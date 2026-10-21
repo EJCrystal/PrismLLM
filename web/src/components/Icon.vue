@@ -1,0 +1,48 @@
+<script setup>
+import { computed } from 'vue'
+
+const props = defineProps({
+  name: { type: String, required: true },
+  size: { type: [Number, String], default: 18 },
+})
+
+const paths = {
+  channels: ['M4 7h16', 'M4 12h10', 'M4 17h7', 'M17 12l3 3-3 3'],
+  aliases: ['M8 7h12', 'M8 12h8', 'M8 17h5', 'M4 7h.01', 'M4 12h.01', 'M4 17h.01'],
+  keys: ['M14 7a4 4 0 1 0-3.5 3.97L5 16.5V19h2.5l1-1v-1.5H10l1-1v-1.5h1.5L14 12.5'],
+  logs: ['M5 5h14v14H5z', 'M8 9h8', 'M8 13h8', 'M8 17h5'],
+  logout: ['M10 5H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4', 'M14 8l4 4-4 4', 'M9 12h9'],
+  menu: ['M4 7h16', 'M4 12h16', 'M4 17h16'],
+  close: ['M6 6l12 12', 'M18 6L6 18'],
+  plus: ['M12 5v14', 'M5 12h14'],
+  edit: ['M4 20h4l10-10-4-4L4 16v4z', 'M13 7l4 4'],
+  trash: ['M5 7h14', 'M9 7V5h6v2', 'M8 7l1 13h6l1-13', 'M10 11v5', 'M14 11v5'],
+  copy: ['M9 9h10v10H9z', 'M5 15V5h10'],
+  check: ['M5 12l4 4L19 6'],
+  search: ['M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z', 'M16 16l4 4'],
+  refresh: ['M20 12a8 8 0 1 1-2.34-5.66', 'M20 5v5h-5'],
+  up: ['M7 14l5-5 5 5'],
+  down: ['M7 10l5 5 5-5'],
+  arrow: ['M5 12h14', 'M13 6l6 6-6 6'],
+  shield: ['M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z'],
+  bolt: ['M13 3L5 14h6l-1 7 8-11h-6l1-7z'],
+}
+
+const iconPaths = computed(() => paths[props.name] || paths.channels)
+</script>
+
+<template>
+  <svg
+    :width="size"
+    :height="size"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <path v-for="path in iconPaths" :key="path" :d="path" />
+  </svg>
+</template>

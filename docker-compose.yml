@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: llm_gateway
+      POSTGRES_USER: llm_gateway
+      POSTGRES_PASSWORD: llm_gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llm_gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/llm_gateway
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
