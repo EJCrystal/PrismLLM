@@ -91,6 +91,17 @@ sudo docker run --rm hello-world
 
 runner 需要能访问 `github.com`、`api.github.com`、Docker Hub，以及 `LLM_GATEWAY_BASE_URL` 指向的网关地址。用 `ubuntu-latest` 时访问不到内网地址。
 
+### Cloudflare 前置要求
+
+网关经 Cloudflare 隧道暴露时，GitHub runner 的出口 IP 会被 Cloudflare 判定为机器人，返回 `Just a moment...` 挑战页，请求到不了 AxonHub。
+
+免费版只能用整体开关，WAF 自定义规则无法跳过 Bot Fight Mode：
+
+- `Security -> Settings -> Bot traffic -> Bot Fight Mode` 关闭
+- 如果 `Security Level` 是 `High` 或 `I'm Under Attack`，调回 `Medium`
+
+API 已有 Bearer 鉴权，关掉机器人挑战不影响安全性；管理面如果也走同一域名，建议单独用子域名并保留验证。
+
 ## 用法
 
 - PR 创建、重新打开、标记 ready 时自动审查，草稿 PR 跳过
