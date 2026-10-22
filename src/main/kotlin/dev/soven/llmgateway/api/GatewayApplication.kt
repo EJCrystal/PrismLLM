@@ -4,6 +4,7 @@ import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.proxy.GatewayMetrics
 import dev.soven.llmgateway.proxy.RequestLogWriter
+import dev.soven.llmgateway.proxy.UpstreamModelCatalog
 import dev.soven.llmgateway.repo.AdminUserRepository
 import dev.soven.llmgateway.repo.AliasRepository
 import dev.soven.llmgateway.repo.ChannelRepository
@@ -76,6 +77,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             socketTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
         }
     }
+
+    val modelCatalog = UpstreamModelCatalog(channelRepository, credentialCipher, httpClient)
 
     fun install(app: Application) {
         databaseFactory.migrate()

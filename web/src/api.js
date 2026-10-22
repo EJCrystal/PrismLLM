@@ -65,6 +65,7 @@ export const api = {
   updateChannel: (id, payload) =>
     request(`/channels/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteChannel: (id) => request(`/channels/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  listChannelModels: (id) => request(`/channels/${encodeURIComponent(id)}/models`),
 
   listAliases: () => request('/aliases'),
   createAlias: (payload) => request('/aliases', { method: 'POST', body: JSON.stringify(payload) }),

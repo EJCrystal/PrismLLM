@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.proxy.fetchUpstreamModels
 import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.ClientKeyHasher
@@ -84,6 +85,15 @@ fun Route.adminRoutes(app: GatewayApplication) {
         get("/channels") {
             call.requireAdmin(app)
             call.respond(app.channelRepository.list().map { it.toResponse() })
+        }
+
+        get("/channels/{id}/models") {
+            call.requireAdmin(app)
+            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少渠道 id")
+            val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
+            val models = fetchUpstreamModels(channel, app.credentialCipher, app.httpClient)
+                .map { ChannelModelResponse(id = it.id, ownedBy = it.ownedBy) }
+            call.respond(ChannelModelsResponse(data = models))
         }
 
         post("/channels") {

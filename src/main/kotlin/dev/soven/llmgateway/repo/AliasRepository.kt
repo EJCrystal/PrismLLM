@@ -56,6 +56,10 @@ class AliasRepository(private val database: Database) {
             .sorted()
     }
 
+    suspend fun listAllAliasNames(): Set<String> = suspendTransaction(database) {
+        ModelAliases.selectAll().map { it[ModelAliases.alias] }.toSet()
+    }
+
     suspend fun list(): List<AliasWithCandidates> = suspendTransaction(database) {
         ModelAliases.selectAll().orderBy(ModelAliases.alias).map { row ->
             AliasWithCandidates(

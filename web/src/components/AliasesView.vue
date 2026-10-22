@@ -20,6 +20,9 @@ const form = reactive({
 })
 
 const maxAttempts = 2
+const channelModels = reactive({})
+const modelLoading = reactive({})
+const modelErrors = reactive({})
 
 const enabledCount = computed(() => aliases.value.filter((item) => item.enabled).length)
 const candidateCount = computed(() =>
@@ -44,6 +47,31 @@ function channelName(channelId) {
   return channels.value.find((channel) => channel.id === channelId)?.name || channelId.slice(0, 8)
 }
 
+async function loadChannelModels(channelId, force = false) {
+  if (!channelId) return
+  if (!force && (channelModels[channelId] || modelLoading[channelId])) return
+  modelLoading[channelId] = true
+  modelErrors[channelId] = ''
+  try {
+    const response = await api.listChannelModels(channelId)
+    channelModels[channelId] = response?.data || []
+  } catch (cause) {
+    channelModels[channelId] = []
+    modelErrors[channelId] = cause.message
+  } finally {
+    modelLoading[channelId] = false
+  }
+}
+
+function modelsFor(channelId) {
+  return channelModels[channelId] || []
+}
+
+function onChannelChange(candidate) {
+  candidate.upstreamModel = ''
+  loadChannelModels(candidate.channelId)
+}
+
 function openCreate() {
   if (channels.value.length === 0) {
     notify('请先创建至少一个渠道', 'error')
@@ -53,6 +81,7 @@ function openCreate() {
   form.alias = ''
   form.enabled = true
   form.candidates = [{ channelId: channels.value[0].id, upstreamModel: '' }]
+  loadChannelModels(channels.value[0].id)
   showForm.value = true
 }
 
@@ -64,14 +93,14 @@ function openEdit(alias) {
     channelId: candidate.channelId,
     upstreamModel: candidate.upstreamModel,
   }))
+  form.candidates.forEach((candidate) => loadChannelModels(candidate.channelId))
   showForm.value = true
 }
 
 function addCandidate() {
-  form.candidates.push({
-    channelId: channels.value[0]?.id || '',
-    upstreamModel: '',
-  })
+  const channelId = channels.value[0]?.id || ''
+  form.candidates.push({ channelId, upstreamModel: '' })
+  loadChannelModels(channelId)
 }
 
 function removeCandidate(index) {
@@ -273,7 +302,7 @@ onMounted(load)
             <span class="candidate-index">{{ index + 1 }}</span>
             <label class="field">
               <span>渠道</span>
-              <select v-model="candidate.channelId">
+              <select v-model="candidate.channelId" @change="onChannelChange(candidate)">
                 <option v-for="channel in channels" :key="channel.id" :value="channel.id">
                   {{ channel.name }}{{ channel.enabled ? '' : '（已停用）' }}
                 </option>
@@ -281,7 +310,33 @@ onMounted(load)
             </label>
             <label class="field grow">
               <span>上游模型名</span>
-              <input v-model="candidate.upstreamModel" placeholder="例如 gpt-4o-mini" autocomplete="off" />
+              <div class="model-input-row">
+                <input
+                  v-model="candidate.upstreamModel"
+                  :list="`models-${index}`"
+                  placeholder="例如 gpt-4o-mini"
+                  autocomplete="off"
+                />
+                <button
+                  type="button"
+                  class="button subtle mini"
+                  :disabled="modelLoading[candidate.channelId]"
+                  @click="loadChannelModels(candidate.channelId, true)"
+                >
+                  {{ modelLoading[candidate.channelId] ? '拉取中…' : '拉取模型' }}
+                </button>
+              </div>
+              <datalist :id="`models-${index}`">
+                <option v-for="model in modelsFor(candidate.channelId)" :key="model.id" :value="model.id">
+                  {{ model.ownedBy || '' }}
+                </option>
+              </datalist>
+              <small v-if="modelErrors[candidate.channelId]" class="text-danger">
+                {{ modelErrors[candidate.channelId] }}
+              </small>
+              <small v-else-if="modelsFor(candidate.channelId).length">
+                已获取 {{ modelsFor(candidate.channelId).length }} 个模型，可直接选择或继续手填。
+              </small>
             </label>
             <div class="candidate-actions">
               <button

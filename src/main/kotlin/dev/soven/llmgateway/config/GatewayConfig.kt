@@ -27,6 +27,7 @@ data class GatewayConfig(
     val drainTimeoutMs: Long,
     val staticDir: Path,
     val cookieSecure: Boolean,
+    val exposeUpstreamModels: Boolean,
 ) {
     companion object {
         fun fromEnv(env: Map<String, String> = System.getenv()): GatewayConfig {
@@ -66,6 +67,8 @@ data class GatewayConfig(
                 staticDir = Path.of(value("STATIC_DIR", "web/dist")),
                 cookieSecure = value("COOKIE_SECURE", "false").toBooleanStrictOrNull()
                     ?: error("COOKIE_SECURE 必须是 true 或 false"),
+                exposeUpstreamModels = value("EXPOSE_UPSTREAM_MODELS", "false").toBooleanStrictOrNull()
+                    ?: error("EXPOSE_UPSTREAM_MODELS 必须是 true 或 false"),
             )
         }
     }

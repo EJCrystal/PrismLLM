@@ -60,6 +60,17 @@ data class RouteCandidate(
 )
 
 /**
+ * 上游 /models 返回的模型。
+ *
+ * @author 文杰
+ * @since 2026-10-22
+ */
+data class UpstreamModel(
+    val id: String,
+    val ownedBy: String? = null,
+)
+
+/**
  * 调用方密钥记录。只保存哈希和展示前缀。
  *
  * @author 文杰

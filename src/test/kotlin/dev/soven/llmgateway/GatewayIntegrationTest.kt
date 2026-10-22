@@ -359,6 +359,53 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `exposes and routes upstream models without aliases when enabled`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(exposeUpstreamModels = true))
+        val channel = createChannel("openai", "ok")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val models = client.get("/v1/models") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+            }
+            assertEquals(HttpStatusCode.OK, models.status)
+            assertTrue(models.bodyAsText().contains("gpt-4o-mini"))
+
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","stream":false,"messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(response.bodyAsText().contains("Hello!"))
+
+            val log = awaitRequestLog()
+            assertEquals(channel.id, log.channelId)
+            assertEquals("gpt-4o-mini", log.upstreamModel)
+        }
+    }
+
+    @Test
+    fun `lists models from an upstream channel`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.get("/admin/api/channels/${channel.id}/models") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("gpt-4o-mini"), "BODY=[$body]")
+            assertTrue(body.contains("deepseek-chat"), "BODY=[$body]")
+        }
+    }
+
+    @Test
     fun `admin login requires csrf and created key can call models`() = runBlocking {
         testApplication {
             application { app.install(this) }
@@ -421,6 +468,7 @@ class GatewayIntegrationTest {
         firstTokenTimeoutMs: Long = 2_000,
         idleTimeoutMs: Long = 2_000,
         totalTimeoutMs: Long = 5_000,
+        exposeUpstreamModels: Boolean = false,
     ): GatewayConfig = GatewayConfig(
         port = 0,
         databaseUrl = postgres.jdbcUrl,
@@ -439,6 +487,7 @@ class GatewayIntegrationTest {
         drainTimeoutMs = 1_000,
         staticDir = Path.of("web/dist"),
         cookieSecure = false,
+        exposeUpstreamModels = exposeUpstreamModels,
     )
 
     private suspend fun createChannel(name: String, scenario: String): ChannelRecord {

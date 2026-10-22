@@ -59,13 +59,20 @@ fun Route.proxyRoutes(app: GatewayApplication) {
     get("/v1/models") {
         authenticate(call, app)
         val aliases = app.aliasRepository.listAvailableAliases()
+        val exposedModels = if (app.config.exposeUpstreamModels) {
+            val aliasNames = app.aliasRepository.listAllAliasNames()
+            app.modelCatalog.listEnabledModels().filterNot { it in aliasNames }
+        } else {
+            emptyList()
+        }
+        val models = (aliases + exposedModels).distinct().sorted()
         call.respond(
             buildJsonObject {
                 put("object", "list")
                 put(
                     "data",
                     buildJsonArray {
-                        aliases.forEach { alias ->
+                        models.forEach { alias ->
                             add(
                                 buildJsonObject {
                                     put("id", alias)
@@ -116,7 +123,10 @@ fun Route.proxyRoutes(app: GatewayApplication) {
                 }
                 else -> throw badRequest("invalid_stream", "stream 必须是布尔值")
             }
-            val candidates = app.aliasRepository.findEnabledCandidates(alias)
+            var candidates = app.aliasRepository.findEnabledCandidates(alias)
+            if (candidates.isEmpty() && app.config.exposeUpstreamModels && app.aliasRepository.findByAlias(alias) == null) {
+                candidates = app.modelCatalog.findCandidates(alias)
+            }
             if (candidates.isEmpty()) {
                 throw notFound("model_not_found", "模型别名 $alias 不存在或没有可用渠道")
             }

@@ -10,6 +10,7 @@ import io.ktor.server.netty.Netty
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.ByteWriteChannel
@@ -52,6 +53,12 @@ class FakeUpstream {
 
     private fun Application.fakeModule() {
         routing {
+            get("/{scenario}/v1/models") {
+                call.respondText(MODELS_BODY, ContentType.Application.Json)
+            }
+            get("/v1/models") {
+                call.respondText(MODELS_BODY, ContentType.Application.Json)
+            }
             post("/{scenario}/v1/chat/completions") {
                 handle(call, call.parameters["scenario"] ?: "ok")
             }
@@ -163,6 +170,8 @@ class FakeUpstream {
             """{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}"""
         private const val ERROR_500 =
             """{"error":{"message":"upstream down","type":"api_error","code":"upstream_down"}}"""
+        private const val MODELS_BODY =
+            """{"object":"list","data":[{"id":"gpt-4o-mini","object":"model","owned_by":"fake"},{"id":"deepseek-chat","object":"model","owned_by":"fake"}]}"""
     }
 }
 
