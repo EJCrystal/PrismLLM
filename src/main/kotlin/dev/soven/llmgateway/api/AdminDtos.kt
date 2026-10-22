@@ -207,6 +207,7 @@ data class ClientKeyCreatedResponse(
 data class RequestLogResponse(
     val requestId: String,
     val clientKeyId: String?,
+    val clientKeyName: String?,
     val alias: String,
     val channelId: String?,
     val channelName: String?,
@@ -218,6 +219,8 @@ data class RequestLogResponse(
     val inputTokens: Long?,
     val outputTokens: Long?,
     val cachedTokens: Long?,
+    val reasoningTokens: Long?,
+    val reasoningEffort: String?,
     val totalTokens: Long?,
     val usageKnown: Boolean,
     val errorCode: String?,
@@ -230,6 +233,7 @@ data class RequestLogResponse(
 fun RequestLogRecord.toResponse() = RequestLogResponse(
     requestId = requestId,
     clientKeyId = clientKeyId,
+    clientKeyName = clientKeyName,
     alias = alias,
     channelId = channelId,
     channelName = channelName,
@@ -241,6 +245,8 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     inputTokens = inputTokens,
     outputTokens = outputTokens,
     cachedTokens = cachedTokens,
+    reasoningTokens = reasoningTokens,
+    reasoningEffort = reasoningEffort,
     totalTokens = totalTokens,
     usageKnown = usageKnown,
     errorCode = errorCode,

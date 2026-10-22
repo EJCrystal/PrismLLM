@@ -38,6 +38,27 @@ class UsageParserTest {
     }
 
     @Test
+    fun `parses reasoning tokens from completion details`() {
+        val line = """data: {"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"completion_tokens_details":{"reasoning_tokens":32}}}"""
+
+        val usage = UsageParser.fromSseLine(line)
+
+        assertEquals(32, usage?.reasoning)
+        assertEquals(50, usage?.output)
+        assertNull(usage?.cached)
+    }
+
+    @Test
+    fun `parses deepseek cache hit tokens`() {
+        val line = """data: {"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}}"""
+
+        val usage = UsageParser.fromSseLine(line)
+
+        assertEquals(80, usage?.cached)
+        assertEquals(100, usage?.input)
+    }
+
+    @Test
     fun `ignores done malformed and non data lines`() {
         assertNull(UsageParser.fromSseLine("data: [DONE]"))
         assertNull(UsageParser.fromSseLine("data: {not-json}"))
@@ -62,6 +83,7 @@ class UsageParserTest {
         assertEquals(3, usage?.output)
         assertEquals(2, usage?.cached)
         assertEquals(13, usage?.total)
+        assertNull(usage?.reasoning)
     }
 
     @Test

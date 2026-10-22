@@ -22,6 +22,7 @@ class RequestLogRepository(private val database: Database) {
         RequestLogs.insert {
             it[requestId] = record.requestId
             it[clientKeyId] = record.clientKeyId
+            it[clientKeyName] = record.clientKeyName
             it[alias] = record.alias
             it[channelId] = record.channelId
             it[channelName] = record.channelName
@@ -33,6 +34,8 @@ class RequestLogRepository(private val database: Database) {
             it[inputTokens] = record.inputTokens
             it[outputTokens] = record.outputTokens
             it[cachedTokens] = record.cachedTokens
+            it[reasoningTokens] = record.reasoningTokens
+            it[reasoningEffort] = record.reasoningEffort
             it[totalTokens] = record.totalTokens
             it[usageKnown] = record.usageKnown
             it[errorCode] = record.errorCode
@@ -54,6 +57,7 @@ class RequestLogRepository(private val database: Database) {
     private fun toRecord(row: ResultRow) = RequestLogRecord(
         requestId = row[RequestLogs.requestId],
         clientKeyId = row[RequestLogs.clientKeyId],
+        clientKeyName = row[RequestLogs.clientKeyName],
         alias = row[RequestLogs.alias],
         channelId = row[RequestLogs.channelId],
         channelName = row[RequestLogs.channelName],
@@ -65,6 +69,8 @@ class RequestLogRepository(private val database: Database) {
         inputTokens = row[RequestLogs.inputTokens],
         outputTokens = row[RequestLogs.outputTokens],
         cachedTokens = row[RequestLogs.cachedTokens],
+        reasoningTokens = row[RequestLogs.reasoningTokens],
+        reasoningEffort = row[RequestLogs.reasoningEffort],
         totalTokens = row[RequestLogs.totalTokens],
         usageKnown = row[RequestLogs.usageKnown],
         errorCode = row[RequestLogs.errorCode],

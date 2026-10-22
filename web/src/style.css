@@ -686,6 +686,7 @@ code,
 
 .actions-col {
   width: 1%;
+  min-width: 58px;
   text-align: right;
 }
 
@@ -873,6 +874,7 @@ code,
   border-radius: 10px;
   font-size: 12px;
   font-weight: 700;
+  white-space: nowrap;
   transition: transform 0.14s ease, background 0.14s ease, border-color 0.14s ease;
 }
 
@@ -1258,8 +1260,8 @@ code,
 
 .logs-table th,
 .logs-table td {
-  padding-right: 13px;
-  padding-left: 13px;
+  padding-right: 11px;
+  padding-left: 11px;
 }
 
 .request-id-cell {
@@ -1305,6 +1307,28 @@ code,
   color: var(--muted);
   font-size: 10px;
   white-space: nowrap;
+}
+
+.usage-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 178px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-cell span {
+  font-size: 12px;
+}
+
+.usage-cell span.muted {
+  font-size: 10.5px;
+}
+
+.stacked-cell {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
 }
 
 /* Request detail */

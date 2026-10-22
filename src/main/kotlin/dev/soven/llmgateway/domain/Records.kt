@@ -108,6 +108,7 @@ data class AdminUserRecord(
 data class RequestLogRecord(
     val requestId: String,
     val clientKeyId: String?,
+    val clientKeyName: String?,
     val alias: String,
     val channelId: String?,
     val channelName: String?,
@@ -119,6 +120,8 @@ data class RequestLogRecord(
     val inputTokens: Long?,
     val outputTokens: Long?,
     val cachedTokens: Long?,
+    val reasoningTokens: Long?,
+    val reasoningEffort: String?,
     val totalTokens: Long?,
     val usageKnown: Boolean,
     val errorCode: String?,
