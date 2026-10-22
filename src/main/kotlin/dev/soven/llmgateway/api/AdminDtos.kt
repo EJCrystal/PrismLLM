@@ -235,3 +235,27 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     errorCode = errorCode,
     createdAt = createdAt,
 )
+
+/**
+ * 上游渠道返回的一个模型。
+ *
+ * @author 文杰
+ * @since 2026-10-22
+ */
+@Serializable
+data class ChannelModelResponse(
+    val id: String,
+    val ownedBy: String? = null,
+)
+
+/**
+ * 上游渠道的模型列表响应。
+ *
+ * @author 文杰
+ * @since 2026-10-22
+ */
+@Serializable
+data class ChannelModelsResponse(
+    val `object`: String = "list",
+    val data: List<ChannelModelResponse>,
+)

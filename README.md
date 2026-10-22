@@ -27,6 +27,8 @@ client --Bearer client key--> gateway --Bearer upstream credential--> OpenAI-com
 
 渠道的 `baseUrl` 必须包含版本路径，例如 `https://api.openai.com/v1`。网关只在该地址后追加 `/chat/completions`，不会自动补 `/v1`。
 
+默认情况下，`/v1/models` 只返回已启用的模型别名。设置 `EXPOSE_UPSTREAM_MODELS=true` 后，会额外合并启用渠道的 `/models` 结果；请求未命中别名时，会按渠道模型列表直接路由。该模式会暴露上游模型名，默认关闭。
+
 ## 快速开始
 
 ```bash
@@ -74,6 +76,7 @@ Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `ht
 | `IDLE_TIMEOUT_MS` | `60000` | 流空闲超时 |
 | `TOTAL_TIMEOUT_MS` | `600000` | 单请求总超时 |
 | `MAX_ATTEMPTS` | `2` | 首 token 前最多尝试的候选数 |
+| `EXPOSE_UPSTREAM_MODELS` | `false` | 是否把启用渠道的上游模型并入 `/v1/models`，并允许未建别名时直连路由 |
 | `DRAIN_TIMEOUT_MS` | `30000` | 优雅停机 drain 时间 |
 | `STATIC_DIR` | `web/dist` | 管理界面静态目录 |
 | `COOKIE_SECURE` | `false` | 管理面 Cookie 是否只走 HTTPS；生产应为 `true` |
@@ -106,6 +109,14 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 ```
 
 写操作需要把登录响应里的 `gw_csrf` Cookie 值放到 `X-CSRF-Token` 请求头。
+
+拉取某个渠道的上游模型列表（网关会请求 `{baseUrl}/models`）：
+
+```bash
+curl -b cookies.txt http://localhost:8080/admin/api/channels/<channel-id>/models
+```
+
+返回 `{"object":"list","data":[{"id":"...","ownedBy":"..."}]}`。上游不支持 `/models` 时返回 502，并带上 `upstream_models_error`。
 
 ## 安全边界
 

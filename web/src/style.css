@@ -1140,6 +1140,52 @@ code,
   padding-bottom: 4px;
 }
 
+.model-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-input-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-list {
+  display: grid;
+  gap: 8px;
+  max-height: 52vh;
+  overflow: auto;
+}
+
+.model-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+
+.model-item-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.model-item-name code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-count {
+  margin-right: auto;
+}
+
 /* Toolbar and logs */
 .table-toolbar {
   display: flex;

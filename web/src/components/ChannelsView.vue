@@ -11,6 +11,12 @@ const error = ref('')
 const showForm = ref(false)
 const saving = ref(false)
 const editingId = ref(null)
+const showModels = ref(false)
+const modelChannel = ref(null)
+const models = ref([])
+const modelsLoading = ref(false)
+const modelsError = ref('')
+let modelRequestId = 0
 
 const form = reactive({
   name: '',
@@ -20,6 +26,45 @@ const form = reactive({
 })
 
 const enabledCount = computed(() => channels.value.filter((channel) => channel.enabled).length)
+
+async function openModels(channel) {
+  modelChannel.value = channel
+  showModels.value = true
+  await loadModels()
+}
+
+async function loadModels() {
+  if (!modelChannel.value) return
+  const requestId = ++modelRequestId
+  const channelId = modelChannel.value.id
+  modelsLoading.value = true
+  modelsError.value = ''
+  try {
+    const response = await api.listChannelModels(channelId)
+    if (requestId !== modelRequestId) return
+    models.value = response?.data || []
+  } catch (cause) {
+    if (requestId !== modelRequestId) return
+    models.value = []
+    modelsError.value = cause.message
+  } finally {
+    if (requestId === modelRequestId) modelsLoading.value = false
+  }
+}
+
+function closeModels() {
+  showModels.value = false
+  modelRequestId += 1
+}
+
+async function copyModel(id) {
+  try {
+    await navigator.clipboard.writeText(id)
+    notify('模型名已复制')
+  } catch {
+    window.prompt('复制模型名', id)
+  }
+}
 
 async function load() {
   loading.value = true
@@ -184,6 +229,9 @@ onMounted(load)
               <td class="muted">{{ formatTime(channel.updatedAt) }}</td>
               <td class="actions-col">
                 <div class="row-actions">
+                  <button type="button" class="icon-button" title="查看模型" @click="openModels(channel)">
+                    <Icon name="models" :size="16" />
+                  </button>
                   <button type="button" class="icon-button" title="编辑" @click="openEdit(channel)">
                     <Icon name="edit" :size="16" />
                   </button>
@@ -208,7 +256,7 @@ onMounted(load)
         <label class="field">
           <span>基础地址</span>
           <input v-model="form.baseUrl" placeholder="https://api.openai.com/v1" autocomplete="off" />
-          <small>网关会在此地址后追加 <code>/chat/completions</code>。</small>
+          <small>网关会在此地址后追加 <code>/chat/completions</code> 和 <code>/models</code>。</small>
         </label>
         <label class="field">
           <span>上游凭据</span>
@@ -233,6 +281,34 @@ onMounted(load)
         <button type="button" class="button ghost" @click="showForm = false">取消</button>
         <button type="button" class="button primary" :disabled="saving" @click="save">
           {{ saving ? '保存中…' : '保存渠道' }}
+        </button>
+      </template>
+    </Modal>
+
+    <Modal v-if="showModels" :title="`${modelChannel?.name || ''} · 上游模型`" wide @close="closeModels">
+      <div v-if="modelsLoading" class="loading-state">
+        <span class="spinner"></span>
+        正在请求上游 <code>/models</code>…
+      </div>
+      <div v-else-if="modelsError" class="callout danger">{{ modelsError }}</div>
+      <div v-else-if="models.length === 0" class="empty-state compact">
+        <h3>没有返回模型</h3>
+        <p>上游返回了空列表，或该渠道不支持 <code>/models</code>。</p>
+      </div>
+      <div v-else class="model-list">
+        <div v-for="model in models" :key="model.id" class="model-item">
+          <div class="model-item-name">
+            <code>{{ model.id }}</code>
+            <span v-if="model.ownedBy" class="muted small">{{ model.ownedBy }}</span>
+          </div>
+          <button type="button" class="button subtle small" @click="copyModel(model.id)">复制</button>
+        </div>
+      </div>
+      <template #footer>
+        <span class="muted small model-count">{{ models.length ? `共 ${models.length} 个模型` : '' }}</span>
+        <button type="button" class="button ghost" @click="closeModels">关闭</button>
+        <button type="button" class="button primary" :disabled="modelsLoading" @click="loadModels">
+          {{ modelsLoading ? '请求中…' : '刷新' }}
         </button>
       </template>
     </Modal>
