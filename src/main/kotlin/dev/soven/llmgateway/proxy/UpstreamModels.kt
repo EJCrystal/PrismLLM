@@ -66,8 +66,6 @@ suspend fun fetchUpstreamModels(
         }
     } catch (e: GatewayException) {
         throw e
-    } catch (e: CancellationException) {
-        throw e
     } catch (e: TimeoutCancellationException) {
         throw GatewayException(
             HttpStatusCode.GatewayTimeout,
@@ -75,6 +73,8 @@ suspend fun fetchUpstreamModels(
             "拉取上游模型列表超时",
             "timeout_error",
         )
+    } catch (e: CancellationException) {
+        throw e
     } catch (e: Throwable) {
         throw GatewayException(
             HttpStatusCode.BadGateway,
