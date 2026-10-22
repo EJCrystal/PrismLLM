@@ -1312,7 +1312,7 @@ code,
 .usage-cell {
   display: grid;
   gap: 3px;
-  min-width: 178px;
+  min-width: 196px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }

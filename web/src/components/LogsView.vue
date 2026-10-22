@@ -103,6 +103,10 @@ function cacheTitle(log) {
   return `缓存 ${formatTokens(log.cachedTokens)} / 输入 ${formatTokens(log.inputTokens)}`
 }
 
+function usageDetailTitle(log) {
+  return `推理 ${formatTokens(log.reasoningTokens)} · 输出速率 ${formatThroughput(log)} tok/s · ${cacheTitle(log)}`
+}
+
 function stageLabel(stage) {
   return stage ? stageLabels[stage] || stage : '—'
 }
@@ -291,8 +295,8 @@ onMounted(load)
                     输入 {{ formatTokensCompact(log.inputTokens) }} · 输出 {{ formatTokensCompact(log.outputTokens) }} · 总
                     {{ formatTokensCompact(log.totalTokens) }}
                   </span>
-                  <span class="muted" :title="cacheTitle(log)">
-                    推理 {{ formatTokensCompact(log.reasoningTokens) }} · {{ formatThroughput(log) }} tok/s · 缓存
+                  <span class="muted" :title="usageDetailTitle(log)">
+                    推理 {{ formatTokensCompact(log.reasoningTokens) }} · 速率 {{ formatThroughput(log) }} tok/s · 缓存
                     {{ formatCacheHit(log) }}
                   </span>
                 </template>
