@@ -29,13 +29,36 @@ jobs:
           startsWith(github.event.comment.body, '/')
         )
       )
-    runs-on: ${{ fromJSON(vars.PR_AGENT_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    # AxonHub listens on 127.0.0.1 only, so the review job must run on the same
+    # host. ubuntu-latest cannot reach a loopback-bound service or pass Cloudflare.
+    runs-on: ${{ fromJSON(vars.PR_AGENT_RUNNER_LABELS || '["self-hosted", "llm-gateway"]') }}
     timeout-minutes: 30
     steps:
       - name: Run PR-Agent
-        uses: The-PR-Agent/pr-agent@v0.48.0
+        # docker run with host networking instead of `uses: docker://`, because a
+        # Docker Action runs on a bridge network and would not see 127.0.0.1:8090.
+        run: |
+          set -euo pipefail
+          docker pull pragent/pr-agent:github_action
+          docker run --rm --network host \
+            -v "$GITHUB_EVENT_PATH:/github/workflow/event.json:ro" \
+            -v "$GITHUB_WORKSPACE:/github/workspace" \
+            -w /github/workspace \
+            -e GITHUB_TOKEN \
+            -e GITHUB_EVENT_NAME -e GITHUB_EVENT_PATH=/github/workflow/event.json \
+            -e GITHUB_REPOSITORY -e GITHUB_SHA -e GITHUB_REF \
+            -e OPENAI__KEY -e OPENAI__API_BASE \
+            -e CONFIG__MODEL -e CONFIG__FALLBACK_MODELS \
+            -e CONFIG__RESPONSE_LANGUAGE -e CONFIG__MAX_MODEL_TOKENS \
+            -e CONFIG__MAX_OUTPUT_TOKENS \
+            -e GITHUB_ACTION_CONFIG__AUTO_REVIEW \
+            -e GITHUB_ACTION_CONFIG__AUTO_DESCRIBE \
+            -e GITHUB_ACTION_CONFIG__AUTO_IMPROVE \
+            -e GITHUB_ACTION_CONFIG__PR_ACTIONS \
+            pragent/pr-agent:github_action
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
           OPENAI__KEY: ${{ secrets.LLM_GATEWAY_KEY }}
           OPENAI__API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
           CONFIG__MODEL: openai/${{ vars.LLM_GATEWAY_REVIEW_MODEL || 'review-model' }}
