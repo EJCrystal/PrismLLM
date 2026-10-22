@@ -56,7 +56,7 @@ async function loadChannelModels(channelId, force = false) {
     const response = await api.listChannelModels(channelId)
     channelModels[channelId] = response?.data || []
   } catch (cause) {
-    channelModels[channelId] = []
+    delete channelModels[channelId]
     modelErrors[channelId] = cause.message
   } finally {
     modelLoading[channelId] = false

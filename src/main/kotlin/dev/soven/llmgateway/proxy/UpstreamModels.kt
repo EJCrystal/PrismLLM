@@ -7,10 +7,12 @@ import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
-import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.isSuccess
+import io.ktor.utils.io.core.readBytes
+import io.ktor.utils.io.readRemaining
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -62,7 +64,16 @@ suspend fun fetchUpstreamModels(
                     "api_error",
                 )
             }
-            parseModelList(response.bodyAsText())
+            val bytes = response.bodyAsChannel().readRemaining(MODEL_LIST_MAX_BYTES.toLong() + 1).readBytes()
+            if (bytes.size > MODEL_LIST_MAX_BYTES) {
+                throw GatewayException(
+                    HttpStatusCode.BadGateway,
+                    "upstream_models_too_large",
+                    "上游模型列表超过 2MB",
+                    "api_error",
+                )
+            }
+            parseModelList(bytes.toString(Charsets.UTF_8))
         }
     } catch (e: GatewayException) {
         throw e
@@ -119,3 +130,4 @@ internal fun parseModelList(text: String): List<UpstreamModel> {
 }
 
 private const val MODEL_LIST_TIMEOUT_MS = 15_000L
+private const val MODEL_LIST_MAX_BYTES = 2 * 1024 * 1024

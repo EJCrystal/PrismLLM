@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
+import org.slf4j.LoggerFactory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -24,9 +25,11 @@ class UpstreamModelCatalog(
     private val credentialCipher: CredentialCipher,
     private val httpClient: HttpClient,
     private val ttlMs: Long = 60_000,
+    private val failureRetryMs: Long = 5_000,
 ) {
     private data class CacheEntry(val models: List<String>, val expiresAt: Long)
 
+    private val logger = LoggerFactory.getLogger(UpstreamModelCatalog::class.java)
     private val cache = ConcurrentHashMap<String, CacheEntry>()
     private val locks = ConcurrentHashMap<String, Mutex>()
 
@@ -70,7 +73,15 @@ class UpstreamModelCatalog(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                emptyList()
+                logger.warn("failed to fetch models for channel {}", channel.id, e)
+                val retryAt = current + failureRetryMs
+                val previous = cache[channel.id]?.models
+                if (previous != null) {
+                    cache[channel.id] = CacheEntry(previous, retryAt)
+                    return@withLock previous
+                }
+                cache[channel.id] = CacheEntry(emptyList(), retryAt)
+                return@withLock emptyList()
             }
             cache[channel.id] = CacheEntry(models, current + ttlMs)
             models
