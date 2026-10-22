@@ -89,4 +89,19 @@ class UsageParserTest {
         assertNull(usage?.output)
         assertFalse(usage?.known == false)
     }
+
+    @Test
+    fun `tolerates surrounding whitespace in sse line`() {
+        val line = "  data:   {\"usage\":{\"total_tokens\":7}}   "
+
+        val usage = UsageParser.fromSseLine(line)
+
+        assertEquals(7, usage?.total)
+    }
+
+    @Test
+    fun `returns null for data prefix without payload`() {
+        assertNull(UsageParser.fromSseLine("data:"))
+        assertNull(UsageParser.fromSseLine("data:   "))
+    }
 }
