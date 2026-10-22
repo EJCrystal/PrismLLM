@@ -1,6 +1,8 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.domain.ClientKeyRecord
+import dev.soven.llmgateway.domain.FailureStage
+import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.proxy.Usage
@@ -89,127 +91,183 @@ fun Route.proxyRoutes(app: GatewayApplication) {
     }
 
     post("/v1/chat/completions") {
-        val requestId = call.request.headers["X-Request-Id"]
-            ?.take(64)
-            ?.takeIf { it.isNotBlank() }
-            ?: UUID.randomUUID().toString()
-        call.response.header("X-Request-Id", requestId)
+        handleProxy(app, call, GatewayProtocol.CHAT_COMPLETIONS)
+    }
 
-        val startedAt = System.nanoTime()
-        val deadlineNanos = startedAt + app.config.totalTimeoutMs * 1_000_000
-        val state = ProxyState()
-        var clientKey: ClientKeyRecord? = null
-        var alias = "unknown"
-        var channelId: String? = null
-        var upstreamModel: String? = null
-        var statusCode = HttpStatusCode.InternalServerError.value
-        var errorCode: String? = null
-
-        try {
-            clientKey = authenticate(call, app)
-            val requestJson = call.receiveLimitedJson(app.config.requestBodyLimitBytes)
-            val modelElement = requestJson["model"] as? JsonPrimitive
-            alias = modelElement
-                ?.takeIf { it.isString }
-                ?.content
-                ?.takeIf { it.isNotBlank() }
-                ?: throw badRequest("invalid_model", "model 必须是非空字符串")
-            val streamElement = requestJson["stream"]
-            val stream = when (streamElement) {
-                null -> false
-                is JsonPrimitive -> {
-                    if (streamElement.isString) throw badRequest("invalid_stream", "stream 必须是布尔值")
-                    streamElement.booleanOrNull ?: throw badRequest("invalid_stream", "stream 必须是布尔值")
-                }
-                else -> throw badRequest("invalid_stream", "stream 必须是布尔值")
-            }
-            var candidates = app.aliasRepository.findEnabledCandidates(alias)
-            if (candidates.isEmpty() && app.config.exposeUpstreamModels && app.aliasRepository.findByAlias(alias) == null) {
-                candidates = app.modelCatalog.findCandidates(alias)
-            }
-            if (candidates.isEmpty()) {
-                throw notFound("model_not_found", "模型别名 $alias 不存在或没有可用渠道")
-            }
-
-            val attempts = candidates.take(app.config.maxAttempts)
-            var lastError: GatewayException? = null
-            for ((index, candidate) in attempts.withIndex()) {
-                channelId = candidate.channel.id
-                upstreamModel = candidate.upstreamModel
-                val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
-                if (remainingMs <= 0) {
-                    throw GatewayException(
-                        HttpStatusCode.GatewayTimeout,
-                        "upstream_timeout",
-                        "上游响应超时",
-                        "timeout_error",
-                    )
-                }
-                try {
-                    if (stream) {
-                        proxyStream(app, call, requestJson, candidate, alias, startedAt, remainingMs, state)
-                    } else {
-                        proxyJson(app, call, requestJson, candidate, remainingMs, state)
-                    }
-                    statusCode = state.statusCode
-                    return@post
-                } catch (e: GatewayException) {
-                    lastError = e
-                    app.metrics.upstreamError(candidate.channel.name, e.code)
-                    if (!e.retryable || state.committed || index == attempts.lastIndex) throw e
-                }
-            }
-            throw lastError ?: GatewayException(
-                HttpStatusCode.BadGateway,
-                "no_candidate",
-                "没有可用候选",
-            )
-        } catch (e: TimeoutCancellationException) {
-            statusCode = if (state.committed) HttpStatusCode.OK.value else HttpStatusCode.GatewayTimeout.value
-            errorCode = if (state.committed) "stream_timeout" else "upstream_timeout"
-            throw GatewayException(HttpStatusCode.GatewayTimeout, "upstream_timeout", "上游响应超时", "timeout_error")
-        } catch (e: GatewayException) {
-            statusCode = if (state.committed) HttpStatusCode.OK.value else e.status.value
-            errorCode = if (state.committed) {
-                if (e.code == "upstream_timeout") "stream_timeout" else "stream_interrupted"
-            } else {
-                e.code
-            }
-            throw e
-        } catch (e: CancellationException) {
-            statusCode = if (state.committed) HttpStatusCode.OK.value else 499
-            errorCode = "client_cancelled"
-            throw e
-        } catch (e: Throwable) {
-            statusCode = if (state.committed) HttpStatusCode.OK.value else HttpStatusCode.InternalServerError.value
-            errorCode = if (state.committed) "stream_interrupted" else "internal_error"
-            throw e
-        } finally {
-            val usage = state.usage
-            app.metrics.request(alias, channelId, statusCode)
-            if (usage != null) app.metrics.usage(alias, usage)
-            app.requestLogWriter.submit(
-                RequestLogRecord(
-                    requestId = requestId,
-                    clientKeyId = clientKey?.id,
-                    alias = alias,
-                    channelId = channelId,
-                    upstreamModel = upstreamModel,
-                    statusCode = statusCode,
-                    firstTokenMs = state.firstTokenMs,
-                    totalMs = (System.nanoTime() - startedAt) / 1_000_000,
-                    inputTokens = usage?.input,
-                    outputTokens = usage?.output,
-                    cachedTokens = usage?.cached,
-                    totalTokens = usage?.total,
-                    usageKnown = usage?.known ?: false,
-                    errorCode = errorCode ?: state.errorCode,
-                    createdAt = System.currentTimeMillis(),
-                ),
-            )
-        }
+    post("/v1/responses") {
+        handleProxy(app, call, GatewayProtocol.RESPONSES)
     }
 }
+
+private suspend fun handleProxy(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    protocol: GatewayProtocol,
+) {
+    val requestId = call.request.headers["X-Request-Id"]
+        ?.take(64)
+        ?.takeIf { it.isNotBlank() }
+        ?: UUID.randomUUID().toString()
+    call.response.header("X-Request-Id", requestId)
+
+    val startedAt = System.nanoTime()
+    val deadlineNanos = startedAt + app.config.totalTimeoutMs * 1_000_000
+    val state = ProxyState()
+    var clientKey: ClientKeyRecord? = null
+    var alias = "unknown"
+    var channelId: String? = null
+    var channelName: String? = null
+    var upstreamModel: String? = null
+    var statusCode = HttpStatusCode.InternalServerError.value
+    var errorCode: String? = null
+    var failureStage: FailureStage? = null
+    var errorMessage: String? = null
+    var upstreamErrorCode: String? = null
+    var phase = FailureStage.REQUEST
+
+    try {
+        clientKey = authenticate(call, app)
+        val requestJson = call.receiveLimitedJson(app.config.requestBodyLimitBytes)
+        val modelElement = requestJson["model"] as? JsonPrimitive
+        alias = modelElement
+            ?.takeIf { it.isString }
+            ?.content
+            ?.takeIf { it.isNotBlank() }
+            ?: throw badRequest("invalid_model", "model 必须是非空字符串")
+        val streamElement = requestJson["stream"]
+        val stream = when (streamElement) {
+            null -> false
+            is JsonPrimitive -> {
+                if (streamElement.isString) throw badRequest("invalid_stream", "stream 必须是布尔值")
+                streamElement.booleanOrNull ?: throw badRequest("invalid_stream", "stream 必须是布尔值")
+            }
+            else -> throw badRequest("invalid_stream", "stream 必须是布尔值")
+        }
+        phase = FailureStage.ROUTING
+        val aliasCandidates = app.aliasRepository.findEnabledCandidates(alias)
+        var candidates = aliasCandidates.filter { protocol in it.channel.protocols }
+        if (aliasCandidates.isNotEmpty() && candidates.isEmpty()) {
+            throw protocolNotSupported(alias, protocol)
+        }
+        if (aliasCandidates.isEmpty() && app.config.exposeUpstreamModels && app.aliasRepository.findByAlias(alias) == null) {
+            candidates = app.modelCatalog.findCandidates(alias, protocol)
+            if (candidates.isEmpty() && app.modelCatalog.findCandidates(alias, null).isNotEmpty()) {
+                throw protocolNotSupported(alias, protocol)
+            }
+        }
+        if (candidates.isEmpty()) {
+            throw notFound("model_not_found", "模型别名 $alias 不存在或没有可用渠道")
+        }
+
+        val attempts = candidates.take(app.config.maxAttempts)
+        phase = FailureStage.UPSTREAM
+        var lastError: GatewayException? = null
+        for ((index, candidate) in attempts.withIndex()) {
+            channelId = candidate.channel.id
+            channelName = candidate.channel.name
+            upstreamModel = candidate.upstreamModel
+            val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
+            if (remainingMs <= 0) {
+                throw GatewayException(
+                    HttpStatusCode.GatewayTimeout,
+                    "upstream_timeout",
+                    "上游响应超时",
+                    "timeout_error",
+                )
+            }
+            try {
+                if (stream) {
+                    proxyStream(app, call, requestJson, candidate, alias, startedAt, remainingMs, state, protocol)
+                } else {
+                    proxyJson(app, call, requestJson, candidate, remainingMs, state, protocol)
+                }
+                statusCode = state.statusCode
+                return
+            } catch (e: GatewayException) {
+                lastError = e
+                app.metrics.upstreamError(candidate.channel.name, e.code)
+                if (!e.retryable || state.committed || index == attempts.lastIndex) throw e
+            }
+        }
+        throw lastError ?: GatewayException(
+            HttpStatusCode.BadGateway,
+            "no_candidate",
+            "没有可用候选",
+        )
+    } catch (e: TimeoutCancellationException) {
+        statusCode = if (state.committed) HttpStatusCode.OK.value else HttpStatusCode.GatewayTimeout.value
+        errorCode = if (state.committed) "stream_timeout" else "upstream_timeout"
+        failureStage = if (state.committed) FailureStage.STREAMING else FailureStage.UPSTREAM
+        errorMessage = if (state.committed) "上游流式响应超时" else "上游响应超时"
+        throw GatewayException(HttpStatusCode.GatewayTimeout, "upstream_timeout", "上游响应超时", "timeout_error")
+    } catch (e: GatewayException) {
+        statusCode = if (state.committed) HttpStatusCode.OK.value else e.status.value
+        errorCode = if (state.committed) {
+            if (e.code == "upstream_timeout") "stream_timeout" else "stream_interrupted"
+        } else {
+            e.code
+        }
+        failureStage = when {
+            state.committed -> FailureStage.STREAMING
+            phase == FailureStage.UPSTREAM -> FailureStage.UPSTREAM
+            phase == FailureStage.ROUTING -> FailureStage.ROUTING
+            else -> FailureStage.REQUEST
+        }
+        errorMessage = e.message.asLogMessage()
+        upstreamErrorCode = e.upstreamCode?.take(200)
+        throw e
+    } catch (e: CancellationException) {
+        statusCode = if (state.committed) HttpStatusCode.OK.value else 499
+        errorCode = "client_cancelled"
+        failureStage = FailureStage.CLIENT
+        errorMessage = "客户端取消请求"
+        throw e
+    } catch (e: Throwable) {
+        statusCode = if (state.committed) HttpStatusCode.OK.value else HttpStatusCode.InternalServerError.value
+        errorCode = if (state.committed) "stream_interrupted" else "internal_error"
+        failureStage = when {
+            state.committed -> FailureStage.STREAMING
+            phase == FailureStage.UPSTREAM -> FailureStage.UPSTREAM
+            else -> FailureStage.REQUEST
+        }
+        errorMessage = e.message.asLogMessage() ?: e::class.simpleName
+        throw e
+    } finally {
+        if (errorCode == null && state.errorCode != null) {
+            failureStage = FailureStage.STREAMING
+            errorMessage = "上游流未正常结束（缺少结束帧）"
+        }
+        val usage = state.usage
+        app.metrics.request(alias, channelId, statusCode)
+        if (usage != null) app.metrics.usage(alias, usage)
+        app.requestLogWriter.submit(
+            RequestLogRecord(
+                requestId = requestId,
+                clientKeyId = clientKey?.id,
+                alias = alias,
+                channelId = channelId,
+                channelName = channelName,
+                upstreamModel = upstreamModel,
+                protocol = protocol,
+                statusCode = statusCode,
+                firstTokenMs = state.firstTokenMs,
+                totalMs = (System.nanoTime() - startedAt) / 1_000_000,
+                inputTokens = usage?.input,
+                outputTokens = usage?.output,
+                cachedTokens = usage?.cached,
+                totalTokens = usage?.total,
+                usageKnown = usage?.known ?: false,
+                errorCode = errorCode ?: state.errorCode,
+                failureStage = failureStage,
+                errorMessage = errorMessage,
+                upstreamErrorCode = upstreamErrorCode,
+                createdAt = System.currentTimeMillis(),
+            ),
+        )
+    }
+}
+
+private fun String?.asLogMessage(): String? = this?.trim()?.take(1000)?.takeIf { it.isNotEmpty() }
 
 private class ProxyState {
     var committed = false
@@ -263,8 +321,9 @@ private suspend fun proxyStream(
     startedAt: Long,
     timeoutMs: Long,
     state: ProxyState,
+    protocol: GatewayProtocol,
 ) {
-    val upstreamUrl = candidate.channel.baseUrl.trimEnd('/') + "/chat/completions"
+    val upstreamUrl = buildUpstreamUrl(candidate, protocol)
     val credential = decryptCredential(app, candidate)
     val body = requestJson.withModel(candidate.upstreamModel).toString()
 
@@ -280,13 +339,16 @@ private suspend fun proxyStream(
                     throw upstreamException(response.status, response.bodyAsText())
                 }
                 val upstream = response.bodyAsChannel()
-                val firstLine = try {
+                val prefixLines = mutableListOf<String>()
+                val firstDataLine = try {
                     withTimeout(app.config.firstTokenTimeoutMs) {
-                        var line = upstream.readUTF8Line()
-                        while (line != null && !line.startsWith("data:")) {
-                            line = upstream.readUTF8Line()
+                        var found: String? = null
+                        while (found == null) {
+                            val next = upstream.readUTF8Line() ?: break
+                            prefixLines.add(next)
+                            if (next.trim().startsWith("data:")) found = next
                         }
-                        line
+                        found
                     }
                 } catch (e: TimeoutCancellationException) {
                     response.call.cancel(e)
@@ -307,18 +369,23 @@ private suspend fun proxyStream(
 
                 state.committed = true
                 state.statusCode = HttpStatusCode.OK.value
-                state.firstTokenMs = (System.nanoTime() - startedAt) / 1_000_000
-                app.metrics.firstToken(alias, candidate.channel.name, state.firstTokenMs!!)
 
                 val completion = CompletableDeferred<Unit>()
                 try {
                     call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
                         try {
-                            writeSseLine(firstLine)
-                            recordUsage(firstLine, state)
-                            var sawDone = firstLine.trim() == "data: [DONE]"
-                            if (sawDone) writeSseLine("")
-                            if (firstLine.trim() != "data: [DONE]") {
+                            var sawDone = false
+                            for (line in prefixLines) {
+                                writeSseLine(line)
+                                markFirstToken(line, protocol, state, startedAt, app, alias, candidate.channel.name)
+                                recordUsage(line, state, protocol)
+                                if (isStreamDone(line, protocol)) {
+                                    writeSseLine("")
+                                    sawDone = true
+                                    break
+                                }
+                            }
+                            if (!sawDone) {
                                 while (true) {
                                     val line = try {
                                         withTimeout(app.config.idleTimeoutMs) { upstream.readUTF8Line() }
@@ -331,8 +398,9 @@ private suspend fun proxyStream(
                                         )
                                     } ?: break
                                     writeSseLine(line)
-                                    recordUsage(line, state)
-                                    if (line.trim() == "data: [DONE]") {
+                                    markFirstToken(line, protocol, state, startedAt, app, alias, candidate.channel.name)
+                                    recordUsage(line, state, protocol)
+                                    if (isStreamDone(line, protocol)) {
                                         writeSseLine("")
                                         sawDone = true
                                         break
@@ -377,8 +445,9 @@ private suspend fun proxyJson(
     candidate: RouteCandidate,
     timeoutMs: Long,
     state: ProxyState,
+    protocol: GatewayProtocol,
 ) {
-    val upstreamUrl = candidate.channel.baseUrl.trimEnd('/') + "/chat/completions"
+    val upstreamUrl = buildUpstreamUrl(candidate, protocol)
     val credential = decryptCredential(app, candidate)
     val body = requestJson.withModel(candidate.upstreamModel).toString()
     try {
@@ -394,7 +463,13 @@ private suspend fun proxyJson(
             }
             state.committed = true
             state.statusCode = response.status.value
-            state.usage = runCatching { UsageParser.fromJson(Json.parseToJsonElement(text).jsonObject) }.getOrNull()
+            state.usage = runCatching {
+                val json = Json.parseToJsonElement(text).jsonObject
+                when (protocol) {
+                    GatewayProtocol.CHAT_COMPLETIONS -> UsageParser.fromJson(json)
+                    GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
+                }
+            }.getOrNull()
             call.respondText(text, ContentType.Application.Json, response.status)
         }
     } catch (e: TimeoutCancellationException) {
@@ -413,6 +488,20 @@ private suspend fun proxyJson(
         throw transportFailure(state.committed)
     }
 }
+
+private fun protocolNotSupported(alias: String, protocol: GatewayProtocol): GatewayException =
+    GatewayException(
+        HttpStatusCode.BadRequest,
+        "protocol_not_supported",
+        "模型别名 $alias 没有支持 ${protocol.value} 的渠道",
+        "invalid_request_error",
+    )
+
+private fun buildUpstreamUrl(candidate: RouteCandidate, protocol: GatewayProtocol): String =
+    candidate.channel.baseUrl.trimEnd('/') + when (protocol) {
+        GatewayProtocol.CHAT_COMPLETIONS -> "/chat/completions"
+        GatewayProtocol.RESPONSES -> "/responses"
+    }
 
 private fun decryptCredential(app: GatewayApplication, candidate: RouteCandidate): String = runCatching {
     app.credentialCipher.decrypt(candidate.channel.credentialCiphertext, candidate.channel.credentialNonce)
@@ -460,9 +549,62 @@ private suspend fun ByteWriteChannel.writeSseLine(line: String) {
     flush()
 }
 
-private fun recordUsage(line: String, state: ProxyState) {
-    UsageParser.fromSseLine(line)?.let { state.usage = it }
+private fun markFirstToken(
+    line: String,
+    protocol: GatewayProtocol,
+    state: ProxyState,
+    startedAt: Long,
+    app: GatewayApplication,
+    alias: String,
+    channelName: String,
+) {
+    if (state.firstTokenMs != null) return
+    val payload = ssePayload(line) ?: return
+    if (payload == "[DONE]") return
+    val type = if (protocol == GatewayProtocol.RESPONSES) {
+        runCatching { Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull }
+            .getOrNull()
+    } else {
+        null
+    }
+    val isFirst = when (protocol) {
+        GatewayProtocol.CHAT_COMPLETIONS -> true
+        GatewayProtocol.RESPONSES -> type in RESPONSES_END_EVENTS || type == "response.output_text.delta"
+    }
+    if (isFirst) {
+        state.firstTokenMs = (System.nanoTime() - startedAt) / 1_000_000
+        app.metrics.firstToken(alias, channelName, state.firstTokenMs!!)
+    }
 }
+
+private fun recordUsage(line: String, state: ProxyState, protocol: GatewayProtocol) {
+    val payload = ssePayload(line) ?: return
+    if (payload == "[DONE]") return
+    val json = runCatching { Json.parseToJsonElement(payload).jsonObject }.getOrNull() ?: return
+    val usage = when (protocol) {
+        GatewayProtocol.CHAT_COMPLETIONS -> UsageParser.fromJson(json)
+        GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
+    }
+    if (usage != null) state.usage = usage
+}
+
+private fun isStreamDone(line: String, protocol: GatewayProtocol): Boolean {
+    val payload = ssePayload(line) ?: return false
+    if (payload == "[DONE]") return true
+    if (protocol != GatewayProtocol.RESPONSES) return false
+    val type = runCatching {
+        Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull
+    }.getOrNull()
+    return type in RESPONSES_END_EVENTS
+}
+
+private fun ssePayload(line: String): String? {
+    val trimmed = line.trim()
+    if (!trimmed.startsWith("data:")) return null
+    return trimmed.removePrefix("data:").trim().takeIf { it.isNotEmpty() }
+}
+
+private val RESPONSES_END_EVENTS = setOf("response.completed", "response.failed", "response.incomplete")
 
 private fun JsonObject.withModel(model: String): JsonObject =
     JsonObject(toMap() + ("model" to JsonPrimitive(model)))

@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.repo.AliasWithCandidates
@@ -36,6 +37,7 @@ data class ChannelRequest(
     val baseUrl: String,
     val credential: String? = null,
     val authType: String = "bearer",
+    val protocols: List<String> = listOf(GatewayProtocol.CHAT_COMPLETIONS.value),
     val enabled: Boolean = true,
 )
 
@@ -51,6 +53,7 @@ data class ChannelResponse(
     val name: String,
     val baseUrl: String,
     val authType: String,
+    val protocols: List<String>,
     val enabled: Boolean,
     val credentialSet: Boolean,
     val createdAt: Long,
@@ -62,6 +65,7 @@ fun ChannelRecord.toResponse() = ChannelResponse(
     name = name,
     baseUrl = baseUrl,
     authType = authType,
+    protocols = protocols.map { it.value }.sorted(),
     enabled = enabled,
     credentialSet = credentialCiphertext.isNotBlank(),
     createdAt = createdAt,
@@ -205,7 +209,9 @@ data class RequestLogResponse(
     val clientKeyId: String?,
     val alias: String,
     val channelId: String?,
+    val channelName: String?,
     val upstreamModel: String?,
+    val protocol: String,
     val statusCode: Int,
     val firstTokenMs: Long?,
     val totalMs: Long,
@@ -215,6 +221,9 @@ data class RequestLogResponse(
     val totalTokens: Long?,
     val usageKnown: Boolean,
     val errorCode: String?,
+    val failureStage: String?,
+    val errorMessage: String?,
+    val upstreamErrorCode: String?,
     val createdAt: Long,
 )
 
@@ -223,7 +232,9 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     clientKeyId = clientKeyId,
     alias = alias,
     channelId = channelId,
+    channelName = channelName,
     upstreamModel = upstreamModel,
+    protocol = protocol.value,
     statusCode = statusCode,
     firstTokenMs = firstTokenMs,
     totalMs = totalMs,
@@ -233,6 +244,9 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     totalTokens = totalTokens,
     usageKnown = usageKnown,
     errorCode = errorCode,
+    failureStage = failureStage?.value,
+    errorMessage = errorMessage,
+    upstreamErrorCode = upstreamErrorCode,
     createdAt = createdAt,
 )
 
@@ -258,4 +272,39 @@ data class ChannelModelResponse(
 data class ChannelModelsResponse(
     val `object`: String = "list",
     val data: List<ChannelModelResponse>,
+)
+
+/**
+ * 协议探测请求。model 为空时使用上游 /models 的第一个模型。
+ *
+ * @author 文杰
+ * @since 2026-10-22
+ */
+@Serializable
+data class ProtocolProbeRequest(val model: String? = null)
+
+/**
+ * 单个协议的探测结果。
+ *
+ * @author 文杰
+ * @since 2026-10-22
+ */
+@Serializable
+data class ProtocolProbeResultResponse(
+    val protocol: String,
+    val supported: Boolean,
+    val statusCode: Int? = null,
+    val message: String,
+)
+
+/**
+ * 渠道协议探测响应。
+ *
+ * @author 文杰
+ * @since 2026-10-22
+ */
+@Serializable
+data class ProtocolProbeResponse(
+    val model: String,
+    val results: List<ProtocolProbeResultResponse>,
 )

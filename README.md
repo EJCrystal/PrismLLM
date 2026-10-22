@@ -1,11 +1,11 @@
 # llm-gateway
 
-面向内部团队的 OpenAI 兼容 LLM 网关。v1 只做一件事：接收 `/v1/chat/completions`，按模型别名选择渠道，透传 SSE 流，并记录用量与请求元数据。
+面向内部团队的 OpenAI 兼容 LLM 网关。v1 接收 `/v1/chat/completions` 与 `/v1/responses`，按模型别名选择渠道，透传 SSE 流，并记录用量与请求元数据。
 
 ## 能力边界
 
-- OpenAI Chat Completions 兼容入口，支持 `stream=true` 与 `stream=false`。
-- 模型别名到有序候选的路由；首 token 前失败最多切换一次。
+- OpenAI Chat Completions 与 Responses 兼容入口，支持 `stream=true` 与 `stream=false`。
+- 渠道按协议配置支持 `chat_completions` / `responses`，路由时按请求协议过滤候选。
 - 调用方密钥鉴权，上游凭据加密存储。
 - 流式响应不缓冲、客户端断开向上游传播。
 - 管理 API 与 Vue 3 管理界面：渠道、别名、调用方密钥、请求日志。
@@ -21,11 +21,11 @@ client --Bearer client key--> gateway --Bearer upstream credential--> OpenAI-com
                                 +-- PostgreSQL: channels, aliases, client keys, request logs
 ```
 
-数据面：`/v1/chat/completions`、`/v1/models`。
+数据面：`/v1/chat/completions`、`/v1/responses`、`/v1/models`。
 管理面：`/admin/api/*`，由会话 Cookie + CSRF Token 保护。
 运维面：`/health/live`、`/health/ready`、`/metrics`。
 
-渠道的 `baseUrl` 必须包含版本路径，例如 `https://api.openai.com/v1`。网关只在该地址后追加 `/chat/completions`，不会自动补 `/v1`。
+渠道的 `baseUrl` 必须包含版本路径，例如 `https://api.openai.com/v1`。网关按请求协议追加 `/chat/completions` 或 `/responses`，不会自动补 `/v1`。
 
 默认情况下，`/v1/models` 只返回已启用的模型别名。设置 `EXPOSE_UPSTREAM_MODELS=true` 后，会额外合并启用渠道的 `/models` 结果；请求未命中别名时，会按渠道模型列表直接路由。该模式会暴露上游模型名，默认关闭。
 
@@ -98,7 +98,14 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model":"fast-chat","stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-模型别名列表：`GET /v1/models`，返回当前启用的别名。
+Responses 调用：
+
+```bash
+curl http://localhost:8080/v1/responses \
+  -H "Authorization: Bearer sk-gw-..."   -H "Content-Type: application/json"   -d '{"model":"fast-chat","stream":true,"input":"hi"}'
+```
+
+模型别名列表：`GET /v1/models`，返回当前启用的别名。请求日志会记录本次请求使用的协议。
 
 管理 API 示例：
 
@@ -118,6 +125,18 @@ curl -b cookies.txt http://localhost:8080/admin/api/channels/<channel-id>/models
 
 返回 `{"object":"list","data":[{"id":"...","ownedBy":"..."}]}`。上游不支持 `/models` 时返回 502，并带上 `upstream_models_error`。
 
+探测渠道支持的协议：
+
+```bash
+curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id>/probe-protocols \
+  -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini"}'
+```
+
+返回每个协议的 `supported`、`statusCode` 和说明。探测会使用已保存凭据发送最小请求（Chat `max_tokens=1`，Responses `max_output_tokens=1`），可能产生少量 token 费用；不传 `model` 时使用上游 `/models` 的第一个模型。
+
+失败请求会在日志中记录 `failureStage`（`request` / `routing` / `upstream` / `streaming` / `client`）、`errorMessage` 和上游返回的 `upstreamErrorCode`。渠道列显示请求发生时的渠道名称快照，同时保留 `channelId` 用于精确关联；渠道改名不会改写历史日志。请求日志列表只显示错误码和阶段，完整原因在“详情”弹层中查看；上游响应正文仍然不落库。
+
 ## 安全边界
 
 - 调用方密钥只保存 SHA-256 哈希和前缀，创建时明文只返回一次。
@@ -132,7 +151,7 @@ curl -b cookies.txt http://localhost:8080/admin/api/channels/<channel-id>/models
 mvn test
 ```
 
-集成测试使用 Testcontainers 启动 PostgreSQL。核心覆盖：SSE 用量解析、别名路由、首 token 前重试（含连接失败）、429 映射、首 token 超时取消上游、管理面 CSRF。
+集成测试使用 Testcontainers 启动 PostgreSQL。核心覆盖：Chat Completions 与 Responses 的 SSE 用量解析、协议路由过滤、别名路由、首 token 前重试（含连接失败）、429 映射、首 token 超时取消上游、管理面 CSRF。
 
 关键实现决策记录在 `docs/adr/`，包括 Kotlin/Ktor 选型、v1 协议边界和上游 HTTP 客户端选择。
 

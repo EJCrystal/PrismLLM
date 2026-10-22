@@ -1,5 +1,7 @@
 package dev.soven.llmgateway.proxy
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -46,6 +48,34 @@ class UsageParserTest {
     @Test
     fun `returns null when usage object is empty`() {
         assertNull(UsageParser.fromSseLine("""data: {"usage":{}}"""))
+    }
+
+    @Test
+    fun `parses responses usage from completed event`() {
+        val json = Json.parseToJsonElement(
+            """{"type":"response.completed","response":{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens":3,"total_tokens":13}}}""",
+        ).jsonObject
+
+        val usage = UsageParser.fromResponsesJson(json)
+
+        assertEquals(10, usage?.input)
+        assertEquals(3, usage?.output)
+        assertEquals(2, usage?.cached)
+        assertEquals(13, usage?.total)
+    }
+
+    @Test
+    fun `parses responses usage from non streaming response`() {
+        val json = Json.parseToJsonElement(
+            """{"object":"response","usage":{"input_tokens":20,"output_tokens":4,"total_tokens":24}}""",
+        ).jsonObject
+
+        val usage = UsageParser.fromResponsesJson(json)
+
+        assertEquals(20, usage?.input)
+        assertEquals(4, usage?.output)
+        assertEquals(24, usage?.total)
+        assertNull(usage?.cached)
     }
 
     @Test
