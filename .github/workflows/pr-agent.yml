@@ -1,0 +1,49 @@
+name: PR Agent
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  pr_agent:
+    name: Review via gateway
+    if: |
+      github.event.sender.type != 'Bot' &&
+      (
+        (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request != null &&
+          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+          startsWith(github.event.comment.body, '/')
+        )
+      )
+    runs-on: ${{ fromJSON(vars.PR_AGENT_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    timeout-minutes: 30
+    steps:
+      - name: Run PR-Agent
+        uses: The-PR-Agent/pr-agent@v0.48.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI__KEY: ${{ secrets.LLM_GATEWAY_KEY }}
+          OPENAI__API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          CONFIG__MODEL: openai/${{ vars.LLM_GATEWAY_REVIEW_MODEL || 'review-model' }}
+          CONFIG__FALLBACK_MODELS: '[]'
+          CONFIG__RESPONSE_LANGUAGE: "zh-CN"
+          CONFIG__MAX_MODEL_TOKENS: "64000"
+          CONFIG__MAX_OUTPUT_TOKENS: "16384"
+          GITHUB_ACTION_CONFIG__AUTO_REVIEW: "true"
+          GITHUB_ACTION_CONFIG__AUTO_DESCRIBE: "false"
+          GITHUB_ACTION_CONFIG__AUTO_IMPROVE: "false"
+          GITHUB_ACTION_CONFIG__PR_ACTIONS: '["opened", "reopened", "ready_for_review"]'

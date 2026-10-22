@@ -1,0 +1,42 @@
+# Model and API key are injected by .github/workflows/pr-agent.yml.
+# This file only controls review behavior, so it is safe to commit.
+
+[config]
+# Longer than the 120s default so big diffs do not get cut off mid-review.
+ai_timeout = 300
+# Any OpenAI-compatible model ID that litellm does not know needs its window
+# declared; the gateway routes this name to a real upstream model.
+custom_model_max_tokens = 256000
+
+[pr_reviewer]
+require_score_review = true
+require_tests_review = true
+require_security_review = true
+require_ticket_analysis_review = false
+inline_key_issues = true
+num_max_findings = 5
+persistent_comment = true
+extra_instructions = """
+这是一个 Kotlin + Ktor 的 OpenAI 兼容 LLM 网关，请按以下重点审查：
+
+1. 流式转发：SSE 透传不能缓冲、不能吞掉上游错误，客户端断开必须向上游传播取消。
+2. 凭据处理：调用方密钥、上游凭据、GATEWAY_MASTER_KEY 不得出现在日志、异常信息或响应体里。
+3. 协议兼容：/v1/chat/completions 与 /v1/responses 的请求/响应字段要与 OpenAI 契约一致，不要擅自改写未知字段。
+4. 路由正确性：按请求协议过滤渠道，baseUrl 已含版本路径，不允许自动补 /v1 或重复拼接。
+5. 数据库与事务：Flyway 迁移需可重入且不回改历史脚本；并发路径避免竞态。
+6. 错误处理：超时、上游 4xx/5xx、解析失败要有明确映射，不要静默失败。
+7. 测试：行为变更应附带测试；指出缺失的边界用例。
+
+每条问题写明：文件与位置、实际影响、可执行的修复建议。
+不要复述 diff；不确定的推断标注为“待确认”，不要编造不存在的 API 或配置。
+"""
+
+[pr_code_suggestions]
+num_code_suggestions_per_chunk = 3
+focus_only_on_problems = true
+suggestions_score_threshold = 7
+
+[pr_description]
+publish_description_as_comment = false
+add_original_user_description = true
+enable_pr_diagram = true

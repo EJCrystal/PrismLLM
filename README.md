@@ -155,6 +155,10 @@ mvn test
 
 关键实现决策记录在 `docs/adr/`，包括 Kotlin/Ktor 选型、v1 协议边界和上游 HTTP 客户端选择。
 
+## 代码审查
+
+PR 会自动触发 PR-Agent 审查，完成后在 PR 里留下中文审查意见。配置、runner 选择和排错见 `docs/pr-agent.md`。
+
 ## 路线图
 
 - v1.1：Anthropic Messages 原生适配、每密钥并发/额度限制、OTel 追踪。
