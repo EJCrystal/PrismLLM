@@ -636,7 +636,9 @@ class GatewayIntegrationTest {
             val chat = client.post("/v1/chat/completions") {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
-                setBody("""{"model":"fast-chat","reasoning_effort":"high","messages":[]}""")
+                setBody(
+                    """{"model":"fast-chat","reasoning_effort":"high","reasoning":{"effort":"low"},"messages":[]}""",
+                )
             }
             assertEquals(HttpStatusCode.OK, chat.status)
             assertEquals("high", awaitLogWithEffort("high").reasoningEffort)
@@ -644,7 +646,9 @@ class GatewayIntegrationTest {
             val responses = client.post("/v1/responses") {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
-                setBody("""{"model":"fast-chat","stream":false,"reasoning":{"effort":"low"},"input":"hi"}""")
+                setBody(
+                    """{"model":"fast-chat","stream":false,"reasoning_effort":"high","reasoning":{"effort":"low"},"input":"hi"}""",
+                )
             }
             assertEquals(HttpStatusCode.OK, responses.status)
             assertEquals("low", awaitLogWithEffort("low").reasoningEffort)

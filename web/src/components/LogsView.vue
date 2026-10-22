@@ -90,9 +90,7 @@ function formatTokensCompact(value) {
 
 function formatThroughput(log) {
   if (log.outputTokens == null || log.totalMs <= 0) return '—'
-  const window = log.totalMs - (log.firstTokenMs ?? 0)
-  if (window <= 0) return '—'
-  return (log.outputTokens / (window / 1000)).toFixed(1)
+  return (log.outputTokens / (log.totalMs / 1000)).toFixed(1)
 }
 
 function formatCacheHit(log) {
@@ -426,7 +424,7 @@ onMounted(load)
                 </strong>
               </div>
               <div class="detail-item">
-                <span>生成速率</span>
+                <span>输出速率</span>
                 <strong>{{ formatThroughput(selected) }} tok/s</strong>
               </div>
             </div>
@@ -438,7 +436,7 @@ onMounted(load)
             </div>
 
             <p class="muted small detail-hint">
-              速率按首个 token 之后的输出 token 计算；缓存命中为 cached / input。缺失字段显示“—”，不做估算。日志不保存 prompt 与响应正文。
+              输出速率为输出 token / 总耗时；缓存命中为 cached / input。缺失字段显示“—”，不做估算。日志不保存 prompt 与响应正文。
             </p>
           </div>
 

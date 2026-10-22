@@ -130,7 +130,7 @@ private suspend fun handleProxy(
     try {
         clientKey = authenticate(call, app)
         val requestJson = call.receiveLimitedJson(app.config.requestBodyLimitBytes)
-        reasoningEffort = ReasoningEffort.fromRequest(requestJson)
+        reasoningEffort = ReasoningEffort.fromRequest(requestJson, protocol)
         val modelElement = requestJson["model"] as? JsonPrimitive
         alias = modelElement
             ?.takeIf { it.isString }
