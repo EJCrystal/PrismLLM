@@ -476,6 +476,66 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `falls back when responses upstream stalls after created event`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(firstTokenTimeoutMs = 300, idleTimeoutMs = 300, totalTimeoutMs = 2_000))
+        val primary = createChannelWithProtocols(
+            "responses-stall",
+            "responses-created-stall",
+            setOf(GatewayProtocol.RESPONSES),
+        )
+        val secondary = createChannelWithProtocols("responses-ok", "ok", setOf(GatewayProtocol.RESPONSES))
+        createAlias("fast-chat", primary to "gpt-4o-mini", secondary to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"input":"hi"}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: response.completed"), "BODY=[$body]")
+            val log = awaitRequestLog()
+            assertEquals(secondary.id, log.channelId)
+            assertEquals(200, log.statusCode)
+        }
+    }
+
+    @Test
+    fun `responses function call delta counts as first output`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(firstTokenTimeoutMs = 300, idleTimeoutMs = 2_000, totalTimeoutMs = 5_000))
+        val channel = createChannelWithProtocols(
+            "responses-function-call",
+            "responses-function-call",
+            setOf(GatewayProtocol.RESPONSES),
+        )
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"input":"hi"}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: response.function_call_arguments.delta"), "BODY=[$body]")
+            assertTrue(body.contains("event: response.completed"), "BODY=[$body]")
+            val log = awaitRequestLog()
+            assertEquals(200, log.statusCode)
+            assertNotNull(log.firstTokenMs)
+        }
+    }
+
+    @Test
     fun `records responses failed terminal event as streaming failure`() = runBlocking {
         val channel = createChannelWithProtocols(
             "responses-failed",

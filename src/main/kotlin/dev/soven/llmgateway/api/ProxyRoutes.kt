@@ -599,7 +599,7 @@ private fun isFirstResponsesToken(line: String): Boolean {
     val type = runCatching {
         Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull
     }.getOrNull()
-    return type in RESPONSES_END_EVENTS || type == "response.output_text.delta"
+    return type in RESPONSES_END_EVENTS || type?.endsWith(".delta") == true
 }
 
 private fun markResponsesTerminalFailure(

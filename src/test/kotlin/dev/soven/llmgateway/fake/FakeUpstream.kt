@@ -184,6 +184,20 @@ class FakeUpstream {
                     completed = true
                     return@respondBytesWriter
                 }
+                if (scenario == "responses-function-call") {
+                    writeSseEvent(
+                        "response.function_call_arguments.delta",
+                        """{"type":"response.function_call_arguments.delta","delta":"{\"city\":\"Paris\"}"}""",
+                    )
+                    delay(500)
+                    writeSseEvent(
+                        "response.function_call_arguments.done",
+                        """{"type":"response.function_call_arguments.done","arguments":"{\"city\":\"Paris\"}"}""",
+                    )
+                    writeSseEvent("response.completed", RESPONSES_FINAL_EVENT)
+                    completed = true
+                    return@respondBytesWriter
+                }
                 delay(10)
                 writeSseEvent(
                     "response.output_text.delta",
