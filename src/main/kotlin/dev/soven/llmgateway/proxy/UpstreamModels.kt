@@ -11,6 +11,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
@@ -64,6 +65,8 @@ suspend fun fetchUpstreamModels(
             parseModelList(response.bodyAsText())
         }
     } catch (e: GatewayException) {
+        throw e
+    } catch (e: CancellationException) {
         throw e
     } catch (e: TimeoutCancellationException) {
         throw GatewayException(

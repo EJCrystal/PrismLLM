@@ -5,6 +5,10 @@ import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
@@ -26,17 +30,29 @@ class UpstreamModelCatalog(
     private val cache = ConcurrentHashMap<String, CacheEntry>()
     private val locks = ConcurrentHashMap<String, Mutex>()
 
-    suspend fun listEnabledModels(): List<String> =
-        enabledChannels().flatMap { modelsFor(it) }.distinct().sorted()
+    suspend fun listEnabledModels(): List<String> = coroutineScope {
+        enabledChannels()
+            .map { channel -> async { modelsFor(channel) } }
+            .awaitAll()
+            .flatten()
+            .distinct()
+            .sorted()
+    }
 
-    suspend fun findCandidates(model: String): List<RouteCandidate> =
-        enabledChannels().mapNotNull { channel ->
-            if (model in modelsFor(channel)) {
-                RouteCandidate(channel = channel, upstreamModel = model, position = 0)
-            } else {
-                null
+    suspend fun findCandidates(model: String): List<RouteCandidate> = coroutineScope {
+        enabledChannels()
+            .map { channel ->
+                async {
+                    if (model in modelsFor(channel)) {
+                        RouteCandidate(channel = channel, upstreamModel = model, position = 0)
+                    } else {
+                        null
+                    }
+                }
             }
-        }
+            .awaitAll()
+            .filterNotNull()
+    }
 
     private suspend fun enabledChannels(): List<ChannelRecord> =
         channelRepository.list().filter { it.enabled }
@@ -49,9 +65,13 @@ class UpstreamModelCatalog(
         return lock.withLock {
             val current = System.currentTimeMillis()
             cache[channel.id]?.takeIf { it.expiresAt > current }?.let { return@withLock it.models }
-            val models = runCatching {
+            val models = try {
                 fetchUpstreamModels(channel, credentialCipher, httpClient).map { it.id }
-            }.getOrDefault(emptyList())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                emptyList()
+            }
             cache[channel.id] = CacheEntry(models, current + ttlMs)
             models
         }
