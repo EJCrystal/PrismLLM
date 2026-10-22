@@ -16,6 +16,7 @@ const modelChannel = ref(null)
 const models = ref([])
 const modelsLoading = ref(false)
 const modelsError = ref('')
+let modelRequestId = 0
 
 const form = reactive({
   name: '',
@@ -34,17 +35,26 @@ async function openModels(channel) {
 
 async function loadModels() {
   if (!modelChannel.value) return
+  const requestId = ++modelRequestId
+  const channelId = modelChannel.value.id
   modelsLoading.value = true
   modelsError.value = ''
   try {
-    const response = await api.listChannelModels(modelChannel.value.id)
+    const response = await api.listChannelModels(channelId)
+    if (requestId !== modelRequestId) return
     models.value = response?.data || []
   } catch (cause) {
+    if (requestId !== modelRequestId) return
     models.value = []
     modelsError.value = cause.message
   } finally {
-    modelsLoading.value = false
+    if (requestId === modelRequestId) modelsLoading.value = false
   }
+}
+
+function closeModels() {
+  showModels.value = false
+  modelRequestId += 1
 }
 
 async function copyModel(id) {
@@ -275,7 +285,7 @@ onMounted(load)
       </template>
     </Modal>
 
-    <Modal v-if="showModels" :title="`${modelChannel?.name || ''} · 上游模型`" wide @close="showModels = false">
+    <Modal v-if="showModels" :title="`${modelChannel?.name || ''} · 上游模型`" wide @close="closeModels">
       <div v-if="modelsLoading" class="loading-state">
         <span class="spinner"></span>
         正在请求上游 <code>/models</code>…
@@ -296,7 +306,7 @@ onMounted(load)
       </div>
       <template #footer>
         <span class="muted small model-count">{{ models.length ? `共 ${models.length} 个模型` : '' }}</span>
-        <button type="button" class="button ghost" @click="showModels = false">关闭</button>
+        <button type="button" class="button ghost" @click="closeModels">关闭</button>
         <button type="button" class="button primary" :disabled="modelsLoading" @click="loadModels">
           {{ modelsLoading ? '请求中…' : '刷新' }}
         </button>
