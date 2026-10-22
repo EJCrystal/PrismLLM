@@ -275,114 +275,116 @@ onMounted(load)
       </div>
     </div>
 
-    <div v-if="selected" class="modal-backdrop" @click.self="closeDetail">
-      <div
-        ref="detailDialog"
-        class="modal wide"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="request-detail-title"
-        tabindex="-1"
-        @keydown="onDetailKeydown"
-      >
-        <div class="modal-head">
-          <div>
-            <h2 id="request-detail-title">请求详情</h2>
-            <p class="muted small">{{ formatTime(selected.createdAt) }}</p>
-          </div>
-          <button type="button" class="icon-button" title="关闭" data-autofocus @click="closeDetail">
-            <Icon name="close" :size="18" />
-          </button>
-        </div>
-
-        <div class="modal-body detail-stack">
-          <div class="detail-id">
-            <span>请求 ID</span>
-            <div class="request-id-cell">
-              <code class="detail-id-value">{{ selected.requestId }}</code>
-              <button
-                type="button"
-                class="icon-button"
-                title="复制请求 ID"
-                @click="copyRequestId(selected.requestId)"
-              >
-                <Icon name="copy" :size="14" />
-              </button>
+    <Teleport to="body">
+      <div v-if="selected" class="modal-backdrop" @click.self="closeDetail">
+        <div
+          ref="detailDialog"
+          class="modal wide"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="request-detail-title"
+          tabindex="-1"
+          @keydown="onDetailKeydown"
+        >
+          <div class="modal-head">
+            <div>
+              <h2 id="request-detail-title">请求详情</h2>
+              <p class="muted small">{{ formatTime(selected.createdAt) }}</p>
             </div>
+            <button type="button" class="icon-button" title="关闭" data-autofocus @click="closeDetail">
+              <Icon name="close" :size="18" />
+            </button>
           </div>
 
-          <div class="detail-grid">
-            <div class="detail-item">
-              <span>状态</span>
-              <strong><span class="badge" :class="statusClass(selected.statusCode)">{{ selected.statusCode }}</span></strong>
+          <div class="modal-body detail-stack">
+            <div class="detail-id">
+              <span>请求 ID</span>
+              <div class="request-id-cell">
+                <code class="detail-id-value">{{ selected.requestId }}</code>
+                <button
+                  type="button"
+                  class="icon-button"
+                  title="复制请求 ID"
+                  @click="copyRequestId(selected.requestId)"
+                >
+                  <Icon name="copy" :size="14" />
+                </button>
+              </div>
             </div>
-            <div class="detail-item">
-              <span>协议</span>
-              <strong>{{ selected.protocol || '—' }}</strong>
+
+            <div class="detail-grid">
+              <div class="detail-item">
+                <span>状态</span>
+                <strong><span class="badge" :class="statusClass(selected.statusCode)">{{ selected.statusCode }}</span></strong>
+              </div>
+              <div class="detail-item">
+                <span>协议</span>
+                <strong>{{ selected.protocol || '—' }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>失败阶段</span>
+                <strong>{{ stageLabel(selected.failureStage) }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>错误码</span>
+                <strong class="mono">{{ selected.errorCode || '—' }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>上游错误码</span>
+                <strong class="mono">{{ selected.upstreamErrorCode || '—' }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>别名</span>
+                <strong>{{ selected.alias }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>渠道名称</span>
+                <strong>{{ selected.channelName || '—' }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>渠道 ID</span>
+                <strong class="mono detail-wrap">{{ selected.channelId || '—' }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>上游模型</span>
+                <strong class="mono detail-wrap">{{ selected.upstreamModel || '—' }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>调用方密钥 ID</span>
+                <strong class="mono detail-wrap">{{ selected.clientKeyId || '—' }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>首 token</span>
+                <strong>{{ formatDuration(selected.firstTokenMs) }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>总耗时</span>
+                <strong>{{ formatDuration(selected.totalMs) }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>用量</span>
+                <strong v-if="selected.usageKnown">
+                  {{ formatTokens(selected.inputTokens) }} / {{ formatTokens(selected.outputTokens) }} /
+                  {{ formatTokens(selected.cachedTokens) }} / {{ formatTokens(selected.totalTokens) }}
+                </strong>
+                <strong v-else class="muted">未知</strong>
+              </div>
             </div>
-            <div class="detail-item">
-              <span>失败阶段</span>
-              <strong>{{ stageLabel(selected.failureStage) }}</strong>
+
+            <div class="detail-block">
+              <span>错误信息</span>
+              <p v-if="selected.errorMessage" class="detail-message">{{ selected.errorMessage }}</p>
+              <p v-else class="muted">无错误信息</p>
             </div>
-            <div class="detail-item">
-              <span>错误码</span>
-              <strong class="mono">{{ selected.errorCode || '—' }}</strong>
-            </div>
-            <div class="detail-item">
-              <span>上游错误码</span>
-              <strong class="mono">{{ selected.upstreamErrorCode || '—' }}</strong>
-            </div>
-            <div class="detail-item">
-              <span>别名</span>
-              <strong>{{ selected.alias }}</strong>
-            </div>
-            <div class="detail-item">
-              <span>渠道名称</span>
-              <strong>{{ selected.channelName || '—' }}</strong>
-            </div>
-            <div class="detail-item">
-              <span>渠道 ID</span>
-              <strong class="mono detail-wrap">{{ selected.channelId || '—' }}</strong>
-            </div>
-            <div class="detail-item">
-              <span>上游模型</span>
-              <strong class="mono detail-wrap">{{ selected.upstreamModel || '—' }}</strong>
-            </div>
-            <div class="detail-item">
-              <span>调用方密钥 ID</span>
-              <strong class="mono detail-wrap">{{ selected.clientKeyId || '—' }}</strong>
-            </div>
-            <div class="detail-item">
-              <span>首 token</span>
-              <strong>{{ formatDuration(selected.firstTokenMs) }}</strong>
-            </div>
-            <div class="detail-item">
-              <span>总耗时</span>
-              <strong>{{ formatDuration(selected.totalMs) }}</strong>
-            </div>
-            <div class="detail-item">
-              <span>用量</span>
-              <strong v-if="selected.usageKnown">
-                {{ formatTokens(selected.inputTokens) }} / {{ formatTokens(selected.outputTokens) }} /
-                {{ formatTokens(selected.cachedTokens) }} / {{ formatTokens(selected.totalTokens) }}
-              </strong>
-              <strong v-else class="muted">未知</strong>
-            </div>
+
+            <p class="muted small detail-hint">用量顺序：input / output / cached / total。日志不保存 prompt 与响应正文。</p>
           </div>
 
-          <div class="detail-block">
-            <span>错误信息</span>
-            <p v-if="selected.errorMessage" class="detail-message">{{ selected.errorMessage }}</p>
-            <p v-else class="muted">无错误信息</p>
+          <div class="modal-foot">
+            <button type="button" class="button ghost" @click="closeDetail">关闭</button>
           </div>
-
-          <p class="muted small detail-hint">用量顺序：input / output / cached / total。日志不保存 prompt 与响应正文。</p>
-        </div>
-
-        <div class="modal-foot">
-          <button type="button" class="button ghost" @click="closeDetail">关闭</button>
         </div>
       </div>
-    </div>
+    </Teleport>
   </section>
 </template>
