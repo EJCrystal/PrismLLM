@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import Icon from './Icon.vue'
@@ -16,14 +16,29 @@ const modelChannel = ref(null)
 const models = ref([])
 const modelsLoading = ref(false)
 const modelsError = ref('')
+const probing = ref(false)
+const probeResults = ref([])
 let modelRequestId = 0
+let probeRequestId = 0
+let probeDerivedProtocols = false
 
 const form = reactive({
   name: '',
   baseUrl: '',
   credential: '',
+  protocols: ['chat_completions'],
   enabled: true,
 })
+
+watch(
+  () => [form.baseUrl, form.credential],
+  () => {
+    if (!probeResults.value.length && !probeDerivedProtocols) return
+    probeResults.value = []
+    if (probeDerivedProtocols) form.protocols = []
+    probeDerivedProtocols = false
+  },
+)
 
 const enabledCount = computed(() => channels.value.filter((channel) => channel.enabled).length)
 
@@ -80,19 +95,85 @@ async function load() {
 
 function openCreate() {
   editingId.value = null
-  Object.assign(form, { name: '', baseUrl: '', credential: '', enabled: true })
+  probeRequestId += 1
+  probing.value = false
+  probeResults.value = []
+  probeDerivedProtocols = false
+  Object.assign(form, {
+    name: '',
+    baseUrl: '',
+    credential: '',
+    protocols: ['chat_completions'],
+    enabled: true,
+  })
   showForm.value = true
 }
 
 function openEdit(channel) {
   editingId.value = channel.id
+  probeRequestId += 1
+  probing.value = false
+  probeResults.value = []
+  probeDerivedProtocols = false
   Object.assign(form, {
     name: channel.name,
     baseUrl: channel.baseUrl,
     credential: '',
+    protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
     enabled: channel.enabled,
   })
   showForm.value = true
+}
+
+function probeState(result) {
+  if (result.supported) return { label: '支持', className: 'success' }
+  if (result.statusCode === 404 || result.statusCode === 405) return { label: '不支持', className: 'neutral' }
+  return { label: '未知', className: 'warning' }
+}
+
+async function probeProtocols() {
+  if (!editingId.value) {
+    notify('请先保存渠道，再探测协议', 'error')
+    return
+  }
+  const savedChannel = channels.value.find((channel) => channel.id === editingId.value)
+  const probeBaseUrl = form.baseUrl.trim()
+  const probeCredential = form.credential.trim()
+  if (!savedChannel || probeBaseUrl !== savedChannel.baseUrl.trim() || probeCredential) {
+    notify('请先保存基础地址或凭据，再探测协议', 'error')
+    return
+  }
+  const channelId = editingId.value
+  const requestId = ++probeRequestId
+  probing.value = true
+  probeResults.value = []
+  try {
+    const response = await api.probeChannelProtocols(channelId)
+    if (
+      requestId !== probeRequestId ||
+      editingId.value !== channelId ||
+      form.baseUrl.trim() !== probeBaseUrl ||
+      form.credential.trim() !== probeCredential
+    ) {
+      return
+    }
+    probeResults.value = response?.results || []
+    const supported = probeResults.value.filter((item) => item.supported).map((item) => item.protocol)
+    if (supported.length > 0) {
+      form.protocols = supported
+      probeDerivedProtocols = true
+    }
+    notify(
+      supported.length > 0 ? `探测到：${supported.join(' / ')}` : '未探测到可用协议',
+      supported.length > 0 ? 'success' : 'error',
+    )
+  } catch (cause) {
+    if (requestId === probeRequestId && editingId.value === channelId) {
+      notify(cause.message, 'error')
+    }
+  } finally {
+    if (requestId === probeRequestId) probing.value = false
+  }
 }
 
 async function save() {
@@ -104,6 +185,10 @@ async function save() {
     notify('新建渠道必须提供上游凭据', 'error')
     return
   }
+  if (form.protocols.length === 0) {
+    notify('至少选择一个支持协议', 'error')
+    return
+  }
 
   saving.value = true
   try {
@@ -112,6 +197,7 @@ async function save() {
       baseUrl: form.baseUrl.trim(),
       credential: form.credential.trim() || null,
       authType: 'bearer',
+      protocols: form.protocols,
       enabled: form.enabled,
     }
     if (editingId.value) {
@@ -122,6 +208,10 @@ async function save() {
       notify('渠道已创建')
     }
     showForm.value = false
+    probeRequestId += 1
+    probing.value = false
+    probeResults.value = []
+    probeDerivedProtocols = false
     await load()
   } catch (cause) {
     notify(cause.message, 'error')
@@ -155,7 +245,7 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>上游接入点</h2>
-        <p>一个渠道对应一个 OpenAI Chat Completions 兼容地址。</p>
+        <p>一个渠道对应一个 OpenAI 兼容接入点，可选择支持 Chat Completions 和/或 Responses。</p>
       </div>
       <button type="button" class="button primary" @click="openCreate">
         <Icon name="plus" :size="17" />
@@ -203,6 +293,7 @@ onMounted(load)
             <tr>
               <th>名称</th>
               <th>基础地址</th>
+              <th>协议</th>
               <th>状态</th>
               <th>凭据</th>
               <th>更新时间</th>
@@ -216,6 +307,13 @@ onMounted(load)
                 <div class="mono muted small">{{ channel.id }}</div>
               </td>
               <td><span class="mono address">{{ channel.baseUrl }}</span></td>
+              <td>
+                <div class="protocol-badges">
+                  <span v-for="protocol in channel.protocols" :key="protocol" class="badge info">
+                    {{ protocol }}
+                  </span>
+                </div>
+              </td>
               <td>
                 <span class="badge" :class="channel.enabled ? 'success' : 'neutral'">
                   {{ channel.enabled ? '启用' : '停用' }}
@@ -256,8 +354,39 @@ onMounted(load)
         <label class="field">
           <span>基础地址</span>
           <input v-model="form.baseUrl" placeholder="https://api.openai.com/v1" autocomplete="off" />
-          <small>网关会在此地址后追加 <code>/chat/completions</code> 和 <code>/models</code>。</small>
+          <small>网关会按请求协议在此地址后追加 <code>/chat/completions</code> 或 <code>/responses</code>，并用 <code>/models</code> 拉取模型列表。</small>
         </label>
+        <div class="field">
+          <span>支持协议</span>
+          <div class="protocol-options">
+            <label><input v-model="form.protocols" type="checkbox" value="chat_completions" /> Chat Completions</label>
+            <label><input v-model="form.protocols" type="checkbox" value="responses" /> Responses</label>
+          </div>
+          <div class="protocol-probe-row">
+            <button
+              type="button"
+              class="button subtle mini"
+              :disabled="!editingId || probing"
+              @click="probeProtocols"
+            >
+              {{ probing ? '探测中…' : '探测协议' }}
+            </button>
+            <span v-if="!editingId" class="muted small">保存渠道后可探测</span>
+            <span v-else class="muted small">使用已保存凭据发送最小请求（1 token）</span>
+          </div>
+          <div v-if="probeResults.length" class="probe-results">
+            <span
+              v-for="result in probeResults"
+              :key="result.protocol"
+              class="badge"
+              :class="probeState(result).className"
+              :title="result.message"
+            >
+              {{ result.protocol }} · {{ probeState(result).label }}{{ result.statusCode ? ` (${result.statusCode})` : '' }}
+            </span>
+          </div>
+          <small>请求只会路由到支持对应协议的渠道。</small>
+        </div>
         <label class="field">
           <span>上游凭据</span>
           <input

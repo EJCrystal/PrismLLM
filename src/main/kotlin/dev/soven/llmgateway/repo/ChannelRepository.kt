@@ -2,6 +2,7 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.Channels
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.security.EncryptedCredential
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
@@ -37,6 +38,7 @@ class ChannelRepository(private val database: Database) {
         baseUrl: String,
         credential: EncryptedCredential,
         authType: String,
+        protocols: Set<GatewayProtocol> = GatewayProtocol.default,
         enabled: Boolean,
     ): ChannelRecord = suspendTransaction(database) {
         val now = System.currentTimeMillis()
@@ -49,6 +51,7 @@ class ChannelRepository(private val database: Database) {
             it[credentialNonce] = credential.nonce
             it[credentialKeyVersion] = credential.keyVersion
             it[Channels.authType] = authType
+            it[Channels.protocols] = protocols.joinToString(",") { protocol -> protocol.value }
             it[Channels.enabled] = enabled
             it[createdAt] = now
             it[updatedAt] = now
@@ -62,6 +65,7 @@ class ChannelRepository(private val database: Database) {
         baseUrl: String,
         credential: EncryptedCredential?,
         authType: String,
+        protocols: Set<GatewayProtocol> = GatewayProtocol.default,
         enabled: Boolean,
     ): ChannelRecord? = suspendTransaction(database) {
         val updated = Channels.update({ Channels.id eq id }) {
@@ -73,6 +77,7 @@ class ChannelRepository(private val database: Database) {
                 it[credentialKeyVersion] = credential.keyVersion
             }
             it[Channels.authType] = authType
+            it[Channels.protocols] = protocols.joinToString(",") { protocol -> protocol.value }
             it[Channels.enabled] = enabled
             it[updatedAt] = System.currentTimeMillis()
         }
@@ -91,6 +96,7 @@ class ChannelRepository(private val database: Database) {
         credentialNonce = row[Channels.credentialNonce],
         credentialKeyVersion = row[Channels.credentialKeyVersion],
         authType = row[Channels.authType],
+        protocols = GatewayProtocol.parse(row[Channels.protocols]),
         enabled = row[Channels.enabled],
         createdAt = row[Channels.createdAt],
         updatedAt = row[Channels.updatedAt],

@@ -46,5 +46,19 @@ object UsageParser {
         return Usage(input = input, output = output, cached = cached, total = total)
     }
 
+    /**
+     * Responses API 的 usage 可能直接在响应对象上，也可能包在流式事件的 `response` 字段里。
+     */
+    fun fromResponsesJson(json: JsonObject): Usage? {
+        val response = json["response"] as? JsonObject ?: json
+        val usage = response["usage"] as? JsonObject ?: return null
+        val input = usage.long("input_tokens")
+        val output = usage.long("output_tokens")
+        val total = usage.long("total_tokens")
+        val cached = (usage["input_tokens_details"] as? JsonObject)?.long("cached_tokens")
+        if (input == null && output == null && cached == null && total == null) return null
+        return Usage(input = input, output = output, cached = cached, total = total)
+    }
+
     private fun JsonObject.long(key: String): Long? = (this[key] as? JsonPrimitive)?.longOrNull
 }

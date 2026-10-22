@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.security.CredentialCipher
@@ -42,8 +43,9 @@ class UpstreamModelCatalog(
             .sorted()
     }
 
-    suspend fun findCandidates(model: String): List<RouteCandidate> = coroutineScope {
+    suspend fun findCandidates(model: String, protocol: GatewayProtocol?): List<RouteCandidate> = coroutineScope {
         enabledChannels()
+            .filter { protocol == null || protocol in it.protocols }
             .map { channel ->
                 async {
                     if (model in modelsFor(channel)) {

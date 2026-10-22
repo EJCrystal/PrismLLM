@@ -65,6 +65,12 @@ class FakeUpstream {
             post("/v1/chat/completions") {
                 handle(call, "ok")
             }
+            post("/{scenario}/v1/responses") {
+                handleResponses(call, call.parameters["scenario"] ?: "ok")
+            }
+            post("/v1/responses") {
+                handleResponses(call, "ok")
+            }
         }
     }
 
@@ -134,6 +140,102 @@ class FakeUpstream {
         }
     }
 
+    private suspend fun handleResponses(call: ApplicationCall, scenario: String) {
+        val body = call.receiveText()
+        requests.add(
+            FakeRequest(
+                scenario = scenario,
+                body = body,
+                authorization = call.request.headers[HttpHeaders.Authorization],
+            ),
+        )
+        val stream = runCatching {
+            Json.parseToJsonElement(body).jsonObject["stream"]?.jsonPrimitive?.booleanOrNull ?: false
+        }.getOrDefault(false)
+
+        when (scenario) {
+            "chat-only" -> {
+                call.respondText(ERROR_404, ContentType.Application.Json, HttpStatusCode.NotFound)
+                return
+            }
+            "429" -> {
+                call.respondText(ERROR_429, ContentType.Application.Json, HttpStatusCode.TooManyRequests)
+                return
+            }
+            "500" -> {
+                call.respondText(ERROR_500, ContentType.Application.Json, HttpStatusCode.InternalServerError)
+                return
+            }
+        }
+        if (!stream) {
+            call.respondText(RESPONSES_NON_STREAM_BODY, ContentType.Application.Json)
+            return
+        }
+
+        var completed = false
+        try {
+            call.respondBytesWriter(ContentType.Text.EventStream) {
+                writeSseEvent(
+                    "response.created",
+                    """{"type":"response.created","response":{"id":"resp_fake","status":"in_progress"}}""",
+                )
+                if (scenario == "responses-created-stall") {
+                    delay(2_000)
+                    completed = true
+                    return@respondBytesWriter
+                }
+                if (scenario == "responses-function-call") {
+                    writeSseEvent(
+                        "response.function_call_arguments.delta",
+                        """{"type":"response.function_call_arguments.delta","delta":"{\"city\":\"Paris\"}"}""",
+                    )
+                    delay(500)
+                    writeSseEvent(
+                        "response.function_call_arguments.done",
+                        """{"type":"response.function_call_arguments.done","arguments":"{\"city\":\"Paris\"}"}""",
+                    )
+                    writeSseEvent("response.completed", RESPONSES_FINAL_EVENT)
+                    completed = true
+                    return@respondBytesWriter
+                }
+                delay(10)
+                writeSseEvent(
+                    "response.output_text.delta",
+                    """{"type":"response.output_text.delta","delta":"Hel"}""",
+                )
+                delay(10)
+                writeSseEvent(
+                    "response.output_text.delta",
+                    """{"type":"response.output_text.delta","delta":"lo"}""",
+                )
+                delay(10)
+                when (scenario) {
+                    "responses-failed" -> writeSseEvent(
+                        "response.failed",
+                        """{"type":"response.failed","response":{"id":"resp_fake","status":"failed","error":{"code":"server_error","message":"upstream failed"}}}""",
+                    )
+                    "responses-incomplete" -> writeSseEvent(
+                        "response.incomplete",
+                        """{"type":"response.incomplete","response":{"id":"resp_fake","status":"incomplete"}}""",
+                    )
+                    "no-usage" -> writeSseEvent(
+                        "response.completed",
+                        """{"type":"response.completed","response":{"id":"resp_fake","status":"completed"}}""",
+                    )
+                    else -> writeSseEvent("response.completed", RESPONSES_FINAL_EVENT)
+                }
+                completed = true
+            }
+        } finally {
+            if (!completed) cancellations.incrementAndGet()
+        }
+    }
+
+    private suspend fun ByteWriteChannel.writeSseEvent(event: String, json: String) {
+        writeFully("event: $event\ndata: $json\n\n".toByteArray(Charsets.UTF_8))
+        flush()
+    }
+
     private suspend fun ByteWriteChannel.writeEvent(json: String) {
         writeFully("data: $json\n\n".toByteArray(Charsets.UTF_8))
         flush()
@@ -170,8 +272,14 @@ class FakeUpstream {
             """{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}"""
         private const val ERROR_500 =
             """{"error":{"message":"upstream down","type":"api_error","code":"upstream_down"}}"""
+        private const val ERROR_404 =
+            """{"error":{"message":"not found","type":"not_found_error","code":"not_found"}}"""
         private const val MODELS_BODY =
             """{"object":"list","data":[{"id":"gpt-4o-mini","object":"model","owned_by":"fake"},{"id":"deepseek-chat","object":"model","owned_by":"fake"}]}"""
+        private const val RESPONSES_NON_STREAM_BODY =
+            """{"id":"resp_fake","object":"response","status":"completed","model":"gpt-4o-mini","output":[],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":13}}"""
+        private const val RESPONSES_FINAL_EVENT =
+            """{"type":"response.completed","response":{"id":"resp_fake","status":"completed","usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":13}}}"""
     }
 }
 

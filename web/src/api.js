@@ -66,6 +66,11 @@ export const api = {
     request(`/channels/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteChannel: (id) => request(`/channels/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listChannelModels: (id) => request(`/channels/${encodeURIComponent(id)}/models`),
+  probeChannelProtocols: (id, model = null) =>
+    request(`/channels/${encodeURIComponent(id)}/probe-protocols`, {
+      method: 'POST',
+      body: JSON.stringify({ model }),
+    }),
 
   listAliases: () => request('/aliases'),
   createAlias: (payload) => request('/aliases', { method: 'POST', body: JSON.stringify(payload) }),

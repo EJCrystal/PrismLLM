@@ -6,6 +6,7 @@ import dev.soven.llmgateway.db.ModelAliases
 import dev.soven.llmgateway.domain.AliasRecord
 import dev.soven.llmgateway.domain.CandidateRecord
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RouteCandidate
 import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.ResultRow
@@ -165,6 +166,7 @@ class AliasRepository(private val database: Database) {
         credentialNonce = this[Channels.credentialNonce],
         credentialKeyVersion = this[Channels.credentialKeyVersion],
         authType = this[Channels.authType],
+        protocols = GatewayProtocol.parse(this[Channels.protocols]),
         enabled = this[Channels.enabled],
         createdAt = this[Channels.createdAt],
         updatedAt = this[Channels.updatedAt],

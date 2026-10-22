@@ -3,6 +3,8 @@ package dev.soven.llmgateway
 import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.FailureStage
+import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.repo.AliasWithCandidates
@@ -121,6 +123,9 @@ class GatewayIntegrationTest {
             assertTrue(log.usageKnown)
             assertNotNull(log.firstTokenMs)
             assertEquals("gpt-4o-mini", log.upstreamModel)
+            assertEquals(channel.id, log.channelId)
+            assertEquals("openai", log.channelName)
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.protocol)
         }
 
         val upstreamRequest = fake.requests.single()
@@ -221,6 +226,8 @@ class GatewayIntegrationTest {
             val log = awaitRequestLog()
             assertEquals(primary.id, log.channelId)
             assertEquals("stream_interrupted", log.errorCode)
+            assertEquals(FailureStage.STREAMING, log.failureStage)
+            assertEquals("上游连接中断", log.errorMessage)
             assertEquals(200, log.statusCode)
         }
     }
@@ -245,6 +252,9 @@ class GatewayIntegrationTest {
             val log = awaitRequestLog()
             assertEquals(429, log.statusCode)
             assertEquals("upstream_error", log.errorCode)
+            assertEquals(FailureStage.UPSTREAM, log.failureStage)
+            assertEquals("上游限流", log.errorMessage)
+            assertEquals("rate_limit_exceeded", log.upstreamErrorCode)
             assertTrue(app.metrics.scrape().contains("gateway_upstream_errors_total"))
         }
     }
@@ -269,6 +279,8 @@ class GatewayIntegrationTest {
             val log = awaitRequestLog()
             assertEquals(504, log.statusCode)
             assertEquals("upstream_timeout", log.errorCode)
+            assertEquals(FailureStage.UPSTREAM, log.failureStage)
+            assertEquals("上游响应超时", log.errorMessage)
         }
         awaitCancellation()
     }
@@ -406,6 +418,299 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `responses protocol streams and records usage`() = runBlocking {
+        val channel = createChannelWithProtocols("responses", "ok", setOf(GatewayProtocol.RESPONSES))
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"input":"hi"}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: response.output_text.delta"), "BODY=[$body]")
+            assertTrue(body.contains("event: response.completed"), "BODY=[$body]")
+            assertTrue(!body.contains("data: [DONE]"), "BODY=[$body]")
+
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.RESPONSES, log.protocol)
+            assertEquals(10L, log.inputTokens)
+            assertEquals(3L, log.outputTokens)
+            assertEquals(2L, log.cachedTokens)
+            assertEquals(13L, log.totalTokens)
+            assertNotNull(log.firstTokenMs)
+        }
+    }
+
+    @Test
+    fun `responses first token timeout ignores response created event`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(firstTokenTimeoutMs = 300, idleTimeoutMs = 300, totalTimeoutMs = 2_000))
+        val channel = createChannelWithProtocols(
+            "responses-created-stall",
+            "responses-created-stall",
+            setOf(GatewayProtocol.RESPONSES),
+        )
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"input":"hi"}""")
+            }
+
+            assertEquals(HttpStatusCode.GatewayTimeout, response.status)
+            val log = awaitRequestLog()
+            assertEquals(504, log.statusCode)
+            assertEquals("upstream_timeout", log.errorCode)
+            assertEquals(FailureStage.UPSTREAM, log.failureStage)
+        }
+    }
+
+    @Test
+    fun `falls back when responses upstream stalls after created event`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(firstTokenTimeoutMs = 300, idleTimeoutMs = 300, totalTimeoutMs = 2_000))
+        val primary = createChannelWithProtocols(
+            "responses-stall",
+            "responses-created-stall",
+            setOf(GatewayProtocol.RESPONSES),
+        )
+        val secondary = createChannelWithProtocols("responses-ok", "ok", setOf(GatewayProtocol.RESPONSES))
+        createAlias("fast-chat", primary to "gpt-4o-mini", secondary to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"input":"hi"}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: response.completed"), "BODY=[$body]")
+            val log = awaitRequestLog()
+            assertEquals(secondary.id, log.channelId)
+            assertEquals(200, log.statusCode)
+        }
+    }
+
+    @Test
+    fun `responses function call delta counts as first output`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(firstTokenTimeoutMs = 300, idleTimeoutMs = 2_000, totalTimeoutMs = 5_000))
+        val channel = createChannelWithProtocols(
+            "responses-function-call",
+            "responses-function-call",
+            setOf(GatewayProtocol.RESPONSES),
+        )
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"input":"hi"}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: response.function_call_arguments.delta"), "BODY=[$body]")
+            assertTrue(body.contains("event: response.completed"), "BODY=[$body]")
+            val log = awaitRequestLog()
+            assertEquals(200, log.statusCode)
+            assertNotNull(log.firstTokenMs)
+        }
+    }
+
+    @Test
+    fun `records responses failed terminal event as streaming failure`() = runBlocking {
+        val channel = createChannelWithProtocols(
+            "responses-failed",
+            "responses-failed",
+            setOf(GatewayProtocol.RESPONSES),
+        )
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"input":"hi"}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: response.failed"), "BODY=[$body]")
+            val log = awaitRequestLog()
+            assertEquals(200, log.statusCode)
+            assertEquals("responses_failed", log.errorCode)
+            assertEquals(FailureStage.STREAMING, log.failureStage)
+            assertEquals("上游响应失败", log.errorMessage)
+        }
+    }
+
+    @Test
+    fun `records responses incomplete terminal event as streaming failure`() = runBlocking {
+        val channel = createChannelWithProtocols(
+            "responses-incomplete",
+            "responses-incomplete",
+            setOf(GatewayProtocol.RESPONSES),
+        )
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"input":"hi"}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: response.incomplete"), "BODY=[$body]")
+            val log = awaitRequestLog()
+            assertEquals(200, log.statusCode)
+            assertEquals("responses_incomplete", log.errorCode)
+            assertEquals(FailureStage.STREAMING, log.failureStage)
+            assertEquals("上游响应未完成", log.errorMessage)
+        }
+    }
+
+    @Test
+    fun `responses protocol records usage for non-streaming`() = runBlocking {
+        val channel = createChannelWithProtocols("responses", "ok", setOf(GatewayProtocol.RESPONSES))
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":false,"input":"hi"}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("\"object\":\"response\""), "BODY=[$body]")
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.RESPONSES, log.protocol)
+            assertEquals(10L, log.inputTokens)
+            assertEquals(3L, log.outputTokens)
+            assertEquals(2L, log.cachedTokens)
+            assertEquals(13L, log.totalTokens)
+        }
+    }
+
+    @Test
+    fun `rejects responses request when channel only supports chat completions`() = runBlocking {
+        val channel = createChannel("chat-only", "ok")
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":false,"input":"hi"}""")
+            }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("protocol_not_supported"))
+            assertTrue(fake.requests.isEmpty())
+            val log = awaitRequestLog()
+            assertEquals(FailureStage.ROUTING, log.failureStage)
+            assertEquals("protocol_not_supported", log.errorCode)
+            assertTrue(log.errorMessage!!.contains("没有支持 responses"))
+            assertNull(log.channelId)
+            assertNull(log.channelName)
+        }
+    }
+
+    @Test
+    fun `probes upstream protocols`() = runBlocking {
+        val channel = createChannel("chat-only", "chat-only")
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/admin/api/channels/${channel.id}/probe-protocols") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini"}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("\"protocol\":\"chat_completions\""), "BODY=[$body]")
+            assertTrue(body.contains("\"protocol\":\"responses\""), "BODY=[$body]")
+            assertTrue(body.contains("\"supported\":true"), "BODY=[$body]")
+            assertTrue(body.contains("\"supported\":false"), "BODY=[$body]")
+        }
+    }
+
+    @Test
+    fun `direct mode reports protocol mismatch`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(exposeUpstreamModels = true))
+        createChannel("chat-only", "ok")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","stream":false,"input":"hi"}""")
+            }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("protocol_not_supported"))
+        }
+    }
+
+    @Test
+    fun `admin channel response exposes protocols`() = runBlocking {
+        createChannelWithProtocols(
+            "both",
+            "ok",
+            setOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES),
+        )
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.get("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("chat_completions"), "BODY=[$body]")
+            assertTrue(body.contains("responses"), "BODY=[$body]")
+        }
+    }
+
+    @Test
     fun `admin login requires csrf and created key can call models`() = runBlocking {
         testApplication {
             application { app.install(this) }
@@ -494,16 +799,27 @@ class GatewayIntegrationTest {
         return createChannelWithBaseUrl(name, "${fake.baseUrl}/$scenario/v1")
     }
 
-    private suspend fun createChannelWithBaseUrl(name: String, baseUrl: String): ChannelRecord {
+    private suspend fun createChannelWithBaseUrl(
+        name: String,
+        baseUrl: String,
+        protocols: Set<GatewayProtocol> = GatewayProtocol.default,
+    ): ChannelRecord {
         val encrypted = app.credentialCipher.encrypt("upstream-secret")
         return app.channelRepository.create(
             name = name,
             baseUrl = baseUrl,
             credential = encrypted,
             authType = "bearer",
+            protocols = protocols,
             enabled = true,
         )
     }
+
+    private suspend fun createChannelWithProtocols(
+        name: String,
+        scenario: String,
+        protocols: Set<GatewayProtocol>,
+    ): ChannelRecord = createChannelWithBaseUrl(name, "${fake.baseUrl}/$scenario/v1", protocols)
 
     private suspend fun createAlias(alias: String, vararg candidates: Pair<ChannelRecord, String>): AliasWithCandidates =
         app.aliasRepository.create(

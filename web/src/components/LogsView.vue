@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
+import { copyText } from '../clipboard'
 import { notify } from '../toast'
 import Icon from './Icon.vue'
 
@@ -8,12 +9,33 @@ const logs = ref([])
 const loading = ref(true)
 const error = ref('')
 const query = ref('')
+const selected = ref(null)
+const detailDialog = ref(null)
+let detailTrigger = null
+
+const stageLabels = {
+  request: '请求',
+  routing: '路由',
+  upstream: '上游',
+  streaming: '流式',
+  client: '客户端',
+}
 
 const filtered = computed(() => {
   const keyword = query.value.trim().toLowerCase()
   if (!keyword) return logs.value
   return logs.value.filter((log) =>
-    [log.requestId, log.alias, log.channelId, log.upstreamModel, log.errorCode]
+    [
+      log.requestId,
+      log.alias,
+      log.channelId,
+      log.channelName,
+      log.upstreamModel,
+      log.errorCode,
+      log.errorMessage,
+      log.failureStage,
+      log.upstreamErrorCode,
+    ]
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
@@ -59,10 +81,78 @@ function formatTokens(value) {
   return value == null ? '—' : value.toLocaleString('zh-CN')
 }
 
+function stageLabel(stage) {
+  return stage ? stageLabels[stage] || stage : '—'
+}
+
 function statusClass(code) {
   if (code >= 500 || code === 499) return 'danger'
   if (code >= 400) return 'warning'
   return 'success'
+}
+
+function openDetail(log, event) {
+  detailTrigger = event?.currentTarget || null
+  selected.value = log
+}
+
+function closeDetail() {
+  selected.value = null
+}
+
+function onDetailKeydown(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeDetail()
+    return
+  }
+  if (event.key !== 'Tab' || !detailDialog.value) return
+  const focusables = Array.from(
+    detailDialog.value.querySelectorAll(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => !element.hasAttribute('disabled'))
+  if (focusables.length === 0) {
+    event.preventDefault()
+    detailDialog.value.focus()
+    return
+  }
+  const first = focusables[0]
+  const last = focusables[focusables.length - 1]
+  const active = document.activeElement
+  if (!detailDialog.value.contains(active)) {
+    event.preventDefault()
+    first.focus()
+    return
+  }
+  if (event.shiftKey && (active === first || active === detailDialog.value)) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+watch(selected, async (value) => {
+  if (value) {
+    await nextTick()
+    const autofocus = detailDialog.value?.querySelector('[data-autofocus]')
+    ;(autofocus || detailDialog.value)?.focus()
+    return
+  }
+  const trigger = detailTrigger
+  detailTrigger = null
+  trigger?.focus()
+})
+
+async function copyRequestId(requestId) {
+  try {
+    await copyText(requestId)
+    notify('请求 ID 已复制')
+  } catch {
+    window.prompt('复制请求 ID', requestId)
+  }
 }
 
 onMounted(load)
@@ -73,7 +163,7 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>最近请求</h2>
-        <p>只记录元数据与 usage，不保存 prompt 或响应正文。</p>
+        <p>列表只保留关键信息，点击“详情”查看完整错误与路由上下文。</p>
       </div>
       <button type="button" class="button ghost" :disabled="loading" @click="refresh">
         <Icon name="refresh" :size="17" />
@@ -105,7 +195,7 @@ onMounted(load)
       <div class="table-toolbar">
         <label class="search-box">
           <Icon name="search" :size="17" />
-          <input v-model="query" placeholder="搜索请求 ID、别名、渠道或错误码" />
+          <input v-model="query" placeholder="搜索请求 ID、别名、渠道、错误码或错误信息" />
         </label>
         <span class="muted small">显示 {{ filtered.length }} / {{ logs.length }} 条</span>
       </div>
@@ -130,21 +220,36 @@ onMounted(load)
               <th>时间</th>
               <th>请求 ID</th>
               <th>别名</th>
+              <th>协议</th>
               <th>渠道 / 上游模型</th>
               <th>状态</th>
               <th>首 token</th>
               <th>总耗时</th>
               <th>tokens</th>
               <th>错误</th>
+              <th class="actions-col"></th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="log in filtered" :key="log.requestId">
               <td class="muted nowrap">{{ formatTime(log.createdAt) }}</td>
-              <td><code class="request-id" :title="log.requestId">{{ log.requestId.slice(0, 12) }}…</code></td>
-              <td><span class="badge info">{{ log.alias }}</span></td>
               <td>
-                <div class="primary-cell small">{{ log.channelId ? log.channelId.slice(0, 8) : '—' }}</div>
+                <div class="request-id-cell">
+                  <code class="request-id" :title="log.requestId">{{ log.requestId.slice(0, 12) }}…</code>
+                  <button
+                    type="button"
+                    class="icon-button list-copy"
+                    title="复制请求 ID"
+                    @click="copyRequestId(log.requestId)"
+                  >
+                    <Icon name="copy" :size="13" />
+                  </button>
+                </div>
+              </td>
+              <td><span class="badge info">{{ log.alias }}</span></td>
+              <td><span class="badge neutral">{{ log.protocol || '—' }}</span></td>
+              <td>
+                <div class="primary-cell small">{{ log.channelName || (log.channelId ? log.channelId.slice(0, 8) : '—') }}</div>
                 <div class="mono muted small">{{ log.upstreamModel || '—' }}</div>
               </td>
               <td><span class="badge" :class="statusClass(log.statusCode)">{{ log.statusCode }}</span></td>
@@ -155,12 +260,128 @@ onMounted(load)
                 <span v-else class="muted">未知</span>
               </td>
               <td>
-                <span v-if="log.errorCode" class="badge warning">{{ log.errorCode }}</span>
+                <div v-if="log.errorCode" class="error-cell">
+                  <span class="badge warning">{{ log.errorCode }}</span>
+                  <span v-if="log.failureStage" class="stage-text">{{ stageLabel(log.failureStage) }}阶段</span>
+                </div>
                 <span v-else class="muted">—</span>
+              </td>
+              <td class="actions-col">
+                <button type="button" class="button subtle mini" @click="openDetail(log, $event)">详情</button>
               </td>
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <div v-if="selected" class="modal-backdrop" @click.self="closeDetail">
+      <div
+        ref="detailDialog"
+        class="modal wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="request-detail-title"
+        tabindex="-1"
+        @keydown="onDetailKeydown"
+      >
+        <div class="modal-head">
+          <div>
+            <h2 id="request-detail-title">请求详情</h2>
+            <p class="muted small">{{ formatTime(selected.createdAt) }}</p>
+          </div>
+          <button type="button" class="icon-button" title="关闭" data-autofocus @click="closeDetail">
+            <Icon name="close" :size="18" />
+          </button>
+        </div>
+
+        <div class="modal-body detail-stack">
+          <div class="detail-id">
+            <span>请求 ID</span>
+            <div class="request-id-cell">
+              <code class="detail-id-value">{{ selected.requestId }}</code>
+              <button
+                type="button"
+                class="icon-button"
+                title="复制请求 ID"
+                @click="copyRequestId(selected.requestId)"
+              >
+                <Icon name="copy" :size="14" />
+              </button>
+            </div>
+          </div>
+
+          <div class="detail-grid">
+            <div class="detail-item">
+              <span>状态</span>
+              <strong><span class="badge" :class="statusClass(selected.statusCode)">{{ selected.statusCode }}</span></strong>
+            </div>
+            <div class="detail-item">
+              <span>协议</span>
+              <strong>{{ selected.protocol || '—' }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>失败阶段</span>
+              <strong>{{ stageLabel(selected.failureStage) }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>错误码</span>
+              <strong class="mono">{{ selected.errorCode || '—' }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>上游错误码</span>
+              <strong class="mono">{{ selected.upstreamErrorCode || '—' }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>别名</span>
+              <strong>{{ selected.alias }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>渠道名称</span>
+              <strong>{{ selected.channelName || '—' }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>渠道 ID</span>
+              <strong class="mono detail-wrap">{{ selected.channelId || '—' }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>上游模型</span>
+              <strong class="mono detail-wrap">{{ selected.upstreamModel || '—' }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>调用方密钥 ID</span>
+              <strong class="mono detail-wrap">{{ selected.clientKeyId || '—' }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>首 token</span>
+              <strong>{{ formatDuration(selected.firstTokenMs) }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>总耗时</span>
+              <strong>{{ formatDuration(selected.totalMs) }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>用量</span>
+              <strong v-if="selected.usageKnown">
+                {{ formatTokens(selected.inputTokens) }} / {{ formatTokens(selected.outputTokens) }} /
+                {{ formatTokens(selected.cachedTokens) }} / {{ formatTokens(selected.totalTokens) }}
+              </strong>
+              <strong v-else class="muted">未知</strong>
+            </div>
+          </div>
+
+          <div class="detail-block">
+            <span>错误信息</span>
+            <p v-if="selected.errorMessage" class="detail-message">{{ selected.errorMessage }}</p>
+            <p v-else class="muted">无错误信息</p>
+          </div>
+
+          <p class="muted small detail-hint">用量顺序：input / output / cached / total。日志不保存 prompt 与响应正文。</p>
+        </div>
+
+        <div class="modal-foot">
+          <button type="button" class="button ghost" @click="closeDetail">关闭</button>
+        </div>
       </div>
     </div>
   </section>

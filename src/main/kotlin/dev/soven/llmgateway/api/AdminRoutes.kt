@@ -1,7 +1,9 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.proxy.fetchUpstreamModels
+import dev.soven.llmgateway.proxy.probeUpstreamProtocols
 import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.ClientKeyHasher
@@ -96,10 +98,41 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(ChannelModelsResponse(data = models))
         }
 
+        post("/channels/{id}/probe-protocols") {
+            call.requireAdmin(app)
+            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少渠道 id")
+            val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
+            val request = call.receive<ProtocolProbeRequest>()
+            val model = request.model?.takeIf { it.isNotBlank() } ?: run {
+                val models = fetchUpstreamModels(channel, app.credentialCipher, app.httpClient)
+                models.firstOrNull()?.id ?: throw GatewayException(
+                    HttpStatusCode.BadGateway,
+                    "no_upstream_models",
+                    "上游没有返回模型，无法探测协议",
+                    "api_error",
+                )
+            }
+            val results = probeUpstreamProtocols(channel, model, app.credentialCipher, app.httpClient)
+            call.respond(
+                ProtocolProbeResponse(
+                    model = model,
+                    results = results.map {
+                        ProtocolProbeResultResponse(
+                            protocol = it.protocol.value,
+                            supported = it.supported,
+                            statusCode = it.statusCode,
+                            message = it.message,
+                        )
+                    },
+                ),
+            )
+        }
+
         post("/channels") {
             call.requireAdmin(app)
             val request = call.receive<ChannelRequest>()
             validateChannel(request, credentialRequired = true)
+            val protocols = parseProtocols(request.protocols)
             if (app.channelRepository.findByName(request.name) != null) {
                 throw conflict("channel_name_exists", "渠道名称已存在")
             }
@@ -109,6 +142,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 baseUrl = request.baseUrl,
                 credential = encrypted,
                 authType = request.authType,
+                protocols = protocols,
                 enabled = request.enabled,
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
@@ -119,6 +153,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少渠道 id")
             val request = call.receive<ChannelRequest>()
             validateChannel(request, credentialRequired = false)
+            val protocols = parseProtocols(request.protocols)
             val existing = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
             val sameName = app.channelRepository.findByName(request.name)
             if (sameName != null && sameName.id != id) throw conflict("channel_name_exists", "渠道名称已存在")
@@ -129,6 +164,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 baseUrl = request.baseUrl,
                 credential = encrypted,
                 authType = request.authType,
+                protocols = protocols,
                 enabled = request.enabled,
             ) ?: throw notFound("channel_not_found", "渠道不存在")
             call.respond(updated.toResponse())
@@ -289,6 +325,14 @@ private fun ApplicationCall.requireAdmin(app: GatewayApplication): AdminSessions
         }
     }
     return session
+}
+
+private fun parseProtocols(values: List<String>): Set<GatewayProtocol> {
+    if (values.isEmpty()) throw badRequest("invalid_channel", "渠道至少需要支持一个协议")
+    return values.map { value ->
+        GatewayProtocol.fromValue(value)
+            ?: throw badRequest("invalid_channel", "不支持的协议: $value")
+    }.toSet()
 }
 
 private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean) {
