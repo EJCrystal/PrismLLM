@@ -448,6 +448,64 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `records responses failed terminal event as streaming failure`() = runBlocking {
+        val channel = createChannelWithProtocols(
+            "responses-failed",
+            "responses-failed",
+            setOf(GatewayProtocol.RESPONSES),
+        )
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"input":"hi"}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: response.failed"), "BODY=[$body]")
+            val log = awaitRequestLog()
+            assertEquals(200, log.statusCode)
+            assertEquals("responses_failed", log.errorCode)
+            assertEquals(FailureStage.STREAMING, log.failureStage)
+            assertEquals("上游响应失败", log.errorMessage)
+        }
+    }
+
+    @Test
+    fun `records responses incomplete terminal event as streaming failure`() = runBlocking {
+        val channel = createChannelWithProtocols(
+            "responses-incomplete",
+            "responses-incomplete",
+            setOf(GatewayProtocol.RESPONSES),
+        )
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"input":"hi"}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: response.incomplete"), "BODY=[$body]")
+            val log = awaitRequestLog()
+            assertEquals(200, log.statusCode)
+            assertEquals("responses_incomplete", log.errorCode)
+            assertEquals(FailureStage.STREAMING, log.failureStage)
+            assertEquals("上游响应未完成", log.errorMessage)
+        }
+    }
+
+    @Test
     fun `responses protocol records usage for non-streaming`() = runBlocking {
         val channel = createChannelWithProtocols("responses", "ok", setOf(GatewayProtocol.RESPONSES))
         createAlias("fast-chat", channel to "gpt-4o-mini")

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import Icon from './Icon.vue'
@@ -19,6 +19,8 @@ const modelsError = ref('')
 const probing = ref(false)
 const probeResults = ref([])
 let modelRequestId = 0
+let probeRequestId = 0
+let probeDerivedProtocols = false
 
 const form = reactive({
   name: '',
@@ -27,6 +29,16 @@ const form = reactive({
   protocols: ['chat_completions'],
   enabled: true,
 })
+
+watch(
+  () => [form.baseUrl, form.credential],
+  () => {
+    if (!probeResults.value.length && !probeDerivedProtocols) return
+    probeResults.value = []
+    if (probeDerivedProtocols) form.protocols = []
+    probeDerivedProtocols = false
+  },
+)
 
 const enabledCount = computed(() => channels.value.filter((channel) => channel.enabled).length)
 
@@ -83,6 +95,10 @@ async function load() {
 
 function openCreate() {
   editingId.value = null
+  probeRequestId += 1
+  probing.value = false
+  probeResults.value = []
+  probeDerivedProtocols = false
   Object.assign(form, {
     name: '',
     baseUrl: '',
@@ -90,12 +106,15 @@ function openCreate() {
     protocols: ['chat_completions'],
     enabled: true,
   })
-  probeResults.value = []
   showForm.value = true
 }
 
 function openEdit(channel) {
   editingId.value = channel.id
+  probeRequestId += 1
+  probing.value = false
+  probeResults.value = []
+  probeDerivedProtocols = false
   Object.assign(form, {
     name: channel.name,
     baseUrl: channel.baseUrl,
@@ -103,7 +122,6 @@ function openEdit(channel) {
     protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
     enabled: channel.enabled,
   })
-  probeResults.value = []
   showForm.value = true
 }
 
@@ -118,21 +136,43 @@ async function probeProtocols() {
     notify('请先保存渠道，再探测协议', 'error')
     return
   }
+  const savedChannel = channels.value.find((channel) => channel.id === editingId.value)
+  const probeBaseUrl = form.baseUrl.trim()
+  const probeCredential = form.credential.trim()
+  if (!savedChannel || probeBaseUrl !== savedChannel.baseUrl.trim() || probeCredential) {
+    notify('请先保存基础地址或凭据，再探测协议', 'error')
+    return
+  }
+  const channelId = editingId.value
+  const requestId = ++probeRequestId
   probing.value = true
   probeResults.value = []
   try {
-    const response = await api.probeChannelProtocols(editingId.value)
+    const response = await api.probeChannelProtocols(channelId)
+    if (
+      requestId !== probeRequestId ||
+      editingId.value !== channelId ||
+      form.baseUrl.trim() !== probeBaseUrl ||
+      form.credential.trim() !== probeCredential
+    ) {
+      return
+    }
     probeResults.value = response?.results || []
     const supported = probeResults.value.filter((item) => item.supported).map((item) => item.protocol)
-    if (supported.length > 0) form.protocols = supported
+    if (supported.length > 0) {
+      form.protocols = supported
+      probeDerivedProtocols = true
+    }
     notify(
       supported.length > 0 ? `探测到：${supported.join(' / ')}` : '未探测到可用协议',
       supported.length > 0 ? 'success' : 'error',
     )
   } catch (cause) {
-    notify(cause.message, 'error')
+    if (requestId === probeRequestId && editingId.value === channelId) {
+      notify(cause.message, 'error')
+    }
   } finally {
-    probing.value = false
+    if (requestId === probeRequestId) probing.value = false
   }
 }
 
@@ -168,7 +208,10 @@ async function save() {
       notify('渠道已创建')
     }
     showForm.value = false
+    probeRequestId += 1
+    probing.value = false
     probeResults.value = []
+    probeDerivedProtocols = false
     await load()
   } catch (cause) {
     notify(cause.message, 'error')
@@ -202,7 +245,7 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>上游接入点</h2>
-        <p>一个渠道对应一个 OpenAI Chat Completions 兼容地址。</p>
+        <p>一个渠道对应一个 OpenAI 兼容接入点，可选择支持 Chat Completions 和/或 Responses。</p>
       </div>
       <button type="button" class="button primary" @click="openCreate">
         <Icon name="plus" :size="17" />
@@ -311,7 +354,7 @@ onMounted(load)
         <label class="field">
           <span>基础地址</span>
           <input v-model="form.baseUrl" placeholder="https://api.openai.com/v1" autocomplete="off" />
-          <small>网关会在此地址后追加 <code>/chat/completions</code> 和 <code>/models</code>。</small>
+          <small>网关会按请求协议在此地址后追加 <code>/chat/completions</code> 或 <code>/responses</code>，并用 <code>/models</code> 拉取模型列表。</small>
         </label>
         <div class="field">
           <span>支持协议</span>

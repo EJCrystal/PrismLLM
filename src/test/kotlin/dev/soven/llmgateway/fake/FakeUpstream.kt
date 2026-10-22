@@ -190,13 +190,20 @@ class FakeUpstream {
                     """{"type":"response.output_text.delta","delta":"lo"}""",
                 )
                 delay(10)
-                if (scenario == "no-usage") {
-                    writeSseEvent(
+                when (scenario) {
+                    "responses-failed" -> writeSseEvent(
+                        "response.failed",
+                        """{"type":"response.failed","response":{"id":"resp_fake","status":"failed","error":{"code":"server_error","message":"upstream failed"}}}""",
+                    )
+                    "responses-incomplete" -> writeSseEvent(
+                        "response.incomplete",
+                        """{"type":"response.incomplete","response":{"id":"resp_fake","status":"incomplete"}}""",
+                    )
+                    "no-usage" -> writeSseEvent(
                         "response.completed",
                         """{"type":"response.completed","response":{"id":"resp_fake","status":"completed"}}""",
                     )
-                } else {
-                    writeSseEvent("response.completed", RESPONSES_FINAL_EVENT)
+                    else -> writeSseEvent("response.completed", RESPONSES_FINAL_EVENT)
                 }
                 completed = true
             }

@@ -235,7 +235,11 @@ private suspend fun handleProxy(
     } finally {
         if (errorCode == null && state.errorCode != null) {
             failureStage = FailureStage.STREAMING
-            errorMessage = "上游流未正常结束（缺少结束帧）"
+            errorMessage = when (state.errorCode) {
+                "responses_failed" -> "上游响应失败"
+                "responses_incomplete" -> "上游响应未完成"
+                else -> "上游流未正常结束（缺少结束帧）"
+            }
         }
         val usage = state.usage
         app.metrics.request(alias, channelId, statusCode)
@@ -380,6 +384,7 @@ private suspend fun proxyStream(
                                 markFirstToken(line, protocol, state, startedAt, app, alias, candidate.channel.name)
                                 recordUsage(line, state, protocol)
                                 if (isStreamDone(line, protocol)) {
+                                    markResponsesTerminalFailure(line, protocol, state)
                                     writeSseLine("")
                                     sawDone = true
                                     break
@@ -401,6 +406,7 @@ private suspend fun proxyStream(
                                     markFirstToken(line, protocol, state, startedAt, app, alias, candidate.channel.name)
                                     recordUsage(line, state, protocol)
                                     if (isStreamDone(line, protocol)) {
+                                        markResponsesTerminalFailure(line, protocol, state)
                                         writeSseLine("")
                                         sawDone = true
                                         break
@@ -586,6 +592,22 @@ private fun recordUsage(line: String, state: ProxyState, protocol: GatewayProtoc
         GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
     }
     if (usage != null) state.usage = usage
+}
+
+private fun markResponsesTerminalFailure(
+    line: String,
+    protocol: GatewayProtocol,
+    state: ProxyState,
+) {
+    if (protocol != GatewayProtocol.RESPONSES) return
+    val payload = ssePayload(line) ?: return
+    val type = runCatching {
+        Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull
+    }.getOrNull()
+    when (type) {
+        "response.failed" -> state.errorCode = "responses_failed"
+        "response.incomplete" -> state.errorCode = "responses_incomplete"
+    }
 }
 
 private fun isStreamDone(line: String, protocol: GatewayProtocol): Boolean {

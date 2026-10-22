@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { copyText } from '../clipboard'
 import { notify } from '../toast'
@@ -10,6 +10,8 @@ const loading = ref(true)
 const error = ref('')
 const query = ref('')
 const selected = ref(null)
+const detailDialog = ref(null)
+let detailTrigger = null
 
 const stageLabels = {
   request: '请求',
@@ -88,6 +90,61 @@ function statusClass(code) {
   if (code >= 400) return 'warning'
   return 'success'
 }
+
+function openDetail(log, event) {
+  detailTrigger = event?.currentTarget || null
+  selected.value = log
+}
+
+function closeDetail() {
+  selected.value = null
+}
+
+function onDetailKeydown(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeDetail()
+    return
+  }
+  if (event.key !== 'Tab' || !detailDialog.value) return
+  const focusables = Array.from(
+    detailDialog.value.querySelectorAll(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => !element.hasAttribute('disabled'))
+  if (focusables.length === 0) {
+    event.preventDefault()
+    detailDialog.value.focus()
+    return
+  }
+  const first = focusables[0]
+  const last = focusables[focusables.length - 1]
+  const active = document.activeElement
+  if (!detailDialog.value.contains(active)) {
+    event.preventDefault()
+    first.focus()
+    return
+  }
+  if (event.shiftKey && (active === first || active === detailDialog.value)) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+watch(selected, async (value) => {
+  if (value) {
+    await nextTick()
+    const autofocus = detailDialog.value?.querySelector('[data-autofocus]')
+    ;(autofocus || detailDialog.value)?.focus()
+    return
+  }
+  const trigger = detailTrigger
+  detailTrigger = null
+  trigger?.focus()
+})
 
 async function copyRequestId(requestId) {
   try {
@@ -210,7 +267,7 @@ onMounted(load)
                 <span v-else class="muted">—</span>
               </td>
               <td class="actions-col">
-                <button type="button" class="button subtle mini" @click="selected = log">详情</button>
+                <button type="button" class="button subtle mini" @click="openDetail(log, $event)">详情</button>
               </td>
             </tr>
           </tbody>
@@ -218,14 +275,22 @@ onMounted(load)
       </div>
     </div>
 
-    <div v-if="selected" class="modal-backdrop" @click.self="selected = null">
-      <div class="modal wide" role="dialog" aria-modal="true" aria-label="请求详情">
+    <div v-if="selected" class="modal-backdrop" @click.self="closeDetail">
+      <div
+        ref="detailDialog"
+        class="modal wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="request-detail-title"
+        tabindex="-1"
+        @keydown="onDetailKeydown"
+      >
         <div class="modal-head">
           <div>
-            <h2>请求详情</h2>
+            <h2 id="request-detail-title">请求详情</h2>
             <p class="muted small">{{ formatTime(selected.createdAt) }}</p>
           </div>
-          <button type="button" class="icon-button" title="关闭" @click="selected = null">
+          <button type="button" class="icon-button" title="关闭" data-autofocus @click="closeDetail">
             <Icon name="close" :size="18" />
           </button>
         </div>
@@ -315,7 +380,7 @@ onMounted(load)
         </div>
 
         <div class="modal-foot">
-          <button type="button" class="button ghost" @click="selected = null">关闭</button>
+          <button type="button" class="button ghost" @click="closeDetail">关闭</button>
         </div>
       </div>
     </div>

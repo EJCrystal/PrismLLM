@@ -14,3 +14,4 @@
 - 错误信息限制为 1000 字符；上游响应正文仍然不落库。
 - 历史日志的三个新字段为空，界面显示为“—”。
 - `failure_stage` 取值为 `request`、`routing`、`upstream`、`streaming`、`client`。
+- Responses 的 `response.failed` / `response.incomplete` 仍按 HTTP 200 转发结束事件，但日志记为 `streaming` 阶段的 `responses_failed` / `responses_incomplete`。
