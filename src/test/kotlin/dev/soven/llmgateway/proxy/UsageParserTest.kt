@@ -49,6 +49,16 @@ class UsageParserTest {
     }
 
     @Test
+    fun `parses deepseek cache hit tokens`() {
+        val line = """data: {"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}}"""
+
+        val usage = UsageParser.fromSseLine(line)
+
+        assertEquals(80, usage?.cached)
+        assertEquals(100, usage?.input)
+    }
+
+    @Test
     fun `ignores done malformed and non data lines`() {
         assertNull(UsageParser.fromSseLine("data: [DONE]"))
         assertNull(UsageParser.fromSseLine("data: {not-json}"))

@@ -44,7 +44,9 @@ object UsageParser {
         val output = usage.long("completion_tokens")
         val total = usage.long("total_tokens")
         val cached = (usage["prompt_tokens_details"] as? JsonObject)?.long("cached_tokens")
+            ?: usage.long("prompt_cache_hit_tokens")
         val reasoning = (usage["completion_tokens_details"] as? JsonObject)?.long("reasoning_tokens")
+            ?: usage.long("reasoning_tokens")
         if (input == null && output == null && cached == null && reasoning == null && total == null) return null
         return Usage(input = input, output = output, cached = cached, reasoning = reasoning, total = total)
     }
@@ -59,7 +61,10 @@ object UsageParser {
         val output = usage.long("output_tokens")
         val total = usage.long("total_tokens")
         val cached = (usage["input_tokens_details"] as? JsonObject)?.long("cached_tokens")
+            ?: usage.long("prompt_cache_hit_tokens")
         val reasoning = (usage["output_tokens_details"] as? JsonObject)?.long("reasoning_tokens")
+            ?: (usage["completion_tokens_details"] as? JsonObject)?.long("reasoning_tokens")
+            ?: usage.long("reasoning_tokens")
         if (input == null && output == null && cached == null && reasoning == null && total == null) return null
         return Usage(
             input = input,
