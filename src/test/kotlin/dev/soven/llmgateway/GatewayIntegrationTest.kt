@@ -448,6 +448,34 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `responses first token timeout ignores response created event`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(firstTokenTimeoutMs = 300, idleTimeoutMs = 300, totalTimeoutMs = 2_000))
+        val channel = createChannelWithProtocols(
+            "responses-created-stall",
+            "responses-created-stall",
+            setOf(GatewayProtocol.RESPONSES),
+        )
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"input":"hi"}""")
+            }
+
+            assertEquals(HttpStatusCode.GatewayTimeout, response.status)
+            val log = awaitRequestLog()
+            assertEquals(504, log.statusCode)
+            assertEquals("upstream_timeout", log.errorCode)
+            assertEquals(FailureStage.UPSTREAM, log.failureStage)
+        }
+    }
+
+    @Test
     fun `records responses failed terminal event as streaming failure`() = runBlocking {
         val channel = createChannelWithProtocols(
             "responses-failed",

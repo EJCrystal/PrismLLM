@@ -350,7 +350,12 @@ private suspend fun proxyStream(
                         while (found == null) {
                             val next = upstream.readUTF8Line() ?: break
                             prefixLines.add(next)
-                            if (next.trim().startsWith("data:")) found = next
+                            if (
+                                next.trim().startsWith("data:") &&
+                                (protocol == GatewayProtocol.CHAT_COMPLETIONS || isFirstResponsesToken(next))
+                            ) {
+                                found = next
+                            }
                         }
                         found
                     }
@@ -567,15 +572,9 @@ private fun markFirstToken(
     if (state.firstTokenMs != null) return
     val payload = ssePayload(line) ?: return
     if (payload == "[DONE]") return
-    val type = if (protocol == GatewayProtocol.RESPONSES) {
-        runCatching { Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull }
-            .getOrNull()
-    } else {
-        null
-    }
     val isFirst = when (protocol) {
         GatewayProtocol.CHAT_COMPLETIONS -> true
-        GatewayProtocol.RESPONSES -> type in RESPONSES_END_EVENTS || type == "response.output_text.delta"
+        GatewayProtocol.RESPONSES -> isFirstResponsesToken(line)
     }
     if (isFirst) {
         state.firstTokenMs = (System.nanoTime() - startedAt) / 1_000_000
@@ -592,6 +591,15 @@ private fun recordUsage(line: String, state: ProxyState, protocol: GatewayProtoc
         GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
     }
     if (usage != null) state.usage = usage
+}
+
+private fun isFirstResponsesToken(line: String): Boolean {
+    val payload = ssePayload(line) ?: return false
+    if (payload == "[DONE]") return false
+    val type = runCatching {
+        Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull
+    }.getOrNull()
+    return type in RESPONSES_END_EVENTS || type == "response.output_text.delta"
 }
 
 private fun markResponsesTerminalFailure(

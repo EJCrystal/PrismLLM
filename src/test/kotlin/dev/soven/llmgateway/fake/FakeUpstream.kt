@@ -179,6 +179,11 @@ class FakeUpstream {
                     "response.created",
                     """{"type":"response.created","response":{"id":"resp_fake","status":"in_progress"}}""",
                 )
+                if (scenario == "responses-created-stall") {
+                    delay(2_000)
+                    completed = true
+                    return@respondBytesWriter
+                }
                 delay(10)
                 writeSseEvent(
                     "response.output_text.delta",
