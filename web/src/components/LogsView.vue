@@ -392,7 +392,7 @@ onMounted(load)
               </div>
               <div class="detail-item">
                 <span>调用方密钥</span>
-                <strong>{{ selected.clientKeyName || '未命名密钥' }}</strong>
+                <strong>{{ selected.clientKeyName || (selected.clientKeyId ? '未命名密钥' : '—') }}</strong>
               </div>
               <div class="detail-item">
                 <span>调用方密钥 ID</span>
