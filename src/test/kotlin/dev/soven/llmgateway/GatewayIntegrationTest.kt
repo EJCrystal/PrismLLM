@@ -125,6 +125,7 @@ class GatewayIntegrationTest {
             assertEquals("gpt-4o-mini", log.upstreamModel)
             assertEquals(channel.id, log.channelId)
             assertEquals("openai", log.channelName)
+            assertEquals("test-key", log.clientKeyName)
             assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.protocol)
         }
 
@@ -442,6 +443,7 @@ class GatewayIntegrationTest {
             assertEquals(10L, log.inputTokens)
             assertEquals(3L, log.outputTokens)
             assertEquals(2L, log.cachedTokens)
+            assertEquals(0L, log.reasoningTokens)
             assertEquals(13L, log.totalTokens)
             assertNotNull(log.firstTokenMs)
         }
@@ -616,6 +618,36 @@ class GatewayIntegrationTest {
             assertEquals(3L, log.outputTokens)
             assertEquals(2L, log.cachedTokens)
             assertEquals(13L, log.totalTokens)
+        }
+    }
+
+    @Test
+    fun `records reasoning effort from chat and responses requests`() = runBlocking {
+        val channel = createChannelWithProtocols(
+            "openai",
+            "ok",
+            setOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES),
+        )
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val chat = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","reasoning_effort":"high","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, chat.status)
+            assertEquals("high", awaitLogWithEffort("high").reasoningEffort)
+
+            val responses = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":false,"reasoning":{"effort":"low"},"input":"hi"}""")
+            }
+            assertEquals(HttpStatusCode.OK, responses.status)
+            assertEquals("low", awaitLogWithEffort("low").reasoningEffort)
         }
     }
 
@@ -848,6 +880,16 @@ class GatewayIntegrationTest {
             delay(50)
         }
         error("request log not written within ${timeoutMs}ms")
+    }
+
+    private suspend fun awaitLogWithEffort(effort: String, timeoutMs: Long = 3_000): RequestLogRecord {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val log = app.requestLogRepository.list(10).firstOrNull { it.reasoningEffort == effort }
+            if (log != null) return log
+            delay(50)
+        }
+        error("request log with reasoning effort $effort not written within ${timeoutMs}ms")
     }
 
     private suspend fun awaitCancellation(timeoutMs: Long = 3_000) {

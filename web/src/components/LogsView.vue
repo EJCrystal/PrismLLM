@@ -81,6 +81,30 @@ function formatTokens(value) {
   return value == null ? '—' : value.toLocaleString('zh-CN')
 }
 
+function formatTokensCompact(value) {
+  if (value == null) return '—'
+  if (value < 10_000) return value.toLocaleString('zh-CN')
+  if (value < 1_000_000) return `${(value / 1_000).toFixed(1)}k`
+  return `${(value / 1_000_000).toFixed(2)}M`
+}
+
+function formatThroughput(log) {
+  if (log.outputTokens == null || log.totalMs <= 0) return '—'
+  const window = log.totalMs - (log.firstTokenMs ?? 0)
+  if (window <= 0) return '—'
+  return (log.outputTokens / (window / 1000)).toFixed(1)
+}
+
+function formatCacheHit(log) {
+  if (log.cachedTokens == null || log.inputTokens == null || log.inputTokens <= 0) return '—'
+  return `${Math.round((log.cachedTokens / log.inputTokens) * 100)}%`
+}
+
+function cacheTitle(log) {
+  if (log.cachedTokens == null) return '上游未返回缓存用量'
+  return `缓存 ${formatTokens(log.cachedTokens)} / 输入 ${formatTokens(log.inputTokens)}`
+}
+
 function stageLabel(stage) {
   return stage ? stageLabels[stage] || stage : '—'
 }
@@ -219,13 +243,11 @@ onMounted(load)
             <tr>
               <th>时间</th>
               <th>请求 ID</th>
-              <th>别名</th>
-              <th>协议</th>
+              <th>别名 / 协议</th>
               <th>渠道 / 上游模型</th>
               <th>状态</th>
-              <th>首 token</th>
-              <th>总耗时</th>
-              <th>tokens</th>
+              <th>耗时</th>
+              <th>Token 用量</th>
               <th>错误</th>
               <th class="actions-col"></th>
             </tr>
@@ -246,17 +268,36 @@ onMounted(load)
                   </button>
                 </div>
               </td>
-              <td><span class="badge info">{{ log.alias }}</span></td>
-              <td><span class="badge neutral">{{ log.protocol || '—' }}</span></td>
+              <td>
+                <div class="stacked-cell">
+                  <span class="badge info">{{ log.alias }}</span>
+                  <span class="muted small">
+                    {{ log.protocol || '—' }}<template v-if="log.reasoningEffort"> · 强度 {{ log.reasoningEffort }}</template>
+                  </span>
+                </div>
+              </td>
               <td>
                 <div class="primary-cell small">{{ log.channelName || (log.channelId ? log.channelId.slice(0, 8) : '—') }}</div>
                 <div class="mono muted small">{{ log.upstreamModel || '—' }}</div>
               </td>
               <td><span class="badge" :class="statusClass(log.statusCode)">{{ log.statusCode }}</span></td>
-              <td class="nowrap">{{ formatDuration(log.firstTokenMs) }}</td>
-              <td class="nowrap">{{ formatDuration(log.totalMs) }}</td>
               <td class="nowrap">
-                <span v-if="log.usageKnown">{{ formatTokens(log.totalTokens) }}</span>
+                <div class="stacked-cell">
+                  <span>{{ formatDuration(log.totalMs) }}</span>
+                  <span class="muted small">首 {{ formatDuration(log.firstTokenMs) }}</span>
+                </div>
+              </td>
+              <td class="usage-cell">
+                <template v-if="log.usageKnown">
+                  <span :title="`输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 总 ${formatTokens(log.totalTokens)}`">
+                    输入 {{ formatTokensCompact(log.inputTokens) }} · 输出 {{ formatTokensCompact(log.outputTokens) }} · 总
+                    {{ formatTokensCompact(log.totalTokens) }}
+                  </span>
+                  <span class="muted" :title="cacheTitle(log)">
+                    推理 {{ formatTokensCompact(log.reasoningTokens) }} · {{ formatThroughput(log) }} tok/s · 缓存
+                    {{ formatCacheHit(log) }}
+                  </span>
+                </template>
                 <span v-else class="muted">未知</span>
               </td>
               <td>
@@ -350,6 +391,10 @@ onMounted(load)
                 <strong class="mono detail-wrap">{{ selected.upstreamModel || '—' }}</strong>
               </div>
               <div class="detail-item">
+                <span>调用方密钥</span>
+                <strong>{{ selected.clientKeyName || '未命名密钥' }}</strong>
+              </div>
+              <div class="detail-item">
                 <span>调用方密钥 ID</span>
                 <strong class="mono detail-wrap">{{ selected.clientKeyId || '—' }}</strong>
               </div>
@@ -362,12 +407,27 @@ onMounted(load)
                 <strong>{{ formatDuration(selected.totalMs) }}</strong>
               </div>
               <div class="detail-item">
-                <span>用量</span>
-                <strong v-if="selected.usageKnown">
-                  {{ formatTokens(selected.inputTokens) }} / {{ formatTokens(selected.outputTokens) }} /
-                  {{ formatTokens(selected.cachedTokens) }} / {{ formatTokens(selected.totalTokens) }}
+                <span>输入 / 输出</span>
+                <strong>{{ formatTokens(selected.inputTokens) }} / {{ formatTokens(selected.outputTokens) }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>推理 / 总量</span>
+                <strong>{{ formatTokens(selected.reasoningTokens) }} / {{ formatTokens(selected.totalTokens) }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>推理强度</span>
+                <strong>{{ selected.reasoningEffort || '未设置' }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>缓存命中</span>
+                <strong :title="cacheTitle(selected)">
+                  {{ formatCacheHit(selected) }}
+                  <span v-if="selected.cachedTokens != null" class="muted small">（{{ formatTokens(selected.cachedTokens) }}）</span>
                 </strong>
-                <strong v-else class="muted">未知</strong>
+              </div>
+              <div class="detail-item">
+                <span>生成速率</span>
+                <strong>{{ formatThroughput(selected) }} tok/s</strong>
               </div>
             </div>
 
@@ -377,7 +437,9 @@ onMounted(load)
               <p v-else class="muted">无错误信息</p>
             </div>
 
-            <p class="muted small detail-hint">用量顺序：input / output / cached / total。日志不保存 prompt 与响应正文。</p>
+            <p class="muted small detail-hint">
+              速率按首个 token 之后的输出 token 计算；缓存命中为 cached / input。缺失字段显示“—”，不做估算。日志不保存 prompt 与响应正文。
+            </p>
           </div>
 
           <div class="modal-foot">

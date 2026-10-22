@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.RouteCandidate
+import dev.soven.llmgateway.proxy.ReasoningEffort
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.UsageParser
 import dev.soven.llmgateway.security.ClientKeyHasher
@@ -118,6 +119,7 @@ private suspend fun handleProxy(
     var channelId: String? = null
     var channelName: String? = null
     var upstreamModel: String? = null
+    var reasoningEffort: String? = null
     var statusCode = HttpStatusCode.InternalServerError.value
     var errorCode: String? = null
     var failureStage: FailureStage? = null
@@ -128,6 +130,7 @@ private suspend fun handleProxy(
     try {
         clientKey = authenticate(call, app)
         val requestJson = call.receiveLimitedJson(app.config.requestBodyLimitBytes)
+        reasoningEffort = ReasoningEffort.fromRequest(requestJson)
         val modelElement = requestJson["model"] as? JsonPrimitive
         alias = modelElement
             ?.takeIf { it.isString }
@@ -248,6 +251,7 @@ private suspend fun handleProxy(
             RequestLogRecord(
                 requestId = requestId,
                 clientKeyId = clientKey?.id,
+                clientKeyName = clientKey?.name,
                 alias = alias,
                 channelId = channelId,
                 channelName = channelName,
@@ -259,6 +263,8 @@ private suspend fun handleProxy(
                 inputTokens = usage?.input,
                 outputTokens = usage?.output,
                 cachedTokens = usage?.cached,
+                reasoningTokens = usage?.reasoning,
+                reasoningEffort = reasoningEffort,
                 totalTokens = usage?.total,
                 usageKnown = usage?.known ?: false,
                 errorCode = errorCode ?: state.errorCode,
