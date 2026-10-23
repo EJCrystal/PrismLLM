@@ -59,13 +59,6 @@ export const api = {
     request('/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request('/logout', { method: 'POST' }),
   me: () => request('/me'),
-  updateAccountAvatar: (payload) =>
-    request('/account/avatar', { method: 'PUT', body: JSON.stringify(payload) }),
-  changePassword: (payload) =>
-    request('/account/password', { method: 'PUT', body: JSON.stringify(payload) }),
-  getExchangeRates: () => request('/exchange-rates'),
-  getExposedModels: () => request('/exposed-models'),
-  getModelsDevCatalog: () => request('/models-dev'),
 
   listChannels: () => request('/channels'),
   createChannel: (payload) => request('/channels', { method: 'POST', body: JSON.stringify(payload) }),
@@ -73,10 +66,6 @@ export const api = {
     request(`/channels/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteChannel: (id) => request(`/channels/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listChannelModels: (id) => request(`/channels/${encodeURIComponent(id)}/models`),
-  discoverChannelModels: (payload) =>
-    request('/channels/model-discovery', { method: 'POST', body: JSON.stringify(payload) }),
-  getModelSuggestions: (models) =>
-    request('/model-suggestions', { method: 'POST', body: JSON.stringify({ models }) }),
   probeChannelProtocols: (id, model = null) =>
     request(`/channels/${encodeURIComponent(id)}/probe-protocols`, {
       method: 'POST',
@@ -96,16 +85,6 @@ export const api = {
     request(`/client-keys/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteClientKey: (id) =>
     request(`/client-keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-
-  listModelPrices: () => request('/model-prices'),
-  getModelPriceReference: (model) =>
-    request(`/model-prices/reference?model=${encodeURIComponent(model)}`),
-  createModelPrice: (payload) =>
-    request('/model-prices', { method: 'POST', body: JSON.stringify(payload) }),
-  updateModelPrice: (id, payload) =>
-    request(`/model-prices/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
-  deleteModelPrice: (id) =>
-    request(`/model-prices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   listRequestLogs: (limit = 100) => request(`/request-logs?limit=${limit}`),
 }

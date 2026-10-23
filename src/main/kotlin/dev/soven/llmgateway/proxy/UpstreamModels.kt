@@ -32,9 +32,7 @@ suspend fun fetchUpstreamModels(
     channel: ChannelRecord,
     credentialCipher: CredentialCipher,
     httpClient: HttpClient,
-    authorizedOnly: Boolean = true,
 ): List<UpstreamModel> {
-    if (authorizedOnly && channel.models.isEmpty()) return emptyList()
     val credential = runCatching {
         credentialCipher.decrypt(channel.credentialCiphertext, channel.credentialNonce)
     }.getOrElse {
@@ -46,19 +44,7 @@ suspend fun fetchUpstreamModels(
         )
     }
 
-    val models = fetchUpstreamModels(channel.baseUrl, credential, httpClient)
-    return if (authorizedOnly) models.filter { it.id in channel.models } else models
-}
-
-/**
- * 使用尚未保存的渠道地址和凭据发现上游模型，供新增渠道时预选授权模型。
- */
-suspend fun fetchUpstreamModels(
-    baseUrl: String,
-    credential: String,
-    httpClient: HttpClient,
-): List<UpstreamModel> {
-    val url = baseUrl.trimEnd('/') + "/models"
+    val url = channel.baseUrl.trimEnd('/') + "/models"
     try {
         return withTimeout(MODEL_LIST_TIMEOUT_MS) {
             val response = httpClient.get(url) {

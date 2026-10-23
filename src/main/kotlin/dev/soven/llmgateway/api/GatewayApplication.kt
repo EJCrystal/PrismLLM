@@ -4,10 +4,7 @@ import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.proxy.GatewayMetrics
 import dev.soven.llmgateway.proxy.RequestLogWriter
-import dev.soven.llmgateway.repo.ModelPriceRepository
 import dev.soven.llmgateway.proxy.UpstreamModelCatalog
-import dev.soven.llmgateway.proxy.ModelPriceReferenceService
-import dev.soven.llmgateway.proxy.CurrencyExchangeService
 import dev.soven.llmgateway.repo.AdminUserRepository
 import dev.soven.llmgateway.repo.AliasRepository
 import dev.soven.llmgateway.repo.ChannelRepository
@@ -68,11 +65,10 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val clientKeyRepository = ClientKeyRepository(databaseFactory.database)
     val adminUserRepository = AdminUserRepository(databaseFactory.database)
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
-    val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
     val credentialCipher = CredentialCipher(config.masterKey)
     val sessions = AdminSessions()
     val metrics = GatewayMetrics()
-    val requestLogWriter = RequestLogWriter(requestLogRepository, modelPriceRepository, scope)
+    val requestLogWriter = RequestLogWriter(requestLogRepository, scope)
 
     val httpClient = HttpClient(Java) {
         install(HttpTimeout) {
@@ -82,9 +78,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         }
     }
 
-    val modelCatalog = UpstreamModelCatalog(channelRepository)
-    val modelPriceReferenceService = ModelPriceReferenceService(httpClient)
-    val currencyExchangeService = CurrencyExchangeService(httpClient)
+    val modelCatalog = UpstreamModelCatalog(channelRepository, credentialCipher, httpClient)
 
     fun install(app: Application) {
         databaseFactory.migrate()

@@ -1,9 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
-import { copyText } from '../clipboard'
 import { notify } from '../toast'
-import { clearUpstreamModelCache } from '../upstreamModelCache'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 
@@ -13,20 +11,15 @@ const error = ref('')
 const showForm = ref(false)
 const saving = ref(false)
 const editingId = ref(null)
-const probing = ref(false)
-const probeResults = ref([])
-const availableModels = ref([])
-const authorizedModels = ref([])
-const canonicalModels = reactive({})
-const mappingSources = reactive({})
+const showModels = ref(false)
+const modelChannel = ref(null)
+const models = ref([])
 const modelsLoading = ref(false)
 const modelsError = ref('')
-const suggestionsLoading = ref(false)
-const suggestionsError = ref('')
-const modelSearch = ref('')
-const modelsLoaded = ref(false)
+const probing = ref(false)
+const probeResults = ref([])
+let modelRequestId = 0
 let probeRequestId = 0
-let modelsRequestId = 0
 let probeDerivedProtocols = false
 
 const form = reactive({
@@ -35,23 +28,11 @@ const form = reactive({
   credential: '',
   protocols: ['chat_completions'],
   enabled: true,
-  exposeUpstreamModels: true,
-})
-
-const aliasOnly = computed({
-  get: () => !form.exposeUpstreamModels,
-  set: (value) => {
-    form.exposeUpstreamModels = !value
-  },
 })
 
 watch(
   () => [form.baseUrl, form.credential],
   () => {
-    modelsRequestId += 1
-    availableModels.value = []
-    modelsLoaded.value = false
-    modelSearch.value = ''
     if (!probeResults.value.length && !probeDerivedProtocols) return
     probeResults.value = []
     if (probeDerivedProtocols) form.protocols = []
@@ -60,20 +41,43 @@ watch(
 )
 
 const enabledCount = computed(() => channels.value.filter((channel) => channel.enabled).length)
-const mappingCount = computed(() => authorizedModels.value.filter((modelId) => canonicalModels[modelId]?.trim()).length)
-const filteredModels = computed(() => {
-  const query = modelSearch.value.trim().toLowerCase()
-  if (!query) return availableModels.value
-  return availableModels.value.filter((model) => [model.id, model.ownedBy || '']
-    .some((value) => value.toLowerCase().includes(query)))
-})
 
-async function copyChannelId(id) {
+async function openModels(channel) {
+  modelChannel.value = channel
+  showModels.value = true
+  await loadModels()
+}
+
+async function loadModels() {
+  if (!modelChannel.value) return
+  const requestId = ++modelRequestId
+  const channelId = modelChannel.value.id
+  modelsLoading.value = true
+  modelsError.value = ''
   try {
-    await copyText(id)
-    notify('渠道 ID 已复制')
+    const response = await api.listChannelModels(channelId)
+    if (requestId !== modelRequestId) return
+    models.value = response?.data || []
+  } catch (cause) {
+    if (requestId !== modelRequestId) return
+    models.value = []
+    modelsError.value = cause.message
+  } finally {
+    if (requestId === modelRequestId) modelsLoading.value = false
+  }
+}
+
+function closeModels() {
+  showModels.value = false
+  modelRequestId += 1
+}
+
+async function copyModel(id) {
+  try {
+    await navigator.clipboard.writeText(id)
+    notify('模型名已复制')
   } catch {
-    window.prompt('复制渠道 ID', id)
+    window.prompt('复制模型名', id)
   }
 }
 
@@ -95,23 +99,12 @@ function openCreate() {
   probing.value = false
   probeResults.value = []
   probeDerivedProtocols = false
-  modelsRequestId += 1
-  availableModels.value = []
-  authorizedModels.value = []
-  clearMappings()
-  modelsLoading.value = false
-  modelsError.value = ''
-  suggestionsLoading.value = false
-  suggestionsError.value = ''
-  modelsLoaded.value = false
-  modelSearch.value = ''
   Object.assign(form, {
     name: '',
     baseUrl: '',
     credential: '',
     protocols: ['chat_completions'],
     enabled: true,
-    exposeUpstreamModels: true,
   })
   showForm.value = true
 }
@@ -122,142 +115,14 @@ function openEdit(channel) {
   probing.value = false
   probeResults.value = []
   probeDerivedProtocols = false
-  modelsRequestId += 1
-  availableModels.value = []
-  authorizedModels.value = [...(channel.models || [])]
-  clearMappings()
-  ;(channel.modelMappings || []).forEach((mapping) => {
-    if (mapping.canonicalModelId) {
-      canonicalModels[mapping.upstreamModel] = mapping.canonicalModelId
-      mappingSources[mapping.upstreamModel] = mapping.mappingSource || 'manual'
-    }
-  })
-  modelsLoading.value = false
-  modelsError.value = ''
-  suggestionsLoading.value = false
-  suggestionsError.value = ''
-  modelsLoaded.value = false
-  modelSearch.value = ''
   Object.assign(form, {
     name: channel.name,
     baseUrl: channel.baseUrl,
     credential: '',
     protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
     enabled: channel.enabled,
-    exposeUpstreamModels: channel.exposeUpstreamModels !== false,
   })
   showForm.value = true
-}
-
-async function loadAvailableModels() {
-  const baseUrl = form.baseUrl.trim()
-  const credential = form.credential.trim()
-  if (!baseUrl) {
-    notify('请先填写基础地址', 'warning')
-    return
-  }
-  if (!editingId.value && !credential) {
-    notify('新建渠道需要填写上游凭据才能加载模型', 'warning')
-    return
-  }
-  const requestId = ++modelsRequestId
-  modelsLoading.value = true
-  modelsError.value = ''
-  try {
-    const response = await api.discoverChannelModels({
-      baseUrl,
-      credential: credential || null,
-      channelId: editingId.value,
-    })
-    if (requestId !== modelsRequestId) return
-    availableModels.value = response?.data || []
-    availableModels.value.forEach((model) => {
-      if (model.authorized && model.canonicalModelId && !canonicalModels[model.id]?.trim()) {
-        canonicalModels[model.id] = model.canonicalModelId
-        mappingSources[model.id] = model.mappingSource || 'manual'
-      }
-    })
-    if (authorizedModels.value.length === 0) {
-      authorizedModels.value = editingId.value
-        ? availableModels.value.filter((model) => model.authorized).map((model) => model.id)
-        : availableModels.value.map((model) => model.id)
-    }
-    modelsLoaded.value = true
-  } catch (cause) {
-    if (requestId === modelsRequestId) modelsError.value = cause.message
-  } finally {
-    if (requestId === modelsRequestId) modelsLoading.value = false
-  }
-}
-
-function toggleModel(modelId) {
-  const selected = new Set(authorizedModels.value)
-  if (selected.has(modelId)) selected.delete(modelId)
-  else selected.add(modelId)
-  authorizedModels.value = [...selected]
-}
-
-async function autoMatchModels() {
-  if (authorizedModels.value.length === 0) {
-    notify('请先选择授权模型', 'warning')
-    return
-  }
-  suggestionsLoading.value = true
-  suggestionsError.value = ''
-  try {
-    const response = await api.getModelSuggestions(authorizedModels.value)
-    if (!response?.loaded) {
-      suggestionsError.value = response?.error || 'models.dev 目录暂不可用'
-      return
-    }
-    let matched = 0
-    ;(response.data || []).forEach((item) => {
-      if (canonicalModels[item.model]?.trim()) return
-      const candidate = item.candidates?.[0]
-      if (candidate) {
-        // id 是某个具体服务商的模型名；规范映射必须保存 canonical_model_id，
-        // 否则会把渠道私有前缀重新暴露给调用方。
-        canonicalModels[item.model] = candidate.canonicalId || candidate.id
-        mappingSources[item.model] = 'models_dev'
-        matched += 1
-      }
-    })
-    notify(
-      matched > 0 ? `已匹配 ${matched} 个规范 ID` : '没有找到可用的规范 ID',
-      matched > 0 ? 'success' : 'warning',
-    )
-  } catch (cause) {
-    suggestionsError.value = cause.message
-  } finally {
-    suggestionsLoading.value = false
-  }
-}
-
-function clearMappings() {
-  Object.keys(canonicalModels).forEach((key) => delete canonicalModels[key])
-  Object.keys(mappingSources).forEach((key) => delete mappingSources[key])
-}
-
-function mappingSourceLabel(source) {
-  if (source === 'models_dev') return 'models.dev'
-  if (source === 'manual') return '手动'
-  return ''
-}
-
-function mappedCount(channel) {
-  return (channel.modelMappings || []).filter((mapping) => mapping.canonicalModelId).length
-}
-
-function selectAllModels() {
-  authorizedModels.value = availableModels.value.map((model) => model.id)
-}
-
-function clearAllModels() {
-  authorizedModels.value = []
-}
-
-function isAuthorized(modelId) {
-  return authorizedModels.value.includes(modelId)
 }
 
 function probeState(result) {
@@ -324,10 +189,6 @@ async function save() {
     notify('至少选择一个支持协议', 'error')
     return
   }
-  if (authorizedModels.value.length === 0) {
-    notify('请至少授权一个上游模型', 'error')
-    return
-  }
 
   saving.value = true
   try {
@@ -338,18 +199,9 @@ async function save() {
       authType: 'bearer',
       protocols: form.protocols,
       enabled: form.enabled,
-      modelMappings: authorizedModels.value.map((upstreamModel) => ({
-        upstreamModel,
-        canonicalModelId: canonicalModels[upstreamModel]?.trim() || null,
-        mappingSource: canonicalModels[upstreamModel]?.trim()
-          ? (mappingSources[upstreamModel] || 'manual')
-          : null,
-      })),
-      exposeUpstreamModels: form.exposeUpstreamModels,
     }
     if (editingId.value) {
       await api.updateChannel(editingId.value, payload)
-      clearUpstreamModelCache(editingId.value)
       notify('渠道已更新')
     } else {
       await api.createChannel(payload)
@@ -372,7 +224,6 @@ async function remove(channel) {
   if (!window.confirm(`确定删除渠道「${channel.name}」？`)) return
   try {
     await api.deleteChannel(channel.id)
-    clearUpstreamModelCache(channel.id)
     notify('渠道已删除')
     await load()
   } catch (cause) {
@@ -394,7 +245,7 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>上游接入点</h2>
-        <p>一个渠道对应一个 OpenAI 兼容接入点，可选择支持 Chat Completions、Responses 或二者皆可。</p>
+        <p>一个渠道对应一个 OpenAI 兼容接入点，可选择支持 Chat Completions 和/或 Responses。</p>
       </div>
       <button type="button" class="button primary" @click="openCreate">
         <Icon name="plus" :size="17" />
@@ -443,7 +294,6 @@ onMounted(load)
               <th>名称</th>
               <th>基础地址</th>
               <th>协议</th>
-              <th>授权模型</th>
               <th>状态</th>
               <th>凭据</th>
               <th>更新时间</th>
@@ -454,36 +304,13 @@ onMounted(load)
             <tr v-for="channel in channels" :key="channel.id">
               <td>
                 <div class="primary-cell">{{ channel.name }}</div>
-                <div class="channel-id-cell">
-                  <span class="mono muted small">{{ channel.id }}</span>
-                  <button
-                    type="button"
-                    class="icon-button list-copy"
-                    title="复制渠道 ID"
-                    @click="copyChannelId(channel.id)"
-                  >
-                    <Icon name="copy" :size="12" />
-                  </button>
-                </div>
+                <div class="mono muted small">{{ channel.id }}</div>
               </td>
               <td><span class="mono address">{{ channel.baseUrl }}</span></td>
               <td>
                 <div class="protocol-badges">
                   <span v-for="protocol in channel.protocols" :key="protocol" class="badge info">
                     {{ protocol }}
-                  </span>
-                </div>
-              </td>
-              <td>
-                <div class="channel-exposure-badges">
-                  <span class="badge" :class="channel.models?.length ? 'info' : 'warning'">
-                    {{ channel.models?.length || 0 }} 个
-                  </span>
-                  <span class="badge" :class="channel.exposeUpstreamModels === false ? 'neutral' : 'info'">
-                    {{ channel.exposeUpstreamModels === false ? '仅别名' : '可直连' }}
-                  </span>
-                  <span v-if="mappedCount(channel)" class="badge success">
-                    规范 {{ mappedCount(channel) }}
                   </span>
                 </div>
               </td>
@@ -500,6 +327,9 @@ onMounted(load)
               <td class="muted">{{ formatTime(channel.updatedAt) }}</td>
               <td class="actions-col">
                 <div class="row-actions">
+                  <button type="button" class="icon-button" title="查看模型" @click="openModels(channel)">
+                    <Icon name="models" :size="16" />
+                  </button>
                   <button type="button" class="icon-button" title="编辑" @click="openEdit(channel)">
                     <Icon name="edit" :size="16" />
                   </button>
@@ -567,82 +397,12 @@ onMounted(load)
           />
           <small>v1 只支持 Bearer。凭据会加密存储，保存后不再回显。</small>
         </label>
-        <div class="field channel-model-auth">
-          <div class="channel-model-auth-head">
-            <div>
-              <span>授权上游模型</span>
-              <small>只有选中的模型会进入模型目录、别名路由和直连路由。</small>
-            </div>
-            <span class="badge info">{{ authorizedModels.length }} 个已选</span>
-          </div>
-          <div class="channel-model-auth-toolbar">
-            <button type="button" class="button subtle mini" :disabled="modelsLoading" @click="loadAvailableModels">
-              {{ modelsLoading ? '读取中…' : (modelsLoaded ? '刷新上游模型' : '加载上游模型') }}
-            </button>
-            <button v-if="authorizedModels.length" type="button" class="button ghost mini" :disabled="suggestionsLoading" @click="autoMatchModels">
-              {{ suggestionsLoading ? '匹配中…' : '自动匹配规范 ID' }}
-            </button>
-            <button v-if="availableModels.length" type="button" class="button ghost mini" @click="selectAllModels">全选</button>
-            <button v-if="availableModels.length" type="button" class="button ghost mini" @click="clearAllModels">清空</button>
-            <span v-if="!editingId && !modelsLoaded" class="muted small">填写基础地址和凭据后加载</span>
-          </div>
-          <div v-if="modelsError" class="callout danger">{{ modelsError }}</div>
-          <div v-if="availableModels.length" class="channel-model-auth-body">
-            <div class="search-box channel-model-auth-search">
-              <Icon name="search" :size="15" />
-              <input v-model="modelSearch" placeholder="搜索模型" />
-            </div>
-            <div class="channel-model-auth-list">
-              <label v-for="model in filteredModels" :key="model.id" class="channel-model-option">
-                <input type="checkbox" :checked="isAuthorized(model.id)" @change="toggleModel(model.id)" />
-                <span><code>{{ model.id }}</code><small v-if="model.ownedBy">上游 owned_by: {{ model.ownedBy }}</small></span>
-              </label>
-              <p v-if="filteredModels.length === 0" class="muted small channel-model-auth-empty">没有匹配的模型。</p>
-            </div>
-          </div>
-          <div v-else-if="authorizedModels.length" class="channel-model-auth-selected">
-            <span v-for="modelId in authorizedModels" :key="modelId" class="badge neutral">{{ modelId }}</span>
-          </div>
-          <div v-else class="channel-model-auth-placeholder">填写基础地址和凭据，点击“加载上游模型”选择允许使用的模型。</div>
-        </div>
-        <div v-if="authorizedModels.length" class="channel-canonical-section">
-          <div class="channel-model-auth-head">
-            <div>
-              <span>规范 ID 映射</span>
-              <small>对外模型 ID 优先使用规范 ID；留空则使用上游模型 ID。建议采用 models.dev 的 canonical ID。</small>
-            </div>
-            <span class="badge info">{{ mappingCount }} 个已映射</span>
-          </div>
-          <div v-if="suggestionsError" class="callout danger">{{ suggestionsError }}</div>
-          <div class="channel-canonical-list">
-            <label v-for="modelId in authorizedModels" :key="modelId" class="channel-canonical-row">
-              <code>{{ modelId }}</code>
-              <input
-                v-model="canonicalModels[modelId]"
-                placeholder="留空则使用上游 ID"
-                autocomplete="off"
-                @input="mappingSources[modelId] = 'manual'"
-              />
-              <span v-if="canonicalModels[modelId]?.trim() && mappingSources[modelId]" class="badge info">
-                {{ mappingSourceLabel(mappingSources[modelId]) }}
-              </span>
-            </label>
-          </div>
-        </div>
         <label class="switch-row">
           <input v-model="form.enabled" type="checkbox" />
           <span class="switch"></span>
           <span>
             <strong>启用渠道</strong>
             <small>停用后不会参与新的别名路由。</small>
-          </span>
-        </label>
-        <label class="switch-row">
-          <input v-model="aliasOnly" type="checkbox" />
-          <span class="switch"></span>
-          <span>
-            <strong>仅通过别名暴露</strong>
-            <small>开启后，该渠道模型不进入 /v1/models 直连列表，也不能用上游模型名直接调用；别名路由仍然可用。</small>
           </span>
         </label>
       </form>
@@ -654,5 +414,32 @@ onMounted(load)
       </template>
     </Modal>
 
+    <Modal v-if="showModels" :title="`${modelChannel?.name || ''} · 上游模型`" wide @close="closeModels">
+      <div v-if="modelsLoading" class="loading-state">
+        <span class="spinner"></span>
+        正在请求上游 <code>/models</code>…
+      </div>
+      <div v-else-if="modelsError" class="callout danger">{{ modelsError }}</div>
+      <div v-else-if="models.length === 0" class="empty-state compact">
+        <h3>没有返回模型</h3>
+        <p>上游返回了空列表，或该渠道不支持 <code>/models</code>。</p>
+      </div>
+      <div v-else class="model-list">
+        <div v-for="model in models" :key="model.id" class="model-item">
+          <div class="model-item-name">
+            <code>{{ model.id }}</code>
+            <span v-if="model.ownedBy" class="muted small">{{ model.ownedBy }}</span>
+          </div>
+          <button type="button" class="button subtle small" @click="copyModel(model.id)">复制</button>
+        </div>
+      </div>
+      <template #footer>
+        <span class="muted small model-count">{{ models.length ? `共 ${models.length} 个模型` : '' }}</span>
+        <button type="button" class="button ghost" @click="closeModels">关闭</button>
+        <button type="button" class="button primary" :disabled="modelsLoading" @click="loadModels">
+          {{ modelsLoading ? '请求中…' : '刷新' }}
+        </button>
+      </template>
+    </Modal>
   </section>
 </template>

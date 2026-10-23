@@ -19,7 +19,6 @@ object Channels : Table("channels") {
     val authType = varchar("auth_type", 20)
     val protocols = varchar("protocols", 100)
     val enabled = bool("enabled")
-    val exposeUpstreamModels = bool("expose_upstream_models").default(true)
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
 
@@ -62,19 +61,6 @@ object AliasCandidates : Table("alias_candidates") {
 }
 
 /**
- * 渠道显式授权的上游模型。只有这里的模型参与目录、直连路由和别名路由。
- */
-object ChannelModels : Table("channel_models") {
-    val channelId = varchar("channel_id", 36).references(Channels.id, onDelete = ReferenceOption.CASCADE)
-    val upstreamModel = varchar("upstream_model", 200)
-    val canonicalModelId = varchar("canonical_model_id", 200).nullable()
-    val mappingSource = varchar("mapping_source", 32).nullable()
-    val createdAt = long("created_at")
-
-    override val primaryKey = PrimaryKey(channelId, upstreamModel)
-}
-
-/**
  * 调用方密钥表。
  *
  * @author 文杰
@@ -93,29 +79,6 @@ object ClientKeys : Table("client_keys") {
 }
 
 /**
- * 渠道内上游模型的计费单价。单价按每百万 token 计算。
- *
- * @author 文杰
- * @since 2026-10-22
- */
-object ModelPrices : Table("model_prices") {
-    val id = varchar("id", 36)
-    val channelId = varchar("channel_id", 36).references(Channels.id, onDelete = ReferenceOption.CASCADE)
-    val upstreamModel = varchar("upstream_model", 200)
-    val currency = varchar("currency", 8)
-    val inputPricePerMillion = decimal("input_price_per_million", 18, 8)
-    val outputPricePerMillion = decimal("output_price_per_million", 18, 8)
-    val cachedInputPricePerMillion = decimal("cached_input_price_per_million", 18, 8).nullable()
-    val createdAt = long("created_at")
-    val updatedAt = long("updated_at")
-
-    override val primaryKey = PrimaryKey(id)
-    init {
-        uniqueIndex(channelId, upstreamModel)
-    }
-}
-
-/**
  * 管理员账号表。
  *
  * @author 文杰
@@ -125,7 +88,6 @@ object AdminUsers : Table("admin_users") {
     val id = varchar("id", 36)
     val username = varchar("username", 100).uniqueIndex()
     val passwordHash = text("password_hash")
-    val avatarDataUrl = text("avatar_data_url").nullable()
     val createdAt = long("created_at")
 
     override val primaryKey = PrimaryKey(id)
@@ -157,11 +119,6 @@ object RequestLogs : Table("request_logs") {
     val reasoningEffort = varchar("reasoning_effort", 40).nullable()
     val totalTokens = long("total_tokens").nullable()
     val usageKnown = bool("usage_known")
-    val costAmount = decimal("cost_amount", 18, 8).nullable()
-    val costCurrency = varchar("cost_currency", 8).nullable()
-    val inputPricePerMillion = decimal("input_price_per_million", 18, 8).nullable()
-    val outputPricePerMillion = decimal("output_price_per_million", 18, 8).nullable()
-    val cachedInputPricePerMillion = decimal("cached_input_price_per_million", 18, 8).nullable()
     val errorCode = varchar("error_code", 100).nullable()
     val failureStage = varchar("failure_stage", 20).nullable()
     val errorMessage = text("error_message").nullable()

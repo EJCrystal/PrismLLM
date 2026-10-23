@@ -1,9 +1,7 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.domain.ChannelRecord
-import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
-import dev.soven.llmgateway.proxy.CatalogModel
 import dev.soven.llmgateway.proxy.fetchUpstreamModels
 import dev.soven.llmgateway.proxy.probeUpstreamProtocols
 import dev.soven.llmgateway.repo.NewCandidate
@@ -24,11 +22,8 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.route
-import java.math.BigDecimal
-import java.math.RoundingMode
 import java.nio.file.Path
 import java.security.MessageDigest
-import java.util.Base64
 
 /**
  * 管理面 API。所有写操作要求会话 Cookie 与 CSRF Token 同时有效。
@@ -73,127 +68,20 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     extensions = mapOf("SameSite" to "Strict"),
                 ),
             )
-            call.respond(MeResponse(user.username, user.avatarDataUrl))
+            call.respond(MeResponse(user.username))
         }
 
         post("/logout") {
             call.requireAdmin(app)
             app.sessions.remove(call.request.cookies["gw_session"])
-            call.clearAdminCookies(app)
+            call.response.cookies.append(Cookie("gw_session", "", maxAge = 0, path = "/", httpOnly = true))
+            call.response.cookies.append(Cookie("gw_csrf", "", maxAge = 0, path = "/"))
             call.respond(HttpStatusCode.NoContent)
         }
 
         get("/me") {
             val session = call.requireAdmin(app)
-            val user = app.adminUserRepository.findByUsername(session.username)
-                ?: throw unauthorized("管理员账号不存在")
-            call.respond(MeResponse(user.username, user.avatarDataUrl))
-        }
-
-        put("/account/avatar") {
-            val session = call.requireAdmin(app)
-            val request = call.receive<AvatarRequest>()
-            val avatarDataUrl = validateAvatarDataUrl(request.avatarDataUrl)
-            val user = app.adminUserRepository.updateAvatar(session.username, avatarDataUrl)
-                ?: throw notFound("admin_not_found", "管理员账号不存在")
-            call.respond(MeResponse(user.username, user.avatarDataUrl))
-        }
-
-        put("/account/password") {
-            val session = call.requireAdmin(app)
-            val request = call.receive<ChangePasswordRequest>()
-            val user = app.adminUserRepository.findByUsername(session.username)
-                ?: throw notFound("admin_not_found", "管理员账号不存在")
-            if (!PasswordHasher.verify(request.currentPassword, user.passwordHash)) {
-                throw badRequest("invalid_current_password", "当前密码不正确")
-            }
-            if (request.newPassword.length !in 8..128) {
-                throw badRequest("invalid_password", "新密码长度必须在 8 到 128 个字符之间")
-            }
-            if (request.newPassword == request.currentPassword) {
-                throw badRequest("password_unchanged", "新密码不能与当前密码相同")
-            }
-            if (!app.adminUserRepository.updatePassword(session.username, PasswordHasher.hash(request.newPassword))) {
-                throw notFound("admin_not_found", "管理员账号不存在")
-            }
-            app.sessions.removeAllForUsername(session.username)
-            call.clearAdminCookies(app)
-            call.respond(HttpStatusCode.NoContent)
-        }
-
-        get("/exchange-rates") {
-            call.requireAdmin(app)
-            call.respond(app.currencyExchangeService.getRates())
-        }
-
-        get("/exposed-models") {
-            call.requireAdmin(app)
-            call.respond(
-                ExposedModelsResponse(
-                    exposeUpstreamModels = app.config.exposeUpstreamModels,
-                    data = listExposedModels(app).map {
-                        ExposedModelResponse(
-                            id = it.id,
-                            source = it.source.value,
-                            canonicalModelId = it.canonicalModelId,
-                            upstreamModels = it.upstreamModels,
-                            channelNames = it.channelNames,
-                        )
-                    },
-                ),
-            )
-        }
-
-        post("/model-suggestions") {
-            call.requireAdmin(app)
-            val request = call.receive<ModelSuggestionRequest>()
-            val models = request.models.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-            if (models.size > MAX_MODEL_SUGGESTIONS) {
-                throw badRequest("too_many_models", "一次最多匹配 $MAX_MODEL_SUGGESTIONS 个模型")
-            }
-            val snapshot = app.modelPriceReferenceService.catalogSnapshot()
-            if (!snapshot.loaded) {
-                call.respond(
-                    ModelSuggestionsResponse(
-                        loaded = false,
-                        error = snapshot.error,
-                        data = emptyList(),
-                    ),
-                )
-            } else {
-                call.respond(
-                    ModelSuggestionsResponse(
-                        loaded = true,
-                        data = models.map { model ->
-                            ModelSuggestionItem(
-                                model = model,
-                                candidates = app.modelPriceReferenceService.findCatalogMatches(model).map { it.toResponse() },
-                            )
-                        },
-                    ),
-                )
-            }
-        }
-
-        get("/models-dev") {
-            call.requireAdmin(app)
-            val snapshot = app.modelPriceReferenceService.catalogSnapshot()
-            val matches = if (snapshot.loaded) {
-                listExposedModels(app).associate { model ->
-                    model.id to app.modelPriceReferenceService.findCatalogMatches(model.id).map { it.toResponse() }
-                }
-            } else {
-                emptyMap()
-            }
-            call.respond(
-                ModelsDevCatalogResponse(
-                    source = app.modelPriceReferenceService.catalogSource,
-                    loaded = snapshot.loaded,
-                    error = snapshot.error,
-                    data = snapshot.models.map { it.toResponse() },
-                    matches = matches,
-                ),
-            )
+            call.respond(MeResponse(session.username))
         }
 
         get("/channels") {
@@ -205,62 +93,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少渠道 id")
             val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
-            val mappingByUpstream = channel.modelMappings.associateBy { it.upstreamModel }
-            val models = fetchUpstreamModels(channel, app.credentialCipher, app.httpClient, authorizedOnly = false)
-                .map {
-                    val mapping = mappingByUpstream[it.id]
-                    ChannelModelResponse(
-                        id = it.id,
-                        ownedBy = it.ownedBy,
-                        authorized = it.id in channel.models,
-                        canonicalModelId = mapping?.canonicalModelId,
-                        mappingSource = mapping?.mappingSource,
-                    )
-                }
-            call.respond(ChannelModelsResponse(data = models))
-        }
-
-        post("/channels/model-discovery") {
-            call.requireAdmin(app)
-            val request = call.receive<ChannelModelDiscoveryRequest>()
-            val baseUrl = request.baseUrl.trim()
-            if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
-                throw badRequest("invalid_channel", "渠道地址必须以 http:// 或 https:// 开头")
-            }
-            val saved = request.channelId
-                ?.takeIf { it.isNotBlank() }
-                ?.let { app.channelRepository.find(it) ?: throw notFound("channel_not_found", "渠道不存在") }
-            val credential = request.credential
-                ?.takeIf { it.isNotBlank() }
-                ?: saved?.let { channel ->
-                    if (baseUrl.trimEnd('/') != channel.baseUrl.trimEnd('/')) {
-                        throw badRequest("invalid_channel", "基础地址已变更，请重新输入上游凭据")
-                    }
-                    runCatching {
-                        app.credentialCipher.decrypt(channel.credentialCiphertext, channel.credentialNonce)
-                    }.getOrElse {
-                        throw GatewayException(
-                            HttpStatusCode.BadGateway,
-                            "upstream_credential_invalid",
-                            "渠道凭据无法解密",
-                            retryable = false,
-                        )
-                    }
-                }
-                ?: throw badRequest("invalid_channel", "发现上游模型需要提供凭据")
-            val authorized = saved?.models?.toSet().orEmpty()
-            val mappingByUpstream = saved?.modelMappings?.associateBy { it.upstreamModel }.orEmpty()
-            val models = fetchUpstreamModels(baseUrl, credential, app.httpClient)
-                .map {
-                    val mapping = mappingByUpstream[it.id]
-                    ChannelModelResponse(
-                        id = it.id,
-                        ownedBy = it.ownedBy,
-                        authorized = it.id in authorized,
-                        canonicalModelId = mapping?.canonicalModelId,
-                        mappingSource = mapping?.mappingSource,
-                    )
-                }
+            val models = fetchUpstreamModels(channel, app.credentialCipher, app.httpClient)
+                .map { ChannelModelResponse(id = it.id, ownedBy = it.ownedBy) }
             call.respond(ChannelModelsResponse(data = models))
         }
 
@@ -310,8 +144,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 authType = request.authType,
                 protocols = protocols,
                 enabled = request.enabled,
-                modelMappings = normalizeModelMappings(request).orEmpty(),
-                exposeUpstreamModels = request.exposeUpstreamModels ?: true,
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
         }
@@ -326,25 +158,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val sameName = app.channelRepository.findByName(request.name)
             if (sameName != null && sameName.id != id) throw conflict("channel_name_exists", "渠道名称已存在")
             val encrypted = request.credential?.takeIf { it.isNotBlank() }?.let(app.credentialCipher::encrypt)
-            val requestedMappings = normalizeModelMappings(request)
-            val modelMappings = if (request.modelMappings == null && request.models != null && requestedMappings != null) {
-                val existingByUpstream = existing.modelMappings.associateBy { it.upstreamModel }
-                requestedMappings.map { existingByUpstream[it.upstreamModel] ?: it }
-            } else {
-                requestedMappings
-            }
-            if (modelMappings != null) {
-                val removed = existing.models.toSet() - modelMappings.map { it.upstreamModel }.toSet()
-                removed.forEach { model ->
-                    val aliases = app.aliasRepository.findAliasNamesUsingModel(existing.id, model)
-                    if (aliases.isNotEmpty()) {
-                        throw conflict(
-                            "channel_model_in_use",
-                            "模型「$model」仍被别名「${aliases.joinToString("、")}」引用，请先调整别名候选",
-                        )
-                    }
-                }
-            }
             val updated = app.channelRepository.update(
                 id = existing.id,
                 name = request.name,
@@ -353,8 +166,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 authType = request.authType,
                 protocols = protocols,
                 enabled = request.enabled,
-                modelMappings = modelMappings,
-                exposeUpstreamModels = request.exposeUpstreamModels,
             ) ?: throw notFound("channel_not_found", "渠道不存在")
             call.respond(updated.toResponse())
         }
@@ -384,7 +195,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val record = app.aliasRepository.create(
                 alias = request.alias,
                 enabled = request.enabled,
-                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel.trim()) },
+                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel) },
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
         }
@@ -400,7 +211,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 id = id,
                 alias = request.alias,
                 enabled = request.enabled,
-                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel.trim()) },
+                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel) },
             ) ?: throw notFound("alias_not_found", "模型别名不存在")
             call.respond(record.toResponse())
         }
@@ -470,67 +281,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(HttpStatusCode.NoContent)
         }
 
-        get("/model-prices/reference") {
-            call.requireAdmin(app)
-            val model = call.request.queryParameters["model"]?.trim()
-            if (model.isNullOrEmpty()) throw badRequest("missing_model", "缺少模型名称")
-            val reference = app.modelPriceReferenceService.lookup(model)
-                ?: throw notFound("reference_price_not_found", "未在参考价库中找到模型「$model」的单价，可直接手动输入")
-            call.respond(reference.toResponse())
-        }
-
-        get("/model-prices") {
-            call.requireAdmin(app)
-            call.respond(app.modelPriceRepository.list().map { it.toResponse() })
-        }
-
-        post("/model-prices") {
-            call.requireAdmin(app)
-            val request = call.receive<ModelPriceRequest>()
-            val price = validateModelPrice(app, request)
-            if (app.modelPriceRepository.find(price.channelId, price.upstreamModel) != null) {
-                throw conflict("model_price_exists", "该渠道和上游模型的计费单价已存在")
-            }
-            val record = app.modelPriceRepository.create(
-                channelId = price.channelId,
-                upstreamModel = price.upstreamModel,
-                currency = price.currency,
-                inputPricePerMillion = price.input,
-                outputPricePerMillion = price.output,
-                cachedInputPricePerMillion = price.cached,
-            )
-            call.respond(HttpStatusCode.Created, record.toResponse())
-        }
-
-        put("/model-prices/{id}") {
-            call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少价格 id")
-            val request = call.receive<ModelPriceRequest>()
-            val price = validateModelPrice(app, request)
-            app.modelPriceRepository.findById(id) ?: throw notFound("model_price_not_found", "计费单价不存在")
-            val duplicate = app.modelPriceRepository.find(price.channelId, price.upstreamModel)
-            if (duplicate != null && duplicate.id != id) {
-                throw conflict("model_price_exists", "该渠道和上游模型的计费单价已存在")
-            }
-            val updated = app.modelPriceRepository.update(
-                id = id,
-                channelId = price.channelId,
-                upstreamModel = price.upstreamModel,
-                currency = price.currency,
-                inputPricePerMillion = price.input,
-                outputPricePerMillion = price.output,
-                cachedInputPricePerMillion = price.cached,
-            ) ?: throw notFound("model_price_not_found", "计费单价不存在")
-            call.respond(updated.toResponse())
-        }
-
-        delete("/model-prices/{id}") {
-            call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少价格 id")
-            if (!app.modelPriceRepository.delete(id)) throw notFound("model_price_not_found", "计费单价不存在")
-            call.respond(HttpStatusCode.NoContent)
-        }
-
         get("/request-logs") {
             call.requireAdmin(app)
             val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 100
@@ -577,48 +327,6 @@ private fun ApplicationCall.requireAdmin(app: GatewayApplication): AdminSessions
     return session
 }
 
-private fun ApplicationCall.clearAdminCookies(app: GatewayApplication) {
-    response.cookies.append(
-        Cookie("gw_session", "", maxAge = 0, path = "/", httpOnly = true, secure = app.config.cookieSecure),
-    )
-    response.cookies.append(
-        Cookie("gw_csrf", "", maxAge = 0, path = "/", secure = app.config.cookieSecure),
-    )
-}
-
-private fun validateAvatarDataUrl(value: String?): String? {
-    if (value.isNullOrBlank()) return null
-    if (value.length > MAX_AVATAR_DATA_URL_CHARS) {
-        throw badRequest("avatar_too_large", "头像数据不能超过 600KB")
-    }
-    val prefix = AVATAR_DATA_URL_PREFIXES.firstOrNull(value::startsWith)
-        ?: throw badRequest("invalid_avatar", "头像仅支持 PNG、JPEG 或 WebP")
-    val bytes = runCatching { Base64.getDecoder().decode(value.removePrefix(prefix)) }
-        .getOrElse { throw badRequest("invalid_avatar", "头像数据格式无效") }
-    if (bytes.isEmpty() || bytes.size > MAX_AVATAR_BYTES) {
-        throw badRequest("avatar_too_large", "头像文件不能超过 400KB")
-    }
-    val validMagic = when (prefix) {
-        "data:image/png;base64," -> bytes.size >= 8 && bytes.copyOfRange(0, 8).contentEquals(PNG_MAGIC)
-        "data:image/jpeg;base64," -> bytes.size >= 3 && bytes.copyOfRange(0, 3).contentEquals(JPEG_MAGIC)
-        else -> bytes.size >= 12 &&
-            bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) == "RIFF" &&
-            bytes.copyOfRange(8, 12).toString(Charsets.US_ASCII) == "WEBP"
-    }
-    if (!validMagic) throw badRequest("invalid_avatar", "头像内容与图片格式不匹配")
-    return value
-}
-
-private val AVATAR_DATA_URL_PREFIXES = listOf(
-    "data:image/png;base64,",
-    "data:image/jpeg;base64,",
-    "data:image/webp;base64,",
-)
-private val PNG_MAGIC = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
-private val JPEG_MAGIC = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte())
-private const val MAX_AVATAR_DATA_URL_CHARS = 600_000
-private const val MAX_AVATAR_BYTES = 400_000
-
 private fun parseProtocols(values: List<String>): Set<GatewayProtocol> {
     if (values.isEmpty()) throw badRequest("invalid_channel", "渠道至少需要支持一个协议")
     return values.map { value ->
@@ -638,59 +346,6 @@ private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean
     }
 }
 
-private fun normalizeModelMappings(request: ChannelRequest): List<ChannelModelRecord>? {
-    val raw = when {
-        request.modelMappings != null -> request.modelMappings.map {
-            ChannelModelRecord(
-                upstreamModel = it.upstreamModel,
-                canonicalModelId = it.canonicalModelId,
-                mappingSource = it.mappingSource,
-            )
-        }
-        request.models != null -> request.models.map { ChannelModelRecord(upstreamModel = it) }
-        else -> return null
-    }
-    val normalized = raw.map { mapping ->
-        val upstreamModel = mapping.upstreamModel.trim()
-        if (upstreamModel.isEmpty() || upstreamModel.length > 200) {
-            throw badRequest("invalid_channel", "上游模型名长度必须在 1..200 之间")
-        }
-        val canonicalModelId = mapping.canonicalModelId?.trim()?.takeIf { it.isNotEmpty() }
-        if (canonicalModelId != null && canonicalModelId.length > 200) {
-            throw badRequest("invalid_channel", "规范 ID 长度不能超过 200 个字符")
-        }
-        val mappingSource = if (canonicalModelId == null) {
-            null
-        } else {
-            mapping.mappingSource?.trim()?.takeIf { it.isNotEmpty() } ?: MAPPING_SOURCE_MANUAL
-        }
-        if (mappingSource != null && mappingSource !in MAPPING_SOURCES) {
-            throw badRequest("invalid_channel", "未知的映射来源: $mappingSource")
-        }
-        ChannelModelRecord(upstreamModel, canonicalModelId, mappingSource)
-    }.distinctBy { it.upstreamModel }
-
-    val duplicateCanonicalIds = normalized
-        .mapNotNull { it.canonicalModelId }
-        .groupingBy { it.lowercase() }
-        .eachCount()
-        .filterValues { it > 1 }
-        .keys
-    if (duplicateCanonicalIds.isNotEmpty()) {
-        throw badRequest("invalid_channel", "同一渠道内规范 ID 不能重复: ${duplicateCanonicalIds.joinToString("、")}")
-    }
-    return normalized
-}
-
-private fun CatalogModel.toResponse() = ModelsDevModelResponse(
-    id = id,
-    canonicalId = canonicalId,
-    provider = provider,
-    providerId = providerId,
-    developer = developer,
-    developerId = developerId,
-)
-
 private suspend fun validateAlias(app: GatewayApplication, request: AliasRequest) {
     if (!ALIAS_PATTERN.matches(request.alias)) {
         throw badRequest("invalid_alias", "模型别名只能包含字母、数字、点、下划线和短横线，长度 1..100")
@@ -698,66 +353,13 @@ private suspend fun validateAlias(app: GatewayApplication, request: AliasRequest
     if (request.candidates.isEmpty()) throw badRequest("invalid_alias", "模型别名至少需要一个候选")
     request.candidates.forEach { candidate ->
         if (candidate.upstreamModel.isBlank()) throw badRequest("invalid_alias", "上游模型名不能为空")
-        val channel = app.channelRepository.find(candidate.channelId)
-        if (channel == null) {
+        if (app.channelRepository.find(candidate.channelId) == null) {
             throw badRequest("invalid_alias", "候选渠道 ${candidate.channelId} 不存在")
         }
-        if (candidate.upstreamModel.trim() !in channel.models) {
-            throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「${candidate.upstreamModel}」")
-        }
     }
-}
-
-private data class ValidatedModelPrice(
-    val channelId: String,
-    val upstreamModel: String,
-    val currency: String,
-    val input: BigDecimal,
-    val output: BigDecimal,
-    val cached: BigDecimal?,
-)
-
-private suspend fun validateModelPrice(
-    app: GatewayApplication,
-    request: ModelPriceRequest,
-): ValidatedModelPrice {
-    val channelId = request.channelId.trim()
-    if (channelId.isEmpty()) throw badRequest("invalid_model_price", "渠道不能为空")
-    if (app.channelRepository.find(channelId) == null) {
-        throw badRequest("invalid_model_price", "渠道不存在")
-    }
-    val upstreamModel = request.upstreamModel.trim()
-    if (upstreamModel.isEmpty() || upstreamModel.length > 200) {
-        throw badRequest("invalid_model_price", "上游模型名长度必须在 1..200 之间")
-    }
-    val currency = request.currency.trim().uppercase()
-    if (!CURRENCY_PATTERN.matches(currency)) {
-        throw badRequest("invalid_model_price", "币种必须是 3 到 8 位字母")
-    }
-    return ValidatedModelPrice(
-        channelId = channelId,
-        upstreamModel = upstreamModel,
-        currency = currency,
-        input = parsePrice(request.inputPricePerMillion, "输入单价"),
-        output = parsePrice(request.outputPricePerMillion, "输出单价"),
-        cached = request.cachedInputPricePerMillion
-            ?.takeIf { it.isNotBlank() }
-            ?.let { parsePrice(it, "缓存输入单价") },
-    )
-}
-
-private fun parsePrice(value: String, label: String): BigDecimal {
-    val parsed = value.trim().toBigDecimalOrNull()
-        ?: throw badRequest("invalid_model_price", "$label 必须是数字")
-    if (parsed < BigDecimal.ZERO) throw badRequest("invalid_model_price", "$label 不能为负数")
-    return parsed.setScale(8, RoundingMode.HALF_UP)
 }
 
 private fun conflict(code: String, message: String): GatewayException =
     GatewayException(HttpStatusCode.Conflict, code, message, "invalid_request_error")
 
 private val ALIAS_PATTERN = Regex("[A-Za-z0-9._-]{1,100}")
-private val CURRENCY_PATTERN = Regex("[A-Za-z]{3,8}")
-private const val MAX_MODEL_SUGGESTIONS = 500
-private const val MAPPING_SOURCE_MANUAL = "manual"
-private val MAPPING_SOURCES = setOf(MAPPING_SOURCE_MANUAL, "models_dev")
