@@ -1476,6 +1476,13 @@ code,
   padding: 38px 24px;
 }
 
+.model-manage-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
 .empty-state h3 {
   margin: 4px 0 0;
   color: var(--ink);

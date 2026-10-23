@@ -377,12 +377,6 @@ onMounted(load)
         <p>模型、路由规则与渠道报价在同一页维护；底层仍分别保存。</p>
       </div>
       <div class="model-manage-actions">
-        <button type="button" class="button subtle" @click="openAliasCreate()">
-          <Icon name="aliases" :size="16" /> 新增别名
-        </button>
-        <button type="button" class="button subtle" @click="openPrice()">
-          <Icon name="price" :size="16" /> 新增价格
-        </button>
         <button type="button" class="button subtle" :disabled="refreshing || loading" @click="refreshAll">
           <Icon name="refresh" :size="16" /> {{ refreshing ? '刷新中…' : '刷新目录' }}
         </button>
@@ -430,8 +424,22 @@ onMounted(load)
       </div>
 
       <div v-if="loading" class="loading-state"><span class="spinner"></span>正在读取模型、别名和价格…</div>
-      <div v-else-if="modelGroups.length === 0" class="empty-state"><div class="empty-icon"><Icon name="models" :size="26" /></div><h3>还没有模型</h3><p>刷新渠道模型或先创建别名。</p></div>
-      <div v-else-if="visibleGroups.length === 0" class="empty-state compact"><h3>没有匹配的模型</h3><p>调整搜索或筛选条件后再试。</p></div>
+      <div v-else-if="modelGroups.length === 0" class="empty-state">
+        <div class="empty-icon"><Icon name="models" :size="26" /></div>
+        <h3>还没有模型</h3>
+        <p>刷新渠道模型，或先创建别名；也可以直接为上游模型手动添加价格。</p>
+        <div class="model-manage-empty-actions">
+          <button type="button" class="button subtle" @click="openAliasCreate()">新增别名</button>
+          <button type="button" class="button primary" @click="openPrice()"><Icon name="price" :size="16" /> 手动添加价格</button>
+        </div>
+      </div>
+      <div v-else-if="visibleGroups.length === 0" class="empty-state compact">
+        <h3>没有匹配的模型</h3>
+        <p>调整搜索或筛选条件后再试，或直接为上游模型手动添加价格。</p>
+        <div class="model-manage-empty-actions">
+          <button type="button" class="button subtle" @click="openPrice()"><Icon name="price" :size="16" /> 手动添加价格</button>
+        </div>
+      </div>
       <template v-else>
         <div class="model-manage-columns"><span></span><span>模型</span><span>模型开发者</span><span>渠道</span><span>别名</span><span>价格覆盖</span><span>状态</span><span>操作</span></div>
         <div class="model-manage-groups">
