@@ -8,6 +8,7 @@ import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.jdbc.update
 import java.util.UUID
 
 /**
@@ -33,12 +34,29 @@ class AdminUserRepository(private val database: Database) {
             it[AdminUsers.passwordHash] = passwordHash
             it[createdAt] = System.currentTimeMillis()
         }
-        AdminUserRecord(id, username, passwordHash)
+        AdminUserRecord(id, username, passwordHash, avatarDataUrl = null)
+    }
+
+    suspend fun updateAvatar(username: String, avatarDataUrl: String?): AdminUserRecord? = suspendTransaction(database) {
+        val updated = AdminUsers.update({ AdminUsers.username eq username }) {
+            it[AdminUsers.avatarDataUrl] = avatarDataUrl
+        }
+        if (updated == 0) null else AdminUsers.selectAll()
+            .where { AdminUsers.username eq username }
+            .single()
+            .let(::toRecord)
+    }
+
+    suspend fun updatePassword(username: String, passwordHash: String): Boolean = suspendTransaction(database) {
+        AdminUsers.update({ AdminUsers.username eq username }) {
+            it[AdminUsers.passwordHash] = passwordHash
+        } > 0
     }
 
     private fun toRecord(row: ResultRow) = AdminUserRecord(
         id = row[AdminUsers.id],
         username = row[AdminUsers.username],
         passwordHash = row[AdminUsers.passwordHash],
+        avatarDataUrl = row[AdminUsers.avatarDataUrl],
     )
 }
