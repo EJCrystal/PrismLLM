@@ -5,7 +5,8 @@ import io.ktor.client.HttpClient
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
-import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsBytes
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import kotlin.coroutines.cancellation.CancellationException
@@ -17,8 +18,10 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.slf4j.LoggerFactory
+import java.io.ByteArrayInputStream
 import java.math.BigDecimal
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.GZIPInputStream
 
 /**
  * 模型参考单价。所有价格单位为每百万 token（USD）。
@@ -243,13 +246,14 @@ class ModelPriceReferenceService(
             try {
                 val response = httpClient.get(catalogUrl) {
                     header(HttpHeaders.UserAgent, "llm-gateway/0.1")
+                    header(HttpHeaders.AcceptEncoding, "gzip")
                     timeout {
-                        requestTimeoutMillis = 15_000
-                        connectTimeoutMillis = 5_000
+                        requestTimeoutMillis = CATALOG_REQUEST_TIMEOUT_MS
+                        connectTimeoutMillis = CATALOG_CONNECT_TIMEOUT_MS
                     }
                 }
                 if (response.status.isSuccess()) {
-                    val text = response.bodyAsText()
+                    val text = decodeCatalogBody(response)
                     val json = Json.parseToJsonElement(text).jsonObject
                     val providers = json["providers"]?.jsonObject ?: emptyMap()
                     val providerNames = providers.mapValues { (providerId, providerElem) ->
@@ -326,6 +330,20 @@ class ModelPriceReferenceService(
         }
     }
 
+    private suspend fun decodeCatalogBody(response: HttpResponse): String {
+        val bytes = response.bodyAsBytes()
+        val gzipEncoded = response.headers[HttpHeaders.ContentEncoding]
+            ?.split(',')
+            ?.any { encoding -> encoding.trim().let { it.equals("gzip", true) || it.equals("x-gzip", true) } }
+            ?: false
+        val decoded = if (gzipEncoded) {
+            GZIPInputStream(ByteArrayInputStream(bytes)).use { it.readBytes() }
+        } else {
+            bytes
+        }
+        return decoded.toString(Charsets.UTF_8)
+    }
+
     private fun candidateKeys(raw: String): List<String> {
         val trimmed = raw.trim()
         val lower = trimmed.lowercase()
@@ -358,5 +376,7 @@ class ModelPriceReferenceService(
 
     private companion object {
         const val RETRY_COOLDOWN_MS = 60_000L
+        const val CATALOG_REQUEST_TIMEOUT_MS = 30_000L
+        const val CATALOG_CONNECT_TIMEOUT_MS = 10_000L
     }
 }

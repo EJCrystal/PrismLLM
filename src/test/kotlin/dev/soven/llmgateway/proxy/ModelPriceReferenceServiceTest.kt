@@ -10,9 +10,12 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.io.ByteArrayOutputStream
 import java.math.BigDecimal
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import java.util.zip.GZIPOutputStream
 
 class ModelPriceReferenceServiceTest {
 
@@ -173,6 +176,41 @@ class ModelPriceReferenceServiceTest {
             assertFalse(second.loaded)
             assertEquals(first.error, second.error)
             assertEquals(1, requests.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `loads gzip encoded catalog responses`() = runBlocking {
+        val body = """
+            {"providers":{"openai":{"name":"OpenAI","models":{"gzip-model":{"canonical_model_id":"gzip-model"}}}}}
+        """.trimIndent()
+        val compressed = ByteArrayOutputStream().use { output ->
+            GZIPOutputStream(output).use { it.write(body.toByteArray()) }
+            output.toByteArray()
+        }
+        val acceptedEncoding = AtomicReference<String?>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/catalog.json") { exchange ->
+            acceptedEncoding.set(exchange.requestHeaders.getFirst("Accept-Encoding"))
+            exchange.responseHeaders.add("Content-Encoding", "gzip")
+            exchange.sendResponseHeaders(200, compressed.size.toLong())
+            exchange.responseBody.use { it.write(compressed) }
+        }
+        server.start()
+        try {
+            val service = ModelPriceReferenceService(
+                httpClient,
+                catalogUrl = "http://127.0.0.1:${server.address.port}/catalog.json",
+            )
+
+            val snapshot = service.catalogSnapshot()
+
+            assertTrue(snapshot.loaded)
+            assertNull(snapshot.error)
+            assertEquals(listOf("gzip-model"), snapshot.models.map { it.id })
+            assertEquals("gzip", acceptedEncoding.get())
         } finally {
             server.stop(0)
         }
