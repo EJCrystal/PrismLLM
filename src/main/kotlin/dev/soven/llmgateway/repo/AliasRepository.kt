@@ -2,7 +2,6 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.AliasCandidates
 import dev.soven.llmgateway.db.Channels
-import dev.soven.llmgateway.db.ChannelModels
 import dev.soven.llmgateway.db.ModelAliases
 import dev.soven.llmgateway.domain.AliasRecord
 import dev.soven.llmgateway.domain.CandidateRecord
@@ -34,23 +33,21 @@ class AliasRepository(private val database: Database) {
             .where { (ModelAliases.alias eq alias) and (ModelAliases.enabled eq true) }
             .singleOrNull() ?: return@suspendTransaction emptyList()
 
-        AliasCandidates
+        val rows = AliasCandidates
             .join(Channels, JoinType.INNER, AliasCandidates.channelId, Channels.id)
             .selectAll()
             .where { (AliasCandidates.aliasId eq aliasRow[ModelAliases.id]) and (Channels.enabled eq true) }
             .orderBy(AliasCandidates.position)
-            .map { row ->
-                RouteCandidate(
-                    channel = row.toChannel(),
-                    upstreamModel = row[AliasCandidates.upstreamModel],
-                    position = row[AliasCandidates.position],
-                )
-            }
-            .filter { candidate ->
-                ChannelModels.selectAll()
-                    .where { (ChannelModels.channelId eq candidate.channel.id) and (ChannelModels.upstreamModel eq candidate.upstreamModel) }
-                    .any()
-            }
+            .toList()
+        val modelsByChannel = loadChannelModelMappingsInTransaction(rows.map { it[Channels.id] })
+        rows.map { row ->
+            val channelId = row[Channels.id]
+            RouteCandidate(
+                channel = row.toChannel(modelsByChannel[channelId].orEmpty()),
+                upstreamModel = row[AliasCandidates.upstreamModel],
+                position = row[AliasCandidates.position],
+            )
+        }.filter { candidate -> candidate.upstreamModel in candidate.channel.models }
     }
 
     suspend fun listAvailableAliases(): List<String> = suspendTransaction(database) {
@@ -179,7 +176,7 @@ class AliasRepository(private val database: Database) {
         updatedAt = this[ModelAliases.updatedAt],
     )
 
-    private fun ResultRow.toChannel() = ChannelRecord(
+    private fun ResultRow.toChannel(modelMappings: List<ChannelModelRecord>) = ChannelRecord(
         id = this[Channels.id],
         name = this[Channels.name],
         baseUrl = this[Channels.baseUrl],
@@ -192,16 +189,7 @@ class AliasRepository(private val database: Database) {
         exposeUpstreamModels = this[Channels.exposeUpstreamModels],
         createdAt = this[Channels.createdAt],
         updatedAt = this[Channels.updatedAt],
-        modelMappings = ChannelModels.selectAll()
-            .where { ChannelModels.channelId eq this[Channels.id] }
-            .map {
-                ChannelModelRecord(
-                    upstreamModel = it[ChannelModels.upstreamModel],
-                    canonicalModelId = it[ChannelModels.canonicalModelId],
-                    mappingSource = it[ChannelModels.mappingSource],
-                )
-            }
-            .sortedBy { it.upstreamModel },
+        modelMappings = modelMappings,
     )
 }
 

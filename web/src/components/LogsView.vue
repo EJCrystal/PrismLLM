@@ -122,6 +122,7 @@ function formatCost(log) {
 
 function costTitle(log) {
   if (log.costAmount == null) {
+    if (!log.usageKnown) return '用量未知，费用无法计算'
     return log.channelId && log.upstreamModel ? '该渠道和上游模型尚未配置计费单价' : '没有可计费的路由信息'
   }
   return `输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 缓存 ${formatTokens(log.cachedTokens)} · ${log.costCurrency}`
@@ -359,7 +360,7 @@ onMounted(load)
               </td>
               <td class="nowrap" :title="costTitle(log)">
                 <span v-if="log.costAmount != null">{{ formatCost(log) }}</span>
-                <span v-else-if="log.channelId && log.upstreamModel" class="muted">未配置</span>
+                <span v-else-if="log.usageKnown && log.channelId && log.upstreamModel" class="muted">未配置</span>
                 <span v-else class="muted">—</span>
               </td>
               <td class="actions-col">
@@ -508,7 +509,7 @@ onMounted(load)
               </div>
               <div class="detail-item">
                 <span>费用</span>
-                <strong>{{ selected.costAmount != null ? formatCost(selected) : '未配置' }}</strong>
+                <strong>{{ selected.costAmount != null ? formatCost(selected) : (selected.usageKnown ? '未配置' : '—') }}</strong>
               </div>
               <div v-if="selected.costAmount != null" class="detail-item">
                 <span>计费单价 / 1M</span>

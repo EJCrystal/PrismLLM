@@ -8,6 +8,7 @@ import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.security.EncryptedCredential
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
@@ -24,7 +25,11 @@ import java.util.UUID
  */
 class ChannelRepository(private val database: Database) {
     suspend fun list(): List<ChannelRecord> = suspendTransaction(database) {
-        Channels.selectAll().orderBy(Channels.name).map(::toRecordWithModels)
+        val rows = Channels.selectAll().orderBy(Channels.name).toList()
+        val modelsByChannel = loadChannelModelMappingsInTransaction(rows.map { it[Channels.id] })
+        rows.map { row ->
+            toRecord(row).copy(modelMappings = modelsByChannel[row[Channels.id]].orEmpty())
+        }
     }
 
     suspend fun find(id: String): ChannelRecord? = suspendTransaction(database) {
@@ -126,16 +131,7 @@ class ChannelRepository(private val database: Database) {
         toRecord(row).copy(modelMappings = modelsForInTransaction(row[Channels.id]))
 
     private fun modelsForInTransaction(channelId: String): List<ChannelModelRecord> =
-        ChannelModels.selectAll()
-            .where { ChannelModels.channelId eq channelId }
-            .map {
-                ChannelModelRecord(
-                    upstreamModel = it[ChannelModels.upstreamModel],
-                    canonicalModelId = it[ChannelModels.canonicalModelId],
-                    mappingSource = it[ChannelModels.mappingSource],
-                )
-            }
-            .sortedBy { it.upstreamModel }
+        loadChannelModelMappingsInTransaction(listOf(channelId))[channelId].orEmpty()
 
     private fun toRecord(row: ResultRow) = ChannelRecord(
         id = row[Channels.id],
@@ -151,4 +147,23 @@ class ChannelRepository(private val database: Database) {
         createdAt = row[Channels.createdAt],
         updatedAt = row[Channels.updatedAt],
     )
+}
+
+/** Batch-loads channel model mappings inside the caller's transaction. */
+internal fun loadChannelModelMappingsInTransaction(
+    channelIds: Collection<String>,
+): Map<String, List<ChannelModelRecord>> {
+    if (channelIds.isEmpty()) return emptyMap()
+    return ChannelModels.selectAll()
+        .where { ChannelModels.channelId inList channelIds }
+        .groupBy { it[ChannelModels.channelId] }
+        .mapValues { (_, rows) ->
+            rows.map {
+                ChannelModelRecord(
+                    upstreamModel = it[ChannelModels.upstreamModel],
+                    canonicalModelId = it[ChannelModels.canonicalModelId],
+                    mappingSource = it[ChannelModels.mappingSource],
+                )
+            }.sortedBy { it.upstreamModel }
+        }
 }

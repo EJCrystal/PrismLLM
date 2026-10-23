@@ -5,12 +5,14 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.math.BigDecimal
 import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicInteger
 
 class ModelPriceReferenceServiceTest {
 
@@ -133,5 +135,58 @@ class ModelPriceReferenceServiceTest {
         } finally {
             server.stop(0)
         }
+    }
+
+    @Test
+    fun `does not retry a non-success catalog response during cooldown`() = runBlocking {
+        val requests = AtomicInteger()
+        val server = catalogServer(503, "temporarily unavailable", requests)
+        try {
+            val service = ModelPriceReferenceService(
+                httpClient,
+                catalogUrl = "http://127.0.0.1:${server.address.port}/catalog.json",
+            )
+
+            assertNull(service.lookup("unknown-model-one"))
+            assertNull(service.lookup("unknown-model-two"))
+            assertEquals("models.dev 返回 503", service.catalogSnapshot().error)
+            assertEquals(1, requests.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `does not retry a catalog parsing exception during cooldown`() = runBlocking {
+        val requests = AtomicInteger()
+        val server = catalogServer(200, "not-json", requests)
+        try {
+            val service = ModelPriceReferenceService(
+                httpClient,
+                catalogUrl = "http://127.0.0.1:${server.address.port}/catalog.json",
+            )
+
+            val first = service.catalogSnapshot()
+            val second = service.catalogSnapshot()
+
+            assertFalse(first.loaded)
+            assertFalse(second.loaded)
+            assertEquals(first.error, second.error)
+            assertEquals(1, requests.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    private fun catalogServer(status: Int, body: String, requests: AtomicInteger): HttpServer {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/catalog.json") { exchange ->
+            requests.incrementAndGet()
+            val bytes = body.toByteArray()
+            exchange.sendResponseHeaders(status, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        return server
     }
 }

@@ -40,16 +40,18 @@ fun Route.adminRoutes(app: GatewayApplication) {
     route("/admin/api") {
         post("/login") {
             val request = call.receive<LoginRequest>()
-            val user = app.adminUserRepository.findByUsername(request.username)
-            if (user == null || !PasswordHasher.verify(request.password, user.passwordHash)) {
-                throw GatewayException(
-                    HttpStatusCode.Unauthorized,
-                    "invalid_credentials",
-                    "用户名或密码错误",
-                    "authentication_error",
-                )
+            val (user, issued) = app.sessions.withUsernameLock(request.username) {
+                val user = app.adminUserRepository.findByUsername(request.username)
+                if (user == null || !PasswordHasher.verify(request.password, user.passwordHash)) {
+                    throw GatewayException(
+                        HttpStatusCode.Unauthorized,
+                        "invalid_credentials",
+                        "用户名或密码错误",
+                        "authentication_error",
+                    )
+                }
+                user to app.sessions.create(user.username)
             }
-            val issued = app.sessions.create(user.username)
             val maxAge = 12 * 60 * 60
             call.response.cookies.append(
                 Cookie(
@@ -102,21 +104,24 @@ fun Route.adminRoutes(app: GatewayApplication) {
         put("/account/password") {
             val session = call.requireAdmin(app)
             val request = call.receive<ChangePasswordRequest>()
-            val user = app.adminUserRepository.findByUsername(session.username)
-                ?: throw notFound("admin_not_found", "管理员账号不存在")
-            if (!PasswordHasher.verify(request.currentPassword, user.passwordHash)) {
-                throw badRequest("invalid_current_password", "当前密码不正确")
+            app.sessions.withUsernameLock(session.username) {
+                call.requireAdmin(app)
+                val user = app.adminUserRepository.findByUsername(session.username)
+                    ?: throw notFound("admin_not_found", "管理员账号不存在")
+                if (!PasswordHasher.verify(request.currentPassword, user.passwordHash)) {
+                    throw badRequest("invalid_current_password", "当前密码不正确")
+                }
+                if (request.newPassword.length !in 8..128) {
+                    throw badRequest("invalid_password", "新密码长度必须在 8 到 128 个字符之间")
+                }
+                if (request.newPassword == request.currentPassword) {
+                    throw badRequest("password_unchanged", "新密码不能与当前密码相同")
+                }
+                if (!app.adminUserRepository.updatePassword(session.username, PasswordHasher.hash(request.newPassword))) {
+                    throw notFound("admin_not_found", "管理员账号不存在")
+                }
+                app.sessions.removeAllForUsername(session.username)
             }
-            if (request.newPassword.length !in 8..128) {
-                throw badRequest("invalid_password", "新密码长度必须在 8 到 128 个字符之间")
-            }
-            if (request.newPassword == request.currentPassword) {
-                throw badRequest("password_unchanged", "新密码不能与当前密码相同")
-            }
-            if (!app.adminUserRepository.updatePassword(session.username, PasswordHasher.hash(request.newPassword))) {
-                throw notFound("admin_not_found", "管理员账号不存在")
-            }
-            app.sessions.removeAllForUsername(session.username)
             call.clearAdminCookies(app)
             call.respond(HttpStatusCode.NoContent)
         }
@@ -670,14 +675,12 @@ private fun normalizeModelMappings(request: ChannelRequest): List<ChannelModelRe
         ChannelModelRecord(upstreamModel, canonicalModelId, mappingSource)
     }.distinctBy { it.upstreamModel }
 
-    val duplicateCanonicalIds = normalized
-        .mapNotNull { it.canonicalModelId }
-        .groupingBy { it.lowercase() }
-        .eachCount()
-        .filterValues { it > 1 }
+    val duplicatePublicIds = normalized
+        .groupBy { (it.canonicalModelId ?: it.upstreamModel).lowercase() }
+        .filterValues { entries -> entries.size > 1 && entries.any { it.canonicalModelId != null } }
         .keys
-    if (duplicateCanonicalIds.isNotEmpty()) {
-        throw badRequest("invalid_channel", "同一渠道内规范 ID 不能重复: ${duplicateCanonicalIds.joinToString("、")}")
+    if (duplicatePublicIds.isNotEmpty()) {
+        throw badRequest("invalid_channel", "同一渠道内对外模型 ID 不能重复: ${duplicatePublicIds.joinToString("、")}")
     }
     return normalized
 }

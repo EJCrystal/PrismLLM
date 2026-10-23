@@ -1,5 +1,6 @@
 package dev.soven.llmgateway.security
 
+import kotlinx.coroutines.sync.Mutex
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
@@ -13,6 +14,17 @@ import java.util.concurrent.ConcurrentHashMap
 class AdminSessions(private val ttlMillis: Long = 12 * 60 * 60 * 1000L) {
     private val sessions = ConcurrentHashMap<String, Session>()
     private val random = SecureRandom()
+    private val usernameLocks = Array(64) { Mutex() }
+
+    suspend fun <T> withUsernameLock(username: String, block: suspend () -> T): T {
+        val lock = usernameLocks[(username.hashCode() and Int.MAX_VALUE) % usernameLocks.size]
+        lock.lock()
+        try {
+            return block()
+        } finally {
+            lock.unlock()
+        }
+    }
 
     fun create(username: String): IssuedSession {
         val token = randomToken()

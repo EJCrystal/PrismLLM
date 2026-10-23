@@ -8,6 +8,7 @@ import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
@@ -164,6 +165,7 @@ class ModelPriceReferenceService(
     private var catalogIndex: Map<String, List<CatalogModel>> = emptyMap()
     @Volatile
     private var catalogError: String? = null
+    private var lastFailureAtMillis = 0L
 
     val catalogSource: String get() = catalogUrl
 
@@ -235,6 +237,9 @@ class ModelPriceReferenceService(
     private suspend fun loadDynamicCatalog() {
         loadMutex.withLock {
             if (dynamicCatalogLoaded) return
+            if (lastFailureAtMillis != 0L && System.currentTimeMillis() - lastFailureAtMillis < RETRY_COOLDOWN_MS) {
+                return
+            }
             try {
                 val response = httpClient.get(catalogUrl) {
                     header(HttpHeaders.UserAgent, "llm-gateway/0.1")
@@ -309,9 +314,13 @@ class ModelPriceReferenceService(
                     logger.info("已从 models.dev 加载 {} 个模型（{} 个价格键）", catalog.size, count)
                 } else {
                     catalogError = "models.dev 返回 ${response.status.value}"
+                    lastFailureAtMillis = System.currentTimeMillis()
                 }
+            } catch (cause: CancellationException) {
+                throw cause
             } catch (cause: Exception) {
                 catalogError = cause.message ?: "未知错误"
+                lastFailureAtMillis = System.currentTimeMillis()
                 logger.warn("拉取 models.dev 参考价库失败: {}", cause.message)
             }
         }
@@ -345,5 +354,9 @@ class ModelPriceReferenceService(
             stem.replace('.', '-'),
             stem.replace('-', '.'),
         ).distinct().filter { it.isNotEmpty() }
+    }
+
+    private companion object {
+        const val RETRY_COOLDOWN_MS = 60_000L
     }
 }

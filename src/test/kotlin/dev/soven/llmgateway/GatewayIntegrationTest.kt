@@ -559,7 +559,49 @@ class GatewayIntegrationTest {
                 )
             }
             assertEquals(HttpStatusCode.BadRequest, duplicate.status)
-            assertTrue(duplicate.bodyAsText().contains("规范 ID 不能重复"))
+            assertTrue(duplicate.bodyAsText().contains("对外模型 ID 不能重复"))
+
+            val canonicalConflictsWithUnmapped = client.put("/admin/api/channels/${channel.id}") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """
+                    {
+                      "name":"mapping-api",
+                      "baseUrl":"${fake.baseUrl}/ok/v1",
+                      "protocols":["chat_completions"],
+                      "enabled":true,
+                      "modelMappings":[
+                        {"upstreamModel":"Qwen-Fast","canonicalModelId":"gpt-4o-mini"},
+                        {"upstreamModel":"gpt-4o-mini"}
+                      ]
+                    }
+                    """.trimIndent(),
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, canonicalConflictsWithUnmapped.status)
+
+            val caseDistinctUnmapped = client.put("/admin/api/channels/${channel.id}") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """
+                    {
+                      "name":"mapping-api",
+                      "baseUrl":"${fake.baseUrl}/ok/v1",
+                      "protocols":["chat_completions"],
+                      "enabled":true,
+                      "modelMappings":[
+                        {"upstreamModel":"model-A"},
+                        {"upstreamModel":"MODEL-a"}
+                      ]
+                    }
+                    """.trimIndent(),
+                )
+            }
+            assertEquals(HttpStatusCode.OK, caseDistinctUnmapped.status)
         }
     }
 
