@@ -208,7 +208,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/channels/{id}/models") {
             call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少渠道 id")
+            val id = call.requiredParam("id", "缺少渠道 id")
             val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
             val mappingByUpstream = channel.modelMappings.associateBy { it.upstreamModel }
             val models = fetchUpstreamModels(channel, app.credentialCipher, app.httpClient, authorizedOnly = false)
@@ -271,7 +271,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         post("/channels/{id}/probe-protocols") {
             call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少渠道 id")
+            val id = call.requiredParam("id", "缺少渠道 id")
             val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
             val request = call.receive<ProtocolProbeRequest>()
             val model = request.model?.takeIf { it.isNotBlank() } ?: run {
@@ -323,7 +323,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         put("/channels/{id}") {
             call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少渠道 id")
+            val id = call.requiredParam("id", "缺少渠道 id")
             val request = call.receive<ChannelRequest>()
             validateChannel(request, credentialRequired = false)
             val protocols = parseProtocols(request.protocols)
@@ -366,7 +366,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         delete("/channels/{id}") {
             call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少渠道 id")
+            val id = call.requiredParam("id", "缺少渠道 id")
             if (app.aliasRepository.isChannelInUse(id)) {
                 throw conflict("channel_in_use", "渠道仍被模型别名引用，不能删除")
             }
@@ -396,7 +396,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         put("/aliases/{id}") {
             call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少别名 id")
+            val id = call.requiredParam("id", "缺少别名 id")
             val request = call.receive<AliasRequest>()
             validateAlias(app, request)
             val sameAlias = app.aliasRepository.findByAlias(request.alias)
@@ -412,7 +412,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         delete("/aliases/{id}") {
             call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少别名 id")
+            val id = call.requiredParam("id", "缺少别名 id")
             if (!app.aliasRepository.delete(id)) throw notFound("alias_not_found", "模型别名不存在")
             call.respond(HttpStatusCode.NoContent)
         }
@@ -453,7 +453,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         put("/client-keys/{id}") {
             call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少密钥 id")
+            val id = call.requiredParam("id", "缺少密钥 id")
             val request = call.receive<ClientKeyRequest>()
             if (request.name.isBlank()) throw badRequest("invalid_client_key", "密钥名称不能为空")
             if (request.expiresAt != null && request.expiresAt <= System.currentTimeMillis()) {
@@ -470,15 +470,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         delete("/client-keys/{id}") {
             call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少密钥 id")
+            val id = call.requiredParam("id", "缺少密钥 id")
             if (!app.clientKeyRepository.delete(id)) throw notFound("client_key_not_found", "调用方密钥不存在")
             call.respond(HttpStatusCode.NoContent)
         }
 
         get("/model-prices/reference") {
             call.requireAdmin(app)
-            val model = call.request.queryParameters["model"]?.trim()
-            if (model.isNullOrEmpty()) throw badRequest("missing_model", "缺少模型名称")
+            val model = call.requiredQuery("model", "缺少模型名称")
             val reference = app.modelPriceReferenceService.lookup(model)
                 ?: throw notFound("reference_price_not_found", "未在参考价库中找到模型「$model」的单价，可直接手动输入")
             call.respond(reference.toResponse())
@@ -509,7 +508,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         put("/model-prices/{id}") {
             call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少价格 id")
+            val id = call.requiredParam("id", "缺少价格 id")
             val request = call.receive<ModelPriceRequest>()
             val price = validateModelPrice(app, request)
             app.modelPriceRepository.findById(id) ?: throw notFound("model_price_not_found", "计费单价不存在")
@@ -531,15 +530,15 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         delete("/model-prices/{id}") {
             call.requireAdmin(app)
-            val id = call.parameters["id"] ?: throw badRequest("missing_id", "缺少价格 id")
+            val id = call.requiredParam("id", "缺少价格 id")
             if (!app.modelPriceRepository.delete(id)) throw notFound("model_price_not_found", "计费单价不存在")
             call.respond(HttpStatusCode.NoContent)
         }
 
         get("/request-logs") {
             call.requireAdmin(app)
-            val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 100
-            val beforeId = call.request.queryParameters["beforeId"]?.toLongOrNull()
+            val limit = call.queryInt("limit", default = 100, min = 1, max = 1000)
+            val beforeId = call.queryLongOrNull("beforeId")
             call.respond(app.requestLogRepository.list(limit, beforeId).map { it.toResponse() })
         }
     }

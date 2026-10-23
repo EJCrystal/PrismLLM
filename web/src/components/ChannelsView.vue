@@ -1,13 +1,24 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
-import { copyText } from '../clipboard'
 import { notify } from '../toast'
 import { clearUpstreamModelCache } from '../upstreamModelCache'
+import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
+import PriceEditorModal from './PriceEditorModal.vue'
+import SecretInput from './SecretInput.vue'
+import TablePlaceholder from './TablePlaceholder.vue'
+import { formatTime } from '../utils/format'
+import {
+  VISIBLE_MODEL_LIMIT,
+  visibleModels,
+  hiddenModelsTitle,
+} from '../utils/channelDisplay'
 
 const channels = ref([])
+const prices = ref([])
+const priceEditor = ref(null)
 const loading = ref(true)
 const error = ref('')
 const showForm = ref(false)
@@ -18,11 +29,8 @@ const probeResults = ref([])
 const availableModels = ref([])
 const authorizedModels = ref([])
 const canonicalModels = reactive({})
-const mappingSources = reactive({})
 const modelsLoading = ref(false)
 const modelsError = ref('')
-const suggestionsLoading = ref(false)
-const suggestionsError = ref('')
 const modelSearch = ref('')
 const modelsLoaded = ref(false)
 let probeRequestId = 0
@@ -36,13 +44,6 @@ const form = reactive({
   protocols: ['chat_completions'],
   enabled: true,
   exposeUpstreamModels: true,
-})
-
-const aliasOnly = computed({
-  get: () => !form.exposeUpstreamModels,
-  set: (value) => {
-    form.exposeUpstreamModels = !value
-  },
 })
 
 watch(
@@ -68,24 +69,52 @@ const filteredModels = computed(() => {
     .some((value) => value.toLowerCase().includes(query)))
 })
 
-async function copyChannelId(id) {
-  try {
-    await copyText(id)
-    notify('渠道 ID 已复制')
-  } catch {
-    window.prompt('复制渠道 ID', id)
-  }
-}
-
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    channels.value = await api.listChannels()
+    const [channelsData, pricesData] = await Promise.all([
+      api.listChannels(),
+      api.listModelPrices().catch(() => []),
+    ])
+    channels.value = channelsData
+    prices.value = pricesData
   } catch (cause) {
     error.value = cause.message
   } finally {
     loading.value = false
+  }
+}
+
+const priceByChannelAndModel = computed(() => {
+  const map = new Map()
+  prices.value.forEach((p) => {
+    map.set(`${p.channelId}\u0000${p.upstreamModel}`, p)
+  })
+  return map
+})
+
+function openPrice(channel, upstreamModel = null) {
+  const existingPrice = upstreamModel
+    ? priceByChannelAndModel.value.get(`${channel.id}\u0000${upstreamModel}`) || null
+    : null
+  priceEditor.value = {
+    channels: channels.value,
+    price: existingPrice,
+    initialTarget: {
+      channelId: channel.id,
+      modelId: upstreamModel || '',
+    },
+  }
+}
+
+async function onPriceSaved() {
+  priceEditor.value = null
+  try {
+    prices.value = await api.listModelPrices()
+    notify('计费单价已保存')
+  } catch {
+    // ignore
   }
 }
 
@@ -101,8 +130,6 @@ function openCreate() {
   clearMappings()
   modelsLoading.value = false
   modelsError.value = ''
-  suggestionsLoading.value = false
-  suggestionsError.value = ''
   modelsLoaded.value = false
   modelSearch.value = ''
   Object.assign(form, {
@@ -129,13 +156,10 @@ function openEdit(channel) {
   ;(channel.modelMappings || []).forEach((mapping) => {
     if (mapping.canonicalModelId) {
       canonicalModels[mapping.upstreamModel] = mapping.canonicalModelId
-      mappingSources[mapping.upstreamModel] = mapping.mappingSource || 'manual'
     }
   })
   modelsLoading.value = false
   modelsError.value = ''
-  suggestionsLoading.value = false
-  suggestionsError.value = ''
   modelsLoaded.value = false
   modelSearch.value = ''
   Object.assign(form, {
@@ -174,7 +198,6 @@ async function loadAvailableModels() {
     availableModels.value.forEach((model) => {
       if (model.authorized && model.canonicalModelId && !canonicalModels[model.id]?.trim()) {
         canonicalModels[model.id] = model.canonicalModelId
-        mappingSources[model.id] = model.mappingSource || 'manual'
       }
     })
     if (authorizedModels.value.length === 0) {
@@ -197,55 +220,12 @@ function toggleModel(modelId) {
   authorizedModels.value = [...selected]
 }
 
-async function autoMatchModels() {
-  if (authorizedModels.value.length === 0) {
-    notify('请先选择授权模型', 'warning')
-    return
-  }
-  suggestionsLoading.value = true
-  suggestionsError.value = ''
-  try {
-    const response = await api.getModelSuggestions(authorizedModels.value)
-    if (!response?.loaded) {
-      suggestionsError.value = response?.error || 'models.dev 目录暂不可用'
-      return
-    }
-    let matched = 0
-    ;(response.data || []).forEach((item) => {
-      if (canonicalModels[item.model]?.trim()) return
-      const candidate = item.candidates?.[0]
-      if (candidate) {
-        // id 是某个具体服务商的模型名；规范映射必须保存 canonical_model_id，
-        // 否则会把渠道私有前缀重新暴露给调用方。
-        canonicalModels[item.model] = candidate.canonicalId || candidate.id
-        mappingSources[item.model] = 'models_dev'
-        matched += 1
-      }
-    })
-    notify(
-      matched > 0 ? `已匹配 ${matched} 个规范 ID` : '没有找到可用的规范 ID',
-      matched > 0 ? 'success' : 'warning',
-    )
-  } catch (cause) {
-    suggestionsError.value = cause.message
-  } finally {
-    suggestionsLoading.value = false
-  }
+function clearMapping(modelId) {
+  canonicalModels[modelId] = ''
 }
 
 function clearMappings() {
   Object.keys(canonicalModels).forEach((key) => delete canonicalModels[key])
-  Object.keys(mappingSources).forEach((key) => delete mappingSources[key])
-}
-
-function mappingSourceLabel(source) {
-  if (source === 'models_dev') return 'models.dev'
-  if (source === 'manual') return '手动'
-  return ''
-}
-
-function mappedCount(channel) {
-  return (channel.modelMappings || []).filter((mapping) => mapping.canonicalModelId).length
 }
 
 function selectAllModels() {
@@ -341,11 +321,9 @@ async function save() {
       modelMappings: authorizedModels.value.map((upstreamModel) => ({
         upstreamModel,
         canonicalModelId: canonicalModels[upstreamModel]?.trim() || null,
-        mappingSource: canonicalModels[upstreamModel]?.trim()
-          ? (mappingSources[upstreamModel] || 'manual')
-          : null,
+        mappingSource: canonicalModels[upstreamModel]?.trim() ? 'manual' : null,
       })),
-      exposeUpstreamModels: form.exposeUpstreamModels,
+      exposeUpstreamModels: true,
     }
     if (editingId.value) {
       await api.updateChannel(editingId.value, payload)
@@ -380,12 +358,6 @@ async function remove(channel) {
   }
 }
 
-function formatTime(value) {
-  return value
-    ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(value)
-    : '—'
-}
-
 onMounted(load)
 </script>
 
@@ -411,7 +383,7 @@ onMounted(load)
       <div class="stat-card">
         <span>启用中</span>
         <strong class="text-success">{{ enabledCount }}</strong>
-        <small>可参与别名路由</small>
+        <small>已启用并提供服务</small>
       </div>
       <div class="stat-card accent">
         <span>凭据策略</span>
@@ -423,19 +395,17 @@ onMounted(load)
     <div v-if="error" class="callout danger">{{ error }}</div>
 
     <div class="panel table-panel">
-      <div v-if="loading" class="loading-state">
-        <span class="spinner"></span>
-        正在读取渠道…
-      </div>
-      <div v-else-if="channels.length === 0" class="empty-state">
-        <div class="empty-icon"><Icon name="channels" :size="26" /></div>
-        <h3>还没有渠道</h3>
-        <p>先接入一个 OpenAI 兼容上游，再创建模型别名。</p>
-        <button type="button" class="button primary" @click="openCreate">
-          <Icon name="plus" :size="17" />
-          新建渠道
-        </button>
-      </div>
+      <TablePlaceholder
+        v-if="loading || channels.length === 0"
+        :loading="loading"
+        loading-text="正在读取渠道…"
+        :empty="channels.length === 0"
+        icon="channels"
+        title="还没有渠道"
+        desc="先接入一个 OpenAI 兼容上游，授权模型并对外提供服务。"
+        action-text="新建渠道"
+        @action="openCreate"
+      />
       <div v-else class="table-scroll">
         <table class="data-table">
           <thead>
@@ -456,14 +426,7 @@ onMounted(load)
                 <div class="primary-cell">{{ channel.name }}</div>
                 <div class="channel-id-cell">
                   <span class="mono muted small">{{ channel.id }}</span>
-                  <button
-                    type="button"
-                    class="icon-button list-copy"
-                    title="复制渠道 ID"
-                    @click="copyChannelId(channel.id)"
-                  >
-                    <Icon name="copy" :size="12" />
-                  </button>
+                  <CopyButton :text="channel.id" title="复制渠道 ID" variant="list" :size="12" />
                 </div>
               </td>
               <td><span class="mono address">{{ channel.baseUrl }}</span></td>
@@ -475,17 +438,24 @@ onMounted(load)
                 </div>
               </td>
               <td>
-                <div class="channel-exposure-badges">
-                  <span class="badge" :class="channel.models?.length ? 'info' : 'warning'">
-                    {{ channel.models?.length || 0 }} 个
+                <div v-if="channel.models?.length" class="channel-model-list">
+                  <span
+                    v-for="item in visibleModels(channel)"
+                    :key="item.upstreamModel"
+                    class="badge info channel-model-name"
+                    :title="item.title"
+                  >
+                    {{ item.displayName }}
                   </span>
-                  <span class="badge" :class="channel.exposeUpstreamModels === false ? 'neutral' : 'info'">
-                    {{ channel.exposeUpstreamModels === false ? '仅别名' : '可直连' }}
-                  </span>
-                  <span v-if="mappedCount(channel)" class="badge success">
-                    规范 {{ mappedCount(channel) }}
+                  <span
+                    v-if="channel.models.length > VISIBLE_MODEL_LIMIT"
+                    class="badge neutral channel-model-name"
+                    :title="hiddenModelsTitle(channel)"
+                  >
+                    +{{ channel.models.length - VISIBLE_MODEL_LIMIT }}
                   </span>
                 </div>
+                <span v-else class="badge warning">未授权模型</span>
               </td>
               <td>
                 <span class="badge" :class="channel.enabled ? 'success' : 'neutral'">
@@ -500,6 +470,9 @@ onMounted(load)
               <td class="muted">{{ formatTime(channel.updatedAt) }}</td>
               <td class="actions-col">
                 <div class="row-actions">
+                  <button type="button" class="icon-button" title="配置模型单价" @click="openPrice(channel)">
+                    <Icon name="price" :size="16" />
+                  </button>
                   <button type="button" class="icon-button" title="编辑" @click="openEdit(channel)">
                     <Icon name="edit" :size="16" />
                   </button>
@@ -514,12 +487,12 @@ onMounted(load)
       </div>
     </div>
 
-    <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" @close="showForm = false">
+    <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide @close="showForm = false">
       <form class="form-grid" @submit.prevent="save">
         <label class="field">
           <span>渠道名称</span>
           <input v-model="form.name" placeholder="例如 openai-primary" autocomplete="off" />
-          <small>用于在别名候选中识别这个接入点。</small>
+          <small>渠道在网关中的唯一标识名称。</small>
         </label>
         <label class="field">
           <span>基础地址</span>
@@ -559,9 +532,8 @@ onMounted(load)
         </div>
         <label class="field">
           <span>上游凭据</span>
-          <input
+          <SecretInput
             v-model="form.credential"
-            type="password"
             :placeholder="editingId ? '留空保持当前凭据' : '输入上游 Bearer Token'"
             autocomplete="new-password"
           />
@@ -571,16 +543,13 @@ onMounted(load)
           <div class="channel-model-auth-head">
             <div>
               <span>授权上游模型</span>
-              <small>只有选中的模型会进入模型目录、别名路由和直连路由。</small>
+              <small>选中的模型会进入模型目录并对外提供服务。</small>
             </div>
             <span class="badge info">{{ authorizedModels.length }} 个已选</span>
           </div>
           <div class="channel-model-auth-toolbar">
             <button type="button" class="button subtle mini" :disabled="modelsLoading" @click="loadAvailableModels">
               {{ modelsLoading ? '读取中…' : (modelsLoaded ? '刷新上游模型' : '加载上游模型') }}
-            </button>
-            <button v-if="authorizedModels.length" type="button" class="button ghost mini" :disabled="suggestionsLoading" @click="autoMatchModels">
-              {{ suggestionsLoading ? '匹配中…' : '自动匹配规范 ID' }}
             </button>
             <button v-if="availableModels.length" type="button" class="button ghost mini" @click="selectAllModels">全选</button>
             <button v-if="availableModels.length" type="button" class="button ghost mini" @click="clearAllModels">清空</button>
@@ -608,25 +577,41 @@ onMounted(load)
         <div v-if="authorizedModels.length" class="channel-canonical-section">
           <div class="channel-model-auth-head">
             <div>
-              <span>规范 ID 映射</span>
-              <small>对外模型 ID 优先使用规范 ID；留空则使用上游模型 ID。建议采用 models.dev 的 canonical ID。</small>
+              <span>对外模型 ID</span>
+              <small>调用方在请求体里使用的模型名；留空则直接使用上游模型名。</small>
             </div>
-            <span class="badge info">{{ mappingCount }} 个已映射</span>
+            <span v-if="mappingCount" class="badge info">{{ mappingCount }} 个已自定义</span>
+            <span v-else class="badge neutral">全部沿用上游名</span>
           </div>
-          <div v-if="suggestionsError" class="callout danger">{{ suggestionsError }}</div>
           <div class="channel-canonical-list">
-            <label v-for="modelId in authorizedModels" :key="modelId" class="channel-canonical-row">
-              <code>{{ modelId }}</code>
-              <input
-                v-model="canonicalModels[modelId]"
-                placeholder="留空则使用上游 ID"
-                autocomplete="off"
-                @input="mappingSources[modelId] = 'manual'"
-              />
-              <span v-if="canonicalModels[modelId]?.trim() && mappingSources[modelId]" class="badge info">
-                {{ mappingSourceLabel(mappingSources[modelId]) }}
-              </span>
-            </label>
+            <div class="channel-canonical-header">
+              <span>上游模型</span>
+              <span></span>
+              <span>对外模型 ID（留空沿用上游模型名）</span>
+            </div>
+            <div v-for="modelId in authorizedModels" :key="modelId" class="channel-canonical-row">
+              <div class="channel-canonical-upstream" :title="modelId">
+                <code>{{ modelId }}</code>
+              </div>
+              <div class="channel-canonical-arrow">→</div>
+              <div class="channel-canonical-input-wrap">
+                <input
+                  v-model="canonicalModels[modelId]"
+                  placeholder="留空沿用上游模型名"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button
+                  v-if="canonicalModels[modelId]"
+                  type="button"
+                  class="channel-canonical-clear"
+                  title="恢复默认（沿用上游名）"
+                  @click="clearMapping(modelId)"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
           </div>
         </div>
         <label class="switch-row">
@@ -634,15 +619,7 @@ onMounted(load)
           <span class="switch"></span>
           <span>
             <strong>启用渠道</strong>
-            <small>停用后不会参与新的别名路由。</small>
-          </span>
-        </label>
-        <label class="switch-row">
-          <input v-model="aliasOnly" type="checkbox" />
-          <span class="switch"></span>
-          <span>
-            <strong>仅通过别名暴露</strong>
-            <small>开启后，该渠道模型不进入 /v1/models 直连列表，也不能用上游模型名直接调用；别名路由仍然可用。</small>
+            <small>停用后不会参与模型路由。</small>
           </span>
         </label>
       </form>
@@ -653,6 +630,15 @@ onMounted(load)
         </button>
       </template>
     </Modal>
+
+    <PriceEditorModal
+      v-if="priceEditor"
+      :channels="priceEditor.channels"
+      :price="priceEditor.price"
+      :initial-target="priceEditor.initialTarget"
+      @close="priceEditor = null"
+      @saved="onPriceSaved"
+    />
 
   </section>
 </template>

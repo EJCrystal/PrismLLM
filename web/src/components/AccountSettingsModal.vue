@@ -4,6 +4,7 @@ import { api } from '../api'
 import { notify } from '../toast'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
+import SecretInput from './SecretInput.vue'
 
 const props = defineProps({
   user: { type: Object, required: true },
@@ -167,9 +168,8 @@ async function changePassword() {
       <form class="account-password-form" @submit.prevent="changePassword">
         <label class="field">
           <span>当前密码</span>
-          <input
+          <SecretInput
             v-model="passwordForm.currentPassword"
-            type="password"
             autocomplete="current-password"
             placeholder="输入当前密码"
           />
@@ -177,18 +177,16 @@ async function changePassword() {
         <div class="account-password-grid">
           <label class="field">
             <span>新密码</span>
-            <input
+            <SecretInput
               v-model="passwordForm.newPassword"
-              type="password"
               autocomplete="new-password"
               placeholder="至少 8 个字符"
             />
           </label>
           <label class="field">
             <span>确认新密码</span>
-            <input
+            <SecretInput
               v-model="passwordForm.confirmPassword"
-              type="password"
               autocomplete="new-password"
               placeholder="再次输入新密码"
             />

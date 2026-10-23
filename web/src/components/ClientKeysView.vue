@@ -2,8 +2,11 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
+import TablePlaceholder from './TablePlaceholder.vue'
+import { formatTime } from '../utils/format'
 
 const keys = ref([])
 const loading = ref(true)
@@ -103,24 +106,6 @@ async function remove(key) {
   }
 }
 
-async function copySecret() {
-  if (!secret.value) return
-  try {
-    await navigator.clipboard.writeText(secret.value.key)
-    notify('密钥已复制')
-  } catch {
-    const textarea = document.createElement('textarea')
-    textarea.value = secret.value.key
-    textarea.style.position = 'fixed'
-    textarea.style.opacity = '0'
-    document.body.appendChild(textarea)
-    textarea.select()
-    document.execCommand('copy')
-    textarea.remove()
-    notify('密钥已复制')
-  }
-}
-
 function toLocalInput(value) {
   if (!value) return ''
   const date = new Date(value)
@@ -130,12 +115,6 @@ function toLocalInput(value) {
 
 function fromLocalInput(value) {
   return value ? new Date(value).getTime() : null
-}
-
-function formatTime(value) {
-  return value
-    ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(value)
-    : '永不过期'
 }
 
 onMounted(load)
@@ -175,19 +154,17 @@ onMounted(load)
     <div v-if="error" class="callout danger">{{ error }}</div>
 
     <div class="panel table-panel">
-      <div v-if="loading" class="loading-state">
-        <span class="spinner"></span>
-        正在读取调用方密钥…
-      </div>
-      <div v-else-if="keys.length === 0" class="empty-state">
-        <div class="empty-icon"><Icon name="keys" :size="26" /></div>
-        <h3>还没有调用方密钥</h3>
-        <p>创建一把密钥，交给需要调用模型的内部服务。</p>
-        <button type="button" class="button primary" @click="openCreate">
-          <Icon name="plus" :size="17" />
-          新建密钥
-        </button>
-      </div>
+      <TablePlaceholder
+        v-if="loading || keys.length === 0"
+        :loading="loading"
+        loading-text="正在读取调用方密钥…"
+        :empty="keys.length === 0"
+        icon="keys"
+        title="还没有调用方密钥"
+        desc="创建一把密钥，交给需要调用模型的内部服务。"
+        action-text="新建密钥"
+        @action="openCreate"
+      />
       <div v-else class="table-scroll">
         <table class="data-table">
           <thead>
@@ -204,7 +181,10 @@ onMounted(load)
             <tr v-for="key in keys" :key="key.id">
               <td>
                 <div class="primary-cell">{{ key.name }}</div>
-                <div class="mono muted small">{{ key.id }}</div>
+                <div class="channel-id-cell">
+                  <span class="mono muted small">{{ key.id }}</span>
+                  <CopyButton :text="key.id" title="复制密钥 ID" variant="list" :size="12" />
+                </div>
               </td>
               <td><code class="key-prefix">{{ key.keyPrefix }}…</code></td>
               <td>
@@ -212,7 +192,7 @@ onMounted(load)
                   {{ key.enabled ? '启用' : '停用' }}
                 </span>
               </td>
-              <td class="muted">{{ formatTime(key.expiresAt) }}</td>
+              <td class="muted">{{ formatTime(key.expiresAt, { fallback: '永不过期' }) }}</td>
               <td class="muted">{{ formatTime(key.createdAt) }}</td>
               <td class="actions-col">
                 <div class="row-actions">
@@ -269,10 +249,7 @@ onMounted(load)
         </p>
         <div class="secret-value">
           <code>{{ secret.key }}</code>
-          <button type="button" class="button subtle" @click="copySecret">
-            <Icon name="copy" :size="16" />
-            复制
-          </button>
+          <CopyButton :text="secret.key" title="复制密钥" variant="subtle" :size="16" />
         </div>
         <p class="secret-usage">
           调用示例：<code>Authorization: Bearer {{ secret.key }}</code>

@@ -1,17 +1,20 @@
 # llm-gateway
 
-面向内部团队的 OpenAI 兼容 LLM 网关。v1 接收 `/v1/chat/completions` 与 `/v1/responses`，按模型别名选择渠道，透传 SSE 流，并记录用量与请求元数据。
+面向内部团队的 OpenAI 兼容 LLM 网关。v1 接收 `/v1/chat/completions` 与 `/v1/responses`，按渠道授权与对外模型 ID 智能路由，透明重写上游模型名，透传 SSE 流，并记录用量与请求元数据。
 
 ## 能力边界
 
 - OpenAI Chat Completions 与 Responses 兼容入口，支持 `stream=true` 与 `stream=false`。
 - 渠道按协议配置支持 `chat_completions` / `responses`，路由时按请求协议过滤候选。
-- 渠道显式授权上游模型；只有已授权模型会进入模型目录、别名路由和直连路由。
-- 渠道模型可配置规范 ID；对外优先展示规范 ID，未配置时回退上游模型 ID。
-- 调用方密钥鉴权，上游凭据加密存储。
+- 渠道显式授权上游模型；支持自定义「对外模型 ID」，留空则直接沿用上游模型名对外暴露并路由。
+- 自定义对外模型 ID 后，上游私有模型名对调用方完全透明隐藏，仅暴露配置的对外模型名；多个渠道配置相同对外模型 ID 时自动聚合并负载均衡。
+- 调用方密钥鉴权，上游凭据加密存储（AES-256-GCM）。
 - 流式响应不缓冲、客户端断开向上游传播。
-- 管理 API 与 Vue 3 管理界面：渠道、别名、调用方密钥、请求日志。
-- 按渠道 + 上游模型配置每百万 token 单价，在请求日志中显示单条请求费用。
+- 管理 API 与 Vue 3 管理界面：
+  - 渠道管理：接入点、协议、凭据、对外模型 ID 映射及模型计费单价配置。
+  - 多主题支持：浅色（Light）、深色（Dark）、护眼暖色（Sepia）三主题无缝轮转与持久化。
+  - 模型列表：查看 `/v1/models` 实际对外暴露结果与 models.dev 临时对比。
+  - 调用方密钥与请求日志审计。
 - PostgreSQL + Flyway；单实例部署。
 
 明确不做：Anthropic/Gemini 原生协议转换、账单与配额、多租户、语义缓存、MCP、多副本。
@@ -21,7 +24,7 @@
 ```
 client --Bearer client key--> gateway --Bearer upstream credential--> OpenAI-compatible upstream
                                 |
-                                +-- PostgreSQL: channels, channel models, aliases, client keys, model prices, request logs
+                                +-- PostgreSQL: channels, channel models, client keys, model prices, request logs
 ```
 
 数据面：`/v1/chat/completions`、`/v1/responses`、`/v1/models`。
@@ -30,11 +33,9 @@ client --Bearer client key--> gateway --Bearer upstream credential--> OpenAI-com
 
 渠道的 `baseUrl` 必须包含版本路径，例如 `https://api.openai.com/v1`。网关按请求协议追加 `/chat/completions` 或 `/responses`，不会自动补 `/v1`。
 
-默认情况下，`/v1/models` 只返回已启用的模型别名。设置 `EXPOSE_UPSTREAM_MODELS=true` 后，会额外合并启用渠道中已授权的模型；请求未命中别名时，会按已授权模型直接路由。该模式会暴露上游模型名，默认关闭。
-
-每个渠道还可以关闭 `exposeUpstreamModels`（管理界面中的“仅通过别名暴露”）。关闭后，该渠道的授权模型不会进入 `/v1/models` 直连列表，也不能用上游模型名直接调用；通过别名发起的路由仍然可用。
-
-渠道模型可配置 `canonicalModelId`。配置后，`/v1/models` 和直连路由使用规范 ID，原始上游 ID 不再对外暴露；未配置时保持原有上游 ID 行为。
+当 `EXPOSE_UPSTREAM_MODELS=true`（默认开启）时，`/v1/models` 会自动聚合所有启用渠道中已授权的模型：
+- **未配置对外模型 ID（留空）**：对外直接使用上游模型名，调用方直接用上游名调用；
+- **配置了对外模型 ID**：对外仅暴露配置的对外 ID，上游私有名字被完全隐藏，客户端调用对外 ID 时网关自动重写为实际上游名。
 
 ## 快速开始
 
@@ -184,9 +185,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 ### 单请求计费
 
-管理界面的“模型”一级菜单提供统一模型清单，按 models.dev 解析的模型开发者分组；展开模型即可管理别名路由和渠道报价，并支持按开发者、渠道、状态和关键词筛选。models.dev 不可用时回退到上游 `owned_by`。清单、别名候选和价格选择器都只展示渠道已授权的模型。底层仍分别保存渠道模型授权、别名候选和渠道价格，单位是每百万 token。价格规则接口：`GET/POST /admin/api/model-prices`、`PUT/DELETE /admin/api/model-prices/{id}`。
-
-升级到 v8 时，迁移会根据已有别名候选和价格规则回填渠道模型授权。没有别名或价格的旧渠道不会自动推断授权模型，需要在渠道编辑弹窗中加载上游模型并选择。v10 新增规范 ID 映射字段；旧数据保持为空并继续使用上游 ID，需在渠道编辑弹窗中自动匹配或手动填写。
+管理界面的“渠道”列表提供便捷的「配置模型单价」入口，直接为每个渠道已授权的上游模型配置输入、输出与缓存读取单价（每百万 token 单价），在请求日志中实时计算并显示单条请求费用。价格规则接口：`GET/POST /admin/api/model-prices`、`PUT/DELETE /admin/api/model-prices/{id}`。
 
 “获取参考单价”返回的原始价格为 USD。切换到 CNY 或 EUR 时，管理面始终以保留的 USD 原值为基准换算，并在连续切换币种时显示 `1 USD = …` 的参考汇率、日期和来源；手动修改价格后，后续切换改为按当前币种换算。汇率缓存 6 小时，获取失败时会恢复原币种而不是保留错误数值。
 
@@ -213,11 +212,21 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 ## 测试
 
+### 后端自动化测试
+
 ```bash
 mvn test
 ```
 
-集成测试使用 Testcontainers 启动 PostgreSQL。核心覆盖：Chat Completions 与 Responses 的 SSE 用量解析、协议路由过滤、别名路由、首 token 前重试（含连接失败）、429 映射、首 token 超时取消上游、管理面 CSRF。
+包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions 与 Responses 的 SSE 用量解析、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前重试（含连接失败）、429 映射、首 token 超时取消上游、管理面 CSRF。
+
+### 前端自动化测试
+
+```bash
+npm --prefix web test
+```
+
+基于 Node.js 原生测试引擎（`node:test`），毫秒级执行。覆盖多主题注册表（浅色/深色/护眼暖色）、持久化与防闪烁、通用复制工具 `copyText`、`SecretInput`、`CopyButton`、`format` 格式化工具及授权模型展示逻辑。
 
 关键实现决策记录在 `docs/adr/`，包括 Kotlin/Ktor 选型、v1 协议边界和上游 HTTP 客户端选择。
 

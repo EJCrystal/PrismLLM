@@ -1,6 +1,8 @@
 <script setup>
 import { ref } from 'vue'
 import { api } from '../api'
+import SecretInput from './SecretInput.vue'
+import ThemeToggle from './ThemeToggle.vue'
 
 const emit = defineEmits(['authenticated'])
 const username = ref('admin')
@@ -28,6 +30,7 @@ async function submit() {
 
 <template>
   <div class="login-page">
+    <ThemeToggle class="login-theme-toggle" />
     <div class="login-art">
       <div class="login-orbit orbit-one"></div>
       <div class="login-orbit orbit-two"></div>
@@ -64,7 +67,11 @@ async function submit() {
           </label>
           <label class="field">
             <span>密码</span>
-            <input v-model="password" type="password" autocomplete="current-password" placeholder="输入管理员密码" />
+            <SecretInput
+              v-model="password"
+              autocomplete="current-password"
+              placeholder="输入管理员密码"
+            />
           </label>
           <p v-if="error" class="form-error">{{ error }}</p>
           <button class="button primary full" type="submit" :disabled="loading">

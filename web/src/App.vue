@@ -5,15 +5,14 @@ import Icon from './components/Icon.vue'
 import ToastStack from './components/ToastStack.vue'
 import LoginView from './components/LoginView.vue'
 import ChannelsView from './components/ChannelsView.vue'
-import ModelManagementView from './components/ModelManagementView.vue'
 import ExposedModelsView from './components/ExposedModelsView.vue'
 import ClientKeysView from './components/ClientKeysView.vue'
 import LogsView from './components/LogsView.vue'
 import AccountSettingsModal from './components/AccountSettingsModal.vue'
+import ThemeToggle from './components/ThemeToggle.vue'
 
 const navItems = [
   { id: 'channels', label: '渠道', icon: 'channels' },
-  { id: 'models', label: '模型', icon: 'models' },
   { id: 'exposed-models', label: '模型列表', icon: 'list' },
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
@@ -23,10 +22,6 @@ const meta = {
   channels: {
     title: '渠道',
     desc: '管理上游模型接入点。凭据加密保存，创建后不再回显。',
-  },
-  models: {
-    title: '模型',
-    desc: '统一管理模型目录、别名路由与计费规则。',
   },
   'exposed-models': {
     title: '模型列表',
@@ -170,6 +165,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="topbar-right">
+          <ThemeToggle />
           <button
             type="button"
             class="user-chip"
@@ -193,7 +189,6 @@ onBeforeUnmount(() => {
 
       <main class="content">
         <ChannelsView v-if="view === 'channels'" />
-        <ModelManagementView v-else-if="view === 'models'" />
         <ExposedModelsView v-else-if="view === 'exposed-models'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
         <LogsView v-else-if="view === 'logs'" />
