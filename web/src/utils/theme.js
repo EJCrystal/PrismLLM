@@ -43,9 +43,10 @@ export function normalizeTheme(themeId) {
  * @param {Storage|null} storage
  * @returns {'light'|'dark'|string}
  */
-export function getSavedTheme(storage = typeof localStorage !== 'undefined' ? localStorage : null) {
+export function getSavedTheme(storage = null) {
   try {
-    const saved = storage?.getItem(THEME_STORAGE_KEY)
+    const s = storage || (typeof localStorage !== 'undefined' ? localStorage : null)
+    const saved = s?.getItem(THEME_STORAGE_KEY)
     return normalizeTheme(saved)
   } catch {
     return DEFAULT_THEME
@@ -75,15 +76,17 @@ export function nextTheme(current) {
  */
 export function applyTheme(
   targetTheme,
-  docEl = typeof document !== 'undefined' ? document.documentElement : null,
-  storage = typeof localStorage !== 'undefined' ? localStorage : null,
+  docEl = null,
+  storage = null,
 ) {
   const theme = normalizeTheme(targetTheme)
-  if (docEl?.setAttribute) {
-    docEl.setAttribute('data-theme', theme)
+  const el = docEl || (typeof document !== 'undefined' ? document.documentElement : null)
+  if (el?.setAttribute) {
+    el.setAttribute('data-theme', theme)
   }
   try {
-    storage?.setItem(THEME_STORAGE_KEY, theme)
+    const s = storage || (typeof localStorage !== 'undefined' ? localStorage : null)
+    s?.setItem(THEME_STORAGE_KEY, theme)
   } catch {
     // ignore
   }

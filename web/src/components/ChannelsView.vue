@@ -110,11 +110,11 @@ function openPrice(channel, upstreamModel = null) {
 
 async function onPriceSaved() {
   priceEditor.value = null
+  notify('计费单价已保存')
   try {
     prices.value = await api.listModelPrices()
-    notify('计费单价已保存')
   } catch {
-    // ignore
+    notify('单价已保存，但刷新列表失败', 'warning')
   }
 }
 

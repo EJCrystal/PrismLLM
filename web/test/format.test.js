@@ -6,6 +6,7 @@ import {
   formatNumber,
   formatTokensCompact,
   formatCost,
+  formatUnitPrice,
 } from '../src/utils/format.js'
 
 describe('utils: format 格式化工具函数库', () => {
@@ -85,6 +86,16 @@ describe('utils: format 格式化工具函数库', () => {
       assert.equal(formatCost(0.005, 'CNY'), '¥0.005')
       assert.equal(formatCost(1.5, 'USD'), '$1.5')
       assert.equal(formatCost(10.25, 'EUR'), '€10.25')
+    })
+  })
+
+  describe('formatUnitPrice', () => {
+    it('保留高精度微小单价且不强制千分位', () => {
+      assert.equal(formatUnitPrice('0.000025'), '0.000025')
+      assert.equal(formatUnitPrice(0.0015), '0.0015')
+      assert.equal(formatUnitPrice(1.23456789), '1.23456789')
+      assert.equal(formatUnitPrice(null), '—')
+      assert.equal(formatUnitPrice(''), '—')
     })
   })
 })

@@ -179,7 +179,7 @@ onMounted(() => {
         :empty="models.length === 0"
         icon="models"
         title="当前没有对外暴露的模型"
-        desc="在渠道中授权模型并设置对外模型 ID 后，这里会同步显示。"
+        desc="在渠道中授权模型后这里会同步显示（配置对外模型 ID 为可选）。"
       />
       <div v-else class="table-scroll">
         <table class="data-table">

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
+import { notify } from '../toast'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
@@ -10,6 +11,7 @@ import {
   formatNumber as formatTokens,
   formatTokensCompact,
   formatCost as formatCostUtil,
+  formatUnitPrice,
 } from '../utils/format'
 
 const logs = ref([])
@@ -99,10 +101,6 @@ function costTitle(log) {
     return log.channelId && log.upstreamModel ? '该渠道和上游模型尚未配置计费单价' : '没有可计费的路由信息'
   }
   return `输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 缓存 ${formatTokens(log.cachedTokens)} · ${log.costCurrency}`
-}
-
-function formatUnitPrice(value) {
-  return formatTokens(value)
 }
 
 function usageDetailTitle(log) {

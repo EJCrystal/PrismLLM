@@ -121,3 +121,16 @@ export function formatCost(amount, currency = 'USD') {
   const prefix = CURRENCY_SYMBOLS[currency] || (currency ? `${currency} ` : '')
   return `${prefix}${text}`
 }
+
+/**
+ * 格式化模型计费单价，保留最高 8 位高精度小数且不强制添加千分位，避免微小单价显示为 0。
+ *
+ * @param {number|string|null} value 单价值
+ * @param {string} fallback 缺省值
+ * @returns {string}
+ */
+export function formatUnitPrice(value, fallback = '—') {
+  if (value == null || value === '' || Number.isNaN(Number(value))) return fallback
+  const num = Number(value)
+  return num.toLocaleString('zh-CN', { maximumFractionDigits: 8, useGrouping: false })
+}

@@ -58,7 +58,6 @@ const show = ref(false)
       class="password-toggle-btn"
       :title="show ? '隐藏内容' : '显示内容'"
       :aria-label="show ? '隐藏内容' : '显示内容'"
-      tabindex="-1"
       @click="show = !show"
     >
       <Icon :name="show ? 'eye-off' : 'eye'" :size="16" />

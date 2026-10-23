@@ -67,11 +67,13 @@ describe('components & utils: 基础交互组件逻辑', () => {
     })
 
     it('CopyButton 成功文案自动推导规则', () => {
-      const computeSuccessTip = (title, customTip) =>
-        customTip || (title.endsWith('复制') ? `${title}成功` : `${title}已复制`)
+      const computeSuccessTip = (title, customTip) => {
+        const subject = title.replace(/^复制\s*/, '')
+        return customTip || (subject ? `${subject}已复制` : '复制成功')
+      }
 
       assert.equal(computeSuccessTip('复制', ''), '复制成功')
-      assert.equal(computeSuccessTip('复制渠道 ID', ''), '复制渠道 ID已复制')
+      assert.equal(computeSuccessTip('复制渠道 ID', ''), '渠道 ID已复制')
       assert.equal(computeSuccessTip('渠道 ID', ''), '渠道 ID已复制')
       assert.equal(computeSuccessTip('自定义操作', '搞定！'), '搞定！')
     })

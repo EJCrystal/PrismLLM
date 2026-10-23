@@ -39,7 +39,8 @@ async function handleCopy() {
     timer = setTimeout(() => {
       copied.value = false
     }, 1500)
-    const tip = props.successTip || (props.title.endsWith('复制') ? `${props.title}成功` : `${props.title}已复制`)
+    const subject = props.title.replace(/^复制\s*/, '')
+    const tip = props.successTip || (subject ? `${subject}已复制` : '复制成功')
     notify(tip)
   } catch {
     window.prompt(props.title || '复制文本', props.text)

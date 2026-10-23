@@ -33,7 +33,7 @@ client --Bearer client key--> gateway --Bearer upstream credential--> OpenAI-com
 
 渠道的 `baseUrl` 必须包含版本路径，例如 `https://api.openai.com/v1`。网关按请求协议追加 `/chat/completions` 或 `/responses`，不会自动补 `/v1`。
 
-当 `EXPOSE_UPSTREAM_MODELS=true`（默认开启）时，`/v1/models` 会自动聚合所有启用渠道中已授权的模型：
+当 `EXPOSE_UPSTREAM_MODELS=true`（默认 `false`，需显式开启）时，`/v1/models` 会自动聚合所有启用渠道中已授权的模型：
 - **未配置对外模型 ID（留空）**：对外直接使用上游模型名，调用方直接用上游名调用；
 - **配置了对外模型 ID**：对外仅暴露配置的对外 ID，上游私有名字被完全隐藏，客户端调用对外 ID 时网关自动重写为实际上游名。
 
