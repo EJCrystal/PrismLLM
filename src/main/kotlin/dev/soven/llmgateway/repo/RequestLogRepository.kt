@@ -38,6 +38,11 @@ class RequestLogRepository(private val database: Database) {
             it[reasoningEffort] = record.reasoningEffort
             it[totalTokens] = record.totalTokens
             it[usageKnown] = record.usageKnown
+            it[costAmount] = record.costAmount
+            it[costCurrency] = record.costCurrency
+            it[inputPricePerMillion] = record.inputPricePerMillion
+            it[outputPricePerMillion] = record.outputPricePerMillion
+            it[cachedInputPricePerMillion] = record.cachedInputPricePerMillion
             it[errorCode] = record.errorCode
             it[failureStage] = record.failureStage?.value
             it[errorMessage] = record.errorMessage
@@ -73,6 +78,11 @@ class RequestLogRepository(private val database: Database) {
         reasoningEffort = row[RequestLogs.reasoningEffort],
         totalTokens = row[RequestLogs.totalTokens],
         usageKnown = row[RequestLogs.usageKnown],
+        costAmount = row[RequestLogs.costAmount],
+        costCurrency = row[RequestLogs.costCurrency],
+        inputPricePerMillion = row[RequestLogs.inputPricePerMillion],
+        outputPricePerMillion = row[RequestLogs.outputPricePerMillion],
+        cachedInputPricePerMillion = row[RequestLogs.cachedInputPricePerMillion],
         errorCode = row[RequestLogs.errorCode],
         failureStage = FailureStage.fromValue(row[RequestLogs.failureStage]),
         errorMessage = row[RequestLogs.errorMessage],

@@ -103,6 +103,36 @@ function cacheTitle(log) {
   return `缓存 ${formatTokens(log.cachedTokens)} / 输入 ${formatTokens(log.inputTokens)}`
 }
 
+const currencySymbols = { USD: '$', CNY: '¥', EUR: '€', JPY: '¥' }
+
+function formatCost(log) {
+  if (log.costAmount == null) return null
+  const value = Number(log.costAmount)
+  if (!Number.isFinite(value)) return `${log.costAmount} ${log.costCurrency || ''}`.trim()
+  let text
+  if (value === 0) text = '0'
+  else if (value < 0.0001) text = value.toFixed(8)
+  else if (value < 0.01) text = value.toFixed(6)
+  else if (value < 1) text = value.toFixed(4)
+  else text = value.toFixed(2)
+  text = text.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
+  const prefix = currencySymbols[log.costCurrency] || (log.costCurrency ? `${log.costCurrency} ` : '')
+  return `${prefix}${text}`
+}
+
+function costTitle(log) {
+  if (log.costAmount == null) {
+    if (!log.usageKnown) return '用量未知，费用无法计算'
+    return log.channelId && log.upstreamModel ? '该渠道和上游模型尚未配置计费单价' : '没有可计费的路由信息'
+  }
+  return `输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 缓存 ${formatTokens(log.cachedTokens)} · ${log.costCurrency}`
+}
+
+function formatUnitPrice(value) {
+  if (value == null) return '—'
+  return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 8 })
+}
+
 function usageDetailTitle(log) {
   return `推理 ${formatTokens(log.reasoningTokens)} · 输出速率 ${formatThroughput(log)} tok/s · ${cacheTitle(log)}`
 }
@@ -181,6 +211,24 @@ async function copyRequestId(requestId) {
   }
 }
 
+async function copyChannelId(channelId) {
+  try {
+    await copyText(channelId)
+    notify('渠道 ID 已复制')
+  } catch {
+    window.prompt('复制渠道 ID', channelId)
+  }
+}
+
+async function copyClientKeyId(clientKeyId) {
+  try {
+    await copyText(clientKeyId)
+    notify('调用方密钥 ID 已复制')
+  } catch {
+    window.prompt('复制调用方密钥 ID', clientKeyId)
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -247,10 +295,10 @@ onMounted(load)
               <th>请求 ID</th>
               <th>别名 / 协议</th>
               <th>渠道 / 上游模型</th>
-              <th>状态</th>
+              <th>状态 / 错误</th>
               <th>耗时</th>
               <th>Token 用量</th>
-              <th>错误</th>
+              <th>费用</th>
               <th class="actions-col"></th>
             </tr>
           </thead>
@@ -282,7 +330,15 @@ onMounted(load)
                 <div class="primary-cell small">{{ log.channelName || (log.channelId ? log.channelId.slice(0, 8) : '—') }}</div>
                 <div class="mono muted small">{{ log.upstreamModel || '—' }}</div>
               </td>
-              <td><span class="badge" :class="statusClass(log.statusCode)">{{ log.statusCode }}</span></td>
+              <td>
+                <div class="stacked-cell">
+                  <span class="badge" :class="statusClass(log.statusCode)">{{ log.statusCode }}</span>
+                  <template v-if="log.errorCode">
+                    <span class="badge warning">{{ log.errorCode }}</span>
+                    <span v-if="log.failureStage" class="stage-text">{{ stageLabel(log.failureStage) }}阶段</span>
+                  </template>
+                </div>
+              </td>
               <td class="nowrap">
                 <div class="stacked-cell">
                   <span>{{ formatDuration(log.totalMs) }}</span>
@@ -302,11 +358,9 @@ onMounted(load)
                 </template>
                 <span v-else class="muted">未知</span>
               </td>
-              <td>
-                <div v-if="log.errorCode" class="error-cell">
-                  <span class="badge warning">{{ log.errorCode }}</span>
-                  <span v-if="log.failureStage" class="stage-text">{{ stageLabel(log.failureStage) }}阶段</span>
-                </div>
+              <td class="nowrap" :title="costTitle(log)">
+                <span v-if="log.costAmount != null">{{ formatCost(log) }}</span>
+                <span v-else-if="log.usageKnown && log.channelId && log.upstreamModel" class="muted">未配置</span>
                 <span v-else class="muted">—</span>
               </td>
               <td class="actions-col">
@@ -386,7 +440,18 @@ onMounted(load)
               </div>
               <div class="detail-item">
                 <span>渠道 ID</span>
-                <strong class="mono detail-wrap">{{ selected.channelId || '—' }}</strong>
+                <div v-if="selected.channelId" class="detail-value-copy">
+                  <strong class="mono detail-wrap">{{ selected.channelId }}</strong>
+                  <button
+                    type="button"
+                    class="icon-button"
+                    title="复制渠道 ID"
+                    @click="copyChannelId(selected.channelId)"
+                  >
+                    <Icon name="copy" :size="13" />
+                  </button>
+                </div>
+                <strong v-else class="muted">—</strong>
               </div>
               <div class="detail-item">
                 <span>上游模型</span>
@@ -398,7 +463,18 @@ onMounted(load)
               </div>
               <div class="detail-item">
                 <span>调用方密钥 ID</span>
-                <strong class="mono detail-wrap">{{ selected.clientKeyId || '—' }}</strong>
+                <div v-if="selected.clientKeyId" class="detail-value-copy">
+                  <strong class="mono detail-wrap">{{ selected.clientKeyId }}</strong>
+                  <button
+                    type="button"
+                    class="icon-button"
+                    title="复制调用方密钥 ID"
+                    @click="copyClientKeyId(selected.clientKeyId)"
+                  >
+                    <Icon name="copy" :size="13" />
+                  </button>
+                </div>
+                <strong v-else class="muted">—</strong>
               </div>
               <div class="detail-item">
                 <span>首 token</span>
@@ -431,6 +507,18 @@ onMounted(load)
                 <span>输出速率</span>
                 <strong>{{ formatThroughput(selected) }} tok/s</strong>
               </div>
+              <div class="detail-item">
+                <span>费用</span>
+                <strong>{{ selected.costAmount != null ? formatCost(selected) : (selected.usageKnown ? '未配置' : '—') }}</strong>
+              </div>
+              <div v-if="selected.costAmount != null" class="detail-item">
+                <span>计费单价 / 1M</span>
+                <strong class="detail-wrap">
+                  {{ selected.costCurrency }} 输入 {{ formatUnitPrice(selected.inputPricePerMillion) }} · 输出
+                  {{ formatUnitPrice(selected.outputPricePerMillion) }} · 缓存
+                  {{ formatUnitPrice(selected.cachedInputPricePerMillion) }}
+                </strong>
+              </div>
             </div>
 
             <div class="detail-block">
@@ -440,7 +528,7 @@ onMounted(load)
             </div>
 
             <p class="muted small detail-hint">
-              输出速率为输出 token / 总耗时；缓存命中为 cached / input。缺失字段显示“—”，不做估算。日志不保存 prompt 与响应正文。
+              输出速率为输出 token / 总耗时；缓存命中为 cached / input。费用按渠道 + 上游模型的单价快照计算，推理 token 已包含在输出 token 中。缺失字段显示“—”，不做估算。日志不保存 prompt 与响应正文。
             </p>
           </div>
 

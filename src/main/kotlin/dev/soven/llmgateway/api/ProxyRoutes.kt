@@ -61,24 +61,17 @@ import java.util.UUID
 fun Route.proxyRoutes(app: GatewayApplication) {
     get("/v1/models") {
         authenticate(call, app)
-        val aliases = app.aliasRepository.listAvailableAliases()
-        val exposedModels = if (app.config.exposeUpstreamModels) {
-            val aliasNames = app.aliasRepository.listAllAliasNames()
-            app.modelCatalog.listEnabledModels().filterNot { it in aliasNames }
-        } else {
-            emptyList()
-        }
-        val models = (aliases + exposedModels).distinct().sorted()
+        val models = listExposedModels(app)
         call.respond(
             buildJsonObject {
                 put("object", "list")
                 put(
                     "data",
                     buildJsonArray {
-                        models.forEach { alias ->
+                        models.forEach { model ->
                             add(
                                 buildJsonObject {
-                                    put("id", alias)
+                                    put("id", model.id)
                                     put("object", "model")
                                     put("created", 0)
                                     put("owned_by", "llm-gateway")
@@ -91,12 +84,10 @@ fun Route.proxyRoutes(app: GatewayApplication) {
         )
     }
 
-    post("/v1/chat/completions") {
-        handleProxy(app, call, GatewayProtocol.CHAT_COMPLETIONS)
-    }
-
-    post("/v1/responses") {
-        handleProxy(app, call, GatewayProtocol.RESPONSES)
+    GatewayProtocol.entries.forEach { protocol ->
+        post("/v1${protocol.path}") {
+            handleProxy(app, call, protocol)
+        }
     }
 }
 
@@ -267,6 +258,11 @@ private suspend fun handleProxy(
                 reasoningEffort = reasoningEffort,
                 totalTokens = usage?.total,
                 usageKnown = usage?.known ?: false,
+                costAmount = null,
+                costCurrency = null,
+                inputPricePerMillion = null,
+                outputPricePerMillion = null,
+                cachedInputPricePerMillion = null,
                 errorCode = errorCode ?: state.errorCode,
                 failureStage = failureStage,
                 errorMessage = errorMessage,
@@ -515,10 +511,7 @@ private fun protocolNotSupported(alias: String, protocol: GatewayProtocol): Gate
     )
 
 private fun buildUpstreamUrl(candidate: RouteCandidate, protocol: GatewayProtocol): String =
-    candidate.channel.baseUrl.trimEnd('/') + when (protocol) {
-        GatewayProtocol.CHAT_COMPLETIONS -> "/chat/completions"
-        GatewayProtocol.RESPONSES -> "/responses"
-    }
+    candidate.channel.baseUrl.trimEnd('/') + protocol.path
 
 private fun decryptCredential(app: GatewayApplication, candidate: RouteCandidate): String = runCatching {
     app.credentialCipher.decrypt(candidate.channel.credentialCiphertext, candidate.channel.credentialNonce)
