@@ -106,6 +106,15 @@
   color: var(--ink);
 }
 
+[data-theme="dark"] select option {
+  background-color: #111827;
+  color: #f1f5f9;
+}
+
+[data-theme="dark"] input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.85);
+}
+
 [data-theme="dark"] .field input:focus,
 [data-theme="dark"] .field select:focus,
 [data-theme="dark"] .search-box input:focus {
@@ -431,6 +440,15 @@
   color: var(--ink);
 }
 
+[data-theme="sepia"] select option {
+  background-color: #fcf9f2;
+  color: #3b2f20;
+}
+
+[data-theme="sepia"] input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: sepia(1) saturate(4) brightness(0.7);
+}
+
 [data-theme="sepia"] .field input:focus,
 [data-theme="sepia"] .field select:focus,
 [data-theme="sepia"] .search-box input:focus {
@@ -531,6 +549,12 @@
 
 [data-theme="sepia"] .login-page {
   background: var(--bg);
+}
+
+[data-theme="sepia"] .modal {
+  background: var(--panel);
+  border-color: var(--line-strong);
+  box-shadow: 0 28px 80px rgba(60, 45, 25, 0.16);
 }
 
 [data-theme="sepia"] .login-card {
@@ -634,6 +658,7 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-color: var(--line-strong) transparent;
 }
 
 html,
