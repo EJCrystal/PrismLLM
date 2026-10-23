@@ -15,6 +15,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
 import io.ktor.client.request.get
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
@@ -27,6 +28,7 @@ import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.AfterAll
@@ -780,9 +782,24 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Cookie, sessionCookie)
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
-                setBody("""{"alias":"fast-chat","candidates":[{"channelId":"$channelId","upstreamModel":"gpt-4o-mini"}]}""")
+                setBody("""{"alias":"fast-chat","candidates":[{"channelId":"$channelId","upstreamModel":" gpt-4o-mini "}]}""")
             }
             assertEquals(HttpStatusCode.Created, createdAlias.status)
+            val createdAliasJson = Json.parseToJsonElement(createdAlias.bodyAsText()).jsonObject
+            val aliasId = createdAliasJson["id"]!!.jsonPrimitive.content
+            val createdModel = createdAliasJson["candidates"]!!.jsonArray[0].jsonObject["upstreamModel"]!!.jsonPrimitive.content
+            assertEquals("gpt-4o-mini", createdModel)
+
+            val updatedAlias = client.put("/admin/api/aliases/$aliasId") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"alias":"fast-chat","candidates":[{"channelId":"$channelId","upstreamModel":" gpt-4o-mini "}]}""")
+            }
+            assertEquals(HttpStatusCode.OK, updatedAlias.status)
+            val updatedAliasJson = Json.parseToJsonElement(updatedAlias.bodyAsText()).jsonObject
+            val updatedModel = updatedAliasJson["candidates"]!!.jsonArray[0].jsonObject["upstreamModel"]!!.jsonPrimitive.content
+            assertEquals("gpt-4o-mini", updatedModel)
 
             val createdKey = client.post("/admin/api/client-keys") {
                 header(HttpHeaders.Cookie, sessionCookie)

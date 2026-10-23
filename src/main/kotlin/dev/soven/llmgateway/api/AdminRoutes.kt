@@ -195,7 +195,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val record = app.aliasRepository.create(
                 alias = request.alias,
                 enabled = request.enabled,
-                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel) },
+                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel.trim()) },
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
         }
@@ -211,7 +211,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 id = id,
                 alias = request.alias,
                 enabled = request.enabled,
-                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel) },
+                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel.trim()) },
             ) ?: throw notFound("alias_not_found", "模型别名不存在")
             call.respond(record.toResponse())
         }
