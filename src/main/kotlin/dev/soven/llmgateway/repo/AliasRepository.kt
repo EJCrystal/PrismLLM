@@ -2,9 +2,11 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.AliasCandidates
 import dev.soven.llmgateway.db.Channels
+import dev.soven.llmgateway.db.ChannelModels
 import dev.soven.llmgateway.db.ModelAliases
 import dev.soven.llmgateway.domain.AliasRecord
 import dev.soven.llmgateway.domain.CandidateRecord
+import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RouteCandidate
@@ -44,6 +46,11 @@ class AliasRepository(private val database: Database) {
                     position = row[AliasCandidates.position],
                 )
             }
+            .filter { candidate ->
+                ChannelModels.selectAll()
+                    .where { (ChannelModels.channelId eq candidate.channel.id) and (ChannelModels.upstreamModel eq candidate.upstreamModel) }
+                    .any()
+            }
     }
 
     suspend fun listAvailableAliases(): List<String> = suspendTransaction(database) {
@@ -82,6 +89,20 @@ class AliasRepository(private val database: Database) {
     suspend fun isChannelInUse(channelId: String): Boolean = suspendTransaction(database) {
         AliasCandidates.selectAll().where { AliasCandidates.channelId eq channelId }.limit(1).any()
     }
+
+    suspend fun findAliasNamesUsingModel(channelId: String, upstreamModel: String): List<String> =
+        suspendTransaction(database) {
+            AliasCandidates
+                .join(ModelAliases, JoinType.INNER, AliasCandidates.aliasId, ModelAliases.id)
+                .selectAll()
+                .where {
+                    (AliasCandidates.channelId eq channelId) and
+                        (AliasCandidates.upstreamModel eq upstreamModel)
+                }
+                .map { it[ModelAliases.alias] }
+                .distinct()
+                .sorted()
+        }
 
     suspend fun create(alias: String, enabled: Boolean, candidates: List<NewCandidate>): AliasWithCandidates =
         suspendTransaction(database) {
@@ -168,8 +189,19 @@ class AliasRepository(private val database: Database) {
         authType = this[Channels.authType],
         protocols = GatewayProtocol.parse(this[Channels.protocols]),
         enabled = this[Channels.enabled],
+        exposeUpstreamModels = this[Channels.exposeUpstreamModels],
         createdAt = this[Channels.createdAt],
         updatedAt = this[Channels.updatedAt],
+        modelMappings = ChannelModels.selectAll()
+            .where { ChannelModels.channelId eq this[Channels.id] }
+            .map {
+                ChannelModelRecord(
+                    upstreamModel = it[ChannelModels.upstreamModel],
+                    canonicalModelId = it[ChannelModels.canonicalModelId],
+                    mappingSource = it[ChannelModels.mappingSource],
+                )
+            }
+            .sortedBy { it.upstreamModel },
     )
 }
 

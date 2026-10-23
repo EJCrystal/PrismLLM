@@ -1,0 +1,115 @@
+package dev.soven.llmgateway.repo
+
+import dev.soven.llmgateway.db.Channels
+import dev.soven.llmgateway.db.ModelPrices
+import dev.soven.llmgateway.domain.ModelPriceRecord
+import org.jetbrains.exposed.v1.core.JoinType
+import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.jdbc.update
+import java.math.BigDecimal
+import java.util.UUID
+
+/**
+ * 模型计费单价的持久化。价格按渠道 + 上游模型唯一。
+ *
+ * @author 文杰
+ * @since 2026-10-22
+ */
+class ModelPriceRepository(private val database: Database) {
+    suspend fun list(): List<ModelPriceRecord> = suspendTransaction(database) {
+        ModelPrices
+            .join(Channels, JoinType.INNER, ModelPrices.channelId, Channels.id)
+            .selectAll()
+            .map(::toRecord)
+            .sortedWith(compareBy({ it.channelName }, { it.upstreamModel }))
+    }
+
+    suspend fun find(channelId: String, upstreamModel: String): ModelPriceRecord? =
+        suspendTransaction(database) {
+            ModelPrices
+                .join(Channels, JoinType.INNER, ModelPrices.channelId, Channels.id)
+                .selectAll()
+                .where { (ModelPrices.channelId eq channelId) and (ModelPrices.upstreamModel eq upstreamModel) }
+                .singleOrNull()
+                ?.let(::toRecord)
+        }
+
+    suspend fun findById(id: String): ModelPriceRecord? = suspendTransaction(database) { load(id) }
+
+    suspend fun create(
+        channelId: String,
+        upstreamModel: String,
+        currency: String,
+        inputPricePerMillion: BigDecimal,
+        outputPricePerMillion: BigDecimal,
+        cachedInputPricePerMillion: BigDecimal?,
+    ): ModelPriceRecord = suspendTransaction(database) {
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        ModelPrices.insert {
+            it[ModelPrices.id] = id
+            it[ModelPrices.channelId] = channelId
+            it[ModelPrices.upstreamModel] = upstreamModel
+            it[ModelPrices.currency] = currency
+            it[ModelPrices.inputPricePerMillion] = inputPricePerMillion
+            it[ModelPrices.outputPricePerMillion] = outputPricePerMillion
+            it[ModelPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
+            it[createdAt] = now
+            it[updatedAt] = now
+        }
+        checkNotNull(load(id))
+    }
+
+    suspend fun update(
+        id: String,
+        channelId: String,
+        upstreamModel: String,
+        currency: String,
+        inputPricePerMillion: BigDecimal,
+        outputPricePerMillion: BigDecimal,
+        cachedInputPricePerMillion: BigDecimal?,
+    ): ModelPriceRecord? = suspendTransaction(database) {
+        val changed = ModelPrices.update({ ModelPrices.id eq id }) {
+            it[ModelPrices.channelId] = channelId
+            it[ModelPrices.upstreamModel] = upstreamModel
+            it[ModelPrices.currency] = currency
+            it[ModelPrices.inputPricePerMillion] = inputPricePerMillion
+            it[ModelPrices.outputPricePerMillion] = outputPricePerMillion
+            it[ModelPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
+            it[updatedAt] = System.currentTimeMillis()
+        }
+        if (changed == 0) null else load(id)
+    }
+
+    suspend fun delete(id: String): Boolean = suspendTransaction(database) {
+        ModelPrices.deleteWhere { ModelPrices.id eq id } > 0
+    }
+
+    private fun load(id: String): ModelPriceRecord? =
+        ModelPrices
+            .join(Channels, JoinType.INNER, ModelPrices.channelId, Channels.id)
+            .selectAll()
+            .where { ModelPrices.id eq id }
+            .singleOrNull()
+            ?.let(::toRecord)
+
+    private fun toRecord(row: ResultRow) = ModelPriceRecord(
+        id = row[ModelPrices.id],
+        channelId = row[ModelPrices.channelId],
+        channelName = row[Channels.name],
+        upstreamModel = row[ModelPrices.upstreamModel],
+        currency = row[ModelPrices.currency],
+        inputPricePerMillion = row[ModelPrices.inputPricePerMillion],
+        outputPricePerMillion = row[ModelPrices.outputPricePerMillion],
+        cachedInputPricePerMillion = row[ModelPrices.cachedInputPricePerMillion],
+        createdAt = row[ModelPrices.createdAt],
+        updatedAt = row[ModelPrices.updatedAt],
+    )
+}

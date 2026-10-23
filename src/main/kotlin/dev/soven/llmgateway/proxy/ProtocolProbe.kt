@@ -82,10 +82,7 @@ suspend fun probeUpstreamProtocols(
 }
 
 private fun probeUrl(channel: ChannelRecord, protocol: GatewayProtocol): String =
-    channel.baseUrl.trimEnd('/') + when (protocol) {
-        GatewayProtocol.CHAT_COMPLETIONS -> "/chat/completions"
-        GatewayProtocol.RESPONSES -> "/responses"
-    }
+    channel.baseUrl.trimEnd('/') + protocol.path
 
 private fun probeBody(protocol: GatewayProtocol, model: String): String = when (protocol) {
     GatewayProtocol.CHAT_COMPLETIONS -> buildJsonObject {

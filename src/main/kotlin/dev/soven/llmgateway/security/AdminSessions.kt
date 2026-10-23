@@ -36,6 +36,10 @@ class AdminSessions(private val ttlMillis: Long = 12 * 60 * 60 * 1000L) {
         if (token != null) sessions.remove(token)
     }
 
+    fun removeAllForUsername(username: String) {
+        sessions.entries.removeIf { it.value.username == username }
+    }
+
     private fun cleanupExpired() {
         val now = System.currentTimeMillis()
         sessions.entries.removeIf { it.value.expiresAt <= now }

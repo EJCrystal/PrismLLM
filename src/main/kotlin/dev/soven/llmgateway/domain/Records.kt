@@ -1,11 +1,19 @@
 package dev.soven.llmgateway.domain
 
+import java.math.BigDecimal
+
 /**
  * 渠道记录。上游凭据只以密文形式存在，读取时按需解密。
  *
  * @author 文杰
  * @since 2026-10-21
  */
+data class ChannelModelRecord(
+    val upstreamModel: String,
+    val canonicalModelId: String? = null,
+    val mappingSource: String? = null,
+)
+
 data class ChannelRecord(
     val id: String,
     val name: String,
@@ -18,7 +26,11 @@ data class ChannelRecord(
     val enabled: Boolean,
     val createdAt: Long,
     val updatedAt: Long,
-)
+    val modelMappings: List<ChannelModelRecord> = emptyList(),
+    val exposeUpstreamModels: Boolean = true,
+) {
+    val models: List<String> get() = modelMappings.map { it.upstreamModel }
+}
 
 /**
  * 模型别名记录。
@@ -88,6 +100,25 @@ data class ClientKeyRecord(
 )
 
 /**
+ * 渠道内上游模型的计费单价。单价按每百万 token 计算。
+ *
+ * @author 文杰
+ * @since 2026-10-22
+ */
+data class ModelPriceRecord(
+    val id: String,
+    val channelId: String,
+    val channelName: String,
+    val upstreamModel: String,
+    val currency: String,
+    val inputPricePerMillion: BigDecimal,
+    val outputPricePerMillion: BigDecimal,
+    val cachedInputPricePerMillion: BigDecimal?,
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
+/**
  * 管理员账号记录。
  *
  * @author 文杰
@@ -97,6 +128,7 @@ data class AdminUserRecord(
     val id: String,
     val username: String,
     val passwordHash: String,
+    val avatarDataUrl: String? = null,
 )
 
 /**
@@ -124,6 +156,11 @@ data class RequestLogRecord(
     val reasoningEffort: String?,
     val totalTokens: Long?,
     val usageKnown: Boolean,
+    val costAmount: BigDecimal?,
+    val costCurrency: String?,
+    val inputPricePerMillion: BigDecimal?,
+    val outputPricePerMillion: BigDecimal?,
+    val cachedInputPricePerMillion: BigDecimal?,
     val errorCode: String?,
     val failureStage: FailureStage?,
     val errorMessage: String?,
