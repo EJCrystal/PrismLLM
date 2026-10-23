@@ -3,7 +3,6 @@ package dev.soven.llmgateway.api
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ClientKeyRecord
-import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.repo.AliasWithCandidates
 import kotlinx.serialization.Serializable
@@ -24,25 +23,7 @@ data class LoginRequest(val username: String, val password: String)
  * @since 2026-10-21
  */
 @Serializable
-data class MeResponse(
-    val username: String,
-    val avatarDataUrl: String? = null,
-)
-
-/**
- * 管理员头像更新请求。空值表示恢复默认首字母头像。
- */
-@Serializable
-data class AvatarRequest(val avatarDataUrl: String? = null)
-
-/**
- * 管理员修改密码请求。
- */
-@Serializable
-data class ChangePasswordRequest(
-    val currentPassword: String,
-    val newPassword: String,
-)
+data class MeResponse(val username: String)
 
 /**
  * 渠道写请求。credential 为空时表示保持原凭据。
@@ -51,13 +32,6 @@ data class ChangePasswordRequest(
  * @since 2026-10-21
  */
 @Serializable
-data class ChannelModelMappingRequest(
-    val upstreamModel: String,
-    val canonicalModelId: String? = null,
-    val mappingSource: String? = null,
-)
-
-@Serializable
 data class ChannelRequest(
     val name: String,
     val baseUrl: String,
@@ -65,9 +39,6 @@ data class ChannelRequest(
     val authType: String = "bearer",
     val protocols: List<String> = listOf(GatewayProtocol.CHAT_COMPLETIONS.value),
     val enabled: Boolean = true,
-    val models: List<String>? = null,
-    val modelMappings: List<ChannelModelMappingRequest>? = null,
-    val exposeUpstreamModels: Boolean? = null,
 )
 
 /**
@@ -87,16 +58,6 @@ data class ChannelResponse(
     val credentialSet: Boolean,
     val createdAt: Long,
     val updatedAt: Long,
-    val models: List<String>,
-    val modelMappings: List<ChannelModelMappingResponse>,
-    val exposeUpstreamModels: Boolean,
-)
-
-@Serializable
-data class ChannelModelMappingResponse(
-    val upstreamModel: String,
-    val canonicalModelId: String? = null,
-    val mappingSource: String? = null,
 )
 
 fun ChannelRecord.toResponse() = ChannelResponse(
@@ -109,15 +70,6 @@ fun ChannelRecord.toResponse() = ChannelResponse(
     credentialSet = credentialCiphertext.isNotBlank(),
     createdAt = createdAt,
     updatedAt = updatedAt,
-    models = models,
-    modelMappings = modelMappings.map {
-        ChannelModelMappingResponse(
-            upstreamModel = it.upstreamModel,
-            canonicalModelId = it.canonicalModelId,
-            mappingSource = it.mappingSource,
-        )
-    },
-    exposeUpstreamModels = exposeUpstreamModels,
 )
 
 /**
@@ -246,84 +198,6 @@ data class ClientKeyCreatedResponse(
 )
 
 /**
- * 模型计费单价写请求。价格单位是每百万 token，使用字符串避免浮点误差。
- *
- * @author 文杰
- * @since 2026-10-22
- */
-@Serializable
-data class ModelPriceRequest(
-    val channelId: String,
-    val upstreamModel: String,
-    val currency: String = "USD",
-    val inputPricePerMillion: String,
-    val outputPricePerMillion: String,
-    val cachedInputPricePerMillion: String? = null,
-)
-
-/**
- * 模型计费单价读响应。
- *
- * @author 文杰
- * @since 2026-10-22
- */
-@Serializable
-data class ModelPriceResponse(
-    val id: String,
-    val channelId: String,
-    val channelName: String,
-    val upstreamModel: String,
-    val currency: String,
-    val inputPricePerMillion: String,
-    val outputPricePerMillion: String,
-    val cachedInputPricePerMillion: String?,
-    val createdAt: Long,
-    val updatedAt: Long,
-)
-
-fun ModelPriceRecord.toResponse() = ModelPriceResponse(
-    id = id,
-    channelId = channelId,
-    channelName = channelName,
-    upstreamModel = upstreamModel,
-    currency = currency,
-    inputPricePerMillion = inputPricePerMillion.toPlainString(),
-    outputPricePerMillion = outputPricePerMillion.toPlainString(),
-    cachedInputPricePerMillion = cachedInputPricePerMillion?.toPlainString(),
-    createdAt = createdAt,
-    updatedAt = updatedAt,
-)
-
-/**
- * 模型参考单价响应。
- *
- * @author 文杰
- * @since 2026-10-22
- */
-@Serializable
-data class ModelPriceReferenceResponse(
-    val model: String,
-    val matchedModel: String,
-    val currency: String,
-    val inputPricePerMillion: String,
-    val outputPricePerMillion: String,
-    val cachedInputPricePerMillion: String? = null,
-    val provider: String? = null,
-    val source: String,
-)
-
-/**
- * USD 基准的币种汇率。价格换算在管理面完成，不改变历史计费规则。
- */
-@Serializable
-data class ExchangeRatesResponse(
-    val base: String,
-    val date: String,
-    val source: String,
-    val rates: Map<String, String>,
-)
-
-/**
  * 请求日志读响应。
  *
  * @author 文杰
@@ -349,11 +223,6 @@ data class RequestLogResponse(
     val reasoningEffort: String?,
     val totalTokens: Long?,
     val usageKnown: Boolean,
-    val costAmount: String?,
-    val costCurrency: String?,
-    val inputPricePerMillion: String?,
-    val outputPricePerMillion: String?,
-    val cachedInputPricePerMillion: String?,
     val errorCode: String?,
     val failureStage: String?,
     val errorMessage: String?,
@@ -380,11 +249,6 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     reasoningEffort = reasoningEffort,
     totalTokens = totalTokens,
     usageKnown = usageKnown,
-    costAmount = costAmount?.toPlainString(),
-    costCurrency = costCurrency,
-    inputPricePerMillion = inputPricePerMillion?.toPlainString(),
-    outputPricePerMillion = outputPricePerMillion?.toPlainString(),
-    cachedInputPricePerMillion = cachedInputPricePerMillion?.toPlainString(),
     errorCode = errorCode,
     failureStage = failureStage?.value,
     errorMessage = errorMessage,
@@ -402,9 +266,6 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
 data class ChannelModelResponse(
     val id: String,
     val ownedBy: String? = null,
-    val authorized: Boolean = false,
-    val canonicalModelId: String? = null,
-    val mappingSource: String? = null,
 )
 
 /**
@@ -417,83 +278,6 @@ data class ChannelModelResponse(
 data class ChannelModelsResponse(
     val `object`: String = "list",
     val data: List<ChannelModelResponse>,
-)
-
-/**
- * 管理面展示的对外模型条目，source 区分别名与上游直连。
- */
-@Serializable
-data class ExposedModelResponse(
-    val id: String,
-    val source: String,
-    val ownedBy: String = "llm-gateway",
-    val canonicalModelId: String? = null,
-    val upstreamModels: List<String> = emptyList(),
-    val channelNames: List<String> = emptyList(),
-)
-
-/**
- * `/v1/models` 当前对外结果的只读快照。
- */
-@Serializable
-data class ExposedModelsResponse(
-    val `object`: String = "list",
-    val exposeUpstreamModels: Boolean,
-    val data: List<ExposedModelResponse>,
-)
-
-/**
- * models.dev 目录中的一个模型 ID。
- */
-@Serializable
-data class ModelsDevModelResponse(
-    val id: String,
-    val canonicalId: String,
-    val provider: String,
-    val providerId: String,
-    val developer: String,
-    val developerId: String,
-)
-
-/**
- * models.dev 目录及其与当前对外模型的匹配结果。matches 的 key 是对外模型 ID。
- */
-@Serializable
-data class ModelsDevCatalogResponse(
-    val source: String,
-    val loaded: Boolean,
-    val error: String? = null,
-    val data: List<ModelsDevModelResponse>,
-    val matches: Map<String, List<ModelsDevModelResponse>> = emptyMap(),
-)
-
-/**
- * 渠道模型的规范 ID 自动匹配请求。
- */
-@Serializable
-data class ModelSuggestionRequest(val models: List<String>)
-
-@Serializable
-data class ModelSuggestionItem(
-    val model: String,
-    val candidates: List<ModelsDevModelResponse>,
-)
-
-@Serializable
-data class ModelSuggestionsResponse(
-    val loaded: Boolean,
-    val error: String? = null,
-    val data: List<ModelSuggestionItem>,
-)
-
-/**
- * 渠道保存前的上游模型发现请求。编辑时可只传 channelId，复用已保存的凭据。
- */
-@Serializable
-data class ChannelModelDiscoveryRequest(
-    val baseUrl: String,
-    val credential: String? = null,
-    val channelId: String? = null,
 )
 
 /**

@@ -6,9 +6,9 @@ package dev.soven.llmgateway.domain
  * @author 文杰
  * @since 2026-10-22
  */
-enum class GatewayProtocol(val value: String, val path: String) {
-    CHAT_COMPLETIONS("chat_completions", "/chat/completions"),
-    RESPONSES("responses", "/responses"),
+enum class GatewayProtocol(val value: String) {
+    CHAT_COMPLETIONS("chat_completions"),
+    RESPONSES("responses"),
     ;
 
     companion object {

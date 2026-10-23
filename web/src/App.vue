@@ -5,16 +5,13 @@ import Icon from './components/Icon.vue'
 import ToastStack from './components/ToastStack.vue'
 import LoginView from './components/LoginView.vue'
 import ChannelsView from './components/ChannelsView.vue'
-import ModelManagementView from './components/ModelManagementView.vue'
-import ExposedModelsView from './components/ExposedModelsView.vue'
+import AliasesView from './components/AliasesView.vue'
 import ClientKeysView from './components/ClientKeysView.vue'
 import LogsView from './components/LogsView.vue'
-import AccountSettingsModal from './components/AccountSettingsModal.vue'
 
 const navItems = [
   { id: 'channels', label: '渠道', icon: 'channels' },
-  { id: 'models', label: '模型', icon: 'models' },
-  { id: 'exposed-models', label: '模型列表', icon: 'list' },
+  { id: 'aliases', label: '模型别名', icon: 'aliases' },
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
 ]
@@ -24,13 +21,9 @@ const meta = {
     title: '渠道',
     desc: '管理上游模型接入点。凭据加密保存，创建后不再回显。',
   },
-  models: {
-    title: '模型',
-    desc: '统一管理模型目录、别名路由与计费规则。',
-  },
-  'exposed-models': {
-    title: '模型列表',
-    desc: '查看调用方通过 /v1/models 获取到的对外模型结果。',
+  aliases: {
+    title: '模型别名',
+    desc: '把调用方使用的模型名映射到一组有序候选，首 token 前失败才切换。',
   },
   'client-keys': {
     title: '调用方密钥',
@@ -46,7 +39,6 @@ const booting = ref(true)
 const user = ref(null)
 const view = ref('channels')
 const navOpen = ref(false)
-const accountOpen = ref(false)
 const currentMeta = computed(() => meta[view.value] || meta.channels)
 
 async function restoreSession() {
@@ -62,7 +54,6 @@ async function restoreSession() {
 function onAuthenticated(authenticatedUser) {
   user.value = authenticatedUser
   view.value = 'channels'
-  accountOpen.value = false
 }
 
 function selectView(id) {
@@ -80,16 +71,6 @@ async function logout() {
 }
 
 function handleUnauthorized() {
-  user.value = null
-  accountOpen.value = false
-}
-
-function onAvatarUpdated(updatedUser) {
-  user.value = updatedUser
-}
-
-function onPasswordChanged() {
-  accountOpen.value = false
   user.value = null
 }
 
@@ -170,44 +151,24 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="topbar-right">
-          <button
-            type="button"
-            class="user-chip"
-            aria-label="打开账户设置"
-            aria-haspopup="dialog"
-            :aria-expanded="accountOpen"
-            @click="accountOpen = true"
-          >
-            <span class="avatar">
-              <img v-if="user.avatarDataUrl" :src="user.avatarDataUrl" alt="" />
-              <template v-else>{{ user.username.slice(0, 1).toUpperCase() }}</template>
-            </span>
-            <span class="user-chip-copy">
+          <div class="user-chip">
+            <span class="avatar">{{ user.username.slice(0, 1).toUpperCase() }}</span>
+            <div>
               <strong>{{ user.username }}</strong>
               <span>管理员</span>
-            </span>
-            <Icon name="chevron" :size="14" />
-          </button>
+            </div>
+          </div>
         </div>
       </header>
 
       <main class="content">
         <ChannelsView v-if="view === 'channels'" />
-        <ModelManagementView v-else-if="view === 'models'" />
-        <ExposedModelsView v-else-if="view === 'exposed-models'" />
+        <AliasesView v-else-if="view === 'aliases'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
         <LogsView v-else-if="view === 'logs'" />
       </main>
     </div>
   </div>
-
-  <AccountSettingsModal
-    v-if="accountOpen && user"
-    :user="user"
-    @close="accountOpen = false"
-    @avatar-updated="onAvatarUpdated"
-    @password-changed="onPasswordChanged"
-  />
 
   <ToastStack />
 </template>
