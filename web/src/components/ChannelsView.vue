@@ -577,7 +577,12 @@ onMounted(load)
           <div class="channel-model-auth-head">
             <div>
               <span>对外模型 ID</span>
-              <small>调用方在请求体里使用的模型名；留空则直接使用上游模型名。</small>
+              <small v-if="form.exposeUpstreamModels !== false">
+                调用方在请求体里使用的模型名；留空则直接使用上游模型名。
+              </small>
+              <small v-else>
+                当前渠道仅通过别名访问；留空不会公开上游模型名，只能由别名引用。
+              </small>
             </div>
             <span v-if="mappingCount" class="badge info">{{ mappingCount }} 个已自定义</span>
             <span v-else class="badge neutral">全部沿用上游名</span>
@@ -586,7 +591,9 @@ onMounted(load)
             <div class="channel-canonical-header">
               <span>上游模型</span>
               <span></span>
-              <span>对外模型 ID（留空沿用上游模型名）</span>
+              <span>
+                对外模型 ID（{{ form.exposeUpstreamModels === false ? '可选；留空不公开上游模型' : '留空沿用上游模型名' }}）
+              </span>
             </div>
             <div v-for="modelId in authorizedModels" :key="modelId" class="channel-canonical-row">
               <button
@@ -613,7 +620,9 @@ onMounted(load)
                 <input
                   :id="`canonical-input-${modelId}`"
                   v-model="canonicalModels[modelId]"
-                  placeholder="留空沿用上游模型名（点击箭头填入）"
+                  :placeholder="form.exposeUpstreamModels === false
+                    ? '可选；留空仅通过别名调用'
+                    : '留空沿用上游模型名（点击箭头填入）'"
                   autocomplete="off"
                   spellcheck="false"
                 />
