@@ -15,6 +15,7 @@ import {
   visibleModels,
   hiddenModelsTitle,
 } from '../utils/channelDisplay'
+import { buildChannelPayload } from '../utils/channelForm'
 
 const channels = ref([])
 const prices = ref([])
@@ -322,20 +323,7 @@ async function save() {
 
   saving.value = true
   try {
-    const payload = {
-      name: form.name.trim(),
-      baseUrl: form.baseUrl.trim(),
-      credential: form.credential.trim() || null,
-      authType: 'bearer',
-      protocols: form.protocols,
-      enabled: form.enabled,
-      modelMappings: authorizedModels.value.map((upstreamModel) => ({
-        upstreamModel,
-        canonicalModelId: canonicalModels[upstreamModel]?.trim() || null,
-        mappingSource: canonicalModels[upstreamModel]?.trim() ? 'manual' : null,
-      })),
-      exposeUpstreamModels: true,
-    }
+    const payload = buildChannelPayload(form, authorizedModels.value, canonicalModels)
     if (editingId.value) {
       await api.updateChannel(editingId.value, payload)
       clearUpstreamModelCache(editingId.value)
@@ -601,13 +589,14 @@ onMounted(load)
               <span>对外模型 ID（留空沿用上游模型名）</span>
             </div>
             <div v-for="modelId in authorizedModels" :key="modelId" class="channel-canonical-row">
-              <div
+              <button
+                type="button"
                 class="channel-canonical-upstream"
                 :title="'点击将「' + modelId + '」填入右侧'"
                 @click="copyUpstreamToCanonical(modelId)"
               >
                 <code>{{ modelId }}</code>
-              </div>
+              </button>
               <button
                 type="button"
                 class="channel-canonical-arrow-btn"

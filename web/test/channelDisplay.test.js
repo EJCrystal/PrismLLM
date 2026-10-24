@@ -25,7 +25,11 @@ describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
       assert.equal(visible[0].displayName, 'deepseek-flash', '标签主文本应为对外模型 ID')
       assert.equal(visible[0].upstreamModel, 'deepseek-v4.1-flash')
       assert.equal(visible[0].isCustom, true)
-      assert.equal(visible[0].title, '上游模型: deepseek-v4.1-flash', 'hover 应提示上游模型名')
+      assert.equal(
+        visible[0].title,
+        'deepseek-flash (上游模型: deepseek-v4.1-flash)',
+        'hover 应同时展示完整对外模型 ID 和上游模型名',
+      )
     })
 
     it('未自定义对外模型 ID（留空/null）时：列表仅显示上游名，且不显示重复 hover 提示', () => {
@@ -102,11 +106,11 @@ describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
       // 验证前 3 个列表项
       const visible = visibleModels(channel)
       assert.equal(visible[0].displayName, 'public-a')
-      assert.equal(visible[0].title, '上游模型: upstream-a')
+      assert.equal(visible[0].title, 'public-a (上游模型: upstream-a)')
       assert.equal(visible[1].displayName, 'upstream-b')
       assert.equal(visible[1].title, '')
       assert.equal(visible[2].displayName, 'public-c')
-      assert.equal(visible[2].title, '上游模型: upstream-c')
+      assert.equal(visible[2].title, 'public-c (上游模型: upstream-c)')
 
       // 验证 +N 完整悬停提示
       const hoverTitle = hiddenModelsTitle(channel)

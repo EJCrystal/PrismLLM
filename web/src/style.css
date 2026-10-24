@@ -2745,7 +2745,19 @@ code,
 
 .channel-canonical-upstream {
   min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
+}
+
+.channel-canonical-upstream:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 .channel-canonical-upstream code {

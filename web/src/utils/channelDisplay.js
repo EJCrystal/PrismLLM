@@ -13,12 +13,13 @@ export function channelDisplayModels(channel) {
   )
   return channel.models.map((upstreamModel) => {
     const canonical = mappingsByUpstream.get(upstreamModel)?.trim()
+    const displayName = canonical || upstreamModel
     const isCustom = !!(canonical && canonical !== upstreamModel)
     return {
       upstreamModel,
-      displayName: canonical || upstreamModel,
+      displayName,
       isCustom,
-      title: isCustom ? `上游模型: ${upstreamModel}` : '',
+      title: isCustom ? `${displayName} (上游模型: ${upstreamModel})` : '',
     }
   })
 }
