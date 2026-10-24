@@ -1275,6 +1275,15 @@ class GatewayIntegrationTest {
                     statusCode = 500,
                 ),
             )
+            app.requestLogRepository.insert(
+                requestLog("stream-failed", createdAt = System.currentTimeMillis()).copy(
+                    clientKeyId = app.clientKeyRepository.list().single().id,
+                    clientKeyName = "test-key",
+                    team = "search-team",
+                    statusCode = 200,
+                    errorCode = "stream_interrupted",
+                ),
+            )
             val login = client.post("/admin/api/login") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"username":"admin","password":"test-password"}""")
@@ -1287,14 +1296,14 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, report.status, report.bodyAsText())
             val json = Json.parseToJsonElement(report.bodyAsText()).jsonObject
             val total = json["total"]!!.jsonObject
-            assertEquals("3", total["requests"]!!.jsonPrimitive.content)
-            assertEquals("1", total["errors"]!!.jsonPrimitive.content)
-            assertEquals("28", total["totalTokens"]!!.jsonPrimitive.content)
+            assertEquals("4", total["requests"]!!.jsonPrimitive.content)
+            assertEquals("2", total["errors"]!!.jsonPrimitive.content)
+            assertEquals("30", total["totalTokens"]!!.jsonPrimitive.content)
             assertEquals("0.000032", total["costs"]!!.jsonObject["USD"]!!.jsonPrimitive.content)
             val team = json["byTeam"]!!.jsonArray.single().jsonObject
             assertEquals("search-team", team["id"]!!.jsonPrimitive.content)
-            assertEquals("3", team["requests"]!!.jsonPrimitive.content)
-            assertEquals("1", team["errors"]!!.jsonPrimitive.content)
+            assertEquals("4", team["requests"]!!.jsonPrimitive.content)
+            assertEquals("2", team["errors"]!!.jsonPrimitive.content)
             val byKey = json["byClientKey"]!!.jsonArray.single().jsonObject
             assertEquals(app.clientKeyRepository.list().single().id, byKey["id"]!!.jsonPrimitive.content)
             assertEquals("test-key", byKey["name"]!!.jsonPrimitive.content)

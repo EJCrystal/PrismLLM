@@ -109,6 +109,7 @@ async function toggle(key) {
   try {
     await api.updateClientKey(key.id, {
       name: key.name,
+      team: key.team,
       enabled: !key.enabled,
       expiresAt: key.expiresAt,
       dailyTokenLimit: key.dailyTokenLimit,

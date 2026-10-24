@@ -70,4 +70,5 @@ class LogRetentionServiceTest {
 
         assertEquals(1, maxActive)
     }
+
 }

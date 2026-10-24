@@ -14,6 +14,8 @@ import org.jetbrains.exposed.v1.core.Op
 import org.jetbrains.exposed.v1.core.Case
 import org.jetbrains.exposed.v1.core.LongColumnType
 import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.or
+import org.jetbrains.exposed.v1.core.isNotNull
 import org.jetbrains.exposed.v1.core.coalesce
 import org.jetbrains.exposed.v1.core.count
 import org.jetbrains.exposed.v1.core.eq
@@ -88,7 +90,7 @@ class RequestLogRepository(private val database: Database) {
             to = query.to,
             total = totals.copy(costs = costsByCurrency(where)),
             byClientKey = groupedQuery(RequestLogs.clientKeyId, RequestLogs.clientKeyName, where),
-            byTeam = groupedQuery(RequestLogs.team, RequestLogs.team, where),
+            byTeam = groupedQuery(RequestLogs.team, RequestLogs.team, where, unassignedId = "__unassigned_team__"),
         )
     }
 
@@ -102,8 +104,9 @@ class RequestLogRepository(private val database: Database) {
     }
 
     private fun totalQuery(where: Op<Boolean>): Query {
+        val failure = (RequestLogs.statusCode greaterEq 400) or (RequestLogs.errorCode.isNotNull())
         val errorCount = Case()
-            .When(RequestLogs.statusCode greaterEq 400, org.jetbrains.exposed.v1.core.longLiteral(1L))
+            .When(failure, org.jetbrains.exposed.v1.core.longLiteral(1L))
             .Else(org.jetbrains.exposed.v1.core.longLiteral(0L))
             .sum()
         return RequestLogs.select(
@@ -128,8 +131,9 @@ class RequestLogRepository(private val database: Database) {
     }
 
     private fun ResultRow.toUsageTotal(): UsageTotal {
+        val failure = (RequestLogs.statusCode greaterEq 400) or (RequestLogs.errorCode.isNotNull())
         val errorCount = Case()
-            .When(RequestLogs.statusCode greaterEq 400, org.jetbrains.exposed.v1.core.longLiteral(1L))
+            .When(failure, org.jetbrains.exposed.v1.core.longLiteral(1L))
             .Else(org.jetbrains.exposed.v1.core.longLiteral(0L))
             .sum()
         return UsageTotal(
@@ -146,10 +150,12 @@ class RequestLogRepository(private val database: Database) {
         idColumn: org.jetbrains.exposed.v1.core.Column<String?>,
         nameColumn: org.jetbrains.exposed.v1.core.Column<String?>,
         where: Op<Boolean>,
+        unassignedId: String = "unassigned",
     ): List<UsageGroup> {
         val count = RequestLogs.id.count()
+        val failure = (RequestLogs.statusCode greaterEq 400) or (RequestLogs.errorCode.isNotNull())
         val errors = Case()
-            .When(RequestLogs.statusCode greaterEq 400, org.jetbrains.exposed.v1.core.longLiteral(1L))
+            .When(failure, org.jetbrains.exposed.v1.core.longLiteral(1L))
             .Else(org.jetbrains.exposed.v1.core.longLiteral(0L))
             .sum()
         val input = RequestLogs.inputTokens.sum()
@@ -161,7 +167,7 @@ class RequestLogRepository(private val database: Database) {
             .groupBy(idColumn, nameColumn, RequestLogs.costCurrency)
             .toList()
         return rows.groupBy { row ->
-            val id = row[idColumn]?.takeIf { it.isNotBlank() } ?: "unassigned"
+            val id = row[idColumn]?.takeIf { it.isNotBlank() } ?: unassignedId
             val name = row[nameColumn]?.takeIf { it.isNotBlank() }
             id to name
         }.map { (key, grouped) ->
@@ -189,7 +195,9 @@ class RequestLogRepository(private val database: Database) {
             .limit(batchSize.coerceIn(100, 100_000))
             .map { it[RequestLogs.id] }
         if (ids.isEmpty()) return@suspendTransaction CleanupResult(0, cutoff)
-        val deleted = RequestLogs.deleteWhere { RequestLogs.id inList ids }
+        val deleted = ids.chunked(10_000).sumOf { chunk ->
+            RequestLogs.deleteWhere { RequestLogs.id inList chunk }
+        }
         CleanupResult(deleted.toLong(), cutoff)
     }
 
