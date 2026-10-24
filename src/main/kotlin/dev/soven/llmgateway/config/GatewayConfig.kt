@@ -2,6 +2,7 @@ package dev.soven.llmgateway.config
 
 import java.nio.file.Path
 import java.util.Base64
+import dev.soven.llmgateway.report.RetentionPolicy
 
 /**
  * 网关运行配置。所有值来自环境变量，启动期完成校验，运行期不再读取环境。
@@ -28,6 +29,7 @@ data class GatewayConfig(
     val staticDir: Path,
     val cookieSecure: Boolean,
     val exposeUpstreamModels: Boolean,
+    val retention: RetentionPolicy,
 ) {
     companion object {
         fun fromEnv(env: Map<String, String> = System.getenv()): GatewayConfig {
@@ -69,6 +71,13 @@ data class GatewayConfig(
                     ?: error("COOKIE_SECURE 必须是 true 或 false"),
                 exposeUpstreamModels = value("EXPOSE_UPSTREAM_MODELS", "false").toBooleanStrictOrNull()
                     ?: error("EXPOSE_UPSTREAM_MODELS 必须是 true 或 false"),
+                retention = RetentionPolicy(
+                    retentionDays = longValue("REQUEST_LOG_RETENTION_DAYS", 30).toInt(),
+                    batchSize = longValue("REQUEST_LOG_CLEANUP_BATCH_SIZE", 5_000).toInt(),
+                    cleanupEnabled = value("REQUEST_LOG_CLEANUP_ENABLED", "true").toBooleanStrictOrNull()
+                        ?: error("REQUEST_LOG_CLEANUP_ENABLED 必须是 true 或 false"),
+                    cleanupIntervalMs = longValue("REQUEST_LOG_CLEANUP_INTERVAL_MS", 3_600_000),
+                ),
             )
         }
     }

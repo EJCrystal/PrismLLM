@@ -12,6 +12,7 @@ import dev.soven.llmgateway.repo.AliasWithCandidates
 import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.security.ClientKeyHasher
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
+import dev.soven.llmgateway.report.RetentionPolicy
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
@@ -1250,6 +1251,88 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `usage report aggregates requests tokens and costs by key and team`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        createPrice(channel, "gpt-4o-mini", input = "1", output = "2")
+        val key = createClientKey(team = "search-team")
+        testApplication {
+            application { app.install(this) }
+            repeat(2) {
+                val response = client.post("/v1/chat/completions") {
+                    header(HttpHeaders.Authorization, "Bearer $key")
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"model":"fast-chat","messages":[]}""")
+                }
+                assertEquals(HttpStatusCode.OK, response.status)
+                awaitRequestLogCount(it + 1)
+            }
+            app.requestLogRepository.insert(
+                requestLog("renamed", createdAt = System.currentTimeMillis()).copy(
+                    clientKeyId = app.clientKeyRepository.list().single().id,
+                    clientKeyName = "renamed-key",
+                    team = "search-team",
+                    costAmount = java.math.BigDecimal("0.00000500"),
+                    costCurrency = "USD",
+                ),
+            )
+            app.requestLogRepository.insert(
+                requestLog("failed", createdAt = System.currentTimeMillis()).copy(
+                    clientKeyId = app.clientKeyRepository.list().single().id,
+                    clientKeyName = "test-key",
+                    team = "search-team",
+                    statusCode = 500,
+                ),
+            )
+            app.requestLogRepository.insert(
+                requestLog("stream-failed", createdAt = System.currentTimeMillis()).copy(
+                    clientKeyId = app.clientKeyRepository.list().single().id,
+                    clientKeyName = "test-key",
+                    team = "search-team",
+                    statusCode = 200,
+                    errorCode = "stream_interrupted",
+                ),
+            )
+            val login = client.post("/admin/api/login") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"username":"admin","password":"test-password"}""")
+            }
+            val cookie = login.headers.getAll(HttpHeaders.SetCookie).orEmpty()
+                .first { it.startsWith("gw_session=") }.substringBefore(";")
+            val report = client.get("/admin/api/usage-report?from=${System.currentTimeMillis() - 86_400_000L}&to=${System.currentTimeMillis() + 60_000L}") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, report.status, report.bodyAsText())
+            val json = Json.parseToJsonElement(report.bodyAsText()).jsonObject
+            val total = json["total"]!!.jsonObject
+            assertEquals("5", total["requests"]!!.jsonPrimitive.content)
+            assertEquals("2", total["errors"]!!.jsonPrimitive.content)
+            assertEquals("32", total["totalTokens"]!!.jsonPrimitive.content)
+            assertEquals("0.000037", total["costs"]!!.jsonObject["USD"]!!.jsonPrimitive.content)
+            val team = json["byTeam"]!!.jsonArray.single().jsonObject
+            assertEquals("search-team", team["id"]!!.jsonPrimitive.content)
+            assertEquals("5", team["requests"]!!.jsonPrimitive.content)
+            assertEquals("2", team["errors"]!!.jsonPrimitive.content)
+            val byKey = json["byClientKey"]!!.jsonArray.single().jsonObject
+            assertEquals(app.clientKeyRepository.list().single().id, byKey["id"]!!.jsonPrimitive.content)
+            assertTrue(byKey["name"]!!.jsonPrimitive.content in setOf("test-key", "renamed-key"))
+        }
+    }
+
+    @Test
+    fun `request log cleanup deletes only expired rows`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val old = requestLog("old", createdAt = now - 31 * 86_400_000L)
+        val recent = requestLog("recent", createdAt = now)
+        app.requestLogRepository.insert(old)
+        app.requestLogRepository.insert(recent)
+        val retired = app.logRetentionService.cleanExpired()
+
+        assertEquals(1, retired.deleted)
+        assertEquals(listOf("recent"), app.requestLogRepository.list(10).map { it.requestId })
+    }
+
+    @Test
     fun `admin client key API validates and returns quota settings`() = runBlocking {
         testApplication {
             application { app.install(this) }
@@ -1490,7 +1573,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("11", result.getString(1))
+                        assertEquals("12", result.getString(1))
                     }
                     statement.executeQuery("select expose_upstream_models from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -1671,7 +1754,48 @@ class GatewayIntegrationTest {
         staticDir = Path.of("web/dist"),
         cookieSecure = false,
         exposeUpstreamModels = exposeUpstreamModels,
+        retention = RetentionPolicy(cleanupEnabled = false),
     )
+
+    private fun requestLog(requestId: String, createdAt: Long) = RequestLogRecord(
+        requestId = requestId,
+        clientKeyId = null,
+        clientKeyName = null,
+        alias = "fast-chat",
+        channelId = null,
+        channelName = null,
+        upstreamModel = null,
+        protocol = GatewayProtocol.CHAT_COMPLETIONS,
+        statusCode = 200,
+        firstTokenMs = null,
+        totalMs = 1,
+        inputTokens = 1,
+        outputTokens = 1,
+        cachedTokens = null,
+        reasoningTokens = null,
+        reasoningEffort = null,
+        totalTokens = 2,
+        usageKnown = true,
+        costAmount = null,
+        costCurrency = null,
+        inputPricePerMillion = null,
+        outputPricePerMillion = null,
+        cachedInputPricePerMillion = null,
+        errorCode = null,
+        failureStage = null,
+        errorMessage = null,
+        upstreamErrorCode = null,
+        createdAt = createdAt,
+    )
+
+    private suspend fun awaitRequestLogCount(count: Int, timeoutMs: Long = 3_000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (app.requestLogRepository.list(10).size >= count) return
+            delay(50)
+        }
+        error("expected $count request logs within ${timeoutMs}ms")
+    }
 
     private suspend fun createChannel(name: String, scenario: String): ChannelRecord {
         return createChannelWithBaseUrl(name, "${fake.baseUrl}/$scenario/v1")
@@ -1713,10 +1837,14 @@ class GatewayIntegrationTest {
             candidates = candidates.map { NewCandidate(it.first.id, it.second) },
         )
 
-    private suspend fun createClientKey(quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits()): String {
+    private suspend fun createClientKey(
+        quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits(),
+        team: String? = null,
+    ): String {
         val generated = ClientKeyHasher.generate()
         app.clientKeyRepository.create(
             name = "test-key",
+            team = team,
             keyHash = generated.hash,
             keyPrefix = generated.prefix,
             enabled = true,

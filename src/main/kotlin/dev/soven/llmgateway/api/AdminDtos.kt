@@ -6,6 +6,11 @@ import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.quota.ClientKeyQuotaUsage
+import dev.soven.llmgateway.report.CleanupResult
+import dev.soven.llmgateway.report.RetentionPolicy
+import dev.soven.llmgateway.report.UsageGroup
+import dev.soven.llmgateway.report.UsageReport
+import dev.soven.llmgateway.report.UsageTotal
 import dev.soven.llmgateway.repo.AliasWithCandidates
 import kotlinx.serialization.Serializable
 
@@ -200,6 +205,7 @@ fun AliasWithCandidates.toResponse() = AliasResponse(
 @Serializable
 data class ClientKeyRequest(
     val name: String,
+    val team: String? = null,
     val enabled: Boolean = true,
     val expiresAt: Long? = null,
     val dailyTokenLimit: Long? = null,
@@ -219,6 +225,7 @@ data class ClientKeyRequest(
 data class ClientKeyResponse(
     val id: String,
     val name: String,
+    val team: String?,
     val keyPrefix: String,
     val enabled: Boolean,
     val expiresAt: Long?,
@@ -234,6 +241,7 @@ data class ClientKeyResponse(
 fun ClientKeyRecord.toResponse() = ClientKeyResponse(
     id = id,
     name = name,
+    team = team,
     keyPrefix = keyPrefix,
     enabled = enabled,
     expiresAt = expiresAt,
@@ -249,6 +257,7 @@ fun ClientKeyRecord.toResponse() = ClientKeyResponse(
 fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyResponse(
     id = id,
     name = name,
+    team = team,
     keyPrefix = keyPrefix,
     enabled = enabled,
     expiresAt = expiresAt,
@@ -278,6 +287,87 @@ data class ClientKeyQuotaUsageResponse(
     val concurrentRequests: Int = 0,
 )
 
+@Serializable
+data class UsageReportResponse(
+    val from: Long,
+    val to: Long,
+    val total: UsageTotalResponse,
+    val byClientKey: List<UsageGroupResponse>,
+    val byTeam: List<UsageGroupResponse>,
+)
+
+@Serializable
+data class UsageTotalResponse(
+    val requests: Long,
+    val errors: Long,
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val totalTokens: Long,
+    val costs: Map<String, String>,
+)
+
+@Serializable
+data class UsageGroupResponse(
+    val id: String,
+    val name: String? = null,
+    val requests: Long,
+    val errors: Long,
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val totalTokens: Long,
+    val costs: Map<String, String>,
+)
+
+@Serializable
+data class RetentionPolicyResponse(
+    val retentionDays: Int,
+    val batchSize: Int,
+    val cleanupEnabled: Boolean,
+    val cleanupIntervalMs: Long,
+    val cutoff: Long,
+)
+
+@Serializable
+data class CleanupResultResponse(val deleted: Long, val cutoff: Long)
+
+fun UsageReport.toResponse() = UsageReportResponse(
+    from = from,
+    to = to,
+    total = total.toResponse(),
+    byClientKey = byClientKey.map { it.toResponse() },
+    byTeam = byTeam.map { it.toResponse() },
+)
+
+fun UsageTotal.toResponse() = UsageTotalResponse(
+    requests = requests,
+    errors = errors,
+    inputTokens = inputTokens,
+    outputTokens = outputTokens,
+    totalTokens = totalTokens,
+    costs = costs.mapValues { (_, value) -> value.stripTrailingZeros().toPlainString() },
+)
+
+fun UsageGroup.toResponse() = UsageGroupResponse(
+    id = id,
+    name = name,
+    requests = requests,
+    errors = errors,
+    inputTokens = inputTokens,
+    outputTokens = outputTokens,
+    totalTokens = totalTokens,
+    costs = costs.mapValues { (_, value) -> value.stripTrailingZeros().toPlainString() },
+)
+
+fun RetentionPolicy.toResponse(now: Long) = RetentionPolicyResponse(
+    retentionDays = retentionDays,
+    batchSize = batchSize,
+    cleanupEnabled = cleanupEnabled,
+    cleanupIntervalMs = cleanupIntervalMs,
+    cutoff = now - retentionDays * 86_400_000L,
+)
+
+fun CleanupResult.toResponse() = CleanupResultResponse(deleted, cutoff)
+
 /**
  * 新建调用方密钥响应。key 只在创建时返回一次。
  *
@@ -288,6 +378,7 @@ data class ClientKeyQuotaUsageResponse(
 data class ClientKeyCreatedResponse(
     val id: String,
     val name: String,
+    val team: String?,
     val key: String,
     val keyPrefix: String,
     val enabled: Boolean,

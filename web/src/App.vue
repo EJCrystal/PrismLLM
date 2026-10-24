@@ -8,6 +8,7 @@ import ChannelsView from './components/ChannelsView.vue'
 import ExposedModelsView from './components/ExposedModelsView.vue'
 import ClientKeysView from './components/ClientKeysView.vue'
 import LogsView from './components/LogsView.vue'
+import UsageReportsView from './components/UsageReportsView.vue'
 import AccountSettingsModal from './components/AccountSettingsModal.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 
@@ -16,6 +17,7 @@ const navItems = [
   { id: 'exposed-models', label: '模型列表', icon: 'list' },
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
+  { id: 'usage-reports', label: '用量报表', icon: 'chart' },
 ]
 
 const meta = {
@@ -34,6 +36,10 @@ const meta = {
   logs: {
     title: '请求日志',
     desc: '查看请求元数据、状态、耗时与 token 用量。默认不记录正文。',
+  },
+  'usage-reports': {
+    title: '用量报表',
+    desc: '按调用方密钥和团队汇总请求、token 与费用。',
   },
 }
 
@@ -192,6 +198,7 @@ onBeforeUnmount(() => {
         <ExposedModelsView v-else-if="view === 'exposed-models'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
         <LogsView v-else-if="view === 'logs'" />
+        <UsageReportsView v-else-if="view === 'usage-reports'" />
       </main>
     </div>
   </div>

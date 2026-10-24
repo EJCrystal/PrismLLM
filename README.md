@@ -198,6 +198,23 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 管理界面和 `GET/POST /admin/api/client-keys`、`PUT /admin/api/client-keys/{id}` 支持以下可选字段：`dailyTokenLimit`、`dailyUsdLimit`、`dailyCnyLimit`、`dailyEurLimit`、`maxConcurrentRequests`。查询密钥时返回 `quotaUsage`，包含今日 token、各币种费用和当前并发数。每日用量保存在 PostgreSQL，账号删除或新一天开始时重新计算。
 
+### 用量报表与日志保留
+
+管理界面的“用量报表”按时间范围汇总请求数、错误数、输入/输出/总 token，以及按实际计费币种分别累计的费用；同时提供按调用方密钥和团队的明细。调用方密钥可设置可选团队，创建请求日志时会保存团队快照，因此后续改团队或删密钥不会改写历史归集。
+
+报表接口：`GET /admin/api/usage-report?from=<epoch-ms>&to=<epoch-ms>`，可选 `clientKeyId` 和 `team` 过滤。默认最近 7 天，单次查询范围最多 366 天。费用不做跨币种换算。
+
+请求日志保留策略由以下环境变量控制：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `REQUEST_LOG_RETENTION_DAYS` | `30` | 请求日志保留天数，范围 1..3650 |
+| `REQUEST_LOG_CLEANUP_ENABLED` | `true` | 是否启用后台定时清理 |
+| `REQUEST_LOG_CLEANUP_INTERVAL_MS` | `3600000` | 自动清理间隔，最小 60000 毫秒 |
+| `REQUEST_LOG_CLEANUP_BATCH_SIZE` | `5000` | 每批删除数量，范围 100..100000 |
+
+清理任务只删除超过保留期的 `request_logs`，按批次执行，避免大事务影响数据面。每日额度账本 `client_key_quota_usage` 不由日志清理任务删除。保留策略可通过 `GET /admin/api/request-log-retention` 查看，并可在管理界面手动触发清理（`POST /admin/api/request-log-retention/cleanup`）。
+
 ### 单请求计费
 
 管理界面的“渠道”列表提供便捷的「配置模型单价」入口，直接为每个渠道已授权的上游模型配置输入、输出与缓存读取单价（每百万 token 单价），在请求日志中实时计算并显示单条请求费用。价格规则接口：`GET/POST /admin/api/model-prices`、`PUT/DELETE /admin/api/model-prices/{id}`。

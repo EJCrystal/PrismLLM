@@ -262,6 +262,7 @@ private suspend fun handleProxy(
                 requestId = requestId,
                 clientKeyId = clientKey?.id,
                 clientKeyName = clientKey?.name,
+                team = clientKey?.team,
                 alias = alias,
                 channelId = channelId,
                 channelName = channelName,
