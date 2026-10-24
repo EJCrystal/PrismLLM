@@ -213,6 +213,8 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 ## 测试
 
+GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行前端测试、前端生产构建及后端测试。它只具有仓库读取权限，并使用独立的并发组；同一 PR 或分支的新提交会取消尚未完成的旧运行。
+
 ### 后端自动化测试
 
 ```bash
