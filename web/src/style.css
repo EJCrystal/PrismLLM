@@ -2151,6 +2151,22 @@ code,
   font-size: 12px;
 }
 
+.audit-path {
+  display: inline-block;
+  max-width: 320px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.load-more-row {
+  display: flex;
+  justify-content: center;
+  padding: 14px 18px;
+  border-top: 1px solid var(--line);
+}
+
 .candidate-list {
   display: flex;
   flex-wrap: wrap;

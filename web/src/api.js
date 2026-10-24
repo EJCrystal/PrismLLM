@@ -97,6 +97,17 @@ export const api = {
   deleteClientKey: (id) =>
     request(`/client-keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
+  rotateClientKey: (id) =>
+    request('/client-keys/' + encodeURIComponent(id) + '/rotate', { method: 'POST' }),
+  revokeClientKey: (id) =>
+    request('/client-keys/' + encodeURIComponent(id) + '/revoke', { method: 'POST' }),
+
+  listAuditLogs: ({ limit = 100, beforeId = null } = {}) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (beforeId != null) params.set('beforeId', String(beforeId))
+    return request('/audit-logs?' + params)
+  },
+
   listModelPrices: () => request('/model-prices'),
   getModelPrices: () => request('/model-prices'),
   getModelPriceReference: (model) =>

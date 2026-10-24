@@ -58,6 +58,15 @@ groups:
           summary: LLM Gateway is frequently rejecting quota-exceeded requests
           description: Quota rejections are {{ $value | humanize }} per second; review affected key limits and consume patterns.
 
+      - alert: LlmGatewayAuditWriteFailures
+        expr: increase(gateway_admin_audit_write_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: LLM Gateway failed to persist a management audit record
+          description: At least one management write completed without its audit record; inspect gateway logs and database health immediately.
+
       - alert: LlmGatewayUpstreamUnhealthy
         expr: |
           (

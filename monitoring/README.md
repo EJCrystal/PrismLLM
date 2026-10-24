@@ -18,6 +18,7 @@ The included rules cover:
 - request error rate above 5% for 10 minutes;
 - complete-request p95 latency above 10 seconds for 10 minutes;
 - sustained quota rejections;
+- management audit persistence failures;
 - per-channel upstream attempt failure rate above 20% for 10 minutes.
 
 The thresholds are starting points for an internal gateway. Tune them against normal traffic, and route Alertmanager notifications to the owning team.
@@ -27,6 +28,7 @@ The thresholds are starting points for an internal gateway. Tune them against no
 - `gateway_requests_total{outcome,status,alias,channel}` counts completed requests. Streaming failures carry `outcome="error"` even when HTTP headers were already committed as 200.
 - `gateway_request_duration_seconds` measures total request latency.
 - `gateway_quota_rejections_total{reason}` counts `429` responses produced by token, cost, or concurrency limits.
+- `gateway_admin_audit_write_failures_total` counts management audit rows that could not be persisted.
 - `gateway_upstream_attempts_total{channel,outcome}` tracks each channel attempt, including retries.
 - `gateway_upstream_errors_total{channel,code}` remains available for detailed upstream error classification.
 - `gateway_database_ready` is updated when `/health/ready` is checked.

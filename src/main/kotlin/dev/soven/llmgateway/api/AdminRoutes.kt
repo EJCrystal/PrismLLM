@@ -78,6 +78,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     extensions = mapOf("SameSite" to "Strict"),
                 ),
             )
+            call.markAdminAuditActor(user.username)
             call.respond(MeResponse(user.username, user.avatarDataUrl))
         }
 
@@ -91,8 +92,16 @@ fun Route.adminRoutes(app: GatewayApplication) {
         get("/me") {
             val session = call.requireAdmin(app)
             val user = app.adminUserRepository.findByUsername(session.username)
-                ?: throw unauthorized("管理员账号不存在")
+                ?: throw adminUnauthorized("管理员账号不存在")
             call.respond(MeResponse(user.username, user.avatarDataUrl))
+        }
+
+        get("/audit-logs") {
+            call.requireAdmin(app)
+            val limit = call.queryInt("limit", default = 100, min = 1, max = 500)
+            val beforeId = call.queryLongOrNull("beforeId")
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(app.adminAuditRepository.list(limit, beforeId).map { it.toResponse() })
         }
 
         put("/account/avatar") {
@@ -447,23 +456,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 expiresAt = request.expiresAt,
                 quotas = quotas,
             )
+            call.response.headers.append("Cache-Control", "no-store")
             call.respond(
                 HttpStatusCode.Created,
-                ClientKeyCreatedResponse(
-                    id = record.id,
-                    name = record.name,
-                    team = record.team,
-                    key = generated.raw,
-                    keyPrefix = record.keyPrefix,
-                    enabled = record.enabled,
-                    expiresAt = record.expiresAt,
-                    dailyTokenLimit = record.quotas.dailyTokens,
-                    dailyUsdLimit = record.quotas.dailyCostLimit("USD")?.stripTrailingZeros()?.toPlainString(),
-                    dailyCnyLimit = record.quotas.dailyCostLimit("CNY")?.stripTrailingZeros()?.toPlainString(),
-                    dailyEurLimit = record.quotas.dailyCostLimit("EUR")?.stripTrailingZeros()?.toPlainString(),
-                    maxConcurrentRequests = record.quotas.maxConcurrentRequests,
-                    createdAt = record.createdAt,
-                ),
+                record.toCreatedResponse(generated.raw),
             )
         }
 
@@ -476,6 +472,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 throw badRequest("invalid_client_key", "过期时间必须晚于当前时间")
             }
             val quotas = validateClientKeyQuotas(request)
+            val existing = app.clientKeyRepository.find(id)
+                ?: throw notFound("client_key_not_found", "调用方密钥不存在")
+            if (existing.revokedAt != null) {
+                throw conflict("client_key_revoked", "调用方密钥已撤销，不能重新启用或修改")
+            }
             val record = app.clientKeyRepository.update(
                 id = id,
                 name = request.name,
@@ -483,7 +484,42 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 enabled = request.enabled,
                 expiresAt = request.expiresAt,
                 quotas = quotas,
-            ) ?: throw notFound("client_key_not_found", "调用方密钥不存在")
+            ) ?: run {
+                val current = app.clientKeyRepository.find(id)
+                    ?: throw notFound("client_key_not_found", "调用方密钥不存在")
+                if (current.revokedAt != null) {
+                    throw conflict("client_key_revoked", "调用方密钥已撤销，不能重新启用或修改")
+                }
+                throw conflict("client_key_update_conflict", "调用方密钥状态已变化，请刷新后重试")
+            }
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(
+                record.toResponse(quotaUsageResponse(app.clientKeyQuotaService.currentUsage(record.id))),
+            )
+        }
+
+        post("/client-keys/{id}/rotate") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少密钥 id")
+            val generated = ClientKeyHasher.generate()
+            val record = app.clientKeyRepository.rotate(id, generated.hash, generated.prefix)
+            if (record == null) {
+                val existing = app.clientKeyRepository.find(id)
+                    ?: throw notFound("client_key_not_found", "调用方密钥不存在")
+                if (existing.revokedAt != null) {
+                    throw conflict("client_key_revoked", "调用方密钥已撤销，不能轮换")
+                }
+                throw conflict("client_key_rotation_conflict", "调用方密钥状态已变化，请刷新后重试")
+            }
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(record.toCreatedResponse(generated.raw))
+        }
+
+        post("/client-keys/{id}/revoke") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少密钥 id")
+            val record = app.clientKeyRepository.revoke(id)
+                ?: throw notFound("client_key_not_found", "调用方密钥不存在")
             call.response.headers.append("Cache-Control", "no-store")
             call.respond(
                 record.toResponse(quotaUsageResponse(app.clientKeyQuotaService.currentUsage(record.id))),
@@ -621,12 +657,23 @@ private suspend fun ApplicationCall.respondAdminFile(root: Path, relative: Strin
 }
 
 private fun ApplicationCall.requireAdmin(app: GatewayApplication): AdminSessions.Session {
-    val token = request.cookies["gw_session"] ?: throw unauthorized("管理面未登录")
-    val session = app.sessions.get(token) ?: throw unauthorized("管理面会话已过期")
+    val token = request.cookies["gw_session"] ?: run {
+        markAdminAuditError("admin_session_missing")
+        throw adminUnauthorized("管理面未登录")
+    }
+    val session = app.sessions.get(token) ?: run {
+        markAdminAuditError("admin_session_expired")
+        throw adminUnauthorized("管理面会话已过期")
+    }
+    markAdminAuditActor(session.username)
     if (request.httpMethod != HttpMethod.Get && request.httpMethod != HttpMethod.Head) {
-        val csrf = request.headers["X-CSRF-Token"] ?: throw forbidden("缺少 CSRF Token")
+        val csrf = request.headers["X-CSRF-Token"] ?: run {
+            markAdminAuditError("csrf_missing")
+            throw adminForbidden("csrf_missing", "缺少 CSRF Token")
+        }
         if (!MessageDigest.isEqual(csrf.toByteArray(Charsets.UTF_8), session.csrf.toByteArray(Charsets.UTF_8))) {
-            throw forbidden("CSRF Token 无效")
+            markAdminAuditError("csrf_invalid")
+            throw adminForbidden("csrf_invalid", "CSRF Token 无效")
         }
     }
     return session
@@ -835,6 +882,12 @@ private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLi
 
 private fun conflict(code: String, message: String): GatewayException =
     GatewayException(HttpStatusCode.Conflict, code, message, "invalid_request_error")
+
+private fun adminUnauthorized(message: String): GatewayException =
+    GatewayException(HttpStatusCode.Unauthorized, "admin_unauthorized", message, "authentication_error")
+
+private fun adminForbidden(code: String, message: String): GatewayException =
+    GatewayException(HttpStatusCode.Forbidden, code, message, "permission_error")
 
 private val ALIAS_PATTERN = Regex("[A-Za-z0-9._-]{1,100}")
 private val CURRENCY_PATTERN = Regex("[A-Za-z]{3,8}")
