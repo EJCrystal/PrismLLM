@@ -1256,7 +1256,6 @@ class GatewayIntegrationTest {
         createAlias("fast-chat", channel to "gpt-4o-mini")
         createPrice(channel, "gpt-4o-mini", input = "1", output = "2")
         val key = createClientKey(team = "search-team")
-
         testApplication {
             application { app.install(this) }
             repeat(2) {
@@ -1268,6 +1267,14 @@ class GatewayIntegrationTest {
                 assertEquals(HttpStatusCode.OK, response.status)
                 awaitRequestLogCount(it + 1)
             }
+            app.requestLogRepository.insert(
+                requestLog("failed", createdAt = System.currentTimeMillis()).copy(
+                    clientKeyId = app.clientKeyRepository.list().single().id,
+                    clientKeyName = "test-key",
+                    team = "search-team",
+                    statusCode = 500,
+                ),
+            )
             val login = client.post("/admin/api/login") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"username":"admin","password":"test-password"}""")
@@ -1280,12 +1287,14 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, report.status, report.bodyAsText())
             val json = Json.parseToJsonElement(report.bodyAsText()).jsonObject
             val total = json["total"]!!.jsonObject
-            assertEquals("2", total["requests"]!!.jsonPrimitive.content)
-            assertEquals("26", total["totalTokens"]!!.jsonPrimitive.content)
+            assertEquals("3", total["requests"]!!.jsonPrimitive.content)
+            assertEquals("1", total["errors"]!!.jsonPrimitive.content)
+            assertEquals("28", total["totalTokens"]!!.jsonPrimitive.content)
             assertEquals("0.000032", total["costs"]!!.jsonObject["USD"]!!.jsonPrimitive.content)
             val team = json["byTeam"]!!.jsonArray.single().jsonObject
             assertEquals("search-team", team["id"]!!.jsonPrimitive.content)
-            assertEquals("2", team["requests"]!!.jsonPrimitive.content)
+            assertEquals("3", team["requests"]!!.jsonPrimitive.content)
+            assertEquals("1", team["errors"]!!.jsonPrimitive.content)
             val byKey = json["byClientKey"]!!.jsonArray.single().jsonObject
             assertEquals(app.clientKeyRepository.list().single().id, byKey["id"]!!.jsonPrimitive.content)
             assertEquals("test-key", byKey["name"]!!.jsonPrimitive.content)

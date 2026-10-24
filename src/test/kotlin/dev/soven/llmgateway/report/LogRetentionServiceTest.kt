@@ -1,6 +1,9 @@
 package dev.soven.llmgateway.report
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.CompletableDeferred
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -46,5 +49,25 @@ class LogRetentionServiceTest {
 
         assertEquals(0, service.cleanExpired().deleted)
         assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun `serializes concurrent cleanup requests`() = runBlocking {
+        var active = 0
+        var maxActive = 0
+        val service = LogRetentionService(
+            deleteBatch = { _, _ ->
+                active++
+                maxActive = maxOf(maxActive, active)
+                active--
+                CleanupResult(0, 1)
+            },
+            policy = RetentionPolicy(batchSize = 100),
+            now = { 1L },
+        )
+
+        listOf(async { service.cleanExpired() }, async { service.cleanExpired() }).awaitAll()
+
+        assertEquals(1, maxActive)
     }
 }

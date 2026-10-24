@@ -6,6 +6,7 @@ import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatNumber } from '../utils/format'
 import { formatUsageCosts, reportRange } from '../utils/usageReport'
+import { createLatestRequestGuard } from '../utils/latestRequest'
 
 const days = ref(7)
 const report = ref(null)
@@ -13,6 +14,7 @@ const retention = ref(null)
 const loading = ref(true)
 const error = ref('')
 const cleaning = ref(false)
+const requests = createLatestRequestGuard()
 
 const total = computed(() => report.value?.total || { requests: 0, errors: 0, totalTokens: 0, costs: {} })
 const errorRate = computed(() => total.value.requests ? `${((total.value.errors / total.value.requests) * 100).toFixed(1)}%` : '0%')
@@ -25,13 +27,18 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [nextReport, nextRetention] = await Promise.all([
-      api.getUsageReport(range()),
-      api.getRetentionPolicy(),
-    ])
-    report.value = nextReport
-    retention.value = nextRetention
+    const result = await requests.run(async () => {
+      const [nextReport, nextRetention] = await Promise.all([
+        api.getUsageReport(range()),
+        api.getRetentionPolicy(),
+      ])
+      return { nextReport, nextRetention }
+    })
+    if (!result.isLatest) return
+    report.value = result.value.nextReport
+    retention.value = result.value.nextRetention
   } catch (cause) {
+    if (cause.isLatest === false) return
     error.value = cause.message
   } finally {
     loading.value = false

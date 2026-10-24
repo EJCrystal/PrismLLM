@@ -6,6 +6,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicBoolean
@@ -24,8 +26,9 @@ class LogRetentionService(
 
     private val logger = LoggerFactory.getLogger(LogRetentionService::class.java)
     private val running = AtomicBoolean(false)
+    private val cleanupMutex = Mutex()
 
-    suspend fun cleanExpired(): CleanupResult {
+    suspend fun cleanExpired(): CleanupResult = cleanupMutex.withLock {
         val cutoff = retentionCutoff(now(), policy.retentionDays)
         var total = 0L
         try {
@@ -35,7 +38,7 @@ class LogRetentionService(
                 if (result.deleted < policy.batchSize) break
             }
             logger.info("request log cleanup completed, deleted={}, cutoff={}", total, cutoff)
-            return CleanupResult(total, cutoff)
+            CleanupResult(total, cutoff)
         } catch (cause: CancellationException) {
             throw cause
         } catch (cause: Throwable) {

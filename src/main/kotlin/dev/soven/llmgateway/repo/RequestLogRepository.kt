@@ -10,15 +10,22 @@ import dev.soven.llmgateway.report.UsageReport
 import dev.soven.llmgateway.report.UsageReportQuery
 import dev.soven.llmgateway.report.UsageTotal
 import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.Op
+import org.jetbrains.exposed.v1.core.Case
+import org.jetbrains.exposed.v1.core.LongColumnType
 import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.coalesce
+import org.jetbrains.exposed.v1.core.count
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.greaterEq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.core.lessEq
+import org.jetbrains.exposed.v1.core.sum
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.Query
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
@@ -74,19 +81,105 @@ class RequestLogRepository(private val database: Database) {
     }
 
     suspend fun report(query: UsageReportQuery): UsageReport = suspendTransaction(database) {
+        val where = reportWhere(query)
+        val totals = totalQuery(where).singleOrNull()?.toUsageTotal() ?: UsageTotal()
+        UsageReport(
+            from = query.from,
+            to = query.to,
+            total = totals.copy(costs = costsByCurrency(where)),
+            byClientKey = groupedQuery(RequestLogs.clientKeyId, RequestLogs.clientKeyName, where),
+            byTeam = groupedQuery(RequestLogs.team, RequestLogs.team, where),
+        )
+    }
+
+    private fun reportWhere(query: UsageReportQuery): Op<Boolean> {
         val conditions = buildList {
             add((RequestLogs.createdAt greaterEq query.from) and (RequestLogs.createdAt lessEq query.to))
             query.clientKeyId?.let { add(RequestLogs.clientKeyId eq it) }
             query.team?.let { add(RequestLogs.team eq it) }
         }
-        val where = conditions.reduce { left, right -> left and right }
-        val totals = RequestLogs.select(RequestLogs.statusCode, RequestLogs.inputTokens, RequestLogs.outputTokens, RequestLogs.totalTokens, RequestLogs.costAmount, RequestLogs.costCurrency)
+        return conditions.reduce { left, right -> left and right }
+    }
+
+    private fun totalQuery(where: Op<Boolean>): Query {
+        val errorCount = Case()
+            .When(RequestLogs.statusCode greaterEq 400, org.jetbrains.exposed.v1.core.longLiteral(1L))
+            .Else(org.jetbrains.exposed.v1.core.longLiteral(0L))
+            .sum()
+        return RequestLogs.select(
+            RequestLogs.id.count(),
+            errorCount,
+            RequestLogs.inputTokens.sum(),
+            RequestLogs.outputTokens.sum(),
+            RequestLogs.totalTokens.sum(),
+        ).where { where }
+    }
+
+    private fun costsByCurrency(where: Op<Boolean>): Map<String, BigDecimal> {
+        val cost = RequestLogs.costAmount.sum()
+        return RequestLogs.select(RequestLogs.costCurrency, cost)
             .where { where }
+            .groupBy(RequestLogs.costCurrency)
+            .mapNotNull { row ->
+                val currency = row[RequestLogs.costCurrency] ?: return@mapNotNull null
+                val amount = row[cost] ?: return@mapNotNull null
+                currency to amount
+            }.toMap()
+    }
+
+    private fun ResultRow.toUsageTotal(): UsageTotal {
+        val errorCount = Case()
+            .When(RequestLogs.statusCode greaterEq 400, org.jetbrains.exposed.v1.core.longLiteral(1L))
+            .Else(org.jetbrains.exposed.v1.core.longLiteral(0L))
+            .sum()
+        return UsageTotal(
+            requests = this[RequestLogs.id.count()],
+            errors = this[errorCount] ?: 0L,
+            inputTokens = this[RequestLogs.inputTokens.sum()] ?: 0L,
+            outputTokens = this[RequestLogs.outputTokens.sum()] ?: 0L,
+            totalTokens = this[RequestLogs.totalTokens.sum()] ?: 0L,
+            costs = emptyMap(),
+        )
+    }
+
+    private fun groupedQuery(
+        idColumn: org.jetbrains.exposed.v1.core.Column<String?>,
+        nameColumn: org.jetbrains.exposed.v1.core.Column<String?>,
+        where: Op<Boolean>,
+    ): List<UsageGroup> {
+        val count = RequestLogs.id.count()
+        val errors = Case()
+            .When(RequestLogs.statusCode greaterEq 400, org.jetbrains.exposed.v1.core.longLiteral(1L))
+            .Else(org.jetbrains.exposed.v1.core.longLiteral(0L))
+            .sum()
+        val input = RequestLogs.inputTokens.sum()
+        val output = RequestLogs.outputTokens.sum()
+        val tokens = RequestLogs.totalTokens.sum()
+        val cost = RequestLogs.costAmount.sum()
+        val rows = RequestLogs.select(idColumn, nameColumn, count, errors, input, output, tokens, cost, RequestLogs.costCurrency)
+            .where { where }
+            .groupBy(idColumn, nameColumn, RequestLogs.costCurrency)
             .toList()
-        val total = aggregate(totals)
-        val byKey = groupedUsage(RequestLogs.clientKeyId, RequestLogs.clientKeyName, where)
-        val byTeam = groupedUsage(RequestLogs.team, RequestLogs.team, where)
-        UsageReport(query.from, query.to, total, byKey, byTeam)
+        return rows.groupBy { row ->
+            val id = row[idColumn]?.takeIf { it.isNotBlank() } ?: "unassigned"
+            val name = row[nameColumn]?.takeIf { it.isNotBlank() }
+            id to name
+        }.map { (key, grouped) ->
+            UsageGroup(
+                id = key.first,
+                name = key.second,
+                requests = grouped.sumOf { it[count] },
+                errors = grouped.sumOf { it[errors] ?: 0L },
+                inputTokens = grouped.sumOf { it[input] ?: 0L },
+                outputTokens = grouped.sumOf { it[output] ?: 0L },
+                totalTokens = grouped.sumOf { it[tokens] ?: 0L },
+                costs = grouped.mapNotNull { row ->
+                    val currency = row[RequestLogs.costCurrency]
+                    val amount = row[cost]
+                    if (currency != null && amount != null) currency to amount else null
+                }.toMap(),
+            )
+        }.sortedByDescending { it.totalTokens }
     }
 
     suspend fun deleteOlderThan(cutoff: Long, batchSize: Int): CleanupResult = suspendTransaction(database) {
@@ -131,58 +224,5 @@ class RequestLogRepository(private val database: Database) {
         upstreamErrorCode = row[RequestLogs.upstreamErrorCode],
         createdAt = row[RequestLogs.createdAt],
     )
-
-    private fun aggregate(rows: List<ResultRow>): UsageTotal {
-        var requests = 0L
-        var errors = 0L
-        var input = 0L
-        var output = 0L
-        var totalTokens = 0L
-        val costs = mutableMapOf<String, BigDecimal>()
-        rows.forEach { row ->
-            requests++
-            if (row[RequestLogs.statusCode] >= 400) errors++
-            input += row[RequestLogs.inputTokens] ?: 0
-            output += row[RequestLogs.outputTokens] ?: 0
-            totalTokens += row[RequestLogs.totalTokens] ?: 0
-            val amount = row[RequestLogs.costAmount]
-            val currency = row[RequestLogs.costCurrency]
-            if (amount != null && currency != null) costs[currency] = (costs[currency] ?: BigDecimal.ZERO) + amount
-        }
-        return UsageTotal(requests, errors, input, output, totalTokens, costs)
-    }
-
-    private fun groupedUsage(
-        idColumn: org.jetbrains.exposed.v1.core.Column<String?>,
-        nameColumn: org.jetbrains.exposed.v1.core.Column<String?>,
-        where: org.jetbrains.exposed.v1.core.Op<Boolean>,
-    ): List<UsageGroup> {
-        val rows = RequestLogs.select(
-            idColumn,
-            nameColumn,
-            RequestLogs.statusCode,
-            RequestLogs.inputTokens,
-            RequestLogs.outputTokens,
-            RequestLogs.totalTokens,
-            RequestLogs.costAmount,
-            RequestLogs.costCurrency,
-        )
-            .where { where }
-            .toList()
-            .groupBy { row -> row[idColumn]?.takeIf { it.isNotBlank() } ?: "unassigned" }
-        return rows.map { (id, grouped) ->
-            val aggregate = aggregate(grouped)
-            UsageGroup(
-                id = id,
-                name = grouped.firstNotNullOfOrNull { it[nameColumn]?.takeIf { value -> value.isNotBlank() } },
-                requests = aggregate.requests,
-                errors = aggregate.errors,
-                inputTokens = aggregate.inputTokens,
-                outputTokens = aggregate.outputTokens,
-                totalTokens = aggregate.totalTokens,
-                costs = aggregate.costs,
-            )
-        }.sortedByDescending { it.totalTokens }
-    }
 
 }
