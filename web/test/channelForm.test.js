@@ -42,4 +42,36 @@ describe('channelForm: 渠道保存请求体', () => {
       },
     ])
   })
+
+  it('未修改的映射保留原 mappingSource', () => {
+    const payload = buildChannelPayload(
+      baseForm,
+      ['deepseek-v4.1-flash'],
+      { 'deepseek-v4.1-flash': 'deepseek-flash' },
+      {
+        'deepseek-v4.1-flash': {
+          canonicalModelId: 'deepseek-flash',
+          mappingSource: 'models_dev',
+        },
+      },
+    )
+
+    assert.equal(payload.modelMappings[0].mappingSource, 'models_dev')
+  })
+
+  it('修改映射后标记为 manual', () => {
+    const payload = buildChannelPayload(
+      baseForm,
+      ['deepseek-v4.1-flash'],
+      { 'deepseek-v4.1-flash': 'deepseek-flash-v2' },
+      {
+        'deepseek-v4.1-flash': {
+          canonicalModelId: 'deepseek-flash',
+          mappingSource: 'models_dev',
+        },
+      },
+    )
+
+    assert.equal(payload.modelMappings[0].mappingSource, 'manual')
+  })
 })

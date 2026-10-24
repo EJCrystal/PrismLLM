@@ -30,6 +30,7 @@ const probeResults = ref([])
 const availableModels = ref([])
 const authorizedModels = ref([])
 const canonicalModels = reactive({})
+const originalMappings = reactive({})
 const modelsLoading = ref(false)
 const modelsError = ref('')
 const modelSearch = ref('')
@@ -155,6 +156,10 @@ function openEdit(channel) {
   authorizedModels.value = [...(channel.models || [])]
   clearMappings()
   ;(channel.modelMappings || []).forEach((mapping) => {
+    originalMappings[mapping.upstreamModel] = {
+      canonicalModelId: mapping.canonicalModelId || null,
+      mappingSource: mapping.mappingSource || null,
+    }
     if (mapping.canonicalModelId) {
       canonicalModels[mapping.upstreamModel] = mapping.canonicalModelId
     }
@@ -238,6 +243,7 @@ function copyUpstreamToCanonical(modelId) {
 
 function clearMappings() {
   Object.keys(canonicalModels).forEach((key) => delete canonicalModels[key])
+  Object.keys(originalMappings).forEach((key) => delete originalMappings[key])
 }
 
 function selectAllModels() {
@@ -323,7 +329,7 @@ async function save() {
 
   saving.value = true
   try {
-    const payload = buildChannelPayload(form, authorizedModels.value, canonicalModels)
+    const payload = buildChannelPayload(form, authorizedModels.value, canonicalModels, originalMappings)
     if (editingId.value) {
       await api.updateChannel(editingId.value, payload)
       clearUpstreamModelCache(editingId.value)
@@ -639,6 +645,14 @@ onMounted(load)
             </div>
           </div>
         </div>
+        <label class="switch-row">
+          <input v-model="form.exposeUpstreamModels" type="checkbox" />
+          <span class="switch"></span>
+          <span>
+            <strong>允许上游模型名直连</strong>
+            <small>开启后可直接使用上游模型名；关闭后只能通过配置的别名访问。</small>
+          </span>
+        </label>
         <label class="switch-row">
           <input v-model="form.enabled" type="checkbox" />
           <span class="switch"></span>
