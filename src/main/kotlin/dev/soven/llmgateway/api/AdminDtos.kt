@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.quota.ClientKeyQuotaUsage
 import dev.soven.llmgateway.repo.AliasWithCandidates
 import kotlinx.serialization.Serializable
 
@@ -201,6 +202,11 @@ data class ClientKeyRequest(
     val name: String,
     val enabled: Boolean = true,
     val expiresAt: Long? = null,
+    val dailyTokenLimit: Long? = null,
+    val dailyUsdLimit: String? = null,
+    val dailyCnyLimit: String? = null,
+    val dailyEurLimit: String? = null,
+    val maxConcurrentRequests: Int? = null,
 )
 
 /**
@@ -216,6 +222,12 @@ data class ClientKeyResponse(
     val keyPrefix: String,
     val enabled: Boolean,
     val expiresAt: Long?,
+    val dailyTokenLimit: Long?,
+    val dailyUsdLimit: String?,
+    val dailyCnyLimit: String?,
+    val dailyEurLimit: String?,
+    val maxConcurrentRequests: Int?,
+    val quotaUsage: ClientKeyQuotaUsageResponse,
     val createdAt: Long,
 )
 
@@ -225,7 +237,45 @@ fun ClientKeyRecord.toResponse() = ClientKeyResponse(
     keyPrefix = keyPrefix,
     enabled = enabled,
     expiresAt = expiresAt,
+    dailyTokenLimit = quotas.dailyTokens,
+    dailyUsdLimit = quotas.dailyCostLimit("USD")?.stripTrailingZeros()?.toPlainString(),
+    dailyCnyLimit = quotas.dailyCostLimit("CNY")?.stripTrailingZeros()?.toPlainString(),
+    dailyEurLimit = quotas.dailyCostLimit("EUR")?.stripTrailingZeros()?.toPlainString(),
+    maxConcurrentRequests = quotas.maxConcurrentRequests,
+    quotaUsage = ClientKeyQuotaUsageResponse(),
     createdAt = createdAt,
+)
+
+fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyResponse(
+    id = id,
+    name = name,
+    keyPrefix = keyPrefix,
+    enabled = enabled,
+    expiresAt = expiresAt,
+    dailyTokenLimit = quotas.dailyTokens,
+    dailyUsdLimit = quotas.dailyCostLimit("USD")?.stripTrailingZeros()?.toPlainString(),
+    dailyCnyLimit = quotas.dailyCostLimit("CNY")?.stripTrailingZeros()?.toPlainString(),
+    dailyEurLimit = quotas.dailyCostLimit("EUR")?.stripTrailingZeros()?.toPlainString(),
+    maxConcurrentRequests = quotas.maxConcurrentRequests,
+    quotaUsage = usage,
+    createdAt = createdAt,
+)
+
+fun quotaUsageResponse(usage: ClientKeyQuotaUsage) = ClientKeyQuotaUsageResponse(
+    dailyTokens = usage.dailyTokens,
+    dailyUsdCost = usage.dailyCost("USD").stripTrailingZeros().toPlainString(),
+    dailyCnyCost = usage.dailyCost("CNY").stripTrailingZeros().toPlainString(),
+    dailyEurCost = usage.dailyCost("EUR").stripTrailingZeros().toPlainString(),
+    concurrentRequests = usage.concurrentRequests,
+)
+
+@Serializable
+data class ClientKeyQuotaUsageResponse(
+    val dailyTokens: Long = 0,
+    val dailyUsdCost: String = "0",
+    val dailyCnyCost: String = "0",
+    val dailyEurCost: String = "0",
+    val concurrentRequests: Int = 0,
 )
 
 /**
@@ -242,6 +292,11 @@ data class ClientKeyCreatedResponse(
     val keyPrefix: String,
     val enabled: Boolean,
     val expiresAt: Long?,
+    val dailyTokenLimit: Long?,
+    val dailyUsdLimit: String?,
+    val dailyCnyLimit: String?,
+    val dailyEurLimit: String?,
+    val maxConcurrentRequests: Int?,
     val createdAt: Long,
 )
 

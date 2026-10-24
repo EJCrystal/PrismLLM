@@ -11,6 +11,7 @@ import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.repo.AliasWithCandidates
 import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.security.ClientKeyHasher
+import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
@@ -29,6 +30,8 @@ import io.ktor.server.testing.testApplication
 import org.flywaydb.core.Flyway
 import org.flywaydb.core.api.MigrationVersion
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -890,6 +893,127 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `rejects next request after daily token limit is consumed`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey(ClientKeyQuotaLimits(dailyTokens = 13))
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            val rejected = send()
+
+            assertEquals(HttpStatusCode.TooManyRequests, rejected.status)
+            assertTrue(rejected.bodyAsText().contains("daily_token_quota_exceeded"))
+            assertEquals(1, fake.requests.size)
+            assertEquals(13, app.clientKeyQuotaService.currentUsage(app.clientKeyRepository.list().single().id).dailyTokens)
+        }
+    }
+
+    @Test
+    fun `rejects next request after daily cost limit is consumed`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        createPrice(channel, "gpt-4o-mini", input = "1", output = "2")
+        val key = createClientKey(
+            ClientKeyQuotaLimits(dailyCosts = mapOf("USD" to BigDecimal("0.000016"))),
+        )
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            val rejected = send()
+            assertEquals(HttpStatusCode.TooManyRequests, rejected.status)
+            assertTrue(rejected.bodyAsText().contains("daily_cost_quota_exceeded"))
+        }
+    }
+
+    @Test
+    fun `rejects concurrent request beyond limit and releases slot afterward`() = runBlocking {
+        val channel = createChannel("openai", "slow")
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey(ClientKeyQuotaLimits(maxConcurrentRequests = 1))
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"messages":[]}""")
+            }
+
+            val first = async(Dispatchers.Default) { send() }
+            val clientKeyId = app.clientKeyRepository.list().single().id
+            val heldDeadline = System.currentTimeMillis() + 2_000
+            while (app.clientKeyQuotaService.currentUsage(clientKeyId).concurrentRequests == 0 && System.currentTimeMillis() < heldDeadline) {
+                delay(5)
+            }
+            assertEquals(1, app.clientKeyQuotaService.currentUsage(clientKeyId).concurrentRequests)
+
+            val rejected = send()
+            assertEquals(HttpStatusCode.TooManyRequests, rejected.status)
+            assertTrue(rejected.bodyAsText().contains("concurrency_limit_exceeded"))
+            assertEquals(HttpStatusCode.OK, first.await().status)
+            assertEquals(HttpStatusCode.OK, send().status)
+        }
+    }
+
+    @Test
+    fun `releases concurrency slot when request is rejected by routing`() = runBlocking {
+        val key = createClientKey(ClientKeyQuotaLimits(maxConcurrentRequests = 1))
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send(model: String) = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"$model","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.NotFound, send("missing-model").status)
+            val channel = createChannel("openai", "ok")
+            createAlias("fast-chat", channel to "gpt-4o-mini")
+            assertEquals(HttpStatusCode.OK, send("fast-chat").status)
+        }
+    }
+
+    @Test
+    fun `persists quota limits through client key repository`() = runBlocking {
+        val generated = ClientKeyHasher.generate()
+        val created = app.clientKeyRepository.create(
+            name = "bounded",
+            keyHash = generated.hash,
+            keyPrefix = generated.prefix,
+            enabled = true,
+            expiresAt = null,
+            quotas = ClientKeyQuotaLimits(
+                dailyTokens = 1000,
+                dailyCosts = mapOf("USD" to BigDecimal("5.50"), "CNY" to BigDecimal("40")),
+                maxConcurrentRequests = 4,
+            ),
+        )
+
+        val loaded = app.clientKeyRepository.find(created.id)!!
+        assertEquals(1000, loaded.quotas.dailyTokens)
+        assertEquals(0, loaded.quotas.dailyCostLimit("USD")?.compareTo(BigDecimal("5.50")))
+        assertEquals(0, loaded.quotas.dailyCostLimit("CNY")?.compareTo(BigDecimal("40")))
+        assertEquals(null, loaded.quotas.dailyCostLimit("EUR"))
+        assertEquals(4, loaded.quotas.maxConcurrentRequests)
+    }
+
+    @Test
     fun `records reasoning effort from chat and responses requests`() = runBlocking {
         val channel = createChannelWithProtocols(
             "openai",
@@ -1126,6 +1250,59 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin client key API validates and returns quota settings`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val login = client.post("/admin/api/login") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"username":"admin","password":"test-password"}""")
+            }
+            val setCookies = login.headers.getAll(HttpHeaders.SetCookie).orEmpty()
+            val sessionCookie = setCookies.first { it.startsWith("gw_session=") }.substringBefore(";")
+            val csrf = setCookies.first { it.startsWith("gw_csrf=") }.substringAfter("=").substringBefore(";")
+
+            suspend fun create(body: String) = client.post("/admin/api/client-keys") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+
+            val created = create(
+                """{"name":"bounded","dailyTokenLimit":100,"dailyUsdLimit":"1.50","dailyCnyLimit":"10","maxConcurrentRequests":2}""",
+            )
+            assertEquals(HttpStatusCode.Created, created.status)
+            val createdJson = Json.parseToJsonElement(created.bodyAsText()).jsonObject
+            assertEquals("100", createdJson["dailyTokenLimit"]!!.jsonPrimitive.content)
+            assertEquals("1.5", createdJson["dailyUsdLimit"]!!.jsonPrimitive.content)
+            assertEquals("2", createdJson["maxConcurrentRequests"]!!.jsonPrimitive.content)
+            assertNull(createdJson["dailyEurLimit"])
+
+            val listed = client.get("/admin/api/client-keys") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, listed.status)
+            val listedKey = Json.parseToJsonElement(listed.bodyAsText()).jsonArray.single().jsonObject
+            val usage = listedKey["quotaUsage"]!!.jsonObject
+            assertEquals("0", usage["dailyTokens"]!!.jsonPrimitive.content)
+            assertEquals("0", usage["concurrentRequests"]!!.jsonPrimitive.content)
+
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                create("""{"name":"negative","dailyTokenLimit":-1}""").status,
+            )
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                create("""{"name":"bad-cost","dailyUsdLimit":"-0.01"}""").status,
+            )
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                create("""{"name":"bad-concurrency","maxConcurrentRequests":0}""").status,
+            )
+        }
+    }
+
+    @Test
     fun `alias rejects un-authorized channel model`() = runBlocking {
         val channel = createChannelWithBaseUrl("alias-auth", "${fake.baseUrl}/ok/v1").let { created ->
             app.channelRepository.update(
@@ -1313,7 +1490,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("10", result.getString(1))
+                        assertEquals("11", result.getString(1))
                     }
                     statement.executeQuery("select expose_upstream_models from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -1536,7 +1713,7 @@ class GatewayIntegrationTest {
             candidates = candidates.map { NewCandidate(it.first.id, it.second) },
         )
 
-    private suspend fun createClientKey(): String {
+    private suspend fun createClientKey(quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits()): String {
         val generated = ClientKeyHasher.generate()
         app.clientKeyRepository.create(
             name = "test-key",
@@ -1544,6 +1721,7 @@ class GatewayIntegrationTest {
             keyPrefix = generated.prefix,
             enabled = true,
             expiresAt = null,
+            quotas = quotas,
         )
         return generated.raw
     }
@@ -1596,7 +1774,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table request_logs, alias_candidates, model_aliases, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table request_logs, alias_candidates, model_aliases, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }

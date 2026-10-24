@@ -7,6 +7,7 @@ import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
+import { buildClientKeyPayload, quotaSummary } from '../utils/clientKeyQuota'
 
 const keys = ref([])
 const loading = ref(true)
@@ -20,9 +21,19 @@ const form = reactive({
   name: '',
   enabled: true,
   expiresAt: '',
+  dailyTokenLimit: '',
+  dailyUsdLimit: '',
+  dailyCnyLimit: '',
+  dailyEurLimit: '',
+  maxConcurrentRequests: '',
 })
 
 const enabledCount = computed(() => keys.value.filter((item) => item.enabled).length)
+const quotaCurrencies = [
+  { code: 'USD', field: 'dailyUsdLimit' },
+  { code: 'CNY', field: 'dailyCnyLimit' },
+  { code: 'EUR', field: 'dailyEurLimit' },
+]
 
 async function load() {
   loading.value = true
@@ -38,7 +49,16 @@ async function load() {
 
 function openCreate() {
   editingId.value = null
-  Object.assign(form, { name: '', enabled: true, expiresAt: '' })
+  Object.assign(form, {
+    name: '',
+    enabled: true,
+    expiresAt: '',
+    dailyTokenLimit: '',
+    dailyUsdLimit: '',
+    dailyCnyLimit: '',
+    dailyEurLimit: '',
+    maxConcurrentRequests: '',
+  })
   showForm.value = true
 }
 
@@ -48,6 +68,11 @@ function openEdit(key) {
     name: key.name,
     enabled: key.enabled,
     expiresAt: toLocalInput(key.expiresAt),
+    dailyTokenLimit: key.dailyTokenLimit ?? '',
+    dailyUsdLimit: key.dailyUsdLimit ?? '',
+    dailyCnyLimit: key.dailyCnyLimit ?? '',
+    dailyEurLimit: key.dailyEurLimit ?? '',
+    maxConcurrentRequests: key.maxConcurrentRequests ?? '',
   })
   showForm.value = true
 }
@@ -59,11 +84,7 @@ async function save() {
   }
   saving.value = true
   try {
-    const payload = {
-      name: form.name.trim(),
-      enabled: form.enabled,
-      expiresAt: fromLocalInput(form.expiresAt),
-    }
+    const payload = buildClientKeyPayload(form, fromLocalInput(form.expiresAt))
     if (editingId.value) {
       await api.updateClientKey(editingId.value, payload)
       notify('调用方密钥已更新')
@@ -87,6 +108,11 @@ async function toggle(key) {
       name: key.name,
       enabled: !key.enabled,
       expiresAt: key.expiresAt,
+      dailyTokenLimit: key.dailyTokenLimit,
+      dailyUsdLimit: key.dailyUsdLimit,
+      dailyCnyLimit: key.dailyCnyLimit,
+      dailyEurLimit: key.dailyEurLimit,
+      maxConcurrentRequests: key.maxConcurrentRequests,
     })
     notify(key.enabled ? '密钥已停用' : '密钥已启用')
     await load()
@@ -172,6 +198,7 @@ onMounted(load)
               <th>名称</th>
               <th>展示前缀</th>
               <th>状态</th>
+              <th>每日额度 / 并发</th>
               <th>过期时间</th>
               <th>创建时间</th>
               <th class="actions-col">操作</th>
@@ -192,6 +219,7 @@ onMounted(load)
                   {{ key.enabled ? '启用' : '停用' }}
                 </span>
               </td>
+              <td class="muted small">{{ quotaSummary(key) }}</td>
               <td class="muted">{{ formatTime(key.expiresAt, { fallback: '永不过期' }) }}</td>
               <td class="muted">{{ formatTime(key.createdAt) }}</td>
               <td class="actions-col">
@@ -224,6 +252,32 @@ onMounted(load)
           <span>过期时间</span>
           <input v-model="form.expiresAt" type="datetime-local" />
           <small>留空表示永不过期；到期后请求会直接返回 401。</small>
+        </label>
+        <label class="field" for="client-key-daily-token-limit">
+          <span>每日 token 上限</span>
+          <input id="client-key-daily-token-limit" v-model="form.dailyTokenLimit" type="number" min="0" step="1" placeholder="留空表示不限制" />
+          <small>按 UTC 自然日累计上游返回的总 token；达到上限后返回 429。</small>
+        </label>
+        <div class="field">
+          <span>每日费用上限</span>
+          <div class="quota-currency-grid">
+            <label v-for="currency in quotaCurrencies" :key="currency.code" class="field">
+              <small>{{ currency.code }}</small>
+              <input
+                v-model="form[currency.field]"
+                type="number"
+                min="0"
+                step="0.00000001"
+                placeholder="留空表示不限制"
+              />
+            </label>
+          </div>
+          <small>按模型单价的实际币种分别累计；未配置的币种不限制费用。</small>
+        </div>
+        <label class="field" for="client-key-max-concurrent">
+          <span>最大并发请求数</span>
+          <input id="client-key-max-concurrent" v-model="form.maxConcurrentRequests" type="number" min="1" step="1" placeholder="留空表示不限制" />
+          <small>单实例内同时处理的请求数；响应结束或失败后自动释放。</small>
         </label>
         <label class="switch-row">
           <input v-model="form.enabled" type="checkbox" />
