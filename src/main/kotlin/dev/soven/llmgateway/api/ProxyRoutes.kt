@@ -168,6 +168,8 @@ private suspend fun handleProxy(
 
         phase = FailureStage.UPSTREAM
         var lastError: GatewayException? = null
+        var retryFrom: String? = null
+        var retryReason: String? = null
         var candidateIndex = 0
         while (candidateIndex < candidates.size && upstreamAttempts < app.config.maxAttempts) {
             val candidate = candidates[candidateIndex++]
@@ -176,9 +178,6 @@ private suspend fun handleProxy(
                 app.metrics.upstreamCircuitSkipped(candidate.channel.name)
                 continue
             }
-            channelId = candidate.channel.id
-            channelName = candidate.channel.name
-            upstreamModel = candidate.upstreamModel
             val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
             if (remainingMs <= 0) {
                 app.upstreamCircuitBreaker.release(permit)
@@ -190,6 +189,14 @@ private suspend fun handleProxy(
                 )
             }
             upstreamAttempts += 1
+            channelId = candidate.channel.id
+            channelName = candidate.channel.name
+            upstreamModel = candidate.upstreamModel
+            retryFrom?.let { from ->
+                app.metrics.upstreamRetry(from, candidate.channel.name, retryReason ?: "upstream_error")
+                retryFrom = null
+                retryReason = null
+            }
             try {
                 if (stream) {
                     proxyStream(app, call, requestJson, candidate, alias, startedAt, remainingMs, state, protocol, traceContext.traceparent)
@@ -240,8 +247,9 @@ private suspend fun handleProxy(
                 )
                 val retryRemainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
                 if (retryDelayMs >= retryRemainingMs) throw e
-                app.metrics.upstreamRetry(candidate.channel.name, nextChannel, e.code)
                 if (retryDelayMs > 0) delay(retryDelayMs)
+                retryFrom = candidate.channel.name
+                retryReason = e.code
             } catch (e: Throwable) {
                 app.upstreamCircuitBreaker.release(permit)
                 throw e
