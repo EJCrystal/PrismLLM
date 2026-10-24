@@ -269,6 +269,7 @@ onMounted(load)
               <td>
                 <div class="primary-cell small">{{ log.channelName || (log.channelId ? log.channelId.slice(0, 8) : '—') }}</div>
                 <div class="mono muted small">{{ log.upstreamModel || '—' }}</div>
+                <span v-if="log.upstreamAttempts > 1" class="badge warning">尝试 {{ log.upstreamAttempts }} 次</span>
               </td>
               <td>
                 <div class="stacked-cell">
@@ -386,6 +387,10 @@ onMounted(load)
                   <CopyButton :text="selected.channelId" title="复制渠道 ID" :size="13" />
                 </div>
                 <strong v-else class="muted">—</strong>
+              </div>
+              <div class="detail-item">
+                <span>上游尝试</span>
+                <strong>{{ selected.upstreamAttempts ?? '—' }}</strong>
               </div>
               <div class="detail-item">
                 <span>上游模型</span>

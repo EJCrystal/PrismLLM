@@ -62,6 +62,21 @@ class GatewayMetrics {
         upstreamAttempt(channel, false)
     }
 
+    fun upstreamRetry(fromChannel: String, toChannel: String, reason: String) {
+        registry.counter(
+            "gateway_upstream_retries_total",
+            Tags.of("from_channel", fromChannel, "to_channel", toChannel, "reason", reason),
+        ).increment()
+    }
+
+    fun upstreamCircuitSkipped(channel: String) {
+        registry.counter("gateway_upstream_circuit_skips_total", Tags.of("channel", channel)).increment()
+    }
+
+    fun upstreamCircuitOpened(channel: String) {
+        registry.counter("gateway_upstream_circuit_opens_total", Tags.of("channel", channel)).increment()
+    }
+
     fun upstreamAttempt(channel: String, healthy: Boolean) {
         registry.counter(
             "gateway_upstream_attempts_total",
