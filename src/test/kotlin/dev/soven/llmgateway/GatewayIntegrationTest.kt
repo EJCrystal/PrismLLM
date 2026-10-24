@@ -109,6 +109,7 @@ class GatewayIntegrationTest {
 
     @Test
     fun `CORS exposes trace correlation headers`() = runBlocking {
+        app.close()
         app = GatewayApplication(config(corsOrigins = listOf("https://console.example.com")))
         testApplication {
             application { app.install(this) }
