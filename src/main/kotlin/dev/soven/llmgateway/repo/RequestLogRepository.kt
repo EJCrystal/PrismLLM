@@ -167,13 +167,11 @@ class RequestLogRepository(private val database: Database) {
             .groupBy(idColumn, nameColumn, RequestLogs.costCurrency)
             .toList()
         return rows.groupBy { row ->
-            val id = row[idColumn]?.takeIf { it.isNotBlank() } ?: unassignedId
-            val name = row[nameColumn]?.takeIf { it.isNotBlank() }
-            id to name
-        }.map { (key, grouped) ->
+            row[idColumn]?.takeIf { it.isNotBlank() } ?: unassignedId
+        }.map { (id, grouped) ->
             UsageGroup(
-                id = key.first,
-                name = key.second,
+                id = id,
+                name = grouped.firstNotNullOfOrNull { it[nameColumn]?.takeIf { value -> value.isNotBlank() } },
                 requests = grouped.sumOf { it[count] },
                 errors = grouped.sumOf { it[errors] ?: 0L },
                 inputTokens = grouped.sumOf { it[input] ?: 0L },
