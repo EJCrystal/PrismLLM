@@ -9,6 +9,7 @@ import dev.soven.llmgateway.proxy.probeUpstreamProtocols
 import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.parseDailyCostLimit
+import dev.soven.llmgateway.report.UsageReportQuery
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.ClientKeyHasher
 import dev.soven.llmgateway.security.PasswordHasher
@@ -439,6 +440,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val generated = ClientKeyHasher.generate()
             val record = app.clientKeyRepository.create(
                 name = request.name,
+                team = normalizeTeam(request.team),
                 keyHash = generated.hash,
                 keyPrefix = generated.prefix,
                 enabled = request.enabled,
@@ -450,6 +452,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 ClientKeyCreatedResponse(
                     id = record.id,
                     name = record.name,
+                    team = record.team,
                     key = generated.raw,
                     keyPrefix = record.keyPrefix,
                     enabled = record.enabled,
@@ -476,6 +479,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val record = app.clientKeyRepository.update(
                 id = id,
                 name = request.name,
+                team = normalizeTeam(request.team),
                 enabled = request.enabled,
                 expiresAt = request.expiresAt,
                 quotas = quotas,
@@ -558,6 +562,35 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val limit = call.queryInt("limit", default = 100, min = 1, max = 1000)
             val beforeId = call.queryLongOrNull("beforeId")
             call.respond(app.requestLogRepository.list(limit, beforeId).map { it.toResponse() })
+        }
+
+        get("/usage-report") {
+            call.requireAdmin(app)
+            val now = System.currentTimeMillis()
+            val to = call.queryLongOrNull("to") ?: now
+            val from = call.queryLongOrNull("from") ?: (to - 7 * 86_400_000L)
+            if (from > to) throw badRequest("invalid_report_range", "报表开始时间不能晚于结束时间")
+            if (to - from > 366 * 86_400_000L) throw badRequest("invalid_report_range", "报表时间范围不能超过 366 天")
+            val report = app.requestLogRepository.report(
+                UsageReportQuery(
+                    from = from,
+                    to = to,
+                    clientKeyId = call.request.queryParameters["clientKeyId"]?.takeIf { it.isNotBlank() },
+                    team = call.request.queryParameters["team"]?.takeIf { it.isNotBlank() },
+                ),
+            )
+            call.respond(report.toResponse())
+        }
+
+        get("/request-log-retention") {
+            call.requireAdmin(app)
+            call.respond(app.config.retention.toResponse(System.currentTimeMillis()))
+        }
+
+        post("/request-log-retention/cleanup") {
+            call.requireAdmin(app)
+            val deleted = app.logRetentionService.cleanExpired()
+            call.respond(deleted.toResponse())
         }
     }
 }
@@ -771,6 +804,12 @@ private fun parsePrice(value: String, label: String): BigDecimal {
         ?: throw badRequest("invalid_model_price", "$label 必须是数字")
     if (parsed < BigDecimal.ZERO) throw badRequest("invalid_model_price", "$label 不能为负数")
     return parsed.setScale(8, RoundingMode.HALF_UP)
+}
+
+private fun normalizeTeam(value: String?): String? {
+    val team = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    if (team.length > 100) throw badRequest("invalid_client_key", "团队名称不能超过 100 个字符")
+    return team
 }
 
 private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLimits {

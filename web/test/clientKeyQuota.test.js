@@ -16,6 +16,7 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
 
     assert.deepEqual(payload, {
       name: 'search-service',
+      team: null,
       enabled: true,
       expiresAt: null,
       dailyTokenLimit: null,

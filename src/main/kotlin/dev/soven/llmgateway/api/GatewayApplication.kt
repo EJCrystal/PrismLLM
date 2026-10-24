@@ -14,6 +14,7 @@ import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.ClientKeyRepository
 import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
+import dev.soven.llmgateway.report.LogRetentionService
 import dev.soven.llmgateway.quota.ClientKeyQuotaService
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.CredentialCipher
@@ -77,6 +78,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val sessions = AdminSessions()
     val metrics = GatewayMetrics()
     val requestLogWriter = RequestLogWriter(requestLogRepository, modelPriceRepository, scope)
+    val logRetentionService = LogRetentionService(requestLogRepository, config.retention)
+    private val logRetentionJob = java.util.concurrent.atomic.AtomicReference<kotlinx.coroutines.Job?>(null)
 
     val httpClient = HttpClient(Java) {
         install(HttpTimeout) {
@@ -178,6 +181,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             adminUi(this@GatewayApplication)
         }
         app.monitor.subscribe(ApplicationStopped) { close() }
+        logRetentionJob.compareAndSet(null, logRetentionService.start(scope))
     }
 
     fun beginShutdown() {
@@ -196,6 +200,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         if (!closed.compareAndSet(false, true)) return
         shuttingDown.set(true)
         runBlocking { requestLogWriter.closeAndDrain(5_000) }
+        logRetentionJob.getAndSet(null)?.cancel()
         scope.cancel()
         httpClient.close()
         databaseFactory.close()

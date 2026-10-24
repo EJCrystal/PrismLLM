@@ -1,6 +1,7 @@
 export function buildClientKeyPayload(form, expiresAt) {
   return {
     name: form.name.trim(),
+    team: optionalText(form.team),
     enabled: form.enabled,
     expiresAt,
     dailyTokenLimit: optionalInteger(form.dailyTokenLimit),

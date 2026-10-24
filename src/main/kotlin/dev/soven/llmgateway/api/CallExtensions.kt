@@ -53,4 +53,4 @@ fun ApplicationCall.queryInt(
  * 可选的长整型（Long）查询参数提取器。
  */
 fun ApplicationCall.queryLongOrNull(name: String): Long? =
-    request.queryParameters[name]?.toLongOrNull()
+    request.queryParameters[name]?.trim()?.toLongOrNull()

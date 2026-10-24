@@ -109,4 +109,12 @@ export const api = {
     request(`/model-prices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   listRequestLogs: (limit = 100) => request(`/request-logs?limit=${limit}`),
+  getUsageReport: ({ from, to, clientKeyId = null, team = null }) => {
+    const params = new URLSearchParams({ from: String(from), to: String(to) })
+    if (clientKeyId) params.set('clientKeyId', clientKeyId)
+    if (team) params.set('team', team)
+    return request(`/usage-report?${params}`)
+  },
+  getRetentionPolicy: () => request('/request-log-retention'),
+  cleanupRequestLogs: () => request('/request-log-retention/cleanup', { method: 'POST' }),
 }

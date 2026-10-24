@@ -83,6 +83,7 @@ object ChannelModels : Table("channel_models") {
 object ClientKeys : Table("client_keys") {
     val id = varchar("id", 36)
     val name = varchar("name", 100)
+    val team = varchar("team", 100).nullable()
     val keyHash = varchar("key_hash", 64).uniqueIndex()
     val keyPrefix = varchar("key_prefix", 20)
     val enabled = bool("enabled")
@@ -161,6 +162,7 @@ object RequestLogs : Table("request_logs") {
     val requestId = varchar("request_id", 64)
     val clientKeyId = varchar("client_key_id", 36).nullable()
     val clientKeyName = varchar("client_key_name", 100).nullable()
+    val team = varchar("team", 100).nullable()
     val alias = varchar("alias", 100)
     val channelId = varchar("channel_id", 36).nullable()
     val channelName = varchar("channel_name", 100).nullable()
