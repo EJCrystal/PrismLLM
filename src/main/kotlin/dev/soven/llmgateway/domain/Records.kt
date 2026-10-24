@@ -100,6 +100,25 @@ data class ClientKeyRecord(
     val expiresAt: Long?,
     val quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits(),
     val createdAt: Long,
+    val rotatedAt: Long? = null,
+    val revokedAt: Long? = null,
+)
+
+/**
+ * 一条管理面写操作审计记录。字段只包含请求元数据。
+ */
+data class AdminAuditRecord(
+    val id: Long,
+    val actor: String?,
+    val action: String,
+    val method: String,
+    val path: String,
+    val statusCode: Int,
+    val result: String,
+    val requestId: String,
+    val sourceIp: String?,
+    val errorCode: String?,
+    val createdAt: Long,
 )
 
 /**

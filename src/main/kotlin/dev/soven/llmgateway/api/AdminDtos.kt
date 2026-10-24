@@ -1,8 +1,9 @@
 package dev.soven.llmgateway.api
 
+import dev.soven.llmgateway.domain.AdminAuditRecord
+import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.quota.ClientKeyQuotaUsage
@@ -236,6 +237,8 @@ data class ClientKeyResponse(
     val maxConcurrentRequests: Int?,
     val quotaUsage: ClientKeyQuotaUsageResponse,
     val createdAt: Long,
+    val rotatedAt: Long?,
+    val revokedAt: Long?,
 )
 
 fun ClientKeyRecord.toResponse() = ClientKeyResponse(
@@ -252,6 +255,8 @@ fun ClientKeyRecord.toResponse() = ClientKeyResponse(
     maxConcurrentRequests = quotas.maxConcurrentRequests,
     quotaUsage = ClientKeyQuotaUsageResponse(),
     createdAt = createdAt,
+    rotatedAt = rotatedAt,
+    revokedAt = revokedAt,
 )
 
 fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyResponse(
@@ -268,6 +273,8 @@ fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyRe
     maxConcurrentRequests = quotas.maxConcurrentRequests,
     quotaUsage = usage,
     createdAt = createdAt,
+    rotatedAt = rotatedAt,
+    revokedAt = revokedAt,
 )
 
 fun quotaUsageResponse(usage: ClientKeyQuotaUsage) = ClientKeyQuotaUsageResponse(
@@ -369,7 +376,7 @@ fun RetentionPolicy.toResponse(now: Long) = RetentionPolicyResponse(
 fun CleanupResult.toResponse() = CleanupResultResponse(deleted, cutoff)
 
 /**
- * 新建调用方密钥响应。key 只在创建时返回一次。
+ * 新建或轮换调用方密钥响应。key 只在本次响应返回一次。
  *
  * @author 文杰
  * @since 2026-10-21
@@ -389,6 +396,58 @@ data class ClientKeyCreatedResponse(
     val dailyEurLimit: String?,
     val maxConcurrentRequests: Int?,
     val createdAt: Long,
+    val rotatedAt: Long?,
+    val revokedAt: Long?,
+)
+
+fun ClientKeyRecord.toCreatedResponse(rawKey: String) = ClientKeyCreatedResponse(
+    id = id,
+    name = name,
+    team = team,
+    key = rawKey,
+    keyPrefix = keyPrefix,
+    enabled = enabled,
+    expiresAt = expiresAt,
+    dailyTokenLimit = quotas.dailyTokens,
+    dailyUsdLimit = quotas.dailyCostLimit("USD")?.stripTrailingZeros()?.toPlainString(),
+    dailyCnyLimit = quotas.dailyCostLimit("CNY")?.stripTrailingZeros()?.toPlainString(),
+    dailyEurLimit = quotas.dailyCostLimit("EUR")?.stripTrailingZeros()?.toPlainString(),
+    maxConcurrentRequests = quotas.maxConcurrentRequests,
+    createdAt = createdAt,
+    rotatedAt = rotatedAt,
+    revokedAt = revokedAt,
+)
+
+/**
+ * 管理面写操作审计读响应。
+ */
+@Serializable
+data class AdminAuditLogResponse(
+    val id: Long,
+    val actor: String?,
+    val action: String,
+    val method: String,
+    val path: String,
+    val statusCode: Int,
+    val result: String,
+    val requestId: String,
+    val sourceIp: String?,
+    val errorCode: String?,
+    val createdAt: Long,
+)
+
+fun AdminAuditRecord.toResponse() = AdminAuditLogResponse(
+    id = id,
+    actor = actor,
+    action = action,
+    method = method,
+    path = path,
+    statusCode = statusCode,
+    result = result,
+    requestId = requestId,
+    sourceIp = sourceIp,
+    errorCode = errorCode,
+    createdAt = createdAt,
 )
 
 /**

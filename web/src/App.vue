@@ -9,6 +9,7 @@ import ExposedModelsView from './components/ExposedModelsView.vue'
 import ClientKeysView from './components/ClientKeysView.vue'
 import LogsView from './components/LogsView.vue'
 import UsageReportsView from './components/UsageReportsView.vue'
+import AdminAuditLogsView from './components/AdminAuditLogsView.vue'
 import AccountSettingsModal from './components/AccountSettingsModal.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 
@@ -18,6 +19,7 @@ const navItems = [
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
   { id: 'usage-reports', label: '用量报表', icon: 'chart' },
+  { id: 'audit-logs', label: '操作审计', icon: 'shield' },
 ]
 
 const meta = {
@@ -40,6 +42,10 @@ const meta = {
   'usage-reports': {
     title: '用量报表',
     desc: '按调用方密钥和团队汇总请求、token 与费用。',
+  },
+  'audit-logs': {
+    title: '操作审计',
+    desc: '查看管理面写操作的操作者、结果、请求 ID 与来源。',
   },
 }
 
@@ -199,6 +205,7 @@ onBeforeUnmount(() => {
         <ClientKeysView v-else-if="view === 'client-keys'" />
         <LogsView v-else-if="view === 'logs'" />
         <UsageReportsView v-else-if="view === 'usage-reports'" />
+        <AdminAuditLogsView v-else-if="view === 'audit-logs'" />
       </main>
     </div>
   </div>

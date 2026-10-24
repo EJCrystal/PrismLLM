@@ -4,7 +4,9 @@ import dev.soven.llmgateway.db.ClientKeys
 import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.isNull
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
@@ -70,7 +72,9 @@ class ClientKeyRepository(private val database: Database) {
         quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits(),
     ): ClientKeyRecord? =
         suspendTransaction(database) {
-            val updated = ClientKeys.update({ ClientKeys.id eq id }) {
+            val updated = ClientKeys.update({
+                (ClientKeys.id eq id) and ClientKeys.revokedAt.isNull()
+            }) {
                 it[ClientKeys.name] = name
                 it[ClientKeys.team] = team
                 it[ClientKeys.enabled] = enabled
@@ -83,6 +87,40 @@ class ClientKeyRepository(private val database: Database) {
             }
             if (updated == 0) null else ClientKeys.selectAll().where { ClientKeys.id eq id }.single().let(::toRecord)
         }
+
+    /**
+     * 原子替换密钥哈希和展示前缀。撤销后的密钥不能轮换。
+     */
+    suspend fun rotate(id: String, keyHash: String, keyPrefix: String): ClientKeyRecord? =
+        suspendTransaction(database) {
+            val now = System.currentTimeMillis()
+            val updated = ClientKeys.update({
+                (ClientKeys.id eq id) and ClientKeys.revokedAt.isNull()
+            }) {
+                it[ClientKeys.keyHash] = keyHash
+                it[ClientKeys.keyPrefix] = keyPrefix
+                it[ClientKeys.rotatedAt] = now
+            }
+            if (updated == 0) {
+                null
+            } else {
+                ClientKeys.selectAll().where { ClientKeys.id eq id }.single().let(::toRecord)
+            }
+        }
+
+    /**
+     * 永久撤销密钥。重复撤销保持原有撤销时间，便于幂等调用。
+     */
+    suspend fun revoke(id: String): ClientKeyRecord? = suspendTransaction(database) {
+        val now = System.currentTimeMillis()
+        ClientKeys.update({
+            (ClientKeys.id eq id) and ClientKeys.revokedAt.isNull()
+        }) {
+            it[ClientKeys.enabled] = false
+            it[ClientKeys.revokedAt] = now
+        }
+        ClientKeys.selectAll().where { ClientKeys.id eq id }.singleOrNull()?.let(::toRecord)
+    }
 
     suspend fun delete(id: String): Boolean = suspendTransaction(database) {
         ClientKeys.deleteWhere { ClientKeys.id eq id } > 0
@@ -106,5 +144,7 @@ class ClientKeyRepository(private val database: Database) {
             maxConcurrentRequests = row[ClientKeys.maxConcurrentRequests],
         ),
         createdAt = row[ClientKeys.createdAt],
+        rotatedAt = row[ClientKeys.rotatedAt],
+        revokedAt = row[ClientKeys.revokedAt],
     )
 }

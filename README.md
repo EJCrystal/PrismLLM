@@ -14,7 +14,7 @@
   - 渠道管理：接入点、协议、凭据、对外模型 ID 映射及模型计费单价配置。
   - 多主题支持：浅色（Light）、深色（Dark）、护眼暖色（Sepia）三主题无缝轮转与持久化。
   - 模型列表：查看 `/v1/models` 实际对外暴露结果与 models.dev 临时对比。
-  - 调用方密钥与请求日志审计。
+  - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
 - PostgreSQL + Flyway；单实例部署。
 
 明确不做：Anthropic/Gemini 原生协议转换、账单与配额、多租户、语义缓存、MCP、多副本。
@@ -24,7 +24,7 @@
 ```
 client --Bearer client key--> gateway --Bearer upstream credential--> OpenAI-compatible upstream
                                 |
-                                +-- PostgreSQL: channels, channel models, client keys, model prices, request logs
+                                +-- PostgreSQL: channels, channel models, client keys, model prices, request logs, admin audit logs
 ```
 
 数据面：`/v1/chat/completions`、`/v1/responses`、`/v1/models`。
@@ -198,6 +198,16 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 管理界面和 `GET/POST /admin/api/client-keys`、`PUT /admin/api/client-keys/{id}` 支持以下可选字段：`dailyTokenLimit`、`dailyUsdLimit`、`dailyCnyLimit`、`dailyEurLimit`、`maxConcurrentRequests`。查询密钥时返回 `quotaUsage`，包含今日 token、各币种费用和当前并发数。每日用量保存在 PostgreSQL，账号删除或新一天开始时重新计算。
 
+### 密钥轮换、永久撤销与管理操作审计
+
+`POST /admin/api/client-keys/{id}/rotate` 会为现有密钥生成新的明文、哈希和展示前缀，并原子替换旧哈希。记录 ID、团队、过期时间和全部额度配置保持不变，旧密钥立即失效；新明文只在本次响应返回一次，并带 `Cache-Control: no-store`。已撤销密钥不能轮换。
+
+`POST /admin/api/client-keys/{id}/revoke` 将密钥永久标记为撤销并停用。重复调用保持原撤销时间，便于安全重试。撤销后的密钥不能重新启用、编辑或轮换，数据面请求直接返回 HTTP `401`。普通停用仍可通过 `PUT /admin/api/client-keys/{id}` 恢复，二者在接口、管理界面和 `revokedAt` 字段中明确区分。
+
+管理面的所有写操作（包括登录、渠道和别名配置、单价修改、日志清理及密钥生命周期操作）都会写入 `admin_audit_logs`。记录包含操作者、动作、HTTP 方法、路径、结果、状态码、`X-Request-Id`、来源地址和错误码，不包含请求体、prompt、响应正文、CSRF、Cookie、密钥明文或哈希。请求未提供有效 `X-Request-Id` 时，网关生成一个 UUID，并在响应中返回。
+
+审计记录接口为 `GET /admin/api/audit-logs?limit=100&beforeId=<id>`，按 ID 倒序分页，最多返回 500 条。接口只读，不提供修改或删除操作；管理界面“操作审计”页可直接查看。`sourceIp` 取当前连接的对端地址；部署在反向代理后时通常显示代理地址，网关不信任可伪造的转发头。
+
 ### 用量报表与日志保留
 
 管理界面的“用量报表”按时间范围汇总请求数、错误数、输入/输出/总 token，以及按实际计费币种分别累计的费用；同时提供按调用方密钥和团队的明细。调用方密钥可设置可选团队，创建请求日志时会保存团队快照，因此后续改团队或删密钥不会改写历史归集。
@@ -237,9 +247,11 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 ## 安全边界
 
 - 调用方密钥只保存 SHA-256 哈希和前缀，创建时明文只返回一次。
+- 密钥轮换后旧哈希立即失效；永久撤销不可通过编辑接口恢复。
 - 上游凭据使用 AES-256-GCM 加密存储，密钥来自 `GATEWAY_MASTER_KEY`；接口只返回“已配置”，不回显。
-- 管理面使用 HttpOnly 会话 Cookie、SameSite=Strict 和 CSRF Token。
-- 默认不记录 prompt/响应正文；日志中不出现任何凭据。
+- 管理面读取要求有效 HttpOnly 会话 Cookie；写操作还要求 SameSite=Strict Cookie 和 `X-CSRF-Token`。调用方 Bearer 密钥不能访问管理 API。
+- 当前只有一个管理员角色，没有按团队划分的 RBAC；所有有效管理会话拥有相同配置权限。
+- 管理操作审计是只追加的元数据记录，不含请求体或凭据。默认不记录 prompt/响应正文；日志中不出现任何凭据。
 - 管理界面与指标端点应只在内网暴露。
 
 ## 可观测性与告警
@@ -258,7 +270,7 @@ GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行
 mvn test
 ```
 
-包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions 与 Responses 的 SSE 用量解析、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前重试（含连接失败）、429 映射、首 token 超时取消上游、管理面 CSRF。
+包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions 与 Responses 的 SSE 用量解析、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前重试（含连接失败）、429 映射、首 token 超时取消上游、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
 
 ### 前端自动化测试
 

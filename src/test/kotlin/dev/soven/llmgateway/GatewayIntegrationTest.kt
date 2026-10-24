@@ -16,6 +16,7 @@ import dev.soven.llmgateway.report.RetentionPolicy
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.put
@@ -1450,6 +1451,211 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `client key lifecycle and admin audit enforce permission boundaries`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+
+            val failedLogin = client.post("/admin/api/login") {
+                header("X-Request-Id", "failed-login-request")
+                contentType(ContentType.Application.Json)
+                setBody("""{"username":"admin","password":"wrong-password"}""")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, failedLogin.status)
+
+            assertEquals(
+                HttpStatusCode.Unauthorized,
+                client.get("/admin/api/audit-logs").status,
+            )
+
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val created = client.post("/admin/api/client-keys") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                header("X-Request-Id", "create-key-request")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"search-service","team":"search-team","dailyTokenLimit":100,"dailyUsdLimit":"1.50","dailyCnyLimit":"10","maxConcurrentRequests":2}""",
+                )
+            }
+            assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
+            assertEquals("no-store", created.headers["Cache-Control"])
+            assertEquals("create-key-request", created.headers["X-Request-Id"])
+            val createdJson = Json.parseToJsonElement(created.bodyAsText()).jsonObject
+            val keyId = createdJson["id"]!!.jsonPrimitive.content
+            val oldKey = createdJson["key"]!!.jsonPrimitive.content
+
+            val rotateWithoutSession = client.post("/admin/api/client-keys/$keyId/rotate") {
+                header("X-Request-Id", "rotate-no-session")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, rotateWithoutSession.status)
+            val revokeWithoutSession = client.post("/admin/api/client-keys/$keyId/revoke") {
+                header("X-Request-Id", "revoke-no-session")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, revokeWithoutSession.status)
+
+            val bearerCannotReadAudit = client.get("/admin/api/audit-logs") {
+                header(HttpHeaders.Authorization, "Bearer $oldKey")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, bearerCannotReadAudit.status)
+
+            val missingCsrf = client.post("/admin/api/client-keys/$keyId/rotate") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-Request-Id", "rotate-missing-csrf")
+            }
+            assertEquals(HttpStatusCode.Forbidden, missingCsrf.status)
+
+            val invalidCsrf = client.post("/admin/api/client-keys/$keyId/rotate") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", "wrong-token")
+                header("X-Request-Id", "rotate-invalid-csrf")
+            }
+            assertEquals(HttpStatusCode.Forbidden, invalidCsrf.status)
+
+            val rotated = client.post("/admin/api/client-keys/$keyId/rotate") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                header("X-Request-Id", "rotate-key-request")
+            }
+            assertEquals(HttpStatusCode.OK, rotated.status, rotated.bodyAsText())
+            assertEquals("no-store", rotated.headers["Cache-Control"])
+            assertEquals("rotate-key-request", rotated.headers["X-Request-Id"])
+            val rotatedJson = Json.parseToJsonElement(rotated.bodyAsText()).jsonObject
+            val newKey = rotatedJson["key"]!!.jsonPrimitive.content
+            assertNotEquals(oldKey, newKey)
+            assertEquals("search-team", rotatedJson["team"]!!.jsonPrimitive.content)
+            assertEquals("100", rotatedJson["dailyTokenLimit"]!!.jsonPrimitive.content)
+            assertEquals("1.5", rotatedJson["dailyUsdLimit"]!!.jsonPrimitive.content)
+            assertEquals("2", rotatedJson["maxConcurrentRequests"]!!.jsonPrimitive.content)
+            assertNotNull(rotatedJson["rotatedAt"])
+            assertNull(rotatedJson["revokedAt"])
+
+            val oldKeyResponse = client.get("/v1/models") {
+                header(HttpHeaders.Authorization, "Bearer $oldKey")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, oldKeyResponse.status)
+            val newKeyResponse = client.get("/v1/models") {
+                header(HttpHeaders.Authorization, "Bearer $newKey")
+            }
+            assertEquals(HttpStatusCode.OK, newKeyResponse.status)
+
+            val revoked = client.post("/admin/api/client-keys/$keyId/revoke") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                header("X-Request-Id", "revoke-key-request")
+            }
+            assertEquals(HttpStatusCode.OK, revoked.status, revoked.bodyAsText())
+            val revokedJson = Json.parseToJsonElement(revoked.bodyAsText()).jsonObject
+            assertEquals("false", revokedJson["enabled"]!!.jsonPrimitive.content)
+            assertNotNull(revokedJson["revokedAt"])
+
+            val revokedKeyResponse = client.get("/v1/models") {
+                header(HttpHeaders.Authorization, "Bearer $newKey")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, revokedKeyResponse.status)
+            assertTrue(revokedKeyResponse.bodyAsText().contains("撤销"))
+
+            val rotateRevoked = client.post("/admin/api/client-keys/$keyId/rotate") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                header("X-Request-Id", "rotate-revoked-request")
+            }
+            assertEquals(HttpStatusCode.Conflict, rotateRevoked.status)
+
+            val reenableRevoked = client.put("/admin/api/client-keys/$keyId") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                header("X-Request-Id", "reenable-revoked-request")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"search-service","team":"search-team","enabled":true,"expiresAt":null,"dailyTokenLimit":100,"dailyUsdLimit":"1.50","dailyCnyLimit":"10","maxConcurrentRequests":2}""",
+                )
+            }
+            assertEquals(HttpStatusCode.Conflict, reenableRevoked.status)
+
+            val auditReadOnly = client.delete("/admin/api/audit-logs") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                header("X-Request-Id", "delete-audit-request")
+            }
+            assertEquals(HttpStatusCode.MethodNotAllowed, auditReadOnly.status)
+
+            val auditResponse = client.get("/admin/api/audit-logs?limit=100") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, auditResponse.status, auditResponse.bodyAsText())
+            assertEquals("no-store", auditResponse.headers["Cache-Control"])
+            val audits = Json.parseToJsonElement(auditResponse.bodyAsText()).jsonArray
+                .map { it.jsonObject }
+            val rotateAudit = audits.single {
+                it["requestId"]!!.jsonPrimitive.content == "rotate-key-request"
+            }
+            assertEquals("admin", rotateAudit["actor"]!!.jsonPrimitive.content)
+            assertEquals("client_key.rotate", rotateAudit["action"]!!.jsonPrimitive.content)
+            assertEquals("success", rotateAudit["result"]!!.jsonPrimitive.content, rotateAudit.toString())
+            assertEquals("200", rotateAudit["statusCode"]!!.jsonPrimitive.content, rotateAudit.toString())
+
+            val missingCsrfAudit = audits.single {
+                it["requestId"]!!.jsonPrimitive.content == "rotate-missing-csrf"
+            }
+            assertEquals("failure", missingCsrfAudit["result"]!!.jsonPrimitive.content)
+            assertEquals("csrf_missing", missingCsrfAudit["errorCode"]!!.jsonPrimitive.content)
+            assertEquals("admin", missingCsrfAudit["actor"]!!.jsonPrimitive.content)
+
+            val invalidCsrfAudit = audits.single {
+                it["requestId"]!!.jsonPrimitive.content == "rotate-invalid-csrf"
+            }
+            assertEquals("csrf_invalid", invalidCsrfAudit["errorCode"]!!.jsonPrimitive.content)
+            assertTrue(
+                audits.any {
+                    it["action"]!!.jsonPrimitive.content == "client_key.revoke" &&
+                        it["requestId"]!!.jsonPrimitive.content == "revoke-key-request"
+                },
+            )
+            assertTrue(
+                audits.any {
+                    it["action"]!!.jsonPrimitive.content == "client_key.create" &&
+                        it["requestId"]!!.jsonPrimitive.content == "create-key-request"
+                },
+            )
+            assertTrue(
+                audits.any {
+                    it["action"]!!.jsonPrimitive.content == "admin.login" &&
+                        it["actor"]!!.jsonPrimitive.content == "admin"
+                },
+            )
+            val failedLoginAudit = audits.single {
+                it["requestId"]!!.jsonPrimitive.content == "failed-login-request"
+            }
+            assertNull(failedLoginAudit["actor"])
+            assertEquals("failure", failedLoginAudit["result"]!!.jsonPrimitive.content)
+            assertEquals("invalid_credentials", failedLoginAudit["errorCode"]!!.jsonPrimitive.content)
+            listOf("rotate-no-session", "revoke-no-session").forEach { requestId ->
+                val unauthenticatedAudit = audits.single {
+                    it["requestId"]!!.jsonPrimitive.content == requestId
+                }
+                assertNull(unauthenticatedAudit["actor"])
+                assertEquals("failure", unauthenticatedAudit["result"]!!.jsonPrimitive.content)
+                assertEquals("admin_session_missing", unauthenticatedAudit["errorCode"]!!.jsonPrimitive.content)
+            }
+
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery(
+                        "select concat_ws('|', actor, action, method, path, request_id, source_ip, error_code) from admin_audit_logs",
+                    ).use { result ->
+                        while (result.next()) {
+                            val row = result.getString(1)
+                            assertTrue(!row.contains(oldKey), "audit row leaked old key: $row")
+                            assertTrue(!row.contains(newKey), "audit row leaked rotated key: $row")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     fun `alias rejects un-authorized channel model`() = runBlocking {
         val channel = createChannelWithBaseUrl("alias-auth", "${fake.baseUrl}/ok/v1").let { created ->
             app.channelRepository.update(
@@ -1637,7 +1843,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("13", result.getString(1))
+                        assertEquals("14", result.getString(1))
                     }
                     statement.executeQuery("select expose_upstream_models from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -1967,7 +2173,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table request_logs, alias_candidates, model_aliases, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table admin_audit_logs, request_logs, alias_candidates, model_aliases, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }

@@ -9,6 +9,7 @@ import dev.soven.llmgateway.proxy.UpstreamModelCatalog
 import dev.soven.llmgateway.proxy.ModelPriceReferenceService
 import dev.soven.llmgateway.proxy.CurrencyExchangeService
 import dev.soven.llmgateway.repo.AdminUserRepository
+import dev.soven.llmgateway.repo.AdminAuditRepository
 import dev.soven.llmgateway.repo.AliasRepository
 import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.ClientKeyRepository
@@ -72,6 +73,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val clientKeyQuotaRepository = ClientKeyQuotaRepository(databaseFactory.database)
     val clientKeyQuotaService = ClientKeyQuotaService(clientKeyQuotaRepository)
     val adminUserRepository = AdminUserRepository(databaseFactory.database)
+    val adminAuditRepository = AdminAuditRepository(databaseFactory.database)
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
     val credentialCipher = CredentialCipher(config.masterKey)
@@ -102,6 +104,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         }
         app.install(StatusPages) {
             exception<UnsupportedMediaTypeException> { call, _ ->
+                call.markAdminAuditError("unsupported_media_type")
                 call.respondGatewayError(
                     HttpStatusCode.UnsupportedMediaType,
                     "unsupported_media_type",
@@ -110,6 +113,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
                 )
             }
             exception<ContentTransformationException> { call, _ ->
+                call.markAdminAuditError("invalid_request")
                 call.respondGatewayError(
                     HttpStatusCode.BadRequest,
                     "invalid_request",
@@ -118,6 +122,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
                 )
             }
             exception<BadRequestException> { call, _ ->
+                call.markAdminAuditError("invalid_request")
                 call.respondGatewayError(
                     HttpStatusCode.BadRequest,
                     "invalid_request",
@@ -126,6 +131,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
                 )
             }
             exception<GatewayException> { call, cause ->
+                call.markAdminAuditError(cause.code)
                 if (call.response.isCommitted) {
                     logger.warn("gateway error after response committed, code={}", cause.code)
                     return@exception
@@ -137,6 +143,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
                 )
             }
             exception<Throwable> { call, cause ->
+                call.markAdminAuditError("internal_error")
                 logger.error("unhandled request error", cause)
                 if (!call.response.isCommitted) {
                     call.respondText(
@@ -150,6 +157,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
                 }
             }
         }
+        app.install(adminAuditPlugin(adminAuditRepository, logger))
         app.install(CORS) {
             allowMethod(HttpMethod.Get)
             allowMethod(HttpMethod.Post)
@@ -162,6 +170,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             allowHeader("traceparent")
             exposeHeader("traceparent")
             exposeHeader("X-Trace-Id")
+            exposeHeader("X-Request-Id")
             config.corsOrigins.forEach { origin ->
                 val uri = runCatching { URI(origin) }.getOrNull() ?: return@forEach
                 val host = uri.host ?: return@forEach

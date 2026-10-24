@@ -409,6 +409,7 @@ private suspend fun authenticate(call: ApplicationCall, app: GatewayApplication)
     val raw = authorization.removePrefix("Bearer ").trim()
     if (!raw.startsWith(ClientKeyHasher.PREFIX)) throw unauthorized()
     val record = app.clientKeyRepository.findByHash(ClientKeyHasher.hash(raw)) ?: throw unauthorized()
+    if (record.revokedAt != null) throw unauthorized("调用方密钥已撤销")
     if (!record.enabled) throw unauthorized("调用方密钥已禁用")
     if (record.expiresAt != null && record.expiresAt <= System.currentTimeMillis()) {
         throw unauthorized("调用方密钥已过期")
