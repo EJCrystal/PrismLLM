@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
+import { createConversionRequestGuard } from '../utils/currencyConversion'
 import { findModelPrice } from '../utils/modelPrice'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
@@ -26,6 +27,7 @@ const exchangeLoading = ref(false)
 const exchangeError = ref('')
 const conversionInfo = ref(null)
 const activePrice = ref(props.price)
+const conversionRequests = createConversionRequestGuard()
 const priceBase = ref(props.price ? {
   currency: props.price.currency,
   inputPricePerMillion: props.price.inputPricePerMillion,
@@ -104,6 +106,14 @@ watch(
 )
 
 watch(
+  () => [form.channelId, form.upstreamModel],
+  () => {
+    conversionRequests.invalidate()
+    exchangeLoading.value = false
+  },
+)
+
+watch(
   () => form.currency,
   async (nextCurrency, previousCurrency) => {
     if (nextCurrency === previousCurrency) return
@@ -117,6 +127,8 @@ watch(
 )
 
 function applyExistingPrice(price) {
+  conversionRequests.invalidate()
+  exchangeLoading.value = false
   activePrice.value = price
   const currency = price.currency || 'USD'
   if (form.currency !== currency) skipNextCurrencyConversion = true
@@ -235,10 +247,12 @@ async function convertCurrency(fromCurrency, toCurrency) {
     exchangeError.value = ''
     return
   }
+  const request = conversionRequests.start()
   exchangeLoading.value = true
   exchangeError.value = ''
   try {
     const data = await ensureExchangeRates()
+    if (!conversionRequests.isCurrent(request) || form.currency !== toCurrency) return
     const basis = priceBase.value
     const sourceCurrency = basis?.currency || fromCurrency
     const factor = exchangeRate(data, toCurrency) / exchangeRate(data, sourceCurrency)
@@ -253,11 +267,12 @@ async function convertCurrency(fromCurrency, toCurrency) {
       source: data.source,
     }
   } catch (cause) {
+    if (!conversionRequests.isCurrent(request)) return
     exchangeError.value = cause.message || '无法获取汇率'
     setCurrencyWithoutConversion(fromCurrency)
     notify('无法获取汇率，币种已恢复', 'error')
   } finally {
-    exchangeLoading.value = false
+    if (conversionRequests.isCurrent(request)) exchangeLoading.value = false
   }
 }
 
