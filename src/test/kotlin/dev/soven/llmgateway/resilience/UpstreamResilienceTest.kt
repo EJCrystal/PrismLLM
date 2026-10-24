@@ -39,8 +39,11 @@ class UpstreamResilienceTest {
         assertNull(breaker.acquire("primary"))
 
         now = 2_000L
+        assertEquals(CircuitStatus.HALF_OPEN, breaker.status("primary"))
+        assertEquals(true, breaker.isAvailable("primary"))
         val probe = assertNotNull(breaker.acquire("primary"))
         assertEquals(true, probe.halfOpen)
+        assertEquals(false, breaker.isAvailable("primary"))
         assertNull(breaker.acquire("primary"))
         breaker.recordSuccess(probe)
 
@@ -72,5 +75,35 @@ class UpstreamResilienceTest {
         assertNull(breaker.acquire("primary"))
         now = 3_000L
         assertNotNull(breaker.acquire("primary"))
+    }
+
+    @Test
+    fun `late results from before circuit opened do not extend cooldown or close it`() {
+        var now = 0L
+        val breaker = UpstreamCircuitBreaker(
+            policy = UpstreamResiliencePolicy(
+                circuitFailureThreshold = 2,
+                circuitOpenMs = 1_000,
+            ),
+            nowMs = { now },
+        )
+        val staleFailure = assertNotNull(breaker.acquire("primary"))
+        val staleSuccess = assertNotNull(breaker.acquire("primary"))
+        val trigger = assertNotNull(breaker.acquire("primary"))
+        assertEquals(false, breaker.recordFailure(trigger).openedNow)
+        val opening = assertNotNull(breaker.acquire("primary"))
+        assertEquals(true, breaker.recordFailure(opening).openedNow)
+
+        now = 500L
+        assertEquals(false, breaker.recordFailure(staleFailure).openedNow)
+        assertEquals(CircuitStatus.OPEN, breaker.status("primary"))
+        assertEquals(false, breaker.isAvailable("primary"))
+
+        breaker.recordSuccess(staleSuccess)
+        assertEquals(CircuitStatus.OPEN, breaker.status("primary"))
+
+        now = 1_000L
+        assertEquals(CircuitStatus.HALF_OPEN, breaker.status("primary"))
+        assertEquals(true, breaker.isAvailable("primary"))
     }
 }

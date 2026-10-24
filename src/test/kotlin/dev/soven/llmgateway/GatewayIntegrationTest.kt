@@ -294,6 +294,41 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `retries a cooled down candidate instead of treating it as open`() = runBlocking {
+        app.close()
+        app = GatewayApplication(
+            config(
+                maxAttempts = 3,
+                circuitFailureThreshold = 1,
+                circuitOpenMs = 300,
+            ),
+        )
+        val primary = createChannel("primary", "500")
+        val secondary = createChannel("secondary", "500")
+        val tertiary = createChannel("tertiary", "ok")
+        createAlias("fast-chat", primary to "m1", secondary to "m2", tertiary to "deepseek-chat")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            assertEquals(3, awaitRequestLog().upstreamAttempts)
+
+            delay(350)
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(2)
+            assertEquals(3, app.requestLogRepository.list(10).first().upstreamAttempts)
+            assertEquals(listOf("500", "500", "ok", "500", "500", "ok"), fake.requests.map { it.scenario })
+        }
+    }
+
+    @Test
     fun `retries next candidate on rate limit before first token`() = runBlocking {
         val primary = createChannel("limited", "429")
         val secondary = createChannel("secondary", "ok")
@@ -2298,6 +2333,7 @@ class GatewayIntegrationTest {
         totalTimeoutMs: Long = 5_000,
         exposeUpstreamModels: Boolean = false,
         corsOrigins: List<String> = emptyList(),
+        maxAttempts: Int = 2,
         retryBackoffBaseMs: Long = 0,
         retryBackoffMaxMs: Long = 0,
         retryJitterMs: Long = 0,
@@ -2317,7 +2353,7 @@ class GatewayIntegrationTest {
         firstTokenTimeoutMs = firstTokenTimeoutMs,
         idleTimeoutMs = idleTimeoutMs,
         totalTimeoutMs = totalTimeoutMs,
-        maxAttempts = 2,
+        maxAttempts = maxAttempts,
         drainTimeoutMs = 1_000,
         staticDir = Path.of("web/dist"),
         cookieSecure = false,

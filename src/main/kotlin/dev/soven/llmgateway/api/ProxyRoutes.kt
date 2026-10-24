@@ -13,7 +13,6 @@ import dev.soven.llmgateway.proxy.TraceContextFactory
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.UsageParser
 import dev.soven.llmgateway.security.ClientKeyHasher
-import dev.soven.llmgateway.resilience.CircuitStatus
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.preparePost
@@ -217,7 +216,7 @@ private suspend fun handleProxy(
                     throw e
                 }
                 if (!e.retryable) {
-                    app.upstreamCircuitBreaker.recordSuccess(permit)
+                    app.upstreamCircuitBreaker.release(permit)
                     throw e
                 }
                 val openedNow = app.upstreamCircuitBreaker.recordFailure(permit).openedNow
@@ -226,7 +225,7 @@ private suspend fun handleProxy(
                     throw e
                 }
                 val nextChannel = candidates.subList(candidateIndex, candidates.size)
-                    .firstOrNull { app.upstreamCircuitBreaker.status(it.channel.id) != CircuitStatus.OPEN }
+                    .firstOrNull { app.upstreamCircuitBreaker.isAvailable(it.channel.id) }
                     ?.channel
                     ?.name
                 if (nextChannel == null) throw e

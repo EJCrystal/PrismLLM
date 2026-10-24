@@ -86,6 +86,7 @@ class UpstreamCircuitBreaker(
     @Synchronized
     fun recordSuccess(permit: CircuitPermit) {
         val state = states.getOrPut(permit.channelId) { State() }
+        if (!permit.halfOpen && state.status != CircuitStatus.CLOSED) return
         state.status = CircuitStatus.CLOSED
         state.consecutiveFailures = 0
         state.openUntil = 0
@@ -95,22 +96,21 @@ class UpstreamCircuitBreaker(
     @Synchronized
     fun recordFailure(permit: CircuitPermit): CircuitFailureResult {
         val state = states.getOrPut(permit.channelId) { State() }
-        return if (permit.halfOpen || state.status == CircuitStatus.HALF_OPEN) {
+        return if (permit.halfOpen) {
+            open(state)
+            CircuitFailureResult(openedNow = true)
+        } else if (state.status != CircuitStatus.CLOSED) {
+            CircuitFailureResult(openedNow = false)
+        } else if (++state.consecutiveFailures >= policy.circuitFailureThreshold) {
             open(state)
             CircuitFailureResult(openedNow = true)
         } else {
-            state.consecutiveFailures += 1
-            if (state.consecutiveFailures >= policy.circuitFailureThreshold) {
-                open(state)
-                CircuitFailureResult(openedNow = true)
-            } else {
-                CircuitFailureResult(openedNow = false)
-            }
+            CircuitFailureResult(openedNow = false)
         }
     }
 
     /**
-     * 请求在上游给出结果前取消时，归还半开探测资格但不把取消当成健康成功。
+     * 请求取消或收到不重试的错误时，归还半开探测资格但不把它当成健康成功。
      */
     @Synchronized
     fun release(permit: CircuitPermit) {
@@ -122,8 +122,24 @@ class UpstreamCircuitBreaker(
     }
 
     @Synchronized
-    fun status(channelId: String): CircuitStatus =
-        states[channelId]?.status ?: CircuitStatus.CLOSED
+    fun status(channelId: String): CircuitStatus {
+        val state = states[channelId] ?: return CircuitStatus.CLOSED
+        return if (state.status == CircuitStatus.OPEN && nowMs() >= state.openUntil) {
+            CircuitStatus.HALF_OPEN
+        } else {
+            state.status
+        }
+    }
+
+    @Synchronized
+    fun isAvailable(channelId: String): Boolean {
+        val state = states[channelId] ?: return true
+        return when (state.status) {
+            CircuitStatus.CLOSED -> true
+            CircuitStatus.OPEN -> nowMs() >= state.openUntil
+            CircuitStatus.HALF_OPEN -> !state.halfOpenProbeInFlight
+        }
+    }
 
     private fun open(state: State) {
         state.status = CircuitStatus.OPEN
