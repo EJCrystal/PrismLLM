@@ -32,7 +32,7 @@ async function load() {
       api.getRetentionPolicy(),
     ])
     return { nextReport, nextRetention }
-  }).catch((cause) => ({ error: cause }))
+  }).catch((cause) => ({ error: cause, isLatest: cause.isLatest }))
   if (!result.isLatest) return
   if (result.error) error.value = result.error.message
   else {

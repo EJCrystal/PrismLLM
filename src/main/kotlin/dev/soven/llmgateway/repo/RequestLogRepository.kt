@@ -181,7 +181,7 @@ class RequestLogRepository(private val database: Database) {
                     val currency = row[RequestLogs.costCurrency]
                     val amount = row[cost]
                     if (currency != null && amount != null) currency to amount else null
-                }.toMap(),
+                }.groupingBy { it.first }.fold(BigDecimal.ZERO) { total, entry -> total + entry.second },
             )
         }.sortedByDescending { it.totalTokens }
     }
