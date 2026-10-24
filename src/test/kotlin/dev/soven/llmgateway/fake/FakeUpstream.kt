@@ -133,7 +133,7 @@ class FakeUpstream {
                     }
                     "slow-stream" -> {
                         writeEvent(CHUNK_HEL)
-                        delay(500)
+                        delay(2_000)
                         writeEvent(CHUNK_LO)
                         writeEvent(FINAL_WITH_USAGE)
                         writeDone()

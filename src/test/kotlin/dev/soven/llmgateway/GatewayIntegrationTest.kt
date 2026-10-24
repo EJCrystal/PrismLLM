@@ -467,7 +467,15 @@ class GatewayIntegrationTest {
     @Test
     fun `client disconnect after first token does not open circuit`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(circuitFailureThreshold = 1, circuitOpenMs = 60_000))
+        app = GatewayApplication(
+            config(
+                firstTokenTimeoutMs = 5_000,
+                idleTimeoutMs = 5_000,
+                totalTimeoutMs = 10_000,
+                circuitFailureThreshold = 1,
+                circuitOpenMs = 60_000,
+            ),
+        )
         val channel = createChannel("primary", "slow-stream")
         createAlias("fast-chat", channel to "m1")
         val key = createClientKey()
@@ -478,30 +486,53 @@ class GatewayIntegrationTest {
         }.start(wait = false)
         try {
             awaitPort(port)
-            val httpClient = java.net.http.HttpClient.newBuilder()
-                .version(java.net.http.HttpClient.Version.HTTP_1_1)
-                .connectTimeout(Duration.ofSeconds(2))
-                .build()
-            fun request() = HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port/v1/chat/completions"))
-                .timeout(Duration.ofSeconds(5))
-                .header(HttpHeaders.Authorization, "Bearer $key")
-                .header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-                .POST(HttpRequest.BodyPublishers.ofString("""{"model":"fast-chat","stream":true,"messages":[]}"""))
-                .build()
-
-            val response = httpClient.send(request(), HttpResponse.BodyHandlers.ofInputStream())
-            assertEquals(HttpStatusCode.OK.value, response.statusCode())
-            response.body().bufferedReader().use { reader ->
-                assertTrue(reader.readLine().startsWith("data:"))
+            val body = """{"model":"fast-chat","stream":true,"messages":[]}"""
+            val requestBytes = (
+                "POST /v1/chat/completions HTTP/1.1\r\n" +
+                    "Host: 127.0.0.1:$port\r\n" +
+                    "Authorization: Bearer $key\r\n" +
+                    "Content-Type: application/json\r\n" +
+                    "Content-Length: ${body.toByteArray().size}\r\n" +
+                    "Connection: close\r\n\r\n" +
+                    body
+                ).toByteArray()
+            Socket("127.0.0.1", port).use { socket ->
+                socket.setSoLinger(true, 0)
+                socket.soTimeout = 5_000
+                socket.getOutputStream().apply {
+                    write(requestBytes)
+                    flush()
+                }
+                val reader = socket.getInputStream().bufferedReader()
+                assertTrue(reader.readLine().startsWith("HTTP/1.1 200"))
+                while (true) {
+                    val header = reader.readLine() ?: break
+                    if (header.isEmpty()) break
+                }
+                var line = reader.readLine()
+                while (line != null && !line.startsWith("data:")) {
+                    line = reader.readLine()
+                }
+                assertNotNull(line)
             }
 
-            val log = awaitRequestLog()
+            val log = awaitRequestLog(5_000)
             assertEquals("client_disconnect", log.errorCode)
             assertEquals(FailureStage.CLIENT, log.failureStage)
             assertEquals(499, log.statusCode)
             assertEquals(1, fake.requests.size)
 
-            val second = httpClient.send(request(), HttpResponse.BodyHandlers.ofString())
+            val httpClient = java.net.http.HttpClient.newBuilder()
+                .version(java.net.http.HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(2))
+                .build()
+            val secondRequest = HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port/v1/chat/completions"))
+                .timeout(Duration.ofSeconds(5))
+                .header(HttpHeaders.Authorization, "Bearer $key")
+                .header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build()
+            val second = httpClient.send(secondRequest, HttpResponse.BodyHandlers.ofString())
             assertEquals(HttpStatusCode.OK.value, second.statusCode())
             assertTrue(second.body().contains("[DONE]"))
             assertEquals(2, fake.requests.size)

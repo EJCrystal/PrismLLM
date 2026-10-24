@@ -39,6 +39,7 @@ data class UpstreamResiliencePolicy(
 data class CircuitPermit(
     val channelId: String,
     val halfOpen: Boolean,
+    val generation: Long,
 )
 
 data class CircuitFailureResult(val openedNow: Boolean)
@@ -62,14 +63,15 @@ class UpstreamCircuitBreaker(
     fun acquire(channelId: String): CircuitPermit? {
         val state = states.getOrPut(channelId) { State() }
         return when (state.status) {
-            CircuitStatus.CLOSED -> CircuitPermit(channelId, halfOpen = false)
+            CircuitStatus.CLOSED -> CircuitPermit(channelId, halfOpen = false, generation = state.generation)
             CircuitStatus.OPEN -> {
                 if (nowMs() < state.openUntil) {
                     null
                 } else {
                     state.status = CircuitStatus.HALF_OPEN
+                    state.generation += 1
                     state.halfOpenProbeInFlight = true
-                    CircuitPermit(channelId, halfOpen = true)
+                    CircuitPermit(channelId, halfOpen = true, generation = state.generation)
                 }
             }
             CircuitStatus.HALF_OPEN -> {
@@ -77,7 +79,7 @@ class UpstreamCircuitBreaker(
                     null
                 } else {
                     state.halfOpenProbeInFlight = true
-                    CircuitPermit(channelId, halfOpen = true)
+                    CircuitPermit(channelId, halfOpen = true, generation = state.generation)
                 }
             }
         }
@@ -86,6 +88,7 @@ class UpstreamCircuitBreaker(
     @Synchronized
     fun recordSuccess(permit: CircuitPermit) {
         val state = states.getOrPut(permit.channelId) { State() }
+        if (permit.generation != state.generation) return
         if (!permit.halfOpen && state.status != CircuitStatus.CLOSED) return
         state.status = CircuitStatus.CLOSED
         state.consecutiveFailures = 0
@@ -96,6 +99,7 @@ class UpstreamCircuitBreaker(
     @Synchronized
     fun recordFailure(permit: CircuitPermit): CircuitFailureResult {
         val state = states.getOrPut(permit.channelId) { State() }
+        if (permit.generation != state.generation) return CircuitFailureResult(openedNow = false)
         return if (permit.halfOpen) {
             open(state)
             CircuitFailureResult(openedNow = true)
@@ -116,9 +120,11 @@ class UpstreamCircuitBreaker(
     fun release(permit: CircuitPermit) {
         if (!permit.halfOpen) return
         val state = states.getOrPut(permit.channelId) { State() }
+        if (permit.generation != state.generation) return
         state.status = CircuitStatus.OPEN
         state.openUntil = nowMs() + policy.circuitOpenMs
         state.halfOpenProbeInFlight = false
+        state.generation += 1
     }
 
     @Synchronized
@@ -146,6 +152,7 @@ class UpstreamCircuitBreaker(
         state.consecutiveFailures = policy.circuitFailureThreshold
         state.openUntil = nowMs() + policy.circuitOpenMs
         state.halfOpenProbeInFlight = false
+        state.generation += 1
     }
 
     private data class State(
@@ -153,5 +160,6 @@ class UpstreamCircuitBreaker(
         var consecutiveFailures: Int = 0,
         var openUntil: Long = 0,
         var halfOpenProbeInFlight: Boolean = false,
+        var generation: Long = 0,
     )
 }

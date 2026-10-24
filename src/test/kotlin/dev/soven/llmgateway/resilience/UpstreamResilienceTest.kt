@@ -106,4 +106,27 @@ class UpstreamResilienceTest {
         assertEquals(CircuitStatus.HALF_OPEN, breaker.status("primary"))
         assertEquals(true, breaker.isAvailable("primary"))
     }
+
+    @Test
+    fun `stale failure after half-open recovery is ignored`() {
+        var now = 0L
+        val breaker = UpstreamCircuitBreaker(
+            policy = UpstreamResiliencePolicy(
+                circuitFailureThreshold = 1,
+                circuitOpenMs = 1_000,
+            ),
+            nowMs = { now },
+        )
+        val stale = assertNotNull(breaker.acquire("primary"))
+        val opening = assertNotNull(breaker.acquire("primary"))
+        assertEquals(true, breaker.recordFailure(opening).openedNow)
+
+        now = 1_000L
+        val probe = assertNotNull(breaker.acquire("primary"))
+        breaker.recordSuccess(probe)
+        assertEquals(CircuitStatus.CLOSED, breaker.status("primary"))
+
+        assertEquals(false, breaker.recordFailure(stale).openedNow)
+        assertEquals(CircuitStatus.CLOSED, breaker.status("primary"))
+    }
 }
