@@ -59,9 +59,10 @@ fun adminAuditPlugin(
             ?: content.status?.value
             ?: HttpStatusCode.OK.value
         val actor = call.attributes.getOrNull(AuditActorKey)?.take(100)
+        if (state.action == "admin.write" && actor == null) return@on
         val errorCode = call.attributes.getOrNull(AuditErrorCodeKey)
             ?: if (statusCode >= 400) "http_$statusCode" else null
-        val sourceIp = call.request.origin.remoteHost.take(100)
+        val sourceIp = call.request.origin.remoteAddress.take(100)
         runCatching {
             repository.record(
                 actor = actor,

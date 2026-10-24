@@ -1467,6 +1467,10 @@ class GatewayIntegrationTest {
                 HttpStatusCode.Unauthorized,
                 client.get("/admin/api/audit-logs").status,
             )
+            val unmatchedWrite = client.post("/admin/api/not-a-route") {
+                header("X-Request-Id", "unmatched-no-session")
+            }
+            assertEquals(HttpStatusCode.NotFound, unmatchedWrite.status)
 
             val (sessionCookie, csrf) = client.loginAdmin()
             val created = client.post("/admin/api/client-keys") {
@@ -1622,6 +1626,11 @@ class GatewayIntegrationTest {
                 audits.any {
                     it["action"]!!.jsonPrimitive.content == "admin.login" &&
                         it["actor"]!!.jsonPrimitive.content == "admin"
+                },
+            )
+            assertTrue(
+                audits.none {
+                    it["requestId"]!!.jsonPrimitive.content == "unmatched-no-session"
                 },
             )
             val failedLoginAudit = audits.single {

@@ -169,7 +169,7 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>访问凭据</h2>
-        <p>调用方用这把密钥访问网关。明文只在创建时显示一次。</p>
+        <p>调用方用这把密钥访问网关。明文只在创建或轮换时显示一次，请立即保存。</p>
       </div>
       <button type="button" class="button primary" @click="openCreate">
         <Icon name="plus" :size="17" />
@@ -376,7 +376,7 @@ onMounted(load)
       <div class="secret-box">
         <p class="secret-warning">
           <template v-if="secretMode === 'rotate'">旧密钥已经立即失效。请现在复制并保存新密钥，关闭后服务端无法再次还原。</template>
-          <template v-else>请现在复制并保存。关闭后服务端无法再次还原这把密钥，只能重新创建。</template>
+          <template v-else>请现在复制并保存。关闭后服务端无法再次还原；如遗失，可在密钥列表轮换获取新明文。</template>
         </p>
         <div class="secret-value">
           <code>{{ secret.key }}</code>
