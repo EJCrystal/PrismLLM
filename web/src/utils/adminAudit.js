@@ -18,6 +18,8 @@ const actionLabels = {
   'client_key.delete': '删除调用方密钥',
   'client_key.rotate': '轮换调用方密钥',
   'client_key.revoke': '撤销调用方密钥',
+  'team_limit.update': '更新团队限流',
+  'team_limit.delete': '清除团队限流',
   'model_price.create': '创建模型单价',
   'model_price.update': '更新模型单价',
   'model_price.delete': '删除模型单价',

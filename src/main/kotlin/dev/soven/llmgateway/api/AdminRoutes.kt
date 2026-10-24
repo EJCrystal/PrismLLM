@@ -433,9 +433,55 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             call.response.headers.append("Cache-Control", "no-store")
             val keys = app.clientKeyRepository.list().map { key ->
-                key.toResponse(quotaUsageResponse(app.clientKeyQuotaService.currentUsage(key.id)))
+                key.toResponse(quotaUsageResponse(app.requestLimitService.clientKeyUsage(key.id)))
             }
             call.respond(keys)
+        }
+
+        get("/team-limits") {
+            call.requireAdmin(app)
+            call.response.headers.append("Cache-Control", "no-store")
+            val policies = app.teamLimitRepository.list().associateBy { it.team }
+            val teams = (policies.keys + app.clientKeyRepository.list().mapNotNull { it.team })
+                .toSortedSet()
+            val responses = teams.map { team ->
+                val usage = app.requestLimitService.teamUsage(team)
+                policies[team]?.toResponse(usage) ?: unconfiguredTeamLimit(team, usage)
+            }
+            call.respond(responses)
+        }
+
+        put("/team-limits/{team}") {
+            call.requireAdmin(app)
+            val team = normalizeTeam(call.requiredParam("team", "缺少团队名称"))
+                ?: throw badRequest("invalid_team_limit", "团队名称不能为空")
+            val request = call.receive<TeamLimitRequest>()
+            if (request.requestsPerMinute == null && request.maxConcurrentRequests == null) {
+                throw badRequest("invalid_team_limit", "每分钟请求数和最大并发数至少设置一项")
+            }
+            if (request.requestsPerMinute != null && request.requestsPerMinute < 0) {
+                throw badRequest("invalid_team_limit", "团队每分钟请求数必须是非负整数")
+            }
+            if (request.maxConcurrentRequests != null && request.maxConcurrentRequests <= 0) {
+                throw badRequest("invalid_team_limit", "团队最大并发请求数必须是正整数")
+            }
+            val policy = app.teamLimitRepository.upsert(
+                team = team,
+                requestsPerMinute = request.requestsPerMinute,
+                maxConcurrentRequests = request.maxConcurrentRequests,
+            )
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(policy.toResponse(app.requestLimitService.teamUsage(team)))
+        }
+
+        delete("/team-limits/{team}") {
+            call.requireAdmin(app)
+            val team = normalizeTeam(call.requiredParam("team", "缺少团队名称"))
+                ?: throw badRequest("invalid_team_limit", "团队名称不能为空")
+            if (!app.teamLimitRepository.delete(team)) {
+                throw notFound("team_limit_not_found", "团队限流策略不存在")
+            }
+            call.respond(HttpStatusCode.NoContent)
         }
 
         post("/client-keys") {
@@ -494,7 +540,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             }
             call.response.headers.append("Cache-Control", "no-store")
             call.respond(
-                record.toResponse(quotaUsageResponse(app.clientKeyQuotaService.currentUsage(record.id))),
+                record.toResponse(quotaUsageResponse(app.requestLimitService.clientKeyUsage(record.id))),
             )
         }
 
@@ -522,7 +568,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 ?: throw notFound("client_key_not_found", "调用方密钥不存在")
             call.response.headers.append("Cache-Control", "no-store")
             call.respond(
-                record.toResponse(quotaUsageResponse(app.clientKeyQuotaService.currentUsage(record.id))),
+                record.toResponse(quotaUsageResponse(app.requestLimitService.clientKeyUsage(record.id))),
             )
         }
 
@@ -866,6 +912,9 @@ private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLi
     if (request.maxConcurrentRequests != null && request.maxConcurrentRequests <= 0) {
         throw badRequest("invalid_client_key", "最大并发请求数必须是正整数")
     }
+    if (request.requestsPerMinute != null && request.requestsPerMinute < 0) {
+        throw badRequest("invalid_client_key", "每分钟请求数必须是非负整数")
+    }
     val costs = try {
         listOf("USD" to request.dailyUsdLimit, "CNY" to request.dailyCnyLimit, "EUR" to request.dailyEurLimit)
             .mapNotNull { (currency, value) -> parseDailyCostLimit(value)?.let { currency to it } }
@@ -877,6 +926,7 @@ private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLi
         dailyTokens = request.dailyTokenLimit,
         dailyCosts = costs,
         maxConcurrentRequests = request.maxConcurrentRequests,
+        requestsPerMinute = request.requestsPerMinute,
     )
 }
 

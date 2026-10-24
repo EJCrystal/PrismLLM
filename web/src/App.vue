@@ -7,6 +7,7 @@ import LoginView from './components/LoginView.vue'
 import ChannelsView from './components/ChannelsView.vue'
 import ExposedModelsView from './components/ExposedModelsView.vue'
 import ClientKeysView from './components/ClientKeysView.vue'
+import TeamLimitsView from './components/TeamLimitsView.vue'
 import LogsView from './components/LogsView.vue'
 import UsageReportsView from './components/UsageReportsView.vue'
 import AdminAuditLogsView from './components/AdminAuditLogsView.vue'
@@ -17,6 +18,7 @@ const navItems = [
   { id: 'channels', label: '渠道', icon: 'channels' },
   { id: 'exposed-models', label: '模型列表', icon: 'list' },
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
+  { id: 'team-limits', label: '团队限流', icon: 'users' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
   { id: 'usage-reports', label: '用量报表', icon: 'chart' },
   { id: 'audit-logs', label: '操作审计', icon: 'shield' },
@@ -34,6 +36,10 @@ const meta = {
   'client-keys': {
     title: '调用方密钥',
     desc: '签发给调用方的访问凭据。服务端只保存哈希和展示前缀。',
+  },
+  'team-limits': {
+    title: '团队限流',
+    desc: '按团队标签共享每分钟请求数与并发名额。',
   },
   logs: {
     title: '请求日志',
@@ -203,6 +209,7 @@ onBeforeUnmount(() => {
         <ChannelsView v-if="view === 'channels'" />
         <ExposedModelsView v-else-if="view === 'exposed-models'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
+        <TeamLimitsView v-else-if="view === 'team-limits'" />
         <LogsView v-else-if="view === 'logs'" />
         <UsageReportsView v-else-if="view === 'usage-reports'" />
         <AdminAuditLogsView v-else-if="view === 'audit-logs'" />

@@ -102,6 +102,15 @@ export const api = {
   revokeClientKey: (id) =>
     request('/client-keys/' + encodeURIComponent(id) + '/revoke', { method: 'POST' }),
 
+  listTeamLimits: () => request('/team-limits'),
+  updateTeamLimit: (team, payload) =>
+    request(`/team-limits/${encodeURIComponent(team)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  deleteTeamLimit: (team) =>
+    request(`/team-limits/${encodeURIComponent(team)}`, { method: 'DELETE' }),
+
   listAuditLogs: ({ limit = 100, beforeId = null } = {}) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (beforeId != null) params.set('beforeId', String(beforeId))

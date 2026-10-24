@@ -3,12 +3,13 @@ package dev.soven.llmgateway.quota
 import java.math.BigDecimal
 
 /**
- * 调用方密钥的可选每日额度。null 表示该维度不设限，0 表示禁止新增用量。
+ * 调用方密钥的可选每日额度、每分钟请求数和并发上限。null 表示该维度不设限。
  */
 data class ClientKeyQuotaLimits(
     val dailyTokens: Long? = null,
     val dailyCosts: Map<String, BigDecimal> = emptyMap(),
     val maxConcurrentRequests: Int? = null,
+    val requestsPerMinute: Int? = null,
 ) {
     fun dailyCostLimit(currency: String): BigDecimal? = dailyCosts[currency.uppercase()]
 }
@@ -20,6 +21,7 @@ data class ClientKeyQuotaUsage(
     val dailyTokens: Long = 0,
     val dailyCosts: Map<String, BigDecimal> = emptyMap(),
     val concurrentRequests: Int = 0,
+    val currentMinuteRequests: Int = 0,
 ) {
     fun dailyCost(currency: String): BigDecimal =
         dailyCosts[currency.uppercase()] ?: BigDecimal.ZERO

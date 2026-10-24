@@ -119,6 +119,8 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "DELETE" && CLIENT_KEY_ITEM_PATTERN.matches(path) -> "client_key.delete"
     method == "POST" && CLIENT_KEY_ROTATE_PATTERN.matches(path) -> "client_key.rotate"
     method == "POST" && CLIENT_KEY_REVOKE_PATTERN.matches(path) -> "client_key.revoke"
+    method == "PUT" && TEAM_LIMIT_ITEM_PATTERN.matches(path) -> "team_limit.update"
+    method == "DELETE" && TEAM_LIMIT_ITEM_PATTERN.matches(path) -> "team_limit.delete"
     method == "POST" && path == "/admin/api/model-prices" -> "model_price.create"
     method == "PUT" && MODEL_PRICE_ITEM_PATTERN.matches(path) -> "model_price.update"
     method == "DELETE" && MODEL_PRICE_ITEM_PATTERN.matches(path) -> "model_price.delete"
@@ -144,4 +146,5 @@ private val ALIAS_ITEM_PATTERN = Regex("^/admin/api/aliases/[^/]+$")
 private val CLIENT_KEY_ITEM_PATTERN = Regex("^/admin/api/client-keys/[^/]+$")
 private val CLIENT_KEY_ROTATE_PATTERN = Regex("^/admin/api/client-keys/[^/]+/rotate$")
 private val CLIENT_KEY_REVOKE_PATTERN = Regex("^/admin/api/client-keys/[^/]+/revoke$")
+private val TEAM_LIMIT_ITEM_PATTERN = Regex("^/admin/api/team-limits/[^/]+$")
 private val MODEL_PRICE_ITEM_PATTERN = Regex("^/admin/api/model-prices/[^/]+$")

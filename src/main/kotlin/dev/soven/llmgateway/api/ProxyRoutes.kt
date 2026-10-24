@@ -6,7 +6,7 @@ import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.proxy.BillingCalculator
-import dev.soven.llmgateway.quota.QuotaLease
+import dev.soven.llmgateway.quota.RequestLimitLease
 import dev.soven.llmgateway.quota.quotaTokensFromUsage
 import dev.soven.llmgateway.proxy.ReasoningEffort
 import dev.soven.llmgateway.proxy.TraceContextFactory
@@ -114,7 +114,7 @@ private suspend fun handleProxy(
     val deadlineNanos = startedAt + app.config.totalTimeoutMs * 1_000_000
     val state = ProxyState()
     var clientKey: ClientKeyRecord? = null
-    var quotaLease: QuotaLease? = null
+    var requestLimitLease: RequestLimitLease? = null
     var alias = "unknown"
     var channelId: String? = null
     var channelName: String? = null
@@ -129,7 +129,7 @@ private suspend fun handleProxy(
 
     try {
         clientKey = authenticate(call, app)
-        quotaLease = app.clientKeyQuotaService.acquire(clientKey)
+        requestLimitLease = app.requestLimitService.acquire(clientKey)
         val requestJson = call.receiveLimitedJson(app.config.requestBodyLimitBytes)
         reasoningEffort = ReasoningEffort.fromRequest(requestJson, protocol)
         val modelElement = requestJson["model"] as? JsonPrimitive
@@ -253,9 +253,9 @@ private suspend fun handleProxy(
             }
         }
         val usage = state.usage
-        settleQuotaOnExit(
+        settleRequestLimitOnExit(
             app = app,
-            lease = quotaLease,
+            lease = requestLimitLease,
             usage = usage,
             channelId = channelId,
             upstreamModel = upstreamModel,
@@ -320,11 +320,14 @@ private val QUOTA_REJECTION_CODES = setOf(
     "daily_token_quota_exceeded",
     "daily_cost_quota_exceeded",
     "concurrency_limit_exceeded",
+    "key_rate_limit_exceeded",
+    "team_rate_limit_exceeded",
+    "team_concurrency_limit_exceeded",
 )
 
-private suspend fun settleQuotaOnExit(
+private suspend fun settleRequestLimitOnExit(
     app: GatewayApplication,
-    lease: QuotaLease?,
+    lease: RequestLimitLease?,
     usage: Usage?,
     channelId: String?,
     upstreamModel: String?,
@@ -338,8 +341,8 @@ private suspend fun settleQuotaOnExit(
     reasoningEffort: String?,
 ) {
     if (lease == null) return
-    try {
-        val calculatedCost = if (usage?.known == true && channelId != null && upstreamModel != null) {
+    val calculatedCost = try {
+        if (usage?.known == true && channelId != null && upstreamModel != null) {
             try {
                 app.modelPriceRepository.find(channelId, upstreamModel)?.let { price ->
                     BillingCalculator.calculate(
@@ -385,15 +388,15 @@ private suspend fun settleQuotaOnExit(
         } else {
             null
         }
-        app.clientKeyQuotaService.settle(
-            lease,
-            quotaTokensFromUsage(usage?.total, usage?.input, usage?.output),
-            calculatedCost?.let { mapOf(it.currency to it.amount) } ?: emptyMap(),
-        )
     } catch (cause: Throwable) {
-        app.clientKeyQuotaService.release(lease)
+        app.requestLimitService.release(lease)
         throw cause
     }
+    app.requestLimitService.settle(
+        lease,
+        quotaTokensFromUsage(usage?.total, usage?.input, usage?.output),
+        calculatedCost?.let { mapOf(it.currency to it.amount) } ?: emptyMap(),
+    )
 }
 
 private class ProxyState {

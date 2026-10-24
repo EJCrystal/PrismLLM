@@ -15,8 +15,10 @@ import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.ClientKeyRepository
 import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
+import dev.soven.llmgateway.repo.TeamLimitRepository
 import dev.soven.llmgateway.report.LogRetentionService
 import dev.soven.llmgateway.quota.ClientKeyQuotaService
+import dev.soven.llmgateway.quota.RequestLimitService
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.security.PasswordHasher
@@ -72,6 +74,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val clientKeyRepository = ClientKeyRepository(databaseFactory.database)
     val clientKeyQuotaRepository = ClientKeyQuotaRepository(databaseFactory.database)
     val clientKeyQuotaService = ClientKeyQuotaService(clientKeyQuotaRepository)
+    val teamLimitRepository = TeamLimitRepository(databaseFactory.database)
+    val requestLimitService = RequestLimitService(clientKeyQuotaService, teamLimitRepository)
     val adminUserRepository = AdminUserRepository(databaseFactory.database)
     val adminAuditRepository = AdminAuditRepository(databaseFactory.database)
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
