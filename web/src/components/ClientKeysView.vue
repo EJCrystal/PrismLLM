@@ -29,6 +29,11 @@ const form = reactive({
 })
 
 const enabledCount = computed(() => keys.value.filter((item) => item.enabled).length)
+const quotaCurrencies = [
+  { code: 'USD', field: 'dailyUsdLimit' },
+  { code: 'CNY', field: 'dailyCnyLimit' },
+  { code: 'EUR', field: 'dailyEurLimit' },
+]
 
 async function load() {
   loading.value = true
@@ -256,10 +261,10 @@ onMounted(load)
         <div class="field">
           <span>每日费用上限</span>
           <div class="quota-currency-grid">
-            <label v-for="currency in ['USD', 'CNY', 'EUR']" :key="currency" class="field">
-              <small>{{ currency }}</small>
+            <label v-for="currency in quotaCurrencies" :key="currency.code" class="field">
+              <small>{{ currency.code }}</small>
               <input
-                v-model="form[`daily${currency}Limit`]"
+                v-model="form[currency.field]"
                 type="number"
                 min="0"
                 step="0.00000001"

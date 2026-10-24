@@ -951,14 +951,14 @@ class GatewayIntegrationTest {
             suspend fun send() = client.post("/v1/chat/completions") {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
-                setBody("""{"model":"fast-chat","messages":[]}""")
+                setBody("""{"model":"fast-chat","stream":true,"messages":[]}""")
             }
 
             val first = async(Dispatchers.Default) { send() }
-            val deadline = System.currentTimeMillis() + 2_000
             val clientKeyId = app.clientKeyRepository.list().single().id
-            while (app.clientKeyQuotaService.currentUsage(clientKeyId).concurrentRequests == 0 && System.currentTimeMillis() < deadline) {
-                delay(10)
+            val heldDeadline = System.currentTimeMillis() + 2_000
+            while (app.clientKeyQuotaService.currentUsage(clientKeyId).concurrentRequests == 0 && System.currentTimeMillis() < heldDeadline) {
+                delay(5)
             }
             assertEquals(1, app.clientKeyQuotaService.currentUsage(clientKeyId).concurrentRequests)
 

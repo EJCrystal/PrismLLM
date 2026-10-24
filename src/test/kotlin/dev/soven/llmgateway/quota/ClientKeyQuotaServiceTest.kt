@@ -81,6 +81,29 @@ class ClientKeyQuotaServiceTest {
         assertTrue(storage.usage[key.id]!!.tokens == 5L)
     }
 
+    @Test
+    fun `releases concurrency when usage write fails`() = runBlocking {
+        var shouldFail = true
+        val service = ClientKeyQuotaService(
+            usageReader = { _, _ -> StoredQuotaUsage() },
+            usageWriter = { _, _, _, _ ->
+                if (shouldFail) throw IllegalStateException("database unavailable")
+            },
+            now = { 1L },
+        )
+        val key = key(ClientKeyQuotaLimits(maxConcurrentRequests = 1))
+        val lease = service.acquire(key)
+
+        assertFailsWith<IllegalStateException> {
+            service.settle(lease, tokens = 10, costs = emptyMap())
+        }
+
+        shouldFail = false
+        val next = service.acquire(key)
+        service.release(next)
+        assertEquals(0, service.currentUsage(key.id).concurrentRequests)
+    }
+
     private fun key(quotas: ClientKeyQuotaLimits) = ClientKeyRecord(
         id = "key-a",
         name = "test",

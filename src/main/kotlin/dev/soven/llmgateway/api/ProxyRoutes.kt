@@ -241,59 +241,20 @@ private suspend fun handleProxy(
             }
         }
         val usage = state.usage
-        val lease = quotaLease
-        if (lease != null) {
-            val calculatedCost = if (clientKey != null && usage?.known == true && channelId != null && upstreamModel != null) {
-                try {
-                    app.modelPriceRepository.find(channelId, upstreamModel)?.let { price ->
-                        BillingCalculator.calculate(
-                            RequestLogRecord(
-                                requestId = requestId,
-                                clientKeyId = clientKey.id,
-                                clientKeyName = clientKey.name,
-                                alias = alias,
-                                channelId = channelId,
-                                channelName = channelName,
-                                upstreamModel = upstreamModel,
-                                protocol = protocol,
-                                statusCode = statusCode,
-                                firstTokenMs = state.firstTokenMs,
-                                totalMs = 0,
-                                inputTokens = usage.input,
-                                outputTokens = usage.output,
-                                cachedTokens = usage.cached,
-                                reasoningTokens = usage.reasoning,
-                                reasoningEffort = reasoningEffort,
-                                totalTokens = usage.total,
-                                usageKnown = usage.known,
-                                costAmount = null,
-                                costCurrency = null,
-                                inputPricePerMillion = null,
-                                outputPricePerMillion = null,
-                                cachedInputPricePerMillion = null,
-                                errorCode = null,
-                                failureStage = null,
-                                errorMessage = null,
-                                upstreamErrorCode = null,
-                                createdAt = System.currentTimeMillis(),
-                            ),
-                            price,
-                        )
-                    }
-        } catch (cause: java.util.concurrent.CancellationException) {
-            throw cause
-        } catch (cause: Exception) {
-            null
-        }
-            } else {
-                null
-            }
-            app.clientKeyQuotaService.settle(
-                lease,
-                quotaTokensFromUsage(usage?.total, usage?.input, usage?.output),
-                calculatedCost?.let { mapOf(it.currency to it.amount) } ?: emptyMap(),
-            )
-        }
+        settleQuotaOnExit(
+            app = app,
+            lease = quotaLease,
+            usage = usage,
+            channelId = channelId,
+            upstreamModel = upstreamModel,
+            requestId = requestId,
+            alias = alias,
+            channelName = channelName,
+            protocol = protocol,
+            statusCode = statusCode,
+            firstTokenMs = state.firstTokenMs,
+            reasoningEffort = reasoningEffort,
+        )
         app.metrics.request(alias, channelId, statusCode)
         if (usage != null) app.metrics.usage(alias, usage)
         app.requestLogWriter.submit(
@@ -332,6 +293,78 @@ private suspend fun handleProxy(
 }
 
 private fun String?.asLogMessage(): String? = this?.trim()?.take(1000)?.takeIf { it.isNotEmpty() }
+
+private suspend fun settleQuotaOnExit(
+    app: GatewayApplication,
+    lease: QuotaLease?,
+    usage: Usage?,
+    channelId: String?,
+    upstreamModel: String?,
+    requestId: String,
+    alias: String,
+    channelName: String?,
+    protocol: GatewayProtocol,
+    statusCode: Int,
+    firstTokenMs: Long?,
+    reasoningEffort: String?,
+) {
+    if (lease == null) return
+    try {
+        val calculatedCost = if (usage?.known == true && channelId != null && upstreamModel != null) {
+            try {
+                app.modelPriceRepository.find(channelId, upstreamModel)?.let { price ->
+                    BillingCalculator.calculate(
+                        RequestLogRecord(
+                            requestId = requestId,
+                            clientKeyId = lease.clientKeyId,
+                            clientKeyName = null,
+                            alias = alias,
+                            channelId = channelId,
+                            channelName = channelName,
+                            upstreamModel = upstreamModel,
+                            protocol = protocol,
+                            statusCode = statusCode,
+                            firstTokenMs = firstTokenMs,
+                            totalMs = 0,
+                            inputTokens = usage.input,
+                            outputTokens = usage.output,
+                            cachedTokens = usage.cached,
+                            reasoningTokens = usage.reasoning,
+                            reasoningEffort = reasoningEffort,
+                            totalTokens = usage.total,
+                            usageKnown = usage.known,
+                            costAmount = null,
+                            costCurrency = null,
+                            inputPricePerMillion = null,
+                            outputPricePerMillion = null,
+                            cachedInputPricePerMillion = null,
+                            errorCode = null,
+                            failureStage = null,
+                            errorMessage = null,
+                            upstreamErrorCode = null,
+                            createdAt = System.currentTimeMillis(),
+                        ),
+                        price,
+                    )
+                }
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+        app.clientKeyQuotaService.settle(
+            lease,
+            quotaTokensFromUsage(usage?.total, usage?.input, usage?.output),
+            calculatedCost?.let { mapOf(it.currency to it.amount) } ?: emptyMap(),
+        )
+    } catch (cause: Throwable) {
+        app.clientKeyQuotaService.release(lease)
+        throw cause
+    }
+}
 
 private class ProxyState {
     var committed = false

@@ -67,4 +67,19 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
   it('无配置时显示未设置限额', () => {
     assert.equal(quotaSummary({ dailyTokenLimit: null, maxConcurrentRequests: null }), '未设置限额')
   })
+
+  it('路由模板逐一对应小驼峰费用字段', () => {
+    const currencies = [
+      { code: 'USD', field: 'dailyUsdLimit' },
+      { code: 'CNY', field: 'dailyCnyLimit' },
+      { code: 'EUR', field: 'dailyEurLimit' },
+    ]
+    assert.equal(new Set(currencies.map((item) => item.field)).size, 3)
+    const form = { name: '', enabled: true }
+    currencies.forEach((item) => { form[item.field] = '' })
+    assert.deepEqual(
+      Object.keys(buildClientKeyPayload(form, null)).filter((key) => currencies.some((item) => item.field === key)),
+      currencies.map((item) => item.field),
+    )
+  })
 })
