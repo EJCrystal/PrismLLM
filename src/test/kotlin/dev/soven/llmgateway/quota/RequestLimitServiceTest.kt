@@ -3,6 +3,9 @@ package dev.soven.llmgateway.quota
 import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.repo.StoredQuotaUsage
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.math.BigDecimal
 import kotlin.test.Test
@@ -104,6 +107,84 @@ class RequestLimitServiceTest {
         }
 
         assertEquals(0, quotaService.currentUsage(key.id).concurrentRequests)
+        assertEquals(0, service.teamUsage("search").activeConcurrentRequests)
+    }
+
+    @Test
+    fun `cancelling while key quota waits preserves other team slots`() = runBlocking {
+        val readerEntered = CompletableDeferred<Unit>()
+        val unblockReader = CompletableDeferred<Unit>()
+        var blockSecondKey = true
+        val quotaService = ClientKeyQuotaService(
+            usageReader = { id, _ ->
+                if (id == "key-b" && blockSecondKey) {
+                    readerEntered.complete(Unit)
+                    unblockReader.await()
+                }
+                StoredQuotaUsage()
+            },
+            usageWriter = { _, _, _, _ -> },
+            now = { 0L },
+        )
+        val service = RequestLimitService(
+            clientKeyQuotaService = quotaService,
+            teamLimitReader = {
+                TeamLimitPolicy(team = "search", maxConcurrentRequests = 2)
+            },
+            rateLimiter = RequestRateLimiter(now = { 0L }),
+        )
+        val first = service.acquire(key("key-a", team = "search"))
+        val waiting = launch { service.acquire(key("key-b", team = "search")) }
+
+        readerEntered.await()
+        waiting.cancelAndJoin()
+        unblockReader.complete(Unit)
+        assertEquals(1, service.teamUsage("search").activeConcurrentRequests)
+
+        blockSecondKey = false
+        val retry = service.acquire(key("key-b", team = "search"))
+        assertEquals(2, service.teamUsage("search").activeConcurrentRequests)
+        service.release(retry)
+        service.release(first)
+        assertEquals(0, service.teamUsage("search").activeConcurrentRequests)
+    }
+
+    @Test
+    fun `cancelling usage settlement releases key and team slots`() = runBlocking {
+        val writerEntered = CompletableDeferred<Unit>()
+        val unblockWriter = CompletableDeferred<Unit>()
+        var blockWriter = true
+        val quotaService = ClientKeyQuotaService(
+            usageReader = { _, _ -> StoredQuotaUsage() },
+            usageWriter = { _, _, _, _ ->
+                if (blockWriter) {
+                    writerEntered.complete(Unit)
+                    unblockWriter.await()
+                }
+            },
+            now = { 0L },
+        )
+        val service = RequestLimitService(
+            clientKeyQuotaService = quotaService,
+            teamLimitReader = {
+                TeamLimitPolicy(team = "search", maxConcurrentRequests = 1)
+            },
+            rateLimiter = RequestRateLimiter(now = { 0L }),
+        )
+        val lease = service.acquire(key("key-a", team = "search"))
+        val settling = launch {
+            service.settle(lease, tokens = 10, costs = emptyMap())
+        }
+
+        writerEntered.await()
+        settling.cancelAndJoin()
+        unblockWriter.complete(Unit)
+        assertEquals(0, quotaService.currentUsage("key-a").concurrentRequests)
+        assertEquals(0, service.teamUsage("search").activeConcurrentRequests)
+
+        blockWriter = false
+        val retry = service.acquire(key("key-a", team = "search"))
+        service.release(retry)
         assertEquals(0, service.teamUsage("search").activeConcurrentRequests)
     }
 
