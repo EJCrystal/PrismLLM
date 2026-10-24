@@ -7,6 +7,8 @@ class GatewayMetricsTest {
     @Test
     fun `exports request outcomes latency quota and upstream health`() {
         val metrics = GatewayMetrics()
+        val initial = metrics.scrape()
+        assertTrue(initial.contains("gateway_admin_audit_write_failures_total 0.0"))
         metrics.request("fast-chat", "primary", 200, 125, failed = false)
         metrics.request("fast-chat", "primary", 200, 50, failed = true)
         metrics.quotaRejection("concurrency_limit_exceeded")
