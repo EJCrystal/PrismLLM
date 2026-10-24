@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { clearUpstreamModelCache } from '../upstreamModelCache'
@@ -222,6 +222,17 @@ function toggleModel(modelId) {
 
 function clearMapping(modelId) {
   canonicalModels[modelId] = ''
+}
+
+function copyUpstreamToCanonical(modelId) {
+  canonicalModels[modelId] = modelId
+  nextTick(() => {
+    const el = document.getElementById(`canonical-input-${modelId}`)
+    if (el) {
+      el.focus()
+      el.select()
+    }
+  })
 }
 
 function clearMappings() {
@@ -590,14 +601,30 @@ onMounted(load)
               <span>对外模型 ID（留空沿用上游模型名）</span>
             </div>
             <div v-for="modelId in authorizedModels" :key="modelId" class="channel-canonical-row">
-              <div class="channel-canonical-upstream" :title="modelId">
+              <div
+                class="channel-canonical-upstream"
+                :title="'点击将「' + modelId + '」填入右侧'"
+                @click="copyUpstreamToCanonical(modelId)"
+              >
                 <code>{{ modelId }}</code>
               </div>
-              <div class="channel-canonical-arrow">→</div>
+              <button
+                type="button"
+                class="channel-canonical-arrow-btn"
+                :title="'点击将「' + modelId + '」填入右侧输入框'"
+                :aria-label="'填入 ' + modelId"
+                @click="copyUpstreamToCanonical(modelId)"
+              >
+                <Icon name="arrow" :size="13" />
+              </button>
               <div class="channel-canonical-input-wrap">
+                <span class="channel-canonical-input-prefix">
+                  <Icon name="models" :size="13" />
+                </span>
                 <input
+                  :id="`canonical-input-${modelId}`"
                   v-model="canonicalModels[modelId]"
-                  placeholder="留空沿用上游模型名"
+                  placeholder="留空沿用上游模型名（点击箭头填入）"
                   autocomplete="off"
                   spellcheck="false"
                 />
@@ -608,7 +635,7 @@ onMounted(load)
                   title="恢复默认（沿用上游名）"
                   @click="clearMapping(modelId)"
                 >
-                  ×
+                  <Icon name="close" :size="12" />
                 </button>
               </div>
             </div>
