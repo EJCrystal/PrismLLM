@@ -37,6 +37,7 @@ const form = reactive({
   dailyCnyLimit: '',
   dailyEurLimit: '',
   maxConcurrentRequests: '',
+  requestsPerMinute: '',
 })
 
 const enabledCount = computed(() => keys.value.filter((item) => item.enabled).length)
@@ -71,6 +72,7 @@ function openCreate() {
     dailyCnyLimit: '',
     dailyEurLimit: '',
     maxConcurrentRequests: '',
+    requestsPerMinute: '',
   })
   showForm.value = true
 }
@@ -88,6 +90,7 @@ function openEdit(key) {
     dailyCnyLimit: key.dailyCnyLimit ?? '',
     dailyEurLimit: key.dailyEurLimit ?? '',
     maxConcurrentRequests: key.maxConcurrentRequests ?? '',
+    requestsPerMinute: key.requestsPerMinute ?? '',
   })
   showForm.value = true
 }
@@ -130,6 +133,7 @@ async function toggle(key) {
       dailyCnyLimit: key.dailyCnyLimit,
       dailyEurLimit: key.dailyEurLimit,
       maxConcurrentRequests: key.maxConcurrentRequests,
+      requestsPerMinute: key.requestsPerMinute,
     })
     notify(key.enabled ? '密钥已停用' : '密钥已启用')
     await load()
@@ -216,7 +220,7 @@ onMounted(load)
               <th>名称</th>
               <th>展示前缀</th>
               <th>状态</th>
-              <th>每日额度 / 并发</th>
+              <th>额度 / 限流</th>
               <th>过期时间</th>
               <th>创建时间</th>
               <th class="actions-col">操作</th>
@@ -318,7 +322,7 @@ onMounted(load)
         <label class="field" for="client-key-team">
           <span>团队</span>
           <input id="client-key-team" v-model="form.team" placeholder="例如 search-team" autocomplete="off" />
-          <small>用于用量报表聚合；留空为未分配团队。修改后不影响历史请求日志中的团队快照。</small>
+          <small>用于用量报表和团队限流；留空为未分配团队。修改后不影响历史请求日志中的团队快照。</small>
         </label>
         <label class="field">
           <span>过期时间</span>
@@ -350,6 +354,11 @@ onMounted(load)
           <span>最大并发请求数</span>
           <input id="client-key-max-concurrent" v-model="form.maxConcurrentRequests" type="number" min="1" step="1" placeholder="留空表示不限制" />
           <small>单实例内同时处理的请求数；响应结束或失败后自动释放。</small>
+        </label>
+        <label class="field" for="client-key-requests-per-minute">
+          <span>每分钟请求上限</span>
+          <input id="client-key-requests-per-minute" v-model="form.requestsPerMinute" type="number" min="0" step="1" placeholder="留空表示不限制" />
+          <small>按 UTC 固定分钟窗口计算；0 表示暂停该密钥的新请求。</small>
         </label>
         <label class="switch-row">
           <input v-model="form.enabled" type="checkbox" />

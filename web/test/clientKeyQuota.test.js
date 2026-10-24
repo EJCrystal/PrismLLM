@@ -12,6 +12,7 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
       dailyCnyLimit: '',
       dailyEurLimit: '',
       maxConcurrentRequests: '',
+      requestsPerMinute: '',
     }, null)
 
     assert.deepEqual(payload, {
@@ -24,6 +25,7 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
       dailyCnyLimit: null,
       dailyEurLimit: null,
       maxConcurrentRequests: null,
+      requestsPerMinute: null,
     })
   })
 
@@ -36,6 +38,7 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
       dailyCnyLimit: '36',
       dailyEurLimit: '',
       maxConcurrentRequests: '4',
+      requestsPerMinute: '120',
     }, 1_700_000_000_000)
 
     assert.equal(payload.dailyTokenLimit, 1_000_000)
@@ -43,6 +46,7 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
     assert.equal(payload.dailyCnyLimit, '36')
     assert.equal(payload.dailyEurLimit, null)
     assert.equal(payload.maxConcurrentRequests, 4)
+    assert.equal(payload.requestsPerMinute, 120)
     assert.equal(payload.expiresAt, 1_700_000_000_000)
   })
 
@@ -53,16 +57,18 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
       dailyCnyLimit: null,
       dailyEurLimit: '2',
       maxConcurrentRequests: 3,
+      requestsPerMinute: 60,
       quotaUsage: {
         dailyTokens: 25,
         dailyUsdCost: '0.25',
         dailyCnyCost: '0',
         dailyEurCost: '0.5',
         concurrentRequests: 1,
+        currentMinuteRequests: 7,
       },
     })
 
-    assert.equal(summary, '25 / 100 token · USD 0.25 / 1.5 · EUR 0.5 / 2 · 并发 1 / 3')
+    assert.equal(summary, '25 / 100 token · USD 0.25 / 1.5 · EUR 0.5 / 2 · 并发 1 / 3 · 7 / 60 次/分钟')
   })
 
   it('无配置时显示未设置限额', () => {
@@ -84,6 +90,7 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
     assert.equal(new Set(currencies.map((item) => item.field)).size, 3)
     const form = { name: '', enabled: true }
     currencies.forEach((item) => { form[item.field] = '' })
+    form.requestsPerMinute = ''
     assert.deepEqual(
       Object.keys(buildClientKeyPayload(form, null)).filter((key) => currencies.some((item) => item.field === key)),
       currencies.map((item) => item.field),

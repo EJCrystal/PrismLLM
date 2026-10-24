@@ -7,6 +7,8 @@ import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.quota.ClientKeyQuotaUsage
+import dev.soven.llmgateway.quota.TeamLimitPolicy
+import dev.soven.llmgateway.quota.TeamLimitUsage
 import dev.soven.llmgateway.report.CleanupResult
 import dev.soven.llmgateway.report.RetentionPolicy
 import dev.soven.llmgateway.report.UsageGroup
@@ -214,6 +216,7 @@ data class ClientKeyRequest(
     val dailyCnyLimit: String? = null,
     val dailyEurLimit: String? = null,
     val maxConcurrentRequests: Int? = null,
+    val requestsPerMinute: Int? = null,
 )
 
 /**
@@ -235,6 +238,7 @@ data class ClientKeyResponse(
     val dailyCnyLimit: String?,
     val dailyEurLimit: String?,
     val maxConcurrentRequests: Int?,
+    val requestsPerMinute: Int?,
     val quotaUsage: ClientKeyQuotaUsageResponse,
     val createdAt: Long,
     val rotatedAt: Long?,
@@ -253,6 +257,7 @@ fun ClientKeyRecord.toResponse() = ClientKeyResponse(
     dailyCnyLimit = quotas.dailyCostLimit("CNY")?.stripTrailingZeros()?.toPlainString(),
     dailyEurLimit = quotas.dailyCostLimit("EUR")?.stripTrailingZeros()?.toPlainString(),
     maxConcurrentRequests = quotas.maxConcurrentRequests,
+    requestsPerMinute = quotas.requestsPerMinute,
     quotaUsage = ClientKeyQuotaUsageResponse(),
     createdAt = createdAt,
     rotatedAt = rotatedAt,
@@ -271,6 +276,7 @@ fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyRe
     dailyCnyLimit = quotas.dailyCostLimit("CNY")?.stripTrailingZeros()?.toPlainString(),
     dailyEurLimit = quotas.dailyCostLimit("EUR")?.stripTrailingZeros()?.toPlainString(),
     maxConcurrentRequests = quotas.maxConcurrentRequests,
+    requestsPerMinute = quotas.requestsPerMinute,
     quotaUsage = usage,
     createdAt = createdAt,
     rotatedAt = rotatedAt,
@@ -283,6 +289,7 @@ fun quotaUsageResponse(usage: ClientKeyQuotaUsage) = ClientKeyQuotaUsageResponse
     dailyCnyCost = usage.dailyCost("CNY").stripTrailingZeros().toPlainString(),
     dailyEurCost = usage.dailyCost("EUR").stripTrailingZeros().toPlainString(),
     concurrentRequests = usage.concurrentRequests,
+    currentMinuteRequests = usage.currentMinuteRequests,
 )
 
 @Serializable
@@ -292,6 +299,7 @@ data class ClientKeyQuotaUsageResponse(
     val dailyCnyCost: String = "0",
     val dailyEurCost: String = "0",
     val concurrentRequests: Int = 0,
+    val currentMinuteRequests: Int = 0,
 )
 
 @Serializable
@@ -395,6 +403,7 @@ data class ClientKeyCreatedResponse(
     val dailyCnyLimit: String?,
     val dailyEurLimit: String?,
     val maxConcurrentRequests: Int?,
+    val requestsPerMinute: Int?,
     val createdAt: Long,
     val rotatedAt: Long?,
     val revokedAt: Long?,
@@ -413,6 +422,7 @@ fun ClientKeyRecord.toCreatedResponse(rawKey: String) = ClientKeyCreatedResponse
     dailyCnyLimit = quotas.dailyCostLimit("CNY")?.stripTrailingZeros()?.toPlainString(),
     dailyEurLimit = quotas.dailyCostLimit("EUR")?.stripTrailingZeros()?.toPlainString(),
     maxConcurrentRequests = quotas.maxConcurrentRequests,
+    requestsPerMinute = quotas.requestsPerMinute,
     createdAt = createdAt,
     rotatedAt = rotatedAt,
     revokedAt = revokedAt,
@@ -448,6 +458,52 @@ fun AdminAuditRecord.toResponse() = AdminAuditLogResponse(
     sourceIp = sourceIp,
     errorCode = errorCode,
     createdAt = createdAt,
+)
+
+/**
+ * 团队请求速率与并发策略写请求。null 表示该维度不限制。
+ */
+@Serializable
+data class TeamLimitRequest(
+    val requestsPerMinute: Int? = null,
+    val maxConcurrentRequests: Int? = null,
+)
+
+/**
+ * 团队限流策略及当前单实例用量。
+ */
+@Serializable
+data class TeamLimitResponse(
+    val team: String,
+    val requestsPerMinute: Int?,
+    val maxConcurrentRequests: Int?,
+    val currentMinuteRequests: Int,
+    val activeConcurrentRequests: Int,
+    val configured: Boolean,
+    val createdAt: Long?,
+    val updatedAt: Long?,
+)
+
+fun TeamLimitPolicy.toResponse(usage: TeamLimitUsage) = TeamLimitResponse(
+    team = team,
+    requestsPerMinute = requestsPerMinute,
+    maxConcurrentRequests = maxConcurrentRequests,
+    currentMinuteRequests = usage.currentMinuteRequests,
+    activeConcurrentRequests = usage.activeConcurrentRequests,
+    configured = true,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+fun unconfiguredTeamLimit(team: String, usage: TeamLimitUsage) = TeamLimitResponse(
+    team = team,
+    requestsPerMinute = null,
+    maxConcurrentRequests = null,
+    currentMinuteRequests = usage.currentMinuteRequests,
+    activeConcurrentRequests = usage.activeConcurrentRequests,
+    configured = false,
+    createdAt = null,
+    updatedAt = null,
 )
 
 /**

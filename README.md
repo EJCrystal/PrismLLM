@@ -8,23 +8,23 @@
 - 渠道按协议配置支持 `chat_completions` / `responses`，路由时按请求协议过滤候选。
 - 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。直连暴露还受全局与渠道开关共同控制。
 - 满足直连开关时，自定义对外模型 ID 会替代上游名对外暴露；多个渠道配置相同对外模型 ID 时自动聚合并负载均衡。
-- 调用方密钥鉴权，上游凭据加密存储（AES-256-GCM）。
+- 调用方密钥鉴权，支持按密钥与团队限制每分钟请求数和并发数；上游凭据使用 AES-256-GCM 加密存储。
 - 流式响应不缓冲、客户端断开向上游传播。
 - 管理 API 与 Vue 3 管理界面：
   - 渠道管理：接入点、协议、凭据、对外模型 ID 映射及模型计费单价配置。
   - 多主题支持：浅色（Light）、深色（Dark）、护眼暖色（Sepia）三主题无缝轮转与持久化。
   - 模型列表：查看 `/v1/models` 实际对外暴露结果与 models.dev 临时对比。
-  - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
+  - 调用方密钥轮换与永久撤销、团队限流、管理操作审计和请求日志。
 - PostgreSQL + Flyway；单实例部署。
 
-明确不做：Anthropic/Gemini 原生协议转换、账单与配额、多租户、语义缓存、MCP、多副本。
+明确不做：Anthropic/Gemini 原生协议转换、多租户 RBAC、语义缓存、MCP、多副本。
 
 ## 架构
 
 ```
 client --Bearer client key--> gateway --Bearer upstream credential--> OpenAI-compatible upstream
                                 |
-                                +-- PostgreSQL: channels, channel models, client keys, model prices, request logs, admin audit logs
+                                +-- PostgreSQL: channels, channel models, client keys, team limits, model prices, request logs, admin audit logs
 ```
 
 数据面：`/v1/chat/completions`、`/v1/responses`、`/v1/models`。
@@ -186,17 +186,30 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 ### 调用方密钥额度与限流
 
-调用方密钥可分别配置每日 token 上限、每日费用上限和最大并发请求数。留空表示该维度不限制；`0` 表示禁止新请求。每日额度按 UTC 自然日重置，所有金额配置最多 8 位小数。
+调用方密钥可分别配置每日 token 上限、每日费用上限、每分钟请求数和最大并发请求数。留空表示该维度不限制；请求速率 `0` 表示暂停新请求。每日额度按 UTC 自然日重置，每分钟请求数按 UTC 固定分钟窗口计算，所有金额配置最多 8 位小数。
 
 费用上限按模型单价的实际币种分别配置，目前支持 USD、CNY 和 EUR。某个币种未配置上限时，该币种的费用不参与额度限制；不同币种之间不做隐含汇率换算。日费用额度只有在对应渠道和模型已配置单价且响应包含用量时才能累计；缺失用量不会按 0 计费。
 
-并发上限是单网关进程内的并发请求数。每个请求在通过鉴权和每日额度检查后占用一个名额；响应完成、流式输出结束、路由失败或客户端中断时都会释放。超额请求返回 HTTP `429`，并通过 OpenAI 兼容错误信封给出以下错误码：
+并发上限是单网关进程内的并发请求数。每个请求在通过密钥/团队速率、每日额度和并发检查后占用相应名额；响应完成、流式输出结束、路由失败或客户端中断时都会释放。超额请求返回 HTTP `429`，并通过 OpenAI 兼容错误信封给出以下错误码：
 
 - `daily_token_quota_exceeded`：今日 token 额度已用完。
 - `daily_cost_quota_exceeded`：某个已配置币种的今日费用额度已用完。
-- `concurrency_limit_exceeded`：并发请求数已达上限。
+- `concurrency_limit_exceeded`：单密钥并发请求数已达上限。
+- `key_rate_limit_exceeded`：单密钥每分钟请求数已达上限。
+- `team_rate_limit_exceeded`：团队每分钟请求数已达上限。
+- `team_concurrency_limit_exceeded`：团队并发请求数已达上限。
 
-管理界面和 `GET/POST /admin/api/client-keys`、`PUT /admin/api/client-keys/{id}` 支持以下可选字段：`dailyTokenLimit`、`dailyUsdLimit`、`dailyCnyLimit`、`dailyEurLimit`、`maxConcurrentRequests`。查询密钥时返回 `quotaUsage`，包含今日 token、各币种费用和当前并发数。每日用量保存在 PostgreSQL，账号删除或新一天开始时重新计算。
+管理界面和 `GET/POST /admin/api/client-keys`、`PUT /admin/api/client-keys/{id}` 支持以下可选字段：`dailyTokenLimit`、`dailyUsdLimit`、`dailyCnyLimit`、`dailyEurLimit`、`maxConcurrentRequests`、`requestsPerMinute`。查询密钥时返回 `quotaUsage`，包含今日 token、各币种费用、当前并发数和当前分钟请求数。每日用量保存在 PostgreSQL，账号删除或新一天开始时重新计算。
+
+### 团队限流与共享并发
+
+调用方密钥的 `team` 标签同时作为团队限流键。团队策略接口为 `GET /admin/api/team-limits`、`PUT /admin/api/team-limits/{team}` 和 `DELETE /admin/api/team-limits/{team}`；策略支持 `requestsPerMinute` 与 `maxConcurrentRequests`，至少配置一项。管理界面“团队限流”页会列出已有密钥团队、当前分钟请求数、活动并发数和已配置上限。
+
+团队每分钟请求数由同一团队下的所有密钥共享，团队并发名额也跨密钥共享。未配置策略的团队不限制；策略中的请求速率为 `0` 时暂停该团队新请求。团队名称区分大小写，必须与密钥上的团队标签完全一致。
+
+请求准入顺序为密钥/团队速率与团队并发、密钥每日额度与密钥并发。速率层放行后即使随后被密钥每日额度拒绝，该次尝试仍计入当前分钟请求数；并发名额在响应结束、流式输出完成、路由失败或客户端中断时释放。
+
+速率窗口、团队并发数和密钥并发数只保存在单实例内存中，进程重启后从零开始。每日 token 与费用用量仍保存在 PostgreSQL，不受进程重启影响。
 
 ### 密钥轮换、永久撤销与管理操作审计
 
@@ -256,7 +269,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 ## 可观测性与告警
 
-`/metrics` 暴露请求结果、完整请求耗时、额度拒绝、管理审计写入失败、上游尝试成功率和上游错误分类。模板 Prometheus 配置与告警规则位于 `monitoring/prometheus/`，覆盖服务失联、readiness 失败、错误率、p95 延迟、额度拒绝、管理审计写入失败和单渠道上游健康；接入说明见 `monitoring/README.md`。
+`/metrics` 暴露请求结果、完整请求耗时、密钥/团队速率与并发拒绝、管理审计写入失败、上游尝试成功率和上游错误分类。模板 Prometheus 配置与告警规则位于 `monitoring/prometheus/`，覆盖服务失联、readiness 失败、错误率、p95 延迟、额度拒绝、管理审计写入失败和单渠道上游健康；接入说明见 `monitoring/README.md`。
 
 数据面接受 W3C `traceparent`。有效请求头中的 trace ID 会保留，网关生成新的 span ID 并向上游透传；响应返回 `traceparent` 与 `X-Trace-Id`，请求日志保存 trace ID，可在管理界面搜索和复制。
 
@@ -270,7 +283,7 @@ GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行
 mvn test
 ```
 
-包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions 与 Responses 的 SSE 用量解析、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前重试（含连接失败）、429 映射、首 token 超时取消上游、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
+包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions 与 Responses 的 SSE 用量解析、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前重试（含连接失败）、429 映射、首 token 超时取消上游、密钥/团队每分钟请求限制、跨密钥团队并发共享与释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
 
 ### 前端自动化测试
 
@@ -278,7 +291,7 @@ mvn test
 npm --prefix web test
 ```
 
-基于 Node.js 原生测试引擎（`node:test`），毫秒级执行。覆盖多主题注册表（浅色/深色/护眼暖色）、持久化与防闪烁、通用复制工具 `copyText`、`SecretInput`、`CopyButton`、`format` 格式化工具、授权模型展示逻辑、密钥轮换/撤销并发保护，以及操作审计分页与刷新竞态。
+基于 Node.js 原生测试引擎（`node:test`），毫秒级执行。覆盖多主题注册表（浅色/深色/护眼暖色）、持久化与防闪烁、通用复制工具 `copyText`、`SecretInput`、`CopyButton`、`format` 格式化工具、授权模型展示逻辑、密钥/团队限流配置、密钥轮换/撤销并发保护，以及操作审计分页与刷新竞态。
 
 关键实现决策记录在 `docs/adr/`，包括 Kotlin/Ktor 选型、v1 协议边界和上游 HTTP 客户端选择。
 
@@ -288,5 +301,5 @@ PR 会自动触发 PR-Agent 审查，完成后在 PR 里留下中文审查意见
 
 ## 路线图
 
-- v1.1：Anthropic Messages 原生适配、每密钥并发/额度限制、OTel 追踪。
-- v1.2：多副本会话、Redis 配置缓存、请求正文按渠道采样。
+- v1.2：Anthropic Messages 原生适配、Redis 共享速率与并发状态、多管理员 RBAC。
+- v1.3：多副本会话、配置缓存、请求正文按渠道采样。

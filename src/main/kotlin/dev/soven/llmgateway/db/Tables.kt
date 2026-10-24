@@ -93,6 +93,7 @@ object ClientKeys : Table("client_keys") {
     val dailyCnyLimit = decimal("daily_cny_limit", 18, 8).nullable()
     val dailyEurLimit = decimal("daily_eur_limit", 18, 8).nullable()
     val maxConcurrentRequests = integer("max_concurrent_requests").nullable()
+    val requestsPerMinute = integer("requests_per_minute").nullable()
     val createdAt = long("created_at")
     val rotatedAt = long("rotated_at").nullable()
     val revokedAt = long("revoked_at").nullable()
@@ -112,6 +113,19 @@ object ClientKeyQuotaUsage : Table("client_key_quota_usage") {
     val eurCost = decimal("eur_cost", 18, 8).default(java.math.BigDecimal.ZERO)
 
     override val primaryKey = PrimaryKey(clientKeyId, period)
+}
+
+/**
+ * 团队级请求速率与并发限制。团队名称与调用方密钥上的 team 标签一致。
+ */
+object TeamLimits : Table("team_limits") {
+    val team = varchar("team", 100)
+    val requestsPerMinute = integer("requests_per_minute").nullable()
+    val maxConcurrentRequests = integer("max_concurrent_requests").nullable()
+    val createdAt = long("created_at")
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(team)
 }
 
 /**

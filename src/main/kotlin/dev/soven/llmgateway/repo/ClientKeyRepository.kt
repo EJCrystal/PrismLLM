@@ -58,6 +58,7 @@ class ClientKeyRepository(private val database: Database) {
             it[ClientKeys.dailyCnyLimit] = quotas.dailyCostLimit("CNY")
             it[ClientKeys.dailyEurLimit] = quotas.dailyCostLimit("EUR")
             it[ClientKeys.maxConcurrentRequests] = quotas.maxConcurrentRequests
+            it[ClientKeys.requestsPerMinute] = quotas.requestsPerMinute
             it[createdAt] = now
         }
         ClientKeys.selectAll().where { ClientKeys.id eq id }.single().let(::toRecord)
@@ -84,6 +85,7 @@ class ClientKeyRepository(private val database: Database) {
                 it[ClientKeys.dailyCnyLimit] = quotas.dailyCostLimit("CNY")
                 it[ClientKeys.dailyEurLimit] = quotas.dailyCostLimit("EUR")
                 it[ClientKeys.maxConcurrentRequests] = quotas.maxConcurrentRequests
+                it[ClientKeys.requestsPerMinute] = quotas.requestsPerMinute
             }
             if (updated == 0) null else ClientKeys.selectAll().where { ClientKeys.id eq id }.single().let(::toRecord)
         }
@@ -142,6 +144,7 @@ class ClientKeyRepository(private val database: Database) {
                 row[ClientKeys.dailyEurLimit]?.let { put("EUR", it) }
             },
             maxConcurrentRequests = row[ClientKeys.maxConcurrentRequests],
+            requestsPerMinute = row[ClientKeys.requestsPerMinute],
         ),
         createdAt = row[ClientKeys.createdAt],
         rotatedAt = row[ClientKeys.rotatedAt],

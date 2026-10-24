@@ -9,6 +9,7 @@ export function buildClientKeyPayload(form, expiresAt) {
     dailyCnyLimit: optionalText(form.dailyCnyLimit),
     dailyEurLimit: optionalText(form.dailyEurLimit),
     maxConcurrentRequests: optionalInteger(form.maxConcurrentRequests),
+    requestsPerMinute: optionalInteger(form.requestsPerMinute),
   }
 }
 
@@ -27,6 +28,9 @@ export function quotaSummary(key) {
   }
   if (key.maxConcurrentRequests != null) {
     quotas.push(`并发 ${key.quotaUsage?.concurrentRequests ?? 0} / ${key.maxConcurrentRequests}`)
+  }
+  if (key.requestsPerMinute != null) {
+    quotas.push(`${key.quotaUsage?.currentMinuteRequests ?? 0} / ${key.requestsPerMinute} 次/分钟`)
   }
   return quotas.length ? quotas.join(' · ') : '未设置限额'
 }

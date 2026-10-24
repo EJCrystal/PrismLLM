@@ -1068,6 +1068,7 @@ class GatewayIntegrationTest {
                 dailyTokens = 1000,
                 dailyCosts = mapOf("USD" to BigDecimal("5.50"), "CNY" to BigDecimal("40")),
                 maxConcurrentRequests = 4,
+                requestsPerMinute = 120,
             ),
         )
 
@@ -1077,6 +1078,7 @@ class GatewayIntegrationTest {
         assertEquals(0, loaded.quotas.dailyCostLimit("CNY")?.compareTo(BigDecimal("40")))
         assertEquals(null, loaded.quotas.dailyCostLimit("EUR"))
         assertEquals(4, loaded.quotas.maxConcurrentRequests)
+        assertEquals(120, loaded.quotas.requestsPerMinute)
     }
 
     @Test
@@ -1417,13 +1419,14 @@ class GatewayIntegrationTest {
             }
 
             val created = create(
-                """{"name":"bounded","dailyTokenLimit":100,"dailyUsdLimit":"1.50","dailyCnyLimit":"10","maxConcurrentRequests":2}""",
+                """{"name":"bounded","dailyTokenLimit":100,"dailyUsdLimit":"1.50","dailyCnyLimit":"10","maxConcurrentRequests":2,"requestsPerMinute":60}""",
             )
             assertEquals(HttpStatusCode.Created, created.status)
             val createdJson = Json.parseToJsonElement(created.bodyAsText()).jsonObject
             assertEquals("100", createdJson["dailyTokenLimit"]!!.jsonPrimitive.content)
             assertEquals("1.5", createdJson["dailyUsdLimit"]!!.jsonPrimitive.content)
             assertEquals("2", createdJson["maxConcurrentRequests"]!!.jsonPrimitive.content)
+            assertEquals("60", createdJson["requestsPerMinute"]!!.jsonPrimitive.content)
             assertNull(createdJson["dailyEurLimit"])
 
             val listed = client.get("/admin/api/client-keys") {
@@ -1434,6 +1437,7 @@ class GatewayIntegrationTest {
             val usage = listedKey["quotaUsage"]!!.jsonObject
             assertEquals("0", usage["dailyTokens"]!!.jsonPrimitive.content)
             assertEquals("0", usage["concurrentRequests"]!!.jsonPrimitive.content)
+            assertEquals("0", usage["currentMinuteRequests"]!!.jsonPrimitive.content)
 
             assertEquals(
                 HttpStatusCode.BadRequest,
@@ -1447,6 +1451,151 @@ class GatewayIntegrationTest {
                 HttpStatusCode.BadRequest,
                 create("""{"name":"bad-concurrency","maxConcurrentRequests":0}""").status,
             )
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                create("""{"name":"bad-rate","requestsPerMinute":-1}""").status,
+            )
+        }
+    }
+
+    @Test
+    fun `team limits are configured and enforce key and team request rates`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val teamKey = createClientKey(team = "search-team")
+        val keyLimited = createClientKey(
+            quotas = ClientKeyQuotaLimits(requestsPerMinute = 0),
+            team = "other-team",
+        )
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            val updated = client.put("/admin/api/team-limits/search-team") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"requestsPerMinute":0,"maxConcurrentRequests":2}""")
+            }
+            assertEquals(HttpStatusCode.OK, updated.status, updated.bodyAsText())
+            val updatedJson = Json.parseToJsonElement(updated.bodyAsText()).jsonObject
+            assertEquals("0", updatedJson["requestsPerMinute"]!!.jsonPrimitive.content)
+            assertEquals("2", updatedJson["maxConcurrentRequests"]!!.jsonPrimitive.content)
+
+            val teamRejected = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $teamKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.TooManyRequests, teamRejected.status)
+            assertEquals(
+                "team_rate_limit_exceeded",
+                Json.parseToJsonElement(teamRejected.bodyAsText()).jsonObject["error"]!!
+                    .jsonObject["code"]!!.jsonPrimitive.content,
+            )
+
+            val keyRejected = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $keyLimited")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.TooManyRequests, keyRejected.status)
+            assertEquals(
+                "key_rate_limit_exceeded",
+                Json.parseToJsonElement(keyRejected.bodyAsText()).jsonObject["error"]!!
+                    .jsonObject["code"]!!.jsonPrimitive.content,
+            )
+            val metrics = app.metrics.scrape()
+            assertTrue(metrics.contains("reason=\"team_rate_limit_exceeded\""))
+            assertTrue(metrics.contains("reason=\"key_rate_limit_exceeded\""))
+
+            val listed = client.get("/admin/api/team-limits") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, listed.status, listed.bodyAsText())
+            val teams = Json.parseToJsonElement(listed.bodyAsText()).jsonArray.map { it.jsonObject }
+            assertTrue(
+                teams.any {
+                    it["team"]!!.jsonPrimitive.content == "search-team" &&
+                        it["configured"]!!.jsonPrimitive.content == "true"
+                },
+            )
+            assertTrue(
+                teams.any {
+                    it["team"]!!.jsonPrimitive.content == "other-team" &&
+                        it["configured"]!!.jsonPrimitive.content == "false"
+                },
+            )
+
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.put("/admin/api/team-limits/search-team") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"requestsPerMinute":-1}""")
+                }.status,
+            )
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.put("/admin/api/team-limits/search-team") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"maxConcurrentRequests":0}""")
+                }.status,
+            )
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.put("/admin/api/team-limits/search-team") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{}""")
+                }.status,
+            )
+
+            val cleared = client.delete("/admin/api/team-limits/search-team") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+            }
+            assertEquals(HttpStatusCode.NoContent, cleared.status)
+
+            val allowedAfterClear = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $teamKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, allowedAfterClear.status)
+
+            val keys = client.get("/admin/api/client-keys") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val searchKey = Json.parseToJsonElement(keys.bodyAsText()).jsonArray
+                .map { it.jsonObject }
+                .single { it["team"]!!.jsonPrimitive.content == "search-team" }
+            assertEquals(
+                "1",
+                searchKey["quotaUsage"]!!.jsonObject["currentMinuteRequests"]!!.jsonPrimitive.content,
+            )
+            val teamUsage = client.get("/admin/api/team-limits") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val searchTeam = Json.parseToJsonElement(teamUsage.bodyAsText()).jsonArray
+                .map { it.jsonObject }
+                .single { it["team"]!!.jsonPrimitive.content == "search-team" }
+            assertEquals("0", searchTeam["activeConcurrentRequests"]!!.jsonPrimitive.content)
+            assertEquals("1", searchTeam["currentMinuteRequests"]!!.jsonPrimitive.content)
+
+            val audit = client.get("/admin/api/audit-logs?limit=100") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val actions = Json.parseToJsonElement(audit.bodyAsText()).jsonArray
+                .map { it.jsonObject["action"]!!.jsonPrimitive.content }
+            assertTrue("team_limit.update" in actions)
+            assertTrue("team_limit.delete" in actions)
         }
     }
 
@@ -1479,7 +1628,7 @@ class GatewayIntegrationTest {
                 header("X-Request-Id", "create-key-request")
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"name":"search-service","team":"search-team","dailyTokenLimit":100,"dailyUsdLimit":"1.50","dailyCnyLimit":"10","maxConcurrentRequests":2}""",
+                    """{"name":"search-service","team":"search-team","dailyTokenLimit":100,"dailyUsdLimit":"1.50","dailyCnyLimit":"10","maxConcurrentRequests":2,"requestsPerMinute":30}""",
                 )
             }
             assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
@@ -1531,6 +1680,7 @@ class GatewayIntegrationTest {
             assertEquals("100", rotatedJson["dailyTokenLimit"]!!.jsonPrimitive.content)
             assertEquals("1.5", rotatedJson["dailyUsdLimit"]!!.jsonPrimitive.content)
             assertEquals("2", rotatedJson["maxConcurrentRequests"]!!.jsonPrimitive.content)
+            assertEquals("30", rotatedJson["requestsPerMinute"]!!.jsonPrimitive.content)
             assertNotNull(rotatedJson["rotatedAt"])
             assertNull(rotatedJson["revokedAt"])
 
@@ -1572,7 +1722,7 @@ class GatewayIntegrationTest {
                 header("X-Request-Id", "reenable-revoked-request")
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"name":"search-service","team":"search-team","enabled":true,"expiresAt":null,"dailyTokenLimit":100,"dailyUsdLimit":"1.50","dailyCnyLimit":"10","maxConcurrentRequests":2}""",
+                    """{"name":"search-service","team":"search-team","enabled":true,"expiresAt":null,"dailyTokenLimit":100,"dailyUsdLimit":"1.50","dailyCnyLimit":"10","maxConcurrentRequests":2,"requestsPerMinute":30}""",
                 )
             }
             assertEquals(HttpStatusCode.Conflict, reenableRevoked.status)
@@ -1852,7 +2002,17 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("14", result.getString(1))
+                        assertEquals("15", result.getString(1))
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'client_keys' and column_name = 'requests_per_minute'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1))
+                    }
+                    statement.executeQuery("select to_regclass('public.team_limits') is not null").use { result ->
+                        assertTrue(result.next())
+                        assertTrue(result.getBoolean(1))
                     }
                     statement.executeQuery("select expose_upstream_models from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -2182,7 +2342,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table admin_audit_logs, request_logs, alias_candidates, model_aliases, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table admin_audit_logs, request_logs, alias_candidates, model_aliases, client_key_quota_usage, team_limits, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }
