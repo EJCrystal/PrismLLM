@@ -242,6 +242,12 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 - 默认不记录 prompt/响应正文；日志中不出现任何凭据。
 - 管理界面与指标端点应只在内网暴露。
 
+## 可观测性与告警
+
+`/metrics` 暴露请求结果、完整请求耗时、额度拒绝、上游尝试成功率和上游错误分类。模板 Prometheus 配置与告警规则位于 `monitoring/prometheus/`，覆盖服务失联、readiness 失败、错误率、p95 延迟、额度拒绝和单渠道上游健康；接入说明见 `monitoring/README.md`。
+
+数据面接受 W3C `traceparent`。有效请求头中的 trace ID 会保留，网关生成新的 span ID 并向上游透传；响应返回 `traceparent` 与 `X-Trace-Id`，请求日志保存 trace ID，可在管理界面搜索和复制。
+
 ## 测试
 
 GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行前端测试、前端生产构建及后端测试。它只具有仓库读取权限，并使用独立的并发组；同一 PR 或分支的新提交会取消尚未完成的旧运行。

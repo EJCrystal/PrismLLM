@@ -1,0 +1,29 @@
+package dev.soven.llmgateway.proxy
+
+import kotlin.test.Test
+import kotlin.test.assertTrue
+
+class GatewayMetricsTest {
+    @Test
+    fun `exports request outcomes latency quota and upstream health`() {
+        val metrics = GatewayMetrics()
+        metrics.request("fast-chat", "primary", 200, 125, failed = false)
+        metrics.request("fast-chat", "primary", 200, 50, failed = true)
+        metrics.quotaRejection("concurrency_limit_exceeded")
+        metrics.upstreamAttempt("primary", true)
+        metrics.upstreamError("primary", "upstream_error")
+        metrics.databaseReady(false)
+        metrics.databaseReady(true)
+
+        val output = metrics.scrape()
+        assertTrue(output.contains("gateway_requests_total"))
+        assertTrue(output.contains("outcome=\"error\""))
+        assertTrue(output.contains("gateway_request_duration_seconds_bucket"))
+        assertTrue(output.contains("gateway_quota_rejections_total"))
+        assertTrue(output.contains("reason=\"concurrency_limit_exceeded\""))
+        assertTrue(output.contains("gateway_upstream_attempts_total"))
+        assertTrue(output.contains("outcome=\"success\""))
+        assertTrue(output.contains("gateway_upstream_errors_total"))
+        assertTrue(output.contains("gateway_database_ready 1.0"))
+    }
+}

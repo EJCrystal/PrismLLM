@@ -36,6 +36,7 @@ const filtered = computed(() => {
   return logs.value.filter((log) =>
     [
       log.requestId,
+      log.traceId,
       log.alias,
       log.channelId,
       log.channelName,
@@ -212,7 +213,7 @@ onMounted(load)
       <div class="table-toolbar">
         <label class="search-box">
           <Icon name="search" :size="17" />
-          <input v-model="query" placeholder="搜索请求 ID、别名、渠道、错误码或错误信息" />
+          <input v-model="query" placeholder="搜索请求 ID、Trace ID、别名、渠道、错误码或错误信息" />
         </label>
         <span class="muted small">显示 {{ filtered.length }} / {{ logs.length }} 条</span>
       </div>
@@ -338,6 +339,14 @@ onMounted(load)
               <div class="request-id-cell">
                 <code class="detail-id-value">{{ selected.requestId }}</code>
                 <CopyButton :text="selected.requestId" title="复制请求 ID" :size="14" />
+              </div>
+            </div>
+
+            <div class="detail-id">
+              <span>Trace ID</span>
+              <div class="request-id-cell">
+                <code class="detail-id-value">{{ selected.traceId || '—' }}</code>
+                <CopyButton v-if="selected.traceId" :text="selected.traceId" title="复制 Trace ID" :size="14" />
               </div>
             </div>
 

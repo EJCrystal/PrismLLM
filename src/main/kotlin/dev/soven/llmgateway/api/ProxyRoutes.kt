@@ -9,6 +9,7 @@ import dev.soven.llmgateway.proxy.BillingCalculator
 import dev.soven.llmgateway.quota.QuotaLease
 import dev.soven.llmgateway.quota.quotaTokensFromUsage
 import dev.soven.llmgateway.proxy.ReasoningEffort
+import dev.soven.llmgateway.proxy.TraceContextFactory
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.UsageParser
 import dev.soven.llmgateway.security.ClientKeyHasher
@@ -99,6 +100,10 @@ private suspend fun handleProxy(
     call: ApplicationCall,
     protocol: GatewayProtocol,
 ) {
+    val traceContext = TraceContextFactory.fromHeaderOrCreate(call.request.headers["traceparent"])
+    call.response.header("traceparent", traceContext.traceparent)
+    call.response.header("X-Trace-Id", traceContext.traceId)
+
     val requestId = call.request.headers["X-Request-Id"]
         ?.take(64)
         ?.takeIf { it.isNotBlank() }
@@ -176,11 +181,15 @@ private suspend fun handleProxy(
             }
             try {
                 if (stream) {
-                    proxyStream(app, call, requestJson, candidate, alias, startedAt, remainingMs, state, protocol)
+                    proxyStream(app, call, requestJson, candidate, alias, startedAt, remainingMs, state, protocol, traceContext.traceparent)
                 } else {
-                    proxyJson(app, call, requestJson, candidate, remainingMs, state, protocol)
+                    proxyJson(app, call, requestJson, candidate, remainingMs, state, protocol, traceContext.traceparent)
                 }
                 statusCode = state.statusCode
+                app.metrics.upstreamAttempt(
+                    candidate.channel.name,
+                    state.statusCode < 400 && state.errorCode == null,
+                )
                 return
             } catch (e: GatewayException) {
                 lastError = e
@@ -200,6 +209,9 @@ private suspend fun handleProxy(
         errorMessage = if (state.committed) "上游流式响应超时" else "上游响应超时"
         throw GatewayException(HttpStatusCode.GatewayTimeout, "upstream_timeout", "上游响应超时", "timeout_error")
     } catch (e: GatewayException) {
+        if (e.status == HttpStatusCode.TooManyRequests && e.code in QUOTA_REJECTION_CODES) {
+            app.metrics.quotaRejection(e.code)
+        }
         statusCode = if (state.committed) HttpStatusCode.OK.value else e.status.value
         errorCode = if (state.committed) {
             if (e.code == "upstream_timeout") "stream_timeout" else "stream_interrupted"
@@ -248,6 +260,7 @@ private suspend fun handleProxy(
             channelId = channelId,
             upstreamModel = upstreamModel,
             requestId = requestId,
+            traceId = traceContext.traceId,
             alias = alias,
             channelName = channelName,
             protocol = protocol,
@@ -255,11 +268,19 @@ private suspend fun handleProxy(
             firstTokenMs = state.firstTokenMs,
             reasoningEffort = reasoningEffort,
         )
-        app.metrics.request(alias, channelId, statusCode)
+        val totalMs = (System.nanoTime() - startedAt) / 1_000_000
+        app.metrics.request(
+            alias,
+            channelId,
+            statusCode,
+            totalMs,
+            failed = statusCode >= 400 || errorCode != null || state.errorCode != null || failureStage != null,
+        )
         if (usage != null) app.metrics.usage(alias, usage)
         app.requestLogWriter.submit(
             RequestLogRecord(
                 requestId = requestId,
+                traceId = traceContext.traceId,
                 clientKeyId = clientKey?.id,
                 clientKeyName = clientKey?.name,
                 team = clientKey?.team,
@@ -270,7 +291,7 @@ private suspend fun handleProxy(
                 protocol = protocol,
                 statusCode = statusCode,
                 firstTokenMs = state.firstTokenMs,
-                totalMs = (System.nanoTime() - startedAt) / 1_000_000,
+                totalMs = totalMs,
                 inputTokens = usage?.input,
                 outputTokens = usage?.output,
                 cachedTokens = usage?.cached,
@@ -295,6 +316,12 @@ private suspend fun handleProxy(
 
 private fun String?.asLogMessage(): String? = this?.trim()?.take(1000)?.takeIf { it.isNotEmpty() }
 
+private val QUOTA_REJECTION_CODES = setOf(
+    "daily_token_quota_exceeded",
+    "daily_cost_quota_exceeded",
+    "concurrency_limit_exceeded",
+)
+
 private suspend fun settleQuotaOnExit(
     app: GatewayApplication,
     lease: QuotaLease?,
@@ -302,6 +329,7 @@ private suspend fun settleQuotaOnExit(
     channelId: String?,
     upstreamModel: String?,
     requestId: String,
+    traceId: String?,
     alias: String,
     channelName: String?,
     protocol: GatewayProtocol,
@@ -317,6 +345,7 @@ private suspend fun settleQuotaOnExit(
                     BillingCalculator.calculate(
                         RequestLogRecord(
                             requestId = requestId,
+                            traceId = traceId,
                             clientKeyId = lease.clientKeyId,
                             clientKeyName = null,
                             alias = alias,
@@ -420,6 +449,7 @@ private suspend fun proxyStream(
     timeoutMs: Long,
     state: ProxyState,
     protocol: GatewayProtocol,
+    traceparent: String,
 ) {
     val upstreamUrl = buildUpstreamUrl(candidate, protocol)
     val credential = decryptCredential(app, candidate)
@@ -429,6 +459,7 @@ private suspend fun proxyStream(
         withTimeout(timeoutMs) {
             app.httpClient.preparePost(upstreamUrl) {
                 header(HttpHeaders.Authorization, "Bearer $credential")
+                header("traceparent", traceparent)
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 header(HttpHeaders.Accept, ContentType.Text.EventStream.toString())
                 setBody(TextContent(body, ContentType.Application.Json))
@@ -551,6 +582,7 @@ private suspend fun proxyJson(
     timeoutMs: Long,
     state: ProxyState,
     protocol: GatewayProtocol,
+    traceparent: String,
 ) {
     val upstreamUrl = buildUpstreamUrl(candidate, protocol)
     val credential = decryptCredential(app, candidate)
@@ -559,6 +591,7 @@ private suspend fun proxyJson(
         withTimeout(timeoutMs) {
             val response = app.httpClient.post(upstreamUrl) {
                 header(HttpHeaders.Authorization, "Bearer $credential")
+                header("traceparent", traceparent)
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 setBody(TextContent(body, ContentType.Application.Json))
             }

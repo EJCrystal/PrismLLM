@@ -49,6 +49,7 @@ import java.nio.file.Path
 import java.sql.DriverManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -102,6 +103,34 @@ class GatewayIntegrationTest {
 
             assertEquals(HttpStatusCode.Unauthorized, response.status)
             assertTrue(response.bodyAsText().contains("invalid_api_key"))
+        }
+    }
+
+    @Test
+    fun `propagates and records W3C trace context`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        createAlias("fast-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+        val traceId = "4bf92f3577b34da6a3ce929d0e0e4736"
+        val incomingParent = "00f067aa0ba902b7"
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                header("traceparent", "00-$traceId-$incomingParent-01")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(traceId, response.headers["X-Trace-Id"])
+            assertTrue(response.headers["traceparent"]?.startsWith("00-$traceId-") == true)
+            val log = awaitRequestLog()
+            assertEquals(traceId, log.traceId)
+            val upstream = fake.requests.single()
+            assertTrue(upstream.traceparent?.startsWith("00-$traceId-") == true)
+            assertNotEquals(incomingParent, upstream.traceparent?.split("-")?.getOrNull(2))
         }
     }
 
@@ -914,6 +943,7 @@ class GatewayIntegrationTest {
             assertTrue(rejected.bodyAsText().contains("daily_token_quota_exceeded"))
             assertEquals(1, fake.requests.size)
             assertEquals(13, app.clientKeyQuotaService.currentUsage(app.clientKeyRepository.list().single().id).dailyTokens)
+            assertTrue(app.metrics.scrape().contains("gateway_quota_rejections_total"))
         }
     }
 
@@ -1573,7 +1603,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("12", result.getString(1))
+                        assertEquals("13", result.getString(1))
                     }
                     statement.executeQuery("select expose_upstream_models from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
