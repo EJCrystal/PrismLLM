@@ -150,7 +150,7 @@ class RequestLogRepository(private val database: Database) {
         idColumn: org.jetbrains.exposed.v1.core.Column<String?>,
         nameColumn: org.jetbrains.exposed.v1.core.Column<String?>,
         where: Op<Boolean>,
-        unassignedId: String = "unassigned",
+        unassignedId: String = "__unassigned_key__",
     ): List<UsageGroup> {
         val count = RequestLogs.id.count()
         val failure = (RequestLogs.statusCode greaterEq 400) or (RequestLogs.errorCode.isNotNull())

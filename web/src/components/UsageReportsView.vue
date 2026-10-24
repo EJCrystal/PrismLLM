@@ -26,23 +26,20 @@ function range() {
 async function load() {
   loading.value = true
   error.value = ''
-  try {
-    const result = await requests.run(async () => {
-      const [nextReport, nextRetention] = await Promise.all([
-        api.getUsageReport(range()),
-        api.getRetentionPolicy(),
-      ])
-      return { nextReport, nextRetention }
-    })
-    if (!result.isLatest) return
+  const result = await requests.run(async () => {
+    const [nextReport, nextRetention] = await Promise.all([
+      api.getUsageReport(range()),
+      api.getRetentionPolicy(),
+    ])
+    return { nextReport, nextRetention }
+  }).catch((cause) => ({ error: cause }))
+  if (!result.isLatest) return
+  if (result.error) error.value = result.error.message
+  else {
     report.value = result.value.nextReport
     retention.value = result.value.nextRetention
-  } catch (cause) {
-    if (cause.isLatest === false) return
-    error.value = cause.message
-  } finally {
-    loading.value = false
   }
+  loading.value = false
 }
 
 async function cleanup() {
@@ -99,7 +96,7 @@ onMounted(load)
               <thead><tr><th>团队</th><th>请求</th><th>Token</th><th>费用</th></tr></thead>
               <tbody>
                 <tr v-for="row in report.byTeam" :key="row.id">
-                  <td>{{ row.name || row.id }}</td>
+                  <td>{{ row.name || (row.id === '__unassigned_team__' ? '未分配团队' : row.id) }}</td>
                   <td>{{ formatNumber(row.requests) }} <span class="muted small">/ {{ row.errors }} 错误</span></td>
                   <td>{{ formatNumber(row.totalTokens) }}</td>
                   <td class="small">{{ formatUsageCosts(row.costs) }}</td>
