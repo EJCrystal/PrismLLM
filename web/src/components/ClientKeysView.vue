@@ -8,6 +8,8 @@ import Modal from './Modal.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
 import { buildClientKeyPayload, quotaSummary } from '../utils/clientKeyQuota'
+import { useClientKeyActions } from '../utils/clientKeyActions'
+import { useSecretReveal } from '../utils/secretReveal'
 
 const keys = ref([])
 const loading = ref(true)
@@ -15,8 +17,15 @@ const error = ref('')
 const showForm = ref(false)
 const saving = ref(false)
 const editingId = ref(null)
-const secret = ref(null)
-const secretMode = ref('create')
+const { secret, secretMode, showSecret, closeSecret } = useSecretReveal()
+const { pendingKeyId, pendingAction, rotate, revoke } = useClientKeyActions({
+  confirmAction: (message) => window.confirm(message),
+  rotateRequest: (id) => api.rotateClientKey(id),
+  revokeRequest: (id) => api.revokeClientKey(id),
+  notify,
+  reload: load,
+  showSecret,
+})
 
 const form = reactive({
   name: '',
@@ -67,7 +76,7 @@ function openCreate() {
 }
 
 function openEdit(key) {
-  if (key.revokedAt != null) return
+  if (pendingKeyId.value != null || key.revokedAt != null) return
   editingId.value = key.id
   Object.assign(form, {
     name: key.name,
@@ -96,8 +105,7 @@ async function save() {
       notify('调用方密钥已更新')
     } else {
       const created = await api.createClientKey(payload)
-      secret.value = created
-      secretMode.value = 'create'
+      showSecret(created, 'create')
       notify('调用方密钥已创建')
     }
     showForm.value = false
@@ -110,7 +118,7 @@ async function save() {
 }
 
 async function toggle(key) {
-  if (key.revokedAt != null) return
+  if (pendingKeyId.value != null || key.revokedAt != null) return
   try {
     await api.updateClientKey(key.id, {
       name: key.name,
@@ -130,32 +138,8 @@ async function toggle(key) {
   }
 }
 
-async function rotate(key) {
-  if (key.revokedAt != null) return
-  if (!window.confirm('确定轮换调用方密钥「' + key.name + '」？旧密钥会立即失效。')) return
-  try {
-    secretMode.value = 'rotate'
-    secret.value = await api.rotateClientKey(key.id)
-    notify('调用方密钥已轮换，旧密钥已失效')
-    await load()
-  } catch (cause) {
-    notify(cause.message, 'error')
-  }
-}
-
-async function revoke(key) {
-  if (key.revokedAt != null) return
-  if (!window.confirm('确定永久撤销调用方密钥「' + key.name + '」？撤销后不能重新启用或轮换。')) return
-  try {
-    await api.revokeClientKey(key.id)
-    notify('调用方密钥已永久撤销')
-    await load()
-  } catch (cause) {
-    notify(cause.message, 'error')
-  }
-}
-
 async function remove(key) {
+  if (pendingKeyId.value != null) return
   if (!window.confirm(`确定删除调用方密钥「${key.name}」？已发出的请求会立即失效。`)) return
   try {
     await api.deleteClientKey(key.id)
@@ -266,16 +250,23 @@ onMounted(load)
               </td>
               <td class="actions-col">
                 <div class="row-actions">
-                  <button v-if="key.revokedAt == null" type="button" class="button mini" @click="toggle(key)">
+                  <button
+                    v-if="key.revokedAt == null"
+                    type="button"
+                    class="button mini"
+                    :disabled="pendingKeyId != null"
+                    @click="toggle(key)"
+                  >
                     {{ key.enabled ? '停用' : '启用' }}
                   </button>
                   <button
                     v-if="key.revokedAt == null"
                     type="button"
                     class="button mini"
+                    :disabled="pendingKeyId != null"
                     @click="rotate(key)"
                   >
-                    轮换
+                    {{ pendingAction === 'rotate' && pendingKeyId === key.id ? '轮换中…' : '轮换' }}
                   </button>
                   <button
                     v-if="key.revokedAt == null"
@@ -283,6 +274,7 @@ onMounted(load)
                     class="icon-button"
                     title="编辑"
                     aria-label="编辑调用方密钥"
+                    :disabled="pendingKeyId != null"
                     @click="openEdit(key)"
                   >
                     <Icon name="edit" :size="16" />
@@ -293,6 +285,7 @@ onMounted(load)
                     class="icon-button danger"
                     title="永久撤销"
                     aria-label="永久撤销调用方密钥"
+                    :disabled="pendingKeyId != null"
                     @click="revoke(key)"
                   >
                     <Icon name="shield" :size="16" />
@@ -302,6 +295,7 @@ onMounted(load)
                     class="icon-button danger"
                     title="删除"
                     aria-label="删除调用方密钥"
+                    :disabled="pendingKeyId != null"
                     @click="remove(key)"
                   >
                     <Icon name="trash" :size="16" />
@@ -377,7 +371,7 @@ onMounted(load)
     <Modal
       v-if="secret"
       :title="secretMode === 'rotate' ? '新密钥只显示这一次' : '密钥只显示这一次'"
-      @close="secret = null"
+      @close="closeSecret"
     >
       <div class="secret-box">
         <p class="secret-warning">
@@ -393,7 +387,7 @@ onMounted(load)
         </p>
       </div>
       <template #footer>
-        <button type="button" class="button primary" @click="secret = null">我已保存</button>
+        <button type="button" class="button primary" @click="closeSecret">我已保存</button>
       </template>
     </Modal>
   </section>

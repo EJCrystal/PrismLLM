@@ -1,50 +1,18 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 import { api } from '../api'
 import { auditActionLabel, auditResultClass, auditResultLabel } from '../utils/adminAudit'
+import { createAdminAuditPager } from '../utils/adminAuditPager'
 import { formatTime } from '../utils/format'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 
-const logs = ref([])
-const loading = ref(true)
-const loadingMore = ref(false)
-const error = ref('')
-const hasMore = ref(false)
-const pageSize = 100
+const { logs, loading, loadingMore, error, hasMore, load, loadMore } = createAdminAuditPager({
+  fetchPage: (options) => api.listAuditLogs(options),
+})
 
 const failureCount = computed(() => logs.value.filter((item) => item.result === 'failure').length)
-
-async function load() {
-  loading.value = true
-  error.value = ''
-  try {
-    logs.value = await api.listAuditLogs({ limit: pageSize })
-    hasMore.value = logs.value.length === pageSize
-  } catch (cause) {
-    error.value = cause.message
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadMore() {
-  if (!logs.value.length || loadingMore.value) return
-  loadingMore.value = true
-  try {
-    const next = await api.listAuditLogs({
-      limit: pageSize,
-      beforeId: logs.value[logs.value.length - 1].id,
-    })
-    logs.value = logs.value.concat(next)
-    hasMore.value = next.length === pageSize
-  } catch (cause) {
-    error.value = cause.message
-  } finally {
-    loadingMore.value = false
-  }
-}
 
 onMounted(load)
 </script>
@@ -56,7 +24,7 @@ onMounted(load)
         <h2>管理操作审计</h2>
         <p>记录管理 API 的写操作结果、操作者、请求 ID 与来源地址，不保存请求正文。</p>
       </div>
-      <button type="button" class="button ghost" :disabled="loading" @click="load">
+      <button type="button" class="button ghost" :disabled="loading || loadingMore" @click="load">
         <Icon name="refresh" :size="16" />
         刷新
       </button>
@@ -136,7 +104,7 @@ onMounted(load)
         </table>
       </div>
       <div v-if="hasMore" class="load-more-row">
-        <button type="button" class="button ghost" :disabled="loadingMore" @click="loadMore">
+        <button type="button" class="button ghost" :disabled="loading || loadingMore" @click="loadMore">
           {{ loadingMore ? '正在加载…' : '加载更多' }}
         </button>
       </div>
