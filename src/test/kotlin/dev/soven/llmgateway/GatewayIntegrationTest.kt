@@ -19,6 +19,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.put
+import io.ktor.client.request.options
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
@@ -103,6 +104,35 @@ class GatewayIntegrationTest {
 
             assertEquals(HttpStatusCode.Unauthorized, response.status)
             assertTrue(response.bodyAsText().contains("invalid_api_key"))
+        }
+    }
+
+    @Test
+    fun `CORS exposes trace correlation headers`() = runBlocking {
+        app = GatewayApplication(config(corsOrigins = listOf("https://console.example.com")))
+        testApplication {
+            application { app.install(this) }
+            val response = client.options("/v1/chat/completions") {
+                header(HttpHeaders.Origin, "https://console.example.com")
+                header(HttpHeaders.AccessControlRequestMethod, "POST")
+                header(HttpHeaders.AccessControlRequestHeaders, "authorization,content-type,traceparent")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals("https://console.example.com", response.headers[HttpHeaders.AccessControlAllowOrigin])
+            assertTrue(response.headers[HttpHeaders.AccessControlAllowHeaders].orEmpty().contains("traceparent"))
+
+            val actual = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Origin, "https://console.example.com")
+                header("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"missing","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, actual.status)
+            assertEquals("https://console.example.com", actual.headers[HttpHeaders.AccessControlAllowOrigin])
+            val exposed = actual.headers[HttpHeaders.AccessControlExposeHeaders].orEmpty()
+            assertTrue(exposed.contains("traceparent"))
+            assertTrue(exposed.contains("X-Trace-Id"))
         }
     }
 
@@ -1014,6 +1044,9 @@ class GatewayIntegrationTest {
             }
 
             assertEquals(HttpStatusCode.NotFound, send("missing-model").status)
+            val metrics = app.metrics.scrape()
+            assertTrue(metrics.contains("alias=\"unresolved\""))
+            assertTrue(!metrics.contains("alias=\"missing-model\""))
             val channel = createChannel("openai", "ok")
             createAlias("fast-chat", channel to "gpt-4o-mini")
             assertEquals(HttpStatusCode.OK, send("fast-chat").status)
@@ -1765,6 +1798,7 @@ class GatewayIntegrationTest {
         idleTimeoutMs: Long = 2_000,
         totalTimeoutMs: Long = 5_000,
         exposeUpstreamModels: Boolean = false,
+        corsOrigins: List<String> = emptyList(),
     ): GatewayConfig = GatewayConfig(
         port = 0,
         databaseUrl = postgres.jdbcUrl,
@@ -1773,7 +1807,7 @@ class GatewayIntegrationTest {
         masterKey = ByteArray(32) { 7 },
         adminUsername = "admin",
         adminPassword = "test-password",
-        corsOrigins = emptyList(),
+        corsOrigins = corsOrigins,
         requestBodyLimitBytes = 1024 * 1024,
         connectTimeoutMs = 1_000,
         firstTokenTimeoutMs = firstTokenTimeoutMs,

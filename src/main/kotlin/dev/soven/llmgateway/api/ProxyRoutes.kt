@@ -270,7 +270,7 @@ private suspend fun handleProxy(
         )
         val totalMs = (System.nanoTime() - startedAt) / 1_000_000
         app.metrics.request(
-            alias,
+            if (channelId == null) "unresolved" else alias,
             channelId,
             statusCode,
             totalMs,

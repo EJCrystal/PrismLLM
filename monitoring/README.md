@@ -2,6 +2,16 @@
 
 `prometheus.yml` scrapes the gateway's `/metrics` endpoint and probes `/health/ready` through Blackbox Exporter. Mount it as `/etc/prometheus/prometheus.yml` and mount `alerts.yml` as `/etc/prometheus/alerts.yml`.
 
+`monitoring/docker-compose.yml` provides both collectors. Start the gateway first, then run:
+
+```bash
+docker compose -f monitoring/docker-compose.yml up -d
+```
+
+The example joins the gateway compose network `llm-gateway_default`; adjust the external network name if your Compose project uses a different name. Prometheus is available at `http://localhost:9090` and Blackbox at `http://localhost:9115`.
+
+Unknown model IDs rejected during routing are recorded under the fixed `alias="unresolved"` label, preventing request-controlled label-cardinality growth.
+
 The included rules cover:
 
 - scrape target down and readiness probe failure;

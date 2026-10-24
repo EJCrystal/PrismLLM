@@ -159,6 +159,9 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             allowHeader(HttpHeaders.ContentType)
             allowHeader("X-CSRF-Token")
             allowHeader("X-Request-Id")
+            allowHeader("traceparent")
+            exposeHeader("traceparent")
+            exposeHeader("X-Trace-Id")
             config.corsOrigins.forEach { origin ->
                 val uri = runCatching { URI(origin) }.getOrNull() ?: return@forEach
                 val host = uri.host ?: return@forEach

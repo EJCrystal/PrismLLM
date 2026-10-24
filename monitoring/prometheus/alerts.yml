@@ -11,7 +11,10 @@ groups:
           description: Prometheus has failed to scrape {{ $labels.instance }} for 2 minutes.
 
       - alert: LlmGatewayNotReady
-        expr: probe_success{job="llm-gateway-ready"} == 0
+        expr: |
+          (probe_success{job="llm-gateway-ready"} == 0)
+          or
+          (up{job="llm-gateway-ready"} == 0)
         for: 2m
         labels:
           severity: critical
