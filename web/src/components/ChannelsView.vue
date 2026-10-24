@@ -78,7 +78,7 @@ async function load() {
   try {
     const [channelsData, pricesData] = await Promise.all([
       api.listChannels(),
-      api.listModelPrices().catch(() => []),
+      api.listModelPrices(),
     ])
     channels.value = channelsData
     prices.value = pricesData

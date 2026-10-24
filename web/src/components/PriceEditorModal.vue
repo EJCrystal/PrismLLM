@@ -106,14 +106,6 @@ watch(
 )
 
 watch(
-  () => [form.channelId, form.upstreamModel],
-  () => {
-    conversionRequests.invalidate()
-    exchangeLoading.value = false
-  },
-)
-
-watch(
   () => form.currency,
   async (nextCurrency, previousCurrency) => {
     if (nextCurrency === previousCurrency) return
@@ -156,6 +148,8 @@ watch(
       return
     }
     if (activePrice.value) {
+      conversionRequests.invalidate()
+      exchangeLoading.value = false
       activePrice.value = null
       form.inputPricePerMillion = ''
       form.outputPricePerMillion = ''
