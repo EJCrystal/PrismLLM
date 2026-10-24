@@ -7,6 +7,8 @@ import dev.soven.llmgateway.proxy.CatalogModel
 import dev.soven.llmgateway.proxy.fetchUpstreamModels
 import dev.soven.llmgateway.proxy.probeUpstreamProtocols
 import dev.soven.llmgateway.repo.NewCandidate
+import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
+import dev.soven.llmgateway.quota.parseDailyCostLimit
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.ClientKeyHasher
 import dev.soven.llmgateway.security.PasswordHasher
@@ -419,7 +421,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/client-keys") {
             call.requireAdmin(app)
-            call.respond(app.clientKeyRepository.list().map { it.toResponse() })
+            call.response.headers.append("Cache-Control", "no-store")
+            val keys = app.clientKeyRepository.list().map { key ->
+                key.toResponse(quotaUsageResponse(app.clientKeyQuotaService.currentUsage(key.id)))
+            }
+            call.respond(keys)
         }
 
         post("/client-keys") {
@@ -429,6 +435,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (request.expiresAt != null && request.expiresAt <= System.currentTimeMillis()) {
                 throw badRequest("invalid_client_key", "过期时间必须晚于当前时间")
             }
+            val quotas = validateClientKeyQuotas(request)
             val generated = ClientKeyHasher.generate()
             val record = app.clientKeyRepository.create(
                 name = request.name,
@@ -436,6 +443,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 keyPrefix = generated.prefix,
                 enabled = request.enabled,
                 expiresAt = request.expiresAt,
+                quotas = quotas,
             )
             call.respond(
                 HttpStatusCode.Created,
@@ -446,6 +454,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     keyPrefix = record.keyPrefix,
                     enabled = record.enabled,
                     expiresAt = record.expiresAt,
+                    dailyTokenLimit = record.quotas.dailyTokens,
+                    dailyUsdLimit = record.quotas.dailyCostLimit("USD")?.stripTrailingZeros()?.toPlainString(),
+                    dailyCnyLimit = record.quotas.dailyCostLimit("CNY")?.stripTrailingZeros()?.toPlainString(),
+                    dailyEurLimit = record.quotas.dailyCostLimit("EUR")?.stripTrailingZeros()?.toPlainString(),
+                    maxConcurrentRequests = record.quotas.maxConcurrentRequests,
                     createdAt = record.createdAt,
                 ),
             )
@@ -459,13 +472,18 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (request.expiresAt != null && request.expiresAt <= System.currentTimeMillis()) {
                 throw badRequest("invalid_client_key", "过期时间必须晚于当前时间")
             }
+            val quotas = validateClientKeyQuotas(request)
             val record = app.clientKeyRepository.update(
                 id = id,
                 name = request.name,
                 enabled = request.enabled,
                 expiresAt = request.expiresAt,
+                quotas = quotas,
             ) ?: throw notFound("client_key_not_found", "调用方密钥不存在")
-            call.respond(record.toResponse())
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(
+                record.toResponse(quotaUsageResponse(app.clientKeyQuotaService.currentUsage(record.id))),
+            )
         }
 
         delete("/client-keys/{id}") {
@@ -753,6 +771,27 @@ private fun parsePrice(value: String, label: String): BigDecimal {
         ?: throw badRequest("invalid_model_price", "$label 必须是数字")
     if (parsed < BigDecimal.ZERO) throw badRequest("invalid_model_price", "$label 不能为负数")
     return parsed.setScale(8, RoundingMode.HALF_UP)
+}
+
+private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLimits {
+    if (request.dailyTokenLimit != null && request.dailyTokenLimit < 0) {
+        throw badRequest("invalid_client_key", "每日 token 上限必须是非负整数")
+    }
+    if (request.maxConcurrentRequests != null && request.maxConcurrentRequests <= 0) {
+        throw badRequest("invalid_client_key", "最大并发请求数必须是正整数")
+    }
+    val costs = try {
+        listOf("USD" to request.dailyUsdLimit, "CNY" to request.dailyCnyLimit, "EUR" to request.dailyEurLimit)
+            .mapNotNull { (currency, value) -> parseDailyCostLimit(value)?.let { currency to it } }
+            .toMap()
+    } catch (cause: IllegalArgumentException) {
+        throw badRequest("invalid_client_key", cause.message ?: "每日费用上限无效")
+    }
+    return ClientKeyQuotaLimits(
+        dailyTokens = request.dailyTokenLimit,
+        dailyCosts = costs,
+        maxConcurrentRequests = request.maxConcurrentRequests,
+    )
 }
 
 private fun conflict(code: String, message: String): GatewayException =

@@ -184,6 +184,20 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 失败请求会在日志中记录 `failureStage`（`request` / `routing` / `upstream` / `streaming` / `client`）、`errorMessage` 和上游返回的 `upstreamErrorCode`。 请求日志同时展示输入、输出、推理和总 token、输出速率（输出 token / 总耗时）与缓存命中率（`cached_tokens / input_tokens`），并记录调用方密钥名称和请求中的推理强度；上游未返回的字段显示“—”，不做估算。渠道列显示请求发生时的渠道名称快照，同时保留 `channelId` 用于精确关联；渠道改名不会改写历史日志。请求日志列表只显示错误码和阶段，完整原因在“详情”弹层中查看；上游响应正文仍然不落库。
 
+### 调用方密钥额度与限流
+
+调用方密钥可分别配置每日 token 上限、每日费用上限和最大并发请求数。留空表示该维度不限制；`0` 表示禁止新请求。每日额度按 UTC 自然日重置，所有金额配置最多 8 位小数。
+
+费用上限按模型单价的实际币种分别配置，目前支持 USD、CNY 和 EUR。某个币种未配置上限时，该币种的费用不参与额度限制；不同币种之间不做隐含汇率换算。日费用额度只有在对应渠道和模型已配置单价且响应包含用量时才能累计；缺失用量不会按 0 计费。
+
+并发上限是单网关进程内的并发请求数。每个请求在通过鉴权和每日额度检查后占用一个名额；响应完成、流式输出结束、路由失败或客户端中断时都会释放。超额请求返回 HTTP `429`，并通过 OpenAI 兼容错误信封给出以下错误码：
+
+- `daily_token_quota_exceeded`：今日 token 额度已用完。
+- `daily_cost_quota_exceeded`：某个已配置币种的今日费用额度已用完。
+- `concurrency_limit_exceeded`：并发请求数已达上限。
+
+管理界面和 `GET/POST /admin/api/client-keys`、`PUT /admin/api/client-keys/{id}` 支持以下可选字段：`dailyTokenLimit`、`dailyUsdLimit`、`dailyCnyLimit`、`dailyEurLimit`、`maxConcurrentRequests`。查询密钥时返回 `quotaUsage`，包含今日 token、各币种费用和当前并发数。每日用量保存在 PostgreSQL，账号删除或新一天开始时重新计算。
+
 ### 单请求计费
 
 管理界面的“渠道”列表提供便捷的「配置模型单价」入口，直接为每个渠道已授权的上游模型配置输入、输出与缓存读取单价（每百万 token 单价），在请求日志中实时计算并显示单条请求费用。价格规则接口：`GET/POST /admin/api/model-prices`、`PUT/DELETE /admin/api/model-prices/{id}`。

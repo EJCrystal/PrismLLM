@@ -2397,6 +2397,12 @@ code,
   gap: 12px;
 }
 
+.quota-currency-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .price-model {
   color: #344054;
   font-size: 12px;
@@ -2408,6 +2414,10 @@ code,
 
 @media (max-width: 600px) {
   .price-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .quota-currency-grid {
     grid-template-columns: 1fr;
   }
 }

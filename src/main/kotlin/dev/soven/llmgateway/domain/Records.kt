@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.domain
 
 import java.math.BigDecimal
+import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 
 /**
  * 渠道记录。上游凭据只以密文形式存在，读取时按需解密。
@@ -96,6 +97,7 @@ data class ClientKeyRecord(
     val keyPrefix: String,
     val enabled: Boolean,
     val expiresAt: Long?,
+    val quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits(),
     val createdAt: Long,
 )
 

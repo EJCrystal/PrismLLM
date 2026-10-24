@@ -12,7 +12,9 @@ import dev.soven.llmgateway.repo.AdminUserRepository
 import dev.soven.llmgateway.repo.AliasRepository
 import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.ClientKeyRepository
+import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
+import dev.soven.llmgateway.quota.ClientKeyQuotaService
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.security.PasswordHasher
@@ -66,6 +68,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val channelRepository = ChannelRepository(databaseFactory.database)
     val aliasRepository = AliasRepository(databaseFactory.database)
     val clientKeyRepository = ClientKeyRepository(databaseFactory.database)
+    val clientKeyQuotaRepository = ClientKeyQuotaRepository(databaseFactory.database)
+    val clientKeyQuotaService = ClientKeyQuotaService(clientKeyQuotaRepository)
     val adminUserRepository = AdminUserRepository(databaseFactory.database)
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)

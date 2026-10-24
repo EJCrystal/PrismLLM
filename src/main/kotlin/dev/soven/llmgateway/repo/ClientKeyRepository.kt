@@ -2,6 +2,7 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.ClientKeys
 import dev.soven.llmgateway.domain.ClientKeyRecord
+import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database
@@ -37,6 +38,7 @@ class ClientKeyRepository(private val database: Database) {
         keyPrefix: String,
         enabled: Boolean,
         expiresAt: Long?,
+        quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits(),
     ): ClientKeyRecord = suspendTransaction(database) {
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
@@ -47,17 +49,33 @@ class ClientKeyRepository(private val database: Database) {
             it[ClientKeys.keyPrefix] = keyPrefix
             it[ClientKeys.enabled] = enabled
             it[ClientKeys.expiresAt] = expiresAt
+            it[ClientKeys.dailyTokenLimit] = quotas.dailyTokens
+            it[ClientKeys.dailyUsdLimit] = quotas.dailyCostLimit("USD")
+            it[ClientKeys.dailyCnyLimit] = quotas.dailyCostLimit("CNY")
+            it[ClientKeys.dailyEurLimit] = quotas.dailyCostLimit("EUR")
+            it[ClientKeys.maxConcurrentRequests] = quotas.maxConcurrentRequests
             it[createdAt] = now
         }
         ClientKeys.selectAll().where { ClientKeys.id eq id }.single().let(::toRecord)
     }
 
-    suspend fun update(id: String, name: String, enabled: Boolean, expiresAt: Long?): ClientKeyRecord? =
+    suspend fun update(
+        id: String,
+        name: String,
+        enabled: Boolean,
+        expiresAt: Long?,
+        quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits(),
+    ): ClientKeyRecord? =
         suspendTransaction(database) {
             val updated = ClientKeys.update({ ClientKeys.id eq id }) {
                 it[ClientKeys.name] = name
                 it[ClientKeys.enabled] = enabled
                 it[ClientKeys.expiresAt] = expiresAt
+                it[ClientKeys.dailyTokenLimit] = quotas.dailyTokens
+                it[ClientKeys.dailyUsdLimit] = quotas.dailyCostLimit("USD")
+                it[ClientKeys.dailyCnyLimit] = quotas.dailyCostLimit("CNY")
+                it[ClientKeys.dailyEurLimit] = quotas.dailyCostLimit("EUR")
+                it[ClientKeys.maxConcurrentRequests] = quotas.maxConcurrentRequests
             }
             if (updated == 0) null else ClientKeys.selectAll().where { ClientKeys.id eq id }.single().let(::toRecord)
         }
@@ -73,6 +91,15 @@ class ClientKeyRepository(private val database: Database) {
         keyPrefix = row[ClientKeys.keyPrefix],
         enabled = row[ClientKeys.enabled],
         expiresAt = row[ClientKeys.expiresAt],
+        quotas = ClientKeyQuotaLimits(
+            dailyTokens = row[ClientKeys.dailyTokenLimit],
+            dailyCosts = buildMap {
+                row[ClientKeys.dailyUsdLimit]?.let { put("USD", it) }
+                row[ClientKeys.dailyCnyLimit]?.let { put("CNY", it) }
+                row[ClientKeys.dailyEurLimit]?.let { put("EUR", it) }
+            },
+            maxConcurrentRequests = row[ClientKeys.maxConcurrentRequests],
+        ),
         createdAt = row[ClientKeys.createdAt],
     )
 }
