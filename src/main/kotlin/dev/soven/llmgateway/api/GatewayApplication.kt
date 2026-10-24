@@ -157,7 +157,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
                 }
             }
         }
-        app.install(adminAuditPlugin(adminAuditRepository, logger))
+        app.install(adminAuditPlugin(adminAuditRepository, logger, metrics::adminAuditWriteFailed))
         app.install(CORS) {
             allowMethod(HttpMethod.Get)
             allowMethod(HttpMethod.Post)

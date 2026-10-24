@@ -256,7 +256,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 ## 可观测性与告警
 
-`/metrics` 暴露请求结果、完整请求耗时、额度拒绝、上游尝试成功率和上游错误分类。模板 Prometheus 配置与告警规则位于 `monitoring/prometheus/`，覆盖服务失联、readiness 失败、错误率、p95 延迟、额度拒绝和单渠道上游健康；接入说明见 `monitoring/README.md`。
+`/metrics` 暴露请求结果、完整请求耗时、额度拒绝、管理审计写入失败、上游尝试成功率和上游错误分类。模板 Prometheus 配置与告警规则位于 `monitoring/prometheus/`，覆盖服务失联、readiness 失败、错误率、p95 延迟、额度拒绝、管理审计写入失败和单渠道上游健康；接入说明见 `monitoring/README.md`。
 
 数据面接受 W3C `traceparent`。有效请求头中的 trace ID 会保留，网关生成新的 span ID 并向上游透传；响应返回 `traceparent` 与 `X-Trace-Id`，请求日志保存 trace ID，可在管理界面搜索和复制。
 

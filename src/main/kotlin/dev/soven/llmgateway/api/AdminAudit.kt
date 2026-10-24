@@ -12,6 +12,7 @@ import io.ktor.server.request.path
 import io.ktor.server.plugins.origin
 import io.ktor.server.response.header
 import io.ktor.util.AttributeKey
+import kotlinx.coroutines.CancellationException
 import org.slf4j.Logger
 import java.util.UUID
 
@@ -38,6 +39,7 @@ private data class AuditState(
 fun adminAuditPlugin(
     repository: AdminAuditRepository,
     logger: Logger,
+    onWriteFailure: () -> Unit,
 ): ApplicationPlugin<Unit> = createApplicationPlugin("AdminAudit") {
     onCall { call ->
         val path = call.request.path()
@@ -63,7 +65,7 @@ fun adminAuditPlugin(
         val errorCode = call.attributes.getOrNull(AuditErrorCodeKey)
             ?: if (statusCode >= 400) "http_$statusCode" else null
         val sourceIp = call.request.origin.remoteAddress.take(100)
-        runCatching {
+        try {
             repository.record(
                 actor = actor,
                 action = state.action,
@@ -74,7 +76,10 @@ fun adminAuditPlugin(
                 sourceIp = sourceIp,
                 errorCode = errorCode,
             )
-        }.onFailure { cause ->
+        } catch (cause: CancellationException) {
+            throw cause
+        } catch (cause: Exception) {
+            onWriteFailure()
             logger.error(
                 "admin audit write failed, action={}, requestId={}",
                 state.action,

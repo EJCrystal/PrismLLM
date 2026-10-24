@@ -71,6 +71,10 @@ class GatewayMetrics {
         registry.counter("gateway_quota_rejections_total", Tags.of("reason", reason)).increment()
     }
 
+    fun adminAuditWriteFailed() {
+        registry.counter("gateway_admin_audit_write_failures_total").increment()
+    }
+
     fun databaseReady(ready: Boolean) {
         databaseReadyValue.set(if (ready) 1.0 else 0.0)
     }
