@@ -160,6 +160,7 @@ object AdminUsers : Table("admin_users") {
 object RequestLogs : Table("request_logs") {
     val id = long("id").autoIncrement()
     val requestId = varchar("request_id", 64)
+    val traceId = varchar("trace_id", 32).nullable()
     val clientKeyId = varchar("client_key_id", 36).nullable()
     val clientKeyName = varchar("client_key_name", 100).nullable()
     val team = varchar("team", 100).nullable()

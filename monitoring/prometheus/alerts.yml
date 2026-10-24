@@ -1,0 +1,75 @@
+groups:
+  - name: llm-gateway
+    rules:
+      - alert: LlmGatewayDown
+        expr: up{job="llm-gateway"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: LLM Gateway target is down
+          description: Prometheus has failed to scrape {{ $labels.instance }} for 2 minutes.
+
+      - alert: LlmGatewayNotReady
+        expr: |
+          (probe_success{job="llm-gateway-ready"} == 0)
+          or
+          (up{job="llm-gateway-ready"} == 0)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: LLM Gateway readiness probe failed
+          description: The gateway readiness endpoint has failed for 2 minutes; inspect /health/ready and database connectivity.
+
+      - alert: LlmGatewayHighErrorRate
+        expr: |
+          (
+            sum(rate(gateway_requests_total{outcome="error"}[5m]))
+            /
+            clamp_min(sum(rate(gateway_requests_total[5m])), 0.001)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: LLM Gateway error rate exceeds 5%
+          description: Error requests are {{ $value | humanizePercentage }} of traffic over the last 5 minutes.
+
+      - alert: LlmGatewayHighLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(gateway_request_duration_seconds_bucket[5m]))
+          ) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: LLM Gateway p95 latency exceeds 10 seconds
+          description: The complete-request p95 latency is {{ $value | humanizeDuration }}.
+
+      - alert: LlmGatewayQuotaRejections
+        expr: sum(rate(gateway_quota_rejections_total[10m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: LLM Gateway is frequently rejecting quota-exceeded requests
+          description: Quota rejections are {{ $value | humanize }} per second; review affected key limits and consume patterns.
+
+      - alert: LlmGatewayUpstreamUnhealthy
+        expr: |
+          (
+            sum by (channel) (rate(gateway_upstream_attempts_total{outcome="error"}[5m]))
+            /
+            clamp_min(sum by (channel) (rate(gateway_upstream_attempts_total[5m])), 0.001)
+          ) > 0.2
+          and on(channel)
+          sum by (channel) (rate(gateway_upstream_attempts_total[5m])) > 0.01
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Upstream channel {{ $labels.channel }} has a high failure rate
+          description: Channel {{ $labels.channel }} has failed more than 20% of attempts for 10 minutes.

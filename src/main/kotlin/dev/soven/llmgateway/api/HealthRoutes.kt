@@ -18,12 +18,15 @@ fun Route.healthRoutes(app: GatewayApplication) {
     }
     get("/health/ready") {
         if (app.shuttingDown.get()) {
+            app.metrics.databaseReady(false)
             call.respondText("shutting down", status = HttpStatusCode.ServiceUnavailable)
             return@get
         }
         if (app.databaseFactory.ping()) {
+            app.metrics.databaseReady(true)
             call.respondText("ok")
         } else {
+            app.metrics.databaseReady(false)
             call.respondText("database unavailable", status = HttpStatusCode.ServiceUnavailable)
         }
     }

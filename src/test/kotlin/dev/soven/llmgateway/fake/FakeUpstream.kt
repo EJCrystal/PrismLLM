@@ -81,6 +81,7 @@ class FakeUpstream {
                 scenario = scenario,
                 body = body,
                 authorization = call.request.headers[HttpHeaders.Authorization],
+                traceparent = call.request.headers["traceparent"],
             ),
         )
         val stream = runCatching {
@@ -147,6 +148,7 @@ class FakeUpstream {
                 scenario = scenario,
                 body = body,
                 authorization = call.request.headers[HttpHeaders.Authorization],
+                traceparent = call.request.headers["traceparent"],
             ),
         )
         val stream = runCatching {
@@ -293,4 +295,5 @@ data class FakeRequest(
     val scenario: String,
     val body: String,
     val authorization: String?,
+    val traceparent: String? = null,
 )

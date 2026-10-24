@@ -43,6 +43,7 @@ class RequestLogRepository(private val database: Database) {
     suspend fun insert(record: RequestLogRecord) = suspendTransaction(database) {
         RequestLogs.insert {
             it[requestId] = record.requestId
+            it[traceId] = record.traceId
             it[clientKeyId] = record.clientKeyId
             it[clientKeyName] = record.clientKeyName
             it[team] = record.team
@@ -201,6 +202,7 @@ class RequestLogRepository(private val database: Database) {
 
     private fun toRecord(row: ResultRow) = RequestLogRecord(
         requestId = row[RequestLogs.requestId],
+        traceId = row[RequestLogs.traceId],
         clientKeyId = row[RequestLogs.clientKeyId],
         clientKeyName = row[RequestLogs.clientKeyName],
         team = row[RequestLogs.team],

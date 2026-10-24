@@ -142,6 +142,7 @@ data class AdminUserRecord(
  */
 data class RequestLogRecord(
     val requestId: String,
+    val traceId: String? = null,
     val clientKeyId: String?,
     val clientKeyName: String?,
     val team: String? = null,

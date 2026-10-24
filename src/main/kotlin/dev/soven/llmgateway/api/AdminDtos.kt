@@ -478,6 +478,7 @@ data class ExchangeRatesResponse(
 @Serializable
 data class RequestLogResponse(
     val requestId: String,
+    val traceId: String?,
     val clientKeyId: String?,
     val clientKeyName: String?,
     val alias: String,
@@ -509,6 +510,7 @@ data class RequestLogResponse(
 
 fun RequestLogRecord.toResponse() = RequestLogResponse(
     requestId = requestId,
+    traceId = traceId,
     clientKeyId = clientKeyId,
     clientKeyName = clientKeyName,
     alias = alias,
