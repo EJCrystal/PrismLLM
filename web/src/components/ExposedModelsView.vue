@@ -4,6 +4,8 @@ import { api } from '../api'
 import { copyText } from '../clipboard'
 import { notify } from '../toast'
 import Icon from './Icon.vue'
+import TablePlaceholder from './TablePlaceholder.vue'
+import { formatTime } from '../utils/format'
 
 const models = ref([])
 const exposeUpstreamModels = ref(false)
@@ -47,11 +49,7 @@ async function loadExposedModels() {
     const response = await api.getExposedModels()
     models.value = response?.data || []
     exposeUpstreamModels.value = Boolean(response?.exposeUpstreamModels)
-    loadedAt.value = new Intl.DateTimeFormat('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    }).format(new Date())
+    loadedAt.value = formatTime(new Date(), { style: 'timeOnly' })
   } catch (cause) {
     error.value = cause.message
   } finally {
@@ -174,15 +172,15 @@ onMounted(() => {
     </div>
 
     <div class="panel table-panel">
-      <div v-if="loading" class="loading-state">
-        <span class="spinner"></span>
-        正在读取模型…
-      </div>
-      <div v-else-if="models.length === 0" class="empty-state">
-        <div class="empty-icon"><Icon name="models" :size="26" /></div>
-        <h3>当前没有对外暴露的模型</h3>
-        <p>创建启用的模型别名，或开启上游直连并授权渠道模型后，这里会同步显示。</p>
-      </div>
+      <TablePlaceholder
+        v-if="loading || models.length === 0"
+        :loading="loading"
+        loading-text="正在读取模型…"
+        :empty="models.length === 0"
+        icon="models"
+        title="当前没有对外暴露的模型"
+        desc="授权模型并允许公开直连，或创建别名后，这里会显示对应模型。若预期出现上游模型名，请检查渠道的“仅通过别名暴露”设置。"
+      />
       <div v-else class="table-scroll">
         <table class="data-table">
           <thead>

@@ -3,12 +3,15 @@ import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
+import { createConversionRequestGuard } from '../utils/currencyConversion'
+import { findModelPrice } from '../utils/modelPrice'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 
 const props = defineProps({
   channels: { type: Array, required: true },
   price: { type: Object, default: null },
+  prices: { type: Array, default: () => [] },
   initialTarget: { type: Object, default: null },
 })
 const emit = defineEmits(['close', 'saved'])
@@ -23,11 +26,13 @@ const exchangeRates = ref(null)
 const exchangeLoading = ref(false)
 const exchangeError = ref('')
 const conversionInfo = ref(null)
+const activePrice = ref(props.price)
+const conversionRequests = createConversionRequestGuard()
 const priceBase = ref(props.price ? {
   currency: props.price.currency,
   inputPricePerMillion: props.price.inputPricePerMillion,
   outputPricePerMillion: props.price.outputPricePerMillion,
-  cachedInputPricePerMillion: props.price.cachedInputPricePerMillion || '',
+  cachedInputPricePerMillion: props.price.cachedInputPricePerMillion ?? '',
 } : null)
 let modelsRequestId = 0
 let exchangeRequest = null
@@ -37,9 +42,9 @@ const form = reactive({
   channelId: props.price?.channelId || props.initialTarget?.channelId || props.channels[0]?.id || '',
   upstreamModel: props.price?.upstreamModel || props.initialTarget?.modelId || '',
   currency: props.price?.currency || 'USD',
-  inputPricePerMillion: props.price?.inputPricePerMillion || '',
-  outputPricePerMillion: props.price?.outputPricePerMillion || '',
-  cachedInputPricePerMillion: props.price?.cachedInputPricePerMillion || '',
+  inputPricePerMillion: props.price?.inputPricePerMillion ?? '',
+  outputPricePerMillion: props.price?.outputPricePerMillion ?? '',
+  cachedInputPricePerMillion: props.price?.cachedInputPricePerMillion ?? '',
 })
 
 const filteredChannelModels = computed(() => {
@@ -111,6 +116,50 @@ watch(
     await convertCurrency(previousCurrency, nextCurrency)
   },
   { flush: 'sync' },
+)
+
+function applyExistingPrice(price) {
+  conversionRequests.invalidate()
+  exchangeLoading.value = false
+  activePrice.value = price
+  const currency = price.currency || 'USD'
+  if (form.currency !== currency) skipNextCurrencyConversion = true
+  form.currency = currency
+  form.inputPricePerMillion = price.inputPricePerMillion ?? ''
+  form.outputPricePerMillion = price.outputPricePerMillion ?? ''
+  form.cachedInputPricePerMillion = price.cachedInputPricePerMillion ?? ''
+  priceBase.value = {
+    currency,
+    inputPricePerMillion: form.inputPricePerMillion,
+    outputPricePerMillion: form.outputPricePerMillion,
+    cachedInputPricePerMillion: form.cachedInputPricePerMillion,
+  }
+  conversionInfo.value = null
+  exchangeError.value = ''
+}
+
+watch(
+  () => [form.channelId, form.upstreamModel, props.prices],
+  ([channelId, upstreamModel]) => {
+    if (props.price) return
+    const existingPrice = findModelPrice(props.prices, channelId, upstreamModel.trim())
+    if (existingPrice) {
+      if (activePrice.value?.id !== existingPrice.id) applyExistingPrice(existingPrice)
+      return
+    }
+    if (activePrice.value) {
+      conversionRequests.invalidate()
+      exchangeLoading.value = false
+      activePrice.value = null
+      form.inputPricePerMillion = ''
+      form.outputPricePerMillion = ''
+      form.cachedInputPricePerMillion = ''
+      priceBase.value = null
+      conversionInfo.value = null
+      exchangeError.value = ''
+    }
+  },
+  { immediate: true },
 )
 
 function openModelPicker() {
@@ -192,10 +241,12 @@ async function convertCurrency(fromCurrency, toCurrency) {
     exchangeError.value = ''
     return
   }
+  const request = conversionRequests.start()
   exchangeLoading.value = true
   exchangeError.value = ''
   try {
     const data = await ensureExchangeRates()
+    if (!conversionRequests.isCurrent(request) || form.currency !== toCurrency) return
     const basis = priceBase.value
     const sourceCurrency = basis?.currency || fromCurrency
     const factor = exchangeRate(data, toCurrency) / exchangeRate(data, sourceCurrency)
@@ -210,11 +261,12 @@ async function convertCurrency(fromCurrency, toCurrency) {
       source: data.source,
     }
   } catch (cause) {
+    if (!conversionRequests.isCurrent(request)) return
     exchangeError.value = cause.message || '无法获取汇率'
     setCurrencyWithoutConversion(fromCurrency)
     notify('无法获取汇率，币种已恢复', 'error')
   } finally {
-    exchangeLoading.value = false
+    if (conversionRequests.isCurrent(request)) exchangeLoading.value = false
   }
 }
 
@@ -304,8 +356,8 @@ async function save() {
       outputPricePerMillion: outputPriceText,
       cachedInputPricePerMillion: cachedPrice == null ? null : cachedPriceText,
     }
-    if (props.price?.id) {
-      await api.updateModelPrice(props.price.id, payload)
+    if (activePrice.value?.id) {
+      await api.updateModelPrice(activePrice.value.id, payload)
       notify('计费单价已更新')
     } else {
       await api.createModelPrice(payload)
@@ -321,7 +373,7 @@ async function save() {
 </script>
 
 <template>
-  <Modal :title="price?.id ? '编辑计费单价' : '新增计费单价'" @close="$emit('close')">
+  <Modal :title="activePrice?.id ? '编辑计费单价' : '新增计费单价'" @close="$emit('close')">
     <form class="form-grid" @submit.prevent="save">
       <label class="field">
         <span>渠道</span>

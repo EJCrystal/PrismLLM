@@ -98,6 +98,7 @@ export const api = {
     request(`/client-keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   listModelPrices: () => request('/model-prices'),
+  getModelPrices: () => request('/model-prices'),
   getModelPriceReference: (model) =>
     request(`/model-prices/reference?model=${encodeURIComponent(model)}`),
   createModelPrice: (payload) =>

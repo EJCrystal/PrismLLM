@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0f172a" />
     <title>LLM Gateway · 管理台</title>
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem('llm_gw_theme');
+          if (t === 'dark' || t === 'sepia') {
+            document.documentElement.setAttribute('data-theme', t);
+          } else {
+            document.documentElement.setAttribute('data-theme', 'light');
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

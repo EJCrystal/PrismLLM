@@ -1,9 +1,18 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
-import { copyText } from '../clipboard'
 import { notify } from '../toast'
+import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
+import TablePlaceholder from './TablePlaceholder.vue'
+import {
+  formatTime,
+  formatDuration,
+  formatNumber as formatTokens,
+  formatTokensCompact,
+  formatCost as formatCostUtil,
+  formatUnitPrice,
+} from '../utils/format'
 
 const logs = ref([])
 const loading = ref(true)
@@ -67,25 +76,8 @@ async function refresh() {
   notify('请求日志已刷新')
 }
 
-function formatTime(value) {
-  return value
-    ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(value)
-    : '—'
-}
-
-function formatDuration(value) {
-  return value == null ? '—' : `${value} ms`
-}
-
-function formatTokens(value) {
-  return value == null ? '—' : value.toLocaleString('zh-CN')
-}
-
-function formatTokensCompact(value) {
-  if (value == null) return '—'
-  if (value < 10_000) return value.toLocaleString('zh-CN')
-  if (value < 1_000_000) return `${(value / 1_000).toFixed(1)}k`
-  return `${(value / 1_000_000).toFixed(2)}M`
+function formatCost(log) {
+  return formatCostUtil(log.costAmount, log.costCurrency)
 }
 
 function formatThroughput(log) {
@@ -103,34 +95,12 @@ function cacheTitle(log) {
   return `缓存 ${formatTokens(log.cachedTokens)} / 输入 ${formatTokens(log.inputTokens)}`
 }
 
-const currencySymbols = { USD: '$', CNY: '¥', EUR: '€', JPY: '¥' }
-
-function formatCost(log) {
-  if (log.costAmount == null) return null
-  const value = Number(log.costAmount)
-  if (!Number.isFinite(value)) return `${log.costAmount} ${log.costCurrency || ''}`.trim()
-  let text
-  if (value === 0) text = '0'
-  else if (value < 0.0001) text = value.toFixed(8)
-  else if (value < 0.01) text = value.toFixed(6)
-  else if (value < 1) text = value.toFixed(4)
-  else text = value.toFixed(2)
-  text = text.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
-  const prefix = currencySymbols[log.costCurrency] || (log.costCurrency ? `${log.costCurrency} ` : '')
-  return `${prefix}${text}`
-}
-
 function costTitle(log) {
   if (log.costAmount == null) {
     if (!log.usageKnown) return '用量未知，费用无法计算'
     return log.channelId && log.upstreamModel ? '该渠道和上游模型尚未配置计费单价' : '没有可计费的路由信息'
   }
   return `输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 缓存 ${formatTokens(log.cachedTokens)} · ${log.costCurrency}`
-}
-
-function formatUnitPrice(value) {
-  if (value == null) return '—'
-  return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 8 })
 }
 
 function usageDetailTitle(log) {
@@ -202,33 +172,6 @@ watch(selected, async (value) => {
   trigger?.focus()
 })
 
-async function copyRequestId(requestId) {
-  try {
-    await copyText(requestId)
-    notify('请求 ID 已复制')
-  } catch {
-    window.prompt('复制请求 ID', requestId)
-  }
-}
-
-async function copyChannelId(channelId) {
-  try {
-    await copyText(channelId)
-    notify('渠道 ID 已复制')
-  } catch {
-    window.prompt('复制渠道 ID', channelId)
-  }
-}
-
-async function copyClientKeyId(clientKeyId) {
-  try {
-    await copyText(clientKeyId)
-    notify('调用方密钥 ID 已复制')
-  } catch {
-    window.prompt('复制调用方密钥 ID', clientKeyId)
-  }
-}
-
 onMounted(load)
 </script>
 
@@ -274,19 +217,22 @@ onMounted(load)
         <span class="muted small">显示 {{ filtered.length }} / {{ logs.length }} 条</span>
       </div>
 
-      <div v-if="loading" class="loading-state">
-        <span class="spinner"></span>
-        正在读取请求日志…
-      </div>
-      <div v-else-if="logs.length === 0" class="empty-state">
-        <div class="empty-icon"><Icon name="logs" :size="26" /></div>
-        <h3>还没有请求日志</h3>
-        <p>通过网关发起一次 /v1/chat/completions 请求后，这里会出现记录。</p>
-      </div>
-      <div v-else-if="filtered.length === 0" class="empty-state compact">
-        <h3>没有匹配的请求</h3>
-        <p>换一个关键词试试。</p>
-      </div>
+      <TablePlaceholder
+        v-if="loading || logs.length === 0"
+        :loading="loading"
+        loading-text="正在读取请求日志…"
+        :empty="logs.length === 0"
+        icon="logs"
+        title="还没有请求日志"
+        desc="通过网关发起一次 /v1/chat/completions 请求后，这里会出现记录。"
+      />
+      <TablePlaceholder
+        v-else-if="filtered.length === 0"
+        :empty="true"
+        compact
+        title="没有匹配的请求"
+        desc="换一个关键词试试。"
+      />
       <div v-else class="table-scroll">
         <table class="data-table logs-table">
           <thead>
@@ -304,18 +250,11 @@ onMounted(load)
           </thead>
           <tbody>
             <tr v-for="log in filtered" :key="log.requestId">
-              <td class="muted nowrap">{{ formatTime(log.createdAt) }}</td>
+              <td class="muted nowrap">{{ formatTime(log.createdAt, { style: 'medium' }) }}</td>
               <td>
                 <div class="request-id-cell">
                   <code class="request-id" :title="log.requestId">{{ log.requestId.slice(0, 12) }}…</code>
-                  <button
-                    type="button"
-                    class="icon-button list-copy"
-                    title="复制请求 ID"
-                    @click="copyRequestId(log.requestId)"
-                  >
-                    <Icon name="copy" :size="13" />
-                  </button>
+                  <CopyButton :text="log.requestId" title="复制请求 ID" variant="list" :size="13" />
                 </div>
               </td>
               <td>
@@ -398,14 +337,7 @@ onMounted(load)
               <span>请求 ID</span>
               <div class="request-id-cell">
                 <code class="detail-id-value">{{ selected.requestId }}</code>
-                <button
-                  type="button"
-                  class="icon-button"
-                  title="复制请求 ID"
-                  @click="copyRequestId(selected.requestId)"
-                >
-                  <Icon name="copy" :size="14" />
-                </button>
+                <CopyButton :text="selected.requestId" title="复制请求 ID" :size="14" />
               </div>
             </div>
 
@@ -442,14 +374,7 @@ onMounted(load)
                 <span>渠道 ID</span>
                 <div v-if="selected.channelId" class="detail-value-copy">
                   <strong class="mono detail-wrap">{{ selected.channelId }}</strong>
-                  <button
-                    type="button"
-                    class="icon-button"
-                    title="复制渠道 ID"
-                    @click="copyChannelId(selected.channelId)"
-                  >
-                    <Icon name="copy" :size="13" />
-                  </button>
+                  <CopyButton :text="selected.channelId" title="复制渠道 ID" :size="13" />
                 </div>
                 <strong v-else class="muted">—</strong>
               </div>
@@ -465,14 +390,7 @@ onMounted(load)
                 <span>调用方密钥 ID</span>
                 <div v-if="selected.clientKeyId" class="detail-value-copy">
                   <strong class="mono detail-wrap">{{ selected.clientKeyId }}</strong>
-                  <button
-                    type="button"
-                    class="icon-button"
-                    title="复制调用方密钥 ID"
-                    @click="copyClientKeyId(selected.clientKeyId)"
-                  >
-                    <Icon name="copy" :size="13" />
-                  </button>
+                  <CopyButton :text="selected.clientKeyId" title="复制调用方密钥 ID" :size="13" />
                 </div>
                 <strong v-else class="muted">—</strong>
               </div>
