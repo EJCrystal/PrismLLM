@@ -193,7 +193,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 故障转移之间使用指数退避并附加有界随机抖动。429 或 5xx 响应带数字形式的 `Retry-After` 时，等待时间不会短于该值；若等待将超过单请求总超时，则直接返回当前错误。退避等待占用请求总超时预算。
 
-每个渠道维护连续失败计数。首 token 后的流中断不会切换渠道，但会计入该渠道的连续失败。达到 `CIRCUIT_FAILURE_THRESHOLD` 后进入 `CIRCUIT_OPEN_MS` 冷却期，期间候选扫描会跳过该渠道。冷却结束后只放行一个半开探测：探测成功恢复渠道，失败或取消重新进入冷却。熔断、连续失败和半开探测状态只保存在单网关进程内，进程重启后清零；请求日志的 `upstreamAttempts` 记录本次请求实际调用的上游次数。
+每个渠道维护连续失败计数。首 token 后的上游流中断不会切换渠道，但会计入该渠道的连续失败；客户端主动断开只记录为 `client_disconnect`，不计入渠道熔断。达到 `CIRCUIT_FAILURE_THRESHOLD` 后进入 `CIRCUIT_OPEN_MS` 冷却期，期间候选扫描会跳过该渠道。冷却结束后只放行一个半开探测：探测成功恢复渠道，失败或取消重新进入冷却。熔断、连续失败和半开探测状态只保存在单网关进程内，进程重启后清零；请求日志的 `upstreamAttempts` 记录本次请求实际调用的上游次数。
 
 所有候选都处于熔断状态时返回 HTTP `503 upstream_circuit_open`，且不会调用上游。
 

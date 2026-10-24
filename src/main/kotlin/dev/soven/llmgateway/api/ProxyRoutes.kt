@@ -34,6 +34,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.util.cio.ChannelWriteException
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.core.readBytes
 import io.ktor.utils.io.readRemaining
@@ -175,7 +176,6 @@ private suspend fun handleProxy(
                 app.metrics.upstreamCircuitSkipped(candidate.channel.name)
                 continue
             }
-            upstreamAttempts += 1
             channelId = candidate.channel.id
             channelName = candidate.channel.name
             upstreamModel = candidate.upstreamModel
@@ -189,6 +189,7 @@ private suspend fun handleProxy(
                     "timeout_error",
                 )
             }
+            upstreamAttempts += 1
             try {
                 if (stream) {
                     proxyStream(app, call, requestJson, candidate, alias, startedAt, remainingMs, state, protocol, traceContext.traceparent)
@@ -208,6 +209,10 @@ private suspend fun handleProxy(
                 return
             } catch (e: GatewayException) {
                 lastError = e
+                if (e.code == "client_disconnect") {
+                    app.upstreamCircuitBreaker.release(permit)
+                    throw e
+                }
                 app.metrics.upstreamError(candidate.channel.name, e.code)
                 if (state.committed) {
                     if (app.upstreamCircuitBreaker.recordFailure(permit).openedNow) {
@@ -229,13 +234,13 @@ private suspend fun handleProxy(
                     ?.channel
                     ?.name
                 if (nextChannel == null) throw e
-                app.metrics.upstreamRetry(candidate.channel.name, nextChannel, e.code)
                 val retryDelayMs = app.config.resilience.retryDelayMs(
                     failedAttemptIndex = upstreamAttempts - 1,
                     retryAfterMs = e.retryAfterMs,
                 )
                 val retryRemainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
                 if (retryDelayMs >= retryRemainingMs) throw e
+                app.metrics.upstreamRetry(candidate.channel.name, nextChannel, e.code)
                 if (retryDelayMs > 0) delay(retryDelayMs)
             } catch (e: Throwable) {
                 app.upstreamCircuitBreaker.release(permit)
@@ -255,6 +260,13 @@ private suspend fun handleProxy(
         errorMessage = if (state.committed) "上游流式响应超时" else "上游响应超时"
         throw GatewayException(HttpStatusCode.GatewayTimeout, "upstream_timeout", "上游响应超时", "timeout_error")
     } catch (e: GatewayException) {
+        if (e.code == "client_disconnect") {
+            statusCode = e.status.value
+            errorCode = e.code
+            failureStage = FailureStage.CLIENT
+            errorMessage = e.message.asLogMessage()
+            throw e
+        }
         if (e.status == HttpStatusCode.TooManyRequests && e.code in QUOTA_REJECTION_CODES) {
             app.metrics.quotaRejection(e.code)
         }
@@ -612,6 +624,8 @@ private suspend fun proxyStream(
                 }
             }
         }
+    } catch (e: ChannelWriteException) {
+        throw clientDisconnected()
     } catch (e: TimeoutCancellationException) {
         throw GatewayException(
             HttpStatusCode.GatewayTimeout,
@@ -715,6 +729,14 @@ private fun transportFailure(committed: Boolean): GatewayException =
         if (committed) "上游连接中断" else "无法连接上游",
         "api_error",
         retryable = !committed,
+    )
+
+private fun clientDisconnected(): GatewayException =
+    GatewayException(
+        HttpStatusCode(499, "Client Closed Request"),
+        "client_disconnect",
+        "客户端连接中断",
+        "api_error",
     )
 
 private fun upstreamException(
