@@ -16,6 +16,7 @@ import {
   hiddenModelsTitle,
 } from '../utils/channelDisplay'
 import { buildChannelPayload } from '../utils/channelForm'
+import { findModelPrice } from '../utils/modelPrice'
 
 const channels = ref([])
 const prices = ref([])
@@ -88,17 +89,9 @@ async function load() {
   }
 }
 
-const priceByChannelAndModel = computed(() => {
-  const map = new Map()
-  prices.value.forEach((p) => {
-    map.set(`${p.channelId}\u0000${p.upstreamModel}`, p)
-  })
-  return map
-})
-
 function openPrice(channel, upstreamModel = null) {
   const existingPrice = upstreamModel
-    ? priceByChannelAndModel.value.get(`${channel.id}\u0000${upstreamModel}`) || null
+    ? findModelPrice(prices.value, channel.id, upstreamModel)
     : null
   priceEditor.value = {
     channels: channels.value,
@@ -674,6 +667,7 @@ onMounted(load)
       v-if="priceEditor"
       :channels="priceEditor.channels"
       :price="priceEditor.price"
+      :prices="prices"
       :initial-target="priceEditor.initialTarget"
       @close="priceEditor = null"
       @saved="onPriceSaved"
