@@ -127,6 +127,7 @@ private suspend fun handleProxy(
     var channelId: String? = null
     var channelName: String? = null
     var upstreamModel: String? = null
+    var streamMode: Boolean? = null
     var reasoningEffort: String? = null
     var statusCode = HttpStatusCode.InternalServerError.value
     var errorCode: String? = null
@@ -156,6 +157,7 @@ private suspend fun handleProxy(
             }
             else -> throw badRequest("invalid_stream", "stream 必须是布尔值")
         }
+        streamMode = stream
         phase = FailureStage.ROUTING
         val aliasCandidates = app.aliasRepository.findEnabledCandidates(alias)
         var candidates = aliasCandidates.filter { protocol in it.channel.protocols }
@@ -411,6 +413,7 @@ private suspend fun handleProxy(
                 channelName = channelName,
                 upstreamModel = upstreamModel,
                 protocol = protocol,
+                stream = streamMode,
                 statusCode = statusCode,
                 firstTokenMs = state.firstTokenMs,
                 totalMs = totalMs,

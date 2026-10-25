@@ -224,6 +224,7 @@ object RequestLogs : Table("request_logs") {
     val channelName = varchar("channel_name", 100).nullable()
     val upstreamModel = varchar("upstream_model", 200).nullable()
     val protocol = varchar("protocol", 40)
+    val stream = bool("stream").nullable()
     val statusCode = integer("status_code")
     val firstTokenMs = long("first_token_ms").nullable()
     val totalMs = long("total_ms")

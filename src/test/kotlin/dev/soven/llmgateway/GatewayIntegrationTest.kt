@@ -2365,6 +2365,9 @@ class GatewayIntegrationTest {
                         values ('migration-price', 'migration-channel', 'duplicate-model', 'USD', 1, 2, null, 1, 1)
                         """.trimIndent(),
                     )
+                    statement.execute(
+                        "insert into request_logs (request_id, alias, status_code, total_ms, created_at) values ('legacy-request-log', 'legacy', 200, 1, 1)",
+                    )
                 }
             }
 
@@ -2382,7 +2385,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("19", result.getString(1))
+                        assertEquals("20", result.getString(1))
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.columns where table_name = 'client_keys' and column_name = 'requests_per_minute'",
@@ -2399,6 +2402,16 @@ class GatewayIntegrationTest {
                     ).use { result ->
                         assertTrue(result.next())
                         assertEquals(1, result.getInt(1))
+                    }
+                    statement.executeQuery(
+                        "select is_nullable from information_schema.columns where table_name = 'request_logs' and column_name = 'stream'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals("YES", result.getString(1))
+                    }
+                    statement.executeQuery("select stream from request_logs where request_id = 'legacy-request-log'").use { result ->
+                        assertTrue(result.next())
+                        assertNull(result.getObject(1))
                     }
                     statement.executeQuery("select expose_upstream_models from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -2555,6 +2568,22 @@ class GatewayIntegrationTest {
         return sessionCookie to csrf
     }
 
+    private suspend fun HttpClient.assertAdminRequestLogStream(requestId: String, expected: Boolean) {
+        val (sessionCookie, csrf) = loginAdmin()
+        val response = get("/admin/api/request-logs") {
+            header(HttpHeaders.Cookie, sessionCookie)
+            header("X-CSRF-Token", csrf)
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        val loggedStream = Json.parseToJsonElement(response.bodyAsText())
+            .jsonArray
+            .first { it.jsonObject["requestId"]?.jsonPrimitive?.content == requestId }
+            .jsonObject["stream"]
+            ?.jsonPrimitive
+            ?.content
+        assertEquals(expected.toString(), loggedStream)
+    }
+
     private fun config(
         firstTokenTimeoutMs: Long = 2_000,
         idleTimeoutMs: Long = 2_000,
@@ -2667,6 +2696,7 @@ class GatewayIntegrationTest {
 
             val log = awaitRequestLog()
             assertEquals(GatewayProtocol.MESSAGES, log.protocol)
+            assertEquals(true, log.stream)
             assertEquals(15L, log.inputTokens)
             assertEquals(4L, log.outputTokens)
             assertEquals(3L, log.cachedTokens)
@@ -2674,6 +2704,7 @@ class GatewayIntegrationTest {
             assertTrue(log.usageKnown)
             assertNotNull(log.firstTokenMs)
             assertEquals(19L, app.clientKeyQuotaService.currentUsage(app.clientKeyRepository.list().single().id).dailyTokens)
+            client.assertAdminRequestLogStream(log.requestId, expected = true)
 
             val upstreamRequest = fake.requests.single()
             val upstreamJson = Json.parseToJsonElement(upstreamRequest.body).jsonObject
@@ -2710,9 +2741,11 @@ class GatewayIntegrationTest {
             assertTrue(response.bodyAsText().contains("msg_fake"))
             val log = awaitRequestLog()
             assertEquals(GatewayProtocol.MESSAGES, log.protocol)
+            assertEquals(false, log.stream)
             assertEquals(15L, log.inputTokens)
             assertEquals(4L, log.outputTokens)
             assertEquals(19L, log.totalTokens)
+            client.assertAdminRequestLogStream(log.requestId, expected = false)
         }
     }
 
