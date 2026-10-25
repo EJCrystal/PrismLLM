@@ -60,7 +60,7 @@ suspend fun probeUpstreamProtocols(
         try {
             withTimeout(timeoutMs) {
                 val response = httpClient.post(probeUrl(channel, protocol)) {
-                    header(HttpHeaders.Authorization, "Bearer $credential")
+                    applyUpstreamAuthentication(credential, channel.authType, protocol)
                     header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                     setBody(TextContent(probeBody(protocol, model), ContentType.Application.Json))
                 }
@@ -106,6 +106,22 @@ private fun probeBody(protocol: GatewayProtocol, model: String): String = when (
         put("stream", false)
         put("max_output_tokens", 1)
         put("input", "ping")
+    }.toString()
+    GatewayProtocol.MESSAGES -> buildJsonObject {
+        put("model", model)
+        put("stream", false)
+        put("max_tokens", 1)
+        put(
+            "messages",
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("role", "user")
+                        put("content", "ping")
+                    },
+                )
+            },
+        )
     }.toString()
 }
 

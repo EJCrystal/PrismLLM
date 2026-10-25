@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.domain
 
 /**
- * 渠道支持的上游协议。v1 只覆盖 OpenAI 的两种请求形状。
+ * 网关入口与渠道上游支持的原生协议。不同协议之间不自动转换。
  *
  * @author 文杰
  * @since 2026-10-22
@@ -9,6 +9,7 @@ package dev.soven.llmgateway.domain
 enum class GatewayProtocol(val value: String, val path: String) {
     CHAT_COMPLETIONS("chat_completions", "/chat/completions"),
     RESPONSES("responses", "/responses"),
+    MESSAGES("messages", "/messages"),
     ;
 
     companion object {

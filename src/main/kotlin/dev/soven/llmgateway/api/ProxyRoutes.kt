@@ -10,6 +10,7 @@ import dev.soven.llmgateway.quota.RequestLimitLease
 import dev.soven.llmgateway.quota.quotaTokensFromUsage
 import dev.soven.llmgateway.proxy.ReasoningEffort
 import dev.soven.llmgateway.proxy.TraceContextFactory
+import dev.soven.llmgateway.proxy.applyUpstreamAuthentication
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.UsageParser
 import dev.soven.llmgateway.resilience.CandidateCooldown
@@ -64,7 +65,7 @@ import org.slf4j.LoggerFactory
 private val proxyLogger = LoggerFactory.getLogger("dev.soven.llmgateway.api.ProxyRoutes")
 
 /**
- * OpenAI 兼容数据面。负责调用方鉴权、别名路由、流式透传和请求日志。
+ * 原生协议数据面。负责调用方鉴权、别名路由、流式透传和请求日志。
  *
  * @author 文杰
  * @since 2026-10-21
@@ -136,7 +137,7 @@ private suspend fun handleProxy(
     var phase = FailureStage.REQUEST
 
     try {
-        clientKey = authenticate(call, app)
+        clientKey = authenticate(call, app, protocol)
         requestLimitLease = app.requestLimitService.acquire(clientKey)
         val requestJson = call.receiveLimitedJson(app.config.requestBodyLimitBytes)
         reasoningEffort = ReasoningEffort.fromRequest(requestJson, protocol)
@@ -356,6 +357,7 @@ private suspend fun handleProxy(
             errorMessage = when (state.errorCode) {
                 "responses_failed" -> "上游响应失败"
                 "responses_incomplete" -> "上游响应未完成"
+                "messages_failed" -> "上游响应失败"
                 else -> "上游流未正常结束（缺少结束帧）"
             }
         }
@@ -530,9 +532,19 @@ private class ProxyState {
     var errorCode: String? = null
 }
 
-private suspend fun authenticate(call: ApplicationCall, app: GatewayApplication): ClientKeyRecord {
-    val authorization = call.request.headers[HttpHeaders.Authorization] ?: throw unauthorized()
-    val raw = authorization.removePrefix("Bearer ").trim()
+private suspend fun authenticate(
+    call: ApplicationCall,
+    app: GatewayApplication,
+    protocol: GatewayProtocol? = null,
+): ClientKeyRecord {
+    val authorization = call.request.headers[HttpHeaders.Authorization]
+    val raw = if (authorization != null) {
+        authorization.removePrefix("Bearer ").trim()
+    } else if (protocol == GatewayProtocol.MESSAGES) {
+        call.request.headers["x-api-key"]?.trim() ?: throw unauthorized()
+    } else {
+        throw unauthorized()
+    }
     if (!raw.startsWith(ClientKeyHasher.PREFIX)) throw unauthorized()
     val record = app.clientKeyRepository.findByHash(ClientKeyHasher.hash(raw)) ?: throw unauthorized()
     if (record.revokedAt != null) throw unauthorized("调用方密钥已撤销")
@@ -586,7 +598,13 @@ private suspend fun proxyStream(
     try {
         withTimeout(timeoutMs) {
             app.httpClient.preparePost(upstreamUrl) {
-                header(HttpHeaders.Authorization, "Bearer $credential")
+                applyUpstreamAuthentication(
+                    credential = credential,
+                    authType = candidate.channel.authType,
+                    protocol = protocol,
+                    anthropicVersion = call.request.headers["anthropic-version"],
+                    anthropicBeta = call.request.headers["anthropic-beta"],
+                )
                 header("traceparent", traceparent)
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 header(HttpHeaders.Accept, ContentType.Text.EventStream.toString())
@@ -597,6 +615,7 @@ private suspend fun proxyStream(
                         response.status,
                         response.bodyAsText(),
                         retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
+                        protocol,
                     )
                 }
                 val upstream = response.bodyAsChannel()
@@ -607,10 +626,7 @@ private suspend fun proxyStream(
                         while (found == null) {
                             val next = upstream.readUTF8Line() ?: break
                             prefixLines.add(next)
-                            if (
-                                next.trim().startsWith("data:") &&
-                                (protocol == GatewayProtocol.CHAT_COMPLETIONS || isFirstResponsesToken(next))
-                            ) {
+                            if (next.trim().startsWith("data:") && isFirstStreamData(next, protocol)) {
                                 found = next
                             }
                         }
@@ -646,7 +662,7 @@ private suspend fun proxyStream(
                                 markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate)
                                 recordUsage(line, state, protocol)
                                 if (isStreamDone(line, protocol)) {
-                                    markResponsesTerminalFailure(line, protocol, state)
+                                    markTerminalStreamFailure(line, protocol, state)
                                     writeSseLine("")
                                     sawDone = true
                                     break
@@ -668,7 +684,7 @@ private suspend fun proxyStream(
                                     markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate)
                                     recordUsage(line, state, protocol)
                                     if (isStreamDone(line, protocol)) {
-                                        markResponsesTerminalFailure(line, protocol, state)
+                                        markTerminalStreamFailure(line, protocol, state)
                                         writeSseLine("")
                                         sawDone = true
                                         break
@@ -724,7 +740,13 @@ private suspend fun proxyJson(
     try {
         withTimeout(timeoutMs) {
             val response = app.httpClient.post(upstreamUrl) {
-                header(HttpHeaders.Authorization, "Bearer $credential")
+                applyUpstreamAuthentication(
+                    credential = credential,
+                    authType = candidate.channel.authType,
+                    protocol = protocol,
+                    anthropicVersion = call.request.headers["anthropic-version"],
+                    anthropicBeta = call.request.headers["anthropic-beta"],
+                )
                 header("traceparent", traceparent)
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 setBody(TextContent(body, ContentType.Application.Json))
@@ -735,6 +757,7 @@ private suspend fun proxyJson(
                     response.status,
                     text,
                     retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
+                    protocol,
                 )
             }
             state.committed = true
@@ -744,6 +767,7 @@ private suspend fun proxyJson(
                 when (protocol) {
                     GatewayProtocol.CHAT_COMPLETIONS -> UsageParser.fromJson(json)
                     GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
+                    GatewayProtocol.MESSAGES -> UsageParser.fromAnthropicJson(json)
                 }
             }.getOrNull()
             call.respondText(text, ContentType.Application.Json, response.status)
@@ -808,13 +832,16 @@ private fun upstreamException(
     status: HttpStatusCode,
     body: String,
     retryAfterMs: Long?,
+    protocol: GatewayProtocol,
 ): GatewayException {
+    val nativeResponseBody = body.takeIf { protocol == GatewayProtocol.MESSAGES && isAnthropicErrorBody(it) }
     val upstreamCode = runCatching {
         val error = Json.parseToJsonElement(body).jsonObject["error"] as? JsonObject
         (error?.get("code") as? JsonPrimitive)?.contentOrNull
             ?: (error?.get("type") as? JsonPrimitive)?.contentOrNull
     }.getOrNull()
     val mapped = when {
+        nativeResponseBody != null -> status
         status.value == 429 -> HttpStatusCode.TooManyRequests
         status.value in setOf(400, 404, 422) -> status
         else -> HttpStatusCode.BadGateway
@@ -835,8 +862,17 @@ private fun upstreamException(
         retryable,
         retryAfterMs.takeIf { retryable },
         status.value,
+        nativeResponseBody,
     )
 }
+
+private fun isAnthropicErrorBody(body: String): Boolean = runCatching {
+    val root = Json.parseToJsonElement(body).jsonObject
+    val error = root["error"] as? JsonObject ?: return false
+    root["type"]?.jsonPrimitive?.contentOrNull == "error" &&
+        error["type"]?.jsonPrimitive?.contentOrNull != null &&
+        error["message"]?.jsonPrimitive?.contentOrNull != null
+}.getOrDefault(false)
 
 private fun retryAfterMillis(value: String?): Long? =
     value
@@ -867,6 +903,7 @@ private fun markFirstToken(
     val isFirst = when (protocol) {
         GatewayProtocol.CHAT_COMPLETIONS -> true
         GatewayProtocol.RESPONSES -> isFirstResponsesToken(line)
+        GatewayProtocol.MESSAGES -> isFirstAnthropicToken(line)
     }
     if (isFirst) {
         val nowNanos = System.nanoTime()
@@ -895,8 +932,31 @@ private fun recordUsage(line: String, state: ProxyState, protocol: GatewayProtoc
     val usage = when (protocol) {
         GatewayProtocol.CHAT_COMPLETIONS -> UsageParser.fromJson(json)
         GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
+        GatewayProtocol.MESSAGES -> UsageParser.fromAnthropicJson(json)
     }
-    if (usage != null) state.usage = usage
+    if (usage != null) state.usage = state.usage?.mergeWith(usage, protocol) ?: usage
+}
+
+private fun isFirstStreamData(line: String, protocol: GatewayProtocol): Boolean = when (protocol) {
+    GatewayProtocol.CHAT_COMPLETIONS -> true
+    GatewayProtocol.RESPONSES -> isFirstResponsesToken(line)
+    GatewayProtocol.MESSAGES -> isFirstAnthropicToken(line) || isAnthropicStreamError(line)
+}
+
+private fun isFirstAnthropicToken(line: String): Boolean {
+    val payload = ssePayload(line) ?: return false
+    val type = runCatching {
+        Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull
+    }.getOrNull()
+    return type == "content_block_start" || type == "content_block_delta"
+}
+
+private fun isAnthropicStreamError(line: String): Boolean {
+    val payload = ssePayload(line) ?: return false
+    val type = runCatching {
+        Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull
+    }.getOrNull()
+    return type == "error"
 }
 
 private fun isFirstResponsesToken(line: String): Boolean {
@@ -908,30 +968,54 @@ private fun isFirstResponsesToken(line: String): Boolean {
     return type in RESPONSES_END_EVENTS || type?.endsWith(".delta") == true
 }
 
-private fun markResponsesTerminalFailure(
+private fun markTerminalStreamFailure(
     line: String,
     protocol: GatewayProtocol,
     state: ProxyState,
 ) {
-    if (protocol != GatewayProtocol.RESPONSES) return
     val payload = ssePayload(line) ?: return
     val type = runCatching {
         Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull
     }.getOrNull()
-    when (type) {
-        "response.failed" -> state.errorCode = "responses_failed"
-        "response.incomplete" -> state.errorCode = "responses_incomplete"
+    when (protocol) {
+        GatewayProtocol.CHAT_COMPLETIONS -> Unit
+        GatewayProtocol.RESPONSES -> when (type) {
+            "response.failed" -> state.errorCode = "responses_failed"
+            "response.incomplete" -> state.errorCode = "responses_incomplete"
+        }
+        GatewayProtocol.MESSAGES -> if (type == "error") state.errorCode = "messages_failed"
     }
 }
 
 private fun isStreamDone(line: String, protocol: GatewayProtocol): Boolean {
     val payload = ssePayload(line) ?: return false
     if (payload == "[DONE]") return true
-    if (protocol != GatewayProtocol.RESPONSES) return false
     val type = runCatching {
         Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull
     }.getOrNull()
-    return type in RESPONSES_END_EVENTS
+    return when (protocol) {
+        GatewayProtocol.CHAT_COMPLETIONS -> false
+        GatewayProtocol.RESPONSES -> type in RESPONSES_END_EVENTS
+        GatewayProtocol.MESSAGES -> type == "message_stop" || type == "error"
+    }
+}
+
+private fun Usage.mergeWith(next: Usage, protocol: GatewayProtocol): Usage {
+    val mergedInput = next.input ?: input
+    val mergedOutput = next.output ?: output
+    val total = next.total
+        ?: if (protocol == GatewayProtocol.MESSAGES && (next.input != null || next.output != null)) {
+            if (mergedInput != null && mergedOutput != null) mergedInput + mergedOutput else this.total
+        } else {
+            this.total
+        }
+    return Usage(
+        input = mergedInput,
+        output = mergedOutput,
+        cached = next.cached ?: cached,
+        reasoning = next.reasoning ?: reasoning,
+        total = total,
+    )
 }
 
 private fun ssePayload(line: String): String? {

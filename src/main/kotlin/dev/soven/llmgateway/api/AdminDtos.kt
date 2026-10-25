@@ -766,6 +766,7 @@ data class ChannelModelDiscoveryRequest(
     val baseUrl: String,
     val credential: String? = null,
     val channelId: String? = null,
+    val authType: String? = null,
 )
 
 /**

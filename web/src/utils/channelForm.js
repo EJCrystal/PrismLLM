@@ -17,7 +17,7 @@ export function buildChannelPayload(
     name: form.name.trim(),
     baseUrl: form.baseUrl.trim(),
     credential: form.credential.trim() || null,
-    authType: 'bearer',
+    authType: form.authType || 'bearer',
     protocols: [...form.protocols],
     enabled: form.enabled,
     modelMappings: authorizedModels.map((upstreamModel) => {

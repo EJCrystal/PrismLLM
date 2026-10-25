@@ -18,6 +18,7 @@ class GatewayException(
     val retryable: Boolean = false,
     val retryAfterMs: Long? = null,
     val upstreamStatus: Int? = null,
+    val nativeResponseBody: String? = null,
 ) : RuntimeException(message)
 
 /**
@@ -46,6 +47,18 @@ data class ErrorBody(
     val upstream_code: String? = null,
 )
 
+@Serializable
+data class AnthropicErrorEnvelope(
+    val type: String = "error",
+    val error: AnthropicErrorBody,
+)
+
+@Serializable
+data class AnthropicErrorBody(
+    val type: String,
+    val message: String,
+)
+
 fun GatewayException.toEnvelope(): ErrorEnvelope = ErrorEnvelope(
     ErrorBody(
         message = message,
@@ -53,6 +66,33 @@ fun GatewayException.toEnvelope(): ErrorEnvelope = ErrorEnvelope(
         code = code,
         upstream_code = upstreamCode,
     ),
+)
+
+fun GatewayException.toAnthropicEnvelope(): AnthropicErrorEnvelope = AnthropicErrorEnvelope(
+    error = AnthropicErrorBody(
+        type = anthropicErrorType(status, type),
+        message = message,
+    ),
+)
+
+fun anthropicErrorType(status: HttpStatusCode, fallback: String): String = when (status.value) {
+    400, 413, 415, 422 -> "invalid_request_error"
+    401 -> "authentication_error"
+    403 -> "permission_error"
+    404 -> "not_found_error"
+    429 -> "rate_limit_error"
+    529 -> "overloaded_error"
+    else -> fallback.takeIf { it in ANTHROPIC_ERROR_TYPES } ?: "api_error"
+}
+
+private val ANTHROPIC_ERROR_TYPES = setOf(
+    "invalid_request_error",
+    "authentication_error",
+    "permission_error",
+    "not_found_error",
+    "rate_limit_error",
+    "api_error",
+    "overloaded_error",
 )
 
 fun badRequest(code: String, message: String): GatewayException =

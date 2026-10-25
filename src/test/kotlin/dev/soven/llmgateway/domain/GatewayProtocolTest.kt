@@ -23,4 +23,10 @@ class GatewayProtocolTest {
             GatewayProtocol.entries.map { it.path }.distinct().size,
         )
     }
+
+    @Test
+    fun `anthropic messages protocol uses native messages endpoint`() {
+        assertEquals("messages", GatewayProtocol.MESSAGES.value)
+        assertEquals("/messages", GatewayProtocol.MESSAGES.path)
+    }
 }

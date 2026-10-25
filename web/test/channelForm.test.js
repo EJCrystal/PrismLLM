@@ -7,6 +7,7 @@ describe('channelForm: 渠道保存请求体', () => {
     name: ' deepseek ',
     baseUrl: ' https://example.com/v1 ',
     credential: '',
+    authType: 'anthropic',
     protocols: ['chat_completions', 'responses'],
     enabled: true,
     exposeUpstreamModels: false,
@@ -20,6 +21,7 @@ describe('channelForm: 渠道保存请求体', () => {
     assert.equal(payload.baseUrl, 'https://example.com/v1')
     assert.equal(payload.credential, null)
     assert.deepEqual(payload.protocols, ['chat_completions', 'responses'])
+    assert.equal(payload.authType, 'anthropic')
   })
 
   it('正确生成规范 ID 映射和映射来源', () => {

@@ -72,6 +72,12 @@ class FakeUpstream {
             post("/v1/responses") {
                 handleResponses(call, "ok")
             }
+            post("/{scenario}/v1/messages") {
+                handleMessages(call, call.parameters["scenario"] ?: "ok")
+            }
+            post("/v1/messages") {
+                handleMessages(call, "ok")
+            }
         }
     }
 
@@ -239,6 +245,61 @@ class FakeUpstream {
         }
     }
 
+    private suspend fun handleMessages(call: ApplicationCall, scenario: String) {
+        val body = call.receiveText()
+        requests.add(
+            FakeRequest(
+                scenario = scenario,
+                body = body,
+                authorization = call.request.headers[HttpHeaders.Authorization],
+                traceparent = call.request.headers["traceparent"],
+                xApiKey = call.request.headers["x-api-key"],
+                anthropicVersion = call.request.headers["anthropic-version"],
+                anthropicBeta = call.request.headers["anthropic-beta"],
+            ),
+        )
+        val stream = runCatching {
+            Json.parseToJsonElement(body).jsonObject["stream"]?.jsonPrimitive?.booleanOrNull ?: false
+        }.getOrDefault(false)
+
+        when (scenario) {
+            "429" -> {
+                call.respondText(ANTHROPIC_ERROR_429, ContentType.Application.Json, HttpStatusCode.TooManyRequests)
+                return
+            }
+            "500" -> {
+                call.respondText(ANTHROPIC_ERROR_500, ContentType.Application.Json, HttpStatusCode.InternalServerError)
+                return
+            }
+        }
+        if (!stream) {
+            call.respondText(ANTHROPIC_NON_STREAM_BODY, ContentType.Application.Json)
+            return
+        }
+
+        if (scenario == "sse-error") {
+            call.respondBytesWriter(ContentType.Text.EventStream) {
+                writeSseEvent("error", ANTHROPIC_STREAM_ERROR)
+            }
+            return
+        }
+
+        var completed = false
+        try {
+            call.respondBytesWriter(ContentType.Text.EventStream) {
+                writeSseEvent("message_start", ANTHROPIC_MESSAGE_START)
+                writeSseEvent("content_block_start", ANTHROPIC_CONTENT_BLOCK_START)
+                writeSseEvent("content_block_delta", ANTHROPIC_CONTENT_BLOCK_DELTA)
+                writeSseEvent("content_block_stop", ANTHROPIC_CONTENT_BLOCK_STOP)
+                writeSseEvent("message_delta", ANTHROPIC_MESSAGE_DELTA)
+                writeSseEvent("message_stop", ANTHROPIC_MESSAGE_STOP)
+                completed = true
+            }
+        } finally {
+            if (!completed) cancellations.incrementAndGet()
+        }
+    }
+
     private suspend fun ByteWriteChannel.writeSseEvent(event: String, json: String) {
         writeFully("event: $event\ndata: $json\n\n".toByteArray(Charsets.UTF_8))
         flush()
@@ -288,6 +349,26 @@ class FakeUpstream {
             """{"id":"resp_fake","object":"response","status":"completed","model":"gpt-4o-mini","output":[],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":13}}"""
         private const val RESPONSES_FINAL_EVENT =
             """{"type":"response.completed","response":{"id":"resp_fake","status":"completed","usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":13}}}"""
+        private const val ANTHROPIC_NON_STREAM_BODY =
+            """{"id":"msg_fake","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"Hello!"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4}}"""
+        private const val ANTHROPIC_MESSAGE_START =
+            """{"type":"message_start","message":{"id":"msg_fake","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":1}}}"""
+        private const val ANTHROPIC_CONTENT_BLOCK_START =
+            """{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"""
+        private const val ANTHROPIC_CONTENT_BLOCK_DELTA =
+            """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello!"}}"""
+        private const val ANTHROPIC_CONTENT_BLOCK_STOP =
+            """{"type":"content_block_stop","index":0}"""
+        private const val ANTHROPIC_MESSAGE_DELTA =
+            """{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":4}}"""
+        private const val ANTHROPIC_MESSAGE_STOP =
+            """{"type":"message_stop"}"""
+        private const val ANTHROPIC_ERROR_429 =
+            """{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}"""
+        private const val ANTHROPIC_ERROR_500 =
+            """{"type":"error","error":{"type":"api_error","message":"upstream down"}}"""
+        private const val ANTHROPIC_STREAM_ERROR =
+            """{"type":"error","error":{"type":"overloaded_error","message":"upstream overloaded"}}"""
     }
 }
 
@@ -302,4 +383,7 @@ data class FakeRequest(
     val body: String,
     val authorization: String?,
     val traceparent: String? = null,
+    val xApiKey: String? = null,
+    val anthropicVersion: String? = null,
+    val anthropicBeta: String? = null,
 )

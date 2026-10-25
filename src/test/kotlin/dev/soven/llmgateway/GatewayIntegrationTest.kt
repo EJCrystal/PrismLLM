@@ -116,6 +116,21 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun xApiKeyAuthenticationIsRestrictedToAnthropicMessages() = runBlocking {
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header("x-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.Unauthorized, response.status)
+        }
+    }
+
+    @Test
     fun `CORS exposes trace correlation headers`() = runBlocking {
         app.close()
         app = GatewayApplication(config(corsOrigins = listOf("https://console.example.com")))
@@ -1523,6 +1538,7 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, response.status)
             assertTrue(body.contains("\"protocol\":\"chat_completions\""), "BODY=[$body]")
             assertTrue(body.contains("\"protocol\":\"responses\""), "BODY=[$body]")
+            assertTrue(body.contains("\"protocol\":\"messages\""), "BODY=[$body]")
             assertTrue(body.contains("\"supported\":true"), "BODY=[$body]")
             assertTrue(body.contains("\"supported\":false"), "BODY=[$body]")
         }
@@ -2620,6 +2636,165 @@ class GatewayIntegrationTest {
         error("expected $count request logs within ${timeoutMs}ms")
     }
 
+    @Test
+    fun anthropicMessagesStreamIsPassedThroughAndRecordsUsage() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "anthropic",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = setOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("claude-fast", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/messages") {
+                header("x-api-key", key)
+                header("anthropic-version", "2023-06-01")
+                header("anthropic-beta", "prompt-caching-2024-07-31")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"claude-fast","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: message_start"), "BODY=[$body]")
+            assertTrue(body.contains("event: content_block_delta"), "BODY=[$body]")
+            assertTrue(body.contains("event: message_stop"), "BODY=[$body]")
+            assertTrue(!body.contains("[DONE]"), "BODY=[$body]")
+
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.MESSAGES, log.protocol)
+            assertEquals(15L, log.inputTokens)
+            assertEquals(4L, log.outputTokens)
+            assertEquals(3L, log.cachedTokens)
+            assertEquals(19L, log.totalTokens)
+            assertTrue(log.usageKnown)
+            assertNotNull(log.firstTokenMs)
+            assertEquals(19L, app.clientKeyQuotaService.currentUsage(app.clientKeyRepository.list().single().id).dailyTokens)
+
+            val upstreamRequest = fake.requests.single()
+            val upstreamJson = Json.parseToJsonElement(upstreamRequest.body).jsonObject
+            assertEquals("claude-sonnet-4-5", upstreamJson["model"]!!.jsonPrimitive.content)
+            assertEquals("hi", upstreamJson["messages"]!!.jsonArray[0].jsonObject["content"]!!.jsonPrimitive.content)
+            assertEquals("upstream-secret", upstreamRequest.xApiKey)
+            assertNull(upstreamRequest.authorization)
+            assertEquals("2023-06-01", upstreamRequest.anthropicVersion)
+            assertEquals("prompt-caching-2024-07-31", upstreamRequest.anthropicBeta)
+        }
+    }
+
+    @Test
+    fun anthropicMessagesNonStreamingAcceptsBearerClientKey() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "anthropic",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = setOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("claude-fast", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/messages") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"claude-fast","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(response.bodyAsText().contains("msg_fake"))
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.MESSAGES, log.protocol)
+            assertEquals(15L, log.inputTokens)
+            assertEquals(4L, log.outputTokens)
+            assertEquals(19L, log.totalTokens)
+        }
+    }
+
+    @Test
+    fun anthropicMessagesPassesThroughStreamErrors() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "anthropic-error",
+            baseUrl = fake.baseUrl + "/sse-error/v1",
+            protocols = setOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("claude-fast", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/messages") {
+                header("x-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"claude-fast","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: error"), "BODY=[$body]")
+            assertTrue(body.contains("\"type\":\"error\""), "BODY=[$body]")
+            val log = awaitRequestLog()
+            assertEquals("messages_failed", log.errorCode)
+            assertNull(log.firstTokenMs)
+            assertEquals(1, fake.requests.size)
+        }
+    }
+
+    @Test
+    fun anthropicMessagesUsesNativeErrorEnvelopeForGatewayAuthenticationFailures() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/messages") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"claude-fast","max_tokens":64,"messages":[]}""")
+            }
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+
+            assertEquals(HttpStatusCode.Unauthorized, response.status)
+            assertEquals("error", body["type"]!!.jsonPrimitive.content)
+            assertEquals("authentication_error", body["error"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
+    fun anthropicMessagesPreservesNativeUpstreamErrorBodyAndStatus() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "anthropic-error",
+            baseUrl = fake.baseUrl + "/500/v1",
+            protocols = setOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("claude-fast", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/messages") {
+                header("x-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"claude-fast","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.InternalServerError, response.status)
+            assertEquals(
+                """{"type":"error","error":{"type":"api_error","message":"upstream down"}}""",
+                body,
+            )
+            val log = awaitRequestLog()
+            assertEquals(500, log.statusCode)
+            assertEquals("api_error", log.upstreamErrorCode)
+        }
+    }
+
     private suspend fun createChannel(name: String, scenario: String): ChannelRecord {
         return createChannelWithBaseUrl(name, "${fake.baseUrl}/$scenario/v1")
     }
@@ -2631,13 +2806,14 @@ class GatewayIntegrationTest {
         exposeUpstreamModels: Boolean = true,
         modelMappings: List<ChannelModelRecord> = mappingsOf("gpt-4o-mini", "deepseek-chat", "m1", "m2"),
         priority: Int = 0,
+        authType: String = "bearer",
     ): ChannelRecord {
         val encrypted = app.credentialCipher.encrypt("upstream-secret")
         return app.channelRepository.create(
             name = name,
             baseUrl = baseUrl,
             credential = encrypted,
-            authType = "bearer",
+            authType = authType,
             protocols = protocols,
             enabled = true,
             modelMappings = modelMappings,

@@ -75,5 +75,38 @@ object UsageParser {
         )
     }
 
+    /**
+     * Anthropic usage appears on the non-streaming message, inside a streaming message_start,
+     * and partially on message_delta. Cache reads are tracked separately; cache creation is
+     * included in input because the current billing model has no cache-write price tier.
+     */
+    fun fromAnthropicJson(json: JsonObject): Usage? {
+        val message = json["message"] as? JsonObject
+        val usage = (message?.get("usage") as? JsonObject)
+            ?: (json["usage"] as? JsonObject)
+            ?: return null
+        val inputTokens = usage.long("input_tokens")
+        val cacheCreationTokens = usage.long("cache_creation_input_tokens")
+        val cacheReadTokens = usage.long("cache_read_input_tokens")
+        val input = listOfNotNull(inputTokens, cacheCreationTokens, cacheReadTokens)
+            .takeIf { it.isNotEmpty() }
+            ?.sum()
+        val output = usage.long("output_tokens")
+        // Streaming message_start carries an initial output count, which message_delta later
+        // replaces. Keep total unknown until the final output count arrives.
+        val eventType = (json["type"] as? JsonPrimitive)?.content
+        val isPartialStreamEvent = eventType == "message_start" || eventType == "message_delta"
+        val total = usage.long("total_tokens")
+            ?: if (!isPartialStreamEvent && input != null && output != null) input + output else null
+        if (input == null && output == null && cacheReadTokens == null && total == null) return null
+        return Usage(
+            input = input,
+            output = output,
+            cached = cacheReadTokens,
+            reasoning = null,
+            total = total,
+        )
+    }
+
     private fun JsonObject.long(key: String): Long? = (this[key] as? JsonPrimitive)?.longOrNull
 }

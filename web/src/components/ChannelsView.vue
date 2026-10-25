@@ -44,6 +44,7 @@ const form = reactive({
   name: '',
   baseUrl: '',
   credential: '',
+  authType: 'bearer',
   protocols: ['chat_completions'],
   enabled: true,
   exposeUpstreamModels: true,
@@ -51,7 +52,7 @@ const form = reactive({
 })
 
 watch(
-  () => [form.baseUrl, form.credential],
+  () => [form.baseUrl, form.credential, form.authType],
   () => {
     modelsRequestId += 1
     availableModels.value = []
@@ -183,6 +184,7 @@ function openCreate() {
     name: '',
     baseUrl: '',
     credential: '',
+    authType: 'bearer',
     protocols: ['chat_completions'],
     enabled: true,
     exposeUpstreamModels: true,
@@ -218,6 +220,7 @@ function openEdit(channel) {
     name: channel.name,
     baseUrl: channel.baseUrl,
     credential: '',
+    authType: channel.authType || 'bearer',
     protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
     enabled: channel.enabled,
     exposeUpstreamModels: channel.exposeUpstreamModels !== false,
@@ -244,6 +247,7 @@ async function loadAvailableModels() {
     const response = await api.discoverChannelModels({
       baseUrl,
       credential: credential || null,
+      authType: form.authType,
       channelId: editingId.value,
     })
     if (requestId !== modelsRequestId) return
@@ -575,13 +579,22 @@ onMounted(load)
         <label class="field">
           <span>基础地址</span>
           <input v-model="form.baseUrl" placeholder="https://api.openai.com/v1" autocomplete="off" />
-          <small>网关会按请求协议在此地址后追加 <code>/chat/completions</code> 或 <code>/responses</code>，并用 <code>/models</code> 拉取模型列表。</small>
+          <small>网关会按请求协议在此地址后追加对应端点，并用 <code>/models</code> 拉取模型列表。</small>
+        </label>
+        <label class="field">
+          <span>上游鉴权</span>
+          <select v-model="form.authType">
+            <option value="bearer">Bearer token</option>
+            <option value="anthropic">Anthropic API key（x-api-key）</option>
+          </select>
+          <small>Anthropic 原生渠道选 Anthropic API key；调用方密钥仍由网关单独鉴权。</small>
         </label>
         <div class="field">
           <span>支持协议</span>
           <div class="protocol-options">
             <label><input v-model="form.protocols" type="checkbox" value="chat_completions" /> Chat Completions</label>
             <label><input v-model="form.protocols" type="checkbox" value="responses" /> Responses</label>
+            <label><input v-model="form.protocols" type="checkbox" value="messages" /> Anthropic Messages</label>
           </div>
           <div class="protocol-probe-row">
             <button
