@@ -836,46 +836,6 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `alias only channel hides upstream model and disables direct routing`() = runBlocking {
-        app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
-        val channel = createChannelWithBaseUrl(
-            "alias-only",
-            "${fake.baseUrl}/ok/v1",
-            exposeUpstreamModels = false,
-        )
-        createAlias("qwen3.8-flash", channel to "gpt-4o-mini")
-        val key = createClientKey()
-
-        testApplication {
-            application { app.install(this) }
-            val models = client.get("/v1/models") {
-                header(HttpHeaders.Authorization, "Bearer $key")
-            }
-            assertEquals(HttpStatusCode.OK, models.status)
-            val body = models.bodyAsText()
-            assertTrue(body.contains("qwen3.8-flash"), "BODY=[$body]")
-            assertTrue(!body.contains("gpt-4o-mini"), "BODY=[$body]")
-
-            val direct = client.post("/v1/chat/completions") {
-                header(HttpHeaders.Authorization, "Bearer $key")
-                contentType(ContentType.Application.Json)
-                setBody("""{"model":"gpt-4o-mini","stream":false,"messages":[]}""")
-            }
-            assertEquals(HttpStatusCode.NotFound, direct.status)
-            assertTrue(direct.bodyAsText().contains("model_not_found"))
-
-            val viaAlias = client.post("/v1/chat/completions") {
-                header(HttpHeaders.Authorization, "Bearer $key")
-                contentType(ContentType.Application.Json)
-                setBody("""{"model":"qwen3.8-flash","stream":false,"messages":[]}""")
-            }
-            assertEquals(HttpStatusCode.OK, viaAlias.status)
-            assertTrue(viaAlias.bodyAsText().contains("Hello!"))
-        }
-    }
-
-    @Test
     fun `canonical model mapping controls exposure and direct routing`() = runBlocking {
         app.close()
         app = GatewayApplication(config(exposeUpstreamModels = true))
@@ -2315,7 +2275,7 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `migrations tolerate duplicate rows and add channel exposure default`() {
+    fun `migrations tolerate duplicate rows`() {
         val databaseName = "migration_latest_${System.nanoTime()}"
         val migrationUrl = postgres.jdbcUrl.substringBefore("?").substringBeforeLast("/") + "/$databaseName"
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
@@ -2366,7 +2326,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("19", result.getString(1))
+                        assertEquals("20", result.getString(1))
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.columns where table_name = 'client_keys' and column_name = 'requests_per_minute'",
@@ -2383,10 +2343,6 @@ class GatewayIntegrationTest {
                     ).use { result ->
                         assertTrue(result.next())
                         assertEquals(1, result.getInt(1))
-                    }
-                    statement.executeQuery("select expose_upstream_models from channels where id = 'migration-channel'").use { result ->
-                        assertTrue(result.next())
-                        assertTrue(result.getBoolean(1))
                     }
                     statement.executeQuery("select canonical_model_id, mapping_source from channel_models where channel_id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -2628,7 +2584,6 @@ class GatewayIntegrationTest {
         name: String,
         baseUrl: String,
         protocols: Set<GatewayProtocol> = GatewayProtocol.default,
-        exposeUpstreamModels: Boolean = true,
         modelMappings: List<ChannelModelRecord> = mappingsOf("gpt-4o-mini", "deepseek-chat", "m1", "m2"),
         priority: Int = 0,
     ): ChannelRecord {
@@ -2641,7 +2596,6 @@ class GatewayIntegrationTest {
             protocols = protocols,
             enabled = true,
             modelMappings = modelMappings,
-            exposeUpstreamModels = exposeUpstreamModels,
             priority = priority,
         )
     }

@@ -54,5 +54,5 @@ class UpstreamModelCatalog(
             .sortedWith(compareBy({ it.position }, { it.channel.name }))
 
     private suspend fun directExposureChannels(): List<ChannelRecord> =
-        channelRepository.list().filter { it.enabled && it.exposeUpstreamModels }
+        channelRepository.list().filter { it.enabled }
 }

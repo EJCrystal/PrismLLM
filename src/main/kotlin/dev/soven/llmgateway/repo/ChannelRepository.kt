@@ -48,7 +48,6 @@ class ChannelRepository(private val database: Database) {
         protocols: Set<GatewayProtocol> = GatewayProtocol.default,
         enabled: Boolean,
         modelMappings: List<ChannelModelRecord> = emptyList(),
-        exposeUpstreamModels: Boolean = true,
         priority: Int = 1,
     ): ChannelRecord = suspendTransaction(database) {
         val now = System.currentTimeMillis()
@@ -63,7 +62,6 @@ class ChannelRepository(private val database: Database) {
             it[Channels.authType] = authType
             it[Channels.protocols] = protocols.joinToString(",") { protocol -> protocol.value }
             it[Channels.enabled] = enabled
-            it[Channels.exposeUpstreamModels] = exposeUpstreamModels
             it[Channels.priority] = priority
             it[createdAt] = now
             it[updatedAt] = now
@@ -81,7 +79,6 @@ class ChannelRepository(private val database: Database) {
         protocols: Set<GatewayProtocol> = GatewayProtocol.default,
         enabled: Boolean,
         modelMappings: List<ChannelModelRecord>? = null,
-        exposeUpstreamModels: Boolean? = null,
         priority: Int? = null,
     ): ChannelRecord? = suspendTransaction(database) {
         val updated = Channels.update({ Channels.id eq id }) {
@@ -95,7 +92,6 @@ class ChannelRepository(private val database: Database) {
             it[Channels.authType] = authType
             it[Channels.protocols] = protocols.joinToString(",") { protocol -> protocol.value }
             it[Channels.enabled] = enabled
-            if (exposeUpstreamModels != null) it[Channels.exposeUpstreamModels] = exposeUpstreamModels
             if (priority != null) it[Channels.priority] = priority
             it[updatedAt] = System.currentTimeMillis()
         }
@@ -147,7 +143,6 @@ class ChannelRepository(private val database: Database) {
         authType = row[Channels.authType],
         protocols = GatewayProtocol.parse(row[Channels.protocols]),
         enabled = row[Channels.enabled],
-        exposeUpstreamModels = row[Channels.exposeUpstreamModels],
         priority = row[Channels.priority],
         createdAt = row[Channels.createdAt],
         updatedAt = row[Channels.updatedAt],

@@ -33,7 +33,7 @@ client --Bearer client key--> gateway --Bearer upstream credential--> OpenAI-com
 
 渠道的 `baseUrl` 必须包含版本路径，例如 `https://api.openai.com/v1`。网关按请求协议追加 `/chat/completions` 或 `/responses`，不会自动补 `/v1`。
 
-上游模型直连 ID 只有在全局 `EXPOSE_UPSTREAM_MODELS=true`（默认 `false`）且所属渠道已启用并允许上游模型名直连（`exposeUpstreamModels=true`）时，才会出现在 `/v1/models` 并可直接路由。满足条件后：
+上游模型直连 ID 只有在全局 `EXPOSE_UPSTREAM_MODELS=true`（默认 `false`）且所属渠道已启用时，才会出现在 `/v1/models` 并可直接路由。满足条件后：
 - **未配置对外模型 ID（留空）**：对外使用上游模型名；
 - **配置了对外模型 ID**：对外只显示该 ID，调用时网关会将它重写为实际上游模型名。
 单独配置的模型别名不受这两个直连开关影响。
@@ -92,7 +92,7 @@ Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `ht
 | `COOLDOWN_AUTH_FAILURE_MS` | `600000` | 401/403 长冷却时长；不自动禁用渠道，修复靠人 |
 | `TTFT_SLOW_THRESHOLD_MS` | `10000` | 流式请求首 token 软阈值 |
 | `TTFT_SLOW_STREAK` | `3` | 首 token 连续超过软阈值多少次后触发候选冷却 |
-| `EXPOSE_UPSTREAM_MODELS` | `false` | 全局是否启用渠道模型直连及其 `/v1/models` 展示；所属渠道还必须启用并设置 `exposeUpstreamModels=true`。单独配置的别名不受此开关影响 |
+| `EXPOSE_UPSTREAM_MODELS` | `false` | 全局是否启用渠道模型直连及其 `/v1/models` 展示；所属渠道还必须启用。单独配置的别名不受此开关影响 |
 | `DRAIN_TIMEOUT_MS` | `30000` | 优雅停机 drain 时间 |
 | `STATIC_DIR` | `web/dist` | 管理界面静态目录 |
 | `COOKIE_SECURE` | `false` | 管理面 Cookie 是否只走 HTTPS；生产应为 `true` |
@@ -151,7 +151,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
 
 编辑渠道时可只传 `channelId`，复用已保存凭据。保存渠道时通过 `models` 数组提交授权模型；省略 `models` 表示保持原授权不变。取消仍被别名候选引用的模型授权会返回 `409 channel_model_in_use`。
 
-渠道写请求还可传 `exposeUpstreamModels`：`true` 允许该渠道的模型 ID 参与直连路由和 `/v1/models`（仍要求全局 `EXPOSE_UPSTREAM_MODELS=true`）；`false` 时不提供该渠道的直连模型 ID，单独配置的别名仍可用；省略时保持原值。
+渠道是否参与直连路由和 `/v1/models` 只由启用状态决定（仍要求全局 `EXPOSE_UPSTREAM_MODELS=true`）；渠道级 `exposeUpstreamModels` 开关已移除。
 
 渠道模型映射通过 `modelMappings` 提交：
 
