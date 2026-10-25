@@ -1,12 +1,15 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { formatUsageCosts, reportRange } from '../src/utils/usageReport.js'
+import { usageCostEntries, reportRange } from '../src/utils/usageReport.js'
 
 describe('usageReport: 用量报表展示', () => {
-  it('按币种展示费用且不隐含换算', () => {
-    assert.equal(formatUsageCosts({ USD: '0.25', CNY: '2' }), 'CNY 2 · USD 0.25')
-    assert.equal(formatUsageCosts({ USD: null }), '—')
-    assert.equal(formatUsageCosts({}), '—')
+  it('费用条目按币种排序并剔除空值，不隐含换算', () => {
+    assert.deepEqual(usageCostEntries({ USD: '0.25', CNY: '2' }), [
+      { currency: 'CNY', value: '2' },
+      { currency: 'USD', value: '0.25' },
+    ])
+    assert.deepEqual(usageCostEntries({ USD: null }), [])
+    assert.deepEqual(usageCostEntries({}), [])
   })
 
   it('时间范围默认最多 366 天', () => {

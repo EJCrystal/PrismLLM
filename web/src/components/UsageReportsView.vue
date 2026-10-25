@@ -5,7 +5,7 @@ import { notify } from '../toast'
 import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatNumber } from '../utils/format'
-import { formatUsageCosts, reportRange } from '../utils/usageReport'
+import { usageCostEntries, reportRange } from '../utils/usageReport'
 import { createLatestRequestGuard } from '../utils/latestRequest'
 
 const days = ref(7)
@@ -64,7 +64,7 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>用量报表</h2>
-        <p>按调用方密钥和团队汇总；费用按原计费币种分别展示，不做汇率换算。</p>
+        <p>按调用方密钥汇总请求、token 与费用；费用按原计费币种分别展示，不做汇率换算。</p>
       </div>
       <div class="form-row">
         <select v-model="days" aria-label="报表时间范围" @change="load">
@@ -85,7 +85,17 @@ onMounted(load)
       <div class="stat-row">
         <div class="stat-card"><span>请求数</span><strong>{{ formatNumber(total.requests) }}</strong><small>{{ errorRate }} 错误</small></div>
         <div class="stat-card"><span>总 token</span><strong>{{ formatNumber(total.totalTokens) }}</strong><small>输入 {{ formatNumber(total.inputTokens) }} · 输出 {{ formatNumber(total.outputTokens) }}</small></div>
-        <div class="stat-card accent"><span>费用</span><strong class="report-cost">{{ formatUsageCosts(total.costs) }}</strong><small>按原计费币种</small></div>
+        <div class="stat-card accent">
+          <span>费用</span>
+          <div class="cost-lines" v-if="usageCostEntries(total.costs).length">
+            <div class="cost-line" v-for="entry in usageCostEntries(total.costs)" :key="entry.currency" :title="entry.currency + ' ' + entry.value">
+              <span class="cost-currency">{{ entry.currency }}</span>
+              <strong class="cost-amount">{{ entry.value }}</strong>
+            </div>
+          </div>
+          <strong v-else class="report-cost muted">—</strong>
+          <small>按原计费币种，不做汇率换算</small>
+        </div>
       </div>
 
       <div class="report-grid">
@@ -99,7 +109,15 @@ onMounted(load)
                   <td>{{ row.name || row.id }}</td>
                   <td>{{ formatNumber(row.requests) }} <span class="muted small">/ {{ row.errors }} 错误</span></td>
                   <td>{{ formatNumber(row.totalTokens) }}</td>
-                  <td class="small">{{ formatUsageCosts(row.costs) }}</td>
+                  <td class="small">
+                    <div class="cost-lines compact" v-if="usageCostEntries(row.costs).length">
+                      <div class="cost-line" v-for="entry in usageCostEntries(row.costs)" :key="entry.currency">
+                        <span class="cost-currency">{{ entry.currency }}</span>
+                        <span class="cost-amount mono">{{ entry.value }}</span>
+                      </div>
+                    </div>
+                    <span v-else class="muted">—</span>
+                  </td>
                 </tr>
                 <tr v-if="!report.byClientKey.length"><td colspan="4" class="muted">该时间范围没有请求。</td></tr>
               </tbody>
