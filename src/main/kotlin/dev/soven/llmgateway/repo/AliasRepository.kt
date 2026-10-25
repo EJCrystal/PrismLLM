@@ -188,6 +188,7 @@ class AliasRepository(private val database: Database) {
         protocols = GatewayProtocol.parse(this[Channels.protocols]),
         enabled = this[Channels.enabled],
         exposeUpstreamModels = this[Channels.exposeUpstreamModels],
+        priority = this[Channels.priority],
         createdAt = this[Channels.createdAt],
         updatedAt = this[Channels.updatedAt],
         modelMappings = modelMappings,

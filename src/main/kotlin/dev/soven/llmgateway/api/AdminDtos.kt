@@ -77,6 +77,7 @@ data class ChannelRequest(
     val models: List<String>? = null,
     val modelMappings: List<ChannelModelMappingRequest>? = null,
     val exposeUpstreamModels: Boolean? = null,
+    val priority: Int? = null,
 )
 
 /**
@@ -99,6 +100,7 @@ data class ChannelResponse(
     val models: List<String>,
     val modelMappings: List<ChannelModelMappingResponse>,
     val exposeUpstreamModels: Boolean,
+    val priority: Int,
 )
 
 @Serializable
@@ -127,6 +129,7 @@ fun ChannelRecord.toResponse() = ChannelResponse(
         )
     },
     exposeUpstreamModels = exposeUpstreamModels,
+    priority = priority,
 )
 
 /**
