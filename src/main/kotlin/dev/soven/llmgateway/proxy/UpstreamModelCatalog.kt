@@ -48,9 +48,10 @@ class UpstreamModelCatalog(
                 channel.modelMappings
                     .filter { (it.canonicalModelId ?: it.upstreamModel) == model }
                     .map { mapping ->
-                        RouteCandidate(channel = channel, upstreamModel = mapping.upstreamModel, position = 0)
+                        RouteCandidate(channel = channel, upstreamModel = mapping.upstreamModel, position = channel.priority)
                     }
             }
+            .sortedWith(compareBy({ it.position }, { it.channel.name }))
 
     private suspend fun directExposureChannels(): List<ChannelRecord> =
         channelRepository.list().filter { it.enabled && it.exposeUpstreamModels }

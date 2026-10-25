@@ -49,6 +49,7 @@ class ChannelRepository(private val database: Database) {
         enabled: Boolean,
         modelMappings: List<ChannelModelRecord> = emptyList(),
         exposeUpstreamModels: Boolean = true,
+        priority: Int = 0,
     ): ChannelRecord = suspendTransaction(database) {
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
@@ -63,6 +64,7 @@ class ChannelRepository(private val database: Database) {
             it[Channels.protocols] = protocols.joinToString(",") { protocol -> protocol.value }
             it[Channels.enabled] = enabled
             it[Channels.exposeUpstreamModels] = exposeUpstreamModels
+            it[Channels.priority] = priority
             it[createdAt] = now
             it[updatedAt] = now
         }
@@ -80,6 +82,7 @@ class ChannelRepository(private val database: Database) {
         enabled: Boolean,
         modelMappings: List<ChannelModelRecord>? = null,
         exposeUpstreamModels: Boolean? = null,
+        priority: Int? = null,
     ): ChannelRecord? = suspendTransaction(database) {
         val updated = Channels.update({ Channels.id eq id }) {
             it[Channels.name] = name
@@ -93,6 +96,7 @@ class ChannelRepository(private val database: Database) {
             it[Channels.protocols] = protocols.joinToString(",") { protocol -> protocol.value }
             it[Channels.enabled] = enabled
             if (exposeUpstreamModels != null) it[Channels.exposeUpstreamModels] = exposeUpstreamModels
+            if (priority != null) it[Channels.priority] = priority
             it[updatedAt] = System.currentTimeMillis()
         }
         if (updated == 0) {
@@ -144,6 +148,7 @@ class ChannelRepository(private val database: Database) {
         protocols = GatewayProtocol.parse(row[Channels.protocols]),
         enabled = row[Channels.enabled],
         exposeUpstreamModels = row[Channels.exposeUpstreamModels],
+        priority = row[Channels.priority],
         createdAt = row[Channels.createdAt],
         updatedAt = row[Channels.updatedAt],
     )

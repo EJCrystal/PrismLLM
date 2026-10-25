@@ -47,6 +47,7 @@ const form = reactive({
   protocols: ['chat_completions'],
   enabled: true,
   exposeUpstreamModels: true,
+  priority: 0,
 })
 
 watch(
@@ -134,6 +135,7 @@ function openCreate() {
     protocols: ['chat_completions'],
     enabled: true,
     exposeUpstreamModels: true,
+    priority: 0,
   })
   showForm.value = true
 }
@@ -168,6 +170,7 @@ function openEdit(channel) {
     protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
     enabled: channel.enabled,
     exposeUpstreamModels: channel.exposeUpstreamModels !== false,
+    priority: channel.priority ?? 0,
   })
   showForm.value = true
 }
@@ -638,6 +641,11 @@ onMounted(load)
             </div>
           </div>
         </div>
+        <label class="field">
+          <span>渠道优先级</span>
+          <input v-model.number="form.priority" type="number" min="0" max="999" step="1" />
+          <small>数值越小越优先。同优先级的渠道轮询分摊流量，低优先级只在高优先级全部失败或冷却时启用。</small>
+        </label>
         <label class="switch-row">
           <input v-model="form.exposeUpstreamModels" type="checkbox" />
           <span class="switch"></span>

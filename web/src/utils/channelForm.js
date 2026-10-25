@@ -35,5 +35,6 @@ export function buildChannelPayload(
       }
     }),
     exposeUpstreamModels: form.exposeUpstreamModels,
+    priority: Number(form.priority) || 0,
   }
 }

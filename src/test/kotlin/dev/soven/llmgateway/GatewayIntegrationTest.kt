@@ -271,6 +271,38 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `direct routing prefers channel priority and skips cooled high priority`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(exposeUpstreamModels = true, cooldownTransientBaseMs = 60_000))
+        val preferred = createChannelWithBaseUrl("preferred", "${fake.baseUrl}/500/v1", priority = 0)
+        val backup = createChannelWithBaseUrl("backup", "${fake.baseUrl}/ok/v1", priority = 1)
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","messages":[]}""")
+            }
+
+            // 高优先级渠道 500：当次请求内故障转移到低优先级渠道，高优先级进入冷却
+            assertEquals(HttpStatusCode.OK, send().status)
+            val firstLog = awaitRequestLog()
+            assertEquals(backup.id, firstLog.channelId)
+            assertEquals(2, firstLog.upstreamAttempts)
+
+            // 后续请求预分拣直接跳过冷却中的高优先级渠道
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(2)
+            val secondLog = app.requestLogRepository.list(10).first()
+            assertEquals(backup.id, secondLog.channelId)
+            assertEquals(1, secondLog.upstreamAttempts)
+            assertEquals(listOf("500", "ok", "ok"), fake.requests.map { it.scenario })
+        }
+    }
+
+    @Test
     fun `fail-open retries cooled candidates when all are blocked`() = runBlocking {
         app.close()
         app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
@@ -2274,7 +2306,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("17", result.getString(1))
+                        assertEquals("18", result.getString(1))
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.columns where table_name = 'client_keys' and column_name = 'requests_per_minute'",
@@ -2538,6 +2570,7 @@ class GatewayIntegrationTest {
         protocols: Set<GatewayProtocol> = GatewayProtocol.default,
         exposeUpstreamModels: Boolean = true,
         modelMappings: List<ChannelModelRecord> = mappingsOf("gpt-4o-mini", "deepseek-chat", "m1", "m2"),
+        priority: Int = 0,
     ): ChannelRecord {
         val encrypted = app.credentialCipher.encrypt("upstream-secret")
         return app.channelRepository.create(
@@ -2549,6 +2582,7 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = modelMappings,
             exposeUpstreamModels = exposeUpstreamModels,
+            priority = priority,
         )
     }
 
