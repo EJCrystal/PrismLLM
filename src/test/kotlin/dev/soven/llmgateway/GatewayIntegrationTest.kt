@@ -274,8 +274,8 @@ class GatewayIntegrationTest {
     fun `direct routing prefers channel priority and skips cooled high priority`() = runBlocking {
         app.close()
         app = GatewayApplication(config(exposeUpstreamModels = true, cooldownTransientBaseMs = 60_000))
-        val preferred = createChannelWithBaseUrl("preferred", "${fake.baseUrl}/500/v1", priority = 0)
-        val backup = createChannelWithBaseUrl("backup", "${fake.baseUrl}/ok/v1", priority = 1)
+        val preferred = createChannelWithBaseUrl("preferred", "${fake.baseUrl}/500/v1", priority = 1)
+        val backup = createChannelWithBaseUrl("backup", "${fake.baseUrl}/ok/v1", priority = 2)
         val key = createClientKey()
 
         testApplication {
@@ -329,7 +329,7 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `channel priority defaults to zero and rejects out of range`() = runBlocking {
+    fun `channel priority defaults to one and validates one to one thousand`() = runBlocking {
         val session = app.sessions.create("admin")
 
         testApplication {
@@ -341,13 +341,21 @@ class GatewayIntegrationTest {
                 setBody("""{"name":"prio-default","baseUrl":"${fake.baseUrl}/ok/v1","credential":"sk-test"}""")
             }
             assertEquals(HttpStatusCode.Created, created.status)
-            assertTrue(created.bodyAsText().contains("\"priority\":0"), created.bodyAsText())
+            assertTrue(created.bodyAsText().contains("\"priority\":1"), created.bodyAsText())
+
+            val upper = client.post("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"prio-upper","baseUrl":"${fake.baseUrl}/ok/v1","credential":"sk-test","priority":1000}""")
+            }
+            assertEquals(HttpStatusCode.Created, upper.status)
 
             val rejected = client.post("/admin/api/channels") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
                 header("X-CSRF-Token", session.session.csrf)
                 contentType(ContentType.Application.Json)
-                setBody("""{"name":"prio-invalid","baseUrl":"${fake.baseUrl}/ok/v1","credential":"sk-test","priority":1000}""")
+                setBody("""{"name":"prio-invalid","baseUrl":"${fake.baseUrl}/ok/v1","credential":"sk-test","priority":0}""")
             }
             assertEquals(HttpStatusCode.BadRequest, rejected.status)
             assertTrue(rejected.bodyAsText().contains("invalid_channel"))
@@ -2358,7 +2366,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("18", result.getString(1))
+                        assertEquals("19", result.getString(1))
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.columns where table_name = 'client_keys' and column_name = 'requests_per_minute'",

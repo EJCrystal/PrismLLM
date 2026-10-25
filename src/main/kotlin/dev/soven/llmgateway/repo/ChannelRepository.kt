@@ -49,7 +49,7 @@ class ChannelRepository(private val database: Database) {
         enabled: Boolean,
         modelMappings: List<ChannelModelRecord> = emptyList(),
         exposeUpstreamModels: Boolean = true,
-        priority: Int = 0,
+        priority: Int = 1,
     ): ChannelRecord = suspendTransaction(database) {
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
