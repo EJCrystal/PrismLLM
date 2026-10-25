@@ -71,6 +71,7 @@ class RequestLogRepository(private val database: Database) {
             it[failureStage] = record.failureStage?.value
             it[errorMessage] = record.errorMessage
             it[upstreamErrorCode] = record.upstreamErrorCode
+            it[upstreamAttempts] = record.upstreamAttempts
             it[createdAt] = record.createdAt
         }
     }
@@ -231,6 +232,7 @@ class RequestLogRepository(private val database: Database) {
         errorMessage = row[RequestLogs.errorMessage],
         upstreamErrorCode = row[RequestLogs.upstreamErrorCode],
         createdAt = row[RequestLogs.createdAt],
+        upstreamAttempts = row[RequestLogs.upstreamAttempts],
     )
 
 }

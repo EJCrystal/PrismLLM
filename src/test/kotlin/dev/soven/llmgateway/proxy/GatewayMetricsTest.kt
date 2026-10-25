@@ -15,6 +15,9 @@ class GatewayMetricsTest {
         metrics.adminAuditWriteFailed()
         metrics.upstreamAttempt("primary", true)
         metrics.upstreamError("primary", "upstream_error")
+        metrics.upstreamRetry("primary", "secondary", "upstream_error")
+        metrics.upstreamCircuitSkipped("primary")
+        metrics.upstreamCircuitOpened("primary")
         metrics.databaseReady(false)
         metrics.databaseReady(true)
 
@@ -28,6 +31,9 @@ class GatewayMetricsTest {
         assertTrue(output.contains("gateway_upstream_attempts_total"))
         assertTrue(output.contains("outcome=\"success\""))
         assertTrue(output.contains("gateway_upstream_errors_total"))
+        assertTrue(output.contains("gateway_upstream_retries_total"))
+        assertTrue(output.contains("gateway_upstream_circuit_skips_total"))
+        assertTrue(output.contains("gateway_upstream_circuit_opens_total"))
         assertTrue(output.contains("gateway_database_ready 1.0"))
     }
 }

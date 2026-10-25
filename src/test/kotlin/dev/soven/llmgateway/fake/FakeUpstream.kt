@@ -8,6 +8,7 @@ import io.ktor.server.application.ApplicationCall
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.request.receiveText
+import io.ktor.server.response.header
 import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
@@ -89,6 +90,11 @@ class FakeUpstream {
         }.getOrDefault(false)
 
         when (scenario) {
+            "429-retry-after" -> {
+                call.response.header(HttpHeaders.RetryAfter, "1")
+                call.respondText(ERROR_429, ContentType.Application.Json, HttpStatusCode.TooManyRequests)
+                return
+            }
             "429" -> {
                 call.respondText(ERROR_429, ContentType.Application.Json, HttpStatusCode.TooManyRequests)
                 return
@@ -123,6 +129,13 @@ class FakeUpstream {
                         writeEvent(CHUNK_HEL)
                         writeEvent(CHUNK_LO)
                         writeEvent(FINAL_NO_USAGE)
+                        writeDone()
+                    }
+                    "slow-stream" -> {
+                        writeEvent(CHUNK_HEL)
+                        delay(2_000)
+                        writeEvent(CHUNK_LO)
+                        writeEvent(FINAL_WITH_USAGE)
                         writeDone()
                     }
                     else -> {

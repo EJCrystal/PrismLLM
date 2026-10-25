@@ -82,3 +82,12 @@ groups:
         annotations:
           summary: Upstream channel {{ $labels.channel }} has a high failure rate
           description: Channel {{ $labels.channel }} has failed more than 20% of attempts for 10 minutes.
+
+      - alert: LlmGatewayUpstreamCircuitOpen
+        expr: increase(gateway_upstream_circuit_opens_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Upstream channel {{ $labels.channel }} entered circuit-open state
+          description: Channel {{ $labels.channel }} reached its consecutive failure threshold; retries will skip it during the cooldown window.

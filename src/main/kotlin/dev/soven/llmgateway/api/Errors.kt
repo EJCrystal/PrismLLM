@@ -16,6 +16,7 @@ class GatewayException(
     val type: String = "api_error",
     val upstreamCode: String? = null,
     val retryable: Boolean = false,
+    val retryAfterMs: Long? = null,
 ) : RuntimeException(message)
 
 /**

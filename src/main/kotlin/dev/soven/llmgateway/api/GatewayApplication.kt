@@ -22,6 +22,7 @@ import dev.soven.llmgateway.quota.RequestLimitService
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.security.PasswordHasher
+import dev.soven.llmgateway.resilience.UpstreamCircuitBreaker
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
 import io.ktor.client.plugins.HttpTimeout
@@ -82,6 +83,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
     val credentialCipher = CredentialCipher(config.masterKey)
     val sessions = AdminSessions()
+    val upstreamCircuitBreaker = UpstreamCircuitBreaker(config.resilience)
     val metrics = GatewayMetrics()
     val requestLogWriter = RequestLogWriter(requestLogRepository, modelPriceRepository, scope)
     val logRetentionService = LogRetentionService(requestLogRepository, config.retention)

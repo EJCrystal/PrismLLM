@@ -13,6 +13,7 @@ import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.security.ClientKeyHasher
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.report.RetentionPolicy
+import dev.soven.llmgateway.resilience.UpstreamResiliencePolicy
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
@@ -28,6 +29,8 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import org.flywaydb.core.Flyway
@@ -47,8 +50,14 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.TestInstance
 import org.testcontainers.containers.PostgreSQLContainer
 import java.math.BigDecimal
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.URI
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.nio.file.Path
 import java.sql.DriverManager
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -226,6 +235,104 @@ class GatewayIntegrationTest {
             val log = awaitRequestLog()
             assertEquals(secondary.id, log.channelId)
             assertEquals(200, log.statusCode)
+            assertEquals(2, log.upstreamAttempts)
+            assertTrue(app.metrics.scrape().contains("gateway_upstream_retries_total"))
+        }
+    }
+
+    @Test
+    fun `opens circuit and skips unhealthy channel on later requests`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(circuitFailureThreshold = 1, circuitOpenMs = 60_000))
+        val primary = createChannel("primary", "500")
+        val secondary = createChannel("secondary", "ok")
+        createAlias("fast-chat", primary to "m1", secondary to "m2")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            val firstLog = awaitRequestLog()
+            assertEquals(2, firstLog.upstreamAttempts)
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(2)
+
+            val scenarios = fake.requests.map { it.scenario }
+            assertEquals(listOf("500", "ok", "ok"), scenarios)
+            assertEquals(1, app.requestLogRepository.list(10).first().upstreamAttempts)
+            val metrics = app.metrics.scrape()
+            assertTrue(metrics.contains("gateway_upstream_circuit_opens_total"))
+            assertTrue(metrics.contains("gateway_upstream_circuit_skips_total"))
+        }
+    }
+
+    @Test
+    fun `returns service unavailable when every candidate circuit is open`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(circuitFailureThreshold = 1, circuitOpenMs = 60_000))
+        val primary = createChannel("primary", "500")
+        createAlias("fast-chat", primary to "m1")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.BadGateway, send().status)
+            assertEquals(1, awaitRequestLog().upstreamAttempts)
+
+            val rejected = send()
+            assertEquals(HttpStatusCode.ServiceUnavailable, rejected.status)
+            assertTrue(rejected.bodyAsText().contains("upstream_circuit_open"))
+            assertEquals(1, fake.requests.size)
+
+            awaitRequestLogCount(2)
+            assertEquals(0, app.requestLogRepository.list(10).first().upstreamAttempts)
+        }
+    }
+
+    @Test
+    fun `retries a cooled down candidate instead of treating it as open`() = runBlocking {
+        app.close()
+        app = GatewayApplication(
+            config(
+                maxAttempts = 3,
+                circuitFailureThreshold = 1,
+                circuitOpenMs = 300,
+            ),
+        )
+        val primary = createChannel("primary", "500")
+        val secondary = createChannel("secondary", "500")
+        val tertiary = createChannel("tertiary", "ok")
+        createAlias("fast-chat", primary to "m1", secondary to "m2", tertiary to "deepseek-chat")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            assertEquals(3, awaitRequestLog().upstreamAttempts)
+
+            delay(350)
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(2)
+            assertEquals(3, app.requestLogRepository.list(10).first().upstreamAttempts)
+            assertEquals(listOf("500", "500", "ok", "500", "500", "ok"), fake.requests.map { it.scenario })
         }
     }
 
@@ -251,6 +358,30 @@ class GatewayIntegrationTest {
             assertEquals(secondary.id, log.channelId)
             assertEquals(200, log.statusCode)
             assertNull(log.errorCode)
+        }
+    }
+
+    @Test
+    fun `honors upstream Retry-After before failing over`() = runBlocking {
+        val primary = createChannel("limited", "429-retry-after")
+        val secondary = createChannel("secondary", "ok")
+        createAlias("fast-chat", primary to "m1", secondary to "m2")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val started = System.nanoTime()
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(elapsedMs >= 900, "elapsedMs=$elapsedMs")
+            assertEquals(2, fake.requests.size)
+            assertEquals(2, awaitRequestLog().upstreamAttempts)
         }
     }
 
@@ -301,6 +432,112 @@ class GatewayIntegrationTest {
             assertEquals(FailureStage.STREAMING, log.failureStage)
             assertEquals("上游连接中断", log.errorMessage)
             assertEquals(200, log.statusCode)
+        }
+    }
+
+    @Test
+    fun `stream interruption opens channel circuit`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(circuitFailureThreshold = 1, circuitOpenMs = 60_000))
+        val channel = createChannel("primary", "disconnect")
+        createAlias("fast-chat", channel to "m1")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            assertEquals("stream_interrupted", awaitRequestLog().errorCode)
+
+            val rejected = send()
+            assertEquals(HttpStatusCode.ServiceUnavailable, rejected.status)
+            assertTrue(rejected.bodyAsText().contains("upstream_circuit_open"))
+            assertEquals(1, fake.requests.size)
+
+            awaitRequestLogCount(2)
+            assertEquals(0, app.requestLogRepository.list(10).first().upstreamAttempts)
+        }
+    }
+
+    @Test
+    fun `client disconnect after first token does not open circuit`() = runBlocking {
+        app.close()
+        app = GatewayApplication(
+            config(
+                firstTokenTimeoutMs = 5_000,
+                idleTimeoutMs = 5_000,
+                totalTimeoutMs = 10_000,
+                circuitFailureThreshold = 1,
+                circuitOpenMs = 60_000,
+            ),
+        )
+        val channel = createChannel("primary", "slow-stream")
+        createAlias("fast-chat", channel to "m1")
+        val key = createClientKey()
+
+        val port = ServerSocket(0).use { it.localPort }
+        val server = embeddedServer(Netty, port = port, host = "127.0.0.1") {
+            app.install(this)
+        }.start(wait = false)
+        try {
+            awaitPort(port)
+            val body = """{"model":"fast-chat","stream":true,"messages":[]}"""
+            val requestBytes = (
+                "POST /v1/chat/completions HTTP/1.1\r\n" +
+                    "Host: 127.0.0.1:$port\r\n" +
+                    "Authorization: Bearer $key\r\n" +
+                    "Content-Type: application/json\r\n" +
+                    "Content-Length: ${body.toByteArray().size}\r\n" +
+                    "Connection: close\r\n\r\n" +
+                    body
+                ).toByteArray()
+            Socket("127.0.0.1", port).use { socket ->
+                socket.setSoLinger(true, 0)
+                socket.soTimeout = 5_000
+                socket.getOutputStream().apply {
+                    write(requestBytes)
+                    flush()
+                }
+                val reader = socket.getInputStream().bufferedReader()
+                assertTrue(reader.readLine().startsWith("HTTP/1.1 200"))
+                while (true) {
+                    val header = reader.readLine() ?: break
+                    if (header.isEmpty()) break
+                }
+                var line = reader.readLine()
+                while (line != null && !line.startsWith("data:")) {
+                    line = reader.readLine()
+                }
+                assertNotNull(line)
+            }
+
+            val log = awaitRequestLog(5_000)
+            assertEquals("client_disconnect", log.errorCode)
+            assertEquals(FailureStage.CLIENT, log.failureStage)
+            assertEquals(499, log.statusCode)
+            assertEquals(1, fake.requests.size)
+
+            val httpClient = java.net.http.HttpClient.newBuilder()
+                .version(java.net.http.HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(2))
+                .build()
+            val secondRequest = HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port/v1/chat/completions"))
+                .timeout(Duration.ofSeconds(5))
+                .header(HttpHeaders.Authorization, "Bearer $key")
+                .header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build()
+            val second = httpClient.send(secondRequest, HttpResponse.BodyHandlers.ofString())
+            assertEquals(HttpStatusCode.OK.value, second.statusCode())
+            assertTrue(second.body().contains("[DONE]"))
+            assertEquals(2, fake.requests.size)
+        } finally {
+            server.stop(0, 1_000)
         }
     }
 
@@ -2002,7 +2239,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("15", result.getString(1))
+                        assertEquals("16", result.getString(1))
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.columns where table_name = 'client_keys' and column_name = 'requests_per_minute'",
@@ -2013,6 +2250,12 @@ class GatewayIntegrationTest {
                     statement.executeQuery("select to_regclass('public.team_limits') is not null").use { result ->
                         assertTrue(result.next())
                         assertTrue(result.getBoolean(1))
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'request_logs' and column_name = 'upstream_attempts'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1))
                     }
                     statement.executeQuery("select expose_upstream_models from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -2175,6 +2418,12 @@ class GatewayIntegrationTest {
         totalTimeoutMs: Long = 5_000,
         exposeUpstreamModels: Boolean = false,
         corsOrigins: List<String> = emptyList(),
+        maxAttempts: Int = 2,
+        retryBackoffBaseMs: Long = 0,
+        retryBackoffMaxMs: Long = 0,
+        retryJitterMs: Long = 0,
+        circuitFailureThreshold: Int = 100,
+        circuitOpenMs: Long = 1_000,
     ): GatewayConfig = GatewayConfig(
         port = 0,
         databaseUrl = postgres.jdbcUrl,
@@ -2189,12 +2438,19 @@ class GatewayIntegrationTest {
         firstTokenTimeoutMs = firstTokenTimeoutMs,
         idleTimeoutMs = idleTimeoutMs,
         totalTimeoutMs = totalTimeoutMs,
-        maxAttempts = 2,
+        maxAttempts = maxAttempts,
         drainTimeoutMs = 1_000,
         staticDir = Path.of("web/dist"),
         cookieSecure = false,
         exposeUpstreamModels = exposeUpstreamModels,
         retention = RetentionPolicy(cleanupEnabled = false),
+        resilience = UpstreamResiliencePolicy(
+            backoffBaseMs = retryBackoffBaseMs,
+            backoffMaxMs = retryBackoffMaxMs,
+            jitterMs = retryJitterMs,
+            circuitFailureThreshold = circuitFailureThreshold,
+            circuitOpenMs = circuitOpenMs,
+        ),
     )
 
     private fun requestLog(requestId: String, createdAt: Long) = RequestLogRecord(
@@ -2317,6 +2573,15 @@ class GatewayIntegrationTest {
             delay(50)
         }
         error("request log not written within ${timeoutMs}ms")
+    }
+
+    private fun awaitPort(port: Int, timeoutMs: Long = 3_000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            runCatching { Socket("127.0.0.1", port).use { return } }
+            Thread.sleep(50)
+        }
+        error("server did not start on port $port within ${timeoutMs}ms")
     }
 
     private suspend fun awaitLogWithEffort(effort: String, timeoutMs: Long = 3_000): RequestLogRecord {

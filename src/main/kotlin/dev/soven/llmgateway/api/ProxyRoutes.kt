@@ -34,6 +34,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.util.cio.ChannelWriteException
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.core.readBytes
 import io.ktor.utils.io.readRemaining
@@ -43,6 +44,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -125,6 +127,7 @@ private suspend fun handleProxy(
     var failureStage: FailureStage? = null
     var errorMessage: String? = null
     var upstreamErrorCode: String? = null
+    var upstreamAttempts = 0
     var phase = FailureStage.REQUEST
 
     try {
@@ -163,21 +166,36 @@ private suspend fun handleProxy(
             throw notFound("model_not_found", "模型别名 $alias 不存在或没有可用渠道")
         }
 
-        val attempts = candidates.take(app.config.maxAttempts)
         phase = FailureStage.UPSTREAM
         var lastError: GatewayException? = null
-        for ((index, candidate) in attempts.withIndex()) {
-            channelId = candidate.channel.id
-            channelName = candidate.channel.name
-            upstreamModel = candidate.upstreamModel
+        var retryFrom: String? = null
+        var retryReason: String? = null
+        var candidateIndex = 0
+        while (candidateIndex < candidates.size && upstreamAttempts < app.config.maxAttempts) {
+            val candidate = candidates[candidateIndex++]
+            val permit = app.upstreamCircuitBreaker.acquire(candidate.channel.id)
+            if (permit == null) {
+                app.metrics.upstreamCircuitSkipped(candidate.channel.name)
+                continue
+            }
             val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
             if (remainingMs <= 0) {
+                app.upstreamCircuitBreaker.release(permit)
                 throw GatewayException(
                     HttpStatusCode.GatewayTimeout,
                     "upstream_timeout",
                     "上游响应超时",
                     "timeout_error",
                 )
+            }
+            upstreamAttempts += 1
+            channelId = candidate.channel.id
+            channelName = candidate.channel.name
+            upstreamModel = candidate.upstreamModel
+            retryFrom?.let { from ->
+                app.metrics.upstreamRetry(from, candidate.channel.name, retryReason ?: "upstream_error")
+                retryFrom = null
+                retryReason = null
             }
             try {
                 if (stream) {
@@ -190,17 +208,58 @@ private suspend fun handleProxy(
                     candidate.channel.name,
                     state.statusCode < 400 && state.errorCode == null,
                 )
+                if (state.errorCode == null) {
+                    app.upstreamCircuitBreaker.recordSuccess(permit)
+                } else if (app.upstreamCircuitBreaker.recordFailure(permit).openedNow) {
+                    app.metrics.upstreamCircuitOpened(candidate.channel.name)
+                }
                 return
             } catch (e: GatewayException) {
                 lastError = e
+                if (e.code == "client_disconnect") {
+                    app.upstreamCircuitBreaker.release(permit)
+                    throw e
+                }
                 app.metrics.upstreamError(candidate.channel.name, e.code)
-                if (!e.retryable || state.committed || index == attempts.lastIndex) throw e
+                if (state.committed) {
+                    if (app.upstreamCircuitBreaker.recordFailure(permit).openedNow) {
+                        app.metrics.upstreamCircuitOpened(candidate.channel.name)
+                    }
+                    throw e
+                }
+                if (!e.retryable) {
+                    app.upstreamCircuitBreaker.release(permit)
+                    throw e
+                }
+                val openedNow = app.upstreamCircuitBreaker.recordFailure(permit).openedNow
+                if (openedNow) app.metrics.upstreamCircuitOpened(candidate.channel.name)
+                if (upstreamAttempts >= app.config.maxAttempts || candidateIndex >= candidates.size) {
+                    throw e
+                }
+                val nextChannel = candidates.subList(candidateIndex, candidates.size)
+                    .firstOrNull { app.upstreamCircuitBreaker.isAvailable(it.channel.id) }
+                    ?.channel
+                    ?.name
+                if (nextChannel == null) throw e
+                val retryDelayMs = app.config.resilience.retryDelayMs(
+                    failedAttemptIndex = upstreamAttempts - 1,
+                    retryAfterMs = e.retryAfterMs,
+                )
+                val retryRemainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
+                if (retryDelayMs >= retryRemainingMs) throw e
+                if (retryDelayMs > 0) delay(retryDelayMs)
+                retryFrom = candidate.channel.name
+                retryReason = e.code
+            } catch (e: Throwable) {
+                app.upstreamCircuitBreaker.release(permit)
+                throw e
             }
         }
         throw lastError ?: GatewayException(
-            HttpStatusCode.BadGateway,
-            "no_candidate",
-            "没有可用候选",
+            HttpStatusCode.ServiceUnavailable,
+            "upstream_circuit_open",
+            "所有候选渠道暂时处于故障冷却期",
+            "api_error",
         )
     } catch (e: TimeoutCancellationException) {
         statusCode = if (state.committed) HttpStatusCode.OK.value else HttpStatusCode.GatewayTimeout.value
@@ -209,6 +268,13 @@ private suspend fun handleProxy(
         errorMessage = if (state.committed) "上游流式响应超时" else "上游响应超时"
         throw GatewayException(HttpStatusCode.GatewayTimeout, "upstream_timeout", "上游响应超时", "timeout_error")
     } catch (e: GatewayException) {
+        if (e.code == "client_disconnect") {
+            statusCode = e.status.value
+            errorCode = e.code
+            failureStage = FailureStage.CLIENT
+            errorMessage = e.message.asLogMessage()
+            throw e
+        }
         if (e.status == HttpStatusCode.TooManyRequests && e.code in QUOTA_REJECTION_CODES) {
             app.metrics.quotaRejection(e.code)
         }
@@ -309,6 +375,7 @@ private suspend fun handleProxy(
                 errorMessage = errorMessage,
                 upstreamErrorCode = upstreamErrorCode,
                 createdAt = System.currentTimeMillis(),
+                upstreamAttempts = upstreamAttempts,
             ),
         )
     }
@@ -469,7 +536,11 @@ private suspend fun proxyStream(
                 setBody(TextContent(body, ContentType.Application.Json))
             }.execute { response ->
                 if (!response.status.isSuccess()) {
-                    throw upstreamException(response.status, response.bodyAsText())
+                    throw upstreamException(
+                        response.status,
+                        response.bodyAsText(),
+                        retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
+                    )
                 }
                 val upstream = response.bodyAsChannel()
                 val prefixLines = mutableListOf<String>()
@@ -561,6 +632,8 @@ private suspend fun proxyStream(
                 }
             }
         }
+    } catch (e: ChannelWriteException) {
+        throw clientDisconnected()
     } catch (e: TimeoutCancellationException) {
         throw GatewayException(
             HttpStatusCode.GatewayTimeout,
@@ -601,7 +674,11 @@ private suspend fun proxyJson(
             }
             val text = response.bodyAsText()
             if (!response.status.isSuccess()) {
-                throw upstreamException(response.status, text)
+                throw upstreamException(
+                    response.status,
+                    text,
+                    retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
+                )
             }
             state.committed = true
             state.statusCode = response.status.value
@@ -662,7 +739,19 @@ private fun transportFailure(committed: Boolean): GatewayException =
         retryable = !committed,
     )
 
-private fun upstreamException(status: HttpStatusCode, body: String): GatewayException {
+private fun clientDisconnected(): GatewayException =
+    GatewayException(
+        HttpStatusCode(499, "Client Closed Request"),
+        "client_disconnect",
+        "客户端连接中断",
+        "api_error",
+    )
+
+private fun upstreamException(
+    status: HttpStatusCode,
+    body: String,
+    retryAfterMs: Long?,
+): GatewayException {
     val upstreamCode = runCatching {
         val error = Json.parseToJsonElement(body).jsonObject["error"] as? JsonObject
         (error?.get("code") as? JsonPrimitive)?.contentOrNull
@@ -680,8 +769,24 @@ private fun upstreamException(status: HttpStatusCode, body: String): GatewayExce
         else -> "上游返回错误 ${status.value}"
     }
     val retryable = status.value == 429 || status.value >= 500 || status.value == 401 || status.value == 403 || status.value == 404
-    return GatewayException(mapped, "upstream_error", message, "api_error", upstreamCode, retryable)
+    return GatewayException(
+        mapped,
+        "upstream_error",
+        message,
+        "api_error",
+        upstreamCode,
+        retryable,
+        retryAfterMs.takeIf { retryable },
+    )
 }
+
+private fun retryAfterMillis(value: String?): Long? =
+    value
+        ?.trim()
+        ?.toLongOrNull()
+        ?.takeIf { it >= 0 }
+        ?.coerceAtMost(86_400L)
+        ?.times(1_000L)
 
 private suspend fun ByteWriteChannel.writeSseLine(line: String) {
     writeFully((line + "\n").toByteArray(Charsets.UTF_8))
