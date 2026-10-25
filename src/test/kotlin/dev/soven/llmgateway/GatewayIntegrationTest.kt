@@ -1011,6 +1011,43 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin partial channel update preserves anthropic authentication`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "anthropic-partial-update",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            protocols = setOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.put("/admin/api/channels/${channel.id}") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """
+                    {
+                      "name":"anthropic-partial-update",
+                      "baseUrl":"${fake.baseUrl}/ok/v1",
+                      "protocols":["messages"],
+                      "enabled":true,
+                      "priority":7
+                    }
+                    """.trimIndent(),
+                )
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(response.bodyAsText().contains("\"authType\":\"anthropic\""))
+            assertEquals("anthropic", app.channelRepository.find(channel.id)?.authType)
+            assertEquals(7, app.channelRepository.find(channel.id)?.priority)
+        }
+    }
+
+    @Test
     fun `lists models from an upstream channel`() = runBlocking {
         val channel = createChannel("openai", "ok")
         val session = app.sessions.create("admin")

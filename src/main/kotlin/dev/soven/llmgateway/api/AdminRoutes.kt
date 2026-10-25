@@ -327,7 +327,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 name = request.name,
                 baseUrl = request.baseUrl,
                 credential = encrypted,
-                authType = request.authType,
+                authType = request.authType ?: "bearer",
                 protocols = protocols,
                 enabled = request.enabled,
                 modelMappings = normalizeModelMappings(request).orEmpty(),
@@ -783,7 +783,7 @@ private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean
     if (!request.baseUrl.startsWith("http://") && !request.baseUrl.startsWith("https://")) {
         throw badRequest("invalid_channel", "渠道地址必须以 http:// 或 https:// 开头")
     }
-    if (request.authType !in setOf("bearer", "anthropic")) {
+    if (request.authType != null && request.authType !in setOf("bearer", "anthropic")) {
         throw badRequest("invalid_channel", "上游鉴权方式必须是 bearer 或 anthropic")
     }
     if (request.priority != null && request.priority !in 1..1000) {

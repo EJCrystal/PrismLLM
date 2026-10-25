@@ -71,7 +71,7 @@ data class ChannelRequest(
     val name: String,
     val baseUrl: String,
     val credential: String? = null,
-    val authType: String = "bearer",
+    val authType: String? = null,
     val protocols: List<String> = listOf(GatewayProtocol.CHAT_COMPLETIONS.value),
     val enabled: Boolean = true,
     val models: List<String>? = null,

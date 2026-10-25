@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { clearUpstreamModelCache } from '../upstreamModelCache'
@@ -16,6 +16,7 @@ import {
   hiddenModelsTitle,
 } from '../utils/channelDisplay'
 import { buildChannelPayload, buildPriorityUpdatePayload } from '../utils/channelForm'
+import { canProbeSavedChannel, createRequestTracker, watchChannelRequestInputs } from '../utils/channelRequestState'
 import { findModelPrice } from '../utils/modelPrice'
 
 const channels = ref([])
@@ -36,8 +37,12 @@ const modelsLoading = ref(false)
 const modelsError = ref('')
 const modelSearch = ref('')
 const modelsLoaded = ref(false)
-let probeRequestId = 0
-let modelsRequestId = 0
+const probeRequests = createRequestTracker(() => {
+  probing.value = false
+})
+const modelRequests = createRequestTracker(() => {
+  modelsLoading.value = false
+})
 let probeDerivedProtocols = false
 
 const form = reactive({
@@ -50,10 +55,10 @@ const form = reactive({
   priority: 1,
 })
 
-watch(
-  () => [form.baseUrl, form.credential, form.authType],
-  () => {
-    modelsRequestId += 1
+watchChannelRequestInputs(form, {
+  modelRequests,
+  probeRequests,
+  onInputsChanged: () => {
     availableModels.value = []
     modelsLoaded.value = false
     modelSearch.value = ''
@@ -62,7 +67,7 @@ watch(
     if (probeDerivedProtocols) form.protocols = []
     probeDerivedProtocols = false
   },
-)
+})
 
 const enabledCount = computed(() => channels.value.filter((channel) => channel.enabled).length)
 const mappingCount = computed(() => authorizedModels.value.filter((modelId) => canonicalModels[modelId]?.trim()).length)
@@ -71,6 +76,14 @@ const filteredModels = computed(() => {
   if (!query) return availableModels.value
   return availableModels.value.filter((model) => [model.id, model.ownedBy || '']
     .some((value) => value.toLowerCase().includes(query)))
+})
+const canProbeProtocols = computed(() => {
+  const savedChannel = channels.value.find((channel) => channel.id === editingId.value)
+  return canProbeSavedChannel(savedChannel, {
+    baseUrl: form.baseUrl,
+    credential: form.credential,
+    authType: form.authType,
+  })
 })
 
 const priorityEditingId = ref(null)
@@ -161,11 +174,11 @@ async function onPriceSaved() {
 
 function openCreate() {
   editingId.value = null
-  probeRequestId += 1
+  probeRequests.invalidate()
   probing.value = false
   probeResults.value = []
   probeDerivedProtocols = false
-  modelsRequestId += 1
+  modelRequests.invalidate()
   availableModels.value = []
   authorizedModels.value = []
   clearMappings()
@@ -187,11 +200,11 @@ function openCreate() {
 
 function openEdit(channel) {
   editingId.value = channel.id
-  probeRequestId += 1
+  probeRequests.invalidate()
   probing.value = false
   probeResults.value = []
   probeDerivedProtocols = false
-  modelsRequestId += 1
+  modelRequests.invalidate()
   availableModels.value = []
   authorizedModels.value = [...(channel.models || [])]
   clearMappings()
@@ -231,7 +244,7 @@ async function loadAvailableModels() {
     notify('新建渠道需要填写上游凭据才能加载模型', 'warning')
     return
   }
-  const requestId = ++modelsRequestId
+  const requestId = modelRequests.begin()
   modelsLoading.value = true
   modelsError.value = ''
   try {
@@ -241,7 +254,7 @@ async function loadAvailableModels() {
       authType: form.authType,
       channelId: editingId.value,
     })
-    if (requestId !== modelsRequestId) return
+    if (!modelRequests.isCurrent(requestId)) return
     availableModels.value = response?.data || []
     availableModels.value.forEach((model) => {
       if (model.authorized && model.canonicalModelId && !canonicalModels[model.id]?.trim()) {
@@ -255,9 +268,9 @@ async function loadAvailableModels() {
     }
     modelsLoaded.value = true
   } catch (cause) {
-    if (requestId === modelsRequestId) modelsError.value = cause.message
+    if (modelRequests.isCurrent(requestId)) modelsError.value = cause.message
   } finally {
-    if (requestId === modelsRequestId) modelsLoading.value = false
+    if (modelRequests.isCurrent(requestId)) modelsLoading.value = false
   }
 }
 
@@ -307,28 +320,30 @@ function probeState(result) {
 }
 
 async function probeProtocols() {
-  if (!editingId.value) {
-    notify('请先保存渠道，再探测协议', 'error')
-    return
-  }
-  const savedChannel = channels.value.find((channel) => channel.id === editingId.value)
+  const channelId = editingId.value
   const probeBaseUrl = form.baseUrl.trim()
   const probeCredential = form.credential.trim()
-  if (!savedChannel || probeBaseUrl !== savedChannel.baseUrl.trim() || probeCredential) {
-    notify('请先保存基础地址或凭据，再探测协议', 'error')
+  const probeAuthType = form.authType
+  const savedChannel = channels.value.find((channel) => channel.id === channelId)
+  if (!canProbeSavedChannel(savedChannel, {
+    baseUrl: probeBaseUrl,
+    credential: probeCredential,
+    authType: probeAuthType,
+  })) {
+    notify('请先保存基础地址、凭据或鉴权方式，再探测协议', 'error')
     return
   }
-  const channelId = editingId.value
-  const requestId = ++probeRequestId
+  const requestId = probeRequests.begin()
   probing.value = true
   probeResults.value = []
   try {
     const response = await api.probeChannelProtocols(channelId)
     if (
-      requestId !== probeRequestId ||
+      !probeRequests.isCurrent(requestId) ||
       editingId.value !== channelId ||
       form.baseUrl.trim() !== probeBaseUrl ||
-      form.credential.trim() !== probeCredential
+      form.credential.trim() !== probeCredential ||
+      form.authType !== probeAuthType
     ) {
       return
     }
@@ -343,11 +358,11 @@ async function probeProtocols() {
       supported.length > 0 ? 'success' : 'error',
     )
   } catch (cause) {
-    if (requestId === probeRequestId && editingId.value === channelId) {
+    if (probeRequests.isCurrent(requestId) && editingId.value === channelId) {
       notify(cause.message, 'error')
     }
   } finally {
-    if (requestId === probeRequestId) probing.value = false
+    if (probeRequests.isCurrent(requestId)) probing.value = false
   }
 }
 
@@ -381,8 +396,7 @@ async function save() {
       notify('渠道已创建')
     }
     showForm.value = false
-    probeRequestId += 1
-    probing.value = false
+    probeRequests.invalidate()
     probeResults.value = []
     probeDerivedProtocols = false
     await load()
@@ -413,7 +427,7 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>上游接入点</h2>
-        <p>一个渠道对应一个 OpenAI 兼容接入点，可选择支持 Chat Completions、Responses 或二者皆可。</p>
+        <p>一个渠道对应一个上游接入点，可选择支持 Chat Completions、Responses、Anthropic Messages 或其组合。</p>
       </div>
       <button type="button" class="button primary" @click="openCreate">
         <Icon name="plus" :size="17" />
@@ -449,7 +463,7 @@ onMounted(load)
         :empty="channels.length === 0"
         icon="channels"
         title="还没有渠道"
-        desc="先接入一个 OpenAI 兼容上游，授权模型并对外提供服务。"
+        desc="先接入一个支持所需协议的上游，授权模型并对外提供服务。"
         action-text="新建渠道"
         @action="openCreate"
       />
@@ -591,12 +605,13 @@ onMounted(load)
             <button
               type="button"
               class="button subtle mini"
-              :disabled="!editingId || probing"
+              :disabled="!canProbeProtocols || probing"
               @click="probeProtocols"
             >
               {{ probing ? '探测中…' : '探测协议' }}
             </button>
             <span v-if="!editingId" class="muted small">保存渠道后可探测</span>
+            <span v-else-if="!canProbeProtocols" class="muted small">保存地址、凭据或鉴权方式后可探测</span>
             <span v-else class="muted small">使用已保存凭据发送最小请求（1 token）</span>
           </div>
           <div v-if="probeResults.length" class="probe-results">
@@ -616,10 +631,10 @@ onMounted(load)
           <span>上游凭据</span>
           <SecretInput
             v-model="form.credential"
-            :placeholder="editingId ? '留空保持当前凭据' : '输入上游 Bearer Token'"
+            :placeholder="editingId ? '留空保持当前凭据' : '输入上游凭据（Bearer Token 或 Anthropic API key）'"
             autocomplete="new-password"
           />
-          <small>v1 只支持 Bearer。凭据会加密存储，保存后不再回显。</small>
+          <small>凭据按所选鉴权方式发送，会加密存储，保存后不再回显。</small>
         </label>
         <div class="field channel-model-auth">
           <div class="channel-model-auth-head">

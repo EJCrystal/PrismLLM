@@ -180,7 +180,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
 curl -b cookies.txt http://localhost:8080/admin/api/exposed-models
 ```
 
-返回 `object` 和 `data`，每条记录包含 `id`、`source`（`alias` / `upstream`）与 `ownedBy`。管理界面的“模型列表”菜单展示同一结果，并提供原始 JSON 响应预览。
+返回 `object` 和 `data`，每条记录包含 `id`、`source`（`alias` / `upstream` / `canonical`）与 `ownedBy`。配置了对外 canonical ID 的上游模型会标记为 `canonical`。管理界面的“模型列表”菜单展示同一结果，并提供原始 JSON 响应预览。
 
 同一页面还会加载 models.dev 目录，展示模型 ID、`canonical_model_id`、模型开发者和服务提供方，并在对外模型表中标记匹配结果。目录接口：`GET /admin/api/models-dev`。上游 `/models` 返回的 `owned_by` 只表示上游元数据，不作为模型开发者；例如 Qwen 通过 OpenAI 兼容接口返回 `owned_by=openai` 时，仍按 canonical ID 的 `alibaba` 命名空间识别开发者。
 
