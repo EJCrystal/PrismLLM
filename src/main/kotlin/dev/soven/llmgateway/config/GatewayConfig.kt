@@ -29,7 +29,6 @@ data class GatewayConfig(
     val drainTimeoutMs: Long,
     val staticDir: Path,
     val cookieSecure: Boolean,
-    val exposeUpstreamModels: Boolean,
     val retention: RetentionPolicy,
     val cooldown: CooldownPolicy = CooldownPolicy(),
 ) {
@@ -89,8 +88,6 @@ data class GatewayConfig(
                 staticDir = Path.of(value("STATIC_DIR", "web/dist")),
                 cookieSecure = value("COOKIE_SECURE", "false").toBooleanStrictOrNull()
                     ?: error("COOKIE_SECURE 必须是 true 或 false"),
-                exposeUpstreamModels = value("EXPOSE_UPSTREAM_MODELS", "false").toBooleanStrictOrNull()
-                    ?: error("EXPOSE_UPSTREAM_MODELS 必须是 true 或 false"),
                 retention = RetentionPolicy(
                     retentionDays = longValue("REQUEST_LOG_RETENTION_DAYS", 30).toInt(),
                     batchSize = longValue("REQUEST_LOG_CLEANUP_BATCH_SIZE", 5_000).toInt(),

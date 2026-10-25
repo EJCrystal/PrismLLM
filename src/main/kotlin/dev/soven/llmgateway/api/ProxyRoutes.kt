@@ -161,7 +161,7 @@ private suspend fun handleProxy(
         if (aliasCandidates.isNotEmpty() && candidates.isEmpty()) {
             throw protocolNotSupported(alias, protocol)
         }
-        if (aliasCandidates.isEmpty() && app.config.exposeUpstreamModels && app.aliasRepository.findByAlias(alias) == null) {
+        if (aliasCandidates.isEmpty() && app.aliasRepository.findByAlias(alias) == null) {
             candidates = app.modelCatalog.findCandidates(alias, protocol)
             if (candidates.isEmpty() && app.modelCatalog.findCandidates(alias, null).isNotEmpty()) {
                 throw protocolNotSupported(alias, protocol)
