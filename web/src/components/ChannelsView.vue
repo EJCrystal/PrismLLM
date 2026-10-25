@@ -15,7 +15,7 @@ import {
   visibleModels,
   hiddenModelsTitle,
 } from '../utils/channelDisplay'
-import { buildChannelPayload } from '../utils/channelForm'
+import { buildChannelPayload, buildPriorityUpdatePayload } from '../utils/channelForm'
 import { findModelPrice } from '../utils/modelPrice'
 
 const channels = ref([])
@@ -107,13 +107,7 @@ async function commitPriorityEdit(channel) {
   if (next === (channel.priority ?? 1)) return
   prioritySaving = true
   try {
-    await api.updateChannel(channel.id, {
-      name: channel.name,
-      baseUrl: channel.baseUrl,
-      protocols: [...(channel.protocols || [])],
-      enabled: channel.enabled,
-      priority: next,
-    })
+    await api.updateChannel(channel.id, buildPriorityUpdatePayload(channel, next))
     channel.priority = next
     notify('渠道优先级已更新', 'success')
   } catch (cause) {

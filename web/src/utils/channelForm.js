@@ -37,3 +37,14 @@ export function buildChannelPayload(
     priority: form.priority === '' || form.priority === null || form.priority === undefined ? null : Number(form.priority) || 1,
   }
 }
+
+export function buildPriorityUpdatePayload(channel, priority) {
+  return {
+    name: channel.name,
+    baseUrl: channel.baseUrl,
+    authType: channel.authType || 'bearer',
+    protocols: [...(channel.protocols || [])],
+    enabled: channel.enabled,
+    priority,
+  }
+}

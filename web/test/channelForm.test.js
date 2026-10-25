@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildChannelPayload } from '../src/utils/channelForm.js'
+import { buildChannelPayload, buildPriorityUpdatePayload } from '../src/utils/channelForm.js'
 
 describe('channelForm: 渠道保存请求体', () => {
   const baseForm = {
@@ -48,6 +48,26 @@ describe('channelForm: 渠道保存请求体', () => {
     assert.equal(buildChannelPayload({ ...baseForm, priority: 0 }, [], {}).priority, 1)
     assert.equal(buildChannelPayload({ ...baseForm, priority: '' }, [], {}).priority, null)
     assert.equal(buildChannelPayload(baseForm, [], {}).priority, null)
+  })
+
+  it('行内修改优先级时保留渠道 Anthropic 鉴权类型', () => {
+    const channel = {
+      name: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      authType: 'anthropic',
+      protocols: ['messages'],
+      enabled: true,
+      priority: 1,
+    }
+
+    assert.deepEqual(buildPriorityUpdatePayload(channel, 4), {
+      name: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      authType: 'anthropic',
+      protocols: ['messages'],
+      enabled: true,
+      priority: 4,
+    })
   })
 
   it('未修改的映射保留原 mappingSource', () => {
