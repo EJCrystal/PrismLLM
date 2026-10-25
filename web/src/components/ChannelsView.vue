@@ -490,7 +490,7 @@ onMounted(load)
                 aria-label="双击或按 Enter 编辑渠道优先级"
                 title="双击编辑优先级"
                 @dblclick="startPriorityEdit(channel)"
-                @keyup.enter="startPriorityEdit(channel)"
+                @keyup.enter.self="startPriorityEdit(channel)"
               >
                 <input
                   v-if="priorityEditingId === channel.id"
@@ -501,7 +501,8 @@ onMounted(load)
                   min="1"
                   max="1000"
                   step="1"
-                  @keyup.enter="commitPriorityEdit(channel)"
+                  @keyup.enter.stop="commitPriorityEdit(channel)"
+                  @dblclick.stop
                   @keyup.esc="cancelPriorityEdit"
                   @blur="commitPriorityEdit(channel)"
                 />
