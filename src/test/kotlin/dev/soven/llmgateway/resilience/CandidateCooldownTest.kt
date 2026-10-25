@@ -211,6 +211,18 @@ class CandidateCooldownTest {
     }
 
     @Test
+    fun `isBlocked detects candidate-key-only cooldown`() {
+        var now = 0L
+        val cooldown = CandidateCooldown(policy = policy(), nowMs = { now })
+        val permit = assertNotNull(cooldown.acquire("ch1", "m1"))
+        cooldown.recordFailure(permit, FailureKind.RATE_LIMITED)
+
+        // 渠道键无状态、仅候选键在冷却时，isBlocked 不能提前返回
+        assertTrue(cooldown.isBlocked("ch1", "m1"))
+        assertFalse(cooldown.isBlocked("ch1", "m2"))
+    }
+
+    @Test
     fun `isBlocked peeks cooldown without consuming probe slot`() {
         var now = 0L
         val cooldown = CandidateCooldown(policy = policy(), nowMs = { now })

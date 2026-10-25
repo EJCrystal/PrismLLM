@@ -335,10 +335,10 @@ class CandidateCooldown(
      */
     @Synchronized
     fun isBlocked(channelId: String, upstreamModel: String): Boolean {
-        val channelState = states[CooldownKey.Channel(channelId).id] ?: return false
-        if (blocked(channelState)) return true
-        val candidateState = states[CooldownKey.Candidate(channelId, upstreamModel).id] ?: return false
-        return blocked(candidateState)
+        // 两个键独立判断：渠道键无状态不代表候选键不在冷却（如仅 429/TTFT 触发的候选级冷却）。
+        states[CooldownKey.Channel(channelId).id]?.let { if (blocked(it)) return true }
+        states[CooldownKey.Candidate(channelId, upstreamModel).id]?.let { if (blocked(it)) return true }
+        return false
     }
 
     @Synchronized

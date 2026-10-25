@@ -282,8 +282,11 @@ private suspend fun handleProxy(
             retryFrom = candidate.channel.name
             retryReason = error.code
         }
-        // fail-open：仍有尝试预算时，被冷却跳过的候选按原顺序照常尝试，绝不因冷却状态拒绝服务。
-        for (candidate in blocked) {
+        // fail-open：仍有尝试预算时，被冷却跳过的候选按原档位顺序照常尝试，绝不因冷却状态拒绝服务。
+        // 重新按候选原始顺序遍历：预分拣与 acquire 之间被拦下的候选应插回原位，而不是追加到尾部。
+        val blockedSet = blocked.toHashSet()
+        for (candidate in candidates) {
+            if (candidate !in blockedSet) continue
             if (upstreamAttempts >= app.config.maxAttempts) break
             val permit = app.candidateCooldown.forceAcquire(candidate.channel.id, candidate.upstreamModel)
             val error = runAttempt(candidate, permit)
