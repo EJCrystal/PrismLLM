@@ -214,7 +214,7 @@ onMounted(load)
       <div class="table-toolbar">
         <label class="search-box">
           <Icon name="search" :size="17" />
-          <input v-model="query" placeholder="搜索请求 ID、Trace ID、别名、渠道、错误码或错误信息" />
+          <input v-model="query" placeholder="搜索请求 ID、Trace ID、请求模型、渠道、错误码或错误信息" />
         </label>
         <span class="muted small">显示 {{ filtered.length }} / {{ logs.length }} 条</span>
       </div>
@@ -241,7 +241,7 @@ onMounted(load)
             <tr>
               <th>时间</th>
               <th>请求 ID</th>
-              <th>别名 / 协议 / 模式</th>
+              <th>请求模型 / 协议 / 流式</th>
               <th>渠道 / 上游模型</th>
               <th>状态 / 错误</th>
               <th>耗时</th>
@@ -362,7 +362,7 @@ onMounted(load)
                 <strong>{{ selected.protocol || '—' }}</strong>
               </div>
               <div class="detail-item">
-                <span>请求模式</span>
+                <span>流式</span>
                 <strong>{{ requestModeLabel(selected.stream) }}</strong>
               </div>
               <div class="detail-item">
@@ -378,7 +378,7 @@ onMounted(load)
                 <strong class="mono">{{ selected.upstreamErrorCode || '—' }}</strong>
               </div>
               <div class="detail-item">
-                <span>别名</span>
+                <span>请求模型</span>
                 <strong>{{ selected.alias }}</strong>
               </div>
               <div class="detail-item">

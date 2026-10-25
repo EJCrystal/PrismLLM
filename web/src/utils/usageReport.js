@@ -1,8 +1,8 @@
-export function formatUsageCosts(costs) {
-  const entries = Object.entries(costs || {})
+export function usageCostEntries(costs) {
+  return Object.entries(costs || {})
     .filter(([, value]) => value != null)
     .sort(([a], [b]) => a.localeCompare(b))
-  return entries.length ? entries.map(([currency, value]) => `${currency} ${value}`).join(' · ') : '—'
+    .map(([currency, value]) => ({ currency, value: String(value) }))
 }
 
 export function reportRange(days, now) {
