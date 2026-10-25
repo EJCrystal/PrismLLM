@@ -92,7 +92,7 @@ Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `ht
 | `COOLDOWN_AUTH_FAILURE_MS` | `600000` | 401/403 长冷却时长；不自动禁用渠道，修复靠人 |
 | `TTFT_SLOW_THRESHOLD_MS` | `10000` | 流式请求首 token 软阈值 |
 | `TTFT_SLOW_STREAK` | `3` | 首 token 连续超过软阈值多少次后触发候选冷却 |
-| `EXPOSE_UPSTREAM_MODELS` | `false` | 全局是否启用渠道模型直连及其 `/v1/models` 展示；所属渠道还必须启用。单独配置的别名不受此开关影响 |
+| `EXPOSE_UPSTREAM_MODELS` | `false` | 全局是否启用渠道模型直连及其 `/v1/models` 展示；所属渠道还必须启用。别名不受此开关影响，但别名候选仍要求渠道处于启用状态 |
 | `DRAIN_TIMEOUT_MS` | `30000` | 优雅停机 drain 时间 |
 | `STATIC_DIR` | `web/dist` | 管理界面静态目录 |
 | `COOKIE_SECURE` | `false` | 管理面 Cookie 是否只走 HTTPS；生产应为 `true` |

@@ -58,6 +58,7 @@ import java.sql.DriverManager
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -2312,6 +2313,25 @@ class GatewayIntegrationTest {
                 }
             }
 
+            // 先迁到 V19，构造一个关闭直连的渠道，验证 V20 会把它转为停用
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("19"))
+                .load()
+                .migrate()
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into channels (id, name, base_url, credential_ciphertext, credential_nonce, credential_key_version, auth_type, enabled, expose_upstream_models, created_at, updated_at)
+                        values ('alias-only-conversion', 'alias-only-conversion', 'https://example.com/v1', 'cipher', 'nonce', 1, 'bearer', true, false, 1, 1)
+                        """.trimIndent(),
+                    )
+                }
+            }
+
             Flyway.configure()
                 .dataSource(migrationUrl, postgres.username, postgres.password)
                 .locations("classpath:db/migration")
@@ -2320,6 +2340,20 @@ class GatewayIntegrationTest {
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
+                    statement.executeQuery("select enabled from channels where id = 'alias-only-conversion'").use { result ->
+                        assertTrue(result.next())
+                        assertFalse(result.getBoolean(1), "原关闭直连的渠道应被转为停用")
+                    }
+                    statement.executeQuery("select enabled from channels where id = 'migration-channel'").use { result ->
+                        assertTrue(result.next())
+                        assertTrue(result.getBoolean(1), "默认直连的渠道应保持启用")
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'channels' and column_name = 'expose_upstream_models'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(0, result.getInt(1), "expose_upstream_models 列应已删除")
+                    }
                     statement.executeQuery("select count(*) from channel_models").use { result ->
                         assertTrue(result.next())
                         assertEquals(1, result.getInt(1))
