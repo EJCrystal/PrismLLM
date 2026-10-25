@@ -46,7 +46,6 @@ const form = reactive({
   credential: '',
   protocols: ['chat_completions'],
   enabled: true,
-  exposeUpstreamModels: true,
   priority: 1,
 })
 
@@ -185,7 +184,6 @@ function openCreate() {
     credential: '',
     protocols: ['chat_completions'],
     enabled: true,
-    exposeUpstreamModels: true,
     priority: 1,
   })
   showForm.value = true
@@ -220,7 +218,6 @@ function openEdit(channel) {
     credential: '',
     protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
     enabled: channel.enabled,
-    exposeUpstreamModels: channel.exposeUpstreamModels !== false,
     priority: channel.priority ?? 1,
   })
   showForm.value = true
@@ -656,12 +653,7 @@ onMounted(load)
           <div class="channel-model-auth-head">
             <div>
               <span>对外模型 ID</span>
-              <small v-if="form.exposeUpstreamModels !== false">
-                调用方在请求体里使用的模型名；留空则直接使用上游模型名。
-              </small>
-              <small v-else>
-                当前渠道仅通过别名访问；留空不会公开上游模型名，只能由别名引用。
-              </small>
+              <small>调用方在请求体里使用的模型名；留空则直接使用上游模型名。</small>
             </div>
             <span v-if="mappingCount" class="badge info">{{ mappingCount }} 个已自定义</span>
             <span v-else class="badge neutral">全部沿用上游名</span>
@@ -671,7 +663,7 @@ onMounted(load)
               <span>上游模型</span>
               <span></span>
               <span>
-                对外模型 ID（{{ form.exposeUpstreamModels === false ? '可选；留空不公开上游模型' : '留空沿用上游模型名' }}）
+                对外模型 ID（留空沿用上游模型名）
               </span>
             </div>
             <div v-for="modelId in authorizedModels" :key="modelId" class="channel-canonical-row">
@@ -699,9 +691,7 @@ onMounted(load)
                 <input
                   :id="`canonical-input-${modelId}`"
                   v-model="canonicalModels[modelId]"
-                  :placeholder="form.exposeUpstreamModels === false
-                    ? '可选；留空仅通过别名调用'
-                    : '留空沿用上游模型名（点击箭头填入）'"
+                  :placeholder="'留空沿用上游模型名（点击箭头填入）'"
                   autocomplete="off"
                   spellcheck="false"
                 />
@@ -722,14 +712,6 @@ onMounted(load)
           <span>渠道优先级</span>
           <input v-model.number="form.priority" type="number" min="1" max="1000" step="1" />
           <small>数值越小越优先（1..1000），仅影响直连路由：同优先级渠道轮询分摊，低优先级只在高优先级全部失败或冷却时启用；别名候选档位由别名自行声明。</small>
-        </label>
-        <label class="switch-row">
-          <input v-model="form.exposeUpstreamModels" type="checkbox" />
-          <span class="switch"></span>
-          <span>
-            <strong>允许上游模型名直连</strong>
-            <small>开启后可直接使用上游模型名；关闭后只能通过配置的别名访问。</small>
-          </span>
         </label>
         <label class="switch-row">
           <input v-model="form.enabled" type="checkbox" />

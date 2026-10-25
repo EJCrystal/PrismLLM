@@ -28,7 +28,6 @@ data class ChannelRecord(
     val createdAt: Long,
     val updatedAt: Long,
     val modelMappings: List<ChannelModelRecord> = emptyList(),
-    val exposeUpstreamModels: Boolean = true,
     val priority: Int = 0,
 ) {
     val models: List<String> get() = modelMappings.map { it.upstreamModel }

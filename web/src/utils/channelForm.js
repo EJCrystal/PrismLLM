@@ -34,7 +34,6 @@ export function buildChannelPayload(
         mappingSource,
       }
     }),
-    exposeUpstreamModels: form.exposeUpstreamModels,
     priority: form.priority === '' || form.priority === null || form.priority === undefined ? null : Number(form.priority) || 1,
   }
 }

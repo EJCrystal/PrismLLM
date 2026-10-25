@@ -17,7 +17,6 @@ class TierSharingTest {
             authType = "bearer",
             protocols = setOf(GatewayProtocol.CHAT_COMPLETIONS),
             enabled = true,
-            exposeUpstreamModels = true,
             createdAt = 0,
             updatedAt = 0,
             modelMappings = emptyList(),
