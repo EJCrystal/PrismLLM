@@ -303,6 +303,58 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `direct routing spreads same-priority channels`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(exposeUpstreamModels = true))
+        val first = createChannelWithBaseUrl("first", "${fake.baseUrl}/ok/v1")
+        val second = createChannelWithBaseUrl("second", "${fake.baseUrl}/ok/v1")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(2)
+            val logs = app.requestLogRepository.list(10)
+            assertEquals(2, logs.size)
+            assertEquals(setOf(first.id, second.id), logs.map { it.channelId }.toSet())
+            logs.forEach { assertEquals(1, it.upstreamAttempts) }
+        }
+    }
+
+    @Test
+    fun `channel priority defaults to zero and rejects out of range`() = runBlocking {
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val created = client.post("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"prio-default","baseUrl":"${fake.baseUrl}/ok/v1","credential":"sk-test"}""")
+            }
+            assertEquals(HttpStatusCode.Created, created.status)
+            assertTrue(created.bodyAsText().contains("\"priority\":0"), created.bodyAsText())
+
+            val rejected = client.post("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"prio-invalid","baseUrl":"${fake.baseUrl}/ok/v1","credential":"sk-test","priority":1000}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, rejected.status)
+            assertTrue(rejected.bodyAsText().contains("invalid_channel"))
+        }
+    }
+
+    @Test
     fun `fail-open retries cooled candidates when all are blocked`() = runBlocking {
         app.close()
         app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))

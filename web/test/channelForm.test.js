@@ -43,6 +43,13 @@ describe('channelForm: 渠道保存请求体', () => {
     ])
   })
 
+  it('渠道优先级随表单透传，空值提交 null 以保留原值', () => {
+    assert.equal(buildChannelPayload({ ...baseForm, priority: 7 }, [], {}).priority, 7)
+    assert.equal(buildChannelPayload({ ...baseForm, priority: 0 }, [], {}).priority, 0)
+    assert.equal(buildChannelPayload({ ...baseForm, priority: '' }, [], {}).priority, null)
+    assert.equal(buildChannelPayload(baseForm, [], {}).priority, null)
+  })
+
   it('未修改的映射保留原 mappingSource', () => {
     const payload = buildChannelPayload(
       baseForm,
