@@ -6,8 +6,8 @@
 
 - 原生协议入口 `/v1/chat/completions`、`/v1/responses` 与 `/v1/messages`，支持流式和非流式请求，不在协议之间转换。
 - 渠道按 `chat_completions`、`responses`、`messages` 声明支持的协议，路由时按请求协议过滤候选。
-- 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。直连暴露还受全局与渠道开关共同控制。
-- 满足直连开关时，自定义对外模型 ID 会替代上游名对外暴露；多个渠道配置相同对外模型 ID 时自动聚合并负载均衡。
+- 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。渠道启用即参与直连暴露。
+- 自定义对外模型 ID 会替代上游名对外暴露；多个渠道配置相同对外模型 ID 时自动聚合、同优先级分摊。
 - 调用方密钥鉴权，支持按密钥与团队限制每分钟请求数和并发数；上游凭据使用 AES-256-GCM 加密存储。
 - 流式响应不缓冲、客户端断开向上游传播。
 - 管理 API 与 Vue 3 管理界面：
@@ -33,10 +33,10 @@ client --client key--> gateway --configured auth--> protocol-compatible upstream
 
 渠道的 `baseUrl` 必须包含上游要求的版本路径，例如 `https://api.openai.com/v1` 或 `https://api.anthropic.com/v1`。网关按请求协议追加 `/chat/completions`、`/responses` 或 `/messages`，不会自动补 `/v1`。Anthropic Messages 请求可使用 `Authorization: Bearer <gateway-key>` 或 `x-api-key: <gateway-key>`；渠道上游鉴权可选择 Bearer 或 Anthropic `x-api-key`，`anthropic-version` 缺省为 `2023-06-01`。
 
-上游模型直连 ID 只有在全局 `EXPOSE_UPSTREAM_MODELS=true`（默认 `false`）且所属渠道已启用并允许上游模型名直连（`exposeUpstreamModels=true`）时，才会出现在 `/v1/models` 并可直接路由。满足条件后：
+启用渠道的对外模型 ID 会出现在 `/v1/models` 并可直接路由。满足条件后：
 - **未配置对外模型 ID（留空）**：对外使用上游模型名；
 - **配置了对外模型 ID**：对外只显示该 ID，调用时网关会将它重写为实际上游模型名。
-单独配置的模型别名不受这两个直连开关影响。
+单独配置的模型别名不依赖渠道直连暴露，但别名候选要求其渠道处于启用状态。
 
 ## 快速开始
 
@@ -92,7 +92,6 @@ Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `ht
 | `COOLDOWN_AUTH_FAILURE_MS` | `600000` | 401/403 长冷却时长；不自动禁用渠道，修复靠人 |
 | `TTFT_SLOW_THRESHOLD_MS` | `10000` | 流式请求首 token 软阈值 |
 | `TTFT_SLOW_STREAK` | `3` | 首 token 连续超过软阈值多少次后触发候选冷却 |
-| `EXPOSE_UPSTREAM_MODELS` | `false` | 全局是否启用渠道模型直连及其 `/v1/models` 展示；所属渠道还必须启用并设置 `exposeUpstreamModels=true`。单独配置的别名不受此开关影响 |
 | `DRAIN_TIMEOUT_MS` | `30000` | 优雅停机 drain 时间 |
 | `STATIC_DIR` | `web/dist` | 管理界面静态目录 |
 | `COOKIE_SECURE` | `false` | 管理面 Cookie 是否只走 HTTPS；生产应为 `true` |
@@ -131,7 +130,7 @@ curl http://localhost:8080/v1/messages \
   -d '{"model":"claude-fast","max_tokens":128,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-模型列表：`GET /v1/models` 返回当前启用的别名；当全局与渠道直连开关均开启时，也会包含可直连的渠道模型 ID。请求日志会记录本次请求使用的协议。
+模型列表：`GET /v1/models` 返回当前启用的别名与启用渠道的可直连模型 ID。请求日志会记录本次请求使用的协议。
 
 管理 API 示例：
 
@@ -161,7 +160,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
 
 编辑渠道时可只传 `channelId`，复用已保存凭据。保存渠道时通过 `models` 数组提交授权模型；省略 `models` 表示保持原授权不变。取消仍被别名候选引用的模型授权会返回 `409 channel_model_in_use`。
 
-渠道写请求还可传 `exposeUpstreamModels`：`true` 允许该渠道的模型 ID 参与直连路由和 `/v1/models`（仍要求全局 `EXPOSE_UPSTREAM_MODELS=true`）；`false` 时不提供该渠道的直连模型 ID，单独配置的别名仍可用；省略时保持原值。
+渠道是否参与直连路由和 `/v1/models` 只由启用状态决定；渠道级 `exposeUpstreamModels` 开关与全局 `EXPOSE_UPSTREAM_MODELS` 环境变量均已移除。
 
 渠道模型映射通过 `modelMappings` 提交：
 
@@ -181,13 +180,13 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
 curl -b cookies.txt http://localhost:8080/admin/api/exposed-models
 ```
 
-返回 `object`、`exposeUpstreamModels` 和 `data`，每条记录包含 `id`、`source`（`alias` / `upstream`）与 `ownedBy`。管理界面的“模型列表”菜单展示同一结果，并提供原始 JSON 响应预览。
+返回 `object` 和 `data`，每条记录包含 `id`、`source`（`alias` / `upstream`）与 `ownedBy`。管理界面的“模型列表”菜单展示同一结果，并提供原始 JSON 响应预览。
 
 同一页面还会加载 models.dev 目录，展示模型 ID、`canonical_model_id`、模型开发者和服务提供方，并在对外模型表中标记匹配结果。目录接口：`GET /admin/api/models-dev`。上游 `/models` 返回的 `owned_by` 只表示上游元数据，不作为模型开发者；例如 Qwen 通过 OpenAI 兼容接口返回 `owned_by=openai` 时，仍按 canonical ID 的 `alibaba` 命名空间识别开发者。
 
 渠道编辑弹窗支持手动填写对外模型 ID，也可点击上游模型名或箭头将原名快速填入。模型列表页展示实际对外 ID、来源、上游模型和渠道，并提供 models.dev 目录用于查询与对照；目录信息不会自动修改渠道配置。
 
-命名建议：可参考 models.dev 的 `canonical_model_id` 填写对外模型 ID；调用方使用该 ID 时，网关会路由到对应的上游原始模型名。配置对外模型 ID 会替代上游名作为直连入口，但不会关闭直连；关闭“允许上游模型名直连”会让该渠道的所有直连 ID（包括配置的对外模型 ID）停止路由，只适合需要仅通过别名访问的场景。
+命名建议：可参考 models.dev 的 `canonical_model_id` 填写对外模型 ID；调用方使用该 ID 时，网关会路由到对应的上游原始模型名。配置对外模型 ID 会替代上游名作为直连入口；渠道停用时其所有直连 ID 停止路由。
 
 探测渠道支持的协议：
 

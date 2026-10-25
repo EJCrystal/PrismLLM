@@ -10,13 +10,11 @@ describe('channelForm: 渠道保存请求体', () => {
     authType: 'anthropic',
     protocols: ['chat_completions', 'responses'],
     enabled: true,
-    exposeUpstreamModels: false,
   }
 
-  it('编辑仅别名渠道时保留 exposeUpstreamModels=false', () => {
+  it('基础字段正确序列化', () => {
     const payload = buildChannelPayload(baseForm, ['deepseek-v4.1-flash'], {})
 
-    assert.equal(payload.exposeUpstreamModels, false)
     assert.equal(payload.name, 'deepseek')
     assert.equal(payload.baseUrl, 'https://example.com/v1')
     assert.equal(payload.credential, null)

@@ -58,6 +58,7 @@ import java.sql.DriverManager
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -288,7 +289,7 @@ class GatewayIntegrationTest {
     @Test
     fun `direct routing prefers channel priority and skips cooled high priority`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true, cooldownTransientBaseMs = 60_000))
+        app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
         val preferred = createChannelWithBaseUrl("preferred", "${fake.baseUrl}/500/v1", priority = 1)
         val backup = createChannelWithBaseUrl("backup", "${fake.baseUrl}/ok/v1", priority = 2)
         val key = createClientKey()
@@ -320,7 +321,7 @@ class GatewayIntegrationTest {
     @Test
     fun `direct routing spreads same-priority channels`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
+        app = GatewayApplication(config())
         val first = createChannelWithBaseUrl("first", "${fake.baseUrl}/ok/v1")
         val second = createChannelWithBaseUrl("second", "${fake.baseUrl}/ok/v1")
         val key = createClientKey()
@@ -824,7 +825,7 @@ class GatewayIntegrationTest {
     @Test
     fun `exposes and routes upstream models without aliases when enabled`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
+        app = GatewayApplication(config())
         val channel = createChannel("openai", "ok")
         val key = createClientKey()
 
@@ -851,49 +852,9 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `alias only channel hides upstream model and disables direct routing`() = runBlocking {
-        app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
-        val channel = createChannelWithBaseUrl(
-            "alias-only",
-            "${fake.baseUrl}/ok/v1",
-            exposeUpstreamModels = false,
-        )
-        createAlias("qwen3.8-flash", channel to "gpt-4o-mini")
-        val key = createClientKey()
-
-        testApplication {
-            application { app.install(this) }
-            val models = client.get("/v1/models") {
-                header(HttpHeaders.Authorization, "Bearer $key")
-            }
-            assertEquals(HttpStatusCode.OK, models.status)
-            val body = models.bodyAsText()
-            assertTrue(body.contains("qwen3.8-flash"), "BODY=[$body]")
-            assertTrue(!body.contains("gpt-4o-mini"), "BODY=[$body]")
-
-            val direct = client.post("/v1/chat/completions") {
-                header(HttpHeaders.Authorization, "Bearer $key")
-                contentType(ContentType.Application.Json)
-                setBody("""{"model":"gpt-4o-mini","stream":false,"messages":[]}""")
-            }
-            assertEquals(HttpStatusCode.NotFound, direct.status)
-            assertTrue(direct.bodyAsText().contains("model_not_found"))
-
-            val viaAlias = client.post("/v1/chat/completions") {
-                header(HttpHeaders.Authorization, "Bearer $key")
-                contentType(ContentType.Application.Json)
-                setBody("""{"model":"qwen3.8-flash","stream":false,"messages":[]}""")
-            }
-            assertEquals(HttpStatusCode.OK, viaAlias.status)
-            assertTrue(viaAlias.bodyAsText().contains("Hello!"))
-        }
-    }
-
-    @Test
     fun `canonical model mapping controls exposure and direct routing`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
+        app = GatewayApplication(config())
         val channel = createChannelWithBaseUrl(
             "canonical",
             "${fake.baseUrl}/ok/v1",
@@ -1070,7 +1031,7 @@ class GatewayIntegrationTest {
     @Test
     fun `admin exposed models matches data plane output`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
+        app = GatewayApplication(config())
         val channel = createChannel("openai", "ok")
         createAlias("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
@@ -1547,7 +1508,7 @@ class GatewayIntegrationTest {
     @Test
     fun `direct mode reports protocol mismatch`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
+        app = GatewayApplication(config())
         createChannel("chat-only", "ok")
         val key = createClientKey()
 
@@ -1659,7 +1620,7 @@ class GatewayIntegrationTest {
     @Test
     fun `channel authorization persists and restricts direct routing`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
+        app = GatewayApplication(config())
         val channel = createChannelWithBaseUrl(
             "authorized-only",
             "${fake.baseUrl}/ok/v1",
@@ -2331,7 +2292,7 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `migrations tolerate duplicate rows and add channel exposure default`() {
+    fun `migrations tolerate duplicate rows`() {
         val databaseName = "migration_latest_${System.nanoTime()}"
         val migrationUrl = postgres.jdbcUrl.substringBefore("?").substringBeforeLast("/") + "/$databaseName"
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
@@ -2371,6 +2332,25 @@ class GatewayIntegrationTest {
                 }
             }
 
+            // 先迁到 V19，构造一个关闭直连的渠道，验证 V20 会把它转为停用
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("19"))
+                .load()
+                .migrate()
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into channels (id, name, base_url, credential_ciphertext, credential_nonce, credential_key_version, auth_type, enabled, expose_upstream_models, created_at, updated_at)
+                        values ('alias-only-conversion', 'alias-only-conversion', 'https://example.com/v1', 'cipher', 'nonce', 1, 'bearer', true, false, 1, 1)
+                        """.trimIndent(),
+                    )
+                }
+            }
+
             Flyway.configure()
                 .dataSource(migrationUrl, postgres.username, postgres.password)
                 .locations("classpath:db/migration")
@@ -2379,13 +2359,27 @@ class GatewayIntegrationTest {
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
+                    statement.executeQuery("select enabled from channels where id = 'alias-only-conversion'").use { result ->
+                        assertTrue(result.next())
+                        assertFalse(result.getBoolean(1), "原关闭直连的渠道应被转为停用")
+                    }
+                    statement.executeQuery("select enabled from channels where id = 'migration-channel'").use { result ->
+                        assertTrue(result.next())
+                        assertTrue(result.getBoolean(1), "默认直连的渠道应保持启用")
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'channels' and column_name = 'expose_upstream_models'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(0, result.getInt(1), "expose_upstream_models 列应已删除")
+                    }
                     statement.executeQuery("select count(*) from channel_models").use { result ->
                         assertTrue(result.next())
                         assertEquals(1, result.getInt(1))
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("20", result.getString(1))
+                        assertEquals("21", result.getString(1))
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.columns where table_name = 'client_keys' and column_name = 'requests_per_minute'",
@@ -2412,10 +2406,6 @@ class GatewayIntegrationTest {
                     statement.executeQuery("select stream from request_logs where request_id = 'legacy-request-log'").use { result ->
                         assertTrue(result.next())
                         assertNull(result.getObject(1))
-                    }
-                    statement.executeQuery("select expose_upstream_models from channels where id = 'migration-channel'").use { result ->
-                        assertTrue(result.next())
-                        assertTrue(result.getBoolean(1))
                     }
                     statement.executeQuery("select canonical_model_id, mapping_source from channel_models where channel_id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -2588,7 +2578,6 @@ class GatewayIntegrationTest {
         firstTokenTimeoutMs: Long = 2_000,
         idleTimeoutMs: Long = 2_000,
         totalTimeoutMs: Long = 5_000,
-        exposeUpstreamModels: Boolean = false,
         corsOrigins: List<String> = emptyList(),
         maxAttempts: Int = 2,
         cooldownTransientBaseMs: Long = 3_600_000,
@@ -2612,7 +2601,6 @@ class GatewayIntegrationTest {
         drainTimeoutMs = 1_000,
         staticDir = Path.of("web/dist"),
         cookieSecure = false,
-        exposeUpstreamModels = exposeUpstreamModels,
         retention = RetentionPolicy(cleanupEnabled = false),
         cooldown = CooldownPolicy(
             transientBaseMs = cooldownTransientBaseMs,
@@ -2919,7 +2907,6 @@ class GatewayIntegrationTest {
         name: String,
         baseUrl: String,
         protocols: Set<GatewayProtocol> = GatewayProtocol.default,
-        exposeUpstreamModels: Boolean = true,
         modelMappings: List<ChannelModelRecord> = mappingsOf("gpt-4o-mini", "deepseek-chat", "m1", "m2"),
         priority: Int = 0,
         authType: String = "bearer",
@@ -2933,7 +2920,6 @@ class GatewayIntegrationTest {
             protocols = protocols,
             enabled = true,
             modelMappings = modelMappings,
-            exposeUpstreamModels = exposeUpstreamModels,
             priority = priority,
         )
     }

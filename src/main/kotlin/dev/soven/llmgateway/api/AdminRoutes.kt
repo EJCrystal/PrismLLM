@@ -147,7 +147,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             call.respond(
                 ExposedModelsResponse(
-                    exposeUpstreamModels = app.config.exposeUpstreamModels,
                     data = listExposedModels(app).map {
                         ExposedModelResponse(
                             id = it.id,
@@ -332,7 +331,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 protocols = protocols,
                 enabled = request.enabled,
                 modelMappings = normalizeModelMappings(request).orEmpty(),
-                exposeUpstreamModels = request.exposeUpstreamModels ?: true,
                 priority = request.priority ?: 1,
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
@@ -376,7 +374,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 protocols = protocols,
                 enabled = request.enabled,
                 modelMappings = modelMappings,
-                exposeUpstreamModels = request.exposeUpstreamModels,
                 priority = request.priority,
             ) ?: throw notFound("channel_not_found", "渠道不存在")
             call.respond(updated.toResponse())

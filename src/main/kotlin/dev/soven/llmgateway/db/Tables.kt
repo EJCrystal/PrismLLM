@@ -19,7 +19,6 @@ object Channels : Table("channels") {
     val authType = varchar("auth_type", 20)
     val protocols = varchar("protocols", 100)
     val enabled = bool("enabled")
-    val exposeUpstreamModels = bool("expose_upstream_models").default(true)
     val priority = integer("priority").default(1)
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
