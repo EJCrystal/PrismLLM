@@ -2567,7 +2567,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table admin_audit_logs, request_logs, alias_candidates, model_aliases, client_key_quota_usage, team_limits, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table admin_audit_logs, request_logs, alias_candidates, model_aliases, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }
