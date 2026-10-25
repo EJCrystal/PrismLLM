@@ -78,6 +78,10 @@ const priorityDraft = ref(1)
 let prioritySaving = false
 
 function startPriorityEdit(channel) {
+  if (prioritySaving) {
+    notify('正在保存上一处优先级修改，请稍候', 'warning')
+    return
+  }
   priorityEditingId.value = channel.id
   priorityDraft.value = channel.priority ?? 1
   nextTick(() => {
@@ -481,13 +485,18 @@ onMounted(load)
               <td><span class="mono address">{{ channel.baseUrl }}</span></td>
               <td
                 class="priority-cell"
+                tabindex="0"
+                role="button"
+                aria-label="双击或按 Enter 编辑渠道优先级"
                 title="双击编辑优先级"
                 @dblclick="startPriorityEdit(channel)"
+                @keyup.enter="startPriorityEdit(channel)"
               >
                 <input
                   v-if="priorityEditingId === channel.id"
                   v-model.number="priorityDraft"
                   class="priority-input"
+                  aria-label="渠道优先级"
                   type="number"
                   min="1"
                   max="1000"
