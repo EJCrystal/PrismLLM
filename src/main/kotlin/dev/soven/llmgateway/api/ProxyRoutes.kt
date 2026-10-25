@@ -217,7 +217,20 @@ private suspend fun handleProxy(
             }
             return try {
                 if (stream) {
-                    proxyStream(app, call, requestJson, candidate, alias, startedAt, attemptStartedNanos, remainingMs, state, protocol, traceContext.traceparent)
+                    proxyStream(
+                        app,
+                        call,
+                        requestJson,
+                        candidate,
+                        alias,
+                        startedAt,
+                        attemptStartedNanos,
+                        remainingMs,
+                        state,
+                        protocol,
+                        traceContext.traceparent,
+                        allowUpstreamErrorFailover = upstreamAttempts < app.config.maxAttempts && upstreamAttempts < candidates.size,
+                    )
                 } else {
                     proxyJson(app, call, requestJson, candidate, remainingMs, state, protocol, traceContext.traceparent)
                 }
@@ -590,6 +603,7 @@ private suspend fun proxyStream(
     state: ProxyState,
     protocol: GatewayProtocol,
     traceparent: String,
+    allowUpstreamErrorFailover: Boolean,
 ) {
     val upstreamUrl = buildUpstreamUrl(candidate, protocol)
     val credential = decryptCredential(app, candidate)
@@ -626,6 +640,17 @@ private suspend fun proxyStream(
                         while (found == null) {
                             val next = upstream.readUTF8Line() ?: break
                             prefixLines.add(next)
+                            if (
+                                protocol == GatewayProtocol.MESSAGES &&
+                                allowUpstreamErrorFailover &&
+                                isAnthropicStreamError(next)
+                            ) {
+                                val error = anthropicStreamException(next)
+                                if (error.retryable) {
+                                    upstream.cancel(error)
+                                    throw error
+                                }
+                            }
                             if (next.trim().startsWith("data:") && isFirstStreamData(next, protocol)) {
                                 found = next
                             }
@@ -957,6 +982,24 @@ private fun isAnthropicStreamError(line: String): Boolean {
         Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull
     }.getOrNull()
     return type == "error"
+}
+
+private fun anthropicStreamException(line: String): GatewayException {
+    val payload = ssePayload(line).orEmpty()
+    val type = runCatching {
+        Json.parseToJsonElement(payload).jsonObject["error"]
+            ?.jsonObject?.get("type")?.jsonPrimitive?.contentOrNull
+    }.getOrNull()
+    val status = when (type) {
+        "invalid_request_error" -> HttpStatusCode.BadRequest
+        "authentication_error" -> HttpStatusCode.Unauthorized
+        "permission_error" -> HttpStatusCode.Forbidden
+        "not_found_error" -> HttpStatusCode.NotFound
+        "rate_limit_error" -> HttpStatusCode.TooManyRequests
+        "overloaded_error" -> HttpStatusCode(529, "Overloaded")
+        else -> HttpStatusCode.InternalServerError
+    }
+    return upstreamException(status, payload, retryAfterMs = null, protocol = GatewayProtocol.MESSAGES)
 }
 
 private fun isFirstResponsesToken(line: String): Boolean {
