@@ -46,7 +46,6 @@ class RequestLogRepository(private val database: Database) {
             it[traceId] = record.traceId
             it[clientKeyId] = record.clientKeyId
             it[clientKeyName] = record.clientKeyName
-            it[team] = record.team
             it[alias] = record.alias
             it[channelId] = record.channelId
             it[channelName] = record.channelName
@@ -92,7 +91,6 @@ class RequestLogRepository(private val database: Database) {
             to = query.to,
             total = totals.copy(costs = costsByCurrency(where)),
             byClientKey = groupedQuery(RequestLogs.clientKeyId, RequestLogs.clientKeyName, where),
-            byTeam = groupedQuery(RequestLogs.team, RequestLogs.team, where, unassignedId = "__unassigned_team__"),
         )
     }
 
@@ -100,7 +98,6 @@ class RequestLogRepository(private val database: Database) {
         val conditions = buildList {
             add((RequestLogs.createdAt greaterEq query.from) and (RequestLogs.createdAt lessEq query.to))
             query.clientKeyId?.let { add(RequestLogs.clientKeyId eq it) }
-            query.team?.let { add(RequestLogs.team eq it) }
         }
         return conditions.reduce { left, right -> left and right }
     }
@@ -206,7 +203,6 @@ class RequestLogRepository(private val database: Database) {
         traceId = row[RequestLogs.traceId],
         clientKeyId = row[RequestLogs.clientKeyId],
         clientKeyName = row[RequestLogs.clientKeyName],
-        team = row[RequestLogs.team],
         alias = row[RequestLogs.alias],
         channelId = row[RequestLogs.channelId],
         channelName = row[RequestLogs.channelName],

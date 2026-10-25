@@ -36,7 +36,6 @@ class ClientKeyRepository(private val database: Database) {
 
     suspend fun create(
         name: String,
-        team: String? = null,
         keyHash: String,
         keyPrefix: String,
         enabled: Boolean,
@@ -48,7 +47,6 @@ class ClientKeyRepository(private val database: Database) {
         ClientKeys.insert {
             it[ClientKeys.id] = id
             it[ClientKeys.name] = name
-            it[ClientKeys.team] = team
             it[ClientKeys.keyHash] = keyHash
             it[ClientKeys.keyPrefix] = keyPrefix
             it[ClientKeys.enabled] = enabled
@@ -77,7 +75,6 @@ class ClientKeyRepository(private val database: Database) {
                 (ClientKeys.id eq id) and ClientKeys.revokedAt.isNull()
             }) {
                 it[ClientKeys.name] = name
-                it[ClientKeys.team] = team
                 it[ClientKeys.enabled] = enabled
                 it[ClientKeys.expiresAt] = expiresAt
                 it[ClientKeys.dailyTokenLimit] = quotas.dailyTokens
@@ -131,7 +128,6 @@ class ClientKeyRepository(private val database: Database) {
     private fun toRecord(row: ResultRow) = ClientKeyRecord(
         id = row[ClientKeys.id],
         name = row[ClientKeys.name],
-        team = row[ClientKeys.team],
         keyHash = row[ClientKeys.keyHash],
         keyPrefix = row[ClientKeys.keyPrefix],
         enabled = row[ClientKeys.enabled],

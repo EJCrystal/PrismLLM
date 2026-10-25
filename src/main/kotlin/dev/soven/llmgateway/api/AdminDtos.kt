@@ -7,8 +7,6 @@ import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.quota.ClientKeyQuotaUsage
-import dev.soven.llmgateway.quota.TeamLimitPolicy
-import dev.soven.llmgateway.quota.TeamLimitUsage
 import dev.soven.llmgateway.report.CleanupResult
 import dev.soven.llmgateway.report.RetentionPolicy
 import dev.soven.llmgateway.report.UsageGroup
@@ -212,7 +210,6 @@ fun AliasWithCandidates.toResponse() = AliasResponse(
 @Serializable
 data class ClientKeyRequest(
     val name: String,
-    val team: String? = null,
     val enabled: Boolean = true,
     val expiresAt: Long? = null,
     val dailyTokenLimit: Long? = null,
@@ -233,7 +230,6 @@ data class ClientKeyRequest(
 data class ClientKeyResponse(
     val id: String,
     val name: String,
-    val team: String?,
     val keyPrefix: String,
     val enabled: Boolean,
     val expiresAt: Long?,
@@ -252,7 +248,6 @@ data class ClientKeyResponse(
 fun ClientKeyRecord.toResponse() = ClientKeyResponse(
     id = id,
     name = name,
-    team = team,
     keyPrefix = keyPrefix,
     enabled = enabled,
     expiresAt = expiresAt,
@@ -271,7 +266,6 @@ fun ClientKeyRecord.toResponse() = ClientKeyResponse(
 fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyResponse(
     id = id,
     name = name,
-    team = team,
     keyPrefix = keyPrefix,
     enabled = enabled,
     expiresAt = expiresAt,
@@ -312,7 +306,6 @@ data class UsageReportResponse(
     val to: Long,
     val total: UsageTotalResponse,
     val byClientKey: List<UsageGroupResponse>,
-    val byTeam: List<UsageGroupResponse>,
 )
 
 @Serializable
@@ -354,7 +347,6 @@ fun UsageReport.toResponse() = UsageReportResponse(
     to = to,
     total = total.toResponse(),
     byClientKey = byClientKey.map { it.toResponse() },
-    byTeam = byTeam.map { it.toResponse() },
 )
 
 fun UsageTotal.toResponse() = UsageTotalResponse(
@@ -397,7 +389,6 @@ fun CleanupResult.toResponse() = CleanupResultResponse(deleted, cutoff)
 data class ClientKeyCreatedResponse(
     val id: String,
     val name: String,
-    val team: String?,
     val key: String,
     val keyPrefix: String,
     val enabled: Boolean,
@@ -416,7 +407,6 @@ data class ClientKeyCreatedResponse(
 fun ClientKeyRecord.toCreatedResponse(rawKey: String) = ClientKeyCreatedResponse(
     id = id,
     name = name,
-    team = team,
     key = rawKey,
     keyPrefix = keyPrefix,
     enabled = enabled,
@@ -462,52 +452,6 @@ fun AdminAuditRecord.toResponse() = AdminAuditLogResponse(
     sourceIp = sourceIp,
     errorCode = errorCode,
     createdAt = createdAt,
-)
-
-/**
- * 团队请求速率与并发策略写请求。null 表示该维度不限制。
- */
-@Serializable
-data class TeamLimitRequest(
-    val requestsPerMinute: Int? = null,
-    val maxConcurrentRequests: Int? = null,
-)
-
-/**
- * 团队限流策略及当前单实例用量。
- */
-@Serializable
-data class TeamLimitResponse(
-    val team: String,
-    val requestsPerMinute: Int?,
-    val maxConcurrentRequests: Int?,
-    val currentMinuteRequests: Int,
-    val activeConcurrentRequests: Int,
-    val configured: Boolean,
-    val createdAt: Long?,
-    val updatedAt: Long?,
-)
-
-fun TeamLimitPolicy.toResponse(usage: TeamLimitUsage) = TeamLimitResponse(
-    team = team,
-    requestsPerMinute = requestsPerMinute,
-    maxConcurrentRequests = maxConcurrentRequests,
-    currentMinuteRequests = usage.currentMinuteRequests,
-    activeConcurrentRequests = usage.activeConcurrentRequests,
-    configured = true,
-    createdAt = createdAt,
-    updatedAt = updatedAt,
-)
-
-fun unconfiguredTeamLimit(team: String, usage: TeamLimitUsage) = TeamLimitResponse(
-    team = team,
-    requestsPerMinute = null,
-    maxConcurrentRequests = null,
-    currentMinuteRequests = usage.currentMinuteRequests,
-    activeConcurrentRequests = usage.activeConcurrentRequests,
-    configured = false,
-    createdAt = null,
-    updatedAt = null,
 )
 
 /**

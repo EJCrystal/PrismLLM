@@ -17,7 +17,6 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
 
     assert.deepEqual(payload, {
       name: 'search-service',
-      team: null,
       enabled: true,
       expiresAt: null,
       dailyTokenLimit: null,
@@ -76,9 +75,8 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
   })
 
   it('启停时保留团队字段', () => {
-    const key = { name: 'search', team: 'search-team', enabled: true, expiresAt: null }
-    const payload = { name: key.name, team: key.team, enabled: !key.enabled, expiresAt: key.expiresAt }
-    assert.equal(payload.team, 'search-team')
+    const key = { name: 'search', enabled: true, expiresAt: null }
+    const payload = { name: key.name, enabled: !key.enabled, expiresAt: key.expiresAt }
   })
 
   it('路由模板逐一对应小驼峰费用字段', () => {

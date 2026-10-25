@@ -102,15 +102,6 @@ export const api = {
   revokeClientKey: (id) =>
     request('/client-keys/' + encodeURIComponent(id) + '/revoke', { method: 'POST' }),
 
-  listTeamLimits: () => request('/team-limits'),
-  updateTeamLimit: (team, payload) =>
-    request(`/team-limits/${encodeURIComponent(team)}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    }),
-  deleteTeamLimit: (team) =>
-    request(`/team-limits/${encodeURIComponent(team)}`, { method: 'DELETE' }),
-
   listAuditLogs: ({ limit = 100, beforeId = null } = {}) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (beforeId != null) params.set('beforeId', String(beforeId))
@@ -129,10 +120,9 @@ export const api = {
     request(`/model-prices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   listRequestLogs: (limit = 100) => request(`/request-logs?limit=${limit}`),
-  getUsageReport: ({ from, to, clientKeyId = null, team = null }) => {
+  getUsageReport: ({ from, to, clientKeyId = null }) => {
     const params = new URLSearchParams({ from: String(from), to: String(to) })
     if (clientKeyId) params.set('clientKeyId', clientKeyId)
-    if (team) params.set('team', team)
     return request(`/usage-report?${params}`)
   },
   getRetentionPolicy: () => request('/request-log-retention'),

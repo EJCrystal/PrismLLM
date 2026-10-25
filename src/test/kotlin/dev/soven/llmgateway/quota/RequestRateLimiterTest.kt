@@ -14,56 +14,27 @@ class RequestRateLimiterTest {
         val limiter = RequestRateLimiter(now = { now })
         val key = key("key-a", ClientKeyQuotaLimits(requestsPerMinute = 2))
 
-        val first = limiter.acquire(key, null)
-        val second = limiter.acquire(key, null)
+        limiter.acquire(key)
+        limiter.acquire(key)
         assertEquals(2, limiter.currentKeyUsage(key.id))
-        val rejected = assertFailsWith<GatewayException> { limiter.acquire(key, null) }
+        val rejected = assertFailsWith<GatewayException> { limiter.acquire(key) }
         assertEquals("key_rate_limit_exceeded", rejected.code)
 
         now = 180_000L
         assertEquals(0, limiter.currentKeyUsage(key.id))
-        val nextMinute = limiter.acquire(key, null)
-        limiter.release(first)
-        limiter.release(second)
-        limiter.release(nextMinute)
+        limiter.acquire(key)
     }
 
     @Test
-    fun `team request limit is shared across keys`() = runBlocking {
-        var now = 0L
-        val limiter = RequestRateLimiter(now = { now })
-        val policy = TeamLimitPolicy(team = "search", requestsPerMinute = 2)
-        val firstKey = key("key-a", team = "search")
-        val secondKey = key("key-b", team = "search")
-
-        val first = limiter.acquire(firstKey, policy)
-        val second = limiter.acquire(secondKey, policy)
-        val rejected = assertFailsWith<GatewayException> { limiter.acquire(secondKey, policy) }
-        assertEquals("team_rate_limit_exceeded", rejected.code)
-
-        now = 60_000L
-        val nextMinute = limiter.acquire(secondKey, policy)
-        listOf(first, second, nextMinute).forEach { limiter.release(it) }
-    }
-
-    @Test
-    fun `team concurrency is shared and released across keys`() = runBlocking {
+    fun `key request limit is independent between keys`() = runBlocking {
         val limiter = RequestRateLimiter(now = { 0L })
-        val policy = TeamLimitPolicy(team = "search", maxConcurrentRequests = 1)
-        val firstKey = key("key-a", team = "search")
-        val secondKey = key("key-b", team = "search")
-        val first = limiter.acquire(firstKey, policy)
+        val first = key("key-a", ClientKeyQuotaLimits(requestsPerMinute = 1))
+        val second = key("key-b", ClientKeyQuotaLimits(requestsPerMinute = 1))
 
-        val rejected = assertFailsWith<GatewayException> { limiter.acquire(secondKey, policy) }
-        assertEquals("team_concurrency_limit_exceeded", rejected.code)
-
-        limiter.release(first)
-        val next = limiter.acquire(secondKey, policy)
-        val usage = limiter.currentTeamUsage("search")
-        assertEquals(1, usage.activeConcurrentRequests)
-        assertEquals(2, usage.currentMinuteRequests)
-        limiter.release(next)
-        assertEquals(0, limiter.currentTeamUsage("search").activeConcurrentRequests)
+        limiter.acquire(first)
+        assertFailsWith<GatewayException> { limiter.acquire(first) }
+        limiter.acquire(second)
+        assertEquals(1, limiter.currentKeyUsage(second.id))
     }
 
     @Test
@@ -71,23 +42,20 @@ class RequestRateLimiterTest {
         val limiter = RequestRateLimiter(now = { 0L })
         val key = key("key-a", ClientKeyQuotaLimits(requestsPerMinute = 0))
 
-        val error = assertFailsWith<GatewayException> { limiter.acquire(key, null) }
-        assertEquals("key_rate_limit_exceeded", error.code)
+        val rejected = assertFailsWith<GatewayException> { limiter.acquire(key) }
+        assertEquals("key_rate_limit_exceeded", rejected.code)
     }
-
-    private fun key(
-        id: String,
-        quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits(),
-        team: String? = null,
-    ) = ClientKeyRecord(
-        id = id,
-        name = id,
-        team = team,
-        keyHash = "hash-$id",
-        keyPrefix = "sk-gw-test",
-        enabled = true,
-        expiresAt = null,
-        quotas = quotas,
-        createdAt = 0,
-    )
 }
+
+private fun key(id: String, quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits()) = ClientKeyRecord(
+    id = id,
+    name = id,
+    keyHash = "hash-$id",
+    keyPrefix = "sk-gw-test",
+    enabled = true,
+    expiresAt = null,
+    quotas = quotas,
+    createdAt = 0,
+    rotatedAt = null,
+    revokedAt = null,
+)

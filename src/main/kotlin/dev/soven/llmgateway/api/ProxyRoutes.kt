@@ -390,7 +390,6 @@ private suspend fun handleProxy(
                 traceId = traceContext.traceId,
                 clientKeyId = clientKey?.id,
                 clientKeyName = clientKey?.name,
-                team = clientKey?.team,
                 alias = alias,
                 channelId = channelId,
                 channelName = channelName,
@@ -444,8 +443,6 @@ private val QUOTA_REJECTION_CODES = setOf(
     "daily_cost_quota_exceeded",
     "concurrency_limit_exceeded",
     "key_rate_limit_exceeded",
-    "team_rate_limit_exceeded",
-    "team_concurrency_limit_exceeded",
 )
 
 private suspend fun settleRequestLimitOnExit(
