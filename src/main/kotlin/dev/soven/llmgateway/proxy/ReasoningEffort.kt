@@ -21,6 +21,7 @@ object ReasoningEffort {
         val raw = when (protocol) {
             GatewayProtocol.CHAT_COMPLETIONS -> request["reasoning_effort"]
             GatewayProtocol.RESPONSES -> (request["reasoning"] as? JsonObject)?.get("effort")
+            GatewayProtocol.MESSAGES -> null
         }
         return (raw as? JsonPrimitive)
             ?.takeIf { it.isString }

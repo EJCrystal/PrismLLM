@@ -168,6 +168,7 @@ data class RequestLogRecord(
     val channelName: String?,
     val upstreamModel: String?,
     val protocol: GatewayProtocol,
+    val stream: Boolean? = null,
     val statusCode: Int,
     val firstTokenMs: Long?,
     val totalMs: Long,

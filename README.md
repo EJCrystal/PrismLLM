@@ -1,11 +1,11 @@
 # llm-gateway
 
-面向内部团队的 OpenAI 兼容 LLM 网关。v1 接收 `/v1/chat/completions` 与 `/v1/responses`，按渠道授权与对外模型 ID 智能路由，透明重写上游模型名，透传 SSE 流，并记录用量与请求元数据。
+面向内部团队的 LLM 网关，原生透传 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages。网关按渠道授权与对外模型 ID 路由，只重写上游模型名，透传 SSE 流，并记录用量与请求元数据。
 
 ## 能力边界
 
-- OpenAI Chat Completions 与 Responses 兼容入口，支持 `stream=true` 与 `stream=false`。
-- 渠道按协议配置支持 `chat_completions` / `responses`，路由时按请求协议过滤候选。
+- 原生协议入口 `/v1/chat/completions`、`/v1/responses` 与 `/v1/messages`，支持流式和非流式请求，不在协议之间转换。
+- 渠道按 `chat_completions`、`responses`、`messages` 声明支持的协议，路由时按请求协议过滤候选。
 - 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。渠道启用即参与直连暴露。
 - 自定义对外模型 ID 会替代上游名对外暴露；多个渠道配置相同对外模型 ID 时自动聚合、同优先级分摊。
 - 调用方密钥鉴权，支持按密钥限制每分钟请求数和并发数；上游凭据使用 AES-256-GCM 加密存储。
@@ -17,21 +17,21 @@
   - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
 - PostgreSQL + Flyway；单实例部署。
 
-明确不做：Anthropic/Gemini 原生协议转换、多租户 RBAC、语义缓存、MCP、多副本。
+明确不做：协议间相互转换（各协议仅原生透传）、Gemini 原生入口、多租户 RBAC、语义缓存、MCP、多副本。
 
 ## 架构
 
 ```
-client --Bearer client key--> gateway --Bearer upstream credential--> OpenAI-compatible upstream
+client --client key--> gateway --configured auth--> protocol-compatible upstream
                                 |
                                 +-- PostgreSQL: channels, channel models, client keys, model prices, request logs, admin audit logs
 ```
 
-数据面：`/v1/chat/completions`、`/v1/responses`、`/v1/models`。
+数据面：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/models`。
 管理面：`/admin/api/*`，由会话 Cookie + CSRF Token 保护。
 运维面：`/health/live`、`/health/ready`、`/metrics`。
 
-渠道的 `baseUrl` 必须包含版本路径，例如 `https://api.openai.com/v1`。网关按请求协议追加 `/chat/completions` 或 `/responses`，不会自动补 `/v1`。
+渠道的 `baseUrl` 必须包含上游要求的版本路径，例如 `https://api.openai.com/v1` 或 `https://api.anthropic.com/v1`。网关按请求协议追加 `/chat/completions`、`/responses` 或 `/messages`，不会自动补 `/v1`。Anthropic Messages 请求可使用 `Authorization: Bearer <gateway-key>` 或 `x-api-key: <gateway-key>`；渠道上游鉴权可选择 Bearer 或 Anthropic `x-api-key`，`anthropic-version` 缺省为 `2023-06-01`。
 
 启用渠道的对外模型 ID 会出现在 `/v1/models` 并可直接路由。满足条件后：
 - **未配置对外模型 ID（留空）**：对外使用上游模型名；
@@ -120,6 +120,16 @@ curl http://localhost:8080/v1/responses \
   -H "Authorization: Bearer sk-gw-..."   -H "Content-Type: application/json"   -d '{"model":"fast-chat","stream":true,"input":"hi"}'
 ```
 
+Anthropic Messages 调用：
+
+```bash
+curl http://localhost:8080/v1/messages \
+  -H "x-api-key: sk-gw-..." \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-fast","max_tokens":128,"messages":[{"role":"user","content":"hi"}]}'
+```
+
 模型列表：`GET /v1/models` 返回当前启用的别名与启用渠道的可直连模型 ID。请求日志会记录本次请求使用的协议。
 
 管理 API 示例：
@@ -170,7 +180,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
 curl -b cookies.txt http://localhost:8080/admin/api/exposed-models
 ```
 
-返回 `object` 和 `data`，每条记录包含 `id`、`source`（`alias` / `upstream`）与 `ownedBy`。管理界面的“模型列表”菜单展示同一结果，并提供原始 JSON 响应预览。
+返回 `object` 和 `data`，每条记录包含 `id`、`source`（`alias` / `upstream` / `canonical`）与 `ownedBy`。配置了对外 canonical ID 的上游模型会标记为 `canonical`。管理界面的“模型列表”菜单展示同一结果，并提供原始 JSON 响应预览。
 
 同一页面还会加载 models.dev 目录，展示模型 ID、`canonical_model_id`、模型开发者和服务提供方，并在对外模型表中标记匹配结果。目录接口：`GET /admin/api/models-dev`。上游 `/models` 返回的 `owned_by` 只表示上游元数据，不作为模型开发者；例如 Qwen 通过 OpenAI 兼容接口返回 `owned_by=openai` 时，仍按 canonical ID 的 `alibaba` 命名空间识别开发者。
 
@@ -186,7 +196,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
   -d '{"model":"gpt-4o-mini"}'
 ```
 
-返回每个协议的 `supported`、`statusCode` 和说明。探测会使用已保存凭据发送最小请求（Chat `max_tokens=1`，Responses `max_output_tokens=1`），可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
+返回每个协议的 `supported`、`statusCode` 和说明。探测会使用已保存凭据发送最小请求（Chat `max_tokens=1`、Responses `max_output_tokens=1`、Messages `max_tokens=1`），可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
 
 ### 候选档位、分摊与候选冷却
 
@@ -287,7 +297,7 @@ GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行
 mvn test
 ```
 
-包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions 与 Responses 的 SSE 用量解析、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、密钥每分钟请求限制与释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
+包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions、Responses 与 Anthropic Messages 的 SSE 用量解析与透传、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、密钥每分钟请求限制与释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
 
 ### 前端自动化测试
 
@@ -295,7 +305,7 @@ mvn test
 npm --prefix web test
 ```
 
-基于 Node.js 原生测试引擎（`node:test`），毫秒级执行。覆盖多主题注册表（浅色/深色/护眼暖色）、持久化与防闪烁、通用复制工具 `copyText`、`SecretInput`、`CopyButton`、`format` 格式化工具、授权模型展示逻辑、密钥/团队限流配置、密钥轮换/撤销并发保护，以及操作审计分页与刷新竞态。
+基于 Node.js 原生测试引擎（`node:test`），毫秒级执行。覆盖多主题注册表（浅色/深色/护眼暖色）、持久化与防闪烁、通用复制工具 `copyText`、`SecretInput`、`CopyButton`、`format` 格式化工具、授权模型展示逻辑、密钥限流配置、密钥轮换/撤销并发保护，以及操作审计分页与刷新竞态。
 
 关键实现决策记录在 `docs/adr/`，包括 Kotlin/Ktor 选型、v1 协议边界和上游 HTTP 客户端选择。
 
@@ -305,5 +315,5 @@ PR 会自动触发 PR-Agent 审查，完成后在 PR 里留下中文审查意见
 
 ## 路线图
 
-- v1.2：Anthropic Messages 原生适配、Redis 共享速率与并发状态、多管理员 RBAC。
+- v1.2：Redis 共享速率与并发状态、多管理员 RBAC。
 - v1.3：多副本会话、配置缓存、请求正文按渠道采样。

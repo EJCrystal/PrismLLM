@@ -111,4 +111,40 @@ class UsageParserTest {
         assertNull(usage?.output)
         assertFalse(usage?.known == false)
     }
+
+    @Test
+    fun `parses anthropic non streaming usage and cache reads`() {
+        val json = Json.parseToJsonElement(
+            """{"type":"message","usage":{"input_tokens":10,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4}}""",
+        ).jsonObject
+
+        val usage = UsageParser.fromAnthropicJson(json)
+
+        assertEquals(15, usage?.input)
+        assertEquals(4, usage?.output)
+        assertEquals(3, usage?.cached)
+        assertEquals(19, usage?.total)
+        assertNull(usage?.reasoning)
+    }
+
+    @Test
+    fun `parses anthropic streaming usage from message start and delta`() {
+        val start = Json.parseToJsonElement(
+            """{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":3,"output_tokens":1}}}""",
+        ).jsonObject
+        val delta = Json.parseToJsonElement(
+            """{"type":"message_delta","usage":{"output_tokens":4}}""",
+        ).jsonObject
+
+        val startUsage = UsageParser.fromAnthropicJson(start)
+        val deltaUsage = UsageParser.fromAnthropicJson(delta)
+
+        assertEquals(13, startUsage?.input)
+        assertEquals(3, startUsage?.cached)
+        assertEquals(1, startUsage?.output)
+        assertNull(startUsage?.total)
+        assertEquals(4, deltaUsage?.output)
+        assertNull(deltaUsage?.input)
+        assertNull(UsageParser.fromAnthropicJson(Json.parseToJsonElement("""{"type":"content_block_delta"}""").jsonObject))
+    }
 }

@@ -75,7 +75,7 @@ class ChannelRepository(private val database: Database) {
         name: String,
         baseUrl: String,
         credential: EncryptedCredential?,
-        authType: String,
+        authType: String?,
         protocols: Set<GatewayProtocol> = GatewayProtocol.default,
         enabled: Boolean,
         modelMappings: List<ChannelModelRecord>? = null,
@@ -89,7 +89,7 @@ class ChannelRepository(private val database: Database) {
                 it[credentialNonce] = credential.nonce
                 it[credentialKeyVersion] = credential.keyVersion
             }
-            it[Channels.authType] = authType
+            if (authType != null) it[Channels.authType] = authType
             it[Channels.protocols] = protocols.joinToString(",") { protocol -> protocol.value }
             it[Channels.enabled] = enabled
             if (priority != null) it[Channels.priority] = priority

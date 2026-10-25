@@ -5,6 +5,7 @@ import { notify } from '../toast'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
+import { requestModeLabel } from '../utils/requestMode'
 import {
   formatTime,
   formatDuration,
@@ -240,7 +241,7 @@ onMounted(load)
             <tr>
               <th>时间</th>
               <th>请求 ID</th>
-              <th>别名 / 协议</th>
+              <th>别名 / 协议 / 模式</th>
               <th>渠道 / 上游模型</th>
               <th>状态 / 错误</th>
               <th>耗时</th>
@@ -262,7 +263,7 @@ onMounted(load)
                 <div class="stacked-cell">
                   <span class="badge info">{{ log.alias }}</span>
                   <span class="muted small">
-                    {{ log.protocol || '—' }}<template v-if="log.reasoningEffort"> · 强度 {{ log.reasoningEffort }}</template>
+                    {{ log.protocol || '—' }} · {{ requestModeLabel(log.stream) }}<template v-if="log.reasoningEffort"> · 强度 {{ log.reasoningEffort }}</template>
                   </span>
                 </div>
               </td>
@@ -359,6 +360,10 @@ onMounted(load)
               <div class="detail-item">
                 <span>协议</span>
                 <strong>{{ selected.protocol || '—' }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>请求模式</span>
+                <strong>{{ requestModeLabel(selected.stream) }}</strong>
               </div>
               <div class="detail-item">
                 <span>失败阶段</span>

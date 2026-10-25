@@ -246,6 +246,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val saved = request.channelId
                 ?.takeIf { it.isNotBlank() }
                 ?.let { app.channelRepository.find(it) ?: throw notFound("channel_not_found", "渠道不存在") }
+            val authType = request.authType ?: saved?.authType ?: "bearer"
+            if (authType !in setOf("bearer", "anthropic")) {
+                throw badRequest("invalid_channel", "上游鉴权方式必须是 bearer 或 anthropic")
+            }
             val credential = request.credential
                 ?.takeIf { it.isNotBlank() }
                 ?: saved?.let { channel ->
@@ -266,7 +270,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 ?: throw badRequest("invalid_channel", "发现上游模型需要提供凭据")
             val authorized = saved?.models?.toSet().orEmpty()
             val mappingByUpstream = saved?.modelMappings?.associateBy { it.upstreamModel }.orEmpty()
-            val models = fetchUpstreamModels(baseUrl, credential, app.httpClient)
+            val models = fetchUpstreamModels(baseUrl, credential, app.httpClient, authType)
                 .map {
                     val mapping = mappingByUpstream[it.id]
                     ChannelModelResponse(
@@ -323,7 +327,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 name = request.name,
                 baseUrl = request.baseUrl,
                 credential = encrypted,
-                authType = request.authType,
+                authType = request.authType ?: "bearer",
                 protocols = protocols,
                 enabled = request.enabled,
                 modelMappings = normalizeModelMappings(request).orEmpty(),
@@ -730,7 +734,9 @@ private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean
     if (!request.baseUrl.startsWith("http://") && !request.baseUrl.startsWith("https://")) {
         throw badRequest("invalid_channel", "渠道地址必须以 http:// 或 https:// 开头")
     }
-    if (request.authType != "bearer") throw badRequest("invalid_channel", "v1 只支持 bearer 凭据")
+    if (request.authType != null && request.authType !in setOf("bearer", "anthropic")) {
+        throw badRequest("invalid_channel", "上游鉴权方式必须是 bearer 或 anthropic")
+    }
     if (request.priority != null && request.priority !in 1..1000) {
         throw badRequest("invalid_channel", "渠道优先级必须在 1..1000 之间")
     }

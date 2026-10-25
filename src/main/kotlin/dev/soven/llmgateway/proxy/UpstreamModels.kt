@@ -46,7 +46,7 @@ suspend fun fetchUpstreamModels(
         )
     }
 
-    val models = fetchUpstreamModels(channel.baseUrl, credential, httpClient)
+    val models = fetchUpstreamModels(channel.baseUrl, credential, httpClient, channel.authType)
     return if (authorizedOnly) models.filter { it.id in channel.models } else models
 }
 
@@ -57,12 +57,13 @@ suspend fun fetchUpstreamModels(
     baseUrl: String,
     credential: String,
     httpClient: HttpClient,
+    authType: String = "bearer",
 ): List<UpstreamModel> {
     val url = baseUrl.trimEnd('/') + "/models"
     try {
         return withTimeout(MODEL_LIST_TIMEOUT_MS) {
             val response = httpClient.get(url) {
-                header(HttpHeaders.Authorization, "Bearer $credential")
+                applyUpstreamAuthentication(credential, authType)
                 header(HttpHeaders.Accept, "application/json")
             }
             if (!response.status.isSuccess()) {

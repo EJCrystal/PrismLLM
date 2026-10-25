@@ -150,6 +150,22 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
                     logger.warn("gateway error after response committed, code={}", cause.code)
                     return@exception
                 }
+                if (call.request.path() == "/v1/messages" && cause.nativeResponseBody != null) {
+                    call.respondText(
+                        cause.nativeResponseBody,
+                        ContentType.Application.Json,
+                        cause.upstreamStatus?.let(HttpStatusCode::fromValue) ?: cause.status,
+                    )
+                    return@exception
+                }
+                if (call.request.path() == "/v1/messages") {
+                    call.respondText(
+                        gatewayJson.encodeToString(AnthropicErrorEnvelope.serializer(), cause.toAnthropicEnvelope()),
+                        ContentType.Application.Json,
+                        cause.status,
+                    )
+                    return@exception
+                }
                 call.respondText(
                     gatewayJson.encodeToString(ErrorEnvelope.serializer(), cause.toEnvelope()),
                     ContentType.Application.Json,
@@ -160,13 +176,11 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
                 call.markAdminAuditError("internal_error")
                 logger.error("unhandled request error", cause)
                 if (!call.response.isCommitted) {
-                    call.respondText(
-                        gatewayJson.encodeToString(
-                            ErrorEnvelope.serializer(),
-                            ErrorEnvelope(ErrorBody("网关内部错误", "api_error", "internal_error")),
-                        ),
-                        ContentType.Application.Json,
+                    call.respondGatewayError(
                         HttpStatusCode.InternalServerError,
+                        "internal_error",
+                        "网关内部错误",
+                        "api_error",
                     )
                 }
             }
@@ -178,6 +192,9 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             allowMethod(HttpMethod.Put)
             allowMethod(HttpMethod.Delete)
             allowHeader(HttpHeaders.Authorization)
+            allowHeader("x-api-key")
+            allowHeader("anthropic-version")
+            allowHeader("anthropic-beta")
             allowHeader(HttpHeaders.ContentType)
             allowHeader("X-CSRF-Token")
             allowHeader("X-Request-Id")
@@ -248,6 +265,17 @@ private suspend fun io.ktor.server.application.ApplicationCall.respondGatewayErr
     message: String,
     type: String,
 ) {
+    if (request.path() == "/v1/messages") {
+        respondText(
+            GatewayApplication.gatewayJson.encodeToString(
+                AnthropicErrorEnvelope.serializer(),
+                AnthropicErrorEnvelope(error = AnthropicErrorBody(anthropicErrorType(status, type), message)),
+            ),
+            ContentType.Application.Json,
+            status,
+        )
+        return
+    }
     respondText(
         GatewayApplication.gatewayJson.encodeToString(
             ErrorEnvelope.serializer(),

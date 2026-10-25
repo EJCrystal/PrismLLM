@@ -51,6 +51,7 @@ class RequestLogRepository(private val database: Database) {
             it[channelName] = record.channelName
             it[upstreamModel] = record.upstreamModel
             it[protocol] = record.protocol.value
+            it[stream] = record.stream
             it[statusCode] = record.statusCode
             it[firstTokenMs] = record.firstTokenMs
             it[totalMs] = record.totalMs
@@ -208,6 +209,7 @@ class RequestLogRepository(private val database: Database) {
         channelName = row[RequestLogs.channelName],
         upstreamModel = row[RequestLogs.upstreamModel],
         protocol = GatewayProtocol.fromValue(row[RequestLogs.protocol]) ?: GatewayProtocol.CHAT_COMPLETIONS,
+        stream = row[RequestLogs.stream],
         statusCode = row[RequestLogs.statusCode],
         firstTokenMs = row[RequestLogs.firstTokenMs],
         totalMs = row[RequestLogs.totalMs],

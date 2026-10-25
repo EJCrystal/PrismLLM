@@ -17,7 +17,7 @@ export function buildChannelPayload(
     name: form.name.trim(),
     baseUrl: form.baseUrl.trim(),
     credential: form.credential.trim() || null,
-    authType: 'bearer',
+    authType: form.authType || 'bearer',
     protocols: [...form.protocols],
     enabled: form.enabled,
     modelMappings: authorizedModels.map((upstreamModel) => {
@@ -35,5 +35,16 @@ export function buildChannelPayload(
       }
     }),
     priority: form.priority === '' || form.priority === null || form.priority === undefined ? null : Number(form.priority) || 1,
+  }
+}
+
+export function buildPriorityUpdatePayload(channel, priority) {
+  return {
+    name: channel.name,
+    baseUrl: channel.baseUrl,
+    authType: channel.authType || 'bearer',
+    protocols: [...(channel.protocols || [])],
+    enabled: channel.enabled,
+    priority,
   }
 }
