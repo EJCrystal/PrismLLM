@@ -177,7 +177,7 @@ onMounted(() => {
         :empty="models.length === 0"
         icon="models"
         title="当前没有对外暴露的模型"
-        desc="授权模型并允许公开直连，或创建别名后，这里会显示对应模型。若预期出现上游模型名，请检查渠道的“仅通过别名暴露”设置。"
+        desc="启用渠道并授权模型，或创建别名后，这里会显示对应模型。若预期出现的模型缺失，请检查渠道是否启用及其授权模型列表。"
       />
       <div v-else class="table-scroll">
         <table class="data-table">
