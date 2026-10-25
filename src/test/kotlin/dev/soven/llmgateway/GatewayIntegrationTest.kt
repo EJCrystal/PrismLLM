@@ -274,7 +274,6 @@ class GatewayIntegrationTest {
     @Test
     fun `direct routing prefers channel priority and skips cooled high priority`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true, cooldownTransientBaseMs = 60_000))
         val preferred = createChannelWithBaseUrl("preferred", "${fake.baseUrl}/500/v1", priority = 1)
         val backup = createChannelWithBaseUrl("backup", "${fake.baseUrl}/ok/v1", priority = 2)
         val key = createClientKey()
@@ -306,7 +305,6 @@ class GatewayIntegrationTest {
     @Test
     fun `direct routing spreads same-priority channels`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
         val first = createChannelWithBaseUrl("first", "${fake.baseUrl}/ok/v1")
         val second = createChannelWithBaseUrl("second", "${fake.baseUrl}/ok/v1")
         val key = createClientKey()
@@ -810,7 +808,6 @@ class GatewayIntegrationTest {
     @Test
     fun `exposes and routes upstream models without aliases when enabled`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
         val channel = createChannel("openai", "ok")
         val key = createClientKey()
 
@@ -839,7 +836,6 @@ class GatewayIntegrationTest {
     @Test
     fun `canonical model mapping controls exposure and direct routing`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
         val channel = createChannelWithBaseUrl(
             "canonical",
             "${fake.baseUrl}/ok/v1",
@@ -1016,7 +1012,6 @@ class GatewayIntegrationTest {
     @Test
     fun `admin exposed models matches data plane output`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
         val channel = createChannel("openai", "ok")
         createAlias("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
@@ -1492,7 +1487,6 @@ class GatewayIntegrationTest {
     @Test
     fun `direct mode reports protocol mismatch`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
         createChannel("chat-only", "ok")
         val key = createClientKey()
 
@@ -1604,7 +1598,6 @@ class GatewayIntegrationTest {
     @Test
     fun `channel authorization persists and restricts direct routing`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(exposeUpstreamModels = true))
         val channel = createChannelWithBaseUrl(
             "authorized-only",
             "${fake.baseUrl}/ok/v1",
@@ -2533,7 +2526,6 @@ class GatewayIntegrationTest {
         firstTokenTimeoutMs: Long = 2_000,
         idleTimeoutMs: Long = 2_000,
         totalTimeoutMs: Long = 5_000,
-        exposeUpstreamModels: Boolean = false,
         corsOrigins: List<String> = emptyList(),
         maxAttempts: Int = 2,
         cooldownTransientBaseMs: Long = 3_600_000,
@@ -2557,7 +2549,6 @@ class GatewayIntegrationTest {
         drainTimeoutMs = 1_000,
         staticDir = Path.of("web/dist"),
         cookieSecure = false,
-        exposeUpstreamModels = exposeUpstreamModels,
         retention = RetentionPolicy(cleanupEnabled = false),
         cooldown = CooldownPolicy(
             transientBaseMs = cooldownTransientBaseMs,

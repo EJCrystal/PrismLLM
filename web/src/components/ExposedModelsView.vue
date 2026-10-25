@@ -8,7 +8,6 @@ import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
 
 const models = ref([])
-const exposeUpstreamModels = ref(false)
 const loading = ref(true)
 const error = ref('')
 const loadedAt = ref('')
@@ -48,7 +47,6 @@ async function loadExposedModels() {
   try {
     const response = await api.getExposedModels()
     models.value = response?.data || []
-    exposeUpstreamModels.value = Boolean(response?.exposeUpstreamModels)
     loadedAt.value = formatTime(new Date(), { style: 'timeOnly' })
   } catch (cause) {
     error.value = cause.message
@@ -135,7 +133,7 @@ onMounted(() => {
     <div class="section-head">
       <div>
         <h2>对外模型列表 <span class="badge info">只读</span></h2>
-        <p>调用方通过 <code>GET /v1/models</code> 获取到的模型结果；上游直连{{ exposeUpstreamModels ? '已开启' : '已关闭' }}，models.dev 已匹配 {{ matchedCount }}/{{ models.length }}。</p>
+        <p>调用方通过 <code>GET /v1/models</code> 获取到的模型结果，models.dev 已匹配 {{ matchedCount }}/{{ models.length }}。</p>
       </div>
       <button type="button" class="button subtle" :disabled="loading || catalogLoading" @click="refreshAll">
         <Icon name="refresh" :size="16" />
@@ -162,7 +160,7 @@ onMounted(() => {
       <div class="stat-card">
         <span>上游直连</span>
         <strong>{{ upstreamCount }}</strong>
-        <small>{{ exposeUpstreamModels ? '来自渠道已授权模型' : 'EXPOSE_UPSTREAM_MODELS=false' }}</small>
+        <small>来自渠道已授权模型</small>
       </div>
     </div>
 

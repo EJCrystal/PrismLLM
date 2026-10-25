@@ -147,7 +147,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             call.respond(
                 ExposedModelsResponse(
-                    exposeUpstreamModels = app.config.exposeUpstreamModels,
                     data = listExposedModels(app).map {
                         ExposedModelResponse(
                             id = it.id,

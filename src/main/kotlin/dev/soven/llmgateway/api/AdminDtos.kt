@@ -707,7 +707,6 @@ data class ExposedModelResponse(
 @Serializable
 data class ExposedModelsResponse(
     val `object`: String = "list",
-    val exposeUpstreamModels: Boolean,
     val data: List<ExposedModelResponse>,
 )
 
