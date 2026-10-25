@@ -968,7 +968,7 @@ private fun recordUsage(line: String, state: ProxyState, protocol: GatewayProtoc
 private fun isFirstStreamData(line: String, protocol: GatewayProtocol): Boolean = when (protocol) {
     GatewayProtocol.CHAT_COMPLETIONS -> true
     GatewayProtocol.RESPONSES -> isFirstResponsesToken(line)
-    GatewayProtocol.MESSAGES -> isFirstAnthropicToken(line) || isAnthropicStreamError(line)
+    GatewayProtocol.MESSAGES -> isFirstAnthropicToken(line) || isStreamDone(line, protocol)
 }
 
 private fun isFirstAnthropicToken(line: String): Boolean {

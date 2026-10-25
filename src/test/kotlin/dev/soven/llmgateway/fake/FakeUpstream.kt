@@ -283,6 +283,20 @@ class FakeUpstream {
             }
             return
         }
+        if (scenario == "empty-message") {
+            var completed = false
+            try {
+                call.respondBytesWriter(ContentType.Text.EventStream) {
+                    writeSseEvent("message_start", ANTHROPIC_MESSAGE_START)
+                    writeSseEvent("message_delta", ANTHROPIC_MESSAGE_DELTA)
+                    writeSseEvent("message_stop", ANTHROPIC_MESSAGE_STOP)
+                    completed = true
+                }
+            } finally {
+                if (!completed) cancellations.incrementAndGet()
+            }
+            return
+        }
 
         var completed = false
         try {

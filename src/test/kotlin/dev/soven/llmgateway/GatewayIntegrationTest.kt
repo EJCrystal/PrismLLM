@@ -2781,6 +2781,44 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun anthropicMessagesAcceptsEmptyCompletedStreamWithoutFirstToken() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "anthropic-empty-completion",
+            baseUrl = fake.baseUrl + "/empty-message/v1",
+            protocols = setOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("claude-fast", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/messages") {
+                header("x-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"claude-fast","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("event: message_start"), "BODY=[$body]")
+            assertTrue(body.contains("event: message_delta"), "BODY=[$body]")
+            assertTrue(body.contains("event: message_stop"), "BODY=[$body]")
+            assertTrue(!body.contains("event: error"), "BODY=[$body]")
+            assertEquals(1, fake.requests.size)
+
+            val log = awaitRequestLog()
+            assertEquals(HttpStatusCode.OK.value, log.statusCode)
+            assertNull(log.errorCode)
+            assertNull(log.firstTokenMs)
+            assertEquals(15L, log.inputTokens)
+            assertEquals(4L, log.outputTokens)
+            assertTrue(log.usageKnown)
+        }
+    }
+
+    @Test
     fun anthropicMessagesRetriesNativeOverloadedStreamErrorBeforeContent() = runBlocking {
         val primary = createChannelWithBaseUrl(
             name = "anthropic-overloaded",
