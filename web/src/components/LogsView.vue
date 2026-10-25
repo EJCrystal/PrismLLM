@@ -5,7 +5,8 @@ import { notify } from '../toast'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
-import { requestModeLabel } from '../utils/requestMode'
+import { requestModeClass, requestModeLabel } from '../utils/requestMode'
+import { reasoningEffortClass, reasoningEffortLabel, tokenUsageLabel, tokenUsageState } from '../utils/requestLogDisplay'
 import {
   formatTime,
   formatDuration,
@@ -78,8 +79,8 @@ async function refresh() {
   notify('请求日志已刷新')
 }
 
-function formatCost(log) {
-  return formatCostUtil(log.costAmount, log.costCurrency)
+function formatCostAmount(log) {
+  return formatCostUtil(log.costAmount, '')
 }
 
 function formatThroughput(log) {
@@ -107,6 +108,10 @@ function costTitle(log) {
 
 function usageDetailTitle(log) {
   return `推理 ${formatTokens(log.reasoningTokens)} · 输出速率 ${formatThroughput(log)} tok/s · ${cacheTitle(log)}`
+}
+
+function usageStateClass(log) {
+  return `usage-${tokenUsageState(log)}`
 }
 
 function stageLabel(stage) {
@@ -241,10 +246,10 @@ onMounted(load)
             <tr>
               <th>时间</th>
               <th>请求 ID</th>
-              <th>请求模型 / 协议 / 流式</th>
+              <th>请求模型 / 协议 / 模式</th>
               <th>渠道 / 上游模型</th>
               <th>状态 / 错误</th>
-              <th>耗时</th>
+              <th>首 token / 总耗时</th>
               <th>Token 用量</th>
               <th>费用</th>
               <th class="actions-col"></th>
@@ -262,9 +267,13 @@ onMounted(load)
               <td>
                 <div class="stacked-cell">
                   <span class="badge info">{{ log.alias }}</span>
-                  <span class="muted small">
-                    {{ log.protocol || '—' }} · {{ requestModeLabel(log.stream) }}<template v-if="log.reasoningEffort"> · 强度 {{ log.reasoningEffort }}</template>
-                  </span>
+                  <div class="request-meta">
+                    <span class="muted small">{{ log.protocol || '—' }}</span>
+                    <span class="mode-badge" :class="`mode-${requestModeClass(log.stream)}`">{{ requestModeLabel(log.stream) }}</span>
+                    <span class="reasoning-badge" :class="reasoningEffortClass(log.reasoningEffort)">
+                      推理 {{ reasoningEffortLabel(log.reasoningEffort) }}
+                    </span>
+                  </div>
                 </div>
               </td>
               <td>
@@ -282,12 +291,12 @@ onMounted(load)
                 </div>
               </td>
               <td class="nowrap">
-                <div class="stacked-cell">
-                  <span>{{ formatDuration(log.totalMs) }}</span>
-                  <span class="muted small">首 {{ formatDuration(log.firstTokenMs) }}</span>
+                <div class="duration-cell">
+                  <span class="duration-first">首 {{ formatDuration(log.firstTokenMs) }}</span>
+                  <span class="muted small">总 {{ formatDuration(log.totalMs) }}</span>
                 </div>
               </td>
-              <td class="usage-cell">
+              <td class="usage-cell" :class="usageStateClass(log)">
                 <template v-if="log.usageKnown">
                   <span :title="`输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 总 ${formatTokens(log.totalTokens)}`">
                     输入 {{ formatTokensCompact(log.inputTokens) }} · 输出 {{ formatTokensCompact(log.outputTokens) }} · 总
@@ -298,10 +307,13 @@ onMounted(load)
                     {{ formatCacheHit(log) }}
                   </span>
                 </template>
-                <span v-else class="muted">未知</span>
+                <span v-else class="usage-state-label">{{ tokenUsageLabel(log) }}</span>
               </td>
               <td class="nowrap" :title="costTitle(log)">
-                <span v-if="log.costAmount != null">{{ formatCost(log) }}</span>
+                <span v-if="log.costAmount != null" class="cost-line log-cost">
+                  <span class="cost-amount">{{ formatCostAmount(log) }}</span>
+                  <span class="cost-currency">{{ log.costCurrency || '—' }}</span>
+                </span>
                 <span v-else-if="log.usageKnown && log.channelId && log.upstreamModel" class="muted">未配置</span>
                 <span v-else class="muted">—</span>
               </td>
@@ -362,8 +374,8 @@ onMounted(load)
                 <strong>{{ selected.protocol || '—' }}</strong>
               </div>
               <div class="detail-item">
-                <span>流式</span>
-                <strong>{{ requestModeLabel(selected.stream) }}</strong>
+                <span>模式</span>
+                <strong><span class="mode-badge" :class="`mode-${requestModeClass(selected.stream)}`">{{ requestModeLabel(selected.stream) }}</span></strong>
               </div>
               <div class="detail-item">
                 <span>失败阶段</span>
@@ -423,15 +435,17 @@ onMounted(load)
               </div>
               <div class="detail-item">
                 <span>输入 / 输出</span>
-                <strong>{{ formatTokens(selected.inputTokens) }} / {{ formatTokens(selected.outputTokens) }}</strong>
+                <strong v-if="selected.usageKnown">{{ formatTokens(selected.inputTokens) }} / {{ formatTokens(selected.outputTokens) }}</strong>
+                <strong v-else class="muted">{{ tokenUsageLabel(selected) }}</strong>
               </div>
               <div class="detail-item">
                 <span>推理 / 总量</span>
-                <strong>{{ formatTokens(selected.reasoningTokens) }} / {{ formatTokens(selected.totalTokens) }}</strong>
+                <strong v-if="selected.usageKnown">{{ formatTokens(selected.reasoningTokens) }} / {{ formatTokens(selected.totalTokens) }}</strong>
+                <strong v-else class="muted">{{ tokenUsageLabel(selected) }}</strong>
               </div>
               <div class="detail-item">
                 <span>推理强度</span>
-                <strong>{{ selected.reasoningEffort || '未设置' }}</strong>
+                <strong><span class="reasoning-badge" :class="reasoningEffortClass(selected.reasoningEffort)">{{ reasoningEffortLabel(selected.reasoningEffort) }}</span></strong>
               </div>
               <div class="detail-item">
                 <span>缓存命中</span>
@@ -446,7 +460,11 @@ onMounted(load)
               </div>
               <div class="detail-item">
                 <span>费用</span>
-                <strong>{{ selected.costAmount != null ? formatCost(selected) : (selected.usageKnown ? '未配置' : '—') }}</strong>
+                <strong v-if="selected.costAmount != null" class="cost-line detail-cost">
+                  <span class="cost-amount">{{ formatCostAmount(selected) }}</span>
+                  <span class="cost-currency">{{ selected.costCurrency || '—' }}</span>
+                </strong>
+                <strong v-else>{{ selected.usageKnown ? '未配置' : '—' }}</strong>
               </div>
               <div v-if="selected.costAmount != null" class="detail-item">
                 <span>计费单价 / 1M</span>

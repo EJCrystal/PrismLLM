@@ -89,8 +89,8 @@ onMounted(load)
           <span>费用</span>
           <div class="cost-lines" v-if="usageCostEntries(total.costs).length">
             <div class="cost-line" v-for="entry in usageCostEntries(total.costs)" :key="entry.currency" :title="entry.currency + ' ' + entry.value">
-              <span class="cost-currency">{{ entry.currency }}</span>
               <strong class="cost-amount">{{ entry.value }}</strong>
+              <span class="cost-currency">{{ entry.currency }}</span>
             </div>
           </div>
           <strong v-else class="report-cost muted">—</strong>
@@ -100,7 +100,13 @@ onMounted(load)
 
       <div class="report-grid">
         <div class="panel report-panel">
-          <div class="report-panel-head"><h3>按调用方密钥</h3><span class="muted small">{{ report.byClientKey.length }} 个密钥</span></div>
+          <div class="report-panel-head">
+            <div class="report-panel-title">
+              <h3>按调用方密钥</h3>
+              <span class="report-count">{{ report.byClientKey.length }} 个密钥</span>
+            </div>
+            <span class="muted small">按总 token 排序</span>
+          </div>
           <div class="table-scroll">
             <table class="data-table compact-table">
               <thead><tr><th>密钥</th><th>请求</th><th>Token</th><th>费用</th></tr></thead>
@@ -112,8 +118,8 @@ onMounted(load)
                   <td class="small">
                     <div class="cost-lines compact" v-if="usageCostEntries(row.costs).length">
                       <div class="cost-line" v-for="entry in usageCostEntries(row.costs)" :key="entry.currency">
-                        <span class="cost-currency">{{ entry.currency }}</span>
                         <span class="cost-amount mono">{{ entry.value }}</span>
+                        <span class="cost-currency">{{ entry.currency }}</span>
                       </div>
                     </div>
                     <span v-else class="muted">—</span>
@@ -127,13 +133,18 @@ onMounted(load)
       </div>
 
       <div v-if="retention" class="panel retention-panel">
-        <div>
-          <h3>请求日志保留</h3>
+        <div class="retention-copy">
+          <div class="retention-title">
+            <h3>请求日志保留</h3>
+            <span class="retention-status" :class="retention.cleanupEnabled ? 'is-on' : 'is-off'">
+              {{ retention.cleanupEnabled ? '自动清理已开启' : '自动清理已关闭' }}
+            </span>
+          </div>
           <p class="muted small">
-            当前保留 {{ retention.retentionDays }} 天，自动清理{{ retention.cleanupEnabled ? '已开启' : '已关闭' }}；每批 {{ formatNumber(retention.batchSize) }} 条。每日额度账本不受日志清理影响。
+            保留 {{ retention.retentionDays }} 天 · 每批 {{ formatNumber(retention.batchSize) }} 条。每日额度账本不受日志清理影响。
           </p>
         </div>
-        <button type="button" class="button subtle" :disabled="cleaning" @click="cleanup">
+        <button type="button" class="button subtle retention-action" :disabled="cleaning" @click="cleanup">
           {{ cleaning ? '清理中…' : '立即清理过期日志' }}
         </button>
       </div>
