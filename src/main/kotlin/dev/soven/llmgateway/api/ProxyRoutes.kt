@@ -12,6 +12,9 @@ import dev.soven.llmgateway.proxy.ReasoningEffort
 import dev.soven.llmgateway.proxy.TraceContextFactory
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.UsageParser
+import dev.soven.llmgateway.resilience.CandidateCooldown
+import dev.soven.llmgateway.resilience.CooldownPermit
+import dev.soven.llmgateway.resilience.FailureKind
 import dev.soven.llmgateway.security.ClientKeyHasher
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -44,7 +47,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -57,6 +59,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.util.UUID
+import org.slf4j.LoggerFactory
+
+private val proxyLogger = LoggerFactory.getLogger("dev.soven.llmgateway.api.ProxyRoutes")
 
 /**
  * OpenAI 兼容数据面。负责调用方鉴权、别名路由、流式透传和请求日志。
@@ -167,20 +172,30 @@ private suspend fun handleProxy(
         }
 
         phase = FailureStage.UPSTREAM
+        // 先按冷却分拣：可尝试的候选进同档轮询，冷却中的保序作为 fail-open 兜底，
+        // 轮询份额只在可尝试候选间分摊，不被冷却候选扭曲。
+        val eligible = mutableListOf<RouteCandidate>()
+        val blocked = mutableListOf<RouteCandidate>()
+        for (candidate in candidates) {
+            if (app.candidateCooldown.isBlocked(candidate.channel.id, candidate.upstreamModel)) {
+                app.metrics.upstreamCooldownSkipped(candidate.channel.name)
+                blocked.add(candidate)
+            } else {
+                eligible.add(candidate)
+            }
+        }
+        val ordered = app.tierSharing.order(alias, eligible)
         var lastError: GatewayException? = null
         var retryFrom: String? = null
         var retryReason: String? = null
-        var candidateIndex = 0
-        while (candidateIndex < candidates.size && upstreamAttempts < app.config.maxAttempts) {
-            val candidate = candidates[candidateIndex++]
-            val permit = app.upstreamCircuitBreaker.acquire(candidate.channel.id)
-            if (permit == null) {
-                app.metrics.upstreamCircuitSkipped(candidate.channel.name)
-                continue
-            }
+
+        /**
+         * 尝试单个候选并把结果记入冷却。返回 null 表示响应已完成，返回异常交由外层决定是否继续。
+         */
+        suspend fun runAttempt(candidate: RouteCandidate, permit: CooldownPermit): GatewayException? {
             val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
             if (remainingMs <= 0) {
-                app.upstreamCircuitBreaker.release(permit)
+                app.candidateCooldown.release(permit)
                 throw GatewayException(
                     HttpStatusCode.GatewayTimeout,
                     "upstream_timeout",
@@ -188,6 +203,8 @@ private suspend fun handleProxy(
                     "timeout_error",
                 )
             }
+            // 首 token 软阈值按本次尝试计时，不继承前面候选消耗掉的时间。
+            val attemptStartedNanos = System.nanoTime()
             upstreamAttempts += 1
             channelId = candidate.channel.id
             channelName = candidate.channel.name
@@ -197,9 +214,9 @@ private suspend fun handleProxy(
                 retryFrom = null
                 retryReason = null
             }
-            try {
+            return try {
                 if (stream) {
-                    proxyStream(app, call, requestJson, candidate, alias, startedAt, remainingMs, state, protocol, traceContext.traceparent)
+                    proxyStream(app, call, requestJson, candidate, alias, startedAt, attemptStartedNanos, remainingMs, state, protocol, traceContext.traceparent)
                 } else {
                     proxyJson(app, call, requestJson, candidate, remainingMs, state, protocol, traceContext.traceparent)
                 }
@@ -209,56 +226,80 @@ private suspend fun handleProxy(
                     state.statusCode < 400 && state.errorCode == null,
                 )
                 if (state.errorCode == null) {
-                    app.upstreamCircuitBreaker.recordSuccess(permit)
-                } else if (app.upstreamCircuitBreaker.recordFailure(permit).openedNow) {
-                    app.metrics.upstreamCircuitOpened(candidate.channel.name)
+                    app.candidateCooldown.recordSuccess(permit)
+                } else {
+                    app.candidateCooldown
+                        .recordFailure(permit, FailureKind.TRANSPORT)
+                        ?.let { app.metrics.upstreamCooldownStarted(candidate.channel.name, it.reason) }
                 }
-                return
+                null
             } catch (e: GatewayException) {
-                lastError = e
                 if (e.code == "client_disconnect") {
-                    app.upstreamCircuitBreaker.release(permit)
+                    app.candidateCooldown.release(permit)
                     throw e
                 }
                 app.metrics.upstreamError(candidate.channel.name, e.code)
-                if (state.committed) {
-                    if (app.upstreamCircuitBreaker.recordFailure(permit).openedNow) {
-                        app.metrics.upstreamCircuitOpened(candidate.channel.name)
-                    }
-                    throw e
+                val kind = classifyFailure(e)
+                if (kind == null) {
+                    app.candidateCooldown.release(permit)
+                } else {
+                    app.candidateCooldown
+                        .recordFailure(permit, kind, e.retryAfterMs)
+                        ?.let { trigger ->
+                            app.metrics.upstreamCooldownStarted(candidate.channel.name, trigger.reason)
+                            if (trigger.reason == CandidateCooldown.REASON_AUTH) {
+                                proxyLogger.error(
+                                    "上游凭据被拒绝，渠道 {} 模型 {} 进入长冷却（{}ms），请检查渠道配置",
+                                    candidate.channel.name,
+                                    candidate.upstreamModel,
+                                    app.config.cooldown.authFailureMs,
+                                )
+                            }
+                        }
                 }
-                if (!e.retryable) {
-                    app.upstreamCircuitBreaker.release(permit)
-                    throw e
-                }
-                val openedNow = app.upstreamCircuitBreaker.recordFailure(permit).openedNow
-                if (openedNow) app.metrics.upstreamCircuitOpened(candidate.channel.name)
-                if (upstreamAttempts >= app.config.maxAttempts || candidateIndex >= candidates.size) {
-                    throw e
-                }
-                val nextChannel = candidates.subList(candidateIndex, candidates.size)
-                    .firstOrNull { app.upstreamCircuitBreaker.isAvailable(it.channel.id) }
-                    ?.channel
-                    ?.name
-                if (nextChannel == null) throw e
-                val retryDelayMs = app.config.resilience.retryDelayMs(
-                    failedAttemptIndex = upstreamAttempts - 1,
-                    retryAfterMs = e.retryAfterMs,
-                )
-                val retryRemainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
-                if (retryDelayMs >= retryRemainingMs) throw e
-                if (retryDelayMs > 0) delay(retryDelayMs)
-                retryFrom = candidate.channel.name
-                retryReason = e.code
+                e
             } catch (e: Throwable) {
-                app.upstreamCircuitBreaker.release(permit)
+                app.candidateCooldown.release(permit)
                 throw e
             }
         }
+
+        var index = 0
+        while (index < ordered.size && upstreamAttempts < app.config.maxAttempts) {
+            val candidate = ordered[index]
+            val permit = app.candidateCooldown.acquire(candidate.channel.id, candidate.upstreamModel)
+            if (permit == null) {
+                app.metrics.upstreamCooldownSkipped(candidate.channel.name)
+                blocked.add(candidate)
+                index++
+                continue
+            }
+            index++
+            val error = runAttempt(candidate, permit)
+            if (error == null) return
+            lastError = error
+            if (!error.retryable || state.committed || upstreamAttempts >= app.config.maxAttempts) throw error
+            retryFrom = candidate.channel.name
+            retryReason = error.code
+        }
+        // fail-open：仍有尝试预算时，被冷却跳过的候选按原档位顺序照常尝试，绝不因冷却状态拒绝服务。
+        // 重新按候选原始顺序遍历：预分拣与 acquire 之间被拦下的候选应插回原位，而不是追加到尾部。
+        val blockedSet = blocked.toHashSet()
+        for (candidate in candidates) {
+            if (candidate !in blockedSet) continue
+            if (upstreamAttempts >= app.config.maxAttempts) break
+            val permit = app.candidateCooldown.forceAcquire(candidate.channel.id, candidate.upstreamModel)
+            val error = runAttempt(candidate, permit)
+            if (error == null) return
+            lastError = error
+            if (!error.retryable || state.committed || upstreamAttempts >= app.config.maxAttempts) throw error
+            retryFrom = candidate.channel.name
+            retryReason = error.code
+        }
         throw lastError ?: GatewayException(
-            HttpStatusCode.ServiceUnavailable,
-            "upstream_circuit_open",
-            "所有候选渠道暂时处于故障冷却期",
+            HttpStatusCode.BadGateway,
+            "no_candidate",
+            "没有可用候选",
             "api_error",
         )
     } catch (e: TimeoutCancellationException) {
@@ -382,6 +423,21 @@ private suspend fun handleProxy(
 }
 
 private fun String?.asLogMessage(): String? = this?.trim()?.take(1000)?.takeIf { it.isNotEmpty() }
+
+/**
+ * 把上游异常映射为冷却分类的粗分类；null 表示不参与冷却记账（400/422 等请求侧错误）。
+ */
+private fun classifyFailure(e: GatewayException): FailureKind? = when (e.code) {
+    "upstream_unreachable", "upstream_empty_stream", "upstream_timeout", "stream_interrupted" -> FailureKind.TRANSPORT
+    "upstream_error" -> when (e.upstreamStatus) {
+        429 -> FailureKind.RATE_LIMITED
+        401, 403 -> FailureKind.AUTH_REJECTED
+        404 -> FailureKind.MODEL_NOT_FOUND
+        null -> null
+        else -> if (e.upstreamStatus >= 500) FailureKind.SERVER_ERROR else null
+    }
+    else -> null
+}
 
 private val QUOTA_REJECTION_CODES = setOf(
     "daily_token_quota_exceeded",
@@ -517,6 +573,7 @@ private suspend fun proxyStream(
     candidate: RouteCandidate,
     alias: String,
     startedAt: Long,
+    attemptStartedNanos: Long,
     timeoutMs: Long,
     state: ProxyState,
     protocol: GatewayProtocol,
@@ -586,7 +643,7 @@ private suspend fun proxyStream(
                             var sawDone = false
                             for (line in prefixLines) {
                                 writeSseLine(line)
-                                markFirstToken(line, protocol, state, startedAt, app, alias, candidate.channel.name)
+                                markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate)
                                 recordUsage(line, state, protocol)
                                 if (isStreamDone(line, protocol)) {
                                     markResponsesTerminalFailure(line, protocol, state)
@@ -608,7 +665,7 @@ private suspend fun proxyStream(
                                         )
                                     } ?: break
                                     writeSseLine(line)
-                                    markFirstToken(line, protocol, state, startedAt, app, alias, candidate.channel.name)
+                                    markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate)
                                     recordUsage(line, state, protocol)
                                     if (isStreamDone(line, protocol)) {
                                         markResponsesTerminalFailure(line, protocol, state)
@@ -777,6 +834,7 @@ private fun upstreamException(
         upstreamCode,
         retryable,
         retryAfterMs.takeIf { retryable },
+        status.value,
     )
 }
 
@@ -798,9 +856,10 @@ private fun markFirstToken(
     protocol: GatewayProtocol,
     state: ProxyState,
     startedAt: Long,
+    attemptStartedNanos: Long,
     app: GatewayApplication,
     alias: String,
-    channelName: String,
+    candidate: RouteCandidate,
 ) {
     if (state.firstTokenMs != null) return
     val payload = ssePayload(line) ?: return
@@ -810,8 +869,22 @@ private fun markFirstToken(
         GatewayProtocol.RESPONSES -> isFirstResponsesToken(line)
     }
     if (isFirst) {
-        state.firstTokenMs = (System.nanoTime() - startedAt) / 1_000_000
-        app.metrics.firstToken(alias, channelName, state.firstTokenMs!!)
+        val nowNanos = System.nanoTime()
+        state.firstTokenMs = (nowNanos - startedAt) / 1_000_000
+        app.metrics.firstToken(alias, candidate.channel.name, state.firstTokenMs!!)
+        // 首 token 软阈值按本次尝试计时：快速兜底不应继承前面候选撞掉的秒数。
+        val attemptFirstTokenMs = (nowNanos - attemptStartedNanos) / 1_000_000
+        if (app.candidateCooldown.recordFirstToken(
+                candidate.channel.id,
+                candidate.upstreamModel,
+                attemptFirstTokenMs,
+            )
+        ) {
+            app.metrics.upstreamCooldownStarted(
+                candidate.channel.name,
+                CandidateCooldown.REASON_TTFT_SLOW,
+            )
+        }
     }
 }
 

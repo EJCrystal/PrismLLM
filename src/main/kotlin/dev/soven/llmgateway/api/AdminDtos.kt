@@ -130,13 +130,17 @@ fun ChannelRecord.toResponse() = ChannelResponse(
 )
 
 /**
- * 候选写请求。
+ * 候选写请求。position 是优先级档位，省略时按数组顺序；同档候选分摊流量。
  *
  * @author 文杰
  * @since 2026-10-21
  */
 @Serializable
-data class CandidateRequest(val channelId: String, val upstreamModel: String)
+data class CandidateRequest(
+    val channelId: String,
+    val upstreamModel: String,
+    val position: Int? = null,
+)
 
 /**
  * 模型别名写请求。

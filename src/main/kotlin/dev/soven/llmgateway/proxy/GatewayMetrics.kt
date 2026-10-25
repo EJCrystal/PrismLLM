@@ -69,12 +69,15 @@ class GatewayMetrics {
         ).increment()
     }
 
-    fun upstreamCircuitSkipped(channel: String) {
-        registry.counter("gateway_upstream_circuit_skips_total", Tags.of("channel", channel)).increment()
+    fun upstreamCooldownSkipped(channel: String) {
+        registry.counter("gateway_upstream_cooldown_skips_total", Tags.of("channel", channel)).increment()
     }
 
-    fun upstreamCircuitOpened(channel: String) {
-        registry.counter("gateway_upstream_circuit_opens_total", Tags.of("channel", channel)).increment()
+    fun upstreamCooldownStarted(channel: String, reason: String) {
+        registry.counter(
+            "gateway_upstream_cooldown_started_total",
+            Tags.of("channel", channel, "reason", reason),
+        ).increment()
     }
 
     fun upstreamAttempt(channel: String, healthy: Boolean) {

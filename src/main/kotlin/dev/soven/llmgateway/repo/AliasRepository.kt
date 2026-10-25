@@ -10,6 +10,7 @@ import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RouteCandidate
 import org.jetbrains.exposed.v1.core.JoinType
+import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.and
@@ -37,7 +38,7 @@ class AliasRepository(private val database: Database) {
             .join(Channels, JoinType.INNER, AliasCandidates.channelId, Channels.id)
             .selectAll()
             .where { (AliasCandidates.aliasId eq aliasRow[ModelAliases.id]) and (Channels.enabled eq true) }
-            .orderBy(AliasCandidates.position)
+            .orderBy(AliasCandidates.position to SortOrder.ASC, AliasCandidates.channelId to SortOrder.ASC)
             .toList()
         val modelsByChannel = loadChannelModelMappingsInTransaction(rows.map { it[Channels.id] })
         rows.map { row ->
@@ -144,7 +145,7 @@ class AliasRepository(private val database: Database) {
                 it[AliasCandidates.aliasId] = aliasId
                 it[channelId] = candidate.channelId
                 it[upstreamModel] = candidate.upstreamModel
-                it[position] = index
+                it[position] = candidate.position ?: index
             }
         }
     }
@@ -154,7 +155,7 @@ class AliasRepository(private val database: Database) {
             .join(Channels, JoinType.INNER, AliasCandidates.channelId, Channels.id)
             .selectAll()
             .where { AliasCandidates.aliasId eq aliasId }
-            .orderBy(AliasCandidates.position)
+            .orderBy(AliasCandidates.position to SortOrder.ASC, AliasCandidates.channelId to SortOrder.ASC)
             .map { row ->
                 CandidateWithChannel(
                     candidate = CandidateRecord(
@@ -216,12 +217,10 @@ data class CandidateWithChannel(
 )
 
 /**
- * 新建候选的输入。
- *
- * @author 文杰
- * @since 2026-10-21
+ * 新建候选的输入。position 是优先级档位，null 表示按数组顺序。
  */
 data class NewCandidate(
     val channelId: String,
     val upstreamModel: String,
+    val position: Int? = null,
 )

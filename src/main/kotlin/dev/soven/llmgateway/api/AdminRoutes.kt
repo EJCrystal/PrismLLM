@@ -401,7 +401,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val record = app.aliasRepository.create(
                 alias = request.alias,
                 enabled = request.enabled,
-                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel.trim()) },
+                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel.trim(), it.position) },
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
         }
@@ -417,7 +417,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 id = id,
                 alias = request.alias,
                 enabled = request.enabled,
-                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel.trim()) },
+                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel.trim(), it.position) },
             ) ?: throw notFound("alias_not_found", "模型别名不存在")
             call.respond(record.toResponse())
         }
@@ -844,6 +844,9 @@ private suspend fun validateAlias(app: GatewayApplication, request: AliasRequest
     if (request.candidates.isEmpty()) throw badRequest("invalid_alias", "模型别名至少需要一个候选")
     request.candidates.forEach { candidate ->
         if (candidate.upstreamModel.isBlank()) throw badRequest("invalid_alias", "上游模型名不能为空")
+        if (candidate.position != null && candidate.position !in 0..999) {
+            throw badRequest("invalid_alias", "候选档位必须在 0..999 之间")
+        }
         val channel = app.channelRepository.find(candidate.channelId)
         if (channel == null) {
             throw badRequest("invalid_alias", "候选渠道 ${candidate.channelId} 不存在")
