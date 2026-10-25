@@ -47,7 +47,7 @@ const form = reactive({
   protocols: ['chat_completions'],
   enabled: true,
   exposeUpstreamModels: true,
-  priority: 0,
+  priority: 1,
 })
 
 watch(
@@ -72,6 +72,53 @@ const filteredModels = computed(() => {
   return availableModels.value.filter((model) => [model.id, model.ownedBy || '']
     .some((value) => value.toLowerCase().includes(query)))
 })
+
+const priorityEditingId = ref(null)
+const priorityDraft = ref(1)
+let prioritySaving = false
+
+function startPriorityEdit(channel) {
+  priorityEditingId.value = channel.id
+  priorityDraft.value = channel.priority ?? 1
+  nextTick(() => {
+    const input = document.querySelector('.priority-input')
+    input?.focus()
+    input?.select()
+  })
+}
+
+function cancelPriorityEdit() {
+  priorityEditingId.value = null
+}
+
+async function commitPriorityEdit(channel) {
+  if (prioritySaving) return
+  if (priorityEditingId.value !== channel.id) return
+  const next = Number(priorityDraft.value)
+  priorityEditingId.value = null
+  if (!Number.isInteger(next) || next < 1 || next > 1000) {
+    notify('优先级必须是 1..1000 的整数', 'warning')
+    return
+  }
+  if (next === (channel.priority ?? 1)) return
+  prioritySaving = true
+  try {
+    await api.updateChannel(channel.id, {
+      name: channel.name,
+      baseUrl: channel.baseUrl,
+      protocols: [...(channel.protocols || [])],
+      enabled: channel.enabled,
+      priority: next,
+    })
+    channel.priority = next
+    notify('渠道优先级已更新', 'success')
+  } catch (cause) {
+    notify(cause.message, 'error')
+    await load()
+  } finally {
+    prioritySaving = false
+  }
+}
 
 async function load() {
   loading.value = true
@@ -135,7 +182,7 @@ function openCreate() {
     protocols: ['chat_completions'],
     enabled: true,
     exposeUpstreamModels: true,
-    priority: 0,
+    priority: 1,
   })
   showForm.value = true
 }
@@ -170,7 +217,7 @@ function openEdit(channel) {
     protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
     enabled: channel.enabled,
     exposeUpstreamModels: channel.exposeUpstreamModels !== false,
-    priority: channel.priority ?? 0,
+    priority: channel.priority ?? 1,
   })
   showForm.value = true
 }
@@ -413,6 +460,7 @@ onMounted(load)
             <tr>
               <th>名称</th>
               <th>基础地址</th>
+              <th title="数值越小越优先；双击单元格可直接修改">优先级</th>
               <th>协议</th>
               <th>授权模型</th>
               <th>状态</th>
@@ -431,6 +479,25 @@ onMounted(load)
                 </div>
               </td>
               <td><span class="mono address">{{ channel.baseUrl }}</span></td>
+              <td
+                class="priority-cell"
+                title="双击编辑优先级"
+                @dblclick="startPriorityEdit(channel)"
+              >
+                <input
+                  v-if="priorityEditingId === channel.id"
+                  v-model.number="priorityDraft"
+                  class="priority-input"
+                  type="number"
+                  min="1"
+                  max="1000"
+                  step="1"
+                  @keyup.enter="commitPriorityEdit(channel)"
+                  @keyup.esc="cancelPriorityEdit"
+                  @blur="commitPriorityEdit(channel)"
+                />
+                <span v-else class="badge neutral">{{ channel.priority ?? 1 }}</span>
+              </td>
               <td>
                 <div class="protocol-badges">
                   <span v-for="protocol in channel.protocols" :key="protocol" class="badge info">
@@ -643,8 +710,8 @@ onMounted(load)
         </div>
         <label class="field">
           <span>渠道优先级</span>
-          <input v-model.number="form.priority" type="number" min="0" max="999" step="1" />
-          <small>数值越小越优先，仅影响直连路由：同优先级渠道轮询分摊，低优先级只在高优先级全部失败或冷却时启用；别名候选档位由别名自行声明。</small>
+          <input v-model.number="form.priority" type="number" min="1" max="1000" step="1" />
+          <small>数值越小越优先（1..1000），仅影响直连路由：同优先级渠道轮询分摊，低优先级只在高优先级全部失败或冷却时启用；别名候选档位由别名自行声明。</small>
         </label>
         <label class="switch-row">
           <input v-model="form.exposeUpstreamModels" type="checkbox" />
@@ -683,3 +750,15 @@ onMounted(load)
 
   </section>
 </template>
+
+<style scoped>
+.priority-cell {
+  cursor: default;
+}
+
+.priority-input {
+  width: 72px;
+  padding: 4px 6px;
+  font: inherit;
+}
+</style>

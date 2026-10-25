@@ -329,7 +329,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 enabled = request.enabled,
                 modelMappings = normalizeModelMappings(request).orEmpty(),
                 exposeUpstreamModels = request.exposeUpstreamModels ?: true,
-                priority = request.priority ?: 0,
+                priority = request.priority ?: 1,
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
         }
@@ -783,8 +783,8 @@ private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean
         throw badRequest("invalid_channel", "渠道地址必须以 http:// 或 https:// 开头")
     }
     if (request.authType != "bearer") throw badRequest("invalid_channel", "v1 只支持 bearer 凭据")
-    if (request.priority != null && request.priority !in 0..999) {
-        throw badRequest("invalid_channel", "渠道优先级必须在 0..999 之间")
+    if (request.priority != null && request.priority !in 1..1000) {
+        throw badRequest("invalid_channel", "渠道优先级必须在 1..1000 之间")
     }
     if (credentialRequired && request.credential.isNullOrBlank()) {
         throw badRequest("invalid_channel", "新建渠道必须提供上游凭据")
