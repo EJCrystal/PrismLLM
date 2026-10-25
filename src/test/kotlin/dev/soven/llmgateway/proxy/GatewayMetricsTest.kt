@@ -16,8 +16,8 @@ class GatewayMetricsTest {
         metrics.upstreamAttempt("primary", true)
         metrics.upstreamError("primary", "upstream_error")
         metrics.upstreamRetry("primary", "secondary", "upstream_error")
-        metrics.upstreamCircuitSkipped("primary")
-        metrics.upstreamCircuitOpened("primary")
+        metrics.upstreamCooldownSkipped("primary")
+        metrics.upstreamCooldownStarted("primary", "transient")
         metrics.databaseReady(false)
         metrics.databaseReady(true)
 
@@ -32,8 +32,8 @@ class GatewayMetricsTest {
         assertTrue(output.contains("outcome=\"success\""))
         assertTrue(output.contains("gateway_upstream_errors_total"))
         assertTrue(output.contains("gateway_upstream_retries_total"))
-        assertTrue(output.contains("gateway_upstream_circuit_skips_total"))
-        assertTrue(output.contains("gateway_upstream_circuit_opens_total"))
+        assertTrue(output.contains("gateway_upstream_cooldown_skips_total"))
+        assertTrue(output.contains("gateway_upstream_cooldown_started_total"))
         assertTrue(output.contains("gateway_database_ready 1.0"))
     }
 }

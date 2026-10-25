@@ -14,6 +14,7 @@ import dev.soven.llmgateway.repo.AliasRepository
 import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.ClientKeyRepository
 import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
+import dev.soven.llmgateway.repo.CooldownStateRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
 import dev.soven.llmgateway.repo.TeamLimitRepository
 import dev.soven.llmgateway.report.LogRetentionService
@@ -22,7 +23,9 @@ import dev.soven.llmgateway.quota.RequestLimitService
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.security.PasswordHasher
-import dev.soven.llmgateway.resilience.UpstreamCircuitBreaker
+import dev.soven.llmgateway.resilience.CandidateCooldown
+import dev.soven.llmgateway.resilience.CooldownStateWriter
+import dev.soven.llmgateway.resilience.TierSharing
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
 import io.ktor.client.plugins.HttpTimeout
@@ -83,7 +86,13 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
     val credentialCipher = CredentialCipher(config.masterKey)
     val sessions = AdminSessions()
-    val upstreamCircuitBreaker = UpstreamCircuitBreaker(config.resilience)
+    val cooldownStateRepository = CooldownStateRepository(databaseFactory.database)
+    val cooldownStateWriter = CooldownStateWriter(cooldownStateRepository, scope)
+    val candidateCooldown = CandidateCooldown(
+        policy = config.cooldown,
+        onChange = cooldownStateWriter::submit,
+    )
+    val tierSharing = TierSharing()
     val metrics = GatewayMetrics()
     val requestLogWriter = RequestLogWriter(requestLogRepository, modelPriceRepository, scope)
     val logRetentionService = LogRetentionService(requestLogRepository, config.retention)
@@ -104,6 +113,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     fun install(app: Application) {
         databaseFactory.migrate()
         runBlocking { seedAdmin() }
+        runBlocking { candidateCooldown.restore(cooldownStateRepository.loadActive(System.currentTimeMillis())) }
 
         app.install(ContentNegotiation) {
             json(gatewayJson)
@@ -218,6 +228,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         if (!closed.compareAndSet(false, true)) return
         shuttingDown.set(true)
         runBlocking { requestLogWriter.closeAndDrain(5_000) }
+        runBlocking { cooldownStateWriter.closeAndDrain(1_000) }
         logRetentionJob.getAndSet(null)?.cancel()
         scope.cancel()
         httpClient.close()

@@ -20,7 +20,7 @@ The included rules cover:
 - sustained quota rejections;
 - management audit persistence failures;
 - per-channel upstream attempt failure rate above 20% for 10 minutes;
-- channels entering circuit-open state.
+- candidates entering cooldown (per failure reason, fail-over with fail-open fallback).
 
 The thresholds are starting points for an internal gateway. Tune them against normal traffic, and route Alertmanager notifications to the owning team.
 

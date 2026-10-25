@@ -85,11 +85,13 @@ Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `ht
 | `IDLE_TIMEOUT_MS` | `60000` | 流空闲超时 |
 | `TOTAL_TIMEOUT_MS` | `600000` | 单请求总超时 |
 | `MAX_ATTEMPTS` | `2` | 首 token 前最多尝试的候选数 |
-| `RETRY_BACKOFF_BASE_MS` | `100` | 第一次故障转移前的指数退避基数 |
-| `RETRY_BACKOFF_MAX_MS` | `2000` | 单次指数退避上限 |
-| `RETRY_JITTER_MS` | `50` | 退避附加随机抖动上限 |
-| `CIRCUIT_FAILURE_THRESHOLD` | `3` | 渠道连续失败多少次后进入熔断 |
-| `CIRCUIT_OPEN_MS` | `30000` | 渠道熔断冷却时间 |
+| `COOLDOWN_TRANSIENT_BASE_MS` | `30000` | 瞬时错误（连接失败、超时、空流、5xx）冷却起步时长 |
+| `COOLDOWN_TRANSIENT_MAX_MS` | `600000` | 瞬时错误冷却上限（连续失败翻倍递增） |
+| `COOLDOWN_RATE_LIMIT_DEFAULT_MS` | `30000` | 429 无 `Retry-After` 时的默认冷却时长 |
+| `COOLDOWN_RATE_LIMIT_MAX_MS` | `60000` | 429 冷却时长上限（遵从 `Retry-After` 并封顶） |
+| `COOLDOWN_AUTH_FAILURE_MS` | `600000` | 401/403 长冷却时长；不自动禁用渠道，修复靠人 |
+| `TTFT_SLOW_THRESHOLD_MS` | `10000` | 流式请求首 token 软阈值 |
+| `TTFT_SLOW_STREAK` | `3` | 首 token 连续超过软阈值多少次后触发候选冷却 |
 | `EXPOSE_UPSTREAM_MODELS` | `false` | 全局是否启用渠道模型直连及其 `/v1/models` 展示；所属渠道还必须启用并设置 `exposeUpstreamModels=true`。单独配置的别名不受此开关影响 |
 | `DRAIN_TIMEOUT_MS` | `30000` | 优雅停机 drain 时间 |
 | `STATIC_DIR` | `web/dist` | 管理界面静态目录 |
@@ -187,15 +189,15 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 返回每个协议的 `supported`、`statusCode` 和说明。探测会使用已保存凭据发送最小请求（Chat `max_tokens=1`，Responses `max_output_tokens=1`），可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
 
-### 上游故障转移、退避与熔断
+### 候选档位、分摊与候选冷却
 
-网关在上游返回首 token 前发生连接失败、超时、429、5xx、401、403 或 404 时，会按别名候选顺序尝试下一个渠道，最多执行 `MAX_ATTEMPTS` 次实际上游请求。400、422 等请求参数错误直接返回，不消耗其他候选；首 token 已提交后的流中断也不会切换渠道。
+别名候选的 `position` 是优先级档位：同档候选轮询分摊流量（例如几个有优惠的渠道共扛同一模型），后续档位只在前面档位失败或冷却时启用。创建/更新别名时每个候选可显式传 `position`（0..999，同档填同一个数），省略时按数组顺序递增；直连暴露的候选同处第 0 档，天然参与分摊。
 
-故障转移之间使用指数退避并附加有界随机抖动。429 或 5xx 响应带数字形式的 `Retry-After` 时，等待时间不会短于该值；若等待将超过单请求总超时，则直接返回当前错误。退避等待占用请求总超时预算。
+上游在首 token 前发生连接失败、超时、429、5xx、401、403 或 404 时，按档位顺序尝试下一个候选，最多执行 `MAX_ATTEMPTS` 次实际上游请求。400、422 等请求参数错误直接返回；首 token 已提交后的流中断不切换渠道。候选之间不做退避等待——下一个候选是不同的上游，立即切换。
 
-每个渠道维护连续失败计数。首 token 后的上游流中断不会切换渠道，但会计入该渠道的连续失败；客户端主动断开只记录为 `client_disconnect`，不计入渠道熔断。达到 `CIRCUIT_FAILURE_THRESHOLD` 后进入 `CIRCUIT_OPEN_MS` 冷却期，期间候选扫描会跳过该渠道。冷却结束后只放行一个半开探测：探测成功恢复渠道，失败或取消重新进入冷却。熔断、连续失败和半开探测状态只保存在单网关进程内，进程重启后清零；请求日志的 `upstreamAttempts` 记录本次请求实际调用的上游次数。
+失败按影响面记录候选冷却：传输层错误（连接失败、超时、空流、流中断）、5xx 与 401/403 记在渠道键上（整渠道连坐），429 与首 token 过慢记在候选键上（渠道与上游模型的组合，不连累同渠道其他模型）。瞬时错误从 `COOLDOWN_TRANSIENT_BASE_MS` 起步、同键连续失败翻倍、封顶 `COOLDOWN_TRANSIENT_MAX_MS`；429 遵从数字 `Retry-After` 并封顶 `COOLDOWN_RATE_LIMIT_MAX_MS`；401/403 长冷却 `COOLDOWN_AUTH_FAILURE_MS` 并打 ERROR 日志，但不自动禁用渠道；404 不冷却。流式请求首 token 连续 `TTFT_SLOW_STREAK` 次超过 `TTFT_SLOW_THRESHOLD_MS` 视同瞬时错误冷却该候选，被计数的请求本身照常完成，非流式不计数。
 
-所有候选都处于熔断状态时返回 HTTP `503 upstream_circuit_open`，且不会调用上游。
+冷却只后置不禁用：路由优先尝试未冷却候选，冷却到期后放行单个探测请求（探测成功完全恢复，失败翻倍重新冷却）；所有候选都在冷却中时仍按档位顺序照常尝试（fail-open），绝不因冷却状态返回 503。客户端主动断开记录为 `client_disconnect`，不奖不罚。冷却状态内存为准、状态变更异步写透 PostgreSQL 并在启动时恢复；请求日志的 `upstreamAttempts` 记录实际调用的上游次数，`gateway_upstream_cooldown_started_total{channel,reason}` 与 `gateway_upstream_cooldown_skips_total{channel}` 提供观测。
 
 失败请求会在日志中记录 `failureStage`（`request` / `routing` / `upstream` / `streaming` / `client`）、`errorMessage` 和上游返回的 `upstreamErrorCode`。 请求日志同时展示输入、输出、推理和总 token、输出速率（输出 token / 总耗时）与缓存命中率（`cached_tokens / input_tokens`），并记录调用方密钥名称和请求中的推理强度；上游未返回的字段显示“—”，不做估算。渠道列显示请求发生时的渠道名称快照，同时保留 `channelId` 用于精确关联；渠道改名不会改写历史日志。请求日志列表只显示错误码和阶段，完整原因在“详情”弹层中查看；上游响应正文仍然不落库。
 
@@ -298,7 +300,7 @@ GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行
 mvn test
 ```
 
-包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions 与 Responses 的 SSE 用量解析、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After、渠道熔断与半开探测、上游尝试次数记录、密钥/团队每分钟请求限制、跨密钥团队并发共享与释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
+包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions 与 Responses 的 SSE 用量解析、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、密钥/团队每分钟请求限制、跨密钥团队并发共享与释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
 
 ### 前端自动化测试
 

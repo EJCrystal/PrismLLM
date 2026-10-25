@@ -13,7 +13,7 @@ import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.security.ClientKeyHasher
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.report.RetentionPolicy
-import dev.soven.llmgateway.resilience.UpstreamResiliencePolicy
+import dev.soven.llmgateway.resilience.CooldownPolicy
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
@@ -239,9 +239,9 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `opens circuit and skips unhealthy channel on later requests`() = runBlocking {
+    fun `cools down unhealthy channel and skips it on later requests`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(circuitFailureThreshold = 1, circuitOpenMs = 60_000))
+        app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
         val primary = createChannel("primary", "500")
         val secondary = createChannel("secondary", "ok")
         createAlias("fast-chat", primary to "m1", secondary to "m2")
@@ -265,15 +265,15 @@ class GatewayIntegrationTest {
             assertEquals(listOf("500", "ok", "ok"), scenarios)
             assertEquals(1, app.requestLogRepository.list(10).first().upstreamAttempts)
             val metrics = app.metrics.scrape()
-            assertTrue(metrics.contains("gateway_upstream_circuit_opens_total"))
-            assertTrue(metrics.contains("gateway_upstream_circuit_skips_total"))
+            assertTrue(metrics.contains("gateway_upstream_cooldown_started_total"))
+            assertTrue(metrics.contains("gateway_upstream_cooldown_skips_total"))
         }
     }
 
     @Test
-    fun `returns service unavailable when every candidate circuit is open`() = runBlocking {
+    fun `fail-open retries cooled candidates when all are blocked`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(circuitFailureThreshold = 1, circuitOpenMs = 60_000))
+        app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
         val primary = createChannel("primary", "500")
         createAlias("fast-chat", primary to "m1")
         val key = createClientKey()
@@ -289,24 +289,89 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.BadGateway, send().status)
             assertEquals(1, awaitRequestLog().upstreamAttempts)
 
-            val rejected = send()
-            assertEquals(HttpStatusCode.ServiceUnavailable, rejected.status)
-            assertTrue(rejected.bodyAsText().contains("upstream_circuit_open"))
-            assertEquals(1, fake.requests.size)
+            // 唯一候选已冷却：fail-open 照常尝试，返回真实上游错误而不是 503
+            val second = send()
+            assertEquals(HttpStatusCode.BadGateway, second.status)
+            assertTrue(!second.bodyAsText().contains("upstream_circuit_open"))
+            assertEquals(2, fake.requests.size)
 
             awaitRequestLogCount(2)
-            assertEquals(0, app.requestLogRepository.list(10).first().upstreamAttempts)
+            assertEquals(1, app.requestLogRepository.list(10).first().upstreamAttempts)
         }
     }
 
     @Test
-    fun `retries a cooled down candidate instead of treating it as open`() = runBlocking {
+    fun `spreads requests across same-tier candidates`() = runBlocking {
+        val primary = createChannel("primary", "ok")
+        val secondary = createChannel("secondary", "ok")
+        createTieredAlias("fast-chat", Triple(primary, "m1", 0), Triple(secondary, "m2", 0))
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(2)
+            val logs = app.requestLogRepository.list(10)
+            assertEquals(2, logs.size)
+            // 同档两个候选各承接一次请求
+            assertEquals(setOf(primary.id, secondary.id), logs.map { it.channelId }.toSet())
+            logs.forEach { assertEquals(1, it.upstreamAttempts) }
+        }
+    }
+
+    @Test
+    fun `slow first token stream cools candidate after streak`() = runBlocking {
+        app.close()
+        app = GatewayApplication(
+            config(
+                firstTokenTimeoutMs = 5_000,
+                idleTimeoutMs = 5_000,
+                totalTimeoutMs = 15_000,
+                ttftSlowThresholdMs = 1_000,
+                ttftSlowStreak = 2,
+            ),
+        )
+        val primary = createChannel("slow", "slow")
+        val secondary = createChannel("secondary", "ok")
+        createAlias("fast-chat", primary to "m1", secondary to "m2")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(2)
+
+            // 连续两次首 token 超过软阈值后，第三个请求应绕开慢渠道
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(3)
+            val third = app.requestLogRepository.list(10).first()
+            assertEquals(secondary.id, third.channelId)
+            assertEquals(1, third.upstreamAttempts)
+            assertEquals(listOf("slow", "slow", "ok"), fake.requests.map { it.scenario })
+        }
+    }
+
+    @Test
+    fun `retries cooled down candidates after cooldown expires`() = runBlocking {
         app.close()
         app = GatewayApplication(
             config(
                 maxAttempts = 3,
-                circuitFailureThreshold = 1,
-                circuitOpenMs = 300,
+                cooldownTransientBaseMs = 300,
             ),
         )
         val primary = createChannel("primary", "500")
@@ -360,7 +425,7 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `honors upstream Retry-After before failing over`() = runBlocking {
+    fun `rate limit cooldown honors Retry-After on next request`() = runBlocking {
         val primary = createChannel("limited", "429-retry-after")
         val secondary = createChannel("secondary", "ok")
         createAlias("fast-chat", primary to "m1", secondary to "m2")
@@ -368,18 +433,22 @@ class GatewayIntegrationTest {
 
         testApplication {
             application { app.install(this) }
-            val started = System.nanoTime()
-            val response = client.post("/v1/chat/completions") {
+            suspend fun send() = client.post("/v1/chat/completions") {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
                 setBody("""{"model":"fast-chat","messages":[]}""")
             }
-            val elapsedMs = (System.nanoTime() - started) / 1_000_000
 
-            assertEquals(HttpStatusCode.OK, response.status)
-            assertTrue(elapsedMs >= 900, "elapsedMs=$elapsedMs")
-            assertEquals(2, fake.requests.size)
+            assertEquals(HttpStatusCode.OK, send().status)
             assertEquals(2, awaitRequestLog().upstreamAttempts)
+
+            // 立即重发：候选键按 Retry-After（1s）冷却，直接跳过限流渠道
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(2)
+            val secondLog = app.requestLogRepository.list(10).first()
+            assertEquals(secondary.id, secondLog.channelId)
+            assertEquals(1, secondLog.upstreamAttempts)
+            assertEquals(listOf("429-retry-after", "ok", "ok"), fake.requests.map { it.scenario })
         }
     }
 
@@ -434,9 +503,9 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `stream interruption opens channel circuit`() = runBlocking {
+    fun `stream interruption cools channel but fail-open still attempts`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(circuitFailureThreshold = 1, circuitOpenMs = 60_000))
+        app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
         val channel = createChannel("primary", "disconnect")
         createAlias("fast-chat", channel to "m1")
         val key = createClientKey()
@@ -452,20 +521,19 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, send().status)
             assertEquals("stream_interrupted", awaitRequestLog().errorCode)
 
-            val rejected = send()
-            assertEquals(HttpStatusCode.ServiceUnavailable, rejected.status)
-            assertTrue(rejected.bodyAsText().contains("upstream_circuit_open"))
-            assertEquals(1, fake.requests.size)
+            // 渠道已冷却：fail-open 照常尝试，仍返回真实流结果而不是 503
+            assertEquals(HttpStatusCode.OK, send().status)
+            assertEquals(2, fake.requests.size)
 
             awaitRequestLogCount(2)
-            assertEquals(0, app.requestLogRepository.list(10).first().upstreamAttempts)
+            assertEquals(1, app.requestLogRepository.list(10).first().upstreamAttempts)
         }
     }
 
     @Test
-    fun `client disconnect after first token does not open circuit`() = runBlocking {
+    fun `client disconnect after first token does not cool channel`() = runBlocking {
         app.close()
-        app = GatewayApplication(config(circuitFailureThreshold = 1, circuitOpenMs = 60_000))
+        app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
         val channel = createChannel("primary", "ok")
         createAlias("fast-chat", channel to "m1")
         val key = createClientKey()
@@ -2386,11 +2454,9 @@ class GatewayIntegrationTest {
         exposeUpstreamModels: Boolean = false,
         corsOrigins: List<String> = emptyList(),
         maxAttempts: Int = 2,
-        retryBackoffBaseMs: Long = 0,
-        retryBackoffMaxMs: Long = 0,
-        retryJitterMs: Long = 0,
-        circuitFailureThreshold: Int = 100,
-        circuitOpenMs: Long = 1_000,
+        cooldownTransientBaseMs: Long = 3_600_000,
+        ttftSlowThresholdMs: Long = 600_000,
+        ttftSlowStreak: Int = 100,
     ): GatewayConfig = GatewayConfig(
         port = 0,
         databaseUrl = postgres.jdbcUrl,
@@ -2411,12 +2477,14 @@ class GatewayIntegrationTest {
         cookieSecure = false,
         exposeUpstreamModels = exposeUpstreamModels,
         retention = RetentionPolicy(cleanupEnabled = false),
-        resilience = UpstreamResiliencePolicy(
-            backoffBaseMs = retryBackoffBaseMs,
-            backoffMaxMs = retryBackoffMaxMs,
-            jitterMs = retryJitterMs,
-            circuitFailureThreshold = circuitFailureThreshold,
-            circuitOpenMs = circuitOpenMs,
+        cooldown = CooldownPolicy(
+            transientBaseMs = cooldownTransientBaseMs,
+            transientMaxMs = 3_600_000,
+            rateLimitDefaultMs = 60_000,
+            rateLimitMaxMs = 60_000,
+            authFailureMs = 600_000,
+            ttftSlowThresholdMs = ttftSlowThresholdMs,
+            ttftSlowStreak = ttftSlowStreak,
         ),
     )
 
@@ -2499,6 +2567,15 @@ class GatewayIntegrationTest {
             enabled = true,
             candidates = candidates.map { NewCandidate(it.first.id, it.second) },
         )
+
+    private suspend fun createTieredAlias(
+        alias: String,
+        vararg candidates: Triple<ChannelRecord, String, Int>,
+    ): AliasWithCandidates = app.aliasRepository.create(
+        alias = alias,
+        enabled = true,
+        candidates = candidates.map { NewCandidate(it.first.id, it.second, it.third) },
+    )
 
     private suspend fun createClientKey(
         quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits(),
