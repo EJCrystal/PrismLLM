@@ -8,13 +8,13 @@
 - 渠道按 `chat_completions`、`responses`、`messages` 声明支持的协议，路由时按请求协议过滤候选。
 - 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。渠道启用即参与直连暴露。
 - 自定义对外模型 ID 会替代上游名对外暴露；多个渠道配置相同对外模型 ID 时自动聚合、同优先级分摊。
-- 调用方密钥鉴权，支持按密钥与团队限制每分钟请求数和并发数；上游凭据使用 AES-256-GCM 加密存储。
+- 调用方密钥鉴权，支持按密钥限制每分钟请求数和并发数；上游凭据使用 AES-256-GCM 加密存储。
 - 流式响应不缓冲、客户端断开向上游传播。
 - 管理 API 与 Vue 3 管理界面：
   - 渠道管理：接入点、协议、凭据、对外模型 ID 映射及模型计费单价配置。
   - 多主题支持：浅色（Light）、深色（Dark）、护眼暖色（Sepia）三主题无缝轮转与持久化。
   - 模型列表：查看 `/v1/models` 实际对外暴露结果与 models.dev 临时对比。
-  - 调用方密钥轮换与永久撤销、团队限流、管理操作审计和请求日志。
+  - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
 - PostgreSQL + Flyway；单实例部署。
 
 明确不做：协议间相互转换（各协议仅原生透传）、Gemini 原生入口、多租户 RBAC、语义缓存、MCP、多副本。
@@ -24,7 +24,7 @@
 ```
 client --client key--> gateway --configured auth--> protocol-compatible upstream
                                 |
-                                +-- PostgreSQL: channels, channel models, client keys, team limits, model prices, request logs, admin audit logs
+                                +-- PostgreSQL: channels, channel models, client keys, model prices, request logs, admin audit logs
 ```
 
 数据面：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/models`。
@@ -216,30 +216,18 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 费用上限按模型单价的实际币种分别配置，目前支持 USD、CNY 和 EUR。某个币种未配置上限时，该币种的费用不参与额度限制；不同币种之间不做隐含汇率换算。日费用额度只有在对应渠道和模型已配置单价且响应包含用量时才能累计；缺失用量不会按 0 计费。
 
-并发上限是单网关进程内的并发请求数。每个请求在通过密钥/团队速率、每日额度和并发检查后占用相应名额；响应完成、流式输出结束、路由失败或客户端中断时都会释放。超额请求返回 HTTP `429`，并通过 OpenAI 兼容错误信封给出以下错误码：
+并发上限是单网关进程内的并发请求数。每个请求在通过密钥速率、每日额度和并发检查后占用相应名额；响应完成、流式输出结束、路由失败或客户端中断时都会释放。超额请求返回 HTTP `429`，并通过 OpenAI 兼容错误信封给出以下错误码：
 
 - `daily_token_quota_exceeded`：今日 token 额度已用完。
 - `daily_cost_quota_exceeded`：某个已配置币种的今日费用额度已用完。
 - `concurrency_limit_exceeded`：单密钥并发请求数已达上限。
 - `key_rate_limit_exceeded`：单密钥每分钟请求数已达上限。
-- `team_rate_limit_exceeded`：团队每分钟请求数已达上限。
-- `team_concurrency_limit_exceeded`：团队并发请求数已达上限。
 
 管理界面和 `GET/POST /admin/api/client-keys`、`PUT /admin/api/client-keys/{id}` 支持以下可选字段：`dailyTokenLimit`、`dailyUsdLimit`、`dailyCnyLimit`、`dailyEurLimit`、`maxConcurrentRequests`、`requestsPerMinute`。查询密钥时返回 `quotaUsage`，包含今日 token、各币种费用、当前并发数和当前分钟请求数。每日用量保存在 PostgreSQL，账号删除或新一天开始时重新计算。
 
-### 团队限流与共享并发
-
-调用方密钥的 `team` 标签同时作为团队限流键。团队策略接口为 `GET /admin/api/team-limits`、`PUT /admin/api/team-limits/{team}` 和 `DELETE /admin/api/team-limits/{team}`；策略支持 `requestsPerMinute` 与 `maxConcurrentRequests`，至少配置一项。管理界面“团队限流”页会列出已有密钥团队、当前分钟请求数、活动并发数和已配置上限。
-
-团队每分钟请求数由同一团队下的所有密钥共享，团队并发名额也跨密钥共享。未配置策略的团队不限制；策略中的请求速率为 `0` 时暂停该团队新请求。团队名称区分大小写，必须与密钥上的团队标签完全一致。
-
-请求准入顺序为密钥/团队速率与团队并发、密钥每日额度与密钥并发。速率层放行后即使随后被密钥每日额度拒绝，该次尝试仍计入当前分钟请求数；并发名额在响应结束、流式输出完成、路由失败或客户端中断时释放。
-
-速率窗口、团队并发数和密钥并发数只保存在单实例内存中，进程重启后从零开始。每日 token 与费用用量仍保存在 PostgreSQL，不受进程重启影响。
-
 ### 密钥轮换、永久撤销与管理操作审计
 
-`POST /admin/api/client-keys/{id}/rotate` 会为现有密钥生成新的明文、哈希和展示前缀，并原子替换旧哈希。记录 ID、团队、过期时间和全部额度配置保持不变，旧密钥立即失效；新明文只在本次响应返回一次，并带 `Cache-Control: no-store`。已撤销密钥不能轮换。
+`POST /admin/api/client-keys/{id}/rotate` 会为现有密钥生成新的明文、哈希和展示前缀，并原子替换旧哈希。记录 ID、过期时间和全部额度配置保持不变，旧密钥立即失效；新明文只在本次响应返回一次，并带 `Cache-Control: no-store`。已撤销密钥不能轮换。
 
 `POST /admin/api/client-keys/{id}/revoke` 将密钥永久标记为撤销并停用。重复调用保持原撤销时间，便于安全重试。撤销后的密钥不能重新启用、编辑或轮换，数据面请求直接返回 HTTP `401`。普通停用仍可通过 `PUT /admin/api/client-keys/{id}` 恢复，二者在接口、管理界面和 `revokedAt` 字段中明确区分。
 
@@ -249,9 +237,9 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 ### 用量报表与日志保留
 
-管理界面的“用量报表”按时间范围汇总请求数、错误数、输入/输出/总 token，以及按实际计费币种分别累计的费用；同时提供按调用方密钥和团队的明细。调用方密钥可设置可选团队，创建请求日志时会保存团队快照，因此后续改团队或删密钥不会改写历史归集。
+管理界面的“用量报表”按时间范围汇总请求数、错误数、输入/输出/总 token，以及按实际计费币种分别累计的费用；同时提供按调用方密钥的明细。
 
-报表接口：`GET /admin/api/usage-report?from=<epoch-ms>&to=<epoch-ms>`，可选 `clientKeyId` 和 `team` 过滤。默认最近 7 天，单次查询范围最多 366 天。费用不做跨币种换算。
+报表接口：`GET /admin/api/usage-report?from=<epoch-ms>&to=<epoch-ms>`，可选 `clientKeyId` 过滤。默认最近 7 天，单次查询范围最多 366 天。费用不做跨币种换算。
 
 请求日志保留策略由以下环境变量控制：
 
@@ -295,7 +283,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 ## 可观测性与告警
 
-`/metrics` 暴露请求结果、完整请求耗时、密钥/团队速率与并发拒绝、管理审计写入失败、上游尝试成功率和上游错误分类。模板 Prometheus 配置与告警规则位于 `monitoring/prometheus/`，覆盖服务失联、readiness 失败、错误率、p95 延迟、额度拒绝、管理审计写入失败和单渠道上游健康；接入说明见 `monitoring/README.md`。
+`/metrics` 暴露请求结果、完整请求耗时、密钥速率与并发拒绝、管理审计写入失败、上游尝试成功率和上游错误分类。模板 Prometheus 配置与告警规则位于 `monitoring/prometheus/`，覆盖服务失联、readiness 失败、错误率、p95 延迟、额度拒绝、管理审计写入失败和单渠道上游健康；接入说明见 `monitoring/README.md`。
 
 数据面接受 W3C `traceparent`。有效请求头中的 trace ID 会保留，网关生成新的 span ID 并向上游透传；响应返回 `traceparent` 与 `X-Trace-Id`，请求日志保存 trace ID，可在管理界面搜索和复制。
 
@@ -309,7 +297,7 @@ GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行
 mvn test
 ```
 
-包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions、Responses 与 Anthropic Messages 的 SSE 用量解析与透传、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、密钥/团队每分钟请求限制、跨密钥团队并发共享与释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
+包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions、Responses 与 Anthropic Messages 的 SSE 用量解析与透传、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、密钥每分钟请求限制与释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
 
 ### 前端自动化测试
 
@@ -317,7 +305,7 @@ mvn test
 npm --prefix web test
 ```
 
-基于 Node.js 原生测试引擎（`node:test`），毫秒级执行。覆盖多主题注册表（浅色/深色/护眼暖色）、持久化与防闪烁、通用复制工具 `copyText`、`SecretInput`、`CopyButton`、`format` 格式化工具、授权模型展示逻辑、密钥/团队限流配置、密钥轮换/撤销并发保护，以及操作审计分页与刷新竞态。
+基于 Node.js 原生测试引擎（`node:test`），毫秒级执行。覆盖多主题注册表（浅色/深色/护眼暖色）、持久化与防闪烁、通用复制工具 `copyText`、`SecretInput`、`CopyButton`、`format` 格式化工具、授权模型展示逻辑、密钥限流配置、密钥轮换/撤销并发保护，以及操作审计分页与刷新竞态。
 
 关键实现决策记录在 `docs/adr/`，包括 Kotlin/Ktor 选型、v1 协议边界和上游 HTTP 客户端选择。
 

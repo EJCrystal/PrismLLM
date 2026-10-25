@@ -64,7 +64,6 @@ class RequestLogWriterTest {
         requestId = requestId,
         clientKeyId = null,
         clientKeyName = null,
-        team = null,
         alias = "alias",
         channelId = "channel",
         channelName = "channel",

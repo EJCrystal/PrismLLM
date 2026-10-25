@@ -441,52 +441,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(keys)
         }
 
-        get("/team-limits") {
-            call.requireAdmin(app)
-            call.response.headers.append("Cache-Control", "no-store")
-            val policies = app.teamLimitRepository.list().associateBy { it.team }
-            val teams = (policies.keys + app.clientKeyRepository.list().mapNotNull { it.team })
-                .toSortedSet()
-            val responses = teams.map { team ->
-                val usage = app.requestLimitService.teamUsage(team)
-                policies[team]?.toResponse(usage) ?: unconfiguredTeamLimit(team, usage)
-            }
-            call.respond(responses)
-        }
-
-        put("/team-limits/{team}") {
-            call.requireAdmin(app)
-            val team = normalizeTeam(call.requiredParam("team", "缺少团队名称"))
-                ?: throw badRequest("invalid_team_limit", "团队名称不能为空")
-            val request = call.receive<TeamLimitRequest>()
-            if (request.requestsPerMinute == null && request.maxConcurrentRequests == null) {
-                throw badRequest("invalid_team_limit", "每分钟请求数和最大并发数至少设置一项")
-            }
-            if (request.requestsPerMinute != null && request.requestsPerMinute < 0) {
-                throw badRequest("invalid_team_limit", "团队每分钟请求数必须是非负整数")
-            }
-            if (request.maxConcurrentRequests != null && request.maxConcurrentRequests <= 0) {
-                throw badRequest("invalid_team_limit", "团队最大并发请求数必须是正整数")
-            }
-            val policy = app.teamLimitRepository.upsert(
-                team = team,
-                requestsPerMinute = request.requestsPerMinute,
-                maxConcurrentRequests = request.maxConcurrentRequests,
-            )
-            call.response.headers.append("Cache-Control", "no-store")
-            call.respond(policy.toResponse(app.requestLimitService.teamUsage(team)))
-        }
-
-        delete("/team-limits/{team}") {
-            call.requireAdmin(app)
-            val team = normalizeTeam(call.requiredParam("team", "缺少团队名称"))
-                ?: throw badRequest("invalid_team_limit", "团队名称不能为空")
-            if (!app.teamLimitRepository.delete(team)) {
-                throw notFound("team_limit_not_found", "团队限流策略不存在")
-            }
-            call.respond(HttpStatusCode.NoContent)
-        }
-
         post("/client-keys") {
             call.requireAdmin(app)
             val request = call.receive<ClientKeyRequest>()
@@ -498,7 +452,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val generated = ClientKeyHasher.generate()
             val record = app.clientKeyRepository.create(
                 name = request.name,
-                team = normalizeTeam(request.team),
                 keyHash = generated.hash,
                 keyPrefix = generated.prefix,
                 enabled = request.enabled,
@@ -529,7 +482,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val record = app.clientKeyRepository.update(
                 id = id,
                 name = request.name,
-                team = normalizeTeam(request.team),
                 enabled = request.enabled,
                 expiresAt = request.expiresAt,
                 quotas = quotas,
@@ -661,7 +613,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     from = from,
                     to = to,
                     clientKeyId = call.request.queryParameters["clientKeyId"]?.takeIf { it.isNotBlank() },
-                    team = call.request.queryParameters["team"]?.takeIf { it.isNotBlank() },
                 ),
             )
             call.respond(report.toResponse())
@@ -908,12 +859,6 @@ private fun parsePrice(value: String, label: String): BigDecimal {
         ?: throw badRequest("invalid_model_price", "$label 必须是数字")
     if (parsed < BigDecimal.ZERO) throw badRequest("invalid_model_price", "$label 不能为负数")
     return parsed.setScale(8, RoundingMode.HALF_UP)
-}
-
-private fun normalizeTeam(value: String?): String? {
-    val team = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-    if (team.length > 100) throw badRequest("invalid_client_key", "团队名称不能超过 100 个字符")
-    return team
 }
 
 private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLimits {

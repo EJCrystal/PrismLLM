@@ -10,8 +10,6 @@ describe('adminAudit: 管理操作审计展示', () => {
   it('把已知动作翻译为可读文案，未知动作保留原值', () => {
     assert.equal(auditActionLabel('client_key.rotate'), '轮换调用方密钥')
     assert.equal(auditActionLabel('client_key.revoke'), '撤销调用方密钥')
-    assert.equal(auditActionLabel('team_limit.update'), '更新团队限流')
-    assert.equal(auditActionLabel('team_limit.delete'), '清除团队限流')
     assert.equal(auditActionLabel('future.action'), 'future.action')
   })
 

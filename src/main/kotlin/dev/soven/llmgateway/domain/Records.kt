@@ -93,7 +93,6 @@ data class UpstreamModel(
 data class ClientKeyRecord(
     val id: String,
     val name: String,
-    val team: String? = null,
     val keyHash: String,
     val keyPrefix: String,
     val enabled: Boolean,
@@ -164,7 +163,6 @@ data class RequestLogRecord(
     val traceId: String? = null,
     val clientKeyId: String?,
     val clientKeyName: String?,
-    val team: String? = null,
     val alias: String,
     val channelId: String?,
     val channelName: String?,

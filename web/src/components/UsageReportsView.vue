@@ -90,23 +90,6 @@ onMounted(load)
 
       <div class="report-grid">
         <div class="panel report-panel">
-          <div class="report-panel-head"><h3>按团队</h3><span class="muted small">{{ report.byTeam.length }} 个团队</span></div>
-          <div class="table-scroll">
-            <table class="data-table compact-table">
-              <thead><tr><th>团队</th><th>请求</th><th>Token</th><th>费用</th></tr></thead>
-              <tbody>
-                <tr v-for="row in report.byTeam" :key="row.id">
-                  <td>{{ row.name || (row.id === '__unassigned_team__' ? '未分配团队' : row.id) }}</td>
-                  <td>{{ formatNumber(row.requests) }} <span class="muted small">/ {{ row.errors }} 错误</span></td>
-                  <td>{{ formatNumber(row.totalTokens) }}</td>
-                  <td class="small">{{ formatUsageCosts(row.costs) }}</td>
-                </tr>
-                <tr v-if="!report.byTeam.length"><td colspan="4" class="muted">该时间范围没有请求。</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div class="panel report-panel">
           <div class="report-panel-head"><h3>按调用方密钥</h3><span class="muted small">{{ report.byClientKey.length }} 个密钥</span></div>
           <div class="table-scroll">
             <table class="data-table compact-table">

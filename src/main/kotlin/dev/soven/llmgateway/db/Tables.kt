@@ -98,7 +98,6 @@ object ChannelModels : Table("channel_models") {
 object ClientKeys : Table("client_keys") {
     val id = varchar("id", 36)
     val name = varchar("name", 100)
-    val team = varchar("team", 100).nullable()
     val keyHash = varchar("key_hash", 64).uniqueIndex()
     val keyPrefix = varchar("key_prefix", 20)
     val enabled = bool("enabled")
@@ -128,19 +127,6 @@ object ClientKeyQuotaUsage : Table("client_key_quota_usage") {
     val eurCost = decimal("eur_cost", 18, 8).default(java.math.BigDecimal.ZERO)
 
     override val primaryKey = PrimaryKey(clientKeyId, period)
-}
-
-/**
- * 团队级请求速率与并发限制。团队名称与调用方密钥上的 team 标签一致。
- */
-object TeamLimits : Table("team_limits") {
-    val team = varchar("team", 100)
-    val requestsPerMinute = integer("requests_per_minute").nullable()
-    val maxConcurrentRequests = integer("max_concurrent_requests").nullable()
-    val createdAt = long("created_at")
-    val updatedAt = long("updated_at")
-
-    override val primaryKey = PrimaryKey(team)
 }
 
 /**
@@ -217,7 +203,6 @@ object RequestLogs : Table("request_logs") {
     val traceId = varchar("trace_id", 32).nullable()
     val clientKeyId = varchar("client_key_id", 36).nullable()
     val clientKeyName = varchar("client_key_name", 100).nullable()
-    val team = varchar("team", 100).nullable()
     val alias = varchar("alias", 100)
     val channelId = varchar("channel_id", 36).nullable()
     val channelName = varchar("channel_name", 100).nullable()
