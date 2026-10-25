@@ -33,8 +33,8 @@ The thresholds are starting points for an internal gateway. Tune them against no
 - `gateway_upstream_attempts_total{channel,outcome}` tracks each channel attempt, including retries.
 - `gateway_upstream_errors_total{channel,code}` remains available for detailed upstream error classification.
 - `gateway_upstream_retries_total{from_channel,to_channel,reason}` counts retry and failover transitions.
-- `gateway_upstream_circuit_skips_total{channel}` counts candidates skipped because their circuit is open.
-- `gateway_upstream_circuit_opens_total{channel}` counts entries into circuit-open state.
+- `gateway_upstream_cooldown_skips_total{channel}` counts candidates skipped because they are cooling down.
+- `gateway_upstream_cooldown_started_total{channel,reason}` counts cooldown starts; `reason` is `transient`, `rate_limited`, `auth_failure`, or `ttft_slow`.
 - `gateway_database_ready` is updated when `/health/ready` is checked.
 
 ## Trace correlation

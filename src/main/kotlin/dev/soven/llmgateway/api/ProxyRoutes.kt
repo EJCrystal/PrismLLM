@@ -59,6 +59,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.util.UUID
+import org.slf4j.LoggerFactory
+
+private val proxyLogger = LoggerFactory.getLogger("dev.soven.llmgateway.api.ProxyRoutes")
 
 /**
  * OpenAI 兼容数据面。负责调用方鉴权、别名路由、流式透传和请求日志。
@@ -169,11 +172,22 @@ private suspend fun handleProxy(
         }
 
         phase = FailureStage.UPSTREAM
-        val ordered = app.tierSharing.order(alias, candidates)
+        // 先按冷却分拣：可尝试的候选进同档轮询，冷却中的保序作为 fail-open 兜底，
+        // 轮询份额只在可尝试候选间分摊，不被冷却候选扭曲。
+        val eligible = mutableListOf<RouteCandidate>()
+        val blocked = mutableListOf<RouteCandidate>()
+        for (candidate in candidates) {
+            if (app.candidateCooldown.isBlocked(candidate.channel.id, candidate.upstreamModel)) {
+                app.metrics.upstreamCooldownSkipped(candidate.channel.name)
+                blocked.add(candidate)
+            } else {
+                eligible.add(candidate)
+            }
+        }
+        val ordered = app.tierSharing.order(alias, eligible)
         var lastError: GatewayException? = null
         var retryFrom: String? = null
         var retryReason: String? = null
-        val blocked = mutableListOf<RouteCandidate>()
 
         /**
          * 尝试单个候选并把结果记入冷却。返回 null 表示响应已完成，返回异常交由外层决定是否继续。
@@ -189,6 +203,8 @@ private suspend fun handleProxy(
                     "timeout_error",
                 )
             }
+            // 首 token 软阈值按本次尝试计时，不继承前面候选消耗掉的时间。
+            val attemptStartedNanos = System.nanoTime()
             upstreamAttempts += 1
             channelId = candidate.channel.id
             channelName = candidate.channel.name
@@ -200,7 +216,7 @@ private suspend fun handleProxy(
             }
             return try {
                 if (stream) {
-                    proxyStream(app, call, requestJson, candidate, alias, startedAt, remainingMs, state, protocol, traceContext.traceparent)
+                    proxyStream(app, call, requestJson, candidate, alias, startedAt, attemptStartedNanos, remainingMs, state, protocol, traceContext.traceparent)
                 } else {
                     proxyJson(app, call, requestJson, candidate, remainingMs, state, protocol, traceContext.traceparent)
                 }
@@ -229,7 +245,17 @@ private suspend fun handleProxy(
                 } else {
                     app.candidateCooldown
                         .recordFailure(permit, kind, e.retryAfterMs)
-                        ?.let { app.metrics.upstreamCooldownStarted(candidate.channel.name, it.reason) }
+                        ?.let { trigger ->
+                            app.metrics.upstreamCooldownStarted(candidate.channel.name, trigger.reason)
+                            if (trigger.reason == CandidateCooldown.REASON_AUTH) {
+                                proxyLogger.error(
+                                    "上游凭据被拒绝，渠道 {} 模型 {} 进入长冷却（{}ms），请检查渠道配置",
+                                    candidate.channel.name,
+                                    candidate.upstreamModel,
+                                    app.config.cooldown.authFailureMs,
+                                )
+                            }
+                        }
                 }
                 e
             } catch (e: Throwable) {
@@ -544,6 +570,7 @@ private suspend fun proxyStream(
     candidate: RouteCandidate,
     alias: String,
     startedAt: Long,
+    attemptStartedNanos: Long,
     timeoutMs: Long,
     state: ProxyState,
     protocol: GatewayProtocol,
@@ -613,7 +640,7 @@ private suspend fun proxyStream(
                             var sawDone = false
                             for (line in prefixLines) {
                                 writeSseLine(line)
-                                markFirstToken(line, protocol, state, startedAt, app, alias, candidate)
+                                markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate)
                                 recordUsage(line, state, protocol)
                                 if (isStreamDone(line, protocol)) {
                                     markResponsesTerminalFailure(line, protocol, state)
@@ -635,7 +662,7 @@ private suspend fun proxyStream(
                                         )
                                     } ?: break
                                     writeSseLine(line)
-                                    markFirstToken(line, protocol, state, startedAt, app, alias, candidate)
+                                    markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate)
                                     recordUsage(line, state, protocol)
                                     if (isStreamDone(line, protocol)) {
                                         markResponsesTerminalFailure(line, protocol, state)
@@ -826,6 +853,7 @@ private fun markFirstToken(
     protocol: GatewayProtocol,
     state: ProxyState,
     startedAt: Long,
+    attemptStartedNanos: Long,
     app: GatewayApplication,
     alias: String,
     candidate: RouteCandidate,
@@ -838,13 +866,15 @@ private fun markFirstToken(
         GatewayProtocol.RESPONSES -> isFirstResponsesToken(line)
     }
     if (isFirst) {
-        state.firstTokenMs = (System.nanoTime() - startedAt) / 1_000_000
+        val nowNanos = System.nanoTime()
+        state.firstTokenMs = (nowNanos - startedAt) / 1_000_000
         app.metrics.firstToken(alias, candidate.channel.name, state.firstTokenMs!!)
-        // 首 token 软阈值：连续过慢触发候选级冷却；被计数的请求本身照常完成。
+        // 首 token 软阈值按本次尝试计时：快速兜底不应继承前面候选撞掉的秒数。
+        val attemptFirstTokenMs = (nowNanos - attemptStartedNanos) / 1_000_000
         if (app.candidateCooldown.recordFirstToken(
                 candidate.channel.id,
                 candidate.upstreamModel,
-                state.firstTokenMs!!,
+                attemptFirstTokenMs,
             )
         ) {
             app.metrics.upstreamCooldownStarted(

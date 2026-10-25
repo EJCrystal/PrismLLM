@@ -198,6 +198,36 @@ class CandidateCooldownTest {
     }
 
     @Test
+    fun `healthy success does not invalidate concurrent failure recording`() {
+        var now = 0L
+        val cooldown = CandidateCooldown(policy = policy(), nowMs = { now })
+        val first = assertNotNull(cooldown.acquire("ch1", "m1"))
+        val second = assertNotNull(cooldown.acquire("ch1", "m1"))
+
+        // 健康态的成功不推进代际：并发的另一请求随后失败仍要记入冷却
+        cooldown.recordSuccess(first)
+        assertEquals(CandidateCooldown.REASON_TRANSIENT, cooldown.recordFailure(second, FailureKind.TRANSPORT)?.reason)
+        assertNull(cooldown.acquire("ch1", "m1"))
+    }
+
+    @Test
+    fun `isBlocked peeks cooldown without consuming probe slot`() {
+        var now = 0L
+        val cooldown = CandidateCooldown(policy = policy(), nowMs = { now })
+        assertFalse(cooldown.isBlocked("ch1", "m1"))
+
+        val permit = assertNotNull(cooldown.acquire("ch1", "m1"))
+        cooldown.recordFailure(permit, FailureKind.TRANSPORT)
+        assertTrue(cooldown.isBlocked("ch1", "m1"))
+
+        // 到期后探测就绪：peek 返回未阻塞，且不占用探测票
+        now = 1_000L
+        assertFalse(cooldown.isBlocked("ch1", "m1"))
+        val probe = assertNotNull(cooldown.acquire("ch1", "m1"))
+        assertTrue(probe.refs.any { it.probing })
+    }
+
+    @Test
     fun `restore reactivates persisted cooldowns`() {
         val cooldown = CandidateCooldown(policy = policy(), nowMs = { 5_000L })
         cooldown.restore(

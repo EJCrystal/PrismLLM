@@ -113,7 +113,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     fun install(app: Application) {
         databaseFactory.migrate()
         runBlocking { seedAdmin() }
-        runBlocking { candidateCooldown.restore(cooldownStateRepository.loadActive(System.currentTimeMillis())) }
+        runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
 
         app.install(ContentNegotiation) {
             json(gatewayJson)

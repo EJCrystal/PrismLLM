@@ -329,6 +329,18 @@ class CandidateCooldown(
         }
     }
 
+    /**
+     * 无副作用地查看候选当前是否被冷却阻塞，供分摊排序在轮询前分拣可尝试候选。
+     * 与 acquire 之间存在竞态窗口，acquire 会再次校验。
+     */
+    @Synchronized
+    fun isBlocked(channelId: String, upstreamModel: String): Boolean {
+        val channelState = states[CooldownKey.Channel(channelId).id] ?: return false
+        if (blocked(channelState)) return true
+        val candidateState = states[CooldownKey.Candidate(channelId, upstreamModel).id] ?: return false
+        return blocked(candidateState)
+    }
+
     @Synchronized
     fun cooldownUntil(channelId: String, upstreamModel: String): Long? {
         var until: Long? = null
@@ -349,8 +361,12 @@ class CandidateCooldown(
         state.consecutiveFailures = 0
         state.cooldownUntil = 0
         state.probeInFlight = false
-        state.generation += 1
-        if (wasCooling) onChange(CooldownChange.Removed(keyId))
+        // 只有真正离开冷却态才推进代际：健康态的成功结果不应作废并发请求的许可，
+        // 否则并发中的另一请求随后失败会被代际守卫忽略，漏记冷却。
+        if (wasCooling) {
+            state.generation += 1
+            onChange(CooldownChange.Removed(keyId))
+        }
     }
 
     private fun releaseProbe(state: KeyState) {

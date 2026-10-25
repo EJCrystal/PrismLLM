@@ -4,7 +4,6 @@ import dev.soven.llmgateway.db.CooldownStates
 import dev.soven.llmgateway.resilience.CooldownStateSnapshot
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
-import org.jetbrains.exposed.v1.core.greaterEq
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -35,10 +34,12 @@ class CooldownStateRepository(private val database: Database) {
         }
     }
 
-    suspend fun loadActive(nowMs: Long): List<CooldownStateSnapshot> = suspendTransaction(database) {
-        CooldownStates.selectAll()
-            .where { CooldownStates.cooldownUntil greaterEq nowMs }
-            .map(::toSnapshot)
+    /**
+     * 加载全部冷却快照，含已过期未探测的行：过期行恢复为探测就绪并保留失败次数，
+     * 重启不能把"到期未恢复"当作"从未失败"。
+     */
+    suspend fun loadAll(): List<CooldownStateSnapshot> = suspendTransaction(database) {
+        CooldownStates.selectAll().map(::toSnapshot)
     }
 
     private fun toSnapshot(row: ResultRow) = CooldownStateSnapshot(
