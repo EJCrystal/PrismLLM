@@ -2,6 +2,9 @@ package dev.soven.llmgateway.quota
 
 import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ClientKeyRecord
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.math.BigDecimal
 import kotlin.test.Test
@@ -25,6 +28,28 @@ class RequestLimitServiceTest {
         val rejected = assertFailsWith<GatewayException> { service.acquire(key) }
         assertEquals("key_rate_limit_exceeded", rejected.code)
         service.release(lease)
+        assertEquals(0, quotaService.currentUsage(key.id).concurrentRequests)
+    }
+
+    @Test
+    fun `release frees concurrency from a cancelled coroutine context`() = runBlocking {
+        val quotaService = quotaService()
+        val service = RequestLimitService(clientKeyQuotaService = quotaService)
+        val key = key(id = "key-a", quotas = ClientKeyQuotaLimits(maxConcurrentRequests = 1))
+
+        val lease = service.acquire(key)
+        assertEquals(1, quotaService.currentUsage(key.id).concurrentRequests)
+
+        // 模拟客户端断开：协程取消后，finally 里的 release 仍必须释放并发名额
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Job())
+        val job = scope.launch {
+            try {
+                kotlinx.coroutines.awaitCancellation()
+            } finally {
+                service.release(lease)
+            }
+        }
+        job.cancelAndJoin()
         assertEquals(0, quotaService.currentUsage(key.id).concurrentRequests)
     }
 

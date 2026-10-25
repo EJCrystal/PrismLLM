@@ -31,9 +31,10 @@ class RequestRateLimiterTest {
         val first = key("key-a", ClientKeyQuotaLimits(requestsPerMinute = 1))
         val second = key("key-b", ClientKeyQuotaLimits(requestsPerMinute = 1))
 
-        limiter.acquire(first)
+        val firstLease = limiter.acquire(first)
         assertFailsWith<GatewayException> { limiter.acquire(first) }
         limiter.acquire(second)
+        assertEquals(firstLease.clientKeyId, first.id)
         assertEquals(1, limiter.currentKeyUsage(second.id))
     }
 

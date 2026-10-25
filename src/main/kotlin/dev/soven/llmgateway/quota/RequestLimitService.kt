@@ -1,6 +1,8 @@
 package dev.soven.llmgateway.quota
 
 import dev.soven.llmgateway.domain.ClientKeyRecord
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import java.math.BigDecimal
 
 /**
@@ -24,11 +26,11 @@ class RequestLimitService(
         lease: RequestLimitLease,
         tokens: Long,
         costs: Map<String, BigDecimal>,
-    ) {
+    ) = withContext(NonCancellable) {
         clientKeyQuotaService.settle(lease.quotaLease, tokens, costs)
     }
 
-    suspend fun release(lease: RequestLimitLease) {
+    suspend fun release(lease: RequestLimitLease) = withContext(NonCancellable) {
         clientKeyQuotaService.release(lease.quotaLease)
     }
 

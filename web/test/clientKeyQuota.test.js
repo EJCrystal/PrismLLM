@@ -74,11 +74,6 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
     assert.equal(quotaSummary({ dailyTokenLimit: null, maxConcurrentRequests: null }), '未设置限额')
   })
 
-  it('启停时保留团队字段', () => {
-    const key = { name: 'search', enabled: true, expiresAt: null }
-    const payload = { name: key.name, enabled: !key.enabled, expiresAt: key.expiresAt }
-  })
-
   it('路由模板逐一对应小驼峰费用字段', () => {
     const currencies = [
       { code: 'USD', field: 'dailyUsdLimit' },
