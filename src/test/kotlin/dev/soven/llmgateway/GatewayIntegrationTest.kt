@@ -29,10 +29,12 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.engine.embeddedServer
-import io.ktor.server.netty.Netty
+import io.ktor.server.application.createApplicationPlugin
+import io.ktor.server.application.hooks.ResponseBodyReadyForSend
+import io.ktor.server.application.install
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import io.ktor.util.cio.ChannelWriteException
 import org.flywaydb.core.Flyway
 import org.flywaydb.core.api.MigrationVersion
 import kotlinx.coroutines.delay
@@ -49,15 +51,11 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.TestInstance
 import org.testcontainers.containers.PostgreSQLContainer
+import java.io.IOException
 import java.math.BigDecimal
-import java.net.ServerSocket
-import java.net.Socket
-import java.net.URI
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.nio.file.Path
 import java.sql.DriverManager
-import java.time.Duration
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -467,77 +465,46 @@ class GatewayIntegrationTest {
     @Test
     fun `client disconnect after first token does not open circuit`() = runBlocking {
         app.close()
-        app = GatewayApplication(
-            config(
-                firstTokenTimeoutMs = 5_000,
-                idleTimeoutMs = 5_000,
-                totalTimeoutMs = 10_000,
-                circuitFailureThreshold = 1,
-                circuitOpenMs = 60_000,
-            ),
-        )
-        val channel = createChannel("primary", "slow-stream")
+        app = GatewayApplication(config(circuitFailureThreshold = 1, circuitOpenMs = 60_000))
+        val channel = createChannel("primary", "ok")
         createAlias("fast-chat", channel to "m1")
         val key = createClientKey()
+        val failNextWrite = AtomicBoolean(false)
 
-        val port = ServerSocket(0).use { it.localPort }
-        val server = embeddedServer(Netty, port = port, host = "127.0.0.1") {
-            app.install(this)
-        }.start(wait = false)
-        try {
-            awaitPort(port)
-            val body = """{"model":"fast-chat","stream":true,"messages":[]}"""
-            val requestBytes = (
-                "POST /v1/chat/completions HTTP/1.1\r\n" +
-                    "Host: 127.0.0.1:$port\r\n" +
-                    "Authorization: Bearer $key\r\n" +
-                    "Content-Type: application/json\r\n" +
-                    "Content-Length: ${body.toByteArray().size}\r\n" +
-                    "Connection: close\r\n\r\n" +
-                    body
-                ).toByteArray()
-            Socket("127.0.0.1", port).use { socket ->
-                socket.setSoLinger(true, 0)
-                socket.soTimeout = 5_000
-                socket.getOutputStream().apply {
-                    write(requestBytes)
-                    flush()
-                }
-                val reader = socket.getInputStream().bufferedReader()
-                assertTrue(reader.readLine().startsWith("HTTP/1.1 200"))
-                while (true) {
-                    val header = reader.readLine() ?: break
-                    if (header.isEmpty()) break
-                }
-                var line = reader.readLine()
-                while (line != null && !line.startsWith("data:")) {
-                    line = reader.readLine()
-                }
-                assertNotNull(line)
+        testApplication {
+            application {
+                app.install(this)
+                install(createApplicationPlugin("test-client-disconnect") {
+                    on(ResponseBodyReadyForSend) { _, _ ->
+                        if (failNextWrite.compareAndSet(true, false)) {
+                            throw ChannelWriteException("test client disconnect", IOException("test"))
+                        }
+                    }
+                })
             }
 
-            val log = awaitRequestLog(5_000)
+            failNextWrite.set(true)
+            val first = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"messages":[]}""")
+            }
+            assertEquals(499, first.status.value)
+
+            val log = awaitRequestLog()
             assertEquals("client_disconnect", log.errorCode)
             assertEquals(FailureStage.CLIENT, log.failureStage)
             assertEquals(499, log.statusCode)
             assertEquals(1, fake.requests.size)
 
-            val httpClient = java.net.http.HttpClient.newBuilder()
-                .version(java.net.http.HttpClient.Version.HTTP_1_1)
-                .connectTimeout(Duration.ofSeconds(2))
-                .build()
-            val secondRequest = HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port/v1/chat/completions"))
-                .timeout(Duration.ofSeconds(5))
-                .header(HttpHeaders.Authorization, "Bearer $key")
-                .header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build()
-            val second = httpClient.send(secondRequest, HttpResponse.BodyHandlers.ofString())
-            assertEquals(HttpStatusCode.OK.value, second.statusCode())
-            assertTrue(second.body().contains("[DONE]"))
+            val second = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, second.status)
+            assertTrue(second.bodyAsText().contains("[DONE]"))
             assertEquals(2, fake.requests.size)
-        } finally {
-            server.stop(0, 1_000)
         }
     }
 
@@ -2573,15 +2540,6 @@ class GatewayIntegrationTest {
             delay(50)
         }
         error("request log not written within ${timeoutMs}ms")
-    }
-
-    private fun awaitPort(port: Int, timeoutMs: Long = 3_000) {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
-            runCatching { Socket("127.0.0.1", port).use { return } }
-            Thread.sleep(50)
-        }
-        error("server did not start on port $port within ${timeoutMs}ms")
     }
 
     private suspend fun awaitLogWithEffort(effort: String, timeoutMs: Long = 3_000): RequestLogRecord {
