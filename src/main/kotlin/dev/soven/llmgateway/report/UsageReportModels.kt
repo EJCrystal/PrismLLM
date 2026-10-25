@@ -6,7 +6,6 @@ data class UsageReportQuery(
     val from: Long,
     val to: Long,
     val clientKeyId: String? = null,
-    val team: String? = null,
 )
 
 data class UsageTotal(
@@ -34,5 +33,4 @@ data class UsageReport(
     val to: Long,
     val total: UsageTotal,
     val byClientKey: List<UsageGroup>,
-    val byTeam: List<UsageGroup>,
 )

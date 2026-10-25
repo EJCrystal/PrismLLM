@@ -29,7 +29,6 @@ const { pendingKeyId, pendingAction, rotate, revoke } = useClientKeyActions({
 
 const form = reactive({
   name: '',
-  team: '',
   enabled: true,
   expiresAt: '',
   dailyTokenLimit: '',
@@ -64,7 +63,6 @@ function openCreate() {
   editingId.value = null
   Object.assign(form, {
     name: '',
-    team: '',
     enabled: true,
     expiresAt: '',
     dailyTokenLimit: '',
@@ -82,7 +80,6 @@ function openEdit(key) {
   editingId.value = key.id
   Object.assign(form, {
     name: key.name,
-    team: key.team || '',
     enabled: key.enabled,
     expiresAt: toLocalInput(key.expiresAt),
     dailyTokenLimit: key.dailyTokenLimit ?? '',
@@ -125,7 +122,6 @@ async function toggle(key) {
   try {
     await api.updateClientKey(key.id, {
       name: key.name,
-      team: key.team,
       enabled: !key.enabled,
       expiresAt: key.expiresAt,
       dailyTokenLimit: key.dailyTokenLimit,
@@ -230,7 +226,6 @@ onMounted(load)
             <tr v-for="key in keys" :key="key.id">
               <td>
                 <div class="primary-cell">{{ key.name }}</div>
-                <div class="muted small">{{ key.team || '未分配团队' }}</div>
                 <div class="channel-id-cell">
                   <span class="mono muted small">{{ key.id }}</span>
                   <CopyButton :text="key.id" title="复制密钥 ID" variant="list" :size="12" />
@@ -318,11 +313,6 @@ onMounted(load)
           <span>名称</span>
           <input v-model="form.name" placeholder="例如 search-service" autocomplete="off" />
           <small>用于识别调用方，不会出现在密钥明文里。</small>
-        </label>
-        <label class="field" for="client-key-team">
-          <span>团队</span>
-          <input id="client-key-team" v-model="form.team" placeholder="例如 search-team" autocomplete="off" />
-          <small>用于用量报表和团队限流；留空为未分配团队。修改后不影响历史请求日志中的团队快照。</small>
         </label>
         <label class="field">
           <span>过期时间</span>
