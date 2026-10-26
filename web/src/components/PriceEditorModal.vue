@@ -122,6 +122,10 @@ async function fetchReferencePrice() {
     notify('请先输入或选择上游模型', 'warning')
     return
   }
+  if (form.currency !== 'USD' && hasPriceDraft(form)) {
+    notify('参考价以 USD 计；当前单价不是 USD，请先清空金额或新建 USD 单价', 'warning')
+    return
+  }
   if (hasPriceDraft(form) && !window.confirm('获取参考价会用 USD 金额覆盖当前填写的单价和币种，是否继续？')) {
     return
   }

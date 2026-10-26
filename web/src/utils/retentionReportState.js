@@ -14,5 +14,8 @@ export function createRetentionReportState() {
     beginToggle() {
       retentionVersion += 1
     },
+    endToggle() {
+      retentionVersion += 1
+    },
   }
 }

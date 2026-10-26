@@ -78,6 +78,7 @@ async function toggleCleanup(event) {
     input.checked = retention.value.cleanupEnabled
     notify(cause.message, 'error')
   } finally {
+    retentionState.endToggle()
     updatingRetention.value = false
   }
 }

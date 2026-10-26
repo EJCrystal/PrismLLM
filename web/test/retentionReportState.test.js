@@ -31,4 +31,13 @@ describe('retentionReportState: 报表刷新与保留开关协调', () => {
     assert.equal(state.shouldApplyRetention(stale), false)
     assert.equal(state.shouldApplyRetention(state.beginLoad()), true)
   })
+
+  it('切换进行期间启动的加载在切换结束后失效', () => {
+    const state = createRetentionReportState()
+    state.beginToggle()
+    const duringToggle = state.beginLoad()
+    state.endToggle()
+    assert.equal(state.shouldApplyRetention(duringToggle), false)
+    assert.equal(state.shouldApplyRetention(state.beginLoad()), true)
+  })
 })

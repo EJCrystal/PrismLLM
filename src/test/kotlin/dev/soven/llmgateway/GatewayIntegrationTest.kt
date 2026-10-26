@@ -2645,6 +2645,16 @@ class GatewayIntegrationTest {
                 assertEquals(HttpStatusCode.OK, result.await().status)
             }
 
+            val persistedAfterConcurrentBatch = app.retentionSettingsRepository.loadCleanupEnabled()
+            assertEquals(
+                app.logRetentionService.currentPolicy().cleanupEnabled,
+                persistedAfterConcurrentBatch,
+            )
+            assertEquals(
+                app.logRetentionService.scheduledCleanupRunning,
+                persistedAfterConcurrentBatch,
+            )
+
             assertEquals(HttpStatusCode.OK, setCleanup(true).status)
 
             val persisted = app.retentionSettingsRepository.loadCleanupEnabled()
