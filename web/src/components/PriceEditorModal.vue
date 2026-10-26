@@ -4,7 +4,14 @@ import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
 import { channelModelPriceOptions, findModelPrice, pricesForChannel } from '../utils/modelPrice'
-import { applyPriceToForm, buildPricePayload, hasPriceDraft, resetPriceForm } from '../utils/priceForm'
+import {
+  applyPriceToForm,
+  buildPricePayload,
+  emptyPriceDraft,
+  hasPriceDraft,
+  priceFormState,
+  resetPriceForm,
+} from '../utils/priceForm'
 import { formatUnitPrice } from '../utils/format'
 import Modal from './Modal.vue'
 
@@ -88,7 +95,6 @@ function applyExistingPrice(price) {
 watch(
   () => [form.channelId, form.upstreamModel, props.prices],
   ([channelId, upstreamModel]) => {
-    if (props.price) return
     const existingPrice = findModelPrice(props.prices, channelId, upstreamModel.trim())
     if (existingPrice) {
       if (activePrice.value?.id !== existingPrice.id) applyExistingPrice(existingPrice)
@@ -117,6 +123,11 @@ function handleModelPickerFocusOut(event) {
 function selectChannelModel(model) {
   form.upstreamModel = model.id
   modelPickerOpen.value = false
+}
+
+function onChannelChange() {
+  activePrice.value = null
+  resetPriceForm(form)
 }
 
 function editPrice(price) {
@@ -206,7 +217,7 @@ async function save() {
     <form class="form-grid" @submit.prevent="save">
       <label class="field">
         <span>渠道</span>
-        <select v-model="form.channelId">
+        <select v-model="form.channelId" @change="onChannelChange">
           <option v-for="channel in channels" :key="channel.id" :value="channel.id">
             {{ channel.name }}
           </option>
@@ -228,6 +239,7 @@ async function save() {
             type="button"
             class="price-configured-item"
             :class="{ active: activePrice?.id === price.id }"
+            :aria-pressed="activePrice?.id === price.id"
             @click="editPrice(price)"
           >
             <code>{{ price.upstreamModel }}</code>
