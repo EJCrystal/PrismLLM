@@ -18,6 +18,31 @@ describe('latestRequest: 丢弃过期报表响应', () => {
     assert.equal(failure.isLatest, true)
   })
 
+
+  it('并发加载期间保持 hasActive，最后一个请求结束后释放', async () => {
+    const guard = createLatestRequestGuard()
+    let release
+    const pending = guard.run(() => new Promise((resolve) => { release = resolve }))
+    assert.equal(guard.hasActive(), true)
+    release('done')
+    await pending
+    assert.equal(guard.hasActive(), false)
+  })
+
+  it('先完成的旧请求不会清掉仍在进行的新请求标记', async () => {
+    const guard = createLatestRequestGuard()
+    let releaseOld
+    let releaseNew
+    const old = guard.run(() => new Promise((resolve) => { releaseOld = resolve }))
+    const fresh = guard.run(() => new Promise((resolve) => { releaseNew = resolve }))
+    releaseOld('old')
+    await old
+    assert.equal(guard.hasActive(), true)
+    releaseNew('new')
+    await fresh
+    assert.equal(guard.hasActive(), false)
+  })
+
   it('invalidate 后尚未完成的请求不再被认定为最新', async () => {
     const guard = createLatestRequestGuard()
     const pending = guard.run(async () => 'slow')

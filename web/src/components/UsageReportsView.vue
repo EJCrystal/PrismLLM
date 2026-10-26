@@ -30,25 +30,25 @@ async function load() {
   loading.value = true
   error.value = ''
   const requestRetentionVersion = retentionState.beginLoad()
-  const result = await requests.run(async () => {
-    const [nextReport, nextRetention] = await Promise.all([
-      api.getUsageReport(range()),
-      api.getRetentionPolicy(),
-    ])
-    return { nextReport, nextRetention }
-  }).catch((cause) => ({ error: cause, isLatest: cause.isLatest }))
-  if (!result.isLatest) {
-    loading.value = false
-    return
-  }
-  if (result.error) error.value = result.error.message
-  else {
-    report.value = result.value.nextReport
-    if (retentionState.shouldApplyRetention(requestRetentionVersion)) {
-      retention.value = result.value.nextRetention
+  try {
+    const result = await requests.run(async () => {
+      const [nextReport, nextRetention] = await Promise.all([
+        api.getUsageReport(range()),
+        api.getRetentionPolicy(),
+      ])
+      return { nextReport, nextRetention }
+    }).catch((cause) => ({ error: cause, isLatest: cause.isLatest }))
+    if (!result.isLatest) return
+    if (result.error) error.value = result.error.message
+    else {
+      report.value = result.value.nextReport
+      if (retentionState.shouldApplyRetention(requestRetentionVersion)) {
+        retention.value = result.value.nextRetention
+      }
     }
+  } finally {
+    if (!requests.hasActive()) loading.value = false
   }
-  loading.value = false
 }
 
 async function cleanup() {
@@ -71,7 +71,6 @@ async function toggleCleanup(event) {
   const enabled = input.checked
   updatingRetention.value = true
   retentionState.beginToggle()
-  requests.invalidate()
   try {
     retention.value = await api.updateRetentionPolicy({ cleanupEnabled: enabled })
     notify('自动清理已' + (enabled ? '开启' : '关闭'))
