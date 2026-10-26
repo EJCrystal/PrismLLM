@@ -11,6 +11,15 @@ export function findModelPrice(prices, channelId, upstreamModel) {
   ) || null
 }
 
+/** List the configured prices for one channel, ordered by upstream model. */
+export function pricesForChannel(prices, channelId) {
+  if (!Array.isArray(prices) || !channelId) return []
+  return prices
+    .filter((price) => price && price.channelId === channelId && typeof price.upstreamModel === 'string')
+    .slice()
+    .sort((left, right) => left.upstreamModel.localeCompare(right.upstreamModel))
+}
+
 /** Return the channel's upstream models that have no price record. */
 export function unpricedChannelModels(channel, prices) {
   if (!channel || !Array.isArray(channel.models)) return []

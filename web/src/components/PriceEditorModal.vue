@@ -3,8 +3,9 @@ import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
-import { findModelPrice } from '../utils/modelPrice'
+import { findModelPrice, pricesForChannel } from '../utils/modelPrice'
 import { buildPricePayload, emptyPriceDraft, hasPriceDraft, priceFormState } from '../utils/priceForm'
+import { formatUnitPrice } from '../utils/format'
 import Modal from './Modal.vue'
 
 const props = defineProps({
@@ -31,10 +32,18 @@ const form = reactive({
   ...initialPrice,
 })
 
+const channelPrices = computed(() => pricesForChannel(props.prices, form.channelId))
+const channelModelOptions = computed(() => {
+  const pricesByModel = new Map(channelPrices.value.map((price) => [price.upstreamModel, price]))
+  return channelModels.value.map((model) => ({
+    ...model,
+    price: pricesByModel.get(model.id) || null,
+  }))
+})
 const filteredChannelModels = computed(() => {
   const query = form.upstreamModel.trim().toLowerCase()
-  if (!query) return channelModels.value
-  return channelModels.value.filter((model) => model.id.toLowerCase().includes(query))
+  if (!query) return channelModelOptions.value
+  return channelModelOptions.value.filter((model) => model.id.toLowerCase().includes(query))
 })
 
 watch(
@@ -116,6 +125,21 @@ function selectChannelModel(model) {
   modelPickerOpen.value = false
 }
 
+function editPrice(price) {
+  activePrice.value = price
+  form.channelId = price.channelId
+  form.upstreamModel = price.upstreamModel
+  Object.assign(form, priceFormState(price))
+  modelPickerOpen.value = false
+}
+
+function startNewPrice() {
+  activePrice.value = null
+  form.upstreamModel = ''
+  Object.assign(form, emptyPriceDraft())
+  modelPickerOpen.value = false
+}
+
 async function fetchReferencePrice() {
   const modelName = form.upstreamModel.trim()
   if (!modelName) {
@@ -187,7 +211,7 @@ async function save() {
 </script>
 
 <template>
-  <Modal :title="activePrice?.id ? '编辑计费单价' : '新增计费单价'" @close="$emit('close')">
+  <Modal :title="activePrice?.id ? '编辑计费单价' : '模型计费单价'" @close="$emit('close')">
     <form class="form-grid" @submit.prevent="save">
       <label class="field">
         <span>渠道</span>
@@ -196,8 +220,34 @@ async function save() {
             {{ channel.name }}
           </option>
         </select>
-        <small>价格绑定到渠道，同一模型在不同渠道可以配置不同价格。</small>
+        <small>价格按「渠道 + 上游模型」单独配置；同一模型在不同渠道也分别计费。</small>
       </label>
+      <div class="price-configured">
+        <div class="price-configured-head">
+          <div>
+            <strong>已配置单价</strong>
+            <span class="muted small"> · {{ channelPrices.length }} 个模型</span>
+          </div>
+          <button v-if="activePrice" type="button" class="button ghost mini" @click="startNewPrice">新增单价</button>
+        </div>
+        <div v-if="channelPrices.length" class="price-configured-list">
+          <button
+            v-for="price in channelPrices"
+            :key="price.id"
+            type="button"
+            class="price-configured-item"
+            :class="{ active: activePrice?.id === price.id }"
+            @click="editPrice(price)"
+          >
+            <code>{{ price.upstreamModel }}</code>
+            <span class="muted small">
+              {{ price.currency }} {{ formatUnitPrice(price.inputPricePerMillion) }} /
+              {{ formatUnitPrice(price.outputPricePerMillion) }} 每 1M
+            </span>
+          </button>
+        </div>
+        <p v-else class="muted small price-configured-empty">该渠道还没有配置任何模型单价。</p>
+      </div>
       <label class="field" for="price-upstream-model">
         <span>上游模型</span>
         <div class="model-picker" @focusin="openModelPicker" @focusout="handleModelPickerFocusOut">
@@ -229,8 +279,13 @@ async function save() {
                 role="option"
                 @click.stop.prevent="selectChannelModel(model)"
               >
-                <code>{{ model.id }}</code>
-                <span v-if="model.ownedBy" class="muted small">{{ model.ownedBy }}</span>
+                <span class="model-picker-option-main">
+                  <code>{{ model.id }}</code>
+                  <span v-if="model.ownedBy" class="muted small">{{ model.ownedBy }}</span>
+                </span>
+                <span class="badge" :class="model.price ? 'success' : 'warning'">
+                  {{ model.price ? '已定价' : '未定价' }}
+                </span>
               </button>
             </template>
             <div v-else class="model-picker-message">没有匹配的模型，可直接手动输入。</div>

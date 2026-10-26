@@ -4,6 +4,7 @@ import {
   buildPricePrompt,
   channelPriceSummaries,
   findModelPrice,
+  pricesForChannel,
   resolveSavedChannel,
   unpricedChannelModels,
 } from '../src/utils/modelPrice.js'
@@ -58,6 +59,26 @@ describe('modelPrice: 按渠道和上游模型查找单价', () => {
     const channel = { id: 'channel-a', models: ['model-a', '  ', '', null, '   '] }
     assert.deepEqual(unpricedChannelModels(channel, spacedPrices), [])
     assert.equal(findModelPrice(spacedPrices, 'channel-a', ' model-a'), spacedPrices[0])
+  })
+
+  it('按渠道列出已配置单价并按上游模型排序', () => {
+    const channelPrices = [
+      { id: 'p2', channelId: 'channel-a', upstreamModel: 'model-z' },
+      { id: 'p1', channelId: 'channel-a', upstreamModel: 'model-a' },
+      { id: 'p3', channelId: 'channel-b', upstreamModel: 'model-b' },
+      null,
+      { id: 'p4', channelId: 'channel-a' },
+    ]
+    assert.deepEqual(
+      pricesForChannel(channelPrices, 'channel-a').map((price) => price.id),
+      ['p1', 'p2'],
+    )
+  })
+
+  it('渠道或价格列表无效时返回空数组', () => {
+    assert.deepEqual(pricesForChannel(null, 'channel-a'), [])
+    assert.deepEqual(pricesForChannel([], 'channel-a'), [])
+    assert.deepEqual(pricesForChannel([{ channelId: 'channel-a', upstreamModel: 'm' }], ''), [])
   })
 
   it('同一对外模型映射多个上游时，只标记尚未定价的上游', () => {
