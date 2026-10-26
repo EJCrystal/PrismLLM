@@ -11,7 +11,7 @@ custom_model_max_tokens = 256000
 reasoning_effort = "none"
 additional_reasoning_effort_models = ["deepseek-flash"]
 # 留足输出空间，避免 diff 较大时在结论生成前被截断。
-max_output_tokens = 32000
+max_output_tokens = 16000
 
 [pr_reviewer]
 require_score_review = true
