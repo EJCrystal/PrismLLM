@@ -3,10 +3,14 @@ package dev.soven.llmgateway.report
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.CompletableDeferred
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class LogRetentionServiceTest {
     @Test
@@ -69,6 +73,46 @@ class LogRetentionServiceTest {
         listOf(async { service.cleanExpired() }, async { service.cleanExpired() }).awaitAll()
 
         assertEquals(1, maxActive)
+    }
+
+    @Test
+    fun `disabled scheduled cleanup does not start but manual cleanup still runs`() = runBlocking {
+        val calls = AtomicInteger()
+        val service = LogRetentionService(
+            deleteBatch = { _, _ ->
+                calls.incrementAndGet()
+                CleanupResult(0, 1)
+            },
+            policy = RetentionPolicy(cleanupEnabled = false, cleanupIntervalMs = 60_000),
+            now = { 1L },
+        )
+
+        assertNull(service.start(this))
+        assertFalse(service.scheduledCleanupRunning)
+        assertEquals(0, service.cleanExpired().deleted)
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun `cancelling the scheduled job fully stops it`() = runBlocking {
+        val cleanupStarted = CompletableDeferred<Unit>()
+        val service = LogRetentionService(
+            deleteBatch = { _, _ ->
+                cleanupStarted.complete(Unit)
+                CleanupResult(0, 1)
+            },
+            policy = RetentionPolicy(cleanupEnabled = true, cleanupIntervalMs = 60_000),
+            now = { 1L },
+        )
+
+        val job = service.start(this)!!
+        cleanupStarted.await()
+        assertTrue(service.scheduledCleanupRunning)
+
+        job.cancelAndJoin()
+
+        assertTrue(job.isCancelled)
+        assertFalse(service.scheduledCleanupRunning)
     }
 
 }

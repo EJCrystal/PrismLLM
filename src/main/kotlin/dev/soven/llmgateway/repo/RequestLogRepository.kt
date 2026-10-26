@@ -231,6 +231,7 @@ class RequestLogRepository(private val database: Database) {
         upstreamErrorCode = row[RequestLogs.upstreamErrorCode],
         createdAt = row[RequestLogs.createdAt],
         upstreamAttempts = row[RequestLogs.upstreamAttempts],
+        id = row[RequestLogs.id],
     )
 
 }

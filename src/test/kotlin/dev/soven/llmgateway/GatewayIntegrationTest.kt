@@ -42,6 +42,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -92,6 +93,7 @@ class GatewayIntegrationTest {
     fun setUp() {
         fake.requests.clear()
         fake.cancellations.set(0)
+        fake.failingModels.clear()
         app = GatewayApplication(config())
         app.databaseFactory.migrate()
         truncateAll()
@@ -431,6 +433,137 @@ class GatewayIntegrationTest {
             // 同档两个候选各承接一次请求
             assertEquals(setOf(primary.id, secondary.id), logs.map { it.channelId }.toSet())
             logs.forEach { assertEquals(1, it.upstreamAttempts) }
+        }
+    }
+
+    @Test
+    fun `shared public id falls back across aliases and recovers after candidate cooldown`() = runBlocking {
+        app.close()
+        app = GatewayApplication(
+            config(
+                maxAttempts = 2,
+                cooldownRateLimitDefaultMs = 300,
+                cooldownRateLimitMaxMs = 300,
+            ),
+        )
+        val channel = createChannelWithBaseUrl(
+            name = "shared-alias-channel",
+            baseUrl = "${fake.baseUrl}/model-route/v1",
+            modelMappings = listOf(
+                ChannelModelRecord("alias-fail", "shared-model", "manual"),
+                ChannelModelRecord("alias-ok", "shared-model", "manual"),
+            ),
+            priority = 1,
+        )
+        fake.failingModels.add("alias-fail")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"shared-model","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            val firstLog = awaitRequestLog()
+            assertEquals(channel.id, firstLog.channelId)
+            assertEquals("alias-ok", firstLog.upstreamModel)
+            assertEquals(2, firstLog.upstreamAttempts)
+
+            // 失败别名仍在冷却，下一次请求直接使用同渠道的可用别名
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(2)
+            val secondLog = app.requestLogRepository.list(10).first()
+            assertEquals("alias-ok", secondLog.upstreamModel)
+            assertEquals(1, secondLog.upstreamAttempts)
+
+            // 冷却到期后主别名重新参与，并可在恢复后独立承接请求
+            fake.failingModels.remove("alias-fail")
+            delay(350)
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(3)
+            val thirdLog = app.requestLogRepository.list(10).first()
+            assertEquals("alias-fail", thirdLog.upstreamModel)
+            assertEquals(1, thirdLog.upstreamAttempts)
+
+            val requestedModels = fake.requests.map {
+                Json.parseToJsonElement(it.body).jsonObject["model"]!!.jsonPrimitive.content
+            }
+            assertEquals(listOf("alias-fail", "alias-ok", "alias-ok", "alias-fail"), requestedModels)
+            assertEquals(1, app.modelCatalog.listEnabledModels().count { it == "shared-model" })
+        }
+    }
+
+    @Test
+    fun `shared public id falls back to a sibling alias after channel level failure`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
+        val channel = createChannelWithBaseUrl(
+            name = "shared-alias-500-channel",
+            baseUrl = "${fake.baseUrl}/model-route-500/v1",
+            modelMappings = listOf(
+                ChannelModelRecord("alias-fail", "shared-500-model", "manual"),
+                ChannelModelRecord("alias-ok", "shared-500-model", "manual"),
+            ),
+            priority = 1,
+        )
+        fake.failingModels.add("alias-fail")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"shared-500-model","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog()
+            assertEquals(channel.id, log.channelId)
+            assertEquals("alias-ok", log.upstreamModel)
+            assertEquals(2, log.upstreamAttempts)
+            val requestedModels = fake.requests.map {
+                Json.parseToJsonElement(it.body).jsonObject["model"]!!.jsonPrimitive.content
+            }
+            assertEquals(listOf("alias-fail", "alias-ok"), requestedModels)
+        }
+    }
+
+    @Test
+    fun `shared public id rotates across channels without duplicating the public model`() = runBlocking {
+        val first = createChannelWithBaseUrl(
+            name = "shared-channel-a",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            modelMappings = listOf(ChannelModelRecord("upstream-a", "shared-channel-model", "manual")),
+            priority = 1,
+        )
+        val second = createChannelWithBaseUrl(
+            name = "shared-channel-b",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            modelMappings = listOf(ChannelModelRecord("upstream-b", "shared-channel-model", "manual")),
+            priority = 1,
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"shared-channel-model","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            assertEquals(HttpStatusCode.OK, send().status)
+            awaitRequestLogCount(2)
+
+            val logs = app.requestLogRepository.list(10)
+            assertEquals(setOf(first.id, second.id), logs.map { it.channelId }.toSet())
+            logs.forEach { assertEquals(1, it.upstreamAttempts) }
+            assertEquals(1, app.modelCatalog.listEnabledModels().count { it == "shared-channel-model" })
         }
     }
 
@@ -913,7 +1046,7 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `admin channel model mappings persist and reject duplicate canonical ids`() = runBlocking {
+    fun `admin channel model mappings persist and allow shared canonical ids`() = runBlocking {
         val channel = createChannelWithBaseUrl(
             "mapping-api",
             "${fake.baseUrl}/ok/v1",
@@ -957,14 +1090,36 @@ class GatewayIntegrationTest {
                       "enabled":true,
                       "modelMappings":[
                         {"upstreamModel":"gpt-4o-mini","canonicalModelId":"same-id","mappingSource":"manual"},
-                        {"upstreamModel":"deepseek-chat","canonicalModelId":"SAME-ID","mappingSource":"manual"}
+                        {"upstreamModel":"deepseek-chat","canonicalModelId":"same-id","mappingSource":"manual"}
                       ]
                     }
                     """.trimIndent(),
                 )
             }
-            assertEquals(HttpStatusCode.BadRequest, duplicate.status)
-            assertTrue(duplicate.bodyAsText().contains("对外模型 ID 不能重复"))
+            assertEquals(HttpStatusCode.OK, duplicate.status)
+            val duplicateBody = duplicate.bodyAsText()
+            assertTrue(duplicateBody.contains("gpt-4o-mini"), "BODY=[$duplicateBody]")
+            assertTrue(duplicateBody.contains("deepseek-chat"), "BODY=[$duplicateBody]")
+            val sharedCandidates = app.modelCatalog.findCandidates("same-id", GatewayProtocol.CHAT_COMPLETIONS)
+            assertEquals(
+                listOf("deepseek-chat", "gpt-4o-mini"),
+                sharedCandidates.map { it.upstreamModel }.sorted(),
+            )
+            assertEquals(1, app.modelCatalog.listEnabledModels().count { it == "same-id" })
+
+            val exposed = client.get("/admin/api/exposed-models") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            assertEquals(HttpStatusCode.OK, exposed.status)
+            val exposedModel = Json.parseToJsonElement(exposed.bodyAsText())
+                .jsonObject["data"]!!
+                .jsonArray
+                .single { it.jsonObject["id"]!!.jsonPrimitive.content == "same-id" }
+                .jsonObject
+            assertEquals(
+                listOf("deepseek-chat", "gpt-4o-mini"),
+                exposedModel["upstreamModels"]!!.jsonArray.map { it.jsonPrimitive.content }.sorted(),
+            )
 
             val canonicalConflictsWithUnmapped = client.put("/admin/api/channels/${channel.id}") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
@@ -985,7 +1140,7 @@ class GatewayIntegrationTest {
                     """.trimIndent(),
                 )
             }
-            assertEquals(HttpStatusCode.BadRequest, canonicalConflictsWithUnmapped.status)
+            assertEquals(HttpStatusCode.OK, canonicalConflictsWithUnmapped.status)
 
             val caseDistinctUnmapped = client.put("/admin/api/channels/${channel.id}") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
@@ -2267,7 +2422,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("22", result.getString(1))
+                        assertEquals("23", result.getString(1))
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.columns where table_name = 'client_keys' and column_name = 'requests_per_minute'",
@@ -2397,6 +2552,107 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin can toggle request log cleanup and persists the setting`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            val initial = client.get("/admin/api/request-log-retention") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, initial.status)
+            assertFalse(
+                Json.parseToJsonElement(initial.bodyAsText()).jsonObject["cleanupEnabled"]!!.jsonPrimitive.boolean,
+            )
+            assertFalse(app.logRetentionService.scheduledCleanupRunning)
+
+            val enabled = client.put("/admin/api/request-log-retention") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"cleanupEnabled":true}""")
+            }
+            assertEquals(HttpStatusCode.OK, enabled.status)
+            assertTrue(
+                Json.parseToJsonElement(enabled.bodyAsText()).jsonObject["cleanupEnabled"]!!.jsonPrimitive.boolean,
+            )
+            assertTrue(app.logRetentionService.scheduledCleanupRunning)
+
+            val disabled = client.put("/admin/api/request-log-retention") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"cleanupEnabled":false}""")
+            }
+            assertEquals(HttpStatusCode.OK, disabled.status)
+            assertFalse(
+                Json.parseToJsonElement(disabled.bodyAsText()).jsonObject["cleanupEnabled"]!!.jsonPrimitive.boolean,
+            )
+            assertFalse(app.logRetentionService.scheduledCleanupRunning)
+            assertEquals(false, app.retentionSettingsRepository.loadCleanupEnabled())
+
+            app.requestLogRepository.insert(
+                requestLog(
+                    requestId = "manual-cleanup-while-disabled",
+                    createdAt = System.currentTimeMillis() - 31 * 86_400_000L,
+                ),
+            )
+            val manualCleanup = client.post("/admin/api/request-log-retention/cleanup") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+            }
+            assertEquals(HttpStatusCode.OK, manualCleanup.status)
+            assertEquals(
+                "1",
+                Json.parseToJsonElement(manualCleanup.bodyAsText())
+                    .jsonObject["deleted"]!!
+                    .jsonPrimitive
+                    .content,
+            )
+            assertFalse(app.logRetentionService.scheduledCleanupRunning)
+        }
+    }
+
+    @Test
+    fun `admin request logs expose id cursors for loading older pages`() = runBlocking {
+        repeat(3) { index ->
+            app.requestLogRepository.insert(
+                requestLog(
+                    requestId = "cursor-page-$index",
+                    createdAt = 1_000L + index,
+                ),
+            )
+        }
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, _) = client.loginAdmin()
+
+            val firstPage = client.get("/admin/api/request-logs?limit=2") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, firstPage.status)
+            val firstIds = Json.parseToJsonElement(firstPage.bodyAsText())
+                .jsonArray
+                .map { it.jsonObject["id"]!!.jsonPrimitive.content.toLong() }
+            assertEquals(2, firstIds.size)
+            assertEquals(firstIds.sortedDescending(), firstIds)
+
+            val secondPage = client.get("/admin/api/request-logs?limit=2&beforeId=${firstIds.last()}") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, secondPage.status)
+            val secondIds = Json.parseToJsonElement(secondPage.bodyAsText())
+                .jsonArray
+                .map { it.jsonObject["id"]!!.jsonPrimitive.content.toLong() }
+            assertEquals(1, secondIds.size)
+            assertTrue(secondIds.single() < firstIds.last())
+        }
+    }
+
+    @Test
     fun `looks up reference price for model`() = runBlocking {
         testApplication {
             application { app.install(this) }
@@ -2465,6 +2721,8 @@ class GatewayIntegrationTest {
         corsOrigins: List<String> = emptyList(),
         maxAttempts: Int = 2,
         cooldownTransientBaseMs: Long = 3_600_000,
+        cooldownRateLimitDefaultMs: Long = 60_000,
+        cooldownRateLimitMaxMs: Long = 60_000,
         ttftSlowThresholdMs: Long = 600_000,
         ttftSlowStreak: Int = 100,
     ): GatewayConfig = GatewayConfig(
@@ -2489,8 +2747,8 @@ class GatewayIntegrationTest {
         cooldown = CooldownPolicy(
             transientBaseMs = cooldownTransientBaseMs,
             transientMaxMs = 3_600_000,
-            rateLimitDefaultMs = 60_000,
-            rateLimitMaxMs = 60_000,
+            rateLimitDefaultMs = cooldownRateLimitDefaultMs,
+            rateLimitMaxMs = cooldownRateLimitMaxMs,
             authFailureMs = 600_000,
             ttftSlowThresholdMs = ttftSlowThresholdMs,
             ttftSlowStreak = ttftSlowStreak,
@@ -2896,7 +3154,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table admin_audit_logs, request_logs, alias_candidates, model_aliases, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table admin_audit_logs, retention_settings, request_logs, alias_candidates, model_aliases, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }

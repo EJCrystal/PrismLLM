@@ -11,15 +11,27 @@ export function channelDisplayModels(channel) {
   const mappingsByUpstream = new Map(
     (channel.modelMappings || []).map((m) => [m.upstreamModel, m.canonicalModelId]),
   )
-  return channel.models.map((upstreamModel) => {
+  const grouped = new Map()
+  channel.models.forEach((upstreamModel) => {
     const canonical = mappingsByUpstream.get(upstreamModel)?.trim()
     const displayName = canonical || upstreamModel
-    const isCustom = !!(canonical && canonical !== upstreamModel)
+    const entry = grouped.get(displayName) || { displayName, upstreamModels: [] }
+    entry.upstreamModels.push(upstreamModel)
+    grouped.set(displayName, entry)
+  })
+  return [...grouped.values()].map(({ displayName, upstreamModels }) => {
+    const uniqueUpstreams = [...new Set(upstreamModels)]
+    const isCustom = uniqueUpstreams.some((upstreamModel) => {
+      const canonical = mappingsByUpstream.get(upstreamModel)?.trim()
+      return !!(canonical && canonical !== upstreamModel)
+    })
+    const showUpstreams = isCustom || uniqueUpstreams.length > 1
     return {
-      upstreamModel,
+      upstreamModel: uniqueUpstreams[0],
+      upstreamModels: uniqueUpstreams,
       displayName,
       isCustom,
-      title: isCustom ? `${displayName} (上游模型: ${upstreamModel})` : '',
+      title: showUpstreams ? `${displayName} (上游模型: ${uniqueUpstreams.join('、')})` : '',
     }
   })
 }
@@ -37,6 +49,6 @@ export function visibleModels(channel) {
  */
 export function hiddenModelsTitle(channel) {
   return channelDisplayModels(channel)
-    .map((m) => (m.isCustom ? `${m.displayName} (上游: ${m.upstreamModel})` : m.displayName))
+    .map((m) => (m.isCustom ? `${m.displayName} (上游: ${m.upstreamModels.join('、')})` : m.displayName))
     .join(', ')
 }

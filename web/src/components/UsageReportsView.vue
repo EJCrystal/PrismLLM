@@ -14,6 +14,7 @@ const retention = ref(null)
 const loading = ref(true)
 const error = ref('')
 const cleaning = ref(false)
+const updatingRetention = ref(false)
 const requests = createLatestRequestGuard()
 
 const total = computed(() => report.value?.total || { requests: 0, errors: 0, totalTokens: 0, costs: {} })
@@ -56,6 +57,22 @@ async function cleanup() {
   }
 }
 
+async function toggleCleanup(event) {
+  if (!retention.value || updatingRetention.value) return
+  const input = event.currentTarget
+  const enabled = input.checked
+  updatingRetention.value = true
+  try {
+    retention.value = await api.updateRetentionPolicy({ cleanupEnabled: enabled })
+    notify('自动清理已' + (enabled ? '开启' : '关闭'))
+  } catch (cause) {
+    input.checked = retention.value.cleanupEnabled
+    notify(cause.message, 'error')
+  } finally {
+    updatingRetention.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -64,10 +81,10 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>用量报表</h2>
-        <p>按调用方密钥汇总请求、token 与费用；费用按原计费币种分别展示，不做汇率换算。</p>
+        <p>按调用方密钥汇总请求、token 与费用，费用统一按美元 (USD) 计费展示。</p>
       </div>
-      <div class="form-row">
-        <select v-model="days" aria-label="报表时间范围" @change="load">
+      <div class="form-row report-filter-row">
+        <select v-model="days" class="select-input report-range-select" aria-label="报表时间范围" @change="load">
           <option :value="1">最近 24 小时</option>
           <option :value="7">最近 7 天</option>
           <option :value="30">最近 30 天</option>
@@ -88,13 +105,13 @@ onMounted(load)
         <div class="stat-card accent">
           <span>费用</span>
           <div class="cost-lines" v-if="usageCostEntries(total.costs).length">
-            <div class="cost-line" v-for="entry in usageCostEntries(total.costs)" :key="entry.currency" :title="entry.currency + ' ' + entry.value">
+            <div class="cost-line" v-for="entry in usageCostEntries(total.costs)" :key="entry.currency">
               <strong class="cost-amount">{{ entry.value }}</strong>
-              <span class="cost-currency">{{ entry.currency }}</span>
+              <span v-if="entry.currency !== 'USD'" class="cost-currency">{{ entry.currency }}</span>
             </div>
           </div>
           <strong v-else class="report-cost muted">—</strong>
-          <small>按原计费币种，不做汇率换算</small>
+          <small>费用统一以美元 (USD) 计费</small>
         </div>
       </div>
 
@@ -119,7 +136,7 @@ onMounted(load)
                     <div class="cost-lines compact" v-if="usageCostEntries(row.costs).length">
                       <div class="cost-line" v-for="entry in usageCostEntries(row.costs)" :key="entry.currency">
                         <span class="cost-amount mono">{{ entry.value }}</span>
-                        <span class="cost-currency">{{ entry.currency }}</span>
+                        <span v-if="entry.currency !== 'USD'" class="cost-currency">{{ entry.currency }}</span>
                       </div>
                     </div>
                     <span v-else class="muted">—</span>
@@ -136,12 +153,22 @@ onMounted(load)
         <div class="retention-copy">
           <div class="retention-title">
             <h3>请求日志保留</h3>
-            <span class="retention-status" :class="retention.cleanupEnabled ? 'is-on' : 'is-off'">
-              {{ retention.cleanupEnabled ? '自动清理已开启' : '自动清理已关闭' }}
-            </span>
+            <label class="retention-toggle" :class="{ 'is-saving': updatingRetention }">
+              <input
+                type="checkbox"
+                :checked="retention.cleanupEnabled"
+                :disabled="updatingRetention"
+                :aria-label="retention.cleanupEnabled ? '关闭自动清理' : '开启自动清理'"
+                @change="toggleCleanup"
+              />
+              <span class="switch"></span>
+              <span class="retention-status" :class="retention.cleanupEnabled ? 'is-on' : 'is-off'">
+                {{ updatingRetention ? '正在更新…' : (retention.cleanupEnabled ? '自动清理已开启' : '自动清理已关闭') }}
+              </span>
+            </label>
           </div>
           <p class="muted small">
-            保留 {{ retention.retentionDays }} 天 · 每批 {{ formatNumber(retention.batchSize) }} 条。每日额度账本不受日志清理影响。
+            保留 {{ retention.retentionDays }} 天 · 每批 {{ formatNumber(retention.batchSize) }} 条。关闭后仍可手动清理；每日额度账本不受日志清理影响。
           </p>
         </div>
         <button type="button" class="button subtle retention-action" :disabled="cleaning" @click="cleanup">

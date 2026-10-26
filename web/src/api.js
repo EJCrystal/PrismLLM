@@ -119,12 +119,18 @@ export const api = {
   deleteModelPrice: (id) =>
     request(`/model-prices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  listRequestLogs: (limit = 100) => request(`/request-logs?limit=${limit}`),
+  listRequestLogs: ({ limit = 100, beforeId = null } = {}) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (beforeId != null) params.set('beforeId', String(beforeId))
+    return request('/request-logs?' + params)
+  },
   getUsageReport: ({ from, to, clientKeyId = null }) => {
     const params = new URLSearchParams({ from: String(from), to: String(to) })
     if (clientKeyId) params.set('clientKeyId', clientKeyId)
     return request(`/usage-report?${params}`)
   },
   getRetentionPolicy: () => request('/request-log-retention'),
+  updateRetentionPolicy: (payload) =>
+    request('/request-log-retention', { method: 'PUT', body: JSON.stringify(payload) }),
   cleanupRequestLogs: () => request('/request-log-retention/cleanup', { method: 'POST' }),
 }

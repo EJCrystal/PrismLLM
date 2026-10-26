@@ -41,11 +41,6 @@ const form = reactive({
 
 const enabledCount = computed(() => keys.value.filter((item) => item.enabled).length)
 const revokedCount = computed(() => keys.value.filter((item) => item.revokedAt != null).length)
-const quotaCurrencies = [
-  { code: 'USD', field: 'dailyUsdLimit' },
-  { code: 'CNY', field: 'dailyCnyLimit' },
-  { code: 'EUR', field: 'dailyEurLimit' },
-]
 
 async function load() {
   loading.value = true
@@ -84,8 +79,8 @@ function openEdit(key) {
     expiresAt: toLocalInput(key.expiresAt),
     dailyTokenLimit: key.dailyTokenLimit ?? '',
     dailyUsdLimit: key.dailyUsdLimit ?? '',
-    dailyCnyLimit: key.dailyCnyLimit ?? '',
-    dailyEurLimit: key.dailyEurLimit ?? '',
+    dailyCnyLimit: '',
+    dailyEurLimit: '',
     maxConcurrentRequests: key.maxConcurrentRequests ?? '',
     requestsPerMinute: key.requestsPerMinute ?? '',
   })
@@ -324,22 +319,18 @@ onMounted(load)
           <input id="client-key-daily-token-limit" v-model="form.dailyTokenLimit" type="number" min="0" step="1" placeholder="留空表示不限制" />
           <small>按 UTC 自然日累计上游返回的总 token；达到上限后返回 429。</small>
         </label>
-        <div class="field">
-          <span>每日费用上限</span>
-          <div class="quota-currency-grid">
-            <label v-for="currency in quotaCurrencies" :key="currency.code" class="field">
-              <small>{{ currency.code }}</small>
-              <input
-                v-model="form[currency.field]"
-                type="number"
-                min="0"
-                step="0.00000001"
-                placeholder="留空表示不限制"
-              />
-            </label>
-          </div>
-          <small>按模型单价的实际币种分别累计；未配置的币种不限制费用。</small>
-        </div>
+        <label class="field" for="client-key-daily-usd-limit">
+          <span>每日费用上限 (USD)</span>
+          <input
+            id="client-key-daily-usd-limit"
+            v-model="form.dailyUsdLimit"
+            type="number"
+            min="0"
+            step="0.00000001"
+            placeholder="留空表示不限制"
+          />
+          <small>按模型单价累计美元费用；达到上限后返回 429。</small>
+        </label>
         <label class="field" for="client-key-max-concurrent">
           <span>最大并发请求数</span>
           <input id="client-key-max-concurrent" v-model="form.maxConcurrentRequests" type="number" min="1" step="1" placeholder="留空表示不限制" />

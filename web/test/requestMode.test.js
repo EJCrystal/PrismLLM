@@ -10,9 +10,11 @@ describe('requestModeLabel', () => {
     assert.equal(requestModeClass(false), 'sync')
   })
 
-  it('marks historical or unavailable request modes as unknown', () => {
-    assert.equal(requestModeLabel(null), '未知')
-    assert.equal(requestModeLabel(undefined), '未知')
-    assert.equal(requestModeClass(undefined), 'unknown')
+  it('treats historical or unavailable stream flags as synchronous', () => {
+    assert.equal(requestModeLabel(null), '同步')
+    assert.equal(requestModeLabel(undefined), '同步')
+    assert.equal(requestModeLabel('true'), '同步')
+    assert.equal(requestModeClass(null), 'sync')
+    assert.equal(requestModeClass(undefined), 'sync')
   })
 })

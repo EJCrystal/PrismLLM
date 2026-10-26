@@ -6,9 +6,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -27,6 +27,16 @@ class LogRetentionService(
     private val logger = LoggerFactory.getLogger(LogRetentionService::class.java)
     private val running = AtomicBoolean(false)
     private val cleanupMutex = Mutex()
+    private val cleanupEnabled = AtomicBoolean(policy.cleanupEnabled)
+
+    val scheduledCleanupRunning: Boolean
+        get() = running.get()
+
+    fun currentPolicy(): RetentionPolicy = policy.copy(cleanupEnabled = cleanupEnabled.get())
+
+    fun setCleanupEnabled(enabled: Boolean) {
+        cleanupEnabled.set(enabled)
+    }
 
     suspend fun cleanExpired(): CleanupResult = cleanupMutex.withLock {
         val cutoff = retentionCutoff(now(), policy.retentionDays)
@@ -48,7 +58,8 @@ class LogRetentionService(
     }
 
     fun start(scope: CoroutineScope): Job? {
-        if (!policy.cleanupEnabled || !running.compareAndSet(false, true)) return null
+        if (!cleanupEnabled.get() || !running.compareAndSet(false, true)) return null
+        logger.info("request log scheduled cleanup started")
         return scope.launch {
             try {
                 while (isActive) {
@@ -63,6 +74,7 @@ class LogRetentionService(
                 }
             } finally {
                 running.set(false)
+                logger.info("request log scheduled cleanup stopped")
             }
         }
     }

@@ -122,6 +122,7 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "POST" && path == "/admin/api/model-prices" -> "model_price.create"
     method == "PUT" && MODEL_PRICE_ITEM_PATTERN.matches(path) -> "model_price.update"
     method == "DELETE" && MODEL_PRICE_ITEM_PATTERN.matches(path) -> "model_price.delete"
+    method == "PUT" && path == "/admin/api/request-log-retention" -> "request_log.retention.update"
     method == "POST" && path == "/admin/api/request-log-retention/cleanup" -> "request_log.cleanup"
     else -> "admin.write"
 }

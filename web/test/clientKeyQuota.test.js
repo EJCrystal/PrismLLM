@@ -74,6 +74,18 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
     assert.equal(quotaSummary({ dailyTokenLimit: null, maxConcurrentRequests: null }), '未设置限额')
   })
 
+  it('统一美元计费时，仅设置 USD 上限且自动将其他币种限额置空', () => {
+    const payload = buildClientKeyPayload({
+      name: 'service-usd',
+      enabled: true,
+      dailyUsdLimit: '10.50',
+    }, null)
+
+    assert.equal(payload.dailyUsdLimit, '10.50')
+    assert.equal(payload.dailyCnyLimit, null)
+    assert.equal(payload.dailyEurLimit, null)
+  })
+
   it('路由模板逐一对应小驼峰费用字段', () => {
     const currencies = [
       { code: 'USD', field: 'dailyUsdLimit' },

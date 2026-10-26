@@ -3,10 +3,13 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import CopyButton from './CopyButton.vue'
+import CursorLoadMore from './CursorLoadMore.vue'
 import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
+import { createCursorPager } from '../utils/cursorPager'
 import { requestModeClass, requestModeLabel } from '../utils/requestMode'
 import { reasoningEffortClass, reasoningEffortLabel, tokenUsageLabel, tokenUsageState } from '../utils/requestLogDisplay'
+import { filterRequestLogs } from '../utils/requestLogSearch'
 import {
   formatTime,
   formatDuration,
@@ -16,12 +19,13 @@ import {
   formatUnitPrice,
 } from '../utils/format'
 
-const logs = ref([])
-const loading = ref(true)
-const error = ref('')
+const { items: logs, pageSize, loading, loadingMore, error, hasMore, load, loadMore, setPageSize } = createCursorPager({
+  fetchPage: (options) => api.listRequestLogs(options),
+})
 const query = ref('')
 const selected = ref(null)
 const detailDialog = ref(null)
+const tableScroll = ref(null)
 let detailTrigger = null
 
 const stageLabels = {
@@ -33,26 +37,7 @@ const stageLabels = {
 }
 
 const filtered = computed(() => {
-  const keyword = query.value.trim().toLowerCase()
-  if (!keyword) return logs.value
-  return logs.value.filter((log) =>
-    [
-      log.requestId,
-      log.traceId,
-      log.alias,
-      log.channelId,
-      log.channelName,
-      log.upstreamModel,
-      log.errorCode,
-      log.errorMessage,
-      log.failureStage,
-      log.upstreamErrorCode,
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-      .includes(keyword),
-  )
+  return filterRequestLogs(logs.value, query.value)
 })
 
 const errorCount = computed(() => logs.value.filter((log) => log.statusCode >= 400).length)
@@ -62,22 +47,22 @@ const averageLatency = computed(() => {
   return `${Math.round(total / logs.value.length)} ms`
 })
 
-async function load() {
-  loading.value = true
-  error.value = ''
-  try {
-    logs.value = await api.listRequestLogs(100)
-  } catch (cause) {
-    error.value = cause.message
-  } finally {
-    loading.value = false
-  }
-}
-
 async function refresh() {
   await load()
+  await nextTick()
+  tableScroll.value?.scrollTo({ top: 0 })
   notify('请求日志已刷新')
 }
+
+watch(pageSize, async () => {
+  await nextTick()
+  tableScroll.value?.scrollTo({ top: 0 })
+})
+
+watch(query, async () => {
+  await nextTick()
+  tableScroll.value?.scrollTo({ top: 0 })
+})
 
 function formatCostAmount(log) {
   return formatCostUtil(log.costAmount, '')
@@ -197,9 +182,9 @@ onMounted(load)
 
     <div class="stat-row">
       <div class="stat-card">
-        <span>本次读取</span>
+        <span>当前已加载</span>
         <strong>{{ logs.length }}</strong>
-        <small>最近 100 条请求</small>
+        <small>按页加载更早请求</small>
       </div>
       <div class="stat-card">
         <span>异常响应</span>
@@ -217,9 +202,12 @@ onMounted(load)
 
     <div class="panel table-panel">
       <div class="table-toolbar">
-        <label class="search-box">
+        <label class="search-box logs-search">
           <Icon name="search" :size="17" />
-          <input v-model="query" placeholder="搜索请求 ID、Trace ID、请求模型、渠道、错误码或错误信息" />
+          <input
+            v-model="query"
+            placeholder="搜索当前已加载记录：ID、模型、渠道、状态码或错误码"
+          />
         </label>
         <span class="muted small">显示 {{ filtered.length }} / {{ logs.length }} 条</span>
       </div>
@@ -240,7 +228,7 @@ onMounted(load)
         title="没有匹配的请求"
         desc="换一个关键词试试。"
       />
-      <div v-else class="table-scroll">
+      <div v-else ref="tableScroll" class="table-scroll table-scroll-paged">
         <table class="data-table logs-table">
           <thead>
             <tr>
@@ -324,6 +312,15 @@ onMounted(load)
           </tbody>
         </table>
       </div>
+      <CursorLoadMore
+        :loaded="logs.length"
+        :has-more="hasMore"
+        :loading="loading"
+        :loading-more="loadingMore"
+        :page-size="pageSize"
+        @load-more="loadMore"
+        @page-size-change="setPageSize"
+      />
     </div>
 
     <Teleport to="body">

@@ -190,4 +190,5 @@ data class RequestLogRecord(
     val upstreamErrorCode: String?,
     val createdAt: Long,
     val upstreamAttempts: Int? = null,
+    val id: Long = 0,
 )

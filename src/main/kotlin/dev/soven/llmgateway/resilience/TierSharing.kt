@@ -29,7 +29,9 @@ class TierSharing {
 
     private fun rotate(tier: List<RouteCandidate>, offset: Long): List<RouteCandidate> {
         if (tier.size <= 1) return tier
-        val start = (offset % tier.size).toInt()
-        return List(tier.size) { index -> tier[(start + index) % tier.size] }
+        val channels = tier.groupBy { it.channel.id }.values.toList()
+        if (channels.size <= 1) return tier
+        val start = (offset % channels.size).toInt()
+        return List(channels.size) { index -> channels[(start + index) % channels.size] }.flatten()
     }
 }

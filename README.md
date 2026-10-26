@@ -7,7 +7,7 @@
 - 原生协议入口 `/v1/chat/completions`、`/v1/responses` 与 `/v1/messages`，支持流式和非流式请求，不在协议之间转换。
 - 渠道按 `chat_completions`、`responses`、`messages` 声明支持的协议，路由时按请求协议过滤候选。
 - 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。渠道启用即参与直连暴露。
-- 自定义对外模型 ID 会替代上游名对外暴露；多个渠道配置相同对外模型 ID 时自动聚合、同优先级分摊。
+- 自定义对外模型 ID 会替代上游名对外暴露；同一渠道的多个上游模型可共享一个对外模型 ID，多个渠道配置相同 ID 时也会自动聚合并参与候选分摊。
 - 调用方密钥鉴权，支持按密钥限制每分钟请求数和并发数；上游凭据使用 AES-256-GCM 加密存储。
 - 流式响应不缓冲、客户端断开向上游传播。
 - 管理 API 与 Vue 3 管理界面：
@@ -172,7 +172,9 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
 }
 ```
 
-`models` 字段仍可用于只提交上游模型列表；更新时会保留这些模型已有的规范 ID。`mappingSource` 支持 `manual` 和 `models_dev`，同一渠道内规范 ID 不允许重复。
+`models` 字段仍可用于只提交上游模型列表；更新时会保留这些模型已有的规范 ID。`mappingSource` 支持 `manual` 和 `models_dev`。同一渠道内的多个上游模型可以映射到同一个对外模型 ID，网关会将这些上游名作为同一模型的候选；如果它们实际不是同一模型，应拆分对外 ID。
+
+共享同一对外 ID 时，路由按渠道分组：同一渠道内按上游模型名稳定排序，首个名称作为主入口，只有失败、冷却或不可用时才回退到同渠道的其他名称；不同渠道之间仍按同档轮询分摊。这样可以避免把同一模型的多个上游别名误当成独立容量。
 
 查看调用方通过 `/v1/models` 获取到的对外结果：
 
@@ -209,6 +211,10 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 冷却只后置不禁用：路由优先尝试未冷却候选，冷却到期后放行单个探测请求（探测成功完全恢复，失败翻倍重新冷却）；所有候选都在冷却中时仍按档位顺序照常尝试（fail-open），绝不因冷却状态返回 503。客户端主动断开记录为 `client_disconnect`，不奖不罚。冷却状态内存为准、状态变更异步写透 PostgreSQL 并在启动时恢复；请求日志的 `upstreamAttempts` 记录实际调用的上游次数，`gateway_upstream_cooldown_started_total{channel,reason}` 与 `gateway_upstream_cooldown_skips_total{channel}` 提供观测。
 
 失败请求会在日志中记录 `failureStage`（`request` / `routing` / `upstream` / `streaming` / `client`）、`errorMessage` 和上游返回的 `upstreamErrorCode`。 请求日志同时展示输入、输出、推理和总 token、输出速率（输出 token / 总耗时）与缓存命中率（`cached_tokens / input_tokens`），并记录调用方密钥名称和请求中的推理强度；上游未返回的字段显示“—”，不做估算。渠道列显示请求发生时的渠道名称快照，同时保留 `channelId` 用于精确关联；渠道改名不会改写历史日志。请求日志列表只显示错误码和阶段，完整原因在“详情”弹层中查看；上游响应正文仍然不落库。
+
+请求日志接口 `GET /admin/api/request-logs?limit=50&beforeId=<id>` 使用只读的日志 `id` 作为游标，按 ID 倒序分页。管理界面与操作审计共用游标分页器，每页可选择 25、50 或 100 条；切换条数会丢弃旧游标并重新加载第一页，点击“加载更早记录”后继续读取，不会一次加载全部历史数据。
+
+请求日志搜索只作用于当前已加载记录，匹配请求 ID、Trace ID、模型、渠道、协议、HTTP 状态码、错误码、错误信息、失败阶段、推理强度和调用方密钥名称；例如输入 `404` 会匹配 HTTP 状态为 404 的记录。
 
 ### 调用方密钥额度与限流
 
@@ -250,7 +256,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 | `REQUEST_LOG_CLEANUP_INTERVAL_MS` | `3600000` | 自动清理间隔，最小 60000 毫秒 |
 | `REQUEST_LOG_CLEANUP_BATCH_SIZE` | `5000` | 每批删除数量，范围 100..100000 |
 
-清理任务只删除超过保留期的 `request_logs`，按批次执行，避免大事务影响数据面。每日额度账本 `client_key_quota_usage` 不由日志清理任务删除。保留策略可通过 `GET /admin/api/request-log-retention` 查看，并可在管理界面手动触发清理（`POST /admin/api/request-log-retention/cleanup`）。
+清理任务只删除超过保留期的 `request_logs`，按批次执行，避免大事务影响数据面。每日额度账本 `client_key_quota_usage` 不由日志清理任务删除。保留策略可通过 `GET /admin/api/request-log-retention` 查看，通过 `PUT /admin/api/request-log-retention` 开关自动清理；关闭时会取消定时任务，手动清理接口（`POST /admin/api/request-log-retention/cleanup`）仍可独立执行。管理面保存的开关会覆盖启动环境变量并在重启后保留。
 
 ### 单请求计费
 
@@ -305,7 +311,7 @@ mvn test
 npm --prefix web test
 ```
 
-基于 Node.js 原生测试引擎（`node:test`），毫秒级执行。覆盖多主题注册表（浅色/深色/护眼暖色）、持久化与防闪烁、通用复制工具 `copyText`、`SecretInput`、`CopyButton`、`format` 格式化工具、授权模型展示逻辑、密钥限流配置、密钥轮换/撤销并发保护，以及操作审计分页与刷新竞态。
+基于 Node.js 原生测试引擎（`node:test`），毫秒级执行。覆盖多主题注册表（浅色/深色/护眼暖色）、持久化与防闪烁、通用复制工具 `copyText`、`SecretInput`、`CopyButton`、`format` 格式化工具、授权模型展示逻辑、密钥限流配置、密钥轮换/撤销并发保护，以及操作审计和请求日志共用的游标分页与刷新竞态。
 
 关键实现决策记录在 `docs/adr/`，包括 Kotlin/Ktor 选型、v1 协议边界和上游 HTTP 客户端选择。
 

@@ -1,8 +1,15 @@
+export function usageCostAmount(value) {
+  return String(value ?? '')
+    .trim()
+    .replace(/\s*\(?USD\)?\s*$/i, '')
+    .trim()
+}
+
 export function usageCostEntries(costs) {
   return Object.entries(costs || {})
     .filter(([, value]) => value != null)
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([currency, value]) => ({ currency, value: String(value) }))
+    .map(([currency, value]) => ({ currency, value: usageCostAmount(value) }))
 }
 
 export function reportRange(days, now) {
