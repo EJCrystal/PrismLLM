@@ -22,6 +22,7 @@
   --shadow: 0 18px 50px rgba(15, 23, 42, 0.08);
   --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
   --radius: 18px;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23667085' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
 }
 
 [data-theme="dark"] {
@@ -47,6 +48,7 @@
   --info-soft: rgba(96, 165, 250, 0.14);
   --shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
   --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
 }
 
 .theme-toggle-btn {
@@ -114,12 +116,6 @@
   background-color: #141c2e;
   border-color: var(--line);
   color: var(--ink);
-}
-
-[data-theme="dark"] select,
-[data-theme="dark"] .select-input,
-[data-theme="dark"] .field select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
 }
 
 [data-theme="dark"] select option {
@@ -481,6 +477,7 @@
   --panel: #fcf9f2;
   --ink: #3b2f20;
   --muted: #85725d;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238d7b68' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
   --line: #e7ddcf;
   --line-strong: #d5c6b2;
   --brand: #b45309;
@@ -544,12 +541,6 @@
   background-color: #fbf7ef;
   border-color: var(--line-strong);
   color: var(--ink);
-}
-
-[data-theme="sepia"] select,
-[data-theme="sepia"] .select-input,
-[data-theme="sepia"] .field select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238d7b68' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
 }
 
 [data-theme="sepia"] select option {
@@ -1229,7 +1220,7 @@ input[type="password"]::-ms-clear,
 
 .login-foot {
   margin: 24px 0 0;
-  color: #98a2b3;
+  color: var(--muted);
   font-size: 11px;
   line-height: 1.6;
 }
@@ -2738,7 +2729,7 @@ select,
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23667085' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-image: var(--select-chevron);
   background-repeat: no-repeat;
   background-position: right 10px center;
   background-size: 14px 14px;
@@ -2796,7 +2787,8 @@ input:disabled {
 
 .field input::placeholder,
 .search-box input::placeholder {
-  color: #98a2b3;
+  color: var(--muted);
+  opacity: 0.8;
 }
 
 .form-grid {
