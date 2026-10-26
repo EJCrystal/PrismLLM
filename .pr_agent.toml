@@ -7,6 +7,8 @@ ai_timeout = 300
 # Any OpenAI-compatible model ID that litellm does not know needs its window
 # declared; the gateway routes this name to a real upstream model.
 custom_model_max_tokens = 256000
+# 与 workflow 保持一致；总预算必须明显大于输出预算，给输入留足空间。
+max_model_tokens = 96000
 # 代码审查需要少量跨文件推理；low 在质量和 token 消耗之间更稳。
 reasoning_effort = "low"
 additional_reasoning_effort_models = ["deepseek-flash"]
