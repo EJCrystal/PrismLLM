@@ -87,6 +87,12 @@ describe('utils: format 格式化工具函数库', () => {
       assert.equal(formatCost(1.5, 'USD'), '$1.5')
       assert.equal(formatCost(10.25, 'EUR'), '€10.25')
     })
+
+    it('空币种只返回金额，由调用方单独渲染币种', () => {
+      assert.equal(formatCost(0.005, ''), '0.005')
+      assert.equal(formatCost(10.25, ''), '10.25')
+      assert.equal(formatCost(null, ''), null)
+    })
   })
 
   describe('formatUnitPrice', () => {

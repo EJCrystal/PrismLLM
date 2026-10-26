@@ -959,6 +959,23 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin rejects retention update with missing field as 400`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.put("/admin/api/request-log-retention") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("{}")
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("invalid_request"))
+        }
+    }
+
+    @Test
     fun `exposes and routes upstream models without aliases when enabled`() = runBlocking {
         app.close()
         app = GatewayApplication(config())
