@@ -28,3 +28,10 @@ export function emptyPriceDraft() {
     cachedInputPricePerMillion: '',
   }
 }
+
+/** True when the user has typed or loaded any price amount. */
+export function hasPriceDraft(form) {
+  if (!form) return false
+  return ['inputPricePerMillion', 'outputPricePerMillion', 'cachedInputPricePerMillion']
+    .some((field) => String(form[field] ?? '').trim() !== '')
+}

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildPricePayload, emptyPriceDraft, priceFormState } from '../src/utils/priceForm.js'
+import { buildPricePayload, emptyPriceDraft, hasPriceDraft, priceFormState } from '../src/utils/priceForm.js'
 
 describe('priceForm: 计费单价的币种与金额', () => {
   it('编辑已有非 USD 单价时保留原币种和金额', () => {
@@ -58,5 +58,13 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(draft.inputPricePerMillion, '')
     assert.equal(draft.outputPricePerMillion, '')
     assert.equal(draft.cachedInputPricePerMillion, '')
+  })
+
+  it('检测用户是否已填写单价草稿', () => {
+    assert.equal(hasPriceDraft(emptyPriceDraft()), false)
+    assert.equal(hasPriceDraft({ inputPricePerMillion: '0.1' }), true)
+    assert.equal(hasPriceDraft({ outputPricePerMillion: '  ' }), false)
+    assert.equal(hasPriceDraft({ cachedInputPricePerMillion: '0.05' }), true)
+    assert.equal(hasPriceDraft(null), false)
   })
 })

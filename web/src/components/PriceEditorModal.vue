@@ -4,7 +4,7 @@ import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
 import { findModelPrice } from '../utils/modelPrice'
-import { buildPricePayload, emptyPriceDraft, priceFormState } from '../utils/priceForm'
+import { buildPricePayload, emptyPriceDraft, hasPriceDraft, priceFormState } from '../utils/priceForm'
 import Modal from './Modal.vue'
 
 const props = defineProps({
@@ -120,6 +120,9 @@ async function fetchReferencePrice() {
   const modelName = form.upstreamModel.trim()
   if (!modelName) {
     notify('请先输入或选择上游模型', 'warning')
+    return
+  }
+  if (hasPriceDraft(form) && !window.confirm('获取参考价会用 USD 金额覆盖当前填写的单价，是否继续？')) {
     return
   }
   fetchingReference.value = true

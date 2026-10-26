@@ -120,7 +120,16 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         runBlocking { seedAdmin() }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
         runBlocking {
-            retentionSettingsRepository.loadCleanupEnabled()?.let(logRetentionService::setCleanupEnabled)
+            val storedCleanupEnabled = retentionSettingsRepository.loadCleanupEnabled()
+            if (storedCleanupEnabled != null) {
+                logRetentionService.setCleanupEnabled(storedCleanupEnabled)
+                logger.info("request log cleanup setting from database: {}", storedCleanupEnabled)
+            } else {
+                logger.info(
+                    "request log cleanup setting from environment: {}",
+                    logRetentionService.currentPolicy().cleanupEnabled,
+                )
+            }
         }
 
         app.install(ContentNegotiation) {
