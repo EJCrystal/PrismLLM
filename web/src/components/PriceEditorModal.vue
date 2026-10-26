@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
-import { channelModelPriceOptions, findModelPrice, pricesForChannel } from '../utils/modelPrice'
+import { channelModelPriceOptions, findModelPrice, isSamePriceTarget, pricesForChannel } from '../utils/modelPrice'
 import {
   applyPriceToForm,
   buildPricePayload,
@@ -97,7 +97,12 @@ watch(
   ([channelId, upstreamModel]) => {
     const existingPrice = findModelPrice(props.prices, channelId, upstreamModel.trim())
     if (existingPrice) {
-      if (activePrice.value?.id !== existingPrice.id) applyExistingPrice(existingPrice)
+      if (
+        activePrice.value?.id !== existingPrice.id &&
+        !isSamePriceTarget(activePrice.value, channelId, upstreamModel)
+      ) {
+        applyExistingPrice(existingPrice)
+      }
       return
     }
     if (activePrice.value) {
@@ -240,12 +245,13 @@ async function save() {
             class="price-configured-item"
             :class="{ active: activePrice?.id === price.id }"
             :aria-pressed="activePrice?.id === price.id"
+            :aria-label="`编辑 ${price.upstreamModel} 的单价：输入 ${formatUnitPrice(price.inputPricePerMillion)}，输出 ${formatUnitPrice(price.outputPricePerMillion)}，币种 ${price.currency}`"
             @click="editPrice(price)"
           >
             <code>{{ price.upstreamModel }}</code>
             <span class="muted small">
-              {{ price.currency }} {{ formatUnitPrice(price.inputPricePerMillion) }} /
-              {{ formatUnitPrice(price.outputPricePerMillion) }} 每 1M
+              输入 {{ formatUnitPrice(price.inputPricePerMillion) }} · 输出
+              {{ formatUnitPrice(price.outputPricePerMillion) }} · {{ price.currency }} / 1M
             </span>
           </button>
         </div>

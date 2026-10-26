@@ -36,6 +36,12 @@ export function channelModelPriceOptions(channelModels, prices, channelId) {
   }))
 }
 
+/** True when the active price already targets the selected channel/model. */
+export function isSamePriceTarget(price, channelId, upstreamModel) {
+  if (!price || price.channelId !== channelId) return false
+  return String(price.upstreamModel ?? '').trim() === String(upstreamModel ?? '').trim()
+}
+
 /** Return the channel's upstream models that have no price record. */
 export function unpricedChannelModels(channel, prices) {
   if (!channel || !Array.isArray(channel.models)) return []

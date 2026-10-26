@@ -5,6 +5,7 @@ import {
   channelModelPriceOptions,
   channelPriceSummaries,
   findModelPrice,
+  isSamePriceTarget,
   pricesForChannel,
   resolveSavedChannel,
   unpricedChannelModels,
@@ -102,6 +103,14 @@ describe('modelPrice: 按渠道和上游模型查找单价', () => {
   it('模型下拉输入无效时安全返回空数组', () => {
     assert.deepEqual(channelModelPriceOptions(null, [], 'channel-a'), [])
     assert.deepEqual(channelModelPriceOptions([{ id: 'm' }], null, 'channel-a')[0].price, null)
+  })
+
+  it('trim 后同名的重复价格仍视为同一编辑目标', () => {
+    const price = { channelId: 'channel-a', upstreamModel: ' model-a ' }
+    assert.equal(isSamePriceTarget(price, 'channel-a', 'model-a'), true)
+    assert.equal(isSamePriceTarget(price, 'channel-b', 'model-a'), false)
+    assert.equal(isSamePriceTarget(price, 'channel-a', 'model-b'), false)
+    assert.equal(isSamePriceTarget(null, 'channel-a', 'model-a'), false)
   })
 
   it('同一对外模型映射多个上游时，只标记尚未定价的上游', () => {
