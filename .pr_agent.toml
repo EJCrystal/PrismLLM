@@ -7,6 +7,11 @@ ai_timeout = 300
 # Any OpenAI-compatible model ID that litellm does not know needs its window
 # declared; the gateway routes this name to a real upstream model.
 custom_model_max_tokens = 256000
+# deepseek-flash 会把输出预算耗在推理阶段；审查只要结论，不需要推理链。
+reasoning_effort = "none"
+additional_reasoning_effort_models = ["deepseek-flash"]
+# 留足输出空间，避免 diff 较大时在结论生成前被截断。
+max_output_tokens = 16000
 
 [pr_reviewer]
 require_score_review = true
