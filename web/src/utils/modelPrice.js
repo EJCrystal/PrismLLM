@@ -15,9 +15,14 @@ export function findModelPrice(prices, channelId, upstreamModel) {
 export function pricesForChannel(prices, channelId) {
   if (!Array.isArray(prices) || !channelId) return []
   return prices
-    .filter((price) => price && price.channelId === channelId && typeof price.upstreamModel === 'string')
+    .filter((price) =>
+      price &&
+      price.channelId === channelId &&
+      typeof price.upstreamModel === 'string' &&
+      price.upstreamModel.trim(),
+    )
     .slice()
-    .sort((left, right) => left.upstreamModel.localeCompare(right.upstreamModel))
+    .sort((left, right) => left.upstreamModel.trim().localeCompare(right.upstreamModel.trim()))
 }
 
 /** Merge channel models with their configured price, matching trimmed model names. */

@@ -230,7 +230,7 @@ async function save() {
             <strong>已配置单价</strong>
             <span class="muted small"> · {{ channelPrices.length }} 个模型</span>
           </div>
-          <button v-if="activePrice" type="button" class="button ghost mini" @click="startNewPrice">新增单价</button>
+          <button type="button" class="button ghost mini" @click="startNewPrice">新增单价</button>
         </div>
         <div v-if="channelPrices.length" class="price-configured-list">
           <button

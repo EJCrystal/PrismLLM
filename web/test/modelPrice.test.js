@@ -69,6 +69,7 @@ describe('modelPrice: 按渠道和上游模型查找单价', () => {
       { id: 'p3', channelId: 'channel-b', upstreamModel: 'model-b' },
       null,
       { id: 'p4', channelId: 'channel-a' },
+      { id: 'p5', channelId: 'channel-a', upstreamModel: '   ' },
     ]
     assert.deepEqual(
       pricesForChannel(channelPrices, 'channel-a').map((price) => price.id),
@@ -80,6 +81,14 @@ describe('modelPrice: 按渠道和上游模型查找单价', () => {
     assert.deepEqual(pricesForChannel(null, 'channel-a'), [])
     assert.deepEqual(pricesForChannel([], 'channel-a'), [])
     assert.deepEqual(pricesForChannel([{ channelId: 'channel-a', upstreamModel: 'm' }], ''), [])
+  })
+
+  it('忽略空白模型名的价格记录', () => {
+    const channelPrices = [
+      { id: 'blank', channelId: 'channel-a', upstreamModel: '   ' },
+      { id: 'valid', channelId: 'channel-a', upstreamModel: ' model-a ' },
+    ]
+    assert.deepEqual(pricesForChannel(channelPrices, 'channel-a').map((price) => price.id), ['valid'])
   })
 
   it('模型下拉按 trim 后匹配已配置价格', () => {
