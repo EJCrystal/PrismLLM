@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildPricePayload, priceFormState } from '../src/utils/priceForm.js'
+import { buildPricePayload, emptyPriceDraft, priceFormState } from '../src/utils/priceForm.js'
 
 describe('priceForm: 计费单价的币种与金额', () => {
   it('编辑已有非 USD 单价时保留原币种和金额', () => {
@@ -43,5 +43,20 @@ describe('priceForm: 计费单价的币种与金额', () => {
       'model-a',
     )
     assert.equal(payload.currency, 'USD')
+  })
+
+  it('从已有 CNY 单价切换到未定价模型时重置为 USD 草稿', () => {
+    const existing = priceFormState({
+      currency: 'CNY',
+      inputPricePerMillion: '7',
+      outputPricePerMillion: '14',
+    })
+    assert.equal(existing.currency, 'CNY')
+
+    const draft = emptyPriceDraft()
+    assert.equal(draft.currency, 'USD')
+    assert.equal(draft.inputPricePerMillion, '')
+    assert.equal(draft.outputPricePerMillion, '')
+    assert.equal(draft.cachedInputPricePerMillion, '')
   })
 })

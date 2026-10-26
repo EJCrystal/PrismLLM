@@ -40,7 +40,9 @@ import org.flywaydb.core.api.MigrationVersion
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
@@ -57,6 +59,7 @@ import java.math.BigDecimal
 import java.nio.file.Path
 import java.sql.DriverManager
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -2628,9 +2631,17 @@ class GatewayIntegrationTest {
                 setBody("""{"cleanupEnabled":$enabled}""")
             }
 
-            repeat(10) { index ->
-                val enabled = index % 2 == 0
-                val result = async(Dispatchers.Default) { setCleanup(enabled) }
+            val started = AtomicInteger(0)
+            val results = coroutineScope {
+                (0 until 10).map { index ->
+                    async(Dispatchers.Default) {
+                        started.incrementAndGet()
+                        while (started.get() < 10) yield()
+                        setCleanup(index % 2 == 0)
+                    }
+                }
+            }
+            results.forEach { result ->
                 assertEquals(HttpStatusCode.OK, result.await().status)
             }
 

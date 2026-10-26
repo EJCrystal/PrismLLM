@@ -7,6 +7,7 @@ import TablePlaceholder from './TablePlaceholder.vue'
 import { formatNumber } from '../utils/format'
 import { usageCostEntries, reportRange } from '../utils/usageReport'
 import { createLatestRequestGuard } from '../utils/latestRequest'
+import { createRetentionReportState } from '../utils/retentionReportState'
 
 const days = ref(7)
 const report = ref(null)
@@ -15,7 +16,7 @@ const loading = ref(true)
 const error = ref('')
 const cleaning = ref(false)
 const updatingRetention = ref(false)
-let retentionVersion = 0
+const retentionState = createRetentionReportState()
 const requests = createLatestRequestGuard()
 
 const total = computed(() => report.value?.total || { requests: 0, errors: 0, totalTokens: 0, costs: {} })
@@ -28,7 +29,7 @@ function range() {
 async function load() {
   loading.value = true
   error.value = ''
-  const requestRetentionVersion = retentionVersion
+  const requestRetentionVersion = retentionState.beginLoad()
   const result = await requests.run(async () => {
     const [nextReport, nextRetention] = await Promise.all([
       api.getUsageReport(range()),
@@ -36,11 +37,14 @@ async function load() {
     ])
     return { nextReport, nextRetention }
   }).catch((cause) => ({ error: cause, isLatest: cause.isLatest }))
-  if (!result.isLatest) return
+  if (!result.isLatest) {
+    loading.value = false
+    return
+  }
   if (result.error) error.value = result.error.message
   else {
     report.value = result.value.nextReport
-    if (requestRetentionVersion === retentionVersion) {
+    if (retentionState.shouldApplyRetention(requestRetentionVersion)) {
       retention.value = result.value.nextRetention
     }
   }
@@ -66,7 +70,7 @@ async function toggleCleanup(event) {
   const input = event.currentTarget
   const enabled = input.checked
   updatingRetention.value = true
-  retentionVersion += 1
+  retentionState.beginToggle()
   requests.invalidate()
   try {
     retention.value = await api.updateRetentionPolicy({ cleanupEnabled: enabled })

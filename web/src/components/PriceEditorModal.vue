@@ -4,7 +4,7 @@ import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
 import { findModelPrice } from '../utils/modelPrice'
-import { buildPricePayload, priceFormState } from '../utils/priceForm'
+import { buildPricePayload, emptyPriceDraft, priceFormState } from '../utils/priceForm'
 import Modal from './Modal.vue'
 
 const props = defineProps({
@@ -93,9 +93,7 @@ watch(
     }
     if (activePrice.value) {
       activePrice.value = null
-      form.inputPricePerMillion = ''
-      form.outputPricePerMillion = ''
-      form.cachedInputPricePerMillion = ''
+      Object.assign(form, emptyPriceDraft())
     }
   },
   { immediate: true },

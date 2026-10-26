@@ -18,3 +18,13 @@ export function buildPricePayload(form, channelId, upstreamModel) {
     cachedInputPricePerMillion: String(form.cachedInputPricePerMillion ?? '').trim() || null,
   }
 }
+
+/** Reset the draft when the selected channel/model has no saved price. */
+export function emptyPriceDraft() {
+  return {
+    currency: 'USD',
+    inputPricePerMillion: '',
+    outputPricePerMillion: '',
+    cachedInputPricePerMillion: '',
+  }
+}
