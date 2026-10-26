@@ -3082,15 +3082,6 @@ input:disabled {
     grid-template-columns: 1fr;
   }
 
-  .price-configured-item {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .price-configured-item span {
-    white-space: normal;
-  }
-
   .quota-currency-grid {
     grid-template-columns: 1fr;
   }
@@ -3716,6 +3707,17 @@ input:disabled {
 
 .price-configured-empty {
   margin: 0;
+}
+
+@media (max-width: 600px) {
+  .price-configured-item {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .price-configured-item span {
+    white-space: normal;
+  }
 }
 
 .model-picker-message {

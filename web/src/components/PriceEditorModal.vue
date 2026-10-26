@@ -3,8 +3,8 @@ import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
-import { findModelPrice, pricesForChannel } from '../utils/modelPrice'
-import { buildPricePayload, emptyPriceDraft, hasPriceDraft, priceFormState } from '../utils/priceForm'
+import { channelModelPriceOptions, findModelPrice, pricesForChannel } from '../utils/modelPrice'
+import { applyPriceToForm, buildPricePayload, hasPriceDraft, resetPriceForm } from '../utils/priceForm'
 import { formatUnitPrice } from '../utils/format'
 import Modal from './Modal.vue'
 
@@ -33,13 +33,7 @@ const form = reactive({
 })
 
 const channelPrices = computed(() => pricesForChannel(props.prices, form.channelId))
-const channelModelOptions = computed(() => {
-  const pricesByModel = new Map(channelPrices.value.map((price) => [price.upstreamModel, price]))
-  return channelModels.value.map((model) => ({
-    ...model,
-    price: pricesByModel.get(model.id) || null,
-  }))
-})
+const channelModelOptions = computed(() => channelModelPriceOptions(channelModels.value, props.prices, form.channelId))
 const filteredChannelModels = computed(() => {
   const query = form.upstreamModel.trim().toLowerCase()
   if (!query) return channelModelOptions.value
@@ -127,16 +121,13 @@ function selectChannelModel(model) {
 
 function editPrice(price) {
   activePrice.value = price
-  form.channelId = price.channelId
-  form.upstreamModel = price.upstreamModel
-  Object.assign(form, priceFormState(price))
+  applyPriceToForm(form, price)
   modelPickerOpen.value = false
 }
 
 function startNewPrice() {
   activePrice.value = null
-  form.upstreamModel = ''
-  Object.assign(form, emptyPriceDraft())
+  resetPriceForm(form)
   modelPickerOpen.value = false
 }
 
@@ -220,7 +211,7 @@ async function save() {
             {{ channel.name }}
           </option>
         </select>
-        <small>价格按「渠道 + 上游模型」单独配置；同一模型在不同渠道也分别计费。</small>
+        <small>价格按「渠道 + 上游模型」单独配置；同一对外模型在不同渠道可以配置不同价格。</small>
       </label>
       <div class="price-configured">
         <div class="price-configured-head">
@@ -302,7 +293,7 @@ async function save() {
           readonly
           aria-label="计费币种"
         />
-        <small>已有单价保留原币种；获取参考价会切换为 USD。</small>
+        <small>获取参考价会切换为 USD。</small>
       </label>
       <div class="field price-grid">
         <label class="field">

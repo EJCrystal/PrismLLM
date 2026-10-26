@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildPricePrompt,
+  channelModelPriceOptions,
   channelPriceSummaries,
   findModelPrice,
   pricesForChannel,
@@ -79,6 +80,19 @@ describe('modelPrice: 按渠道和上游模型查找单价', () => {
     assert.deepEqual(pricesForChannel(null, 'channel-a'), [])
     assert.deepEqual(pricesForChannel([], 'channel-a'), [])
     assert.deepEqual(pricesForChannel([{ channelId: 'channel-a', upstreamModel: 'm' }], ''), [])
+  })
+
+  it('模型下拉按 trim 后匹配已配置价格', () => {
+    const models = [{ id: ' model-a ' }, { id: 'model-b' }]
+    const channelPrices = [{ id: 'p1', channelId: 'channel-a', upstreamModel: ' model-a ' }]
+    const options = channelModelPriceOptions(models, channelPrices, 'channel-a')
+    assert.equal(options[0].price, channelPrices[0])
+    assert.equal(options[1].price, null)
+  })
+
+  it('模型下拉输入无效时安全返回空数组', () => {
+    assert.deepEqual(channelModelPriceOptions(null, [], 'channel-a'), [])
+    assert.deepEqual(channelModelPriceOptions([{ id: 'm' }], null, 'channel-a')[0].price, null)
   })
 
   it('同一对外模型映射多个上游时，只标记尚未定价的上游', () => {

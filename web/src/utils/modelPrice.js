@@ -20,6 +20,17 @@ export function pricesForChannel(prices, channelId) {
     .sort((left, right) => left.upstreamModel.localeCompare(right.upstreamModel))
 }
 
+/** Merge channel models with their configured price, matching trimmed model names. */
+export function channelModelPriceOptions(channelModels, prices, channelId) {
+  const pricesByModel = new Map(
+    pricesForChannel(prices, channelId).map((price) => [price.upstreamModel.trim(), price]),
+  )
+  return (Array.isArray(channelModels) ? channelModels : []).map((model) => ({
+    ...model,
+    price: pricesByModel.get(String(model.id).trim()) || null,
+  }))
+}
+
 /** Return the channel's upstream models that have no price record. */
 export function unpricedChannelModels(channel, prices) {
   if (!channel || !Array.isArray(channel.models)) return []
