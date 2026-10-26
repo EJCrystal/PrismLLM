@@ -79,8 +79,8 @@ function openEdit(key) {
     expiresAt: toLocalInput(key.expiresAt),
     dailyTokenLimit: key.dailyTokenLimit ?? '',
     dailyUsdLimit: key.dailyUsdLimit ?? '',
-    dailyCnyLimit: '',
-    dailyEurLimit: '',
+    dailyCnyLimit: key.dailyCnyLimit ?? '',
+    dailyEurLimit: key.dailyEurLimit ?? '',
     maxConcurrentRequests: key.maxConcurrentRequests ?? '',
     requestsPerMinute: key.requestsPerMinute ?? '',
   })

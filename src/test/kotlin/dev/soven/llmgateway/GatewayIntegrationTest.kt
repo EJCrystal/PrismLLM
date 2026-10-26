@@ -2615,6 +2615,32 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `overlapping retention updates keep runtime and persisted state aligned`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            suspend fun setCleanup(enabled: Boolean) = client.put("/admin/api/request-log-retention") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"cleanupEnabled":$enabled}""")
+            }
+
+            repeat(10) { index ->
+                val enabled = index % 2 == 0
+                val result = async(Dispatchers.Default) { setCleanup(enabled) }
+                assertEquals(HttpStatusCode.OK, result.await().status)
+            }
+
+            val persisted = app.retentionSettingsRepository.loadCleanupEnabled()
+            assertEquals(app.logRetentionService.currentPolicy().cleanupEnabled, persisted)
+            assertEquals(app.logRetentionService.scheduledCleanupRunning, persisted)
+        }
+    }
+
+    @Test
     fun `admin request logs expose id cursors for loading older pages`() = runBlocking {
         repeat(3) { index ->
             app.requestLogRepository.insert(

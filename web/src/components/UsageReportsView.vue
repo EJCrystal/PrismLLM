@@ -15,6 +15,7 @@ const loading = ref(true)
 const error = ref('')
 const cleaning = ref(false)
 const updatingRetention = ref(false)
+let retentionVersion = 0
 const requests = createLatestRequestGuard()
 
 const total = computed(() => report.value?.total || { requests: 0, errors: 0, totalTokens: 0, costs: {} })
@@ -27,6 +28,7 @@ function range() {
 async function load() {
   loading.value = true
   error.value = ''
+  const requestRetentionVersion = retentionVersion
   const result = await requests.run(async () => {
     const [nextReport, nextRetention] = await Promise.all([
       api.getUsageReport(range()),
@@ -38,7 +40,9 @@ async function load() {
   if (result.error) error.value = result.error.message
   else {
     report.value = result.value.nextReport
-    retention.value = result.value.nextRetention
+    if (requestRetentionVersion === retentionVersion) {
+      retention.value = result.value.nextRetention
+    }
   }
   loading.value = false
 }
@@ -62,6 +66,8 @@ async function toggleCleanup(event) {
   const input = event.currentTarget
   const enabled = input.checked
   updatingRetention.value = true
+  retentionVersion += 1
+  requests.invalidate()
   try {
     retention.value = await api.updateRetentionPolicy({ cleanupEnabled: enabled })
     notify('自动清理已' + (enabled ? '开启' : '关闭'))
@@ -81,7 +87,7 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>用量报表</h2>
-        <p>按调用方密钥汇总请求、token 与费用，费用统一按美元 (USD) 计费展示。</p>
+        <p>按调用方密钥汇总请求、token 与费用，费用按各自计费币种汇总，不做隐含汇率换算。</p>
       </div>
       <div class="form-row report-filter-row">
         <select v-model="days" class="select-input report-range-select" aria-label="报表时间范围" @change="load">
@@ -111,7 +117,7 @@ onMounted(load)
             </div>
           </div>
           <strong v-else class="report-cost muted">—</strong>
-          <small>费用统一以美元 (USD) 计费</small>
+          <small>按计费币种分别汇总，不做汇率换算</small>
         </div>
       </div>
 

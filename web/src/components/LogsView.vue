@@ -48,10 +48,10 @@ const averageLatency = computed(() => {
 })
 
 async function refresh() {
-  await load()
+  const loaded = await load()
   await nextTick()
   tableScroll.value?.scrollTo({ top: 0 })
-  notify('请求日志已刷新')
+  if (loaded) notify('请求日志已刷新')
 }
 
 watch(pageSize, async () => {

@@ -17,4 +17,13 @@ describe('latestRequest: 丢弃过期报表响应', () => {
     const failure = await guard.run(async () => { throw new Error('offline') }).catch((error) => error)
     assert.equal(failure.isLatest, true)
   })
+
+  it('invalidate 后尚未完成的请求不再被认定为最新', async () => {
+    const guard = createLatestRequestGuard()
+    const pending = guard.run(async () => 'slow')
+    guard.invalidate()
+    const result = await pending
+    assert.equal(result.isLatest, false)
+    assert.equal(guard.isLatest(result.request), false)
+  })
 })

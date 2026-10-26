@@ -51,10 +51,11 @@ export function createCursorPager({
     try {
       const next = await fetchPage({ limit: requestedSize + 1, beforeId: cursor })
       if (requestGeneration !== generation) return false
-      const page = next.slice(0, requestedSize)
+      const normalized = Array.isArray(next) ? next : []
+      const page = normalized.slice(0, requestedSize)
       const knownKeys = new Set(items.value.map(getKey))
       items.value = items.value.concat(page.filter((item) => !knownKeys.has(getKey(item))))
-      hasMore.value = next.length > requestedSize
+      hasMore.value = normalized.length > requestedSize
       return true
     } catch (cause) {
       if (requestGeneration === generation) error.value = cause.message

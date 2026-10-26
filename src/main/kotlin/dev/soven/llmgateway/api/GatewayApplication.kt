@@ -242,6 +242,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     }
 
     suspend fun updateLogCleanupEnabled(enabled: Boolean) = logRetentionMutex.withLock {
+        retentionSettingsRepository.saveCleanupEnabled(enabled)
         logRetentionService.setCleanupEnabled(enabled)
         if (enabled) startLogRetentionJobLocked() else stopLogRetentionJobLocked()
     }

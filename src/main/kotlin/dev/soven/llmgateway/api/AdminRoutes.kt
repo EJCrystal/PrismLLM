@@ -626,7 +626,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
         put("/request-log-retention") {
             call.requireAdmin(app)
             val request = call.receive<UpdateRetentionPolicyRequest>()
-            app.retentionSettingsRepository.saveCleanupEnabled(request.cleanupEnabled)
             app.updateLogCleanupEnabled(request.cleanupEnabled)
             call.respond(app.logRetentionService.currentPolicy().toResponse(System.currentTimeMillis()))
         }

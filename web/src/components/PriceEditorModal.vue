@@ -4,6 +4,7 @@ import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
 import { findModelPrice } from '../utils/modelPrice'
+import { buildPricePayload, priceFormState } from '../utils/priceForm'
 import Modal from './Modal.vue'
 
 const props = defineProps({
@@ -23,13 +24,11 @@ const saving = ref(false)
 const activePrice = ref(props.price)
 let modelsRequestId = 0
 
+const initialPrice = priceFormState(props.price)
 const form = reactive({
   channelId: props.price?.channelId || props.initialTarget?.channelId || props.channels[0]?.id || '',
   upstreamModel: props.price?.upstreamModel || props.initialTarget?.modelId || '',
-  currency: 'USD',
-  inputPricePerMillion: props.price?.inputPricePerMillion ?? '',
-  outputPricePerMillion: props.price?.outputPricePerMillion ?? '',
-  cachedInputPricePerMillion: props.price?.cachedInputPricePerMillion ?? '',
+  ...initialPrice,
 })
 
 const filteredChannelModels = computed(() => {
@@ -80,10 +79,7 @@ watch(
 
 function applyExistingPrice(price) {
   activePrice.value = price
-  form.currency = 'USD'
-  form.inputPricePerMillion = price.inputPricePerMillion ?? ''
-  form.outputPricePerMillion = price.outputPricePerMillion ?? ''
-  form.cachedInputPricePerMillion = price.cachedInputPricePerMillion ?? ''
+  Object.assign(form, priceFormState(price))
 }
 
 watch(
@@ -156,8 +152,6 @@ async function save() {
   }
   const inputPrice = Number(form.inputPricePerMillion)
   const outputPrice = Number(form.outputPricePerMillion)
-  const inputPriceText = String(form.inputPricePerMillion).trim()
-  const outputPriceText = String(form.outputPricePerMillion).trim()
   const cachedPriceText = String(form.cachedInputPricePerMillion ?? '').trim()
   const cachedPrice = cachedPriceText ? Number(cachedPriceText) : null
   if (!Number.isFinite(inputPrice) || inputPrice < 0 || !Number.isFinite(outputPrice) || outputPrice < 0) {
@@ -170,14 +164,7 @@ async function save() {
   }
   saving.value = true
   try {
-    const payload = {
-      channelId: form.channelId,
-      upstreamModel: form.upstreamModel.trim(),
-      currency: 'USD',
-      inputPricePerMillion: inputPriceText,
-      outputPricePerMillion: outputPriceText,
-      cachedInputPricePerMillion: cachedPrice == null ? null : cachedPriceText,
-    }
+    const payload = buildPricePayload(form, form.channelId, form.upstreamModel)
     if (activePrice.value?.id) {
       await api.updateModelPrice(activePrice.value.id, payload)
       notify('计费单价已更新')
@@ -249,8 +236,13 @@ async function save() {
       </label>
       <label class="field">
         <span>计费币种</span>
-        <input type="text" value="USD (美元)" disabled />
-        <small>计费统一采用美元 (USD)。</small>
+        <input
+          type="text"
+          :value="form.currency"
+          readonly
+          aria-label="计费币种"
+        />
+        <small>已有单价保留原币种；获取参考价会切换为 USD。</small>
       </label>
       <div class="field price-grid">
         <label class="field">
@@ -267,7 +259,7 @@ async function save() {
         </label>
       </div>
       <p class="muted small price-hint">
-        单位为每百万 token（美元）。缓存 token 使用缓存输入单价，留空时按输入单价计费；推理 token 已包含在输出 token 中，不重复计费。
+        单位为每百万 token，币种见上方。缓存 token 使用缓存输入单价，留空时按输入单价计费；推理 token 已包含在输出 token 中，不重复计费。
       </p>
     </form>
     <template #footer>

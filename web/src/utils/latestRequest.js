@@ -14,5 +14,8 @@ export function createLatestRequestGuard() {
     isLatest(request) {
       return request === latest
     },
+    invalidate() {
+      latest += 1
+    },
   }
 }

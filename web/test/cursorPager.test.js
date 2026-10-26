@@ -358,4 +358,39 @@ describe('cursorPager: 游标分页并发安全', () => {
     assert.equal(pager.loading.value, false)
     assert.equal(pager.loadingMore.value, false)
   })
+
+  it('加载更多返回 null 时按空页处理，不抛原始 TypeError', async () => {
+    let request = 0
+    const pager = createCursorPager({
+      pageSize: 2,
+      fetchPage: async (options) => {
+        request += 1
+        if (options.beforeId != null) return null
+        return [{ id: 10 }, { id: 9 }, { id: 8 }]
+      },
+    })
+
+    assert.equal(await pager.load(), true)
+    assert.equal(pager.hasMore.value, true)
+    assert.equal(await pager.loadMore(), true)
+    assert.deepEqual(pager.items.value.map((item) => item.id), [10, 9])
+    assert.equal(pager.hasMore.value, false)
+    assert.equal(pager.error.value, '')
+    assert.equal(pager.loadingMore.value, false)
+  })
+
+  it('加载更多返回非数组时按空页处理', async () => {
+    const pager = createCursorPager({
+      pageSize: 2,
+      fetchPage: async (options) => options.beforeId != null
+        ? { data: [] }
+        : [{ id: 10 }, { id: 9 }, { id: 8 }],
+    })
+
+    await pager.load()
+    assert.equal(await pager.loadMore(), true)
+    assert.deepEqual(pager.items.value.map((item) => item.id), [10, 9])
+    assert.equal(pager.hasMore.value, false)
+    assert.equal(pager.error.value, '')
+  })
 })
