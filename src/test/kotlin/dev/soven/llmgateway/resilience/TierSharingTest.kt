@@ -65,4 +65,22 @@ class TierSharingTest {
         val only = candidate(0, "a")
         assertEquals(listOf(only), sharing.order("alias", listOf(only)))
     }
+
+    @Test
+    fun `upstream aliases in one channel stay together as one routing unit`() {
+        val sharing = TierSharing()
+        val primary = candidate(0, "a")
+        val secondary = candidate(0, "b")
+        val aliases = listOf(
+            primary.copy(upstreamModel = "alias-1"),
+            primary.copy(upstreamModel = "alias-2"),
+            secondary,
+        )
+
+        val first = sharing.order("shared-model", aliases)
+        val second = sharing.order("shared-model", aliases)
+
+        assertEquals(listOf("alias-1", "alias-2", "m"), first.map { it.upstreamModel })
+        assertEquals(listOf("m", "alias-1", "alias-2"), second.map { it.upstreamModel })
+    }
 }

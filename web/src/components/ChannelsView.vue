@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { clearUpstreamModelCache } from '../upstreamModelCache'
@@ -12,16 +12,23 @@ import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
 import {
   VISIBLE_MODEL_LIMIT,
+  channelDisplayModels,
   visibleModels,
   hiddenModelsTitle,
 } from '../utils/channelDisplay'
 import { buildChannelPayload, buildPriorityUpdatePayload } from '../utils/channelForm'
 import { canProbeSavedChannel, createRequestTracker, watchChannelRequestInputs } from '../utils/channelRequestState'
-import { findModelPrice } from '../utils/modelPrice'
+import {
+  buildPricePrompt,
+  channelPriceSummaries,
+  findModelPrice,
+  resolveSavedChannel,
+} from '../utils/modelPrice'
 
 const channels = ref([])
 const prices = ref([])
 const priceEditor = ref(null)
+const pricePromptChannelId = ref(null)
 const loading = ref(true)
 const error = ref('')
 const showForm = ref(false)
@@ -70,6 +77,17 @@ watchChannelRequestInputs(form, {
 })
 
 const enabledCount = computed(() => channels.value.filter((channel) => channel.enabled).length)
+const priceSummaries = computed(() => channelPriceSummaries(channels.value, prices.value))
+const pricePrompt = computed(() => {
+  const channelId = pricePromptChannelId.value
+  if (!channelId) return null
+  const channel = channels.value.find((item) => item.id === channelId)
+  const summary = priceSummaries.value.get(channelId)
+  return buildPricePrompt(channel, summary?.count ?? 0)
+})
+watch(pricePrompt, (value) => {
+  if (!value && pricePromptChannelId.value) pricePromptChannelId.value = null
+})
 const mappingCount = computed(() => authorizedModels.value.filter((modelId) => canonicalModels[modelId]?.trim()).length)
 const filteredModels = computed(() => {
   const query = modelSearch.value.trim().toLowerCase()
@@ -160,6 +178,44 @@ function openPrice(channel, upstreamModel = null) {
       modelId: upstreamModel || '',
     },
   }
+}
+
+function priceSummary(channel) {
+  return priceSummaries.value.get(channel.id) || { unpriced: [], count: 0 }
+}
+
+function unpricedDisplayModels(channel, item) {
+  const unpriced = priceSummary(channel).unpriced
+  return (item.upstreamModels || []).filter((model) => unpriced.includes(String(model).trim()))
+}
+
+function modelTitle(channel, item) {
+  const base = item.title || item.displayName
+  const unpriced = unpricedDisplayModels(channel, item)
+  return unpriced.length ? `${base}；未配置单价: ${unpriced.join('、')}` : base
+}
+
+function configureChannelPrices(channel) {
+  openPrice(channel, priceSummary(channel).unpriced[0] || null)
+}
+
+function updatePricePrompt(channel) {
+  const count = channel ? priceSummary(channel).count : 0
+  pricePromptChannelId.value = channel && count > 0 ? channel.id : null
+  return count
+}
+
+function dismissPricePrompt() {
+  pricePromptChannelId.value = null
+}
+
+function configurePromptPrices() {
+  const channel = channels.value.find((item) => item.id === pricePromptChannelId.value)
+  if (!channel) {
+    pricePromptChannelId.value = null
+    return
+  }
+  configureChannelPrices(channel)
 }
 
 async function onPriceSaved() {
@@ -313,6 +369,10 @@ function isAuthorized(modelId) {
   return authorizedModels.value.includes(modelId)
 }
 
+function channelModelCount(channel) {
+  return channelDisplayModels(channel).length
+}
+
 function probeState(result) {
   if (result.supported) return { label: '支持', className: 'success' }
   if (result.statusCode === 404 || result.statusCode === 405) return { label: '不支持', className: 'neutral' }
@@ -367,6 +427,7 @@ async function probeProtocols() {
 }
 
 async function save() {
+  if (saving.value) return
   if (!form.name.trim() || !form.baseUrl.trim()) {
     notify('请填写渠道名称和基础地址', 'error')
     return
@@ -387,19 +448,23 @@ async function save() {
   saving.value = true
   try {
     const payload = buildChannelPayload(form, authorizedModels.value, canonicalModels, originalMappings)
-    if (editingId.value) {
-      await api.updateChannel(editingId.value, payload)
-      clearUpstreamModelCache(editingId.value)
-      notify('渠道已更新')
-    } else {
-      await api.createChannel(payload)
-      notify('渠道已创建')
-    }
+    const wasEditing = !!editingId.value
+    const saved = wasEditing
+      ? await api.updateChannel(editingId.value, payload)
+      : await api.createChannel(payload)
+    if (wasEditing) clearUpstreamModelCache(editingId.value)
     showForm.value = false
     probeRequests.invalidate()
     probeResults.value = []
     probeDerivedProtocols = false
     await load()
+    const savedChannel = resolveSavedChannel(channels.value, saved, editingId.value, form.name)
+    const unpricedCount = updatePricePrompt(savedChannel)
+    if (unpricedCount > 0) {
+      notify(`渠道已保存，还有 ${unpricedCount} 个上游模型未配置单价`, 'warning')
+    } else {
+      notify(wasEditing ? '渠道已更新' : '渠道已创建')
+    }
   } catch (cause) {
     notify(cause.message, 'error')
   } finally {
@@ -412,6 +477,7 @@ async function remove(channel) {
   try {
     await api.deleteChannel(channel.id)
     clearUpstreamModelCache(channel.id)
+    if (pricePromptChannelId.value === channel.id) pricePromptChannelId.value = null
     notify('渠道已删除')
     await load()
   } catch (cause) {
@@ -435,7 +501,7 @@ onMounted(load)
       </button>
     </div>
 
-    <div class="stat-row">
+    <div class="stat-row two">
       <div class="stat-card">
         <span>渠道总数</span>
         <strong>{{ channels.length }}</strong>
@@ -446,14 +512,20 @@ onMounted(load)
         <strong class="text-success">{{ enabledCount }}</strong>
         <small>已启用并提供服务</small>
       </div>
-      <div class="stat-card accent">
-        <span>凭据策略</span>
-        <strong>AES-256-GCM</strong>
-        <small>接口不回显上游凭据</small>
-      </div>
     </div>
 
     <div v-if="error" class="callout danger">{{ error }}</div>
+
+    <div v-if="pricePrompt" class="callout warning channel-price-callout">
+      <div>
+        <strong>渠道「{{ pricePrompt.channelName }}」还有 {{ pricePrompt.count }} 个上游模型未配置单价</strong>
+        <p>这些请求仍会正常转发，但不会计入费用。</p>
+      </div>
+      <div class="channel-price-callout-actions">
+        <button type="button" class="button ghost mini" @click="dismissPricePrompt">稍后配置</button>
+        <button type="button" class="button primary mini" @click="configurePromptPrices">立即配置</button>
+      </div>
+    </div>
 
     <div class="panel table-panel">
       <TablePlaceholder
@@ -477,7 +549,6 @@ onMounted(load)
               <th>协议</th>
               <th>授权模型</th>
               <th>状态</th>
-              <th>凭据</th>
               <th>更新时间</th>
               <th class="actions-col">操作</th>
             </tr>
@@ -528,30 +599,43 @@ onMounted(load)
                 <div v-if="channel.models?.length" class="channel-model-list">
                   <span
                     v-for="item in visibleModels(channel)"
-                    :key="item.upstreamModel"
-                    class="badge info channel-model-name"
-                    :title="item.title"
+                    :key="item.displayName"
+                    class="channel-model-entry"
                   >
-                    {{ item.displayName }}
+                    <span class="badge info channel-model-name" :title="modelTitle(channel, item)">
+                      {{ item.displayName }}
+                    </span>
+                    <span
+                      v-if="unpricedDisplayModels(channel, item).length"
+                      class="channel-model-price-flag"
+                      title="该模型尚未配置计费单价"
+                    >
+                      未定价
+                    </span>
                   </span>
                   <span
-                    v-if="channel.models.length > VISIBLE_MODEL_LIMIT"
+                    v-if="channelModelCount(channel) > VISIBLE_MODEL_LIMIT"
                     class="badge neutral channel-model-name"
                     :title="hiddenModelsTitle(channel)"
                   >
-                    +{{ channel.models.length - VISIBLE_MODEL_LIMIT }}
+                    +{{ channelModelCount(channel) - VISIBLE_MODEL_LIMIT }}
                   </span>
                 </div>
                 <span v-else class="badge warning">未授权模型</span>
+                <button
+                  v-if="priceSummary(channel).count > 0"
+                  type="button"
+                  class="channel-price-warning"
+                  title="点击配置模型计费单价"
+                  @click="configureChannelPrices(channel)"
+                >
+                  <Icon name="price" :size="12" />
+                  {{ priceSummary(channel).count }} 个上游模型未定价
+                </button>
               </td>
               <td>
                 <span class="badge" :class="channel.enabled ? 'success' : 'neutral'">
                   {{ channel.enabled ? '启用' : '停用' }}
-                </span>
-              </td>
-              <td>
-                <span class="badge" :class="channel.credentialSet ? 'info' : 'warning'">
-                  {{ channel.credentialSet ? '已配置' : '未配置' }}
                 </span>
               </td>
               <td class="muted">{{ formatTime(channel.updatedAt) }}</td>
@@ -685,7 +769,7 @@ onMounted(load)
               <span>上游模型</span>
               <span></span>
               <span>
-                对外模型 ID（留空沿用上游模型名）
+                对外模型 ID（留空沿用上游名；多个上游可映射为同一个 ID）
               </span>
             </div>
             <div v-for="modelId in authorizedModels" :key="modelId" class="channel-canonical-row">

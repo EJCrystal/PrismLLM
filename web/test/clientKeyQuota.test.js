@@ -74,6 +74,58 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
     assert.equal(quotaSummary({ dailyTokenLimit: null, maxConcurrentRequests: null }), '未设置限额')
   })
 
+  it('统一美元计费时，仅设置 USD 上限且自动将其他币种限额置空', () => {
+    const payload = buildClientKeyPayload({
+      name: 'service-usd',
+      enabled: true,
+      dailyUsdLimit: '10.50',
+    }, null)
+
+    assert.equal(payload.dailyUsdLimit, '10.50')
+    assert.equal(payload.dailyCnyLimit, null)
+    assert.equal(payload.dailyEurLimit, null)
+  })
+
+  it('编辑密钥时保留已有的 CNY 和 EUR 每日上限', () => {
+    const key = {
+      name: 'legacy-caps',
+      enabled: true,
+      dailyTokenLimit: 1000,
+      dailyUsdLimit: '2',
+      dailyCnyLimit: '36',
+      dailyEurLimit: '4.5',
+      maxConcurrentRequests: 3,
+      requestsPerMinute: 60,
+    }
+    const form = {
+      name: key.name,
+      enabled: key.enabled,
+      dailyTokenLimit: String(key.dailyTokenLimit),
+      dailyUsdLimit: key.dailyUsdLimit,
+      dailyCnyLimit: key.dailyCnyLimit ?? '',
+      dailyEurLimit: key.dailyEurLimit ?? '',
+      maxConcurrentRequests: String(key.maxConcurrentRequests),
+      requestsPerMinute: String(key.requestsPerMinute),
+    }
+
+    const payload = buildClientKeyPayload(form, null)
+    assert.equal(payload.dailyCnyLimit, '36')
+    assert.equal(payload.dailyEurLimit, '4.5')
+  })
+
+  it('编辑没有非 USD 上限的密钥时仍提交 null', () => {
+    const form = {
+      name: 'usd-only',
+      enabled: true,
+      dailyUsdLimit: '10',
+      dailyCnyLimit: '',
+      dailyEurLimit: '',
+    }
+    const payload = buildClientKeyPayload(form, null)
+    assert.equal(payload.dailyCnyLimit, null)
+    assert.equal(payload.dailyEurLimit, null)
+  })
+
   it('路由模板逐一对应小驼峰费用字段', () => {
     const currencies = [
       { code: 'USD', field: 'dailyUsdLimit' },

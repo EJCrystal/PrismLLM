@@ -24,6 +24,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.io.IOException
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -42,6 +43,7 @@ class FakeUpstream {
     val baseUrl: String get() = "http://127.0.0.1:$port"
     val requests = ConcurrentLinkedQueue<FakeRequest>()
     val cancellations = AtomicInteger()
+    val failingModels = ConcurrentHashMap.newKeySet<String>()
 
     fun start() {
         server.start(wait = false)
@@ -91,9 +93,9 @@ class FakeUpstream {
                 traceparent = call.request.headers["traceparent"],
             ),
         )
-        val stream = runCatching {
-            Json.parseToJsonElement(body).jsonObject["stream"]?.jsonPrimitive?.booleanOrNull ?: false
-        }.getOrDefault(false)
+        val json = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull()
+        val stream = json?.get("stream")?.jsonPrimitive?.booleanOrNull ?: false
+        val model = json?.get("model")?.jsonPrimitive?.content
 
         when (scenario) {
             "429-retry-after" -> {
@@ -108,6 +110,18 @@ class FakeUpstream {
             "500" -> {
                 call.respondText(ERROR_500, ContentType.Application.Json, HttpStatusCode.InternalServerError)
                 return
+            }
+            "model-route" -> {
+                if (model != null && model in failingModels) {
+                    call.respondText(ERROR_429, ContentType.Application.Json, HttpStatusCode.TooManyRequests)
+                    return
+                }
+            }
+            "model-route-500" -> {
+                if (model != null && model in failingModels) {
+                    call.respondText(ERROR_500, ContentType.Application.Json, HttpStatusCode.InternalServerError)
+                    return
+                }
             }
         }
         if (!stream) {

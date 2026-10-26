@@ -16,6 +16,7 @@ import dev.soven.llmgateway.repo.ClientKeyRepository
 import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
 import dev.soven.llmgateway.repo.CooldownStateRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
+import dev.soven.llmgateway.repo.RetentionSettingsRepository
 import dev.soven.llmgateway.report.LogRetentionService
 import dev.soven.llmgateway.quota.ClientKeyQuotaService
 import dev.soven.llmgateway.quota.RequestLimitService
@@ -50,9 +51,13 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
@@ -81,6 +86,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val adminUserRepository = AdminUserRepository(databaseFactory.database)
     val adminAuditRepository = AdminAuditRepository(databaseFactory.database)
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
+    val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
     val credentialCipher = CredentialCipher(config.masterKey)
     val sessions = AdminSessions()
@@ -94,7 +100,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val metrics = GatewayMetrics()
     val requestLogWriter = RequestLogWriter(requestLogRepository, modelPriceRepository, scope)
     val logRetentionService = LogRetentionService(requestLogRepository, config.retention)
-    private val logRetentionJob = java.util.concurrent.atomic.AtomicReference<kotlinx.coroutines.Job?>(null)
+    private val logRetentionJob = java.util.concurrent.atomic.AtomicReference<Job?>(null)
+    private val logRetentionMutex = Mutex()
 
     val httpClient = HttpClient(Java) {
         install(HttpTimeout) {
@@ -112,6 +119,18 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         databaseFactory.migrate()
         runBlocking { seedAdmin() }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
+        runBlocking {
+            val storedCleanupEnabled = retentionSettingsRepository.loadCleanupEnabled()
+            if (storedCleanupEnabled != null) {
+                logRetentionService.setCleanupEnabled(storedCleanupEnabled)
+                logger.info("request log cleanup setting from database: {}", storedCleanupEnabled)
+            } else {
+                logger.info(
+                    "request log cleanup setting from environment: {}",
+                    logRetentionService.currentPolicy().cleanupEnabled,
+                )
+            }
+        }
 
         app.install(ContentNegotiation) {
             json(gatewayJson)
@@ -224,11 +243,35 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             adminUi(this@GatewayApplication)
         }
         app.monitor.subscribe(ApplicationStopped) { close() }
-        logRetentionJob.compareAndSet(null, logRetentionService.start(scope))
+        runBlocking { syncLogRetentionJob() }
     }
 
     fun beginShutdown() {
         shuttingDown.set(true)
+    }
+
+    suspend fun updateLogCleanupEnabled(enabled: Boolean) = logRetentionMutex.withLock {
+        retentionSettingsRepository.saveCleanupEnabled(enabled)
+        logRetentionService.setCleanupEnabled(enabled)
+        if (enabled) startLogRetentionJobLocked() else stopLogRetentionJobLocked()
+    }
+
+    private suspend fun syncLogRetentionJob() = logRetentionMutex.withLock {
+        if (logRetentionService.currentPolicy().cleanupEnabled) {
+            startLogRetentionJobLocked()
+        } else {
+            stopLogRetentionJobLocked()
+        }
+    }
+
+    private fun startLogRetentionJobLocked() {
+        if (logRetentionJob.get() == null) {
+            logRetentionJob.set(logRetentionService.start(scope))
+        }
+    }
+
+    private suspend fun stopLogRetentionJobLocked() {
+        logRetentionJob.getAndSet(null)?.cancelAndJoin()
     }
 
     private suspend fun seedAdmin() {
@@ -244,7 +287,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         shuttingDown.set(true)
         runBlocking { requestLogWriter.closeAndDrain(5_000) }
         runBlocking { cooldownStateWriter.closeAndDrain(1_000) }
-        logRetentionJob.getAndSet(null)?.cancel()
+        runBlocking { logRetentionJob.getAndSet(null)?.cancelAndJoin() }
         scope.cancel()
         httpClient.close()
         databaseFactory.close()

@@ -1,18 +1,31 @@
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { auditActionLabel, auditResultClass, auditResultLabel } from '../utils/adminAudit'
-import { createAdminAuditPager } from '../utils/adminAuditPager'
+import { createCursorPager } from '../utils/cursorPager'
 import { formatTime } from '../utils/format'
 import CopyButton from './CopyButton.vue'
+import CursorLoadMore from './CursorLoadMore.vue'
 import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 
-const { logs, loading, loadingMore, error, hasMore, load, loadMore } = createAdminAuditPager({
+const { items: logs, pageSize, loading, loadingMore, error, hasMore, load, loadMore, setPageSize } = createCursorPager({
   fetchPage: (options) => api.listAuditLogs(options),
 })
 
 const failureCount = computed(() => logs.value.filter((item) => item.result === 'failure').length)
+const tableScroll = ref(null)
+
+async function refresh() {
+  await load()
+  await nextTick()
+  tableScroll.value?.scrollTo({ top: 0 })
+}
+
+watch(pageSize, async () => {
+  await nextTick()
+  tableScroll.value?.scrollTo({ top: 0 })
+})
 
 onMounted(load)
 </script>
@@ -24,7 +37,7 @@ onMounted(load)
         <h2>管理操作审计</h2>
         <p>记录管理 API 的写操作结果、操作者、请求 ID 与来源地址，不保存请求正文。</p>
       </div>
-      <button type="button" class="button ghost" :disabled="loading || loadingMore" @click="load">
+      <button type="button" class="button ghost" :disabled="loading || loadingMore" @click="refresh">
         <Icon name="refresh" :size="16" />
         刷新
       </button>
@@ -60,7 +73,7 @@ onMounted(load)
         title="还没有管理操作记录"
         desc="登录、配置变更和密钥生命周期操作会出现在这里。"
       />
-      <div v-else class="table-scroll">
+      <div v-else ref="tableScroll" class="table-scroll table-scroll-paged">
         <table class="data-table">
           <thead>
             <tr>
@@ -103,11 +116,15 @@ onMounted(load)
           </tbody>
         </table>
       </div>
-      <div v-if="hasMore" class="load-more-row">
-        <button type="button" class="button ghost" :disabled="loading || loadingMore" @click="loadMore">
-          {{ loadingMore ? '正在加载…' : '加载更多' }}
-        </button>
-      </div>
+      <CursorLoadMore
+        :loaded="logs.length"
+        :has-more="hasMore"
+        :loading="loading"
+        :loading-more="loadingMore"
+        :page-size="pageSize"
+        @load-more="loadMore"
+        @page-size-change="setPageSize"
+      />
     </div>
   </section>
 </template>

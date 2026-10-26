@@ -56,6 +56,7 @@ const view = ref('channels')
 const navOpen = ref(false)
 const accountOpen = ref(false)
 const currentMeta = computed(() => meta[view.value] || meta.channels)
+const isDataView = computed(() => view.value === 'logs' || view.value === 'audit-logs')
 
 async function restoreSession() {
   try {
@@ -165,7 +166,7 @@ onBeforeUnmount(() => {
 
     <div v-if="navOpen" class="sidebar-scrim" @click="navOpen = false"></div>
 
-    <div class="main">
+    <div class="main" :class="{ 'main-data': isDataView }">
       <header class="topbar">
         <div class="topbar-left">
           <button type="button" class="icon-button mobile-menu" aria-label="打开导航" @click="navOpen = true">
@@ -200,7 +201,7 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <main class="content">
+      <main class="content" :class="{ 'content-data': isDataView }">
         <ChannelsView v-if="view === 'channels'" />
         <ExposedModelsView v-else-if="view === 'exposed-models'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />

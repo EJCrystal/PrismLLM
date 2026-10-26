@@ -43,6 +43,30 @@ describe('channelForm: 渠道保存请求体', () => {
     ])
   })
 
+  it('允许多个上游模型映射为同一个对外 ID', () => {
+    const payload = buildChannelPayload(
+      baseForm,
+      ['deepseek-flash', 'deepseek-v4.1-flash'],
+      {
+        'deepseek-flash': 'deepseek-flash',
+        'deepseek-v4.1-flash': 'deepseek-flash',
+      },
+    )
+
+    assert.deepEqual(payload.modelMappings, [
+      {
+        upstreamModel: 'deepseek-flash',
+        canonicalModelId: 'deepseek-flash',
+        mappingSource: 'manual',
+      },
+      {
+        upstreamModel: 'deepseek-v4.1-flash',
+        canonicalModelId: 'deepseek-flash',
+        mappingSource: 'manual',
+      },
+    ])
+  })
+
   it('渠道优先级随表单透传，空值提交 null 以保留原值', () => {
     assert.equal(buildChannelPayload({ ...baseForm, priority: 7 }, [], {}).priority, 7)
     assert.equal(buildChannelPayload({ ...baseForm, priority: 0 }, [], {}).priority, 1)

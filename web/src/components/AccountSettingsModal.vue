@@ -114,7 +114,7 @@ async function changePassword() {
         <img v-if="avatarDraft" :src="avatarDraft" alt="管理员头像" />
         <template v-else>{{ initial }}</template>
       </span>
-      <div>
+      <div class="account-profile-copy">
         <strong>{{ user.username }}</strong>
         <span>管理员账号</span>
       </div>

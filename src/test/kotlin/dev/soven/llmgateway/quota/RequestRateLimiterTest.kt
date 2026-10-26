@@ -9,7 +9,7 @@ import kotlin.test.assertFailsWith
 
 class RequestRateLimiterTest {
     @Test
-    fun `key request limit resets on the next UTC minute`() = runBlocking {
+    fun `key request limit resets on the next UTC minute`(): Unit = runBlocking {
         var now = 120_000L
         val limiter = RequestRateLimiter(now = { now })
         val key = key("key-a", ClientKeyQuotaLimits(requestsPerMinute = 2))

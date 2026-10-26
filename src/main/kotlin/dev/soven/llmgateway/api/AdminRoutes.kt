@@ -620,7 +620,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/request-log-retention") {
             call.requireAdmin(app)
-            call.respond(app.config.retention.toResponse(System.currentTimeMillis()))
+            call.respond(app.logRetentionService.currentPolicy().toResponse(System.currentTimeMillis()))
+        }
+
+        put("/request-log-retention") {
+            call.requireAdmin(app)
+            val request = call.receive<UpdateRetentionPolicyRequest>()
+            app.updateLogCleanupEnabled(request.cleanupEnabled)
+            call.respond(app.logRetentionService.currentPolicy().toResponse(System.currentTimeMillis()))
         }
 
         post("/request-log-retention/cleanup") {
@@ -777,13 +784,6 @@ private fun normalizeModelMappings(request: ChannelRequest): List<ChannelModelRe
         ChannelModelRecord(upstreamModel, canonicalModelId, mappingSource)
     }.distinctBy { it.upstreamModel }
 
-    val duplicatePublicIds = normalized
-        .groupBy { (it.canonicalModelId ?: it.upstreamModel).lowercase() }
-        .filterValues { entries -> entries.size > 1 && entries.any { it.canonicalModelId != null } }
-        .keys
-    if (duplicatePublicIds.isNotEmpty()) {
-        throw badRequest("invalid_channel", "同一渠道内对外模型 ID 不能重复: ${duplicatePublicIds.joinToString("、")}")
-    }
     return normalized
 }
 

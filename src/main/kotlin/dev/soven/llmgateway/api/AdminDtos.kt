@@ -340,6 +340,11 @@ data class RetentionPolicyResponse(
 )
 
 @Serializable
+data class UpdateRetentionPolicyRequest(
+    val cleanupEnabled: Boolean,
+)
+
+@Serializable
 data class CleanupResultResponse(val deleted: Long, val cutoff: Long)
 
 fun UsageReport.toResponse() = UsageReportResponse(
@@ -540,6 +545,7 @@ data class ExchangeRatesResponse(
  */
 @Serializable
 data class RequestLogResponse(
+    val id: Long,
     val requestId: String,
     val traceId: String?,
     val clientKeyId: String?,
@@ -574,6 +580,7 @@ data class RequestLogResponse(
 )
 
 fun RequestLogRecord.toResponse() = RequestLogResponse(
+    id = id,
     requestId = requestId,
     traceId = traceId,
     clientKeyId = clientKeyId,

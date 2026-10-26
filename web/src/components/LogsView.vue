@@ -3,9 +3,13 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import CopyButton from './CopyButton.vue'
+import CursorLoadMore from './CursorLoadMore.vue'
 import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
-import { requestModeLabel } from '../utils/requestMode'
+import { createCursorPager } from '../utils/cursorPager'
+import { requestModeClass, requestModeLabel } from '../utils/requestMode'
+import { reasoningEffortClass, reasoningEffortLabel, tokenUsageLabel, tokenUsageState } from '../utils/requestLogDisplay'
+import { filterRequestLogs } from '../utils/requestLogSearch'
 import {
   formatTime,
   formatDuration,
@@ -15,12 +19,13 @@ import {
   formatUnitPrice,
 } from '../utils/format'
 
-const logs = ref([])
-const loading = ref(true)
-const error = ref('')
+const { items: logs, pageSize, loading, loadingMore, error, hasMore, load, loadMore, setPageSize } = createCursorPager({
+  fetchPage: (options) => api.listRequestLogs(options),
+})
 const query = ref('')
 const selected = ref(null)
 const detailDialog = ref(null)
+const tableScroll = ref(null)
 let detailTrigger = null
 
 const stageLabels = {
@@ -32,26 +37,7 @@ const stageLabels = {
 }
 
 const filtered = computed(() => {
-  const keyword = query.value.trim().toLowerCase()
-  if (!keyword) return logs.value
-  return logs.value.filter((log) =>
-    [
-      log.requestId,
-      log.traceId,
-      log.alias,
-      log.channelId,
-      log.channelName,
-      log.upstreamModel,
-      log.errorCode,
-      log.errorMessage,
-      log.failureStage,
-      log.upstreamErrorCode,
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-      .includes(keyword),
-  )
+  return filterRequestLogs(logs.value, query.value)
 })
 
 const errorCount = computed(() => logs.value.filter((log) => log.statusCode >= 400).length)
@@ -61,25 +47,25 @@ const averageLatency = computed(() => {
   return `${Math.round(total / logs.value.length)} ms`
 })
 
-async function load() {
-  loading.value = true
-  error.value = ''
-  try {
-    logs.value = await api.listRequestLogs(100)
-  } catch (cause) {
-    error.value = cause.message
-  } finally {
-    loading.value = false
-  }
-}
-
 async function refresh() {
-  await load()
-  notify('请求日志已刷新')
+  const loaded = await load()
+  await nextTick()
+  tableScroll.value?.scrollTo({ top: 0 })
+  if (loaded) notify('请求日志已刷新')
 }
 
-function formatCost(log) {
-  return formatCostUtil(log.costAmount, log.costCurrency)
+watch(pageSize, async () => {
+  await nextTick()
+  tableScroll.value?.scrollTo({ top: 0 })
+})
+
+watch(query, async () => {
+  await nextTick()
+  tableScroll.value?.scrollTo({ top: 0 })
+})
+
+function formatCostAmount(log) {
+  return formatCostUtil(log.costAmount, '')
 }
 
 function formatThroughput(log) {
@@ -107,6 +93,10 @@ function costTitle(log) {
 
 function usageDetailTitle(log) {
   return `推理 ${formatTokens(log.reasoningTokens)} · 输出速率 ${formatThroughput(log)} tok/s · ${cacheTitle(log)}`
+}
+
+function usageStateClass(log) {
+  return `usage-${tokenUsageState(log)}`
 }
 
 function stageLabel(stage) {
@@ -192,9 +182,9 @@ onMounted(load)
 
     <div class="stat-row">
       <div class="stat-card">
-        <span>本次读取</span>
+        <span>当前已加载</span>
         <strong>{{ logs.length }}</strong>
-        <small>最近 100 条请求</small>
+        <small>按页加载更早请求</small>
       </div>
       <div class="stat-card">
         <span>异常响应</span>
@@ -212,9 +202,12 @@ onMounted(load)
 
     <div class="panel table-panel">
       <div class="table-toolbar">
-        <label class="search-box">
+        <label class="search-box logs-search">
           <Icon name="search" :size="17" />
-          <input v-model="query" placeholder="搜索请求 ID、Trace ID、请求模型、渠道、错误码或错误信息" />
+          <input
+            v-model="query"
+            placeholder="搜索当前已加载记录：ID、模型、渠道、状态码或错误码"
+          />
         </label>
         <span class="muted small">显示 {{ filtered.length }} / {{ logs.length }} 条</span>
       </div>
@@ -235,16 +228,16 @@ onMounted(load)
         title="没有匹配的请求"
         desc="换一个关键词试试。"
       />
-      <div v-else class="table-scroll">
+      <div v-else ref="tableScroll" class="table-scroll table-scroll-paged">
         <table class="data-table logs-table">
           <thead>
             <tr>
               <th>时间</th>
               <th>请求 ID</th>
-              <th>请求模型 / 协议 / 流式</th>
+              <th>请求模型 / 协议 / 模式</th>
               <th>渠道 / 上游模型</th>
               <th>状态 / 错误</th>
-              <th>耗时</th>
+              <th>首 token / 总耗时</th>
               <th>Token 用量</th>
               <th>费用</th>
               <th class="actions-col"></th>
@@ -262,9 +255,13 @@ onMounted(load)
               <td>
                 <div class="stacked-cell">
                   <span class="badge info">{{ log.alias }}</span>
-                  <span class="muted small">
-                    {{ log.protocol || '—' }} · {{ requestModeLabel(log.stream) }}<template v-if="log.reasoningEffort"> · 强度 {{ log.reasoningEffort }}</template>
-                  </span>
+                  <div class="request-meta">
+                    <span class="muted small">{{ log.protocol || '—' }}</span>
+                    <span class="mode-badge" :class="`mode-${requestModeClass(log.stream)}`">{{ requestModeLabel(log.stream) }}</span>
+                    <span class="reasoning-badge" :class="reasoningEffortClass(log.reasoningEffort)">
+                      推理 {{ reasoningEffortLabel(log.reasoningEffort) }}
+                    </span>
+                  </div>
                 </div>
               </td>
               <td>
@@ -282,12 +279,12 @@ onMounted(load)
                 </div>
               </td>
               <td class="nowrap">
-                <div class="stacked-cell">
-                  <span>{{ formatDuration(log.totalMs) }}</span>
-                  <span class="muted small">首 {{ formatDuration(log.firstTokenMs) }}</span>
+                <div class="duration-cell">
+                  <span class="duration-first">首 {{ formatDuration(log.firstTokenMs) }}</span>
+                  <span class="muted small">总 {{ formatDuration(log.totalMs) }}</span>
                 </div>
               </td>
-              <td class="usage-cell">
+              <td class="usage-cell" :class="usageStateClass(log)">
                 <template v-if="log.usageKnown">
                   <span :title="`输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 总 ${formatTokens(log.totalTokens)}`">
                     输入 {{ formatTokensCompact(log.inputTokens) }} · 输出 {{ formatTokensCompact(log.outputTokens) }} · 总
@@ -298,10 +295,13 @@ onMounted(load)
                     {{ formatCacheHit(log) }}
                   </span>
                 </template>
-                <span v-else class="muted">未知</span>
+                <span v-else class="usage-state-label">{{ tokenUsageLabel(log) }}</span>
               </td>
               <td class="nowrap" :title="costTitle(log)">
-                <span v-if="log.costAmount != null">{{ formatCost(log) }}</span>
+                <span v-if="log.costAmount != null" class="cost-line log-cost">
+                  <span class="cost-amount">{{ formatCostAmount(log) }}</span>
+                  <span class="cost-currency">{{ log.costCurrency || '—' }}</span>
+                </span>
                 <span v-else-if="log.usageKnown && log.channelId && log.upstreamModel" class="muted">未配置</span>
                 <span v-else class="muted">—</span>
               </td>
@@ -312,6 +312,15 @@ onMounted(load)
           </tbody>
         </table>
       </div>
+      <CursorLoadMore
+        :loaded="logs.length"
+        :has-more="hasMore"
+        :loading="loading"
+        :loading-more="loadingMore"
+        :page-size="pageSize"
+        @load-more="loadMore"
+        @page-size-change="setPageSize"
+      />
     </div>
 
     <Teleport to="body">
@@ -362,8 +371,8 @@ onMounted(load)
                 <strong>{{ selected.protocol || '—' }}</strong>
               </div>
               <div class="detail-item">
-                <span>流式</span>
-                <strong>{{ requestModeLabel(selected.stream) }}</strong>
+                <span>模式</span>
+                <strong><span class="mode-badge" :class="`mode-${requestModeClass(selected.stream)}`">{{ requestModeLabel(selected.stream) }}</span></strong>
               </div>
               <div class="detail-item">
                 <span>失败阶段</span>
@@ -423,15 +432,17 @@ onMounted(load)
               </div>
               <div class="detail-item">
                 <span>输入 / 输出</span>
-                <strong>{{ formatTokens(selected.inputTokens) }} / {{ formatTokens(selected.outputTokens) }}</strong>
+                <strong v-if="selected.usageKnown">{{ formatTokens(selected.inputTokens) }} / {{ formatTokens(selected.outputTokens) }}</strong>
+                <strong v-else class="muted">{{ tokenUsageLabel(selected) }}</strong>
               </div>
               <div class="detail-item">
                 <span>推理 / 总量</span>
-                <strong>{{ formatTokens(selected.reasoningTokens) }} / {{ formatTokens(selected.totalTokens) }}</strong>
+                <strong v-if="selected.usageKnown">{{ formatTokens(selected.reasoningTokens) }} / {{ formatTokens(selected.totalTokens) }}</strong>
+                <strong v-else class="muted">{{ tokenUsageLabel(selected) }}</strong>
               </div>
               <div class="detail-item">
                 <span>推理强度</span>
-                <strong>{{ selected.reasoningEffort || '未设置' }}</strong>
+                <strong><span class="reasoning-badge" :class="reasoningEffortClass(selected.reasoningEffort)">{{ reasoningEffortLabel(selected.reasoningEffort) }}</span></strong>
               </div>
               <div class="detail-item">
                 <span>缓存命中</span>
@@ -446,7 +457,11 @@ onMounted(load)
               </div>
               <div class="detail-item">
                 <span>费用</span>
-                <strong>{{ selected.costAmount != null ? formatCost(selected) : (selected.usageKnown ? '未配置' : '—') }}</strong>
+                <strong v-if="selected.costAmount != null" class="cost-line detail-cost">
+                  <span class="cost-amount">{{ formatCostAmount(selected) }}</span>
+                  <span class="cost-currency">{{ selected.costCurrency || '—' }}</span>
+                </strong>
+                <strong v-else>{{ selected.usageKnown ? '未配置' : '—' }}</strong>
               </div>
               <div v-if="selected.costAmount != null" class="detail-item">
                 <span>计费单价 / 1M</span>

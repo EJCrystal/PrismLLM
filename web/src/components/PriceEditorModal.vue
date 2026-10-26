@@ -3,9 +3,8 @@ import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
-import { createConversionRequestGuard } from '../utils/currencyConversion'
 import { findModelPrice } from '../utils/modelPrice'
-import Icon from './Icon.vue'
+import { buildPricePayload, emptyPriceDraft, hasPriceDraft, priceFormState } from '../utils/priceForm'
 import Modal from './Modal.vue'
 
 const props = defineProps({
@@ -22,47 +21,20 @@ const fetchingReference = ref(false)
 const referenceHint = ref('')
 const modelPickerOpen = ref(false)
 const saving = ref(false)
-const exchangeRates = ref(null)
-const exchangeLoading = ref(false)
-const exchangeError = ref('')
-const conversionInfo = ref(null)
 const activePrice = ref(props.price)
-const conversionRequests = createConversionRequestGuard()
-const priceBase = ref(props.price ? {
-  currency: props.price.currency,
-  inputPricePerMillion: props.price.inputPricePerMillion,
-  outputPricePerMillion: props.price.outputPricePerMillion,
-  cachedInputPricePerMillion: props.price.cachedInputPricePerMillion ?? '',
-} : null)
 let modelsRequestId = 0
-let exchangeRequest = null
-let skipNextCurrencyConversion = false
 
+const initialPrice = priceFormState(props.price)
 const form = reactive({
   channelId: props.price?.channelId || props.initialTarget?.channelId || props.channels[0]?.id || '',
   upstreamModel: props.price?.upstreamModel || props.initialTarget?.modelId || '',
-  currency: props.price?.currency || 'USD',
-  inputPricePerMillion: props.price?.inputPricePerMillion ?? '',
-  outputPricePerMillion: props.price?.outputPricePerMillion ?? '',
-  cachedInputPricePerMillion: props.price?.cachedInputPricePerMillion ?? '',
+  ...initialPrice,
 })
 
 const filteredChannelModels = computed(() => {
   const query = form.upstreamModel.trim().toLowerCase()
   if (!query) return channelModels.value
   return channelModels.value.filter((model) => model.id.toLowerCase().includes(query))
-})
-
-const currencyHint = computed(() => {
-  if (exchangeLoading.value) return '正在获取汇率并换算价格…'
-  if (exchangeError.value) return exchangeError.value
-  if (conversionInfo.value) {
-    if (conversionInfo.value.from === conversionInfo.value.to) {
-      return `已使用 ${conversionInfo.value.from} 基准价格 · ${conversionInfo.value.date} · ${conversionInfo.value.source}`
-    }
-    return `已按 1 ${conversionInfo.value.from} = ${conversionInfo.value.rate} ${conversionInfo.value.to} 换算 · ${conversionInfo.value.date} · ${conversionInfo.value.source}`
-  }
-  return '参考价从 USD 基准换算；手动改价后会以当前币种作为新基准。'
 })
 
 watch(
@@ -105,37 +77,9 @@ watch(
   },
 )
 
-watch(
-  () => form.currency,
-  async (nextCurrency, previousCurrency) => {
-    if (nextCurrency === previousCurrency) return
-    if (skipNextCurrencyConversion) {
-      skipNextCurrencyConversion = false
-      return
-    }
-    await convertCurrency(previousCurrency, nextCurrency)
-  },
-  { flush: 'sync' },
-)
-
 function applyExistingPrice(price) {
-  conversionRequests.invalidate()
-  exchangeLoading.value = false
   activePrice.value = price
-  const currency = price.currency || 'USD'
-  if (form.currency !== currency) skipNextCurrencyConversion = true
-  form.currency = currency
-  form.inputPricePerMillion = price.inputPricePerMillion ?? ''
-  form.outputPricePerMillion = price.outputPricePerMillion ?? ''
-  form.cachedInputPricePerMillion = price.cachedInputPricePerMillion ?? ''
-  priceBase.value = {
-    currency,
-    inputPricePerMillion: form.inputPricePerMillion,
-    outputPricePerMillion: form.outputPricePerMillion,
-    cachedInputPricePerMillion: form.cachedInputPricePerMillion,
-  }
-  conversionInfo.value = null
-  exchangeError.value = ''
+  Object.assign(form, priceFormState(price))
 }
 
 watch(
@@ -148,15 +92,8 @@ watch(
       return
     }
     if (activePrice.value) {
-      conversionRequests.invalidate()
-      exchangeLoading.value = false
       activePrice.value = null
-      form.inputPricePerMillion = ''
-      form.outputPricePerMillion = ''
-      form.cachedInputPricePerMillion = ''
-      priceBase.value = null
-      conversionInfo.value = null
-      exchangeError.value = ''
+      Object.assign(form, emptyPriceDraft())
     }
   },
   { immediate: true },
@@ -179,148 +116,34 @@ function selectChannelModel(model) {
   modelPickerOpen.value = false
 }
 
-function setCurrencyWithoutConversion(currency) {
-  if (form.currency !== currency) skipNextCurrencyConversion = true
-  form.currency = currency
-}
-
 async function fetchReferencePrice() {
   const modelName = form.upstreamModel.trim()
   if (!modelName) {
     notify('请先输入或选择上游模型', 'warning')
     return
   }
+  if (form.currency !== 'USD' && hasPriceDraft(form)) {
+    notify('参考价以 USD 计；当前单价不是 USD，请先清空金额或新建 USD 单价', 'warning')
+    return
+  }
+  if (hasPriceDraft(form) && !window.confirm('获取参考价会用 USD 金额覆盖当前填写的单价和币种，是否继续？')) {
+    return
+  }
   fetchingReference.value = true
   referenceHint.value = ''
-  conversionInfo.value = null
-  exchangeError.value = ''
   try {
     const res = await api.getModelPriceReference(modelName)
-    setCurrencyWithoutConversion(res.currency || 'USD')
+    form.currency = 'USD'
     form.inputPricePerMillion = res.inputPricePerMillion
     form.outputPricePerMillion = res.outputPricePerMillion
     form.cachedInputPricePerMillion = res.cachedInputPricePerMillion || ''
-    priceBase.value = {
-      currency: res.currency || 'USD',
-      inputPricePerMillion: res.inputPricePerMillion,
-      outputPricePerMillion: res.outputPricePerMillion,
-      cachedInputPricePerMillion: res.cachedInputPricePerMillion || '',
-    }
-    referenceHint.value = `已填入参考价（匹配: ${res.matchedModel}，原币种: ${res.currency || 'USD'}，来源: ${res.source}）`
-    notify(`已填入「${res.matchedModel}」参考单价`)
+    referenceHint.value = `已填入参考价（匹配: ${res.matchedModel}，来源: ${res.source}）`
+    notify(`已填入「${res.matchedModel}」USD 参考单价`)
   } catch (cause) {
     notify(cause.message || '未在参考库中找到该模型，请手动输入', 'warning')
   } finally {
     fetchingReference.value = false
   }
-}
-
-async function ensureExchangeRates() {
-  if (exchangeRates.value) return exchangeRates.value
-  if (exchangeRequest) return exchangeRequest
-  exchangeLoading.value = true
-  exchangeError.value = ''
-  exchangeRequest = (async () => {
-    try {
-      const data = await api.getExchangeRates()
-      exchangeRates.value = data
-      return data
-    } finally {
-      exchangeLoading.value = false
-      exchangeRequest = null
-    }
-  })()
-  return exchangeRequest
-}
-
-async function convertCurrency(fromCurrency, toCurrency) {
-  const hasPrice = [form.inputPricePerMillion, form.outputPricePerMillion, form.cachedInputPricePerMillion]
-    .some((value) => value !== '' && value != null)
-  if (!hasPrice) {
-    conversionInfo.value = null
-    exchangeError.value = ''
-    return
-  }
-  const request = conversionRequests.start()
-  exchangeLoading.value = true
-  exchangeError.value = ''
-  try {
-    const data = await ensureExchangeRates()
-    if (!conversionRequests.isCurrent(request) || form.currency !== toCurrency) return
-    const basis = priceBase.value
-    const sourceCurrency = basis?.currency || fromCurrency
-    const factor = exchangeRate(data, toCurrency) / exchangeRate(data, sourceCurrency)
-    form.inputPricePerMillion = convertValue(basis?.inputPricePerMillion ?? form.inputPricePerMillion, factor)
-    form.outputPricePerMillion = convertValue(basis?.outputPricePerMillion ?? form.outputPricePerMillion, factor)
-    form.cachedInputPricePerMillion = convertValue(basis?.cachedInputPricePerMillion ?? form.cachedInputPricePerMillion, factor)
-    conversionInfo.value = {
-      from: sourceCurrency,
-      to: toCurrency,
-      rate: Number(factor.toFixed(8)).toString(),
-      date: data.date,
-      source: data.source,
-    }
-  } catch (cause) {
-    if (!conversionRequests.isCurrent(request)) return
-    exchangeError.value = cause.message || '无法获取汇率'
-    setCurrencyWithoutConversion(fromCurrency)
-    notify('无法获取汇率，币种已恢复', 'error')
-  } finally {
-    if (conversionRequests.isCurrent(request)) exchangeLoading.value = false
-  }
-}
-
-function exchangeRate(data, currency) {
-  if (currency === 'USD') return 1
-  const rate = Number(data.rates?.[currency])
-  if (!Number.isFinite(rate) || rate <= 0) throw new Error(`缺少 ${currency} 汇率`)
-  return rate
-}
-
-function convertValue(value, factor) {
-  if (value === '' || value == null) return value
-  const number = Number(value)
-  if (!Number.isFinite(number)) return value
-  return Number((number * factor).toFixed(8)).toString()
-}
-
-function convertBaseValue(value, factor) {
-  if (value === '' || value == null) return value
-  const number = Number(value)
-  if (!Number.isFinite(number)) return value
-  return (number * factor).toFixed(12).replace(/0+$/, '').replace(/\.$/, '')
-}
-
-function markPriceEdited(event, field) {
-  const basis = priceBase.value
-  let nextBase
-  if (basis && basis.currency === form.currency) {
-    nextBase = { ...basis }
-  } else if (basis && exchangeRates.value) {
-    try {
-      const factor = exchangeRate(exchangeRates.value, form.currency) / exchangeRate(exchangeRates.value, basis.currency)
-      nextBase = {
-        currency: form.currency,
-        inputPricePerMillion: convertBaseValue(basis.inputPricePerMillion, factor),
-        outputPricePerMillion: convertBaseValue(basis.outputPricePerMillion, factor),
-        cachedInputPricePerMillion: convertBaseValue(basis.cachedInputPricePerMillion, factor),
-      }
-    } catch {
-      nextBase = null
-    }
-  }
-  if (!nextBase) {
-    nextBase = {
-      currency: form.currency,
-      inputPricePerMillion: form.inputPricePerMillion,
-      outputPricePerMillion: form.outputPricePerMillion,
-      cachedInputPricePerMillion: form.cachedInputPricePerMillion,
-    }
-  }
-  nextBase[field] = event.target.value
-  priceBase.value = nextBase
-  conversionInfo.value = null
-  exchangeError.value = ''
 }
 
 async function save() {
@@ -334,8 +157,6 @@ async function save() {
   }
   const inputPrice = Number(form.inputPricePerMillion)
   const outputPrice = Number(form.outputPricePerMillion)
-  const inputPriceText = String(form.inputPricePerMillion).trim()
-  const outputPriceText = String(form.outputPricePerMillion).trim()
   const cachedPriceText = String(form.cachedInputPricePerMillion ?? '').trim()
   const cachedPrice = cachedPriceText ? Number(cachedPriceText) : null
   if (!Number.isFinite(inputPrice) || inputPrice < 0 || !Number.isFinite(outputPrice) || outputPrice < 0) {
@@ -348,14 +169,7 @@ async function save() {
   }
   saving.value = true
   try {
-    const payload = {
-      channelId: form.channelId,
-      upstreamModel: form.upstreamModel.trim(),
-      currency: form.currency,
-      inputPricePerMillion: inputPriceText,
-      outputPricePerMillion: outputPriceText,
-      cachedInputPricePerMillion: cachedPrice == null ? null : cachedPriceText,
-    }
+    const payload = buildPricePayload(form, form.channelId, form.upstreamModel)
     if (activePrice.value?.id) {
       await api.updateModelPrice(activePrice.value.id, payload)
       notify('计费单价已更新')
@@ -426,33 +240,31 @@ async function save() {
         <small v-else>从渠道模型选择或手动输入后，可获取 USD 参考价。</small>
       </label>
       <label class="field">
-        <span>币种</span>
-        <select v-model="form.currency" :disabled="exchangeLoading">
-          <option value="USD">USD</option>
-          <option value="CNY">CNY</option>
-          <option value="EUR">EUR</option>
-        </select>
-        <small>每条价格规则使用独立币种。</small>
-        <small class="currency-hint" :class="{ 'text-danger': exchangeError, 'reference-hint': conversionInfo && !exchangeError }">
-          {{ currencyHint }}
-        </small>
+        <span>计费币种</span>
+        <input
+          type="text"
+          :value="form.currency"
+          readonly
+          aria-label="计费币种"
+        />
+        <small>已有单价保留原币种；获取参考价会切换为 USD。</small>
       </label>
       <div class="field price-grid">
         <label class="field">
           <span>输入单价 / 1M</span>
-          <input v-model="form.inputPricePerMillion" type="number" min="0" step="0.00000001" placeholder="0.15" :disabled="exchangeLoading" @input="markPriceEdited($event, 'inputPricePerMillion')" />
+          <input v-model="form.inputPricePerMillion" type="number" min="0" step="0.00000001" placeholder="0.15" />
         </label>
         <label class="field">
           <span>输出单价 / 1M</span>
-          <input v-model="form.outputPricePerMillion" type="number" min="0" step="0.00000001" placeholder="0.60" :disabled="exchangeLoading" @input="markPriceEdited($event, 'outputPricePerMillion')" />
+          <input v-model="form.outputPricePerMillion" type="number" min="0" step="0.00000001" placeholder="0.60" />
         </label>
         <label class="field">
           <span>缓存输入单价 / 1M</span>
-          <input v-model="form.cachedInputPricePerMillion" type="number" min="0" step="0.00000001" placeholder="留空则按输入单价" :disabled="exchangeLoading" @input="markPriceEdited($event, 'cachedInputPricePerMillion')" />
+          <input v-model="form.cachedInputPricePerMillion" type="number" min="0" step="0.00000001" placeholder="留空则按输入单价" />
         </label>
       </div>
       <p class="muted small price-hint">
-        单位为每百万 token。缓存 token 使用缓存输入单价，留空时按输入单价计费；推理 token 已包含在输出 token 中，不重复计费。
+        单位为每百万 token，币种见上方。缓存 token 使用缓存输入单价，留空时按输入单价计费；推理 token 已包含在输出 token 中，不重复计费。
       </p>
     </form>
     <template #footer>

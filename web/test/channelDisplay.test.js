@@ -72,6 +72,26 @@ describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
       assert.equal(visible[0].isCustom, false)
       assert.equal(visible[0].title, '', '同名时不应有多余的 hover 提示')
     })
+
+    it('多个上游模型映射为同一对外 ID 时：只显示一个模型，并在 hover 中列出全部上游名', () => {
+      const channel = {
+        models: ['deepseek-flash', 'deepseek-v4.1-flash'],
+        modelMappings: [
+          { upstreamModel: 'deepseek-flash', canonicalModelId: 'deepseek-flash' },
+          { upstreamModel: 'deepseek-v4.1-flash', canonicalModelId: 'deepseek-flash' },
+        ],
+      }
+
+      const visible = visibleModels(channel)
+
+      assert.equal(visible.length, 1)
+      assert.equal(visible[0].displayName, 'deepseek-flash')
+      assert.deepEqual(visible[0].upstreamModels, ['deepseek-flash', 'deepseek-v4.1-flash'])
+      assert.equal(
+        visible[0].title,
+        'deepseek-flash (上游模型: deepseek-flash、deepseek-v4.1-flash)',
+      )
+    })
   })
 
   describe('+N 折叠徽章展示 (hiddenModelsTitle)', () => {
