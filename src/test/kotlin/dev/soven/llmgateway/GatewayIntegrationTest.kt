@@ -1636,6 +1636,26 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin deletes one channel price override without affecting other models`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val target = createPrice(channel, "gpt-4o-mini", input = "1", output = "2")
+        createPrice(channel, "deepseek-chat", input = "3", output = "4")
+
+        testApplication {
+            application { app.install(this) }
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.delete("/admin/api/model-prices/${target.id}") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+            }
+
+            assertEquals(HttpStatusCode.NoContent, response.status)
+            assertNull(app.modelPriceRepository.find(channel.id, "gpt-4o-mini"))
+            assertNotNull(app.modelPriceRepository.find(channel.id, "deepseek-chat"))
+        }
+    }
+
+    @Test
     fun `rejects next request after daily token limit is consumed`() = runBlocking {
         val channel = createChannel("openai", "ok")
         createAlias("fast-chat", channel to "gpt-4o-mini")

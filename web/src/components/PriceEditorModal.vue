@@ -15,6 +15,7 @@ import {
   applyPriceToForm,
   buildBatchPricePayload,
   buildPricePayload,
+  emptyPriceDraft,
   existingPricePayload,
   hasPriceDraft,
   hasActivePriceDraft,
@@ -27,7 +28,17 @@ import {
   refreshedPriceToApply,
   resolveModelSelectionTarget,
 } from '../utils/modelSelection'
+import {
+  buildChannelPriceDeleteMessage,
+  clonePriceDraftForm,
+  collectDirtyPriceDrafts,
+  createPriceDraft,
+  priceDraftHasChanges,
+  priceDraftKey,
+  priceDraftSnapshot,
+} from '../utils/priceDraftState'
 import { formatPriceSummary, formatTime, formatUnitPrice } from '../utils/format'
+import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import PriceFields from './PriceFields.vue'
 
@@ -45,6 +56,7 @@ const modelsError = ref('')
 const fetchingReference = ref(false)
 const referenceHint = ref('')
 const saving = ref(false)
+const deletingPriceId = ref(null)
 const activePrice = ref(props.price)
 const batchOpen = ref(false)
 const batchSelected = ref([])
@@ -58,6 +70,9 @@ let referenceRequestId = 0
 let versionRequestId = 0
 let cancellationRequestId = 0
 const manuallyEnteredModel = ref(false)
+const draftStates = reactive(new Map())
+const locallyDeletedPriceIds = ref(new Set())
+const activeDraftKey = ref('')
 
 const initialPrice = priceFormState(props.price)
 const form = reactive({
@@ -65,9 +80,11 @@ const form = reactive({
   upstreamModel: props.price?.upstreamModel || props.initialTarget?.modelId || '',
   ...initialPrice,
 })
+const currentBaseline = ref(priceDraftSnapshot(form))
 
 const currentChannelName = computed(() => channelDisplayName(props.channels, form.channelId))
 const batchPriceSummary = computed(() => hasActivePriceDraft(form) ? formatPriceSummary(form) : '尚未填写价格')
+const currentDraftDirty = computed(() => priceDraftSnapshot(form) !== currentBaseline.value)
 
 function referenceDraftKey() {
   return [
@@ -90,7 +107,9 @@ function cancelReferenceLookup() {
   fetchingReference.value = false
 }
 
-const channelPrices = computed(() => pricesForChannel(props.prices, form.channelId))
+const visiblePrices = computed(() => (Array.isArray(props.prices) ? props.prices : [])
+  .filter((price) => price && !locallyDeletedPriceIds.value.has(price.id)))
+const channelPrices = computed(() => pricesForChannel(visiblePrices.value, form.channelId))
 const selectedChannel = computed(() => props.channels.find((channel) => channel.id === form.channelId) || null)
 const availableChannelModels = computed(() => channelModelOptionsForChannel(
   selectedChannel.value,
@@ -98,7 +117,7 @@ const availableChannelModels = computed(() => channelModelOptionsForChannel(
 ))
 const channelModelOptions = computed(() => channelModelPriceOptions(
   availableChannelModels.value,
-  props.prices,
+  visiblePrices.value,
   form.channelId,
   props.defaultPrices,
 ))
@@ -115,6 +134,24 @@ const selectedPriceSource = computed(() => {
 })
 const allBatchSelected = computed(() => channelModelOptions.value.length > 0 &&
   channelModelOptions.value.every((model) => batchSelected.value.includes(model.id)))
+const dirtyDraftCount = computed(() => {
+  let count = currentDraftDirty.value ? 1 : 0
+  for (const [key, draft] of draftStates) {
+    if (key !== activeDraftKey.value && priceDraftHasChanges(draft)) count += 1
+  }
+  return count
+})
+const saveButtonLabel = computed(() => {
+  if (saving.value) return '保存中…'
+  return dirtyDraftCount.value > 1 ? `保存全部（${dirtyDraftCount.value} 个模型）` : '保存单价'
+})
+
+function isModelDirty(modelId) {
+  const normalized = String(modelId ?? '').trim()
+  if (!normalized) return false
+  if (normalized === form.upstreamModel.trim()) return currentDraftDirty.value
+  return priceDraftHasChanges(draftStates.get(priceDraftKey(form.channelId, normalized)))
+}
 
 watch(
   () => form.channelId,
@@ -175,17 +212,50 @@ function applyExistingPrice(price) {
   Object.assign(form, priceFormState(price))
 }
 
+function currentPriceDraft() {
+  return createPriceDraft({
+    channelId: form.channelId,
+    modelId: form.upstreamModel,
+    form,
+    price: activePrice.value,
+    baseline: currentBaseline.value,
+  })
+}
+
+function stashCurrentDraft() {
+  if (!form.channelId || !form.upstreamModel.trim()) return null
+  const draft = currentPriceDraft()
+  draftStates.set(draft.key, draft)
+  return draft
+}
+
+function restorePriceDraft(draft, key) {
+  cancelReferenceLookup()
+  versionRequestId += 1
+  activePrice.value = draft.price || null
+  Object.assign(form, clonePriceDraftForm(draft.form))
+  currentBaseline.value = draft.baseline ?? priceDraftSnapshot(form)
+  activeDraftKey.value = key
+}
+
 watch(
   () => [form.channelId, form.upstreamModel],
   ([channelId, upstreamModel]) => {
-    const target = resolveModelSelectionTarget(channelId, upstreamModel, props.prices)
-    const existingPrice = target.price
-    if (existingPrice) {
-      applyExistingPrice(existingPrice)
-    } else {
+    const key = priceDraftKey(channelId, upstreamModel)
+    if (activeDraftKey.value && activeDraftKey.value !== key) clearVersionHistory()
+    const stored = draftStates.get(key)
+    if (stored) {
+      restorePriceDraft(stored, key)
+      return
+    }
+    const target = resolveModelSelectionTarget(channelId, upstreamModel, visiblePrices.value)
+    if (target.price) applyExistingPrice(target.price)
+    else {
       activePrice.value = null
       Object.assign(form, target.draft)
     }
+    currentBaseline.value = priceDraftSnapshot(form)
+    activeDraftKey.value = key
   },
   { immediate: true },
 )
@@ -193,9 +263,16 @@ watch(
 watch(
   () => props.prices,
   () => {
-    const target = resolveModelSelectionTarget(form.channelId, form.upstreamModel, props.prices)
+    for (const [key, draft] of draftStates) {
+      if (key !== activeDraftKey.value && !priceDraftHasChanges(draft)) draftStates.delete(key)
+    }
+    if (currentDraftDirty.value) return
+    const target = resolveModelSelectionTarget(form.channelId, form.upstreamModel, visiblePrices.value)
     const refreshedPrice = refreshedPriceToApply(target.price, activePrice.value)
-    if (refreshedPrice) applyExistingPrice(refreshedPrice)
+    if (!refreshedPrice) return
+    applyExistingPrice(refreshedPrice)
+    currentBaseline.value = priceDraftSnapshot(form)
+    if (activeDraftKey.value) draftStates.delete(activeDraftKey.value)
   },
 )
 
@@ -208,28 +285,57 @@ function clearVersionHistory() {
 }
 
 function selectChannelModel(model) {
+  const nextModel = String(model?.id ?? '').trim()
+  if (!nextModel || nextModel === form.upstreamModel.trim()) return
+  stashCurrentDraft()
   cancelReferenceLookup()
   clearVersionHistory()
   manuallyEnteredModel.value = false
-  form.upstreamModel = model.id
+  form.upstreamModel = nextModel
 }
 
 function editPrice(price) {
+  const modelId = String(price?.upstreamModel ?? '').trim()
+  if (!modelId) return
+  const targetKey = priceDraftKey(form.channelId, modelId)
+  const targetDraft = draftStates.get(targetKey)
+
+  if (modelId === form.upstreamModel.trim()) {
+    if (currentDraftDirty.value &&
+      !window.confirm(`「${modelId}」有未保存的修改，重新载入已保存价格会丢弃这些修改，是否继续？`)
+    ) return
+    draftStates.delete(targetKey)
+    cancelReferenceLookup()
+    activePrice.value = price
+    clearVersionHistory()
+    applyPriceToForm(form, price)
+    currentBaseline.value = priceDraftSnapshot(form)
+    return
+  }
+
+  if (priceDraftHasChanges(targetDraft) &&
+    !window.confirm(`「${modelId}」有未保存的修改，重新载入已保存价格会丢弃这些修改，是否继续？`)
+  ) return
+  stashCurrentDraft()
+  draftStates.delete(targetKey)
   cancelReferenceLookup()
-  activePrice.value = price
   clearVersionHistory()
-  applyPriceToForm(form, price)
+  manuallyEnteredModel.value = false
+  form.upstreamModel = modelId
 }
 
 function startNewPrice() {
+  if (currentDraftDirty.value &&
+    !window.confirm('当前价格有未保存的修改，新增单价会丢弃这些修改，是否继续？')
+  ) return
+  draftStates.clear()
+  activeDraftKey.value = ''
   cancelReferenceLookup()
   activePrice.value = null
   clearVersionHistory()
   resetPriceForm(form)
+  currentBaseline.value = priceDraftSnapshot(form)
   manuallyEnteredModel.value = false
-  if (modelChoiceMode.value === 'single') {
-    selectChannelModel(channelModelOptions.value[0])
-  }
 }
 
 function markModelAsManuallyEntered() {
@@ -397,26 +503,94 @@ async function save() {
     notify('请填写上游模型', 'error')
     return
   }
-  const validationError = priceFormError(form)
-  if (validationError) {
-    notify(validationError, 'error')
+  const drafts = collectDirtyPriceDrafts(draftStates, currentPriceDraft())
+  if (drafts.length === 0) {
+    notify('没有需要保存的修改', 'info')
     return
   }
-  saving.value = true
-  try {
-    const payload = existingPricePayload(form, form.channelId, form.upstreamModel)
-    if (activePrice.value?.id) {
-      await api.updateModelPrice(activePrice.value.id, payload)
-      notify('计费单价已更新')
-    } else {
-      await api.createModelPrice(payload)
-      notify('计费单价已创建')
+  for (const draft of drafts) {
+    const validationError = priceFormError(draft.form)
+    if (validationError) {
+      if (draft.modelId !== form.upstreamModel.trim()) {
+        stashCurrentDraft()
+        draftStates.set(draft.key, draft)
+        form.upstreamModel = draft.modelId
+      }
+      notify(`「${draft.modelId}」：${validationError}`, 'error')
+      return
     }
+  }
+  if (drafts.length > 1 &&
+    !window.confirm(`将保存 ${drafts.length} 个模型的渠道覆盖价，是否继续？`)
+  ) return
+
+  saving.value = true
+  let savedCount = 0
+  const failures = []
+  try {
+    for (const draft of drafts) {
+      try {
+        const payload = existingPricePayload(draft.form, draft.channelId, draft.modelId)
+        const saved = draft.price?.id
+          ? await api.updateModelPrice(draft.price.id, payload)
+          : await api.createModelPrice(payload)
+        const baseline = priceDraftSnapshot(draft.form)
+        draftStates.set(draft.key, { ...draft, price: saved, baseline })
+        if (draft.key === activeDraftKey.value) {
+          activePrice.value = saved
+          currentBaseline.value = baseline
+        }
+        savedCount += 1
+      } catch (cause) {
+        failures.push(`${draft.modelId}：${cause.message}`)
+      }
+    }
+    if (savedCount > 0) emit('saved')
+    if (failures.length > 0) {
+      notify(`已保存 ${savedCount} 个，${failures.length} 个失败。${failures[0]}`, 'error')
+    } else if (drafts.length === 1) {
+      notify(drafts[0].price?.id ? '计费单价已更新' : '计费单价已创建')
+    } else {
+      notify(`已保存 ${savedCount} 个模型的渠道单价`)
+    }
+  } finally {
+    saving.value = false
+  }
+}
+
+async function removePrice(price) {
+  if (!price?.id) return
+  const modelId = String(price.upstreamModel ?? '').trim()
+  if (!modelId) return
+  const key = priceDraftKey(form.channelId, modelId)
+  const storedDraft = draftStates.get(key)
+  const hasUnsavedDraft = modelId === form.upstreamModel.trim()
+    ? currentDraftDirty.value
+    : priceDraftHasChanges(storedDraft)
+  const defaultPrice = channelModelOptions.value.find(
+    (model) => String(model.id ?? '').trim() === modelId,
+  )?.defaultPrice || null
+  if (!window.confirm(buildChannelPriceDeleteMessage({ modelId, defaultPrice, hasUnsavedDraft }))) return
+
+  deletingPriceId.value = price.id
+  try {
+    await api.deleteModelPrice(price.id)
+    locallyDeletedPriceIds.value = new Set([...locallyDeletedPriceIds.value, price.id])
+    draftStates.delete(key)
+    if (modelId === form.upstreamModel.trim()) {
+      activePrice.value = null
+      clearVersionHistory()
+      Object.assign(form, emptyPriceDraft())
+      currentBaseline.value = priceDraftSnapshot(form)
+    }
+    notify(defaultPrice
+      ? `「${modelId}」的渠道覆盖价已删除，将继续继承模型默认价`
+      : `「${modelId}」的渠道覆盖价已删除，已恢复为未定价`)
     emit('saved')
   } catch (cause) {
     notify(cause.message, 'error')
   } finally {
-    saving.value = false
+    deletingPriceId.value = null
   }
 }
 
@@ -434,10 +608,23 @@ async function applyBatch() {
     notify(validationError, 'error')
     return
   }
+  const dirtySelected = batchSelected.value.filter(isModelDirty)
+  const overrideNote = dirtySelected.length > 0
+    ? `\n其中 ${dirtySelected.length} 个模型有未保存修改，将被当前价格覆盖。`
+    : ''
+  if (!window.confirm(`将把当前价格套用到 ${batchSelected.value.length} 个模型，是否继续？${overrideNote}`)) return
   saving.value = true
   try {
-    await api.batchUpsertModelPrices(buildBatchPricePayload(form, form.channelId, batchSelected.value))
-    notify(`已为 ${batchSelected.value.length} 个模型套用渠道单价`)
+    const selectedModels = [...batchSelected.value]
+    const records = await api.batchUpsertModelPrices(buildBatchPricePayload(form, form.channelId, selectedModels))
+    const recordsByModel = new Map((records || []).map((record) => [record.upstreamModel, record]))
+    for (const modelId of selectedModels) draftStates.delete(priceDraftKey(form.channelId, modelId))
+    const currentRecord = recordsByModel.get(form.upstreamModel.trim())
+    if (currentRecord) {
+      activePrice.value = currentRecord
+      currentBaseline.value = priceDraftSnapshot(form)
+    }
+    notify(`已为 ${selectedModels.length} 个模型套用渠道单价`)
     batchSelected.value = []
     batchOpen.value = false
     emit('saved')
@@ -447,10 +634,17 @@ async function applyBatch() {
     saving.value = false
   }
 }
+
+function requestClose() {
+  if (dirtyDraftCount.value > 0 &&
+    !window.confirm(`还有 ${dirtyDraftCount.value} 项价格修改未保存，确定关闭？`)
+  ) return
+  emit('close')
+}
 </script>
 
 <template>
-  <Modal :title="activePrice?.id ? '编辑计费单价' : '模型计费单价'" @close="$emit('close')">
+  <Modal :title="activePrice?.id ? '编辑计费单价' : '模型计费单价'" @close="requestClose">
     <form class="form-grid" @submit.prevent="save">
       <label class="field">
         <span>渠道</span>
@@ -462,26 +656,41 @@ async function applyBatch() {
           <div>
             <strong>渠道覆盖单价</strong>
             <span class="muted small"> · {{ channelPrices.length }} 个模型</span>
+            <span v-if="dirtyDraftCount" class="muted small"> · {{ dirtyDraftCount }} 项未保存</span>
           </div>
           <div class="price-configured-actions">
             <button type="button" class="button ghost mini" @click="toggleBatch">批量套用</button>
-            <button type="button" class="button ghost mini" @click="startNewPrice">新增单价</button>
+            <button v-if="!modelsLoading && !channelModelOptions.length" type="button" class="button ghost mini" @click="startNewPrice">新增单价</button>
           </div>
         </div>
         <div v-if="channelPrices.length" class="price-configured-list">
-          <button
+          <div
             v-for="price in channelPrices"
             :key="price.id"
-            type="button"
             class="price-configured-item"
             :class="{ active: activePrice?.id === price.id }"
-            :aria-pressed="activePrice?.id === price.id"
-            :aria-label="`编辑 ${price.upstreamModel} 的单价：${formatPriceSummary(price)}`"
-            @click="editPrice(price)"
           >
-            <code>{{ price.upstreamModel }}</code>
-            <span class="muted small">{{ formatPriceSummary(price) }}</span>
-          </button>
+            <button
+              type="button"
+              class="price-configured-main"
+              :aria-pressed="activePrice?.id === price.id"
+              :aria-label="`编辑 ${price.upstreamModel} 的单价：${formatPriceSummary(price)}`"
+              @click="editPrice(price)"
+            >
+              <code>{{ price.upstreamModel }}</code>
+              <span class="muted small">{{ formatPriceSummary(price) }}</span>
+            </button>
+            <span v-if="isModelDirty(price.upstreamModel)" class="badge warning unsaved">未保存</span>
+            <button
+              type="button"
+              class="icon-button danger"
+              :disabled="deletingPriceId === price.id"
+              :aria-label="`删除 ${price.upstreamModel} 的渠道覆盖价`"
+              @click="removePrice(price)"
+            >
+              <Icon name="trash" :size="15" />
+            </button>
+          </div>
         </div>
         <p v-else class="muted small price-configured-empty">该渠道还没有渠道覆盖价，模型会继承默认价（如有）。</p>
       </div>
@@ -489,7 +698,7 @@ async function applyBatch() {
         <div class="model-selection-head">
           <span>上游模型</span>
           <small v-if="modelChoiceMode === 'multiple'">
-            {{ channelModelOptions.length }} 个模型，点击切换后分别配置
+            {{ channelModelOptions.length }} 个模型，可分别编辑，最后统一保存
           </small>
         </div>
         <div v-if="modelsLoading && channelModelOptions.length === 0" class="model-selection-message">
@@ -504,8 +713,11 @@ async function applyBatch() {
               <code>{{ channelModelOptions[0].id }}</code>
               <small v-if="channelModelOptions[0].ownedBy">{{ channelModelOptions[0].ownedBy }}</small>
             </span>
-            <span class="badge" :class="priceSourceClass(channelModelOptions[0])">
-              {{ priceSourceLabel(channelModelOptions[0]) }}
+            <span class="model-option-badges">
+              <span v-if="isModelDirty(channelModelOptions[0].id)" class="badge warning unsaved">未保存</span>
+              <span class="badge" :class="priceSourceClass(channelModelOptions[0])">
+                {{ priceSourceLabel(channelModelOptions[0]) }}
+              </span>
             </span>
           </div>
           <div v-else class="model-switcher" role="group" aria-label="选择要配置的上游模型">
@@ -522,8 +734,11 @@ async function applyBatch() {
                 <code>{{ model.id }}</code>
                 <small v-if="model.ownedBy">{{ model.ownedBy }}</small>
               </span>
-              <span class="badge" :class="priceSourceClass(model)">
-                {{ priceSourceLabel(model) }}
+              <span class="model-option-badges">
+                <span v-if="isModelDirty(model.id)" class="badge warning unsaved">未保存</span>
+                <span class="badge" :class="priceSourceClass(model)">
+                  {{ priceSourceLabel(model) }}
+                </span>
               </span>
             </button>
           </div>
@@ -650,15 +865,54 @@ async function applyBatch() {
       </p>
     </form>
     <template #footer>
-      <button type="button" class="button ghost" @click="$emit('close')">取消</button>
-      <button type="button" class="button primary" :disabled="saving || channels.length === 0" @click="save">
-        {{ saving ? '保存中…' : '保存单价' }}
+      <button type="button" class="button ghost" @click="requestClose">取消</button>
+      <button
+        type="button"
+        class="button primary"
+        :disabled="saving || channels.length === 0 || dirtyDraftCount === 0"
+        @click="save"
+      >
+        {{ saveButtonLabel }}
       </button>
     </template>
   </Modal>
 </template>
 
 <style scoped>
+.price-configured-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.price-configured-main code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.price-configured-main span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.model-option-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
 .model-selection-field {
   display: grid;
   gap: 9px;
@@ -783,6 +1037,15 @@ async function applyBatch() {
 }
 
 @media (max-width: 600px) {
+  .price-configured-main {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .price-configured-main span {
+    white-space: normal;
+  }
+
   .model-switcher {
     grid-template-columns: 1fr;
   }
