@@ -3162,6 +3162,64 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `historical version lookup survives later immediate update`() = runBlocking {
+        val channel = createChannel("historical-price", "ok")
+        val first = app.modelPriceRepository.create(
+            channelId = channel.id,
+            upstreamModel = "gpt-4o-mini",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1"),
+            outputPricePerMillion = BigDecimal("2"),
+        )!!
+        val historicalTime = first.effectiveFrom + 1
+        val scheduledCurrent = app.modelPriceRepository.update(
+            id = first.id,
+            channelId = channel.id,
+            upstreamModel = "gpt-4o-mini",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("3"),
+            outputPricePerMillion = BigDecimal("4"),
+        )
+        val historical = app.modelPriceRepository.findEffective(channel.id, "gpt-4o-mini", historicalTime)
+        assertEquals(1, historical?.version)
+        assertEquals(0, historical?.inputPricePerMillion?.compareTo(BigDecimal("1")))
+    }
+
+    @Test
+    fun `cancelled future plan cannot return after current version deletion`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val record = app.modelDefaultPriceRepository.create(
+            modelId = "cancelled-plan",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1"),
+            outputPricePerMillion = BigDecimal("2"),
+        )!!
+        app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("3"),
+            outputPricePerMillion = BigDecimal("4"),
+            effectiveAt = now + 3_600_000L,
+        )
+        val current = app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("5"),
+            outputPricePerMillion = BigDecimal("6"),
+        )!!
+        assertNull(app.modelDefaultPriceRepository.findScheduled(record.modelId, now))
+        val currentVersion = app.modelDefaultPriceRepository.listVersions(record.modelId)
+            .first { it.version == current.currentVersion }
+        app.modelDefaultPriceRepository.deleteVersion(currentVersion.id)
+        val restored = app.modelDefaultPriceRepository.find(record.modelId)!!
+        assertEquals(1, restored.currentVersion)
+        assertEquals(0, restored.inputPricePerMillion.compareTo(BigDecimal("1")))
+        assertNull(app.modelDefaultPriceRepository.findEffective(record.modelId, now + 10_000_000L)?.takeIf { it.version > 1 })
+    }
+
+    @Test
     fun `batch scheduled prices remain visible and delete current channel version rolls back`() = runBlocking {
         val channel = createChannel("scheduled-batch", "ok")
         val now = System.currentTimeMillis()
@@ -3180,24 +3238,18 @@ class GatewayIntegrationTest {
             prices.all { app.modelPriceRepository.findScheduled(channel.id, it.upstreamModel)?.status == "scheduled" },
         )
 
-        val current = app.modelPriceRepository.update(
+        val scheduledCurrent = app.modelPriceRepository.update(
             id = prices.first().id,
             channelId = channel.id,
             upstreamModel = prices.first().upstreamModel,
             currency = "USD",
-            inputPricePerMillion = BigDecimal("5"),
+            inputPricePerMillion = BigDecimal("1"),
             outputPricePerMillion = BigDecimal("6"),
         )!!
-        val version = app.modelPriceRepository.listVersions(channel.id, current.upstreamModel)
-            .first { it.version == current.currentVersion }
+        val version = app.modelPriceRepository.listVersions(channel.id, scheduledCurrent.upstreamModel)
+            .first { it.version == scheduledCurrent.currentVersion }
         app.modelPriceRepository.deleteVersion(version.id)
-        val afterDelete = app.modelPriceRepository.findById(current.id)!!
-        assertEquals(0, afterDelete.inputPricePerMillion.compareTo(BigDecimal("3")))
-        assertEquals(
-            "active",
-            app.modelPriceRepository.listVersions(channel.id, current.upstreamModel)
-                .first { it.version == afterDelete.currentVersion }.status,
-        )
+        assertNull(app.modelPriceRepository.findById(scheduledCurrent.id))
     }
 
     @Test

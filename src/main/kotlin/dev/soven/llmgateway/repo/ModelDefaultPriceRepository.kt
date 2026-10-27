@@ -133,11 +133,20 @@ class ModelDefaultPriceRepository(private val database: Database) {
                 .singleOrNull()
             if (active != null) {
                 val activeVersion = active[ModelDefaultPriceVersions.version]
+                val activeVersionId = active[ModelDefaultPriceVersions.id]
                 ModelDefaultPriceVersions.update({
                     (ModelDefaultPriceVersions.modelId eq modelId) and
                         (ModelDefaultPriceVersions.version eq activeVersion)
                 }) {
                     it[status] = "active"
+                }
+                ModelDefaultPriceVersions.update({
+                    (ModelDefaultPriceVersions.modelId eq modelId) and
+                        (ModelDefaultPriceVersions.id neq activeVersionId) and
+                        (ModelDefaultPriceVersions.effectiveFrom lessEq now) and
+                        (ModelDefaultPriceVersions.status eq "active")
+                }) {
+                    it[status] = "archived"
                 }
                 ModelDefaultPrices.update({ ModelDefaultPrices.modelId eq modelId }) {
                     it[currency] = active[ModelDefaultPriceVersions.currency]
@@ -154,14 +163,32 @@ class ModelDefaultPriceRepository(private val database: Database) {
                 }
             } else {
                 val anyRemaining = ModelDefaultPriceVersions.selectAll()
-                    .where { ModelDefaultPriceVersions.modelId eq modelId }
+                    .where {
+                        (ModelDefaultPriceVersions.modelId eq modelId) and
+                            (ModelDefaultPriceVersions.effectiveFrom greater now) and
+                            (ModelDefaultPriceVersions.status neq "cancelled")
+                    }
                     .orderBy(ModelDefaultPriceVersions.effectiveFrom to SortOrder.ASC)
                     .limit(1)
                     .singleOrNull()
                 if (anyRemaining == null) {
                     ModelDefaultPrices.deleteWhere { ModelDefaultPrices.modelId eq modelId }
                 } else {
+                    ModelDefaultPriceVersions.update({
+                        (ModelDefaultPriceVersions.modelId eq modelId) and
+                            (ModelDefaultPriceVersions.version eq anyRemaining[ModelDefaultPriceVersions.version])
+                    }) {
+                        it[status] = "active"
+                    }
                     ModelDefaultPrices.update({ ModelDefaultPrices.modelId eq modelId }) {
+                        it[currency] = anyRemaining[ModelDefaultPriceVersions.currency]
+                        it[inputPricePerMillion] = anyRemaining[ModelDefaultPriceVersions.inputPricePerMillion]
+                        it[outputPricePerMillion] = anyRemaining[ModelDefaultPriceVersions.outputPricePerMillion]
+                        it[cachedInputPricePerMillion] = anyRemaining[ModelDefaultPriceVersions.cachedInputPricePerMillion]
+                        it[cachedInputWritePricePerMillion] = anyRemaining[ModelDefaultPriceVersions.cachedInputWritePricePerMillion]
+                        it[pricingMode] = anyRemaining[ModelDefaultPriceVersions.pricingMode]
+                        it[perRequestPrice] = anyRemaining[ModelDefaultPriceVersions.perRequestPrice]
+                        it[priceTiersJson] = anyRemaining[ModelDefaultPriceVersions.priceTiersJson]
                         it[currentVersion] = anyRemaining[ModelDefaultPriceVersions.version]
                         it[effectiveFrom] = anyRemaining[ModelDefaultPriceVersions.effectiveFrom]
                         it[updatedAt] = now
@@ -254,11 +281,20 @@ class ModelDefaultPriceRepository(private val database: Database) {
         val isScheduled = effectiveFrom > now
 
         if (!isScheduled) {
+            val nowUpdate = System.currentTimeMillis()
             ModelDefaultPriceVersions.update({
                 (ModelDefaultPriceVersions.modelId eq normalizedModel) and
-                    (ModelDefaultPriceVersions.status inList listOf("active", "scheduled"))
+                    (ModelDefaultPriceVersions.effectiveFrom lessEq nowUpdate) and
+                    (ModelDefaultPriceVersions.status neq "cancelled")
             }) {
                 it[status] = "archived"
+            }
+            ModelDefaultPriceVersions.update({
+                (ModelDefaultPriceVersions.modelId eq normalizedModel) and
+                    (ModelDefaultPriceVersions.effectiveFrom greater nowUpdate) and
+                    (ModelDefaultPriceVersions.status neq "cancelled")
+            }) {
+                it[status] = "cancelled"
             }
             val nextVersion = nextVersion(normalizedModel)
             insertVersion(

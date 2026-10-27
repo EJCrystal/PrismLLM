@@ -100,7 +100,7 @@ class ModelPriceRepository(private val database: Database) {
                 (ModelPriceVersions.channelId eq channelId) and
                     (ModelPriceVersions.upstreamModel eq normalizedModel) and
                     (ModelPriceVersions.effectiveFrom lessEq asOfTime) and
-                    (ModelPriceVersions.status inList listOf("active", "scheduled"))
+                    (ModelPriceVersions.status neq "cancelled")
             }
             .orderBy(ModelPriceVersions.effectiveFrom to SortOrder.DESC, ModelPriceVersions.version to SortOrder.DESC)
             .limit(1)
@@ -156,7 +156,8 @@ class ModelPriceRepository(private val database: Database) {
                 .where {
                     (ModelPriceVersions.channelId eq channelId) and
                         (ModelPriceVersions.upstreamModel eq upstreamModel) and
-                        (ModelPriceVersions.effectiveFrom lessEq now)
+                        (ModelPriceVersions.effectiveFrom lessEq now) and
+                        (ModelPriceVersions.status neq "cancelled")
                 }
                 .orderBy(ModelPriceVersions.effectiveFrom to SortOrder.DESC, ModelPriceVersions.version to SortOrder.DESC)
                 .limit(1)
@@ -198,7 +199,8 @@ class ModelPriceRepository(private val database: Database) {
                     .where {
                         (ModelPriceVersions.channelId eq channelId) and
                             (ModelPriceVersions.upstreamModel eq upstreamModel) and
-                            (ModelPriceVersions.effectiveFrom greater now)
+                            (ModelPriceVersions.effectiveFrom greater now) and
+                            (ModelPriceVersions.status neq "cancelled")
                     }
                     .orderBy(ModelPriceVersions.effectiveFrom to SortOrder.ASC)
                     .limit(1)
@@ -311,12 +313,22 @@ class ModelPriceRepository(private val database: Database) {
         val isScheduled = effectiveFrom > now
 
         if (!isScheduled) {
+            val nowUpdate = System.currentTimeMillis()
             ModelPriceVersions.update({
                 (ModelPriceVersions.channelId eq channelId) and
                     (ModelPriceVersions.upstreamModel eq normalizedModel) and
-                    (ModelPriceVersions.status inList listOf("active", "scheduled"))
+                    (ModelPriceVersions.effectiveFrom lessEq nowUpdate) and
+                    (ModelPriceVersions.status neq "cancelled")
             }) {
                 it[status] = "archived"
+            }
+            ModelPriceVersions.update({
+                (ModelPriceVersions.channelId eq channelId) and
+                    (ModelPriceVersions.upstreamModel eq normalizedModel) and
+                    (ModelPriceVersions.effectiveFrom greater nowUpdate) and
+                    (ModelPriceVersions.status neq "cancelled")
+            }) {
+                it[status] = "cancelled"
             }
             val nextVersion = nextVersion(channelId, normalizedModel)
             insertVersion(
@@ -386,12 +398,22 @@ class ModelPriceRepository(private val database: Database) {
 
         for (upstreamModel in normalizedModels) {
             if (!isScheduled) {
+                val nowUpdate = System.currentTimeMillis()
                 ModelPriceVersions.update({
                     (ModelPriceVersions.channelId eq channelId) and
                         (ModelPriceVersions.upstreamModel eq upstreamModel) and
-                        (ModelPriceVersions.status inList listOf("active", "scheduled"))
+                        (ModelPriceVersions.effectiveFrom lessEq nowUpdate) and
+                        (ModelPriceVersions.status neq "cancelled")
                 }) {
                     it[status] = "archived"
+                }
+                ModelPriceVersions.update({
+                    (ModelPriceVersions.channelId eq channelId) and
+                        (ModelPriceVersions.upstreamModel eq upstreamModel) and
+                        (ModelPriceVersions.effectiveFrom greater nowUpdate) and
+                        (ModelPriceVersions.status neq "cancelled")
+                }) {
+                    it[status] = "cancelled"
                 }
                 val nextVersion = nextVersion(channelId, upstreamModel)
                 insertVersion(
@@ -427,7 +449,7 @@ class ModelPriceRepository(private val database: Database) {
                     (ModelPriceVersions.channelId eq channelId) and
                         (ModelPriceVersions.upstreamModel eq upstreamModel) and
                         (ModelPriceVersions.effectiveFrom greater nowUpdate) and
-                        (ModelPriceVersions.status inList listOf("active", "scheduled"))
+                        (ModelPriceVersions.status neq "cancelled")
                 }) {
                     it[status] = "cancelled"
                 }
