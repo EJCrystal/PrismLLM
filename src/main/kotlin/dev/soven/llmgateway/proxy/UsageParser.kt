@@ -85,8 +85,16 @@ object UsageParser {
 
     /**
      * Anthropic usage appears on the non-streaming message, inside a streaming message_start,
-     * and partially on message_delta. Cache reads are tracked separately; cache creation is
-     * included in input and tracked independently for the cache-write rate.
+     * and partially on message_delta.
+     *
+     * Note on Anthropic token accounting:
+     * In Anthropic Messages API, `input_tokens` only counts uncached prompt tokens;
+     * `cache_creation_input_tokens` (cache write) and `cache_read_input_tokens` (cache read)
+     * are reported separately without being included in `input_tokens`.
+     * To align with Gateway's unified billing model (where `input` represents total prompt volume),
+     * `Usage.input` is the sum of (uncached input + cache creation + cache read). Downstream,
+     * `BillingCalculator` subtracts `cachedRead` and `cachedWrite` from `input` to recover the uncached
+     * input count, ensuring each token category is priced exactly once without overlap or double billing.
      */
     fun fromAnthropicJson(json: JsonObject): Usage? {
         val message = json["message"] as? JsonObject

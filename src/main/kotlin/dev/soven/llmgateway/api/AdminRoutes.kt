@@ -599,7 +599,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     perRequestPrice = price.values.perRequest,
                     priceTiers = price.values.priceTiers,
                 )
-            } catch (cause: ExposedSQLException) {
+            } catch (cause: Throwable) {
                 if (isUniqueViolation(cause)) {
                     throw conflict("model_default_price_exists", "该模型的默认单价已存在")
                 }
@@ -1067,8 +1067,9 @@ private fun validatePriceValues(
             if (isLast && limit != null) {
                 throw badRequest("invalid_model_price", "最后一个价格档位必须不设上限")
             }
-            if (!isLast && (limit == null || limit <= previous)) {
-                throw badRequest("invalid_model_price", "阶梯上限必须为正整数并严格递增，最后一档不设上限")
+            val maxLimit = 100_000_000_000L
+            if (!isLast && (limit == null || limit <= previous || limit > maxLimit)) {
+                throw badRequest("invalid_model_price", "阶梯上限必须为正整数并严格递增（最大不超过 1000 亿），最后一档不设上限")
             }
             if (limit != null) previous = limit
             ModelPriceTier(

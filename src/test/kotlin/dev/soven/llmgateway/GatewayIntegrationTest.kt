@@ -2990,6 +2990,16 @@ class GatewayIntegrationTest {
             assertEquals("tiered", tieredJson["pricingMode"]!!.jsonPrimitive.content)
             assertEquals(2, tieredJson["priceTiers"]!!.jsonArray.size)
 
+            val hugeLimit = client.post("/admin/api/model-default-prices") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"overflow-test","currency":"USD","pricingMode":"tiered","priceTiers":[{"upToTokens":100000000001,"inputPricePerMillion":"1","outputPricePerMillion":"2"},{"upToTokens":null,"inputPricePerMillion":"2","outputPricePerMillion":"4"}]}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, hugeLimit.status)
+
             client.delete("/admin/api/model-default-prices/$perReqId") {
                 header(HttpHeaders.Cookie, sessionCookie)
                 header("X-CSRF-Token", csrf)
@@ -3046,6 +3056,36 @@ class GatewayIntegrationTest {
             awaitRequestLogCount(2)
             val failLog = app.requestLogRepository.list(10).first { it.alias == "req-chat-fail" }
             assertNull(failLog.costAmount)
+        }
+    }
+
+    @Test
+    fun `per_request pricing does not charge interrupted stream`() = runBlocking {
+        val channel = createChannel("stream-disc", "disconnect")
+        createAlias("per-req-stream-disc", channel to "m1")
+        app.modelPriceRepository.create(
+            channelId = channel.id,
+            upstreamModel = "m1",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal.ZERO,
+            outputPricePerMillion = BigDecimal.ZERO,
+            cachedInputPricePerMillion = null,
+            pricingMode = dev.soven.llmgateway.domain.PricingMode.PER_REQUEST,
+            perRequestPrice = BigDecimal("0.08"),
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"per-req-stream-disc","stream":true,"messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog()
+            assertEquals("stream_interrupted", log.errorCode)
+            assertNull(log.costAmount, "中断的流式请求不应收取按次费用")
         }
     }
 
