@@ -282,4 +282,45 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(form.outputPricePerMillion, '4')
   })
 
+  it('仅在计划金额和生效时间都未修改时保留原排期', () => {
+    const effectiveFrom = Date.now() + 3_600_000
+    const loaded = priceFormState({
+      currency: 'USD',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      scheduledVersion: {
+        effectiveFrom,
+        currency: 'USD',
+        inputPricePerMillion: '3',
+        outputPricePerMillion: '4',
+        pricingMode: 'token',
+      },
+    })
+    assert.equal(buildPricePayload(loaded, 'c', 'm').preserveSchedule, true)
+    assert.equal(buildPricePayload({ ...loaded, inputPricePerMillion: '5' }, 'c', 'm').preserveSchedule, false)
+    assert.equal(buildPricePayload({ ...loaded, isScheduled: false }, 'c', 'm').preserveSchedule, false)
+  })
+
+  it('编辑计划金额或时间时提交真实排期更新', () => {
+    const effectiveFrom = Date.now() + 3_600_000
+    const loaded = priceFormState({
+      currency: 'USD',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      scheduledVersion: {
+        effectiveFrom,
+        currency: 'USD',
+        inputPricePerMillion: '3',
+        outputPricePerMillion: '4',
+        pricingMode: 'token',
+      },
+    })
+    const changedAmount = buildPricePayload({ ...loaded, inputPricePerMillion: '5' }, 'c', 'm')
+    assert.equal(changedAmount.preserveSchedule, false)
+    assert.equal(changedAmount.inputPricePerMillion, '5')
+    const changedTime = buildPricePayload({ ...loaded, effectiveAt: '2099-01-01T00:00' }, 'c', 'm')
+    assert.equal(changedTime.preserveSchedule, false)
+    assert.ok(changedTime.effectiveAt > Date.now())
+  })
+
 })

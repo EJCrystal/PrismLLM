@@ -190,6 +190,7 @@ function selectChannelModel(model) {
 function onChannelChange() {
   cancelReferenceLookup()
   versionRequestId += 1
+  loadingVersions.value = false
   activePrice.value = null
   resetPriceForm(form)
 }
@@ -203,13 +204,6 @@ function editPrice(price) {
   applyPriceToForm(form, price)
   modelPickerOpen.value = false
 }
-
-watch(
-  () => form.isScheduled,
-  (scheduled) => {
-    if (activePrice.value?.scheduledVersion) form.preserveSchedule = !scheduled
-  },
-)
 
 function startNewPrice() {
   cancelReferenceLookup()
@@ -239,24 +233,35 @@ async function toggleVersionHistory() {
   }
 }
 
+watch(
+  () => [form.channelId, form.upstreamModel, activePrice.value?.id, showVersions.value],
+  () => {
+    if (!showVersions.value) loadingVersions.value = false
+  },
+)
+
 async function cancelScheduledVersion(version) {
   if (!version?.id) return
   if (!window.confirm(`确定取消将于 ${formatTime(version.effectiveFrom)} 生效的版本 v${version.version}？`)) return
   cancellingVersion.value = true
+  const requestId = ++versionRequestId
+  const channelId = form.channelId
+  const upstreamModel = form.upstreamModel.trim()
   try {
     await api.deleteModelPriceVersion(version.id)
     notify('定时生效版本已取消')
-    if (activePrice.value) {
+    if (activePrice.value && requestId === versionRequestId) {
       activePrice.value.scheduledVersion = null
     }
-    if (showVersions.value && form.channelId && form.upstreamModel.trim()) {
-      versionHistory.value = await api.listModelPriceVersions(form.channelId, form.upstreamModel.trim())
+    if (showVersions.value && channelId && upstreamModel) {
+      const versions = await api.listModelPriceVersions(channelId, upstreamModel)
+      if (requestId === versionRequestId) versionHistory.value = versions
     }
     emit('saved')
   } catch (e) {
     notify(e.message, 'error')
   } finally {
-    cancellingVersion.value = false
+    if (requestId === versionRequestId) cancellingVersion.value = false
   }
 }
 

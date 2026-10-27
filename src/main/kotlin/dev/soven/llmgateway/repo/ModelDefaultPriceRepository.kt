@@ -222,7 +222,6 @@ class ModelDefaultPriceRepository(private val database: Database) {
         perRequestPrice: BigDecimal? = null,
         priceTiers: List<ModelPriceTier> = emptyList(),
         effectiveAt: Long? = null,
-        preserveSchedule: Boolean = false,
     ): DefaultModelPriceRecord? = suspendTransaction(database) {
         val normalizedModel = modelId.trim()
         if (normalizedModel.isEmpty()) return@suspendTransaction null
@@ -297,23 +296,8 @@ class ModelDefaultPriceRepository(private val database: Database) {
         if (preserveSchedule) {
             val current = resolveCurrentVersion(normalizedModel, now)
             val pending = findPendingVersion(normalizedModel, now)
-            if (current == null || pending == null) return@suspendTransaction null
-            return@suspendTransaction DefaultModelPriceRecord(
-                id = id,
-                modelId = normalizedModel,
-                currency = pending.currency,
-                inputPricePerMillion = pending.inputPricePerMillion,
-                outputPricePerMillion = pending.outputPricePerMillion,
-                cachedInputPricePerMillion = pending.cachedInputPricePerMillion,
-                cachedInputWritePricePerMillion = pending.cachedInputWritePricePerMillion,
-                pricingMode = pending.pricingMode,
-                perRequestPrice = pending.perRequestPrice,
-                priceTiers = pending.priceTiers,
-                currentVersion = current.version,
-                effectiveFrom = current.effectiveFrom,
-                createdAt = existing[ModelDefaultPrices.createdAt],
-                updatedAt = existing[ModelDefaultPrices.updatedAt],
-            )
+            if (pending == null) return@suspendTransaction null
+            return@suspendTransaction toRecord(existing, current)
         }
 
         if (!isScheduled) {

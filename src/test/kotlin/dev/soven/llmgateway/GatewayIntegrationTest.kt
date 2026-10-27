@@ -3308,13 +3308,47 @@ class GatewayIntegrationTest {
             outputPricePerMillion = BigDecimal("4"),
             effectiveAt = effectiveAt,
             preserveSchedule = true,
-        )
+        )!!.let { response ->
+            assertEquals(0, response.inputPricePerMillion.compareTo(BigDecimal("1")))
+        }
         val current = app.modelDefaultPriceRepository.findEffective(record.modelId)
         val pending = app.modelDefaultPriceRepository.findScheduled(record.modelId, now)
         assertEquals(1, current?.version)
         assertEquals(0, current?.inputPricePerMillion?.compareTo(BigDecimal("1")))
         assertEquals(2, pending?.version)
         assertEquals(0, pending?.inputPricePerMillion?.compareTo(BigDecimal("3")))
+    }
+
+    @Test
+    fun `editing a pending price creates a new schedule instead of skipping it`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val record = app.modelDefaultPriceRepository.create(
+            modelId = "plan-edit",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1"),
+            outputPricePerMillion = BigDecimal("2"),
+        )!!
+        app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("3"),
+            outputPricePerMillion = BigDecimal("4"),
+            effectiveAt = now + 3_600_000L,
+        )
+        app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("5"),
+            outputPricePerMillion = BigDecimal("6"),
+            effectiveAt = now + 7_200_000L,
+        )
+        val current = app.modelDefaultPriceRepository.findEffective(record.modelId)
+        val pending = app.modelDefaultPriceRepository.findScheduled(record.modelId, now)
+        assertEquals(0, current?.inputPricePerMillion?.compareTo(BigDecimal("1")))
+        assertEquals(3, pending?.version)
+        assertEquals(0, pending?.inputPricePerMillion?.compareTo(BigDecimal("5")))
     }
 
     @Test

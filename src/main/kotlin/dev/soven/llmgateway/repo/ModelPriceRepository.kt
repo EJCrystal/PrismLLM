@@ -330,9 +330,8 @@ class ModelPriceRepository(private val database: Database) {
         val isScheduled = effectiveFrom > now
 
         if (preserveSchedule) {
-            val current = resolveCurrentVersion(channelId, normalizedModel, now)
             val pending = findPendingVersion(channelId, normalizedModel, now)
-            if (current == null || pending == null) return@suspendTransaction null
+            if (pending == null) return@suspendTransaction null
             return@suspendTransaction load(id)
         }
 

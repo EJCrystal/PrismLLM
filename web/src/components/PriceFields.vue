@@ -13,7 +13,6 @@ const modes = [
 ]
 
 function onScheduleChange(scheduled) {
-  if (props.form.preserveSchedule && scheduled) return
   props.form.isScheduled = scheduled
   if (scheduled && !props.form.effectiveAt) {
     const tomorrow = new Date(Date.now() + 24 * 3600_000)
