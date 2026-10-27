@@ -3221,6 +3221,32 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `deleting only current version keeps future plan inactive until its time`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val record = app.modelDefaultPriceRepository.create(
+            modelId = "only-future-plan",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1"),
+            outputPricePerMillion = BigDecimal("2"),
+        )!!
+        val future = now + 3_600_000L
+        app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("3"),
+            outputPricePerMillion = BigDecimal("4"),
+            effectiveAt = future,
+        )
+        val currentVersion = app.modelDefaultPriceRepository.listVersions(record.modelId)
+            .first { it.version == 1 }
+        app.modelDefaultPriceRepository.deleteVersion(currentVersion.id)
+        assertNull(app.modelDefaultPriceRepository.findEffective(record.modelId, now + 1))
+        val plan = app.modelDefaultPriceRepository.findScheduled(record.modelId, now)
+        assertEquals("scheduled", plan?.status)
+    }
+
+    @Test
     fun `batch scheduled prices remain visible and delete current channel version rolls back`() = runBlocking {
         val channel = createChannel("scheduled-batch", "ok")
         val now = System.currentTimeMillis()
@@ -3371,6 +3397,47 @@ class GatewayIntegrationTest {
             }
             assertEquals(HttpStatusCode.BadRequest, response.status)
             assertTrue(response.bodyAsText().contains("model_default_price_schedule_not_found"))
+        }
+    }
+
+    @Test
+    fun `preserve schedule rejects a replaced pending version`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val record = app.modelDefaultPriceRepository.create(
+            modelId = "plan-race",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1"),
+            outputPricePerMillion = BigDecimal("2"),
+        )!!
+        app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("3"),
+            outputPricePerMillion = BigDecimal("4"),
+            effectiveAt = now + 3_600_000L,
+        )
+        val originalPlan = app.modelDefaultPriceRepository.findScheduled(record.modelId, now)!!
+        app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("5"),
+            outputPricePerMillion = BigDecimal("6"),
+            effectiveAt = now + 7_200_000L,
+        )
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.put("/admin/api/model-default-prices/${record.id}") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"modelId":"plan-race","currency":"USD","inputPricePerMillion":"3","outputPricePerMillion":"4","preserveSchedule":true,"expectedScheduleId":"${originalPlan.id}"}""")
+            }
+            assertEquals(HttpStatusCode.Conflict, response.status)
+            assertTrue(response.bodyAsText().contains("model_default_price_schedule_changed"))
         }
     }
 

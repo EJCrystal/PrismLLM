@@ -484,6 +484,7 @@ data class ModelPriceRequest(
     val priceTiers: List<ModelPriceTierRequest> = emptyList(),
     val effectiveAt: Long? = null,
     val preserveSchedule: Boolean = false,
+    val expectedScheduleId: String? = null,
 )
 
 @Serializable
@@ -604,6 +605,7 @@ data class ModelDefaultPriceRequest(
     val priceTiers: List<ModelPriceTierRequest> = emptyList(),
     val effectiveAt: Long? = null,
     val preserveSchedule: Boolean = false,
+    val expectedScheduleId: String? = null,
 )
 
 @Serializable

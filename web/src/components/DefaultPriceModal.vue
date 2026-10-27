@@ -124,15 +124,16 @@ async function cancelScheduledVersion(version) {
   cancellingVersion.value = true
   const requestId = ++cancellationRequestId
   const priceId = activePrice.value?.id
+  const priceKey = form.modelId
   try {
     await api.deleteModelDefaultPriceVersion(version.id)
     notify('定时生效版本已取消')
-    if (activePrice.value && requestId === cancellationRequestId) {
+    if (activePrice.value?.id === priceId && form.modelId === priceKey) {
       activePrice.value.scheduledVersion = null
     }
-    if (showVersions.value && priceId) {
+    if (showVersions.value && activePrice.value?.id === priceId) {
       const versions = await api.listModelDefaultPriceVersions(priceId)
-      if (requestId === cancellationRequestId) versionHistory.value = versions
+      if (activePrice.value?.id === priceId) versionHistory.value = versions
     }
     emit('saved')
   } catch (e) {

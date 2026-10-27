@@ -248,15 +248,29 @@ async function cancelScheduledVersion(version) {
   const requestId = ++cancellationRequestId
   const channelId = form.channelId
   const upstreamModel = form.upstreamModel.trim()
+  const priceId = activePrice.value?.id
   try {
     await api.deleteModelPriceVersion(version.id)
     notify('定时生效版本已取消')
-    if (activePrice.value && requestId === cancellationRequestId) {
+    if (
+      activePrice.value?.id === priceId &&
+      form.channelId === channelId &&
+      form.upstreamModel.trim() === upstreamModel
+    ) {
       activePrice.value.scheduledVersion = null
     }
-    if (showVersions.value && channelId && upstreamModel) {
+    if (
+      showVersions.value &&
+      activePrice.value?.id === priceId &&
+      form.channelId === channelId &&
+      form.upstreamModel.trim() === upstreamModel
+    ) {
       const versions = await api.listModelPriceVersions(channelId, upstreamModel)
-      if (requestId === cancellationRequestId) versionHistory.value = versions
+      if (
+        activePrice.value?.id === priceId &&
+        form.channelId === channelId &&
+        form.upstreamModel.trim() === upstreamModel
+      ) versionHistory.value = versions
     }
     emit('saved')
   } catch (e) {
@@ -531,7 +545,7 @@ async function applyBatch() {
         />
         <small>获取参考价会切换为 USD。</small>
       </label>
-      <PriceFields :form="form" :has-current-price="Boolean(activePrice?.id)" />
+      <PriceFields :form="form" :has-current-price="Boolean(activePrice?.id || inheritedPrice)" />
 
       <div v-if="activePrice?.scheduledVersion" class="callout warning price-scheduled-banner">
         <div class="scheduled-banner-info">

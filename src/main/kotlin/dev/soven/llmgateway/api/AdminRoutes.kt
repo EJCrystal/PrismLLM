@@ -611,13 +611,18 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     priceTiers = price.values.priceTiers,
                     effectiveAt = price.values.effectiveAt,
                     preserveSchedule = price.values.preserveSchedule,
+                    expectedScheduleId = price.values.expectedScheduleId,
                 )
             } catch (cause: Throwable) {
                 if (isUniqueViolation(cause)) {
                     throw conflict("model_default_price_exists", "该模型的默认单价已存在")
                 }
                 throw cause
-            } ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            } ?: if (price.values.preserveSchedule && price.values.expectedScheduleId != null) {
+                throw conflict("model_default_price_schedule_changed", "定时版本已发生变化，请刷新后重试")
+            } else {
+                throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            }
             val scheduled = app.modelDefaultPriceRepository.findScheduled(updated.modelId)
             call.respond(updated.toResponse(scheduled))
         }
@@ -719,7 +724,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 priceTiers = price.values.priceTiers,
                 effectiveAt = price.values.effectiveAt,
                 preserveSchedule = price.values.preserveSchedule,
-            ) ?: throw notFound("model_price_not_found", "计费单价不存在")
+                expectedScheduleId = price.values.expectedScheduleId,
+            ) ?: if (price.values.preserveSchedule && price.values.expectedScheduleId != null) {
+                throw conflict("model_price_schedule_changed", "定时版本已发生变化，请刷新后重试")
+            } else {
+                throw notFound("model_price_not_found", "计费单价不存在")
+            }
             val scheduled = app.modelPriceRepository.findScheduled(updated.channelId, updated.upstreamModel)
             call.respond(updated.toResponse(scheduled))
         }
@@ -981,6 +991,7 @@ private data class ValidatedPriceValues(
     val priceTiers: List<ModelPriceTier>,
     val effectiveAt: Long? = null,
     val preserveSchedule: Boolean = false,
+    val expectedScheduleId: String? = null,
 )
 
 private data class ValidatedModelPrice(
@@ -1018,6 +1029,7 @@ private fun validateDefaultModelPrice(request: ModelDefaultPriceRequest): Valida
             request.priceTiers,
             request.effectiveAt,
             request.preserveSchedule,
+            request.expectedScheduleId,
         ),
     )
 }
@@ -1088,6 +1100,7 @@ private suspend fun validateModelPrice(
             request.priceTiers,
             request.effectiveAt,
             request.preserveSchedule,
+            request.expectedScheduleId,
         ),
     )
 }
@@ -1103,6 +1116,7 @@ private fun validatePriceValues(
     tierValues: List<ModelPriceTierRequest>,
     effectiveAtValue: Long? = null,
     preserveSchedule: Boolean = false,
+    expectedScheduleId: String? = null,
 ): ValidatedPriceValues {
     val mode = PricingMode.entries.firstOrNull { it.value == modeValue }
         ?: throw badRequest("invalid_model_price", "计费方式无效")
@@ -1161,6 +1175,7 @@ private fun validatePriceValues(
         priceTiers = tiers,
         effectiveAt = effectiveAtValue?.takeIf { it > 0 },
         preserveSchedule = preserveSchedule,
+        expectedScheduleId = expectedScheduleId,
     )
 }
 

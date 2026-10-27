@@ -87,9 +87,9 @@ class ModelDefaultPriceRepository(private val database: Database) {
         if (normalized.isEmpty()) return@suspendTransaction null
         ModelDefaultPriceVersions.selectAll()
             .where {
-                (ModelDefaultPriceVersions.modelId eq normalized) and
-                    (ModelDefaultPriceVersions.effectiveFrom lessEq asOfTime) and
-                    (ModelDefaultPriceVersions.status neq "cancelled")
+                    (ModelDefaultPriceVersions.modelId eq normalized) and
+                        (ModelDefaultPriceVersions.effectiveFrom lessEq asOfTime) and
+                        (ModelDefaultPriceVersions.status neq "cancelled")
             }
             .orderBy(ModelDefaultPriceVersions.effectiveFrom to SortOrder.DESC, ModelDefaultPriceVersions.version to SortOrder.DESC)
             .limit(1)
@@ -185,26 +185,6 @@ class ModelDefaultPriceRepository(private val database: Database) {
                     .singleOrNull()
                 if (anyRemaining == null) {
                     ModelDefaultPrices.deleteWhere { ModelDefaultPrices.modelId eq modelId }
-                } else {
-                    ModelDefaultPriceVersions.update({
-                        (ModelDefaultPriceVersions.modelId eq modelId) and
-                            (ModelDefaultPriceVersions.version eq anyRemaining[ModelDefaultPriceVersions.version])
-                    }) {
-                        it[status] = "active"
-                    }
-                    ModelDefaultPrices.update({ ModelDefaultPrices.modelId eq modelId }) {
-                        it[currency] = anyRemaining[ModelDefaultPriceVersions.currency]
-                        it[inputPricePerMillion] = anyRemaining[ModelDefaultPriceVersions.inputPricePerMillion]
-                        it[outputPricePerMillion] = anyRemaining[ModelDefaultPriceVersions.outputPricePerMillion]
-                        it[cachedInputPricePerMillion] = anyRemaining[ModelDefaultPriceVersions.cachedInputPricePerMillion]
-                        it[cachedInputWritePricePerMillion] = anyRemaining[ModelDefaultPriceVersions.cachedInputWritePricePerMillion]
-                        it[pricingMode] = anyRemaining[ModelDefaultPriceVersions.pricingMode]
-                        it[perRequestPrice] = anyRemaining[ModelDefaultPriceVersions.perRequestPrice]
-                        it[priceTiersJson] = anyRemaining[ModelDefaultPriceVersions.priceTiersJson]
-                        it[currentVersion] = anyRemaining[ModelDefaultPriceVersions.version]
-                        it[effectiveFrom] = anyRemaining[ModelDefaultPriceVersions.effectiveFrom]
-                        it[updatedAt] = now
-                    }
                 }
             }
         }
@@ -276,6 +256,7 @@ class ModelDefaultPriceRepository(private val database: Database) {
         priceTiers: List<ModelPriceTier> = emptyList(),
         effectiveAt: Long? = null,
         preserveSchedule: Boolean = false,
+        expectedScheduleId: String? = null,
     ): DefaultModelPriceRecord? = suspendTransaction(database) {
         val normalizedModel = modelId.trim()
         if (normalizedModel.isEmpty()) return@suspendTransaction null
@@ -296,7 +277,9 @@ class ModelDefaultPriceRepository(private val database: Database) {
         if (preserveSchedule) {
             val current = resolveCurrentVersion(normalizedModel, now)
             val pending = findPendingVersion(normalizedModel, now)
-            if (pending == null) return@suspendTransaction null
+            if (pending == null || (expectedScheduleId != null && pending.id != expectedScheduleId)) {
+                return@suspendTransaction null
+            }
             return@suspendTransaction toRecord(existing, current)
         }
 

@@ -141,7 +141,7 @@ function removeTier(index) {
       <span>切换时间</span>
       <input v-model="form.effectiveAt" type="datetime-local" />
       <small v-if="hasCurrentPrice">在此之前继续使用当前价格。</small>
-      <small v-else class="schedule-empty-note">生效前暂无当前价，此模型不会计费。</small>
+      <small v-else class="schedule-empty-note">生效前暂无当前价或默认价，此模型不会计费。</small>
     </label>
   </fieldset>
 </template>
