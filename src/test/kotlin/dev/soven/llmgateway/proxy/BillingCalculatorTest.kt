@@ -147,6 +147,29 @@ class BillingCalculatorTest {
     }
 
     @Test
+    fun `openai compatible cache fields partition inclusive input without double billing`() {
+        val usage = UsageParser.fromJson(
+            Json.parseToJsonElement(
+                """{"usage":{"prompt_tokens":100,"completion_tokens":0,"total_tokens":100,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":30}}}""",
+            ).jsonObject,
+        )!!
+
+        val cost = BillingCalculator.calculate(
+            record(
+                input = usage.input,
+                output = usage.output,
+                cached = usage.cached,
+                cachedWrite = usage.cacheWrite,
+            ),
+            price(input = "1", output = "0", cached = "0.5", cachedWrite = "1.25"),
+        )
+
+        // 100 prompt tokens split into 50 uncached, 20 cache-read, and 30 cache-write tokens.
+        assertEquals(100L, usage.input)
+        assertEquals(BigDecimal("0.00009750"), cost?.amount)
+    }
+
+    @Test
     fun `charges fixed amount for per_request pricing mode on successful request`() {
         val perReqPrice = ModelPriceRecord(
             id = "p-req",
