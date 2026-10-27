@@ -263,4 +263,22 @@ describe('priceForm: 计费单价的币种与金额', () => {
     }, 'channel-1', 'm1')
     assert.equal(immediatePayload.effectiveAt, null)
   })
+
+  it('重新打开已有计划版本时回填计划金额，避免用当前价覆盖计划', () => {
+    const form = priceFormState({
+      currency: 'USD',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      scheduledVersion: {
+        effectiveFrom: Date.now() + 3_600_000,
+        currency: 'USD',
+        inputPricePerMillion: '3',
+        outputPricePerMillion: '4',
+        pricingMode: 'token',
+      },
+    })
+    assert.equal(form.isScheduled, true)
+    assert.equal(form.inputPricePerMillion, '3')
+    assert.equal(form.outputPricePerMillion, '4')
+  })
 })

@@ -2,17 +2,19 @@ import { fromLocalInput, toLocalInput } from './format.js'
 
 /** Build the editable price form and payload without silently changing its currency. */
 export function priceFormState(price) {
-  const scheduledTime = price?.scheduledVersion?.effectiveFrom ||
-    (price?.effectiveAt && new Date(price.effectiveAt).getTime() > Date.now() ? price.effectiveAt : null)
+  const scheduled = price?.scheduledVersion || null
+  const scheduledTime = scheduled?.effectiveFrom || null
   return {
-    currency: price?.currency || 'USD',
-    inputPricePerMillion: price?.inputPricePerMillion ?? '',
-    outputPricePerMillion: price?.outputPricePerMillion ?? '',
-    cachedInputPricePerMillion: price?.cachedInputPricePerMillion ?? '',
-    cachedInputWritePricePerMillion: price?.cachedInputWritePricePerMillion ?? '',
-    pricingMode: price?.pricingMode || 'token',
-    perRequestPrice: price?.perRequestPrice ?? '',
-    priceTiers: Array.isArray(price?.priceTiers) ? price.priceTiers.map(priceTierFormState) : [],
+    currency: scheduled?.currency || price?.currency || 'USD',
+    inputPricePerMillion: scheduled?.inputPricePerMillion ?? price?.inputPricePerMillion ?? '',
+    outputPricePerMillion: scheduled?.outputPricePerMillion ?? price?.outputPricePerMillion ?? '',
+    cachedInputPricePerMillion: scheduled?.cachedInputPricePerMillion ?? price?.cachedInputPricePerMillion ?? '',
+    cachedInputWritePricePerMillion: scheduled?.cachedInputWritePricePerMillion ?? price?.cachedInputWritePricePerMillion ?? '',
+    pricingMode: scheduled?.pricingMode || price?.pricingMode || 'token',
+    perRequestPrice: scheduled?.perRequestPrice ?? price?.perRequestPrice ?? '',
+    priceTiers: Array.isArray(scheduled?.priceTiers)
+      ? scheduled.priceTiers.map(priceTierFormState)
+      : Array.isArray(price?.priceTiers) ? price.priceTiers.map(priceTierFormState) : [],
     isScheduled: Boolean(scheduledTime),
     effectiveAt: scheduledTime ? toLocalInput(scheduledTime) : '',
   }

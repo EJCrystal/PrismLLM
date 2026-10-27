@@ -3092,10 +3092,112 @@ class GatewayIntegrationTest {
                 }.map { it.await() }
             }
 
-            assertEquals(1, responses.count { it.status == HttpStatusCode.OK })
-            assertEquals(1, responses.count { it.status == HttpStatusCode.Conflict })
-            assertEquals(1, app.modelDefaultPriceRepository.list().count { it.modelId == "race-target" })
+            assertTrue(responses.all { it.status == HttpStatusCode.BadRequest }, responses.map { it.status }.toString())
+            assertTrue(responses.all { it.bodyAsText().contains("model_default_price_model_immutable") })
+            assertEquals(0, app.modelDefaultPriceRepository.list().count { it.modelId == "race-target" })
         }
+    }
+
+    @Test
+    fun `scheduled version replacement and current version display stay consistent`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val record = checkNotNull(
+            app.modelDefaultPriceRepository.create(
+                modelId = "schedule-replacement",
+                currency = "USD",
+                inputPricePerMillion = BigDecimal("1"),
+                outputPricePerMillion = BigDecimal("2"),
+            ),
+        )
+        val firstSchedule = now + 3_600_000L
+        app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("3"),
+            outputPricePerMillion = BigDecimal("4"),
+            effectiveAt = firstSchedule,
+        )
+        app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("5"),
+            outputPricePerMillion = BigDecimal("6"),
+            effectiveAt = firstSchedule + 60_000L,
+        )
+        val scheduled = app.modelDefaultPriceRepository.findScheduled(record.modelId, now)
+        assertEquals(3, scheduled?.version)
+        assertEquals("scheduled", scheduled?.status)
+        assertEquals(0, scheduled?.inputPricePerMillion?.compareTo(BigDecimal("5")))
+        assertEquals(0, app.modelDefaultPriceRepository.find(record.modelId)?.inputPricePerMillion?.compareTo(BigDecimal("1")))
+
+        app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("7"),
+            outputPricePerMillion = BigDecimal("8"),
+        )
+        assertNull(app.modelDefaultPriceRepository.findScheduled(record.modelId, now))
+        val current = app.modelDefaultPriceRepository.list().first { it.modelId == record.modelId }
+        assertEquals(0, current.inputPricePerMillion.compareTo(BigDecimal("7")))
+        assertEquals("active", app.modelDefaultPriceRepository.listVersions(record.modelId).first { it.version == current.currentVersion }.status)
+
+        val second = app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("9"),
+            outputPricePerMillion = BigDecimal("10"),
+        )!!
+        val version = app.modelDefaultPriceRepository.listVersions(record.modelId).first { it.version == second.currentVersion }
+        app.modelDefaultPriceRepository.deleteVersion(version.id)
+        val afterDelete = app.modelDefaultPriceRepository.find(record.modelId)!!
+        assertEquals(0, afterDelete.inputPricePerMillion.compareTo(BigDecimal("7")))
+        assertEquals("active", app.modelDefaultPriceRepository.listVersions(record.modelId).first { it.version == afterDelete.currentVersion }.status)
+
+        app.modelDefaultPriceRepository.delete(record.id)
+        assertNull(app.modelDefaultPriceRepository.findEffective(record.modelId))
+    }
+
+    @Test
+    fun `batch scheduled prices remain visible and delete current channel version rolls back`() = runBlocking {
+        val channel = createChannel("scheduled-batch", "ok")
+        val now = System.currentTimeMillis()
+        val prices = app.modelPriceRepository.upsertBatch(
+            channelId = channel.id,
+            upstreamModels = listOf("gpt-4o-mini", "deepseek-chat"),
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("3"),
+            outputPricePerMillion = BigDecimal("4"),
+            cachedInputPricePerMillion = null,
+            effectiveAt = now + 3_600_000L,
+        )
+        assertEquals(2, prices.size)
+        assertEquals(2, app.modelPriceRepository.list().count { it.channelId == channel.id })
+        assertTrue(
+            prices.all { app.modelPriceRepository.findScheduled(channel.id, it.upstreamModel)?.status == "scheduled" },
+        )
+
+        val current = app.modelPriceRepository.update(
+            id = prices.first().id,
+            channelId = channel.id,
+            upstreamModel = prices.first().upstreamModel,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("5"),
+            outputPricePerMillion = BigDecimal("6"),
+        )!!
+        val version = app.modelPriceRepository.listVersions(channel.id, current.upstreamModel)
+            .first { it.version == current.currentVersion }
+        app.modelPriceRepository.deleteVersion(version.id)
+        val afterDelete = app.modelPriceRepository.findById(current.id)!!
+        assertEquals(0, afterDelete.inputPricePerMillion.compareTo(BigDecimal("3")))
+        assertEquals(
+            "active",
+            app.modelPriceRepository.listVersions(channel.id, current.upstreamModel)
+                .first { it.version == afterDelete.currentVersion }.status,
+        )
     }
 
     @Test
@@ -3417,12 +3519,13 @@ class GatewayIntegrationTest {
         assertEquals(1, rolledBack.currentVersion)
         assertEquals(0, rolledBack.inputPricePerMillion.compareTo(BigDecimal("1.0")))
 
-        // 3. 更新模型默认价并验证改名与版本递增
+        // 3. 更新模型默认价并验证禁止改名与重复创建防护
         testApplication {
             application { app.install(this) }
             val client = jsonClient()
             val (sessionCookie, csrf) = client.loginAdmin()
 
+            // 尝试篡改模型 ID 返回 400
             val renameUpdate = client.put("/admin/api/model-default-prices/${v1.id}") {
                 header(HttpHeaders.Cookie, sessionCookie)
                 header("X-CSRF-Token", csrf)
@@ -3431,8 +3534,32 @@ class GatewayIntegrationTest {
                     """{"modelId":"renamed-model-id","currency":"USD","inputPricePerMillion":"5","outputPricePerMillion":"5"}""",
                 )
             }
-            assertEquals(HttpStatusCode.OK, renameUpdate.status)
-            assertEquals("renamed-model-id", app.modelDefaultPriceRepository.findById(v1.id)?.modelId)
+            assertEquals(HttpStatusCode.BadRequest, renameUpdate.status)
+
+            // 正常调价成功并递增版本
+            val validUpdate = client.put("/admin/api/model-default-prices/${v1.id}") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"rollback-model","currency":"USD","inputPricePerMillion":"5","outputPricePerMillion":"5"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, validUpdate.status)
+
+            // 重复 POST 创建已有模型返回 409，且不产生孤立版本记录
+            val countBefore = app.modelDefaultPriceRepository.listVersions("rollback-model").size
+            val duplicateCreate = client.post("/admin/api/model-default-prices") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"rollback-model","currency":"USD","inputPricePerMillion":"8","outputPricePerMillion":"8"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.Conflict, duplicateCreate.status)
+            val countAfter = app.modelDefaultPriceRepository.listVersions("rollback-model").size
+            assertEquals(countBefore, countAfter, "重复创建冲突不应向版本表插入孤立记录")
         }
     }
 
@@ -3926,7 +4053,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table admin_audit_logs, retention_settings, request_logs, alias_candidates, model_aliases, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table admin_audit_logs, retention_settings, request_logs, alias_candidates, model_aliases, model_default_price_versions, model_default_prices, model_price_versions, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }

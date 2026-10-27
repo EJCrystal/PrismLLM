@@ -11,6 +11,7 @@ import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.greater
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.lessEq
 import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.jdbc.Database
@@ -31,8 +32,9 @@ import java.util.UUID
  */
 class ModelDefaultPriceRepository(private val database: Database) {
     suspend fun list(): List<DefaultModelPriceRecord> = suspendTransaction(database) {
+        val now = System.currentTimeMillis()
         ModelDefaultPrices.selectAll()
-            .map(::toRecord)
+            .map { row -> toRecord(row, resolveCurrentVersion(row[ModelDefaultPrices.modelId], now)) }
             .sortedBy { it.modelId }
     }
 
@@ -42,15 +44,28 @@ class ModelDefaultPriceRepository(private val database: Database) {
         ModelDefaultPrices.selectAll()
             .where { ModelDefaultPrices.modelId eq normalized }
             .singleOrNull()
-            ?.let(::toRecord)
+            ?.let { row -> toRecord(row, resolveCurrentVersion(normalized, System.currentTimeMillis())) }
     }
 
     suspend fun findById(id: String): DefaultModelPriceRecord? = suspendTransaction(database) {
-        ModelDefaultPrices.selectAll()
+        val row = ModelDefaultPrices.selectAll()
             .where { ModelDefaultPrices.id eq id }
             .singleOrNull()
-            ?.let(::toRecord)
+            ?: return@suspendTransaction null
+        toRecord(row, resolveCurrentVersion(row[ModelDefaultPrices.modelId], System.currentTimeMillis()))
     }
+
+    private fun resolveCurrentVersion(modelId: String, asOfTime: Long): DefaultModelPriceVersionRecord? =
+        ModelDefaultPriceVersions.selectAll()
+            .where {
+                (ModelDefaultPriceVersions.modelId eq modelId) and
+                    (ModelDefaultPriceVersions.effectiveFrom lessEq asOfTime) and
+                    (ModelDefaultPriceVersions.status neq "cancelled")
+            }
+            .orderBy(ModelDefaultPriceVersions.effectiveFrom to SortOrder.DESC, ModelDefaultPriceVersions.version to SortOrder.DESC)
+            .limit(1)
+            .singleOrNull()
+            ?.let(::toVersionRecord)
 
     suspend fun findEffective(
         modelId: String,
@@ -68,7 +83,6 @@ class ModelDefaultPriceRepository(private val database: Database) {
             .limit(1)
             .singleOrNull()
             ?.let(::toVersionRecord)
-            ?: find(normalized)?.takeIf { it.effectiveFrom <= asOfTime }?.toBaselineVersion()
     }
 
     suspend fun findScheduled(
@@ -170,88 +184,44 @@ class ModelDefaultPriceRepository(private val database: Database) {
         priceTiers: List<ModelPriceTier> = emptyList(),
         effectiveAt: Long? = null,
     ): DefaultModelPriceRecord? = suspendTransaction(database) {
-        val id = UUID.randomUUID().toString()
-        val now = System.currentTimeMillis()
-        val effectiveFrom = effectiveAt?.takeIf { it > 0 } ?: now
-        val isScheduled = effectiveFrom > now
         val normalizedModel = modelId.trim()
-
-        val maxVersion = ModelDefaultPriceVersions.selectAll()
-            .where { ModelDefaultPriceVersions.modelId eq normalizedModel }
-            .maxOfOrNull { it[ModelDefaultPriceVersions.version] } ?: 0
-        val nextVersion = maxVersion + 1
-
-        val versionId = UUID.randomUUID().toString()
-        ModelDefaultPriceVersions.insert {
-            it[ModelDefaultPriceVersions.id] = versionId
-            it[ModelDefaultPriceVersions.modelId] = normalizedModel
-            it[version] = nextVersion
-            it[ModelDefaultPriceVersions.currency] = currency
-            it[ModelDefaultPriceVersions.inputPricePerMillion] = inputPricePerMillion
-            it[ModelDefaultPriceVersions.outputPricePerMillion] = outputPricePerMillion
-            it[ModelDefaultPriceVersions.cachedInputPricePerMillion] = cachedInputPricePerMillion
-            it[ModelDefaultPriceVersions.cachedInputWritePricePerMillion] = cachedInputWritePricePerMillion
-            it[ModelDefaultPriceVersions.pricingMode] = pricingMode.value
-            it[ModelDefaultPriceVersions.perRequestPrice] = perRequestPrice
-            it[priceTiersJson] = PricingTierCodec.encode(priceTiers)
-            it[ModelDefaultPriceVersions.effectiveFrom] = effectiveFrom
-            it[status] = if (isScheduled) "scheduled" else "active"
-            it[createdAt] = now
-        }
+        if (normalizedModel.isEmpty()) return@suspendTransaction null
 
         val existing = ModelDefaultPrices.selectAll()
             .where { ModelDefaultPrices.modelId eq normalizedModel }
             .singleOrNull()
-
-        if (existing != null && !isScheduled) {
+        if (existing != null) {
             return@suspendTransaction null
         }
 
-        val priceId = if (existing == null) {
-            ModelDefaultPrices.insertIgnore {
-                it[ModelDefaultPrices.id] = id
-                it[ModelDefaultPrices.modelId] = normalizedModel
-                it[ModelDefaultPrices.currency] = currency
-                it[ModelDefaultPrices.inputPricePerMillion] = inputPricePerMillion
-                it[ModelDefaultPrices.outputPricePerMillion] = outputPricePerMillion
-                it[ModelDefaultPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
-                it[ModelDefaultPrices.cachedInputWritePricePerMillion] = cachedInputWritePricePerMillion
-                it[ModelDefaultPrices.pricingMode] = pricingMode.value
-                it[ModelDefaultPrices.perRequestPrice] = perRequestPrice
-                it[priceTiersJson] = PricingTierCodec.encode(priceTiers)
-                it[currentVersion] = nextVersion
-                it[ModelDefaultPrices.effectiveFrom] = effectiveFrom
-                it[createdAt] = now
-                it[updatedAt] = now
-            }
-            id
-        } else {
-            val existingId = existing[ModelDefaultPrices.id]
-            if (!isScheduled) {
-                ModelDefaultPriceVersions.update({
-                    (ModelDefaultPriceVersions.modelId eq normalizedModel) and
-                        (ModelDefaultPriceVersions.version neq nextVersion) and
-                        (ModelDefaultPriceVersions.status eq "active")
-                }) {
-                    it[status] = "archived"
-                }
-                ModelDefaultPrices.update({ ModelDefaultPrices.id eq existingId }) {
-                    it[ModelDefaultPrices.currency] = currency
-                    it[ModelDefaultPrices.inputPricePerMillion] = inputPricePerMillion
-                    it[ModelDefaultPrices.outputPricePerMillion] = outputPricePerMillion
-                    it[ModelDefaultPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
-                    it[ModelDefaultPrices.cachedInputWritePricePerMillion] = cachedInputWritePricePerMillion
-                    it[ModelDefaultPrices.pricingMode] = pricingMode.value
-                    it[ModelDefaultPrices.perRequestPrice] = perRequestPrice
-                    it[priceTiersJson] = PricingTierCodec.encode(priceTiers)
-                    it[currentVersion] = nextVersion
-                    it[ModelDefaultPrices.effectiveFrom] = effectiveFrom
-                    it[updatedAt] = now
-                }
-            }
-            existingId
-        }
-        load(priceId)
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val effectiveFrom = effectiveAt?.takeIf { it > 0 } ?: now
+        val isScheduled = effectiveFrom > now
+
+        val inserted = ModelDefaultPrices.insertIgnore {
+            it[ModelDefaultPrices.id] = id
+            it[ModelDefaultPrices.modelId] = normalizedModel
+            it[ModelDefaultPrices.currency] = currency
+            it[ModelDefaultPrices.inputPricePerMillion] = inputPricePerMillion
+            it[ModelDefaultPrices.outputPricePerMillion] = outputPricePerMillion
+            it[ModelDefaultPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
+            it[ModelDefaultPrices.cachedInputWritePricePerMillion] = cachedInputWritePricePerMillion
+            it[ModelDefaultPrices.pricingMode] = pricingMode.value
+            it[ModelDefaultPrices.perRequestPrice] = perRequestPrice
+            it[priceTiersJson] = PricingTierCodec.encode(priceTiers)
+            it[currentVersion] = 1
+            it[ModelDefaultPrices.effectiveFrom] = effectiveFrom
+            it[createdAt] = now
+            it[updatedAt] = now
+        }.insertedCount > 0
+        if (!inserted) return@suspendTransaction null
+        insertVersion(
+            normalizedModel, 1, effectiveFrom, if (isScheduled) "scheduled" else "active", now, currency,
+            inputPricePerMillion, outputPricePerMillion, cachedInputPricePerMillion,
+            cachedInputWritePricePerMillion, pricingMode, perRequestPrice, priceTiers,
+        )
+        load(id, System.currentTimeMillis())
     }
 
     suspend fun update(
@@ -267,44 +237,36 @@ class ModelDefaultPriceRepository(private val database: Database) {
         priceTiers: List<ModelPriceTier> = emptyList(),
         effectiveAt: Long? = null,
     ): DefaultModelPriceRecord? = suspendTransaction(database) {
+        val normalizedModel = modelId.trim()
+        if (normalizedModel.isEmpty()) return@suspendTransaction null
+
+        val existing = ModelDefaultPrices.selectAll()
+            .where { ModelDefaultPrices.id eq id }
+            .forUpdate()
+            .singleOrNull() ?: return@suspendTransaction null
+
+        if (existing[ModelDefaultPrices.modelId] != normalizedModel) {
+            return@suspendTransaction null
+        }
+
         val now = System.currentTimeMillis()
         val effectiveFrom = effectiveAt?.takeIf { it > 0 } ?: now
         val isScheduled = effectiveFrom > now
-        val normalizedModel = modelId.trim()
-
-        val maxVersion = ModelDefaultPriceVersions.selectAll()
-            .where { ModelDefaultPriceVersions.modelId eq normalizedModel }
-            .maxOfOrNull { it[ModelDefaultPriceVersions.version] } ?: 0
-        val nextVersion = maxVersion + 1
-
-        val versionId = UUID.randomUUID().toString()
-        ModelDefaultPriceVersions.insert {
-            it[ModelDefaultPriceVersions.id] = versionId
-            it[ModelDefaultPriceVersions.modelId] = normalizedModel
-            it[version] = nextVersion
-            it[ModelDefaultPriceVersions.currency] = currency
-            it[ModelDefaultPriceVersions.inputPricePerMillion] = inputPricePerMillion
-            it[ModelDefaultPriceVersions.outputPricePerMillion] = outputPricePerMillion
-            it[ModelDefaultPriceVersions.cachedInputPricePerMillion] = cachedInputPricePerMillion
-            it[ModelDefaultPriceVersions.cachedInputWritePricePerMillion] = cachedInputWritePricePerMillion
-            it[ModelDefaultPriceVersions.pricingMode] = pricingMode.value
-            it[ModelDefaultPriceVersions.perRequestPrice] = perRequestPrice
-            it[priceTiersJson] = PricingTierCodec.encode(priceTiers)
-            it[ModelDefaultPriceVersions.effectiveFrom] = effectiveFrom
-            it[status] = if (isScheduled) "scheduled" else "active"
-            it[createdAt] = now
-        }
 
         if (!isScheduled) {
             ModelDefaultPriceVersions.update({
                 (ModelDefaultPriceVersions.modelId eq normalizedModel) and
-                    (ModelDefaultPriceVersions.version neq nextVersion) and
-                    (ModelDefaultPriceVersions.status eq "active")
+                    (ModelDefaultPriceVersions.status inList listOf("active", "scheduled"))
             }) {
                 it[status] = "archived"
             }
+            val nextVersion = nextVersion(normalizedModel)
+            insertVersion(
+                normalizedModel, nextVersion, effectiveFrom, "active", now, currency,
+                inputPricePerMillion, outputPricePerMillion, cachedInputPricePerMillion,
+                cachedInputWritePricePerMillion, pricingMode, perRequestPrice, priceTiers,
+            )
             val changed = ModelDefaultPrices.update({ ModelDefaultPrices.id eq id }) {
-                it[ModelDefaultPrices.modelId] = normalizedModel
                 it[ModelDefaultPrices.currency] = currency
                 it[ModelDefaultPrices.inputPricePerMillion] = inputPricePerMillion
                 it[ModelDefaultPrices.outputPricePerMillion] = outputPricePerMillion
@@ -317,35 +279,94 @@ class ModelDefaultPriceRepository(private val database: Database) {
                 it[ModelDefaultPrices.effectiveFrom] = effectiveFrom
                 it[updatedAt] = now
             }
-            if (changed == 0) null else load(id)
+            if (changed == 0) null else load(id, System.currentTimeMillis())
         } else {
-            load(id)
+            val nowUpdate = System.currentTimeMillis()
+            ModelDefaultPriceVersions.update({
+                (ModelDefaultPriceVersions.modelId eq normalizedModel) and
+                    (ModelDefaultPriceVersions.effectiveFrom greater nowUpdate) and
+                    (ModelDefaultPriceVersions.status neq "cancelled")
+            }) {
+                it[status] = "cancelled"
+            }
+            val nextVersion = nextVersion(normalizedModel)
+            insertVersion(
+                normalizedModel, nextVersion, effectiveFrom, "scheduled", now, currency,
+                inputPricePerMillion, outputPricePerMillion, cachedInputPricePerMillion,
+                cachedInputWritePricePerMillion, pricingMode, perRequestPrice, priceTiers,
+            )
+            load(id, System.currentTimeMillis())
         }
     }
 
     suspend fun delete(id: String): Boolean = suspendTransaction(database) {
+        val target = ModelDefaultPrices.selectAll().where { ModelDefaultPrices.id eq id }.singleOrNull()
+            ?: return@suspendTransaction false
+        val modelId = target[ModelDefaultPrices.modelId]
+        ModelDefaultPriceVersions.deleteWhere { ModelDefaultPriceVersions.modelId eq modelId }
         ModelDefaultPrices.deleteWhere { ModelDefaultPrices.id eq id } > 0
     }
 
-    private fun load(id: String): DefaultModelPriceRecord? =
+    private fun nextVersion(modelId: String): Int =
+        (ModelDefaultPriceVersions.selectAll()
+            .where { ModelDefaultPriceVersions.modelId eq modelId }
+            .maxOfOrNull { it[ModelDefaultPriceVersions.version] } ?: 0) + 1
+
+    private fun insertVersion(
+        modelId: String,
+        version: Int,
+        effectiveFrom: Long,
+        status: String,
+        createdAt: Long,
+        currency: String,
+        inputPricePerMillion: BigDecimal,
+        outputPricePerMillion: BigDecimal,
+        cachedInputPricePerMillion: BigDecimal?,
+        cachedInputWritePricePerMillion: BigDecimal?,
+        pricingMode: PricingMode,
+        perRequestPrice: BigDecimal?,
+        priceTiers: List<ModelPriceTier>,
+    ) {
+        ModelDefaultPriceVersions.insert {
+            it[ModelDefaultPriceVersions.id] = UUID.randomUUID().toString()
+            it[ModelDefaultPriceVersions.modelId] = modelId
+            it[ModelDefaultPriceVersions.version] = version
+            it[ModelDefaultPriceVersions.currency] = currency
+            it[ModelDefaultPriceVersions.inputPricePerMillion] = inputPricePerMillion
+            it[ModelDefaultPriceVersions.outputPricePerMillion] = outputPricePerMillion
+            it[ModelDefaultPriceVersions.cachedInputPricePerMillion] = cachedInputPricePerMillion
+            it[ModelDefaultPriceVersions.cachedInputWritePricePerMillion] = cachedInputWritePricePerMillion
+            it[ModelDefaultPriceVersions.pricingMode] = pricingMode.value
+            it[ModelDefaultPriceVersions.perRequestPrice] = perRequestPrice
+            it[priceTiersJson] = PricingTierCodec.encode(priceTiers)
+            it[ModelDefaultPriceVersions.effectiveFrom] = effectiveFrom
+            it[ModelDefaultPriceVersions.status] = status
+            it[ModelDefaultPriceVersions.createdAt] = createdAt
+        }
+    }
+
+    private fun load(id: String, asOfTime: Long): DefaultModelPriceRecord? =
         ModelDefaultPrices.selectAll()
             .where { ModelDefaultPrices.id eq id }
             .singleOrNull()
-            ?.let(::toRecord)
+            ?.let { row -> toRecord(row, resolveCurrentVersion(row[ModelDefaultPrices.modelId], asOfTime)) }
 
-    private fun toRecord(row: ResultRow) = DefaultModelPriceRecord(
+    private fun toRecord(
+        row: ResultRow,
+        currentVersion: DefaultModelPriceVersionRecord? = null,
+    ) = DefaultModelPriceRecord(
         id = row[ModelDefaultPrices.id],
         modelId = row[ModelDefaultPrices.modelId],
-        currency = row[ModelDefaultPrices.currency],
-        inputPricePerMillion = row[ModelDefaultPrices.inputPricePerMillion],
-        outputPricePerMillion = row[ModelDefaultPrices.outputPricePerMillion],
-        cachedInputPricePerMillion = row[ModelDefaultPrices.cachedInputPricePerMillion],
-        cachedInputWritePricePerMillion = row[ModelDefaultPrices.cachedInputWritePricePerMillion],
-        pricingMode = PricingMode.fromValue(row[ModelDefaultPrices.pricingMode]),
-        perRequestPrice = row[ModelDefaultPrices.perRequestPrice],
-        priceTiers = PricingTierCodec.decode(row[ModelDefaultPrices.priceTiersJson]),
-        currentVersion = row[ModelDefaultPrices.currentVersion],
-        effectiveFrom = row[ModelDefaultPrices.effectiveFrom],
+        currency = currentVersion?.currency ?: row[ModelDefaultPrices.currency],
+        inputPricePerMillion = currentVersion?.inputPricePerMillion ?: row[ModelDefaultPrices.inputPricePerMillion],
+        outputPricePerMillion = currentVersion?.outputPricePerMillion ?: row[ModelDefaultPrices.outputPricePerMillion],
+        cachedInputPricePerMillion = currentVersion?.cachedInputPricePerMillion ?: row[ModelDefaultPrices.cachedInputPricePerMillion],
+        cachedInputWritePricePerMillion = currentVersion?.cachedInputWritePricePerMillion ?: row[ModelDefaultPrices.cachedInputWritePricePerMillion],
+        pricingMode = currentVersion?.pricingMode ?: PricingMode.fromValue(row[ModelDefaultPrices.pricingMode]),
+        perRequestPrice = currentVersion?.perRequestPrice ?: row[ModelDefaultPrices.perRequestPrice],
+        priceTiers = currentVersion?.priceTiers ?: PricingTierCodec.decode(row[ModelDefaultPrices.priceTiersJson]),
+        currentVersion = currentVersion?.version ?: row[ModelDefaultPrices.currentVersion],
+        effectiveFrom = currentVersion?.effectiveFrom ?: row[ModelDefaultPrices.effectiveFrom],
         createdAt = row[ModelDefaultPrices.createdAt],
         updatedAt = row[ModelDefaultPrices.updatedAt],
     )
@@ -367,20 +388,4 @@ class ModelDefaultPriceRepository(private val database: Database) {
         createdAt = row[ModelDefaultPriceVersions.createdAt],
     )
 
-    private fun DefaultModelPriceRecord.toBaselineVersion() = DefaultModelPriceVersionRecord(
-        id = id,
-        modelId = modelId,
-        version = currentVersion,
-        currency = currency,
-        inputPricePerMillion = inputPricePerMillion,
-        outputPricePerMillion = outputPricePerMillion,
-        cachedInputPricePerMillion = cachedInputPricePerMillion,
-        cachedInputWritePricePerMillion = cachedInputWritePricePerMillion,
-        pricingMode = pricingMode,
-        perRequestPrice = perRequestPrice,
-        priceTiers = priceTiers,
-        effectiveFrom = effectiveFrom,
-        status = "active",
-        createdAt = createdAt,
-    )
 }

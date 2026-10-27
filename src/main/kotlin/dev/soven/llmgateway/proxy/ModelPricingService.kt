@@ -56,7 +56,7 @@ class ModelPricingService(
                 return ResolvedModelPrice(
                     source = ModelPriceSource.CHANNEL_OVERRIDE,
                     modelId = modelId?.trim()?.takeIf { it.isNotEmpty() } ?: upstreamModel.trim(),
-                    channelPriceId = primaryPrice?.id ?: version.id,
+                    channelPriceId = primaryPrice?.id,
                     priceVersion = version.version,
                     priceVersionId = version.id,
                     currency = version.currency,
@@ -81,7 +81,7 @@ class ModelPricingService(
                 return ResolvedModelPrice(
                     source = ModelPriceSource.MODEL_DEFAULT,
                     modelId = version.modelId,
-                    defaultPriceId = primaryPrice?.id ?: version.id,
+                    defaultPriceId = primaryPrice?.id,
                     priceVersion = version.version,
                     priceVersionId = version.id,
                     currency = version.currency,

@@ -566,10 +566,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val request = call.receive<ModelDefaultPriceRequest>()
             val price = validateDefaultModelPrice(request)
-            if (price.values.effectiveAt == null || price.values.effectiveAt <= System.currentTimeMillis()) {
-                if (app.modelDefaultPriceRepository.find(price.modelId) != null) {
-                    throw conflict("model_default_price_exists", "该模型的默认单价已存在")
-                }
+            if (app.modelDefaultPriceRepository.find(price.modelId) != null) {
+                throw conflict("model_default_price_exists", "该模型的默认单价已存在")
             }
             val record = app.modelDefaultPriceRepository.create(
                 modelId = price.modelId,
@@ -592,10 +590,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val id = call.requiredParam("id", "缺少默认价 id")
             val request = call.receive<ModelDefaultPriceRequest>()
             val price = validateDefaultModelPrice(request)
-            app.modelDefaultPriceRepository.findById(id) ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
-            val duplicate = app.modelDefaultPriceRepository.find(price.modelId)
-            if (duplicate != null && duplicate.id != id) {
-                throw conflict("model_default_price_exists", "该模型的默认单价已存在")
+            val existing = app.modelDefaultPriceRepository.findById(id) ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            if (existing.modelId != price.modelId) {
+                throw badRequest("model_default_price_model_immutable", "已存在的默认单价不可修改模型 ID，请新建或删除后重新配置")
             }
             val updated = try {
                 app.modelDefaultPriceRepository.update(
@@ -672,10 +669,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val request = call.receive<ModelPriceRequest>()
             val price = validateModelPrice(app, request)
-            if (price.values.effectiveAt == null || price.values.effectiveAt <= System.currentTimeMillis()) {
-                if (app.modelPriceRepository.find(price.channelId, price.upstreamModel) != null) {
-                    throw conflict("model_price_exists", "该渠道和上游模型的计费单价已存在")
-                }
+            if (app.modelPriceRepository.find(price.channelId, price.upstreamModel) != null) {
+                throw conflict("model_price_exists", "该渠道和上游模型的计费单价已存在")
             }
             val record = app.modelPriceRepository.create(
                 channelId = price.channelId,
@@ -699,10 +694,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val id = call.requiredParam("id", "缺少价格 id")
             val request = call.receive<ModelPriceRequest>()
             val price = validateModelPrice(app, request)
-            app.modelPriceRepository.findById(id) ?: throw notFound("model_price_not_found", "计费单价不存在")
-            val duplicate = app.modelPriceRepository.find(price.channelId, price.upstreamModel)
-            if (duplicate != null && duplicate.id != id && (price.values.effectiveAt == null || price.values.effectiveAt <= System.currentTimeMillis())) {
-                throw conflict("model_price_exists", "该渠道和上游模型的计费单价已存在")
+            val existing = app.modelPriceRepository.findById(id) ?: throw notFound("model_price_not_found", "计费单价不存在")
+            if (existing.channelId != price.channelId || existing.upstreamModel != price.upstreamModel) {
+                throw badRequest("model_price_key_immutable", "已存在的单价不可修改渠道或上游模型，请新建或删除后重新配置")
             }
             val updated = app.modelPriceRepository.update(
                 id = id,
