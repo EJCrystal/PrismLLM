@@ -4697,6 +4697,7 @@ input:disabled {
   display: grid;
   gap: 9px;
   width: min(360px, calc(100vw - 44px));
+  pointer-events: none;
 }
 
 .toast {

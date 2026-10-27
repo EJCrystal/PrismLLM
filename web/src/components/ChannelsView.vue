@@ -940,6 +940,18 @@ onMounted(load)
           {{ saving ? '保存中…' : '保存渠道' }}
         </button>
       </template>
+
+      <ModelTestModal
+        v-if="testTarget"
+        :channel="testTarget.channel"
+        :model="testTarget.model"
+        @close="testTarget = null"
+      />
+
+      <ModelTestSettingsModal
+        v-if="showTestSettings"
+        @close="showTestSettings = false"
+      />
     </Modal>
 
     <PriceEditorModal
@@ -960,18 +972,6 @@ onMounted(load)
       :channels="channels"
       @close="showDefaultPrices = false"
       @saved="onDefaultPricesSaved"
-    />
-
-    <ModelTestModal
-      v-if="testTarget"
-      :channel="testTarget.channel"
-      :model="testTarget.model"
-      @close="testTarget = null"
-    />
-
-    <ModelTestSettingsModal
-      v-if="showTestSettings"
-      @close="showTestSettings = false"
     />
 
   </section>
