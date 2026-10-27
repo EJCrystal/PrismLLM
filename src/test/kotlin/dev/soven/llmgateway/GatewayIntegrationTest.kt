@@ -3247,6 +3247,38 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `deleting and recreating a channel price does not inherit old versions`() = runBlocking {
+        val channel = createChannel("recreate-price", "ok")
+        val first = app.modelPriceRepository.create(
+            channelId = channel.id,
+            upstreamModel = "gpt-4o-mini",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1"),
+            outputPricePerMillion = BigDecimal("2"),
+        )!!
+        app.modelPriceRepository.update(
+            id = first.id,
+            channelId = channel.id,
+            upstreamModel = first.upstreamModel,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("3"),
+            outputPricePerMillion = BigDecimal("4"),
+            effectiveAt = System.currentTimeMillis() + 3_600_000L,
+        )
+        app.modelPriceRepository.delete(first.id)
+        assertNull(app.modelPriceRepository.findEffective(channel.id, first.upstreamModel))
+        val recreated = app.modelPriceRepository.create(
+            channelId = channel.id,
+            upstreamModel = first.upstreamModel,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("5"),
+            outputPricePerMillion = BigDecimal("6"),
+        )!!
+        assertEquals(1, recreated.currentVersion)
+        assertEquals(1, app.modelPriceRepository.listVersions(channel.id, first.upstreamModel).size)
+    }
+
+    @Test
     fun `batch scheduled prices remain visible and delete current channel version rolls back`() = runBlocking {
         val channel = createChannel("scheduled-batch", "ok")
         val now = System.currentTimeMillis()
@@ -3439,6 +3471,22 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.Conflict, response.status)
             assertTrue(response.bodyAsText().contains("model_default_price_schedule_changed"))
         }
+    }
+
+    @Test
+    fun `first future default price is not exposed by list or find before it starts`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val record = app.modelDefaultPriceRepository.create(
+            modelId = "first-scheduled-visible",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("7"),
+            outputPricePerMillion = BigDecimal("14"),
+            effectiveAt = now + 3_600_000L,
+        )!!
+        val listed = app.modelDefaultPriceRepository.list().first { it.modelId == record.modelId }
+        assertEquals(0, listed.currentVersion)
+        assertNull(app.modelDefaultPriceRepository.findEffective(record.modelId, now))
+        assertEquals(0, listed.inputPricePerMillion.signum(), "未来价格不应通过主表回退为当前价")
     }
 
     @Test

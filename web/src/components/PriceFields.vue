@@ -119,23 +119,26 @@ function removeTier(index) {
     <button v-if="form.priceTiers.length === 0" type="button" class="button subtle mini" @click="addTier">添加第一档</button>
   </section>
 
-  <fieldset class="field price-schedule-field">
-    <legend>价格生效时间</legend>
+  <section class="price-schedule-panel">
+    <div class="price-schedule-head">
+      <strong>价格生效时间</strong>
+      <small>选择新价格从什么时候开始计费</small>
+    </div>
     <div class="price-schedule-toggle">
-      <label class="schedule-option" :class="{ active: !form.isScheduled }">
+      <button type="button" class="schedule-option" :class="{ active: !form.isScheduled }" :aria-pressed="!form.isScheduled" @click="onScheduleChange(false)">
         <input type="radio" :value="false" v-model="form.isScheduled" @change="onScheduleChange(false)" />
         <span class="schedule-option-copy">
           <strong>立即生效</strong>
           <small>保存后马上按新价格计费</small>
         </span>
-      </label>
-      <label class="schedule-option" :class="{ active: form.isScheduled }">
+      </button>
+      <button type="button" class="schedule-option" :class="{ active: form.isScheduled }" :aria-pressed="form.isScheduled" @click="onScheduleChange(true)">
         <input type="radio" :value="true" v-model="form.isScheduled" @change="onScheduleChange(true)" />
         <span class="schedule-option-copy">
           <strong>定时生效</strong>
           <small>到指定时间再自动切换</small>
         </span>
-      </label>
+      </button>
     </div>
     <label v-if="form.isScheduled" class="schedule-date-wrap">
       <span>切换时间</span>
@@ -143,24 +146,35 @@ function removeTier(index) {
       <small v-if="hasCurrentPrice">在此之前继续使用当前价格。</small>
       <small v-else class="schedule-empty-note">生效前暂无当前价或默认价，此模型不会计费。</small>
     </label>
-  </fieldset>
+  </section>
 </template>
 
 <style scoped>
-.price-schedule-field {
+.price-schedule-panel {
   display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  border: 0;
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
 }
 
-.price-schedule-field legend {
-  margin-bottom: 8px;
-  padding: 0;
+.price-schedule-head {
+  display: grid;
+  gap: 4px;
+}
+
+.price-schedule-head strong {
   color: var(--ink);
   font-size: 13px;
-  font-weight: 600;
+}
+
+.price-schedule-head small {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .price-schedule-toggle {
@@ -179,6 +193,9 @@ function removeTier(index) {
   border-radius: 10px;
   background: var(--panel);
   cursor: pointer;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
   transition: border-color 160ms ease, background-color 160ms ease;
 }
 
@@ -191,6 +208,10 @@ function removeTier(index) {
   flex: 0 0 auto;
   margin-top: 3px;
   accent-color: var(--brand);
+}
+
+.schedule-option.active input {
+  pointer-events: none;
 }
 
 .schedule-option-copy {

@@ -342,4 +342,26 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(buildPricePayload(loaded, 'c', 'm').preserveSchedule, true)
   })
 
+  it('带版本 ID 的计划未修改时仍保留原计划和并发校验标识', () => {
+    const loaded = priceFormState({
+      currency: 'USD',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      scheduledVersion: {
+        id: 'schedule-1',
+        effectiveFrom: Date.now() + 3_600_000,
+        currency: 'USD',
+        inputPricePerMillion: '3',
+        outputPricePerMillion: '4',
+        pricingMode: 'token',
+      },
+    })
+    const payload = buildPricePayload(loaded, 'c', 'm')
+    assert.equal(payload.preserveSchedule, true)
+    assert.equal(payload.expectedScheduleId, 'schedule-1')
+    const changed = buildPricePayload({ ...loaded, outputPricePerMillion: '9' }, 'c', 'm')
+    assert.equal(changed.preserveSchedule, false)
+    assert.equal(changed.expectedScheduleId, null)
+  })
+
 })

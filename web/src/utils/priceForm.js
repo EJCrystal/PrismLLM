@@ -23,6 +23,7 @@ export function priceFormState(price) {
       ...price?.scheduledVersion,
       effectiveFrom: fromLocalInput(toLocalInput(scheduledTime)),
     }) : null,
+    scheduledId: scheduledTime ? (price?.scheduledVersion?.id ?? null) : null,
   }
 }
 
@@ -30,7 +31,6 @@ export function priceFormState(price) {
 export function scheduleSnapshot(value) {
   if (!value) return null
   return JSON.stringify({
-    scheduledId: value.id ?? null,
     effectiveFrom: Number(value.effectiveFrom || 0),
     currency: value.currency || '',
     inputPricePerMillion: value.inputPricePerMillion ?? '',
@@ -117,7 +117,7 @@ function pricingPayload(form) {
     effectiveAt: form?.isScheduled && form?.effectiveAt ? fromLocalInput(form.effectiveAt) : null,
     preserveSchedule: isUnchangedSchedule(form),
     expectedScheduleId: isUnchangedSchedule(form)
-      ? (JSON.parse(form.scheduledSnapshot).scheduledId ?? null)
+      ? form.scheduledId
       : null,
   }
 }
@@ -179,6 +179,7 @@ export function emptyPriceDraft() {
     perRequestPrice: '',
     priceTiers: [],
     scheduledSnapshot: null,
+    scheduledId: null,
     isScheduled: false,
     effectiveAt: '',
   }

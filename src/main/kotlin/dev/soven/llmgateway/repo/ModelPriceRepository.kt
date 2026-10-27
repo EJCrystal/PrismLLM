@@ -505,6 +505,10 @@ class ModelPriceRepository(private val database: Database) {
             ?: return@suspendTransaction false
         val channelId = target[ModelPrices.channelId]
         val upstreamModel = target[ModelPrices.upstreamModel]
+        ModelPriceVersions.deleteWhere {
+            (ModelPriceVersions.channelId eq channelId) and
+                (ModelPriceVersions.upstreamModel eq upstreamModel)
+        }
         ModelPrices.deleteWhere { ModelPrices.id eq id } > 0
     }
 
@@ -570,15 +574,15 @@ class ModelPriceRepository(private val database: Database) {
         channelName = row[Channels.name],
         upstreamModel = row[ModelPrices.upstreamModel],
         currency = currentVersion?.currency ?: row[ModelPrices.currency],
-        inputPricePerMillion = currentVersion?.inputPricePerMillion ?: row[ModelPrices.inputPricePerMillion],
-        outputPricePerMillion = currentVersion?.outputPricePerMillion ?: row[ModelPrices.outputPricePerMillion],
-        cachedInputPricePerMillion = currentVersion?.cachedInputPricePerMillion ?: row[ModelPrices.cachedInputPricePerMillion],
-        cachedInputWritePricePerMillion = currentVersion?.cachedInputWritePricePerMillion ?: row[ModelPrices.cachedInputWritePricePerMillion],
-        pricingMode = currentVersion?.pricingMode ?: PricingMode.fromValue(row[ModelPrices.pricingMode]),
-        perRequestPrice = currentVersion?.perRequestPrice ?: row[ModelPrices.perRequestPrice],
-        priceTiers = currentVersion?.priceTiers ?: PricingTierCodec.decode(row[ModelPrices.priceTiersJson]),
-        currentVersion = currentVersion?.version ?: row[ModelPrices.currentVersion],
-        effectiveFrom = currentVersion?.effectiveFrom ?: row[ModelPrices.effectiveFrom],
+        inputPricePerMillion = currentVersion?.inputPricePerMillion ?: BigDecimal.ZERO,
+        outputPricePerMillion = currentVersion?.outputPricePerMillion ?: BigDecimal.ZERO,
+        cachedInputPricePerMillion = currentVersion?.cachedInputPricePerMillion,
+        cachedInputWritePricePerMillion = currentVersion?.cachedInputWritePricePerMillion,
+        pricingMode = currentVersion?.pricingMode ?: PricingMode.TOKEN,
+        perRequestPrice = currentVersion?.perRequestPrice,
+        priceTiers = currentVersion?.priceTiers ?: emptyList(),
+        currentVersion = currentVersion?.version ?: 0,
+        effectiveFrom = currentVersion?.effectiveFrom ?: 0L,
         createdAt = row[ModelPrices.createdAt],
         updatedAt = row[ModelPrices.updatedAt],
     )
