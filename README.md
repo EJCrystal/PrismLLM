@@ -81,7 +81,7 @@ Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `ht
 | `CORS_ORIGINS` | 空 | 允许的浏览器来源，逗号分隔 |
 | `REQUEST_BODY_LIMIT_BYTES` | `10485760` | 请求体上限 |
 | `CONNECT_TIMEOUT_MS` | `5000` | 上游连接超时 |
-| `FIRST_TOKEN_TIMEOUT_MS` | `60000` | 首 token 超时 |
+| `FIRST_TOKEN_TIMEOUT_MS` | `120000` | 流式上游首 token 超时 |
 | `IDLE_TIMEOUT_MS` | `60000` | 流空闲超时 |
 | `TOTAL_TIMEOUT_MS` | `600000` | 单请求总超时 |
 | `MAX_ATTEMPTS` | `2` | 首 token 前最多尝试的候选数 |

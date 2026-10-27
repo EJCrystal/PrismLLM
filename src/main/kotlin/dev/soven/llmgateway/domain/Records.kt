@@ -146,6 +146,10 @@ data class ModelPriceRecord(
     val cachedInputPricePerMillion: BigDecimal?,
     val createdAt: Long,
     val updatedAt: Long,
+    val cachedInputWritePricePerMillion: BigDecimal? = null,
+    val pricingMode: PricingMode = PricingMode.TOKEN,
+    val perRequestPrice: BigDecimal? = null,
+    val priceTiers: List<ModelPriceTier> = emptyList(),
 )
 
 /** 按对外模型 ID 配置的默认单价。 */
@@ -158,6 +162,10 @@ data class DefaultModelPriceRecord(
     val cachedInputPricePerMillion: BigDecimal?,
     val createdAt: Long,
     val updatedAt: Long,
+    val cachedInputWritePricePerMillion: BigDecimal? = null,
+    val pricingMode: PricingMode = PricingMode.TOKEN,
+    val perRequestPrice: BigDecimal? = null,
+    val priceTiers: List<ModelPriceTier> = emptyList(),
 )
 
 /**
@@ -196,6 +204,7 @@ data class RequestLogRecord(
     val inputTokens: Long?,
     val outputTokens: Long?,
     val cachedTokens: Long?,
+    val cachedWriteTokens: Long? = null,
     val reasoningTokens: Long?,
     val reasoningEffort: String?,
     val totalTokens: Long?,
@@ -205,6 +214,10 @@ data class RequestLogRecord(
     val inputPricePerMillion: BigDecimal?,
     val outputPricePerMillion: BigDecimal?,
     val cachedInputPricePerMillion: BigDecimal?,
+    val cachedInputWritePricePerMillion: BigDecimal? = null,
+    val pricingMode: PricingMode = PricingMode.TOKEN,
+    val perRequestPrice: BigDecimal? = null,
+    val priceTiers: List<ModelPriceTier> = emptyList(),
     val errorCode: String?,
     val failureStage: FailureStage?,
     val errorMessage: String?,

@@ -80,7 +80,7 @@ data class GatewayConfig(
                 corsOrigins = value("CORS_ORIGINS", "").split(',').map { it.trim() }.filter { it.isNotEmpty() },
                 requestBodyLimitBytes = longValue("REQUEST_BODY_LIMIT_BYTES", 10L * 1024 * 1024),
                 connectTimeoutMs = longValue("CONNECT_TIMEOUT_MS", 5_000),
-                firstTokenTimeoutMs = longValue("FIRST_TOKEN_TIMEOUT_MS", 60_000),
+                firstTokenTimeoutMs = longValue("FIRST_TOKEN_TIMEOUT_MS", 120_000),
                 idleTimeoutMs = longValue("IDLE_TIMEOUT_MS", 60_000),
                 totalTimeoutMs = longValue("TOTAL_TIMEOUT_MS", 600_000),
                 maxAttempts = maxAttempts,

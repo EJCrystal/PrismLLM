@@ -2,6 +2,8 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.ModelDefaultPrices
 import dev.soven.llmgateway.domain.DefaultModelPriceRecord
+import dev.soven.llmgateway.domain.ModelPriceTier
+import dev.soven.llmgateway.domain.PricingMode
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database
@@ -48,6 +50,10 @@ class ModelDefaultPriceRepository(private val database: Database) {
         inputPricePerMillion: BigDecimal,
         outputPricePerMillion: BigDecimal,
         cachedInputPricePerMillion: BigDecimal?,
+        cachedInputWritePricePerMillion: BigDecimal? = null,
+        pricingMode: PricingMode = PricingMode.TOKEN,
+        perRequestPrice: BigDecimal? = null,
+        priceTiers: List<ModelPriceTier> = emptyList(),
     ): DefaultModelPriceRecord? = suspendTransaction(database) {
         val id = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
@@ -58,6 +64,10 @@ class ModelDefaultPriceRepository(private val database: Database) {
             it[ModelDefaultPrices.inputPricePerMillion] = inputPricePerMillion
             it[ModelDefaultPrices.outputPricePerMillion] = outputPricePerMillion
             it[ModelDefaultPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
+            it[ModelDefaultPrices.cachedInputWritePricePerMillion] = cachedInputWritePricePerMillion
+            it[ModelDefaultPrices.pricingMode] = pricingMode.value
+            it[ModelDefaultPrices.perRequestPrice] = perRequestPrice
+            it[ModelDefaultPrices.priceTiersJson] = PricingTierCodec.encode(priceTiers)
             it[createdAt] = now
             it[updatedAt] = now
         }
@@ -71,6 +81,10 @@ class ModelDefaultPriceRepository(private val database: Database) {
         inputPricePerMillion: BigDecimal,
         outputPricePerMillion: BigDecimal,
         cachedInputPricePerMillion: BigDecimal?,
+        cachedInputWritePricePerMillion: BigDecimal? = null,
+        pricingMode: PricingMode = PricingMode.TOKEN,
+        perRequestPrice: BigDecimal? = null,
+        priceTiers: List<ModelPriceTier> = emptyList(),
     ): DefaultModelPriceRecord? = suspendTransaction(database) {
         val changed = ModelDefaultPrices.update({ ModelDefaultPrices.id eq id }) {
             it[ModelDefaultPrices.modelId] = modelId.trim()
@@ -78,6 +92,10 @@ class ModelDefaultPriceRepository(private val database: Database) {
             it[ModelDefaultPrices.inputPricePerMillion] = inputPricePerMillion
             it[ModelDefaultPrices.outputPricePerMillion] = outputPricePerMillion
             it[ModelDefaultPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
+            it[ModelDefaultPrices.cachedInputWritePricePerMillion] = cachedInputWritePricePerMillion
+            it[ModelDefaultPrices.pricingMode] = pricingMode.value
+            it[ModelDefaultPrices.perRequestPrice] = perRequestPrice
+            it[ModelDefaultPrices.priceTiersJson] = PricingTierCodec.encode(priceTiers)
             it[updatedAt] = System.currentTimeMillis()
         }
         if (changed == 0) null else load(id)
@@ -100,6 +118,10 @@ class ModelDefaultPriceRepository(private val database: Database) {
         inputPricePerMillion = row[ModelDefaultPrices.inputPricePerMillion],
         outputPricePerMillion = row[ModelDefaultPrices.outputPricePerMillion],
         cachedInputPricePerMillion = row[ModelDefaultPrices.cachedInputPricePerMillion],
+        cachedInputWritePricePerMillion = row[ModelDefaultPrices.cachedInputWritePricePerMillion],
+        pricingMode = PricingMode.fromValue(row[ModelDefaultPrices.pricingMode]),
+        perRequestPrice = row[ModelDefaultPrices.perRequestPrice],
+        priceTiers = PricingTierCodec.decode(row[ModelDefaultPrices.priceTiersJson]),
         createdAt = row[ModelDefaultPrices.createdAt],
         updatedAt = row[ModelDefaultPrices.updatedAt],
     )

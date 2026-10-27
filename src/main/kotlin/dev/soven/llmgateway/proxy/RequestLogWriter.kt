@@ -48,7 +48,6 @@ class RequestLogWriter private constructor(
     }
 
     private suspend fun withCost(record: RequestLogRecord): RequestLogRecord {
-        if (!record.usageKnown) return record
         val price = try {
             resolvePrice(record)
         } catch (cause: CancellationException) {
@@ -64,6 +63,10 @@ class RequestLogWriter private constructor(
             inputPricePerMillion = cost.inputPricePerMillion,
             outputPricePerMillion = cost.outputPricePerMillion,
             cachedInputPricePerMillion = cost.cachedInputPricePerMillion,
+            cachedInputWritePricePerMillion = cost.cachedInputWritePricePerMillion,
+            pricingMode = cost.pricingMode,
+            perRequestPrice = cost.perRequestPrice,
+            priceTiers = cost.priceTiers,
         )
     }
 

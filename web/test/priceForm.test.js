@@ -10,6 +10,7 @@ import {
   hasPriceDraft,
   parseNonNegativePrice,
   parseOptionalNonNegativePrice,
+  priceFormError,
   priceFormState,
   resetPriceForm,
 } from '../src/utils/priceForm.js'
@@ -153,5 +154,75 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(parseNonNegativePrice('1.25'), 1.25)
     assert.equal(parseOptionalNonNegativePrice(''), null)
     assert.equal(parseOptionalNonNegativePrice('0.3'), 0.3)
+  })
+
+  it('校验 token 计费输入与输出单价必填且非负', () => {
+    assert.equal(priceFormError({ pricingMode: 'token', inputPricePerMillion: '', outputPricePerMillion: '1' }), '输入和输出单价必须是非负数字')
+    assert.equal(priceFormError({ pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '' }), '输入和输出单价必须是非负数字')
+    assert.equal(priceFormError({ pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2', cachedInputWritePricePerMillion: '-1' }), '缓存写入单价必须是非负数字')
+    assert.equal(priceFormError({ pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2', cachedInputPricePerMillion: '0.5', cachedInputWritePricePerMillion: '0.8' }), null)
+  })
+
+  it('校验按次计费费用必填且非负', () => {
+    assert.equal(priceFormError({ pricingMode: 'per_request', perRequestPrice: '' }), '按次费用必须是非负数字')
+    assert.equal(priceFormError({ pricingMode: 'per_request', perRequestPrice: '-0.5' }), '按次费用必须是非负数字')
+    assert.equal(priceFormError({ pricingMode: 'per_request', perRequestPrice: '0.04' }), null)
+  })
+
+  it('校验阶梯与总量阶梯计费档位及上限严格递增', () => {
+    assert.equal(priceFormError({ pricingMode: 'tiered', priceTiers: [] }), '请添加 1 到 20 个价格档位')
+    assert.equal(priceFormError({
+      pricingMode: 'tiered',
+      priceTiers: [
+        { upToTokens: '100', inputPricePerMillion: '1', outputPricePerMillion: '2' },
+        { upToTokens: '50', inputPricePerMillion: '2', outputPricePerMillion: '4' },
+      ],
+    }), '阶梯上限必须严格递增，最后一档留空表示不限')
+    assert.equal(priceFormError({
+      pricingMode: 'tiered',
+      priceTiers: [
+        { upToTokens: '100', inputPricePerMillion: '1', outputPricePerMillion: '2' },
+        { upToTokens: '200', inputPricePerMillion: '2', outputPricePerMillion: '4' },
+      ],
+    }), '阶梯上限必须严格递增，最后一档留空表示不限')
+    assert.equal(priceFormError({
+      pricingMode: 'tiered',
+      priceTiers: [
+        { upToTokens: '100', inputPricePerMillion: '', outputPricePerMillion: '2' },
+        { upToTokens: '', inputPricePerMillion: '2', outputPricePerMillion: '4' },
+      ],
+    }), '每档的输入和输出单价都必须是非负数字')
+    assert.equal(priceFormError({
+      pricingMode: 'tiered',
+      priceTiers: [
+        { upToTokens: '100', inputPricePerMillion: '1', outputPricePerMillion: '2' },
+        { upToTokens: '', inputPricePerMillion: '2', outputPricePerMillion: '4' },
+      ],
+    }), null)
+  })
+
+  it('构建按次计费与阶梯计费请求体', () => {
+    const perReqPayload = buildPricePayload({
+      currency: 'USD',
+      pricingMode: 'per_request',
+      perRequestPrice: '0.05',
+    }, 'channel-1', 'm1')
+    assert.equal(perReqPayload.pricingMode, 'per_request')
+    assert.equal(perReqPayload.perRequestPrice, '0.05')
+    assert.equal(perReqPayload.inputPricePerMillion, null)
+
+    const tieredPayload = buildPricePayload({
+      currency: 'USD',
+      pricingMode: 'tiered',
+      priceTiers: [
+        { upToTokens: '128000', inputPricePerMillion: '1', outputPricePerMillion: '2', cachedInputPricePerMillion: '0.5' },
+        { upToTokens: '', inputPricePerMillion: '2', outputPricePerMillion: '4' },
+      ],
+    }, 'channel-1', 'm1')
+    assert.equal(tieredPayload.pricingMode, 'tiered')
+    assert.equal(tieredPayload.priceTiers.length, 2)
+    assert.equal(tieredPayload.priceTiers[0].upToTokens, 128000)
+    assert.equal(tieredPayload.priceTiers[0].cachedInputPricePerMillion, '0.5')
+    assert.equal(tieredPayload.priceTiers[1].upToTokens, null)
   })
 })

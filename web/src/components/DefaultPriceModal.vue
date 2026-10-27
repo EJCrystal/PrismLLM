@@ -2,17 +2,17 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
-import { formatUnitPrice } from '../utils/format'
+import { formatPriceSummary, formatUnitPrice } from '../utils/format'
 import { defaultPriceModelOptions } from '../utils/modelPrice'
 import {
   buildDefaultPricePayload,
   defaultPriceFormState,
   hasPriceDraft,
-  parseNonNegativePrice,
-  parseOptionalNonNegativePrice,
+  priceFormError,
 } from '../utils/priceForm'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
+import PriceFields from './PriceFields.vue'
 
 const props = defineProps({
   prices: { type: Array, default: () => [] },
@@ -36,6 +36,10 @@ function referenceDraftKey() {
     form.inputPricePerMillion,
     form.outputPricePerMillion,
     form.cachedInputPricePerMillion,
+    form.cachedInputWritePricePerMillion,
+    form.pricingMode,
+    form.perRequestPrice,
+    JSON.stringify(form.priceTiers),
   ].join('\u0000')
 }
 
@@ -96,6 +100,10 @@ async function fetchReferencePrice() {
     const res = await api.getModelPriceReference(modelName)
     if (requestId !== referenceRequestId || draftKey !== referenceDraftKey()) return
     form.currency = 'USD'
+    form.pricingMode = 'token'
+    form.perRequestPrice = ''
+    form.cachedInputWritePricePerMillion = ''
+    form.priceTiers = []
     form.inputPricePerMillion = res.inputPricePerMillion
     form.outputPricePerMillion = res.outputPricePerMillion
     form.cachedInputPricePerMillion = res.cachedInputPricePerMillion || ''
@@ -116,15 +124,9 @@ async function save() {
     notify('请填写模型 ID', 'error')
     return
   }
-  const inputPrice = parseNonNegativePrice(form.inputPricePerMillion)
-  const outputPrice = parseNonNegativePrice(form.outputPricePerMillion)
-  const cachedPrice = parseOptionalNonNegativePrice(form.cachedInputPricePerMillion)
-  if (inputPrice == null || outputPrice == null) {
-    notify('输入和输出单价必须是非负数字', 'error')
-    return
-  }
-  if (String(form.cachedInputPricePerMillion ?? '').trim() && cachedPrice == null) {
-    notify('缓存输入单价必须是非负数字', 'error')
+  const validationError = priceFormError(form)
+  if (validationError) {
+    notify(validationError, 'error')
     return
   }
   saving.value = true
@@ -185,14 +187,11 @@ async function remove(price) {
               type="button"
               class="price-default-main"
               :aria-pressed="activePrice?.id === price.id"
-              :aria-label="`编辑 ${price.modelId} 的默认价：输入 ${formatUnitPrice(price.inputPricePerMillion)}，输出 ${formatUnitPrice(price.outputPricePerMillion)}，币种 ${price.currency}`"
+              :aria-label="`编辑 ${price.modelId} 的默认价：${formatPriceSummary(price)}`"
               @click="applyPrice(price)"
             >
               <code>{{ price.modelId }}</code>
-              <span class="muted small">
-                输入 {{ formatUnitPrice(price.inputPricePerMillion) }} · 输出
-                {{ formatUnitPrice(price.outputPricePerMillion) }} · {{ price.currency }} / 1M
-              </span>
+              <span class="muted small">{{ formatPriceSummary(price) }}</span>
             </button>
             <button
               type="button"
@@ -231,20 +230,7 @@ async function remove(price) {
         <small>获取参考价会切换为 USD。</small>
       </label>
 
-      <div class="field price-grid">
-        <label class="field">
-          <span>输入单价 / 1M</span>
-          <input v-model="form.inputPricePerMillion" type="number" min="0" step="0.00000001" placeholder="0.15" />
-        </label>
-        <label class="field">
-          <span>输出单价 / 1M</span>
-          <input v-model="form.outputPricePerMillion" type="number" min="0" step="0.00000001" placeholder="0.60" />
-        </label>
-        <label class="field">
-          <span>缓存输入单价 / 1M</span>
-          <input v-model="form.cachedInputPricePerMillion" type="number" min="0" step="0.00000001" placeholder="留空则按输入单价" />
-        </label>
-      </div>
+      <PriceFields :form="form" />
 
       <div class="price-default-reference">
         <button type="button" class="button subtle mini" :disabled="fetchingReference || !form.modelId.trim()" @click="fetchReferencePrice">
@@ -254,7 +240,7 @@ async function remove(price) {
       </div>
 
       <p class="muted small price-hint">
-        默认价用于没有渠道覆盖价的模型。单位为每百万 token；缓存 token 使用缓存输入单价，留空时按输入单价计费。
+        默认价用于没有渠道覆盖价的模型。计费方式支持按 Token、按次、阶梯累进与阶梯总量；缓存读写单价留空时回退到输入单价。
       </p>
     </form>
     <template #footer>

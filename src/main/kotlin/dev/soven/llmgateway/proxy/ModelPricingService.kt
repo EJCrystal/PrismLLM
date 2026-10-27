@@ -1,6 +1,8 @@
 package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.domain.ModelPriceTier
+import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.repo.ModelDefaultPriceRepository
 import dev.soven.llmgateway.repo.ModelPriceRepository
 import java.math.BigDecimal
@@ -23,6 +25,10 @@ data class ResolvedModelPrice(
     val inputPricePerMillion: BigDecimal,
     val outputPricePerMillion: BigDecimal,
     val cachedInputPricePerMillion: BigDecimal?,
+    val cachedInputWritePricePerMillion: BigDecimal? = null,
+    val pricingMode: PricingMode = PricingMode.TOKEN,
+    val perRequestPrice: BigDecimal? = null,
+    val priceTiers: List<ModelPriceTier> = emptyList(),
 )
 
 /**
@@ -51,6 +57,10 @@ class ModelPricingService(
                     inputPricePerMillion = price.inputPricePerMillion,
                     outputPricePerMillion = price.outputPricePerMillion,
                     cachedInputPricePerMillion = price.cachedInputPricePerMillion,
+                    cachedInputWritePricePerMillion = price.cachedInputWritePricePerMillion,
+                    pricingMode = price.pricingMode,
+                    perRequestPrice = price.perRequestPrice,
+                    priceTiers = price.priceTiers,
                 )
             }
         }
@@ -69,6 +79,10 @@ class ModelPricingService(
                     inputPricePerMillion = price.inputPricePerMillion,
                     outputPricePerMillion = price.outputPricePerMillion,
                     cachedInputPricePerMillion = price.cachedInputPricePerMillion,
+                    cachedInputWritePricePerMillion = price.cachedInputWritePricePerMillion,
+                    pricingMode = price.pricingMode,
+                    perRequestPrice = price.perRequestPrice,
+                    priceTiers = price.priceTiers,
                 )
             }
         }

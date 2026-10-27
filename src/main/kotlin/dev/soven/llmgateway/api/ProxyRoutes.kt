@@ -392,6 +392,7 @@ private suspend fun handleProxy(
             channelName = channelName,
             protocol = protocol,
             statusCode = statusCode,
+            requestSucceeded = statusCode in 200..299 && errorCode == null && state.errorCode == null && failureStage == null,
             firstTokenMs = state.firstTokenMs,
             reasoningEffort = reasoningEffort,
         )
@@ -423,6 +424,7 @@ private suspend fun handleProxy(
                 inputTokens = usage?.input,
                 outputTokens = usage?.output,
                 cachedTokens = usage?.cached,
+                cachedWriteTokens = usage?.cacheWrite,
                 reasoningTokens = usage?.reasoning,
                 reasoningEffort = reasoningEffort,
                 totalTokens = usage?.total,
@@ -480,12 +482,13 @@ private suspend fun settleRequestLimitOnExit(
     channelName: String?,
     protocol: GatewayProtocol,
     statusCode: Int,
+    requestSucceeded: Boolean,
     firstTokenMs: Long?,
     reasoningEffort: String?,
 ) {
     if (lease == null) return
     val calculatedCost = try {
-        if (usage?.known == true && channelId != null && upstreamModel != null) {
+        if (channelId != null && upstreamModel != null) {
             try {
                 app.modelPricingService.resolve(channelId, upstreamModel, pricingModelId)?.let { price ->
                     BillingCalculator.calculate(
@@ -503,13 +506,14 @@ private suspend fun settleRequestLimitOnExit(
                             statusCode = statusCode,
                             firstTokenMs = firstTokenMs,
                             totalMs = 0,
-                            inputTokens = usage.input,
-                            outputTokens = usage.output,
-                            cachedTokens = usage.cached,
-                            reasoningTokens = usage.reasoning,
+                            inputTokens = usage?.input,
+                            outputTokens = usage?.output,
+                            cachedTokens = usage?.cached,
+                            cachedWriteTokens = usage?.cacheWrite,
+                            reasoningTokens = usage?.reasoning,
                             reasoningEffort = reasoningEffort,
-                            totalTokens = usage.total,
-                            usageKnown = usage.known,
+                            totalTokens = usage?.total,
+                            usageKnown = usage?.known ?: false,
                             costAmount = null,
                             costCurrency = null,
                             inputPricePerMillion = null,
@@ -522,6 +526,7 @@ private suspend fun settleRequestLimitOnExit(
                             createdAt = System.currentTimeMillis(),
                         ),
                         price,
+                        requestSucceeded,
                     )
                 }
             } catch (cause: CancellationException) {
@@ -1062,6 +1067,7 @@ private fun Usage.mergeWith(next: Usage, protocol: GatewayProtocol): Usage {
         input = mergedInput,
         output = mergedOutput,
         cached = next.cached ?: cached,
+        cacheWrite = next.cacheWrite ?: cacheWrite,
         reasoning = next.reasoning ?: reasoning,
         total = total,
     )

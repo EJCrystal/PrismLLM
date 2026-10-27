@@ -123,8 +123,33 @@ class UsageParserTest {
         assertEquals(15, usage?.input)
         assertEquals(4, usage?.output)
         assertEquals(3, usage?.cached)
+        assertEquals(2, usage?.cacheWrite)
         assertEquals(19, usage?.total)
         assertNull(usage?.reasoning)
+    }
+
+    @Test
+    fun `parses cache write tokens from prompt details in chat completions`() {
+        val line = """data: {"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":10}}}"""
+
+        val usage = UsageParser.fromSseLine(line)
+
+        assertEquals(20, usage?.cached)
+        assertEquals(10, usage?.cacheWrite)
+        assertEquals(100, usage?.input)
+    }
+
+    @Test
+    fun `parses cache write tokens from responses api`() {
+        val json = Json.parseToJsonElement(
+            """{"type":"response.completed","response":{"usage":{"input_tokens":50,"input_tokens_details":{"cached_tokens":15,"cache_creation_tokens":25},"output_tokens":5,"total_tokens":55}}}""",
+        ).jsonObject
+
+        val usage = UsageParser.fromResponsesJson(json)
+
+        assertEquals(50, usage?.input)
+        assertEquals(15, usage?.cached)
+        assertEquals(25, usage?.cacheWrite)
     }
 
     @Test

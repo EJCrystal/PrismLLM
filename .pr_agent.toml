@@ -1,9 +1,12 @@
-# Model and API key are injected by .github/workflows/pr-agent.yml.
-# This file only controls review behavior, so it is safe to commit.
+# API key and gateway URL are injected by the workflow; model order and review behavior live here.
 
 [config]
-# Longer than the 120s default so big diffs do not get cut off mid-review.
-ai_timeout = 300
+# Three sequential 120s model attempts need room to complete before PR-Agent times out.
+ai_timeout = 480
+model = "openai/gpt-6-luna"
+fallback_models = ["openai/deepseek-flash", "openai/gemini-3.8-flash"]
+# Move to the next fallback on timeout without replaying the same model.
+retry_same_model_on_timeout = false
 # Any OpenAI-compatible model ID that litellm does not know needs its window
 # declared; the gateway routes this name to a real upstream model.
 custom_model_max_tokens = 256000
@@ -11,7 +14,7 @@ custom_model_max_tokens = 256000
 max_model_tokens = 96000
 # 代码审查需要少量跨文件推理；low 在质量和 token 消耗之间更稳。
 reasoning_effort = "low"
-additional_reasoning_effort_models = ["deepseek-flash"]
+additional_reasoning_effort_models = ["gpt-6-luna", "deepseek-flash", "gemini-3.8-flash"]
 # 推理 token 计入输出预算；预留 24000，避免结论生成前被截断。
 max_output_tokens = 24000
 

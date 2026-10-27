@@ -134,3 +134,30 @@ export function formatUnitPrice(value, fallback = '—') {
   const num = Number(value)
   return num.toLocaleString('zh-CN', { maximumFractionDigits: 8, useGrouping: false })
 }
+
+/**
+ * 格式化模型计费规则摘要（用于列表展示、无障碍提示与日志详情）。
+ *
+ * @param {object|null} price 单价对象或日志记录
+ * @param {string} fallback 缺省值
+ * @returns {string}
+ */
+export function formatPriceSummary(price, fallback = '—') {
+  if (!price) return fallback
+  const mode = price.pricingMode || 'token'
+  const currency = price.currency || price.costCurrency || 'USD'
+  if (mode === 'per_request') {
+    return `按次 ${formatUnitPrice(price.perRequestPrice)} ${currency}`
+  }
+  if (mode === 'tiered') {
+    const count = Array.isArray(price.priceTiers) ? price.priceTiers.length : 0
+    return count > 0 ? `阶梯价 (${count} 档) · ${currency}` : `阶梯价 · ${currency}`
+  }
+  if (mode === 'volume') {
+    const count = Array.isArray(price.priceTiers) ? price.priceTiers.length : 0
+    return count > 0 ? `阶梯总量价 (${count} 档) · ${currency}` : `阶梯总量价 · ${currency}`
+  }
+  const input = formatUnitPrice(price.inputPricePerMillion)
+  const output = formatUnitPrice(price.outputPricePerMillion)
+  return `输入 ${input} · 输出 ${output} · ${currency} / 1M`
+}

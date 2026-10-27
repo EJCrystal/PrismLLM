@@ -4,6 +4,7 @@ import dev.soven.llmgateway.db.RequestLogs
 import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.report.CleanupResult
 import dev.soven.llmgateway.report.UsageGroup
 import dev.soven.llmgateway.report.UsageReport
@@ -58,6 +59,7 @@ class RequestLogRepository(private val database: Database) {
             it[inputTokens] = record.inputTokens
             it[outputTokens] = record.outputTokens
             it[cachedTokens] = record.cachedTokens
+            it[cachedWriteTokens] = record.cachedWriteTokens
             it[reasoningTokens] = record.reasoningTokens
             it[reasoningEffort] = record.reasoningEffort
             it[totalTokens] = record.totalTokens
@@ -67,6 +69,10 @@ class RequestLogRepository(private val database: Database) {
             it[inputPricePerMillion] = record.inputPricePerMillion
             it[outputPricePerMillion] = record.outputPricePerMillion
             it[cachedInputPricePerMillion] = record.cachedInputPricePerMillion
+            it[cachedInputWritePricePerMillion] = record.cachedInputWritePricePerMillion
+            it[pricingMode] = record.pricingMode.value
+            it[perRequestPrice] = record.perRequestPrice
+            it[priceTiersJson] = PricingTierCodec.encode(record.priceTiers)
             it[errorCode] = record.errorCode
             it[failureStage] = record.failureStage?.value
             it[errorMessage] = record.errorMessage
@@ -216,6 +222,7 @@ class RequestLogRepository(private val database: Database) {
         inputTokens = row[RequestLogs.inputTokens],
         outputTokens = row[RequestLogs.outputTokens],
         cachedTokens = row[RequestLogs.cachedTokens],
+        cachedWriteTokens = row[RequestLogs.cachedWriteTokens],
         reasoningTokens = row[RequestLogs.reasoningTokens],
         reasoningEffort = row[RequestLogs.reasoningEffort],
         totalTokens = row[RequestLogs.totalTokens],
@@ -225,6 +232,10 @@ class RequestLogRepository(private val database: Database) {
         inputPricePerMillion = row[RequestLogs.inputPricePerMillion],
         outputPricePerMillion = row[RequestLogs.outputPricePerMillion],
         cachedInputPricePerMillion = row[RequestLogs.cachedInputPricePerMillion],
+        cachedInputWritePricePerMillion = row[RequestLogs.cachedInputWritePricePerMillion],
+        pricingMode = PricingMode.fromValue(row[RequestLogs.pricingMode]),
+        perRequestPrice = row[RequestLogs.perRequestPrice],
+        priceTiers = PricingTierCodec.decode(row[RequestLogs.priceTiersJson]),
         errorCode = row[RequestLogs.errorCode],
         failureStage = FailureStage.fromValue(row[RequestLogs.failureStage]),
         errorMessage = row[RequestLogs.errorMessage],
