@@ -35,3 +35,21 @@ export function hasPriceDraft(form) {
   return ['inputPricePerMillion', 'outputPricePerMillion', 'cachedInputPricePerMillion']
     .some((field) => String(form[field] ?? '').trim() !== '')
 }
+
+/** Load a saved price into the edit form. */
+export function applyPriceToForm(form, price) {
+  if (!form || !price) return form
+  Object.assign(form, {
+    channelId: price.channelId,
+    upstreamModel: price.upstreamModel,
+    ...priceFormState(price),
+  })
+  return form
+}
+
+/** Reset the form to a fresh USD draft for the selected channel. */
+export function resetPriceForm(form) {
+  if (!form) return form
+  Object.assign(form, { upstreamModel: '', ...emptyPriceDraft() })
+  return form
+}

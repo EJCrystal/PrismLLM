@@ -11,6 +11,37 @@ export function findModelPrice(prices, channelId, upstreamModel) {
   ) || null
 }
 
+/** List the configured prices for one channel, ordered by upstream model. */
+export function pricesForChannel(prices, channelId) {
+  if (!Array.isArray(prices) || !channelId) return []
+  return prices
+    .filter((price) =>
+      price &&
+      price.channelId === channelId &&
+      typeof price.upstreamModel === 'string' &&
+      price.upstreamModel.trim(),
+    )
+    .slice()
+    .sort((left, right) => left.upstreamModel.trim().localeCompare(right.upstreamModel.trim()))
+}
+
+/** Merge channel models with their configured price, matching trimmed model names. */
+export function channelModelPriceOptions(channelModels, prices, channelId) {
+  const pricesByModel = new Map(
+    pricesForChannel(prices, channelId).map((price) => [price.upstreamModel.trim(), price]),
+  )
+  return (Array.isArray(channelModels) ? channelModels : []).map((model) => ({
+    ...model,
+    price: pricesByModel.get(String(model.id).trim()) || null,
+  }))
+}
+
+/** True when the active price already targets the selected channel/model. */
+export function isSamePriceTarget(price, channelId, upstreamModel) {
+  if (!price || price.channelId !== channelId) return false
+  return String(price.upstreamModel ?? '').trim() === String(upstreamModel ?? '').trim()
+}
+
 /** Return the channel's upstream models that have no price record. */
 export function unpricedChannelModels(channel, prices) {
   if (!channel || !Array.isArray(channel.models)) return []

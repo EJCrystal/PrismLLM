@@ -3,8 +3,16 @@ import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
-import { findModelPrice } from '../utils/modelPrice'
-import { buildPricePayload, emptyPriceDraft, hasPriceDraft, priceFormState } from '../utils/priceForm'
+import { channelModelPriceOptions, findModelPrice, isSamePriceTarget, pricesForChannel } from '../utils/modelPrice'
+import {
+  applyPriceToForm,
+  buildPricePayload,
+  emptyPriceDraft,
+  hasPriceDraft,
+  priceFormState,
+  resetPriceForm,
+} from '../utils/priceForm'
+import { formatUnitPrice } from '../utils/format'
 import Modal from './Modal.vue'
 
 const props = defineProps({
@@ -31,10 +39,12 @@ const form = reactive({
   ...initialPrice,
 })
 
+const channelPrices = computed(() => pricesForChannel(props.prices, form.channelId))
+const channelModelOptions = computed(() => channelModelPriceOptions(channelModels.value, props.prices, form.channelId))
 const filteredChannelModels = computed(() => {
   const query = form.upstreamModel.trim().toLowerCase()
-  if (!query) return channelModels.value
-  return channelModels.value.filter((model) => model.id.toLowerCase().includes(query))
+  if (!query) return channelModelOptions.value
+  return channelModelOptions.value.filter((model) => model.id.toLowerCase().includes(query))
 })
 
 watch(
@@ -85,10 +95,14 @@ function applyExistingPrice(price) {
 watch(
   () => [form.channelId, form.upstreamModel, props.prices],
   ([channelId, upstreamModel]) => {
-    if (props.price) return
     const existingPrice = findModelPrice(props.prices, channelId, upstreamModel.trim())
     if (existingPrice) {
-      if (activePrice.value?.id !== existingPrice.id) applyExistingPrice(existingPrice)
+      if (
+        activePrice.value?.id !== existingPrice.id &&
+        !isSamePriceTarget(activePrice.value, channelId, upstreamModel)
+      ) {
+        applyExistingPrice(existingPrice)
+      }
       return
     }
     if (activePrice.value) {
@@ -113,6 +127,23 @@ function handleModelPickerFocusOut(event) {
 
 function selectChannelModel(model) {
   form.upstreamModel = model.id
+  modelPickerOpen.value = false
+}
+
+function onChannelChange() {
+  activePrice.value = null
+  resetPriceForm(form)
+}
+
+function editPrice(price) {
+  activePrice.value = price
+  applyPriceToForm(form, price)
+  modelPickerOpen.value = false
+}
+
+function startNewPrice() {
+  activePrice.value = null
+  resetPriceForm(form)
   modelPickerOpen.value = false
 }
 
@@ -187,17 +218,45 @@ async function save() {
 </script>
 
 <template>
-  <Modal :title="activePrice?.id ? '编辑计费单价' : '新增计费单价'" @close="$emit('close')">
+  <Modal :title="activePrice?.id ? '编辑计费单价' : '模型计费单价'" @close="$emit('close')">
     <form class="form-grid" @submit.prevent="save">
       <label class="field">
         <span>渠道</span>
-        <select v-model="form.channelId">
+        <select v-model="form.channelId" @change="onChannelChange">
           <option v-for="channel in channels" :key="channel.id" :value="channel.id">
             {{ channel.name }}
           </option>
         </select>
-        <small>价格绑定到渠道，同一模型在不同渠道可以配置不同价格。</small>
+        <small>价格按「渠道 + 上游模型」单独配置；同一对外模型在不同渠道可以配置不同价格。</small>
       </label>
+      <div class="price-configured">
+        <div class="price-configured-head">
+          <div>
+            <strong>已配置单价</strong>
+            <span class="muted small"> · {{ channelPrices.length }} 个模型</span>
+          </div>
+          <button type="button" class="button ghost mini" @click="startNewPrice">新增单价</button>
+        </div>
+        <div v-if="channelPrices.length" class="price-configured-list">
+          <button
+            v-for="price in channelPrices"
+            :key="price.id"
+            type="button"
+            class="price-configured-item"
+            :class="{ active: activePrice?.id === price.id }"
+            :aria-pressed="activePrice?.id === price.id"
+            :aria-label="`编辑 ${price.upstreamModel} 的单价：输入 ${formatUnitPrice(price.inputPricePerMillion)}，输出 ${formatUnitPrice(price.outputPricePerMillion)}，币种 ${price.currency}`"
+            @click="editPrice(price)"
+          >
+            <code>{{ price.upstreamModel }}</code>
+            <span class="muted small">
+              输入 {{ formatUnitPrice(price.inputPricePerMillion) }} · 输出
+              {{ formatUnitPrice(price.outputPricePerMillion) }} · {{ price.currency }} / 1M
+            </span>
+          </button>
+        </div>
+        <p v-else class="muted small price-configured-empty">该渠道还没有配置任何模型单价。</p>
+      </div>
       <label class="field" for="price-upstream-model">
         <span>上游模型</span>
         <div class="model-picker" @focusin="openModelPicker" @focusout="handleModelPickerFocusOut">
@@ -229,8 +288,13 @@ async function save() {
                 role="option"
                 @click.stop.prevent="selectChannelModel(model)"
               >
-                <code>{{ model.id }}</code>
-                <span v-if="model.ownedBy" class="muted small">{{ model.ownedBy }}</span>
+                <span class="model-picker-option-main">
+                  <code>{{ model.id }}</code>
+                  <span v-if="model.ownedBy" class="muted small">{{ model.ownedBy }}</span>
+                </span>
+                <span class="badge" :class="model.price ? 'success' : 'warning'">
+                  {{ model.price ? '已定价' : '未定价' }}
+                </span>
               </button>
             </template>
             <div v-else class="model-picker-message">没有匹配的模型，可直接手动输入。</div>
@@ -247,7 +311,7 @@ async function save() {
           readonly
           aria-label="计费币种"
         />
-        <small>已有单价保留原币种；获取参考价会切换为 USD。</small>
+        <small>获取参考价会切换为 USD。</small>
       </label>
       <div class="field price-grid">
         <label class="field">
