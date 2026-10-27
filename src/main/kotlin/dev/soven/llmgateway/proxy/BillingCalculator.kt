@@ -19,8 +19,6 @@ data class CalculatedCost(
     val cachedInputWritePricePerMillion: BigDecimal?,
     val perRequestPrice: BigDecimal?,
     val priceTiers: List<ModelPriceTier>,
-    val priceVersion: Int? = null,
-    val priceVersionId: String? = null,
 )
 
 /**
@@ -63,8 +61,6 @@ object BillingCalculator {
                 cachedInputWritePricePerMillion = null,
                 perRequestPrice = requestPrice,
                 priceTiers = emptyList(),
-                priceVersion = price.priceVersion,
-                priceVersionId = price.priceVersionId,
             )
         }
 
@@ -113,8 +109,6 @@ object BillingCalculator {
             } else null,
             perRequestPrice = null,
             priceTiers = price.priceTiers,
-            priceVersion = price.priceVersion,
-            priceVersionId = price.priceVersionId,
         )
     }
 
@@ -151,8 +145,6 @@ object BillingCalculator {
         source = ModelPriceSource.CHANNEL_OVERRIDE,
         modelId = upstreamModel,
         channelPriceId = id,
-        priceVersion = currentVersion,
-        priceVersionId = null,
         currency = currency,
         inputPricePerMillion = inputPricePerMillion,
         outputPricePerMillion = outputPricePerMillion,
@@ -167,8 +159,6 @@ object BillingCalculator {
         source = ModelPriceSource.MODEL_DEFAULT,
         modelId = modelId,
         defaultPriceId = id,
-        priceVersion = currentVersion,
-        priceVersionId = null,
         currency = currency,
         inputPricePerMillion = inputPricePerMillion,
         outputPricePerMillion = outputPricePerMillion,

@@ -150,8 +150,6 @@ data class ModelPriceRecord(
     val pricingMode: PricingMode = PricingMode.TOKEN,
     val perRequestPrice: BigDecimal? = null,
     val priceTiers: List<ModelPriceTier> = emptyList(),
-    val currentVersion: Int = 1,
-    val effectiveFrom: Long = 0L,
 )
 
 /** 按对外模型 ID 配置的默认单价。 */
@@ -168,45 +166,6 @@ data class DefaultModelPriceRecord(
     val pricingMode: PricingMode = PricingMode.TOKEN,
     val perRequestPrice: BigDecimal? = null,
     val priceTiers: List<ModelPriceTier> = emptyList(),
-    val currentVersion: Int = 1,
-    val effectiveFrom: Long = 0L,
-)
-
-/** 渠道模型单价的具体版本记录。 */
-data class ModelPriceVersionRecord(
-    val id: String,
-    val channelId: String,
-    val upstreamModel: String,
-    val version: Int,
-    val currency: String,
-    val inputPricePerMillion: BigDecimal,
-    val outputPricePerMillion: BigDecimal,
-    val cachedInputPricePerMillion: BigDecimal?,
-    val cachedInputWritePricePerMillion: BigDecimal? = null,
-    val pricingMode: PricingMode = PricingMode.TOKEN,
-    val perRequestPrice: BigDecimal? = null,
-    val priceTiers: List<ModelPriceTier> = emptyList(),
-    val effectiveFrom: Long,
-    val status: String,
-    val createdAt: Long,
-)
-
-/** 模型默认单价的具体版本记录。 */
-data class DefaultModelPriceVersionRecord(
-    val id: String,
-    val modelId: String,
-    val version: Int,
-    val currency: String,
-    val inputPricePerMillion: BigDecimal,
-    val outputPricePerMillion: BigDecimal,
-    val cachedInputPricePerMillion: BigDecimal?,
-    val cachedInputWritePricePerMillion: BigDecimal? = null,
-    val pricingMode: PricingMode = PricingMode.TOKEN,
-    val perRequestPrice: BigDecimal? = null,
-    val priceTiers: List<ModelPriceTier> = emptyList(),
-    val effectiveFrom: Long,
-    val status: String,
-    val createdAt: Long,
 )
 
 /**
@@ -259,8 +218,6 @@ data class RequestLogRecord(
     val pricingMode: PricingMode = PricingMode.TOKEN,
     val perRequestPrice: BigDecimal? = null,
     val priceTiers: List<ModelPriceTier> = emptyList(),
-    val priceVersion: Int? = null,
-    val priceVersionId: String? = null,
     val errorCode: String?,
     val failureStage: FailureStage?,
     val errorMessage: String?,

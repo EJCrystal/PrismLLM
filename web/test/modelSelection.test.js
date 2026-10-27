@@ -6,7 +6,6 @@ import {
   channelModelPriceOptions,
 } from '../src/utils/modelPrice.js'
 import {
-  clearedVersionHistoryState,
   refreshedPriceToApply,
   resolveModelSelectionTarget,
 } from '../src/utils/modelSelection.js'
@@ -71,15 +70,6 @@ describe('modelSelection: 渠道模型切换', () => {
     assert.equal(target.draft.currency, 'USD')
     assert.equal(target.draft.inputPricePerMillion, '')
     assert.equal(target.draft.outputPricePerMillion, '')
-  })
-
-  it('切换模型时清空旧版本历史并让加载请求失效', () => {
-    assert.deepEqual(clearedVersionHistoryState(), {
-      invalidateRequest: true,
-      showVersions: false,
-      loadingVersions: false,
-      versionHistory: [],
-    })
   })
 
   it('价格列表刷新暂时缺少当前记录时不清空编辑状态', () => {

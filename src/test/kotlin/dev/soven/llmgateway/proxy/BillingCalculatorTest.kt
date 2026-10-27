@@ -89,8 +89,6 @@ class BillingCalculatorTest {
                 source = ModelPriceSource.MODEL_DEFAULT,
                 modelId = "model",
                 defaultPriceId = "default-price",
-                priceVersion = 7,
-                priceVersionId = "version-7",
                 currency = "USD",
                 inputPricePerMillion = BigDecimal("1"),
                 outputPricePerMillion = BigDecimal("2"),
@@ -100,8 +98,6 @@ class BillingCalculatorTest {
 
         assertEquals(BigDecimal("0.00020000"), cost?.amount)
         assertEquals("USD", cost?.currency)
-        assertEquals(7, cost?.priceVersion)
-        assertEquals("version-7", cost?.priceVersionId)
     }
 
     @Test

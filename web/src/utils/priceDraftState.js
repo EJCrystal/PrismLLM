@@ -30,10 +30,6 @@ export function priceDraftSnapshot(form) {
     pricingMode: String(form?.pricingMode || 'token'),
     perRequestPrice: String(form?.perRequestPrice ?? ''),
     priceTiers: (Array.isArray(form?.priceTiers) ? form.priceTiers : []).map(normalizeTier),
-    isScheduled: Boolean(form?.isScheduled),
-    effectiveAt: String(form?.effectiveAt ?? ''),
-    scheduledSnapshot: form?.scheduledSnapshot ?? null,
-    scheduledId: form?.scheduledId ?? null,
   })
 }
 
@@ -49,10 +45,6 @@ export function clonePriceDraftForm(form) {
     perRequestPrice: form?.perRequestPrice ?? '',
     priceTiers: (Array.isArray(form?.priceTiers) ? form.priceTiers : [])
       .map((tier) => ({ ...tier })),
-    isScheduled: Boolean(form?.isScheduled),
-    effectiveAt: form?.effectiveAt ?? '',
-    scheduledSnapshot: form?.scheduledSnapshot ?? null,
-    scheduledId: form?.scheduledId ?? null,
   }
 }
 
@@ -96,5 +88,5 @@ export function buildChannelPriceDeleteMessage({ modelId, defaultPrice = null, h
     ? `删除后将恢复为继承模型默认价（${formatPriceSummary(defaultPrice)}）。`
     : '删除后将恢复为未定价。'
   const draftNote = hasUnsavedDraft ? '\n该模型尚未保存的编辑也会一并丢弃。' : ''
-  return `确定删除「${modelId}」的渠道覆盖价？\n\n${fallback}${draftNote}\n相关价格版本记录也会一并删除。`
+  return `确定删除「${modelId}」的渠道覆盖价？\n\n${fallback}${draftNote}`
 }

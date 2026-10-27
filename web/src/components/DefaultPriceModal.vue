@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
-import { formatPriceSummary, formatTime, formatUnitPrice } from '../utils/format'
+import { formatPriceSummary } from '../utils/format'
 import { defaultPriceModelOptions } from '../utils/modelPrice'
 import {
   buildDefaultPricePayload,
@@ -26,14 +26,8 @@ const saving = ref(false)
 const deletingId = ref(null)
 const fetchingReference = ref(false)
 const referenceHint = ref('')
-const showVersions = ref(false)
-const loadingVersions = ref(false)
-const versionHistory = ref([])
-const cancellingVersion = ref(false)
 const form = reactive({ modelId: '', ...defaultPriceFormState(null) })
 let referenceRequestId = 0
-let versionRequestId = 0
-let cancellationRequestId = 0
 
 function referenceDraftKey() {
   return [
@@ -74,73 +68,16 @@ const filteredModelOptions = computed(() => {
 
 function applyPrice(price) {
   cancelReferenceLookup()
-  versionRequestId += 1
-  loadingVersions.value = false
   activePrice.value = price
-  showVersions.value = false
-  versionHistory.value = []
   Object.assign(form, defaultPriceFormState(price))
   referenceHint.value = ''
 }
 
 function startNewPrice() {
   cancelReferenceLookup()
-  versionRequestId += 1
-  loadingVersions.value = false
   activePrice.value = null
-  showVersions.value = false
-  versionHistory.value = []
   Object.assign(form, { modelId: '', ...defaultPriceFormState(null) })
   referenceHint.value = ''
-}
-
-async function toggleVersionHistory() {
-  showVersions.value = !showVersions.value
-  if (showVersions.value && activePrice.value?.id) {
-    const requestId = ++versionRequestId
-    const priceId = activePrice.value.id
-    loadingVersions.value = true
-    try {
-      const versions = await api.listModelDefaultPriceVersions(priceId)
-      if (requestId === versionRequestId) versionHistory.value = versions
-    } catch (e) {
-      if (requestId === versionRequestId) notify(e.message, 'error')
-    } finally {
-      if (requestId === versionRequestId) loadingVersions.value = false
-    }
-  }
-}
-
-watch(
-  () => [activePrice.value?.id, showVersions.value],
-  () => {
-    if (!showVersions.value) loadingVersions.value = false
-  },
-)
-
-async function cancelScheduledVersion(version) {
-  if (!version?.id) return
-  if (!window.confirm(`确定取消将于 ${formatTime(version.effectiveFrom)} 生效的版本 v${version.version}？`)) return
-  cancellingVersion.value = true
-  const requestId = ++cancellationRequestId
-  const priceId = activePrice.value?.id
-  const priceKey = form.modelId
-  try {
-    await api.deleteModelDefaultPriceVersion(version.id)
-    notify('定时生效版本已取消')
-    if (activePrice.value?.id === priceId && form.modelId === priceKey) {
-      activePrice.value.scheduledVersion = null
-    }
-    if (showVersions.value && activePrice.value?.id === priceId) {
-      const versions = await api.listModelDefaultPriceVersions(priceId)
-      if (activePrice.value?.id === priceId) versionHistory.value = versions
-    }
-    emit('saved')
-  } catch (e) {
-    notify(e.message, 'error')
-  } finally {
-    if (requestId === cancellationRequestId) cancellingVersion.value = false
-  }
 }
 
 async function fetchReferencePrice() {
@@ -296,54 +233,7 @@ async function remove(price) {
         <small>获取参考价会切换为 USD。</small>
       </label>
 
-      <PriceFields :form="form" :has-current-price="Boolean(activePrice?.id)" />
-
-      <div v-if="activePrice?.scheduledVersion" class="callout warning price-scheduled-banner">
-        <div class="scheduled-banner-info">
-          <strong>定时生效版本 (v{{ activePrice.scheduledVersion.version }})</strong>
-          <span class="muted small"> · 将于 {{ formatTime(activePrice.scheduledVersion.effectiveFrom) }} 生效</span>
-          <div class="small">{{ formatPriceSummary(activePrice.scheduledVersion) }}</div>
-        </div>
-        <button
-          type="button"
-          class="button ghost mini danger"
-          :disabled="cancellingVersion"
-          @click="cancelScheduledVersion(activePrice.scheduledVersion)"
-        >
-          取消定时
-        </button>
-      </div>
-
-      <div v-if="activePrice?.id" class="price-version-history">
-        <div class="version-history-head">
-          <span class="muted small">
-            当前版本：v{{ activePrice.currentVersion || 1 }}（生效于 {{ formatTime(activePrice.effectiveFrom || activePrice.createdAt) }}）
-          </span>
-          <button type="button" class="button ghost mini" @click="toggleVersionHistory">
-            {{ showVersions ? '收起版本历史' : '查看版本历史' }}
-          </button>
-        </div>
-        <div v-if="showVersions" class="version-history-list">
-          <div v-if="loadingVersions" class="muted small">正在加载版本历史…</div>
-          <div v-else-if="versionHistory.length === 0" class="muted small">暂无其他版本记录</div>
-          <div v-for="ver in versionHistory" :key="ver.id" class="version-history-item">
-            <span class="badge" :class="ver.status === 'scheduled' ? 'warning' : (ver.version === activePrice.currentVersion ? 'success' : 'muted')">
-              {{ ver.status === 'scheduled' ? '待生效' : (ver.version === activePrice.currentVersion ? '生效中' : '历史') }}
-            </span>
-            <code>v{{ ver.version }}</code>
-            <span class="muted small">{{ formatPriceSummary(ver) }} · {{ formatTime(ver.effectiveFrom) }}</span>
-            <button
-              v-if="ver.status === 'scheduled'"
-              type="button"
-              class="button ghost mini danger"
-              :disabled="cancellingVersion"
-              @click="cancelScheduledVersion(ver)"
-            >
-              取消
-            </button>
-          </div>
-        </div>
-      </div>
+      <PriceFields :form="form" />
 
       <div class="price-default-reference">
         <button type="button" class="button subtle mini" :disabled="fetchingReference || !form.modelId.trim()" @click="fetchReferencePrice">

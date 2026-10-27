@@ -1,9 +1,6 @@
 <script setup>
-import { toLocalInput } from '../utils/format'
-
 const props = defineProps({
   form: { type: Object, required: true },
-  hasCurrentPrice: { type: Boolean, default: true },
 })
 
 const modes = [
@@ -12,15 +9,6 @@ const modes = [
   { value: 'tiered', label: '阶梯价' },
   { value: 'volume', label: '阶梯总量价' },
 ]
-
-function onScheduleChange(scheduled) {
-  props.form.isScheduled = scheduled
-  if (scheduled && !props.form.effectiveAt) {
-    const tomorrow = new Date(Date.now() + 24 * 3600_000)
-    tomorrow.setMinutes(0, 0, 0)
-    props.form.effectiveAt = toLocalInput(tomorrow.getTime())
-  }
-}
 
 function addTier() {
   const tiers = props.form.priceTiers || (props.form.priceTiers = [])
@@ -118,135 +106,9 @@ function removeTier(index) {
     </div>
     <button v-if="form.priceTiers.length === 0" type="button" class="button subtle mini" @click="addTier">添加第一档</button>
   </section>
-
-  <section class="price-schedule-panel">
-    <div class="price-schedule-head">
-      <strong>价格生效时间</strong>
-      <small>选择新价格从什么时候开始计费</small>
-    </div>
-    <div class="price-schedule-toggle">
-      <button type="button" class="schedule-option" :class="{ active: !form.isScheduled }" :aria-pressed="!form.isScheduled" @click="onScheduleChange(false)">
-        <input type="radio" :value="false" v-model="form.isScheduled" @change="onScheduleChange(false)" />
-        <span class="schedule-option-copy">
-          <strong>立即生效</strong>
-          <small>保存后马上按新价格计费</small>
-        </span>
-      </button>
-      <button type="button" class="schedule-option" :class="{ active: form.isScheduled }" :aria-pressed="form.isScheduled" @click="onScheduleChange(true)">
-        <input type="radio" :value="true" v-model="form.isScheduled" @change="onScheduleChange(true)" />
-        <span class="schedule-option-copy">
-          <strong>定时生效</strong>
-          <small>到指定时间再自动切换</small>
-        </span>
-      </button>
-    </div>
-    <label v-if="form.isScheduled" class="schedule-date-wrap">
-      <span>切换时间</span>
-      <input v-model="form.effectiveAt" type="datetime-local" />
-      <small v-if="hasCurrentPrice">在此之前继续使用当前价格。</small>
-      <small v-else class="schedule-empty-note">生效前暂无当前价或默认价，此模型不会计费。</small>
-    </label>
-  </section>
 </template>
 
 <style scoped>
-.price-schedule-panel {
-  display: grid;
-  grid-column: 1 / -1;
-  width: 100%;
-  min-width: 0;
-  gap: 14px;
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--bg);
-}
-
-.price-schedule-head {
-  display: grid;
-  gap: 4px;
-}
-
-.price-schedule-head strong {
-  color: var(--ink);
-  font-size: 13px;
-}
-
-.price-schedule-head small {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.price-schedule-toggle {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.schedule-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel);
-  cursor: pointer;
-  color: var(--ink);
-  font: inherit;
-  text-align: left;
-  transition: border-color 160ms ease, background-color 160ms ease;
-}
-
-.schedule-option.active {
-  border-color: var(--brand);
-  background: var(--info-soft);
-}
-
-.schedule-option input {
-  flex: 0 0 auto;
-  margin-top: 3px;
-  accent-color: var(--brand);
-}
-
-.schedule-option.active input {
-  pointer-events: none;
-}
-
-.schedule-option-copy {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.schedule-option-copy strong {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.schedule-option-copy small {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.schedule-date-wrap {
-  display: grid;
-  gap: 6px;
-  margin-top: 4px;
-}
-
-.schedule-date-wrap > span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.schedule-empty-note {
-  color: var(--warning);
-}
 .price-tier-editor {
   display: grid;
   gap: 10px;
@@ -279,10 +141,6 @@ function removeTier(index) {
 }
 
 @media (max-width: 600px) {
-  .price-schedule-toggle {
-    grid-template-columns: 1fr;
-  }
-
   .price-tier-rates {
     grid-template-columns: 1fr;
   }
