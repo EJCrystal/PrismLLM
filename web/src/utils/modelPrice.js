@@ -6,6 +6,14 @@ export function channelDisplayName(channels, channelId) {
   return found?.name || target
 }
 
+/** Pick the model selector layout for the available channel models. */
+export function channelModelChoiceMode(models) {
+  const count = Array.isArray(models) ? models.filter(Boolean).length : 0
+  if (count === 0) return 'manual'
+  if (count === 1) return 'single'
+  return 'multiple'
+}
+
 /** Find the price record for one channel/model pair. */
 export function findModelPrice(prices, channelId, upstreamModel) {
   if (!Array.isArray(prices) || !channelId) return null

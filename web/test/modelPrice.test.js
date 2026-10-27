@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   buildPricePrompt,
   channelDisplayName,
+  channelModelChoiceMode,
   channelModelPriceOptions,
   channelModelPricingId,
   channelPriceSummaries,
@@ -428,5 +429,14 @@ describe('modelPrice: 渠道显示名称解析', () => {
     assert.equal(channelDisplayName(null, null), '')
     assert.equal(channelDisplayName([], ''), '')
     assert.equal(channelDisplayName(channels, '   '), '')
+  })
+})
+
+describe('modelPrice: 渠道模型选择布局', () => {
+  it('空模型使用手动输入，单模型直接展示，多模型使用切换器', () => {
+    assert.equal(channelModelChoiceMode([]), 'manual')
+    assert.equal(channelModelChoiceMode(null), 'manual')
+    assert.equal(channelModelChoiceMode([{ id: 'm1' }]), 'single')
+    assert.equal(channelModelChoiceMode([{ id: 'm1' }, { id: 'm2' }]), 'multiple')
   })
 })
