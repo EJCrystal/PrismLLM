@@ -23,12 +23,12 @@ const emit = defineEmits(['close'])
 const protocols = computed(() => props.channel.protocols?.length
   ? props.channel.protocols
   : ['chat_completions'])
+const settings = ref(normalizeModelTestSettings(null))
 const form = reactive({
   protocol: protocols.value[0],
-  prompt: '',
-  reasoningEffort: '',
+  prompt: settings.value.defaultPrompt,
+  reasoningEffort: settings.value.defaultReasoningEffort,
 })
-const settings = ref(normalizeModelTestSettings(null))
 const loadingSettings = ref(true)
 const testing = ref(false)
 const result = ref(null)
