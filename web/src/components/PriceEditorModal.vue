@@ -24,7 +24,7 @@ import {
 } from '../utils/priceForm'
 import {
   clearedVersionHistoryState,
-  modelSelectionAction,
+  refreshedPriceToApply,
   resolveModelSelectionTarget,
 } from '../utils/modelSelection'
 import { formatPriceSummary, formatTime, formatUnitPrice } from '../utils/format'
@@ -57,7 +57,7 @@ let modelsRequestId = 0
 let referenceRequestId = 0
 let versionRequestId = 0
 let cancellationRequestId = 0
-let manuallyEnteredModel = false
+const manuallyEnteredModel = ref(false)
 
 const initialPrice = priceFormState(props.price)
 const form = reactive({
@@ -161,7 +161,7 @@ watch(
 watch(
   channelModelOptions,
   (models) => {
-    if (shouldSelectInitialModel(models, form.upstreamModel, manuallyEnteredModel)) {
+    if (shouldSelectInitialModel(models, form.upstreamModel, manuallyEnteredModel.value)) {
       selectChannelModel(models[0])
     }
   },
@@ -176,20 +176,27 @@ function applyExistingPrice(price) {
 }
 
 watch(
-  () => [form.channelId, form.upstreamModel, props.prices],
-  ([channelId, upstreamModel], previous) => {
-    const targetChanged = !previous || previous[0] !== channelId || previous[1] !== upstreamModel
+  () => [form.channelId, form.upstreamModel],
+  ([channelId, upstreamModel]) => {
     const target = resolveModelSelectionTarget(channelId, upstreamModel, props.prices)
     const existingPrice = target.price
-    const action = modelSelectionAction(existingPrice, activePrice.value, targetChanged)
-    if (action === 'load' && existingPrice) {
+    if (existingPrice) {
       applyExistingPrice(existingPrice)
-    } else if (action === 'clear') {
+    } else {
       activePrice.value = null
       Object.assign(form, target.draft)
     }
   },
   { immediate: true },
+)
+
+watch(
+  () => props.prices,
+  () => {
+    const target = resolveModelSelectionTarget(form.channelId, form.upstreamModel, props.prices)
+    const refreshedPrice = refreshedPriceToApply(target.price, activePrice.value)
+    if (refreshedPrice) applyExistingPrice(refreshedPrice)
+  },
 )
 
 function clearVersionHistory() {
@@ -203,7 +210,7 @@ function clearVersionHistory() {
 function selectChannelModel(model) {
   cancelReferenceLookup()
   clearVersionHistory()
-  manuallyEnteredModel = false
+  manuallyEnteredModel.value = false
   form.upstreamModel = model.id
 }
 
@@ -219,10 +226,14 @@ function startNewPrice() {
   activePrice.value = null
   clearVersionHistory()
   resetPriceForm(form)
-  manuallyEnteredModel = false
+  manuallyEnteredModel.value = false
   if (modelChoiceMode.value === 'single') {
     selectChannelModel(channelModelOptions.value[0])
   }
+}
+
+function markModelAsManuallyEntered() {
+  manuallyEnteredModel.value = true
 }
 
 async function toggleVersionHistory() {
@@ -529,7 +540,7 @@ async function applyBatch() {
             v-model="form.upstreamModel"
             placeholder="输入模型名"
             autocomplete="off"
-            @input="manuallyEnteredModel = true"
+            @input="markModelAsManuallyEntered"
           />
           <button type="button" class="button subtle mini" :disabled="fetchingReference || !form.upstreamModel.trim()" @click="fetchReferencePrice">
             {{ fetchingReference ? '查询中…' : '获取参考单价' }}
