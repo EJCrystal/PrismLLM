@@ -195,6 +195,22 @@ export function hasPriceDraft(form) {
         .some((field) => String(tier?.[field] ?? '').trim() !== '')))
 }
 
+/** True when the currently selected billing mode contains an entered price. */
+export function hasActivePriceDraft(form) {
+  const mode = form?.pricingMode || 'token'
+  if (mode === 'token') {
+    return ['inputPricePerMillion', 'outputPricePerMillion']
+      .some((field) => String(form?.[field] ?? '').trim() !== '')
+  }
+  if (mode === 'per_request') return String(form?.perRequestPrice ?? '').trim() !== ''
+  if (mode === 'tiered' || mode === 'volume') {
+    return Array.isArray(form?.priceTiers) && form.priceTiers.some((tier) =>
+      ['inputPricePerMillion', 'outputPricePerMillion', 'cachedInputPricePerMillion', 'cachedInputWritePricePerMillion']
+        .some((field) => String(tier?.[field] ?? '').trim() !== ''))
+  }
+  return false
+}
+
 /** Parse a required non-negative price field; blank or invalid input returns null. */
 export function parseNonNegativePrice(value) {
   const text = String(value ?? '').trim()
@@ -245,6 +261,11 @@ export function priceFormError(form, options = {}) {
         return '阶梯上限必须严格递增，最后一档留空表示不限'
       }
       if (!isLast) previous = Number(limit)
+      if (batchAction &&
+        (!String(tier.inputPricePerMillion ?? '').trim() || !String(tier.outputPricePerMillion ?? '').trim())
+      ) {
+        return '请先填写每档的输入和输出单价，再批量套用'
+      }
       if (parseNonNegativePrice(tier.inputPricePerMillion) == null || parseNonNegativePrice(tier.outputPricePerMillion) == null) {
         return '每档的输入和输出单价都必须是非负数字'
       }

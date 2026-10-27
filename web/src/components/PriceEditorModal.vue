@@ -11,6 +11,7 @@ import {
   existingPricePayload,
   emptyPriceDraft,
   hasPriceDraft,
+  hasActivePriceDraft,
   priceFormError,
   priceFormState,
   resetPriceForm,
@@ -55,7 +56,7 @@ const form = reactive({
 })
 
 const currentChannelName = computed(() => channelDisplayName(props.channels, form.channelId))
-const batchPriceSummary = computed(() => hasPriceDraft(form) ? formatPriceSummary(form) : '尚未填写价格')
+const batchPriceSummary = computed(() => hasActivePriceDraft(form) ? formatPriceSummary(form) : '尚未填写价格')
 
 function referenceDraftKey() {
   return [
