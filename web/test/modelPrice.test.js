@@ -6,6 +6,7 @@ import {
   channelModelPricingId,
   channelPriceSummaries,
   findDefaultModelPrice,
+  findDefaultPriceForModel,
   findModelPrice,
   isSamePriceTarget,
   pricesForChannel,
@@ -254,6 +255,16 @@ describe('modelPrice: 模型默认价与渠道覆盖', () => {
     assert.equal(options[0].defaultPrice, defaults[0])
     assert.equal(options[0].price, null)
     assert.equal(options[1].defaultPrice, defaults[1])
+  })
+
+  it('模型下拉在规范 ID 无默认价时回退上游模型默认价', () => {
+    const upstreamDefaults = [
+      { id: 'd3', modelId: 'deepseek-v4.1-flash', currency: 'USD', inputPricePerMillion: '0.2' },
+    ]
+    const models = [{ id: 'deepseek-v4.1-flash', canonicalModelId: 'deepseek-flash' }]
+    const options = channelModelPriceOptions(models, [], 'channel-a', upstreamDefaults)
+    assert.equal(options[0].defaultPrice, upstreamDefaults[0])
+    assert.equal(findDefaultPriceForModel(upstreamDefaults, 'deepseek-v4.1-flash', 'deepseek-flash'), upstreamDefaults[0])
   })
 })
 

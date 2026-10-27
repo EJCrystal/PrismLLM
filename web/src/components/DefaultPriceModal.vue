@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { formatUnitPrice } from '../utils/format'
@@ -25,6 +25,30 @@ const deletingId = ref(null)
 const fetchingReference = ref(false)
 const referenceHint = ref('')
 const form = reactive({ modelId: '', ...defaultPriceFormState(null) })
+let referenceRequestId = 0
+
+function referenceDraftKey() {
+  return [
+    activePrice.value?.id || '',
+    form.modelId.trim(),
+    form.currency,
+    form.inputPricePerMillion,
+    form.outputPricePerMillion,
+    form.cachedInputPricePerMillion,
+  ].join('\u0000')
+}
+
+function cancelReferenceLookup() {
+  referenceRequestId += 1
+  fetchingReference.value = false
+}
+
+watch(
+  () => form.modelId,
+  () => {
+    referenceHint.value = ''
+  },
+)
 
 const modelOptions = computed(() => {
   const entries = new Map()
@@ -63,12 +87,14 @@ const filteredModelOptions = computed(() => {
 })
 
 function applyPrice(price) {
+  cancelReferenceLookup()
   activePrice.value = price
   Object.assign(form, defaultPriceFormState(price))
   referenceHint.value = ''
 }
 
 function startNewPrice() {
+  cancelReferenceLookup()
   activePrice.value = null
   Object.assign(form, { modelId: '', ...defaultPriceFormState(null) })
   referenceHint.value = ''
@@ -87,10 +113,13 @@ async function fetchReferencePrice() {
   if (hasPriceDraft(form) && !window.confirm('获取参考价会用 USD 金额覆盖当前填写的单价和币种，是否继续？')) {
     return
   }
+  const requestId = ++referenceRequestId
+  const draftKey = referenceDraftKey()
   fetchingReference.value = true
   referenceHint.value = ''
   try {
     const res = await api.getModelPriceReference(modelName)
+    if (requestId !== referenceRequestId || draftKey !== referenceDraftKey()) return
     form.currency = 'USD'
     form.inputPricePerMillion = res.inputPricePerMillion
     form.outputPricePerMillion = res.outputPricePerMillion
@@ -98,9 +127,11 @@ async function fetchReferencePrice() {
     referenceHint.value = `已填入参考价（匹配: ${res.matchedModel}，来源: ${res.source}）`
     notify(`已填入「${res.matchedModel}」USD 参考单价`)
   } catch (cause) {
-    notify(cause.message || '未在参考库中找到该模型，请手动输入', 'warning')
+    if (requestId === referenceRequestId) {
+      notify(cause.message || '未在参考库中找到该模型，请手动输入', 'warning')
+    }
   } finally {
-    fetchingReference.value = false
+    if (requestId === referenceRequestId) fetchingReference.value = false
   }
 }
 

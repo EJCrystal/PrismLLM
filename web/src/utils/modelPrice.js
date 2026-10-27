@@ -23,6 +23,14 @@ export function findDefaultModelPrice(defaultPrices, modelId) {
   ) || null
 }
 
+/** Resolve a model default price by canonical ID first, then upstream model name. */
+export function findDefaultPriceForModel(defaultPrices, upstreamModel, canonicalModelId = null) {
+  const upstream = String(upstreamModel ?? '').trim()
+  const canonical = String(canonicalModelId ?? '').trim()
+  return findDefaultModelPrice(defaultPrices, canonical || upstream) ||
+    (canonical && canonical !== upstream ? findDefaultModelPrice(defaultPrices, upstream) : null)
+}
+
 /** Resolve the model ID used by model-level default pricing. */
 export function channelModelPricingId(channel, upstreamModel) {
   const model = String(upstreamModel ?? '').trim()
@@ -43,8 +51,11 @@ export function resolveChannelModelPrice(channel, upstreamModel, prices, default
     return { source: 'channel', price: channelPrice, modelId, defaultPrice: null }
   }
   const upstream = String(upstreamModel ?? '').trim()
-  const defaultPrice = findDefaultModelPrice(defaultPrices, modelId) ||
-    (upstream && upstream !== modelId ? findDefaultModelPrice(defaultPrices, upstream) : null)
+  const defaultPrice = findDefaultPriceForModel(
+    defaultPrices,
+    upstream,
+    modelId !== upstream ? modelId : null,
+  )
   if (defaultPrice) {
     return { source: 'default', price: defaultPrice, modelId, defaultPrice }
   }
@@ -73,10 +84,7 @@ export function channelModelPriceOptions(channelModels, prices, channelId, defau
   return (Array.isArray(channelModels) ? channelModels : []).map((model) => ({
     ...model,
     price: pricesByModel.get(String(model.id).trim()) || null,
-    defaultPrice: findDefaultModelPrice(
-      defaultPrices,
-      String(model.canonicalModelId ?? '').trim() || String(model.id ?? '').trim(),
-    ),
+    defaultPrice: findDefaultPriceForModel(defaultPrices, model.id, model.canonicalModelId),
   }))
 }
 
