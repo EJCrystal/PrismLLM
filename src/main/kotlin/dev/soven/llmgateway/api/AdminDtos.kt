@@ -6,8 +6,10 @@ import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.ModelPriceTier
+import dev.soven.llmgateway.domain.ModelPriceVersionRecord
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.domain.DefaultModelPriceRecord
+import dev.soven.llmgateway.domain.DefaultModelPriceVersionRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.quota.ClientKeyQuotaUsage
 import dev.soven.llmgateway.report.CleanupResult
@@ -480,6 +482,9 @@ data class ModelPriceRequest(
     val pricingMode: String = PricingMode.TOKEN.value,
     val perRequestPrice: String? = null,
     val priceTiers: List<ModelPriceTierRequest> = emptyList(),
+    val effectiveAt: Long? = null,
+    val preserveSchedule: Boolean = false,
+    val expectedScheduleId: String? = null,
 )
 
 @Serializable
@@ -498,6 +503,43 @@ data class ModelPriceTierResponse(
     val outputPricePerMillion: String,
     val cachedInputPricePerMillion: String? = null,
     val cachedInputWritePricePerMillion: String? = null,
+)
+
+@Serializable
+data class ModelPriceVersionResponse(
+    val id: String,
+    val channelId: String,
+    val upstreamModel: String,
+    val version: Int,
+    val currency: String,
+    val inputPricePerMillion: String,
+    val outputPricePerMillion: String,
+    val cachedInputPricePerMillion: String?,
+    val cachedInputWritePricePerMillion: String? = null,
+    val pricingMode: String = PricingMode.TOKEN.value,
+    val perRequestPrice: String? = null,
+    val priceTiers: List<ModelPriceTierResponse> = emptyList(),
+    val effectiveFrom: Long,
+    val status: String,
+    val createdAt: Long,
+)
+
+fun ModelPriceVersionRecord.toResponse() = ModelPriceVersionResponse(
+    id = id,
+    channelId = channelId,
+    upstreamModel = upstreamModel,
+    version = version,
+    currency = currency,
+    inputPricePerMillion = inputPricePerMillion.toPlainString(),
+    outputPricePerMillion = outputPricePerMillion.toPlainString(),
+    cachedInputPricePerMillion = cachedInputPricePerMillion?.toPlainString(),
+    cachedInputWritePricePerMillion = cachedInputWritePricePerMillion?.toPlainString(),
+    pricingMode = pricingMode.value,
+    perRequestPrice = perRequestPrice?.toPlainString(),
+    priceTiers = priceTiers.map { it.toResponse() },
+    effectiveFrom = effectiveFrom,
+    status = status,
+    createdAt = createdAt,
 )
 
 /**
@@ -520,11 +562,14 @@ data class ModelPriceResponse(
     val pricingMode: String = PricingMode.TOKEN.value,
     val perRequestPrice: String? = null,
     val priceTiers: List<ModelPriceTierResponse> = emptyList(),
+    val currentVersion: Int = 1,
+    val effectiveFrom: Long = 0L,
+    val scheduledVersion: ModelPriceVersionResponse? = null,
     val createdAt: Long,
     val updatedAt: Long,
 )
 
-fun ModelPriceRecord.toResponse() = ModelPriceResponse(
+fun ModelPriceRecord.toResponse(scheduledVersion: ModelPriceVersionRecord? = null) = ModelPriceResponse(
     id = id,
     channelId = channelId,
     channelName = channelName,
@@ -537,6 +582,9 @@ fun ModelPriceRecord.toResponse() = ModelPriceResponse(
     pricingMode = pricingMode.value,
     perRequestPrice = perRequestPrice?.toPlainString(),
     priceTiers = priceTiers.map { it.toResponse() },
+    currentVersion = currentVersion,
+    effectiveFrom = effectiveFrom,
+    scheduledVersion = scheduledVersion?.toResponse(),
     createdAt = createdAt,
     updatedAt = updatedAt,
 )
@@ -555,6 +603,44 @@ data class ModelDefaultPriceRequest(
     val pricingMode: String = PricingMode.TOKEN.value,
     val perRequestPrice: String? = null,
     val priceTiers: List<ModelPriceTierRequest> = emptyList(),
+    val effectiveAt: Long? = null,
+    val preserveSchedule: Boolean = false,
+    val expectedScheduleId: String? = null,
+)
+
+@Serializable
+data class ModelDefaultPriceVersionResponse(
+    val id: String,
+    val modelId: String,
+    val version: Int,
+    val currency: String,
+    val inputPricePerMillion: String,
+    val outputPricePerMillion: String,
+    val cachedInputPricePerMillion: String?,
+    val cachedInputWritePricePerMillion: String? = null,
+    val pricingMode: String = PricingMode.TOKEN.value,
+    val perRequestPrice: String? = null,
+    val priceTiers: List<ModelPriceTierResponse> = emptyList(),
+    val effectiveFrom: Long,
+    val status: String,
+    val createdAt: Long,
+)
+
+fun DefaultModelPriceVersionRecord.toResponse() = ModelDefaultPriceVersionResponse(
+    id = id,
+    modelId = modelId,
+    version = version,
+    currency = currency,
+    inputPricePerMillion = inputPricePerMillion.toPlainString(),
+    outputPricePerMillion = outputPricePerMillion.toPlainString(),
+    cachedInputPricePerMillion = cachedInputPricePerMillion?.toPlainString(),
+    cachedInputWritePricePerMillion = cachedInputWritePricePerMillion?.toPlainString(),
+    pricingMode = pricingMode.value,
+    perRequestPrice = perRequestPrice?.toPlainString(),
+    priceTiers = priceTiers.map { it.toResponse() },
+    effectiveFrom = effectiveFrom,
+    status = status,
+    createdAt = createdAt,
 )
 
 /**
@@ -572,11 +658,14 @@ data class ModelDefaultPriceResponse(
     val pricingMode: String = PricingMode.TOKEN.value,
     val perRequestPrice: String? = null,
     val priceTiers: List<ModelPriceTierResponse> = emptyList(),
+    val currentVersion: Int = 1,
+    val effectiveFrom: Long = 0L,
+    val scheduledVersion: ModelDefaultPriceVersionResponse? = null,
     val createdAt: Long,
     val updatedAt: Long,
 )
 
-fun DefaultModelPriceRecord.toResponse() = ModelDefaultPriceResponse(
+fun DefaultModelPriceRecord.toResponse(scheduledVersion: DefaultModelPriceVersionRecord? = null) = ModelDefaultPriceResponse(
     id = id,
     modelId = modelId,
     currency = currency,
@@ -587,6 +676,9 @@ fun DefaultModelPriceRecord.toResponse() = ModelDefaultPriceResponse(
     pricingMode = pricingMode.value,
     perRequestPrice = perRequestPrice?.toPlainString(),
     priceTiers = priceTiers.map { it.toResponse() },
+    currentVersion = currentVersion,
+    effectiveFrom = effectiveFrom,
+    scheduledVersion = scheduledVersion?.toResponse(),
     createdAt = createdAt,
     updatedAt = updatedAt,
 )
@@ -606,6 +698,7 @@ data class ModelPriceBatchRequest(
     val pricingMode: String = PricingMode.TOKEN.value,
     val perRequestPrice: String? = null,
     val priceTiers: List<ModelPriceTierRequest> = emptyList(),
+    val effectiveAt: Long? = null,
 )
 
 private fun ModelPriceTier.toResponse() = ModelPriceTierResponse(
@@ -684,6 +777,8 @@ data class RequestLogResponse(
     val pricingMode: String = PricingMode.TOKEN.value,
     val perRequestPrice: String? = null,
     val priceTiers: List<ModelPriceTierResponse> = emptyList(),
+    val priceVersion: Int? = null,
+    val priceVersionId: String? = null,
     val errorCode: String?,
     val failureStage: String?,
     val errorMessage: String?,
@@ -724,6 +819,8 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     pricingMode = pricingMode.value,
     perRequestPrice = perRequestPrice?.toPlainString(),
     priceTiers = priceTiers.map { it.toResponse() },
+    priceVersion = priceVersion,
+    priceVersionId = priceVersionId,
     errorCode = errorCode,
     failureStage = failureStage?.value,
     errorMessage = errorMessage,

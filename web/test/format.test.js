@@ -9,6 +9,8 @@ import {
   formatUnitPrice,
   formatPriceSummary,
   formatPriceSnapshot,
+  toLocalInput,
+  fromLocalInput,
 } from '../src/utils/format.js'
 
 describe('utils: format 格式化工具函数库', () => {
@@ -181,6 +183,24 @@ describe('utils: format 格式化工具函数库', () => {
         { label: '每次请求', value: '0.04 USD' },
       ])
       assert.deepEqual(formatPriceSnapshot(null), [])
+    })
+  })
+
+  describe('toLocalInput & fromLocalInput', () => {
+    it('时间戳与本地 datetime-local 格式安全往返转换', () => {
+      const now = 1792942800000
+      const localStr = toLocalInput(now)
+      assert.match(localStr, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
+      const roundTrip = fromLocalInput(localStr)
+      assert.equal(typeof roundTrip, 'number')
+      assert.ok(Math.abs(roundTrip - now) <= 60_000)
+    })
+
+    it('空值与无效值安全处理', () => {
+      assert.equal(toLocalInput(null), '')
+      assert.equal(toLocalInput('invalid'), '')
+      assert.equal(fromLocalInput(null), null)
+      assert.equal(fromLocalInput(''), null)
     })
   })
 })

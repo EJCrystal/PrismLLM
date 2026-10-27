@@ -290,21 +290,47 @@ describe('modelPrice: 模型默认价与渠道覆盖', () => {
     assert.equal(findDefaultPriceForModel(upstreamDefaults, 'deepseek-v4.1-flash', 'deepseek-flash'), upstreamDefaults[0])
   })
 
-  it('默认价候选同时收集映射、授权模型和已有默认价', () => {
+  it('默认价候选收集渠道映射与授权模型，并排除已配置默认价的模型', () => {
     const channels = [
       {
         id: 'c1',
         name: '渠道一',
-        models: ['mapped-model', 'plain-model', '  '],
+        models: ['mapped-model', 'plain-model', 'unconfigured-model', '  '],
         modelMappings: [{ upstreamModel: 'mapped-model', canonicalModelId: 'mapped-canonical' }],
       },
       null,
     ]
-    const prices = [{ id: 'd1', modelId: ' legacy-model ' }]
+    const prices = [{ id: 'd1', modelId: 'plain-model' }]
     const options = defaultPriceModelOptions(channels, prices)
-    assert.deepEqual(options.map((option) => option.id), ['legacy-model', 'mapped-canonical', 'plain-model'])
-    assert.deepEqual(options[1].upstreamModels, ['mapped-model'])
-    assert.deepEqual(options[1].channelNames, ['渠道一'])
+    assert.deepEqual(options.map((option) => option.id), ['mapped-canonical', 'unconfigured-model'])
+    assert.deepEqual(options[0].upstreamModels, ['mapped-model'])
+    assert.deepEqual(options[0].channelNames, ['渠道一'])
+  })
+
+  it('编辑已有默认价时候选列表允许保留当前正在编辑的模型', () => {
+    const channels = [
+      {
+        id: 'c1',
+        name: '渠道一',
+        models: ['plain-model', 'other-model'],
+      },
+    ]
+    const prices = [{ id: 'd1', modelId: 'plain-model' }, { id: 'd2', modelId: 'other-model' }]
+    const options = defaultPriceModelOptions(channels, prices, 'plain-model')
+    assert.deepEqual(options.map((option) => option.id), ['plain-model'])
+  })
+
+  it('排除已配置默认价时忽略大小写与首尾空白', () => {
+    const channels = [
+      {
+        id: 'c1',
+        name: '渠道一',
+        models: ['deepseek-flash', 'qwen-flash'],
+      },
+    ]
+    const prices = [{ id: 'd1', modelId: '  DEEPSEEK-FLASH  ' }]
+    const options = defaultPriceModelOptions(channels, prices)
+    assert.deepEqual(options.map((option) => option.id), ['qwen-flash'])
   })
 
   it('默认价候选对异常输入安全返回', () => {

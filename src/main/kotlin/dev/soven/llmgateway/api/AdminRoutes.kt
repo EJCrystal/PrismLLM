@@ -546,12 +546,20 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/model-prices") {
             call.requireAdmin(app)
-            call.respond(app.modelPriceRepository.list().map { it.toResponse() })
+            val prices = app.modelPriceRepository.list().map { price ->
+                val scheduled = app.modelPriceRepository.findScheduled(price.channelId, price.upstreamModel)
+                price.toResponse(scheduled)
+            }
+            call.respond(prices)
         }
 
         get("/model-default-prices") {
             call.requireAdmin(app)
-            call.respond(app.modelDefaultPriceRepository.list().map { it.toResponse() })
+            val prices = app.modelDefaultPriceRepository.list().map { price ->
+                val scheduled = app.modelDefaultPriceRepository.findScheduled(price.modelId)
+                price.toResponse(scheduled)
+            }
+            call.respond(prices)
         }
 
         post("/model-default-prices") {
@@ -571,8 +579,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 pricingMode = price.values.pricingMode,
                 perRequestPrice = price.values.perRequest,
                 priceTiers = price.values.priceTiers,
+                effectiveAt = price.values.effectiveAt,
             ) ?: throw conflict("model_default_price_exists", "该模型的默认单价已存在")
-            call.respond(HttpStatusCode.Created, record.toResponse())
+            val scheduled = app.modelDefaultPriceRepository.findScheduled(record.modelId)
+            call.respond(HttpStatusCode.Created, record.toResponse(scheduled))
         }
 
         put("/model-default-prices/{id}") {
@@ -580,7 +590,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val id = call.requiredParam("id", "缺少默认价 id")
             val request = call.receive<ModelDefaultPriceRequest>()
             val price = validateDefaultModelPrice(request)
-            app.modelDefaultPriceRepository.findById(id) ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            val existing = app.modelDefaultPriceRepository.findById(id) ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            if (existing.modelId != price.modelId) {
+                throw badRequest("model_default_price_model_immutable", "已存在的默认单价不可修改模型 ID，请新建或删除后重新配置")
+            }
+            if (price.values.preserveSchedule && app.modelDefaultPriceRepository.findScheduled(existing.modelId) == null) {
+                throw badRequest("model_default_price_schedule_not_found", "该默认价当前没有可保留的定时版本")
+            }
             val updated = try {
                 app.modelDefaultPriceRepository.update(
                     id = id,
@@ -593,14 +609,40 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     pricingMode = price.values.pricingMode,
                     perRequestPrice = price.values.perRequest,
                     priceTiers = price.values.priceTiers,
+                    effectiveAt = price.values.effectiveAt,
+                    preserveSchedule = price.values.preserveSchedule,
+                    expectedScheduleId = price.values.expectedScheduleId,
                 )
-            } catch (cause: Exception) {
+            } catch (cause: Throwable) {
                 if (isUniqueViolation(cause)) {
                     throw conflict("model_default_price_exists", "该模型的默认单价已存在")
                 }
                 throw cause
-            } ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
-            call.respond(updated.toResponse())
+            } ?: if (price.values.preserveSchedule && price.values.expectedScheduleId != null) {
+                throw conflict("model_default_price_schedule_changed", "定时版本已发生变化，请刷新后重试")
+            } else {
+                throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            }
+            val scheduled = app.modelDefaultPriceRepository.findScheduled(updated.modelId)
+            call.respond(updated.toResponse(scheduled))
+        }
+
+        get("/model-default-prices/{id}/versions") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少默认价 id")
+            val price = app.modelDefaultPriceRepository.findById(id)
+                ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            val versions = app.modelDefaultPriceRepository.listVersions(price.modelId)
+            call.respond(versions.map { it.toResponse() })
+        }
+
+        delete("/model-default-price-versions/{id}") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少版本 id")
+            if (!app.modelDefaultPriceRepository.deleteVersion(id)) {
+                throw notFound("model_default_price_version_not_found", "模型默认单价版本不存在")
+            }
+            call.respond(HttpStatusCode.NoContent)
         }
 
         delete("/model-default-prices/{id}") {
@@ -627,6 +669,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 pricingMode = batch.values.pricingMode,
                 perRequestPrice = batch.values.perRequest,
                 priceTiers = batch.values.priceTiers,
+                effectiveAt = batch.values.effectiveAt,
             )
             call.respond(records.map { it.toResponse() })
         }
@@ -649,8 +692,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 pricingMode = price.values.pricingMode,
                 perRequestPrice = price.values.perRequest,
                 priceTiers = price.values.priceTiers,
-            )
-            call.respond(HttpStatusCode.Created, record.toResponse())
+                effectiveAt = price.values.effectiveAt,
+            ) ?: throw conflict("model_price_exists", "该渠道和上游模型的计费单价已存在")
+            val scheduled = app.modelPriceRepository.findScheduled(record.channelId, record.upstreamModel)
+            call.respond(HttpStatusCode.Created, record.toResponse(scheduled))
         }
 
         put("/model-prices/{id}") {
@@ -658,10 +703,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val id = call.requiredParam("id", "缺少价格 id")
             val request = call.receive<ModelPriceRequest>()
             val price = validateModelPrice(app, request)
-            app.modelPriceRepository.findById(id) ?: throw notFound("model_price_not_found", "计费单价不存在")
-            val duplicate = app.modelPriceRepository.find(price.channelId, price.upstreamModel)
-            if (duplicate != null && duplicate.id != id) {
-                throw conflict("model_price_exists", "该渠道和上游模型的计费单价已存在")
+            val existing = app.modelPriceRepository.findById(id) ?: throw notFound("model_price_not_found", "计费单价不存在")
+            if (existing.channelId != price.channelId || existing.upstreamModel != price.upstreamModel) {
+                throw badRequest("model_price_key_immutable", "已存在的单价不可修改渠道或上游模型，请新建或删除后重新配置")
+            }
+            if (price.values.preserveSchedule && app.modelPriceRepository.findScheduled(existing.channelId, existing.upstreamModel) == null) {
+                throw badRequest("model_price_schedule_not_found", "该计费单价当前没有可保留的定时版本")
             }
             val updated = app.modelPriceRepository.update(
                 id = id,
@@ -675,8 +722,33 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 pricingMode = price.values.pricingMode,
                 perRequestPrice = price.values.perRequest,
                 priceTiers = price.values.priceTiers,
-            ) ?: throw notFound("model_price_not_found", "计费单价不存在")
-            call.respond(updated.toResponse())
+                effectiveAt = price.values.effectiveAt,
+                preserveSchedule = price.values.preserveSchedule,
+                expectedScheduleId = price.values.expectedScheduleId,
+            ) ?: if (price.values.preserveSchedule && price.values.expectedScheduleId != null) {
+                throw conflict("model_price_schedule_changed", "定时版本已发生变化，请刷新后重试")
+            } else {
+                throw notFound("model_price_not_found", "计费单价不存在")
+            }
+            val scheduled = app.modelPriceRepository.findScheduled(updated.channelId, updated.upstreamModel)
+            call.respond(updated.toResponse(scheduled))
+        }
+
+        get("/channels/{channelId}/model-prices/{model}/versions") {
+            call.requireAdmin(app)
+            val channelId = call.requiredParam("channelId", "缺少渠道 id")
+            val model = call.requiredParam("model", "缺少模型名")
+            val versions = app.modelPriceRepository.listVersions(channelId, model)
+            call.respond(versions.map { it.toResponse() })
+        }
+
+        delete("/model-price-versions/{id}") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少版本 id")
+            if (!app.modelPriceRepository.deleteVersion(id)) {
+                throw notFound("model_price_version_not_found", "计费单价版本不存在")
+            }
+            call.respond(HttpStatusCode.NoContent)
         }
 
         delete("/model-prices/{id}") {
@@ -917,6 +989,9 @@ private data class ValidatedPriceValues(
     val pricingMode: PricingMode,
     val perRequest: BigDecimal?,
     val priceTiers: List<ModelPriceTier>,
+    val effectiveAt: Long? = null,
+    val preserveSchedule: Boolean = false,
+    val expectedScheduleId: String? = null,
 )
 
 private data class ValidatedModelPrice(
@@ -952,6 +1027,9 @@ private fun validateDefaultModelPrice(request: ModelDefaultPriceRequest): Valida
             request.pricingMode,
             request.perRequestPrice,
             request.priceTiers,
+            request.effectiveAt,
+            request.preserveSchedule,
+            request.expectedScheduleId,
         ),
     )
 }
@@ -990,6 +1068,7 @@ private suspend fun validateModelPriceBatch(
             request.pricingMode,
             request.perRequestPrice,
             request.priceTiers,
+            request.effectiveAt,
         ),
     )
 }
@@ -1019,6 +1098,9 @@ private suspend fun validateModelPrice(
             request.pricingMode,
             request.perRequestPrice,
             request.priceTiers,
+            request.effectiveAt,
+            request.preserveSchedule,
+            request.expectedScheduleId,
         ),
     )
 }
@@ -1032,6 +1114,9 @@ private fun validatePriceValues(
     modeValue: String,
     perRequestValue: String?,
     tierValues: List<ModelPriceTierRequest>,
+    effectiveAtValue: Long? = null,
+    preserveSchedule: Boolean = false,
+    expectedScheduleId: String? = null,
 ): ValidatedPriceValues {
     val mode = PricingMode.entries.firstOrNull { it.value == modeValue }
         ?: throw badRequest("invalid_model_price", "计费方式无效")
@@ -1088,6 +1173,9 @@ private fun validatePriceValues(
         pricingMode = mode,
         perRequest = perRequest,
         priceTiers = tiers,
+        effectiveAt = effectiveAtValue?.takeIf { it > 0 },
+        preserveSchedule = preserveSchedule,
+        expectedScheduleId = expectedScheduleId,
     )
 }
 

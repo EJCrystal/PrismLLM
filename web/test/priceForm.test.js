@@ -225,4 +225,143 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(tieredPayload.priceTiers[0].cachedInputPricePerMillion, '0.5')
     assert.equal(tieredPayload.priceTiers[1].upToTokens, null)
   })
+
+  it('校验定时生效时间必填且必须为未来时间', () => {
+    assert.equal(
+      priceFormError({ pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2', isScheduled: true, effectiveAt: '' }),
+      '请选择定时生效时间',
+    )
+    assert.equal(
+      priceFormError({ pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2', isScheduled: true, effectiveAt: '2020-01-01T00:00' }),
+      '定时生效时间必须是未来的时间',
+    )
+    assert.equal(
+      priceFormError({ pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2', isScheduled: true, effectiveAt: '2099-01-01T00:00' }),
+      null,
+    )
+  })
+
+  it('构建定时生效请求体', () => {
+    const scheduledPayload = buildPricePayload({
+      currency: 'USD',
+      pricingMode: 'token',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      isScheduled: true,
+      effectiveAt: '2099-01-01T12:00',
+    }, 'channel-1', 'm1')
+    assert.equal(typeof scheduledPayload.effectiveAt, 'number')
+    assert.ok(scheduledPayload.effectiveAt > Date.now())
+
+    const immediatePayload = buildPricePayload({
+      currency: 'USD',
+      pricingMode: 'token',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      isScheduled: false,
+      effectiveAt: '2099-01-01T12:00',
+    }, 'channel-1', 'm1')
+    assert.equal(immediatePayload.effectiveAt, null)
+  })
+
+  it('重新打开已有计划版本时回填计划金额，避免用当前价覆盖计划', () => {
+    const form = priceFormState({
+      currency: 'USD',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      scheduledVersion: {
+        effectiveFrom: Date.now() + 3_600_000,
+        currency: 'USD',
+        inputPricePerMillion: '3',
+        outputPricePerMillion: '4',
+        pricingMode: 'token',
+      },
+    })
+    assert.equal(form.isScheduled, true)
+    assert.equal(form.inputPricePerMillion, '3')
+    assert.equal(form.outputPricePerMillion, '4')
+  })
+
+  it('仅在计划金额和生效时间都未修改时保留原排期', () => {
+    const effectiveFrom = Date.now() + 3_600_000
+    const loaded = priceFormState({
+      currency: 'USD',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      scheduledVersion: {
+        effectiveFrom,
+        currency: 'USD',
+        inputPricePerMillion: '3',
+        outputPricePerMillion: '4',
+        pricingMode: 'token',
+      },
+    })
+    assert.equal(buildPricePayload(loaded, 'c', 'm').preserveSchedule, true)
+    assert.equal(buildPricePayload({ ...loaded, inputPricePerMillion: '5' }, 'c', 'm').preserveSchedule, false)
+    assert.equal(buildPricePayload({ ...loaded, isScheduled: false }, 'c', 'm').preserveSchedule, false)
+  })
+
+  it('编辑计划金额或时间时提交真实排期更新', () => {
+    const effectiveFrom = Date.now() + 3_600_000
+    const loaded = priceFormState({
+      currency: 'USD',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      scheduledVersion: {
+        effectiveFrom,
+        currency: 'USD',
+        inputPricePerMillion: '3',
+        outputPricePerMillion: '4',
+        pricingMode: 'token',
+      },
+    })
+    const changedAmount = buildPricePayload({ ...loaded, inputPricePerMillion: '5' }, 'c', 'm')
+    assert.equal(changedAmount.preserveSchedule, false)
+    assert.equal(changedAmount.inputPricePerMillion, '5')
+    const changedTime = buildPricePayload({ ...loaded, effectiveAt: '2099-01-01T00:00' }, 'c', 'm')
+    assert.equal(changedTime.preserveSchedule, false)
+    assert.ok(changedTime.effectiveAt > Date.now())
+  })
+
+  it('计划未设置缓存价时不会继承当前价的缓存覆盖', () => {
+    const loaded = priceFormState({
+      currency: 'USD',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      cachedInputPricePerMillion: '0.5',
+      scheduledVersion: {
+        effectiveFrom: Date.now() + 3_600_000,
+        currency: 'USD',
+        inputPricePerMillion: '3',
+        outputPricePerMillion: '4',
+        cachedInputPricePerMillion: null,
+        pricingMode: 'token',
+      },
+    })
+    assert.equal(loaded.cachedInputPricePerMillion, '')
+    assert.equal(buildPricePayload(loaded, 'c', 'm').preserveSchedule, true)
+  })
+
+  it('带版本 ID 的计划未修改时仍保留原计划和并发校验标识', () => {
+    const loaded = priceFormState({
+      currency: 'USD',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      scheduledVersion: {
+        id: 'schedule-1',
+        effectiveFrom: Date.now() + 3_600_000,
+        currency: 'USD',
+        inputPricePerMillion: '3',
+        outputPricePerMillion: '4',
+        pricingMode: 'token',
+      },
+    })
+    const payload = buildPricePayload(loaded, 'c', 'm')
+    assert.equal(payload.preserveSchedule, true)
+    assert.equal(payload.expectedScheduleId, 'schedule-1')
+    const changed = buildPricePayload({ ...loaded, outputPricePerMillion: '9' }, 'c', 'm')
+    assert.equal(changed.preserveSchedule, false)
+    assert.equal(changed.expectedScheduleId, null)
+  })
+
 })

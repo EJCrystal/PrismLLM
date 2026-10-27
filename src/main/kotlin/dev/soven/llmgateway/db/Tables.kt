@@ -147,6 +147,8 @@ object ModelPrices : Table("model_prices") {
     val pricingMode = varchar("pricing_mode", 20).default("token")
     val perRequestPrice = decimal("per_request_price", 18, 8).nullable()
     val priceTiersJson = text("price_tiers_json").default("[]")
+    val currentVersion = integer("current_version").default(1)
+    val effectiveFrom = long("effective_from").default(0L)
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
 
@@ -170,10 +172,65 @@ object ModelDefaultPrices : Table("model_default_prices") {
     val pricingMode = varchar("pricing_mode", 20).default("token")
     val perRequestPrice = decimal("per_request_price", 18, 8).nullable()
     val priceTiersJson = text("price_tiers_json").default("[]")
+    val currentVersion = integer("current_version").default(1)
+    val effectiveFrom = long("effective_from").default(0L)
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
 
     override val primaryKey = PrimaryKey(id)
+}
+
+/**
+ * 渠道模型单价的历史与定时生效版本。
+ */
+object ModelPriceVersions : Table("model_price_versions") {
+    val id = varchar("id", 36)
+    val channelId = varchar("channel_id", 36).references(Channels.id, onDelete = ReferenceOption.CASCADE)
+    val upstreamModel = varchar("upstream_model", 200)
+    val version = integer("version")
+    val currency = varchar("currency", 8)
+    val inputPricePerMillion = decimal("input_price_per_million", 18, 8)
+    val outputPricePerMillion = decimal("output_price_per_million", 18, 8)
+    val cachedInputPricePerMillion = decimal("cached_input_price_per_million", 18, 8).nullable()
+    val cachedInputWritePricePerMillion = decimal("cached_input_write_price_per_million", 18, 8).nullable()
+    val pricingMode = varchar("pricing_mode", 20).default("token")
+    val perRequestPrice = decimal("per_request_price", 18, 8).nullable()
+    val priceTiersJson = text("price_tiers_json").default("[]")
+    val effectiveFrom = long("effective_from")
+    val status = varchar("status", 20).default("active")
+    val createdAt = long("created_at")
+
+    override val primaryKey = PrimaryKey(id)
+    init {
+        uniqueIndex(channelId, upstreamModel, version)
+        index(false, channelId, upstreamModel, effectiveFrom)
+    }
+}
+
+/**
+ * 模型默认单价的历史与定时生效版本。
+ */
+object ModelDefaultPriceVersions : Table("model_default_price_versions") {
+    val id = varchar("id", 36)
+    val modelId = varchar("model_id", 200)
+    val version = integer("version")
+    val currency = varchar("currency", 8)
+    val inputPricePerMillion = decimal("input_price_per_million", 18, 8)
+    val outputPricePerMillion = decimal("output_price_per_million", 18, 8)
+    val cachedInputPricePerMillion = decimal("cached_input_price_per_million", 18, 8).nullable()
+    val cachedInputWritePricePerMillion = decimal("cached_input_write_price_per_million", 18, 8).nullable()
+    val pricingMode = varchar("pricing_mode", 20).default("token")
+    val perRequestPrice = decimal("per_request_price", 18, 8).nullable()
+    val priceTiersJson = text("price_tiers_json").default("[]")
+    val effectiveFrom = long("effective_from")
+    val status = varchar("status", 20).default("active")
+    val createdAt = long("created_at")
+
+    override val primaryKey = PrimaryKey(id)
+    init {
+        uniqueIndex(modelId, version)
+        index(false, modelId, effectiveFrom)
+    }
 }
 
 /**
@@ -264,6 +321,8 @@ object RequestLogs : Table("request_logs") {
     val pricingMode = varchar("pricing_mode", 20).default("token")
     val perRequestPrice = decimal("per_request_price", 18, 8).nullable()
     val priceTiersJson = text("price_tiers_json").default("[]")
+    val priceVersion = integer("price_version").nullable()
+    val priceVersionId = varchar("price_version_id", 36).nullable()
     val errorCode = varchar("error_code", 100).nullable()
     val failureStage = varchar("failure_stage", 20).nullable()
     val errorMessage = text("error_message").nullable()

@@ -120,6 +120,10 @@ export const api = {
     request(`/model-prices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   batchUpsertModelPrices: (payload) =>
     request('/model-prices/batch', { method: 'POST', body: JSON.stringify(payload) }),
+  listModelPriceVersions: (channelId, model) =>
+    request(`/channels/${encodeURIComponent(channelId)}/model-prices/${encodeURIComponent(model)}/versions`),
+  deleteModelPriceVersion: (versionId) =>
+    request(`/model-price-versions/${encodeURIComponent(versionId)}`, { method: 'DELETE' }),
 
   listModelDefaultPrices: () => request('/model-default-prices'),
   createModelDefaultPrice: (payload) =>
@@ -128,6 +132,10 @@ export const api = {
     request(`/model-default-prices/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteModelDefaultPrice: (id) =>
     request(`/model-default-prices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  listModelDefaultPriceVersions: (id) =>
+    request(`/model-default-prices/${encodeURIComponent(id)}/versions`),
+  deleteModelDefaultPriceVersion: (versionId) =>
+    request(`/model-default-price-versions/${encodeURIComponent(versionId)}`, { method: 'DELETE' }),
 
   listRequestLogs: ({ limit = 100, beforeId = null } = {}) => {
     const params = new URLSearchParams({ limit: String(limit) })

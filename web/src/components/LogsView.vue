@@ -466,7 +466,10 @@ onMounted(load)
                 <strong v-else>{{ selected.usageKnown ? '未配置' : '—' }}</strong>
               </div>
               <div v-if="selected.costAmount != null" class="detail-block detail-price-snapshot">
-                <span>计费单价快照 · {{ formatPriceSummary(selected) }}</span>
+                <span>
+                  计费单价快照 · {{ formatPriceSummary(selected) }}
+                  <span v-if="selected.priceVersion" class="badge muted small">v{{ selected.priceVersion }}</span>
+                </span>
                 <dl class="detail-price-list">
                   <div v-for="item in formatPriceSnapshot(selected)" :key="item.label" class="detail-price-row">
                     <dt>{{ item.label }}</dt>

@@ -1,15 +1,77 @@
+import { fromLocalInput, toLocalInput } from './format.js'
+
 /** Build the editable price form and payload without silently changing its currency. */
 export function priceFormState(price) {
+  const scheduled = price?.scheduledVersion || null
+  const scheduledTime = scheduled?.effectiveFrom && scheduled.effectiveFrom > Date.now()
+    ? scheduled.effectiveFrom
+    : null
   return {
-    currency: price?.currency || 'USD',
-    inputPricePerMillion: price?.inputPricePerMillion ?? '',
-    outputPricePerMillion: price?.outputPricePerMillion ?? '',
-    cachedInputPricePerMillion: price?.cachedInputPricePerMillion ?? '',
-    cachedInputWritePricePerMillion: price?.cachedInputWritePricePerMillion ?? '',
-    pricingMode: price?.pricingMode || 'token',
-    perRequestPrice: price?.perRequestPrice ?? '',
-    priceTiers: Array.isArray(price?.priceTiers) ? price.priceTiers.map(priceTierFormState) : [],
+    currency: scheduled?.currency || price?.currency || 'USD',
+    inputPricePerMillion: scheduled?.inputPricePerMillion ?? price?.inputPricePerMillion ?? '',
+    outputPricePerMillion: scheduled?.outputPricePerMillion ?? price?.outputPricePerMillion ?? '',
+    cachedInputPricePerMillion: scheduled ? (scheduled.cachedInputPricePerMillion ?? '') : (price?.cachedInputPricePerMillion ?? ''),
+    cachedInputWritePricePerMillion: scheduled ? (scheduled.cachedInputWritePricePerMillion ?? '') : (price?.cachedInputWritePricePerMillion ?? ''),
+    pricingMode: scheduled?.pricingMode || price?.pricingMode || 'token',
+    perRequestPrice: scheduled?.perRequestPrice ?? price?.perRequestPrice ?? '',
+    priceTiers: Array.isArray(scheduled?.priceTiers)
+      ? scheduled.priceTiers.map(priceTierFormState)
+      : Array.isArray(price?.priceTiers) ? price.priceTiers.map(priceTierFormState) : [],
+    isScheduled: Boolean(scheduledTime),
+    effectiveAt: scheduledTime ? toLocalInput(scheduledTime) : '',
+    scheduledSnapshot: scheduledTime ? scheduleSnapshot({
+      ...price?.scheduledVersion,
+      effectiveFrom: fromLocalInput(toLocalInput(scheduledTime)),
+    }) : null,
+    scheduledId: scheduledTime ? (price?.scheduledVersion?.id ?? null) : null,
   }
+}
+
+/** Stable comparison key for a pending scheduled price. */
+export function scheduleSnapshot(value) {
+  if (!value) return null
+  return JSON.stringify({
+    effectiveFrom: Number(value.effectiveFrom || 0),
+    currency: value.currency || '',
+    inputPricePerMillion: value.inputPricePerMillion ?? '',
+    outputPricePerMillion: value.outputPricePerMillion ?? '',
+    cachedInputPricePerMillion: value.cachedInputPricePerMillion ?? '',
+    cachedInputWritePricePerMillion: value.cachedInputWritePricePerMillion ?? '',
+    pricingMode: value.pricingMode || '',
+    perRequestPrice: value.perRequestPrice ?? '',
+    priceTiers: normalizeSnapshotTiers(value.priceTiers, value.pricingMode),
+  })
+}
+
+function normalizeSnapshotTiers(tiers, pricingMode) {
+  if (!['tiered', 'volume'].includes(pricingMode)) return []
+  return (Array.isArray(tiers) ? tiers : []).map((tier) => {
+    const limit = String(tier?.upToTokens ?? '').trim()
+    return {
+      upToTokens: limit ? Number(limit) : null,
+      inputPricePerMillion: String(tier?.inputPricePerMillion ?? '').trim(),
+      outputPricePerMillion: String(tier?.outputPricePerMillion ?? '').trim(),
+      cachedInputPricePerMillion: String(tier?.cachedInputPricePerMillion ?? '').trim() || null,
+      cachedInputWritePricePerMillion: String(tier?.cachedInputWritePricePerMillion ?? '').trim() || null,
+    }
+  })
+}
+
+/** True only when the user has not altered the loaded pending schedule. */
+export function isUnchangedSchedule(form) {
+  if (!form?.scheduledSnapshot || !form.isScheduled || !form.effectiveAt) return false
+  const current = scheduleSnapshot({
+    currency: form.currency,
+    inputPricePerMillion: form.inputPricePerMillion,
+    outputPricePerMillion: form.outputPricePerMillion,
+    cachedInputPricePerMillion: form.cachedInputPricePerMillion,
+    cachedInputWritePricePerMillion: form.cachedInputWritePricePerMillion,
+    pricingMode: form.pricingMode,
+    perRequestPrice: form.perRequestPrice,
+    priceTiers: priceTiersPayload(form),
+    effectiveFrom: fromLocalInput(form.effectiveAt),
+  })
+  return current === form.scheduledSnapshot
 }
 
 function priceTierFormState(tier) {
@@ -52,6 +114,11 @@ function pricingPayload(form) {
       ? String(form?.perRequestPrice ?? '').trim() || null
       : null,
     priceTiers: priceTiersPayload(form),
+    effectiveAt: form?.isScheduled && form?.effectiveAt ? fromLocalInput(form.effectiveAt) : null,
+    preserveSchedule: isUnchangedSchedule(form),
+    expectedScheduleId: isUnchangedSchedule(form)
+      ? form.scheduledId
+      : null,
   }
 }
 
@@ -92,6 +159,14 @@ export function buildBatchPricePayload(form, channelId, upstreamModels) {
   }
 }
 
+export function existingPricePayload(form, channelId, upstreamModel) {
+  return buildPricePayload(form, channelId, upstreamModel)
+}
+
+export function existingDefaultPricePayload(form, modelId) {
+  return buildDefaultPricePayload(form, modelId)
+}
+
 /** Reset the draft when the selected channel/model has no saved price. */
 export function emptyPriceDraft() {
   return {
@@ -103,6 +178,10 @@ export function emptyPriceDraft() {
     pricingMode: 'token',
     perRequestPrice: '',
     priceTiers: [],
+    scheduledSnapshot: null,
+    scheduledId: null,
+    isScheduled: false,
+    effectiveAt: '',
   }
 }
 
@@ -170,6 +249,11 @@ export function priceFormError(form) {
     if (String(form[field] ?? '').trim() && parseOptionalNonNegativePrice(form[field]) == null) {
       return field === 'cachedInputPricePerMillion' ? '缓存读取单价必须是非负数字' : '缓存写入单价必须是非负数字'
     }
+  }
+  if (form?.isScheduled) {
+    const effectiveAtMs = fromLocalInput(form.effectiveAt)
+    if (!effectiveAtMs) return '请选择定时生效时间'
+    if (effectiveAtMs <= Date.now()) return '定时生效时间必须是未来的时间'
   }
   return null
 }

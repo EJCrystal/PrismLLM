@@ -123,9 +123,11 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "POST" && path == "/admin/api/model-prices/batch" -> "model_price.batch"
     method == "PUT" && MODEL_PRICE_ITEM_PATTERN.matches(path) -> "model_price.update"
     method == "DELETE" && MODEL_PRICE_ITEM_PATTERN.matches(path) -> "model_price.delete"
+    method == "DELETE" && MODEL_PRICE_VERSION_ITEM_PATTERN.matches(path) -> "model_price_version.delete"
     method == "POST" && path == "/admin/api/model-default-prices" -> "model_default_price.create"
     method == "PUT" && MODEL_DEFAULT_PRICE_ITEM_PATTERN.matches(path) -> "model_default_price.update"
     method == "DELETE" && MODEL_DEFAULT_PRICE_ITEM_PATTERN.matches(path) -> "model_default_price.delete"
+    method == "DELETE" && MODEL_DEFAULT_PRICE_VERSION_ITEM_PATTERN.matches(path) -> "model_default_price_version.delete"
     method == "PUT" && path == "/admin/api/request-log-retention" -> "request_log.retention.update"
     method == "POST" && path == "/admin/api/request-log-retention/cleanup" -> "request_log.cleanup"
     else -> "admin.write"
@@ -150,4 +152,6 @@ private val CLIENT_KEY_ITEM_PATTERN = Regex("^/admin/api/client-keys/[^/]+$")
 private val CLIENT_KEY_ROTATE_PATTERN = Regex("^/admin/api/client-keys/[^/]+/rotate$")
 private val CLIENT_KEY_REVOKE_PATTERN = Regex("^/admin/api/client-keys/[^/]+/revoke$")
 private val MODEL_PRICE_ITEM_PATTERN = Regex("^/admin/api/model-prices/[^/]+$")
+private val MODEL_PRICE_VERSION_ITEM_PATTERN = Regex("^/admin/api/model-price-versions/[^/]+$")
 private val MODEL_DEFAULT_PRICE_ITEM_PATTERN = Regex("^/admin/api/model-default-prices/[^/]+$")
+private val MODEL_DEFAULT_PRICE_VERSION_ITEM_PATTERN = Regex("^/admin/api/model-default-price-versions/[^/]+$")
