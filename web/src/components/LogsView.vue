@@ -268,6 +268,7 @@ onMounted(load)
               </td>
               <td>
                 <div class="primary-cell small">{{ log.channelName || (log.channelId ? log.channelId.slice(0, 8) : '—') }}</div>
+                <div v-if="log.channelKeyName" class="muted small">密钥 {{ log.channelKeyName }}</div>
                 <div class="mono muted small">{{ log.upstreamModel || '—' }}</div>
                 <span v-if="log.upstreamAttempts > 1" class="badge warning">尝试 {{ log.upstreamAttempts }} 次</span>
               </td>
@@ -395,6 +396,10 @@ onMounted(load)
               <div class="detail-item">
                 <span>渠道名称</span>
                 <strong>{{ selected.channelName || '—' }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>上游密钥</span>
+                <strong>{{ selected.channelKeyName || '—' }}</strong>
               </div>
               <div class="detail-item">
                 <span>渠道 ID</span>

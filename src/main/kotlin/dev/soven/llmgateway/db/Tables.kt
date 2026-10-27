@@ -13,9 +13,6 @@ object Channels : Table("channels") {
     val id = varchar("id", 36)
     val name = varchar("name", 100).uniqueIndex()
     val baseUrl = varchar("base_url", 500)
-    val credentialCiphertext = text("credential_ciphertext")
-    val credentialNonce = text("credential_nonce")
-    val credentialKeyVersion = integer("credential_key_version")
     val authType = varchar("auth_type", 20)
     val protocols = varchar("protocols", 100)
     val enabled = bool("enabled")
@@ -24,6 +21,37 @@ object Channels : Table("channels") {
     val updatedAt = long("updated_at")
 
     override val primaryKey = PrimaryKey(id)
+}
+
+/**
+ * 渠道下的上游密钥。同一渠道的密钥共用基础地址、鉴权方式和协议。
+ */
+object ChannelKeys : Table("channel_keys") {
+    val id = varchar("id", 36)
+    val channelId = varchar("channel_id", 36).references(Channels.id, onDelete = ReferenceOption.CASCADE)
+    val name = varchar("name", 100)
+    val credentialCiphertext = text("credential_ciphertext")
+    val credentialNonce = text("credential_nonce")
+    val credentialKeyVersion = integer("credential_key_version")
+    val enabled = bool("enabled")
+    val priority = integer("priority").default(1)
+    val createdAt = long("created_at")
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(id)
+    init {
+        uniqueIndex(channelId, name)
+        index(false, channelId, priority)
+    }
+}
+
+/** 渠道密钥显式授权的上游模型。 */
+object ChannelKeyModels : Table("channel_key_models") {
+    val keyId = varchar("key_id", 36).references(ChannelKeys.id, onDelete = ReferenceOption.CASCADE)
+    val upstreamModel = varchar("upstream_model", 200)
+    val createdAt = long("created_at")
+
+    override val primaryKey = PrimaryKey(keyId, upstreamModel)
 }
 
 /**
@@ -251,6 +279,8 @@ object RequestLogs : Table("request_logs") {
     val alias = varchar("alias", 100)
     val channelId = varchar("channel_id", 36).nullable()
     val channelName = varchar("channel_name", 100).nullable()
+    val channelKeyId = varchar("channel_key_id", 36).nullable()
+    val channelKeyName = varchar("channel_key_name", 100).nullable()
     val upstreamModel = varchar("upstream_model", 200).nullable()
     val protocol = varchar("protocol", 40)
     val stream = bool("stream").nullable()

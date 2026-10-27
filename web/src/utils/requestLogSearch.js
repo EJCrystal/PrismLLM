@@ -4,6 +4,7 @@ const SEARCH_FIELDS = [
   'alias',
   'channelId',
   'channelName',
+  'channelKeyName',
   'upstreamModel',
   'protocol',
   'statusCode',

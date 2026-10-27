@@ -125,4 +125,22 @@ describe('channelForm: 渠道保存请求体', () => {
 
     assert.equal(payload.modelMappings[0].mappingSource, 'manual')
   })
+
+  it('提交密钥池时不发送旧版单凭据', () => {
+    const payload = buildChannelPayload(
+      { ...baseForm, credential: 'legacy-secret' },
+      ['m1', 'm2'],
+      {},
+      {},
+      [
+        { id: 'key-1', name: ' primary ', credential: '', enabled: true, priority: 1, models: ['m1', 'm1'] },
+        { name: 'backup', credential: ' secret ', enabled: false, priority: 2, models: ['m2'] },
+      ],
+    )
+
+    assert.deepEqual(payload.keys, [
+      { id: 'key-1', name: 'primary', credential: null, enabled: true, priority: 1, models: ['m1'] },
+      { id: null, name: 'backup', credential: 'secret', enabled: false, priority: 2, models: ['m2'] },
+    ])
+  })
 })

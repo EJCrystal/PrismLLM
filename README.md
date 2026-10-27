@@ -7,11 +7,12 @@
 - 原生协议入口 `/v1/chat/completions`、`/v1/responses` 与 `/v1/messages`，支持流式和非流式请求，不在协议之间转换。
 - 渠道按 `chat_completions`、`responses`、`messages` 声明支持的协议，路由时按请求协议过滤候选。
 - 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。渠道启用即参与直连暴露。
+- 渠道支持密钥池：每个密钥独立保存凭据、启用状态、优先级和可用模型；同一渠道内按密钥优先级分档，同档密钥轮询。
 - 自定义对外模型 ID 会替代上游名对外暴露；同一渠道的多个上游模型可共享一个对外模型 ID，多个渠道配置相同 ID 时也会自动聚合并参与候选分摊。
 - 调用方密钥鉴权，支持按密钥限制每分钟请求数和并发数；上游凭据使用 AES-256-GCM 加密存储。
 - 流式响应不缓冲、客户端断开向上游传播。
 - 管理 API 与 Vue 3 管理界面：
-  - 渠道管理：接入点、协议、凭据、对外模型 ID 映射及模型计费单价配置。
+  - 渠道管理：接入点、协议、密钥池、对外模型 ID 映射及模型计费单价配置。
   - 多主题支持：浅色（Light）、深色（Dark）、护眼暖色（Sepia）三主题无缝轮转与持久化。
   - 模型列表：查看 `/v1/models` 实际对外暴露结果与 models.dev 临时对比。
   - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
@@ -142,13 +143,13 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 
 写操作需要把登录响应里的 `gw_csrf` Cookie 值放到 `X-CSRF-Token` 请求头。
 
-拉取某个渠道的上游模型列表（网关会请求 `{baseUrl}/models`）：
+拉取某个渠道的上游模型列表（网关会请求 `{baseUrl}/models`）。未指定 `keyId` 时使用优先级最高的启用密钥：
 
 ```bash
-curl -b cookies.txt http://localhost:8080/admin/api/channels/<channel-id>/models
+curl -b cookies.txt 'http://localhost:8080/admin/api/channels/<channel-id>/models?keyId=<key-id>'
 ```
 
-返回 `{"object":"list","data":[{"id":"...","ownedBy":"...","authorized":true}]}`。`authorized` 表示该模型是否已被渠道授权。上游不支持 `/models` 时返回 502，并带上 `upstream_models_error`。
+返回 `{"object":"list","data":[{"id":"...","ownedBy":"...","authorized":true}]}`。`authorized` 表示该模型是否已被选中的密钥授权。上游不支持 `/models` 时返回 502，并带上 `upstream_models_error`。
 
 新建渠道时可在保存前发现上游模型：
 
@@ -158,7 +159,27 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
   -d '{"baseUrl":"https://api.openai.com/v1","credential":"sk-..."}'
 ```
 
-编辑渠道时可只传 `channelId`，复用已保存凭据。保存渠道时通过 `models` 数组提交授权模型；省略 `models` 表示保持原授权不变。取消仍被别名候选引用的模型授权会返回 `409 channel_model_in_use`。
+编辑渠道时可只传 `channelId` 和可选的 `keyId`，复用已保存密钥。保存渠道时通过 `keys` 数组提交密钥池；每个密钥包含 `name`、`credential`、`enabled`、`priority` 和 `models`。旧版单凭据字段仍兼容：新建时自动生成“默认密钥”，更新时只作用于唯一的默认密钥。取消仍被别名候选引用的模型授权会返回 `409 channel_model_in_use`。
+
+渠道密钥池示例：
+
+```json
+{
+  "name": "openai-primary",
+  "baseUrl": "https://api.openai.com/v1",
+  "authType": "bearer",
+  "protocols": ["chat_completions"],
+  "enabled": true,
+  "modelMappings": [
+    {"upstreamModel": "gpt-4o-mini"},
+    {"upstreamModel": "deepseek-chat"}
+  ],
+  "keys": [
+    {"name": "primary", "credential": "sk-primary", "priority": 1, "models": ["gpt-4o-mini"]},
+    {"name": "backup", "credential": "sk-backup", "priority": 2, "models": ["gpt-4o-mini", "deepseek-chat"]}
+  ]
+}
+```
 
 渠道是否参与直连路由和 `/v1/models` 只由启用状态决定；渠道级 `exposeUpstreamModels` 开关与全局 `EXPOSE_UPSTREAM_MODELS` 环境变量均已移除。
 
@@ -174,7 +195,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
 
 `models` 字段仍可用于只提交上游模型列表；更新时会保留这些模型已有的规范 ID。`mappingSource` 支持 `manual` 和 `models_dev`。同一渠道内的多个上游模型可以映射到同一个对外模型 ID，网关会将这些上游名作为同一模型的候选；如果它们实际不是同一模型，应拆分对外 ID。
 
-共享同一对外 ID 时，路由按渠道分组：同一渠道内按上游模型名稳定排序，首个名称作为主入口，只有失败、冷却或不可用时才回退到同渠道的其他名称；不同渠道之间仍按同档轮询分摊。这样可以避免把同一模型的多个上游别名误当成独立容量。
+共享同一对外 ID 时，路由先按渠道优先级分档；同一渠道内先按上游模型名稳定排序，首个名称作为主入口，只有失败、冷却或不可用时才回退到同渠道的其他名称。每个上游模型下再按密钥优先级分档，同档密钥轮询。这样既避免把同一模型的多个上游别名误当成独立容量，也能把同一模型在多个密钥上的容量聚合起来。
 
 查看调用方通过 `/v1/models` 获取到的对外结果：
 

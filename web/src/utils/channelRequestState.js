@@ -18,9 +18,12 @@ export function createRequestTracker(onInvalidate = () => {}) {
   }
 }
 
-export function watchChannelRequestInputs(form, { modelRequests, probeRequests, onInputsChanged }) {
+export function watchChannelRequestInputs(
+  form,
+  { modelRequests, probeRequests, onInputsChanged, credentialSource = () => form.credential },
+) {
   return watch(
-    () => [form.baseUrl, form.credential, form.authType],
+    () => [form.baseUrl, credentialSource(), form.authType],
     () => {
       modelRequests.invalidate()
       probeRequests.invalidate()

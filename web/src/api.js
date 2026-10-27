@@ -77,10 +77,10 @@ export const api = {
     request('/channels/model-discovery', { method: 'POST', body: JSON.stringify(payload) }),
   getModelSuggestions: (models) =>
     request('/model-suggestions', { method: 'POST', body: JSON.stringify({ models }) }),
-  probeChannelProtocols: (id, model = null) =>
+  probeChannelProtocols: (id, model = null, keyId = null) =>
     request(`/channels/${encodeURIComponent(id)}/probe-protocols`, {
       method: 'POST',
-      body: JSON.stringify({ model }),
+      body: JSON.stringify({ model, keyId }),
     }),
   testChannelModel: (id, payload) =>
     request(`/channels/${encodeURIComponent(id)}/model-test`, {

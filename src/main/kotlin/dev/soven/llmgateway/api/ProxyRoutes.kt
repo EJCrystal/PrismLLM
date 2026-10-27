@@ -126,6 +126,8 @@ private suspend fun handleProxy(
     var alias = "unknown"
     var channelId: String? = null
     var channelName: String? = null
+    var channelKeyId: String? = null
+    var channelKeyName: String? = null
     var upstreamModel: String? = null
     var pricingModelId: String? = null
     var streamMode: Boolean? = null
@@ -181,7 +183,7 @@ private suspend fun handleProxy(
         val eligible = mutableListOf<RouteCandidate>()
         val blocked = mutableListOf<RouteCandidate>()
         for (candidate in candidates) {
-            if (app.candidateCooldown.isBlocked(candidate.channel.id, candidate.upstreamModel)) {
+            if (app.candidateCooldown.isBlocked(candidate.channel.id, candidate.key.id, candidate.upstreamModel)) {
                 app.metrics.upstreamCooldownSkipped(candidate.channel.name)
                 blocked.add(candidate)
             } else {
@@ -212,6 +214,8 @@ private suspend fun handleProxy(
             upstreamAttempts += 1
             channelId = candidate.channel.id
             channelName = candidate.channel.name
+            channelKeyId = candidate.key.id
+            channelKeyName = candidate.key.name
             upstreamModel = candidate.upstreamModel
             pricingModelId = candidate.pricingModelId
             retryFrom?.let { from ->
@@ -267,8 +271,9 @@ private suspend fun handleProxy(
                             app.metrics.upstreamCooldownStarted(candidate.channel.name, trigger.reason)
                             if (trigger.reason == CandidateCooldown.REASON_AUTH) {
                                 proxyLogger.error(
-                                    "上游凭据被拒绝，渠道 {} 模型 {} 进入长冷却（{}ms），请检查渠道配置",
+                                    "上游凭据被拒绝，渠道 {} 密钥 {} 模型 {} 进入长冷却（{}ms），请检查密钥配置",
                                     candidate.channel.name,
+                                    candidate.key.name,
                                     candidate.upstreamModel,
                                     app.config.cooldown.authFailureMs,
                                 )
@@ -285,7 +290,7 @@ private suspend fun handleProxy(
         var index = 0
         while (index < ordered.size && upstreamAttempts < app.config.maxAttempts) {
             val candidate = ordered[index]
-            val permit = app.candidateCooldown.acquire(candidate.channel.id, candidate.upstreamModel)
+            val permit = app.candidateCooldown.acquire(candidate.channel.id, candidate.key.id, candidate.upstreamModel)
             if (permit == null) {
                 app.metrics.upstreamCooldownSkipped(candidate.channel.name)
                 blocked.add(candidate)
@@ -306,7 +311,7 @@ private suspend fun handleProxy(
         for (candidate in candidates) {
             if (candidate !in blockedSet) continue
             if (upstreamAttempts >= app.config.maxAttempts) break
-            val permit = app.candidateCooldown.forceAcquire(candidate.channel.id, candidate.upstreamModel)
+            val permit = app.candidateCooldown.forceAcquire(candidate.channel.id, candidate.key.id, candidate.upstreamModel)
             val error = runAttempt(candidate, permit)
             if (error == null) return
             lastError = error
@@ -414,6 +419,8 @@ private suspend fun handleProxy(
                 alias = alias,
                 channelId = channelId,
                 channelName = channelName,
+                channelKeyId = channelKeyId,
+                channelKeyName = channelKeyName,
                 upstreamModel = upstreamModel,
                 pricingModelId = pricingModelId,
                 protocol = protocol,
@@ -837,7 +844,7 @@ private fun buildUpstreamUrl(candidate: RouteCandidate, protocol: GatewayProtoco
     candidate.channel.baseUrl.trimEnd('/') + protocol.path
 
 private fun decryptCredential(app: GatewayApplication, candidate: RouteCandidate): String = runCatching {
-    app.credentialCipher.decrypt(candidate.channel.credentialCiphertext, candidate.channel.credentialNonce)
+    app.credentialCipher.decrypt(candidate.key.credentialCiphertext, candidate.key.credentialNonce)
 }.getOrElse {
     throw GatewayException(
         HttpStatusCode.BadGateway,
@@ -949,6 +956,7 @@ private fun markFirstToken(
         val attemptFirstTokenMs = (nowNanos - attemptStartedNanos) / 1_000_000
         if (app.candidateCooldown.recordFirstToken(
                 candidate.channel.id,
+                candidate.key.id,
                 candidate.upstreamModel,
                 attemptFirstTokenMs,
             )

@@ -1,27 +1,59 @@
 package dev.soven.llmgateway.resilience
 
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class TierSharingTest {
-    private fun candidate(position: Int, name: String) = dev.soven.llmgateway.domain.RouteCandidate(
+    private fun candidate(
+        position: Int,
+        name: String,
+        keyName: String = "default",
+        keyPriority: Int = 1,
+        upstreamModel: String = "m",
+    ) = dev.soven.llmgateway.domain.RouteCandidate(
         channel = ChannelRecord(
             id = "id-$name",
             name = name,
             baseUrl = "https://$name.example",
-            credentialCiphertext = "c",
-            credentialNonce = "n",
-            credentialKeyVersion = 1,
             authType = "bearer",
             protocols = setOf(GatewayProtocol.CHAT_COMPLETIONS),
             enabled = true,
             createdAt = 0,
             updatedAt = 0,
             modelMappings = emptyList(),
+            keys = listOf(
+                ChannelKeyRecord(
+                    id = "key-$name-$keyName",
+                    channelId = "id-$name",
+                    name = keyName,
+                    credentialCiphertext = "c",
+                    credentialNonce = "n",
+                    credentialKeyVersion = 1,
+                    enabled = true,
+                    priority = keyPriority,
+                    models = listOf(upstreamModel),
+                    createdAt = 0,
+                    updatedAt = 0,
+                ),
+            ),
         ),
-        upstreamModel = "m",
+        key = ChannelKeyRecord(
+            id = "key-$name-$keyName",
+            channelId = "id-$name",
+            name = keyName,
+            credentialCiphertext = "c",
+            credentialNonce = "n",
+            credentialKeyVersion = 1,
+            enabled = true,
+            priority = keyPriority,
+            models = listOf(upstreamModel),
+            createdAt = 0,
+            updatedAt = 0,
+        ),
+        upstreamModel = upstreamModel,
         position = position,
     )
 
@@ -82,5 +114,35 @@ class TierSharingTest {
 
         assertEquals(listOf("alias-1", "alias-2", "m"), first.map { it.upstreamModel })
         assertEquals(listOf("m", "alias-1", "alias-2"), second.map { it.upstreamModel })
+    }
+
+    @Test
+    fun `same channel keys rotate within the same key priority`() {
+        val sharing = TierSharing()
+        val candidates = listOf(
+            candidate(0, "a", keyName = "k1"),
+            candidate(0, "a", keyName = "k2"),
+            candidate(0, "b", keyName = "k1"),
+        )
+
+        val first = sharing.order("shared-model", candidates).map { "${it.channel.name}/${it.key.name}" }
+        val second = sharing.order("shared-model", candidates).map { "${it.channel.name}/${it.key.name}" }
+
+        assertEquals(listOf("a/k1", "a/k2", "b/k1"), first)
+        assertEquals(listOf("b/k1", "a/k2", "a/k1"), second)
+    }
+
+    @Test
+    fun `lower priority keys stay behind higher priority keys in one channel`() {
+        val sharing = TierSharing()
+        val candidates = listOf(
+            candidate(0, "a", keyName = "primary", keyPriority = 1),
+            candidate(0, "a", keyName = "backup", keyPriority = 2),
+        )
+
+        repeat(4) {
+            val ordered = sharing.order("shared-model", candidates).map { it.key.name }
+            assertEquals(listOf("primary", "backup"), ordered)
+        }
     }
 }

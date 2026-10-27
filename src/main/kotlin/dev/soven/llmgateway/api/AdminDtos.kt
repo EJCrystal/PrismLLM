@@ -3,6 +3,7 @@ package dev.soven.llmgateway.api
 import dev.soven.llmgateway.domain.AdminAuditRecord
 import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.ModelPriceTier
@@ -70,6 +71,19 @@ data class ChannelModelMappingRequest(
     val mappingSource: String? = null,
 )
 
+/**
+ * 渠道密钥写请求。id 为空表示新建；credential 为空表示保持原凭据。
+ */
+@Serializable
+data class ChannelKeyRequest(
+    val id: String? = null,
+    val name: String,
+    val credential: String? = null,
+    val enabled: Boolean = true,
+    val priority: Int? = null,
+    val models: List<String> = emptyList(),
+)
+
 @Serializable
 data class ChannelRequest(
     val name: String,
@@ -81,6 +95,7 @@ data class ChannelRequest(
     val models: List<String>? = null,
     val modelMappings: List<ChannelModelMappingRequest>? = null,
     val priority: Int? = null,
+    val keys: List<ChannelKeyRequest>? = null,
 )
 
 /**
@@ -103,6 +118,26 @@ data class ChannelResponse(
     val models: List<String>,
     val modelMappings: List<ChannelModelMappingResponse>,
     val priority: Int,
+    val keys: List<ChannelKeyResponse> = emptyList(),
+)
+
+@Serializable
+data class ChannelKeyResponse(
+    val id: String,
+    val name: String,
+    val enabled: Boolean,
+    val priority: Int,
+    val credentialSet: Boolean,
+    val models: List<String>,
+)
+
+fun ChannelKeyRecord.toResponse() = ChannelKeyResponse(
+    id = id,
+    name = name,
+    enabled = enabled,
+    priority = priority,
+    credentialSet = credentialSet,
+    models = models,
 )
 
 @Serializable
@@ -119,7 +154,7 @@ fun ChannelRecord.toResponse() = ChannelResponse(
     authType = authType,
     protocols = protocols.map { it.value }.sorted(),
     enabled = enabled,
-    credentialSet = credentialCiphertext.isNotBlank(),
+    credentialSet = keys.any { it.credentialSet },
     createdAt = createdAt,
     updatedAt = updatedAt,
     models = models,
@@ -131,6 +166,7 @@ fun ChannelRecord.toResponse() = ChannelResponse(
         )
     },
     priority = priority,
+    keys = keys.map { it.toResponse() },
 )
 
 /**
@@ -663,6 +699,8 @@ data class RequestLogResponse(
     val alias: String,
     val channelId: String?,
     val channelName: String?,
+    val channelKeyId: String? = null,
+    val channelKeyName: String? = null,
     val upstreamModel: String?,
     val protocol: String,
     val stream: Boolean?,
@@ -703,6 +741,8 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     alias = alias,
     channelId = channelId,
     channelName = channelName,
+    channelKeyId = channelKeyId,
+    channelKeyName = channelKeyName,
     upstreamModel = upstreamModel,
     protocol = protocol.value,
     stream = stream,
@@ -835,6 +875,7 @@ data class ChannelModelDiscoveryRequest(
     val baseUrl: String,
     val credential: String? = null,
     val channelId: String? = null,
+    val keyId: String? = null,
     val authType: String? = null,
 )
 
@@ -845,7 +886,7 @@ data class ChannelModelDiscoveryRequest(
  * @since 2026-10-22
  */
 @Serializable
-data class ProtocolProbeRequest(val model: String? = null)
+data class ProtocolProbeRequest(val model: String? = null, val keyId: String? = null)
 
 /**
  * 单个协议的探测结果。
@@ -870,6 +911,8 @@ data class ProtocolProbeResultResponse(
 @Serializable
 data class ProtocolProbeResponse(
     val model: String,
+    val keyId: String? = null,
+    val keyName: String? = null,
     val results: List<ProtocolProbeResultResponse>,
 )
 
@@ -898,6 +941,7 @@ fun ModelTestSettingsRecord.toResponse() = ModelTestSettingsResponse(
 data class ChannelModelTestRequest(
     val model: String,
     val protocol: String,
+    val keyId: String? = null,
     val prompt: String? = null,
     val reasoningEffort: String? = null,
 )
@@ -924,6 +968,8 @@ data class ChannelModelTestResponse(
     val success: Boolean,
     val model: String,
     val protocol: String,
+    val keyId: String? = null,
+    val keyName: String? = null,
     val statusCode: Int? = null,
     val latencyMs: Long,
     val prompt: String,
@@ -936,12 +982,16 @@ data class ChannelModelTestResponse(
 fun ModelConnectivityTestResult.toResponse(
     model: String,
     protocol: GatewayProtocol,
+    keyId: String?,
+    keyName: String?,
     prompt: String,
     reasoningEffort: String?,
 ) = ChannelModelTestResponse(
     success = success,
     model = model,
     protocol = protocol.value,
+    keyId = keyId,
+    keyName = keyName,
     statusCode = statusCode,
     latencyMs = latencyMs,
     prompt = prompt,

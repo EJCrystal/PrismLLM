@@ -2,6 +2,7 @@ package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
@@ -43,6 +44,7 @@ data class ModelConnectivityTestResult(
  */
 suspend fun testChannelModelConnectivity(
     channel: ChannelRecord,
+    key: ChannelKeyRecord,
     model: String,
     protocol: GatewayProtocol,
     prompt: String,
@@ -53,7 +55,7 @@ suspend fun testChannelModelConnectivity(
     maxOutputTokens: Int = 128,
 ): ModelConnectivityTestResult {
     val credential = runCatching {
-        credentialCipher.decrypt(channel.credentialCiphertext, channel.credentialNonce)
+        credentialCipher.decrypt(key.credentialCiphertext, key.credentialNonce)
     }.getOrElse {
         throw GatewayException(
             HttpStatusCode.BadGateway,

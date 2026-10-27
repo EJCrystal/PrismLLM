@@ -42,7 +42,7 @@ data class CooldownPolicy(
 }
 
 /**
- * 冷却状态的键。传输层健康与凭据失效按渠道记键；429 与首 token 过慢按候选记键。
+ * 冷却状态的键。传输层健康按渠道记键；凭据失效按密钥记键；429 与首 token 过慢按密钥+模型记键。
  */
 sealed interface CooldownKey {
     val id: String
@@ -51,8 +51,16 @@ sealed interface CooldownKey {
         override val id: String = "ch:$channelId"
     }
 
-    data class Candidate(val channelId: String, val upstreamModel: String) : CooldownKey {
-        override val id: String = "cand:$channelId:$upstreamModel"
+    data class Key(val channelId: String, val keyId: String) : CooldownKey {
+        override val id: String = "key:$channelId:$keyId"
+    }
+
+    data class KeyCandidate(
+        val channelId: String,
+        val keyId: String,
+        val upstreamModel: String,
+    ) : CooldownKey {
+        override val id: String = "kc:$channelId:$keyId:$upstreamModel"
     }
 }
 
@@ -101,23 +109,25 @@ interface CooldownClassifier {
         kind: FailureKind,
         retryAfterMs: Long?,
         channelId: String,
+        keyId: String,
         upstreamModel: String,
     ): CooldownAction
 }
 
 /**
- * v1 默认分类：自有 API key 渠道。传输层错误与 5xx、401/403 记渠道键，429 记候选键，404 不冷却。
+ * 默认分类：传输层错误与 5xx 记渠道键，401/403 记密钥键，429 记密钥+模型键，404 不冷却。
  */
 class DefaultCooldownClassifier : CooldownClassifier {
     override fun classify(
         kind: FailureKind,
         retryAfterMs: Long?,
         channelId: String,
+        keyId: String,
         upstreamModel: String,
     ): CooldownAction = when (kind) {
         FailureKind.TRANSPORT, FailureKind.SERVER_ERROR -> CooldownAction.Transient(CooldownKey.Channel(channelId))
-        FailureKind.RATE_LIMITED -> CooldownAction.RateLimited(CooldownKey.Candidate(channelId, upstreamModel), retryAfterMs)
-        FailureKind.AUTH_REJECTED -> CooldownAction.AuthFailure(CooldownKey.Channel(channelId))
+        FailureKind.RATE_LIMITED -> CooldownAction.RateLimited(CooldownKey.KeyCandidate(channelId, keyId, upstreamModel), retryAfterMs)
+        FailureKind.AUTH_REJECTED -> CooldownAction.AuthFailure(CooldownKey.Key(channelId, keyId))
         FailureKind.MODEL_NOT_FOUND -> CooldownAction.None
     }
 }
@@ -134,6 +144,7 @@ data class CooldownStateSnapshot(
  */
 data class CooldownPermit(
     val channelId: String,
+    val keyId: String,
     val upstreamModel: String,
     val refs: List<Ref>,
 ) {
@@ -172,43 +183,53 @@ class CandidateCooldown(
     private val ttftStreaks = ConcurrentHashMap<String, Int>()
 
     /**
-     * 获取一次尝试的许可。候选被渠道键或候选键冷却且未到探测时机时返回 null。
+     * 获取一次尝试的许可。渠道、密钥或密钥+模型被冷却且未到探测时机时返回 null。
      */
     @Synchronized
-    fun acquire(channelId: String, upstreamModel: String): CooldownPermit? {
+    fun acquire(channelId: String, keyId: String, upstreamModel: String): CooldownPermit? {
         val channelKeyId = CooldownKey.Channel(channelId).id
-        val candidateKeyId = CooldownKey.Candidate(channelId, upstreamModel).id
+        val keyStateId = CooldownKey.Key(channelId, keyId).id
+        val candidateKeyId = CooldownKey.KeyCandidate(channelId, keyId, upstreamModel).id
         val channelState = states.getOrPut(channelKeyId) { KeyState(channelKeyId) }
+        val keyState = states.getOrPut(keyStateId) { KeyState(keyStateId) }
         val candidateState = states.getOrPut(candidateKeyId) { KeyState(candidateKeyId) }
-        if (blocked(channelState) || blocked(candidateState)) return null
-        // 始终携带两个键的引用：失败动作可能落在任一键上（传输层错误打渠道键，429 打候选键）。
+        if (blocked(channelState) || blocked(keyState) || blocked(candidateState)) return null
+        // 始终携带三个键的引用：失败动作可能落在渠道、密钥或密钥+模型上。
         val refs = listOf(
             CooldownPermit.Ref(channelKeyId, channelState.generation, channelState.cooldownUntil > 0),
+            CooldownPermit.Ref(keyStateId, keyState.generation, keyState.cooldownUntil > 0),
             CooldownPermit.Ref(candidateKeyId, candidateState.generation, candidateState.cooldownUntil > 0),
         )
         if (channelState.cooldownUntil > 0) {
             channelState.probeInFlight = true
         }
+        if (keyState.cooldownUntil > 0) {
+            keyState.probeInFlight = true
+        }
         if (candidateState.cooldownUntil > 0) {
             candidateState.probeInFlight = true
         }
-        return CooldownPermit(channelId, upstreamModel, refs)
+        return CooldownPermit(channelId, keyId, upstreamModel, refs)
     }
 
     /**
      * fail-open 许可：不检查也不占用冷却状态，供所有候选都被冷却时照常尝试。
      */
     @Synchronized
-    fun forceAcquire(channelId: String, upstreamModel: String): CooldownPermit {
+    fun forceAcquire(channelId: String, keyId: String, upstreamModel: String): CooldownPermit {
         val channelKeyId = CooldownKey.Channel(channelId).id
-        val candidateKeyId = CooldownKey.Candidate(channelId, upstreamModel).id
+        val keyStateId = CooldownKey.Key(channelId, keyId).id
+        val candidateKeyId = CooldownKey.KeyCandidate(channelId, keyId, upstreamModel).id
         val channelState = states.getOrPut(channelKeyId) { KeyState(channelKeyId) }
+        val keyState = states.getOrPut(keyStateId) { KeyState(keyStateId) }
         val candidateState = states.getOrPut(candidateKeyId) { KeyState(candidateKeyId) }
         return CooldownPermit(
             channelId,
+            keyId,
             upstreamModel,
             listOf(
                 CooldownPermit.Ref(channelKeyId, channelState.generation, probing = false),
+                CooldownPermit.Ref(keyStateId, keyState.generation, probing = false),
                 CooldownPermit.Ref(candidateKeyId, candidateState.generation, probing = false),
             ),
         )
@@ -232,7 +253,7 @@ class CandidateCooldown(
         kind: FailureKind,
         retryAfterMs: Long? = null,
     ): CooldownTrigger? {
-        val action = classifier.classify(kind, retryAfterMs, permit.channelId, permit.upstreamModel)
+        val action = classifier.classify(kind, retryAfterMs, permit.channelId, permit.keyId, permit.upstreamModel)
         val targetKeyId = when (action) {
             is CooldownAction.Transient -> action.key.id
             is CooldownAction.RateLimited -> action.key.id
@@ -295,24 +316,24 @@ class CandidateCooldown(
      * 被计数的请求本身照常完成。返回是否触发。
      */
     @Synchronized
-    fun recordFirstToken(channelId: String, upstreamModel: String, firstTokenMs: Long): Boolean {
+    fun recordFirstToken(channelId: String, keyId: String, upstreamModel: String, firstTokenMs: Long): Boolean {
         if (firstTokenMs <= policy.ttftSlowThresholdMs) {
-            ttftStreaks.remove(CooldownKey.Candidate(channelId, upstreamModel).id)
+            ttftStreaks.remove(CooldownKey.KeyCandidate(channelId, keyId, upstreamModel).id)
             return false
         }
-        val keyId = CooldownKey.Candidate(channelId, upstreamModel).id
-        val streak = (ttftStreaks[keyId] ?: 0) + 1
+        val stateKey = CooldownKey.KeyCandidate(channelId, keyId, upstreamModel).id
+        val streak = (ttftStreaks[stateKey] ?: 0) + 1
         if (streak < policy.ttftSlowStreak) {
-            ttftStreaks[keyId] = streak
+            ttftStreaks[stateKey] = streak
             return false
         }
-        ttftStreaks.remove(keyId)
-        states.getOrPut(keyId) { KeyState(keyId) }.let { state ->
+        ttftStreaks.remove(stateKey)
+        states.getOrPut(stateKey) { KeyState(stateKey) }.let { state ->
             state.consecutiveFailures += 1
             state.cooldownUntil = nowMs() + policy.transientDurationMs(state.consecutiveFailures)
             state.probeInFlight = false
             state.generation += 1
-            onChange(CooldownChange.Updated(keyId, state.consecutiveFailures, state.cooldownUntil))
+            onChange(CooldownChange.Updated(stateKey, state.consecutiveFailures, state.cooldownUntil))
         }
         return true
     }
@@ -334,17 +355,22 @@ class CandidateCooldown(
      * 与 acquire 之间存在竞态窗口，acquire 会再次校验。
      */
     @Synchronized
-    fun isBlocked(channelId: String, upstreamModel: String): Boolean {
-        // 两个键独立判断：渠道键无状态不代表候选键不在冷却（如仅 429/TTFT 触发的候选级冷却）。
+    fun isBlocked(channelId: String, keyId: String, upstreamModel: String): Boolean {
+        // 三个键独立判断：渠道键无状态不代表密钥或候选键不在冷却。
         states[CooldownKey.Channel(channelId).id]?.let { if (blocked(it)) return true }
-        states[CooldownKey.Candidate(channelId, upstreamModel).id]?.let { if (blocked(it)) return true }
+        states[CooldownKey.Key(channelId, keyId).id]?.let { if (blocked(it)) return true }
+        states[CooldownKey.KeyCandidate(channelId, keyId, upstreamModel).id]?.let { if (blocked(it)) return true }
         return false
     }
 
     @Synchronized
-    fun cooldownUntil(channelId: String, upstreamModel: String): Long? {
+    fun cooldownUntil(channelId: String, keyId: String, upstreamModel: String): Long? {
         var until: Long? = null
-        for (key in listOf(CooldownKey.Channel(channelId), CooldownKey.Candidate(channelId, upstreamModel))) {
+        for (key in listOf(
+            CooldownKey.Channel(channelId),
+            CooldownKey.Key(channelId, keyId),
+            CooldownKey.KeyCandidate(channelId, keyId, upstreamModel),
+        )) {
             val state = states[key.id] ?: continue
             if (state.cooldownUntil > nowMs() && (until == null || state.cooldownUntil > until)) {
                 until = state.cooldownUntil

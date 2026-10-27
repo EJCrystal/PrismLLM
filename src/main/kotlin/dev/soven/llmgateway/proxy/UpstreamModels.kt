@@ -2,6 +2,7 @@ package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.UpstreamModel
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
@@ -30,13 +31,14 @@ import kotlinx.serialization.json.contentOrNull
  */
 suspend fun fetchUpstreamModels(
     channel: ChannelRecord,
+    key: ChannelKeyRecord,
     credentialCipher: CredentialCipher,
     httpClient: HttpClient,
     authorizedOnly: Boolean = true,
 ): List<UpstreamModel> {
-    if (authorizedOnly && channel.models.isEmpty()) return emptyList()
+    if (authorizedOnly && key.models.isEmpty()) return emptyList()
     val credential = runCatching {
-        credentialCipher.decrypt(channel.credentialCiphertext, channel.credentialNonce)
+        credentialCipher.decrypt(key.credentialCiphertext, key.credentialNonce)
     }.getOrElse {
         throw GatewayException(
             HttpStatusCode.BadGateway,
@@ -47,7 +49,7 @@ suspend fun fetchUpstreamModels(
     }
 
     val models = fetchUpstreamModels(channel.baseUrl, credential, httpClient, channel.authType)
-    return if (authorizedOnly) models.filter { it.id in channel.models } else models
+    return if (authorizedOnly) models.filter { it.id in key.models } else models
 }
 
 /**

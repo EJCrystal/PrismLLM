@@ -9,6 +9,7 @@ const logs = [
     alias: 'deepseek-flash',
     channelId: 'channel-a',
     channelName: 'primary',
+    channelKeyName: 'key-alpha',
     upstreamModel: 'deepseek-v4.1-flash',
     protocol: 'chat_completions',
     statusCode: 404,
@@ -33,6 +34,7 @@ describe('requestLogSearch: 请求日志当前页搜索', () => {
     assert.equal(filterRequestLogs(logs, 'REQ-200').length, 1)
     assert.equal(filterRequestLogs(logs, 'deepseek-v4.1').length, 1)
     assert.equal(filterRequestLogs(logs, 'secondary').length, 1)
+    assert.equal(filterRequestLogs(logs, 'key-alpha').length, 1)
     assert.equal(filterRequestLogs(logs, 'model_not_found').length, 1)
   })
 

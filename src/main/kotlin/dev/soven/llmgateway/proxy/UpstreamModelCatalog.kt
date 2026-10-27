@@ -26,7 +26,7 @@ class UpstreamModelCatalog(
 ) {
     suspend fun listDirectModels(): List<DirectModel> =
         directExposureChannels().flatMap { channel ->
-            channel.modelMappings.map { mapping ->
+            channel.modelMappings.filter { mapping -> channel.keysFor(mapping.upstreamModel).isNotEmpty() }.map { mapping ->
                 DirectModel(
                     publicId = mapping.canonicalModelId ?: mapping.upstreamModel,
                     upstreamModel = mapping.upstreamModel,
@@ -47,11 +47,25 @@ class UpstreamModelCatalog(
             .flatMap { channel ->
                 channel.modelMappings
                     .filter { (it.canonicalModelId ?: it.upstreamModel) == model }
-                    .map { mapping ->
-                        RouteCandidate(channel = channel, upstreamModel = mapping.upstreamModel, position = channel.priority)
+                    .flatMap { mapping ->
+                        channel.keysFor(mapping.upstreamModel).map { key ->
+                            RouteCandidate(
+                                channel = channel,
+                                key = key,
+                                upstreamModel = mapping.upstreamModel,
+                                position = channel.priority,
+                            )
+                        }
                     }
             }
-            .sortedWith(compareBy({ it.position }, { it.channel.name }, { it.upstreamModel }))
+            .sortedWith(compareBy(
+                { it.position },
+                { it.channel.name },
+                { it.upstreamModel },
+                { it.key.priority },
+                { it.key.name },
+                { it.key.id },
+            ))
 
     private suspend fun directExposureChannels(): List<ChannelRecord> =
         channelRepository.list().filter { it.enabled }

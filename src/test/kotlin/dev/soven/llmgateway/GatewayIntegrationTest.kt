@@ -10,6 +10,7 @@ import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.repo.AliasWithCandidates
 import dev.soven.llmgateway.repo.NewCandidate
+import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.security.ClientKeyHasher
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.report.RetentionPolicy
@@ -380,6 +381,175 @@ class GatewayIntegrationTest {
             }
             assertEquals(HttpStatusCode.BadRequest, rejected.status)
             assertTrue(rejected.bodyAsText().contains("invalid_channel"))
+        }
+    }
+
+    @Test
+    fun `same channel keys fail over by key priority and record key name`() = runBlocking {
+        app.channelRepository.create(
+            name = "key-priority",
+            baseUrl = "${fake.baseUrl}/key-route/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "primary",
+                    credential = app.credentialCipher.encrypt("key-primary"),
+                    priority = 1,
+                    models = listOf("gpt-4o-mini"),
+                ),
+                NewChannelKey(
+                    name = "backup",
+                    credential = app.credentialCipher.encrypt("key-backup"),
+                    priority = 2,
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+            priority = 1,
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            assertEquals(HttpStatusCode.OK, send().status)
+            assertEquals(
+                listOf("Bearer key-primary", "Bearer key-backup", "Bearer key-backup"),
+                fake.requests.map { it.authorization },
+            )
+            awaitRequestLogCount(2)
+            val logs = app.requestLogRepository.list(10)
+            assertEquals(setOf("backup"), logs.map { it.channelKeyName }.toSet())
+            assertEquals(listOf(1, 2), logs.mapNotNull { it.upstreamAttempts }.sorted())
+        }
+    }
+
+    @Test
+    fun `channel keys expose model union but route only to supporting keys`() = runBlocking {
+        app.channelRepository.create(
+            name = "key-models",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "primary",
+                    credential = app.credentialCipher.encrypt("key-primary"),
+                    models = listOf("gpt-4o-mini"),
+                ),
+                NewChannelKey(
+                    name = "backup",
+                    credential = app.credentialCipher.encrypt("key-backup"),
+                    models = listOf("deepseek-chat"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini", "deepseek-chat"),
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send(model: String) = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"$model","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send("gpt-4o-mini").status)
+            assertEquals(HttpStatusCode.OK, send("deepseek-chat").status)
+            assertEquals(listOf("Bearer key-primary", "Bearer key-backup"), fake.requests.map { it.authorization })
+
+            val models = client.get("/v1/models") { header(HttpHeaders.Authorization, "Bearer $key") }
+            val body = models.bodyAsText()
+            assertTrue(body.contains("gpt-4o-mini"), body)
+            assertTrue(body.contains("deepseek-chat"), body)
+        }
+    }
+
+    @Test
+    fun `admin creates and updates a channel key pool`() = runBlocking {
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val created = client.post("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """
+                    {
+                      "name":"key-api",
+                      "baseUrl":"${fake.baseUrl}/ok/v1",
+                      "authType":"bearer",
+                      "protocols":["chat_completions"],
+                      "enabled":true,
+                      "modelMappings":[{"upstreamModel":"gpt-4o-mini"},{"upstreamModel":"deepseek-chat"}],
+                      "keys":[
+                        {"name":"primary","credential":"key-primary","priority":1,"models":["gpt-4o-mini"]},
+                        {"name":"backup","credential":"key-backup","priority":2,"models":["deepseek-chat"]}
+                      ]
+                    }
+                    """.trimIndent(),
+                )
+            }
+            assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
+            val createdBody = Json.parseToJsonElement(created.bodyAsText()).jsonObject
+            val channelId = createdBody["id"]!!.jsonPrimitive.content
+            val createdKeys = createdBody["keys"]!!.jsonArray
+            assertEquals(2, createdKeys.size)
+            assertEquals(listOf("primary", "backup"), createdKeys.map { it.jsonObject["name"]!!.jsonPrimitive.content })
+            val backupId = createdKeys.first { it.jsonObject["name"]!!.jsonPrimitive.content == "backup" }
+                .jsonObject["id"]!!.jsonPrimitive.content
+
+            val tested = client.post("/admin/api/channels/$channelId/model-test") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"deepseek-chat","protocol":"chat_completions","keyId":"$backupId","prompt":"ping"}""")
+            }
+            assertEquals(HttpStatusCode.OK, tested.status, tested.bodyAsText())
+            val testBody = Json.parseToJsonElement(tested.bodyAsText()).jsonObject
+            assertEquals("backup", testBody["keyName"]!!.jsonPrimitive.content)
+            assertEquals("Bearer key-backup", fake.requests.last().authorization)
+
+            val updated = client.put("/admin/api/channels/$channelId") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """
+                    {
+                      "name":"key-api",
+                      "baseUrl":"${fake.baseUrl}/ok/v1",
+                      "authType":"bearer",
+                      "protocols":["chat_completions"],
+                      "enabled":true,
+                      "modelMappings":[{"upstreamModel":"gpt-4o-mini"},{"upstreamModel":"deepseek-chat"}],
+                      "keys":[
+                        {"id":"${createdKeys.first().jsonObject["id"]!!.jsonPrimitive.content}","name":"primary","priority":1,"models":["gpt-4o-mini","deepseek-chat"]},
+                        {"name":"third","credential":"key-third","priority":3,"models":["gpt-4o-mini"]}
+                      ]
+                    }
+                    """.trimIndent(),
+                )
+            }
+            assertEquals(HttpStatusCode.OK, updated.status, updated.bodyAsText())
+            val updatedKeys = Json.parseToJsonElement(updated.bodyAsText()).jsonObject["keys"]!!.jsonArray
+            assertEquals(listOf("primary", "third"), updatedKeys.map { it.jsonObject["name"]!!.jsonPrimitive.content })
+            assertEquals(
+                setOf("gpt-4o-mini", "deepseek-chat"),
+                updatedKeys.first().jsonObject["models"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet(),
+            )
         }
     }
 
@@ -929,7 +1099,6 @@ class GatewayIntegrationTest {
             id = channel.id,
             name = channel.name,
             baseUrl = channel.baseUrl,
-            credential = null,
             authType = channel.authType,
             enabled = false,
         )
@@ -2119,7 +2288,6 @@ class GatewayIntegrationTest {
                 id = created.id,
                 name = created.name,
                 baseUrl = created.baseUrl,
-                credential = null,
                 authType = created.authType,
                 protocols = created.protocols,
                 enabled = true,
@@ -2503,7 +2671,6 @@ class GatewayIntegrationTest {
                 id = created.id,
                 name = created.name,
                 baseUrl = created.baseUrl,
-                credential = null,
                 authType = created.authType,
                 protocols = created.protocols,
                 enabled = true,
@@ -2532,7 +2699,6 @@ class GatewayIntegrationTest {
                 id = created.id,
                 name = created.name,
                 baseUrl = created.baseUrl,
-                credential = null,
                 authType = created.authType,
                 protocols = created.protocols,
                 enabled = true,
@@ -2567,6 +2733,15 @@ class GatewayIntegrationTest {
             assertEquals("true", savedModels.getValue("gpt-4o-mini")["authorized"]!!.jsonPrimitive.content)
             assertEquals("false", savedModels.getValue("deepseek-chat")["authorized"]!!.jsonPrimitive.content)
 
+            val withExplicitKey = client.post("/admin/api/channels/model-discovery") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"baseUrl":"${channel.baseUrl}","channelId":"${channel.id}","keyId":"${channel.keys.single().id}"}""")
+            }
+            assertEquals(HttpStatusCode.OK, withExplicitKey.status)
+            assertTrue(withExplicitKey.bodyAsText().contains("gpt-4o-mini"))
+
             val changedBaseUrl = client.post("/admin/api/channels/model-discovery") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
                 header("X-CSRF-Token", session.session.csrf)
@@ -2585,7 +2760,6 @@ class GatewayIntegrationTest {
                 id = created.id,
                 name = created.name,
                 baseUrl = created.baseUrl,
-                credential = null,
                 authType = created.authType,
                 protocols = created.protocols,
                 enabled = true,
@@ -2732,7 +2906,27 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("28", result.getString(1))
+                        assertEquals("29", result.getString(1))
+                    }
+                    statement.executeQuery(
+                        "select name, credential_ciphertext from channel_keys where channel_id = 'migration-channel'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals("默认密钥", result.getString(1))
+                        assertEquals("cipher", result.getString(2), "V29 应迁移原渠道凭据")
+                        assertFalse(result.next())
+                    }
+                    statement.executeQuery(
+                        "select count(*) from channel_key_models km join channel_keys k on k.id = km.key_id where k.channel_id = 'migration-channel'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V29 应迁移原渠道模型授权")
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'channels' and column_name like 'credential_%'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(0, result.getInt(1), "V29 应删除渠道级凭据列")
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.tables where table_name = 'model_test_settings'",
@@ -3771,7 +3965,13 @@ class GatewayIntegrationTest {
         return app.channelRepository.create(
             name = name,
             baseUrl = baseUrl,
-            credential = encrypted,
+            keys = listOf(
+                dev.soven.llmgateway.repo.NewChannelKey(
+                    name = "默认密钥",
+                    credential = encrypted,
+                    models = modelMappings.map { it.upstreamModel },
+                ),
+            ),
             authType = authType,
             protocols = protocols,
             enabled = true,

@@ -98,6 +98,12 @@ class FakeUpstream {
         val model = json?.get("model")?.jsonPrimitive?.content
 
         when (scenario) {
+            "key-route" -> {
+                if (call.request.headers[HttpHeaders.Authorization] == "Bearer key-primary") {
+                    call.respondText(ERROR_401, ContentType.Application.Json, HttpStatusCode.Unauthorized)
+                    return
+                }
+            }
             "429-retry-after" -> {
                 call.response.header(HttpHeaders.RetryAfter, "1")
                 call.respondText(ERROR_429, ContentType.Application.Json, HttpStatusCode.TooManyRequests)
@@ -367,6 +373,8 @@ class FakeUpstream {
             """{"id":"fake","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}"""
         private const val ERROR_429 =
             """{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}"""
+        private const val ERROR_401 =
+            """{"error":{"message":"invalid key","type":"authentication_error","code":"invalid_api_key"}}"""
         private const val ERROR_500 =
             """{"error":{"message":"upstream down","type":"api_error","code":"upstream_down"}}"""
         private const val ERROR_404 =

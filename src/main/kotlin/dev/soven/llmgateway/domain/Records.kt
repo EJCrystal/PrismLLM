@@ -15,13 +15,31 @@ data class ChannelModelRecord(
     val mappingSource: String? = null,
 )
 
+/**
+ * 渠道下的上游密钥。凭据只以密文形式存在，模型集合表示该密钥可调用的上游模型。
+ */
+data class ChannelKeyRecord(
+    val id: String,
+    val channelId: String,
+    val name: String,
+    val credentialCiphertext: String,
+    val credentialNonce: String,
+    val credentialKeyVersion: Int,
+    val enabled: Boolean,
+    val priority: Int,
+    val models: List<String> = emptyList(),
+    val createdAt: Long,
+    val updatedAt: Long,
+) {
+    val credentialSet: Boolean get() = credentialCiphertext.isNotBlank()
+
+    fun supports(upstreamModel: String): Boolean = upstreamModel in models
+}
+
 data class ChannelRecord(
     val id: String,
     val name: String,
     val baseUrl: String,
-    val credentialCiphertext: String,
-    val credentialNonce: String,
-    val credentialKeyVersion: Int,
     val authType: String,
     val protocols: Set<GatewayProtocol>,
     val enabled: Boolean,
@@ -29,8 +47,16 @@ data class ChannelRecord(
     val updatedAt: Long,
     val modelMappings: List<ChannelModelRecord> = emptyList(),
     val priority: Int = 0,
+    val keys: List<ChannelKeyRecord> = emptyList(),
 ) {
     val models: List<String> get() = modelMappings.map { it.upstreamModel }
+
+    /** 支持指定上游模型的启用密钥，按密钥优先级、名称和 id 稳定排序。 */
+    fun keysFor(upstreamModel: String): List<ChannelKeyRecord> = keys
+        .asSequence()
+        .filter { it.enabled && it.supports(upstreamModel) }
+        .sortedWith(compareBy({ it.priority }, { it.name }, { it.id }))
+        .toList()
 }
 
 /**
@@ -69,6 +95,7 @@ data class CandidateRecord(
  */
 data class RouteCandidate(
     val channel: ChannelRecord,
+    val key: ChannelKeyRecord,
     val upstreamModel: String,
     val position: Int,
 ) {
@@ -202,6 +229,8 @@ data class RequestLogRecord(
     val alias: String,
     val channelId: String?,
     val channelName: String?,
+    val channelKeyId: String? = null,
+    val channelKeyName: String? = null,
     val upstreamModel: String?,
     val protocol: GatewayProtocol,
     val stream: Boolean? = null,
