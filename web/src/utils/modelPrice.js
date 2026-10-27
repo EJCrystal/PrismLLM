@@ -6,6 +6,65 @@ export function channelDisplayName(channels, channelId) {
   return found?.name || target
 }
 
+/** Pick the model selector layout for the available channel models. */
+export function channelModelChoiceMode(models) {
+  const count = Array.isArray(models) ? models.filter(Boolean).length : 0
+  if (count === 0) return 'manual'
+  if (count === 1) return 'single'
+  return 'multiple'
+}
+
+/**
+ * Merge channel authorization with discovered models so a target returned by
+ * the channel route remains selectable even when upstream discovery omits it.
+ */
+export function channelModelOptionsForChannel(channel, discoveredModels = []) {
+  if (!channel?.id) return []
+  const entries = new Map()
+  const mappings = new Map(
+    (Array.isArray(channel.modelMappings) ? channel.modelMappings : [])
+      .map((mapping) => [String(mapping?.upstreamModel ?? '').trim(), mapping])
+      .filter(([model]) => Boolean(model)),
+  )
+  const addAuthorized = (modelId) => {
+    const id = String(modelId ?? '').trim()
+    if (!id) return
+    const mapping = mappings.get(id)
+    entries.set(id, {
+      id,
+      authorized: true,
+      canonicalModelId: String(mapping?.canonicalModelId ?? '').trim() || null,
+      mappingSource: mapping?.mappingSource || null,
+    })
+  }
+  for (const mapping of Array.isArray(channel.modelMappings) ? channel.modelMappings : []) {
+    addAuthorized(mapping?.upstreamModel)
+  }
+  for (const model of Array.isArray(channel.models) ? channel.models : []) {
+    addAuthorized(model)
+  }
+  for (const model of Array.isArray(discoveredModels) ? discoveredModels : []) {
+    const id = String(model?.id ?? '').trim()
+    if (!id || model?.authorized !== true) continue
+    entries.set(id, {
+      ...entries.get(id),
+      ...model,
+      id,
+      authorized: true,
+      canonicalModelId: model.canonicalModelId ?? entries.get(id)?.canonicalModelId ?? null,
+      mappingSource: model.mappingSource ?? entries.get(id)?.mappingSource ?? null,
+    })
+  }
+  return [...entries.values()].sort((left, right) => left.id.localeCompare(right.id))
+}
+
+/** True when the initial model should be selected without replacing manual input. */
+export function shouldSelectInitialModel(models, currentModelId, manuallyEntered = false) {
+  if (!Array.isArray(models) || models.length === 0 || manuallyEntered) return false
+  const current = String(currentModelId ?? '').trim()
+  return !current || !models.some((model) => String(model?.id ?? '').trim() === current)
+}
+
 /** Find the price record for one channel/model pair. */
 export function findModelPrice(prices, channelId, upstreamModel) {
   if (!Array.isArray(prices) || !channelId) return null

@@ -3,19 +3,30 @@ import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
-import { channelDisplayName, channelModelPriceOptions, findModelPrice, isSamePriceTarget, pricesForChannel } from '../utils/modelPrice'
+import {
+  channelDisplayName,
+  channelModelChoiceMode,
+  channelModelOptionsForChannel,
+  channelModelPriceOptions,
+  pricesForChannel,
+  shouldSelectInitialModel,
+} from '../utils/modelPrice'
 import {
   applyPriceToForm,
   buildBatchPricePayload,
   buildPricePayload,
   existingPricePayload,
-  emptyPriceDraft,
   hasPriceDraft,
   hasActivePriceDraft,
   priceFormError,
   priceFormState,
   resetPriceForm,
 } from '../utils/priceForm'
+import {
+  clearedVersionHistoryState,
+  refreshedPriceToApply,
+  resolveModelSelectionTarget,
+} from '../utils/modelSelection'
 import { formatPriceSummary, formatTime, formatUnitPrice } from '../utils/format'
 import Modal from './Modal.vue'
 import PriceFields from './PriceFields.vue'
@@ -33,7 +44,6 @@ const modelsLoading = ref(false)
 const modelsError = ref('')
 const fetchingReference = ref(false)
 const referenceHint = ref('')
-const modelPickerOpen = ref(false)
 const saving = ref(false)
 const activePrice = ref(props.price)
 const batchOpen = ref(false)
@@ -47,6 +57,7 @@ let modelsRequestId = 0
 let referenceRequestId = 0
 let versionRequestId = 0
 let cancellationRequestId = 0
+const manuallyEnteredModel = ref(false)
 
 const initialPrice = priceFormState(props.price)
 const form = reactive({
@@ -80,17 +91,18 @@ function cancelReferenceLookup() {
 }
 
 const channelPrices = computed(() => pricesForChannel(props.prices, form.channelId))
-const channelModelOptions = computed(() => channelModelPriceOptions(
+const selectedChannel = computed(() => props.channels.find((channel) => channel.id === form.channelId) || null)
+const availableChannelModels = computed(() => channelModelOptionsForChannel(
+  selectedChannel.value,
   channelModels.value,
+))
+const channelModelOptions = computed(() => channelModelPriceOptions(
+  availableChannelModels.value,
   props.prices,
   form.channelId,
   props.defaultPrices,
 ))
-const filteredChannelModels = computed(() => {
-  const query = form.upstreamModel.trim().toLowerCase()
-  if (!query) return channelModelOptions.value
-  return channelModelOptions.value.filter((model) => model.id.toLowerCase().includes(query))
-})
+const modelChoiceMode = computed(() => channelModelChoiceMode(channelModelOptions.value))
 const selectedModelOption = computed(() => channelModelOptions.value.find(
   (model) => String(model.id ?? '').trim() === form.upstreamModel.trim(),
 ))
@@ -109,7 +121,6 @@ watch(
   async (channelId) => {
     const requestId = ++modelsRequestId
     cancelReferenceLookup()
-    modelPickerOpen.value = false
     batchOpen.value = false
     batchSelected.value = []
     channelModels.value = []
@@ -147,6 +158,16 @@ watch(
   },
 )
 
+watch(
+  channelModelOptions,
+  (models) => {
+    if (shouldSelectInitialModel(models, form.upstreamModel, manuallyEnteredModel.value)) {
+      selectChannelModel(models[0])
+    }
+  },
+  { immediate: true },
+)
+
 function applyExistingPrice(price) {
   cancelReferenceLookup()
   versionRequestId += 1
@@ -155,62 +176,64 @@ function applyExistingPrice(price) {
 }
 
 watch(
-  () => [form.channelId, form.upstreamModel, props.prices],
+  () => [form.channelId, form.upstreamModel],
   ([channelId, upstreamModel]) => {
-    const existingPrice = findModelPrice(props.prices, channelId, upstreamModel.trim())
+    const target = resolveModelSelectionTarget(channelId, upstreamModel, props.prices)
+    const existingPrice = target.price
     if (existingPrice) {
-      if (
-        activePrice.value?.id !== existingPrice.id &&
-        !isSamePriceTarget(activePrice.value, channelId, upstreamModel)
-      ) {
-        applyExistingPrice(existingPrice)
-      }
-      return
-    }
-    if (activePrice.value) {
+      applyExistingPrice(existingPrice)
+    } else {
       activePrice.value = null
-      Object.assign(form, emptyPriceDraft())
+      Object.assign(form, target.draft)
     }
   },
   { immediate: true },
 )
 
-function openModelPicker() {
-  modelPickerOpen.value = true
-}
+watch(
+  () => props.prices,
+  () => {
+    const target = resolveModelSelectionTarget(form.channelId, form.upstreamModel, props.prices)
+    const refreshedPrice = refreshedPriceToApply(target.price, activePrice.value)
+    if (refreshedPrice) applyExistingPrice(refreshedPrice)
+  },
+)
 
-function handleModelPickerFocusOut(event) {
-  const next = event.relatedTarget
-  if (next && event.currentTarget.contains(next)) return
-  window.setTimeout(() => {
-    modelPickerOpen.value = false
-  }, 0)
+function clearVersionHistory() {
+  const historyState = clearedVersionHistoryState()
+  if (historyState.invalidateRequest) versionRequestId += 1
+  showVersions.value = historyState.showVersions
+  loadingVersions.value = historyState.loadingVersions
+  versionHistory.value = historyState.versionHistory
 }
 
 function selectChannelModel(model) {
   cancelReferenceLookup()
+  clearVersionHistory()
+  manuallyEnteredModel.value = false
   form.upstreamModel = model.id
-  modelPickerOpen.value = false
 }
 
 function editPrice(price) {
   cancelReferenceLookup()
-  versionRequestId += 1
   activePrice.value = price
-  showVersions.value = false
-  versionHistory.value = []
+  clearVersionHistory()
   applyPriceToForm(form, price)
-  modelPickerOpen.value = false
 }
 
 function startNewPrice() {
   cancelReferenceLookup()
-  versionRequestId += 1
   activePrice.value = null
-  showVersions.value = false
-  versionHistory.value = []
+  clearVersionHistory()
   resetPriceForm(form)
-  modelPickerOpen.value = false
+  manuallyEnteredModel.value = false
+  if (modelChoiceMode.value === 'single') {
+    selectChannelModel(channelModelOptions.value[0])
+  }
+}
+
+function markModelAsManuallyEntered() {
+  manuallyEnteredModel.value = true
 }
 
 async function toggleVersionHistory() {
@@ -462,57 +485,77 @@ async function applyBatch() {
         </div>
         <p v-else class="muted small price-configured-empty">该渠道还没有渠道覆盖价，模型会继承默认价（如有）。</p>
       </div>
-      <label class="field" for="price-upstream-model">
-        <span>上游模型</span>
-        <div class="model-picker" @focusin="openModelPicker" @focusout="handleModelPickerFocusOut">
-          <div class="model-input-row">
-            <input
-              id="price-upstream-model"
-              v-model="form.upstreamModel"
-              placeholder="点击选择或输入模型名"
-              autocomplete="off"
-              role="combobox"
-              :aria-expanded="modelPickerOpen"
-              aria-controls="price-model-options"
-              @click="openModelPicker"
-              @keydown.escape.prevent="modelPickerOpen = false"
-            />
+      <section class="field model-selection-field" aria-label="上游模型">
+        <div class="model-selection-head">
+          <span>上游模型</span>
+          <small v-if="modelChoiceMode === 'multiple'">
+            {{ channelModelOptions.length }} 个模型，点击切换后分别配置
+          </small>
+        </div>
+        <div v-if="modelsLoading && channelModelOptions.length === 0" class="model-selection-message">
+          正在读取渠道模型…
+        </div>
+        <template v-else-if="channelModelOptions.length">
+          <div
+            v-if="modelChoiceMode === 'single'"
+            class="model-single-option"
+          >
+            <span class="model-option-copy">
+              <code>{{ channelModelOptions[0].id }}</code>
+              <small v-if="channelModelOptions[0].ownedBy">{{ channelModelOptions[0].ownedBy }}</small>
+            </span>
+            <span class="badge" :class="priceSourceClass(channelModelOptions[0])">
+              {{ priceSourceLabel(channelModelOptions[0]) }}
+            </span>
+          </div>
+          <div v-else class="model-switcher" role="group" aria-label="选择要配置的上游模型">
+            <button
+              v-for="model in channelModelOptions"
+              :key="model.id"
+              type="button"
+              class="model-switch-option"
+              :class="{ active: form.upstreamModel.trim() === model.id }"
+              :aria-pressed="form.upstreamModel.trim() === model.id"
+              @click="selectChannelModel(model)"
+            >
+              <span class="model-option-copy">
+                <code>{{ model.id }}</code>
+                <small v-if="model.ownedBy">{{ model.ownedBy }}</small>
+              </span>
+              <span class="badge" :class="priceSourceClass(model)">
+                {{ priceSourceLabel(model) }}
+              </span>
+            </button>
+          </div>
+          <div class="model-selected-bar">
+            <span>当前配置：<code>{{ form.upstreamModel }}</code></span>
             <button type="button" class="button subtle mini" :disabled="fetchingReference || !form.upstreamModel.trim()" @click="fetchReferencePrice">
               {{ fetchingReference ? '查询中…' : '获取参考单价' }}
             </button>
           </div>
-          <div v-if="modelPickerOpen" id="price-model-options" class="model-picker-menu" role="listbox">
-            <div v-if="modelsLoading" class="model-picker-message">正在读取渠道模型…</div>
-            <div v-else-if="modelsError" class="model-picker-message danger">{{ modelsError }}</div>
-            <template v-else-if="filteredChannelModels.length">
-              <button
-                v-for="model in filteredChannelModels"
-                :key="model.id"
-                type="button"
-                class="model-picker-option"
-                role="option"
-                @click.stop.prevent="selectChannelModel(model)"
-              >
-                <span class="model-picker-option-main">
-                  <code>{{ model.id }}</code>
-                  <span v-if="model.ownedBy" class="muted small">{{ model.ownedBy }}</span>
-                </span>
-                <span class="badge" :class="priceSourceClass(model)">
-                  {{ priceSourceLabel(model) }}
-                </span>
-              </button>
-            </template>
-            <div v-else class="model-picker-message">没有匹配的模型，可直接手动输入。</div>
-          </div>
+        </template>
+        <div v-else class="model-input-row">
+          <input
+            id="price-upstream-model"
+            v-model="form.upstreamModel"
+            placeholder="输入模型名"
+            autocomplete="off"
+            @input="markModelAsManuallyEntered"
+          />
+          <button type="button" class="button subtle mini" :disabled="fetchingReference || !form.upstreamModel.trim()" @click="fetchReferencePrice">
+            {{ fetchingReference ? '查询中…' : '获取参考单价' }}
+          </button>
         </div>
+        <small v-if="modelsError" class="danger">{{ modelsError }}</small>
         <small v-if="referenceHint" class="reference-hint">{{ referenceHint }}</small>
         <small v-else-if="selectedPriceSource === 'channel'">当前使用渠道覆盖价，模型默认价不会生效。</small>
         <small v-else-if="selectedPriceSource === 'default'" class="reference-hint">
           当前继承模型默认价（{{ formatPriceSummary(inheritedPrice) }}）。保存后将创建渠道覆盖价。
           <button type="button" class="link-button" @click="applyDefaultPrice">填入默认价</button>
         </small>
-        <small v-else>从渠道模型选择或手动输入后，可获取 USD 参考价。</small>
-      </label>
+        <small v-else-if="channelModelOptions.length">该模型尚未配置渠道覆盖价，可手动填写或获取 USD 参考价。</small>
+        <small v-else>该渠道没有可读取的模型，可直接输入模型名。</small>
+      </section>
       <label class="field">
         <span>计费币种</span>
         <input
@@ -614,3 +657,145 @@ async function applyBatch() {
     </template>
   </Modal>
 </template>
+
+<style scoped>
+.model-selection-field {
+  display: grid;
+  gap: 9px;
+}
+
+.model-selection-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-selection-head > span {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.model-selection-head > small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.model-selection-message {
+  padding: 11px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.model-switcher {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.model-switch-option,
+.model-single-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.model-switch-option {
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 150ms ease, background-color 150ms ease, box-shadow 150ms ease;
+}
+
+.model-switch-option:hover,
+.model-switch-option:focus-visible {
+  border-color: var(--line-strong);
+  outline: 0;
+}
+
+.model-switch-option.active {
+  border-color: var(--brand);
+  background: var(--info-soft);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 12%, transparent);
+}
+
+.model-single-option {
+  background: var(--bg);
+}
+
+.model-option-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.model-option-copy code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.model-option-copy small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.model-switch-option .badge,
+.model-single-option .badge {
+  flex: 0 0 auto;
+}
+
+.model-selected-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.model-selected-bar > span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.model-selected-bar code {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.danger {
+  color: var(--danger);
+}
+
+@media (max-width: 600px) {
+  .model-switcher {
+    grid-template-columns: 1fr;
+  }
+
+  .model-selection-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .model-selected-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+</style>
