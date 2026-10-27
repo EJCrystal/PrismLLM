@@ -1,4 +1,16 @@
 -- 归一化历史渠道单价中的上游模型名，保留最近更新的一条，避免 trim 后重复。
+delete from channel_models c
+using channel_models d
+where c.channel_id = d.channel_id
+  and btrim(c.upstream_model) = btrim(d.upstream_model)
+  and (
+      c.created_at < d.created_at
+      or (c.created_at = d.created_at and c.upstream_model > d.upstream_model)
+  );
+
+update channel_models
+set upstream_model = btrim(upstream_model);
+
 delete from model_prices p
 using model_prices q
 where p.channel_id = q.channel_id

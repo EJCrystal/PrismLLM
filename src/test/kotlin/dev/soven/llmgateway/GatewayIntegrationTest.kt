@@ -2514,6 +2514,12 @@ class GatewayIntegrationTest {
                         """.trimIndent(),
                     )
                     statement.execute(
+                        """
+                        insert into model_prices (id, channel_id, upstream_model, currency, input_price_per_million, output_price_per_million, cached_input_price_per_million, created_at, updated_at)
+                        values ('migration-price-old', 'migration-channel', 'duplicate-model ', 'USD', 9, 9, null, 1, 0)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
                         "insert into request_logs (request_id, alias, status_code, total_ms, created_at) values ('legacy-request-log', 'legacy', 200, 1, 1)",
                     )
                 }
@@ -2567,6 +2573,14 @@ class GatewayIntegrationTest {
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
                         assertEquals("24", result.getString(1))
+                    }
+                    statement.executeQuery(
+                        "select upstream_model, input_price_per_million from model_prices where channel_id = 'migration-channel'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals("duplicate-model", result.getString(1), "V24 应清理 trim 后重复的价格并保留最近更新的一条")
+                        assertEquals(0, result.getBigDecimal(2).compareTo(BigDecimal("1")))
+                        assertFalse(result.next(), "同一渠道 trim 后只应保留一条价格")
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.columns where table_name = 'client_keys' and column_name = 'requests_per_minute'",

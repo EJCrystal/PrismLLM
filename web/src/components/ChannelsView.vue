@@ -23,7 +23,7 @@ import {
   buildPricePrompt,
   channelPriceSummaries,
   findModelPrice,
-  resolveChannelModelPrice,
+  resolveDisplayPriceSource,
   resolveSavedChannel,
 } from '../utils/modelPrice'
 
@@ -196,12 +196,7 @@ function unpricedDisplayModels(channel, item) {
 }
 
 function priceSourceForDisplay(channel, item) {
-  const sources = (item.upstreamModels || []).map((model) =>
-    resolveChannelModelPrice(channel, model, prices.value, defaultPrices.value).source)
-  if (sources.some((source) => source === 'none')) return 'none'
-  if (sources.every((source) => source === 'channel')) return 'channel'
-  if (sources.every((source) => source === 'default')) return 'default'
-  return 'mixed'
+  return resolveDisplayPriceSource(channel, item.upstreamModels, prices.value, defaultPrices.value)
 }
 
 function priceSourceLabel(source) {

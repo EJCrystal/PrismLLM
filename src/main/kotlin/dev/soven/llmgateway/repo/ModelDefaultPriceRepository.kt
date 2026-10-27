@@ -6,7 +6,7 @@ import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
-import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.insertIgnore
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
@@ -48,10 +48,10 @@ class ModelDefaultPriceRepository(private val database: Database) {
         inputPricePerMillion: BigDecimal,
         outputPricePerMillion: BigDecimal,
         cachedInputPricePerMillion: BigDecimal?,
-    ): DefaultModelPriceRecord = suspendTransaction(database) {
+    ): DefaultModelPriceRecord? = suspendTransaction(database) {
         val id = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
-        ModelDefaultPrices.insert {
+        ModelDefaultPrices.insertIgnore {
             it[ModelDefaultPrices.id] = id
             it[ModelDefaultPrices.modelId] = modelId.trim()
             it[ModelDefaultPrices.currency] = currency
@@ -61,7 +61,7 @@ class ModelDefaultPriceRepository(private val database: Database) {
             it[createdAt] = now
             it[updatedAt] = now
         }
-        checkNotNull(load(id))
+        load(id)
     }
 
     suspend fun update(

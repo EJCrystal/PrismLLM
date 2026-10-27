@@ -62,6 +62,16 @@ export function resolveChannelModelPrice(channel, upstreamModel, prices, default
   return { source: 'none', price: null, modelId, defaultPrice: null }
 }
 
+/** Resolve the aggregate source label for a displayed model group. */
+export function resolveDisplayPriceSource(channel, upstreamModels, prices, defaultPrices = []) {
+  const sources = (Array.isArray(upstreamModels) ? upstreamModels : [])
+    .map((model) => resolveChannelModelPrice(channel, model, prices, defaultPrices).source)
+  if (sources.length === 0 || sources.some((source) => source === 'none')) return 'none'
+  if (sources.every((source) => source === 'channel')) return 'channel'
+  if (sources.every((source) => source === 'default')) return 'default'
+  return 'mixed'
+}
+
 /** List the configured prices for one channel, ordered by upstream model. */
 export function pricesForChannel(prices, channelId) {
   if (!Array.isArray(prices) || !channelId) return []

@@ -27,6 +27,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.route
+import org.jetbrains.exposed.v1.exceptions.ExposedSQLException
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.nio.file.Path
@@ -565,7 +566,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 inputPricePerMillion = price.input,
                 outputPricePerMillion = price.output,
                 cachedInputPricePerMillion = price.cached,
-            )
+            ) ?: throw conflict("model_default_price_exists", "该模型的默认单价已存在")
             call.respond(HttpStatusCode.Created, record.toResponse())
         }
 
@@ -579,14 +580,21 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (duplicate != null && duplicate.id != id) {
                 throw conflict("model_default_price_exists", "该模型的默认单价已存在")
             }
-            val updated = app.modelDefaultPriceRepository.update(
-                id = id,
-                modelId = price.modelId,
-                currency = price.currency,
-                inputPricePerMillion = price.input,
-                outputPricePerMillion = price.output,
-                cachedInputPricePerMillion = price.cached,
-            ) ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            val updated = try {
+                app.modelDefaultPriceRepository.update(
+                    id = id,
+                    modelId = price.modelId,
+                    currency = price.currency,
+                    inputPricePerMillion = price.input,
+                    outputPricePerMillion = price.output,
+                    cachedInputPricePerMillion = price.cached,
+                )
+            } catch (cause: ExposedSQLException) {
+                if (isUniqueViolation(cause)) {
+                    throw conflict("model_default_price_exists", "该模型的默认单价已存在")
+                }
+                throw cause
+            } ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
             call.respond(updated.toResponse())
         }
 
@@ -1000,6 +1008,10 @@ private fun parsePrice(value: String, label: String): BigDecimal {
     if (parsed < BigDecimal.ZERO) throw badRequest("invalid_model_price", "$label 不能为负数")
     return parsed.setScale(8, RoundingMode.HALF_UP)
 }
+
+private fun isUniqueViolation(cause: Throwable): Boolean =
+    generateSequence(cause) { it.cause }
+        .any { (it as? java.sql.SQLException)?.sqlState == "23505" }
 
 private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLimits {
     if (request.dailyTokenLimit != null && request.dailyTokenLimit < 0) {

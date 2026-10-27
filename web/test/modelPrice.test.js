@@ -11,6 +11,7 @@ import {
   isSamePriceTarget,
   pricesForChannel,
   resolveChannelModelPrice,
+  resolveDisplayPriceSource,
   resolveSavedChannel,
   unpricedChannelModels,
 } from '../src/utils/modelPrice.js'
@@ -236,6 +237,27 @@ describe('modelPrice: 模型默认价与渠道覆盖', () => {
     const resolved = resolveChannelModelPrice(channel, 'missing', [], defaults)
     assert.equal(resolved.source, 'none')
     assert.equal(resolved.price, null)
+  })
+
+  it('空模型组不会误判为渠道价', () => {
+    assert.equal(resolveDisplayPriceSource(channel, [], [], defaults), 'none')
+    assert.equal(resolveDisplayPriceSource(channel, null, [], defaults), 'none')
+  })
+
+  it('模型组来源区分渠道价、默认价和混合价', () => {
+    const prices = [{ id: 'p1', channelId: 'channel-a', upstreamModel: 'gpt-4o-mini' }]
+    assert.equal(
+      resolveDisplayPriceSource(channel, ['gpt-4o-mini'], prices, defaults),
+      'channel',
+    )
+    assert.equal(
+      resolveDisplayPriceSource(channel, ['deepseek-v4.1-flash'], prices, defaults),
+      'default',
+    )
+    assert.equal(
+      resolveDisplayPriceSource(channel, ['gpt-4o-mini', 'deepseek-v4.1-flash'], prices, defaults),
+      'mixed',
+    )
   })
 
   it('默认价会让未定价汇总归零', () => {

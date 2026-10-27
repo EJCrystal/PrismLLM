@@ -14,6 +14,7 @@ import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
+import org.jetbrains.exposed.v1.jdbc.upsert
 import java.math.BigDecimal
 import java.util.UUID
 
@@ -110,33 +111,20 @@ class ModelPriceRepository(private val database: Database) {
 
         val now = System.currentTimeMillis()
         for (upstreamModel in normalizedModels) {
-            val existingId = ModelPrices.selectAll()
-                .where {
-                    (ModelPrices.channelId eq channelId) and
-                        (ModelPrices.upstreamModel eq upstreamModel)
-                }
-                .singleOrNull()
-                ?.get(ModelPrices.id)
-            if (existingId == null) {
-                ModelPrices.insert {
-                    it[id] = UUID.randomUUID().toString()
-                    it[ModelPrices.channelId] = channelId
-                    it[ModelPrices.upstreamModel] = upstreamModel
-                    it[ModelPrices.currency] = currency
-                    it[ModelPrices.inputPricePerMillion] = inputPricePerMillion
-                    it[ModelPrices.outputPricePerMillion] = outputPricePerMillion
-                    it[ModelPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
-                    it[createdAt] = now
-                    it[updatedAt] = now
-                }
-            } else {
-                ModelPrices.update({ ModelPrices.id eq existingId }) {
-                    it[ModelPrices.currency] = currency
-                    it[ModelPrices.inputPricePerMillion] = inputPricePerMillion
-                    it[ModelPrices.outputPricePerMillion] = outputPricePerMillion
-                    it[ModelPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
-                    it[updatedAt] = now
-                }
+            ModelPrices.upsert(
+                ModelPrices.channelId,
+                ModelPrices.upstreamModel,
+                onUpdateExclude = listOf(ModelPrices.id, ModelPrices.createdAt),
+            ) {
+                it[id] = UUID.randomUUID().toString()
+                it[ModelPrices.channelId] = channelId
+                it[ModelPrices.upstreamModel] = upstreamModel
+                it[ModelPrices.currency] = currency
+                it[ModelPrices.inputPricePerMillion] = inputPricePerMillion
+                it[ModelPrices.outputPricePerMillion] = outputPricePerMillion
+                it[ModelPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
+                it[createdAt] = now
+                it[updatedAt] = now
             }
         }
 
