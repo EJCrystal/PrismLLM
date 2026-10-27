@@ -2607,7 +2607,25 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("25", result.getString(1))
+                        assertEquals("26", result.getString(1))
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.tables where table_name = 'model_price_versions'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V26 应创建 model_price_versions 表")
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.tables where table_name = 'model_default_price_versions'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V26 应创建 model_default_price_versions 表")
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'request_logs' and column_name = 'price_version'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V26 应为 request_logs 增加 price_version 列")
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.columns where table_name = 'model_prices' and column_name = 'cached_input_write_price_per_million'",
@@ -3239,6 +3257,120 @@ class GatewayIntegrationTest {
             assertEquals(0, log.costAmount?.compareTo(BigDecimal("0.00002250")))
             assertEquals(2L, log.cachedWriteTokens)
             assertEquals(0, log.cachedInputWritePricePerMillion?.compareTo(BigDecimal("1.5")))
+        }
+    }
+
+    @Test
+    fun `admin schedules future price version and can view and cancel versions`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            val created = client.post("/admin/api/model-default-prices") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"claude-3-opus","currency":"USD","inputPricePerMillion":"15","outputPricePerMillion":"75"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.Created, created.status)
+            val createdJson = Json.parseToJsonElement(created.bodyAsText()).jsonObject
+            val id = createdJson["id"]!!.jsonPrimitive.content
+            assertEquals(1, createdJson["currentVersion"]!!.jsonPrimitive.content.toInt())
+
+            val futureTime = System.currentTimeMillis() + 3_600_000L
+            val scheduled = client.put("/admin/api/model-default-prices/$id") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"claude-3-opus","currency":"USD","inputPricePerMillion":"10","outputPricePerMillion":"50","effectiveAt":$futureTime}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, scheduled.status)
+            val scheduledJson = Json.parseToJsonElement(scheduled.bodyAsText()).jsonObject
+            val scheduledVer = scheduledJson["scheduledVersion"]?.jsonObject
+            assertEquals(2, scheduledVer?.get("version")?.jsonPrimitive?.content?.toInt())
+            assertEquals("scheduled", scheduledVer?.get("status")?.jsonPrimitive?.content)
+            assertEquals("10.00000000", scheduledVer?.get("inputPricePerMillion")?.jsonPrimitive?.content)
+
+            val versions = client.get("/admin/api/model-default-prices/$id/versions") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, versions.status)
+            val versionsArray = Json.parseToJsonElement(versions.bodyAsText()).jsonArray
+            assertEquals(2, versionsArray.size)
+
+            val scheduledVersionId = scheduledVer!!["id"]!!.jsonPrimitive.content
+            val deletedVer = client.delete("/admin/api/model-default-price-versions/$scheduledVersionId") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+            }
+            assertEquals(HttpStatusCode.NoContent, deletedVer.status)
+
+            val versionsAfterCancel = client.get("/admin/api/model-default-prices/$id/versions") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val versionsAfterArray = Json.parseToJsonElement(versionsAfterCancel.bodyAsText()).jsonArray
+            assertEquals(1, versionsAfterArray.size)
+            assertEquals(1, versionsAfterArray[0].jsonObject["version"]!!.jsonPrimitive.content.toInt())
+
+            client.delete("/admin/api/model-default-prices/$id") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+            }
+        }
+    }
+
+    @Test
+    fun `proxy request records price_version and respects scheduled effective time`() = runBlocking {
+        val channel = createChannel("versioned-channel", "ok")
+        createAlias("versioned-chat", channel to "gpt-4o-mini")
+        val now = System.currentTimeMillis()
+        val v1Price = app.modelPriceRepository.create(
+            channelId = channel.id,
+            upstreamModel = "gpt-4o-mini",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1.0"),
+            outputPricePerMillion = BigDecimal("2.0"),
+        )
+        // 预定 1 小时后生效的 v2 价格（单价提高）
+        app.modelPriceRepository.update(
+            id = v1Price.id,
+            channelId = channel.id,
+            upstreamModel = "gpt-4o-mini",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("5.0"),
+            outputPricePerMillion = BigDecimal("10.0"),
+            effectiveAt = now + 3_600_000L,
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"versioned-chat","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog()
+            // 到达生效时间前，继续使用 v1 单价 (input 1, output 2) -> 16 / 1M = 0.000016
+            assertEquals(0, log.costAmount?.compareTo(BigDecimal("0.000016")))
+            assertEquals(1, log.priceVersion)
+
+            // 模拟到达 1 小时后，解析出来的生效单价自动切换为 v2 (input 5, output 10)
+            val futureEffective = app.modelPricingService.resolve(
+                channelId = channel.id,
+                upstreamModel = "gpt-4o-mini",
+                modelId = "versioned-chat",
+                asOfTime = now + 3_600_001L,
+            )
+            assertEquals(2, futureEffective?.priceVersion)
+            assertEquals(0, futureEffective?.inputPricePerMillion?.compareTo(BigDecimal("5.0")))
+            assertEquals(0, futureEffective?.outputPricePerMillion?.compareTo(BigDecimal("10.0")))
         }
     }
 

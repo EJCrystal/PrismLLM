@@ -67,6 +67,8 @@ class RequestLogWriter private constructor(
             pricingMode = cost.pricingMode,
             perRequestPrice = cost.perRequestPrice,
             priceTiers = cost.priceTiers,
+            priceVersion = cost.priceVersion,
+            priceVersionId = cost.priceVersionId,
         )
     }
 

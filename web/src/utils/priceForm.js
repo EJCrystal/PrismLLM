@@ -1,5 +1,9 @@
+import { fromLocalInput, toLocalInput } from './format.js'
+
 /** Build the editable price form and payload without silently changing its currency. */
 export function priceFormState(price) {
+  const scheduledTime = price?.scheduledVersion?.effectiveFrom ||
+    (price?.effectiveAt && new Date(price.effectiveAt).getTime() > Date.now() ? price.effectiveAt : null)
   return {
     currency: price?.currency || 'USD',
     inputPricePerMillion: price?.inputPricePerMillion ?? '',
@@ -9,6 +13,8 @@ export function priceFormState(price) {
     pricingMode: price?.pricingMode || 'token',
     perRequestPrice: price?.perRequestPrice ?? '',
     priceTiers: Array.isArray(price?.priceTiers) ? price.priceTiers.map(priceTierFormState) : [],
+    isScheduled: Boolean(scheduledTime),
+    effectiveAt: scheduledTime ? toLocalInput(scheduledTime) : '',
   }
 }
 
@@ -52,6 +58,7 @@ function pricingPayload(form) {
       ? String(form?.perRequestPrice ?? '').trim() || null
       : null,
     priceTiers: priceTiersPayload(form),
+    effectiveAt: form?.isScheduled && form?.effectiveAt ? fromLocalInput(form.effectiveAt) : null,
   }
 }
 
@@ -103,6 +110,8 @@ export function emptyPriceDraft() {
     pricingMode: 'token',
     perRequestPrice: '',
     priceTiers: [],
+    isScheduled: false,
+    effectiveAt: '',
   }
 }
 
@@ -170,6 +179,11 @@ export function priceFormError(form) {
     if (String(form[field] ?? '').trim() && parseOptionalNonNegativePrice(form[field]) == null) {
       return field === 'cachedInputPricePerMillion' ? '缓存读取单价必须是非负数字' : '缓存写入单价必须是非负数字'
     }
+  }
+  if (form?.isScheduled) {
+    const effectiveAtMs = fromLocalInput(form.effectiveAt)
+    if (!effectiveAtMs) return '请选择定时生效时间'
+    if (effectiveAtMs <= Date.now()) return '定时生效时间必须是未来的时间'
   }
   return null
 }

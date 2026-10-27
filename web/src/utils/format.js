@@ -213,3 +213,29 @@ export function formatPriceSnapshot(price) {
     { label: '缓存写单价', value: cachedUnit(price.cachedInputWritePricePerMillion, price.inputPricePerMillion) },
   ]
 }
+
+/**
+ * 将时间戳转为 datetime-local 输入框所需的本地时间字符串 (YYYY-MM-DDTHH:mm)。
+ *
+ * @param {number|string|null} value 毫秒时间戳或日期字符串
+ * @returns {string}
+ */
+export function toLocalInput(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return local.toISOString().slice(0, 16)
+}
+
+/**
+ * 将 datetime-local 输入框的值解析为 UTC 毫秒时间戳。
+ *
+ * @param {string|null} value 本地时间字符串
+ * @returns {number|null}
+ */
+export function fromLocalInput(value) {
+  if (!value) return null
+  const time = new Date(value).getTime()
+  return Number.isFinite(time) ? time : null
+}

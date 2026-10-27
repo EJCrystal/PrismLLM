@@ -21,6 +21,8 @@ data class ResolvedModelPrice(
     val modelId: String,
     val channelPriceId: String? = null,
     val defaultPriceId: String? = null,
+    val priceVersion: Int? = null,
+    val priceVersionId: String? = null,
     val currency: String,
     val inputPricePerMillion: BigDecimal,
     val outputPricePerMillion: BigDecimal,
@@ -46,21 +48,24 @@ class ModelPricingService(
         channelId: String?,
         upstreamModel: String?,
         modelId: String?,
+        asOfTime: Long = System.currentTimeMillis(),
     ): ResolvedModelPrice? {
         if (channelId != null && upstreamModel != null) {
-            channelPriceRepository.find(channelId, upstreamModel)?.let { price ->
+            channelPriceRepository.findEffective(channelId, upstreamModel, asOfTime)?.let { version ->
                 return ResolvedModelPrice(
                     source = ModelPriceSource.CHANNEL_OVERRIDE,
                     modelId = modelId?.trim()?.takeIf { it.isNotEmpty() } ?: upstreamModel.trim(),
-                    channelPriceId = price.id,
-                    currency = price.currency,
-                    inputPricePerMillion = price.inputPricePerMillion,
-                    outputPricePerMillion = price.outputPricePerMillion,
-                    cachedInputPricePerMillion = price.cachedInputPricePerMillion,
-                    cachedInputWritePricePerMillion = price.cachedInputWritePricePerMillion,
-                    pricingMode = price.pricingMode,
-                    perRequestPrice = price.perRequestPrice,
-                    priceTiers = price.priceTiers,
+                    channelPriceId = version.channelId,
+                    priceVersion = version.version,
+                    priceVersionId = version.id,
+                    currency = version.currency,
+                    inputPricePerMillion = version.inputPricePerMillion,
+                    outputPricePerMillion = version.outputPricePerMillion,
+                    cachedInputPricePerMillion = version.cachedInputPricePerMillion,
+                    cachedInputWritePricePerMillion = version.cachedInputWritePricePerMillion,
+                    pricingMode = version.pricingMode,
+                    perRequestPrice = version.perRequestPrice,
+                    priceTiers = version.priceTiers,
                 )
             }
         }
@@ -70,19 +75,21 @@ class ModelPricingService(
             upstreamModel?.trim()?.takeIf { it.isNotEmpty() },
         ).distinct()
         for (defaultModelId in defaultModelIds) {
-            defaultPriceRepository.find(defaultModelId)?.let { price ->
+            defaultPriceRepository.findEffective(defaultModelId, asOfTime)?.let { version ->
                 return ResolvedModelPrice(
                     source = ModelPriceSource.MODEL_DEFAULT,
-                    modelId = price.modelId,
-                    defaultPriceId = price.id,
-                    currency = price.currency,
-                    inputPricePerMillion = price.inputPricePerMillion,
-                    outputPricePerMillion = price.outputPricePerMillion,
-                    cachedInputPricePerMillion = price.cachedInputPricePerMillion,
-                    cachedInputWritePricePerMillion = price.cachedInputWritePricePerMillion,
-                    pricingMode = price.pricingMode,
-                    perRequestPrice = price.perRequestPrice,
-                    priceTiers = price.priceTiers,
+                    modelId = version.modelId,
+                    defaultPriceId = version.id,
+                    priceVersion = version.version,
+                    priceVersionId = version.id,
+                    currency = version.currency,
+                    inputPricePerMillion = version.inputPricePerMillion,
+                    outputPricePerMillion = version.outputPricePerMillion,
+                    cachedInputPricePerMillion = version.cachedInputPricePerMillion,
+                    cachedInputWritePricePerMillion = version.cachedInputWritePricePerMillion,
+                    pricingMode = version.pricingMode,
+                    perRequestPrice = version.perRequestPrice,
+                    priceTiers = version.priceTiers,
                 )
             }
         }
@@ -90,5 +97,5 @@ class ModelPricingService(
     }
 
     suspend fun resolve(record: RequestLogRecord): ResolvedModelPrice? =
-        resolve(record.channelId, record.upstreamModel, record.pricingModelId)
+        resolve(record.channelId, record.upstreamModel, record.pricingModelId, record.createdAt)
 }

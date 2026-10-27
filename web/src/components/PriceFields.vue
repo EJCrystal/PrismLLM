@@ -1,4 +1,6 @@
 <script setup>
+import { toLocalInput } from '../utils/format'
+
 const props = defineProps({
   form: { type: Object, required: true },
 })
@@ -9,6 +11,15 @@ const modes = [
   { value: 'tiered', label: '阶梯价' },
   { value: 'volume', label: '阶梯总量价' },
 ]
+
+function onScheduleChange(scheduled) {
+  props.form.isScheduled = scheduled
+  if (scheduled && !props.form.effectiveAt) {
+    const tomorrow = new Date(Date.now() + 24 * 3600_000)
+    tomorrow.setMinutes(0, 0, 0)
+    props.form.effectiveAt = toLocalInput(tomorrow.getTime())
+  }
+}
 
 function addTier() {
   const tiers = props.form.priceTiers || (props.form.priceTiers = [])
@@ -106,9 +117,52 @@ function removeTier(index) {
     </div>
     <button v-if="form.priceTiers.length === 0" type="button" class="button subtle mini" @click="addTier">添加第一档</button>
   </section>
+
+  <div class="field price-schedule-field">
+    <span>生效方式</span>
+    <div class="price-schedule-toggle">
+      <label class="schedule-radio">
+        <input type="radio" :value="false" v-model="form.isScheduled" @change="onScheduleChange(false)" />
+        <span>立即生效</span>
+      </label>
+      <label class="schedule-radio">
+        <input type="radio" :value="true" v-model="form.isScheduled" @change="onScheduleChange(true)" />
+        <span>定时生效</span>
+      </label>
+    </div>
+    <div v-if="form.isScheduled" class="schedule-date-wrap">
+      <input v-model="form.effectiveAt" type="datetime-local" />
+      <small>将在指定的未来时间自动切换为此价格版本；到达该时间前仍沿用当前生效价格。</small>
+    </div>
+    <small v-else>保存后立即作为当前有效价格生效，并保留版本历史。</small>
+  </div>
 </template>
 
 <style scoped>
+.price-schedule-field {
+  display: grid;
+  gap: 8px;
+}
+
+.price-schedule-toggle {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.schedule-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.schedule-date-wrap {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
 .price-tier-editor {
   display: grid;
   gap: 10px;

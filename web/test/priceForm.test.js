@@ -225,4 +225,42 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(tieredPayload.priceTiers[0].cachedInputPricePerMillion, '0.5')
     assert.equal(tieredPayload.priceTiers[1].upToTokens, null)
   })
+
+  it('校验定时生效时间必填且必须为未来时间', () => {
+    assert.equal(
+      priceFormError({ pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2', isScheduled: true, effectiveAt: '' }),
+      '请选择定时生效时间',
+    )
+    assert.equal(
+      priceFormError({ pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2', isScheduled: true, effectiveAt: '2020-01-01T00:00' }),
+      '定时生效时间必须是未来的时间',
+    )
+    assert.equal(
+      priceFormError({ pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2', isScheduled: true, effectiveAt: '2099-01-01T00:00' }),
+      null,
+    )
+  })
+
+  it('构建定时生效请求体', () => {
+    const scheduledPayload = buildPricePayload({
+      currency: 'USD',
+      pricingMode: 'token',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      isScheduled: true,
+      effectiveAt: '2099-01-01T12:00',
+    }, 'channel-1', 'm1')
+    assert.equal(typeof scheduledPayload.effectiveAt, 'number')
+    assert.ok(scheduledPayload.effectiveAt > Date.now())
+
+    const immediatePayload = buildPricePayload({
+      currency: 'USD',
+      pricingMode: 'token',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      isScheduled: false,
+      effectiveAt: '2099-01-01T12:00',
+    }, 'channel-1', 'm1')
+    assert.equal(immediatePayload.effectiveAt, null)
+  })
 })

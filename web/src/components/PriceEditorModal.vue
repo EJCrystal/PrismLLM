@@ -14,7 +14,7 @@ import {
   priceFormState,
   resetPriceForm,
 } from '../utils/priceForm'
-import { formatPriceSummary, formatUnitPrice } from '../utils/format'
+import { formatPriceSummary, formatTime, formatUnitPrice } from '../utils/format'
 import Modal from './Modal.vue'
 import PriceFields from './PriceFields.vue'
 
@@ -36,6 +36,10 @@ const saving = ref(false)
 const activePrice = ref(props.price)
 const batchOpen = ref(false)
 const batchSelected = ref([])
+const showVersions = ref(false)
+const loadingVersions = ref(false)
+const versionHistory = ref([])
+const cancellingVersion = ref(false)
 let modelsRequestId = 0
 let referenceRequestId = 0
 
@@ -189,6 +193,8 @@ function onChannelChange() {
 function editPrice(price) {
   cancelReferenceLookup()
   activePrice.value = price
+  showVersions.value = false
+  versionHistory.value = []
   applyPriceToForm(form, price)
   modelPickerOpen.value = false
 }
@@ -196,8 +202,45 @@ function editPrice(price) {
 function startNewPrice() {
   cancelReferenceLookup()
   activePrice.value = null
+  showVersions.value = false
+  versionHistory.value = []
   resetPriceForm(form)
   modelPickerOpen.value = false
+}
+
+async function toggleVersionHistory() {
+  showVersions.value = !showVersions.value
+  if (showVersions.value && form.channelId && form.upstreamModel.trim()) {
+    loadingVersions.value = true
+    try {
+      versionHistory.value = await api.listModelPriceVersions(form.channelId, form.upstreamModel.trim())
+    } catch (e) {
+      notify(e.message, 'error')
+    } finally {
+      loadingVersions.value = false
+    }
+  }
+}
+
+async function cancelScheduledVersion(version) {
+  if (!version?.id) return
+  if (!window.confirm(`确定取消将于 ${formatTime(version.effectiveFrom)} 生效的版本 v${version.version}？`)) return
+  cancellingVersion.value = true
+  try {
+    await api.deleteModelPriceVersion(version.id)
+    notify('定时生效版本已取消')
+    if (activePrice.value) {
+      activePrice.value.scheduledVersion = null
+    }
+    if (showVersions.value && form.channelId && form.upstreamModel.trim()) {
+      versionHistory.value = await api.listModelPriceVersions(form.channelId, form.upstreamModel.trim())
+    }
+    emit('saved')
+  } catch (e) {
+    notify(e.message, 'error')
+  } finally {
+    cancellingVersion.value = false
+  }
 }
 
 function applyDefaultPrice() {
@@ -466,6 +509,54 @@ async function applyBatch() {
         <small>获取参考价会切换为 USD。</small>
       </label>
       <PriceFields :form="form" />
+
+      <div v-if="activePrice?.scheduledVersion" class="callout warning price-scheduled-banner">
+        <div class="scheduled-banner-info">
+          <strong>定时生效版本 (v{{ activePrice.scheduledVersion.version }})</strong>
+          <span class="muted small"> · 将于 {{ formatTime(activePrice.scheduledVersion.effectiveFrom) }} 生效</span>
+          <div class="small">{{ formatPriceSummary(activePrice.scheduledVersion) }}</div>
+        </div>
+        <button
+          type="button"
+          class="button ghost mini danger"
+          :disabled="cancellingVersion"
+          @click="cancelScheduledVersion(activePrice.scheduledVersion)"
+        >
+          取消定时
+        </button>
+      </div>
+
+      <div v-if="activePrice?.id" class="price-version-history">
+        <div class="version-history-head">
+          <span class="muted small">
+            当前版本：v{{ activePrice.currentVersion || 1 }}（生效于 {{ formatTime(activePrice.effectiveFrom || activePrice.createdAt) }}）
+          </span>
+          <button type="button" class="button ghost mini" @click="toggleVersionHistory">
+            {{ showVersions ? '收起版本历史' : '查看版本历史' }}
+          </button>
+        </div>
+        <div v-if="showVersions" class="version-history-list">
+          <div v-if="loadingVersions" class="muted small">正在加载版本历史…</div>
+          <div v-else-if="versionHistory.length === 0" class="muted small">暂无其他版本记录</div>
+          <div v-for="ver in versionHistory" :key="ver.id" class="version-history-item">
+            <span class="badge" :class="ver.status === 'scheduled' ? 'warning' : (ver.version === activePrice.currentVersion ? 'success' : 'muted')">
+              {{ ver.status === 'scheduled' ? '待生效' : (ver.version === activePrice.currentVersion ? '生效中' : '历史') }}
+            </span>
+            <code>v{{ ver.version }}</code>
+            <span class="muted small">{{ formatPriceSummary(ver) }} · {{ formatTime(ver.effectiveFrom) }}</span>
+            <button
+              v-if="ver.status === 'scheduled'"
+              type="button"
+              class="button ghost mini danger"
+              :disabled="cancellingVersion"
+              @click="cancelScheduledVersion(ver)"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      </div>
+
       <p v-if="activePrice?.id" class="muted small price-source-note">正在编辑渠道覆盖价。</p>
       <p v-else-if="inheritedPrice" class="callout info price-source-note">
         该模型当前继承默认价；保存后将为当前渠道创建覆盖价。

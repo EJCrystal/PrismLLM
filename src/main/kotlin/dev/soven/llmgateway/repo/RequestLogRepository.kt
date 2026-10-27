@@ -73,6 +73,8 @@ class RequestLogRepository(private val database: Database) {
             it[pricingMode] = record.pricingMode.value
             it[perRequestPrice] = record.perRequestPrice
             it[priceTiersJson] = PricingTierCodec.encode(record.priceTiers)
+            it[priceVersion] = record.priceVersion
+            it[priceVersionId] = record.priceVersionId
             it[errorCode] = record.errorCode
             it[failureStage] = record.failureStage?.value
             it[errorMessage] = record.errorMessage
@@ -236,6 +238,8 @@ class RequestLogRepository(private val database: Database) {
         pricingMode = PricingMode.fromValue(row[RequestLogs.pricingMode]),
         perRequestPrice = row[RequestLogs.perRequestPrice],
         priceTiers = PricingTierCodec.decode(row[RequestLogs.priceTiersJson]),
+        priceVersion = row[RequestLogs.priceVersion],
+        priceVersionId = row[RequestLogs.priceVersionId],
         errorCode = row[RequestLogs.errorCode],
         failureStage = FailureStage.fromValue(row[RequestLogs.failureStage]),
         errorMessage = row[RequestLogs.errorMessage],
