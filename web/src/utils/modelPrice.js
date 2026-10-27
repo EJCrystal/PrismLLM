@@ -1,3 +1,11 @@
+/** Resolve the display name of a channel, falling back to channel ID. */
+export function channelDisplayName(channels, channelId) {
+  if (!channelId) return ''
+  const target = String(channelId).trim()
+  const found = (Array.isArray(channels) ? channels : []).find((c) => c && c.id === target)
+  return found?.name || target
+}
+
 /** Find the price record for one channel/model pair. */
 export function findModelPrice(prices, channelId, upstreamModel) {
   if (!Array.isArray(prices) || !channelId) return null

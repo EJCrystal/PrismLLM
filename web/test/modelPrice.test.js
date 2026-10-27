@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildPricePrompt,
+  channelDisplayName,
   channelModelPriceOptions,
   channelModelPricingId,
   channelPriceSummaries,
@@ -405,5 +406,27 @@ describe('modelPrice: 保存后定位渠道', () => {
   it('渠道已不存在时返回 null，避免陈旧提示', () => {
     assert.equal(resolveSavedChannel(channels, { id: 'missing' }, 'missing'), null)
     assert.equal(resolveSavedChannel([], null, null, '渠道一'), null)
+  })
+})
+
+describe('modelPrice: 渠道显示名称解析', () => {
+  const channels = [
+    { id: 'c1', name: 'Anthropic-麻豆科技' },
+    { id: 'c2', name: 'deepseek-grox' },
+  ]
+
+  it('能正确根据 channelId 找到渠道名称', () => {
+    assert.equal(channelDisplayName(channels, 'c1'), 'Anthropic-麻豆科技')
+    assert.equal(channelDisplayName(channels, 'c2'), 'deepseek-grox')
+  })
+
+  it('找不到对应渠道时回退为 channelId', () => {
+    assert.equal(channelDisplayName(channels, 'unknown-id'), 'unknown-id')
+  })
+
+  it('空值与异常输入安全返回', () => {
+    assert.equal(channelDisplayName(null, null), '')
+    assert.equal(channelDisplayName([], ''), '')
+    assert.equal(channelDisplayName(channels, '   '), '')
   })
 })
