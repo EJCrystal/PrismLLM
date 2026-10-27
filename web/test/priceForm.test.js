@@ -8,6 +8,7 @@ import {
   defaultPriceFormState,
   emptyPriceDraft,
   hasPriceDraft,
+  hasActivePriceDraft,
   parseNonNegativePrice,
   parseOptionalNonNegativePrice,
   priceFormError,
@@ -240,6 +241,45 @@ describe('priceForm: 计费单价的币种与金额', () => {
       priceFormError({ pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2', isScheduled: true, effectiveAt: '2099-01-01T00:00' }),
       null,
     )
+  })
+
+  it('批量套用在金额未填写时给出明确的填写提示', () => {
+    assert.equal(
+      priceFormError(
+        { pricingMode: 'token', inputPricePerMillion: '', outputPricePerMillion: '' },
+        { action: 'batch' },
+      ),
+      '请先填写输入单价和输出单价，再批量套用',
+    )
+    assert.equal(
+      priceFormError(
+        { pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2' },
+        { action: 'batch' },
+      ),
+      null,
+    )
+    for (const pricingMode of ['tiered', 'volume']) {
+      assert.equal(
+        priceFormError({
+          pricingMode,
+          priceTiers: [{ upToTokens: '', inputPricePerMillion: '', outputPricePerMillion: '' }],
+        }, { action: 'batch' }),
+        '请先填写每档的输入和输出单价，再批量套用',
+      )
+    }
+  })
+
+  it('批量价格摘要只检查当前计费方式的字段', () => {
+    assert.equal(hasActivePriceDraft({
+      pricingMode: 'per_request',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      perRequestPrice: '',
+    }), false)
+    assert.equal(hasActivePriceDraft({
+      pricingMode: 'per_request',
+      perRequestPrice: '0.01',
+    }), true)
   })
 
   it('构建定时生效请求体', () => {
