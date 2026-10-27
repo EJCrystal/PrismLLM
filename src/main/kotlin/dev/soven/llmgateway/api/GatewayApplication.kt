@@ -19,6 +19,7 @@ import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
 import dev.soven.llmgateway.repo.CooldownStateRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
 import dev.soven.llmgateway.repo.RetentionSettingsRepository
+import dev.soven.llmgateway.repo.ModelTestSettingsRepository
 import dev.soven.llmgateway.report.LogRetentionService
 import dev.soven.llmgateway.quota.ClientKeyQuotaService
 import dev.soven.llmgateway.quota.RequestLimitService
@@ -89,6 +90,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val adminAuditRepository = AdminAuditRepository(databaseFactory.database)
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
+    val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
     val modelDefaultPriceRepository = ModelDefaultPriceRepository(databaseFactory.database)
     val modelPricingService = ModelPricingService(modelPriceRepository, modelDefaultPriceRepository)

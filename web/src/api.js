@@ -82,6 +82,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ model }),
     }),
+  testChannelModel: (id, payload) =>
+    request(`/channels/${encodeURIComponent(id)}/model-test`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getModelTestSettings: () => request('/model-test-settings'),
+  updateModelTestSettings: (payload) =>
+    request('/model-test-settings', { method: 'PUT', body: JSON.stringify(payload) }),
 
   listAliases: () => request('/aliases'),
   createAlias: (payload) => request('/aliases', { method: 'POST', body: JSON.stringify(payload) }),

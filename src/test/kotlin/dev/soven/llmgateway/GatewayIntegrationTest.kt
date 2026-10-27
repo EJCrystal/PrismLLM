@@ -1891,6 +1891,111 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin updates model test settings`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            val initial = client.get("/admin/api/model-test-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, initial.status)
+            assertTrue(initial.bodyAsText().contains("请只回复 OK"))
+
+            val updated = client.put("/admin/api/model-test-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"defaultPrompt":"  custom prompt  ","defaultReasoningEffort":"high"}""")
+            }
+            assertEquals(HttpStatusCode.OK, updated.status)
+            val json = Json.parseToJsonElement(updated.bodyAsText()).jsonObject
+            assertEquals("custom prompt", json["defaultPrompt"]?.jsonPrimitive?.content)
+            assertEquals("high", json["defaultReasoningEffort"]?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun `admin tests a channel model with prompt and reasoning effort`() = runBlocking {
+        val channel = createChannel("model-test", "ok")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.post("/admin/api/channels/${channel.id}/model-test") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"model":"gpt-4o-mini","protocol":"chat_completions","prompt":"custom prompt","reasoningEffort":"high"}""",
+                )
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val json = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals(true, json["success"]?.jsonPrimitive?.content?.toBoolean())
+            assertEquals("Hello!", json["responseText"]?.jsonPrimitive?.content)
+            assertEquals("10", json["usage"]?.jsonObject?.get("inputTokens")?.jsonPrimitive?.content)
+            val upstream = fake.requests.last().body
+            assertTrue(upstream.contains("\"reasoning_effort\":\"high\""), upstream)
+            assertTrue(upstream.contains("\"content\":\"custom prompt\""), upstream)
+            assertTrue(upstream.contains("\"max_tokens\":128"), upstream)
+        }
+    }
+
+    @Test
+    fun `model test rejects reasoning effort for messages protocol`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            "model-test-messages",
+            "${fake.baseUrl}/ok/v1",
+            protocols = setOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+        )
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.post("/admin/api/channels/${channel.id}/model-test") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"model":"claude-sonnet-4-5","protocol":"messages","prompt":"hi","reasoningEffort":"high"}""",
+                )
+            }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("model_test_reasoning_unsupported"))
+        }
+    }
+
+    @Test
+    fun `model test returns upstream failure details`() = runBlocking {
+        val channel = createChannel("model-test-fail", "500")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.post("/admin/api/channels/${channel.id}/model-test") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","protocol":"chat_completions","prompt":"hi"}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val json = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals(false, json["success"]?.jsonPrimitive?.content?.toBoolean())
+            assertEquals("500", json["statusCode"]?.jsonPrimitive?.content)
+            assertEquals("upstream down", json["errorMessage"]?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
     fun `direct mode reports protocol mismatch`() = runBlocking {
         app.close()
         app = GatewayApplication(config())
@@ -2627,7 +2732,13 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("27", result.getString(1))
+                        assertEquals("28", result.getString(1))
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.tables where table_name = 'model_test_settings'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V28 应创建 model_test_settings 表")
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.tables where table_name = 'model_price_versions'",
@@ -3772,7 +3883,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table admin_audit_logs, retention_settings, request_logs, alias_candidates, model_aliases, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table admin_audit_logs, retention_settings, model_test_settings, request_logs, alias_candidates, model_aliases, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }

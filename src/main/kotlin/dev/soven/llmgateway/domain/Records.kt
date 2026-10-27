@@ -168,6 +168,13 @@ data class DefaultModelPriceRecord(
     val priceTiers: List<ModelPriceTier> = emptyList(),
 )
 
+/** 渠道模型连通性测试的全局默认值。 */
+data class ModelTestSettingsRecord(
+    val defaultPrompt: String,
+    val defaultReasoningEffort: String?,
+    val updatedAt: Long,
+)
+
 /**
  * 管理员账号记录。
  *

@@ -200,6 +200,16 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 返回每个协议的 `supported`、`statusCode` 和说明。探测会使用已保存凭据发送最小请求（Chat `max_tokens=1`、Responses `max_output_tokens=1`、Messages `max_tokens=1`），可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
 
+渠道编辑弹窗的授权模型列表提供「测试」入口，可对指定模型发送一次真实请求，并指定协议、推理强度和测试提示词。测试使用已保存的渠道凭据，不经过数据面、不写入请求日志，也不消耗调用方密钥额度；最多输出 128 token，超时 45 秒。Chat Completions 发送顶层 `reasoning_effort`，Responses 发送 `reasoning.effort`，Anthropic Messages 暂不支持推理强度。
+
+```bash
+curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id>/model-test \
+  -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","protocol":"chat_completions","prompt":"请只回复 OK","reasoningEffort":"high"}'
+```
+
+全局默认提示词和默认推理强度通过 `GET/PUT /admin/api/model-test-settings` 配置；单次测试可以覆盖全局值。
+
 ### 候选档位、分摊与候选冷却
 
 别名候选的 `position` 是优先级档位：同档候选轮询分摊流量（例如几个有优惠的渠道共扛同一模型），后续档位只在前面档位失败或冷却时启用。创建/更新别名时每个候选可显式传 `position`（0..999，同档填同一个数），省略时按数组顺序递增；直连暴露的候选同处第 0 档，天然参与分摊。

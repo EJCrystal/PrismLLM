@@ -7,6 +7,7 @@ const actionLabels = {
   'account.password.update': '修改管理员密码',
   'channel.discover_models': '发现渠道模型',
   'channel.probe_protocols': '探测渠道协议',
+  'channel.model_test': '测试渠道模型',
   'channel.create': '创建渠道',
   'channel.update': '更新渠道',
   'channel.delete': '删除渠道',
@@ -25,6 +26,7 @@ const actionLabels = {
   'model_default_price.create': '创建模型默认价',
   'model_default_price.update': '更新模型默认价',
   'model_default_price.delete': '删除模型默认价',
+  'model_test_settings.update': '更新模型测试设置',
   'request_log.cleanup': '清理请求日志',
 }
 

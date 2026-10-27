@@ -8,7 +8,10 @@ import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.domain.DefaultModelPriceRecord
+import dev.soven.llmgateway.domain.ModelTestSettingsRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.proxy.ModelConnectivityTestResult
+import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.quota.ClientKeyQuotaUsage
 import dev.soven.llmgateway.report.CleanupResult
 import dev.soven.llmgateway.report.RetentionPolicy
@@ -868,4 +871,82 @@ data class ProtocolProbeResultResponse(
 data class ProtocolProbeResponse(
     val model: String,
     val results: List<ProtocolProbeResultResponse>,
+)
+
+/** 模型连通性测试的全局默认设置。 */
+@Serializable
+data class ModelTestSettingsRequest(
+    val defaultPrompt: String,
+    val defaultReasoningEffort: String? = null,
+)
+
+@Serializable
+data class ModelTestSettingsResponse(
+    val defaultPrompt: String,
+    val defaultReasoningEffort: String? = null,
+    val updatedAt: Long,
+)
+
+fun ModelTestSettingsRecord.toResponse() = ModelTestSettingsResponse(
+    defaultPrompt = defaultPrompt,
+    defaultReasoningEffort = defaultReasoningEffort,
+    updatedAt = updatedAt,
+)
+
+/** 对指定渠道模型发送一次真实请求。 */
+@Serializable
+data class ChannelModelTestRequest(
+    val model: String,
+    val protocol: String,
+    val prompt: String? = null,
+    val reasoningEffort: String? = null,
+)
+
+@Serializable
+data class ChannelModelTestUsageResponse(
+    val inputTokens: Long? = null,
+    val outputTokens: Long? = null,
+    val cachedTokens: Long? = null,
+    val reasoningTokens: Long? = null,
+    val totalTokens: Long? = null,
+)
+
+fun Usage.toTestResponse() = ChannelModelTestUsageResponse(
+    inputTokens = input,
+    outputTokens = output,
+    cachedTokens = cached,
+    reasoningTokens = reasoning,
+    totalTokens = total,
+)
+
+@Serializable
+data class ChannelModelTestResponse(
+    val success: Boolean,
+    val model: String,
+    val protocol: String,
+    val statusCode: Int? = null,
+    val latencyMs: Long,
+    val prompt: String,
+    val reasoningEffort: String? = null,
+    val responseText: String? = null,
+    val errorMessage: String? = null,
+    val usage: ChannelModelTestUsageResponse? = null,
+)
+
+fun ModelConnectivityTestResult.toResponse(
+    model: String,
+    protocol: GatewayProtocol,
+    prompt: String,
+    reasoningEffort: String?,
+) = ChannelModelTestResponse(
+    success = success,
+    model = model,
+    protocol = protocol.value,
+    statusCode = statusCode,
+    latencyMs = latencyMs,
+    prompt = prompt,
+    reasoningEffort = reasoningEffort,
+    responseText = responseText,
+    errorMessage = errorMessage,
+    usage = usage?.toTestResponse(),
 )

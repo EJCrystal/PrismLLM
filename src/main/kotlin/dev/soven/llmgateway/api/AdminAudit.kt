@@ -108,6 +108,7 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "POST" && path == "/admin/api/model-suggestions" -> "admin.model_suggestions"
     method == "POST" && path == "/admin/api/channels/model-discovery" -> "channel.discover_models"
     method == "POST" && CHANNEL_PROBE_PATTERN.matches(path) -> "channel.probe_protocols"
+    method == "POST" && CHANNEL_MODEL_TEST_PATTERN.matches(path) -> "channel.model_test"
     method == "POST" && path == "/admin/api/channels" -> "channel.create"
     method == "PUT" && CHANNEL_ITEM_PATTERN.matches(path) -> "channel.update"
     method == "DELETE" && CHANNEL_ITEM_PATTERN.matches(path) -> "channel.delete"
@@ -128,6 +129,7 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "DELETE" && MODEL_DEFAULT_PRICE_ITEM_PATTERN.matches(path) -> "model_default_price.delete"
     method == "PUT" && path == "/admin/api/request-log-retention" -> "request_log.retention.update"
     method == "POST" && path == "/admin/api/request-log-retention/cleanup" -> "request_log.cleanup"
+    method == "PUT" && path == "/admin/api/model-test-settings" -> "model_test_settings.update"
     else -> "admin.write"
 }
 
@@ -144,6 +146,7 @@ private fun sanitizeRequestId(value: String?): String {
 }
 
 private val CHANNEL_PROBE_PATTERN = Regex("^/admin/api/channels/[^/]+/probe-protocols$")
+private val CHANNEL_MODEL_TEST_PATTERN = Regex("^/admin/api/channels/[^/]+/model-test$")
 private val CHANNEL_ITEM_PATTERN = Regex("^/admin/api/channels/[^/]+$")
 private val ALIAS_ITEM_PATTERN = Regex("^/admin/api/aliases/[^/]+$")
 private val CLIENT_KEY_ITEM_PATTERN = Regex("^/admin/api/client-keys/[^/]+$")

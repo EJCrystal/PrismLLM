@@ -1,0 +1,78 @@
+package dev.soven.llmgateway.proxy
+
+import dev.soven.llmgateway.domain.GatewayProtocol
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Test
+
+class ModelConnectivityTestTest {
+    @Test
+    fun `builds chat body with prompt and reasoning effort`() {
+        val body = Json.parseToJsonElement(
+            buildModelTestBody(
+                protocol = GatewayProtocol.CHAT_COMPLETIONS,
+                model = "gpt-test",
+                prompt = "say ok",
+                reasoningEffort = "high",
+                maxOutputTokens = 128,
+            ),
+        ).jsonObject
+
+        assertEquals("gpt-test", body["model"]?.jsonPrimitive?.content)
+        assertEquals("high", body["reasoning_effort"]?.jsonPrimitive?.content)
+        assertEquals("say ok", body["messages"]?.jsonArray?.first()?.jsonObject?.get("content")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `builds responses body with nested reasoning effort`() {
+        val body = Json.parseToJsonElement(
+            buildModelTestBody(
+                protocol = GatewayProtocol.RESPONSES,
+                model = "gpt-test",
+                prompt = "say ok",
+                reasoningEffort = "medium",
+                maxOutputTokens = 128,
+            ),
+        ).jsonObject
+
+        assertEquals("medium", body["reasoning"]?.jsonObject?.get("effort")?.jsonPrimitive?.content)
+        assertEquals("say ok", body["input"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `messages body omits reasoning effort`() {
+        val body = Json.parseToJsonElement(
+            buildModelTestBody(
+                protocol = GatewayProtocol.MESSAGES,
+                model = "claude-test",
+                prompt = "say ok",
+                reasoningEffort = "high",
+                maxOutputTokens = 128,
+            ),
+        ).jsonObject
+
+        assertNull(body["reasoning_effort"])
+        assertNull(body["reasoning"])
+    }
+
+    @Test
+    fun `extracts text from each protocol response`() {
+        val chat = Json.parseToJsonElement(
+            """{"choices":[{"message":{"content":"chat ok"}}]}""",
+        ).jsonObject
+        val responses = Json.parseToJsonElement(
+            """{"output":[{"content":[{"type":"output_text","text":"responses ok"}]}]}""",
+        ).jsonObject
+        val messages = Json.parseToJsonElement(
+            """{"content":[{"type":"text","text":"messages ok"}]}""",
+        ).jsonObject
+
+        assertEquals("chat ok", extractModelTestResponseText(GatewayProtocol.CHAT_COMPLETIONS, chat))
+        assertEquals("responses ok", extractModelTestResponseText(GatewayProtocol.RESPONSES, responses))
+        assertEquals("messages ok", extractModelTestResponseText(GatewayProtocol.MESSAGES, messages))
+    }
+}

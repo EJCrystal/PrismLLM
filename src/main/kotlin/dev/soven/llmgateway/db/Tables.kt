@@ -226,6 +226,16 @@ object RetentionSettings : Table("retention_settings") {
     override val primaryKey = PrimaryKey(id)
 }
 
+/** 渠道模型连通性测试的全局默认值。 */
+object ModelTestSettings : Table("model_test_settings") {
+    val id = integer("id")
+    val defaultPrompt = text("default_prompt")
+    val defaultReasoningEffort = varchar("default_reasoning_effort", 20).nullable()
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(id)
+}
+
 /**
  * 请求日志表。
  *

@@ -8,6 +8,8 @@ import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import PriceEditorModal from './PriceEditorModal.vue'
 import DefaultPriceModal from './DefaultPriceModal.vue'
+import ModelTestModal from './ModelTestModal.vue'
+import ModelTestSettingsModal from './ModelTestSettingsModal.vue'
 import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
@@ -32,6 +34,8 @@ const prices = ref([])
 const defaultPrices = ref([])
 const priceEditor = ref(null)
 const showDefaultPrices = ref(false)
+const testTarget = ref(null)
+const showTestSettings = ref(false)
 const pricePromptChannelId = ref(null)
 const loading = ref(true)
 const error = ref('')
@@ -107,6 +111,36 @@ const canProbeProtocols = computed(() => {
     authType: form.authType,
   })
 })
+
+function savedEditingChannel() {
+  return channels.value.find((channel) => channel.id === editingId.value) || null
+}
+
+function canTestModel(modelId) {
+  const channel = savedEditingChannel()
+  return Boolean(
+    channel &&
+    channel.protocols?.length &&
+    channel.models.includes(modelId),
+  )
+}
+
+function openModelTest(modelId) {
+  const channel = savedEditingChannel()
+  if (!channel) {
+    notify('请先保存渠道后再测试模型', 'warning')
+    return
+  }
+  if (!channel.models.includes(modelId)) {
+    notify('该模型尚未保存到渠道，请先保存渠道后再测试', 'warning')
+    return
+  }
+  if (!channel.protocols?.length) {
+    notify('渠道尚未启用任何协议，无法测试', 'warning')
+    return
+  }
+  testTarget.value = { channel, model: modelId }
+}
 
 const priorityEditingId = ref(null)
 const priorityDraft = ref(1)
@@ -325,6 +359,11 @@ function openEdit(channel) {
     priority: channel.priority ?? 1,
   })
   showForm.value = true
+}
+
+function closeChannelForm() {
+  if (testTarget.value || showTestSettings.value) return
+  showForm.value = false
 }
 
 async function loadAvailableModels() {
@@ -710,7 +749,7 @@ onMounted(load)
       </div>
     </div>
 
-    <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide @close="showForm = false">
+    <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide @close="closeChannelForm">
       <form class="form-grid" @submit.prevent="save">
         <label class="field">
           <span>渠道名称</span>
@@ -817,6 +856,10 @@ onMounted(load)
             <span v-else class="badge neutral">全部沿用上游名</span>
           </div>
           <div class="channel-canonical-list">
+            <div class="channel-model-test-toolbar">
+              <span class="muted small">测试会使用已保存的渠道配置发送一次真实上游请求。</span>
+              <button type="button" class="button ghost mini" @click="showTestSettings = true">全局测试设置</button>
+            </div>
             <div class="channel-canonical-header">
               <span>上游模型</span>
               <span></span>
@@ -825,14 +868,25 @@ onMounted(load)
               </span>
             </div>
             <div v-for="modelId in authorizedModels" :key="modelId" class="channel-canonical-row">
-              <button
-                type="button"
-                class="channel-canonical-upstream"
-                :title="'点击将「' + modelId + '」填入右侧'"
-                @click="copyUpstreamToCanonical(modelId)"
-              >
-                <code>{{ modelId }}</code>
-              </button>
+              <div class="channel-canonical-model">
+                <button
+                  type="button"
+                  class="channel-canonical-upstream"
+                  :title="'点击将「' + modelId + '」填入右侧'"
+                  @click="copyUpstreamToCanonical(modelId)"
+                >
+                  <code>{{ modelId }}</code>
+                </button>
+                <button
+                  type="button"
+                  class="button ghost mini channel-model-test-btn"
+                  :disabled="!canTestModel(modelId)"
+                  :title="canTestModel(modelId) ? '测试模型连通性' : '保存渠道和模型后可测试'"
+                  @click="openModelTest(modelId)"
+                >
+                  测试
+                </button>
+              </div>
               <button
                 type="button"
                 class="channel-canonical-arrow-btn"
@@ -881,7 +935,7 @@ onMounted(load)
         </label>
       </form>
       <template #footer>
-        <button type="button" class="button ghost" @click="showForm = false">取消</button>
+        <button type="button" class="button ghost" @click="closeChannelForm">取消</button>
         <button type="button" class="button primary" :disabled="saving" @click="save">
           {{ saving ? '保存中…' : '保存渠道' }}
         </button>
@@ -906,6 +960,18 @@ onMounted(load)
       :channels="channels"
       @close="showDefaultPrices = false"
       @saved="onDefaultPricesSaved"
+    />
+
+    <ModelTestModal
+      v-if="testTarget"
+      :channel="testTarget.channel"
+      :model="testTarget.model"
+      @close="testTarget = null"
+    />
+
+    <ModelTestSettingsModal
+      v-if="showTestSettings"
+      @close="showTestSettings = false"
     />
 
   </section>

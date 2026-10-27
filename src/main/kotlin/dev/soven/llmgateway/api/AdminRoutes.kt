@@ -8,6 +8,7 @@ import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.proxy.CatalogModel
 import dev.soven.llmgateway.proxy.fetchUpstreamModels
 import dev.soven.llmgateway.proxy.probeUpstreamProtocols
+import dev.soven.llmgateway.proxy.testChannelModelConnectivity
 import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.parseDailyCostLimit
@@ -214,6 +215,22 @@ fun Route.adminRoutes(app: GatewayApplication) {
             )
         }
 
+        get("/model-test-settings") {
+            call.requireAdmin(app)
+            call.respond(app.modelTestSettingsRepository.load().toResponse())
+        }
+
+        put("/model-test-settings") {
+            call.requireAdmin(app)
+            val request = call.receive<ModelTestSettingsRequest>()
+            val prompt = request.defaultPrompt.trim()
+            if (prompt.isEmpty() || prompt.length > MODEL_TEST_PROMPT_MAX) {
+                throw badRequest("invalid_model_test_settings", "默认提示词长度必须在 1..$MODEL_TEST_PROMPT_MAX 之间")
+            }
+            app.modelTestSettingsRepository.save(prompt, normalizeReasoningEffort(request.defaultReasoningEffort))
+            call.respond(app.modelTestSettingsRepository.load().toResponse())
+        }
+
         get("/channels") {
             call.requireAdmin(app)
             call.respond(app.channelRepository.list().map { it.toResponse() })
@@ -314,6 +331,50 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     },
                 ),
             )
+        }
+
+        post("/channels/{id}/model-test") {
+            call.requireAdmin(app)
+            val channelId = call.requiredParam("id", "缺少渠道 id")
+            val channel = app.channelRepository.find(channelId)
+                ?: throw notFound("channel_not_found", "渠道不存在")
+            val request = call.receive<ChannelModelTestRequest>()
+            val model = request.model.trim()
+            if (model.isEmpty() || model.length > 200) {
+                throw badRequest("invalid_model_test", "模型名长度必须在 1..200 之间")
+            }
+            if (model !in channel.models) {
+                throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
+            }
+            val protocol = GatewayProtocol.fromValue(request.protocol.trim())
+                ?: throw badRequest("invalid_model_test_protocol", "测试协议无效")
+            if (protocol !in channel.protocols) {
+                throw badRequest("model_test_protocol_unsupported", "渠道未启用协议 ${protocol.value}")
+            }
+            val settings = app.modelTestSettingsRepository.load()
+            val prompt = request.prompt?.trim()?.takeIf { it.isNotEmpty() } ?: settings.defaultPrompt
+            if (prompt.length > MODEL_TEST_PROMPT_MAX) {
+                throw badRequest("invalid_model_test_prompt", "测试提示词不能超过 $MODEL_TEST_PROMPT_MAX 个字符")
+            }
+            val explicitEffort = normalizeReasoningEffort(request.reasoningEffort)
+            val reasoningEffort = if (protocol == GatewayProtocol.MESSAGES) {
+                if (explicitEffort != null) {
+                    throw badRequest("model_test_reasoning_unsupported", "Anthropic Messages 暂不支持推理强度")
+                }
+                null
+            } else {
+                explicitEffort ?: normalizeReasoningEffort(settings.defaultReasoningEffort)
+            }
+            val result = testChannelModelConnectivity(
+                channel = channel,
+                model = model,
+                protocol = protocol,
+                prompt = prompt,
+                reasoningEffort = reasoningEffort,
+                credentialCipher = app.credentialCipher,
+                httpClient = app.httpClient,
+            )
+            call.respond(result.toResponse(model, protocol, prompt, reasoningEffort))
         }
 
         post("/channels") {
@@ -1098,6 +1159,14 @@ private fun validatePriceValues(
 private fun parseOptionalPrice(value: String?, label: String): BigDecimal? =
     value?.trim()?.takeIf { it.isNotEmpty() }?.let { parsePrice(it, label) }
 
+private fun normalizeReasoningEffort(value: String?): String? {
+    val effort = value?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+    if (effort !in MODEL_TEST_REASONING_EFFORTS) {
+        throw badRequest("invalid_reasoning_effort", "推理强度必须是 minimal、low、medium 或 high")
+    }
+    return effort
+}
+
 private fun parseCurrency(value: String): String {
     val currency = value.trim().uppercase()
     if (!CURRENCY_PATTERN.matches(currency)) {
@@ -1116,6 +1185,9 @@ private fun parsePrice(value: String, label: String): BigDecimal {
 private fun isUniqueViolation(cause: Throwable): Boolean =
     generateSequence(cause) { it.cause }
         .any { (it as? java.sql.SQLException)?.sqlState == "23505" }
+
+private const val MODEL_TEST_PROMPT_MAX = 4_000
+private val MODEL_TEST_REASONING_EFFORTS = setOf("minimal", "low", "medium", "high")
 
 private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLimits {
     if (request.dailyTokenLimit != null && request.dailyTokenLimit < 0) {
