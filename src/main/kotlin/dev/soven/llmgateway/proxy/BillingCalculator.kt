@@ -129,11 +129,14 @@ object BillingCalculator {
         var amount = ZERO
         for (tier in tiers) {
             if (remaining == 0L) break
-            val capacity = tier.upToTokens?.let { (it - lowerBound).coerceAtLeast(0) } ?: remaining
+            val upperBound = tier.upToTokens
+            val capacity = upperBound?.let {
+                if (it <= lowerBound) 0L else it - lowerBound
+            } ?: remaining
             val inBand = minOf(remaining, capacity)
             if (inBand > 0) amount = amount.add(BigDecimal.valueOf(inBand).multiply(rate(tier)))
             remaining -= inBand
-            tier.upToTokens?.let { lowerBound = it }
+            upperBound?.takeIf { it > lowerBound }?.let { lowerBound = it }
         }
         return amount
     }

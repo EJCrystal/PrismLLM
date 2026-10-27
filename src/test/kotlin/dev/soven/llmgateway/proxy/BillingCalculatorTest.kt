@@ -234,6 +234,47 @@ class BillingCalculatorTest {
     }
 
     @Test
+    fun `tiered billing ignores non increasing extreme bounds without overflowing`() {
+        val tieredPrice = ModelPriceRecord(
+            id = "p-tiered-extreme",
+            channelId = "c",
+            channelName = "c",
+            upstreamModel = "m",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal.ZERO,
+            outputPricePerMillion = BigDecimal.ZERO,
+            cachedInputPricePerMillion = null,
+            pricingMode = PricingMode.TIERED,
+            priceTiers = listOf(
+                ModelPriceTier(
+                    upToTokens = Long.MAX_VALUE - 10,
+                    inputPricePerMillion = BigDecimal.ONE,
+                    outputPricePerMillion = BigDecimal.ZERO,
+                ),
+                ModelPriceTier(
+                    upToTokens = Long.MIN_VALUE,
+                    inputPricePerMillion = BigDecimal("100"),
+                    outputPricePerMillion = BigDecimal.ZERO,
+                ),
+                ModelPriceTier(
+                    upToTokens = null,
+                    inputPricePerMillion = BigDecimal("2"),
+                    outputPricePerMillion = BigDecimal.ZERO,
+                ),
+            ),
+            createdAt = 0,
+            updatedAt = 0,
+        )
+
+        val cost = BillingCalculator.calculate(
+            record(input = Long.MAX_VALUE, output = 0),
+            tieredPrice,
+        )
+
+        assertEquals(BigDecimal("9223372036854.77581700"), cost?.amount)
+    }
+
+    @Test
     fun `charges volume tokens at the matching band for entire usage`() {
         val volumePrice = ModelPriceRecord(
             id = "p-vol",
