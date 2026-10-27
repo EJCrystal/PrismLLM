@@ -3172,7 +3172,8 @@ class GatewayIntegrationTest {
             outputPricePerMillion = BigDecimal("2"),
         )!!
         val historicalTime = first.effectiveFrom + 1
-        val scheduledCurrent = app.modelPriceRepository.update(
+        while (System.currentTimeMillis() <= historicalTime) delay(1)
+        app.modelPriceRepository.update(
             id = first.id,
             channelId = channel.id,
             upstreamModel = "gpt-4o-mini",
