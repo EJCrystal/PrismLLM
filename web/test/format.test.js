@@ -8,6 +8,7 @@ import {
   formatCost,
   formatUnitPrice,
   formatPriceSummary,
+  formatPriceSnapshot,
 } from '../src/utils/format.js'
 
 describe('utils: format 格式化工具函数库', () => {
@@ -134,6 +135,52 @@ describe('utils: format 格式化工具函数库', () => {
 
     it('空值回退占位符', () => {
       assert.equal(formatPriceSummary(null), '—')
+    })
+  })
+
+  describe('formatPriceSnapshot', () => {
+    it('展示 token 模式的输入、输出和缓存读写单价', () => {
+      assert.deepEqual(
+        formatPriceSnapshot({
+          pricingMode: 'token',
+          costCurrency: 'USD',
+          inputPricePerMillion: '1',
+          outputPricePerMillion: '2',
+          cachedInputPricePerMillion: '0.4',
+          cachedInputWritePricePerMillion: '1.5',
+        }),
+        [
+          { label: '输入单价', value: '1 USD / 1M' },
+          { label: '输出单价', value: '2 USD / 1M' },
+          { label: '缓存读单价', value: '0.4 USD / 1M' },
+          { label: '缓存写单价', value: '1.5 USD / 1M' },
+        ],
+      )
+    })
+
+    it('显示 tiered 和 volume 的边界及每档缓存读写价格', () => {
+      assert.deepEqual(
+        formatPriceSnapshot({
+          pricingMode: 'tiered',
+          costCurrency: 'CNY',
+          priceTiers: [
+            { upToTokens: 128000, inputPricePerMillion: '1', outputPricePerMillion: '2' },
+            { upToTokens: null, inputPricePerMillion: '3', outputPricePerMillion: '4', cachedInputPricePerMillion: '0.8', cachedInputWritePricePerMillion: '2.5' },
+          ],
+        }),
+        [
+          { label: '第 1 档 · ≤ 128,000 tokens', value: '输入 1 · 输出 2 · 缓存读 沿用输入价（1 CNY / 1M） · 缓存写 沿用输入价（1 CNY / 1M） · CNY / 1M' },
+          { label: '第 2 档 · ≥ 128,001 tokens', value: '输入 3 · 输出 4 · 缓存读 0.8 CNY / 1M · 缓存写 2.5 CNY / 1M · CNY / 1M' },
+        ],
+      )
+      assert.deepEqual(formatPriceSnapshot({ pricingMode: 'volume', priceTiers: [] }), [])
+    })
+
+    it('显示按次单价并安全处理空快照', () => {
+      assert.deepEqual(formatPriceSnapshot({ pricingMode: 'per_request', perRequestPrice: '0.04', costCurrency: 'USD' }), [
+        { label: '每次请求', value: '0.04 USD' },
+      ])
+      assert.deepEqual(formatPriceSnapshot(null), [])
     })
   })
 })

@@ -965,15 +965,15 @@ private suspend fun validateModelPriceBatch(
     if (app.channelRepository.find(channelId) == null) {
         throw badRequest("invalid_model_price", "渠道不存在")
     }
+    if (request.upstreamModels.size > 200) {
+        throw badRequest("invalid_model_price", "一次最多套用 200 个上游模型")
+    }
     val upstreamModels = request.upstreamModels
         .map { it.trim() }
         .filter { it.isNotEmpty() }
         .distinct()
     if (upstreamModels.isEmpty()) {
         throw badRequest("invalid_model_price", "至少选择一个上游模型")
-    }
-    if (upstreamModels.size > 200) {
-        throw badRequest("invalid_model_price", "一次最多套用 200 个上游模型")
     }
     if (upstreamModels.any { it.length > 200 }) {
         throw badRequest("invalid_model_price", "上游模型名长度必须在 1..200 之间")

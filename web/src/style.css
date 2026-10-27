@@ -4464,6 +4464,36 @@ input:disabled {
   gap: 7px;
 }
 
+.detail-price-snapshot {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.detail-price-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.detail-price-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.35fr) minmax(0, 1fr);
+  gap: 5px 14px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.detail-price-row dt {
+  color: var(--muted);
+}
+
+.detail-price-row dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .detail-message {
   margin: 0;
   padding: 12px 14px;
@@ -4490,6 +4520,11 @@ input:disabled {
 @media (max-width: 480px) {
   .detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .detail-price-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
   }
 }
 
