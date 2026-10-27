@@ -3,7 +3,9 @@ import { fromLocalInput, toLocalInput } from './format.js'
 /** Build the editable price form and payload without silently changing its currency. */
 export function priceFormState(price) {
   const scheduled = price?.scheduledVersion || null
-  const scheduledTime = scheduled?.effectiveFrom || null
+  const scheduledTime = scheduled?.effectiveFrom && scheduled.effectiveFrom > Date.now()
+    ? scheduled.effectiveFrom
+    : null
   return {
     currency: scheduled?.currency || price?.currency || 'USD',
     inputPricePerMillion: scheduled?.inputPricePerMillion ?? price?.inputPricePerMillion ?? '',
@@ -17,6 +19,7 @@ export function priceFormState(price) {
       : Array.isArray(price?.priceTiers) ? price.priceTiers.map(priceTierFormState) : [],
     isScheduled: Boolean(scheduledTime),
     effectiveAt: scheduledTime ? toLocalInput(scheduledTime) : '',
+    preserveSchedule: Boolean(scheduledTime),
   }
 }
 
@@ -61,6 +64,7 @@ function pricingPayload(form) {
       : null,
     priceTiers: priceTiersPayload(form),
     effectiveAt: form?.isScheduled && form?.effectiveAt ? fromLocalInput(form.effectiveAt) : null,
+    preserveSchedule: Boolean(form?.preserveSchedule),
   }
 }
 
@@ -70,6 +74,7 @@ export function buildPricePayload(form, channelId, upstreamModel) {
     upstreamModel: String(upstreamModel ?? '').trim(),
     currency: form.currency || 'USD',
     ...pricingPayload(form),
+    preserveSchedule: Boolean(form?.preserveSchedule),
   }
 }
 
@@ -87,6 +92,7 @@ export function buildDefaultPricePayload(form, modelId) {
     modelId: String(modelId ?? '').trim(),
     currency: form.currency || 'USD',
     ...pricingPayload(form),
+    preserveSchedule: Boolean(form?.preserveSchedule),
   }
 }
 
@@ -101,6 +107,14 @@ export function buildBatchPricePayload(form, channelId, upstreamModels) {
   }
 }
 
+export function existingPricePayload(form, channelId, upstreamModel) {
+  return buildPricePayload(form, channelId, upstreamModel)
+}
+
+export function existingDefaultPricePayload(form, modelId) {
+  return buildDefaultPricePayload(form, modelId)
+}
+
 /** Reset the draft when the selected channel/model has no saved price. */
 export function emptyPriceDraft() {
   return {
@@ -112,6 +126,7 @@ export function emptyPriceDraft() {
     pricingMode: 'token',
     perRequestPrice: '',
     priceTiers: [],
+    preserveSchedule: false,
     isScheduled: false,
     effectiveAt: '',
   }

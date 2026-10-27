@@ -580,6 +580,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 perRequestPrice = price.values.perRequest,
                 priceTiers = price.values.priceTiers,
                 effectiveAt = price.values.effectiveAt,
+                preserveSchedule = price.values.preserveSchedule,
             ) ?: throw conflict("model_default_price_exists", "该模型的默认单价已存在")
             val scheduled = app.modelDefaultPriceRepository.findScheduled(record.modelId)
             call.respond(HttpStatusCode.Created, record.toResponse(scheduled))
@@ -607,6 +608,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     perRequestPrice = price.values.perRequest,
                     priceTiers = price.values.priceTiers,
                     effectiveAt = price.values.effectiveAt,
+                    preserveSchedule = price.values.preserveSchedule,
                 )
             } catch (cause: Throwable) {
                 if (isUniqueViolation(cause)) {
@@ -711,6 +713,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 perRequestPrice = price.values.perRequest,
                 priceTiers = price.values.priceTiers,
                 effectiveAt = price.values.effectiveAt,
+                preserveSchedule = price.values.preserveSchedule,
             ) ?: throw notFound("model_price_not_found", "计费单价不存在")
             val scheduled = app.modelPriceRepository.findScheduled(updated.channelId, updated.upstreamModel)
             call.respond(updated.toResponse(scheduled))
@@ -972,6 +975,7 @@ private data class ValidatedPriceValues(
     val perRequest: BigDecimal?,
     val priceTiers: List<ModelPriceTier>,
     val effectiveAt: Long? = null,
+    val preserveSchedule: Boolean = false,
 )
 
 private data class ValidatedModelPrice(
@@ -1008,6 +1012,7 @@ private fun validateDefaultModelPrice(request: ModelDefaultPriceRequest): Valida
             request.perRequestPrice,
             request.priceTiers,
             request.effectiveAt,
+            request.preserveSchedule,
         ),
     )
 }
@@ -1077,6 +1082,7 @@ private suspend fun validateModelPrice(
             request.perRequestPrice,
             request.priceTiers,
             request.effectiveAt,
+            request.preserveSchedule,
         ),
     )
 }
@@ -1091,6 +1097,7 @@ private fun validatePriceValues(
     perRequestValue: String?,
     tierValues: List<ModelPriceTierRequest>,
     effectiveAtValue: Long? = null,
+    preserveSchedule: Boolean = false,
 ): ValidatedPriceValues {
     val mode = PricingMode.entries.firstOrNull { it.value == modeValue }
         ?: throw badRequest("invalid_model_price", "计费方式无效")
@@ -1148,6 +1155,7 @@ private fun validatePriceValues(
         perRequest = perRequest,
         priceTiers = tiers,
         effectiveAt = effectiveAtValue?.takeIf { it > 0 },
+        preserveSchedule = preserveSchedule,
     )
 }
 

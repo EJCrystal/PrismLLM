@@ -67,6 +67,18 @@ class ModelDefaultPriceRepository(private val database: Database) {
             .singleOrNull()
             ?.let(::toVersionRecord)
 
+    private fun findPendingVersion(modelId: String, asOfTime: Long): DefaultModelPriceVersionRecord? =
+        ModelDefaultPriceVersions.selectAll()
+            .where {
+                (ModelDefaultPriceVersions.modelId eq modelId) and
+                    (ModelDefaultPriceVersions.effectiveFrom greater asOfTime) and
+                    (ModelDefaultPriceVersions.status eq "scheduled")
+            }
+            .orderBy(ModelDefaultPriceVersions.effectiveFrom to SortOrder.ASC)
+            .limit(1)
+            .singleOrNull()
+            ?.let(::toVersionRecord)
+
     suspend fun findEffective(
         modelId: String,
         asOfTime: Long = System.currentTimeMillis(),
@@ -210,6 +222,7 @@ class ModelDefaultPriceRepository(private val database: Database) {
         perRequestPrice: BigDecimal? = null,
         priceTiers: List<ModelPriceTier> = emptyList(),
         effectiveAt: Long? = null,
+        preserveSchedule: Boolean = false,
     ): DefaultModelPriceRecord? = suspendTransaction(database) {
         val normalizedModel = modelId.trim()
         if (normalizedModel.isEmpty()) return@suspendTransaction null
@@ -263,6 +276,7 @@ class ModelDefaultPriceRepository(private val database: Database) {
         perRequestPrice: BigDecimal? = null,
         priceTiers: List<ModelPriceTier> = emptyList(),
         effectiveAt: Long? = null,
+        preserveSchedule: Boolean = false,
     ): DefaultModelPriceRecord? = suspendTransaction(database) {
         val normalizedModel = modelId.trim()
         if (normalizedModel.isEmpty()) return@suspendTransaction null
@@ -279,6 +293,28 @@ class ModelDefaultPriceRepository(private val database: Database) {
         val now = System.currentTimeMillis()
         val effectiveFrom = effectiveAt?.takeIf { it > 0 } ?: now
         val isScheduled = effectiveFrom > now
+
+        if (preserveSchedule) {
+            val current = resolveCurrentVersion(normalizedModel, now)
+            val pending = findPendingVersion(normalizedModel, now)
+            if (current == null || pending == null) return@suspendTransaction null
+            return@suspendTransaction DefaultModelPriceRecord(
+                id = id,
+                modelId = normalizedModel,
+                currency = pending.currency,
+                inputPricePerMillion = pending.inputPricePerMillion,
+                outputPricePerMillion = pending.outputPricePerMillion,
+                cachedInputPricePerMillion = pending.cachedInputPricePerMillion,
+                cachedInputWritePricePerMillion = pending.cachedInputWritePricePerMillion,
+                pricingMode = pending.pricingMode,
+                perRequestPrice = pending.perRequestPrice,
+                priceTiers = pending.priceTiers,
+                currentVersion = current.version,
+                effectiveFrom = current.effectiveFrom,
+                createdAt = existing[ModelDefaultPrices.createdAt],
+                updatedAt = existing[ModelDefaultPrices.updatedAt],
+            )
+        }
 
         if (!isScheduled) {
             val nowUpdate = System.currentTimeMillis()

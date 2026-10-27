@@ -281,4 +281,5 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(form.inputPricePerMillion, '3')
     assert.equal(form.outputPricePerMillion, '4')
   })
+
 })

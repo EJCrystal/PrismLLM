@@ -88,6 +88,22 @@ class ModelPriceRepository(private val database: Database) {
         .singleOrNull()
         ?.let(::toVersionRecord)
 
+    private fun findPendingVersion(
+        channelId: String,
+        upstreamModel: String,
+        asOfTime: Long,
+    ): ModelPriceVersionRecord? = ModelPriceVersions.selectAll()
+        .where {
+            (ModelPriceVersions.channelId eq channelId) and
+                (ModelPriceVersions.upstreamModel eq upstreamModel) and
+                (ModelPriceVersions.effectiveFrom greater asOfTime) and
+                (ModelPriceVersions.status eq "scheduled")
+        }
+        .orderBy(ModelPriceVersions.effectiveFrom to SortOrder.ASC)
+        .limit(1)
+        .singleOrNull()
+        ?.let(::toVersionRecord)
+
     suspend fun findEffective(
         channelId: String,
         upstreamModel: String,
@@ -295,6 +311,7 @@ class ModelPriceRepository(private val database: Database) {
         perRequestPrice: BigDecimal? = null,
         priceTiers: List<ModelPriceTier> = emptyList(),
         effectiveAt: Long? = null,
+        preserveSchedule: Boolean = false,
     ): ModelPriceRecord? = suspendTransaction(database) {
         val normalizedModel = upstreamModel.trim()
         if (normalizedModel.isEmpty()) return@suspendTransaction null
@@ -311,6 +328,13 @@ class ModelPriceRepository(private val database: Database) {
         val now = System.currentTimeMillis()
         val effectiveFrom = effectiveAt?.takeIf { it > 0 } ?: now
         val isScheduled = effectiveFrom > now
+
+        if (preserveSchedule) {
+            val current = resolveCurrentVersion(channelId, normalizedModel, now)
+            val pending = findPendingVersion(channelId, normalizedModel, now)
+            if (current == null || pending == null) return@suspendTransaction null
+            return@suspendTransaction load(id)
+        }
 
         if (!isScheduled) {
             val nowUpdate = System.currentTimeMillis()
@@ -459,26 +483,27 @@ class ModelPriceRepository(private val database: Database) {
                     inputPricePerMillion, outputPricePerMillion, cachedInputPricePerMillion,
                     cachedInputWritePricePerMillion, pricingMode, perRequestPrice, priceTiers,
                 )
-                ModelPrices.upsert(
-                    ModelPrices.channelId,
-                    ModelPrices.upstreamModel,
-                    onUpdateExclude = listOf(ModelPrices.id, ModelPrices.createdAt),
-                ) {
-                    it[id] = UUID.randomUUID().toString()
-                    it[ModelPrices.channelId] = channelId
-                    it[ModelPrices.upstreamModel] = upstreamModel
-                    it[ModelPrices.currency] = currency
-                    it[ModelPrices.inputPricePerMillion] = inputPricePerMillion
-                    it[ModelPrices.outputPricePerMillion] = outputPricePerMillion
-                    it[ModelPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
-                    it[ModelPrices.cachedInputWritePricePerMillion] = cachedInputWritePricePerMillion
-                    it[ModelPrices.pricingMode] = pricingMode.value
-                    it[ModelPrices.perRequestPrice] = perRequestPrice
-                    it[priceTiersJson] = PricingTierCodec.encode(priceTiers)
-                    it[currentVersion] = nextVersion
-                    it[ModelPrices.effectiveFrom] = effectiveFrom
-                    it[createdAt] = now
-                    it[updatedAt] = now
+                val hasCurrentPrice = ModelPrices.selectAll()
+                    .where { (ModelPrices.channelId eq channelId) and (ModelPrices.upstreamModel eq upstreamModel) }
+                    .count() > 0
+                if (!hasCurrentPrice) {
+                    ModelPrices.insert {
+                        it[id] = UUID.randomUUID().toString()
+                        it[ModelPrices.channelId] = channelId
+                        it[ModelPrices.upstreamModel] = upstreamModel
+                        it[ModelPrices.currency] = currency
+                        it[ModelPrices.inputPricePerMillion] = inputPricePerMillion
+                        it[ModelPrices.outputPricePerMillion] = outputPricePerMillion
+                        it[ModelPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
+                        it[ModelPrices.cachedInputWritePricePerMillion] = cachedInputWritePricePerMillion
+                        it[ModelPrices.pricingMode] = pricingMode.value
+                        it[ModelPrices.perRequestPrice] = perRequestPrice
+                        it[priceTiersJson] = PricingTierCodec.encode(priceTiers)
+                        it[currentVersion] = nextVersion
+                        it[ModelPrices.effectiveFrom] = effectiveFrom
+                        it[createdAt] = now
+                        it[updatedAt] = now
+                    }
                 }
             }
         }

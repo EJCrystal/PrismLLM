@@ -6,6 +6,7 @@ import { formatPriceSummary, formatTime, formatUnitPrice } from '../utils/format
 import { defaultPriceModelOptions } from '../utils/modelPrice'
 import {
   buildDefaultPricePayload,
+  existingDefaultPricePayload,
   defaultPriceFormState,
   hasPriceDraft,
   priceFormError,
@@ -31,6 +32,7 @@ const versionHistory = ref([])
 const cancellingVersion = ref(false)
 const form = reactive({ modelId: '', ...defaultPriceFormState(null) })
 let referenceRequestId = 0
+let versionRequestId = 0
 
 function referenceDraftKey() {
   return [
@@ -71,6 +73,7 @@ const filteredModelOptions = computed(() => {
 
 function applyPrice(price) {
   cancelReferenceLookup()
+  versionRequestId += 1
   activePrice.value = price
   showVersions.value = false
   versionHistory.value = []
@@ -78,8 +81,16 @@ function applyPrice(price) {
   referenceHint.value = ''
 }
 
+watch(
+  () => form.isScheduled,
+  (scheduled) => {
+    if (activePrice.value?.scheduledVersion) form.preserveSchedule = !scheduled
+  },
+)
+
 function startNewPrice() {
   cancelReferenceLookup()
+  versionRequestId += 1
   activePrice.value = null
   showVersions.value = false
   versionHistory.value = []
@@ -90,13 +101,16 @@ function startNewPrice() {
 async function toggleVersionHistory() {
   showVersions.value = !showVersions.value
   if (showVersions.value && activePrice.value?.id) {
+    const requestId = ++versionRequestId
+    const priceId = activePrice.value.id
     loadingVersions.value = true
     try {
-      versionHistory.value = await api.listModelDefaultPriceVersions(activePrice.value.id)
+      const versions = await api.listModelDefaultPriceVersions(priceId)
+      if (requestId === versionRequestId) versionHistory.value = versions
     } catch (e) {
-      notify(e.message, 'error')
+      if (requestId === versionRequestId) notify(e.message, 'error')
     } finally {
-      loadingVersions.value = false
+      if (requestId === versionRequestId) loadingVersions.value = false
     }
   }
 }
@@ -174,7 +188,7 @@ async function save() {
   }
   saving.value = true
   try {
-    const payload = buildDefaultPricePayload(form, modelId)
+    const payload = existingDefaultPricePayload(form, modelId)
     if (activePrice.value?.id) {
       await api.updateModelDefaultPrice(activePrice.value.id, payload)
       notify('模型默认价已更新')

@@ -8,6 +8,7 @@ import {
   applyPriceToForm,
   buildBatchPricePayload,
   buildPricePayload,
+  existingPricePayload,
   emptyPriceDraft,
   hasPriceDraft,
   priceFormError,
@@ -42,6 +43,7 @@ const versionHistory = ref([])
 const cancellingVersion = ref(false)
 let modelsRequestId = 0
 let referenceRequestId = 0
+let versionRequestId = 0
 
 const initialPrice = priceFormState(props.price)
 const form = reactive({
@@ -141,6 +143,7 @@ watch(
 
 function applyExistingPrice(price) {
   cancelReferenceLookup()
+  versionRequestId += 1
   activePrice.value = price
   Object.assign(form, priceFormState(price))
 }
@@ -186,12 +189,14 @@ function selectChannelModel(model) {
 
 function onChannelChange() {
   cancelReferenceLookup()
+  versionRequestId += 1
   activePrice.value = null
   resetPriceForm(form)
 }
 
 function editPrice(price) {
   cancelReferenceLookup()
+  versionRequestId += 1
   activePrice.value = price
   showVersions.value = false
   versionHistory.value = []
@@ -199,8 +204,16 @@ function editPrice(price) {
   modelPickerOpen.value = false
 }
 
+watch(
+  () => form.isScheduled,
+  (scheduled) => {
+    if (activePrice.value?.scheduledVersion) form.preserveSchedule = !scheduled
+  },
+)
+
 function startNewPrice() {
   cancelReferenceLookup()
+  versionRequestId += 1
   activePrice.value = null
   showVersions.value = false
   versionHistory.value = []
@@ -211,13 +224,17 @@ function startNewPrice() {
 async function toggleVersionHistory() {
   showVersions.value = !showVersions.value
   if (showVersions.value && form.channelId && form.upstreamModel.trim()) {
+    const requestId = ++versionRequestId
+    const channelId = form.channelId
+    const upstreamModel = form.upstreamModel.trim()
     loadingVersions.value = true
     try {
-      versionHistory.value = await api.listModelPriceVersions(form.channelId, form.upstreamModel.trim())
+      const versions = await api.listModelPriceVersions(channelId, upstreamModel)
+      if (requestId === versionRequestId) versionHistory.value = versions
     } catch (e) {
-      notify(e.message, 'error')
+      if (requestId === versionRequestId) notify(e.message, 'error')
     } finally {
-      loadingVersions.value = false
+      if (requestId === versionRequestId) loadingVersions.value = false
     }
   }
 }
@@ -340,7 +357,7 @@ async function save() {
   }
   saving.value = true
   try {
-    const payload = buildPricePayload(form, form.channelId, form.upstreamModel)
+    const payload = existingPricePayload(form, form.channelId, form.upstreamModel)
     if (activePrice.value?.id) {
       await api.updateModelPrice(activePrice.value.id, payload)
       notify('计费单价已更新')

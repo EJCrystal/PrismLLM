@@ -13,6 +13,7 @@ const modes = [
 ]
 
 function onScheduleChange(scheduled) {
+  if (props.form.preserveSchedule && scheduled) return
   props.form.isScheduled = scheduled
   if (scheduled && !props.form.effectiveAt) {
     const tomorrow = new Date(Date.now() + 24 * 3600_000)
@@ -123,7 +124,7 @@ function removeTier(index) {
     <div class="price-schedule-toggle">
       <label class="schedule-radio">
         <input type="radio" :value="false" v-model="form.isScheduled" @change="onScheduleChange(false)" />
-        <span>立即生效</span>
+        <span>保存为当前价（取消计划）</span>
       </label>
       <label class="schedule-radio">
         <input type="radio" :value="true" v-model="form.isScheduled" @change="onScheduleChange(true)" />

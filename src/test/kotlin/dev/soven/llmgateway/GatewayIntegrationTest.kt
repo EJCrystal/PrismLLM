@@ -3254,6 +3254,70 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `batch scheduled update keeps current baseline until effective time`() = runBlocking {
+        val channel = createChannel("batch-baseline", "ok")
+        val current = app.modelPriceRepository.create(
+            channelId = channel.id,
+            upstreamModel = "gpt-4o-mini",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1"),
+            outputPricePerMillion = BigDecimal("2"),
+        )!!
+        val future = System.currentTimeMillis() + 3_600_000L
+        app.modelPriceRepository.upsertBatch(
+            channelId = channel.id,
+            upstreamModels = listOf("gpt-4o-mini"),
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("5"),
+            outputPricePerMillion = BigDecimal("6"),
+            cachedInputPricePerMillion = null,
+            effectiveAt = future,
+        )
+        val currentBefore = app.modelPriceRepository.findEffective(channel.id, "gpt-4o-mini")
+        assertEquals(1, currentBefore?.version)
+        assertEquals(0, currentBefore?.inputPricePerMillion?.compareTo(BigDecimal("1")))
+        val futurePrice = app.modelPriceRepository.findEffective(channel.id, "gpt-4o-mini", future + 1)
+        assertEquals(2, futurePrice?.version)
+        assertEquals(0, futurePrice?.inputPricePerMillion?.compareTo(BigDecimal("5")))
+        assertEquals(current.id, app.modelPriceRepository.findById(current.id)?.id)
+    }
+
+    @Test
+    fun `reopening and saving a scheduled price preserves the plan`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val record = app.modelDefaultPriceRepository.create(
+            modelId = "plan-preserve",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1"),
+            outputPricePerMillion = BigDecimal("2"),
+        )!!
+        val effectiveAt = now + 3_600_000L
+        app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("3"),
+            outputPricePerMillion = BigDecimal("4"),
+            effectiveAt = effectiveAt,
+        )
+        app.modelDefaultPriceRepository.update(
+            id = record.id,
+            modelId = record.modelId,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("3"),
+            outputPricePerMillion = BigDecimal("4"),
+            effectiveAt = effectiveAt,
+            preserveSchedule = true,
+        )
+        val current = app.modelDefaultPriceRepository.findEffective(record.modelId)
+        val pending = app.modelDefaultPriceRepository.findScheduled(record.modelId, now)
+        assertEquals(1, current?.version)
+        assertEquals(0, current?.inputPricePerMillion?.compareTo(BigDecimal("1")))
+        assertEquals(2, pending?.version)
+        assertEquals(0, pending?.inputPricePerMillion?.compareTo(BigDecimal("3")))
+    }
+
+    @Test
     fun `records request cost with per_request pricing and skips failed request`() = runBlocking {
         val okChannel = createChannel("ok-channel", "ok")
         val failChannel = createChannel("fail-channel", "500")
