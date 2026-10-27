@@ -153,6 +153,22 @@ object ModelPrices : Table("model_prices") {
 }
 
 /**
+ * 按对外模型 ID 配置的默认计费单价。渠道内同上游模型的价格优先于默认价。
+ */
+object ModelDefaultPrices : Table("model_default_prices") {
+    val id = varchar("id", 36)
+    val modelId = varchar("model_id", 200).uniqueIndex()
+    val currency = varchar("currency", 8)
+    val inputPricePerMillion = decimal("input_price_per_million", 18, 8)
+    val outputPricePerMillion = decimal("output_price_per_million", 18, 8)
+    val cachedInputPricePerMillion = decimal("cached_input_price_per_million", 18, 8).nullable()
+    val createdAt = long("created_at")
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(id)
+}
+
+/**
  * 管理员账号表。
  *
  * @author 文杰

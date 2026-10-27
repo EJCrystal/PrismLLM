@@ -3,10 +3,13 @@ import assert from 'node:assert/strict'
 import {
   buildPricePrompt,
   channelModelPriceOptions,
+  channelModelPricingId,
   channelPriceSummaries,
+  findDefaultModelPrice,
   findModelPrice,
   isSamePriceTarget,
   pricesForChannel,
+  resolveChannelModelPrice,
   resolveSavedChannel,
   unpricedChannelModels,
 } from '../src/utils/modelPrice.js'
@@ -174,6 +177,83 @@ describe('modelPrice: 未定价汇总', () => {
   it('异常输入返回空汇总', () => {
     assert.equal(channelPriceSummaries(null, prices).size, 0)
     assert.equal(channelPriceSummaries([null, { models: ['m'] }], prices).size, 0)
+  })
+})
+
+describe('modelPrice: 模型默认价与渠道覆盖', () => {
+  const channel = {
+    id: 'channel-a',
+    models: ['deepseek-v4.1-flash', 'gpt-4o-mini'],
+    modelMappings: [
+      { upstreamModel: 'deepseek-v4.1-flash', canonicalModelId: 'deepseek-flash' },
+      { upstreamModel: 'gpt-4o-mini' },
+    ],
+  }
+  const defaults = [
+    { id: 'd1', modelId: 'deepseek-flash', currency: 'USD', inputPricePerMillion: '0.15' },
+    { id: 'd2', modelId: ' gpt-4o-mini ', currency: 'USD', inputPricePerMillion: '0.10' },
+  ]
+
+  it('按 trim 后的模型 ID 查找默认价', () => {
+    assert.equal(findDefaultModelPrice(defaults, ' gpt-4o-mini '), defaults[1])
+    assert.equal(findDefaultModelPrice(defaults, 'missing'), null)
+    assert.equal(findDefaultModelPrice(null, 'deepseek-flash'), null)
+  })
+
+  it('优先使用渠道配置的规范 ID 作为默认价模型 ID', () => {
+    assert.equal(channelModelPricingId(channel, 'deepseek-v4.1-flash'), 'deepseek-flash')
+    assert.equal(channelModelPricingId(channel, 'gpt-4o-mini'), 'gpt-4o-mini')
+    assert.equal(channelModelPricingId(channel, 'missing'), 'missing')
+  })
+
+  it('没有渠道覆盖价时继承默认价', () => {
+    const resolved = resolveChannelModelPrice(channel, 'deepseek-v4.1-flash', [], defaults)
+    assert.equal(resolved.source, 'default')
+    assert.equal(resolved.price, defaults[0])
+    assert.equal(resolved.modelId, 'deepseek-flash')
+  })
+
+  it('渠道覆盖价优先于模型默认价', () => {
+    const prices = [{ id: 'p1', channelId: 'channel-a', upstreamModel: 'deepseek-v4.1-flash' }]
+    const resolved = resolveChannelModelPrice(channel, 'deepseek-v4.1-flash', prices, defaults)
+    assert.equal(resolved.source, 'channel')
+    assert.equal(resolved.price, prices[0])
+    assert.equal(resolved.defaultPrice, null)
+  })
+
+  it('规范 ID 没有默认价时回退到上游模型名', () => {
+    const upstreamDefaults = [
+      { id: 'd3', modelId: 'deepseek-v4.1-flash', currency: 'USD', inputPricePerMillion: '0.2' },
+    ]
+    const resolved = resolveChannelModelPrice(channel, 'deepseek-v4.1-flash', [], upstreamDefaults)
+    assert.equal(resolved.source, 'default')
+    assert.equal(resolved.price, upstreamDefaults[0])
+    assert.equal(resolved.modelId, 'deepseek-flash')
+  })
+
+  it('未配置任何价格时返回 none', () => {
+    const resolved = resolveChannelModelPrice(channel, 'missing', [], defaults)
+    assert.equal(resolved.source, 'none')
+    assert.equal(resolved.price, null)
+  })
+
+  it('默认价会让未定价汇总归零', () => {
+    assert.deepEqual(unpricedChannelModels(channel, [], defaults), [])
+    assert.deepEqual(channelPriceSummaries([channel], [], defaults).get('channel-a'), {
+      unpriced: [],
+      count: 0,
+    })
+  })
+
+  it('模型下拉同时带出渠道价和默认价', () => {
+    const models = [
+      { id: 'deepseek-v4.1-flash', canonicalModelId: 'deepseek-flash' },
+      { id: 'gpt-4o-mini' },
+    ]
+    const options = channelModelPriceOptions(models, [], 'channel-a', defaults)
+    assert.equal(options[0].defaultPrice, defaults[0])
+    assert.equal(options[0].price, null)
+    assert.equal(options[1].defaultPrice, defaults[1])
   })
 })
 

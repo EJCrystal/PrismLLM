@@ -11,6 +11,46 @@ export function findModelPrice(prices, channelId, upstreamModel) {
   ) || null
 }
 
+/** Find one model-level default price by trimmed model ID. */
+export function findDefaultModelPrice(defaultPrices, modelId) {
+  if (!Array.isArray(defaultPrices)) return null
+  const target = typeof modelId === 'string' ? modelId.trim() : ''
+  if (!target) return null
+  return defaultPrices.find((price) =>
+    price &&
+    typeof price.modelId === 'string' &&
+    price.modelId.trim() === target,
+  ) || null
+}
+
+/** Resolve the model ID used by model-level default pricing. */
+export function channelModelPricingId(channel, upstreamModel) {
+  const model = String(upstreamModel ?? '').trim()
+  if (!model) return ''
+  const mapping = (Array.isArray(channel?.modelMappings) ? channel.modelMappings : [])
+    .find((item) => String(item?.upstreamModel ?? '').trim() === model)
+  return String(mapping?.canonicalModelId ?? '').trim() || model
+}
+
+/**
+ * Resolve the effective price and its source for one channel model.
+ * Channel overrides win over model defaults.
+ */
+export function resolveChannelModelPrice(channel, upstreamModel, prices, defaultPrices = []) {
+  const channelPrice = findModelPrice(prices, channel?.id, upstreamModel)
+  const modelId = channelModelPricingId(channel, upstreamModel)
+  if (channelPrice) {
+    return { source: 'channel', price: channelPrice, modelId, defaultPrice: null }
+  }
+  const upstream = String(upstreamModel ?? '').trim()
+  const defaultPrice = findDefaultModelPrice(defaultPrices, modelId) ||
+    (upstream && upstream !== modelId ? findDefaultModelPrice(defaultPrices, upstream) : null)
+  if (defaultPrice) {
+    return { source: 'default', price: defaultPrice, modelId, defaultPrice }
+  }
+  return { source: 'none', price: null, modelId, defaultPrice: null }
+}
+
 /** List the configured prices for one channel, ordered by upstream model. */
 export function pricesForChannel(prices, channelId) {
   if (!Array.isArray(prices) || !channelId) return []
@@ -26,13 +66,17 @@ export function pricesForChannel(prices, channelId) {
 }
 
 /** Merge channel models with their configured price, matching trimmed model names. */
-export function channelModelPriceOptions(channelModels, prices, channelId) {
+export function channelModelPriceOptions(channelModels, prices, channelId, defaultPrices = []) {
   const pricesByModel = new Map(
     pricesForChannel(prices, channelId).map((price) => [price.upstreamModel.trim(), price]),
   )
   return (Array.isArray(channelModels) ? channelModels : []).map((model) => ({
     ...model,
     price: pricesByModel.get(String(model.id).trim()) || null,
+    defaultPrice: findDefaultModelPrice(
+      defaultPrices,
+      String(model.canonicalModelId ?? '').trim() || String(model.id ?? '').trim(),
+    ),
   }))
 }
 
@@ -43,7 +87,7 @@ export function isSamePriceTarget(price, channelId, upstreamModel) {
 }
 
 /** Return the channel's upstream models that have no price record. */
-export function unpricedChannelModels(channel, prices) {
+export function unpricedChannelModels(channel, prices, defaultPrices = []) {
   if (!channel || !Array.isArray(channel.models)) return []
   const models = [
     ...new Set(
@@ -53,15 +97,15 @@ export function unpricedChannelModels(channel, prices) {
         .filter(Boolean),
     ),
   ]
-  return models.filter((model) => !findModelPrice(prices, channel.id, model))
+  return models.filter((model) => resolveChannelModelPrice(channel, model, prices, defaultPrices).source === 'none')
 }
 
 /** Build unpriced-model summaries keyed by channel id. Recomputed from current data. */
-export function channelPriceSummaries(channels, prices) {
+export function channelPriceSummaries(channels, prices, defaultPrices = []) {
   const summaries = new Map()
   for (const channel of Array.isArray(channels) ? channels : []) {
     if (!channel?.id) continue
-    const unpriced = unpricedChannelModels(channel, prices)
+    const unpriced = unpricedChannelModels(channel, prices, defaultPrices)
     summaries.set(channel.id, { unpriced, count: unpriced.length })
   }
   return summaries

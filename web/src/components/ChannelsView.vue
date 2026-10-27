@@ -7,6 +7,7 @@ import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import PriceEditorModal from './PriceEditorModal.vue'
+import DefaultPriceModal from './DefaultPriceModal.vue'
 import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
@@ -22,12 +23,15 @@ import {
   buildPricePrompt,
   channelPriceSummaries,
   findModelPrice,
+  resolveChannelModelPrice,
   resolveSavedChannel,
 } from '../utils/modelPrice'
 
 const channels = ref([])
 const prices = ref([])
+const defaultPrices = ref([])
 const priceEditor = ref(null)
+const showDefaultPrices = ref(false)
 const pricePromptChannelId = ref(null)
 const loading = ref(true)
 const error = ref('')
@@ -77,7 +81,7 @@ watchChannelRequestInputs(form, {
 })
 
 const enabledCount = computed(() => channels.value.filter((channel) => channel.enabled).length)
-const priceSummaries = computed(() => channelPriceSummaries(channels.value, prices.value))
+const priceSummaries = computed(() => channelPriceSummaries(channels.value, prices.value, defaultPrices.value))
 const pricePrompt = computed(() => {
   const channelId = pricePromptChannelId.value
   if (!channelId) return null
@@ -153,12 +157,14 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [channelsData, pricesData] = await Promise.all([
+    const [channelsData, pricesData, defaultPricesData] = await Promise.all([
       api.listChannels(),
       api.listModelPrices(),
+      api.listModelDefaultPrices(),
     ])
     channels.value = channelsData
     prices.value = pricesData
+    defaultPrices.value = defaultPricesData
   } catch (cause) {
     error.value = cause.message
   } finally {
@@ -187,6 +193,22 @@ function priceSummary(channel) {
 function unpricedDisplayModels(channel, item) {
   const unpriced = priceSummary(channel).unpriced
   return (item.upstreamModels || []).filter((model) => unpriced.includes(String(model).trim()))
+}
+
+function priceSourceForDisplay(channel, item) {
+  const sources = (item.upstreamModels || []).map((model) =>
+    resolveChannelModelPrice(channel, model, prices.value, defaultPrices.value).source)
+  if (sources.some((source) => source === 'none')) return 'none'
+  if (sources.every((source) => source === 'channel')) return 'channel'
+  if (sources.every((source) => source === 'default')) return 'default'
+  return 'mixed'
+}
+
+function priceSourceLabel(source) {
+  if (source === 'channel') return '渠道价'
+  if (source === 'default') return '默认价'
+  if (source === 'mixed') return '混合价'
+  return '未定价'
 }
 
 function modelTitle(channel, item) {
@@ -225,6 +247,19 @@ async function onPriceSaved() {
     prices.value = await api.listModelPrices()
   } catch {
     notify('单价已保存，但刷新列表失败', 'warning')
+  }
+}
+
+async function onDefaultPricesSaved() {
+  try {
+    const [pricesData, defaultPricesData] = await Promise.all([
+      api.listModelPrices(),
+      api.listModelDefaultPrices(),
+    ])
+    prices.value = pricesData
+    defaultPrices.value = defaultPricesData
+  } catch {
+    notify('默认价已变更，但刷新列表失败', 'warning')
   }
 }
 
@@ -495,10 +530,16 @@ onMounted(load)
         <h2>上游接入点</h2>
         <p>一个渠道对应一个上游接入点，可选择支持 Chat Completions、Responses、Anthropic Messages 或其组合。</p>
       </div>
-      <button type="button" class="button primary" @click="openCreate">
-        <Icon name="plus" :size="17" />
-        新建渠道
-      </button>
+      <div class="section-head-actions">
+        <button type="button" class="button subtle" @click="showDefaultPrices = true">
+          <Icon name="price" :size="16" />
+          模型默认价
+        </button>
+        <button type="button" class="button primary" @click="openCreate">
+          <Icon name="plus" :size="17" />
+          新建渠道
+        </button>
+      </div>
     </div>
 
     <div class="stat-row two">
@@ -611,6 +652,14 @@ onMounted(load)
                       title="该模型尚未配置计费单价"
                     >
                       未定价
+                    </span>
+                    <span
+                      v-else
+                      class="channel-model-price-source"
+                      :class="`is-${priceSourceForDisplay(channel, item)}`"
+                      :title="`当前价格来源：${priceSourceLabel(priceSourceForDisplay(channel, item))}`"
+                    >
+                      {{ priceSourceLabel(priceSourceForDisplay(channel, item)) }}
                     </span>
                   </span>
                   <span
@@ -841,9 +890,18 @@ onMounted(load)
       :channels="priceEditor.channels"
       :price="priceEditor.price"
       :prices="prices"
+      :default-prices="defaultPrices"
       :initial-target="priceEditor.initialTarget"
       @close="priceEditor = null"
       @saved="onPriceSaved"
+    />
+
+    <DefaultPriceModal
+      v-if="showDefaultPrices"
+      :prices="defaultPrices"
+      :channels="channels"
+      @close="showDefaultPrices = false"
+      @saved="onDefaultPricesSaved"
     />
 
   </section>

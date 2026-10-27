@@ -547,6 +547,73 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(app.modelPriceRepository.list().map { it.toResponse() })
         }
 
+        get("/model-default-prices") {
+            call.requireAdmin(app)
+            call.respond(app.modelDefaultPriceRepository.list().map { it.toResponse() })
+        }
+
+        post("/model-default-prices") {
+            call.requireAdmin(app)
+            val request = call.receive<ModelDefaultPriceRequest>()
+            val price = validateDefaultModelPrice(request)
+            if (app.modelDefaultPriceRepository.find(price.modelId) != null) {
+                throw conflict("model_default_price_exists", "该模型的默认单价已存在")
+            }
+            val record = app.modelDefaultPriceRepository.create(
+                modelId = price.modelId,
+                currency = price.currency,
+                inputPricePerMillion = price.input,
+                outputPricePerMillion = price.output,
+                cachedInputPricePerMillion = price.cached,
+            )
+            call.respond(HttpStatusCode.Created, record.toResponse())
+        }
+
+        put("/model-default-prices/{id}") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少默认价 id")
+            val request = call.receive<ModelDefaultPriceRequest>()
+            val price = validateDefaultModelPrice(request)
+            app.modelDefaultPriceRepository.findById(id) ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            val duplicate = app.modelDefaultPriceRepository.find(price.modelId)
+            if (duplicate != null && duplicate.id != id) {
+                throw conflict("model_default_price_exists", "该模型的默认单价已存在")
+            }
+            val updated = app.modelDefaultPriceRepository.update(
+                id = id,
+                modelId = price.modelId,
+                currency = price.currency,
+                inputPricePerMillion = price.input,
+                outputPricePerMillion = price.output,
+                cachedInputPricePerMillion = price.cached,
+            ) ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            call.respond(updated.toResponse())
+        }
+
+        delete("/model-default-prices/{id}") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少默认价 id")
+            if (!app.modelDefaultPriceRepository.delete(id)) {
+                throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            }
+            call.respond(HttpStatusCode.NoContent)
+        }
+
+        post("/model-prices/batch") {
+            call.requireAdmin(app)
+            val request = call.receive<ModelPriceBatchRequest>()
+            val batch = validateModelPriceBatch(app, request)
+            val records = app.modelPriceRepository.upsertBatch(
+                channelId = batch.channelId,
+                upstreamModels = batch.upstreamModels,
+                currency = batch.currency,
+                inputPricePerMillion = batch.input,
+                outputPricePerMillion = batch.output,
+                cachedInputPricePerMillion = batch.cached,
+            )
+            call.respond(records.map { it.toResponse() })
+        }
+
         post("/model-prices") {
             call.requireAdmin(app)
             val request = call.receive<ModelPriceRequest>()
@@ -825,6 +892,74 @@ private data class ValidatedModelPrice(
     val cached: BigDecimal?,
 )
 
+private data class ValidatedDefaultModelPrice(
+    val modelId: String,
+    val currency: String,
+    val input: BigDecimal,
+    val output: BigDecimal,
+    val cached: BigDecimal?,
+)
+
+private data class ValidatedModelPriceBatch(
+    val channelId: String,
+    val upstreamModels: List<String>,
+    val currency: String,
+    val input: BigDecimal,
+    val output: BigDecimal,
+    val cached: BigDecimal?,
+)
+
+private fun validateDefaultModelPrice(request: ModelDefaultPriceRequest): ValidatedDefaultModelPrice {
+    val modelId = request.modelId.trim()
+    if (modelId.isEmpty() || modelId.length > 200) {
+        throw badRequest("invalid_model_default_price", "模型 ID 长度必须在 1..200 之间")
+    }
+    val currency = parseCurrency(request.currency)
+    return ValidatedDefaultModelPrice(
+        modelId = modelId,
+        currency = currency,
+        input = parsePrice(request.inputPricePerMillion, "输入单价"),
+        output = parsePrice(request.outputPricePerMillion, "输出单价"),
+        cached = request.cachedInputPricePerMillion
+            ?.takeIf { it.isNotBlank() }
+            ?.let { parsePrice(it, "缓存输入单价") },
+    )
+}
+
+private suspend fun validateModelPriceBatch(
+    app: GatewayApplication,
+    request: ModelPriceBatchRequest,
+): ValidatedModelPriceBatch {
+    val channelId = request.channelId.trim()
+    if (channelId.isEmpty()) throw badRequest("invalid_model_price", "渠道不能为空")
+    if (app.channelRepository.find(channelId) == null) {
+        throw badRequest("invalid_model_price", "渠道不存在")
+    }
+    val upstreamModels = request.upstreamModels
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .distinct()
+    if (upstreamModels.isEmpty()) {
+        throw badRequest("invalid_model_price", "至少选择一个上游模型")
+    }
+    if (upstreamModels.size > 200) {
+        throw badRequest("invalid_model_price", "一次最多套用 200 个上游模型")
+    }
+    if (upstreamModels.any { it.length > 200 }) {
+        throw badRequest("invalid_model_price", "上游模型名长度必须在 1..200 之间")
+    }
+    return ValidatedModelPriceBatch(
+        channelId = channelId,
+        upstreamModels = upstreamModels,
+        currency = parseCurrency(request.currency),
+        input = parsePrice(request.inputPricePerMillion, "输入单价"),
+        output = parsePrice(request.outputPricePerMillion, "输出单价"),
+        cached = request.cachedInputPricePerMillion
+            ?.takeIf { it.isNotBlank() }
+            ?.let { parsePrice(it, "缓存输入单价") },
+    )
+}
+
 private suspend fun validateModelPrice(
     app: GatewayApplication,
     request: ModelPriceRequest,
@@ -838,10 +973,7 @@ private suspend fun validateModelPrice(
     if (upstreamModel.isEmpty() || upstreamModel.length > 200) {
         throw badRequest("invalid_model_price", "上游模型名长度必须在 1..200 之间")
     }
-    val currency = request.currency.trim().uppercase()
-    if (!CURRENCY_PATTERN.matches(currency)) {
-        throw badRequest("invalid_model_price", "币种必须是 3 到 8 位字母")
-    }
+    val currency = parseCurrency(request.currency)
     return ValidatedModelPrice(
         channelId = channelId,
         upstreamModel = upstreamModel,
@@ -852,6 +984,14 @@ private suspend fun validateModelPrice(
             ?.takeIf { it.isNotBlank() }
             ?.let { parsePrice(it, "缓存输入单价") },
     )
+}
+
+private fun parseCurrency(value: String): String {
+    val currency = value.trim().uppercase()
+    if (!CURRENCY_PATTERN.matches(currency)) {
+        throw badRequest("invalid_model_price", "币种必须是 3 到 8 位字母")
+    }
+    return currency
 }
 
 private fun parsePrice(value: String, label: String): BigDecimal {

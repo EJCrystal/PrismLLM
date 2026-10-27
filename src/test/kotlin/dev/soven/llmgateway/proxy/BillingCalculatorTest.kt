@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
 import java.math.BigDecimal
@@ -53,6 +54,46 @@ class BillingCalculatorTest {
         assertNull(BillingCalculator.calculate(record(input = null, output = 10), price()))
         assertNull(BillingCalculator.calculate(record(input = 10, output = null), price()))
         assertNull(BillingCalculator.calculate(record(input = 10, output = 10, known = false), price()))
+    }
+
+    @Test
+    fun `charges with model default price definition`() {
+        val cost = BillingCalculator.calculate(
+            record(input = 100, output = 50, cached = 20),
+            DefaultModelPriceRecord(
+                id = "default-price",
+                modelId = "model",
+                currency = "CNY",
+                inputPricePerMillion = BigDecimal("3"),
+                outputPricePerMillion = BigDecimal("4"),
+                cachedInputPricePerMillion = BigDecimal("1"),
+                createdAt = 0,
+                updatedAt = 0,
+            ),
+        )
+
+        assertEquals(BigDecimal("0.00046000"), cost?.amount)
+        assertEquals("CNY", cost?.currency)
+        assertEquals(BigDecimal("1"), cost?.cachedInputPricePerMillion)
+    }
+
+    @Test
+    fun `charges with resolved model price and records source`() {
+        val cost = BillingCalculator.calculate(
+            record(input = 100, output = 50),
+            ResolvedModelPrice(
+                source = ModelPriceSource.MODEL_DEFAULT,
+                modelId = "model",
+                defaultPriceId = "default-price",
+                currency = "USD",
+                inputPricePerMillion = BigDecimal("1"),
+                outputPricePerMillion = BigDecimal("2"),
+                cachedInputPricePerMillion = null,
+            ),
+        )
+
+        assertEquals(BigDecimal("0.00020000"), cost?.amount)
+        assertEquals("USD", cost?.currency)
     }
 
     private fun record(

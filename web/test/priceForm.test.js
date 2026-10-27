@@ -2,9 +2,14 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   applyPriceToForm,
+  buildBatchPricePayload,
+  buildDefaultPricePayload,
   buildPricePayload,
+  defaultPriceFormState,
   emptyPriceDraft,
   hasPriceDraft,
+  parseNonNegativePrice,
+  parseOptionalNonNegativePrice,
   priceFormState,
   resetPriceForm,
 } from '../src/utils/priceForm.js'
@@ -108,5 +113,45 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(form.inputPricePerMillion, '')
     assert.equal(form.outputPricePerMillion, '')
     assert.equal(form.cachedInputPricePerMillion, '')
+  })
+
+  it('构建模型默认价请求体并保留原币种', () => {
+    const form = {
+      ...defaultPriceFormState({
+        modelId: 'deepseek-flash',
+        currency: 'CNY',
+        inputPricePerMillion: '7',
+        outputPricePerMillion: '14',
+        cachedInputPricePerMillion: '1',
+      }),
+    }
+    const payload = buildDefaultPricePayload(form, ' deepseek-flash ')
+    assert.equal(payload.modelId, 'deepseek-flash')
+    assert.equal(payload.currency, 'CNY')
+    assert.equal(payload.inputPricePerMillion, '7')
+    assert.equal(payload.outputPricePerMillion, '14')
+    assert.equal(payload.cachedInputPricePerMillion, '1')
+  })
+
+  it('构建批量套用请求体时去重并过滤空模型', () => {
+    const payload = buildBatchPricePayload(
+      { currency: 'USD', inputPricePerMillion: '1', outputPricePerMillion: '2', cachedInputPricePerMillion: ' ' },
+      'channel-a',
+      [' m1 ', 'm1', '', null, 'm2'],
+    )
+    assert.deepEqual(payload.upstreamModels, ['m1', 'm2'])
+    assert.equal(payload.channelId, 'channel-a')
+    assert.equal(payload.cachedInputPricePerMillion, null)
+  })
+
+  it('空金额不会被当成 0，非法值返回 null', () => {
+    assert.equal(parseNonNegativePrice(''), null)
+    assert.equal(parseNonNegativePrice('   '), null)
+    assert.equal(parseNonNegativePrice('abc'), null)
+    assert.equal(parseNonNegativePrice('-1'), null)
+    assert.equal(parseNonNegativePrice('0'), 0)
+    assert.equal(parseNonNegativePrice('1.25'), 1.25)
+    assert.equal(parseOptionalNonNegativePrice(''), null)
+    assert.equal(parseOptionalNonNegativePrice('0.3'), 0.3)
   })
 })

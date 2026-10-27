@@ -1,8 +1,6 @@
 package dev.soven.llmgateway.proxy
 
-import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
-import dev.soven.llmgateway.repo.ModelPriceRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -20,20 +18,20 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 class RequestLogWriter private constructor(
     private val insertRecord: suspend (RequestLogRecord) -> Unit,
-    private val findPrice: suspend (String, String) -> ModelPriceRecord?,
+    private val resolvePrice: suspend (RequestLogRecord) -> ResolvedModelPrice?,
     scope: CoroutineScope,
 ) {
     constructor(
         repository: RequestLogRepository,
-        priceRepository: ModelPriceRepository,
+        pricingService: ModelPricingService,
         scope: CoroutineScope,
-    ) : this(repository::insert, priceRepository::find, scope)
+    ) : this(repository::insert, { record -> pricingService.resolve(record) }, scope)
 
     internal constructor(
         scope: CoroutineScope,
         insertRecord: suspend (RequestLogRecord) -> Unit,
-        findPrice: suspend (String, String) -> ModelPriceRecord?,
-    ) : this(insertRecord, findPrice, scope)
+        resolvePrice: suspend (RequestLogRecord) -> ResolvedModelPrice?,
+    ) : this(insertRecord, resolvePrice, scope)
 
     private val logger = LoggerFactory.getLogger(RequestLogWriter::class.java)
     private val queue = Channel<RequestLogRecord>(capacity = 1024)
@@ -50,11 +48,9 @@ class RequestLogWriter private constructor(
     }
 
     private suspend fun withCost(record: RequestLogRecord): RequestLogRecord {
-        val channelId = record.channelId ?: return record
-        val upstreamModel = record.upstreamModel ?: return record
         if (!record.usageKnown) return record
         val price = try {
-            findPrice(channelId, upstreamModel)
+            resolvePrice(record)
         } catch (cause: CancellationException) {
             throw cause
         } catch (cause: Throwable) {

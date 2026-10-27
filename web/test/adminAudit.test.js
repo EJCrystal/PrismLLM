@@ -10,6 +10,8 @@ describe('adminAudit: 管理操作审计展示', () => {
   it('把已知动作翻译为可读文案，未知动作保留原值', () => {
     assert.equal(auditActionLabel('client_key.rotate'), '轮换调用方密钥')
     assert.equal(auditActionLabel('client_key.revoke'), '撤销调用方密钥')
+    assert.equal(auditActionLabel('model_price.batch'), '批量套用模型单价')
+    assert.equal(auditActionLabel('model_default_price.create'), '创建模型默认价')
     assert.equal(auditActionLabel('future.action'), 'future.action')
   })
 

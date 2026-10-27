@@ -7,6 +7,7 @@ import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
@@ -33,10 +34,12 @@ class ModelPriceRepository(private val database: Database) {
 
     suspend fun find(channelId: String, upstreamModel: String): ModelPriceRecord? =
         suspendTransaction(database) {
+            val normalizedModel = upstreamModel.trim()
+            if (normalizedModel.isEmpty()) return@suspendTransaction null
             ModelPrices
                 .join(Channels, JoinType.INNER, ModelPrices.channelId, Channels.id)
                 .selectAll()
-                .where { (ModelPrices.channelId eq channelId) and (ModelPrices.upstreamModel eq upstreamModel) }
+                .where { (ModelPrices.channelId eq channelId) and (ModelPrices.upstreamModel eq normalizedModel) }
                 .singleOrNull()
                 ?.let(::toRecord)
         }
@@ -56,7 +59,7 @@ class ModelPriceRepository(private val database: Database) {
         ModelPrices.insert {
             it[ModelPrices.id] = id
             it[ModelPrices.channelId] = channelId
-            it[ModelPrices.upstreamModel] = upstreamModel
+            it[ModelPrices.upstreamModel] = upstreamModel.trim()
             it[ModelPrices.currency] = currency
             it[ModelPrices.inputPricePerMillion] = inputPricePerMillion
             it[ModelPrices.outputPricePerMillion] = outputPricePerMillion
@@ -78,7 +81,7 @@ class ModelPriceRepository(private val database: Database) {
     ): ModelPriceRecord? = suspendTransaction(database) {
         val changed = ModelPrices.update({ ModelPrices.id eq id }) {
             it[ModelPrices.channelId] = channelId
-            it[ModelPrices.upstreamModel] = upstreamModel
+            it[ModelPrices.upstreamModel] = upstreamModel.trim()
             it[ModelPrices.currency] = currency
             it[ModelPrices.inputPricePerMillion] = inputPricePerMillion
             it[ModelPrices.outputPricePerMillion] = outputPricePerMillion
@@ -86,6 +89,66 @@ class ModelPriceRepository(private val database: Database) {
             it[updatedAt] = System.currentTimeMillis()
         }
         if (changed == 0) null else load(id)
+    }
+
+    /**
+     * 在同一渠道内批量创建或更新多个上游模型的单价。所有写入在同一事务内完成。
+     */
+    suspend fun upsertBatch(
+        channelId: String,
+        upstreamModels: List<String>,
+        currency: String,
+        inputPricePerMillion: BigDecimal,
+        outputPricePerMillion: BigDecimal,
+        cachedInputPricePerMillion: BigDecimal?,
+    ): List<ModelPriceRecord> = suspendTransaction(database) {
+        val normalizedModels = upstreamModels
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        if (normalizedModels.isEmpty()) return@suspendTransaction emptyList()
+
+        val now = System.currentTimeMillis()
+        for (upstreamModel in normalizedModels) {
+            val existingId = ModelPrices.selectAll()
+                .where {
+                    (ModelPrices.channelId eq channelId) and
+                        (ModelPrices.upstreamModel eq upstreamModel)
+                }
+                .singleOrNull()
+                ?.get(ModelPrices.id)
+            if (existingId == null) {
+                ModelPrices.insert {
+                    it[id] = UUID.randomUUID().toString()
+                    it[ModelPrices.channelId] = channelId
+                    it[ModelPrices.upstreamModel] = upstreamModel
+                    it[ModelPrices.currency] = currency
+                    it[ModelPrices.inputPricePerMillion] = inputPricePerMillion
+                    it[ModelPrices.outputPricePerMillion] = outputPricePerMillion
+                    it[ModelPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
+                    it[createdAt] = now
+                    it[updatedAt] = now
+                }
+            } else {
+                ModelPrices.update({ ModelPrices.id eq existingId }) {
+                    it[ModelPrices.currency] = currency
+                    it[ModelPrices.inputPricePerMillion] = inputPricePerMillion
+                    it[ModelPrices.outputPricePerMillion] = outputPricePerMillion
+                    it[ModelPrices.cachedInputPricePerMillion] = cachedInputPricePerMillion
+                    it[updatedAt] = now
+                }
+            }
+        }
+
+        ModelPrices
+            .join(Channels, JoinType.INNER, ModelPrices.channelId, Channels.id)
+            .selectAll()
+            .where {
+                (ModelPrices.channelId eq channelId) and
+                    (ModelPrices.upstreamModel inList normalizedModels)
+            }
+            .map(::toRecord)
+            .sortedBy { it.upstreamModel }
     }
 
     suspend fun delete(id: String): Boolean = suspendTransaction(database) {

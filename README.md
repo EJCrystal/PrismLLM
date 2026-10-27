@@ -260,7 +260,15 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 ### 单请求计费
 
-管理界面的“渠道”列表提供便捷的「配置模型单价」入口，直接为每个渠道已授权的上游模型配置输入、输出与缓存读取单价（每百万 token 单价），在请求日志中实时计算并显示单条请求费用。价格规则接口：`GET/POST /admin/api/model-prices`、`PUT/DELETE /admin/api/model-prices/{id}`。
+管理界面的“渠道”列表提供便捷的「配置模型单价」入口，直接为每个渠道已授权的上游模型配置输入、输出与缓存读取单价（每百万 token 单价），在请求日志中实时计算并显示单条请求费用。渠道列表还会显示每个模型的价格来源：渠道价、默认价或未定价。
+
+价格分为两层，解析优先级为 `渠道 + 上游模型` > `模型默认价` > 未定价：
+
+- **渠道覆盖价**：为单个渠道的上游模型配置，优先于默认价；接口为 `GET/POST /admin/api/model-prices`、`PUT/DELETE /admin/api/model-prices/{id}`。
+- **模型默认价**：按对外模型 ID 配置，渠道没有覆盖价时自动继承；接口为 `GET/POST /admin/api/model-default-prices`、`PUT/DELETE /admin/api/model-default-prices/{id}`。
+- **批量套用**：在同一渠道内为多个上游模型一次写入相同单价；接口为 `POST /admin/api/model-prices/batch`。
+
+模型默认价的模型 ID 优先使用渠道配置的规范 ID（canonical model ID），未配置时回退到上游模型名；这样同一对外模型跨渠道只需要维护一份默认价。
 
 “获取参考单价”返回的原始价格为 USD。切换到 CNY 或 EUR 时，管理面始终以保留的 USD 原值为基准换算，并在连续切换币种时显示 `1 USD = …` 的参考汇率、日期和来源；手动修改价格后，后续切换改为按当前币种换算。汇率缓存 6 小时，获取失败时会恢复原币种而不是保留错误数值。
 

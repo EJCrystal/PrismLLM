@@ -2152,6 +2152,13 @@ input[type="password"]::-ms-clear,
   font-size: 12px;
 }
 
+.section-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .stat-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2559,6 +2566,12 @@ input[type="password"]::-ms-clear,
   border-color: color-mix(in srgb, var(--warning) 32%, var(--line));
   background: var(--warning-soft);
   color: var(--warning);
+}
+
+.callout.info {
+  border-color: color-mix(in srgb, var(--brand) 26%, var(--line));
+  background: var(--info-soft);
+  color: var(--ink);
 }
 
 .loading-state,
@@ -3667,6 +3680,77 @@ input:disabled {
   gap: 10px;
 }
 
+.price-configured-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.price-batch {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.price-batch-head {
+  display: grid;
+  gap: 2px;
+}
+
+.price-batch-list {
+  display: grid;
+  max-height: 190px;
+  gap: 4px;
+  overflow: auto;
+}
+
+.price-batch-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 7px;
+}
+
+.price-batch-item:hover {
+  background: var(--info-soft);
+}
+
+.price-batch-item code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.price-batch-item .badge {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.price-batch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--brand);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.price-source-note {
+  margin: 0;
+}
+
 .price-configured-list {
   display: grid;
   max-height: 180px;
@@ -4071,6 +4155,32 @@ input:disabled {
   font-size: 9px;
   font-weight: 800;
   line-height: 1.5;
+}
+
+.channel-model-price-source {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--info-soft);
+  color: var(--brand);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.channel-model-price-source.is-channel {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.channel-model-price-source.is-default {
+  background: var(--info-soft);
+  color: var(--brand);
+}
+
+.channel-model-price-source.is-mixed {
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .channel-price-warning {

@@ -71,7 +71,16 @@ data class RouteCandidate(
     val channel: ChannelRecord,
     val upstreamModel: String,
     val position: Int,
-)
+) {
+    /** 计费使用的模型 ID：优先渠道配置的规范 ID，未配置时回退上游模型。 */
+    val pricingModelId: String
+        get() = channel.modelMappings
+            .firstOrNull { it.upstreamModel.trim() == upstreamModel.trim() }
+            ?.canonicalModelId
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: upstreamModel.trim()
+}
 
 /**
  * 上游 /models 返回的模型。
@@ -139,6 +148,18 @@ data class ModelPriceRecord(
     val updatedAt: Long,
 )
 
+/** 按对外模型 ID 配置的默认单价。 */
+data class DefaultModelPriceRecord(
+    val id: String,
+    val modelId: String,
+    val currency: String,
+    val inputPricePerMillion: BigDecimal,
+    val outputPricePerMillion: BigDecimal,
+    val cachedInputPricePerMillion: BigDecimal?,
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
 /**
  * 管理员账号记录。
  *
@@ -190,5 +211,6 @@ data class RequestLogRecord(
     val upstreamErrorCode: String?,
     val createdAt: Long,
     val upstreamAttempts: Int? = null,
+    val pricingModelId: String? = null,
     val id: Long = 0,
 )

@@ -127,6 +127,7 @@ private suspend fun handleProxy(
     var channelId: String? = null
     var channelName: String? = null
     var upstreamModel: String? = null
+    var pricingModelId: String? = null
     var streamMode: Boolean? = null
     var reasoningEffort: String? = null
     var statusCode = HttpStatusCode.InternalServerError.value
@@ -212,6 +213,7 @@ private suspend fun handleProxy(
             channelId = candidate.channel.id
             channelName = candidate.channel.name
             upstreamModel = candidate.upstreamModel
+            pricingModelId = candidate.pricingModelId
             retryFrom?.let { from ->
                 app.metrics.upstreamRetry(from, candidate.channel.name, retryReason ?: "upstream_error")
                 retryFrom = null
@@ -383,6 +385,7 @@ private suspend fun handleProxy(
             usage = usage,
             channelId = channelId,
             upstreamModel = upstreamModel,
+            pricingModelId = pricingModelId,
             requestId = requestId,
             traceId = traceContext.traceId,
             alias = alias,
@@ -411,6 +414,7 @@ private suspend fun handleProxy(
                 channelId = channelId,
                 channelName = channelName,
                 upstreamModel = upstreamModel,
+                pricingModelId = pricingModelId,
                 protocol = protocol,
                 stream = streamMode,
                 statusCode = statusCode,
@@ -469,6 +473,7 @@ private suspend fun settleRequestLimitOnExit(
     usage: Usage?,
     channelId: String?,
     upstreamModel: String?,
+    pricingModelId: String?,
     requestId: String,
     traceId: String?,
     alias: String,
@@ -482,7 +487,7 @@ private suspend fun settleRequestLimitOnExit(
     val calculatedCost = try {
         if (usage?.known == true && channelId != null && upstreamModel != null) {
             try {
-                app.modelPriceRepository.find(channelId, upstreamModel)?.let { price ->
+                app.modelPricingService.resolve(channelId, upstreamModel, pricingModelId)?.let { price ->
                     BillingCalculator.calculate(
                         RequestLogRecord(
                             requestId = requestId,
@@ -493,6 +498,7 @@ private suspend fun settleRequestLimitOnExit(
                             channelId = channelId,
                             channelName = channelName,
                             upstreamModel = upstreamModel,
+                            pricingModelId = pricingModelId,
                             protocol = protocol,
                             statusCode = statusCode,
                             firstTokenMs = firstTokenMs,

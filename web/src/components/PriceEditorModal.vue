@@ -6,9 +6,12 @@ import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamMode
 import { channelModelPriceOptions, findModelPrice, isSamePriceTarget, pricesForChannel } from '../utils/modelPrice'
 import {
   applyPriceToForm,
+  buildBatchPricePayload,
   buildPricePayload,
   emptyPriceDraft,
   hasPriceDraft,
+  parseNonNegativePrice,
+  parseOptionalNonNegativePrice,
   priceFormState,
   resetPriceForm,
 } from '../utils/priceForm'
@@ -19,6 +22,7 @@ const props = defineProps({
   channels: { type: Array, required: true },
   price: { type: Object, default: null },
   prices: { type: Array, default: () => [] },
+  defaultPrices: { type: Array, default: () => [] },
   initialTarget: { type: Object, default: null },
 })
 const emit = defineEmits(['close', 'saved'])
@@ -30,6 +34,8 @@ const referenceHint = ref('')
 const modelPickerOpen = ref(false)
 const saving = ref(false)
 const activePrice = ref(props.price)
+const batchOpen = ref(false)
+const batchSelected = ref([])
 let modelsRequestId = 0
 
 const initialPrice = priceFormState(props.price)
@@ -40,18 +46,37 @@ const form = reactive({
 })
 
 const channelPrices = computed(() => pricesForChannel(props.prices, form.channelId))
-const channelModelOptions = computed(() => channelModelPriceOptions(channelModels.value, props.prices, form.channelId))
+const channelModelOptions = computed(() => channelModelPriceOptions(
+  channelModels.value,
+  props.prices,
+  form.channelId,
+  props.defaultPrices,
+))
 const filteredChannelModels = computed(() => {
   const query = form.upstreamModel.trim().toLowerCase()
   if (!query) return channelModelOptions.value
   return channelModelOptions.value.filter((model) => model.id.toLowerCase().includes(query))
 })
+const selectedModelOption = computed(() => channelModelOptions.value.find(
+  (model) => String(model.id ?? '').trim() === form.upstreamModel.trim(),
+))
+const inheritedPrice = computed(() => selectedModelOption.value?.defaultPrice || null)
+const selectedPriceSource = computed(() => {
+  if (activePrice.value?.id) return 'channel'
+  if (selectedModelOption.value?.price) return 'channel'
+  if (inheritedPrice.value) return 'default'
+  return 'none'
+})
+const allBatchSelected = computed(() => channelModelOptions.value.length > 0 &&
+  channelModelOptions.value.every((model) => batchSelected.value.includes(model.id)))
 
 watch(
   () => form.channelId,
   async (channelId) => {
     const requestId = ++modelsRequestId
     modelPickerOpen.value = false
+    batchOpen.value = false
+    batchSelected.value = []
     channelModels.value = []
     modelsError.value = ''
     if (!channelId) return
@@ -147,6 +172,35 @@ function startNewPrice() {
   modelPickerOpen.value = false
 }
 
+function applyDefaultPrice() {
+  const price = inheritedPrice.value
+  if (!price) return
+  form.currency = price.currency || 'USD'
+  form.inputPricePerMillion = price.inputPricePerMillion ?? ''
+  form.outputPricePerMillion = price.outputPricePerMillion ?? ''
+  form.cachedInputPricePerMillion = price.cachedInputPricePerMillion ?? ''
+}
+
+function toggleBatchAll() {
+  if (allBatchSelected.value) {
+    batchSelected.value = []
+  } else {
+    batchSelected.value = channelModelOptions.value.map((model) => model.id)
+  }
+}
+
+function priceSourceLabel(model) {
+  if (model?.price) return '渠道覆盖'
+  if (model?.defaultPrice) return '默认价'
+  return '未定价'
+}
+
+function priceSourceClass(model) {
+  if (model?.price) return 'success'
+  if (model?.defaultPrice) return 'info'
+  return 'warning'
+}
+
 async function fetchReferencePrice() {
   const modelName = form.upstreamModel.trim()
   if (!modelName) {
@@ -186,15 +240,14 @@ async function save() {
     notify('请填写上游模型', 'error')
     return
   }
-  const inputPrice = Number(form.inputPricePerMillion)
-  const outputPrice = Number(form.outputPricePerMillion)
-  const cachedPriceText = String(form.cachedInputPricePerMillion ?? '').trim()
-  const cachedPrice = cachedPriceText ? Number(cachedPriceText) : null
-  if (!Number.isFinite(inputPrice) || inputPrice < 0 || !Number.isFinite(outputPrice) || outputPrice < 0) {
+  const inputPrice = parseNonNegativePrice(form.inputPricePerMillion)
+  const outputPrice = parseNonNegativePrice(form.outputPricePerMillion)
+  const cachedPrice = parseOptionalNonNegativePrice(form.cachedInputPricePerMillion)
+  if (inputPrice == null || outputPrice == null) {
     notify('输入和输出单价必须是非负数字', 'error')
     return
   }
-  if (cachedPrice != null && (!Number.isFinite(cachedPrice) || cachedPrice < 0)) {
+  if (String(form.cachedInputPricePerMillion ?? '').trim() && cachedPrice == null) {
     notify('缓存输入单价必须是非负数字', 'error')
     return
   }
@@ -215,6 +268,40 @@ async function save() {
     saving.value = false
   }
 }
+
+async function applyBatch() {
+  if (!form.channelId) {
+    notify('请选择渠道', 'error')
+    return
+  }
+  if (batchSelected.value.length === 0) {
+    notify('请至少选择一个模型', 'warning')
+    return
+  }
+  const inputPrice = parseNonNegativePrice(form.inputPricePerMillion)
+  const outputPrice = parseNonNegativePrice(form.outputPricePerMillion)
+  const cachedPrice = parseOptionalNonNegativePrice(form.cachedInputPricePerMillion)
+  if (inputPrice == null || outputPrice == null) {
+    notify('输入和输出单价必须是非负数字', 'error')
+    return
+  }
+  if (String(form.cachedInputPricePerMillion ?? '').trim() && cachedPrice == null) {
+    notify('缓存输入单价必须是非负数字', 'error')
+    return
+  }
+  saving.value = true
+  try {
+    await api.batchUpsertModelPrices(buildBatchPricePayload(form, form.channelId, batchSelected.value))
+    notify(`已为 ${batchSelected.value.length} 个模型套用渠道单价`)
+    batchSelected.value = []
+    batchOpen.value = false
+    emit('saved')
+  } catch (cause) {
+    notify(cause.message, 'error')
+  } finally {
+    saving.value = false
+  }
+}
 </script>
 
 <template>
@@ -227,15 +314,18 @@ async function save() {
             {{ channel.name }}
           </option>
         </select>
-        <small>价格按「渠道 + 上游模型」单独配置；同一对外模型在不同渠道可以配置不同价格。</small>
+        <small>渠道覆盖价按「渠道 + 上游模型」配置，优先于模型默认价；未配置时自动继承默认价。</small>
       </label>
       <div class="price-configured">
         <div class="price-configured-head">
           <div>
-            <strong>已配置单价</strong>
+            <strong>渠道覆盖单价</strong>
             <span class="muted small"> · {{ channelPrices.length }} 个模型</span>
           </div>
-          <button type="button" class="button ghost mini" @click="startNewPrice">新增单价</button>
+          <div class="price-configured-actions">
+            <button type="button" class="button ghost mini" @click="batchOpen = !batchOpen">批量套用</button>
+            <button type="button" class="button ghost mini" @click="startNewPrice">新增单价</button>
+          </div>
         </div>
         <div v-if="channelPrices.length" class="price-configured-list">
           <button
@@ -255,7 +345,29 @@ async function save() {
             </span>
           </button>
         </div>
-        <p v-else class="muted small price-configured-empty">该渠道还没有配置任何模型单价。</p>
+        <p v-else class="muted small price-configured-empty">该渠道还没有渠道覆盖价，模型会继承默认价（如有）。</p>
+        <div v-if="batchOpen" class="price-batch">
+          <div class="price-batch-head">
+            <strong>批量套用当前金额</strong>
+            <span class="muted small">将上方填写的币种和单价应用到所选上游模型，已有渠道价会被覆盖。</span>
+          </div>
+          <div v-if="channelModelOptions.length" class="price-batch-list">
+            <label v-for="model in channelModelOptions" :key="model.id" class="price-batch-item">
+              <input v-model="batchSelected" type="checkbox" :value="model.id" />
+              <code>{{ model.id }}</code>
+              <span class="badge" :class="priceSourceClass(model)">{{ priceSourceLabel(model) }}</span>
+            </label>
+          </div>
+          <p v-else class="muted small price-configured-empty">当前渠道没有可批量套用的模型。</p>
+          <div class="price-batch-actions">
+            <button type="button" class="button ghost mini" @click="toggleBatchAll">
+              {{ allBatchSelected ? '取消全选' : '全选' }}
+            </button>
+            <button type="button" class="button primary mini" :disabled="saving || batchSelected.length === 0" @click="applyBatch">
+              套用到 {{ batchSelected.length }} 个模型
+            </button>
+          </div>
+        </div>
       </div>
       <label class="field" for="price-upstream-model">
         <span>上游模型</span>
@@ -292,8 +404,8 @@ async function save() {
                   <code>{{ model.id }}</code>
                   <span v-if="model.ownedBy" class="muted small">{{ model.ownedBy }}</span>
                 </span>
-                <span class="badge" :class="model.price ? 'success' : 'warning'">
-                  {{ model.price ? '已定价' : '未定价' }}
+                <span class="badge" :class="priceSourceClass(model)">
+                  {{ priceSourceLabel(model) }}
                 </span>
               </button>
             </template>
@@ -301,6 +413,12 @@ async function save() {
           </div>
         </div>
         <small v-if="referenceHint" class="reference-hint">{{ referenceHint }}</small>
+        <small v-else-if="selectedPriceSource === 'channel'">当前使用渠道覆盖价，模型默认价不会生效。</small>
+        <small v-else-if="selectedPriceSource === 'default'" class="reference-hint">
+          当前继承模型默认价（输入 {{ formatUnitPrice(inheritedPrice.inputPricePerMillion) }} / 输出
+          {{ formatUnitPrice(inheritedPrice.outputPricePerMillion) }} {{ inheritedPrice.currency }}）。保存后将创建渠道覆盖价。
+          <button type="button" class="link-button" @click="applyDefaultPrice">填入默认价</button>
+        </small>
         <small v-else>从渠道模型选择或手动输入后，可获取 USD 参考价。</small>
       </label>
       <label class="field">
@@ -327,6 +445,10 @@ async function save() {
           <input v-model="form.cachedInputPricePerMillion" type="number" min="0" step="0.00000001" placeholder="留空则按输入单价" />
         </label>
       </div>
+      <p v-if="activePrice?.id" class="muted small price-source-note">正在编辑渠道覆盖价。</p>
+      <p v-else-if="inheritedPrice" class="callout info price-source-note">
+        该模型当前继承默认价；保存后将为当前渠道创建覆盖价。
+      </p>
       <p class="muted small price-hint">
         单位为每百万 token，币种见上方。缓存 token 使用缓存输入单价，留空时按输入单价计费；推理 token 已包含在输出 token 中，不重复计费。
       </p>
