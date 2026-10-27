@@ -245,6 +245,14 @@ async function onPriceSaved() {
   }
 }
 
+async function onPriceChanged() {
+  try {
+    prices.value = await api.listModelPrices()
+  } catch {
+    notify('单价已删除，但刷新列表失败', 'warning')
+  }
+}
+
 async function onDefaultPricesSaved() {
   try {
     const [pricesData, defaultPricesData] = await Promise.all([
@@ -889,6 +897,7 @@ onMounted(load)
       :initial-target="priceEditor.initialTarget"
       @close="priceEditor = null"
       @saved="onPriceSaved"
+      @changed="onPriceChanged"
     />
 
     <DefaultPriceModal

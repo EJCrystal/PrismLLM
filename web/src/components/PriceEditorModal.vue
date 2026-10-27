@@ -48,7 +48,7 @@ const props = defineProps({
   defaultPrices: { type: Array, default: () => [] },
   initialTarget: { type: Object, default: null },
 })
-const emit = defineEmits(['close', 'saved'])
+const emit = defineEmits(['close', 'saved', 'changed'])
 const channelModels = ref([])
 const modelsLoading = ref(false)
 const modelsError = ref('')
@@ -499,7 +499,7 @@ async function removePrice(price) {
     notify(defaultPrice
       ? `「${modelId}」的渠道覆盖价已删除，将继续继承模型默认价`
       : `「${modelId}」的渠道覆盖价已删除，已恢复为未定价`)
-    emit('saved')
+    emit('changed')
   } catch (cause) {
     notify(cause.message, 'error')
   } finally {
