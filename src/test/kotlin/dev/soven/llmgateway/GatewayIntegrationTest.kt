@@ -3352,6 +3352,29 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `preserve schedule without pending version returns a clear validation error`() = runBlocking {
+        val record = app.modelDefaultPriceRepository.create(
+            modelId = "no-pending-plan",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1"),
+            outputPricePerMillion = BigDecimal("2"),
+        )!!
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.put("/admin/api/model-default-prices/${record.id}") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"modelId":"no-pending-plan","currency":"USD","inputPricePerMillion":"1","outputPricePerMillion":"2","preserveSchedule":true}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("model_default_price_schedule_not_found"))
+        }
+    }
+
+    @Test
     fun `records request cost with per_request pricing and skips failed request`() = runBlocking {
         val okChannel = createChannel("ok-channel", "ok")
         val failChannel = createChannel("fail-channel", "500")

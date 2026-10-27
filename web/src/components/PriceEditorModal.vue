@@ -44,6 +44,7 @@ const cancellingVersion = ref(false)
 let modelsRequestId = 0
 let referenceRequestId = 0
 let versionRequestId = 0
+let cancellationRequestId = 0
 
 const initialPrice = priceFormState(props.price)
 const form = reactive({
@@ -244,24 +245,24 @@ async function cancelScheduledVersion(version) {
   if (!version?.id) return
   if (!window.confirm(`确定取消将于 ${formatTime(version.effectiveFrom)} 生效的版本 v${version.version}？`)) return
   cancellingVersion.value = true
-  const requestId = ++versionRequestId
+  const requestId = ++cancellationRequestId
   const channelId = form.channelId
   const upstreamModel = form.upstreamModel.trim()
   try {
     await api.deleteModelPriceVersion(version.id)
     notify('定时生效版本已取消')
-    if (activePrice.value && requestId === versionRequestId) {
+    if (activePrice.value && requestId === cancellationRequestId) {
       activePrice.value.scheduledVersion = null
     }
     if (showVersions.value && channelId && upstreamModel) {
       const versions = await api.listModelPriceVersions(channelId, upstreamModel)
-      if (requestId === versionRequestId) versionHistory.value = versions
+      if (requestId === cancellationRequestId) versionHistory.value = versions
     }
     emit('saved')
   } catch (e) {
     notify(e.message, 'error')
   } finally {
-    if (requestId === versionRequestId) cancellingVersion.value = false
+    if (requestId === cancellationRequestId) cancellingVersion.value = false
   }
 }
 
@@ -530,7 +531,7 @@ async function applyBatch() {
         />
         <small>获取参考价会切换为 USD。</small>
       </label>
-      <PriceFields :form="form" />
+      <PriceFields :form="form" :has-current-price="Boolean(activePrice?.id)" />
 
       <div v-if="activePrice?.scheduledVersion" class="callout warning price-scheduled-banner">
         <div class="scheduled-banner-info">

@@ -594,6 +594,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (existing.modelId != price.modelId) {
                 throw badRequest("model_default_price_model_immutable", "已存在的默认单价不可修改模型 ID，请新建或删除后重新配置")
             }
+            if (price.values.preserveSchedule && app.modelDefaultPriceRepository.findScheduled(existing.modelId) == null) {
+                throw badRequest("model_default_price_schedule_not_found", "该默认价当前没有可保留的定时版本")
+            }
             val updated = try {
                 app.modelDefaultPriceRepository.update(
                     id = id,
@@ -698,6 +701,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val existing = app.modelPriceRepository.findById(id) ?: throw notFound("model_price_not_found", "计费单价不存在")
             if (existing.channelId != price.channelId || existing.upstreamModel != price.upstreamModel) {
                 throw badRequest("model_price_key_immutable", "已存在的单价不可修改渠道或上游模型，请新建或删除后重新配置")
+            }
+            if (price.values.preserveSchedule && app.modelPriceRepository.findScheduled(existing.channelId, existing.upstreamModel) == null) {
+                throw badRequest("model_price_schedule_not_found", "该计费单价当前没有可保留的定时版本")
             }
             val updated = app.modelPriceRepository.update(
                 id = id,

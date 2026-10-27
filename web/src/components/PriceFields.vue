@@ -3,6 +3,7 @@ import { toLocalInput } from '../utils/format'
 
 const props = defineProps({
   form: { type: Object, required: true },
+  hasCurrentPrice: { type: Boolean, default: true },
 })
 
 const modes = [
@@ -118,50 +119,112 @@ function removeTier(index) {
     <button v-if="form.priceTiers.length === 0" type="button" class="button subtle mini" @click="addTier">添加第一档</button>
   </section>
 
-  <div class="field price-schedule-field">
-    <span>生效方式</span>
+  <fieldset class="field price-schedule-field">
+    <legend>价格生效时间</legend>
     <div class="price-schedule-toggle">
-      <label class="schedule-radio">
+      <label class="schedule-option" :class="{ active: !form.isScheduled }">
         <input type="radio" :value="false" v-model="form.isScheduled" @change="onScheduleChange(false)" />
-        <span>保存为当前价（取消计划）</span>
+        <span class="schedule-option-copy">
+          <strong>立即生效</strong>
+          <small>保存后马上按新价格计费</small>
+        </span>
       </label>
-      <label class="schedule-radio">
+      <label class="schedule-option" :class="{ active: form.isScheduled }">
         <input type="radio" :value="true" v-model="form.isScheduled" @change="onScheduleChange(true)" />
-        <span>定时生效</span>
+        <span class="schedule-option-copy">
+          <strong>定时生效</strong>
+          <small>到指定时间再自动切换</small>
+        </span>
       </label>
     </div>
-    <div v-if="form.isScheduled" class="schedule-date-wrap">
+    <label v-if="form.isScheduled" class="schedule-date-wrap">
+      <span>切换时间</span>
       <input v-model="form.effectiveAt" type="datetime-local" />
-      <small>将在指定的未来时间自动切换为此价格版本；到达该时间前仍沿用当前生效价格。</small>
-    </div>
-    <small v-else>保存后立即作为当前有效价格生效，并保留版本历史。</small>
-  </div>
+      <small v-if="hasCurrentPrice">在此之前继续使用当前价格。</small>
+      <small v-else class="schedule-empty-note">生效前暂无当前价，此模型不会计费。</small>
+    </label>
+  </fieldset>
 </template>
 
 <style scoped>
 .price-schedule-field {
   display: grid;
   gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.price-schedule-field legend {
+  margin-bottom: 8px;
+  padding: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .price-schedule-toggle {
-  display: flex;
-  align-items: center;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
-.schedule-radio {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.schedule-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
   cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.schedule-option.active {
+  border-color: var(--brand);
+  background: var(--info-soft);
+}
+
+.schedule-option input {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  accent-color: var(--brand);
+}
+
+.schedule-option-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.schedule-option-copy strong {
+  color: var(--ink);
   font-size: 13px;
+  font-weight: 600;
+}
+
+.schedule-option-copy small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .schedule-date-wrap {
   display: grid;
   gap: 6px;
   margin-top: 4px;
+}
+
+.schedule-date-wrap > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.schedule-empty-note {
+  color: var(--warning);
 }
 .price-tier-editor {
   display: grid;
@@ -195,6 +258,10 @@ function removeTier(index) {
 }
 
 @media (max-width: 600px) {
+  .price-schedule-toggle {
+    grid-template-columns: 1fr;
+  }
+
   .price-tier-rates {
     grid-template-columns: 1fr;
   }

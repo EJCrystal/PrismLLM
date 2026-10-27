@@ -14,6 +14,36 @@ import kotlin.coroutines.cancellation.CancellationException
 
 class RequestLogWriterTest {
     @Test
+    fun `writes version audit fields into recalculated request log`() = runBlocking {
+        val records = mutableListOf<RequestLogRecord>()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val writer = RequestLogWriter(
+                scope = scope,
+                insertRecord = { records += it },
+                resolvePrice = {
+                    ResolvedModelPrice(
+                        source = ModelPriceSource.MODEL_DEFAULT,
+                        modelId = "model",
+                        defaultPriceId = "default-price",
+                        priceVersion = 7,
+                        priceVersionId = "version-7",
+                        currency = "USD",
+                        inputPricePerMillion = java.math.BigDecimal.ONE,
+                        outputPricePerMillion = java.math.BigDecimal.ONE,
+                        cachedInputPricePerMillion = null,
+                    )
+                },
+            )
+            writer.submit(requestRecord("versioned"))
+            writer.closeAndDrain(5_000)
+            assertEquals(7, records.single().priceVersion)
+            assertEquals("version-7", records.single().priceVersionId)
+        } finally {
+            scope.cancel()
+        }
+    }
+    @Test
     fun `propagates cancellation from request log insert`() = runBlocking {
         val insertCalls = AtomicInteger()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

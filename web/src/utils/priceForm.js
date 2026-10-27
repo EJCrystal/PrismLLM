@@ -10,8 +10,8 @@ export function priceFormState(price) {
     currency: scheduled?.currency || price?.currency || 'USD',
     inputPricePerMillion: scheduled?.inputPricePerMillion ?? price?.inputPricePerMillion ?? '',
     outputPricePerMillion: scheduled?.outputPricePerMillion ?? price?.outputPricePerMillion ?? '',
-    cachedInputPricePerMillion: scheduled?.cachedInputPricePerMillion ?? price?.cachedInputPricePerMillion ?? '',
-    cachedInputWritePricePerMillion: scheduled?.cachedInputWritePricePerMillion ?? price?.cachedInputWritePricePerMillion ?? '',
+    cachedInputPricePerMillion: scheduled ? (scheduled.cachedInputPricePerMillion ?? '') : (price?.cachedInputPricePerMillion ?? ''),
+    cachedInputWritePricePerMillion: scheduled ? (scheduled.cachedInputWritePricePerMillion ?? '') : (price?.cachedInputWritePricePerMillion ?? ''),
     pricingMode: scheduled?.pricingMode || price?.pricingMode || 'token',
     perRequestPrice: scheduled?.perRequestPrice ?? price?.perRequestPrice ?? '',
     priceTiers: Array.isArray(scheduled?.priceTiers)

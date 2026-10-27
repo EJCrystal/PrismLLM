@@ -323,4 +323,23 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.ok(changedTime.effectiveAt > Date.now())
   })
 
+  it('计划未设置缓存价时不会继承当前价的缓存覆盖', () => {
+    const loaded = priceFormState({
+      currency: 'USD',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      cachedInputPricePerMillion: '0.5',
+      scheduledVersion: {
+        effectiveFrom: Date.now() + 3_600_000,
+        currency: 'USD',
+        inputPricePerMillion: '3',
+        outputPricePerMillion: '4',
+        cachedInputPricePerMillion: null,
+        pricingMode: 'token',
+      },
+    })
+    assert.equal(loaded.cachedInputPricePerMillion, '')
+    assert.equal(buildPricePayload(loaded, 'c', 'm').preserveSchedule, true)
+  })
+
 })
