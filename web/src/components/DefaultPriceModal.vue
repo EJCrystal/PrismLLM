@@ -59,7 +59,7 @@ watch(
   },
 )
 
-const modelOptions = computed(() => defaultPriceModelOptions(props.channels, props.prices))
+const modelOptions = computed(() => defaultPriceModelOptions(props.channels, props.prices, activePrice.value?.modelId))
 
 const filteredModelOptions = computed(() => {
   const query = form.modelId.trim().toLowerCase()
@@ -258,13 +258,15 @@ async function remove(price) {
           list="default-price-model-options"
           placeholder="例如 deepseek-v4.1-flash"
           autocomplete="off"
+          :disabled="Boolean(activePrice)"
         />
         <datalist id="default-price-model-options">
           <option v-for="model in filteredModelOptions" :key="model.id" :value="model.id">
             {{ model.channelNames.length ? `渠道：${model.channelNames.join('、')}` : '' }}
           </option>
         </datalist>
-        <small>默认价按模型 ID 生效；渠道覆盖价优先。模型 ID 通常是渠道配置的规范 ID，未配置时使用上游模型名。</small>
+        <small v-if="activePrice">已配置的默认单价不可修改模型 ID；如需更换模型请新增或删除后重新配置。</small>
+        <small v-else>默认价按模型 ID 生效；渠道覆盖价优先。模型 ID 通常是渠道配置的规范 ID，未配置时使用上游模型名。</small>
       </label>
 
       <label class="field">

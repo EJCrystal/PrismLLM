@@ -41,10 +41,10 @@ export function channelModelPricingId(channel, upstreamModel) {
 }
 
 /**
- * Build model-ID candidates for default pricing from channel mappings,
- * authorized models, and already configured default prices.
+ * Build model-ID candidates for default pricing from channel mappings and authorized models.
+ * Models that already have a default price configured are excluded unless matching currentModelId (when editing).
  */
-export function defaultPriceModelOptions(channels, prices) {
+export function defaultPriceModelOptions(channels, configuredPrices = [], currentModelId = null) {
   const entries = new Map()
   const add = (upstreamModel, canonicalModelId, channelName) => {
     const upstream = String(upstreamModel ?? '').trim()
@@ -69,10 +69,20 @@ export function defaultPriceModelOptions(channels, prices) {
       if (upstream && !mapped.has(upstream)) add(upstream, null, channel.name)
     }
   }
-  for (const price of Array.isArray(prices) ? prices : []) {
-    add(price?.modelId, null, null)
-  }
+
+  const configuredIds = new Set(
+    (Array.isArray(configuredPrices) ? configuredPrices : [])
+      .map((p) => String(p?.modelId ?? '').trim().toLowerCase())
+      .filter(Boolean),
+  )
+  const currentTrimmed = String(currentModelId ?? '').trim().toLowerCase()
+
   return [...entries.values()]
+    .filter((entry) => {
+      const id = entry.id.toLowerCase()
+      if (currentTrimmed && id === currentTrimmed) return true
+      return !configuredIds.has(id)
+    })
     .map((entry) => ({
       id: entry.id,
       upstreamModels: [...entry.upstreamModels].sort(),
