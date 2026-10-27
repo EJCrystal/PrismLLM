@@ -4,6 +4,7 @@ import {
   buildPricePrompt,
   channelDisplayName,
   channelModelChoiceMode,
+  channelModelOptionsForChannel,
   channelModelPriceOptions,
   channelModelPricingId,
   channelPriceSummaries,
@@ -17,6 +18,7 @@ import {
   resolveDisplayPriceSource,
   resolveSavedChannel,
   unpricedChannelModels,
+  shouldSelectInitialModel,
 } from '../src/utils/modelPrice.js'
 import { channelDisplayModels } from '../src/utils/channelDisplay.js'
 
@@ -438,5 +440,30 @@ describe('modelPrice: 渠道模型选择布局', () => {
     assert.equal(channelModelChoiceMode(null), 'manual')
     assert.equal(channelModelChoiceMode([{ id: 'm1' }]), 'single')
     assert.equal(channelModelChoiceMode([{ id: 'm1' }, { id: 'm2' }]), 'multiple')
+  })
+
+  it('保留渠道已授权但上游发现结果遗漏的模型', () => {
+    const channel = {
+      id: 'c1',
+      models: ['model-a', 'model-b'],
+      modelMappings: [
+        { upstreamModel: 'model-a', canonicalModelId: 'canonical-a' },
+        { upstreamModel: 'model-b', canonicalModelId: 'canonical-b' },
+      ],
+    }
+    const options = channelModelOptionsForChannel(channel, [
+      { id: 'model-a', authorized: true, ownedBy: 'provider-a' },
+    ])
+    assert.deepEqual(options.map((model) => model.id), ['model-a', 'model-b'])
+    assert.equal(options[1].canonicalModelId, 'canonical-b')
+    assert.equal(options[1].authorized, true)
+  })
+
+  it('主动输入的模型不会被异步加载结果覆盖', () => {
+    const models = [{ id: 'model-a' }]
+    assert.equal(shouldSelectInitialModel(models, '', false), true)
+    assert.equal(shouldSelectInitialModel(models, 'typed-model', false), true)
+    assert.equal(shouldSelectInitialModel(models, 'typed-model', true), false)
+    assert.equal(shouldSelectInitialModel(models, 'model-a', false), false)
   })
 })

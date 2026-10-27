@@ -6,23 +6,24 @@ import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamMode
 import {
   channelDisplayName,
   channelModelChoiceMode,
+  channelModelOptionsForChannel,
   channelModelPriceOptions,
-  findModelPrice,
   isSamePriceTarget,
   pricesForChannel,
+  shouldSelectInitialModel,
 } from '../utils/modelPrice'
 import {
   applyPriceToForm,
   buildBatchPricePayload,
   buildPricePayload,
   existingPricePayload,
-  emptyPriceDraft,
   hasPriceDraft,
   hasActivePriceDraft,
   priceFormError,
   priceFormState,
   resetPriceForm,
 } from '../utils/priceForm'
+import { clearedVersionHistoryState, resolveModelSelectionTarget } from '../utils/modelSelection'
 import { formatPriceSummary, formatTime, formatUnitPrice } from '../utils/format'
 import Modal from './Modal.vue'
 import PriceFields from './PriceFields.vue'
@@ -53,6 +54,7 @@ let modelsRequestId = 0
 let referenceRequestId = 0
 let versionRequestId = 0
 let cancellationRequestId = 0
+let manuallyEnteredModel = false
 
 const initialPrice = priceFormState(props.price)
 const form = reactive({
@@ -86,8 +88,13 @@ function cancelReferenceLookup() {
 }
 
 const channelPrices = computed(() => pricesForChannel(props.prices, form.channelId))
-const channelModelOptions = computed(() => channelModelPriceOptions(
+const selectedChannel = computed(() => props.channels.find((channel) => channel.id === form.channelId) || null)
+const availableChannelModels = computed(() => channelModelOptionsForChannel(
+  selectedChannel.value,
   channelModels.value,
+))
+const channelModelOptions = computed(() => channelModelPriceOptions(
+  availableChannelModels.value,
   props.prices,
   form.channelId,
   props.defaultPrices,
@@ -151,10 +158,7 @@ watch(
 watch(
   channelModelOptions,
   (models) => {
-    if (models.length === 0) return
-    const current = form.upstreamModel.trim()
-    const currentExists = models.some((model) => String(model.id).trim() === current)
-    if (!currentExists && (models.length === 1 || !current)) {
+    if (shouldSelectInitialModel(models, form.upstreamModel, manuallyEnteredModel)) {
       selectChannelModel(models[0])
     }
   },
@@ -172,7 +176,8 @@ watch(
   () => [form.channelId, form.upstreamModel, props.prices],
   ([channelId, upstreamModel], previous) => {
     const targetChanged = !previous || previous[0] !== channelId || previous[1] !== upstreamModel
-    const existingPrice = findModelPrice(props.prices, channelId, upstreamModel.trim())
+    const target = resolveModelSelectionTarget(channelId, upstreamModel, props.prices)
+    const existingPrice = target.price
     if (existingPrice) {
       if (
         activePrice.value?.id !== existingPrice.id &&
@@ -184,37 +189,40 @@ watch(
     }
     if (activePrice.value || targetChanged) {
       activePrice.value = null
-      Object.assign(form, emptyPriceDraft())
+      Object.assign(form, target.draft)
     }
   },
   { immediate: true },
 )
 
+function clearVersionHistory() {
+  const historyState = clearedVersionHistoryState()
+  if (historyState.invalidateRequest) versionRequestId += 1
+  showVersions.value = historyState.showVersions
+  loadingVersions.value = historyState.loadingVersions
+  versionHistory.value = historyState.versionHistory
+}
+
 function selectChannelModel(model) {
   cancelReferenceLookup()
-  versionRequestId += 1
-  showVersions.value = false
-  loadingVersions.value = false
-  versionHistory.value = []
+  clearVersionHistory()
+  manuallyEnteredModel = false
   form.upstreamModel = model.id
 }
 
 function editPrice(price) {
   cancelReferenceLookup()
-  versionRequestId += 1
   activePrice.value = price
-  showVersions.value = false
-  versionHistory.value = []
+  clearVersionHistory()
   applyPriceToForm(form, price)
 }
 
 function startNewPrice() {
   cancelReferenceLookup()
-  versionRequestId += 1
   activePrice.value = null
-  showVersions.value = false
-  versionHistory.value = []
+  clearVersionHistory()
   resetPriceForm(form)
+  manuallyEnteredModel = false
   if (modelChoiceMode.value === 'single') {
     selectChannelModel(channelModelOptions.value[0])
   }
@@ -492,15 +500,14 @@ async function applyBatch() {
               {{ priceSourceLabel(channelModelOptions[0]) }}
             </span>
           </div>
-          <div v-else class="model-switcher" role="tablist" aria-label="选择要配置的上游模型">
+          <div v-else class="model-switcher" role="group" aria-label="选择要配置的上游模型">
             <button
               v-for="model in channelModelOptions"
               :key="model.id"
               type="button"
               class="model-switch-option"
               :class="{ active: form.upstreamModel.trim() === model.id }"
-              role="tab"
-              :aria-selected="form.upstreamModel.trim() === model.id"
+              :aria-pressed="form.upstreamModel.trim() === model.id"
               @click="selectChannelModel(model)"
             >
               <span class="model-option-copy">
@@ -525,6 +532,7 @@ async function applyBatch() {
             v-model="form.upstreamModel"
             placeholder="输入模型名"
             autocomplete="off"
+            @input="manuallyEnteredModel = true"
           />
           <button type="button" class="button subtle mini" :disabled="fetchingReference || !form.upstreamModel.trim()" @click="fetchReferencePrice">
             {{ fetchingReference ? '查询中…' : '获取参考单价' }}
