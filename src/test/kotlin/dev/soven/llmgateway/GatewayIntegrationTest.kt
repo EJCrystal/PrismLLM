@@ -3008,6 +3008,50 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `concurrent default price updates map unique conflicts to 409`() = runBlocking {
+        suspend fun createDefaultPrice(modelId: String) = checkNotNull(
+            app.modelDefaultPriceRepository.create(
+                modelId = modelId,
+                currency = "USD",
+                inputPricePerMillion = BigDecimal.ONE,
+                outputPricePerMillion = BigDecimal.ONE,
+                cachedInputPricePerMillion = null,
+            ),
+        )
+
+        val first = createDefaultPrice("race-first")
+        val second = createDefaultPrice("race-second")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val ready = AtomicInteger(0)
+            val responses = coroutineScope {
+                listOf(first.id, second.id).map { id ->
+                    async(Dispatchers.Default) {
+                        ready.incrementAndGet()
+                        val deadline = System.nanoTime() + 5_000_000_000L
+                        while (ready.get() < 2 && System.nanoTime() < deadline) yield()
+                        client.put("/admin/api/model-default-prices/$id") {
+                            header(HttpHeaders.Cookie, sessionCookie)
+                            header("X-CSRF-Token", csrf)
+                            contentType(ContentType.Application.Json)
+                            setBody(
+                                """{"modelId":"race-target","currency":"USD","inputPricePerMillion":"2","outputPricePerMillion":"3"}""",
+                            )
+                        }
+                    }
+                }.map { it.await() }
+            }
+
+            assertEquals(1, responses.count { it.status == HttpStatusCode.OK })
+            assertEquals(1, responses.count { it.status == HttpStatusCode.Conflict })
+            assertEquals(1, app.modelDefaultPriceRepository.list().count { it.modelId == "race-target" })
+        }
+    }
+
+    @Test
     fun `records request cost with per_request pricing and skips failed request`() = runBlocking {
         val okChannel = createChannel("ok-channel", "ok")
         val failChannel = createChannel("fail-channel", "500")

@@ -29,7 +29,6 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.route
-import org.jetbrains.exposed.v1.exceptions.ExposedSQLException
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.nio.file.Path
@@ -582,10 +581,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val request = call.receive<ModelDefaultPriceRequest>()
             val price = validateDefaultModelPrice(request)
             app.modelDefaultPriceRepository.findById(id) ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
-            val duplicate = app.modelDefaultPriceRepository.find(price.modelId)
-            if (duplicate != null && duplicate.id != id) {
-                throw conflict("model_default_price_exists", "该模型的默认单价已存在")
-            }
             val updated = try {
                 app.modelDefaultPriceRepository.update(
                     id = id,
@@ -599,7 +594,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     perRequestPrice = price.values.perRequest,
                     priceTiers = price.values.priceTiers,
                 )
-            } catch (cause: Throwable) {
+            } catch (cause: Exception) {
                 if (isUniqueViolation(cause)) {
                     throw conflict("model_default_price_exists", "该模型的默认单价已存在")
                 }

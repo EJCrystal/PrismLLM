@@ -7,6 +7,8 @@ import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.domain.RequestLogRecord
 import java.math.BigDecimal
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -119,6 +121,29 @@ class BillingCalculatorTest {
 
         assertEquals(BigDecimal("0.00009000"), cost?.amount)
         assertEquals(BigDecimal("1"), cost?.cachedInputWritePricePerMillion)
+    }
+
+    @Test
+    fun `anthropic cache read and write usage is billed exactly once`() {
+        val usage = UsageParser.fromAnthropicJson(
+            Json.parseToJsonElement(
+                """{"type":"message","usage":{"input_tokens":10,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4}}""",
+            ).jsonObject,
+        )!!
+
+        val cost = BillingCalculator.calculate(
+            record(
+                input = usage.input,
+                output = usage.output,
+                cached = usage.cached,
+                cachedWrite = usage.cacheWrite,
+            ),
+            price(input = "2", output = "0", cached = "0.5", cachedWrite = "1.25"),
+        )
+
+        // 10 uncached + 3 cache-read + 2 cache-write tokens: 20 + 1.5 + 2.5 = 24 / million.
+        assertEquals(15L, usage.input)
+        assertEquals(BigDecimal("0.00002400"), cost?.amount)
     }
 
     @Test
