@@ -101,13 +101,11 @@ API 已有 Bearer 鉴权，关掉机器人挑战不影响安全性；管理面�
 
 ## 用法
 
-- PR 创建、重新打开、标记 ready 时自动审查，草稿 PR 跳过
-- 后续 push 默认不重复审查，节省 token
+- PR 创建、重新打开、标记 ready，以及后续每次 push 都会自动审查；草稿 PR 跳过
+- push 会触发新的审查并消耗 token，审查使用 PR 当前分支中的最新配置
 - PR 顶层评论里可用 `/review`、`/describe`、`/improve`、`/ask 这里的取消为什么会丢`
 - 代码行内评论可用 `/ask 这条修复是否合理`；PR-Agent 会结合该行、线程和 PR diff 回复
 - 行内 `/ask` 只接受仓库 `OWNER`、`MEMBER`、`COLLABORATOR` 的评论，普通回复不会自动触发
-
-需要每次 push 都自动审查时，把工作流的 `on.pull_request.types` 加上 `synchronize`，并把 `GITHUB_ACTION_CONFIG__PR_ACTIONS` 也加上 `synchronize`。
 
 ## 成本
 

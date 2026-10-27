@@ -161,3 +161,55 @@ export function formatPriceSummary(price, fallback = '—') {
   const output = formatUnitPrice(price.outputPricePerMillion)
   return `输入 ${input} · 输出 ${output} · ${currency} / 1M`
 }
+
+/**
+ * 格式化日志保存的完整计费单价快照，包含缓存单价和各阶梯边界。
+ *
+ * @param {object|null} price 单价快照或请求日志
+ * @returns {{label: string, value: string}[]}
+ */
+export function formatPriceSnapshot(price) {
+  if (!price) return []
+  const currency = price.currency || price.costCurrency || 'USD'
+  const unit = (value) => `${formatUnitPrice(value)} ${currency} / 1M`
+  const cachedUnit = (value, input) => value == null
+    ? `沿用输入价（${unit(input)}）`
+    : unit(value)
+
+  if (price.pricingMode === 'per_request') {
+    return [{ label: '每次请求', value: `${formatUnitPrice(price.perRequestPrice)} ${currency}` }]
+  }
+
+  if (price.pricingMode === 'tiered' || price.pricingMode === 'volume') {
+    const tiers = Array.isArray(price.priceTiers) ? price.priceTiers : []
+    return tiers.map((tier, index) => {
+      const previousLimit = index > 0 ? tiers[index - 1]?.upToTokens : null
+      const limit = tier.upToTokens
+      let range
+      if (limit == null) {
+        range = previousLimit == null ? '无上限' : `≥ ${formatNumber(Number(previousLimit) + 1)} tokens`
+      } else if (previousLimit == null) {
+        range = `≤ ${formatNumber(limit)} tokens`
+      } else {
+        range = `${formatNumber(Number(previousLimit) + 1)}–${formatNumber(limit)} tokens`
+      }
+      const rates = [
+        `输入 ${formatUnitPrice(tier.inputPricePerMillion)}`,
+        `输出 ${formatUnitPrice(tier.outputPricePerMillion)}`,
+        `缓存读 ${cachedUnit(tier.cachedInputPricePerMillion, tier.inputPricePerMillion)}`,
+        `缓存写 ${cachedUnit(tier.cachedInputWritePricePerMillion, tier.inputPricePerMillion)}`,
+      ]
+      return {
+        label: `第 ${index + 1} 档 · ${range}`,
+        value: `${rates.join(' · ')} · ${currency} / 1M`,
+      }
+    })
+  }
+
+  return [
+    { label: '输入单价', value: unit(price.inputPricePerMillion) },
+    { label: '输出单价', value: unit(price.outputPricePerMillion) },
+    { label: '缓存读单价', value: cachedUnit(price.cachedInputPricePerMillion, price.inputPricePerMillion) },
+    { label: '缓存写单价', value: cachedUnit(price.cachedInputWritePricePerMillion, price.inputPricePerMillion) },
+  ]
+}

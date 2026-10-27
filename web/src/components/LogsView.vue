@@ -18,6 +18,7 @@ import {
   formatCost as formatCostUtil,
   formatUnitPrice,
   formatPriceSummary,
+  formatPriceSnapshot,
 } from '../utils/format'
 
 const { items: logs, pageSize, loading, loadingMore, error, hasMore, load, loadMore, setPageSize } = createCursorPager({
@@ -464,11 +465,14 @@ onMounted(load)
                 </strong>
                 <strong v-else>{{ selected.usageKnown ? '未配置' : '—' }}</strong>
               </div>
-              <div v-if="selected.costAmount != null" class="detail-item">
-                <span>{{ selected.pricingMode === 'per_request' ? '按次费用' : (selected.pricingMode === 'tiered' || selected.pricingMode === 'volume' ? '计费规则' : '计费单价 / 1M') }}</span>
-                <strong class="detail-wrap">
-                  {{ formatPriceSummary(selected) }}
-                </strong>
+              <div v-if="selected.costAmount != null" class="detail-block detail-price-snapshot">
+                <span>计费单价快照 · {{ formatPriceSummary(selected) }}</span>
+                <dl class="detail-price-list">
+                  <div v-for="item in formatPriceSnapshot(selected)" :key="item.label" class="detail-price-row">
+                    <dt>{{ item.label }}</dt>
+                    <dd>{{ item.value }}</dd>
+                  </div>
+                </dl>
               </div>
             </div>
 

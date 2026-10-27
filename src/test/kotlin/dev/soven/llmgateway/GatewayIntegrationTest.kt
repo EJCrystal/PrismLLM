@@ -1607,6 +1607,35 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin batch rejects more than 200 raw model entries before normalization`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+
+        testApplication {
+            application { app.install(this) }
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val oversizedLists = listOf(
+                List(201) { "duplicate-model" },
+                List(201) { "" },
+            )
+
+            for (models in oversizedLists) {
+                val serializedModels = models.joinToString(",") { model -> "\"$model\"" }
+                val response = client.post("/admin/api/model-prices/batch") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        """{"channelId":"${channel.id}","upstreamModels":[$serializedModels],"inputPricePerMillion":"1","outputPricePerMillion":"2"}""",
+                    )
+                }
+
+                assertEquals(HttpStatusCode.BadRequest, response.status)
+                assertTrue(response.bodyAsText().contains("invalid_model_price"))
+            }
+        }
+    }
+
+    @Test
     fun `rejects next request after daily token limit is consumed`() = runBlocking {
         val channel = createChannel("openai", "ok")
         createAlias("fast-chat", channel to "gpt-4o-mini")
