@@ -99,7 +99,7 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(form.cachedInputPricePerMillion, '1')
   })
 
-  it('新增单价时清空模型与金额并恢复 USD', () => {
+  it('新增单价时清空模型与金额并恢复 USD，但保留绑定的 channelId', () => {
     const form = {
       channelId: 'c1',
       upstreamModel: 'deepseek-v4.1-flash',
@@ -109,6 +109,7 @@ describe('priceForm: 计费单价的币种与金额', () => {
       cachedInputPricePerMillion: '1',
     }
     resetPriceForm(form)
+    assert.equal(form.channelId, 'c1', '渠道 ID 必须保持锁定')
     assert.equal(form.upstreamModel, '')
     assert.equal(form.currency, 'USD')
     assert.equal(form.inputPricePerMillion, '')

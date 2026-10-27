@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
-import { channelModelPriceOptions, findModelPrice, isSamePriceTarget, pricesForChannel } from '../utils/modelPrice'
+import { channelDisplayName, channelModelPriceOptions, findModelPrice, isSamePriceTarget, pricesForChannel } from '../utils/modelPrice'
 import {
   applyPriceToForm,
   buildBatchPricePayload,
@@ -52,6 +52,8 @@ const form = reactive({
   upstreamModel: props.price?.upstreamModel || props.initialTarget?.modelId || '',
   ...initialPrice,
 })
+
+const currentChannelName = computed(() => channelDisplayName(props.channels, form.channelId))
 
 function referenceDraftKey() {
   return [
@@ -186,14 +188,6 @@ function selectChannelModel(model) {
   cancelReferenceLookup()
   form.upstreamModel = model.id
   modelPickerOpen.value = false
-}
-
-function onChannelChange() {
-  cancelReferenceLookup()
-  versionRequestId += 1
-  loadingVersions.value = false
-  activePrice.value = null
-  resetPriceForm(form)
 }
 
 function editPrice(price) {
@@ -427,11 +421,7 @@ async function applyBatch() {
     <form class="form-grid" @submit.prevent="save">
       <label class="field">
         <span>渠道</span>
-        <select v-model="form.channelId" @change="onChannelChange">
-          <option v-for="channel in channels" :key="channel.id" :value="channel.id">
-            {{ channel.name }}
-          </option>
-        </select>
+        <input type="text" :value="currentChannelName" readonly disabled aria-label="渠道" />
         <small>渠道覆盖价按「渠道 + 上游模型」配置，优先于模型默认价；未配置时自动继承默认价。</small>
       </label>
       <div class="price-configured">
