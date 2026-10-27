@@ -268,7 +268,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 - **模型默认价**：按对外模型 ID 配置，渠道没有覆盖价时自动继承；接口为 `GET/POST /admin/api/model-default-prices`、`PUT/DELETE /admin/api/model-default-prices/{id}`。
 - **批量套用**：在同一渠道内为多个上游模型一次写入相同单价；接口为 `POST /admin/api/model-prices/batch`。
 
-模型默认价的模型 ID 优先使用渠道配置的规范 ID（canonical model ID），未配置时回退到上游模型名；这样同一对外模型跨渠道只需要维护一份默认价。
+模型默认价的模型 ID 优先使用渠道配置的规范 ID（canonical model ID），未配置时回退到上游模型名；规范 ID 没有对应默认价时也会再尝试上游模型名。这样同一对外模型跨渠道只需要维护一份默认价。
 
 “获取参考单价”返回的原始价格为 USD。切换到 CNY 或 EUR 时，管理面始终以保留的 USD 原值为基准换算，并在连续切换币种时显示 `1 USD = …` 的参考汇率、日期和来源；手动修改价格后，后续切换改为按当前币种换算。汇率缓存 6 小时，获取失败时会恢复原币种而不是保留错误数值。
 

@@ -41,6 +41,47 @@ export function channelModelPricingId(channel, upstreamModel) {
 }
 
 /**
+ * Build model-ID candidates for default pricing from channel mappings,
+ * authorized models, and already configured default prices.
+ */
+export function defaultPriceModelOptions(channels, prices) {
+  const entries = new Map()
+  const add = (upstreamModel, canonicalModelId, channelName) => {
+    const upstream = String(upstreamModel ?? '').trim()
+    const canonical = String(canonicalModelId ?? '').trim()
+    const modelId = canonical || upstream
+    if (!modelId) return
+    const entry = entries.get(modelId) || { id: modelId, upstreamModels: new Set(), channelNames: new Set() }
+    if (upstream) entry.upstreamModels.add(upstream)
+    if (channelName) entry.channelNames.add(channelName)
+    entries.set(modelId, entry)
+  }
+  for (const channel of Array.isArray(channels) ? channels : []) {
+    if (!channel) continue
+    const mapped = new Set()
+    for (const mapping of Array.isArray(channel.modelMappings) ? channel.modelMappings : []) {
+      const upstream = String(mapping?.upstreamModel ?? '').trim()
+      mapped.add(upstream)
+      add(upstream, mapping?.canonicalModelId, channel.name)
+    }
+    for (const model of Array.isArray(channel.models) ? channel.models : []) {
+      const upstream = String(model ?? '').trim()
+      if (upstream && !mapped.has(upstream)) add(upstream, null, channel.name)
+    }
+  }
+  for (const price of Array.isArray(prices) ? prices : []) {
+    add(price?.modelId, null, null)
+  }
+  return [...entries.values()]
+    .map((entry) => ({
+      id: entry.id,
+      upstreamModels: [...entry.upstreamModels].sort(),
+      channelNames: [...entry.channelNames].sort(),
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id))
+}
+
+/**
  * Resolve the effective price and its source for one channel model.
  * Channel overrides win over model defaults.
  */

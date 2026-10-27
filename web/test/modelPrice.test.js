@@ -5,6 +5,7 @@ import {
   channelModelPriceOptions,
   channelModelPricingId,
   channelPriceSummaries,
+  defaultPriceModelOptions,
   findDefaultModelPrice,
   findDefaultPriceForModel,
   findModelPrice,
@@ -287,6 +288,28 @@ describe('modelPrice: 模型默认价与渠道覆盖', () => {
     const options = channelModelPriceOptions(models, [], 'channel-a', upstreamDefaults)
     assert.equal(options[0].defaultPrice, upstreamDefaults[0])
     assert.equal(findDefaultPriceForModel(upstreamDefaults, 'deepseek-v4.1-flash', 'deepseek-flash'), upstreamDefaults[0])
+  })
+
+  it('默认价候选同时收集映射、授权模型和已有默认价', () => {
+    const channels = [
+      {
+        id: 'c1',
+        name: '渠道一',
+        models: ['mapped-model', 'plain-model', '  '],
+        modelMappings: [{ upstreamModel: 'mapped-model', canonicalModelId: 'mapped-canonical' }],
+      },
+      null,
+    ]
+    const prices = [{ id: 'd1', modelId: ' legacy-model ' }]
+    const options = defaultPriceModelOptions(channels, prices)
+    assert.deepEqual(options.map((option) => option.id), ['legacy-model', 'mapped-canonical', 'plain-model'])
+    assert.deepEqual(options[1].upstreamModels, ['mapped-model'])
+    assert.deepEqual(options[1].channelNames, ['渠道一'])
+  })
+
+  it('默认价候选对异常输入安全返回', () => {
+    assert.deepEqual(defaultPriceModelOptions(null, null), [])
+    assert.deepEqual(defaultPriceModelOptions([{ id: 'c1' }], []), [])
   })
 })
 

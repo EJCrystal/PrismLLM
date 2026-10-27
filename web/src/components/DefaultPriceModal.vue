@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { formatUnitPrice } from '../utils/format'
+import { defaultPriceModelOptions } from '../utils/modelPrice'
 import {
   buildDefaultPricePayload,
   defaultPriceFormState,
@@ -50,33 +51,7 @@ watch(
   },
 )
 
-const modelOptions = computed(() => {
-  const entries = new Map()
-  for (const channel of Array.isArray(props.channels) ? props.channels : []) {
-    for (const mapping of channel.modelMappings || []) {
-      const upstreamModel = String(mapping.upstreamModel ?? '').trim()
-      const modelId = String(mapping.canonicalModelId ?? '').trim() || upstreamModel
-      if (!modelId) continue
-      const entry = entries.get(modelId) || { id: modelId, upstreamModels: new Set(), channelNames: new Set() }
-      if (upstreamModel) entry.upstreamModels.add(upstreamModel)
-      if (channel.name) entry.channelNames.add(channel.name)
-      entries.set(modelId, entry)
-    }
-  }
-  for (const price of Array.isArray(props.prices) ? props.prices : []) {
-    const modelId = String(price?.modelId ?? '').trim()
-    if (modelId && !entries.has(modelId)) {
-      entries.set(modelId, { id: modelId, upstreamModels: new Set(), channelNames: new Set() })
-    }
-  }
-  return [...entries.values()]
-    .map((entry) => ({
-      id: entry.id,
-      upstreamModels: [...entry.upstreamModels].sort(),
-      channelNames: [...entry.channelNames].sort(),
-    }))
-    .sort((left, right) => left.id.localeCompare(right.id))
-})
+const modelOptions = computed(() => defaultPriceModelOptions(props.channels, props.prices))
 
 const filteredModelOptions = computed(() => {
   const query = form.modelId.trim().toLowerCase()
