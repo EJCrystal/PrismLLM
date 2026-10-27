@@ -2505,7 +2505,7 @@ class GatewayIntegrationTest {
                         "insert into model_aliases (id, alias, enabled, created_at, updated_at) values ('migration-alias', 'migration-alias', true, 1, 1)",
                     )
                     statement.execute(
-                        "insert into alias_candidates (id, alias_id, channel_id, upstream_model, position) values ('migration-candidate', 'migration-alias', 'migration-channel', 'duplicate-model', 0)",
+                        "insert into alias_candidates (id, alias_id, channel_id, upstream_model, position) values ('migration-candidate', 'migration-alias', 'migration-channel', 'duplicate-model ', 0)",
                     )
                     statement.execute(
                         """
@@ -2569,6 +2569,12 @@ class GatewayIntegrationTest {
                     statement.executeQuery("select count(*) from channel_models").use { result ->
                         assertTrue(result.next())
                         assertEquals(1, result.getInt(1))
+                    }
+                    statement.executeQuery(
+                        "select upstream_model from alias_candidates where id = 'migration-candidate'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals("duplicate-model", result.getString(1), "V24 应同步归一化历史别名候选")
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())

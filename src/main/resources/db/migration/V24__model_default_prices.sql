@@ -11,6 +11,9 @@ where c.channel_id = d.channel_id
 update channel_models
 set upstream_model = btrim(upstream_model);
 
+update alias_candidates
+set upstream_model = btrim(upstream_model);
+
 delete from model_prices p
 using model_prices q
 where p.channel_id = q.channel_id
