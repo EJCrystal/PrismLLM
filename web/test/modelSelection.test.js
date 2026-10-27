@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   clearedVersionHistoryState,
+  modelSelectionAction,
   resolveModelSelectionTarget,
 } from '../src/utils/modelSelection.js'
 
@@ -41,5 +42,11 @@ describe('modelSelection: 渠道模型切换', () => {
       loadingVersions: false,
       versionHistory: [],
     })
+  })
+
+  it('同一模型的价格列表暂时刷新时保留正在编辑的草稿', () => {
+    assert.equal(modelSelectionAction(null, { id: 'price-a' }, false), 'preserve')
+    assert.equal(modelSelectionAction(null, { id: 'price-a' }, true), 'clear')
+    assert.equal(modelSelectionAction({ id: 'price-b' }, { id: 'price-a' }, true), 'load')
   })
 })

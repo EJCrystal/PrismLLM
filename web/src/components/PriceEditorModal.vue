@@ -8,7 +8,6 @@ import {
   channelModelChoiceMode,
   channelModelOptionsForChannel,
   channelModelPriceOptions,
-  isSamePriceTarget,
   pricesForChannel,
   shouldSelectInitialModel,
 } from '../utils/modelPrice'
@@ -23,7 +22,11 @@ import {
   priceFormState,
   resetPriceForm,
 } from '../utils/priceForm'
-import { clearedVersionHistoryState, resolveModelSelectionTarget } from '../utils/modelSelection'
+import {
+  clearedVersionHistoryState,
+  modelSelectionAction,
+  resolveModelSelectionTarget,
+} from '../utils/modelSelection'
 import { formatPriceSummary, formatTime, formatUnitPrice } from '../utils/format'
 import Modal from './Modal.vue'
 import PriceFields from './PriceFields.vue'
@@ -178,16 +181,10 @@ watch(
     const targetChanged = !previous || previous[0] !== channelId || previous[1] !== upstreamModel
     const target = resolveModelSelectionTarget(channelId, upstreamModel, props.prices)
     const existingPrice = target.price
-    if (existingPrice) {
-      if (
-        activePrice.value?.id !== existingPrice.id &&
-        !isSamePriceTarget(activePrice.value, channelId, upstreamModel)
-      ) {
-        applyExistingPrice(existingPrice)
-      }
-      return
-    }
-    if (activePrice.value || targetChanged) {
+    const action = modelSelectionAction(existingPrice, activePrice.value, targetChanged)
+    if (action === 'load' && existingPrice) {
+      applyExistingPrice(existingPrice)
+    } else if (action === 'clear') {
       activePrice.value = null
       Object.assign(form, target.draft)
     }

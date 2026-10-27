@@ -21,3 +21,10 @@ export function clearedVersionHistoryState() {
     versionHistory: [],
   }
 }
+
+/** Decide whether a model watcher should load, clear, or preserve the draft. */
+export function modelSelectionAction(existingPrice, activePrice, targetChanged) {
+  if (existingPrice && activePrice?.id !== existingPrice.id) return 'load'
+  if (!existingPrice && targetChanged) return 'clear'
+  return 'preserve'
+}
