@@ -1507,6 +1507,106 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `records request cost from model default price when channel has no override`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        createAlias("default-priced-chat", channel to "gpt-4o-mini")
+        createDefaultPrice("gpt-4o-mini", input = "3", output = "4")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"default-priced-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog()
+            assertEquals(0, log.costAmount?.compareTo(BigDecimal("0.000042")))
+            assertEquals("USD", log.costCurrency)
+            assertEquals(0, log.inputPricePerMillion?.compareTo(BigDecimal("3")))
+            assertEquals(0, log.outputPricePerMillion?.compareTo(BigDecimal("4")))
+        }
+    }
+
+    @Test
+    fun `channel price overrides model default price`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        createAlias("override-priced-chat", channel to "gpt-4o-mini")
+        createDefaultPrice("gpt-4o-mini", input = "3", output = "4")
+        createPrice(channel, "gpt-4o-mini", input = "1", output = "2")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"override-priced-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog()
+            assertEquals(0, log.costAmount?.compareTo(BigDecimal("0.000016")))
+            assertEquals(0, log.inputPricePerMillion?.compareTo(BigDecimal("1")))
+            assertEquals(0, log.outputPricePerMillion?.compareTo(BigDecimal("2")))
+        }
+    }
+
+    @Test
+    fun `falls back to upstream model default when canonical default is missing`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            "openai-canonical",
+            "${fake.baseUrl}/ok/v1",
+            modelMappings = listOf(ChannelModelRecord("gpt-4o-mini", "gpt-4o-mini-canonical")),
+        )
+        createAlias("fallback-priced-chat", channel to "gpt-4o-mini")
+        createDefaultPrice("gpt-4o-mini", input = "1", output = "2")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fallback-priced-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog()
+            assertEquals(0, log.costAmount?.compareTo(BigDecimal("0.000016")))
+            assertEquals(0, log.inputPricePerMillion?.compareTo(BigDecimal("1")))
+        }
+    }
+
+    @Test
+    fun `admin batch upserts model prices for multiple upstream models`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        createPrice(channel, "gpt-4o-mini", input = "9", output = "9")
+
+        testApplication {
+            application { app.install(this) }
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.post("/admin/api/model-prices/batch") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"channelId":"${channel.id}","upstreamModels":["gpt-4o-mini","deepseek-chat"],"currency":"CNY","inputPricePerMillion":"7","outputPricePerMillion":"14"}""",
+                )
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val prices = app.modelPriceRepository.list().filter { it.channelId == channel.id }
+            assertEquals(2, prices.size)
+            assertTrue(prices.all { it.currency == "CNY" })
+            assertTrue(prices.all { it.inputPricePerMillion.compareTo(BigDecimal("7")) == 0 })
+            assertTrue(prices.all { it.outputPricePerMillion.compareTo(BigDecimal("14")) == 0 })
+        }
+    }
+
+    @Test
     fun `rejects next request after daily token limit is consumed`() = runBlocking {
         val channel = createChannel("openai", "ok")
         createAlias("fast-chat", channel to "gpt-4o-mini")
@@ -1546,6 +1646,30 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
                 setBody("""{"model":"fast-chat","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            val rejected = send()
+            assertEquals(HttpStatusCode.TooManyRequests, rejected.status)
+            assertTrue(rejected.bodyAsText().contains("daily_cost_quota_exceeded"))
+        }
+    }
+
+    @Test
+    fun `daily cost limit uses model default price when channel has no override`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        createAlias("default-cost-chat", channel to "gpt-4o-mini")
+        createDefaultPrice("gpt-4o-mini", input = "1", output = "2")
+        val key = createClientKey(
+            ClientKeyQuotaLimits(dailyCosts = mapOf("USD" to BigDecimal("0.000016"))),
+        )
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"default-cost-chat","messages":[]}""")
             }
 
             assertEquals(HttpStatusCode.OK, send().status)
@@ -2381,12 +2505,18 @@ class GatewayIntegrationTest {
                         "insert into model_aliases (id, alias, enabled, created_at, updated_at) values ('migration-alias', 'migration-alias', true, 1, 1)",
                     )
                     statement.execute(
-                        "insert into alias_candidates (id, alias_id, channel_id, upstream_model, position) values ('migration-candidate', 'migration-alias', 'migration-channel', 'duplicate-model', 0)",
+                        "insert into alias_candidates (id, alias_id, channel_id, upstream_model, position) values ('migration-candidate', 'migration-alias', 'migration-channel', 'duplicate-model ', 0)",
                     )
                     statement.execute(
                         """
                         insert into model_prices (id, channel_id, upstream_model, currency, input_price_per_million, output_price_per_million, cached_input_price_per_million, created_at, updated_at)
                         values ('migration-price', 'migration-channel', 'duplicate-model', 'USD', 1, 2, null, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into model_prices (id, channel_id, upstream_model, currency, input_price_per_million, output_price_per_million, cached_input_price_per_million, created_at, updated_at)
+                        values ('migration-price-old', 'migration-channel', 'duplicate-model ', 'USD', 9, 9, null, 1, 0)
                         """.trimIndent(),
                     )
                     statement.execute(
@@ -2440,9 +2570,41 @@ class GatewayIntegrationTest {
                         assertTrue(result.next())
                         assertEquals(1, result.getInt(1))
                     }
+                    statement.executeQuery(
+                        "select upstream_model from alias_candidates where id = 'migration-candidate'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals("duplicate-model", result.getString(1), "V24 应同步归一化历史别名候选")
+                    }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("23", result.getString(1))
+                        assertEquals("25", result.getString(1))
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'model_prices' and column_name = 'cached_input_write_price_per_million'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V25 应为 model_prices 增加 cached_input_write_price_per_million 列")
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'model_default_prices' and column_name = 'pricing_mode'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V25 应为 model_default_prices 增加 pricing_mode 列")
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'request_logs' and column_name = 'cached_write_tokens'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V25 应为 request_logs 增加 cached_write_tokens 列")
+                    }
+                    statement.executeQuery(
+                        "select upstream_model, input_price_per_million from model_prices where channel_id = 'migration-channel'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals("duplicate-model", result.getString(1), "V24 应清理 trim 后重复的价格并保留最近更新的一条")
+                        assertEquals(0, result.getBigDecimal(2).compareTo(BigDecimal("1")))
+                        assertFalse(result.next(), "同一渠道 trim 后只应保留一条价格")
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.columns where table_name = 'client_keys' and column_name = 'requests_per_minute'",
@@ -2743,6 +2905,311 @@ class GatewayIntegrationTest {
             assertEquals("1.1", json["outputPricePerMillion"]?.jsonPrimitive?.content)
             assertEquals("0.07", json["cachedInputPricePerMillion"]?.jsonPrimitive?.content)
             assertEquals("官方基准价", json["source"]?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun `admin manages model default prices`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            val created = client.post("/admin/api/model-default-prices") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"deepseek-v4.1-flash","currency":"CNY","inputPricePerMillion":"7","outputPricePerMillion":"14","cachedInputPricePerMillion":"1"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.Created, created.status)
+            val createdJson = Json.parseToJsonElement(created.bodyAsText()).jsonObject
+            val id = createdJson["id"]!!.jsonPrimitive.content
+            assertEquals("CNY", createdJson["currency"]!!.jsonPrimitive.content)
+
+            val duplicate = client.post("/admin/api/model-default-prices") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"deepseek-v4.1-flash","currency":"USD","inputPricePerMillion":"1","outputPricePerMillion":"2"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.Conflict, duplicate.status)
+
+            val listed = client.get("/admin/api/model-default-prices") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, listed.status)
+            assertEquals(1, Json.parseToJsonElement(listed.bodyAsText()).jsonArray.size)
+
+            val updated = client.put("/admin/api/model-default-prices/$id") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"deepseek-v4.1-flash","currency":"USD","inputPricePerMillion":"3","outputPricePerMillion":"4"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, updated.status)
+            val updatedJson = Json.parseToJsonElement(updated.bodyAsText()).jsonObject
+            assertEquals("3.00000000", updatedJson["inputPricePerMillion"]!!.jsonPrimitive.content)
+
+            val deleted = client.delete("/admin/api/model-default-prices/$id") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+            }
+            assertEquals(HttpStatusCode.NoContent, deleted.status)
+            assertNull(app.modelDefaultPriceRepository.find("deepseek-v4.1-flash"))
+
+            val perReq = client.post("/admin/api/model-default-prices") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"dall-e-3","currency":"USD","pricingMode":"per_request","perRequestPrice":"0.04"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.Created, perReq.status)
+            val perReqJson = Json.parseToJsonElement(perReq.bodyAsText()).jsonObject
+            assertEquals("per_request", perReqJson["pricingMode"]!!.jsonPrimitive.content)
+            assertEquals("0.04000000", perReqJson["perRequestPrice"]!!.jsonPrimitive.content)
+
+            val perReqId = perReqJson["id"]!!.jsonPrimitive.content
+            val tiered = client.put("/admin/api/model-default-prices/$perReqId") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"dall-e-3","currency":"USD","pricingMode":"tiered","priceTiers":[{"upToTokens":128000,"inputPricePerMillion":"1","outputPricePerMillion":"2"},{"upToTokens":null,"inputPricePerMillion":"2","outputPricePerMillion":"4"}]}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, tiered.status)
+            val tieredJson = Json.parseToJsonElement(tiered.bodyAsText()).jsonObject
+            assertEquals("tiered", tieredJson["pricingMode"]!!.jsonPrimitive.content)
+            assertEquals(2, tieredJson["priceTiers"]!!.jsonArray.size)
+
+            val hugeLimit = client.post("/admin/api/model-default-prices") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"overflow-test","currency":"USD","pricingMode":"tiered","priceTiers":[{"upToTokens":100000000001,"inputPricePerMillion":"1","outputPricePerMillion":"2"},{"upToTokens":null,"inputPricePerMillion":"2","outputPricePerMillion":"4"}]}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, hugeLimit.status)
+
+            client.delete("/admin/api/model-default-prices/$perReqId") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+            }
+        }
+    }
+
+    @Test
+    fun `concurrent default price updates map unique conflicts to 409`() = runBlocking {
+        suspend fun createDefaultPrice(modelId: String) = checkNotNull(
+            app.modelDefaultPriceRepository.create(
+                modelId = modelId,
+                currency = "USD",
+                inputPricePerMillion = BigDecimal.ONE,
+                outputPricePerMillion = BigDecimal.ONE,
+                cachedInputPricePerMillion = null,
+            ),
+        )
+
+        val first = createDefaultPrice("race-first")
+        val second = createDefaultPrice("race-second")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val ready = AtomicInteger(0)
+            val responses = coroutineScope {
+                listOf(first.id, second.id).map { id ->
+                    async(Dispatchers.Default) {
+                        ready.incrementAndGet()
+                        val deadline = System.nanoTime() + 5_000_000_000L
+                        while (ready.get() < 2 && System.nanoTime() < deadline) yield()
+                        client.put("/admin/api/model-default-prices/$id") {
+                            header(HttpHeaders.Cookie, sessionCookie)
+                            header("X-CSRF-Token", csrf)
+                            contentType(ContentType.Application.Json)
+                            setBody(
+                                """{"modelId":"race-target","currency":"USD","inputPricePerMillion":"2","outputPricePerMillion":"3"}""",
+                            )
+                        }
+                    }
+                }.map { it.await() }
+            }
+
+            assertEquals(1, responses.count { it.status == HttpStatusCode.OK })
+            assertEquals(1, responses.count { it.status == HttpStatusCode.Conflict })
+            assertEquals(1, app.modelDefaultPriceRepository.list().count { it.modelId == "race-target" })
+        }
+    }
+
+    @Test
+    fun `records request cost with per_request pricing and skips failed request`() = runBlocking {
+        val okChannel = createChannel("ok-channel", "ok")
+        val failChannel = createChannel("fail-channel", "500")
+        createAlias("req-chat-ok", okChannel to "gpt-4o-mini")
+        createAlias("req-chat-fail", failChannel to "gpt-4o-mini")
+        app.modelPriceRepository.create(
+            channelId = okChannel.id,
+            upstreamModel = "gpt-4o-mini",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal.ZERO,
+            outputPricePerMillion = BigDecimal.ZERO,
+            cachedInputPricePerMillion = null,
+            pricingMode = dev.soven.llmgateway.domain.PricingMode.PER_REQUEST,
+            perRequestPrice = BigDecimal("0.05"),
+        )
+        app.modelPriceRepository.create(
+            channelId = failChannel.id,
+            upstreamModel = "gpt-4o-mini",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal.ZERO,
+            outputPricePerMillion = BigDecimal.ZERO,
+            cachedInputPricePerMillion = null,
+            pricingMode = dev.soven.llmgateway.domain.PricingMode.PER_REQUEST,
+            perRequestPrice = BigDecimal("0.05"),
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val okResponse = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"req-chat-ok","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, okResponse.status)
+            val okLog = awaitRequestLog()
+            assertEquals(0, okLog.costAmount?.compareTo(BigDecimal("0.05000000")))
+            assertEquals("per_request", okLog.pricingMode.value)
+
+            val failResponse = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"req-chat-fail","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.BadGateway, failResponse.status)
+            awaitRequestLogCount(2)
+            val failLog = app.requestLogRepository.list(10).first { it.alias == "req-chat-fail" }
+            assertNull(failLog.costAmount)
+        }
+    }
+
+    @Test
+    fun `per_request pricing does not charge interrupted stream`() = runBlocking {
+        val channel = createChannel("stream-disc", "disconnect")
+        createAlias("per-req-stream-disc", channel to "m1")
+        app.modelPriceRepository.create(
+            channelId = channel.id,
+            upstreamModel = "m1",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal.ZERO,
+            outputPricePerMillion = BigDecimal.ZERO,
+            cachedInputPricePerMillion = null,
+            pricingMode = dev.soven.llmgateway.domain.PricingMode.PER_REQUEST,
+            perRequestPrice = BigDecimal("0.08"),
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"per-req-stream-disc","stream":true,"messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog()
+            assertEquals("stream_interrupted", log.errorCode)
+            assertNull(log.costAmount, "中断的流式请求不应收取按次费用")
+        }
+    }
+
+    @Test
+    fun `records request cost with tiered pricing`() = runBlocking {
+        val channel = createChannel("tiered-channel", "ok")
+        createAlias("tiered-chat", channel to "gpt-4o-mini")
+        app.modelPriceRepository.create(
+            channelId = channel.id,
+            upstreamModel = "gpt-4o-mini",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal.ZERO,
+            outputPricePerMillion = BigDecimal.ZERO,
+            cachedInputPricePerMillion = null,
+            pricingMode = dev.soven.llmgateway.domain.PricingMode.TIERED,
+            priceTiers = listOf(
+                dev.soven.llmgateway.domain.ModelPriceTier(
+                    upToTokens = 5,
+                    inputPricePerMillion = BigDecimal("1.0"),
+                    outputPricePerMillion = BigDecimal("2.0"),
+                ),
+                dev.soven.llmgateway.domain.ModelPriceTier(
+                    upToTokens = null,
+                    inputPricePerMillion = BigDecimal("2.0"),
+                    outputPricePerMillion = BigDecimal("4.0"),
+                ),
+            ),
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"tiered-chat","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog()
+            // input 10 (5*1 + 5*2 = 15), output 3 (3*2 = 6) -> 21 / 1M = 0.00002100
+            assertEquals(0, log.costAmount?.compareTo(BigDecimal("0.00002100")))
+            assertEquals("tiered", log.pricingMode.value)
+        }
+    }
+
+    @Test
+    fun `records request cost with cache write rate for anthropic messages`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "anthropic-cache-write",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = setOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("claude-cache", channel to "claude-sonnet-4-5")
+        app.modelPriceRepository.create(
+            channelId = channel.id,
+            upstreamModel = "claude-sonnet-4-5",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1.0"),
+            outputPricePerMillion = BigDecimal("2.0"),
+            cachedInputPricePerMillion = BigDecimal("0.5"),
+            cachedInputWritePricePerMillion = BigDecimal("1.5"),
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/messages") {
+                header("x-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"claude-cache","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog()
+            // input 15 (uncached 10, cachedRead 3, cachedWrite 2), output 4
+            // cost = (10*1 + 3*0.5 + 2*1.5 + 4*2) / 1M = 22.5 / 1M = 0.00002250
+            assertEquals(0, log.costAmount?.compareTo(BigDecimal("0.00002250")))
+            assertEquals(2L, log.cachedWriteTokens)
+            assertEquals(0, log.cachedInputWritePricePerMillion?.compareTo(BigDecimal("1.5")))
         }
     }
 
@@ -3188,6 +3655,19 @@ class GatewayIntegrationTest {
         cachedInputPricePerMillion = cached?.let(::BigDecimal),
     )
 
+    private suspend fun createDefaultPrice(
+        modelId: String,
+        input: String,
+        output: String,
+        cached: String? = null,
+    ) = app.modelDefaultPriceRepository.create(
+        modelId = modelId,
+        currency = "USD",
+        inputPricePerMillion = BigDecimal(input),
+        outputPricePerMillion = BigDecimal(output),
+        cachedInputPricePerMillion = cached?.let(::BigDecimal),
+    )
+
     private suspend fun awaitRequestLog(timeoutMs: Long = 3_000): RequestLogRecord {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
@@ -3221,7 +3701,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table admin_audit_logs, retention_settings, request_logs, alias_candidates, model_aliases, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table admin_audit_logs, retention_settings, request_logs, alias_candidates, model_aliases, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }

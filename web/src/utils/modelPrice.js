@@ -11,6 +11,108 @@ export function findModelPrice(prices, channelId, upstreamModel) {
   ) || null
 }
 
+/** Find one model-level default price by trimmed model ID. */
+export function findDefaultModelPrice(defaultPrices, modelId) {
+  if (!Array.isArray(defaultPrices)) return null
+  const target = typeof modelId === 'string' ? modelId.trim() : ''
+  if (!target) return null
+  return defaultPrices.find((price) =>
+    price &&
+    typeof price.modelId === 'string' &&
+    price.modelId.trim() === target,
+  ) || null
+}
+
+/** Resolve a model default price by canonical ID first, then upstream model name. */
+export function findDefaultPriceForModel(defaultPrices, upstreamModel, canonicalModelId = null) {
+  const upstream = String(upstreamModel ?? '').trim()
+  const canonical = String(canonicalModelId ?? '').trim()
+  return findDefaultModelPrice(defaultPrices, canonical || upstream) ||
+    (canonical && canonical !== upstream ? findDefaultModelPrice(defaultPrices, upstream) : null)
+}
+
+/** Resolve the model ID used by model-level default pricing. */
+export function channelModelPricingId(channel, upstreamModel) {
+  const model = String(upstreamModel ?? '').trim()
+  if (!model) return ''
+  const mapping = (Array.isArray(channel?.modelMappings) ? channel.modelMappings : [])
+    .find((item) => String(item?.upstreamModel ?? '').trim() === model)
+  return String(mapping?.canonicalModelId ?? '').trim() || model
+}
+
+/**
+ * Build model-ID candidates for default pricing from channel mappings,
+ * authorized models, and already configured default prices.
+ */
+export function defaultPriceModelOptions(channels, prices) {
+  const entries = new Map()
+  const add = (upstreamModel, canonicalModelId, channelName) => {
+    const upstream = String(upstreamModel ?? '').trim()
+    const canonical = String(canonicalModelId ?? '').trim()
+    const modelId = canonical || upstream
+    if (!modelId) return
+    const entry = entries.get(modelId) || { id: modelId, upstreamModels: new Set(), channelNames: new Set() }
+    if (upstream) entry.upstreamModels.add(upstream)
+    if (channelName) entry.channelNames.add(channelName)
+    entries.set(modelId, entry)
+  }
+  for (const channel of Array.isArray(channels) ? channels : []) {
+    if (!channel) continue
+    const mapped = new Set()
+    for (const mapping of Array.isArray(channel.modelMappings) ? channel.modelMappings : []) {
+      const upstream = String(mapping?.upstreamModel ?? '').trim()
+      mapped.add(upstream)
+      add(upstream, mapping?.canonicalModelId, channel.name)
+    }
+    for (const model of Array.isArray(channel.models) ? channel.models : []) {
+      const upstream = String(model ?? '').trim()
+      if (upstream && !mapped.has(upstream)) add(upstream, null, channel.name)
+    }
+  }
+  for (const price of Array.isArray(prices) ? prices : []) {
+    add(price?.modelId, null, null)
+  }
+  return [...entries.values()]
+    .map((entry) => ({
+      id: entry.id,
+      upstreamModels: [...entry.upstreamModels].sort(),
+      channelNames: [...entry.channelNames].sort(),
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id))
+}
+
+/**
+ * Resolve the effective price and its source for one channel model.
+ * Channel overrides win over model defaults.
+ */
+export function resolveChannelModelPrice(channel, upstreamModel, prices, defaultPrices = []) {
+  const channelPrice = findModelPrice(prices, channel?.id, upstreamModel)
+  const modelId = channelModelPricingId(channel, upstreamModel)
+  if (channelPrice) {
+    return { source: 'channel', price: channelPrice, modelId, defaultPrice: null }
+  }
+  const upstream = String(upstreamModel ?? '').trim()
+  const defaultPrice = findDefaultPriceForModel(
+    defaultPrices,
+    upstream,
+    modelId !== upstream ? modelId : null,
+  )
+  if (defaultPrice) {
+    return { source: 'default', price: defaultPrice, modelId, defaultPrice }
+  }
+  return { source: 'none', price: null, modelId, defaultPrice: null }
+}
+
+/** Resolve the aggregate source label for a displayed model group. */
+export function resolveDisplayPriceSource(channel, upstreamModels, prices, defaultPrices = []) {
+  const sources = (Array.isArray(upstreamModels) ? upstreamModels : [])
+    .map((model) => resolveChannelModelPrice(channel, model, prices, defaultPrices).source)
+  if (sources.length === 0 || sources.some((source) => source === 'none')) return 'none'
+  if (sources.every((source) => source === 'channel')) return 'channel'
+  if (sources.every((source) => source === 'default')) return 'default'
+  return 'mixed'
+}
+
 /** List the configured prices for one channel, ordered by upstream model. */
 export function pricesForChannel(prices, channelId) {
   if (!Array.isArray(prices) || !channelId) return []
@@ -26,13 +128,14 @@ export function pricesForChannel(prices, channelId) {
 }
 
 /** Merge channel models with their configured price, matching trimmed model names. */
-export function channelModelPriceOptions(channelModels, prices, channelId) {
+export function channelModelPriceOptions(channelModels, prices, channelId, defaultPrices = []) {
   const pricesByModel = new Map(
     pricesForChannel(prices, channelId).map((price) => [price.upstreamModel.trim(), price]),
   )
   return (Array.isArray(channelModels) ? channelModels : []).map((model) => ({
     ...model,
     price: pricesByModel.get(String(model.id).trim()) || null,
+    defaultPrice: findDefaultPriceForModel(defaultPrices, model.id, model.canonicalModelId),
   }))
 }
 
@@ -43,7 +146,7 @@ export function isSamePriceTarget(price, channelId, upstreamModel) {
 }
 
 /** Return the channel's upstream models that have no price record. */
-export function unpricedChannelModels(channel, prices) {
+export function unpricedChannelModels(channel, prices, defaultPrices = []) {
   if (!channel || !Array.isArray(channel.models)) return []
   const models = [
     ...new Set(
@@ -53,15 +156,15 @@ export function unpricedChannelModels(channel, prices) {
         .filter(Boolean),
     ),
   ]
-  return models.filter((model) => !findModelPrice(prices, channel.id, model))
+  return models.filter((model) => resolveChannelModelPrice(channel, model, prices, defaultPrices).source === 'none')
 }
 
 /** Build unpriced-model summaries keyed by channel id. Recomputed from current data. */
-export function channelPriceSummaries(channels, prices) {
+export function channelPriceSummaries(channels, prices, defaultPrices = []) {
   const summaries = new Map()
   for (const channel of Array.isArray(channels) ? channels : []) {
     if (!channel?.id) continue
-    const unpriced = unpricedChannelModels(channel, prices)
+    const unpriced = unpricedChannelModels(channel, prices, defaultPrices)
     summaries.set(channel.id, { unpriced, count: unpriced.length })
   }
   return summaries

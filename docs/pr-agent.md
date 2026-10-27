@@ -5,7 +5,7 @@
 - 工作流：`.github/workflows/pr-agent.yml`
 - 审查规则：`.pr_agent.toml`
 - 请求发往自建网关的 OpenAI 兼容入口（`/v1/chat/completions`），用调用方密钥鉴权
-- 模型名是网关里的别名，由仓库变量 `LLM_GATEWAY_REVIEW_MODEL` 指定
+- 主模型和备用模型通过 PR-Agent 的 fallback 配置依次调用网关
 
 ## 必须做的配置
 
@@ -26,42 +26,39 @@ gh secret set LLM_GATEWAY_KEY
 
 这个密钥在管理界面「调用方密钥」里创建，明文只显示一次。
 
-### 2. Variable：网关地址和模型别名
+### 2. Variable：网关地址
 
 `Settings -> Secrets and variables -> Actions -> Variables`：
 
 ```text
-LLM_GATEWAY_BASE_URL     = https://gateway.internal.example.com/v1
-LLM_GATEWAY_REVIEW_MODEL = <网关里指向审查模型的别名>
+LLM_GATEWAY_BASE_URL = https://gateway.internal.example.com/v1
 ```
 
 走命令行：
 
 ```bash
 gh variable set LLM_GATEWAY_BASE_URL --body "https://gateway.internal.example.com/v1"
-gh variable set LLM_GATEWAY_REVIEW_MODEL --body "review-model"
 ```
 
 地址必须**包含 `/v1`**，与 README 里渠道 `baseUrl` 的约定一致；PR-Agent 自己追加 `/chat/completions`，不会补 `/v1`。
 
-## 自定义 URL 的原理
+## 模型顺序、流式请求与超时
 
-工作流用三个变量把 PR-Agent 指向你的网关：
+工作流将请求发往同一个 OpenAI 兼容网关，并按顺序配置三个模型：
 
-```yaml
-OPENAI__KEY: ${{ secrets.LLM_GATEWAY_KEY }}
-OPENAI__API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
-CONFIG__MODEL: openai/${{ vars.LLM_GATEWAY_REVIEW_MODEL || 'review-model' }}
-CONFIG__FALLBACK_MODELS: '[]'
-```
+    OPENAI__KEY: <LLM_GATEWAY_KEY secret>
+    OPENAI__API_BASE: <LLM_GATEWAY_BASE_URL variable>
+    CONFIG__MODEL: openai/gpt-6-luna
+    CONFIG__FALLBACK_MODELS: '["openai/deepseek-flash", "openai/gemini-3.8-flash"]'
+    CONFIG__REASONING_EFFORT: "low"
+    CONFIG__ADDITIONAL_REASONING_EFFORT_MODELS: '["gpt-6-luna", "deepseek-flash", "gemini-3.8-flash"]'
+    CONFIG__RETRY_SAME_MODEL_ON_TIMEOUT: "false"
+    LITELLM__FORCE_STREAMING_CUSTOM_LLM_PROVIDER: "openai"
+    LITELLM__FORCE_STREAMING_API_BASE_SUBSTRINGS: '["/v1"]'
 
-`openai/` 前缀让 LiteLLM 走 OpenAI 兼容路径，实际请求发到 `OPENAI__API_BASE`，模型名用你网关里的别名。任何 OpenAI 兼容网关都能这样接。
+openai/ 前缀让 LiteLLM 走 OpenAI 兼容路径。三个模型都必须能通过网关访问（可在 GET /v1/models 确认）；若网关中使用的是别名，请把配置里的模型 ID 换成对应别名。PR-Agent 把流完整收集后才生成审查结果；启用流式是为了让网关能在首 token 超时时切换候选。
 
-## 上游模型与回退
-
-主模型和回退都在网关内部完成，不依赖 PR-Agent。要换审查模型，只改仓库变量 `LLM_GATEWAY_REVIEW_MODEL`，或在网关管理界面把该别名指向另一个渠道，不必改工作流。
-
-不建议在 `CONFIG__FALLBACK_MODELS` 里写 `openai/xxx`：这些名称都会带着同一个 `api_base` 和密钥发出，网关若不认识就会直接报错。让网关按渠道做重试和切换更可靠。
+顺序是 gpt-6-luna → deepseek-flash → gemini-3.8-flash，推理强度均为 low。PR-Agent 超时后进入下一模型，不重试刚超时的模型。网关运行环境需设置 FIRST_TOKEN_TIMEOUT_MS=120000，限制单次流式调用等待首 token 的时间。模型回退列表由 PR-Agent 依次尝试；网关 MAX_ATTEMPTS 仅限制同一模型 ID 的路由候选次数。PR-Agent ai_timeout 为 480 秒，网关 TOTAL_TIMEOUT_MS 默认 600 秒。
 
 ## 选择 runner
 
@@ -114,7 +111,7 @@ API 已有 Bearer 鉴权，关掉机器人挑战不影响安全性；管理面�
 
 ## 成本
 
-PR-Agent 只按你网关的渠道计费，成本取决于 `LLM_GATEWAY_REVIEW_MODEL` 背后的上游模型：
+PR-Agent 只按你网关的渠道计费，成本取决于实际成功响应的模型：
 
 - 一次 20K 输入 + 4K 输出的审查，DeepSeek V4 Flash 约 `$0.005`，Gemini 3.8 Flash 约 `$0.03`
 - 具体单价见各厂商定价页；这里不再复制价格，避免过期
@@ -129,7 +126,7 @@ PR-Agent 只按你网关的渠道计费，成本取决于 `LLM_GATEWAY_REVIEW_MO
 
 ## 排错
 
-- `Model not found` / 网关返回 404：`LLM_GATEWAY_REVIEW_MODEL` 与网关里的别名不一致，或别名未启用
+- `Model not found` / 网关返回 404：工作流中的模型 ID 未通过网关暴露，或模型/别名未启用
 - `401`：`LLM_GATEWAY_KEY` 不是有效的调用方密钥；确认没有多余空格
 - 连接超时 / `getaddrinfo` 失败：`LLM_GATEWAY_BASE_URL` 不可达，常见于用 `ubuntu-latest` 访问内网地址
 - `404` 且路径重复：`LLM_GATEWAY_BASE_URL` 少了或多了 `/v1`，应为 `https://host/v1`

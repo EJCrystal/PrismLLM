@@ -5,6 +5,9 @@ import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ModelPriceRecord
+import dev.soven.llmgateway.domain.ModelPriceTier
+import dev.soven.llmgateway.domain.PricingMode
+import dev.soven.llmgateway.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.quota.ClientKeyQuotaUsage
 import dev.soven.llmgateway.report.CleanupResult
@@ -470,9 +473,31 @@ data class ModelPriceRequest(
     val channelId: String,
     val upstreamModel: String,
     val currency: String = "USD",
+    val inputPricePerMillion: String? = null,
+    val outputPricePerMillion: String? = null,
+    val cachedInputPricePerMillion: String? = null,
+    val cachedInputWritePricePerMillion: String? = null,
+    val pricingMode: String = PricingMode.TOKEN.value,
+    val perRequestPrice: String? = null,
+    val priceTiers: List<ModelPriceTierRequest> = emptyList(),
+)
+
+@Serializable
+data class ModelPriceTierRequest(
+    val upToTokens: Long? = null,
     val inputPricePerMillion: String,
     val outputPricePerMillion: String,
     val cachedInputPricePerMillion: String? = null,
+    val cachedInputWritePricePerMillion: String? = null,
+)
+
+@Serializable
+data class ModelPriceTierResponse(
+    val upToTokens: Long?,
+    val inputPricePerMillion: String,
+    val outputPricePerMillion: String,
+    val cachedInputPricePerMillion: String? = null,
+    val cachedInputWritePricePerMillion: String? = null,
 )
 
 /**
@@ -491,6 +516,10 @@ data class ModelPriceResponse(
     val inputPricePerMillion: String,
     val outputPricePerMillion: String,
     val cachedInputPricePerMillion: String?,
+    val cachedInputWritePricePerMillion: String? = null,
+    val pricingMode: String = PricingMode.TOKEN.value,
+    val perRequestPrice: String? = null,
+    val priceTiers: List<ModelPriceTierResponse> = emptyList(),
     val createdAt: Long,
     val updatedAt: Long,
 )
@@ -504,8 +533,87 @@ fun ModelPriceRecord.toResponse() = ModelPriceResponse(
     inputPricePerMillion = inputPricePerMillion.toPlainString(),
     outputPricePerMillion = outputPricePerMillion.toPlainString(),
     cachedInputPricePerMillion = cachedInputPricePerMillion?.toPlainString(),
+    cachedInputWritePricePerMillion = cachedInputWritePricePerMillion?.toPlainString(),
+    pricingMode = pricingMode.value,
+    perRequestPrice = perRequestPrice?.toPlainString(),
+    priceTiers = priceTiers.map { it.toResponse() },
     createdAt = createdAt,
     updatedAt = updatedAt,
+)
+
+/**
+ * 模型默认单价写请求。价格单位是每百万 token，使用字符串避免浮点误差。
+ */
+@Serializable
+data class ModelDefaultPriceRequest(
+    val modelId: String,
+    val currency: String = "USD",
+    val inputPricePerMillion: String? = null,
+    val outputPricePerMillion: String? = null,
+    val cachedInputPricePerMillion: String? = null,
+    val cachedInputWritePricePerMillion: String? = null,
+    val pricingMode: String = PricingMode.TOKEN.value,
+    val perRequestPrice: String? = null,
+    val priceTiers: List<ModelPriceTierRequest> = emptyList(),
+)
+
+/**
+ * 模型默认单价读响应。
+ */
+@Serializable
+data class ModelDefaultPriceResponse(
+    val id: String,
+    val modelId: String,
+    val currency: String,
+    val inputPricePerMillion: String,
+    val outputPricePerMillion: String,
+    val cachedInputPricePerMillion: String?,
+    val cachedInputWritePricePerMillion: String? = null,
+    val pricingMode: String = PricingMode.TOKEN.value,
+    val perRequestPrice: String? = null,
+    val priceTiers: List<ModelPriceTierResponse> = emptyList(),
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
+fun DefaultModelPriceRecord.toResponse() = ModelDefaultPriceResponse(
+    id = id,
+    modelId = modelId,
+    currency = currency,
+    inputPricePerMillion = inputPricePerMillion.toPlainString(),
+    outputPricePerMillion = outputPricePerMillion.toPlainString(),
+    cachedInputPricePerMillion = cachedInputPricePerMillion?.toPlainString(),
+    cachedInputWritePricePerMillion = cachedInputWritePricePerMillion?.toPlainString(),
+    pricingMode = pricingMode.value,
+    perRequestPrice = perRequestPrice?.toPlainString(),
+    priceTiers = priceTiers.map { it.toResponse() },
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+/**
+ * 同一渠道内多个上游模型批量套用单价。
+ */
+@Serializable
+data class ModelPriceBatchRequest(
+    val channelId: String,
+    val upstreamModels: List<String>,
+    val currency: String = "USD",
+    val inputPricePerMillion: String? = null,
+    val outputPricePerMillion: String? = null,
+    val cachedInputPricePerMillion: String? = null,
+    val cachedInputWritePricePerMillion: String? = null,
+    val pricingMode: String = PricingMode.TOKEN.value,
+    val perRequestPrice: String? = null,
+    val priceTiers: List<ModelPriceTierRequest> = emptyList(),
+)
+
+private fun ModelPriceTier.toResponse() = ModelPriceTierResponse(
+    upToTokens = upToTokens,
+    inputPricePerMillion = inputPricePerMillion.toPlainString(),
+    outputPricePerMillion = outputPricePerMillion.toPlainString(),
+    cachedInputPricePerMillion = cachedInputPricePerMillion?.toPlainString(),
+    cachedInputWritePricePerMillion = cachedInputWritePricePerMillion?.toPlainString(),
 )
 
 /**
@@ -562,6 +670,7 @@ data class RequestLogResponse(
     val inputTokens: Long?,
     val outputTokens: Long?,
     val cachedTokens: Long?,
+    val cachedWriteTokens: Long? = null,
     val reasoningTokens: Long?,
     val reasoningEffort: String?,
     val totalTokens: Long?,
@@ -571,6 +680,10 @@ data class RequestLogResponse(
     val inputPricePerMillion: String?,
     val outputPricePerMillion: String?,
     val cachedInputPricePerMillion: String?,
+    val cachedInputWritePricePerMillion: String? = null,
+    val pricingMode: String = PricingMode.TOKEN.value,
+    val perRequestPrice: String? = null,
+    val priceTiers: List<ModelPriceTierResponse> = emptyList(),
     val errorCode: String?,
     val failureStage: String?,
     val errorMessage: String?,
@@ -597,6 +710,7 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     inputTokens = inputTokens,
     outputTokens = outputTokens,
     cachedTokens = cachedTokens,
+    cachedWriteTokens = cachedWriteTokens,
     reasoningTokens = reasoningTokens,
     reasoningEffort = reasoningEffort,
     totalTokens = totalTokens,
@@ -606,6 +720,10 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     inputPricePerMillion = inputPricePerMillion?.toPlainString(),
     outputPricePerMillion = outputPricePerMillion?.toPlainString(),
     cachedInputPricePerMillion = cachedInputPricePerMillion?.toPlainString(),
+    cachedInputWritePricePerMillion = cachedInputWritePricePerMillion?.toPlainString(),
+    pricingMode = pricingMode.value,
+    perRequestPrice = perRequestPrice?.toPlainString(),
+    priceTiers = priceTiers.map { it.toResponse() },
     errorCode = errorCode,
     failureStage = failureStage?.value,
     errorMessage = errorMessage,

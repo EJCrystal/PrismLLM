@@ -19,8 +19,12 @@ const actionLabels = {
   'client_key.rotate': '轮换调用方密钥',
   'client_key.revoke': '撤销调用方密钥',
   'model_price.create': '创建模型单价',
+  'model_price.batch': '批量套用模型单价',
   'model_price.update': '更新模型单价',
   'model_price.delete': '删除模型单价',
+  'model_default_price.create': '创建模型默认价',
+  'model_default_price.update': '更新模型默认价',
+  'model_default_price.delete': '删除模型默认价',
   'request_log.cleanup': '清理请求日志',
 }
 

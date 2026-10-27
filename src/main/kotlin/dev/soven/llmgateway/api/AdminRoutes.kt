@@ -3,6 +3,8 @@ package dev.soven.llmgateway.api
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.ModelPriceTier
+import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.proxy.CatalogModel
 import dev.soven.llmgateway.proxy.fetchUpstreamModels
 import dev.soven.llmgateway.proxy.probeUpstreamProtocols
@@ -547,6 +549,88 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(app.modelPriceRepository.list().map { it.toResponse() })
         }
 
+        get("/model-default-prices") {
+            call.requireAdmin(app)
+            call.respond(app.modelDefaultPriceRepository.list().map { it.toResponse() })
+        }
+
+        post("/model-default-prices") {
+            call.requireAdmin(app)
+            val request = call.receive<ModelDefaultPriceRequest>()
+            val price = validateDefaultModelPrice(request)
+            if (app.modelDefaultPriceRepository.find(price.modelId) != null) {
+                throw conflict("model_default_price_exists", "该模型的默认单价已存在")
+            }
+            val record = app.modelDefaultPriceRepository.create(
+                modelId = price.modelId,
+                currency = price.values.currency,
+                inputPricePerMillion = price.values.input,
+                outputPricePerMillion = price.values.output,
+                cachedInputPricePerMillion = price.values.cached,
+                cachedInputWritePricePerMillion = price.values.cachedWrite,
+                pricingMode = price.values.pricingMode,
+                perRequestPrice = price.values.perRequest,
+                priceTiers = price.values.priceTiers,
+            ) ?: throw conflict("model_default_price_exists", "该模型的默认单价已存在")
+            call.respond(HttpStatusCode.Created, record.toResponse())
+        }
+
+        put("/model-default-prices/{id}") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少默认价 id")
+            val request = call.receive<ModelDefaultPriceRequest>()
+            val price = validateDefaultModelPrice(request)
+            app.modelDefaultPriceRepository.findById(id) ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            val updated = try {
+                app.modelDefaultPriceRepository.update(
+                    id = id,
+                    modelId = price.modelId,
+                    currency = price.values.currency,
+                    inputPricePerMillion = price.values.input,
+                    outputPricePerMillion = price.values.output,
+                    cachedInputPricePerMillion = price.values.cached,
+                    cachedInputWritePricePerMillion = price.values.cachedWrite,
+                    pricingMode = price.values.pricingMode,
+                    perRequestPrice = price.values.perRequest,
+                    priceTiers = price.values.priceTiers,
+                )
+            } catch (cause: Exception) {
+                if (isUniqueViolation(cause)) {
+                    throw conflict("model_default_price_exists", "该模型的默认单价已存在")
+                }
+                throw cause
+            } ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            call.respond(updated.toResponse())
+        }
+
+        delete("/model-default-prices/{id}") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少默认价 id")
+            if (!app.modelDefaultPriceRepository.delete(id)) {
+                throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            }
+            call.respond(HttpStatusCode.NoContent)
+        }
+
+        post("/model-prices/batch") {
+            call.requireAdmin(app)
+            val request = call.receive<ModelPriceBatchRequest>()
+            val batch = validateModelPriceBatch(app, request)
+            val records = app.modelPriceRepository.upsertBatch(
+                channelId = batch.channelId,
+                upstreamModels = batch.upstreamModels,
+                currency = batch.values.currency,
+                inputPricePerMillion = batch.values.input,
+                outputPricePerMillion = batch.values.output,
+                cachedInputPricePerMillion = batch.values.cached,
+                cachedInputWritePricePerMillion = batch.values.cachedWrite,
+                pricingMode = batch.values.pricingMode,
+                perRequestPrice = batch.values.perRequest,
+                priceTiers = batch.values.priceTiers,
+            )
+            call.respond(records.map { it.toResponse() })
+        }
+
         post("/model-prices") {
             call.requireAdmin(app)
             val request = call.receive<ModelPriceRequest>()
@@ -557,10 +641,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val record = app.modelPriceRepository.create(
                 channelId = price.channelId,
                 upstreamModel = price.upstreamModel,
-                currency = price.currency,
-                inputPricePerMillion = price.input,
-                outputPricePerMillion = price.output,
-                cachedInputPricePerMillion = price.cached,
+                currency = price.values.currency,
+                inputPricePerMillion = price.values.input,
+                outputPricePerMillion = price.values.output,
+                cachedInputPricePerMillion = price.values.cached,
+                cachedInputWritePricePerMillion = price.values.cachedWrite,
+                pricingMode = price.values.pricingMode,
+                perRequestPrice = price.values.perRequest,
+                priceTiers = price.values.priceTiers,
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
         }
@@ -579,10 +667,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 id = id,
                 channelId = price.channelId,
                 upstreamModel = price.upstreamModel,
-                currency = price.currency,
-                inputPricePerMillion = price.input,
-                outputPricePerMillion = price.output,
-                cachedInputPricePerMillion = price.cached,
+                currency = price.values.currency,
+                inputPricePerMillion = price.values.input,
+                outputPricePerMillion = price.values.output,
+                cachedInputPricePerMillion = price.values.cached,
+                cachedInputWritePricePerMillion = price.values.cachedWrite,
+                pricingMode = price.values.pricingMode,
+                perRequestPrice = price.values.perRequest,
+                priceTiers = price.values.priceTiers,
             ) ?: throw notFound("model_price_not_found", "计费单价不存在")
             call.respond(updated.toResponse())
         }
@@ -816,14 +908,91 @@ private suspend fun validateAlias(app: GatewayApplication, request: AliasRequest
     }
 }
 
-private data class ValidatedModelPrice(
-    val channelId: String,
-    val upstreamModel: String,
+private data class ValidatedPriceValues(
     val currency: String,
     val input: BigDecimal,
     val output: BigDecimal,
     val cached: BigDecimal?,
+    val cachedWrite: BigDecimal?,
+    val pricingMode: PricingMode,
+    val perRequest: BigDecimal?,
+    val priceTiers: List<ModelPriceTier>,
 )
+
+private data class ValidatedModelPrice(
+    val channelId: String,
+    val upstreamModel: String,
+    val values: ValidatedPriceValues,
+)
+
+private data class ValidatedDefaultModelPrice(
+    val modelId: String,
+    val values: ValidatedPriceValues,
+)
+
+private data class ValidatedModelPriceBatch(
+    val channelId: String,
+    val upstreamModels: List<String>,
+    val values: ValidatedPriceValues,
+)
+
+private fun validateDefaultModelPrice(request: ModelDefaultPriceRequest): ValidatedDefaultModelPrice {
+    val modelId = request.modelId.trim()
+    if (modelId.isEmpty() || modelId.length > 200) {
+        throw badRequest("invalid_model_default_price", "模型 ID 长度必须在 1..200 之间")
+    }
+    return ValidatedDefaultModelPrice(
+        modelId = modelId,
+        values = validatePriceValues(
+            request.currency,
+            request.inputPricePerMillion,
+            request.outputPricePerMillion,
+            request.cachedInputPricePerMillion,
+            request.cachedInputWritePricePerMillion,
+            request.pricingMode,
+            request.perRequestPrice,
+            request.priceTiers,
+        ),
+    )
+}
+
+private suspend fun validateModelPriceBatch(
+    app: GatewayApplication,
+    request: ModelPriceBatchRequest,
+): ValidatedModelPriceBatch {
+    val channelId = request.channelId.trim()
+    if (channelId.isEmpty()) throw badRequest("invalid_model_price", "渠道不能为空")
+    if (app.channelRepository.find(channelId) == null) {
+        throw badRequest("invalid_model_price", "渠道不存在")
+    }
+    val upstreamModels = request.upstreamModels
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .distinct()
+    if (upstreamModels.isEmpty()) {
+        throw badRequest("invalid_model_price", "至少选择一个上游模型")
+    }
+    if (upstreamModels.size > 200) {
+        throw badRequest("invalid_model_price", "一次最多套用 200 个上游模型")
+    }
+    if (upstreamModels.any { it.length > 200 }) {
+        throw badRequest("invalid_model_price", "上游模型名长度必须在 1..200 之间")
+    }
+    return ValidatedModelPriceBatch(
+        channelId = channelId,
+        upstreamModels = upstreamModels,
+        values = validatePriceValues(
+            request.currency,
+            request.inputPricePerMillion,
+            request.outputPricePerMillion,
+            request.cachedInputPricePerMillion,
+            request.cachedInputWritePricePerMillion,
+            request.pricingMode,
+            request.perRequestPrice,
+            request.priceTiers,
+        ),
+    )
+}
 
 private suspend fun validateModelPrice(
     app: GatewayApplication,
@@ -838,20 +1007,99 @@ private suspend fun validateModelPrice(
     if (upstreamModel.isEmpty() || upstreamModel.length > 200) {
         throw badRequest("invalid_model_price", "上游模型名长度必须在 1..200 之间")
     }
-    val currency = request.currency.trim().uppercase()
-    if (!CURRENCY_PATTERN.matches(currency)) {
-        throw badRequest("invalid_model_price", "币种必须是 3 到 8 位字母")
-    }
     return ValidatedModelPrice(
         channelId = channelId,
         upstreamModel = upstreamModel,
-        currency = currency,
-        input = parsePrice(request.inputPricePerMillion, "输入单价"),
-        output = parsePrice(request.outputPricePerMillion, "输出单价"),
-        cached = request.cachedInputPricePerMillion
-            ?.takeIf { it.isNotBlank() }
-            ?.let { parsePrice(it, "缓存输入单价") },
+        values = validatePriceValues(
+            request.currency,
+            request.inputPricePerMillion,
+            request.outputPricePerMillion,
+            request.cachedInputPricePerMillion,
+            request.cachedInputWritePricePerMillion,
+            request.pricingMode,
+            request.perRequestPrice,
+            request.priceTiers,
+        ),
     )
+}
+
+private fun validatePriceValues(
+    currencyValue: String,
+    inputValue: String?,
+    outputValue: String?,
+    cachedValue: String?,
+    cachedWriteValue: String?,
+    modeValue: String,
+    perRequestValue: String?,
+    tierValues: List<ModelPriceTierRequest>,
+): ValidatedPriceValues {
+    val mode = PricingMode.entries.firstOrNull { it.value == modeValue }
+        ?: throw badRequest("invalid_model_price", "计费方式无效")
+    val input = if (mode == PricingMode.TOKEN) {
+        parsePrice(inputValue.orEmpty(), "输入单价")
+    } else {
+        parseOptionalPrice(inputValue, "输入单价") ?: BigDecimal.ZERO
+    }
+    val output = if (mode == PricingMode.TOKEN) {
+        parsePrice(outputValue.orEmpty(), "输出单价")
+    } else {
+        parseOptionalPrice(outputValue, "输出单价") ?: BigDecimal.ZERO
+    }
+    val cached = parseOptionalPrice(cachedValue, "缓存读取单价")
+    val cachedWrite = parseOptionalPrice(cachedWriteValue, "缓存写入单价")
+    val perRequest = parseOptionalPrice(perRequestValue, "按次费用")
+    if (mode == PricingMode.PER_REQUEST && perRequest == null) {
+        throw badRequest("invalid_model_price", "按次费用必须是非负数字")
+    }
+    val tiers = if (mode == PricingMode.TIERED || mode == PricingMode.VOLUME) {
+        if (tierValues.isEmpty() || tierValues.size > 20) {
+            throw badRequest("invalid_model_price", "阶梯计费需要 1..20 个价格档位")
+        }
+        var previous = 0L
+        val parsed = tierValues.mapIndexed { index, tier ->
+            val isLast = index == tierValues.lastIndex
+            val limit = tier.upToTokens
+            if (isLast && limit != null) {
+                throw badRequest("invalid_model_price", "最后一个价格档位必须不设上限")
+            }
+            val maxLimit = 100_000_000_000L
+            if (!isLast && (limit == null || limit <= previous || limit > maxLimit)) {
+                throw badRequest("invalid_model_price", "阶梯上限必须为正整数并严格递增（最大不超过 1000 亿），最后一档不设上限")
+            }
+            if (limit != null) previous = limit
+            ModelPriceTier(
+                upToTokens = limit,
+                inputPricePerMillion = parsePrice(tier.inputPricePerMillion, "阶梯输入单价"),
+                outputPricePerMillion = parsePrice(tier.outputPricePerMillion, "阶梯输出单价"),
+                cachedInputPricePerMillion = parseOptionalPrice(tier.cachedInputPricePerMillion, "阶梯缓存读取单价"),
+                cachedInputWritePricePerMillion = parseOptionalPrice(tier.cachedInputWritePricePerMillion, "阶梯缓存写入单价"),
+            )
+        }
+        parsed
+    } else {
+        emptyList()
+    }
+    return ValidatedPriceValues(
+        currency = parseCurrency(currencyValue),
+        input = input,
+        output = output,
+        cached = cached,
+        cachedWrite = cachedWrite,
+        pricingMode = mode,
+        perRequest = perRequest,
+        priceTiers = tiers,
+    )
+}
+
+private fun parseOptionalPrice(value: String?, label: String): BigDecimal? =
+    value?.trim()?.takeIf { it.isNotEmpty() }?.let { parsePrice(it, label) }
+
+private fun parseCurrency(value: String): String {
+    val currency = value.trim().uppercase()
+    if (!CURRENCY_PATTERN.matches(currency)) {
+        throw badRequest("invalid_model_price", "币种必须是 3 到 8 位字母")
+    }
+    return currency
 }
 
 private fun parsePrice(value: String, label: String): BigDecimal {
@@ -860,6 +1108,10 @@ private fun parsePrice(value: String, label: String): BigDecimal {
     if (parsed < BigDecimal.ZERO) throw badRequest("invalid_model_price", "$label 不能为负数")
     return parsed.setScale(8, RoundingMode.HALF_UP)
 }
+
+private fun isUniqueViolation(cause: Throwable): Boolean =
+    generateSequence(cause) { it.cause }
+        .any { (it as? java.sql.SQLException)?.sqlState == "23505" }
 
 private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLimits {
     if (request.dailyTokenLimit != null && request.dailyTokenLimit < 0) {

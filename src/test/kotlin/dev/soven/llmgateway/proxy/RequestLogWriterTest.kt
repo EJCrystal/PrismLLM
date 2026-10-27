@@ -23,7 +23,7 @@ class RequestLogWriterTest {
                 insertRecord = {
                     if (insertCalls.incrementAndGet() == 1) throw CancellationException("stop writer")
                 },
-                findPrice = { _, _ -> null },
+                resolvePrice = { null },
             )
             writer.submit(requestRecord("first"))
             writer.submit(requestRecord("second"))
@@ -44,7 +44,7 @@ class RequestLogWriterTest {
             val writer = RequestLogWriter(
                 scope = scope,
                 insertRecord = { insertCalls.incrementAndGet() },
-                findPrice = { _, _ ->
+                resolvePrice = {
                     lookupCalls.incrementAndGet()
                     throw CancellationException("stop writer")
                 },

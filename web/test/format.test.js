@@ -7,6 +7,7 @@ import {
   formatTokensCompact,
   formatCost,
   formatUnitPrice,
+  formatPriceSummary,
 } from '../src/utils/format.js'
 
 describe('utils: format 格式化工具函数库', () => {
@@ -102,6 +103,37 @@ describe('utils: format 格式化工具函数库', () => {
       assert.equal(formatUnitPrice(1.23456789), '1.23456789')
       assert.equal(formatUnitPrice(null), '—')
       assert.equal(formatUnitPrice(''), '—')
+    })
+  })
+
+  describe('formatPriceSummary', () => {
+    it('格式化 Token 单价', () => {
+      assert.equal(
+        formatPriceSummary({ inputPricePerMillion: '0.15', outputPricePerMillion: '0.6', currency: 'USD' }),
+        '输入 0.15 · 输出 0.6 · USD / 1M',
+      )
+    })
+
+    it('格式化按次费用', () => {
+      assert.equal(
+        formatPriceSummary({ pricingMode: 'per_request', perRequestPrice: '0.04', currency: 'USD' }),
+        '按次 0.04 USD',
+      )
+    })
+
+    it('格式化阶梯计费与总量阶梯计费', () => {
+      assert.equal(
+        formatPriceSummary({ pricingMode: 'tiered', priceTiers: [{}, {}], currency: 'CNY' }),
+        '阶梯价 (2 档) · CNY',
+      )
+      assert.equal(
+        formatPriceSummary({ pricingMode: 'volume', priceTiers: [{}], currency: 'USD' }),
+        '阶梯总量价 (1 档) · USD',
+      )
+    })
+
+    it('空值回退占位符', () => {
+      assert.equal(formatPriceSummary(null), '—')
     })
   })
 })

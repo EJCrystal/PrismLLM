@@ -143,6 +143,10 @@ object ModelPrices : Table("model_prices") {
     val inputPricePerMillion = decimal("input_price_per_million", 18, 8)
     val outputPricePerMillion = decimal("output_price_per_million", 18, 8)
     val cachedInputPricePerMillion = decimal("cached_input_price_per_million", 18, 8).nullable()
+    val cachedInputWritePricePerMillion = decimal("cached_input_write_price_per_million", 18, 8).nullable()
+    val pricingMode = varchar("pricing_mode", 20).default("token")
+    val perRequestPrice = decimal("per_request_price", 18, 8).nullable()
+    val priceTiersJson = text("price_tiers_json").default("[]")
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
 
@@ -150,6 +154,26 @@ object ModelPrices : Table("model_prices") {
     init {
         uniqueIndex(channelId, upstreamModel)
     }
+}
+
+/**
+ * 按对外模型 ID 配置的默认计费单价。渠道内同上游模型的价格优先于默认价。
+ */
+object ModelDefaultPrices : Table("model_default_prices") {
+    val id = varchar("id", 36)
+    val modelId = varchar("model_id", 200).uniqueIndex()
+    val currency = varchar("currency", 8)
+    val inputPricePerMillion = decimal("input_price_per_million", 18, 8)
+    val outputPricePerMillion = decimal("output_price_per_million", 18, 8)
+    val cachedInputPricePerMillion = decimal("cached_input_price_per_million", 18, 8).nullable()
+    val cachedInputWritePricePerMillion = decimal("cached_input_write_price_per_million", 18, 8).nullable()
+    val pricingMode = varchar("pricing_mode", 20).default("token")
+    val perRequestPrice = decimal("per_request_price", 18, 8).nullable()
+    val priceTiersJson = text("price_tiers_json").default("[]")
+    val createdAt = long("created_at")
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(id)
 }
 
 /**
@@ -226,6 +250,7 @@ object RequestLogs : Table("request_logs") {
     val inputTokens = long("input_tokens").nullable()
     val outputTokens = long("output_tokens").nullable()
     val cachedTokens = long("cached_tokens").nullable()
+    val cachedWriteTokens = long("cached_write_tokens").nullable()
     val reasoningTokens = long("reasoning_tokens").nullable()
     val reasoningEffort = varchar("reasoning_effort", 40).nullable()
     val totalTokens = long("total_tokens").nullable()
@@ -235,6 +260,10 @@ object RequestLogs : Table("request_logs") {
     val inputPricePerMillion = decimal("input_price_per_million", 18, 8).nullable()
     val outputPricePerMillion = decimal("output_price_per_million", 18, 8).nullable()
     val cachedInputPricePerMillion = decimal("cached_input_price_per_million", 18, 8).nullable()
+    val cachedInputWritePricePerMillion = decimal("cached_input_write_price_per_million", 18, 8).nullable()
+    val pricingMode = varchar("pricing_mode", 20).default("token")
+    val perRequestPrice = decimal("per_request_price", 18, 8).nullable()
+    val priceTiersJson = text("price_tiers_json").default("[]")
     val errorCode = varchar("error_code", 100).nullable()
     val failureStage = varchar("failure_stage", 20).nullable()
     val errorMessage = text("error_message").nullable()

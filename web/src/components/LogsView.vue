@@ -17,6 +17,7 @@ import {
   formatTokensCompact,
   formatCost as formatCostUtil,
   formatUnitPrice,
+  formatPriceSummary,
 } from '../utils/format'
 
 const { items: logs, pageSize, loading, loadingMore, error, hasMore, load, loadMore, setPageSize } = createCursorPager({
@@ -88,7 +89,7 @@ function costTitle(log) {
     if (!log.usageKnown) return '用量未知，费用无法计算'
     return log.channelId && log.upstreamModel ? '该渠道和上游模型尚未配置计费单价' : '没有可计费的路由信息'
   }
-  return `输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 缓存 ${formatTokens(log.cachedTokens)} · ${log.costCurrency}`
+  return formatPriceSummary(log)
 }
 
 function usageDetailTitle(log) {
@@ -464,11 +465,9 @@ onMounted(load)
                 <strong v-else>{{ selected.usageKnown ? '未配置' : '—' }}</strong>
               </div>
               <div v-if="selected.costAmount != null" class="detail-item">
-                <span>计费单价 / 1M</span>
+                <span>{{ selected.pricingMode === 'per_request' ? '按次费用' : (selected.pricingMode === 'tiered' || selected.pricingMode === 'volume' ? '计费规则' : '计费单价 / 1M') }}</span>
                 <strong class="detail-wrap">
-                  {{ selected.costCurrency }} 输入 {{ formatUnitPrice(selected.inputPricePerMillion) }} · 输出
-                  {{ formatUnitPrice(selected.outputPricePerMillion) }} · 缓存
-                  {{ formatUnitPrice(selected.cachedInputPricePerMillion) }}
+                  {{ formatPriceSummary(selected) }}
                 </strong>
               </div>
             </div>

@@ -2,7 +2,7 @@ name: PR Agent
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, synchronize]
   issue_comment:
     types: [created]
   pull_request_review_comment:
@@ -48,14 +48,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI__KEY: ${{ secrets.LLM_GATEWAY_KEY }}
           OPENAI__API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
-          CONFIG__MODEL: openai/${{ vars.LLM_GATEWAY_REVIEW_MODEL || 'review-model' }}
-          CONFIG__FALLBACK_MODELS: '[]'
+          CONFIG__MODEL: openai/gpt-6-luna
+          CONFIG__FALLBACK_MODELS: '["openai/deepseek-flash", "openai/gemini-3.8-flash"]'
           CONFIG__RESPONSE_LANGUAGE: "zh-CN"
           CONFIG__MAX_MODEL_TOKENS: "96000"
           CONFIG__MAX_OUTPUT_TOKENS: "24000"
           CONFIG__REASONING_EFFORT: "low"
-          CONFIG__ADDITIONAL_REASONING_EFFORT_MODELS: '["deepseek-flash"]'
+          CONFIG__ADDITIONAL_REASONING_EFFORT_MODELS: '["gpt-6-luna", "deepseek-flash", "gemini-3.8-flash"]'
+          CONFIG__RETRY_SAME_MODEL_ON_TIMEOUT: "false"
+          LITELLM__FORCE_STREAMING_CUSTOM_LLM_PROVIDER: "openai"
+          LITELLM__FORCE_STREAMING_API_BASE_SUBSTRINGS: '["/v1"]'
           GITHUB_ACTION_CONFIG__AUTO_REVIEW: "true"
           GITHUB_ACTION_CONFIG__AUTO_DESCRIBE: "false"
           GITHUB_ACTION_CONFIG__AUTO_IMPROVE: "false"
-          GITHUB_ACTION_CONFIG__PR_ACTIONS: '["opened", "reopened", "ready_for_review"]'
+          GITHUB_ACTION_CONFIG__PR_ACTIONS: '["opened", "reopened", "ready_for_review", "synchronize"]'

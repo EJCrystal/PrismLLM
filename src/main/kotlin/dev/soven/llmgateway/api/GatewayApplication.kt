@@ -5,6 +5,8 @@ import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.proxy.GatewayMetrics
 import dev.soven.llmgateway.proxy.RequestLogWriter
 import dev.soven.llmgateway.repo.ModelPriceRepository
+import dev.soven.llmgateway.repo.ModelDefaultPriceRepository
+import dev.soven.llmgateway.proxy.ModelPricingService
 import dev.soven.llmgateway.proxy.UpstreamModelCatalog
 import dev.soven.llmgateway.proxy.ModelPriceReferenceService
 import dev.soven.llmgateway.proxy.CurrencyExchangeService
@@ -88,6 +90,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
+    val modelDefaultPriceRepository = ModelDefaultPriceRepository(databaseFactory.database)
+    val modelPricingService = ModelPricingService(modelPriceRepository, modelDefaultPriceRepository)
     val credentialCipher = CredentialCipher(config.masterKey)
     val sessions = AdminSessions()
     val cooldownStateRepository = CooldownStateRepository(databaseFactory.database)
@@ -98,7 +102,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     )
     val tierSharing = TierSharing()
     val metrics = GatewayMetrics()
-    val requestLogWriter = RequestLogWriter(requestLogRepository, modelPriceRepository, scope)
+    val requestLogWriter = RequestLogWriter(requestLogRepository, modelPricingService, scope)
     val logRetentionService = LogRetentionService(requestLogRepository, config.retention)
     private val logRetentionJob = java.util.concurrent.atomic.AtomicReference<Job?>(null)
     private val logRetentionMutex = Mutex()
