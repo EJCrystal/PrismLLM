@@ -68,7 +68,7 @@ class ModelDefaultPriceRepository(private val database: Database) {
             .limit(1)
             .singleOrNull()
             ?.let(::toVersionRecord)
-            ?: find(normalized)?.toBaselineVersion()
+            ?: find(normalized)?.takeIf { it.effectiveFrom <= asOfTime }?.toBaselineVersion()
     }
 
     suspend fun findScheduled(
@@ -107,16 +107,24 @@ class ModelDefaultPriceRepository(private val database: Database) {
         val modelId = target[ModelDefaultPriceVersions.modelId]
         val deleted = ModelDefaultPriceVersions.deleteWhere { ModelDefaultPriceVersions.id eq versionId } > 0
         if (deleted) {
+            val now = System.currentTimeMillis()
             val active = ModelDefaultPriceVersions.selectAll()
                 .where {
                     (ModelDefaultPriceVersions.modelId eq modelId) and
-                        (ModelDefaultPriceVersions.effectiveFrom lessEq System.currentTimeMillis()) and
+                        (ModelDefaultPriceVersions.effectiveFrom lessEq now) and
                         (ModelDefaultPriceVersions.status neq "cancelled")
                 }
                 .orderBy(ModelDefaultPriceVersions.effectiveFrom to SortOrder.DESC, ModelDefaultPriceVersions.version to SortOrder.DESC)
                 .limit(1)
                 .singleOrNull()
             if (active != null) {
+                val activeVersion = active[ModelDefaultPriceVersions.version]
+                ModelDefaultPriceVersions.update({
+                    (ModelDefaultPriceVersions.modelId eq modelId) and
+                        (ModelDefaultPriceVersions.version eq activeVersion)
+                }) {
+                    it[status] = "active"
+                }
                 ModelDefaultPrices.update({ ModelDefaultPrices.modelId eq modelId }) {
                     it[currency] = active[ModelDefaultPriceVersions.currency]
                     it[inputPricePerMillion] = active[ModelDefaultPriceVersions.inputPricePerMillion]
@@ -126,9 +134,24 @@ class ModelDefaultPriceRepository(private val database: Database) {
                     it[pricingMode] = active[ModelDefaultPriceVersions.pricingMode]
                     it[perRequestPrice] = active[ModelDefaultPriceVersions.perRequestPrice]
                     it[priceTiersJson] = active[ModelDefaultPriceVersions.priceTiersJson]
-                    it[currentVersion] = active[ModelDefaultPriceVersions.version]
+                    it[currentVersion] = activeVersion
                     it[effectiveFrom] = active[ModelDefaultPriceVersions.effectiveFrom]
-                    it[updatedAt] = System.currentTimeMillis()
+                    it[updatedAt] = now
+                }
+            } else {
+                val anyRemaining = ModelDefaultPriceVersions.selectAll()
+                    .where { ModelDefaultPriceVersions.modelId eq modelId }
+                    .orderBy(ModelDefaultPriceVersions.effectiveFrom to SortOrder.ASC)
+                    .limit(1)
+                    .singleOrNull()
+                if (anyRemaining == null) {
+                    ModelDefaultPrices.deleteWhere { ModelDefaultPrices.modelId eq modelId }
+                } else {
+                    ModelDefaultPrices.update({ ModelDefaultPrices.modelId eq modelId }) {
+                        it[currentVersion] = anyRemaining[ModelDefaultPriceVersions.version]
+                        it[effectiveFrom] = anyRemaining[ModelDefaultPriceVersions.effectiveFrom]
+                        it[updatedAt] = now
+                    }
                 }
             }
         }
@@ -179,6 +202,10 @@ class ModelDefaultPriceRepository(private val database: Database) {
         val existing = ModelDefaultPrices.selectAll()
             .where { ModelDefaultPrices.modelId eq normalizedModel }
             .singleOrNull()
+
+        if (existing != null && !isScheduled) {
+            return@suspendTransaction null
+        }
 
         val priceId = if (existing == null) {
             ModelDefaultPrices.insertIgnore {

@@ -73,7 +73,7 @@ class ModelPriceRepository(private val database: Database) {
             .limit(1)
             .singleOrNull()
             ?.let(::toVersionRecord)
-            ?: find(channelId, normalizedModel)?.toBaselineVersion()
+            ?: find(channelId, normalizedModel)?.takeIf { it.effectiveFrom <= asOfTime }?.toBaselineVersion()
     }
 
     suspend fun findScheduled(
@@ -119,29 +119,58 @@ class ModelPriceRepository(private val database: Database) {
         val upstreamModel = target[ModelPriceVersions.upstreamModel]
         val deleted = ModelPriceVersions.deleteWhere { ModelPriceVersions.id eq versionId } > 0
         if (deleted) {
-            val active = ModelPriceVersions.selectAll()
+            val now = System.currentTimeMillis()
+            val remainingActive = ModelPriceVersions.selectAll()
                 .where {
                     (ModelPriceVersions.channelId eq channelId) and
                         (ModelPriceVersions.upstreamModel eq upstreamModel) and
-                        (ModelPriceVersions.effectiveFrom lessEq System.currentTimeMillis()) and
+                        (ModelPriceVersions.effectiveFrom lessEq now) and
                         (ModelPriceVersions.status neq "cancelled")
                 }
                 .orderBy(ModelPriceVersions.effectiveFrom to SortOrder.DESC, ModelPriceVersions.version to SortOrder.DESC)
                 .limit(1)
                 .singleOrNull()
-            if (active != null) {
+            if (remainingActive != null) {
+                val activeVersion = remainingActive[ModelPriceVersions.version]
+                ModelPriceVersions.update({
+                    (ModelPriceVersions.channelId eq channelId) and
+                        (ModelPriceVersions.upstreamModel eq upstreamModel) and
+                        (ModelPriceVersions.version eq activeVersion)
+                }) {
+                    it[status] = "active"
+                }
                 ModelPrices.update({ (ModelPrices.channelId eq channelId) and (ModelPrices.upstreamModel eq upstreamModel) }) {
-                    it[currency] = active[ModelPriceVersions.currency]
-                    it[inputPricePerMillion] = active[ModelPriceVersions.inputPricePerMillion]
-                    it[outputPricePerMillion] = active[ModelPriceVersions.outputPricePerMillion]
-                    it[cachedInputPricePerMillion] = active[ModelPriceVersions.cachedInputPricePerMillion]
-                    it[cachedInputWritePricePerMillion] = active[ModelPriceVersions.cachedInputWritePricePerMillion]
-                    it[pricingMode] = active[ModelPriceVersions.pricingMode]
-                    it[perRequestPrice] = active[ModelPriceVersions.perRequestPrice]
-                    it[priceTiersJson] = active[ModelPriceVersions.priceTiersJson]
-                    it[currentVersion] = active[ModelPriceVersions.version]
-                    it[effectiveFrom] = active[ModelPriceVersions.effectiveFrom]
-                    it[updatedAt] = System.currentTimeMillis()
+                    it[currency] = remainingActive[ModelPriceVersions.currency]
+                    it[inputPricePerMillion] = remainingActive[ModelPriceVersions.inputPricePerMillion]
+                    it[outputPricePerMillion] = remainingActive[ModelPriceVersions.outputPricePerMillion]
+                    it[cachedInputPricePerMillion] = remainingActive[ModelPriceVersions.cachedInputPricePerMillion]
+                    it[cachedInputWritePricePerMillion] = remainingActive[ModelPriceVersions.cachedInputWritePricePerMillion]
+                    it[pricingMode] = remainingActive[ModelPriceVersions.pricingMode]
+                    it[perRequestPrice] = remainingActive[ModelPriceVersions.perRequestPrice]
+                    it[priceTiersJson] = remainingActive[ModelPriceVersions.priceTiersJson]
+                    it[currentVersion] = activeVersion
+                    it[effectiveFrom] = remainingActive[ModelPriceVersions.effectiveFrom]
+                    it[updatedAt] = now
+                }
+            } else {
+                val anyRemaining = ModelPriceVersions.selectAll()
+                    .where {
+                        (ModelPriceVersions.channelId eq channelId) and
+                            (ModelPriceVersions.upstreamModel eq upstreamModel)
+                    }
+                    .orderBy(ModelPriceVersions.effectiveFrom to SortOrder.ASC)
+                    .limit(1)
+                    .singleOrNull()
+                if (anyRemaining == null) {
+                    ModelPrices.deleteWhere {
+                        (ModelPrices.channelId eq channelId) and (ModelPrices.upstreamModel eq upstreamModel)
+                    }
+                } else {
+                    ModelPrices.update({ (ModelPrices.channelId eq channelId) and (ModelPrices.upstreamModel eq upstreamModel) }) {
+                        it[currentVersion] = anyRemaining[ModelPriceVersions.version]
+                        it[effectiveFrom] = anyRemaining[ModelPriceVersions.effectiveFrom]
+                        it[updatedAt] = now
+                    }
                 }
             }
         }
@@ -160,7 +189,7 @@ class ModelPriceRepository(private val database: Database) {
         perRequestPrice: BigDecimal? = null,
         priceTiers: List<ModelPriceTier> = emptyList(),
         effectiveAt: Long? = null,
-    ): ModelPriceRecord = suspendTransaction(database) {
+    ): ModelPriceRecord? = suspendTransaction(database) {
         val id = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
         val effectiveFrom = effectiveAt?.takeIf { it > 0 } ?: now
@@ -194,6 +223,10 @@ class ModelPriceRepository(private val database: Database) {
         val existing = ModelPrices.selectAll()
             .where { (ModelPrices.channelId eq channelId) and (ModelPrices.upstreamModel eq normalizedModel) }
             .singleOrNull()
+
+        if (existing != null && !isScheduled) {
+            return@suspendTransaction null
+        }
 
         val priceId = if (existing == null) {
             ModelPrices.insert {

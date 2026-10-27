@@ -3338,7 +3338,7 @@ class GatewayIntegrationTest {
         )
         // 预定 1 小时后生效的 v2 价格（单价提高）
         app.modelPriceRepository.update(
-            id = v1Price.id,
+            id = v1Price!!.id,
             channelId = channel.id,
             upstreamModel = "gpt-4o-mini",
             currency = "USD",
@@ -3371,6 +3371,68 @@ class GatewayIntegrationTest {
             assertEquals(2, futureEffective?.priceVersion)
             assertEquals(0, futureEffective?.inputPricePerMillion?.compareTo(BigDecimal("5.0")))
             assertEquals(0, futureEffective?.outputPricePerMillion?.compareTo(BigDecimal("10.0")))
+        }
+    }
+
+    @Test
+    fun `initial scheduled price is not effective prematurely and deleting active version rolls back`() = runBlocking {
+        val now = System.currentTimeMillis()
+        // 1. 首次创建即指定未来时间
+        app.modelDefaultPriceRepository.create(
+            modelId = "sched-new-model",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("10.0"),
+            outputPricePerMillion = BigDecimal("20.0"),
+            effectiveAt = now + 3_600_000L,
+        )
+        // 生效时间前解析返回 null（未定价）
+        assertNull(app.modelDefaultPriceRepository.findEffective("sched-new-model", asOfTime = now))
+        // 生效时间后解析正常命中
+        val effectiveLater = app.modelDefaultPriceRepository.findEffective("sched-new-model", asOfTime = now + 3_600_001L)
+        assertNotNull(effectiveLater)
+        assertEquals(1, effectiveLater.version)
+
+        // 2. 版本回退：创建 v1，更新为 v2，删除 v2 后回退到 v1
+        val v1 = app.modelDefaultPriceRepository.create(
+            modelId = "rollback-model",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("1.0"),
+            outputPricePerMillion = BigDecimal("2.0"),
+        )!!
+        assertEquals(1, v1.currentVersion)
+
+        val v2 = app.modelDefaultPriceRepository.update(
+            id = v1.id,
+            modelId = "rollback-model",
+            currency = "USD",
+            inputPricePerMillion = BigDecimal("3.0"),
+            outputPricePerMillion = BigDecimal("6.0"),
+        )!!
+        assertEquals(2, v2.currentVersion)
+
+        val v2VersionRecord = app.modelDefaultPriceRepository.listVersions("rollback-model").first { it.version == 2 }
+        app.modelDefaultPriceRepository.deleteVersion(v2VersionRecord.id)
+
+        val rolledBack = app.modelDefaultPriceRepository.find("rollback-model")!!
+        assertEquals(1, rolledBack.currentVersion)
+        assertEquals(0, rolledBack.inputPricePerMillion.compareTo(BigDecimal("1.0")))
+
+        // 3. 更新模型默认价并验证改名与版本递增
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            val renameUpdate = client.put("/admin/api/model-default-prices/${v1.id}") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"renamed-model-id","currency":"USD","inputPricePerMillion":"5","outputPricePerMillion":"5"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, renameUpdate.status)
+            assertEquals("renamed-model-id", app.modelDefaultPriceRepository.findById(v1.id)?.modelId)
         }
     }
 
@@ -3807,13 +3869,15 @@ class GatewayIntegrationTest {
         input: String,
         output: String,
         cached: String? = null,
-    ) = app.modelPriceRepository.create(
-        channelId = channel.id,
-        upstreamModel = upstreamModel,
-        currency = "USD",
-        inputPricePerMillion = BigDecimal(input),
-        outputPricePerMillion = BigDecimal(output),
-        cachedInputPricePerMillion = cached?.let(::BigDecimal),
+    ) = checkNotNull(
+        app.modelPriceRepository.create(
+            channelId = channel.id,
+            upstreamModel = upstreamModel,
+            currency = "USD",
+            inputPricePerMillion = BigDecimal(input),
+            outputPricePerMillion = BigDecimal(output),
+            cachedInputPricePerMillion = cached?.let(::BigDecimal),
+        ),
     )
 
     private suspend fun createDefaultPrice(

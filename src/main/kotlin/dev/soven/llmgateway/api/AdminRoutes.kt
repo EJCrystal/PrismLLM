@@ -593,6 +593,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val request = call.receive<ModelDefaultPriceRequest>()
             val price = validateDefaultModelPrice(request)
             app.modelDefaultPriceRepository.findById(id) ?: throw notFound("model_default_price_not_found", "模型默认单价不存在")
+            val duplicate = app.modelDefaultPriceRepository.find(price.modelId)
+            if (duplicate != null && duplicate.id != id) {
+                throw conflict("model_default_price_exists", "该模型的默认单价已存在")
+            }
             val updated = try {
                 app.modelDefaultPriceRepository.update(
                     id = id,
@@ -685,7 +689,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 perRequestPrice = price.values.perRequest,
                 priceTiers = price.values.priceTiers,
                 effectiveAt = price.values.effectiveAt,
-            )
+            ) ?: throw conflict("model_price_exists", "该渠道和上游模型的计费单价已存在")
             val scheduled = app.modelPriceRepository.findScheduled(record.channelId, record.upstreamModel)
             call.respond(HttpStatusCode.Created, record.toResponse(scheduled))
         }

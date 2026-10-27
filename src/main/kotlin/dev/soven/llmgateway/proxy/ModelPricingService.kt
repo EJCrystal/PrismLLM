@@ -51,11 +51,12 @@ class ModelPricingService(
         asOfTime: Long = System.currentTimeMillis(),
     ): ResolvedModelPrice? {
         if (channelId != null && upstreamModel != null) {
+            val primaryPrice = channelPriceRepository.find(channelId, upstreamModel)
             channelPriceRepository.findEffective(channelId, upstreamModel, asOfTime)?.let { version ->
                 return ResolvedModelPrice(
                     source = ModelPriceSource.CHANNEL_OVERRIDE,
                     modelId = modelId?.trim()?.takeIf { it.isNotEmpty() } ?: upstreamModel.trim(),
-                    channelPriceId = version.channelId,
+                    channelPriceId = primaryPrice?.id ?: version.id,
                     priceVersion = version.version,
                     priceVersionId = version.id,
                     currency = version.currency,
@@ -75,11 +76,12 @@ class ModelPricingService(
             upstreamModel?.trim()?.takeIf { it.isNotEmpty() },
         ).distinct()
         for (defaultModelId in defaultModelIds) {
+            val primaryPrice = defaultPriceRepository.find(defaultModelId)
             defaultPriceRepository.findEffective(defaultModelId, asOfTime)?.let { version ->
                 return ResolvedModelPrice(
                     source = ModelPriceSource.MODEL_DEFAULT,
                     modelId = version.modelId,
-                    defaultPriceId = version.id,
+                    defaultPriceId = primaryPrice?.id ?: version.id,
                     priceVersion = version.version,
                     priceVersionId = version.id,
                     currency = version.currency,
