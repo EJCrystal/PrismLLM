@@ -210,19 +210,31 @@ export function parseOptionalNonNegativePrice(value) {
 }
 
 /** Validate the active pricing strategy before sending it to the API. */
-export function priceFormError(form) {
+export function priceFormError(form, options = {}) {
   const mode = form?.pricingMode || 'token'
+  const batchAction = options.action === 'batch'
   const optionalFields = mode === 'token'
     ? ['cachedInputPricePerMillion', 'cachedInputWritePricePerMillion']
     : []
   if (mode === 'token') {
+    if (batchAction &&
+      (!String(form.inputPricePerMillion ?? '').trim() || !String(form.outputPricePerMillion ?? '').trim())
+    ) {
+      return '请先填写输入单价和输出单价，再批量套用'
+    }
     if (parseNonNegativePrice(form.inputPricePerMillion) == null || parseNonNegativePrice(form.outputPricePerMillion) == null) {
       return '输入和输出单价必须是非负数字'
     }
   } else if (mode === 'per_request') {
+    if (batchAction && !String(form.perRequestPrice ?? '').trim()) {
+      return '请先填写按次费用，再批量套用'
+    }
     if (parseNonNegativePrice(form.perRequestPrice) == null) return '按次费用必须是非负数字'
   } else if (mode === 'tiered' || mode === 'volume') {
     const tiers = Array.isArray(form.priceTiers) ? form.priceTiers : []
+    if (batchAction && tiers.length === 0) {
+      return '请先添加阶梯价格，再批量套用'
+    }
     if (tiers.length === 0 || tiers.length > 20) return '请添加 1 到 20 个价格档位'
     let previous = 0
     for (let index = 0; index < tiers.length; index += 1) {

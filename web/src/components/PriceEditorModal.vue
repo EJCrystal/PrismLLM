@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
@@ -37,6 +37,7 @@ const saving = ref(false)
 const activePrice = ref(props.price)
 const batchOpen = ref(false)
 const batchSelected = ref([])
+const batchPanel = ref(null)
 const showVersions = ref(false)
 const loadingVersions = ref(false)
 const versionHistory = ref([])
@@ -54,6 +55,7 @@ const form = reactive({
 })
 
 const currentChannelName = computed(() => channelDisplayName(props.channels, form.channelId))
+const batchPriceSummary = computed(() => hasPriceDraft(form) ? formatPriceSummary(form) : '尚未填写价格')
 
 function referenceDraftKey() {
   return [
@@ -295,6 +297,13 @@ function toggleBatchAll() {
   }
 }
 
+async function toggleBatch() {
+  batchOpen.value = !batchOpen.value
+  if (!batchOpen.value) return
+  await nextTick()
+  batchPanel.value?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
 function priceSourceLabel(model) {
   if (model?.price) return '渠道覆盖'
   if (model?.defaultPrice) return '默认价'
@@ -396,7 +405,7 @@ async function applyBatch() {
     notify('请至少选择一个模型', 'warning')
     return
   }
-  const validationError = priceFormError(form)
+  const validationError = priceFormError(form, { action: 'batch' })
   if (validationError) {
     notify(validationError, 'error')
     return
@@ -431,7 +440,7 @@ async function applyBatch() {
             <span class="muted small"> · {{ channelPrices.length }} 个模型</span>
           </div>
           <div class="price-configured-actions">
-            <button type="button" class="button ghost mini" @click="batchOpen = !batchOpen">批量套用</button>
+            <button type="button" class="button ghost mini" @click="toggleBatch">批量套用</button>
             <button type="button" class="button ghost mini" @click="startNewPrice">新增单价</button>
           </div>
         </div>
@@ -451,28 +460,6 @@ async function applyBatch() {
           </button>
         </div>
         <p v-else class="muted small price-configured-empty">该渠道还没有渠道覆盖价，模型会继承默认价（如有）。</p>
-        <div v-if="batchOpen" class="price-batch">
-          <div class="price-batch-head">
-            <strong>批量套用当前金额</strong>
-            <span class="muted small">将上方填写的币种和单价应用到所选上游模型，已有渠道价会被覆盖。</span>
-          </div>
-          <div v-if="channelModelOptions.length" class="price-batch-list">
-            <label v-for="model in channelModelOptions" :key="model.id" class="price-batch-item">
-              <input v-model="batchSelected" type="checkbox" :value="model.id" />
-              <code>{{ model.id }}</code>
-              <span class="badge" :class="priceSourceClass(model)">{{ priceSourceLabel(model) }}</span>
-            </label>
-          </div>
-          <p v-else class="muted small price-configured-empty">当前渠道没有可批量套用的模型。</p>
-          <div class="price-batch-actions">
-            <button type="button" class="button ghost mini" @click="toggleBatchAll">
-              {{ allBatchSelected ? '取消全选' : '全选' }}
-            </button>
-            <button type="button" class="button primary mini" :disabled="saving || batchSelected.length === 0" @click="applyBatch">
-              套用到 {{ batchSelected.length }} 个模型
-            </button>
-          </div>
-        </div>
       </div>
       <label class="field" for="price-upstream-model">
         <span>上游模型</span>
@@ -536,6 +523,32 @@ async function applyBatch() {
         <small>获取参考价会切换为 USD。</small>
       </label>
       <PriceFields :form="form" :has-current-price="Boolean(activePrice?.id || inheritedPrice)" />
+
+      <div v-if="batchOpen" ref="batchPanel" class="price-batch">
+        <div class="price-batch-head">
+          <div>
+            <strong>批量套用当前价格</strong>
+            <span class="muted small">使用上方已经填写的计费规则，覆盖所选模型的渠道价。</span>
+          </div>
+          <strong class="price-batch-rate">{{ batchPriceSummary }}</strong>
+        </div>
+        <div v-if="channelModelOptions.length" class="price-batch-list">
+          <label v-for="model in channelModelOptions" :key="model.id" class="price-batch-item">
+            <input v-model="batchSelected" type="checkbox" :value="model.id" />
+            <code>{{ model.id }}</code>
+            <span class="badge" :class="priceSourceClass(model)">{{ priceSourceLabel(model) }}</span>
+          </label>
+        </div>
+        <p v-else class="muted small price-configured-empty">当前渠道没有可批量套用的模型。</p>
+        <div class="price-batch-actions">
+          <button type="button" class="button ghost mini" @click="toggleBatchAll">
+            {{ allBatchSelected ? '取消全选' : '全选' }}
+          </button>
+          <button type="button" class="button primary mini" :disabled="saving || batchSelected.length === 0" @click="applyBatch">
+            套用到 {{ batchSelected.length }} 个模型
+          </button>
+        </div>
+      </div>
 
       <div v-if="activePrice?.scheduledVersion" class="callout warning price-scheduled-banner">
         <div class="scheduled-banner-info">

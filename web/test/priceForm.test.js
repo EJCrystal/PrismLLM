@@ -242,6 +242,23 @@ describe('priceForm: 计费单价的币种与金额', () => {
     )
   })
 
+  it('批量套用在金额未填写时给出明确的填写提示', () => {
+    assert.equal(
+      priceFormError(
+        { pricingMode: 'token', inputPricePerMillion: '', outputPricePerMillion: '' },
+        { action: 'batch' },
+      ),
+      '请先填写输入单价和输出单价，再批量套用',
+    )
+    assert.equal(
+      priceFormError(
+        { pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2' },
+        { action: 'batch' },
+      ),
+      null,
+    )
+  })
+
   it('构建定时生效请求体', () => {
     const scheduledPayload = buildPricePayload({
       currency: 'USD',
