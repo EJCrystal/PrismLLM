@@ -2,8 +2,15 @@ name: CI
 
 on:
   pull_request:
+    # Docs-only changes do not need the backend/frontend test suite.
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
 
 permissions:
   contents: read
