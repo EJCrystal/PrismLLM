@@ -6,6 +6,9 @@ import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.proxy.BillingCalculator
+import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
+import dev.soven.llmgateway.quota.ChannelKeyRateLimitLease
+import dev.soven.llmgateway.quota.ChannelKeyRateLimitReason
 import dev.soven.llmgateway.quota.RequestLimitLease
 import dev.soven.llmgateway.quota.quotaTokensFromUsage
 import dev.soven.llmgateway.proxy.ReasoningEffort
@@ -198,11 +201,24 @@ private suspend fun handleProxy(
         var lastError: GatewayException? = null
         var retryFrom: String? = null
         var retryReason: String? = null
+        var rateLimitRetryAfterMs: Long? = null
+        var rateLimitReason: ChannelKeyRateLimitReason? = null
+        fun rememberRateLimitDenial(decision: ChannelKeyRateLimitDecision.Denied) {
+            val current = rateLimitRetryAfterMs
+            if (current == null || decision.retryAfterMs < current) {
+                rateLimitRetryAfterMs = decision.retryAfterMs
+                rateLimitReason = decision.reason
+            }
+        }
 
         /**
          * 尝试单个候选并把结果记入冷却。返回 null 表示响应已完成，返回异常交由外层决定是否继续。
          */
-        suspend fun runAttempt(candidate: RouteCandidate, permit: CooldownPermit): GatewayException? {
+        suspend fun runAttempt(
+            candidate: RouteCandidate,
+            permit: CooldownPermit,
+            rateLimitLease: ChannelKeyRateLimitLease?,
+        ): GatewayException? = try {
             val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
             if (remainingMs <= 0) {
                 app.candidateCooldown.release(permit)
@@ -227,7 +243,7 @@ private suspend fun handleProxy(
                 retryFrom = null
                 retryReason = null
             }
-            return try {
+            try {
                 app.keyAvailabilityGate.withReader(candidate.key.id) {
                     if (!app.keyAutoDisableRepository.isAvailable(candidate.key)) {
                         throw CandidateUnavailableException()
@@ -320,6 +336,8 @@ private suspend fun handleProxy(
                 app.candidateCooldown.release(permit)
                 throw e
             }
+        } finally {
+            app.channelKeyRateLimiter.release(rateLimitLease)
         }
 
         var index = 0
@@ -333,7 +351,14 @@ private suspend fun handleProxy(
                 continue
             }
             index++
-            val error = runAttempt(candidate, permit)
+            val rateDecision = app.channelKeyRateLimiter.acquire(candidate.key)
+            if (rateDecision is ChannelKeyRateLimitDecision.Denied) {
+                app.candidateCooldown.release(permit)
+                app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, rateDecision.reason.metricValue)
+                rememberRateLimitDenial(rateDecision)
+                continue
+            }
+            val error = runAttempt(candidate, permit, (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease)
             if (error == null) return
             if (error.code != "no_candidate") lastError = error
             if (error.code == "no_candidate") continue
@@ -348,13 +373,32 @@ private suspend fun handleProxy(
             if (candidate !in blockedSet) continue
             if (upstreamAttempts >= app.config.maxAttempts) break
             val permit = app.candidateCooldown.forceAcquire(candidate.channel.id, candidate.key.id, candidate.upstreamModel)
-            val error = runAttempt(candidate, permit)
+            val rateDecision = app.channelKeyRateLimiter.acquire(candidate.key)
+            if (rateDecision is ChannelKeyRateLimitDecision.Denied) {
+                app.candidateCooldown.release(permit)
+                app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, rateDecision.reason.metricValue)
+                rememberRateLimitDenial(rateDecision)
+                continue
+            }
+            val error = runAttempt(candidate, permit, (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease)
             if (error == null) return
             if (error.code != "no_candidate") lastError = error
             if (error.code == "no_candidate") continue
             if (!error.retryable || state.committed || upstreamAttempts >= app.config.maxAttempts) throw error
             retryFrom = candidate.channel.name
             retryReason = error.code
+        }
+        if (lastError == null && rateLimitRetryAfterMs != null) {
+            throw GatewayException(
+                HttpStatusCode.TooManyRequests,
+                "upstream_key_rate_limit_exceeded",
+                when (rateLimitReason) {
+                    ChannelKeyRateLimitReason.CONCURRENCY -> "上游密钥分组并发请求数已达上限"
+                    else -> "上游密钥分组每分钟请求数已达上限"
+                },
+                "rate_limit_error",
+                retryAfterMs = rateLimitRetryAfterMs,
+            )
         }
         throw lastError ?: GatewayException(
             HttpStatusCode.BadGateway,

@@ -4,6 +4,7 @@ import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
@@ -266,6 +267,100 @@ class GatewayIntegrationTest {
             assertEquals(2, log.upstreamAttempts)
             assertTrue(app.metrics.scrape().contains("gateway_upstream_retries_total"))
         }
+    }
+
+    @Test
+    fun `channel key RPM is shared across models and returns retry after`() = runBlocking {
+        val policy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1)
+        val channel = app.channelRepository.create(
+            name = "shared-key-rpm",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "group-a",
+                    credential = app.credentialCipher.encrypt("shared-secret"),
+                    models = listOf("m1", "m2"),
+                    rateLimit = policy,
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1", "m2"),
+        )
+        createAlias("limited-model-one", channel to "m1")
+        createAlias("limited-model-two", channel to "m2")
+        val clientKey = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val first = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"limited-model-one","messages":[]}""")
+            }
+            val second = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"limited-model-two","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, first.status)
+            assertEquals(HttpStatusCode.TooManyRequests, second.status)
+            assertTrue(second.bodyAsText().contains("upstream_key_rate_limit_exceeded"))
+            assertTrue(second.headers[HttpHeaders.RetryAfter]?.toLongOrNull()?.let { it >= 1 } == true)
+            awaitRequestLogCount(2)
+            assertEquals(0, scalarInt("select count(*) from channel_key_health"))
+        }
+
+        assertEquals(1, fake.requests.size)
+    }
+
+    @Test
+    fun `rate limited primary key falls back to an unlimited backup key`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "rate-limit-fallback",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "primary",
+                    credential = app.credentialCipher.encrypt("primary-secret"),
+                    priority = 1,
+                    models = listOf("m1"),
+                    rateLimit = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1),
+                ),
+                NewChannelKey(
+                    name = "backup",
+                    credential = app.credentialCipher.encrypt("backup-secret"),
+                    priority = 2,
+                    models = listOf("m1"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        createAlias("rate-limit-fallback", channel to "m1")
+        val clientKey = createClientKey()
+        app.channelKeyRateLimiter.acquire(channel.keys.first { it.name == "primary" })
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"rate-limit-fallback","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog()
+            assertEquals("backup", log.channelKeyName)
+            assertEquals(1, log.upstreamAttempts)
+            assertTrue(app.metrics.scrape().contains("gateway_upstream_key_rate_limit_skips_total"))
+            assertEquals(0, scalarInt("select count(*) from channel_key_health"))
+        }
+
+        assertEquals("Bearer backup-secret", fake.requests.single().authorization)
     }
 
     @Test
@@ -3313,6 +3408,102 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `channel key rate limits persist update and cascade on key deletion`() = runBlocking {
+        val initialPolicy = ChannelKeyRateLimitPolicy(
+            enabled = true,
+            requestsPerMinute = 60,
+            maxConcurrentRequests = 3,
+        )
+        val channel = app.channelRepository.create(
+            name = "rate-limit-persistence",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "group-a",
+                    credential = app.credentialCipher.encrypt("upstream-secret"),
+                    models = listOf("m1"),
+                    rateLimit = initialPolicy,
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        assertEquals(initialPolicy, channel.keys.single().rateLimit)
+
+        val disabledPolicy = ChannelKeyRateLimitPolicy(
+            enabled = false,
+            requestsPerMinute = 120,
+            maxConcurrentRequests = 5,
+        )
+        val updated = app.channelRepository.update(
+            id = channel.id,
+            name = channel.name,
+            baseUrl = channel.baseUrl,
+            keys = listOf(
+                ChannelKeyUpdate(
+                    id = channel.keys.single().id,
+                    name = "group-a",
+                    enabled = true,
+                    priority = 1,
+                    models = listOf("m1"),
+                    rateLimit = disabledPolicy,
+                ),
+            ),
+            authType = channel.authType,
+            protocols = channel.protocols,
+            enabled = true,
+        )
+        assertEquals(disabledPolicy, updated?.keys?.single()?.rateLimit)
+        assertFalse(updated!!.keys.single().rateLimit.configured)
+
+        assertTrue(app.channelRepository.delete(channel.id))
+        assertEquals(0, scalarInt("select count(*) from channel_key_rate_limits"))
+    }
+
+    @Test
+    fun `legacy channel update preserves an existing key rate limit`() = runBlocking {
+        val policy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 30)
+        val channel = app.channelRepository.create(
+            name = "legacy-rate-limit-update",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "默认密钥",
+                    credential = app.credentialCipher.encrypt("old-secret"),
+                    models = listOf("m1"),
+                    rateLimit = policy,
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.put("/admin/api/channels/${channel.id}") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"legacy-rate-limit-update","baseUrl":"${fake.baseUrl}/ok/v1","credential":"new-secret","authType":"bearer","protocols":["chat_completions"],"enabled":true,"modelMappings":[{"upstreamModel":"m1"}]}""",
+                )
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val responseRateLimit = Json.parseToJsonElement(response.bodyAsText())
+                .jsonObject["keys"]!!.jsonArray.single().jsonObject["rateLimit"]!!.jsonObject
+            assertTrue(responseRateLimit["enabled"]!!.jsonPrimitive.content.toBoolean())
+            assertEquals(30, responseRateLimit["requestsPerMinute"]!!.jsonPrimitive.content.toInt())
+            assertEquals(policy, app.channelRepository.find(channel.id)?.keys?.single()?.rateLimit)
+        }
+    }
+
+    @Test
     fun `migrations tolerate duplicate rows`() {
         val databaseName = "migration_latest_${System.nanoTime()}"
         val migrationUrl = postgres.jdbcUrl.substringBefore("?").substringBeforeLast("/") + "/$databaseName"
@@ -3412,7 +3603,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("30", result.getString(1))
+                        assertEquals("31", result.getString(1))
                     }
                     statement.executeQuery("select enabled, auth_failure_threshold, failure_threshold, failure_window_minutes from key_auto_disable_settings where id = 1").use { result ->
                         assertTrue(result.next())
@@ -3450,6 +3641,12 @@ class GatewayIntegrationTest {
                     ).use { result ->
                         assertTrue(result.next())
                         assertEquals(1, result.getInt(1), "V28 应创建 model_test_settings 表")
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.tables where table_name = 'channel_key_rate_limits'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V31 应创建 channel_key_rate_limits 表")
                     }
                     statement.executeQuery(
                         "select count(*) from information_schema.tables where table_name = 'model_price_versions'",
@@ -4626,4 +4823,14 @@ class GatewayIntegrationTest {
             }
         }
     }
+
+    private fun scalarInt(sql: String): Int =
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery(sql).use { result ->
+                    check(result.next()) { "query returned no rows: $sql" }
+                    result.getInt(1)
+                }
+            }
+        }
 }

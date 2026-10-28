@@ -17,6 +17,30 @@ data class ChannelModelRecord(
 )
 
 /**
+ * 渠道密钥对应上游分组的主动限流规则。规则作用于该密钥支持的全部模型。
+ */
+data class ChannelKeyRateLimitPolicy(
+    val enabled: Boolean = false,
+    val requestsPerMinute: Int? = null,
+    val maxConcurrentRequests: Int? = null,
+) {
+    init {
+        require(requestsPerMinute == null || requestsPerMinute in 1..1_000_000) {
+            "每分钟请求数必须在 1..1000000 之间"
+        }
+        require(maxConcurrentRequests == null || maxConcurrentRequests in 1..100_000) {
+            "最大并发请求数必须在 1..100000 之间"
+        }
+        require(!enabled || requestsPerMinute != null || maxConcurrentRequests != null) {
+            "启用限流时至少需要配置每分钟请求数或最大并发请求数"
+        }
+    }
+
+    val configured: Boolean
+        get() = enabled && (requestsPerMinute != null || maxConcurrentRequests != null)
+}
+
+/**
  * 渠道下的上游密钥。凭据只以密文形式存在，模型集合表示该密钥可调用的上游模型。
  */
 data class ChannelKeyRecord(
@@ -29,6 +53,7 @@ data class ChannelKeyRecord(
     val enabled: Boolean,
     val priority: Int,
     val models: List<String> = emptyList(),
+    val rateLimit: ChannelKeyRateLimitPolicy = ChannelKeyRateLimitPolicy(),
     val createdAt: Long,
     val updatedAt: Long,
     val stateVersion: Long = 0,

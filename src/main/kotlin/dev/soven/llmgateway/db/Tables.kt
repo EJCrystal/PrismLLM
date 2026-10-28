@@ -57,6 +57,17 @@ object ChannelKeyModels : Table("channel_key_models") {
     override val primaryKey = PrimaryKey(keyId, upstreamModel)
 }
 
+/** 渠道密钥对应上游分组的主动限流规则。未配置行表示不限制。 */
+object ChannelKeyRateLimits : Table("channel_key_rate_limits") {
+    val keyId = varchar("key_id", 36).references(ChannelKeys.id, onDelete = ReferenceOption.CASCADE)
+    val enabled = bool("enabled")
+    val requestsPerMinute = integer("requests_per_minute").nullable()
+    val maxConcurrentRequests = integer("max_concurrent_requests").nullable()
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(keyId)
+}
+
 /** 自动禁用统计按密钥聚合，规则修改后通过 revision 开始新一轮计数。 */
 object ChannelKeyHealth : Table("channel_key_health") {
     val keyId = varchar("key_id", 36).references(ChannelKeys.id, onDelete = ReferenceOption.CASCADE)

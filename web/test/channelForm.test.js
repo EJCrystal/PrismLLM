@@ -139,8 +139,14 @@ describe('channelForm: 渠道保存请求体', () => {
     )
 
     assert.deepEqual(payload.keys, [
-      { id: 'key-1', name: 'primary', credential: null, enabled: true, priority: 1, models: ['m1'] },
-      { id: null, name: 'backup', credential: 'secret', enabled: false, priority: 2, models: ['m2'] },
+      {
+        id: 'key-1', name: 'primary', credential: null, enabled: true, priority: 1, models: ['m1'],
+        rateLimit: { enabled: false, requestsPerMinute: null, maxConcurrentRequests: null },
+      },
+      {
+        id: null, name: 'backup', credential: 'secret', enabled: false, priority: 2, models: ['m2'],
+        rateLimit: { enabled: false, requestsPerMinute: null, maxConcurrentRequests: null },
+      },
     ])
   })
 
@@ -151,5 +157,30 @@ describe('channelForm: 渠道保存请求体', () => {
     assert.equal(payload.keys[0].stateVersion, 0)
     assert.equal(payload.keys[0].enabled, false)
     assert.equal(payload.keys[0].credential, null)
+    assert.deepEqual(payload.keys[0].rateLimit, {
+      enabled: false,
+      requestsPerMinute: null,
+      maxConcurrentRequests: null,
+    })
+  })
+
+  it('提交渠道密钥的 RPM 和最大并发规则', () => {
+    const payload = buildChannelPayload(baseForm, ['m1'], {}, {}, [
+      {
+        id: 'key-1',
+        name: 'primary',
+        credential: '',
+        enabled: true,
+        priority: 1,
+        models: ['m1'],
+        rateLimit: { enabled: true, requestsPerMinute: 60, maxConcurrentRequests: 3 },
+      },
+    ])
+
+    assert.deepEqual(payload.keys[0].rateLimit, {
+      enabled: true,
+      requestsPerMinute: 60,
+      maxConcurrentRequests: 3,
+    })
   })
 })

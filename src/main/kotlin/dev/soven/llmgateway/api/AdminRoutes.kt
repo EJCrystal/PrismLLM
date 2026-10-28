@@ -2,6 +2,7 @@ package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ModelPriceTier
@@ -490,6 +491,15 @@ fun Route.adminRoutes(app: GatewayApplication) {
             updated.keys.filter { key ->
                 existing.keys.firstOrNull { it.id == key.id }?.stateVersion != key.stateVersion
             }.forEach { app.candidateCooldown.clearKey(updated.id, it.id) }
+            val previousById = existing.keys.associateBy { it.id }
+            updated.keys.forEach { key ->
+                if (previousById[key.id]?.rateLimit != key.rateLimit) {
+                    app.channelKeyRateLimiter.updatePolicy(updated.id, key.id, key.rateLimit)
+                }
+            }
+            (existing.keys.map { it.id }.toSet() - updated.keys.map { it.id }.toSet()).forEach { keyId ->
+                app.channelKeyRateLimiter.clearKey(updated.id, keyId)
+            }
             call.respond(updated.toResponse())
         }
 
@@ -499,7 +509,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (app.aliasRepository.isChannelInUse(id)) {
                 throw conflict("channel_in_use", "渠道仍被模型别名引用，不能删除")
             }
+            val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
             if (!app.channelRepository.delete(id)) throw notFound("channel_not_found", "渠道不存在")
+            channel.keys.forEach { app.channelKeyRateLimiter.clearKey(channel.id, it.id) }
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -1029,6 +1041,7 @@ private fun normalizeNewKeys(
             enabled = key.enabled,
             priority = key.priority,
             models = key.models,
+            rateLimit = key.rateLimit ?: ChannelKeyRateLimitPolicy(),
         )
     }
 }
@@ -1064,6 +1077,8 @@ private fun normalizeUpdatedKeys(
                 enabled = key.enabled,
                 priority = key.priority,
                 models = key.models,
+                rateLimit = key.rateLimit ?: existing.keys.firstOrNull { it.id == key.id }?.rateLimit
+                    ?: ChannelKeyRateLimitPolicy(),
                 stateVersion = key.stateVersion,
             )
         }
@@ -1079,6 +1094,7 @@ private fun normalizeUpdatedKeys(
             enabled = current.enabled,
             priority = current.priority,
             models = if (modelMappings != null) channelModels.toList() else current.models,
+            rateLimit = current.rateLimit,
             stateVersion = current.stateVersion,
         ),
     )
@@ -1091,6 +1107,7 @@ private data class NormalizedKey(
     val enabled: Boolean,
     val priority: Int,
     val models: List<String>,
+    val rateLimit: ChannelKeyRateLimitPolicy?,
     val stateVersion: Long?,
 )
 
@@ -1123,6 +1140,7 @@ private fun normalizeKeys(
             }
         }
         if (models.isEmpty()) throw badRequest("invalid_channel", "密钥「$name」至少需要授权一个模型")
+        val rateLimit = key.rateLimit?.let { normalizeChannelKeyRateLimit(it, name) }
         NormalizedKey(
             id = keyId,
             name = name,
@@ -1130,9 +1148,23 @@ private fun normalizeKeys(
             enabled = key.enabled,
             priority = priority,
             models = models,
+            rateLimit = rateLimit,
             stateVersion = key.stateVersion,
         )
     }
+}
+
+private fun normalizeChannelKeyRateLimit(
+    request: ChannelKeyRateLimitRequest,
+    keyName: String,
+): ChannelKeyRateLimitPolicy = try {
+    ChannelKeyRateLimitPolicy(
+        enabled = request.enabled,
+        requestsPerMinute = request.requestsPerMinute,
+        maxConcurrentRequests = request.maxConcurrentRequests,
+    )
+} catch (cause: IllegalArgumentException) {
+    throw badRequest("invalid_channel", "密钥「$keyName」限流规则无效：${cause.message}")
 }
 
 private const val DEFAULT_CHANNEL_KEY_NAME = "默认密钥"

@@ -11,6 +11,7 @@ import DefaultPriceModal from './DefaultPriceModal.vue'
 import ModelTestModal from './ModelTestModal.vue'
 import ModelTestSettingsModal from './ModelTestSettingsModal.vue'
 import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
+import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
@@ -21,6 +22,11 @@ import {
   hiddenModelsTitle,
 } from '../utils/channelDisplay'
 import { buildChannelPayload, buildPriorityUpdatePayload } from '../utils/channelForm'
+import {
+  channelKeyRateLimitSummary,
+  normalizeChannelKeyRateLimit,
+  validateChannelKeyRateLimit,
+} from '../utils/channelKeyRateLimit.js'
 import { canProbeSavedChannel, createRequestTracker, watchChannelRequestInputs } from '../utils/channelRequestState'
 import {
   buildPricePrompt,
@@ -38,6 +44,7 @@ const showDefaultPrices = ref(false)
 const testTarget = ref(null)
 const showTestSettings = ref(false)
 const showAutoDisableSettings = ref(false)
+const rateLimitTarget = ref(null)
 const pricePromptChannelId = ref(null)
 const loading = ref(true)
 const error = ref('')
@@ -122,6 +129,7 @@ function newKeyDraft(overrides = {}) {
     stateVersion: overrides.stateVersion ?? null,
     autoDisabledAt: overrides.autoDisabledAt ?? null,
     autoDisableReason: overrides.autoDisableReason ?? null,
+    rateLimit: normalizeChannelKeyRateLimit(overrides.rateLimit),
     models: [...(overrides.models || [])],
     availableModels: [],
     modelsLoading: false,
@@ -143,6 +151,19 @@ function removeKey(index) {
     return
   }
   channelKeys.value.splice(index, 1)
+}
+
+function openRateLimitEditor(key) {
+  rateLimitTarget.value = {
+    key,
+    rule: normalizeChannelKeyRateLimit(key.rateLimit),
+  }
+}
+
+function applyRateLimit(rule) {
+  if (!rateLimitTarget.value) return
+  rateLimitTarget.value.key.rateLimit = normalizeChannelKeyRateLimit(rule)
+  rateLimitTarget.value = null
 }
 
 function keyModelOptions(key) {
@@ -453,7 +474,7 @@ function openEdit(channel) {
 }
 
 function closeChannelForm() {
-  if (testTarget.value || showTestSettings.value || showAutoDisableSettings.value) return
+  if (testTarget.value || showTestSettings.value || showAutoDisableSettings.value || rateLimitTarget.value) return
   showForm.value = false
 }
 
@@ -574,6 +595,12 @@ async function save() {
     }
     if (!key.models.length) {
       notify(`密钥「${name}」至少需要授权一个模型`, 'error')
+      return
+    }
+    try {
+      validateChannelKeyRateLimit(key.rateLimit)
+    } catch (cause) {
+      notify(`密钥「${name}」限流规则无效：${cause.message}`, 'error')
       return
     }
   }
@@ -931,6 +958,15 @@ onMounted(load)
                   autocomplete="new-password"
                 />
               </label>
+              <div class="channel-key-rate-limit-row">
+                <div>
+                  <strong>上游分组限流</strong>
+                  <small>{{ channelKeyRateLimitSummary(key.rateLimit) }}。按当前渠道与密钥共享计数，覆盖全部模型。</small>
+                </div>
+                <button type="button" class="button ghost mini" @click="openRateLimitEditor(key)">
+                  {{ key.rateLimit?.enabled ? '编辑限流' : '配置限流' }}
+                </button>
+              </div>
               <div class="channel-key-models">
                 <div class="channel-model-auth-toolbar">
                   <span class="muted small">可用模型（{{ key.models.length }}）</span>
@@ -1066,6 +1102,14 @@ onMounted(load)
         @close="testTarget = null"
       />
 
+      <ChannelKeyRateLimitModal
+        v-if="rateLimitTarget"
+        :key-name="rateLimitTarget.key.name || '未命名密钥'"
+        :rule="rateLimitTarget.rule"
+        @close="rateLimitTarget = null"
+        @save="applyRateLimit"
+      />
+
     </Modal>
 
     <ModelTestSettingsModal
@@ -1110,5 +1154,32 @@ onMounted(load)
   width: 72px;
   padding: 4px 6px;
   font: inherit;
+}
+
+.channel-key-rate-limit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.channel-key-rate-limit-row > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.channel-key-rate-limit-row strong { font-size: 13px; }
+.channel-key-rate-limit-row small { color: var(--muted); line-height: 1.5; }
+.channel-key-rate-limit-row .button { flex: 0 0 auto; min-height: 36px; }
+
+@media (max-width: 640px) {
+  .channel-key-rate-limit-row { align-items: stretch; flex-direction: column; }
+  .channel-key-rate-limit-row .button { align-self: flex-start; }
 }
 </style>

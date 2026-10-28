@@ -160,7 +160,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
   -d '{"baseUrl":"https://api.openai.com/v1","credential":"sk-..."}'
 ```
 
-编辑渠道时可只传 `channelId` 和可选的 `keyId`，复用已保存密钥。保存渠道时通过 `keys` 数组提交密钥池；每个密钥包含 `name`、`credential`、`enabled`、`priority` 和 `models`。旧版单凭据字段仍兼容：新建时自动生成“默认密钥”，更新时只作用于唯一的默认密钥。取消仍被别名候选引用的模型授权会返回 `409 channel_model_in_use`。
+编辑渠道时可只传 `channelId` 和可选的 `keyId`，复用已保存密钥。保存渠道时通过 `keys` 数组提交密钥池；每个密钥包含 `name`、`credential`、`enabled`、`priority`、`models` 和可选的 `rateLimit`。旧版单凭据字段仍兼容：新建时自动生成“默认密钥”，更新时只作用于唯一的默认密钥并保留已有 `rateLimit`。取消仍被别名候选引用的模型授权会返回 `409 channel_model_in_use`。
 
 渠道密钥池示例：
 
@@ -176,11 +176,23 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
     {"upstreamModel": "deepseek-chat"}
   ],
   "keys": [
-    {"name": "primary", "credential": "sk-primary", "priority": 1, "models": ["gpt-4o-mini"]},
+    {
+      "name": "primary",
+      "credential": "sk-primary",
+      "priority": 1,
+      "models": ["gpt-4o-mini"],
+      "rateLimit": {"enabled": true, "requestsPerMinute": 60, "maxConcurrentRequests": 3}
+    },
     {"name": "backup", "credential": "sk-backup", "priority": 2, "models": ["gpt-4o-mini", "deepseek-chat"]}
   ]
 }
 ```
+
+### 上游分组主动限流
+
+每个渠道密钥代表一个上游分组，可在密钥卡片中单独配置 `requestsPerMinute` 和 `maxConcurrentRequests`。两项都按 `channelId + keyId` 共享计数，覆盖该密钥下的全部模型；未配置或 `enabled=false` 时不限流。只填写其中一项时，另一项保持不限流。
+
+RPM 使用平滑令牌桶，每个实际上游请求尝试消耗一个令牌；最大并发从发送上游请求开始占用，并在成功、失败、超时或取消后释放。本地限流拒绝会优先尝试其他密钥；所有候选都被本地限流时返回 `429 upstream_key_rate_limit_exceeded` 和 `Retry-After`，不会触发候选冷却或自动禁用统计。限流状态保存在单实例内存中，规则保存在 PostgreSQL 的 `channel_key_rate_limits` 表。
 
 渠道是否参与直连路由和 `/v1/models` 只由启用状态决定；渠道级 `exposeUpstreamModels` 开关与全局 `EXPOSE_UPSTREAM_MODELS` 环境变量均已移除。
 
@@ -357,7 +369,7 @@ GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行
 mvn test
 ```
 
-包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions、Responses 与 Anthropic Messages 的 SSE 用量解析与透传、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、密钥每分钟请求限制与释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
+包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions、Responses 与 Anthropic Messages 的 SSE 用量解析与透传、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、渠道密钥分组 RPM/并发限流与取消安全释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
 
 ### 前端自动化测试
 
