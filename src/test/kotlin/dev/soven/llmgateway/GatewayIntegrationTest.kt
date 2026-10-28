@@ -50,6 +50,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -2522,12 +2523,13 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, updated.status)
             val json = Json.parseToJsonElement(updated.bodyAsText()).jsonObject
             assertEquals("custom prompt", json["defaultPrompt"]?.jsonPrimitive?.content)
-            assertEquals("high", json["defaultReasoningEffort"]?.jsonPrimitive?.content)
+            assertTrue("defaultReasoningEffort" in json)
+            assertEquals(JsonNull, json["defaultReasoningEffort"])
         }
     }
 
     @Test
-    fun `admin tests a channel model with prompt and reasoning effort`() = runBlocking {
+    fun `admin tests a channel model without reasoning effort`() = runBlocking {
         val channel = createChannel("model-test", "ok")
 
         testApplication {
@@ -2548,15 +2550,17 @@ class GatewayIntegrationTest {
             assertEquals(true, json["success"]?.jsonPrimitive?.content?.toBoolean())
             assertEquals("Hello!", json["responseText"]?.jsonPrimitive?.content)
             assertEquals("10", json["usage"]?.jsonObject?.get("inputTokens")?.jsonPrimitive?.content)
+            assertTrue("reasoningEffort" in json)
+            assertEquals(JsonNull, json["reasoningEffort"])
             val upstream = fake.requests.last().body
-            assertTrue(upstream.contains("\"reasoning_effort\":\"high\""), upstream)
+            assertFalse(upstream.contains("reasoning_effort"), upstream)
             assertTrue(upstream.contains("\"content\":\"custom prompt\""), upstream)
             assertTrue(upstream.contains("\"max_tokens\":128"), upstream)
         }
     }
 
     @Test
-    fun `model test rejects reasoning effort for messages protocol`() = runBlocking {
+    fun `model test ignores legacy reasoning effort for messages protocol`() = runBlocking {
         val channel = createChannelWithBaseUrl(
             "model-test-messages",
             "${fake.baseUrl}/ok/v1",
@@ -2577,8 +2581,10 @@ class GatewayIntegrationTest {
                 )
             }
 
-            assertEquals(HttpStatusCode.BadRequest, response.status)
-            assertTrue(response.bodyAsText().contains("model_test_reasoning_unsupported"))
+            assertEquals(HttpStatusCode.OK, response.status)
+            val upstream = fake.requests.last().body
+            assertFalse(upstream.contains("reasoning_effort"), upstream)
+            assertFalse(upstream.contains("\"reasoning\""), upstream)
         }
     }
 

@@ -6,34 +6,25 @@ import {
   formatModelTestUsage,
   modelTestProtocolLabel,
   normalizeModelTestSettings,
-  supportsReasoningEffort,
 } from '../src/utils/modelTest.js'
 
 describe('modelTest: 渠道模型连通性测试', () => {
   it('设置缺失时回退到默认提示词', () => {
     assert.deepEqual(normalizeModelTestSettings(null), {
       defaultPrompt: MODEL_TEST_DEFAULT_PROMPT,
-      defaultReasoningEffort: '',
     })
   })
 
-  it('保留全局默认提示词和推理强度', () => {
+  it('全局测试设置只保留默认提示词', () => {
     assert.deepEqual(normalizeModelTestSettings({
       defaultPrompt: '  reply ok  ',
       defaultReasoningEffort: ' high ',
     }), {
       defaultPrompt: 'reply ok',
-      defaultReasoningEffort: 'high',
     })
   })
 
-  it('Chat Completions 和 Responses 支持推理强度，Messages 不支持', () => {
-    assert.equal(supportsReasoningEffort('chat_completions'), true)
-    assert.equal(supportsReasoningEffort('responses'), true)
-    assert.equal(supportsReasoningEffort('messages'), false)
-  })
-
-  it('构建测试请求时去掉首尾空白，Messages 不发送推理强度', () => {
+  it('构建测试请求时去掉首尾空白且不发送推理强度', () => {
     assert.deepEqual(buildModelTestRequest({
       model: ' model-a ',
       protocol: 'chat_completions',
@@ -44,15 +35,7 @@ describe('modelTest: 渠道模型连通性测试', () => {
       protocol: 'chat_completions',
       keyId: null,
       prompt: 'hello',
-      reasoningEffort: 'high',
     })
-
-    assert.equal(buildModelTestRequest({
-      model: 'claude',
-      protocol: 'messages',
-      prompt: 'hello',
-      reasoningEffort: 'high',
-    }).reasoningEffort, null)
   })
 
   it('测试请求携带选中的密钥', () => {

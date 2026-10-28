@@ -644,6 +644,10 @@ onMounted(load)
           <Icon name="shield" :size="16" />
           密钥自动禁用
         </button>
+        <button type="button" class="button subtle" @click="showTestSettings = true">
+          <Icon name="bolt" :size="16" />
+          全局测试配置
+        </button>
         <button type="button" class="button subtle" @click="showDefaultPrices = true">
           <Icon name="price" :size="16" />
           模型默认价
@@ -973,7 +977,6 @@ onMounted(load)
           <div class="channel-canonical-list">
             <div class="channel-model-test-toolbar">
               <span class="muted small">测试会使用已保存的渠道配置发送一次真实上游请求。</span>
-              <button type="button" class="button ghost mini" @click="showTestSettings = true">全局测试设置</button>
             </div>
             <div class="channel-canonical-header">
               <span>上游模型</span>
@@ -1063,11 +1066,12 @@ onMounted(load)
         @close="testTarget = null"
       />
 
-      <ModelTestSettingsModal
-        v-if="showTestSettings"
-        @close="showTestSettings = false"
-      />
     </Modal>
+
+    <ModelTestSettingsModal
+      v-if="showTestSettings"
+      @close="showTestSettings = false"
+    />
 
     <PriceEditorModal
       v-if="priceEditor"

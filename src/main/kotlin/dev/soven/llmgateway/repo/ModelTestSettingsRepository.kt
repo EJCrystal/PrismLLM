@@ -8,7 +8,7 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.upsert
 
-/** 持久化渠道模型连通性测试的全局默认提示词与推理强度。 */
+/** 持久化渠道模型连通性测试的全局默认提示词。 */
 class ModelTestSettingsRepository(private val database: Database) {
     suspend fun load(): ModelTestSettingsRecord = suspendTransaction(database) {
         ModelTestSettings.selectAll()
@@ -17,19 +17,17 @@ class ModelTestSettingsRepository(private val database: Database) {
             ?.let {
                 ModelTestSettingsRecord(
                     defaultPrompt = it[ModelTestSettings.defaultPrompt],
-                    defaultReasoningEffort = it[ModelTestSettings.defaultReasoningEffort],
                     updatedAt = it[ModelTestSettings.updatedAt],
                 )
             }
-            ?: ModelTestSettingsRecord(DEFAULT_PROMPT, null, 0)
+            ?: ModelTestSettingsRecord(DEFAULT_PROMPT, 0)
     }
 
-    suspend fun save(defaultPrompt: String, defaultReasoningEffort: String?) {
+    suspend fun save(defaultPrompt: String) {
         suspendTransaction(database) {
             ModelTestSettings.upsert(ModelTestSettings.id) {
                 it[id] = SINGLETON_ID
                 it[ModelTestSettings.defaultPrompt] = defaultPrompt
-                it[ModelTestSettings.defaultReasoningEffort] = defaultReasoningEffort
                 it[updatedAt] = System.currentTimeMillis()
             }
         }

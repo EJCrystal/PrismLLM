@@ -48,7 +48,6 @@ suspend fun testChannelModelConnectivity(
     model: String,
     protocol: GatewayProtocol,
     prompt: String,
-    reasoningEffort: String?,
     credentialCipher: CredentialCipher,
     httpClient: HttpClient,
     timeoutMs: Long = 45_000,
@@ -73,7 +72,7 @@ suspend fun testChannelModelConnectivity(
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 setBody(
                     TextContent(
-                        buildModelTestBody(protocol, model, prompt, reasoningEffort, maxOutputTokens),
+                        buildModelTestBody(protocol, model, prompt, maxOutputTokens),
                         ContentType.Application.Json,
                     ),
                 )
@@ -129,7 +128,6 @@ internal fun buildModelTestBody(
     protocol: GatewayProtocol,
     model: String,
     prompt: String,
-    reasoningEffort: String?,
     maxOutputTokens: Int,
 ): String = when (protocol) {
     GatewayProtocol.CHAT_COMPLETIONS -> buildJsonObject {
@@ -137,16 +135,12 @@ internal fun buildModelTestBody(
         put("stream", false)
         put("max_tokens", maxOutputTokens)
         put("messages", userMessages(prompt))
-        reasoningEffort?.let { put("reasoning_effort", it) }
     }.toString()
     GatewayProtocol.RESPONSES -> buildJsonObject {
         put("model", model)
         put("stream", false)
         put("max_output_tokens", maxOutputTokens)
         put("input", prompt)
-        reasoningEffort?.let {
-            put("reasoning", buildJsonObject { put("effort", it) })
-        }
     }.toString()
     GatewayProtocol.MESSAGES -> buildJsonObject {
         put("model", model)
