@@ -119,6 +119,10 @@ class ChannelRepository(private val database: Database) {
         priority: Int? = null,
     ): ChannelRecord? = suspendTransaction(database) {
         val now = System.currentTimeMillis()
+        Channels.selectAll()
+            .where { Channels.id eq id }
+            .forUpdate()
+            .singleOrNull() ?: return@suspendTransaction null
         val updated = Channels.update({ Channels.id eq id }) {
             it[Channels.name] = name
             it[Channels.baseUrl] = baseUrl

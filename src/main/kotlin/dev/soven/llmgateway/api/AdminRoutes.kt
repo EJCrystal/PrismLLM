@@ -262,6 +262,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
         post("/channels/model-discovery") {
             call.requireAdmin(app)
             val request = call.receive<ChannelModelDiscoveryRequest>()
+            if (!request.keyId.isNullOrBlank() && !request.credential.isNullOrBlank()) {
+                throw badRequest("invalid_channel", "keyId 与 credential 不能同时提交")
+            }
             val baseUrl = request.baseUrl.trim()
             if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
                 throw badRequest("invalid_channel", "渠道地址必须以 http:// 或 https:// 开头")
@@ -271,7 +274,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 ?.let { app.channelRepository.find(it) ?: throw notFound("channel_not_found", "渠道不存在") }
             val savedKey = saved?.let { channel ->
                 request.keyId?.takeIf { it.isNotBlank() }?.let { keyId ->
-                    channel.keys.firstOrNull { it.id == keyId }
+                    channel.keys.firstOrNull { it.id == keyId }?.also { key ->
+                        if (!key.enabled) throw badRequest("channel_key_disabled", "渠道密钥已停用")
+                    }
                         ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
                 } ?: channel.keys.filter { it.enabled }.minWithOrNull(compareBy({ it.priority }, { it.name }))
                     ?: channel.keys.minWithOrNull(compareBy({ it.priority }, { it.name }))
@@ -915,8 +920,10 @@ private fun parseProtocols(values: List<String>): Set<GatewayProtocol> {
 /** 选择显式指定的密钥；未指定时使用优先级最高的启用密钥。 */
 private fun resolveChannelKey(channel: ChannelRecord, keyId: String?): ChannelKeyRecord {
     if (!keyId.isNullOrBlank()) {
-        return channel.keys.firstOrNull { it.id == keyId }
+        val key = channel.keys.firstOrNull { it.id == keyId }
             ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
+        if (!key.enabled) throw badRequest("channel_key_disabled", "渠道密钥已停用")
+        return key
     }
     return channel.keys
         .filter { it.enabled }
@@ -933,6 +940,10 @@ private fun resolveChannelKeyForModel(
     if (!keyId.isNullOrBlank()) {
         val key = channel.keys.firstOrNull { it.id == keyId }
             ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
+        if (!key.enabled) throw badRequest("channel_key_disabled", "渠道密钥已停用")
+        if (model !in channel.models) {
+            throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
+        }
         if (!key.supports(model)) {
             throw badRequest("model_not_authorized", "密钥「${key.name}」未授权模型「$model」")
         }
@@ -952,6 +963,9 @@ private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean
     }
     if (request.priority != null && request.priority !in 1..1000) {
         throw badRequest("invalid_channel", "渠道优先级必须在 1..1000 之间")
+    }
+    if (!request.keys.isNullOrEmpty() && !request.credential.isNullOrBlank()) {
+        throw badRequest("invalid_channel", "keys 与 credential 不能同时提交")
     }
     if (credentialRequired && request.credential.isNullOrBlank()) {
         if (request.keys.isNullOrEmpty()) throw badRequest("invalid_channel", "新建渠道必须提供上游凭据")

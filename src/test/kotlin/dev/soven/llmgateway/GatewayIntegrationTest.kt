@@ -554,6 +554,107 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `legacy model update keeps the default key authorization in sync`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            "legacy-models",
+            "${fake.baseUrl}/ok/v1",
+            modelMappings = mappingsOf("gpt-4o-mini", "deepseek-chat"),
+        )
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.put("/admin/api/channels/${channel.id}") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"legacy-models","baseUrl":"${fake.baseUrl}/ok/v1","protocols":["chat_completions"],"enabled":true,"models":["gpt-4o-mini"]}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val updated = assertNotNull(app.channelRepository.find(channel.id))
+            assertEquals(setOf("gpt-4o-mini"), updated.models.toSet())
+            assertEquals(listOf("gpt-4o-mini"), updated.keys.single().models)
+        }
+    }
+
+    @Test
+    fun `admin rejects disabled keys for discovery and model tests`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "disabled-key",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "primary",
+                    credential = app.credentialCipher.encrypt("key-primary"),
+                    models = listOf("gpt-4o-mini"),
+                ),
+                NewChannelKey(
+                    name = "disabled",
+                    credential = app.credentialCipher.encrypt("key-disabled"),
+                    enabled = false,
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+        )
+        val disabledKey = channel.keys.single { it.name == "disabled" }
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val discovery = client.post("/admin/api/channels/model-discovery") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"baseUrl":"${channel.baseUrl}","channelId":"${channel.id}","keyId":"${disabledKey.id}"}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, discovery.status)
+            assertTrue(discovery.bodyAsText().contains("channel_key_disabled"))
+
+            val tested = client.post("/admin/api/channels/${channel.id}/model-test") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","protocol":"chat_completions","keyId":"${disabledKey.id}","prompt":"ping"}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, tested.status)
+            assertTrue(tested.bodyAsText().contains("channel_key_disabled"))
+        }
+    }
+
+    @Test
+    fun `admin rejects legacy credential together with keys`() = runBlocking {
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """
+                    {
+                      "name":"mixed-credential",
+                      "baseUrl":"${fake.baseUrl}/ok/v1",
+                      "credential":"legacy",
+                      "modelMappings":[{"upstreamModel":"gpt-4o-mini"}],
+                      "keys":[{"name":"primary","credential":"key-primary","models":["gpt-4o-mini"]}]
+                    }
+                    """.trimIndent(),
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("keys 与 credential 不能同时提交"))
+        }
+    }
+
+    @Test
     fun `fail-open retries cooled candidates when all are blocked`() = runBlocking {
         app.close()
         app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
@@ -2741,6 +2842,17 @@ class GatewayIntegrationTest {
             }
             assertEquals(HttpStatusCode.OK, withExplicitKey.status)
             assertTrue(withExplicitKey.bodyAsText().contains("gpt-4o-mini"))
+
+            val mixedCredential = client.post("/admin/api/channels/model-discovery") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"baseUrl":"${channel.baseUrl}","channelId":"${channel.id}","keyId":"${channel.keys.single().id}","credential":"upstream-secret"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, mixedCredential.status)
+            assertTrue(mixedCredential.bodyAsText().contains("keyId 与 credential 不能同时提交"))
 
             val changedBaseUrl = client.post("/admin/api/channels/model-discovery") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")

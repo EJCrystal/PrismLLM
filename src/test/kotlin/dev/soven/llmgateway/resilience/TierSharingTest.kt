@@ -145,4 +145,21 @@ class TierSharingTest {
             assertEquals(listOf("primary", "backup"), ordered)
         }
     }
+
+    @Test
+    fun `channel and key rotations do not stay correlated`() {
+        val sharing = TierSharing()
+        val candidates = listOf(
+            candidate(0, "a", keyName = "k1"),
+            candidate(0, "a", keyName = "k2"),
+            candidate(0, "b", keyName = "k1"),
+            candidate(0, "b", keyName = "k2"),
+        )
+
+        val firstChoices = (1..4).map {
+            sharing.order("shared-model", candidates).first().let { "${it.channel.name}/${it.key.name}" }
+        }
+
+        assertEquals(setOf("a/k1", "a/k2", "b/k1", "b/k2"), firstChoices.toSet())
+    }
 }

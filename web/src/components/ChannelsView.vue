@@ -185,7 +185,7 @@ async function loadKeyModels(key) {
       credential: credential || null,
       authType,
       channelId: editingId.value,
-      keyId: key.id || null,
+      keyId: credential ? null : (key.id || null),
     })
     if (
       requestId !== key.modelsRequestId ||
