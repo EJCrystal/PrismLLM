@@ -11,35 +11,33 @@ import org.junit.jupiter.api.Test
 
 class ModelConnectivityTestTest {
     @Test
-    fun `builds chat body with prompt and reasoning effort`() {
+    fun `builds chat body with prompt and no reasoning effort`() {
         val body = Json.parseToJsonElement(
             buildModelTestBody(
                 protocol = GatewayProtocol.CHAT_COMPLETIONS,
                 model = "gpt-test",
                 prompt = "say ok",
-                reasoningEffort = "high",
                 maxOutputTokens = 128,
             ),
         ).jsonObject
 
         assertEquals("gpt-test", body["model"]?.jsonPrimitive?.content)
-        assertEquals("high", body["reasoning_effort"]?.jsonPrimitive?.content)
+        assertNull(body["reasoning_effort"])
         assertEquals("say ok", body["messages"]?.jsonArray?.first()?.jsonObject?.get("content")?.jsonPrimitive?.content)
     }
 
     @Test
-    fun `builds responses body with nested reasoning effort`() {
+    fun `builds responses body without reasoning effort`() {
         val body = Json.parseToJsonElement(
             buildModelTestBody(
                 protocol = GatewayProtocol.RESPONSES,
                 model = "gpt-test",
                 prompt = "say ok",
-                reasoningEffort = "medium",
                 maxOutputTokens = 128,
             ),
         ).jsonObject
 
-        assertEquals("medium", body["reasoning"]?.jsonObject?.get("effort")?.jsonPrimitive?.content)
+        assertNull(body["reasoning"])
         assertEquals("say ok", body["input"]?.jsonPrimitive?.content)
     }
 
@@ -50,7 +48,6 @@ class ModelConnectivityTestTest {
                 protocol = GatewayProtocol.MESSAGES,
                 model = "claude-test",
                 prompt = "say ok",
-                reasoningEffort = "high",
                 maxOutputTokens = 128,
             ),
         ).jsonObject

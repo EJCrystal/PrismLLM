@@ -2,11 +2,11 @@
 import { onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
-import { MODEL_TEST_REASONING_OPTIONS, normalizeModelTestSettings } from '../utils/modelTest'
+import { normalizeModelTestSettings } from '../utils/modelTest'
 import Modal from './Modal.vue'
 
 const emit = defineEmits(['close', 'saved'])
-const form = reactive({ defaultPrompt: '', defaultReasoningEffort: '' })
+const form = reactive({ defaultPrompt: '' })
 const loading = ref(true)
 const saving = ref(false)
 
@@ -28,10 +28,7 @@ async function save() {
   }
   saving.value = true
   try {
-    await api.updateModelTestSettings({
-      defaultPrompt: prompt,
-      defaultReasoningEffort: form.defaultReasoningEffort || null,
-    })
+    await api.updateModelTestSettings({ defaultPrompt: prompt })
     notify('模型测试设置已保存')
     emit('saved')
     emit('close')
@@ -44,7 +41,7 @@ async function save() {
 </script>
 
 <template>
-  <Modal title="模型测试设置" @close="$emit('close')">
+  <Modal title="全局测试配置" @close="$emit('close')">
     <form class="form-grid" @submit.prevent="save">
       <label class="field">
         <span>默认测试提示词</span>
@@ -56,15 +53,6 @@ async function save() {
           :disabled="loading"
         ></textarea>
         <small>每次打开模型测试会默认填入这段提示词，单次测试仍可临时修改。</small>
-      </label>
-      <label class="field">
-        <span>默认推理强度</span>
-        <select v-model="form.defaultReasoningEffort" :disabled="loading">
-          <option v-for="option in MODEL_TEST_REASONING_OPTIONS" :key="option.value" :value="option.value">
-            {{ option.label }}
-          </option>
-        </select>
-        <small>Anthropic Messages 测试会忽略推理强度；Chat Completions 与 Responses 会按该值发送。</small>
       </label>
     </form>
     <template #footer>

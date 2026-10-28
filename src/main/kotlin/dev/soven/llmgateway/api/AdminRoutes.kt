@@ -230,7 +230,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (prompt.isEmpty() || prompt.length > MODEL_TEST_PROMPT_MAX) {
                 throw badRequest("invalid_model_test_settings", "默认提示词长度必须在 1..$MODEL_TEST_PROMPT_MAX 之间")
             }
-            app.modelTestSettingsRepository.save(prompt, normalizeReasoningEffort(request.defaultReasoningEffort))
+            app.modelTestSettingsRepository.save(prompt)
             call.respond(app.modelTestSettingsRepository.load().toResponse())
         }
 
@@ -377,26 +377,16 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (prompt.length > MODEL_TEST_PROMPT_MAX) {
                 throw badRequest("invalid_model_test_prompt", "测试提示词不能超过 $MODEL_TEST_PROMPT_MAX 个字符")
             }
-            val explicitEffort = normalizeReasoningEffort(request.reasoningEffort)
-            val reasoningEffort = if (protocol == GatewayProtocol.MESSAGES) {
-                if (explicitEffort != null) {
-                    throw badRequest("model_test_reasoning_unsupported", "Anthropic Messages 暂不支持推理强度")
-                }
-                null
-            } else {
-                explicitEffort ?: normalizeReasoningEffort(settings.defaultReasoningEffort)
-            }
             val result = testChannelModelConnectivity(
                 channel = channel,
                 key = key,
                 model = model,
                 protocol = protocol,
                 prompt = prompt,
-                reasoningEffort = reasoningEffort,
                 credentialCipher = app.credentialCipher,
                 httpClient = app.httpClient,
             )
-            call.respond(result.toResponse(model, protocol, key.id, key.name, prompt, reasoningEffort))
+            call.respond(result.toResponse(model, protocol, key.id, key.name, prompt))
         }
 
         post("/channels") {
@@ -1353,14 +1343,6 @@ private fun validatePriceValues(
 private fun parseOptionalPrice(value: String?, label: String): BigDecimal? =
     value?.trim()?.takeIf { it.isNotEmpty() }?.let { parsePrice(it, label) }
 
-private fun normalizeReasoningEffort(value: String?): String? {
-    val effort = value?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
-    if (effort !in MODEL_TEST_REASONING_EFFORTS) {
-        throw badRequest("invalid_reasoning_effort", "推理强度必须是 minimal、low、medium 或 high")
-    }
-    return effort
-}
-
 private fun parseCurrency(value: String): String {
     val currency = value.trim().uppercase()
     if (!CURRENCY_PATTERN.matches(currency)) {
@@ -1381,7 +1363,6 @@ private fun isUniqueViolation(cause: Throwable): Boolean =
         .any { (it as? java.sql.SQLException)?.sqlState == "23505" }
 
 private const val MODEL_TEST_PROMPT_MAX = 4_000
-private val MODEL_TEST_REASONING_EFFORTS = setOf("minimal", "low", "medium", "high")
 
 private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLimits {
     if (request.dailyTokenLimit != null && request.dailyTokenLimit < 0) {
