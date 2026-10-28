@@ -95,6 +95,12 @@ class ModelPriceReferenceService(
     private val catalogUrl: String = "https://models.dev/catalog.json",
     private val cacheDuration: Duration = Duration.ofDays(1),
     private val preRefreshLead: Duration = Duration.ofHours(1),
+    /**
+     * 缓存到期后仍可继续使用最后一次成功快照的时长。仅用于短暂的上游故障，
+     * 超期后目录和 models.dev 参考价都视为不可用。
+     */
+    private val staleFallbackDuration: Duration = Duration.ofDays(1),
+    private val nanoTime: () -> Long = { System.nanoTime() },
 ) {
     init {
         require(!cacheDuration.isZero && !cacheDuration.isNegative) {
@@ -102,6 +108,12 @@ class ModelPriceReferenceService(
         }
         require(!preRefreshLead.isNegative) {
             "models.dev 提前刷新时间不能为负数"
+        }
+        require(preRefreshLead < cacheDuration) {
+            "models.dev 提前刷新时间必须小于缓存有效期"
+        }
+        require(!staleFallbackDuration.isNegative) {
+            "models.dev 陈旧快照兜底时间不能为负数"
         }
     }
 
@@ -182,6 +194,7 @@ class ModelPriceReferenceService(
         val models: List<CatalogModel>,
         val index: Map<String, List<CatalogModel>>,
         val prices: Map<String, ReferencePrice>,
+        val loadedAtNanos: Long,
     )
 
     private val catalogCache: Cache<String, CatalogState> = CacheBuilder.newBuilder()
@@ -280,7 +293,10 @@ class ModelPriceReferenceService(
     private suspend fun currentCatalogState(): CatalogState? {
         catalogCache.getIfPresent(CATALOG_CACHE_KEY)?.let { return it }
         loadDynamicCatalog()
-        return catalogCache.getIfPresent(CATALOG_CACHE_KEY) ?: lastGoodCatalog.get()
+        catalogCache.getIfPresent(CATALOG_CACHE_KEY)?.let { return it }
+        val fallback = lastGoodCatalog.get() ?: return null
+        val staleAge = Duration.ofNanos(nanoTime() - fallback.loadedAtNanos) - cacheDuration
+        return fallback.takeIf { staleAge <= staleFallbackDuration }
     }
 
     private suspend fun loadDynamicCatalog(force: Boolean = false): Boolean {
@@ -303,7 +319,8 @@ class ModelPriceReferenceService(
                     return false
                 }
 
-                val state = parseCatalog(decodeCatalogBody(response))
+                val parsed = parseCatalog(decodeCatalogBody(response))
+                val state = parsed.copy(loadedAtNanos = nanoTime())
                 catalogCache.put(CATALOG_CACHE_KEY, state)
                 lastGoodCatalog.set(state)
                 catalogError = null
@@ -392,6 +409,7 @@ class ModelPriceReferenceService(
                 entries.distinctBy { it.providerId to it.id }
             },
             prices = prices,
+            loadedAtNanos = 0L,
         )
     }
 

@@ -16,18 +16,31 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import java.io.ByteArrayOutputStream
 import java.math.BigDecimal
 import java.net.InetSocketAddress
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.GZIPOutputStream
 
 class ModelPriceReferenceServiceTest {
 
     private val httpClient = HttpClient(Java)
+
+    @Test
+    fun `rejects refresh lead that would poll the catalog continuously`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            ModelPriceReferenceService(
+                httpClient,
+                cacheDuration = Duration.ofMinutes(10),
+                preRefreshLead = Duration.ofMinutes(10),
+            )
+        }
+    }
 
     @Test
     fun `matches common baseline models instantly without network`() = runBlocking {
@@ -257,6 +270,44 @@ class ModelPriceReferenceServiceTest {
             assertNotNull(service.lookup("stale-model"))
         } finally {
             refreshScope.cancel()
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `expires stale catalog fallback so old prices are not served indefinitely`() = runBlocking {
+        val requests = AtomicInteger()
+        val clock = AtomicLong(Duration.ofDays(2).toNanos())
+        val body = """
+            {"providers":{"custom":{"name":"Custom","models":{"stale-model":{"canonical_model_id":"stale-model","cost":{"input":1,"output":2}}}}}}
+        """.trimIndent()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/catalog.json") { exchange ->
+            val requestNumber = requests.incrementAndGet()
+            val bytes = body.toByteArray()
+            exchange.sendResponseHeaders(if (requestNumber == 1) 200 else 503, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val service = ModelPriceReferenceService(
+                httpClient,
+                catalogUrl = "http://127.0.0.1:${server.address.port}/catalog.json",
+                cacheDuration = Duration.ofMillis(200),
+                preRefreshLead = Duration.ofMillis(100),
+                staleFallbackDuration = Duration.ofMillis(300),
+                nanoTime = { clock.get() },
+            )
+            assertTrue(service.catalogSnapshot().loaded)
+            delay(250)
+            clock.addAndGet(Duration.ofMillis(450).toNanos())
+            assertTrue(service.catalogSnapshot().loaded)
+            assertNotNull(service.lookup("stale-model"))
+            clock.addAndGet(Duration.ofMillis(100).toNanos())
+            assertFalse(service.catalogSnapshot().loaded)
+            assertNull(service.lookup("stale-model"))
+            assertNull(service.findCatalogMatches("stale-model").firstOrNull())
+        } finally {
             server.stop(0)
         }
     }
