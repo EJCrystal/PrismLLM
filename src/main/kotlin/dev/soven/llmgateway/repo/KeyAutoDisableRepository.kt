@@ -19,7 +19,7 @@ import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database
-import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.insertIgnore
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -46,21 +46,19 @@ class KeyAutoDisableRepository(
     }
 
     suspend fun saveSettings(policy: KeyAutoDisablePolicy): KeyAutoDisableSettingsChange = suspendTransaction(database) {
-        var row = KeyAutoDisableSettings.selectAll()
-            .where { KeyAutoDisableSettings.id eq SINGLETON_ID }.forUpdate().singleOrNull()
-        if (row == null) {
-            KeyAutoDisableSettings.insert {
-                it[id] = SINGLETON_ID
-                it[enabled] = true
-                it[authFailureThreshold] = 3
-                it[failureThreshold] = 5
-                it[failureWindowMinutes] = 5
-                it[revision] = 0
-                it[updatedAt] = nowMs()
-            }
-            row = KeyAutoDisableSettings.selectAll()
-                .where { KeyAutoDisableSettings.id eq SINGLETON_ID }.forUpdate().single()
+        // 迁移会创建单例行；测试或手工清空后也允许首次并发保存。
+        // 冲突时忽略插入，再锁定同一行，避免两个请求都看到空行后争抢主键。
+        KeyAutoDisableSettings.insertIgnore {
+            it[id] = SINGLETON_ID
+            it[enabled] = true
+            it[authFailureThreshold] = 3
+            it[failureThreshold] = 5
+            it[failureWindowMinutes] = 5
+            it[revision] = 0
+            it[updatedAt] = nowMs()
         }
+        val row = KeyAutoDisableSettings.selectAll()
+            .where { KeyAutoDisableSettings.id eq SINGLETON_ID }.forUpdate().single()
         val before = settingsRecord(row)
         if (before.policy == policy) return@suspendTransaction KeyAutoDisableSettingsChange(before, before)
         val after = KeyAutoDisableSettingsRecord(policy, before.revision + 1, nowMs())

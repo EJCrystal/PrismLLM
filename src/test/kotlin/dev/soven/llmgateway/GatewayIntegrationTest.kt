@@ -648,6 +648,46 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun keyAutoDisableIgnoresNonStreamClientWriteFailures() = runBlocking {
+        val channel = createAutoDisablePool(withBackup = false)
+        val key = createClientKey()
+        val failNextWrite = AtomicBoolean(false)
+        testApplication {
+            application {
+                app.install(this)
+                install(createApplicationPlugin("test-json-client-disconnect") {
+                    on(ResponseBodyReadyForSend) { _, _ ->
+                        if (failNextWrite.compareAndSet(true, false)) {
+                            throw ChannelWriteException("test client disconnect", IOException("test"))
+                        }
+                    }
+                })
+            }
+            repeat(5) {
+                failNextWrite.set(true)
+                val response = client.sendAutoDisableRequest(key)
+                assertEquals(499, response.status.value)
+                assertTrue(assertNotNull(app.channelRepository.find(channel.id)).keys.single().enabled)
+            }
+            assertEquals(5, fake.requests.size)
+            assertTrue(app.adminAuditRepository.list(100).none { it.action == "channel_key.auto_disable" })
+            assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key).status)
+        }
+    }
+
+    @Test
+    fun keyAutoDisableSettingsConcurrentFirstSaveDoesNotRace() = runBlocking {
+        val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository)
+        val revisions = coroutineScope {
+            (1..12).map { index -> async(Dispatchers.IO) {
+                settings.saveSettings(KeyAutoDisablePolicy(authFailureThreshold = index)).after.revision
+            } }.awaitAll()
+        }
+        assertEquals((1L..12L).toSet(), revisions.toSet())
+        assertEquals(12L, settings.loadSettings().revision)
+    }
+
+    @Test
     fun keyAutoDisableSettingsApiValidatesCsrfPersistsAndAudits() = runBlocking {
         testApplication {
             application { app.install(this) }
@@ -709,6 +749,18 @@ class GatewayIntegrationTest {
             assertTrue(stale.bodyAsText().contains("channel_key_state_changed"))
             assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }.enabled)
             assertEquals(HttpStatusCode.BadRequest, update(assertNotNull(app.channelRepository.find(channel.id))).status)
+            val disabled = assertNotNull(app.channelRepository.find(channel.id))
+            assertFailsWith<dev.soven.llmgateway.repo.ChannelKeyReenableRequiresCredentialException> {
+                app.channelRepository.update(
+                    id = channel.id, name = channel.name, baseUrl = channel.baseUrl,
+                    authType = channel.authType, enabled = true,
+                    keys = disabled.keys.map { current -> ChannelKeyUpdate(
+                        id = current.id, name = current.name, enabled = true, priority = current.priority,
+                        models = current.models, // 旧客户端可省略版本，但不能用原凭据覆盖自动禁用。
+                        credential = if (current.id == primary.id) app.credentialCipher.encrypt("key-primary") else null,
+                    ) },
+                )
+            }
             assertEquals(HttpStatusCode.OK, update(assertNotNull(app.channelRepository.find(channel.id)), replaceCredential = true).status)
             val enabled = assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }
             assertTrue(enabled.enabled)

@@ -83,7 +83,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
 
     val shuttingDown = AtomicBoolean(false)
     val databaseFactory = DatabaseFactory(config)
-    val channelRepository = ChannelRepository(databaseFactory.database)
+    val credentialCipher = CredentialCipher(config.masterKey)
+    val channelRepository = ChannelRepository(databaseFactory.database, credentialCipher)
     val aliasRepository = AliasRepository(databaseFactory.database)
     val clientKeyRepository = ClientKeyRepository(databaseFactory.database)
     val clientKeyQuotaRepository = ClientKeyQuotaRepository(databaseFactory.database)
@@ -98,7 +99,6 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
     val modelDefaultPriceRepository = ModelDefaultPriceRepository(databaseFactory.database)
     val modelPricingService = ModelPricingService(modelPriceRepository, modelDefaultPriceRepository)
-    val credentialCipher = CredentialCipher(config.masterKey)
     val sessions = AdminSessions()
     val cooldownStateRepository = CooldownStateRepository(databaseFactory.database)
     val cooldownStateWriter = CooldownStateWriter(cooldownStateRepository, scope)

@@ -9,6 +9,7 @@ import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.security.EncryptedCredential
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
@@ -22,6 +23,7 @@ import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
+import java.security.MessageDigest
 import java.util.UUID
 
 /** 新建渠道密钥的输入。凭据已加密。 */
@@ -55,7 +57,7 @@ class ChannelKeyReenableRequiresCredentialException(name: String) : RuntimeExcep
  * @author 文杰
  * @since 2026-10-21
  */
-class ChannelRepository(private val database: Database) {
+class ChannelRepository(private val database: Database, private val credentialCipher: CredentialCipher) {
     suspend fun list(): List<ChannelRecord> = suspendTransaction(database) {
         val rows = Channels.selectAll().orderBy(Channels.name).toList()
         val ids = rows.map { it[Channels.id] }
@@ -212,8 +214,22 @@ class ChannelRepository(private val database: Database) {
                 if (key.stateVersion != null && key.stateVersion != previous[ChannelKeys.stateVersion]) {
                     throw ChannelKeyStateChangedException()
                 }
-                if (previous[ChannelKeys.autoDisabledAt] != null && key.enabled && key.credential == null) {
-                    throw ChannelKeyReenableRequiresCredentialException(previous[ChannelKeys.name])
+                if (previous[ChannelKeys.autoDisabledAt] != null) {
+                    if (key.enabled && key.credential == null) {
+                        throw ChannelKeyReenableRequiresCredentialException(previous[ChannelKeys.name])
+                    }
+                    if (key.credential != null) {
+                        val oldValue = credentialCipher.decrypt(
+                            previous[ChannelKeys.credentialCiphertext], previous[ChannelKeys.credentialNonce],
+                        ).toByteArray(Charsets.UTF_8)
+                        val newValue = credentialCipher.decrypt(
+                            key.credential.ciphertext, key.credential.nonce,
+                        ).toByteArray(Charsets.UTF_8)
+                        val unchanged = MessageDigest.isEqual(oldValue, newValue)
+                        oldValue.fill(0)
+                        newValue.fill(0)
+                        if (unchanged) throw ChannelKeyReenableRequiresCredentialException(previous[ChannelKeys.name])
+                    }
                 }
                 val resetHealth = key.credential != null || key.enabled != previous[ChannelKeys.enabled]
                 ChannelKeys.update({ ChannelKeys.id eq keyId }) {

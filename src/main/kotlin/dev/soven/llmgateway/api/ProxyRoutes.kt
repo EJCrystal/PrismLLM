@@ -49,6 +49,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -272,6 +274,7 @@ private suspend fun handleProxy(
                     app.candidateCooldown.release(permit)
                     throw e
                 }
+                currentCoroutineContext().ensureActive()
                 app.metrics.upstreamError(candidate.channel.name, e.code)
                 val kind = classifyFailure(e)
                 if (kind == null) {
@@ -490,6 +493,7 @@ private suspend fun recordKeyOutcome(
     httpStatus: Int? = null,
     errorCode: String? = null,
 ) {
+    currentCoroutineContext().ensureActive()
     try {
         app.keyAutoDisableRepository.recordOutcome(candidate.key, outcome, requestId, httpStatus, errorCode)?.let { reason ->
             app.metrics.keyAutoDisabled(candidate.channel.name, reason)
@@ -503,7 +507,8 @@ private suspend fun recordKeyOutcome(
     } catch (cause: Exception) {
         app.metrics.keyAutoDisableWriteFailed()
         proxyLogger.error(
-            "密钥自动禁用统计或审计写入失败，keyId={}, requestId={}", candidate.key.id, requestId, cause,
+            "密钥自动禁用统计或审计写入失败，keyId={}, requestId={}, exceptionType={}",
+            candidate.key.id, requestId, cause.javaClass.simpleName,
         )
     }
 }
@@ -869,6 +874,8 @@ private suspend fun proxyJson(
             }.getOrNull()
             call.respondText(text, ContentType.Application.Json, response.status)
         }
+    } catch (e: ChannelWriteException) {
+        throw clientDisconnected()
     } catch (e: TimeoutCancellationException) {
         throw GatewayException(
             HttpStatusCode.GatewayTimeout,
