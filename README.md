@@ -15,7 +15,7 @@
 - 管理 API 与 Vue 3 管理界面：
   - 渠道管理：接入点、协议、密钥池、对外模型 ID 映射及模型计费单价配置。
   - 多主题支持：浅色（Light）、深色（Dark）、护眼暖色（Sepia）三主题无缝轮转与持久化。
-  - 模型列表：查看 `/v1/models` 实际对外暴露结果与 models.dev 临时对比。
+  - 模型列表：查看 `/v1/models` 实际对外暴露结果与每日缓存的 models.dev 目录对比。
   - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
 - PostgreSQL + Flyway；单实例部署。
 
@@ -218,7 +218,7 @@ curl -b cookies.txt http://localhost:8080/admin/api/exposed-models
 
 返回 `object` 和 `data`，每条记录包含 `id`、`source`（`alias` / `upstream` / `canonical`）与 `ownedBy`。配置了对外 canonical ID 的上游模型会标记为 `canonical`。管理界面的“模型列表”菜单展示同一结果，并提供原始 JSON 响应预览。
 
-同一页面还会加载 models.dev 目录，展示模型 ID、`canonical_model_id`、模型开发者和服务提供方，并在对外模型表中标记匹配结果。目录接口：`GET /admin/api/models-dev`。上游 `/models` 返回的 `owned_by` 只表示上游元数据，不作为模型开发者；例如 Qwen 通过 OpenAI 兼容接口返回 `owned_by=openai` 时，仍按 canonical ID 的 `alibaba` 命名空间识别开发者。
+同一页面还会加载 models.dev 目录，展示模型 ID、`canonical_model_id`、模型开发者和服务提供方，并在对外模型表中标记匹配结果。目录接口：`GET /admin/api/models-dev`。目录在后台缓存 24 小时，并在到期前 1 小时刷新；刷新失败时继续使用上一份完整快照并每分钟重试。上游 `/models` 返回的 `owned_by` 只表示上游元数据，不作为模型开发者；例如 Qwen 通过 OpenAI 兼容接口返回 `owned_by=openai` 时，仍按 canonical ID 的 `alibaba` 命名空间识别开发者。
 
 渠道编辑弹窗支持手动填写对外模型 ID，也可点击上游模型名或箭头将原名快速填入。模型列表页展示实际对外 ID、来源、上游模型和渠道，并提供 models.dev 目录用于查询与对照；目录信息不会自动修改渠道配置。
 
@@ -312,7 +312,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 - **渠道覆盖价**：为单个渠道的上游模型配置，优先于默认价；接口为 `GET/POST /admin/api/model-prices`、`PUT/DELETE /admin/api/model-prices/{id}`。
 - **模型默认价**：按对外模型 ID 配置，渠道没有覆盖价时自动继承；接口为 `GET/POST /admin/api/model-default-prices`、`PUT/DELETE /admin/api/model-default-prices/{id}`。
-- **批量套用**：在同一渠道内为多个上游模型一次写入相同单价；接口为 `POST /admin/api/model-prices/batch`。
+- **批量接口兼容**：`POST /admin/api/model-prices/batch` 仍保留给已有 API 调用方；管理台不再提供“批量套用”入口。
 
 模型默认价的模型 ID 优先使用渠道配置的规范 ID（canonical model ID），未配置时回退到上游模型名；规范 ID 没有对应默认价时也会再尝试上游模型名。这样同一对外模型跨渠道只需要维护一份默认价。
 

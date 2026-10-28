@@ -2,13 +2,11 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   applyPriceToForm,
-  buildBatchPricePayload,
   buildDefaultPricePayload,
   buildPricePayload,
   defaultPriceFormState,
   emptyPriceDraft,
   hasPriceDraft,
-  hasActivePriceDraft,
   parseNonNegativePrice,
   parseOptionalNonNegativePrice,
   priceFormError,
@@ -136,17 +134,6 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(payload.cachedInputPricePerMillion, '1')
   })
 
-  it('构建批量套用请求体时去重并过滤空模型', () => {
-    const payload = buildBatchPricePayload(
-      { currency: 'USD', inputPricePerMillion: '1', outputPricePerMillion: '2', cachedInputPricePerMillion: ' ' },
-      'channel-a',
-      [' m1 ', 'm1', '', null, 'm2'],
-    )
-    assert.deepEqual(payload.upstreamModels, ['m1', 'm2'])
-    assert.equal(payload.channelId, 'channel-a')
-    assert.equal(payload.cachedInputPricePerMillion, null)
-  })
-
   it('空金额不会被当成 0，非法值返回 null', () => {
     assert.equal(parseNonNegativePrice(''), null)
     assert.equal(parseNonNegativePrice('   '), null)
@@ -226,45 +213,6 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(tieredPayload.priceTiers[0].upToTokens, 128000)
     assert.equal(tieredPayload.priceTiers[0].cachedInputPricePerMillion, '0.5')
     assert.equal(tieredPayload.priceTiers[1].upToTokens, null)
-  })
-
-  it('批量套用在金额未填写时给出明确的填写提示', () => {
-    assert.equal(
-      priceFormError(
-        { pricingMode: 'token', inputPricePerMillion: '', outputPricePerMillion: '' },
-        { action: 'batch' },
-      ),
-      '请先填写输入单价和输出单价，再批量套用',
-    )
-    assert.equal(
-      priceFormError(
-        { pricingMode: 'token', inputPricePerMillion: '1', outputPricePerMillion: '2' },
-        { action: 'batch' },
-      ),
-      null,
-    )
-    for (const pricingMode of ['tiered', 'volume']) {
-      assert.equal(
-        priceFormError({
-          pricingMode,
-          priceTiers: [{ upToTokens: '', inputPricePerMillion: '', outputPricePerMillion: '' }],
-        }, { action: 'batch' }),
-        '请先填写每档的输入和输出单价，再批量套用',
-      )
-    }
-  })
-
-  it('批量价格摘要只检查当前计费方式的字段', () => {
-    assert.equal(hasActivePriceDraft({
-      pricingMode: 'per_request',
-      inputPricePerMillion: '1',
-      outputPricePerMillion: '2',
-      perRequestPrice: '',
-    }), false)
-    assert.equal(hasActivePriceDraft({
-      pricingMode: 'per_request',
-      perRequestPrice: '0.01',
-    }), true)
   })
 
 })

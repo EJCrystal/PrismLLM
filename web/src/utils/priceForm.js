@@ -81,17 +81,6 @@ export function buildDefaultPricePayload(form, modelId) {
   }
 }
 
-export function buildBatchPricePayload(form, channelId, upstreamModels) {
-  return {
-    channelId,
-    upstreamModels: [...new Set((Array.isArray(upstreamModels) ? upstreamModels : [])
-      .map((model) => String(model ?? '').trim())
-      .filter(Boolean))],
-    currency: form.currency || 'USD',
-    ...pricingPayload(form),
-  }
-}
-
 export function existingPricePayload(form, channelId, upstreamModel) {
   return buildPricePayload(form, channelId, upstreamModel)
 }
@@ -124,22 +113,6 @@ export function hasPriceDraft(form) {
         .some((field) => String(tier?.[field] ?? '').trim() !== '')))
 }
 
-/** True when the currently selected billing mode contains an entered price. */
-export function hasActivePriceDraft(form) {
-  const mode = form?.pricingMode || 'token'
-  if (mode === 'token') {
-    return ['inputPricePerMillion', 'outputPricePerMillion']
-      .some((field) => String(form?.[field] ?? '').trim() !== '')
-  }
-  if (mode === 'per_request') return String(form?.perRequestPrice ?? '').trim() !== ''
-  if (mode === 'tiered' || mode === 'volume') {
-    return Array.isArray(form?.priceTiers) && form.priceTiers.some((tier) =>
-      ['inputPricePerMillion', 'outputPricePerMillion', 'cachedInputPricePerMillion', 'cachedInputWritePricePerMillion']
-        .some((field) => String(tier?.[field] ?? '').trim() !== ''))
-  }
-  return false
-}
-
 /** Parse a required non-negative price field; blank or invalid input returns null. */
 export function parseNonNegativePrice(value) {
   const text = String(value ?? '').trim()
@@ -155,31 +128,19 @@ export function parseOptionalNonNegativePrice(value) {
 }
 
 /** Validate the active pricing strategy before sending it to the API. */
-export function priceFormError(form, options = {}) {
+export function priceFormError(form) {
   const mode = form?.pricingMode || 'token'
-  const batchAction = options.action === 'batch'
   const optionalFields = mode === 'token'
     ? ['cachedInputPricePerMillion', 'cachedInputWritePricePerMillion']
     : []
   if (mode === 'token') {
-    if (batchAction &&
-      (!String(form.inputPricePerMillion ?? '').trim() || !String(form.outputPricePerMillion ?? '').trim())
-    ) {
-      return '请先填写输入单价和输出单价，再批量套用'
-    }
     if (parseNonNegativePrice(form.inputPricePerMillion) == null || parseNonNegativePrice(form.outputPricePerMillion) == null) {
       return '输入和输出单价必须是非负数字'
     }
   } else if (mode === 'per_request') {
-    if (batchAction && !String(form.perRequestPrice ?? '').trim()) {
-      return '请先填写按次费用，再批量套用'
-    }
     if (parseNonNegativePrice(form.perRequestPrice) == null) return '按次费用必须是非负数字'
   } else if (mode === 'tiered' || mode === 'volume') {
     const tiers = Array.isArray(form.priceTiers) ? form.priceTiers : []
-    if (batchAction && tiers.length === 0) {
-      return '请先添加阶梯价格，再批量套用'
-    }
     if (tiers.length === 0 || tiers.length > 20) return '请添加 1 到 20 个价格档位'
     let previous = 0
     for (let index = 0; index < tiers.length; index += 1) {
@@ -190,11 +151,6 @@ export function priceFormError(form, options = {}) {
         return '阶梯上限必须严格递增，最后一档留空表示不限'
       }
       if (!isLast) previous = Number(limit)
-      if (batchAction &&
-        (!String(tier.inputPricePerMillion ?? '').trim() || !String(tier.outputPricePerMillion ?? '').trim())
-      ) {
-        return '请先填写每档的输入和输出单价，再批量套用'
-      }
       if (parseNonNegativePrice(tier.inputPricePerMillion) == null || parseNonNegativePrice(tier.outputPricePerMillion) == null) {
         return '每档的输入和输出单价都必须是非负数字'
       }

@@ -129,9 +129,6 @@ export const api = {
     request(`/model-prices/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteModelPrice: (id) =>
     request(`/model-prices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  batchUpsertModelPrices: (payload) =>
-    request('/model-prices/batch', { method: 'POST', body: JSON.stringify(payload) }),
-
   listModelDefaultPrices: () => request('/model-default-prices'),
   createModelDefaultPrice: (payload) =>
     request('/model-default-prices', { method: 'POST', body: JSON.stringify(payload) }),
