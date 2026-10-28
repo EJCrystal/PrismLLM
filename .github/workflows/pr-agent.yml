@@ -18,13 +18,14 @@ permissions:
   issues: write
   pull-requests: write
 
-concurrency:
-  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
-
 jobs:
   pr_agent:
     name: Review via gateway
+    # Keep concurrency at job level so an unauthorized `/...` comment cannot
+    # cancel a running review before the job's `if` guard rejects it.
+    concurrency:
+      group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     if: |
       github.event.sender.type != 'Bot' &&
       (

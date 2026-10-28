@@ -21,7 +21,7 @@ reviews:
     # Pause automatic reviews after three reviewed commits on the same PR.
     # Resume with `@coderabbitai resume` when the branch is ready again.
     auto_pause_after_reviewed_commits: 3
-    ignore_title_keywords: ["WIP", "DO NOT MERGE", "skip-review"]
+    ignore_title_keywords: ["[WIP]", "DO NOT MERGE", "skip-review"]
 
   # Lock files and build output do not need review. Keep docs/ADRs in scope.
   path_filters:
