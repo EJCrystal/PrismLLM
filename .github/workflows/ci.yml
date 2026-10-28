@@ -32,8 +32,11 @@ jobs:
 
       - name: Detect changed paths
         id: filter
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
+          # Force a git diff instead of the 3,000-file pull request API limit.
+          token: ''
+          base: ${{ github.event.pull_request.base.sha || github.event.before }}
           predicate-quantifier: 'some-with-excludes'
           filters: |
             code:
