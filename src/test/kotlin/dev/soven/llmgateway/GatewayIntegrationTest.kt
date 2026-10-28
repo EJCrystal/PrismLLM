@@ -45,8 +45,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.boolean
-import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -2183,7 +2183,8 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, updated.status)
             val json = Json.parseToJsonElement(updated.bodyAsText()).jsonObject
             assertEquals("custom prompt", json["defaultPrompt"]?.jsonPrimitive?.content)
-            assertNull(json["defaultReasoningEffort"]?.jsonPrimitive?.contentOrNull)
+            assertTrue("defaultReasoningEffort" in json)
+            assertEquals(JsonNull, json["defaultReasoningEffort"])
         }
     }
 
@@ -2209,7 +2210,8 @@ class GatewayIntegrationTest {
             assertEquals(true, json["success"]?.jsonPrimitive?.content?.toBoolean())
             assertEquals("Hello!", json["responseText"]?.jsonPrimitive?.content)
             assertEquals("10", json["usage"]?.jsonObject?.get("inputTokens")?.jsonPrimitive?.content)
-            assertNull(json["reasoningEffort"]?.jsonPrimitive?.contentOrNull)
+            assertTrue("reasoningEffort" in json)
+            assertEquals(JsonNull, json["reasoningEffort"])
             val upstream = fake.requests.last().body
             assertFalse(upstream.contains("reasoning_effort"), upstream)
             assertTrue(upstream.contains("\"content\":\"custom prompt\""), upstream)
