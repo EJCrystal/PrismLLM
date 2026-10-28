@@ -371,6 +371,14 @@ mvn test
 
 包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions、Responses 与 Anthropic Messages 的 SSE 用量解析与透传、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、渠道密钥分组 RPM/并发限流与取消安全释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
 
+只运行渠道密钥 RPM、最大并发和故障转移的端到端验证：
+
+```bash
+mvn -Dgroups=channel-key-rate-limit test
+```
+
+这组测试使用真实 PostgreSQL、Ktor 数据面和可延迟返回的假上游，验证同一密钥的 RPM 额度跨模型共享、限流后切换到备用密钥、并发占满后的切换，以及全部密钥繁忙时返回 `429 + Retry-After` 且请求不会到达上游。
+
 ### 前端自动化测试
 
 ```bash

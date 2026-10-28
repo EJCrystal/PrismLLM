@@ -16,6 +16,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
@@ -27,6 +28,7 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * OpenAI 兼容的假上游，用路径选择故障场景，供集成测试与本地联调使用。
@@ -45,6 +47,14 @@ class FakeUpstream {
     val cancellations = AtomicInteger()
     val failingModels = ConcurrentHashMap.newKeySet<String>()
     val keyStatuses = ConcurrentHashMap<String, Int>()
+    private val chatHold = AtomicReference<CompletableDeferred<Unit>?>(null)
+
+    fun holdChatRequests(): CompletableDeferred<Unit> =
+        CompletableDeferred<Unit>().also(chatHold::set)
+
+    fun clearChatHold() {
+        chatHold.set(null)
+    }
 
     fun start() {
         server.start(wait = false)
@@ -147,6 +157,9 @@ class FakeUpstream {
         if (!stream) {
             call.respondText(NON_STREAM_BODY, ContentType.Application.Json)
             return
+        }
+        if (scenario == "concurrency-hold") {
+            chatHold.get()?.await()
         }
 
         var completed = false
