@@ -679,7 +679,7 @@ class GatewayIntegrationTest {
     fun keyAutoDisableSettingsConcurrentFirstSaveDoesNotRace() = runBlocking {
         val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository)
         val revisions = coroutineScope {
-            (1..12).map { index -> async(Dispatchers.IO) {
+            (4..15).map { index -> async(Dispatchers.IO) {
                 settings.saveSettings(KeyAutoDisablePolicy(authFailureThreshold = index)).after.revision
             } }.awaitAll()
         }

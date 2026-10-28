@@ -274,7 +274,12 @@ private suspend fun handleProxy(
                     app.candidateCooldown.release(permit)
                     throw e
                 }
-                currentCoroutineContext().ensureActive()
+                try {
+                    currentCoroutineContext().ensureActive()
+                } catch (cancelled: CancellationException) {
+                    app.candidateCooldown.release(permit)
+                    throw cancelled
+                }
                 app.metrics.upstreamError(candidate.channel.name, e.code)
                 val kind = classifyFailure(e)
                 if (kind == null) {
