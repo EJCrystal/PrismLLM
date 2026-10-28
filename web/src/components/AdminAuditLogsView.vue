@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
-import { auditActionLabel, auditResultClass, auditResultLabel } from '../utils/adminAudit'
+import { auditActionLabel, auditDetailsRows, auditDetailsSummary, auditResultClass, auditResultLabel } from '../utils/adminAudit'
 import { createCursorPager } from '../utils/cursorPager'
 import { formatTime } from '../utils/format'
 import CopyButton from './CopyButton.vue'
@@ -35,7 +35,7 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>管理操作审计</h2>
-        <p>记录管理 API 的写操作结果、操作者、请求 ID 与来源地址，不保存请求正文。</p>
+        <p>记录管理写操作与密钥自动禁用，展示操作者、触发原因和请求 ID，不保存请求正文。</p>
       </div>
       <button type="button" class="button ghost" :disabled="loading || loadingMore" @click="refresh">
         <Icon name="refresh" :size="16" />
@@ -89,17 +89,27 @@ onMounted(load)
             <tr v-for="entry in logs" :key="entry.id">
               <td>
                 <div class="primary-cell">{{ formatTime(entry.createdAt) }}</div>
-                <div class="muted small">{{ entry.actor || '未认证请求' }}</div>
+                <div class="muted small">{{ entry.action === 'channel_key.auto_disable' ? '系统' : (entry.actor || '未认证请求') }}</div>
               </td>
               <td>
                 <div>{{ auditActionLabel(entry.action) }}</div>
                 <div class="mono muted small">{{ entry.action }}</div>
+                <div v-if="auditDetailsSummary(entry)" class="audit-details-summary small">{{ auditDetailsSummary(entry) }}</div>
+                <details v-if="auditDetailsRows(entry).length" class="audit-details">
+                  <summary>查看详情</summary>
+                  <dl>
+                    <template v-for="[label, value] in auditDetailsRows(entry)" :key="label">
+                      <dt>{{ label }}</dt>
+                      <dd>{{ value }}</dd>
+                    </template>
+                  </dl>
+                </details>
               </td>
               <td>
                 <span class="badge" :class="auditResultClass(entry.result)">
                   {{ auditResultLabel(entry.result) }}
                 </span>
-                <div class="muted small">HTTP {{ entry.statusCode }}</div>
+                <div class="muted small">{{ entry.action === 'channel_key.auto_disable' ? '系统执行' : `HTTP ${entry.statusCode}` }}</div>
                 <div v-if="entry.errorCode" class="mono muted small">{{ entry.errorCode }}</div>
               </td>
               <td>
@@ -128,3 +138,12 @@ onMounted(load)
     </div>
   </section>
 </template>
+
+<style scoped>
+.audit-details-summary { max-width: 320px; margin-top: 6px; white-space: normal; overflow-wrap: anywhere; }
+.audit-details { max-width: 320px; margin-top: 6px; font-size: 12px; }
+.audit-details summary { color: var(--info); cursor: pointer; }
+.audit-details dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; white-space: normal; }
+.audit-details dt { color: var(--muted); }
+.audit-details dd { margin: 0; overflow-wrap: anywhere; }
+</style>

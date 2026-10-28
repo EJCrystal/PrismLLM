@@ -9,6 +9,9 @@ import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.insertReturning
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 
 /**
  * 管理面写操作审计持久化。调用方只能追加和读取，不提供修改或删除接口。
@@ -23,7 +26,23 @@ class AdminAuditRepository(private val database: Database) {
         requestId: String,
         sourceIp: String?,
         errorCode: String?,
+        details: JsonObject? = null,
     ): AdminAuditRecord = suspendTransaction(database) {
+        recordInTransaction(actor, action, method, path, statusCode, requestId, sourceIp, errorCode, details)
+    }
+
+    /** 与系统触发的密钥状态变更共用当前事务，审计写入失败时一并回滚。 */
+    internal fun recordInTransaction(
+        actor: String?,
+        action: String,
+        method: String,
+        path: String,
+        statusCode: Int,
+        requestId: String,
+        sourceIp: String?,
+        errorCode: String?,
+        details: JsonObject? = null,
+    ): AdminAuditRecord {
         val createdAt = System.currentTimeMillis()
         val result = if (statusCode < 400) "success" else "failure"
         val id = AdminAuditLogs.insertReturning(listOf(AdminAuditLogs.id)) {
@@ -36,9 +55,10 @@ class AdminAuditRepository(private val database: Database) {
             it[AdminAuditLogs.requestId] = requestId
             it[AdminAuditLogs.sourceIp] = sourceIp
             it[AdminAuditLogs.errorCode] = errorCode
+            it[AdminAuditLogs.details] = details?.toString()
             it[AdminAuditLogs.createdAt] = createdAt
         }.single()[AdminAuditLogs.id]
-        AdminAuditRecord(
+        return AdminAuditRecord(
             id = id,
             actor = actor,
             action = action,
@@ -50,6 +70,7 @@ class AdminAuditRepository(private val database: Database) {
             sourceIp = sourceIp,
             errorCode = errorCode,
             createdAt = createdAt,
+            details = details,
         )
     }
 
@@ -77,6 +98,7 @@ class AdminAuditRepository(private val database: Database) {
         requestId = row[AdminAuditLogs.requestId],
         sourceIp = row[AdminAuditLogs.sourceIp],
         errorCode = row[AdminAuditLogs.errorCode],
+        details = row[AdminAuditLogs.details]?.let { Json.parseToJsonElement(it).jsonObject },
         createdAt = row[AdminAuditLogs.createdAt],
     )
 }

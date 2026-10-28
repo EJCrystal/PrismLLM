@@ -34,6 +34,9 @@ object ChannelKeys : Table("channel_keys") {
     val credentialNonce = text("credential_nonce")
     val credentialKeyVersion = integer("credential_key_version")
     val enabled = bool("enabled")
+    val stateVersion = long("state_version").default(0)
+    val autoDisabledAt = long("auto_disabled_at").nullable()
+    val autoDisableReason = varchar("auto_disable_reason", 40).nullable()
     val priority = integer("priority").default(1)
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
@@ -52,6 +55,28 @@ object ChannelKeyModels : Table("channel_key_models") {
     val createdAt = long("created_at")
 
     override val primaryKey = PrimaryKey(keyId, upstreamModel)
+}
+
+/** 自动禁用统计按密钥聚合，规则修改后通过 revision 开始新一轮计数。 */
+object ChannelKeyHealth : Table("channel_key_health") {
+    val keyId = varchar("key_id", 36).references(ChannelKeys.id, onDelete = ReferenceOption.CASCADE)
+    val policyRevision = long("policy_revision")
+    val authFailureStreak = integer("auth_failure_streak")
+    val recentFailures = text("recent_failures")
+
+    override val primaryKey = PrimaryKey(keyId)
+}
+
+object KeyAutoDisableSettings : Table("key_auto_disable_settings") {
+    val id = integer("id")
+    val enabled = bool("enabled")
+    val authFailureThreshold = integer("auth_failure_threshold")
+    val failureThreshold = integer("failure_threshold")
+    val failureWindowMinutes = integer("failure_window_minutes")
+    val revision = long("revision")
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(id)
 }
 
 /**
@@ -234,6 +259,7 @@ object AdminAuditLogs : Table("admin_audit_logs") {
     val requestId = varchar("request_id", 64)
     val sourceIp = varchar("source_ip", 100).nullable()
     val errorCode = varchar("error_code", 100).nullable()
+    val details = text("details").nullable()
     val createdAt = long("created_at")
 
     override val primaryKey = PrimaryKey(id)

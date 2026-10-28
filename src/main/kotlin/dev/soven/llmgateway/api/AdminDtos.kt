@@ -20,7 +20,9 @@ import dev.soven.llmgateway.report.UsageGroup
 import dev.soven.llmgateway.report.UsageReport
 import dev.soven.llmgateway.report.UsageTotal
 import dev.soven.llmgateway.repo.AliasWithCandidates
+import dev.soven.llmgateway.resilience.KeyAutoDisableSettingsRecord
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * 管理面登录请求。
@@ -82,6 +84,7 @@ data class ChannelKeyRequest(
     val enabled: Boolean = true,
     val priority: Int? = null,
     val models: List<String> = emptyList(),
+    val stateVersion: Long? = null,
 )
 
 @Serializable
@@ -129,6 +132,9 @@ data class ChannelKeyResponse(
     val priority: Int,
     val credentialSet: Boolean,
     val models: List<String>,
+    val stateVersion: Long = 0,
+    val autoDisabledAt: Long? = null,
+    val autoDisableReason: String? = null,
 )
 
 fun ChannelKeyRecord.toResponse() = ChannelKeyResponse(
@@ -138,6 +144,34 @@ fun ChannelKeyRecord.toResponse() = ChannelKeyResponse(
     priority = priority,
     credentialSet = credentialSet,
     models = models,
+    stateVersion = stateVersion,
+    autoDisabledAt = autoDisabledAt,
+    autoDisableReason = autoDisableReason,
+)
+
+@Serializable
+data class KeyAutoDisableSettingsRequest(
+    val enabled: Boolean,
+    val authFailureThreshold: Int,
+    val failureThreshold: Int,
+    val failureWindowMinutes: Int,
+)
+
+@Serializable
+data class KeyAutoDisableSettingsResponse(
+    val enabled: Boolean,
+    val authFailureThreshold: Int,
+    val failureThreshold: Int,
+    val failureWindowMinutes: Int,
+    val updatedAt: Long,
+)
+
+fun KeyAutoDisableSettingsRecord.toResponse() = KeyAutoDisableSettingsResponse(
+    enabled = policy.enabled,
+    authFailureThreshold = policy.authFailureThreshold,
+    failureThreshold = policy.failureThreshold,
+    failureWindowMinutes = policy.failureWindowMinutes,
+    updatedAt = updatedAt,
 )
 
 @Serializable
@@ -485,6 +519,7 @@ data class AdminAuditLogResponse(
     val sourceIp: String?,
     val errorCode: String?,
     val createdAt: Long,
+    val details: JsonObject? = null,
 )
 
 fun AdminAuditRecord.toResponse() = AdminAuditLogResponse(
@@ -499,6 +534,7 @@ fun AdminAuditRecord.toResponse() = AdminAuditLogResponse(
     sourceIp = sourceIp,
     errorCode = errorCode,
     createdAt = createdAt,
+    details = details,
 )
 
 /**

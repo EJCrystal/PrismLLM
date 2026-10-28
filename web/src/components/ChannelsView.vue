@@ -10,6 +10,7 @@ import PriceEditorModal from './PriceEditorModal.vue'
 import DefaultPriceModal from './DefaultPriceModal.vue'
 import ModelTestModal from './ModelTestModal.vue'
 import ModelTestSettingsModal from './ModelTestSettingsModal.vue'
+import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
@@ -36,6 +37,7 @@ const priceEditor = ref(null)
 const showDefaultPrices = ref(false)
 const testTarget = ref(null)
 const showTestSettings = ref(false)
+const showAutoDisableSettings = ref(false)
 const pricePromptChannelId = ref(null)
 const loading = ref(true)
 const error = ref('')
@@ -117,6 +119,9 @@ function newKeyDraft(overrides = {}) {
     credential: '',
     enabled: overrides.enabled ?? true,
     priority: overrides.priority ?? 1,
+    stateVersion: overrides.stateVersion ?? null,
+    autoDisabledAt: overrides.autoDisabledAt ?? null,
+    autoDisableReason: overrides.autoDisableReason ?? null,
     models: [...(overrides.models || [])],
     availableModels: [],
     modelsLoading: false,
@@ -425,13 +430,7 @@ function openEdit(channel) {
   const savedKeys = channel.keys?.length
     ? channel.keys
     : [{ name: '默认密钥', enabled: true, priority: 1, models: channel.models || [] }]
-  channelKeys.value = savedKeys.map((key) => newKeyDraft({
-    id: key.id,
-    name: key.name,
-    enabled: key.enabled,
-    priority: key.priority,
-    models: key.models,
-  }))
+  channelKeys.value = savedKeys.map((key) => newKeyDraft(key))
   clearMappings()
   ;(channel.modelMappings || []).forEach((mapping) => {
     originalMappings[mapping.upstreamModel] = {
@@ -454,7 +453,7 @@ function openEdit(channel) {
 }
 
 function closeChannelForm() {
-  if (testTarget.value || showTestSettings.value) return
+  if (testTarget.value || showTestSettings.value || showAutoDisableSettings.value) return
   showForm.value = false
 }
 
@@ -569,6 +568,10 @@ async function save() {
       notify(`新建密钥「${name}」必须提供上游凭据`, 'error')
       return
     }
+    if (key.autoDisabledAt && key.enabled && !key.credential.trim()) {
+      notify(`密钥「${name}」自动禁用后重新启用需要更换上游凭据`, 'error')
+      return
+    }
     if (!key.models.length) {
       notify(`密钥「${name}」至少需要授权一个模型`, 'error')
       return
@@ -607,6 +610,7 @@ async function save() {
     }
   } catch (cause) {
     notify(cause.message, 'error')
+    if (cause.code === 'channel_key_state_changed') await load()
   } finally {
     saving.value = false
   }
@@ -636,6 +640,10 @@ onMounted(load)
         <p>一个渠道对应一个上游接入点，可选择支持 Chat Completions、Responses、Anthropic Messages 或其组合。</p>
       </div>
       <div class="section-head-actions">
+        <button type="button" class="button subtle" @click="showAutoDisableSettings = true">
+          <Icon name="shield" :size="16" />
+          密钥自动禁用
+        </button>
         <button type="button" class="button subtle" @click="showDefaultPrices = true">
           <Icon name="price" :size="16" />
           模型默认价
@@ -710,6 +718,9 @@ onMounted(load)
                 <div class="muted small">
                   {{ channel.keys?.length || 0 }} 个密钥
                   <template v-if="channel.keys?.length">· {{ channel.keys.filter((key) => key.enabled).length }} 个启用</template>
+                </div>
+                <div v-if="channel.keys?.some((key) => key.autoDisabledAt)" class="text-danger small">
+                  {{ channel.keys.filter((key) => key.autoDisabledAt).length }} 个自动禁用
                 </div>
               </td>
               <td><span class="mono address">{{ channel.baseUrl }}</span></td>
@@ -875,7 +886,10 @@ onMounted(load)
               <span>上游密钥</span>
               <small>同一渠道的密钥共用基础地址、鉴权方式和协议；密钥优先级只在当前渠道内生效。</small>
             </div>
-            <span class="badge info">{{ channelKeys.length }} 个密钥</span>
+            <div class="section-head-actions">
+              <span class="badge info">{{ channelKeys.length }} 个密钥</span>
+              <button type="button" class="button ghost mini" @click="showAutoDisableSettings = true">自动禁用规则</button>
+            </div>
           </div>
           <div class="channel-key-list">
             <div v-for="(key, index) in channelKeys" :key="key.localId" class="channel-key-card">
@@ -900,6 +914,10 @@ onMounted(load)
                   <span>操作</span>
                   <button type="button" class="button ghost mini channel-key-delete" @click="removeKey(index)">删除</button>
                 </div>
+              </div>
+              <div v-if="key.autoDisabledAt" class="callout warning">
+                <strong>{{ key.enabled ? '保存后重新启用' : '已自动禁用' }}：{{ key.autoDisableReason }}</strong>
+                <p>禁用时间：{{ formatTime(key.autoDisabledAt) }}。请更换上游凭据，再打开启用开关并保存；保存后会清空失败计数。</p>
               </div>
               <label class="field">
                 <span>上游凭据</span>
@@ -1069,6 +1087,11 @@ onMounted(load)
       :channels="channels"
       @close="showDefaultPrices = false"
       @saved="onDefaultPricesSaved"
+    />
+
+    <KeyAutoDisableSettingsModal
+      v-if="showAutoDisableSettings"
+      @close="showAutoDisableSettings = false"
     />
 
   </section>

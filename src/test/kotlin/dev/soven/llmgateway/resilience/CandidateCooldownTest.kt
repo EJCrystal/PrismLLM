@@ -282,4 +282,27 @@ class CandidateCooldownTest {
         val removed = changes.lastOrNull() as? CooldownChange.Removed
         assertEquals("ch:ch1", removed?.stateKey)
     }
+
+    @Test
+    fun `key reset clears all key model cooldowns and ignores late permits`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+        val lateAuth = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(lateAuth, FailureKind.AUTH_REJECTED)
+        val lateRateLimit = cooldown.forceAcquire("ch1", "k1", "m2")
+        cooldown.recordFailure(lateRateLimit, FailureKind.RATE_LIMITED)
+        val other = assertNotNull(cooldown.acquire("ch1", "k2", "m1"))
+        cooldown.recordFailure(other, FailureKind.RATE_LIMITED)
+        cooldown.recordFirstToken("ch1", "k1", "m3", 1000)
+
+        cooldown.clearKey("ch1", "k1")
+        assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        assertNotNull(cooldown.acquire("ch1", "k1", "m2"))
+        assertNull(cooldown.acquire("ch1", "k2", "m1"))
+        assertNull(cooldown.recordFailure(lateAuth, FailureKind.AUTH_REJECTED))
+        assertNull(cooldown.recordFailure(lateRateLimit, FailureKind.RATE_LIMITED))
+        assertFalse(cooldown.recordFirstToken("ch1", "k1", "m3", 1000))
+        assertTrue(changes.any { it == CooldownChange.Removed("key:ch1:k1") })
+        assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k1:m2") })
+    }
 }

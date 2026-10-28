@@ -90,6 +90,9 @@ export const api = {
   getModelTestSettings: () => request('/model-test-settings'),
   updateModelTestSettings: (payload) =>
     request('/model-test-settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  getKeyAutoDisableSettings: () => request('/key-auto-disable-settings'),
+  updateKeyAutoDisableSettings: (payload) =>
+    request('/key-auto-disable-settings', { method: 'PUT', body: JSON.stringify(payload) }),
 
   listAliases: () => request('/aliases'),
   createAlias: (payload) => request('/aliases', { method: 'POST', body: JSON.stringify(payload) }),

@@ -41,6 +41,7 @@ export function buildChannelPayload(
   if (keys.length) {
     payload.keys = keys.map((key) => ({
       id: key.id || null,
+      ...(key.id && key.stateVersion != null ? { stateVersion: key.stateVersion } : {}),
       name: String(key.name ?? '').trim(),
       credential: String(key.credential ?? '').trim() || null,
       enabled: key.enabled !== false,

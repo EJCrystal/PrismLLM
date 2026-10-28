@@ -13,12 +13,14 @@ import io.ktor.server.plugins.origin
 import io.ktor.server.response.header
 import io.ktor.util.AttributeKey
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.JsonObject
 import org.slf4j.Logger
 import java.util.UUID
 
 private val AuditStateKey = AttributeKey<AuditState>("AdminAuditState")
 private val AuditActorKey = AttributeKey<String>("AdminAuditActor")
 private val AuditErrorCodeKey = AttributeKey<String>("AdminAuditErrorCode")
+private val AuditDetailsKey = AttributeKey<JsonObject>("AdminAuditDetails")
 private val auditedMethods = setOf(
     HttpMethod.Post,
     HttpMethod.Put,
@@ -75,6 +77,7 @@ fun adminAuditPlugin(
                 requestId = state.requestId,
                 sourceIp = sourceIp,
                 errorCode = errorCode,
+                details = call.attributes.getOrNull(AuditDetailsKey),
             )
         } catch (cause: CancellationException) {
             throw cause
@@ -98,6 +101,11 @@ internal fun ApplicationCall.markAdminAuditError(code: String) {
     if (!attributes.contains(AuditErrorCodeKey)) {
         attributes.put(AuditErrorCodeKey, code.take(100))
     }
+}
+
+/** 只接收由路由生成的非敏感配置元数据，不能传入原始请求正文。 */
+internal fun ApplicationCall.markAdminAuditDetails(details: JsonObject) {
+    attributes.put(AuditDetailsKey, details)
 }
 
 internal fun auditAction(method: String, path: String): String = when {
@@ -130,6 +138,7 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "PUT" && path == "/admin/api/request-log-retention" -> "request_log.retention.update"
     method == "POST" && path == "/admin/api/request-log-retention/cleanup" -> "request_log.cleanup"
     method == "PUT" && path == "/admin/api/model-test-settings" -> "model_test_settings.update"
+    method == "PUT" && path == "/admin/api/key-auto-disable-settings" -> "key_auto_disable_settings.update"
     else -> "admin.write"
 }
 

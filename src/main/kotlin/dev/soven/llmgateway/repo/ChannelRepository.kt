@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.ChannelKeyModels
+import dev.soven.llmgateway.db.ChannelKeyHealth
 import dev.soven.llmgateway.db.ChannelKeys
 import dev.soven.llmgateway.db.ChannelModels
 import dev.soven.llmgateway.db.Channels
@@ -40,6 +41,12 @@ data class ChannelKeyUpdate(
     val enabled: Boolean = true,
     val priority: Int = 1,
     val models: List<String> = emptyList(),
+    val stateVersion: Long? = null,
+)
+
+class ChannelKeyStateChangedException : RuntimeException("密钥状态已变化，请重新打开渠道编辑页面后再保存")
+class ChannelKeyReenableRequiresCredentialException(name: String) : RuntimeException(
+    "密钥「$name」因错误自动禁用，重新启用前必须更换上游凭据",
 )
 
 /**
@@ -186,6 +193,7 @@ class ChannelRepository(private val database: Database) {
     private fun saveKeys(channelId: String, keys: List<ChannelKeyUpdate>, now: Long) {
         val existing = ChannelKeys.selectAll()
             .where { ChannelKeys.channelId eq channelId }
+            .orderBy(ChannelKeys.id).forUpdate()
             .associateBy { it[ChannelKeys.id] }
         val allowedModels = ChannelModels.selectAll()
             .where { ChannelModels.channelId eq channelId }
@@ -200,6 +208,14 @@ class ChannelRepository(private val database: Database) {
             }
             keptIds += keyId
             if (keyId in existing) {
+                val previous = existing.getValue(keyId)
+                if (key.stateVersion != null && key.stateVersion != previous[ChannelKeys.stateVersion]) {
+                    throw ChannelKeyStateChangedException()
+                }
+                if (previous[ChannelKeys.autoDisabledAt] != null && key.enabled && key.credential == null) {
+                    throw ChannelKeyReenableRequiresCredentialException(previous[ChannelKeys.name])
+                }
+                val resetHealth = key.credential != null || key.enabled != previous[ChannelKeys.enabled]
                 ChannelKeys.update({ ChannelKeys.id eq keyId }) {
                     it[name] = key.name
                     key.credential?.let { credential ->
@@ -210,7 +226,13 @@ class ChannelRepository(private val database: Database) {
                     it[enabled] = key.enabled
                     it[priority] = key.priority
                     it[updatedAt] = now
+                    if (resetHealth) {
+                        it[stateVersion] = previous[ChannelKeys.stateVersion] + 1
+                        it[autoDisabledAt] = null
+                        it[autoDisableReason] = null
+                    }
                 }
+                if (resetHealth) ChannelKeyHealth.deleteWhere { ChannelKeyHealth.keyId eq keyId }
             } else {
                 val credential = key.credential
                     ?: throw IllegalArgumentException("new channel key requires credential")
@@ -314,6 +336,9 @@ internal fun loadChannelKeysInTransaction(
                 models = modelsByKey[row[ChannelKeys.id]].orEmpty(),
                 createdAt = row[ChannelKeys.createdAt],
                 updatedAt = row[ChannelKeys.updatedAt],
+                stateVersion = row[ChannelKeys.stateVersion],
+                autoDisabledAt = row[ChannelKeys.autoDisabledAt],
+                autoDisableReason = row[ChannelKeys.autoDisableReason],
             )
         }
     }

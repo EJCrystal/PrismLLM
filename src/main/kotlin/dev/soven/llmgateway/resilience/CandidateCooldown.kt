@@ -350,6 +350,22 @@ class CandidateCooldown(
         }
     }
 
+    /** 更换凭据或切换启用状态后清除密钥级冷却，并作废旧请求的许可。 */
+    @Synchronized
+    fun clearKey(channelId: String, keyId: String) {
+        val keyStateId = CooldownKey.Key(channelId, keyId).id
+        val candidatePrefix = "kc:$channelId:$keyId:"
+        for ((id, state) in states) {
+            if (id != keyStateId && !id.startsWith(candidatePrefix)) continue
+            state.consecutiveFailures = 0
+            state.cooldownUntil = 0
+            state.probeInFlight = false
+            state.generation += 1
+            onChange(CooldownChange.Removed(id))
+        }
+        ttftStreaks.keys.removeIf { it.startsWith(candidatePrefix) }
+    }
+
     /**
      * 无副作用地查看候选当前是否被冷却阻塞，供分摊排序在轮询前分拣可尝试候选。
      * 与 acquire 之间存在竞态窗口，acquire 会再次校验。
