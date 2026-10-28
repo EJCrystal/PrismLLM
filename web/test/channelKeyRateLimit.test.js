@@ -37,6 +37,16 @@ describe('channelKeyRateLimit: 渠道密钥限流规则', () => {
     assert.equal(channelKeyRateLimitSummary(rule), '已关闭（保留 RPM 60 · 并发 3）')
   })
 
+  it('编辑已知字段时透传服务端新增字段', () => {
+    const rule = {
+      enabled: true,
+      requestsPerMinute: 60,
+      maxConcurrentRequests: 2,
+      futureWindowSeconds: 30,
+    }
+    assert.deepEqual(buildChannelKeyRateLimitPayload(rule), rule)
+  })
+
   it('启用规则时至少需要一个限额', () => {
     assert.throws(
       () => buildChannelKeyRateLimitPayload({ enabled: true }),

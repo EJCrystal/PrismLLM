@@ -5,10 +5,12 @@ export const DEFAULT_CHANNEL_KEY_RATE_LIMIT = Object.freeze({
 })
 
 export function normalizeChannelKeyRateLimit(rule = {}) {
+  const source = rule && typeof rule === 'object' ? rule : {}
   return {
-    enabled: rule?.enabled === true,
-    requestsPerMinute: optionalNumber(rule?.requestsPerMinute),
-    maxConcurrentRequests: optionalNumber(rule?.maxConcurrentRequests),
+    ...source,
+    enabled: source.enabled === true,
+    requestsPerMinute: optionalNumber(source.requestsPerMinute),
+    maxConcurrentRequests: optionalNumber(source.maxConcurrentRequests),
   }
 }
 
