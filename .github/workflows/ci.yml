@@ -2,20 +2,8 @@ name: CI
 
 on:
   pull_request:
-    # Docs-only changes do not need the backend/frontend test suite, but
-    # monitoring files must always run the Prometheus validation.
-    paths:
-      - "**"
-      - "!**/*.md"
-      - "!docs/**"
-      - "monitoring/**"
   push:
     branches: [main]
-    paths:
-      - "**"
-      - "!**/*.md"
-      - "!docs/**"
-      - "monitoring/**"
 
 permissions:
   contents: read
@@ -25,8 +13,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      monitoring: ${{ steps.filter.outputs.monitoring }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          # Force a git diff instead of the 3,000-file pull request API limit.
+          token: ''
+          base: ${{ github.event.pull_request.base.sha || github.event.before }}
+          predicate-quantifier: 'some-with-excludes'
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+            monitoring:
+              - 'monitoring/**'
+
   test:
     name: Test and build
+    needs: changes
+    # Keep the required check present for docs-only PRs: the job is skipped
+    # instead of the whole workflow, so GitHub treats it as a successful check.
+    if: |
+      !cancelled() && (
+        needs.changes.result != 'success' ||
+        needs.changes.outputs.code == 'true' ||
+        needs.changes.outputs.monitoring == 'true'
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
