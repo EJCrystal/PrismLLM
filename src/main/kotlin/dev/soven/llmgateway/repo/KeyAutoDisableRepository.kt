@@ -34,6 +34,12 @@ data class KeyAutoDisableSettingsChange(
     val after: KeyAutoDisableSettingsRecord,
 )
 
+data class KeyAutoDisableSettingsAuditContext(
+    val actor: String?,
+    val requestId: String,
+    val sourceIp: String?,
+)
+
 /** 事务已算出需要停用，但调用方尚未取得密钥写锁；回滚计数后由写锁路径重放。 */
 class KeyAutoDisablePendingException : RuntimeException(null, null, false, false)
 
@@ -50,7 +56,10 @@ class KeyAutoDisableRepository(
         settingsInTransaction()
     }
 
-    suspend fun saveSettings(policy: KeyAutoDisablePolicy): KeyAutoDisableSettingsChange = suspendTransaction(database) {
+    suspend fun saveSettings(
+        policy: KeyAutoDisablePolicy,
+        auditContext: KeyAutoDisableSettingsAuditContext? = null,
+    ): KeyAutoDisableSettingsChange = suspendTransaction(database) {
         // 迁移会创建单例行；测试或手工清空后也允许首次并发保存。
         // 冲突时忽略插入，再锁定同一行，避免两个请求都看到空行后争抢主键。
         KeyAutoDisableSettings.insertIgnore {
@@ -74,6 +83,22 @@ class KeyAutoDisableRepository(
             it[failureWindowMinutes] = policy.failureWindowMinutes
             it[revision] = after.revision
             it[updatedAt] = after.updatedAt
+        }
+        auditContext?.let { context ->
+            audit.recordInTransaction(
+                actor = context.actor,
+                action = "key_auto_disable_settings.update",
+                method = "PUT",
+                path = "/admin/api/key-auto-disable-settings",
+                statusCode = 200,
+                requestId = context.requestId,
+                sourceIp = context.sourceIp,
+                errorCode = null,
+                details = buildJsonObject {
+                    put("before", settingsAuditJson(before))
+                    put("after", settingsAuditJson(after))
+                },
+            )
         }
         KeyAutoDisableSettingsChange(before, after)
     }
@@ -109,6 +134,7 @@ class KeyAutoDisableRepository(
             KeyFailureState(
                 stored[ChannelKeyHealth.authFailureStreak],
                 parseRecentFailures(stored[ChannelKeyHealth.recentFailures]),
+
             )
         } else KeyFailureState()
         val now = nowMs()
@@ -180,6 +206,14 @@ class KeyAutoDisableRepository(
         revision = row[KeyAutoDisableSettings.revision],
         updatedAt = row[KeyAutoDisableSettings.updatedAt],
     )
+
+    private fun settingsAuditJson(settings: KeyAutoDisableSettingsRecord) = buildJsonObject {
+        put("enabled", settings.policy.enabled)
+        put("authFailureThreshold", settings.policy.authFailureThreshold)
+        put("failureThreshold", settings.policy.failureThreshold)
+        put("failureWindowMinutes", settings.policy.failureWindowMinutes)
+        put("updatedAt", settings.updatedAt)
+    }
 
     /** 历史计数损坏时从空状态重新累计，避免自动禁用记账永久失效。 */
     private fun parseRecentFailures(value: String): List<Long> = runCatching {

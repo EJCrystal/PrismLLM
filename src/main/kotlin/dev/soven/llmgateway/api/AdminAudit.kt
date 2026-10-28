@@ -21,6 +21,7 @@ private val AuditStateKey = AttributeKey<AuditState>("AdminAuditState")
 private val AuditActorKey = AttributeKey<String>("AdminAuditActor")
 private val AuditErrorCodeKey = AttributeKey<String>("AdminAuditErrorCode")
 private val AuditDetailsKey = AttributeKey<JsonObject>("AdminAuditDetails")
+private val AuditHandledKey = AttributeKey<Unit>("AdminAuditHandled")
 private val auditedMethods = setOf(
     HttpMethod.Post,
     HttpMethod.Put,
@@ -59,6 +60,7 @@ fun adminAuditPlugin(
 
     on(ResponseBodyReadyForSend) { call, content ->
         val state = call.attributes.getOrNull(AuditStateKey) ?: return@on
+        if (call.attributes.contains(AuditHandledKey)) return@on
         val statusCode = call.response.status()?.value
             ?: content.status?.value
             ?: HttpStatusCode.OK.value
@@ -97,6 +99,8 @@ internal fun ApplicationCall.markAdminAuditActor(username: String) {
     attributes.put(AuditActorKey, username.take(100))
 }
 
+internal fun ApplicationCall.adminAuditActor(): String? = attributes.getOrNull(AuditActorKey)
+
 internal fun ApplicationCall.markAdminAuditError(code: String) {
     if (!attributes.contains(AuditErrorCodeKey)) {
         attributes.put(AuditErrorCodeKey, code.take(100))
@@ -106,6 +110,10 @@ internal fun ApplicationCall.markAdminAuditError(code: String) {
 /** 只接收由路由生成的非敏感配置元数据，不能传入原始请求正文。 */
 internal fun ApplicationCall.markAdminAuditDetails(details: JsonObject) {
     attributes.put(AuditDetailsKey, details)
+}
+
+internal fun ApplicationCall.markAdminAuditHandled() {
+    attributes.put(AuditHandledKey, Unit)
 }
 
 internal fun auditAction(method: String, path: String): String = when {

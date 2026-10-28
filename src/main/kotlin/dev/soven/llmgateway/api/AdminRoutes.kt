@@ -13,6 +13,7 @@ import dev.soven.llmgateway.proxy.testChannelModelConnectivity
 import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.repo.KeyAutoDisableSettingsAuditContext
 import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.parseDailyCostLimit
@@ -24,6 +25,7 @@ import io.ktor.http.Cookie
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.plugins.origin
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -258,11 +260,16 @@ fun Route.adminRoutes(app: GatewayApplication) {
             } catch (cause: IllegalArgumentException) {
                 throw badRequest("invalid_key_auto_disable_settings", cause.message ?: "自动禁用规则无效")
             }
-            val change = app.keyAutoDisableRepository.saveSettings(policy)
-            call.markAdminAuditDetails(buildJsonObject {
-                put("before", GatewayApplication.gatewayJson.encodeToJsonElement(change.before.toResponse()))
-                put("after", GatewayApplication.gatewayJson.encodeToJsonElement(change.after.toResponse()))
-            })
+            val requestId = call.response.headers["X-Request-Id"]
+            val change = app.keyAutoDisableRepository.saveSettings(
+                policy,
+                KeyAutoDisableSettingsAuditContext(
+                    actor = call.adminAuditActor()?.take(100),
+                    requestId = requestId ?: call.request.headers["X-Request-Id"].orEmpty(),
+                    sourceIp = call.request.origin.remoteAddress.take(100),
+                ),
+            )
+            call.markAdminAuditHandled()
             call.respond(change.after.toResponse())
         }
 

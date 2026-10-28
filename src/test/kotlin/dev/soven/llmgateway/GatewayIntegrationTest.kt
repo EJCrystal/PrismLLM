@@ -694,6 +694,7 @@ class GatewayIntegrationTest {
         assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }.enabled)
     }
 
+    @Test
     fun keyAutoDisableSettingsConcurrentFirstSaveDoesNotRace() = runBlocking {
         val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository)
         val revisions = coroutineScope {
@@ -3158,6 +3159,7 @@ class GatewayIntegrationTest {
         assertEquals("test.malformed", record.action)
     }
 
+    @Test
     fun `alias rejects un-authorized channel model`() = runBlocking {
         val channel = createChannelWithBaseUrl("alias-auth", "${fake.baseUrl}/ok/v1").let { created ->
             app.channelRepository.update(
