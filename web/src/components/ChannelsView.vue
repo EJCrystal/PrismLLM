@@ -477,7 +477,7 @@ function clearMappings() {
   Object.keys(originalMappings).forEach((key) => delete originalMappings[key])
 }
 
-function channelModelCount(channel) {
+function channelPublicModelCount(channel) {
   return channelDisplayModels(channel).length
 }
 
@@ -787,11 +787,11 @@ onMounted(load)
                     </span>
                   </span>
                   <span
-                    v-if="channelModelCount(channel) > VISIBLE_MODEL_LIMIT"
+                    v-if="channelPublicModelCount(channel) > VISIBLE_MODEL_LIMIT"
                     class="badge neutral channel-model-name"
                     :title="hiddenModelsTitle(channel)"
                   >
-                    +{{ channelModelCount(channel) - VISIBLE_MODEL_LIMIT }}
+                    +{{ channelPublicModelCount(channel) - VISIBLE_MODEL_LIMIT }}
                   </span>
                 </div>
                 <span v-else class="badge warning">未授权模型</span>
