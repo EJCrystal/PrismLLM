@@ -387,6 +387,8 @@ class GatewayIntegrationTest {
     @Tag("channel-key-rate-limit")
     @Test
     fun `channel key concurrency fails over to backup and returns 429 when both keys are busy`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(totalTimeoutMs = 20_000))
         val channel = app.channelRepository.create(
             name = "concurrency-end-to-end",
             baseUrl = "${fake.baseUrl}/concurrency-hold/v1",
