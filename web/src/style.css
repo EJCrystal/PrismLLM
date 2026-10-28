@@ -3310,13 +3310,41 @@ input:disabled {
 
 .channel-key-card-head {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) 110px auto auto;
+  grid-template-columns: minmax(0, 1fr) 110px 110px 64px;
   align-items: end;
   gap: 10px;
 }
 
-.channel-key-enabled {
-  align-self: center;
+.channel-key-toggle-field,
+.channel-key-action-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.channel-key-toggle-field > span,
+.channel-key-action-field > span {
+  color: #344054;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.channel-key-toggle {
+  min-height: 40px;
+  height: 40px;
+  align-items: center;
+  padding: 0 12px;
+  background: var(--bg);
+}
+
+.channel-key-toggle .switch {
+  margin-top: 0;
+}
+
+.channel-key-delete {
+  min-height: 40px;
+  height: 40px;
+  justify-content: center;
 }
 
 .channel-key-models {

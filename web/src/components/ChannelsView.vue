@@ -888,12 +888,18 @@ onMounted(load)
                   <span>密钥优先级</span>
                   <input v-model.number="key.priority" type="number" min="1" max="1000" step="1" />
                 </label>
-                <label class="switch-row channel-key-enabled">
-                  <input v-model="key.enabled" type="checkbox" />
-                  <span class="switch"></span>
-                  <span><strong>启用</strong></span>
-                </label>
-                <button type="button" class="button ghost mini" @click="removeKey(index)">删除</button>
+                <div class="channel-key-toggle-field">
+                  <span>状态</span>
+                  <label class="switch-row channel-key-toggle">
+                    <input v-model="key.enabled" type="checkbox" />
+                    <span class="switch"></span>
+                    <span><strong>启用</strong></span>
+                  </label>
+                </div>
+                <div class="channel-key-action-field">
+                  <span>操作</span>
+                  <button type="button" class="button ghost mini channel-key-delete" @click="removeKey(index)">删除</button>
+                </div>
               </div>
               <label class="field">
                 <span>上游凭据</span>
