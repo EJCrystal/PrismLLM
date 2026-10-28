@@ -69,6 +69,17 @@ class ChannelKeyRateLimiterTest {
     }
 
     @Test
+    fun `state keys cannot collide when ids contain delimiters`(): Unit = runBlocking {
+        val limiter = ChannelKeyRateLimiter(nowNanos = { 0L })
+        val policy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1)
+        val first = key("c", policy, channelId = "a:b")
+        val second = key("b:c", policy, channelId = "a")
+
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(first))
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(second))
+    }
+
+    @Test
     fun `concurrency lease blocks then releases capacity`(): Unit = runBlocking {
         val limiter = ChannelKeyRateLimiter(nowNanos = { 0L })
         val limited = key(
@@ -132,6 +143,55 @@ class ChannelKeyRateLimiterTest {
         val updatedLease = assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(updated)).lease
         limiter.release(updatedLease)
         assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(updated))
+    }
+
+    @Test
+    fun `stale request snapshots cannot overwrite the authoritative policy`(): Unit = runBlocking {
+        val limiter = ChannelKeyRateLimiter(nowNanos = { 0L })
+        val original = key(
+            "stale-policy",
+            ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1),
+        )
+        val updatedPolicy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 2)
+
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(original))
+        limiter.updatePolicy(original.channelId, original.id, updatedPolicy)
+
+        // 在途请求仍携带旧快照，但已应用的新规则不能被它回滚。
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(original))
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(original.copy(rateLimit = updatedPolicy)))
+        assertIs<ChannelKeyRateLimitDecision.Denied>(limiter.acquire(original))
+    }
+
+    @Test
+    fun `reapplying the same policy does not refill RPM tokens`(): Unit = runBlocking {
+        val limiter = ChannelKeyRateLimiter(nowNanos = { 0L })
+        val policy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1)
+        val limited = key("idempotent-update", policy)
+
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(limited))
+        assertIs<ChannelKeyRateLimitDecision.Denied>(limiter.acquire(limited))
+
+        limiter.updatePolicy(limited.channelId, limited.id, policy)
+        assertIs<ChannelKeyRateLimitDecision.Denied>(limiter.acquire(limited))
+    }
+
+    @Test
+    fun `disabling and re-enabling a policy preserves an in-flight concurrency lease`(): Unit = runBlocking {
+        val limiter = ChannelKeyRateLimiter(nowNanos = { 0L })
+        val policy = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1)
+        val limited = key("disable-with-active-lease", policy)
+        val lease = assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(limited)).lease
+
+        limiter.updatePolicy(limited.channelId, limited.id, policy.copy(enabled = false))
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(limited))
+
+        limiter.updatePolicy(limited.channelId, limited.id, policy)
+        assertIs<ChannelKeyRateLimitDecision.Denied>(limiter.acquire(limited))
+
+        limiter.release(lease)
+        val reacquired = assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(limited)).lease
+        limiter.release(reacquired)
     }
 }
 

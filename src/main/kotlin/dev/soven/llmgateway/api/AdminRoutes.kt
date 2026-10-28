@@ -1157,14 +1157,28 @@ private fun normalizeKeys(
 private fun normalizeChannelKeyRateLimit(
     request: ChannelKeyRateLimitRequest,
     keyName: String,
-): ChannelKeyRateLimitPolicy = try {
-    ChannelKeyRateLimitPolicy(
+): ChannelKeyRateLimitPolicy {
+    val requestsPerMinute = request.requestsPerMinute
+    val maxConcurrentRequests = request.maxConcurrentRequests
+    when {
+        requestsPerMinute != null && requestsPerMinute !in 1..1_000_000 -> throw badRequest(
+            "invalid_channel",
+            "密钥「$keyName」限流规则无效：每分钟请求数必须在 1..1000000 之间",
+        )
+        maxConcurrentRequests != null && maxConcurrentRequests !in 1..100_000 -> throw badRequest(
+            "invalid_channel",
+            "密钥「$keyName」限流规则无效：最大并发请求数必须在 1..100000 之间",
+        )
+        request.enabled && requestsPerMinute == null && maxConcurrentRequests == null -> throw badRequest(
+            "invalid_channel",
+            "密钥「$keyName」限流规则无效：启用时至少需要配置每分钟请求数或最大并发请求数",
+        )
+    }
+    return ChannelKeyRateLimitPolicy(
         enabled = request.enabled,
-        requestsPerMinute = request.requestsPerMinute,
-        maxConcurrentRequests = request.maxConcurrentRequests,
+        requestsPerMinute = requestsPerMinute,
+        maxConcurrentRequests = maxConcurrentRequests,
     )
-} catch (cause: IllegalArgumentException) {
-    throw badRequest("invalid_channel", "密钥「$keyName」限流规则无效：${cause.message}")
 }
 
 private const val DEFAULT_CHANNEL_KEY_NAME = "默认密钥"

@@ -18,6 +18,7 @@ import dev.soven.llmgateway.resilience.KeyAttemptOutcome
 import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
 import dev.soven.llmgateway.security.ClientKeyHasher
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
+import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
 import dev.soven.llmgateway.report.RetentionPolicy
 import dev.soven.llmgateway.resilience.CooldownPolicy
 import io.ktor.client.HttpClient
@@ -71,6 +72,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -361,6 +363,165 @@ class GatewayIntegrationTest {
         }
 
         assertEquals("Bearer backup-secret", fake.requests.single().authorization)
+    }
+
+    @Test
+    fun `channel key concurrency lease is released after proxy success and failure`() = runBlocking {
+        val policy = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1)
+        val successChannel = app.channelRepository.create(
+            name = "concurrency-success",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "group-success",
+                    credential = app.credentialCipher.encrypt("success-secret"),
+                    models = listOf("m1"),
+                    rateLimit = policy,
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        val failureChannel = app.channelRepository.create(
+            name = "concurrency-failure",
+            baseUrl = "${fake.baseUrl}/500/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "group-failure",
+                    credential = app.credentialCipher.encrypt("failure-secret"),
+                    models = listOf("m1"),
+                    rateLimit = policy,
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        createAlias("concurrency-success", successChannel to "m1")
+        createAlias("concurrency-failure", failureChannel to "m1")
+        val clientKey = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val success = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"concurrency-success","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, success.status)
+            val successLease = assertIs<ChannelKeyRateLimitDecision.Allowed>(
+                app.channelKeyRateLimiter.acquire(successChannel.keys.single()),
+            ).lease
+            assertNotNull(successLease)
+            app.channelKeyRateLimiter.release(successLease)
+
+            val failure = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"concurrency-failure","messages":[]}""")
+            }
+            assertTrue(failure.status.value >= 500)
+            val failureLease = assertIs<ChannelKeyRateLimitDecision.Allowed>(
+                app.channelKeyRateLimiter.acquire(failureChannel.keys.single()),
+            ).lease
+            assertNotNull(failureLease)
+            app.channelKeyRateLimiter.release(failureLease)
+        }
+    }
+
+    @Test
+    fun `channel key concurrency lease is released after proxy timeout`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(firstTokenTimeoutMs = 1_000, totalTimeoutMs = 100))
+        val channel = app.channelRepository.create(
+            name = "concurrency-timeout",
+            baseUrl = "${fake.baseUrl}/slow/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "group-timeout",
+                    credential = app.credentialCipher.encrypt("timeout-secret"),
+                    models = listOf("m1"),
+                    rateLimit = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        createAlias("concurrency-timeout", channel to "m1")
+        val clientKey = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"concurrency-timeout","stream":true,"messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.GatewayTimeout, response.status)
+            assertTrue(response.bodyAsText().contains("upstream_timeout"))
+
+            val lease = assertIs<ChannelKeyRateLimitDecision.Allowed>(
+                app.channelKeyRateLimiter.acquire(channel.keys.single()),
+            ).lease
+            assertNotNull(lease)
+            app.channelKeyRateLimiter.release(lease)
+            awaitCancellation()
+        }
+    }
+
+    @Test
+    fun `channel key concurrency lease is released after client disconnect`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "concurrency-client-disconnect",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "group-client-disconnect",
+                    credential = app.credentialCipher.encrypt("disconnect-secret"),
+                    models = listOf("m1"),
+                    rateLimit = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        createAlias("concurrency-client-disconnect", channel to "m1")
+        val clientKey = createClientKey()
+        val failNextWrite = AtomicBoolean(false)
+
+        testApplication {
+            application {
+                app.install(this)
+                install(createApplicationPlugin("test-rate-limit-client-disconnect") {
+                    on(ResponseBodyReadyForSend) { _, _ ->
+                        if (failNextWrite.compareAndSet(true, false)) {
+                            throw ChannelWriteException("test client disconnect", IOException("test"))
+                        }
+                    }
+                })
+            }
+
+            failNextWrite.set(true)
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"concurrency-client-disconnect","stream":true,"messages":[]}""")
+            }
+            assertEquals(499, response.status.value)
+
+            val lease = assertIs<ChannelKeyRateLimitDecision.Allowed>(
+                app.channelKeyRateLimiter.acquire(channel.keys.single()),
+            ).lease
+            assertNotNull(lease)
+            app.channelKeyRateLimiter.release(lease)
+        }
     }
 
     @Test

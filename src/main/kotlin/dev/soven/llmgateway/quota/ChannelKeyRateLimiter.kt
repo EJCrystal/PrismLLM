@@ -42,21 +42,20 @@ class ChannelKeyRateLimiter(
     private val nowNanos: () -> Long = System::nanoTime,
 ) {
     private val mutex = Mutex()
-    private val states = mutableMapOf<String, KeyState>()
+    private val states = mutableMapOf<StateKey, KeyState>()
 
     suspend fun acquire(key: ChannelKeyRecord): ChannelKeyRateLimitDecision = mutex.withLock {
-        val policy = key.rateLimit
         val now = nowNanos()
-        val stateKey = stateKey(key.channelId, key.id)
+        val stateKey = StateKey(key.channelId, key.id)
+        // 管理端 updatePolicy 是已加载状态的权威来源。这样在途请求携带的旧快照
+        // 不会把刚保存的新规则回滚，也不会重复重置新规则的令牌桶。
+        val policy = states[stateKey]?.policy ?: key.rateLimit
         if (!policy.configured) {
-            val state = states[stateKey]
-            state?.applyPolicy(policy, now)
-            if (state?.activeRequests == 0) states.remove(stateKey)
+            if (states[stateKey]?.activeRequests == 0) states.remove(stateKey)
             return@withLock ChannelKeyRateLimitDecision.Allowed(null)
         }
 
         val state = states.getOrPut(stateKey) { KeyState(policy) }
-        state.applyPolicy(policy, now)
         state.refill(now, policy.requestsPerMinute)
 
         val rpmRetryAfterMs = policy.requestsPerMinute
@@ -87,7 +86,7 @@ class ChannelKeyRateLimiter(
         if (lease?.holdsConcurrency != true) return
         withContext(NonCancellable) {
             mutex.withLock {
-                states[stateKey(lease.channelId, lease.keyId)]?.let { state ->
+                states[StateKey(lease.channelId, lease.keyId)]?.let { state ->
                     if (state.activeRequests > 0) state.activeRequests -= 1
                 }
             }
@@ -97,23 +96,31 @@ class ChannelKeyRateLimiter(
     /** 配置更新后立即重置 RPM 令牌，同时保留在途请求的并发计数。 */
     suspend fun updatePolicy(channelId: String, keyId: String, policy: ChannelKeyRateLimitPolicy) {
         mutex.withLock {
-            states[stateKey(channelId, keyId)]?.applyPolicy(policy, nowNanos())
+            val stateKey = StateKey(channelId, keyId)
+            val state = states[stateKey]
+            if (state == null) {
+                if (policy.configured) states[stateKey] = KeyState(policy)
+                return@withLock
+            }
+            state.applyPolicy(policy, nowNanos())
+            if (!policy.configured && state.activeRequests == 0) states.remove(stateKey)
         }
     }
 
     suspend fun clearKey(channelId: String, keyId: String) {
-        mutex.withLock { states.remove(stateKey(channelId, keyId)) }
+        mutex.withLock { states.remove(StateKey(channelId, keyId)) }
     }
-
-    private fun stateKey(channelId: String, keyId: String): String = "$channelId:$keyId"
 
     private fun retryAfterMs(tokens: Double, requestsPerMinute: Int): Long {
         val nanos = ceil((1.0 - tokens) * NANOS_PER_MINUTE / requestsPerMinute).toLong()
         return ((nanos + NANOS_PER_MILLISECOND - 1) / NANOS_PER_MILLISECOND).coerceAtLeast(1)
     }
 
+    private data class StateKey(val channelId: String, val keyId: String)
+
     private class KeyState(policy: ChannelKeyRateLimitPolicy) {
-        private var policy: ChannelKeyRateLimitPolicy = policy
+        var policy: ChannelKeyRateLimitPolicy = policy
+            private set
         var requestTokens: Double = policy.requestsPerMinute?.toDouble() ?: 0.0
         var lastRefillNanos: Long? = null
         var activeRequests: Int = 0
