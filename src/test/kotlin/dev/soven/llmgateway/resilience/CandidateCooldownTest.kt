@@ -285,6 +285,26 @@ class CandidateCooldownTest {
     }
 
     @Test
+    fun `stale permit releases still-current probe slots`() {
+        var now = 0L
+        val cooldown = CandidateCooldown(
+            policy = policy(ttftSlowThresholdMs = 100, ttftSlowStreak = 1),
+            nowMs = { now },
+        )
+        val warmup = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(warmup, FailureKind.TRANSPORT)
+        now = 10_000L
+
+        val permit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        assertNull(cooldown.acquire("ch1", "k1", "m2"))
+
+        assertTrue(cooldown.recordFirstToken(permit, 200))
+        cooldown.recordSuccess(permit)
+
+        assertNotNull(cooldown.acquire("ch1", "k1", "m2"))
+    }
+
+    @Test
     fun `key reset clears all key model cooldowns and ignores late permits`() {
         val changes = mutableListOf<CooldownChange>()
         val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)

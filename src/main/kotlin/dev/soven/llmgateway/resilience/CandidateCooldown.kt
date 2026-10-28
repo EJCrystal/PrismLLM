@@ -237,7 +237,10 @@ class CandidateCooldown(
 
     @Synchronized
     fun recordSuccess(permit: CooldownPermit) {
-        if (!permitIsCurrent(permit)) return
+        if (!permitIsCurrent(permit)) {
+            releaseCurrentProbes(permit)
+            return
+        }
         for (ref in permit.refs) {
             val state = states[ref.keyId] ?: continue
             if (ref.generation != state.generation) continue
@@ -254,7 +257,10 @@ class CandidateCooldown(
         kind: FailureKind,
         retryAfterMs: Long? = null,
     ): CooldownTrigger? {
-        if (!permitIsCurrent(permit)) return null
+        if (!permitIsCurrent(permit)) {
+            releaseCurrentProbes(permit)
+            return null
+        }
         val action = classifier.classify(kind, retryAfterMs, permit.channelId, permit.keyId, permit.upstreamModel)
         val targetKeyId = when (action) {
             is CooldownAction.Transient -> action.key.id
@@ -305,7 +311,10 @@ class CandidateCooldown(
      */
     @Synchronized
     fun release(permit: CooldownPermit) {
-        if (!permitIsCurrent(permit)) return
+        if (!permitIsCurrent(permit)) {
+            releaseCurrentProbes(permit)
+            return
+        }
         for (ref in permit.refs) {
             val state = states[ref.keyId] ?: continue
             if (!ref.probing) continue
@@ -403,6 +412,15 @@ class CandidateCooldown(
 
     private fun permitIsCurrent(permit: CooldownPermit): Boolean =
         permit.refs.all { ref -> states[ref.keyId]?.generation == ref.generation }
+
+    /** 结果因任一 ref 过期而作废时，仍归还其他尚未过期的探测占位。 */
+    private fun releaseCurrentProbes(permit: CooldownPermit) {
+        for (ref in permit.refs) {
+            if (!ref.probing) continue
+            val state = states[ref.keyId] ?: continue
+            if (ref.generation == state.generation) releaseProbe(state)
+        }
+    }
 
     private fun blocked(state: KeyState): Boolean =
         state.cooldownUntil > nowMs() || (state.cooldownUntil > 0 && state.probeInFlight)
