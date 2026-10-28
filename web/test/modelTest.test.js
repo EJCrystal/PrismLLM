@@ -42,6 +42,7 @@ describe('modelTest: 渠道模型连通性测试', () => {
     }), {
       model: 'model-a',
       protocol: 'chat_completions',
+      keyId: null,
       prompt: 'hello',
       reasoningEffort: 'high',
     })
@@ -52,6 +53,15 @@ describe('modelTest: 渠道模型连通性测试', () => {
       prompt: 'hello',
       reasoningEffort: 'high',
     }).reasoningEffort, null)
+  })
+
+  it('测试请求携带选中的密钥', () => {
+    assert.equal(buildModelTestRequest({
+      model: 'model-a',
+      protocol: 'chat_completions',
+      prompt: 'hello',
+      keyId: ' key-1 ',
+    }).keyId, 'key-1')
   })
 
   it('协议显示名称和用量摘要可读', () => {

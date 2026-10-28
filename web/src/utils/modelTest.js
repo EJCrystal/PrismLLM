@@ -29,10 +29,11 @@ export function modelTestProtocolLabel(protocol) {
   return MODEL_TEST_PROTOCOL_LABELS[protocol] || protocol
 }
 
-export function buildModelTestRequest({ model, protocol, prompt, reasoningEffort }) {
+export function buildModelTestRequest({ model, protocol, prompt, reasoningEffort, keyId }) {
   return {
     model: String(model ?? '').trim(),
     protocol: String(protocol ?? '').trim(),
+    keyId: String(keyId ?? '').trim() || null,
     prompt: String(prompt ?? '').trim(),
     reasoningEffort: supportsReasoningEffort(protocol)
       ? (String(reasoningEffort ?? '').trim() || null)

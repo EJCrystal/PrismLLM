@@ -2,6 +2,7 @@ package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
@@ -40,13 +41,14 @@ data class ProtocolProbeResult(
  */
 suspend fun probeUpstreamProtocols(
     channel: ChannelRecord,
+    key: ChannelKeyRecord,
     model: String,
     credentialCipher: CredentialCipher,
     httpClient: HttpClient,
     timeoutMs: Long = 20_000,
 ): List<ProtocolProbeResult> {
     val credential = runCatching {
-        credentialCipher.decrypt(channel.credentialCiphertext, channel.credentialNonce)
+        credentialCipher.decrypt(key.credentialCiphertext, key.credentialNonce)
     }.getOrElse {
         throw GatewayException(
             HttpStatusCode.BadGateway,

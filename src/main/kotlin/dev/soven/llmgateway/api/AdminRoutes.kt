@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ModelPriceTier
@@ -10,6 +11,8 @@ import dev.soven.llmgateway.proxy.fetchUpstreamModels
 import dev.soven.llmgateway.proxy.probeUpstreamProtocols
 import dev.soven.llmgateway.proxy.testChannelModelConnectivity
 import dev.soven.llmgateway.repo.NewCandidate
+import dev.soven.llmgateway.repo.ChannelKeyUpdate
+import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.parseDailyCostLimit
 import dev.soven.llmgateway.report.UsageReportQuery
@@ -240,14 +243,15 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val id = call.requiredParam("id", "缺少渠道 id")
             val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
+            val key = resolveChannelKey(channel, call.request.queryParameters["keyId"])
             val mappingByUpstream = channel.modelMappings.associateBy { it.upstreamModel }
-            val models = fetchUpstreamModels(channel, app.credentialCipher, app.httpClient, authorizedOnly = false)
+            val models = fetchUpstreamModels(channel, key, app.credentialCipher, app.httpClient, authorizedOnly = false)
                 .map {
                     val mapping = mappingByUpstream[it.id]
                     ChannelModelResponse(
                         id = it.id,
                         ownedBy = it.ownedBy,
-                        authorized = it.id in channel.models,
+                        authorized = it.id in key.models,
                         canonicalModelId = mapping?.canonicalModelId,
                         mappingSource = mapping?.mappingSource,
                     )
@@ -258,6 +262,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
         post("/channels/model-discovery") {
             call.requireAdmin(app)
             val request = call.receive<ChannelModelDiscoveryRequest>()
+            if (!request.keyId.isNullOrBlank() && !request.credential.isNullOrBlank()) {
+                throw badRequest("invalid_channel", "keyId 与 credential 不能同时提交")
+            }
             val baseUrl = request.baseUrl.trim()
             if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
                 throw badRequest("invalid_channel", "渠道地址必须以 http:// 或 https:// 开头")
@@ -265,6 +272,15 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val saved = request.channelId
                 ?.takeIf { it.isNotBlank() }
                 ?.let { app.channelRepository.find(it) ?: throw notFound("channel_not_found", "渠道不存在") }
+            val savedKey = saved?.let { channel ->
+                request.keyId?.takeIf { it.isNotBlank() }?.let { keyId ->
+                    channel.keys.firstOrNull { it.id == keyId }?.also { key ->
+                        if (!key.enabled) throw badRequest("channel_key_disabled", "渠道密钥已停用")
+                    }
+                        ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
+                } ?: channel.keys.filter { it.enabled }.minWithOrNull(compareBy({ it.priority }, { it.name }))
+                    ?: channel.keys.minWithOrNull(compareBy({ it.priority }, { it.name }))
+            }
             val authType = request.authType ?: saved?.authType ?: "bearer"
             if (authType !in setOf("bearer", "anthropic")) {
                 throw badRequest("invalid_channel", "上游鉴权方式必须是 bearer 或 anthropic")
@@ -276,7 +292,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         throw badRequest("invalid_channel", "基础地址已变更，请重新输入上游凭据")
                     }
                     runCatching {
-                        app.credentialCipher.decrypt(channel.credentialCiphertext, channel.credentialNonce)
+                        val key = savedKey ?: throw badRequest("invalid_channel", "渠道没有可用密钥")
+                        app.credentialCipher.decrypt(key.credentialCiphertext, key.credentialNonce)
                     }.getOrElse {
                         throw GatewayException(
                             HttpStatusCode.BadGateway,
@@ -287,7 +304,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     }
                 }
                 ?: throw badRequest("invalid_channel", "发现上游模型需要提供凭据")
-            val authorized = saved?.models?.toSet().orEmpty()
+            val authorized = savedKey?.models?.toSet().orEmpty()
             val mappingByUpstream = saved?.modelMappings?.associateBy { it.upstreamModel }.orEmpty()
             val models = fetchUpstreamModels(baseUrl, credential, app.httpClient, authType)
                 .map {
@@ -308,8 +325,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val id = call.requiredParam("id", "缺少渠道 id")
             val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
             val request = call.receive<ProtocolProbeRequest>()
+            val key = resolveChannelKey(channel, request.keyId)
             val model = request.model?.takeIf { it.isNotBlank() } ?: run {
-                val models = fetchUpstreamModels(channel, app.credentialCipher, app.httpClient)
+                val models = fetchUpstreamModels(channel, key, app.credentialCipher, app.httpClient)
                 models.firstOrNull()?.id ?: throw GatewayException(
                     HttpStatusCode.BadGateway,
                     "no_upstream_models",
@@ -317,10 +335,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     "api_error",
                 )
             }
-            val results = probeUpstreamProtocols(channel, model, app.credentialCipher, app.httpClient)
+            val results = probeUpstreamProtocols(channel, key, model, app.credentialCipher, app.httpClient)
             call.respond(
                 ProtocolProbeResponse(
                     model = model,
+                    keyId = key.id,
+                    keyName = key.name,
                     results = results.map {
                         ProtocolProbeResultResponse(
                             protocol = it.protocol.value,
@@ -346,6 +366,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (model !in channel.models) {
                 throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
             }
+            val key = resolveChannelKeyForModel(channel, model, request.keyId)
             val protocol = GatewayProtocol.fromValue(request.protocol.trim())
                 ?: throw badRequest("invalid_model_test_protocol", "测试协议无效")
             if (protocol !in channel.protocols) {
@@ -367,6 +388,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             }
             val result = testChannelModelConnectivity(
                 channel = channel,
+                key = key,
                 model = model,
                 protocol = protocol,
                 prompt = prompt,
@@ -374,7 +396,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 credentialCipher = app.credentialCipher,
                 httpClient = app.httpClient,
             )
-            call.respond(result.toResponse(model, protocol, prompt, reasoningEffort))
+            call.respond(result.toResponse(model, protocol, key.id, key.name, prompt, reasoningEffort))
         }
 
         post("/channels") {
@@ -385,15 +407,16 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (app.channelRepository.findByName(request.name) != null) {
                 throw conflict("channel_name_exists", "渠道名称已存在")
             }
-            val encrypted = app.credentialCipher.encrypt(request.credential!!)
+            val modelMappings = normalizeModelMappings(request).orEmpty()
+            val keys = normalizeNewKeys(app, request, modelMappings)
             val record = app.channelRepository.create(
                 name = request.name,
                 baseUrl = request.baseUrl,
-                credential = encrypted,
+                keys = keys,
                 authType = request.authType ?: "bearer",
                 protocols = protocols,
                 enabled = request.enabled,
-                modelMappings = normalizeModelMappings(request).orEmpty(),
+                modelMappings = modelMappings,
                 priority = request.priority ?: 1,
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
@@ -428,11 +451,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     }
                 }
             }
+            val keys = normalizeUpdatedKeys(app, existing, request, modelMappings, encrypted)
             val updated = app.channelRepository.update(
                 id = existing.id,
                 name = request.name,
                 baseUrl = request.baseUrl,
-                credential = encrypted,
+                keys = keys,
                 authType = request.authType,
                 protocols = protocols,
                 enabled = request.enabled,
@@ -893,6 +917,42 @@ private fun parseProtocols(values: List<String>): Set<GatewayProtocol> {
     }.toSet()
 }
 
+/** 选择显式指定的密钥；未指定时使用优先级最高的启用密钥。 */
+private fun resolveChannelKey(channel: ChannelRecord, keyId: String?): ChannelKeyRecord {
+    if (!keyId.isNullOrBlank()) {
+        val key = channel.keys.firstOrNull { it.id == keyId }
+            ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
+        if (!key.enabled) throw badRequest("channel_key_disabled", "渠道密钥已停用")
+        return key
+    }
+    return channel.keys
+        .filter { it.enabled }
+        .minWithOrNull(compareBy({ it.priority }, { it.name }, { it.id }))
+        ?: throw badRequest("channel_key_unavailable", "渠道没有可用的启用密钥")
+}
+
+/** 为指定模型选择密钥；显式 keyId 必须支持该模型。 */
+private fun resolveChannelKeyForModel(
+    channel: ChannelRecord,
+    model: String,
+    keyId: String?,
+): ChannelKeyRecord {
+    if (!keyId.isNullOrBlank()) {
+        val key = channel.keys.firstOrNull { it.id == keyId }
+            ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
+        if (!key.enabled) throw badRequest("channel_key_disabled", "渠道密钥已停用")
+        if (model !in channel.models) {
+            throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
+        }
+        if (!key.supports(model)) {
+            throw badRequest("model_not_authorized", "密钥「${key.name}」未授权模型「$model」")
+        }
+        return key
+    }
+    return channel.keysFor(model).firstOrNull()
+        ?: throw badRequest("channel_key_unavailable", "没有启用密钥支持模型「$model」")
+}
+
 private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean) {
     if (request.name.isBlank()) throw badRequest("invalid_channel", "渠道名称不能为空")
     if (!request.baseUrl.startsWith("http://") && !request.baseUrl.startsWith("https://")) {
@@ -904,10 +964,144 @@ private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean
     if (request.priority != null && request.priority !in 1..1000) {
         throw badRequest("invalid_channel", "渠道优先级必须在 1..1000 之间")
     }
+    if (!request.keys.isNullOrEmpty() && !request.credential.isNullOrBlank()) {
+        throw badRequest("invalid_channel", "keys 与 credential 不能同时提交")
+    }
     if (credentialRequired && request.credential.isNullOrBlank()) {
-        throw badRequest("invalid_channel", "新建渠道必须提供上游凭据")
+        if (request.keys.isNullOrEmpty()) throw badRequest("invalid_channel", "新建渠道必须提供上游凭据")
+        if (request.keys.any { it.credential.isNullOrBlank() }) {
+            throw badRequest("invalid_channel", "新建渠道的每个密钥都必须提供上游凭据")
+        }
     }
 }
+
+/**
+ * 新建渠道时的密钥归一化。未显式提交 keys 时，把旧版单个 credential 视为“默认密钥”。
+ */
+private fun normalizeNewKeys(
+    app: GatewayApplication,
+    request: ChannelRequest,
+    modelMappings: List<ChannelModelRecord>,
+): List<NewChannelKey> {
+    val channelModels = modelMappings.map { it.upstreamModel }.toSet()
+    if (request.keys.isNullOrEmpty()) {
+        val credential = request.credential?.takeIf { it.isNotBlank() }
+            ?: throw badRequest("invalid_channel", "新建渠道必须提供上游凭据")
+        return listOf(
+            NewChannelKey(
+                name = DEFAULT_CHANNEL_KEY_NAME,
+                credential = app.credentialCipher.encrypt(credential),
+                models = channelModels.toList(),
+            ),
+        )
+    }
+    return normalizeKeys(request.keys, channelModels, app).map { key ->
+        NewChannelKey(
+            name = key.name,
+            credential = key.credential ?: throw badRequest("invalid_channel", "新建渠道的每个密钥都必须提供上游凭据"),
+            enabled = key.enabled,
+            priority = key.priority,
+            models = key.models,
+        )
+    }
+}
+
+/**
+ * 更新渠道时的密钥归一化。
+ *
+ * 旧版请求只带 credential 时只修改唯一的默认密钥；渠道已有多个密钥时必须显式提交 keys，
+ * 防止旧客户端误删密钥池。
+ */
+private fun normalizeUpdatedKeys(
+    app: GatewayApplication,
+    existing: ChannelRecord,
+    request: ChannelRequest,
+    modelMappings: List<ChannelModelRecord>?,
+    encryptedCredential: dev.soven.llmgateway.security.EncryptedCredential?,
+): List<ChannelKeyUpdate>? {
+    val channelModels = (modelMappings ?: existing.modelMappings).map { it.upstreamModel }.toSet()
+    val requested = request.keys
+    if (requested != null) {
+        val existingIds = existing.keys.map { it.id }.toSet()
+        return normalizeKeys(requested, channelModels, app).map { key ->
+            if (key.id != null && key.id !in existingIds) {
+                throw badRequest("invalid_channel", "密钥不存在: ${key.id}")
+            }
+            if (key.id == null && key.credential == null) {
+                throw badRequest("invalid_channel", "新建密钥「${key.name}」必须提供上游凭据")
+            }
+            ChannelKeyUpdate(
+                id = key.id,
+                name = key.name,
+                credential = key.credential,
+                enabled = key.enabled,
+                priority = key.priority,
+                models = key.models,
+            )
+        }
+    }
+    if (encryptedCredential == null && modelMappings == null) return null
+    if (existing.keys.size != 1) throw badRequest("invalid_channel", "渠道已配置多个密钥，请显式提交 keys")
+    val current = existing.keys.single()
+    return listOf(
+        ChannelKeyUpdate(
+            id = current.id,
+            name = current.name,
+            credential = encryptedCredential,
+            enabled = current.enabled,
+            priority = current.priority,
+            models = if (modelMappings != null) channelModels.toList() else current.models,
+        ),
+    )
+}
+
+private data class NormalizedKey(
+    val id: String?,
+    val name: String,
+    val credential: dev.soven.llmgateway.security.EncryptedCredential?,
+    val enabled: Boolean,
+    val priority: Int,
+    val models: List<String>,
+)
+
+private fun normalizeKeys(
+    keys: List<ChannelKeyRequest>,
+    channelModels: Set<String>,
+    app: GatewayApplication,
+): List<NormalizedKey> {
+    if (keys.isEmpty()) throw badRequest("invalid_channel", "渠道至少需要一个密钥")
+    val names = mutableSetOf<String>()
+    val ids = mutableSetOf<String>()
+    return keys.map { key ->
+        val name = key.name.trim()
+        if (name.isEmpty() || name.length > 100) {
+            throw badRequest("invalid_channel", "密钥名称长度必须在 1..100 之间")
+        }
+        if (!names.add(name)) throw badRequest("invalid_channel", "密钥名称不能重复: $name")
+        val keyId = key.id?.takeIf { it.isNotBlank() }
+        if (keyId != null && !ids.add(keyId)) throw badRequest("invalid_channel", "密钥 id 不能重复: $keyId")
+        val priority = key.priority ?: 1
+        if (priority !in 1..1000) throw badRequest("invalid_channel", "密钥优先级必须在 1..1000 之间")
+        val models = key.models.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        models.forEach { model ->
+            if (model.length > 200) throw badRequest("invalid_channel", "上游模型名长度不能超过 200 个字符")
+            if (model !in channelModels) {
+                throw badRequest("invalid_channel", "密钥「$name」引用了未授权的模型「$model」")
+            }
+        }
+        if (models.isEmpty()) throw badRequest("invalid_channel", "密钥「$name」至少需要授权一个模型")
+        NormalizedKey(
+            id = keyId,
+            name = name,
+            credential = key.credential?.takeIf { it.isNotBlank() }?.let(app.credentialCipher::encrypt),
+            enabled = key.enabled,
+            priority = priority,
+            models = models,
+        )
+    }
+}
+
+private const val DEFAULT_CHANNEL_KEY_NAME = "默认密钥"
 
 private fun normalizeModelMappings(request: ChannelRequest): List<ChannelModelRecord>? {
     val raw = when {

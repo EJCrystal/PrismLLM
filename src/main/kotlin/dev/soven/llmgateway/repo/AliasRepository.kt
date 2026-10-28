@@ -6,6 +6,7 @@ import dev.soven.llmgateway.db.ModelAliases
 import dev.soven.llmgateway.domain.AliasRecord
 import dev.soven.llmgateway.domain.CandidateRecord
 import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RouteCandidate
@@ -41,14 +42,31 @@ class AliasRepository(private val database: Database) {
             .orderBy(AliasCandidates.position to SortOrder.ASC, AliasCandidates.channelId to SortOrder.ASC)
             .toList()
         val modelsByChannel = loadChannelModelMappingsInTransaction(rows.map { it[Channels.id] })
-        rows.map { row ->
+        val keysByChannel = loadChannelKeysInTransaction(rows.map { it[Channels.id] })
+        rows.flatMap { row ->
             val channelId = row[Channels.id]
-            RouteCandidate(
-                channel = row.toChannel(modelsByChannel[channelId].orEmpty()),
-                upstreamModel = row[AliasCandidates.upstreamModel],
-                position = row[AliasCandidates.position],
+            val upstreamModel = row[AliasCandidates.upstreamModel]
+            val channel = row.toChannel(
+                modelsByChannel[channelId].orEmpty(),
+                keysByChannel[channelId].orEmpty(),
             )
-        }.filter { candidate -> candidate.upstreamModel in candidate.channel.models }
+            if (upstreamModel !in channel.models) return@flatMap emptyList()
+            channel.keysFor(upstreamModel).map { key ->
+                RouteCandidate(
+                    channel = channel,
+                    key = key,
+                    upstreamModel = upstreamModel,
+                    position = row[AliasCandidates.position],
+                )
+            }
+        }.sortedWith(compareBy(
+            { it.position },
+            { it.channel.name },
+            { it.upstreamModel },
+            { it.key.priority },
+            { it.key.name },
+            { it.key.id },
+        ))
     }
 
     suspend fun listAvailableAliases(): List<String> = suspendTransaction(database) {
@@ -177,13 +195,13 @@ class AliasRepository(private val database: Database) {
         updatedAt = this[ModelAliases.updatedAt],
     )
 
-    private fun ResultRow.toChannel(modelMappings: List<ChannelModelRecord>) = ChannelRecord(
+    private fun ResultRow.toChannel(
+        modelMappings: List<ChannelModelRecord>,
+        keys: List<ChannelKeyRecord>,
+    ) = ChannelRecord(
         id = this[Channels.id],
         name = this[Channels.name],
         baseUrl = this[Channels.baseUrl],
-        credentialCiphertext = this[Channels.credentialCiphertext],
-        credentialNonce = this[Channels.credentialNonce],
-        credentialKeyVersion = this[Channels.credentialKeyVersion],
         authType = this[Channels.authType],
         protocols = GatewayProtocol.parse(this[Channels.protocols]),
         enabled = this[Channels.enabled],
@@ -191,6 +209,7 @@ class AliasRepository(private val database: Database) {
         createdAt = this[Channels.createdAt],
         updatedAt = this[Channels.updatedAt],
         modelMappings = modelMappings,
+        keys = keys,
     )
 }
 

@@ -44,26 +44,19 @@ const saving = ref(false)
 const editingId = ref(null)
 const probing = ref(false)
 const probeResults = ref([])
-const availableModels = ref([])
-const authorizedModels = ref([])
+const channelKeys = ref([])
+let keyDraftSeq = 0
 const canonicalModels = reactive({})
 const originalMappings = reactive({})
-const modelsLoading = ref(false)
-const modelsError = ref('')
-const modelSearch = ref('')
-const modelsLoaded = ref(false)
 const probeRequests = createRequestTracker(() => {
   probing.value = false
 })
-const modelRequests = createRequestTracker(() => {
-  modelsLoading.value = false
-})
+const modelRequests = createRequestTracker()
 let probeDerivedProtocols = false
 
 const form = reactive({
   name: '',
   baseUrl: '',
-  credential: '',
   authType: 'bearer',
   protocols: ['chat_completions'],
   enabled: true,
@@ -73,10 +66,14 @@ const form = reactive({
 watchChannelRequestInputs(form, {
   modelRequests,
   probeRequests,
+  credentialSource: () => channelKeys.value.map((key) => key.credential).join('\u0000'),
   onInputsChanged: () => {
-    availableModels.value = []
-    modelsLoaded.value = false
-    modelSearch.value = ''
+    channelKeys.value.forEach((key) => {
+      key.availableModels = []
+      key.modelsLoading = false
+      key.modelsError = ''
+      key.modelsRequestId = (key.modelsRequestId || 0) + 1
+    })
     if (!probeResults.value.length && !probeDerivedProtocols) return
     probeResults.value = []
     if (probeDerivedProtocols) form.protocols = []
@@ -96,21 +93,117 @@ const pricePrompt = computed(() => {
 watch(pricePrompt, (value) => {
   if (!value && pricePromptChannelId.value) pricePromptChannelId.value = null
 })
-const mappingCount = computed(() => authorizedModels.value.filter((modelId) => canonicalModels[modelId]?.trim()).length)
-const filteredModels = computed(() => {
-  const query = modelSearch.value.trim().toLowerCase()
-  if (!query) return availableModels.value
-  return availableModels.value.filter((model) => [model.id, model.ownedBy || '']
-    .some((value) => value.toLowerCase().includes(query)))
+const authorizedModels = computed(() => {
+  const models = new Set()
+  channelKeys.value.forEach((key) => key.models.forEach((model) => models.add(model)))
+  return [...models].sort()
 })
+const mappingCount = computed(() => authorizedModels.value.filter((modelId) => canonicalModels[modelId]?.trim()).length)
 const canProbeProtocols = computed(() => {
   const savedChannel = channels.value.find((channel) => channel.id === editingId.value)
+  if (!savedChannel?.keys?.length) return false
   return canProbeSavedChannel(savedChannel, {
     baseUrl: form.baseUrl,
-    credential: form.credential,
+    credential: channelKeys.value.some((key) => key.credential.trim()) ? 'draft' : '',
     authType: form.authType,
   })
 })
+
+function newKeyDraft(overrides = {}) {
+  return {
+    localId: `key-${++keyDraftSeq}`,
+    id: overrides.id || null,
+    name: overrides.name || '',
+    credential: '',
+    enabled: overrides.enabled ?? true,
+    priority: overrides.priority ?? 1,
+    models: [...(overrides.models || [])],
+    availableModels: [],
+    modelsLoading: false,
+    modelsError: '',
+    modelsRequestId: 0,
+  }
+}
+
+function addKey() {
+  const names = new Set(channelKeys.value.map((key) => key.name.trim()))
+  let index = channelKeys.value.length + 1
+  while (names.has(`密钥 ${index}`)) index += 1
+  channelKeys.value.push(newKeyDraft({ name: `密钥 ${index}`, priority: 1 }))
+}
+
+function removeKey(index) {
+  if (channelKeys.value.length <= 1) {
+    notify('至少保留一个密钥', 'warning')
+    return
+  }
+  channelKeys.value.splice(index, 1)
+}
+
+function keyModelOptions(key) {
+  const options = new Map()
+  ;(key.availableModels || []).forEach((model) => options.set(model.id, model))
+  ;(key.models || []).forEach((modelId) => {
+    if (!options.has(modelId)) options.set(modelId, { id: modelId })
+  })
+  return [...options.values()].sort((left, right) => left.id.localeCompare(right.id))
+}
+
+function toggleKeyModel(key, modelId) {
+  const selected = new Set(key.models)
+  if (selected.has(modelId)) selected.delete(modelId)
+  else selected.add(modelId)
+  key.models = [...selected].sort()
+}
+
+function selectAllKeyModels(key) {
+  key.models = keyModelOptions(key).map((model) => model.id)
+}
+
+function clearKeyModels(key) {
+  key.models = []
+}
+
+async function loadKeyModels(key) {
+  const baseUrl = form.baseUrl.trim()
+  const credential = key.credential.trim()
+  const authType = form.authType
+  if (!baseUrl) {
+    notify('请先填写基础地址', 'warning')
+    return
+  }
+  if (!key.id && !credential) {
+    notify('新建密钥需要填写上游凭据才能加载模型', 'warning')
+    return
+  }
+  const requestId = ++key.modelsRequestId
+  key.modelsLoading = true
+  key.modelsError = ''
+  try {
+    const response = await api.discoverChannelModels({
+      baseUrl,
+      credential: credential || null,
+      authType,
+      channelId: editingId.value,
+      keyId: credential ? null : (key.id || null),
+    })
+    if (
+      requestId !== key.modelsRequestId ||
+      form.baseUrl.trim() !== baseUrl ||
+      form.authType !== authType ||
+      key.credential.trim() !== credential
+    ) return
+    key.availableModels = response?.data || []
+    if (key.models.length === 0) {
+      const authorized = key.availableModels.filter((model) => model.authorized).map((model) => model.id)
+      key.models = authorized.length ? authorized : (key.id ? [] : key.availableModels.map((model) => model.id))
+    }
+  } catch (cause) {
+    if (requestId === key.modelsRequestId) key.modelsError = cause.message
+  } finally {
+    if (requestId === key.modelsRequestId) key.modelsLoading = false
+  }
+}
 
 function savedEditingChannel() {
   return channels.value.find((channel) => channel.id === editingId.value) || null
@@ -118,11 +211,10 @@ function savedEditingChannel() {
 
 function canTestModel(modelId) {
   const channel = savedEditingChannel()
-  return Boolean(
-    channel &&
-    channel.protocols?.length &&
-    channel.models.includes(modelId),
-  )
+  if (!channel?.protocols?.length) return false
+  return channel.keys?.length
+    ? channel.keys.some((key) => key.enabled && key.models.includes(modelId))
+    : channel.models.includes(modelId)
 }
 
 function openModelTest(modelId) {
@@ -131,7 +223,10 @@ function openModelTest(modelId) {
     notify('请先保存渠道后再测试模型', 'warning')
     return
   }
-  if (!channel.models.includes(modelId)) {
+  const supported = channel.keys?.length
+    ? channel.keys.some((key) => key.enabled && key.models.includes(modelId))
+    : channel.models.includes(modelId)
+  if (!supported) {
     notify('该模型尚未保存到渠道，请先保存渠道后再测试', 'warning')
     return
   }
@@ -307,17 +402,11 @@ function openCreate() {
   probeResults.value = []
   probeDerivedProtocols = false
   modelRequests.invalidate()
-  availableModels.value = []
-  authorizedModels.value = []
+  channelKeys.value = [newKeyDraft({ name: '默认密钥', priority: 1 })]
   clearMappings()
-  modelsLoading.value = false
-  modelsError.value = ''
-  modelsLoaded.value = false
-  modelSearch.value = ''
   Object.assign(form, {
     name: '',
     baseUrl: '',
-    credential: '',
     authType: 'bearer',
     protocols: ['chat_completions'],
     enabled: true,
@@ -333,8 +422,16 @@ function openEdit(channel) {
   probeResults.value = []
   probeDerivedProtocols = false
   modelRequests.invalidate()
-  availableModels.value = []
-  authorizedModels.value = [...(channel.models || [])]
+  const savedKeys = channel.keys?.length
+    ? channel.keys
+    : [{ name: '默认密钥', enabled: true, priority: 1, models: channel.models || [] }]
+  channelKeys.value = savedKeys.map((key) => newKeyDraft({
+    id: key.id,
+    name: key.name,
+    enabled: key.enabled,
+    priority: key.priority,
+    models: key.models,
+  }))
   clearMappings()
   ;(channel.modelMappings || []).forEach((mapping) => {
     originalMappings[mapping.upstreamModel] = {
@@ -345,14 +442,9 @@ function openEdit(channel) {
       canonicalModels[mapping.upstreamModel] = mapping.canonicalModelId
     }
   })
-  modelsLoading.value = false
-  modelsError.value = ''
-  modelsLoaded.value = false
-  modelSearch.value = ''
   Object.assign(form, {
     name: channel.name,
     baseUrl: channel.baseUrl,
-    credential: '',
     authType: channel.authType || 'bearer',
     protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
     enabled: channel.enabled,
@@ -364,54 +456,6 @@ function openEdit(channel) {
 function closeChannelForm() {
   if (testTarget.value || showTestSettings.value) return
   showForm.value = false
-}
-
-async function loadAvailableModels() {
-  const baseUrl = form.baseUrl.trim()
-  const credential = form.credential.trim()
-  if (!baseUrl) {
-    notify('请先填写基础地址', 'warning')
-    return
-  }
-  if (!editingId.value && !credential) {
-    notify('新建渠道需要填写上游凭据才能加载模型', 'warning')
-    return
-  }
-  const requestId = modelRequests.begin()
-  modelsLoading.value = true
-  modelsError.value = ''
-  try {
-    const response = await api.discoverChannelModels({
-      baseUrl,
-      credential: credential || null,
-      authType: form.authType,
-      channelId: editingId.value,
-    })
-    if (!modelRequests.isCurrent(requestId)) return
-    availableModels.value = response?.data || []
-    availableModels.value.forEach((model) => {
-      if (model.authorized && model.canonicalModelId && !canonicalModels[model.id]?.trim()) {
-        canonicalModels[model.id] = model.canonicalModelId
-      }
-    })
-    if (authorizedModels.value.length === 0) {
-      authorizedModels.value = editingId.value
-        ? availableModels.value.filter((model) => model.authorized).map((model) => model.id)
-        : availableModels.value.map((model) => model.id)
-    }
-    modelsLoaded.value = true
-  } catch (cause) {
-    if (modelRequests.isCurrent(requestId)) modelsError.value = cause.message
-  } finally {
-    if (modelRequests.isCurrent(requestId)) modelsLoading.value = false
-  }
-}
-
-function toggleModel(modelId) {
-  const selected = new Set(authorizedModels.value)
-  if (selected.has(modelId)) selected.delete(modelId)
-  else selected.add(modelId)
-  authorizedModels.value = [...selected]
 }
 
 function clearMapping(modelId) {
@@ -434,18 +478,6 @@ function clearMappings() {
   Object.keys(originalMappings).forEach((key) => delete originalMappings[key])
 }
 
-function selectAllModels() {
-  authorizedModels.value = availableModels.value.map((model) => model.id)
-}
-
-function clearAllModels() {
-  authorizedModels.value = []
-}
-
-function isAuthorized(modelId) {
-  return authorizedModels.value.includes(modelId)
-}
-
 function channelModelCount(channel) {
   return channelDisplayModels(channel).length
 }
@@ -459,7 +491,7 @@ function probeState(result) {
 async function probeProtocols() {
   const channelId = editingId.value
   const probeBaseUrl = form.baseUrl.trim()
-  const probeCredential = form.credential.trim()
+  const probeCredential = channelKeys.value.map((key) => key.credential).join('\u0000')
   const probeAuthType = form.authType
   const savedChannel = channels.value.find((channel) => channel.id === channelId)
   if (!canProbeSavedChannel(savedChannel, {
@@ -479,7 +511,7 @@ async function probeProtocols() {
       !probeRequests.isCurrent(requestId) ||
       editingId.value !== channelId ||
       form.baseUrl.trim() !== probeBaseUrl ||
-      form.credential.trim() !== probeCredential ||
+      channelKeys.value.map((key) => key.credential).join('\u0000') !== probeCredential ||
       form.authType !== probeAuthType
     ) {
       return
@@ -509,13 +541,38 @@ async function save() {
     notify('请填写渠道名称和基础地址', 'error')
     return
   }
-  if (!editingId.value && !form.credential.trim()) {
-    notify('新建渠道必须提供上游凭据', 'error')
-    return
-  }
   if (form.protocols.length === 0) {
     notify('至少选择一个支持协议', 'error')
     return
+  }
+  if (channelKeys.value.length === 0) {
+    notify('渠道至少需要一个密钥', 'error')
+    return
+  }
+  const names = new Set()
+  for (const key of channelKeys.value) {
+    const name = key.name.trim()
+    if (!name) {
+      notify('密钥名称不能为空', 'error')
+      return
+    }
+    if (names.has(name)) {
+      notify(`密钥名称不能重复：${name}`, 'error')
+      return
+    }
+    names.add(name)
+    if (!Number.isInteger(Number(key.priority)) || Number(key.priority) < 1 || Number(key.priority) > 1000) {
+      notify('密钥优先级必须是 1..1000 的整数', 'error')
+      return
+    }
+    if (!key.id && !key.credential.trim()) {
+      notify(`新建密钥「${name}」必须提供上游凭据`, 'error')
+      return
+    }
+    if (!key.models.length) {
+      notify(`密钥「${name}」至少需要授权一个模型`, 'error')
+      return
+    }
   }
   if (authorizedModels.value.length === 0) {
     notify('请至少授权一个上游模型', 'error')
@@ -524,7 +581,13 @@ async function save() {
 
   saving.value = true
   try {
-    const payload = buildChannelPayload(form, authorizedModels.value, canonicalModels, originalMappings)
+    const payload = buildChannelPayload(
+      form,
+      authorizedModels.value,
+      canonicalModels,
+      originalMappings,
+      channelKeys.value,
+    )
     const wasEditing = !!editingId.value
     const saved = wasEditing
       ? await api.updateChannel(editingId.value, payload)
@@ -643,6 +706,10 @@ onMounted(load)
                 <div class="channel-id-cell">
                   <span class="mono muted small">{{ channel.id }}</span>
                   <CopyButton :text="channel.id" title="复制渠道 ID" variant="list" :size="12" />
+                </div>
+                <div class="muted small">
+                  {{ channel.keys?.length || 0 }} 个密钥
+                  <template v-if="channel.keys?.length">· {{ channel.keys.filter((key) => key.enabled).length }} 个启用</template>
                 </div>
               </td>
               <td><span class="mono address">{{ channel.baseUrl }}</span></td>
@@ -786,8 +853,8 @@ onMounted(load)
               {{ probing ? '探测中…' : '探测协议' }}
             </button>
             <span v-if="!editingId" class="muted small">保存渠道后可探测</span>
-            <span v-else-if="!canProbeProtocols" class="muted small">保存地址、凭据或鉴权方式后可探测</span>
-            <span v-else class="muted small">使用已保存凭据发送最小请求（1 token）</span>
+            <span v-else-if="!canProbeProtocols" class="muted small">保存地址、密钥凭据或鉴权方式后可探测</span>
+            <span v-else class="muted small">使用已保存密钥发送最小请求（1 token）</span>
           </div>
           <div v-if="probeResults.length" class="probe-results">
             <span
@@ -802,49 +869,73 @@ onMounted(load)
           </div>
           <small>请求只会路由到支持对应协议的渠道。</small>
         </div>
-        <label class="field">
-          <span>上游凭据</span>
-          <SecretInput
-            v-model="form.credential"
-            :placeholder="editingId ? '留空保持当前凭据' : '输入上游凭据（Bearer Token 或 Anthropic API key）'"
-            autocomplete="new-password"
-          />
-          <small>凭据按所选鉴权方式发送，会加密存储，保存后不再回显。</small>
-        </label>
-        <div class="field channel-model-auth">
+        <div class="field channel-key-pool">
           <div class="channel-model-auth-head">
             <div>
-              <span>授权上游模型</span>
-              <small>选中的模型会进入模型目录并对外提供服务。</small>
+              <span>上游密钥</span>
+              <small>同一渠道的密钥共用基础地址、鉴权方式和协议；密钥优先级只在当前渠道内生效。</small>
             </div>
-            <span class="badge info">{{ authorizedModels.length }} 个已选</span>
+            <span class="badge info">{{ channelKeys.length }} 个密钥</span>
           </div>
-          <div class="channel-model-auth-toolbar">
-            <button type="button" class="button subtle mini" :disabled="modelsLoading" @click="loadAvailableModels">
-              {{ modelsLoading ? '读取中…' : (modelsLoaded ? '刷新上游模型' : '加载上游模型') }}
-            </button>
-            <button v-if="availableModels.length" type="button" class="button ghost mini" @click="selectAllModels">全选</button>
-            <button v-if="availableModels.length" type="button" class="button ghost mini" @click="clearAllModels">清空</button>
-            <span v-if="!editingId && !modelsLoaded" class="muted small">填写基础地址和凭据后加载</span>
-          </div>
-          <div v-if="modelsError" class="callout danger">{{ modelsError }}</div>
-          <div v-if="availableModels.length" class="channel-model-auth-body">
-            <div class="search-box channel-model-auth-search">
-              <Icon name="search" :size="15" />
-              <input v-model="modelSearch" placeholder="搜索模型" />
-            </div>
-            <div class="channel-model-auth-list">
-              <label v-for="model in filteredModels" :key="model.id" class="channel-model-option">
-                <input type="checkbox" :checked="isAuthorized(model.id)" @change="toggleModel(model.id)" />
-                <span><code>{{ model.id }}</code><small v-if="model.ownedBy">上游 owned_by: {{ model.ownedBy }}</small></span>
+          <div class="channel-key-list">
+            <div v-for="(key, index) in channelKeys" :key="key.localId" class="channel-key-card">
+              <div class="channel-key-card-head">
+                <label class="field">
+                  <span>密钥名称</span>
+                  <input v-model="key.name" placeholder="例如 primary" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>密钥优先级</span>
+                  <input v-model.number="key.priority" type="number" min="1" max="1000" step="1" />
+                </label>
+                <label class="switch-row channel-key-enabled">
+                  <input v-model="key.enabled" type="checkbox" />
+                  <span class="switch"></span>
+                  <span><strong>启用</strong></span>
+                </label>
+                <button type="button" class="button ghost mini" @click="removeKey(index)">删除</button>
+              </div>
+              <label class="field">
+                <span>上游凭据</span>
+                <SecretInput
+                  v-model="key.credential"
+                  :placeholder="key.id ? '留空保持当前凭据' : '输入上游凭据（Bearer Token 或 Anthropic API key）'"
+                  autocomplete="new-password"
+                />
               </label>
-              <p v-if="filteredModels.length === 0" class="muted small channel-model-auth-empty">没有匹配的模型。</p>
+              <div class="channel-key-models">
+                <div class="channel-model-auth-toolbar">
+                  <span class="muted small">可用模型（{{ key.models.length }}）</span>
+                  <button type="button" class="button subtle mini" :disabled="key.modelsLoading" @click="loadKeyModels(key)">
+                    {{ key.modelsLoading ? '读取中…' : '读取模型' }}
+                  </button>
+                  <button type="button" class="button ghost mini" @click="selectAllKeyModels(key)">全选</button>
+                  <button type="button" class="button ghost mini" @click="clearKeyModels(key)">清空</button>
+                </div>
+                <div v-if="key.modelsError" class="callout danger">{{ key.modelsError }}</div>
+                <div v-if="keyModelOptions(key).length" class="channel-model-auth-body">
+                  <div class="channel-model-auth-list">
+                    <label v-for="model in keyModelOptions(key)" :key="model.id" class="channel-model-option">
+                      <input
+                        type="checkbox"
+                        :checked="key.models.includes(model.id)"
+                        @change="toggleKeyModel(key, model.id)"
+                      />
+                      <span>
+                        <code>{{ model.id }}</code>
+                        <small v-if="model.ownedBy">上游 owned_by: {{ model.ownedBy }}</small>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+                <div v-else class="channel-model-auth-placeholder">
+                  填写凭据后点击“读取模型”，再选择该密钥可用的模型。
+                </div>
+              </div>
             </div>
           </div>
-          <div v-else-if="authorizedModels.length" class="channel-model-auth-selected">
-            <span v-for="modelId in authorizedModels" :key="modelId" class="badge neutral">{{ modelId }}</span>
-          </div>
-          <div v-else class="channel-model-auth-placeholder">填写基础地址和凭据，点击“加载上游模型”选择允许使用的模型。</div>
+          <button type="button" class="button ghost mini channel-key-add" @click="addKey">添加密钥</button>
+          <small>同一模型可以配置在多个密钥上；同优先级密钥轮询，低优先级密钥只在高优先级密钥失败或冷却时启用。</small>
         </div>
         <div v-if="authorizedModels.length" class="channel-canonical-section">
           <div class="channel-model-auth-head">

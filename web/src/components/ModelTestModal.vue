@@ -23,8 +23,11 @@ const emit = defineEmits(['close'])
 const protocols = computed(() => props.channel.protocols?.length
   ? props.channel.protocols
   : ['chat_completions'])
+const supportingKeys = computed(() => (props.channel.keys || [])
+  .filter((key) => key.enabled && key.models?.includes(props.model)))
 const settings = ref(normalizeModelTestSettings(null))
 const form = reactive({
+  keyId: supportingKeys.value[0]?.id || '',
   protocol: protocols.value[0],
   prompt: settings.value.defaultPrompt,
   reasoningEffort: settings.value.defaultReasoningEffort,
@@ -69,6 +72,7 @@ async function runTest() {
         protocol: form.protocol,
         prompt,
         reasoningEffort: form.reasoningEffort,
+        keyId: form.keyId,
       }),
     )
     notify(result.value.success ? '模型连通性测试成功' : '模型连通性测试失败', result.value.success ? 'success' : 'error')
@@ -93,6 +97,15 @@ async function runTest() {
       </div>
 
       <div class="model-test-grid">
+        <label v-if="supportingKeys.length" class="field">
+          <span>使用密钥</span>
+          <select v-model="form.keyId" :disabled="testing">
+            <option v-for="key in supportingKeys" :key="key.id" :value="key.id">
+              {{ key.name }}（优先级 {{ key.priority }}）
+            </option>
+          </select>
+          <small>同一模型可配置多个密钥，测试只使用选中的密钥。</small>
+        </label>
         <label class="field">
           <span>协议</span>
           <select v-model="form.protocol" :disabled="testing">
@@ -130,6 +143,7 @@ async function runTest() {
       <div v-if="result" class="callout model-test-result" :class="modelTestResultTone(result)">
         <div class="model-test-result-head">
           <strong>{{ modelTestResultTitle(result) }}</strong>
+          <span v-if="result.keyName" class="badge neutral">{{ result.keyName }}</span>
           <span v-if="result.statusCode" class="badge" :class="modelTestResultTone(result)">HTTP {{ result.statusCode }}</span>
           <span class="muted small">{{ result.latencyMs }} ms</span>
         </div>
