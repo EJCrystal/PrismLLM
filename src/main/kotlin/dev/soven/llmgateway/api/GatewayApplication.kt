@@ -31,6 +31,7 @@ import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.security.PasswordHasher
 import dev.soven.llmgateway.resilience.CandidateCooldown
 import dev.soven.llmgateway.resilience.CooldownStateWriter
+import dev.soven.llmgateway.resilience.KeyAvailabilityGate
 import dev.soven.llmgateway.resilience.TierSharing
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
@@ -93,6 +94,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val adminUserRepository = AdminUserRepository(databaseFactory.database)
     val adminAuditRepository = AdminAuditRepository(databaseFactory.database)
     val keyAutoDisableRepository = KeyAutoDisableRepository(databaseFactory.database, adminAuditRepository)
+    val keyAvailabilityGate = KeyAvailabilityGate()
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
