@@ -1,3 +1,5 @@
+import { buildChannelKeyRateLimitPayload } from './channelKeyRateLimit.js'
+
 /**
  * 将渠道编辑表单转换为管理 API 请求体。
  *
@@ -49,6 +51,7 @@ export function buildChannelPayload(
         ? 1
         : Number(key.priority) || 1,
       models: [...new Set((key.models || []).map((model) => String(model).trim()).filter(Boolean))],
+      rateLimit: buildChannelKeyRateLimitPayload(key.rateLimit),
     }))
   }
   return payload

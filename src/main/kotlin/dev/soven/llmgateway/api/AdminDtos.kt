@@ -4,6 +4,7 @@ import dev.soven.llmgateway.domain.AdminAuditRecord
 import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.ModelPriceTier
@@ -79,6 +80,13 @@ data class ChannelModelMappingRequest(
  * 渠道密钥写请求。id 为空表示新建；credential 为空表示保持原凭据。
  */
 @Serializable
+data class ChannelKeyRateLimitRequest(
+    val enabled: Boolean = true,
+    val requestsPerMinute: Int? = null,
+    val maxConcurrentRequests: Int? = null,
+)
+
+@Serializable
 data class ChannelKeyRequest(
     val id: String? = null,
     val name: String,
@@ -86,6 +94,7 @@ data class ChannelKeyRequest(
     val enabled: Boolean = true,
     val priority: Int? = null,
     val models: List<String> = emptyList(),
+    val rateLimit: ChannelKeyRateLimitRequest? = null,
     val stateVersion: Long? = null,
 )
 
@@ -127,6 +136,19 @@ data class ChannelResponse(
 )
 
 @Serializable
+data class ChannelKeyRateLimitResponse(
+    val enabled: Boolean = false,
+    val requestsPerMinute: Int? = null,
+    val maxConcurrentRequests: Int? = null,
+)
+
+fun ChannelKeyRateLimitPolicy.toResponse() = ChannelKeyRateLimitResponse(
+    enabled = enabled,
+    requestsPerMinute = requestsPerMinute,
+    maxConcurrentRequests = maxConcurrentRequests,
+)
+
+@Serializable
 data class ChannelKeyResponse(
     val id: String,
     val name: String,
@@ -134,6 +156,7 @@ data class ChannelKeyResponse(
     val priority: Int,
     val credentialSet: Boolean,
     val models: List<String>,
+    val rateLimit: ChannelKeyRateLimitResponse = ChannelKeyRateLimitResponse(),
     val stateVersion: Long = 0,
     val autoDisabledAt: Long? = null,
     val autoDisableReason: String? = null,
@@ -146,6 +169,7 @@ fun ChannelKeyRecord.toResponse() = ChannelKeyResponse(
     priority = priority,
     credentialSet = credentialSet,
     models = models,
+    rateLimit = rateLimit.toResponse(),
     stateVersion = stateVersion,
     autoDisabledAt = autoDisabledAt,
     autoDisableReason = autoDisableReason,

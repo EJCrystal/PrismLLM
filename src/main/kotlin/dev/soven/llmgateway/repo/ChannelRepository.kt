@@ -2,10 +2,12 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.ChannelKeyModels
 import dev.soven.llmgateway.db.ChannelKeyHealth
+import dev.soven.llmgateway.db.ChannelKeyRateLimits
 import dev.soven.llmgateway.db.ChannelKeys
 import dev.soven.llmgateway.db.ChannelModels
 import dev.soven.llmgateway.db.Channels
 import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
@@ -33,6 +35,7 @@ data class NewChannelKey(
     val enabled: Boolean = true,
     val priority: Int = 1,
     val models: List<String> = emptyList(),
+    val rateLimit: ChannelKeyRateLimitPolicy = ChannelKeyRateLimitPolicy(),
 )
 
 /** 更新渠道密钥的输入。credential 为空表示保持原凭据。 */
@@ -43,6 +46,8 @@ data class ChannelKeyUpdate(
     val enabled: Boolean = true,
     val priority: Int = 1,
     val models: List<String> = emptyList(),
+    /** `null` 表示保留该密钥已有的限流规则。 */
+    val rateLimit: ChannelKeyRateLimitPolicy? = null,
     val stateVersion: Long? = null,
 )
 
@@ -111,6 +116,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
                 enabled = key.enabled,
                 priority = key.priority,
                 models = key.models,
+                rateLimit = key.rateLimit,
             )
         }, now)
         Channels.selectAll().where { Channels.id eq id }.single().let(::toRecordWithRelations)
@@ -274,9 +280,22 @@ class ChannelRepository(private val database: Database, private val credentialCi
                     it[createdAt] = now
                 }
             }
+            key.rateLimit?.let { saveRateLimit(keyId, it, now) }
         }
         (existing.keys - keptIds).forEach { staleId ->
             ChannelKeys.deleteWhere { ChannelKeys.id eq staleId }
+        }
+    }
+
+    private fun saveRateLimit(keyId: String, policy: ChannelKeyRateLimitPolicy, now: Long) {
+        ChannelKeyRateLimits.deleteWhere { ChannelKeyRateLimits.keyId eq keyId }
+        if (!policy.enabled && policy.requestsPerMinute == null && policy.maxConcurrentRequests == null) return
+        ChannelKeyRateLimits.insert {
+            it[ChannelKeyRateLimits.keyId] = keyId
+            it[enabled] = policy.enabled
+            it[requestsPerMinute] = policy.requestsPerMinute
+            it[maxConcurrentRequests] = policy.maxConcurrentRequests
+            it[updatedAt] = now
         }
     }
 
@@ -338,6 +357,15 @@ internal fun loadChannelKeysInTransaction(
         .where { ChannelKeyModels.keyId inList keyRows.map { it[ChannelKeys.id] } }
         .groupBy { it[ChannelKeyModels.keyId] }
         .mapValues { (_, rows) -> rows.map { it[ChannelKeyModels.upstreamModel] }.sorted() }
+    val rateLimitsByKey = ChannelKeyRateLimits.selectAll()
+        .where { ChannelKeyRateLimits.keyId inList keyRows.map { it[ChannelKeys.id] } }
+        .associate { row ->
+            row[ChannelKeyRateLimits.keyId] to ChannelKeyRateLimitPolicy(
+                enabled = row[ChannelKeyRateLimits.enabled],
+                requestsPerMinute = row[ChannelKeyRateLimits.requestsPerMinute],
+                maxConcurrentRequests = row[ChannelKeyRateLimits.maxConcurrentRequests],
+            )
+        }
     return keyRows.groupBy { it[ChannelKeys.channelId] }.mapValues { (_, rows) ->
         rows.map { row ->
             ChannelKeyRecord(
@@ -350,6 +378,7 @@ internal fun loadChannelKeysInTransaction(
                 enabled = row[ChannelKeys.enabled],
                 priority = row[ChannelKeys.priority],
                 models = modelsByKey[row[ChannelKeys.id]].orEmpty(),
+                rateLimit = rateLimitsByKey[row[ChannelKeys.id]] ?: ChannelKeyRateLimitPolicy(),
                 createdAt = row[ChannelKeys.createdAt],
                 updatedAt = row[ChannelKeys.updatedAt],
                 stateVersion = row[ChannelKeys.stateVersion],

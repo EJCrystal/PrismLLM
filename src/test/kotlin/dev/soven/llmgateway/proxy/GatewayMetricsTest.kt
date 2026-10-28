@@ -18,6 +18,7 @@ class GatewayMetricsTest {
         metrics.upstreamRetry("primary", "secondary", "upstream_error")
         metrics.upstreamCooldownSkipped("primary")
         metrics.upstreamCooldownStarted("primary", "transient")
+        metrics.upstreamKeyRateLimitSkipped("primary", "requests_per_minute")
         metrics.databaseReady(false)
         metrics.databaseReady(true)
 
@@ -34,6 +35,8 @@ class GatewayMetricsTest {
         assertTrue(output.contains("gateway_upstream_retries_total"))
         assertTrue(output.contains("gateway_upstream_cooldown_skips_total"))
         assertTrue(output.contains("gateway_upstream_cooldown_started_total"))
+        assertTrue(output.contains("gateway_upstream_key_rate_limit_skips_total"))
+        assertTrue(output.contains("reason=\"requests_per_minute\""))
         assertTrue(output.contains("gateway_database_ready 1.0"))
     }
 }

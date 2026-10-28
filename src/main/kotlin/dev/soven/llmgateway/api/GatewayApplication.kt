@@ -25,6 +25,7 @@ import dev.soven.llmgateway.repo.ChannelKeyStateChangedException
 import dev.soven.llmgateway.repo.ChannelKeyReenableRequiresCredentialException
 import dev.soven.llmgateway.report.LogRetentionService
 import dev.soven.llmgateway.quota.ClientKeyQuotaService
+import dev.soven.llmgateway.quota.ChannelKeyRateLimiter
 import dev.soven.llmgateway.quota.RequestLimitService
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.CredentialCipher
@@ -55,6 +56,7 @@ import io.ktor.server.metrics.micrometer.MicrometerMetrics
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.path
 import io.ktor.server.response.respondText
+import io.ktor.server.response.header
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -95,6 +97,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val adminAuditRepository = AdminAuditRepository(databaseFactory.database)
     val keyAutoDisableRepository = KeyAutoDisableRepository(databaseFactory.database, adminAuditRepository)
     val keyAvailabilityGate = KeyAvailabilityGate()
+    val channelKeyRateLimiter = ChannelKeyRateLimiter()
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
@@ -198,6 +201,10 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
                 if (call.response.isCommitted) {
                     logger.warn("gateway error after response committed, code={}", cause.code)
                     return@exception
+                }
+                cause.retryAfterMs?.let { retryAfterMs ->
+                    val retryAfterSeconds = ((retryAfterMs + 999) / 1_000).coerceAtLeast(1)
+                    call.response.header(HttpHeaders.RetryAfter, retryAfterSeconds.toString())
                 }
                 if (call.request.path() == "/v1/messages" && cause.nativeResponseBody != null) {
                     call.respondText(

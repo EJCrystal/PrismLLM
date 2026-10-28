@@ -75,6 +75,13 @@ class GatewayMetrics {
         registry.counter("gateway_upstream_cooldown_skips_total", Tags.of("channel", channel)).increment()
     }
 
+    fun upstreamKeyRateLimitSkipped(channel: String, reason: String) {
+        registry.counter(
+            "gateway_upstream_key_rate_limit_skips_total",
+            Tags.of("channel", channel, "reason", reason),
+        ).increment()
+    }
+
     fun upstreamCooldownStarted(channel: String, reason: String) {
         registry.counter(
             "gateway_upstream_cooldown_started_total",
