@@ -221,15 +221,15 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 返回每个协议的 `supported`、`statusCode` 和说明。探测会使用已保存凭据发送最小请求（Chat `max_tokens=1`、Responses `max_output_tokens=1`、Messages `max_tokens=1`），可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
 
-渠道编辑弹窗的授权模型列表提供「测试」入口，可对指定模型发送一次真实请求，并指定协议、推理强度和测试提示词。测试使用已保存的渠道凭据，不经过数据面、不写入请求日志，也不消耗调用方密钥额度；最多输出 128 token，超时 45 秒。Chat Completions 发送顶层 `reasoning_effort`，Responses 发送 `reasoning.effort`，Anthropic Messages 暂不支持推理强度。
+渠道编辑弹窗的授权模型列表提供「测试」入口，可对指定模型发送一次真实请求，并指定协议和测试提示词。测试使用已保存的渠道凭据，不经过数据面、不写入请求日志，也不消耗调用方密钥额度；最多输出 128 token，超时 45 秒。连通性测试不指定推理强度。
 
 ```bash
 curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id>/model-test \
   -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4o-mini","protocol":"chat_completions","prompt":"请只回复 OK","reasoningEffort":"high"}'
+  -d '{"model":"gpt-4o-mini","protocol":"chat_completions","prompt":"请只回复 OK"}'
 ```
 
-全局默认提示词和默认推理强度通过 `GET/PUT /admin/api/model-test-settings` 配置；单次测试可以覆盖全局值。
+渠道页「上游接入点」标题右侧的「全局测试配置」可设置默认提示词，对应 `GET/PUT /admin/api/model-test-settings`；单次测试可以临时修改提示词。旧请求里的推理强度字段会被忽略。
 
 ### 候选档位、分摊与候选冷却
 

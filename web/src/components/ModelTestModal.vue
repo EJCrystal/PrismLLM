@@ -3,14 +3,12 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import {
-  MODEL_TEST_REASONING_OPTIONS,
   buildModelTestRequest,
   formatModelTestUsage,
   modelTestProtocolLabel,
   modelTestResultTitle,
   modelTestResultTone,
   normalizeModelTestSettings,
-  supportsReasoningEffort,
 } from '../utils/modelTest'
 import Modal from './Modal.vue'
 
@@ -30,19 +28,16 @@ const form = reactive({
   keyId: supportingKeys.value[0]?.id || '',
   protocol: protocols.value[0],
   prompt: settings.value.defaultPrompt,
-  reasoningEffort: settings.value.defaultReasoningEffort,
 })
 const loadingSettings = ref(true)
 const testing = ref(false)
 const result = ref(null)
-const reasoningEnabled = computed(() => supportsReasoningEffort(form.protocol))
 const usageText = computed(() => formatModelTestUsage(result.value?.usage))
 
 onMounted(async () => {
   try {
     settings.value = normalizeModelTestSettings(await api.getModelTestSettings())
     form.prompt = settings.value.defaultPrompt
-    form.reasoningEffort = settings.value.defaultReasoningEffort
   } catch (cause) {
     notify(cause.message, 'warning')
     form.prompt = settings.value.defaultPrompt
@@ -53,7 +48,6 @@ onMounted(async () => {
 
 function resetPrompt() {
   form.prompt = settings.value.defaultPrompt
-  form.reasoningEffort = settings.value.defaultReasoningEffort
 }
 
 async function runTest() {
@@ -71,7 +65,6 @@ async function runTest() {
         model: props.model,
         protocol: form.protocol,
         prompt,
-        reasoningEffort: form.reasoningEffort,
         keyId: form.keyId,
       }),
     )
@@ -113,15 +106,6 @@ async function runTest() {
               {{ modelTestProtocolLabel(protocol) }}
             </option>
           </select>
-        </label>
-        <label class="field">
-          <span>推理强度</span>
-          <select v-model="form.reasoningEffort" :disabled="!reasoningEnabled || testing">
-            <option v-for="option in MODEL_TEST_REASONING_OPTIONS" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </option>
-          </select>
-          <small v-if="!reasoningEnabled">Anthropic Messages 暂不支持推理强度。</small>
         </label>
       </div>
 

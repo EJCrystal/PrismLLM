@@ -6,38 +6,22 @@ export const MODEL_TEST_PROTOCOL_LABELS = {
   messages: 'Anthropic Messages',
 }
 
-export const MODEL_TEST_REASONING_OPTIONS = [
-  { value: '', label: '默认（不传）' },
-  { value: 'minimal', label: '最低' },
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
-]
-
 export function normalizeModelTestSettings(settings) {
   return {
     defaultPrompt: String(settings?.defaultPrompt ?? '').trim() || MODEL_TEST_DEFAULT_PROMPT,
-    defaultReasoningEffort: String(settings?.defaultReasoningEffort ?? '').trim(),
   }
-}
-
-export function supportsReasoningEffort(protocol) {
-  return protocol !== 'messages'
 }
 
 export function modelTestProtocolLabel(protocol) {
   return MODEL_TEST_PROTOCOL_LABELS[protocol] || protocol
 }
 
-export function buildModelTestRequest({ model, protocol, prompt, reasoningEffort, keyId }) {
+export function buildModelTestRequest({ model, protocol, prompt, keyId }) {
   return {
     model: String(model ?? '').trim(),
     protocol: String(protocol ?? '').trim(),
     keyId: String(keyId ?? '').trim() || null,
     prompt: String(prompt ?? '').trim(),
-    reasoningEffort: supportsReasoningEffort(protocol)
-      ? (String(reasoningEffort ?? '').trim() || null)
-      : null,
   }
 }
 

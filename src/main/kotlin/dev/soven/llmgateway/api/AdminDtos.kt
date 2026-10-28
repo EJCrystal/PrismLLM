@@ -932,7 +932,7 @@ data class ModelTestSettingsResponse(
 
 fun ModelTestSettingsRecord.toResponse() = ModelTestSettingsResponse(
     defaultPrompt = defaultPrompt,
-    defaultReasoningEffort = defaultReasoningEffort,
+    defaultReasoningEffort = null,
     updatedAt = updatedAt,
 )
 
@@ -985,7 +985,6 @@ fun ModelConnectivityTestResult.toResponse(
     keyId: String?,
     keyName: String?,
     prompt: String,
-    reasoningEffort: String?,
 ) = ChannelModelTestResponse(
     success = success,
     model = model,
@@ -995,7 +994,7 @@ fun ModelConnectivityTestResult.toResponse(
     statusCode = statusCode,
     latencyMs = latencyMs,
     prompt = prompt,
-    reasoningEffort = reasoningEffort,
+    reasoningEffort = null,
     responseText = responseText,
     errorMessage = errorMessage,
     usage = usage?.toTestResponse(),
