@@ -42,8 +42,10 @@ import java.math.RoundingMode
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Base64
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
@@ -483,30 +485,32 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     }
                 }
                 val keys = normalizeUpdatedKeys(app, existing, request, modelMappings, encrypted)
-                val updated = app.channelRepository.update(
-                    id = existing.id,
-                    name = request.name,
-                    baseUrl = request.baseUrl,
-                    keys = keys,
-                    authType = request.authType,
-                    protocols = protocols,
-                    enabled = request.enabled,
-                    modelMappings = modelMappings,
-                    priority = request.priority,
-                ) ?: throw notFound("channel_not_found", "渠道不存在")
-                updated.keys.filter { key ->
-                    existing.keys.firstOrNull { it.id == key.id }?.stateVersion != key.stateVersion
-                }.forEach { app.candidateCooldown.clearKey(updated.id, it.id) }
-                val previousById = existing.keys.associateBy { it.id }
-                updated.keys.forEach { key ->
-                    if (previousById[key.id]?.rateLimit != key.rateLimit) {
-                        app.channelKeyRateLimiter.updatePolicy(updated.id, key.id, key.rateLimit)
+                withContext(NonCancellable) {
+                    val updated = app.channelRepository.update(
+                        id = existing.id,
+                        name = request.name,
+                        baseUrl = request.baseUrl,
+                        keys = keys,
+                        authType = request.authType,
+                        protocols = protocols,
+                        enabled = request.enabled,
+                        modelMappings = modelMappings,
+                        priority = request.priority,
+                    ) ?: throw notFound("channel_not_found", "渠道不存在")
+                    updated.keys.filter { key ->
+                        existing.keys.firstOrNull { it.id == key.id }?.stateVersion != key.stateVersion
+                    }.forEach { app.candidateCooldown.clearKey(updated.id, it.id) }
+                    val previousById = existing.keys.associateBy { it.id }
+                    updated.keys.forEach { key ->
+                        if (previousById[key.id]?.rateLimit != key.rateLimit) {
+                            app.channelKeyRateLimiter.updatePolicy(updated.id, key.id, key.rateLimit)
+                        }
                     }
+                    (existing.keys.map { it.id }.toSet() - updated.keys.map { it.id }.toSet()).forEach { keyId ->
+                        app.channelKeyRateLimiter.clearKey(updated.id, keyId)
+                    }
+                    updated
                 }
-                (existing.keys.map { it.id }.toSet() - updated.keys.map { it.id }.toSet()).forEach { keyId ->
-                    app.channelKeyRateLimiter.clearKey(updated.id, keyId)
-                }
-                updated
             }
             call.respond(updated.toResponse())
         }
@@ -519,8 +523,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     throw conflict("channel_in_use", "渠道仍被模型别名引用，不能删除")
                 }
                 val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
-                if (!app.channelRepository.delete(id)) throw notFound("channel_not_found", "渠道不存在")
-                channel.keys.forEach { app.channelKeyRateLimiter.clearKey(channel.id, it.id) }
+                withContext(NonCancellable) {
+                    if (!app.channelRepository.delete(id)) throw notFound("channel_not_found", "渠道不存在")
+                    channel.keys.forEach { app.channelKeyRateLimiter.clearKey(channel.id, it.id) }
+                }
             }
             call.respond(HttpStatusCode.NoContent)
         }
