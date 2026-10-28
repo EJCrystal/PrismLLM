@@ -273,6 +273,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             adminUi(this@GatewayApplication)
         }
         app.monitor.subscribe(ApplicationStopped) { close() }
+        modelPriceReferenceService.start(scope)
         runBlocking { syncLogRetentionJob() }
     }
 

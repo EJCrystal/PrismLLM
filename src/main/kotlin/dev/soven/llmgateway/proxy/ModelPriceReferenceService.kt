@@ -1,5 +1,7 @@
 package dev.soven.llmgateway.proxy
 
+import com.google.common.cache.Cache
+import com.google.common.cache.CacheBuilder
 import dev.soven.llmgateway.api.ModelPriceReferenceResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.timeout
@@ -10,6 +12,11 @@ import io.ktor.client.statement.bodyAsBytes
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
@@ -20,7 +27,9 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.slf4j.LoggerFactory
 import java.io.ByteArrayInputStream
 import java.math.BigDecimal
-import java.util.concurrent.ConcurrentHashMap
+import java.time.Duration
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.GZIPInputStream
 
 /**
@@ -84,7 +93,18 @@ data class CatalogSnapshot(
 class ModelPriceReferenceService(
     private val httpClient: HttpClient,
     private val catalogUrl: String = "https://models.dev/catalog.json",
+    private val cacheDuration: Duration = Duration.ofDays(1),
+    private val preRefreshLead: Duration = Duration.ofHours(1),
 ) {
+    init {
+        require(!cacheDuration.isZero && !cacheDuration.isNegative) {
+            "models.dev 缓存有效期必须大于 0"
+        }
+        require(!preRefreshLead.isNegative) {
+            "models.dev 提前刷新时间不能为负数"
+        }
+    }
+
     private val logger = LoggerFactory.getLogger(ModelPriceReferenceService::class.java)
 
     private data class BaselineEntry(
@@ -158,34 +178,64 @@ class ModelPriceReferenceService(
         "llama-3.1-8b-instruct" to BaselineEntry("Meta", BigDecimal("0.02"), BigDecimal("0.05")),
     )
 
-    private val dynamicCache = ConcurrentHashMap<String, ReferencePrice>()
+    private data class CatalogState(
+        val models: List<CatalogModel>,
+        val index: Map<String, List<CatalogModel>>,
+        val prices: Map<String, ReferencePrice>,
+    )
+
+    private val catalogCache: Cache<String, CatalogState> = CacheBuilder.newBuilder()
+        .expireAfterWrite(cacheDuration.toMillis().coerceAtLeast(1), TimeUnit.MILLISECONDS)
+        .build()
+    private val lastGoodCatalog = AtomicReference<CatalogState?>(null)
     private val loadMutex = Mutex()
-    @Volatile
-    private var dynamicCatalogLoaded = false
-    @Volatile
-    private var catalogModels: List<CatalogModel> = emptyList()
-    @Volatile
-    private var catalogIndex: Map<String, List<CatalogModel>> = emptyMap()
+    private val refreshInterval = (cacheDuration - preRefreshLead)
+        .coerceAtLeast(Duration.ofMillis(1))
+
     @Volatile
     private var catalogError: String? = null
+    @Volatile
     private var lastFailureAtMillis = 0L
+    private var refreshJob: Job? = null
 
     val catalogSource: String get() = catalogUrl
 
+    /**
+     * 启动后台目录刷新。首次调用立即预热；之后在缓存到期前刷新，失败时每分钟重试。
+     */
+    @Synchronized
+    fun start(scope: CoroutineScope): Job = refreshJob ?: scope.launch {
+        var needsInitialLoad = true
+        while (isActive) {
+            if (needsInitialLoad) {
+                if (!loadDynamicCatalog()) {
+                    delay(RETRY_COOLDOWN_MS)
+                    continue
+                }
+                needsInitialLoad = false
+            }
+
+            delay(refreshInterval.toMillis())
+            while (isActive && !loadDynamicCatalog(force = true)) {
+                delay(RETRY_COOLDOWN_MS)
+            }
+        }
+    }.also { refreshJob = it }
+
     suspend fun catalogSnapshot(): CatalogSnapshot {
-        if (!dynamicCatalogLoaded) loadDynamicCatalog()
+        val state = currentCatalogState()
         return CatalogSnapshot(
-            loaded = dynamicCatalogLoaded,
+            loaded = state != null,
             error = catalogError,
-            models = catalogModels,
+            models = state?.models.orEmpty(),
         )
     }
 
     suspend fun findCatalogMatches(model: String): List<CatalogModel> {
-        if (!dynamicCatalogLoaded) loadDynamicCatalog()
+        val state = currentCatalogState() ?: return emptyList()
         val candidates = candidateKeys(model)
         val matches = candidates
-            .flatMap { catalogIndex[it].orEmpty() }
+            .flatMap { state.index[it].orEmpty() }
             .distinctBy { it.providerId to it.id }
         val exactKeys = candidates.take(2).toSet()
         val exactMatches = matches.filter {
@@ -215,33 +265,29 @@ class ModelPriceReferenceService(
             }
         }
 
-        // 2. 动态开源平台缓存
+        // 2. models.dev 缓存
+        val state = currentCatalogState() ?: return null
         for (key in candidates) {
-            val cached = dynamicCache[key]
+            val cached = state.prices[key]
             if (cached != null) {
                 return cached.copy(model = model)
-            }
-        }
-
-        // 3. 动态从 models.dev 拉取一次
-        if (!dynamicCatalogLoaded) {
-            loadDynamicCatalog()
-            for (key in candidates) {
-                val cached = dynamicCache[key]
-                if (cached != null) {
-                    return cached.copy(model = model)
-                }
             }
         }
 
         return null
     }
 
-    private suspend fun loadDynamicCatalog() {
+    private suspend fun currentCatalogState(): CatalogState? {
+        catalogCache.getIfPresent(CATALOG_CACHE_KEY)?.let { return it }
+        loadDynamicCatalog()
+        return catalogCache.getIfPresent(CATALOG_CACHE_KEY) ?: lastGoodCatalog.get()
+    }
+
+    private suspend fun loadDynamicCatalog(force: Boolean = false): Boolean {
         loadMutex.withLock {
-            if (dynamicCatalogLoaded) return
+            if (!force && catalogCache.getIfPresent(CATALOG_CACHE_KEY) != null) return true
             if (lastFailureAtMillis != 0L && System.currentTimeMillis() - lastFailureAtMillis < RETRY_COOLDOWN_MS) {
-                return
+                return false
             }
             try {
                 val response = httpClient.get(catalogUrl) {
@@ -252,82 +298,101 @@ class ModelPriceReferenceService(
                         connectTimeoutMillis = CATALOG_CONNECT_TIMEOUT_MS
                     }
                 }
-                if (response.status.isSuccess()) {
-                    val text = decodeCatalogBody(response)
-                    val json = Json.parseToJsonElement(text).jsonObject
-                    val providers = json["providers"]?.jsonObject ?: emptyMap()
-                    val providerNames = providers.mapValues { (providerId, providerElem) ->
-                        (providerElem as? JsonObject)
-                            ?.get("name")
-                            ?.jsonPrimitive
-                            ?.content
-                            ?: providerId
-                    }
-                    var count = 0
-                    val catalog = LinkedHashMap<String, CatalogModel>()
-                    val index = HashMap<String, MutableList<CatalogModel>>()
-                    for ((providerId, providerElem) in providers) {
-                        val pObj = providerElem as? JsonObject ?: continue
-                        val pName = providerNames[providerId] ?: providerId
-                        val models = pObj["models"]?.jsonObject ?: continue
-                        for ((modelId, modelElem) in models) {
-                            val mObj = modelElem as? JsonObject ?: continue
-                            val cid = mObj["canonical_model_id"]?.jsonPrimitive?.content ?: modelId
-                            val developerId = cid.substringBefore('/')
-                                .takeIf { cid.contains('/') }
-                                ?: providerId
-                            val catalogModel = CatalogModel(
-                                id = modelId,
-                                canonicalId = cid,
-                                provider = pName,
-                                providerId = providerId,
-                                developer = providerNames[developerId] ?: developerId,
-                                developerId = developerId,
-                            )
-                            catalog["$providerId\u0000$modelId"] = catalogModel
-                            for (key in (candidateKeys(modelId) + candidateKeys(cid)).distinct()) {
-                                index.getOrPut(key) { mutableListOf() }.add(catalogModel)
-                            }
-
-                            val cost = mObj["cost"] as? JsonObject ?: continue
-                            val input = cost["input"]?.jsonPrimitive?.doubleOrNull ?: continue
-                            val output = cost["output"]?.jsonPrimitive?.doubleOrNull ?: continue
-                            val cached = cost["cache_read"]?.jsonPrimitive?.doubleOrNull
-
-                            val ref = ReferencePrice(
-                                model = modelId,
-                                matchedModel = cid,
-                                currency = "USD",
-                                inputPricePerMillion = BigDecimal.valueOf(input),
-                                outputPricePerMillion = BigDecimal.valueOf(output),
-                                cachedInputPricePerMillion = cached?.let { BigDecimal.valueOf(it) },
-                                provider = pName,
-                                source = "models.dev ($pName)",
-                            )
-                            for (k in candidateKeys(modelId) + candidateKeys(cid)) {
-                                if (dynamicCache.putIfAbsent(k, ref) == null) count++
-                            }
-                        }
-                    }
-                    catalogModels = catalog.values.sortedWith(compareBy({ it.provider }, { it.id }))
-                    catalogIndex = index.mapValues { (_, entries) ->
-                        entries.distinctBy { it.providerId to it.id }
-                    }
-                    dynamicCatalogLoaded = true
-                    catalogError = null
-                    logger.info("已从 models.dev 加载 {} 个模型（{} 个价格键）", catalog.size, count)
-                } else {
-                    catalogError = "models.dev 返回 ${response.status.value}"
-                    lastFailureAtMillis = System.currentTimeMillis()
+                if (!response.status.isSuccess()) {
+                    recordFailure("models.dev 返回 " + response.status.value)
+                    return false
                 }
+
+                val state = parseCatalog(decodeCatalogBody(response))
+                catalogCache.put(CATALOG_CACHE_KEY, state)
+                lastGoodCatalog.set(state)
+                catalogError = null
+                lastFailureAtMillis = 0L
+                logger.info(
+                    "已从 models.dev 加载 {} 个模型（{} 个价格键）",
+                    state.models.size,
+                    state.prices.size,
+                )
+                return true
             } catch (cause: CancellationException) {
                 throw cause
             } catch (cause: Exception) {
-                catalogError = cause.message ?: "未知错误"
-                lastFailureAtMillis = System.currentTimeMillis()
-                logger.warn("拉取 models.dev 参考价库失败: {}", cause.message)
+                recordFailure(cause.message ?: "未知错误", cause)
+                return false
             }
         }
+    }
+
+    private fun recordFailure(message: String, cause: Exception? = null) {
+        catalogError = message
+        lastFailureAtMillis = System.currentTimeMillis()
+        if (cause != null) {
+            logger.warn("拉取 models.dev 参考价库失败: {}", cause.message)
+        }
+    }
+
+    private fun parseCatalog(text: String): CatalogState {
+        val json = Json.parseToJsonElement(text).jsonObject
+        val providers = json["providers"]?.jsonObject ?: emptyMap()
+        val providerNames = providers.mapValues { (providerId, providerElem) ->
+            (providerElem as? JsonObject)
+                ?.get("name")
+                ?.jsonPrimitive
+                ?.content
+                ?: providerId
+        }
+        val catalog = LinkedHashMap<String, CatalogModel>()
+        val index = HashMap<String, MutableList<CatalogModel>>()
+        val prices = HashMap<String, ReferencePrice>()
+        for ((providerId, providerElem) in providers) {
+            val pObj = providerElem as? JsonObject ?: continue
+            val pName = providerNames[providerId] ?: providerId
+            val models = pObj["models"]?.jsonObject ?: continue
+            for ((modelId, modelElem) in models) {
+                val mObj = modelElem as? JsonObject ?: continue
+                val cid = mObj["canonical_model_id"]?.jsonPrimitive?.content ?: modelId
+                val developerId = cid.substringBefore('/')
+                    .takeIf { cid.contains('/') }
+                    ?: providerId
+                val catalogModel = CatalogModel(
+                    id = modelId,
+                    canonicalId = cid,
+                    provider = pName,
+                    providerId = providerId,
+                    developer = providerNames[developerId] ?: developerId,
+                    developerId = developerId,
+                )
+                catalog["$providerId\u0000$modelId"] = catalogModel
+                for (key in (candidateKeys(modelId) + candidateKeys(cid)).distinct()) {
+                    index.getOrPut(key) { mutableListOf() }.add(catalogModel)
+                }
+
+                val cost = mObj["cost"] as? JsonObject ?: continue
+                val input = cost["input"]?.jsonPrimitive?.doubleOrNull ?: continue
+                val output = cost["output"]?.jsonPrimitive?.doubleOrNull ?: continue
+                val cached = cost["cache_read"]?.jsonPrimitive?.doubleOrNull
+                val reference = ReferencePrice(
+                    model = modelId,
+                    matchedModel = cid,
+                    currency = "USD",
+                    inputPricePerMillion = BigDecimal.valueOf(input),
+                    outputPricePerMillion = BigDecimal.valueOf(output),
+                    cachedInputPricePerMillion = cached?.let { BigDecimal.valueOf(it) },
+                    provider = pName,
+                    source = "models.dev ($pName)",
+                )
+                for (key in candidateKeys(modelId) + candidateKeys(cid)) {
+                    prices.putIfAbsent(key, reference)
+                }
+            }
+        }
+        return CatalogState(
+            models = catalog.values.sortedWith(compareBy({ it.provider }, { it.id })),
+            index = index.mapValues { (_, entries) ->
+                entries.distinctBy { it.providerId to it.id }
+            },
+            prices = prices,
+        )
     }
 
     private suspend fun decodeCatalogBody(response: HttpResponse): String {
@@ -375,6 +440,7 @@ class ModelPriceReferenceService(
     }
 
     private companion object {
+        const val CATALOG_CACHE_KEY = "models.dev"
         const val RETRY_COOLDOWN_MS = 60_000L
         const val CATALOG_REQUEST_TIMEOUT_MS = 30_000L
         const val CATALOG_CONNECT_TIMEOUT_MS = 10_000L

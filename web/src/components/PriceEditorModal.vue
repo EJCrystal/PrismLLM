@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
@@ -13,12 +13,10 @@ import {
 } from '../utils/modelPrice'
 import {
   applyPriceToForm,
-  buildBatchPricePayload,
   buildPricePayload,
   emptyPriceDraft,
   existingPricePayload,
   hasPriceDraft,
-  hasActivePriceDraft,
   priceFormError,
   priceFormState,
   resetPriceForm,
@@ -57,9 +55,6 @@ const referenceHint = ref('')
 const saving = ref(false)
 const deletingPriceId = ref(null)
 const activePrice = ref(props.price)
-const batchOpen = ref(false)
-const batchSelected = ref([])
-const batchPanel = ref(null)
 let modelsRequestId = 0
 let referenceRequestId = 0
 const manuallyEnteredModel = ref(false)
@@ -76,7 +71,6 @@ const form = reactive({
 const currentBaseline = ref(priceDraftSnapshot(form))
 
 const currentChannelName = computed(() => channelDisplayName(props.channels, form.channelId))
-const batchPriceSummary = computed(() => hasActivePriceDraft(form) ? formatPriceSummary(form) : '尚未填写价格')
 const currentDraftDirty = computed(() => priceDraftSnapshot(form) !== currentBaseline.value)
 
 function referenceDraftKey() {
@@ -125,8 +119,6 @@ const selectedPriceSource = computed(() => {
   if (inheritedPrice.value) return 'default'
   return 'none'
 })
-const allBatchSelected = computed(() => channelModelOptions.value.length > 0 &&
-  channelModelOptions.value.every((model) => batchSelected.value.includes(model.id)))
 const dirtyDraftCount = computed(() => {
   let count = currentDraftDirty.value ? 1 : 0
   for (const [key, draft] of draftStates) {
@@ -151,8 +143,6 @@ watch(
   async (channelId) => {
     const requestId = ++modelsRequestId
     cancelReferenceLookup()
-    batchOpen.value = false
-    batchSelected.value = []
     channelModels.value = []
     modelsError.value = ''
     if (!channelId) return
@@ -333,21 +323,6 @@ function applyDefaultPrice() {
   form.priceTiers = (price.priceTiers || []).map((tier) => ({ ...tier }))
 }
 
-function toggleBatchAll() {
-  if (allBatchSelected.value) {
-    batchSelected.value = []
-  } else {
-    batchSelected.value = channelModelOptions.value.map((model) => model.id)
-  }
-}
-
-async function toggleBatch() {
-  batchOpen.value = !batchOpen.value
-  if (!batchOpen.value) return
-  await nextTick()
-  batchPanel.value?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-}
-
 function priceSourceLabel(model) {
   if (model?.price) return '渠道覆盖'
   if (model?.defaultPrice) return '默认价'
@@ -507,47 +482,6 @@ async function removePrice(price) {
   }
 }
 
-async function applyBatch() {
-  if (!form.channelId) {
-    notify('请选择渠道', 'error')
-    return
-  }
-  if (batchSelected.value.length === 0) {
-    notify('请至少选择一个模型', 'warning')
-    return
-  }
-  const validationError = priceFormError(form, { action: 'batch' })
-  if (validationError) {
-    notify(validationError, 'error')
-    return
-  }
-  const dirtySelected = batchSelected.value.filter(isModelDirty)
-  const overrideNote = dirtySelected.length > 0
-    ? `\n其中 ${dirtySelected.length} 个模型有未保存修改，将被当前价格覆盖。`
-    : ''
-  if (!window.confirm(`将把当前价格套用到 ${batchSelected.value.length} 个模型，是否继续？${overrideNote}`)) return
-  saving.value = true
-  try {
-    const selectedModels = [...batchSelected.value]
-    const records = await api.batchUpsertModelPrices(buildBatchPricePayload(form, form.channelId, selectedModels))
-    const recordsByModel = new Map((records || []).map((record) => [record.upstreamModel, record]))
-    for (const modelId of selectedModels) draftStates.delete(priceDraftKey(form.channelId, modelId))
-    const currentRecord = recordsByModel.get(form.upstreamModel.trim())
-    if (currentRecord) {
-      activePrice.value = currentRecord
-      currentBaseline.value = priceDraftSnapshot(form)
-    }
-    notify(`已为 ${selectedModels.length} 个模型套用渠道单价`)
-    batchSelected.value = []
-    batchOpen.value = false
-    emit('saved')
-  } catch (cause) {
-    notify(cause.message, 'error')
-  } finally {
-    saving.value = false
-  }
-}
-
 function requestClose() {
   if (dirtyDraftCount.value > 0 &&
     !window.confirm(`还有 ${dirtyDraftCount.value} 项价格修改未保存，确定关闭？`)
@@ -572,7 +506,6 @@ function requestClose() {
             <span v-if="dirtyDraftCount" class="muted small"> · {{ dirtyDraftCount }} 项未保存</span>
           </div>
           <div class="price-configured-actions">
-            <button type="button" class="button ghost mini" @click="toggleBatch">批量套用</button>
             <button v-if="!modelsLoading && !channelModelOptions.length" type="button" class="button ghost mini" @click="startNewPrice">新增单价</button>
           </div>
         </div>
@@ -695,32 +628,6 @@ function requestClose() {
         <small>获取参考价会切换为 USD。</small>
       </label>
       <PriceFields :form="form" />
-
-      <div v-if="batchOpen" ref="batchPanel" class="price-batch">
-        <div class="price-batch-head">
-          <div>
-            <strong>批量套用当前价格</strong>
-            <span class="muted small">使用上方已经填写的计费规则，覆盖所选模型的渠道价。</span>
-          </div>
-          <strong class="price-batch-rate">{{ batchPriceSummary }}</strong>
-        </div>
-        <div v-if="channelModelOptions.length" class="price-batch-list">
-          <label v-for="model in channelModelOptions" :key="model.id" class="price-batch-item">
-            <input v-model="batchSelected" type="checkbox" :value="model.id" />
-            <code>{{ model.id }}</code>
-            <span class="badge" :class="priceSourceClass(model)">{{ priceSourceLabel(model) }}</span>
-          </label>
-        </div>
-        <p v-else class="muted small price-configured-empty">当前渠道没有可批量套用的模型。</p>
-        <div class="price-batch-actions">
-          <button type="button" class="button ghost mini" @click="toggleBatchAll">
-            {{ allBatchSelected ? '取消全选' : '全选' }}
-          </button>
-          <button type="button" class="button primary mini" :disabled="saving || batchSelected.length === 0" @click="applyBatch">
-            套用到 {{ batchSelected.length }} 个模型
-          </button>
-        </div>
-      </div>
 
       <p v-if="activePrice?.id" class="muted small price-source-note">正在编辑渠道覆盖价。</p>
       <p v-else-if="inheritedPrice" class="callout info price-source-note">

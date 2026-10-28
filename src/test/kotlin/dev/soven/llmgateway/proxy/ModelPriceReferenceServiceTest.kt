@@ -3,16 +3,24 @@ package dev.soven.llmgateway.proxy
 import com.sun.net.httpserver.HttpServer
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.ByteArrayOutputStream
 import java.math.BigDecimal
 import java.net.InetSocketAddress
+import java.time.Duration
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.GZIPOutputStream
@@ -137,6 +145,135 @@ class ModelPriceReferenceServiceTest {
             assertEquals("alibaba", qwen.developerId)
         } finally {
             server.stop(0)
+        }
+    }
+
+    @Test
+    fun `reuses the loaded catalog snapshot across requests`() = runBlocking {
+        val requests = AtomicInteger()
+        val body = """
+            {"providers":{"custom":{"name":"Custom","models":{"cached-model":{"canonical_model_id":"cached-model","cost":{"input":1,"output":2}}}}}}
+        """.trimIndent()
+        val server = catalogServer(200, body, requests)
+        try {
+            val service = ModelPriceReferenceService(
+                httpClient,
+                catalogUrl = "http://127.0.0.1:" + server.address.port + "/catalog.json",
+            )
+
+            assertEquals(listOf("cached-model"), service.catalogSnapshot().models.map { it.id })
+            assertEquals(listOf("cached-model"), service.findCatalogMatches("cached-model").map { it.id })
+            assertNotNull(service.lookup("cached-model"))
+            assertEquals(1, requests.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `refreshes catalog and prices together before cache expiry`() = runBlocking {
+        val requests = AtomicInteger()
+        val firstBody = """
+            {"providers":{"custom":{"name":"Custom","models":{"refresh-old":{"canonical_model_id":"refresh-old","cost":{"input":1,"output":2}}}}}}
+        """.trimIndent()
+        val secondBody = """
+            {"providers":{"custom":{"name":"Custom","models":{"refresh-new":{"canonical_model_id":"refresh-new","cost":{"input":2,"output":4}}}}}}
+        """.trimIndent()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/catalog.json") { exchange ->
+            val requestNumber = requests.incrementAndGet()
+            val bytes = (if (requestNumber == 1) firstBody else secondBody).toByteArray()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val service = ModelPriceReferenceService(
+                httpClient,
+                catalogUrl = "http://127.0.0.1:" + server.address.port + "/catalog.json",
+                cacheDuration = Duration.ofMillis(400),
+                preRefreshLead = Duration.ofMillis(300),
+            )
+            service.start(refreshScope)
+
+            var snapshot = service.catalogSnapshot()
+            withTimeout(3_000) {
+                while (snapshot.models.none { it.id == "refresh-new" }) {
+                    delay(10)
+                    snapshot = service.catalogSnapshot()
+                }
+            }
+
+            assertEquals(listOf("refresh-new"), snapshot.models.map { it.id })
+            assertNull(service.lookup("refresh-old"))
+            val refreshed = service.lookup("refresh-new")
+            assertNotNull(refreshed)
+            assertEquals(0, refreshed?.inputPricePerMillion?.compareTo(BigDecimal("2")))
+            assertEquals(0, refreshed?.outputPricePerMillion?.compareTo(BigDecimal("4")))
+        } finally {
+            refreshScope.cancel()
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `keeps the last complete catalog when a scheduled refresh fails`() = runBlocking {
+        val requests = AtomicInteger()
+        val body = """
+            {"providers":{"custom":{"name":"Custom","models":{"stale-model":{"canonical_model_id":"stale-model","cost":{"input":1,"output":2}}}}}}
+        """.trimIndent()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/catalog.json") { exchange ->
+            val requestNumber = requests.incrementAndGet()
+            val bytes = body.toByteArray()
+            exchange.sendResponseHeaders(if (requestNumber == 1) 200 else 503, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val service = ModelPriceReferenceService(
+                httpClient,
+                catalogUrl = "http://127.0.0.1:" + server.address.port + "/catalog.json",
+                cacheDuration = Duration.ofMillis(300),
+                preRefreshLead = Duration.ofMillis(250),
+            )
+            service.start(refreshScope)
+
+            var snapshot = service.catalogSnapshot()
+            withTimeout(3_000) {
+                while (snapshot.error == null) {
+                    delay(10)
+                    snapshot = service.catalogSnapshot()
+                }
+            }
+            delay(350)
+
+            snapshot = service.catalogSnapshot()
+            assertTrue(snapshot.loaded)
+            assertEquals("models.dev 返回 503", snapshot.error)
+            assertEquals(listOf("stale-model"), snapshot.models.map { it.id })
+            assertNotNull(service.lookup("stale-model"))
+        } finally {
+            refreshScope.cancel()
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `starting the background refresh more than once returns the same job`() {
+        val service = ModelPriceReferenceService(
+            httpClient,
+            catalogUrl = "http://127.0.0.1:1/catalog.json",
+        )
+        val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val first = service.start(refreshScope)
+            val second = service.start(refreshScope)
+            assertSame(first, second)
+        } finally {
+            refreshScope.cancel()
         }
     }
 

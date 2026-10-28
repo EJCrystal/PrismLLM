@@ -24,6 +24,7 @@
         <logback.version>1.6.5</logback.version>
         <logstash.version>9.0</logstash.version>
         <micrometer.version>1.17.1</micrometer.version>
+        <guava.version>33.5.0-jre</guava.version>
         <bcprov.version>1.86</bcprov.version>
         <junit.version>5.13.4</junit.version>
         <mockk.version>1.14.11</mockk.version>
@@ -160,6 +161,11 @@
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
             <version>${micrometer.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>${guava.version}</version>
         </dependency>
         <dependency>
             <groupId>org.bouncycastle</groupId>
