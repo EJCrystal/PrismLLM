@@ -13,7 +13,6 @@ import dev.soven.llmgateway.proxy.testChannelModelConnectivity
 import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.NewChannelKey
-import dev.soven.llmgateway.repo.ChannelKeyStateChangedException
 import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.parseDailyCostLimit
@@ -470,23 +469,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 }
             }
             val keys = normalizeUpdatedKeys(app, existing, request, modelMappings, encrypted)
-            if (request.keys != null) {
-                val existingById = existing.keys.associateBy { it.id }
-                for (key in request.keys) {
-                    val previous = existingById[key.id] ?: continue
-                    if (key.stateVersion != null && key.stateVersion != previous.stateVersion) {
-                        throw ChannelKeyStateChangedException()
-                    }
-                    if (previous.autoDisabledAt != null && key.enabled &&
-                        key.credential.isNullOrBlank()
-                    ) {
-                        throw badRequest(
-                            "channel_key_reenable_requires_credential",
-                            "密钥「${previous.name}」因错误自动禁用，重新启用前必须更换上游凭据",
-                        )
-                    }
-                }
-            }
             val updated = app.channelRepository.update(
                 id = existing.id,
                 name = request.name,

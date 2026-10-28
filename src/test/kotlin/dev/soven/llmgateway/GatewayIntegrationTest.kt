@@ -3112,6 +3112,29 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin audit tolerates malformed details without dropping records`() = runBlocking {
+        val created = app.adminAuditRepository.record(
+            actor = "system",
+            action = "test.malformed",
+            method = "AUTO",
+            path = "/test",
+            statusCode = 200,
+            requestId = "malformed-details",
+            sourceIp = null,
+            errorCode = null,
+        )
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update admin_audit_logs set details = ? where id = ?").use { statement ->
+                statement.setString(1, "{not-json")
+                statement.setLong(2, created.id)
+                statement.executeUpdate()
+            }
+        }
+        val record = app.adminAuditRepository.list(10).single { it.requestId == "malformed-details" }
+        assertNull(record.details)
+        assertEquals("test.malformed", record.action)
+    }
+
     fun `alias rejects un-authorized channel model`() = runBlocking {
         val channel = createChannelWithBaseUrl("alias-auth", "${fake.baseUrl}/ok/v1").let { created ->
             app.channelRepository.update(

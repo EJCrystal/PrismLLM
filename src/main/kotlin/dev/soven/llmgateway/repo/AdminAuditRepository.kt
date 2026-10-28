@@ -98,7 +98,11 @@ class AdminAuditRepository(private val database: Database) {
         requestId = row[AdminAuditLogs.requestId],
         sourceIp = row[AdminAuditLogs.sourceIp],
         errorCode = row[AdminAuditLogs.errorCode],
-        details = row[AdminAuditLogs.details]?.let { Json.parseToJsonElement(it).jsonObject },
+        details = row[AdminAuditLogs.details]?.let(::parseDetails),
         createdAt = row[AdminAuditLogs.createdAt],
     )
+
+    /** 单条历史详情损坏时仍返回该审计记录，避免整页审计查询失败。 */
+    private fun parseDetails(value: String): JsonObject? =
+        runCatching { Json.parseToJsonElement(value).jsonObject }.getOrNull()
 }
