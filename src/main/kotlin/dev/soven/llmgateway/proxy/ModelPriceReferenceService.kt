@@ -104,6 +104,9 @@ class ModelPriceReferenceService(
         require(!preRefreshLead.isNegative) {
             "models.dev 提前刷新时间不能为负数"
         }
+        require(preRefreshLead < cacheDuration) {
+            "models.dev 提前刷新时间必须小于缓存有效期"
+        }
         require(!staleFallbackDuration.isNegative) {
             "models.dev 陈旧快照兜底时间不能为负数"
         }

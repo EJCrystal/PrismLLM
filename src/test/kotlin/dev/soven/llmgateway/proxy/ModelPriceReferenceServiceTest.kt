@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import java.io.ByteArrayOutputStream
 import java.math.BigDecimal
@@ -28,6 +29,17 @@ import java.util.zip.GZIPOutputStream
 class ModelPriceReferenceServiceTest {
 
     private val httpClient = HttpClient(Java)
+
+    @Test
+    fun `rejects refresh lead that would poll the catalog continuously`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            ModelPriceReferenceService(
+                httpClient,
+                cacheDuration = Duration.ofMinutes(10),
+                preRefreshLead = Duration.ofMinutes(10),
+            )
+        }
+    }
 
     @Test
     fun `matches common baseline models instantly without network`() = runBlocking {
@@ -280,7 +292,7 @@ class ModelPriceReferenceServiceTest {
                 httpClient,
                 catalogUrl = "http://127.0.0.1:${server.address.port}/catalog.json",
                 cacheDuration = Duration.ofMillis(200),
-                preRefreshLead = Duration.ofMillis(200),
+                preRefreshLead = Duration.ofMillis(100),
                 staleFallbackDuration = Duration.ofMillis(300),
             )
             assertTrue(service.catalogSnapshot().loaded)
