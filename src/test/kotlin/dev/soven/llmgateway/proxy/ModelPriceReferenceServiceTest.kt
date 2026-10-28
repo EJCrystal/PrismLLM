@@ -23,6 +23,7 @@ import java.math.BigDecimal
 import java.net.InetSocketAddress
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.GZIPOutputStream
 
@@ -276,6 +277,7 @@ class ModelPriceReferenceServiceTest {
     @Test
     fun `expires stale catalog fallback so old prices are not served indefinitely`() = runBlocking {
         val requests = AtomicInteger()
+        val clock = AtomicLong(Duration.ofDays(2).toNanos())
         val body = """
             {"providers":{"custom":{"name":"Custom","models":{"stale-model":{"canonical_model_id":"stale-model","cost":{"input":1,"output":2}}}}}}
         """.trimIndent()
@@ -294,9 +296,14 @@ class ModelPriceReferenceServiceTest {
                 cacheDuration = Duration.ofMillis(200),
                 preRefreshLead = Duration.ofMillis(100),
                 staleFallbackDuration = Duration.ofMillis(300),
+                nanoTime = { clock.get() },
             )
             assertTrue(service.catalogSnapshot().loaded)
-            delay(400)
+            delay(250)
+            clock.addAndGet(Duration.ofMillis(450).toNanos())
+            assertTrue(service.catalogSnapshot().loaded)
+            assertNotNull(service.lookup("stale-model"))
+            clock.addAndGet(Duration.ofMillis(100).toNanos())
             assertFalse(service.catalogSnapshot().loaded)
             assertNull(service.lookup("stale-model"))
             assertNull(service.findCatalogMatches("stale-model").firstOrNull())

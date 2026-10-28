@@ -95,7 +95,12 @@ class ModelPriceReferenceService(
     private val catalogUrl: String = "https://models.dev/catalog.json",
     private val cacheDuration: Duration = Duration.ofDays(1),
     private val preRefreshLead: Duration = Duration.ofHours(1),
+    /**
+     * 缓存到期后仍可继续使用最后一次成功快照的时长。仅用于短暂的上游故障，
+     * 超期后目录和 models.dev 参考价都视为不可用。
+     */
     private val staleFallbackDuration: Duration = Duration.ofDays(1),
+    private val nanoTime: () -> Long = { System.nanoTime() },
 ) {
     init {
         require(!cacheDuration.isZero && !cacheDuration.isNegative) {
@@ -189,7 +194,7 @@ class ModelPriceReferenceService(
         val models: List<CatalogModel>,
         val index: Map<String, List<CatalogModel>>,
         val prices: Map<String, ReferencePrice>,
-        val loadedAtMillis: Long,
+        val loadedAtNanos: Long,
     )
 
     private val catalogCache: Cache<String, CatalogState> = CacheBuilder.newBuilder()
@@ -290,8 +295,8 @@ class ModelPriceReferenceService(
         loadDynamicCatalog()
         catalogCache.getIfPresent(CATALOG_CACHE_KEY)?.let { return it }
         val fallback = lastGoodCatalog.get() ?: return null
-        val age = System.currentTimeMillis() - fallback.loadedAtMillis
-        return fallback.takeIf { age <= staleFallbackDuration.toMillis() }
+        val staleAge = Duration.ofNanos(nanoTime() - fallback.loadedAtNanos) - cacheDuration
+        return fallback.takeIf { staleAge <= staleFallbackDuration }
     }
 
     private suspend fun loadDynamicCatalog(force: Boolean = false): Boolean {
@@ -314,7 +319,7 @@ class ModelPriceReferenceService(
                     return false
                 }
 
-                val state = parseCatalog(decodeCatalogBody(response), System.currentTimeMillis())
+                val state = parseCatalog(decodeCatalogBody(response), nanoTime())
                 catalogCache.put(CATALOG_CACHE_KEY, state)
                 lastGoodCatalog.set(state)
                 catalogError = null
@@ -342,7 +347,7 @@ class ModelPriceReferenceService(
         }
     }
 
-    private fun parseCatalog(text: String, loadedAtMillis: Long): CatalogState {
+    private fun parseCatalog(text: String, loadedAtNanos: Long): CatalogState {
         val json = Json.parseToJsonElement(text).jsonObject
         val providers = json["providers"]?.jsonObject ?: emptyMap()
         val providerNames = providers.mapValues { (providerId, providerElem) ->
@@ -403,7 +408,7 @@ class ModelPriceReferenceService(
                 entries.distinctBy { it.providerId to it.id }
             },
             prices = prices,
-            loadedAtMillis = loadedAtMillis,
+            loadedAtNanos = loadedAtNanos,
         )
     }
 
