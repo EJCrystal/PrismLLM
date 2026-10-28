@@ -319,7 +319,8 @@ class ModelPriceReferenceService(
                     return false
                 }
 
-                val state = parseCatalog(decodeCatalogBody(response), nanoTime())
+                val parsed = parseCatalog(decodeCatalogBody(response))
+                val state = parsed.copy(loadedAtNanos = nanoTime())
                 catalogCache.put(CATALOG_CACHE_KEY, state)
                 lastGoodCatalog.set(state)
                 catalogError = null
@@ -347,7 +348,7 @@ class ModelPriceReferenceService(
         }
     }
 
-    private fun parseCatalog(text: String, loadedAtNanos: Long): CatalogState {
+    private fun parseCatalog(text: String): CatalogState {
         val json = Json.parseToJsonElement(text).jsonObject
         val providers = json["providers"]?.jsonObject ?: emptyMap()
         val providerNames = providers.mapValues { (providerId, providerElem) ->
@@ -408,7 +409,7 @@ class ModelPriceReferenceService(
                 entries.distinctBy { it.providerId to it.id }
             },
             prices = prices,
-            loadedAtNanos = loadedAtNanos,
+            loadedAtNanos = 0L,
         )
     }
 
