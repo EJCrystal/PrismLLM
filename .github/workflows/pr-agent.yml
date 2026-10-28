@@ -22,9 +22,10 @@ jobs:
   pr_agent:
     name: Review via gateway
     # Keep concurrency at job level so an unauthorized `/...` comment cannot
-    # cancel a running review before the job's `if` guard rejects it.
+    # cancel a running review before the job's `if` guard rejects it. Include
+    # the event and comment id so `/ask` does not cancel an automatic review.
     concurrency:
-      group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: pr-agent-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event.comment.id || 'auto' }}
       cancel-in-progress: true
     if: |
       github.event.sender.type != 'Bot' &&
