@@ -83,8 +83,10 @@ class ChannelKeyRateLimiter(
         if (lease?.holdsConcurrency != true) return
         withContext(NonCancellable) {
             mutex.withLock {
-                states[StateKey(lease.channelId, lease.keyId)]?.let { state ->
+                val stateKey = StateKey(lease.channelId, lease.keyId)
+                states[stateKey]?.let { state ->
                     if (state.activeRequests > 0) state.activeRequests -= 1
+                    if (state.retired && state.activeRequests == 0) states.remove(stateKey)
                 }
             }
         }
@@ -99,12 +101,21 @@ class ChannelKeyRateLimiter(
                 states[stateKey] = KeyState(policy)
                 return@withLock
             }
+            state.retired = false
             state.applyPolicy(policy, nowNanos())
         }
     }
 
     suspend fun clearKey(channelId: String, keyId: String) {
-        mutex.withLock { states.remove(StateKey(channelId, keyId)) }
+        mutex.withLock {
+            val stateKey = StateKey(channelId, keyId)
+            val state = states[stateKey] ?: return@withLock
+            if (state.activeRequests == 0) {
+                states.remove(stateKey)
+            } else {
+                state.retired = true
+            }
+        }
     }
 
     private fun retryAfterMs(tokens: Double, requestsPerMinute: Int): Long {
@@ -120,6 +131,7 @@ class ChannelKeyRateLimiter(
         var requestTokens: Double = policy.requestsPerMinute?.toDouble() ?: 0.0
         var lastRefillNanos: Long? = null
         var activeRequests: Int = 0
+        var retired: Boolean = false
 
         fun applyPolicy(policy: ChannelKeyRateLimitPolicy, now: Long) {
             if (this.policy == policy) return

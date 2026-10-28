@@ -223,6 +223,22 @@ class ChannelKeyRateLimiterTest {
 
         assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(limited))
     }
+
+    @Test
+    fun `clear key preserves active concurrency leases until they are released`(): Unit = runBlocking {
+        val limiter = ChannelKeyRateLimiter(nowNanos = { 0L })
+        val policy = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1)
+        val limited = key("deleted-with-active-lease", policy)
+        val lease = assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(limited)).lease
+
+        limiter.clearKey(limited.channelId, limited.id)
+        limiter.updatePolicy(limited.channelId, limited.id, policy)
+        assertIs<ChannelKeyRateLimitDecision.Denied>(limiter.acquire(limited))
+
+        limiter.release(lease)
+        val reacquired = assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(limited)).lease
+        limiter.release(reacquired)
+    }
 }
 
 private fun key(
