@@ -20,6 +20,8 @@ import dev.soven.llmgateway.report.UsageGroup
 import dev.soven.llmgateway.report.UsageReport
 import dev.soven.llmgateway.report.UsageTotal
 import dev.soven.llmgateway.repo.AliasWithCandidates
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.Serializable
 
 /**
@@ -926,13 +928,13 @@ data class ModelTestSettingsRequest(
 @Serializable
 data class ModelTestSettingsResponse(
     val defaultPrompt: String,
-    val defaultReasoningEffort: String? = null,
+    val defaultReasoningEffort: JsonElement = JsonNull,
     val updatedAt: Long,
 )
 
 fun ModelTestSettingsRecord.toResponse() = ModelTestSettingsResponse(
     defaultPrompt = defaultPrompt,
-    defaultReasoningEffort = null,
+    defaultReasoningEffort = JsonNull,
     updatedAt = updatedAt,
 )
 
@@ -973,7 +975,7 @@ data class ChannelModelTestResponse(
     val statusCode: Int? = null,
     val latencyMs: Long,
     val prompt: String,
-    val reasoningEffort: String? = null,
+    val reasoningEffort: JsonElement = JsonNull,
     val responseText: String? = null,
     val errorMessage: String? = null,
     val usage: ChannelModelTestUsageResponse? = null,
@@ -994,7 +996,7 @@ fun ModelConnectivityTestResult.toResponse(
     statusCode = statusCode,
     latencyMs = latencyMs,
     prompt = prompt,
-    reasoningEffort = null,
+    reasoningEffort = JsonNull,
     responseText = responseText,
     errorMessage = errorMessage,
     usage = usage?.toTestResponse(),
