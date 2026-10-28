@@ -55,6 +55,41 @@ class KeyAvailabilityGateTest {
     }
 
     @Test
+    fun `cancelled reader releases its slot for the next writer`() = runBlocking {
+        val gate = KeyAvailabilityGate()
+        val firstStarted = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val secondStarted = CompletableDeferred<Unit>()
+        val writerStarted = CompletableDeferred<Unit>()
+
+        val first = launch {
+            gate.withReader("key-3") {
+                firstStarted.complete(Unit)
+                releaseFirst.await()
+            }
+        }
+        firstStarted.await()
+        val second = launch {
+            gate.withReader("key-3") {
+                secondStarted.complete(Unit)
+                CompletableDeferred<Unit>().await()
+            }
+        }
+        secondStarted.await()
+        second.cancelAndJoin()
+
+        val writer = launch {
+            gate.withWriter("key-3") { writerStarted.complete(Unit) }
+        }
+        delay(50)
+        assertFalse(writerStarted.isCompleted)
+        releaseFirst.complete(Unit)
+        withTimeout(1_000) { writerStarted.await() }
+        first.join()
+        writer.join()
+    }
+
+    @Test
     fun `cancelled waiting writer does not block future readers`() = runBlocking {
         val gate = KeyAvailabilityGate()
         val readerStarted = CompletableDeferred<Unit>()

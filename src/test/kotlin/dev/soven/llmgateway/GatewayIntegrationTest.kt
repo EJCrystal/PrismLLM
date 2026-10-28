@@ -677,6 +677,23 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun keyAutoDisableRecoversCorruptFailureWindow() = runBlocking {
+        val channel = createAutoDisablePool(withBackup = false)
+        val primary = channel.keys.first()
+        app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "corrupt-1", 401)
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update channel_key_health set recent_failures = ? where key_id = ?").use { statement ->
+                statement.setString(1, "{not-json")
+                statement.setString(2, primary.id)
+                statement.executeUpdate()
+            }
+        }
+        repeat(2) { index ->
+            app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "corrupt-${index + 2}", 401)
+        }
+        assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }.enabled)
+    }
+
     fun keyAutoDisableSettingsConcurrentFirstSaveDoesNotRace() = runBlocking {
         val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository)
         val revisions = coroutineScope {
@@ -737,18 +754,24 @@ class GatewayIntegrationTest {
         testApplication {
             application { app.install(this) }
             val (cookie, csrf) = client.loginAdmin()
-            suspend fun update(source: ChannelRecord, replaceCredential: Boolean = false) = client.put("/admin/api/channels/${channel.id}") {
+            suspend fun update(
+                source: ChannelRecord,
+                replaceCredential: Boolean = false,
+                keyEnabled: Boolean = true,
+            ) = client.put("/admin/api/channels/${channel.id}") {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
                 setBody("""{"name":"${channel.name}","baseUrl":"${channel.baseUrl}","enabled":true,"keys":[${
-                    source.keys.joinToString { """{"id":"${it.id}","name":"${it.name}","enabled":true,"stateVersion":${it.stateVersion},"priority":${it.priority},"models":["m1","m2"]${if (replaceCredential && it.id == primary.id) ",\"credential\":\"repaired-key\"" else ""}}""" }
+                    source.keys.joinToString { """{"id":"${it.id}","name":"${it.name}","enabled":${keyEnabled},"stateVersion":${it.stateVersion},"priority":${it.priority},"models":["m1","m2"]${if (replaceCredential && it.id == primary.id) ",\"credential\":\"repaired-key\"" else ""}}""" }
                 }]}""")
             }
             val stale = update(channel)
             assertEquals(HttpStatusCode.Conflict, stale.status)
             assertTrue(stale.bodyAsText().contains("channel_key_state_changed"))
             assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }.enabled)
+            assertEquals(HttpStatusCode.OK, update(assertNotNull(app.channelRepository.find(channel.id)), keyEnabled = false).status)
+            assertNotNull(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }.autoDisabledAt)
             assertEquals(HttpStatusCode.BadRequest, update(assertNotNull(app.channelRepository.find(channel.id))).status)
             val disabled = assertNotNull(app.channelRepository.find(channel.id))
             assertFailsWith<dev.soven.llmgateway.repo.ChannelKeyReenableRequiresCredentialException> {

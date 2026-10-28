@@ -19,7 +19,7 @@ describe('密钥自动禁用规则', () => {
     assert.deepEqual(buildKeyAutoDisableSettingsPayload({
       enabled: false, authFailureThreshold: '4', failureThreshold: 10, failureWindowMinutes: '15',
     }), { enabled: false, authFailureThreshold: 4, failureThreshold: 10, failureWindowMinutes: 15 })
-    assert.equal(keyAutoDisableRuleLabel({ enabled: false }), '已关闭自动禁用')
+    assert.equal(keyAutoDisableRuleLabel({ enabled: false, authFailureThreshold: 4, failureThreshold: 10, failureWindowMinutes: 15 }), '已关闭自动禁用（连续 4 次 401/403，或 15 分钟内失败 10 次）')
   })
 
   it('拒绝空值、小数、非数值和超出范围的阈值', () => {

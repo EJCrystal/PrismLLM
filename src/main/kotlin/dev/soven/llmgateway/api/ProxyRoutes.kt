@@ -13,6 +13,7 @@ import dev.soven.llmgateway.proxy.TraceContextFactory
 import dev.soven.llmgateway.proxy.applyUpstreamAuthentication
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.UsageParser
+import dev.soven.llmgateway.repo.KeyAutoDisablePendingException
 import dev.soven.llmgateway.resilience.CandidateCooldown
 import dev.soven.llmgateway.resilience.CooldownPermit
 import dev.soven.llmgateway.resilience.FailureKind
@@ -237,6 +238,7 @@ private suspend fun handleProxy(
                             call,
                             requestJson,
                             candidate,
+                            permit,
                             alias,
                             startedAt,
                             attemptStartedNanos,
@@ -268,6 +270,7 @@ private suspend fun handleProxy(
                 }
                 null
             } catch (_: CandidateUnavailableException) {
+                upstreamAttempts -= 1
                 app.candidateCooldown.release(permit)
                 GatewayException(
                     HttpStatusCode.BadGateway, "no_candidate", "密钥已停用，请尝试其他候选", "api_error",
@@ -499,9 +502,18 @@ private suspend fun recordKeyOutcome(
 ) {
     currentCoroutineContext().ensureActive()
     try {
-        app.keyAvailabilityGate.withWriter(candidate.key.id) {
-            app.keyAutoDisableRepository.recordOutcome(candidate.key, outcome, requestId, httpStatus, errorCode)
-        }?.let { reason ->
+        val reason = try {
+            app.keyAutoDisableRepository.recordOutcome(
+                candidate.key, outcome, requestId, httpStatus, errorCode, allowDisable = false,
+            )
+        } catch (_: KeyAutoDisablePendingException) {
+            app.keyAvailabilityGate.withWriter(candidate.key.id) {
+                app.keyAutoDisableRepository.recordOutcome(
+                    candidate.key, outcome, requestId, httpStatus, errorCode, allowDisable = true,
+                )
+            }
+        }
+        reason?.let { reason ->
             app.metrics.keyAutoDisabled(candidate.channel.name, reason)
             proxyLogger.warn(
                 "上游密钥自动禁用，channelId={}, keyId={}, reason={}, requestId={}",
@@ -681,6 +693,7 @@ private suspend fun proxyStream(
     call: ApplicationCall,
     requestJson: JsonObject,
     candidate: RouteCandidate,
+    permit: CooldownPermit,
     alias: String,
     startedAt: Long,
     attemptStartedNanos: Long,
@@ -769,7 +782,7 @@ private suspend fun proxyStream(
                             var sawDone = false
                             for (line in prefixLines) {
                                 writeSseLine(line)
-                                markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate)
+                                markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
                                 recordUsage(line, state, protocol)
                                 if (isStreamDone(line, protocol)) {
                                     markTerminalStreamFailure(line, protocol, state)
@@ -791,7 +804,7 @@ private suspend fun proxyStream(
                                         )
                                     } ?: break
                                     writeSseLine(line)
-                                    markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate)
+                                    markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
                                     recordUsage(line, state, protocol)
                                     if (isStreamDone(line, protocol)) {
                                         markTerminalStreamFailure(line, protocol, state)
@@ -1008,6 +1021,7 @@ private fun markFirstToken(
     app: GatewayApplication,
     alias: String,
     candidate: RouteCandidate,
+    permit: CooldownPermit,
 ) {
     if (state.firstTokenMs != null) return
     val payload = ssePayload(line) ?: return
@@ -1024,9 +1038,7 @@ private fun markFirstToken(
         // 首 token 软阈值按本次尝试计时：快速兜底不应继承前面候选撞掉的秒数。
         val attemptFirstTokenMs = (nowNanos - attemptStartedNanos) / 1_000_000
         if (app.candidateCooldown.recordFirstToken(
-                candidate.channel.id,
-                candidate.key.id,
-                candidate.upstreamModel,
+                permit,
                 attemptFirstTokenMs,
             )
         ) {

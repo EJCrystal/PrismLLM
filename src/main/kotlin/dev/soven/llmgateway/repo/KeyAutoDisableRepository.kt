@@ -10,6 +10,8 @@ import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
 import dev.soven.llmgateway.resilience.KeyAutoDisableSettingsRecord
 import dev.soven.llmgateway.resilience.KeyFailureState
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
@@ -31,6 +33,9 @@ data class KeyAutoDisableSettingsChange(
     val before: KeyAutoDisableSettingsRecord,
     val after: KeyAutoDisableSettingsRecord,
 )
+
+/** 事务已算出需要停用，但调用方尚未取得密钥写锁；回滚计数后由写锁路径重放。 */
+class KeyAutoDisablePendingException : RuntimeException(null, null, false, false)
 
 /**
  * 对密钥行加锁串行记账，跨请求、模型和网关进程聚合失败。
@@ -87,6 +92,7 @@ class KeyAutoDisableRepository(
         requestId: String,
         httpStatus: Int? = null,
         errorCode: String? = null,
+        allowDisable: Boolean = true,
     ): String? = suspendTransaction(database) {
         val row = ChannelKeys.selectAll().where { ChannelKeys.id eq key.id }.forUpdate().singleOrNull()
             ?: return@suspendTransaction null
@@ -102,7 +108,7 @@ class KeyAutoDisableRepository(
         val state = if (stored != null && stored[ChannelKeyHealth.policyRevision] == settings.revision) {
             KeyFailureState(
                 stored[ChannelKeyHealth.authFailureStreak],
-                Json.parseToJsonElement(stored[ChannelKeyHealth.recentFailures]).jsonArray.map { it.jsonPrimitive.long },
+                parseRecentFailures(stored[ChannelKeyHealth.recentFailures]),
             )
         } else KeyFailureState()
         val now = nowMs()
@@ -113,9 +119,12 @@ class KeyAutoDisableRepository(
             it[keyId] = key.id
             it[policyRevision] = settings.revision
             it[authFailureStreak] = result.state.authFailureStreak
-            it[recentFailures] = result.state.recentFailures.joinToString(prefix = "[", postfix = "]")
+            it[recentFailures] = buildJsonArray {
+                result.state.recentFailures.forEach { failure -> add(JsonPrimitive(failure)) }
+            }.toString()
         }
         val reason = result.reason ?: return@suspendTransaction null
+        if (!allowDisable) throw KeyAutoDisablePendingException()
         val message = when (reason) {
             KeyAutoDisablePolicy.REASON_AUTH_STREAK -> "连续 ${result.state.authFailureStreak} 次 401/403"
             else -> "${settings.policy.failureWindowMinutes} 分钟内失败 ${result.state.recentFailures.size} 次"
@@ -171,6 +180,11 @@ class KeyAutoDisableRepository(
         revision = row[KeyAutoDisableSettings.revision],
         updatedAt = row[KeyAutoDisableSettings.updatedAt],
     )
+
+    /** 历史计数损坏时从空状态重新累计，避免自动禁用记账永久失效。 */
+    private fun parseRecentFailures(value: String): List<Long> = runCatching {
+        Json.parseToJsonElement(value).jsonArray.map { it.jsonPrimitive.long }
+    }.getOrDefault(emptyList())
 
     private companion object {
         const val SINGLETON_ID = 1

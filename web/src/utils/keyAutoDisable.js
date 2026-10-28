@@ -40,7 +40,9 @@ export function buildKeyAutoDisableSettingsPayload(form) {
 
 export function keyAutoDisableRuleLabel(settings) {
   if (!settings) return '—'
-  return settings.enabled
-    ? `连续 ${settings.authFailureThreshold} 次 401/403，或 ${settings.failureWindowMinutes} 分钟内失败 ${settings.failureThreshold} 次`
-    : '已关闭自动禁用'
+  const rule = `连续 ${settings.authFailureThreshold} 次 401/403，或 ${settings.failureWindowMinutes} 分钟内失败 ${settings.failureThreshold} 次`
+  if (settings.enabled) return rule
+  const hasThresholds = ['authFailureThreshold', 'failureThreshold', 'failureWindowMinutes']
+    .every((field) => Number.isInteger(settings[field]) && settings[field] > 0)
+  return hasThresholds ? `已关闭自动禁用（${rule}）` : '已关闭自动禁用'
 }

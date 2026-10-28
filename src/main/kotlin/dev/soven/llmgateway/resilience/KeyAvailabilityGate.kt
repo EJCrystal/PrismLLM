@@ -1,8 +1,10 @@
 package dev.soven.llmgateway.resilience
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 class KeyAvailabilityGate {
@@ -33,9 +35,11 @@ class KeyAvailabilityGate {
         try {
             return block()
         } finally {
-            mutex.withLock {
-                state.readers -= 1
-                if (state.readers == 0) signal(state)
+            withContext(NonCancellable) {
+                mutex.withLock {
+                    state.readers -= 1
+                    if (state.readers == 0) signal(state)
+                }
             }
         }
     }
@@ -61,13 +65,15 @@ class KeyAvailabilityGate {
             }
             return block()
         } finally {
-            mutex.withLock {
-                if (acquired) {
-                    state.writerActive = false
-                    signal(state)
-                } else {
-                    state.waitingWriters -= 1
-                    signal(state)
+            withContext(NonCancellable) {
+                mutex.withLock {
+                    if (acquired) {
+                        state.writerActive = false
+                        signal(state)
+                    } else {
+                        state.waitingWriters -= 1
+                        signal(state)
+                    }
                 }
             }
         }
