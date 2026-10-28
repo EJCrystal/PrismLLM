@@ -1,0 +1,81 @@
+# CodeRabbit streamlined review configuration.
+# Goal: keep the high-signal review while cutting optional work that adds minutes.
+language: "zh-CN"
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  changed_files_summary: true
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  related_issues: false
+  related_prs: false
+  suggested_reviewers: false
+  in_progress_fortune: false
+  poem: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    # Pause automatic reviews after three reviewed commits on the same PR.
+    # Resume with `@coderabbitai resume` when the branch is ready again.
+    auto_pause_after_reviewed_commits: 3
+    ignore_title_keywords: ["[WIP]", "DO NOT MERGE", "skip-review"]
+
+  # Lock files and build output do not need review. Keep docs/ADRs in scope.
+  path_filters:
+    - "!**/package-lock.json"
+    - "!**/*.lock"
+    - "!**/dist/**"
+    - "!**/target/**"
+    - "!**/midscene_run/**"
+
+  # Keep the cheap title/description checks; skip the expensive per-function checks.
+  pre_merge_checks:
+    docstrings: { mode: "off" }
+    issue_assessment: { mode: "off" }
+
+  tools:
+    # CodeRabbit waits for GitHub Checks before finalizing a review. This repo's
+    # CI takes ~3 minutes, so disable the wait unless CI-failure analysis is needed.
+    github-checks: { enabled: false }
+
+    # Keep one scanner per job instead of running overlapping tools twice.
+    opengrep: { enabled: false }
+    trufflehog: { enabled: false }
+    checkov: { enabled: false }
+
+    # No matching source/config in this repository, or no project config to make
+    # the tool useful. Disabling avoids sandbox startup and noisy default rules.
+    detekt: { enabled: false }
+    sqlfluff: { enabled: false }
+    markdownlint: { enabled: false }
+    languagetool: { enabled: false }
+    presidio: { enabled: false }
+    eslint: { enabled: false }
+    biome: { enabled: false }
+    oxc: { enabled: false }
+    stylelint: { enabled: false }
+    clang: { enabled: false }
+    cppcheck: { enabled: false }
+    fbinfer: { enabled: false }
+    pmd: { enabled: false }
+    pylint: { enabled: false }
+    flake8: { enabled: false }
+    ruff: { enabled: false }
+    rubocop: { enabled: false }
+    phpstan: { enabled: false }
+    phpmd: { enabled: false }
+    phpcs: { enabled: false }
+    swiftlint: { enabled: false }
+    golangci-lint: { enabled: false }
+
+    # High-signal checks for this Kotlin/Ktor + Vue gateway.
+    semgrep: { enabled: true }
+    gitleaks: { enabled: true }
+    osvScanner: { enabled: true }
+    actionlint: { enabled: true }
+    zizmor: { enabled: true }
+    hadolint: { enabled: true }
+    trivy: { enabled: true }
