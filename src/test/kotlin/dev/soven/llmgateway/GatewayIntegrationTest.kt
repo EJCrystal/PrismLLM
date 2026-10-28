@@ -62,6 +62,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
 import org.testcontainers.containers.PostgreSQLContainer
 import java.io.IOException
@@ -110,6 +111,7 @@ class GatewayIntegrationTest {
         fake.cancellations.set(0)
         fake.failingModels.clear()
         fake.keyStatuses.clear()
+        fake.clearChatHold()
         app = GatewayApplication(config())
         app.databaseFactory.migrate()
         truncateAll()
@@ -317,6 +319,159 @@ class GatewayIntegrationTest {
         }
 
         assertEquals(1, fake.requests.size)
+    }
+
+    @Tag("channel-key-rate-limit")
+    @Test
+    fun `channel key RPM is shared across models and fails over to backup`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "rpm-shared-fallback",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "primary",
+                    credential = app.credentialCipher.encrypt("primary-secret"),
+                    priority = 1,
+                    models = listOf("m1", "m2"),
+                    rateLimit = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1),
+                ),
+                NewChannelKey(
+                    name = "backup",
+                    credential = app.credentialCipher.encrypt("backup-secret"),
+                    priority = 2,
+                    models = listOf("m1", "m2"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1", "m2"),
+        )
+        createAlias("rpm-shared-a", channel to "m1")
+        createAlias("rpm-shared-b", channel to "m2")
+        val clientKey = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send(model: String) = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"$model","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send("rpm-shared-a").status)
+            assertEquals(HttpStatusCode.OK, send("rpm-shared-b").status)
+            awaitRequestLogCount(2)
+
+            val logs = app.requestLogRepository.list(10)
+            val primaryLog = logs.single { it.channelKeyName == "primary" }
+            val backupLog = logs.single { it.channelKeyName == "backup" }
+            assertEquals("rpm-shared-a", primaryLog.alias)
+            assertEquals("rpm-shared-b", backupLog.alias)
+            assertEquals(1, primaryLog.upstreamAttempts)
+            assertEquals(1, backupLog.upstreamAttempts)
+            assertTrue(
+                app.metrics.scrape().contains(
+                    """gateway_upstream_key_rate_limit_skips_total{channel="rpm-shared-fallback",reason="requests_per_minute"} 1.0""",
+                ),
+            )
+            assertEquals(0, scalarInt("select count(*) from channel_key_health"))
+        }
+
+        assertEquals(
+            listOf("Bearer primary-secret", "Bearer backup-secret"),
+            fake.requests.map { it.authorization },
+        )
+    }
+
+    @Tag("channel-key-rate-limit")
+    @Test
+    fun `channel key concurrency fails over to backup and returns 429 when both keys are busy`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "concurrency-end-to-end",
+            baseUrl = "${fake.baseUrl}/concurrency-hold/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "primary",
+                    credential = app.credentialCipher.encrypt("primary-secret"),
+                    priority = 1,
+                    models = listOf("m1"),
+                    rateLimit = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1),
+                ),
+                NewChannelKey(
+                    name = "backup",
+                    credential = app.credentialCipher.encrypt("backup-secret"),
+                    priority = 2,
+                    models = listOf("m1"),
+                    rateLimit = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        createAlias("concurrency-end-to-end", channel to "m1")
+        val clientKey = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"concurrency-end-to-end","stream":true,"messages":[]}""")
+            }
+
+            val releaseHeldRequests = fake.holdChatRequests()
+            val first = async { send() }
+            try {
+                awaitCondition("first request to reach the primary key") {
+                    fake.requests.any { it.authorization == "Bearer primary-secret" }
+                }
+                val second = async { send() }
+                try {
+                    awaitCondition("second request to fail over to the backup key") {
+                        fake.requests.any { it.authorization == "Bearer backup-secret" }
+                    }
+
+                    val rejected = send()
+                    assertEquals(HttpStatusCode.TooManyRequests, rejected.status)
+                    assertTrue(rejected.bodyAsText().contains("upstream_key_rate_limit_exceeded"))
+                    assertTrue(rejected.headers[HttpHeaders.RetryAfter]?.toLongOrNull()?.let { it >= 1 } == true)
+
+                    releaseHeldRequests.complete(Unit)
+                    val firstResponse = first.await()
+                    val secondResponse = second.await()
+                    assertEquals(HttpStatusCode.OK, firstResponse.status)
+                    assertEquals(HttpStatusCode.OK, secondResponse.status)
+                    assertTrue(firstResponse.bodyAsText().contains("[DONE]"))
+                    assertTrue(secondResponse.bodyAsText().contains("[DONE]"))
+                } finally {
+                    releaseHeldRequests.complete(Unit)
+                    second.cancel()
+                }
+            } finally {
+                releaseHeldRequests.complete(Unit)
+                first.cancel()
+                fake.clearChatHold()
+            }
+
+            awaitRequestLogCount(3)
+            val logs = app.requestLogRepository.list(10)
+            val successfulLogs = logs.filter { it.statusCode == HttpStatusCode.OK.value }
+            assertEquals(setOf("primary", "backup"), successfulLogs.map { it.channelKeyName }.toSet())
+            assertTrue(successfulLogs.all { it.upstreamAttempts == 1 })
+            val rejectedLog = logs.single { it.statusCode == HttpStatusCode.TooManyRequests.value }
+            assertEquals("upstream_key_rate_limit_exceeded", rejectedLog.errorCode)
+            assertEquals(0, rejectedLog.upstreamAttempts)
+            assertTrue(
+                app.metrics.scrape().contains(
+                    """gateway_upstream_key_rate_limit_skips_total{channel="concurrency-end-to-end",reason="concurrency"} 3.0""",
+                ),
+            )
+            assertEquals(2, fake.requests.size)
+            assertEquals(0, scalarInt("select count(*) from channel_key_health"))
+        }
     }
 
     @Test
@@ -5159,6 +5314,19 @@ class GatewayIntegrationTest {
             delay(50)
         }
         error("request log not written within ${timeoutMs}ms")
+    }
+
+    private suspend fun awaitCondition(
+        description: String,
+        timeoutMs: Long = 3_000,
+        condition: () -> Boolean,
+    ) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
+            delay(10)
+        }
+        error("timed out waiting for $description within ${timeoutMs}ms")
     }
 
     private suspend fun awaitLogWithEffort(effort: String, timeoutMs: Long = 3_000): RequestLogRecord {
