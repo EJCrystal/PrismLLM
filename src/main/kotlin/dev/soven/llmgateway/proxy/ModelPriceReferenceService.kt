@@ -95,6 +95,7 @@ class ModelPriceReferenceService(
     private val catalogUrl: String = "https://models.dev/catalog.json",
     private val cacheDuration: Duration = Duration.ofDays(1),
     private val preRefreshLead: Duration = Duration.ofHours(1),
+    private val staleFallbackDuration: Duration = Duration.ofDays(1),
 ) {
     init {
         require(!cacheDuration.isZero && !cacheDuration.isNegative) {
@@ -102,6 +103,9 @@ class ModelPriceReferenceService(
         }
         require(!preRefreshLead.isNegative) {
             "models.dev 提前刷新时间不能为负数"
+        }
+        require(!staleFallbackDuration.isNegative) {
+            "models.dev 陈旧快照兜底时间不能为负数"
         }
     }
 
@@ -182,6 +186,7 @@ class ModelPriceReferenceService(
         val models: List<CatalogModel>,
         val index: Map<String, List<CatalogModel>>,
         val prices: Map<String, ReferencePrice>,
+        val loadedAtMillis: Long,
     )
 
     private val catalogCache: Cache<String, CatalogState> = CacheBuilder.newBuilder()
@@ -280,7 +285,10 @@ class ModelPriceReferenceService(
     private suspend fun currentCatalogState(): CatalogState? {
         catalogCache.getIfPresent(CATALOG_CACHE_KEY)?.let { return it }
         loadDynamicCatalog()
-        return catalogCache.getIfPresent(CATALOG_CACHE_KEY) ?: lastGoodCatalog.get()
+        catalogCache.getIfPresent(CATALOG_CACHE_KEY)?.let { return it }
+        val fallback = lastGoodCatalog.get() ?: return null
+        val age = System.currentTimeMillis() - fallback.loadedAtMillis
+        return fallback.takeIf { age <= staleFallbackDuration.toMillis() }
     }
 
     private suspend fun loadDynamicCatalog(force: Boolean = false): Boolean {
@@ -303,7 +311,7 @@ class ModelPriceReferenceService(
                     return false
                 }
 
-                val state = parseCatalog(decodeCatalogBody(response))
+                val state = parseCatalog(decodeCatalogBody(response), System.currentTimeMillis())
                 catalogCache.put(CATALOG_CACHE_KEY, state)
                 lastGoodCatalog.set(state)
                 catalogError = null
@@ -331,7 +339,7 @@ class ModelPriceReferenceService(
         }
     }
 
-    private fun parseCatalog(text: String): CatalogState {
+    private fun parseCatalog(text: String, loadedAtMillis: Long): CatalogState {
         val json = Json.parseToJsonElement(text).jsonObject
         val providers = json["providers"]?.jsonObject ?: emptyMap()
         val providerNames = providers.mapValues { (providerId, providerElem) ->
@@ -392,6 +400,7 @@ class ModelPriceReferenceService(
                 entries.distinctBy { it.providerId to it.id }
             },
             prices = prices,
+            loadedAtMillis = loadedAtMillis,
         )
     }
 

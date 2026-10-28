@@ -262,6 +262,38 @@ class ModelPriceReferenceServiceTest {
     }
 
     @Test
+    fun `expires stale catalog fallback so old prices are not served indefinitely`() = runBlocking {
+        val requests = AtomicInteger()
+        val body = """
+            {"providers":{"custom":{"name":"Custom","models":{"stale-model":{"canonical_model_id":"stale-model","cost":{"input":1,"output":2}}}}}}
+        """.trimIndent()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/catalog.json") { exchange ->
+            val requestNumber = requests.incrementAndGet()
+            val bytes = body.toByteArray()
+            exchange.sendResponseHeaders(if (requestNumber == 1) 200 else 503, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val service = ModelPriceReferenceService(
+                httpClient,
+                catalogUrl = "http://127.0.0.1:${server.address.port}/catalog.json",
+                cacheDuration = Duration.ofMillis(200),
+                preRefreshLead = Duration.ofMillis(200),
+                staleFallbackDuration = Duration.ofMillis(300),
+            )
+            assertTrue(service.catalogSnapshot().loaded)
+            delay(400)
+            assertFalse(service.catalogSnapshot().loaded)
+            assertNull(service.lookup("stale-model"))
+            assertNull(service.findCatalogMatches("stale-model").firstOrNull())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `starting the background refresh more than once returns the same job`() {
         val service = ModelPriceReferenceService(
             httpClient,
