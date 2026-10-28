@@ -2,7 +2,12 @@ name: PR Agent
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
+    # CodeRabbit handles incremental reviews on every push. PR-Agent only needs
+    # to run when the PR first becomes reviewable, plus explicit slash commands.
+    types: [opened, reopened, ready_for_review]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
   issue_comment:
     types: [created]
   pull_request_review_comment:
@@ -15,7 +20,7 @@ permissions:
 
 concurrency:
   group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   pr_agent:
@@ -40,7 +45,7 @@ jobs:
         )
       )
     runs-on: ${{ fromJSON(vars.PR_AGENT_RUNNER_LABELS || '["ubuntu-latest"]') }}
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Run PR-Agent
         uses: The-PR-Agent/pr-agent@v0.48.0
@@ -61,4 +66,4 @@ jobs:
           GITHUB_ACTION_CONFIG__AUTO_REVIEW: "true"
           GITHUB_ACTION_CONFIG__AUTO_DESCRIBE: "false"
           GITHUB_ACTION_CONFIG__AUTO_IMPROVE: "false"
-          GITHUB_ACTION_CONFIG__PR_ACTIONS: '["opened", "reopened", "ready_for_review", "synchronize"]'
+          GITHUB_ACTION_CONFIG__PR_ACTIONS: '["opened", "reopened", "ready_for_review"]'
