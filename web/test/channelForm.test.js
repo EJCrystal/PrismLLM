@@ -143,4 +143,13 @@ describe('channelForm: 渠道保存请求体', () => {
       { id: null, name: 'backup', credential: 'secret', enabled: false, priority: 2, models: ['m2'] },
     ])
   })
+
+  it('编辑已保存的密钥携带状态版本，避免覆盖同时发生的自动禁用', () => {
+    const payload = buildChannelPayload(baseForm, ['m1'], {}, {}, [
+      { id: 'key-1', stateVersion: 0, name: 'primary', enabled: false, priority: 1, models: ['m1'] },
+    ])
+    assert.equal(payload.keys[0].stateVersion, 0)
+    assert.equal(payload.keys[0].enabled, false)
+    assert.equal(payload.keys[0].credential, null)
+  })
 })

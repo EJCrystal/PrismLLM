@@ -193,11 +193,12 @@ class CandidateCooldownTest {
         var now = 0L
         val cooldown = CandidateCooldown(policy = policy(ttftSlowThresholdMs = 500, ttftSlowStreak = 2), nowMs = { now })
 
-        assertFalse(cooldown.recordFirstToken("ch1", "k1", "m1", firstTokenMs = 600))
+        val permit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        assertFalse(cooldown.recordFirstToken(permit, firstTokenMs = 600))
         // 快 token 清零连慢计数
-        assertFalse(cooldown.recordFirstToken("ch1", "k1", "m1", firstTokenMs = 100))
-        assertFalse(cooldown.recordFirstToken("ch1", "k1", "m1", firstTokenMs = 600))
-        assertTrue(cooldown.recordFirstToken("ch1", "k1", "m1", firstTokenMs = 700))
+        assertFalse(cooldown.recordFirstToken(permit, firstTokenMs = 100))
+        assertFalse(cooldown.recordFirstToken(permit, firstTokenMs = 600))
+        assertTrue(cooldown.recordFirstToken(permit, firstTokenMs = 700))
 
         assertNull(cooldown.acquire("ch1", "k1", "m1"))
         assertNotNull(cooldown.acquire("ch1", "k1", "m2"))
@@ -281,5 +282,51 @@ class CandidateCooldownTest {
         cooldown.recordSuccess(probe)
         val removed = changes.lastOrNull() as? CooldownChange.Removed
         assertEquals("ch:ch1", removed?.stateKey)
+    }
+
+    @Test
+    fun `stale permit releases still-current probe slots`() {
+        var now = 0L
+        val cooldown = CandidateCooldown(
+            policy = policy(ttftSlowThresholdMs = 100, ttftSlowStreak = 1),
+            nowMs = { now },
+        )
+        val warmup = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(warmup, FailureKind.TRANSPORT)
+        now = 10_000L
+
+        val permit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        assertNull(cooldown.acquire("ch1", "k1", "m2"))
+
+        assertTrue(cooldown.recordFirstToken(permit, 200))
+        cooldown.recordSuccess(permit)
+
+        assertNotNull(cooldown.acquire("ch1", "k1", "m2"))
+    }
+
+    @Test
+    fun `key reset clears all key model cooldowns and ignores late permits`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+        val lateAuth = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(lateAuth, FailureKind.AUTH_REJECTED)
+        val lateRateLimit = cooldown.forceAcquire("ch1", "k1", "m2")
+        cooldown.recordFailure(lateRateLimit, FailureKind.RATE_LIMITED)
+        val lateTransport = assertNotNull(cooldown.forceAcquire("ch1", "k1", "m1"))
+        val other = assertNotNull(cooldown.acquire("ch1", "k2", "m1"))
+        cooldown.recordFailure(other, FailureKind.RATE_LIMITED)
+        val ttftPermit = assertNotNull(cooldown.acquire("ch1", "k1", "m3"))
+        cooldown.recordFirstToken(ttftPermit, 1000)
+
+        cooldown.clearKey("ch1", "k1")
+        assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        assertNotNull(cooldown.acquire("ch1", "k1", "m2"))
+        assertNull(cooldown.acquire("ch1", "k2", "m1"))
+        assertNull(cooldown.recordFailure(lateAuth, FailureKind.AUTH_REJECTED))
+        assertNull(cooldown.recordFailure(lateRateLimit, FailureKind.RATE_LIMITED))
+        assertNull(cooldown.recordFailure(lateTransport, FailureKind.TRANSPORT))
+        assertFalse(cooldown.recordFirstToken(ttftPermit, 1000))
+        assertTrue(changes.any { it == CooldownChange.Removed("key:ch1:k1") })
+        assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k1:m2") })
     }
 }

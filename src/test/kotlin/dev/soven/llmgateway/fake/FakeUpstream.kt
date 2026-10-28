@@ -44,6 +44,7 @@ class FakeUpstream {
     val requests = ConcurrentLinkedQueue<FakeRequest>()
     val cancellations = AtomicInteger()
     val failingModels = ConcurrentHashMap.newKeySet<String>()
+    val keyStatuses = ConcurrentHashMap<String, Int>()
 
     fun start() {
         server.start(wait = false)
@@ -83,6 +84,18 @@ class FakeUpstream {
         }
     }
 
+    private suspend fun respondKeyHealth(call: ApplicationCall, scenario: String): Boolean {
+        if (scenario != "key-health") return false
+        val credential = call.request.headers[HttpHeaders.Authorization] ?: call.request.headers["x-api-key"]
+        val status = credential?.let(keyStatuses::get) ?: 200
+        if (status < 400) return false
+        call.respondText(
+            """{"error":{"message":"fake key failure","code":"fake_key_failure"}}""",
+            ContentType.Application.Json, HttpStatusCode.fromValue(status),
+        )
+        return true
+    }
+
     private suspend fun handle(call: ApplicationCall, scenario: String) {
         val body = call.receiveText()
         requests.add(
@@ -96,6 +109,7 @@ class FakeUpstream {
         val json = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull()
         val stream = json?.get("stream")?.jsonPrimitive?.booleanOrNull ?: false
         val model = json?.get("model")?.jsonPrimitive?.content
+        if (respondKeyHealth(call, scenario)) return
 
         when (scenario) {
             "key-route" -> {
@@ -186,6 +200,7 @@ class FakeUpstream {
         val stream = runCatching {
             Json.parseToJsonElement(body).jsonObject["stream"]?.jsonPrimitive?.booleanOrNull ?: false
         }.getOrDefault(false)
+        if (respondKeyHealth(call, scenario)) return
 
         when (scenario) {
             "chat-only" -> {
@@ -281,6 +296,7 @@ class FakeUpstream {
         val stream = runCatching {
             Json.parseToJsonElement(body).jsonObject["stream"]?.jsonPrimitive?.booleanOrNull ?: false
         }.getOrDefault(false)
+        if (respondKeyHealth(call, scenario)) return
 
         when (scenario) {
             "429" -> {

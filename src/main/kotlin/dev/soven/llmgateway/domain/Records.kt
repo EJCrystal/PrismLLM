@@ -2,6 +2,7 @@ package dev.soven.llmgateway.domain
 
 import java.math.BigDecimal
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
+import kotlinx.serialization.json.JsonObject
 
 /**
  * 渠道记录。上游凭据只以密文形式存在，读取时按需解密。
@@ -30,6 +31,9 @@ data class ChannelKeyRecord(
     val models: List<String> = emptyList(),
     val createdAt: Long,
     val updatedAt: Long,
+    val stateVersion: Long = 0,
+    val autoDisabledAt: Long? = null,
+    val autoDisableReason: String? = null,
 ) {
     val credentialSet: Boolean get() = credentialCiphertext.isNotBlank()
 
@@ -154,6 +158,7 @@ data class AdminAuditRecord(
     val sourceIp: String?,
     val errorCode: String?,
     val createdAt: Long,
+    val details: JsonObject? = null,
 )
 
 /**

@@ -13,6 +13,8 @@ import dev.soven.llmgateway.proxy.testChannelModelConnectivity
 import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.repo.KeyAutoDisableSettingsAuditContext
+import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.parseDailyCostLimit
 import dev.soven.llmgateway.report.UsageReportQuery
@@ -23,6 +25,7 @@ import io.ktor.http.Cookie
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.plugins.origin
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -38,6 +41,9 @@ import java.math.RoundingMode
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Base64
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.put
 
 /**
  * 管理面 API。所有写操作要求会话 Cookie 与 CSRF Token 同时有效。
@@ -237,6 +243,34 @@ fun Route.adminRoutes(app: GatewayApplication) {
         get("/channels") {
             call.requireAdmin(app)
             call.respond(app.channelRepository.list().map { it.toResponse() })
+        }
+
+        get("/key-auto-disable-settings") {
+            call.requireAdmin(app)
+            call.respond(app.keyAutoDisableRepository.loadSettings().toResponse())
+        }
+
+        put("/key-auto-disable-settings") {
+            call.requireAdmin(app)
+            val request = call.receive<KeyAutoDisableSettingsRequest>()
+            val policy = try {
+                KeyAutoDisablePolicy(
+                    request.enabled, request.authFailureThreshold, request.failureThreshold, request.failureWindowMinutes,
+                )
+            } catch (cause: IllegalArgumentException) {
+                throw badRequest("invalid_key_auto_disable_settings", cause.message ?: "自动禁用规则无效")
+            }
+            val requestId = call.response.headers["X-Request-Id"]
+            val change = app.keyAutoDisableRepository.saveSettings(
+                policy,
+                KeyAutoDisableSettingsAuditContext(
+                    actor = call.adminAuditActor()?.take(100),
+                    requestId = requestId ?: call.request.headers["X-Request-Id"].orEmpty(),
+                    sourceIp = call.request.origin.remoteAddress.take(100),
+                ),
+            )
+            call.markAdminAuditHandled()
+            call.respond(change.after.toResponse())
         }
 
         get("/channels/{id}/models") {
@@ -453,6 +487,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 modelMappings = modelMappings,
                 priority = request.priority,
             ) ?: throw notFound("channel_not_found", "渠道不存在")
+            updated.keys.filter { key ->
+                existing.keys.firstOrNull { it.id == key.id }?.stateVersion != key.stateVersion
+            }.forEach { app.candidateCooldown.clearKey(updated.id, it.id) }
             call.respond(updated.toResponse())
         }
 
@@ -1027,6 +1064,7 @@ private fun normalizeUpdatedKeys(
                 enabled = key.enabled,
                 priority = key.priority,
                 models = key.models,
+                stateVersion = key.stateVersion,
             )
         }
     }
@@ -1041,6 +1079,7 @@ private fun normalizeUpdatedKeys(
             enabled = current.enabled,
             priority = current.priority,
             models = if (modelMappings != null) channelModels.toList() else current.models,
+            stateVersion = current.stateVersion,
         ),
     )
 }
@@ -1052,6 +1091,7 @@ private data class NormalizedKey(
     val enabled: Boolean,
     val priority: Int,
     val models: List<String>,
+    val stateVersion: Long?,
 )
 
 private fun normalizeKeys(
@@ -1072,6 +1112,9 @@ private fun normalizeKeys(
         if (keyId != null && !ids.add(keyId)) throw badRequest("invalid_channel", "密钥 id 不能重复: $keyId")
         val priority = key.priority ?: 1
         if (priority !in 1..1000) throw badRequest("invalid_channel", "密钥优先级必须在 1..1000 之间")
+        if (key.stateVersion != null && key.stateVersion < 0) {
+            throw badRequest("invalid_channel", "密钥状态版本不能为负数")
+        }
         val models = key.models.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         models.forEach { model ->
             if (model.length > 200) throw badRequest("invalid_channel", "上游模型名长度不能超过 200 个字符")
@@ -1087,6 +1130,7 @@ private fun normalizeKeys(
             enabled = key.enabled,
             priority = priority,
             models = models,
+            stateVersion = key.stateVersion,
         )
     }
 }

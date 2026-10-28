@@ -13,9 +13,11 @@ import dev.soven.llmgateway.proxy.TraceContextFactory
 import dev.soven.llmgateway.proxy.applyUpstreamAuthentication
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.UsageParser
+import dev.soven.llmgateway.repo.KeyAutoDisablePendingException
 import dev.soven.llmgateway.resilience.CandidateCooldown
 import dev.soven.llmgateway.resilience.CooldownPermit
 import dev.soven.llmgateway.resilience.FailureKind
+import dev.soven.llmgateway.resilience.KeyAttemptOutcome
 import dev.soven.llmgateway.security.ClientKeyHasher
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -48,6 +50,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -224,23 +228,29 @@ private suspend fun handleProxy(
                 retryReason = null
             }
             return try {
-                if (stream) {
-                    proxyStream(
-                        app,
-                        call,
-                        requestJson,
-                        candidate,
-                        alias,
-                        startedAt,
-                        attemptStartedNanos,
-                        remainingMs,
-                        state,
-                        protocol,
-                        traceContext.traceparent,
-                        allowUpstreamErrorFailover = upstreamAttempts < app.config.maxAttempts && upstreamAttempts < candidates.size,
-                    )
-                } else {
-                    proxyJson(app, call, requestJson, candidate, remainingMs, state, protocol, traceContext.traceparent)
+                app.keyAvailabilityGate.withReader(candidate.key.id) {
+                    if (!app.keyAutoDisableRepository.isAvailable(candidate.key)) {
+                        throw CandidateUnavailableException()
+                    }
+                    if (stream) {
+                        proxyStream(
+                            app,
+                            call,
+                            requestJson,
+                            candidate,
+                            permit,
+                            alias,
+                            startedAt,
+                            attemptStartedNanos,
+                            remainingMs,
+                            state,
+                            protocol,
+                            traceContext.traceparent,
+                            allowUpstreamErrorFailover = upstreamAttempts < app.config.maxAttempts && upstreamAttempts < candidates.size,
+                        )
+                    } else {
+                        proxyJson(app, call, requestJson, candidate, remainingMs, state, protocol, traceContext.traceparent)
+                    }
                 }
                 statusCode = state.statusCode
                 app.metrics.upstreamAttempt(
@@ -249,16 +259,33 @@ private suspend fun handleProxy(
                 )
                 if (state.errorCode == null) {
                     app.candidateCooldown.recordSuccess(permit)
+                    recordKeyOutcome(app, candidate, KeyAttemptOutcome.SUCCESS, requestId, state.statusCode)
                 } else {
                     app.candidateCooldown
                         .recordFailure(permit, FailureKind.TRANSPORT)
                         ?.let { app.metrics.upstreamCooldownStarted(candidate.channel.name, it.reason) }
+                    recordKeyOutcome(
+                        app, candidate, KeyAttemptOutcome.FAILURE, requestId, state.statusCode, state.errorCode,
+                    )
                 }
                 null
+            } catch (_: CandidateUnavailableException) {
+                upstreamAttempts -= 1
+                app.candidateCooldown.release(permit)
+                GatewayException(
+                    HttpStatusCode.BadGateway, "no_candidate", "密钥已停用，请尝试其他候选", "api_error",
+                    retryable = true,
+                )
             } catch (e: GatewayException) {
                 if (e.code == "client_disconnect") {
                     app.candidateCooldown.release(permit)
                     throw e
+                }
+                try {
+                    currentCoroutineContext().ensureActive()
+                } catch (cancelled: CancellationException) {
+                    app.candidateCooldown.release(permit)
+                    throw cancelled
                 }
                 app.metrics.upstreamError(candidate.channel.name, e.code)
                 val kind = classifyFailure(e)
@@ -280,6 +307,14 @@ private suspend fun handleProxy(
                             }
                         }
                 }
+                val outcome = when (kind) {
+                    FailureKind.AUTH_REJECTED -> KeyAttemptOutcome.AUTH_FAILURE
+                    FailureKind.TRANSPORT, FailureKind.SERVER_ERROR, FailureKind.RATE_LIMITED -> KeyAttemptOutcome.FAILURE
+                    else -> if (e.upstreamStatus != null) KeyAttemptOutcome.OTHER_RESPONSE else null
+                }
+                if (outcome != null) {
+                    recordKeyOutcome(app, candidate, outcome, requestId, e.upstreamStatus, e.code)
+                }
                 e
             } catch (e: Throwable) {
                 app.candidateCooldown.release(permit)
@@ -300,7 +335,8 @@ private suspend fun handleProxy(
             index++
             val error = runAttempt(candidate, permit)
             if (error == null) return
-            lastError = error
+            if (error.code != "no_candidate") lastError = error
+            if (error.code == "no_candidate") continue
             if (!error.retryable || state.committed || upstreamAttempts >= app.config.maxAttempts) throw error
             retryFrom = candidate.channel.name
             retryReason = error.code
@@ -314,7 +350,8 @@ private suspend fun handleProxy(
             val permit = app.candidateCooldown.forceAcquire(candidate.channel.id, candidate.key.id, candidate.upstreamModel)
             val error = runAttempt(candidate, permit)
             if (error == null) return
-            lastError = error
+            if (error.code != "no_candidate") lastError = error
+            if (error.code == "no_candidate") continue
             if (!error.retryable || state.committed || upstreamAttempts >= app.config.maxAttempts) throw error
             retryFrom = candidate.channel.name
             retryReason = error.code
@@ -453,6 +490,48 @@ private suspend fun handleProxy(
 }
 
 private fun String?.asLogMessage(): String? = this?.trim()?.take(1000)?.takeIf { it.isNotEmpty() }
+
+/** 统计写入失败不改变已经完成的上游结果，也不触发重复请求。 */
+private suspend fun recordKeyOutcome(
+    app: GatewayApplication,
+    candidate: RouteCandidate,
+    outcome: KeyAttemptOutcome,
+    requestId: String,
+    httpStatus: Int? = null,
+    errorCode: String? = null,
+) {
+    currentCoroutineContext().ensureActive()
+    try {
+        val reason = try {
+            app.keyAutoDisableRepository.recordOutcome(
+                candidate.key, outcome, requestId, httpStatus, errorCode, allowDisable = false,
+            )
+        } catch (_: KeyAutoDisablePendingException) {
+            app.keyAvailabilityGate.withWriter(candidate.key.id) {
+                app.keyAutoDisableRepository.recordOutcome(
+                    candidate.key, outcome, requestId, httpStatus, errorCode, allowDisable = true,
+                )
+            }
+        }
+        reason?.let { reason ->
+            app.metrics.keyAutoDisabled(candidate.channel.name, reason)
+            proxyLogger.warn(
+                "上游密钥自动禁用，channelId={}, keyId={}, reason={}, requestId={}",
+                candidate.channel.id, candidate.key.id, reason, requestId,
+            )
+        }
+    } catch (cause: CancellationException) {
+        throw cause
+    } catch (cause: Exception) {
+        app.metrics.keyAutoDisableWriteFailed()
+        proxyLogger.error(
+            "密钥自动禁用统计或审计写入失败，keyId={}, requestId={}, exceptionType={}",
+            candidate.key.id, requestId, cause.javaClass.simpleName,
+        )
+    }
+}
+
+private class CandidateUnavailableException : RuntimeException(null, null, false, false)
 
 /**
  * 把上游异常映射为冷却分类的粗分类；null 表示不参与冷却记账（400/422 等请求侧错误）。
@@ -614,6 +693,7 @@ private suspend fun proxyStream(
     call: ApplicationCall,
     requestJson: JsonObject,
     candidate: RouteCandidate,
+    permit: CooldownPermit,
     alias: String,
     startedAt: Long,
     attemptStartedNanos: Long,
@@ -702,7 +782,7 @@ private suspend fun proxyStream(
                             var sawDone = false
                             for (line in prefixLines) {
                                 writeSseLine(line)
-                                markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate)
+                                markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
                                 recordUsage(line, state, protocol)
                                 if (isStreamDone(line, protocol)) {
                                     markTerminalStreamFailure(line, protocol, state)
@@ -724,7 +804,7 @@ private suspend fun proxyStream(
                                         )
                                     } ?: break
                                     writeSseLine(line)
-                                    markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate)
+                                    markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
                                     recordUsage(line, state, protocol)
                                     if (isStreamDone(line, protocol)) {
                                         markTerminalStreamFailure(line, protocol, state)
@@ -815,6 +895,8 @@ private suspend fun proxyJson(
             }.getOrNull()
             call.respondText(text, ContentType.Application.Json, response.status)
         }
+    } catch (e: ChannelWriteException) {
+        throw clientDisconnected()
     } catch (e: TimeoutCancellationException) {
         throw GatewayException(
             HttpStatusCode.GatewayTimeout,
@@ -939,6 +1021,7 @@ private fun markFirstToken(
     app: GatewayApplication,
     alias: String,
     candidate: RouteCandidate,
+    permit: CooldownPermit,
 ) {
     if (state.firstTokenMs != null) return
     val payload = ssePayload(line) ?: return
@@ -955,9 +1038,7 @@ private fun markFirstToken(
         // 首 token 软阈值按本次尝试计时：快速兜底不应继承前面候选撞掉的秒数。
         val attemptFirstTokenMs = (nowNanos - attemptStartedNanos) / 1_000_000
         if (app.candidateCooldown.recordFirstToken(
-                candidate.channel.id,
-                candidate.key.id,
-                candidate.upstreamModel,
+                permit,
                 attemptFirstTokenMs,
             )
         ) {

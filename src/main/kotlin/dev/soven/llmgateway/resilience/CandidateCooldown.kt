@@ -237,6 +237,10 @@ class CandidateCooldown(
 
     @Synchronized
     fun recordSuccess(permit: CooldownPermit) {
+        if (!permitIsCurrent(permit)) {
+            releaseCurrentProbes(permit)
+            return
+        }
         for (ref in permit.refs) {
             val state = states[ref.keyId] ?: continue
             if (ref.generation != state.generation) continue
@@ -253,6 +257,10 @@ class CandidateCooldown(
         kind: FailureKind,
         retryAfterMs: Long? = null,
     ): CooldownTrigger? {
+        if (!permitIsCurrent(permit)) {
+            releaseCurrentProbes(permit)
+            return null
+        }
         val action = classifier.classify(kind, retryAfterMs, permit.channelId, permit.keyId, permit.upstreamModel)
         val targetKeyId = when (action) {
             is CooldownAction.Transient -> action.key.id
@@ -303,6 +311,10 @@ class CandidateCooldown(
      */
     @Synchronized
     fun release(permit: CooldownPermit) {
+        if (!permitIsCurrent(permit)) {
+            releaseCurrentProbes(permit)
+            return
+        }
         for (ref in permit.refs) {
             val state = states[ref.keyId] ?: continue
             if (!ref.probing) continue
@@ -316,12 +328,15 @@ class CandidateCooldown(
      * 被计数的请求本身照常完成。返回是否触发。
      */
     @Synchronized
-    fun recordFirstToken(channelId: String, keyId: String, upstreamModel: String, firstTokenMs: Long): Boolean {
+    fun recordFirstToken(permit: CooldownPermit, firstTokenMs: Long): Boolean {
+        val stateKey = CooldownKey.KeyCandidate(permit.channelId, permit.keyId, permit.upstreamModel).id
+        val candidateRef = permit.refs.firstOrNull { it.keyId == stateKey } ?: return false
+        val candidateState = states[stateKey] ?: return false
+        if (candidateRef.generation != candidateState.generation) return false
         if (firstTokenMs <= policy.ttftSlowThresholdMs) {
-            ttftStreaks.remove(CooldownKey.KeyCandidate(channelId, keyId, upstreamModel).id)
+            ttftStreaks.remove(stateKey)
             return false
         }
-        val stateKey = CooldownKey.KeyCandidate(channelId, keyId, upstreamModel).id
         val streak = (ttftStreaks[stateKey] ?: 0) + 1
         if (streak < policy.ttftSlowStreak) {
             ttftStreaks[stateKey] = streak
@@ -348,6 +363,22 @@ class CandidateCooldown(
                 cooldownUntil = snapshot.cooldownUntil,
             )
         }
+    }
+
+    /** 更换凭据或切换启用状态后清除密钥级冷却，并作废旧请求的许可。 */
+    @Synchronized
+    fun clearKey(channelId: String, keyId: String) {
+        val keyStateId = CooldownKey.Key(channelId, keyId).id
+        val candidatePrefix = "kc:$channelId:$keyId:"
+        for ((id, state) in states) {
+            if (id != keyStateId && !id.startsWith(candidatePrefix)) continue
+            state.consecutiveFailures = 0
+            state.cooldownUntil = 0
+            state.probeInFlight = false
+            state.generation += 1
+            onChange(CooldownChange.Removed(id))
+        }
+        ttftStreaks.keys.removeIf { it.startsWith(candidatePrefix) }
     }
 
     /**
@@ -377,6 +408,18 @@ class CandidateCooldown(
             }
         }
         return until
+    }
+
+    private fun permitIsCurrent(permit: CooldownPermit): Boolean =
+        permit.refs.all { ref -> states[ref.keyId]?.generation == ref.generation }
+
+    /** 结果因任一 ref 过期而作废时，仍归还其他尚未过期的探测占位。 */
+    private fun releaseCurrentProbes(permit: CooldownPermit) {
+        for (ref in permit.refs) {
+            if (!ref.probing) continue
+            val state = states[ref.keyId] ?: continue
+            if (ref.generation == state.generation) releaseProbe(state)
+        }
     }
 
     private fun blocked(state: KeyState): Boolean =

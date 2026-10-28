@@ -19,6 +19,8 @@ class GatewayMetrics {
     private val databaseReadyValue = AtomicReference(0.0)
     private val adminAuditWriteFailures =
         registry.counter("gateway_admin_audit_write_failures_total")
+    private val keyAutoDisableFailures =
+        registry.counter("gateway_key_auto_disable_write_failures_total")
 
     init {
         Gauge.builder("gateway_database_ready", databaseReadyValue) { it.get() }
@@ -93,6 +95,14 @@ class GatewayMetrics {
 
     fun adminAuditWriteFailed() {
         adminAuditWriteFailures.increment()
+    }
+
+    fun keyAutoDisableWriteFailed() {
+        keyAutoDisableFailures.increment()
+    }
+
+    fun keyAutoDisabled(channel: String, reason: String) {
+        registry.counter("gateway_key_auto_disabled_total", Tags.of("channel", channel, "reason", reason)).increment()
     }
 
     fun databaseReady(ready: Boolean) {

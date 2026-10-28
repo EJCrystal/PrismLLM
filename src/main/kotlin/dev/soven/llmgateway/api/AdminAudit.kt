@@ -13,12 +13,15 @@ import io.ktor.server.plugins.origin
 import io.ktor.server.response.header
 import io.ktor.util.AttributeKey
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.JsonObject
 import org.slf4j.Logger
 import java.util.UUID
 
 private val AuditStateKey = AttributeKey<AuditState>("AdminAuditState")
 private val AuditActorKey = AttributeKey<String>("AdminAuditActor")
 private val AuditErrorCodeKey = AttributeKey<String>("AdminAuditErrorCode")
+private val AuditDetailsKey = AttributeKey<JsonObject>("AdminAuditDetails")
+private val AuditHandledKey = AttributeKey<Unit>("AdminAuditHandled")
 private val auditedMethods = setOf(
     HttpMethod.Post,
     HttpMethod.Put,
@@ -57,6 +60,7 @@ fun adminAuditPlugin(
 
     on(ResponseBodyReadyForSend) { call, content ->
         val state = call.attributes.getOrNull(AuditStateKey) ?: return@on
+        if (call.attributes.contains(AuditHandledKey)) return@on
         val statusCode = call.response.status()?.value
             ?: content.status?.value
             ?: HttpStatusCode.OK.value
@@ -75,6 +79,7 @@ fun adminAuditPlugin(
                 requestId = state.requestId,
                 sourceIp = sourceIp,
                 errorCode = errorCode,
+                details = call.attributes.getOrNull(AuditDetailsKey),
             )
         } catch (cause: CancellationException) {
             throw cause
@@ -94,10 +99,21 @@ internal fun ApplicationCall.markAdminAuditActor(username: String) {
     attributes.put(AuditActorKey, username.take(100))
 }
 
+internal fun ApplicationCall.adminAuditActor(): String? = attributes.getOrNull(AuditActorKey)
+
 internal fun ApplicationCall.markAdminAuditError(code: String) {
     if (!attributes.contains(AuditErrorCodeKey)) {
         attributes.put(AuditErrorCodeKey, code.take(100))
     }
+}
+
+/** 只接收由路由生成的非敏感配置元数据，不能传入原始请求正文。 */
+internal fun ApplicationCall.markAdminAuditDetails(details: JsonObject) {
+    attributes.put(AuditDetailsKey, details)
+}
+
+internal fun ApplicationCall.markAdminAuditHandled() {
+    attributes.put(AuditHandledKey, Unit)
 }
 
 internal fun auditAction(method: String, path: String): String = when {
@@ -130,6 +146,7 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "PUT" && path == "/admin/api/request-log-retention" -> "request_log.retention.update"
     method == "POST" && path == "/admin/api/request-log-retention/cleanup" -> "request_log.cleanup"
     method == "PUT" && path == "/admin/api/model-test-settings" -> "model_test_settings.update"
+    method == "PUT" && path == "/admin/api/key-auto-disable-settings" -> "key_auto_disable_settings.update"
     else -> "admin.write"
 }
 
