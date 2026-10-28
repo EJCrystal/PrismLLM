@@ -203,7 +203,9 @@ private suspend fun handleProxy(
         var retryReason: String? = null
         var rateLimitRetryAfterMs: Long? = null
         var rateLimitReason: ChannelKeyRateLimitReason? = null
-        fun rememberRateLimitDenial(decision: ChannelKeyRateLimitDecision.Denied) {
+        val rateLimitedCandidates = mutableSetOf<RouteCandidate>()
+        fun rememberRateLimitDenial(candidate: RouteCandidate, decision: ChannelKeyRateLimitDecision.Denied) {
+            rateLimitedCandidates += candidate
             val current = rateLimitRetryAfterMs
             if (current == null || decision.retryAfterMs < current) {
                 rateLimitRetryAfterMs = decision.retryAfterMs
@@ -355,7 +357,7 @@ private suspend fun handleProxy(
             if (rateDecision is ChannelKeyRateLimitDecision.Denied) {
                 app.candidateCooldown.release(permit)
                 app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, rateDecision.reason.metricValue)
-                rememberRateLimitDenial(rateDecision)
+                rememberRateLimitDenial(candidate, rateDecision)
                 continue
             }
             val error = runAttempt(candidate, permit, (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease)
@@ -377,7 +379,7 @@ private suspend fun handleProxy(
             if (rateDecision is ChannelKeyRateLimitDecision.Denied) {
                 app.candidateCooldown.release(permit)
                 app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, rateDecision.reason.metricValue)
-                rememberRateLimitDenial(rateDecision)
+                rememberRateLimitDenial(candidate, rateDecision)
                 continue
             }
             val error = runAttempt(candidate, permit, (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease)
@@ -388,7 +390,11 @@ private suspend fun handleProxy(
             retryFrom = candidate.channel.name
             retryReason = error.code
         }
-        if (lastError == null && rateLimitRetryAfterMs != null) {
+        if (
+            lastError == null &&
+            rateLimitRetryAfterMs != null &&
+            rateLimitedCandidates.containsAll(candidates)
+        ) {
             throw GatewayException(
                 HttpStatusCode.TooManyRequests,
                 "upstream_key_rate_limit_exceeded",

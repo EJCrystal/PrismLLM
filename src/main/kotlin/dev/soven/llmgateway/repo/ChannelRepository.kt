@@ -46,7 +46,8 @@ data class ChannelKeyUpdate(
     val enabled: Boolean = true,
     val priority: Int = 1,
     val models: List<String> = emptyList(),
-    val rateLimit: ChannelKeyRateLimitPolicy = ChannelKeyRateLimitPolicy(),
+    /** `null` 表示保留该密钥已有的限流规则。 */
+    val rateLimit: ChannelKeyRateLimitPolicy? = null,
     val stateVersion: Long? = null,
 )
 
@@ -279,7 +280,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
                     it[createdAt] = now
                 }
             }
-            saveRateLimit(keyId, key.rateLimit, now)
+            key.rateLimit?.let { saveRateLimit(keyId, it, now) }
         }
         (existing.keys - keptIds).forEach { staleId ->
             ChannelKeys.deleteWhere { ChannelKeys.id eq staleId }

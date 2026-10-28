@@ -164,6 +164,22 @@ class ChannelKeyRateLimiterTest {
     }
 
     @Test
+    fun `stale request snapshot cannot re-enable a disabled policy`(): Unit = runBlocking {
+        val limiter = ChannelKeyRateLimiter(nowNanos = { 0L })
+        val original = key(
+            "disabled-stale-policy",
+            ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1),
+        )
+
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(original))
+        limiter.updatePolicy(original.channelId, original.id, original.rateLimit.copy(enabled = false))
+
+        // 旧请求仍携带启用状态的快照，不能覆盖管理端刚保存的禁用策略。
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(original))
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(original))
+    }
+
+    @Test
     fun `reapplying the same policy does not refill RPM tokens`(): Unit = runBlocking {
         val limiter = ChannelKeyRateLimiter(nowNanos = { 0L })
         val policy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1)

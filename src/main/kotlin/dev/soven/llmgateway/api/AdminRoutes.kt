@@ -42,6 +42,8 @@ import java.math.RoundingMode
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Base64
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
@@ -53,6 +55,7 @@ import kotlinx.serialization.json.put
  * @since 2026-10-21
  */
 fun Route.adminRoutes(app: GatewayApplication) {
+    val channelUpdateMutex = Mutex()
     route("/admin/api") {
         post("/login") {
             val request = call.receive<LoginRequest>()
@@ -453,52 +456,57 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val request = call.receive<ChannelRequest>()
             validateChannel(request, credentialRequired = false)
             val protocols = parseProtocols(request.protocols)
-            val existing = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
-            val sameName = app.channelRepository.findByName(request.name)
-            if (sameName != null && sameName.id != id) throw conflict("channel_name_exists", "渠道名称已存在")
-            val encrypted = request.credential?.takeIf { it.isNotBlank() }?.let(app.credentialCipher::encrypt)
-            val requestedMappings = normalizeModelMappings(request)
-            val modelMappings = if (request.modelMappings == null && request.models != null && requestedMappings != null) {
-                val existingByUpstream = existing.modelMappings.associateBy { it.upstreamModel }
-                requestedMappings.map { existingByUpstream[it.upstreamModel] ?: it }
-            } else {
-                requestedMappings
-            }
-            if (modelMappings != null) {
-                val removed = existing.models.toSet() - modelMappings.map { it.upstreamModel }.toSet()
-                removed.forEach { model ->
-                    val aliases = app.aliasRepository.findAliasNamesUsingModel(existing.id, model)
-                    if (aliases.isNotEmpty()) {
-                        throw conflict(
-                            "channel_model_in_use",
-                            "模型「$model」仍被别名「${aliases.joinToString("、")}」引用，请先调整别名候选",
-                        )
+            val updated = channelUpdateMutex.withLock {
+                val existing = app.channelRepository.find(id)
+                    ?: throw notFound("channel_not_found", "渠道不存在")
+                val sameName = app.channelRepository.findByName(request.name)
+                if (sameName != null && sameName.id != id) throw conflict("channel_name_exists", "渠道名称已存在")
+                val encrypted = request.credential?.takeIf { it.isNotBlank() }?.let(app.credentialCipher::encrypt)
+                val requestedMappings = normalizeModelMappings(request)
+                val modelMappings =
+                    if (request.modelMappings == null && request.models != null && requestedMappings != null) {
+                        val existingByUpstream = existing.modelMappings.associateBy { it.upstreamModel }
+                        requestedMappings.map { existingByUpstream[it.upstreamModel] ?: it }
+                    } else {
+                        requestedMappings
+                    }
+                if (modelMappings != null) {
+                    val removed = existing.models.toSet() - modelMappings.map { it.upstreamModel }.toSet()
+                    removed.forEach { model ->
+                        val aliases = app.aliasRepository.findAliasNamesUsingModel(existing.id, model)
+                        if (aliases.isNotEmpty()) {
+                            throw conflict(
+                                "channel_model_in_use",
+                                "模型「$model」仍被别名「${aliases.joinToString("、")}」引用，请先调整别名候选",
+                            )
+                        }
                     }
                 }
-            }
-            val keys = normalizeUpdatedKeys(app, existing, request, modelMappings, encrypted)
-            val updated = app.channelRepository.update(
-                id = existing.id,
-                name = request.name,
-                baseUrl = request.baseUrl,
-                keys = keys,
-                authType = request.authType,
-                protocols = protocols,
-                enabled = request.enabled,
-                modelMappings = modelMappings,
-                priority = request.priority,
-            ) ?: throw notFound("channel_not_found", "渠道不存在")
-            updated.keys.filter { key ->
-                existing.keys.firstOrNull { it.id == key.id }?.stateVersion != key.stateVersion
-            }.forEach { app.candidateCooldown.clearKey(updated.id, it.id) }
-            val previousById = existing.keys.associateBy { it.id }
-            updated.keys.forEach { key ->
-                if (previousById[key.id]?.rateLimit != key.rateLimit) {
-                    app.channelKeyRateLimiter.updatePolicy(updated.id, key.id, key.rateLimit)
+                val keys = normalizeUpdatedKeys(app, existing, request, modelMappings, encrypted)
+                val updated = app.channelRepository.update(
+                    id = existing.id,
+                    name = request.name,
+                    baseUrl = request.baseUrl,
+                    keys = keys,
+                    authType = request.authType,
+                    protocols = protocols,
+                    enabled = request.enabled,
+                    modelMappings = modelMappings,
+                    priority = request.priority,
+                ) ?: throw notFound("channel_not_found", "渠道不存在")
+                updated.keys.filter { key ->
+                    existing.keys.firstOrNull { it.id == key.id }?.stateVersion != key.stateVersion
+                }.forEach { app.candidateCooldown.clearKey(updated.id, it.id) }
+                val previousById = existing.keys.associateBy { it.id }
+                updated.keys.forEach { key ->
+                    if (previousById[key.id]?.rateLimit != key.rateLimit) {
+                        app.channelKeyRateLimiter.updatePolicy(updated.id, key.id, key.rateLimit)
+                    }
                 }
-            }
-            (existing.keys.map { it.id }.toSet() - updated.keys.map { it.id }.toSet()).forEach { keyId ->
-                app.channelKeyRateLimiter.clearKey(updated.id, keyId)
+                (existing.keys.map { it.id }.toSet() - updated.keys.map { it.id }.toSet()).forEach { keyId ->
+                    app.channelKeyRateLimiter.clearKey(updated.id, keyId)
+                }
+                updated
             }
             call.respond(updated.toResponse())
         }
@@ -506,12 +514,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
         delete("/channels/{id}") {
             call.requireAdmin(app)
             val id = call.requiredParam("id", "缺少渠道 id")
-            if (app.aliasRepository.isChannelInUse(id)) {
-                throw conflict("channel_in_use", "渠道仍被模型别名引用，不能删除")
+            channelUpdateMutex.withLock {
+                if (app.aliasRepository.isChannelInUse(id)) {
+                    throw conflict("channel_in_use", "渠道仍被模型别名引用，不能删除")
+                }
+                val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
+                if (!app.channelRepository.delete(id)) throw notFound("channel_not_found", "渠道不存在")
+                channel.keys.forEach { app.channelKeyRateLimiter.clearKey(channel.id, it.id) }
             }
-            val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
-            if (!app.channelRepository.delete(id)) throw notFound("channel_not_found", "渠道不存在")
-            channel.keys.forEach { app.channelKeyRateLimiter.clearKey(channel.id, it.id) }
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -1077,8 +1087,7 @@ private fun normalizeUpdatedKeys(
                 enabled = key.enabled,
                 priority = key.priority,
                 models = key.models,
-                rateLimit = key.rateLimit ?: existing.keys.firstOrNull { it.id == key.id }?.rateLimit
-                    ?: ChannelKeyRateLimitPolicy(),
+                rateLimit = key.rateLimit,
                 stateVersion = key.stateVersion,
             )
         }
@@ -1094,7 +1103,7 @@ private fun normalizeUpdatedKeys(
             enabled = current.enabled,
             priority = current.priority,
             models = if (modelMappings != null) channelModels.toList() else current.models,
-            rateLimit = current.rateLimit,
+            rateLimit = null,
             stateVersion = current.stateVersion,
         ),
     )

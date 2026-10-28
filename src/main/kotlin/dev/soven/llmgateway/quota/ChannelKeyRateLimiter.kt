@@ -50,10 +50,7 @@ class ChannelKeyRateLimiter(
         // 管理端 updatePolicy 是已加载状态的权威来源。这样在途请求携带的旧快照
         // 不会把刚保存的新规则回滚，也不会重复重置新规则的令牌桶。
         val policy = states[stateKey]?.policy ?: key.rateLimit
-        if (!policy.configured) {
-            if (states[stateKey]?.activeRequests == 0) states.remove(stateKey)
-            return@withLock ChannelKeyRateLimitDecision.Allowed(null)
-        }
+        if (!policy.configured) return@withLock ChannelKeyRateLimitDecision.Allowed(null)
 
         val state = states.getOrPut(stateKey) { KeyState(policy) }
         state.refill(now, policy.requestsPerMinute)
@@ -99,11 +96,10 @@ class ChannelKeyRateLimiter(
             val stateKey = StateKey(channelId, keyId)
             val state = states[stateKey]
             if (state == null) {
-                if (policy.configured) states[stateKey] = KeyState(policy)
+                states[stateKey] = KeyState(policy)
                 return@withLock
             }
             state.applyPolicy(policy, nowNanos())
-            if (!policy.configured && state.activeRequests == 0) states.remove(stateKey)
         }
     }
 

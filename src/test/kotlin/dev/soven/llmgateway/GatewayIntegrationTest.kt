@@ -45,6 +45,7 @@ import io.ktor.util.cio.ChannelWriteException
 import org.flywaydb.core.Flyway
 import org.flywaydb.core.api.MigrationVersion
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -363,6 +364,100 @@ class GatewayIntegrationTest {
         }
 
         assertEquals("Bearer backup-secret", fake.requests.single().authorization)
+    }
+
+    @Test
+    fun `partial local rate limit does not mask an unavailable candidate`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "partial-rate-limit",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "primary",
+                    credential = app.credentialCipher.encrypt("primary-secret"),
+                    priority = 1,
+                    models = listOf("m1"),
+                    rateLimit = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1),
+                ),
+                NewChannelKey(
+                    name = "backup",
+                    credential = app.credentialCipher.encrypt("backup-secret"),
+                    priority = 2,
+                    models = listOf("m1"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        createAlias("partial-rate-limit", channel to "m1")
+        val clientKey = createClientKey()
+        val primary = channel.keys.first { it.name == "primary" }
+        val backup = channel.keys.first { it.name == "backup" }
+        app.channelKeyRateLimiter.acquire(primary)
+
+        val gateHeld = CompletableDeferred<Unit>()
+        val releaseGate = CompletableDeferred<Unit>()
+        val gateWriter = async {
+            app.keyAvailabilityGate.withWriter(backup.id) {
+                gateHeld.complete(Unit)
+                releaseGate.await()
+            }
+        }
+        gateHeld.await()
+
+        try {
+            testApplication {
+                application { app.install(this) }
+                val pending = async {
+                    client.post("/v1/chat/completions") {
+                        header(HttpHeaders.Authorization, "Bearer $clientKey")
+                        contentType(ContentType.Application.Json)
+                        setBody("""{"model":"partial-rate-limit","messages":[]}""")
+                    }
+                }
+
+                val metricDeadline = System.currentTimeMillis() + 3_000
+                while (!app.metrics.scrape().contains(
+                        """gateway_upstream_key_rate_limit_skips_total{channel="partial-rate-limit",reason="requests_per_minute"}""",
+                    )
+                ) {
+                    check(System.currentTimeMillis() < metricDeadline) { "request did not reach the rate-limited candidate" }
+                    delay(10)
+                }
+
+                app.channelRepository.update(
+                    id = channel.id,
+                    name = channel.name,
+                    baseUrl = channel.baseUrl,
+                    keys = channel.keys.map { key ->
+                        ChannelKeyUpdate(
+                            id = key.id,
+                            name = key.name,
+                            enabled = key.id != backup.id,
+                            priority = key.priority,
+                            models = key.models,
+                            stateVersion = key.stateVersion,
+                        )
+                    },
+                    authType = channel.authType,
+                    protocols = channel.protocols,
+                    enabled = true,
+                    modelMappings = channel.modelMappings,
+                )
+                releaseGate.complete(Unit)
+
+                val response = pending.await()
+                assertEquals(HttpStatusCode.BadGateway, response.status)
+                val body = response.bodyAsText()
+                assertTrue(body.contains("no_candidate"))
+                assertFalse(body.contains("upstream_key_rate_limit_exceeded"))
+            }
+        } finally {
+            releaseGate.complete(Unit)
+            gateWriter.await()
+        }
     }
 
     @Test
@@ -3618,6 +3713,25 @@ class GatewayIntegrationTest {
         )
         assertEquals(disabledPolicy, updated?.keys?.single()?.rateLimit)
         assertFalse(updated!!.keys.single().rateLimit.configured)
+
+        val preserved = app.channelRepository.update(
+            id = channel.id,
+            name = channel.name,
+            baseUrl = channel.baseUrl,
+            keys = listOf(
+                ChannelKeyUpdate(
+                    id = channel.keys.single().id,
+                    name = "group-a",
+                    enabled = true,
+                    priority = 1,
+                    models = listOf("m1"),
+                ),
+            ),
+            authType = channel.authType,
+            protocols = channel.protocols,
+            enabled = true,
+        )
+        assertEquals(disabledPolicy, preserved?.keys?.single()?.rateLimit)
 
         assertTrue(app.channelRepository.delete(channel.id))
         assertEquals(0, scalarInt("select count(*) from channel_key_rate_limits"))
