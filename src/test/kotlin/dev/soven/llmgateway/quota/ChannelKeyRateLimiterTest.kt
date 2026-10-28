@@ -209,6 +209,20 @@ class ChannelKeyRateLimiterTest {
         val reacquired = assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(limited)).lease
         limiter.release(reacquired)
     }
+
+    @Test
+    fun `re-enabling an RPM policy starts with a fresh token bucket`(): Unit = runBlocking {
+        val limiter = ChannelKeyRateLimiter(nowNanos = { 0L })
+        val policy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1)
+        val limited = key("rpm-disable-reenable", policy)
+
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(limited))
+        assertIs<ChannelKeyRateLimitDecision.Denied>(limiter.acquire(limited))
+        limiter.updatePolicy(limited.channelId, limited.id, policy.copy(enabled = false))
+        limiter.updatePolicy(limited.channelId, limited.id, policy)
+
+        assertIs<ChannelKeyRateLimitDecision.Allowed>(limiter.acquire(limited))
+    }
 }
 
 private fun key(

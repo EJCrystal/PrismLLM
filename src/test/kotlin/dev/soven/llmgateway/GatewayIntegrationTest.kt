@@ -320,6 +320,54 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `local rate limit denials inspect every candidate without consuming attempt budget`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(maxAttempts = 1))
+        val policy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1)
+        val channel = app.channelRepository.create(
+            name = "all-keys-locally-limited",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "primary",
+                    credential = app.credentialCipher.encrypt("primary-secret"),
+                    priority = 1,
+                    models = listOf("m1"),
+                    rateLimit = policy,
+                ),
+                NewChannelKey(
+                    name = "backup",
+                    credential = app.credentialCipher.encrypt("backup-secret"),
+                    priority = 2,
+                    models = listOf("m1"),
+                    rateLimit = policy,
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        createAlias("all-keys-locally-limited", channel to "m1")
+        val clientKey = createClientKey()
+        channel.keys.forEach { key -> app.channelKeyRateLimiter.acquire(key) }
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"all-keys-locally-limited","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.TooManyRequests, response.status)
+            assertTrue(response.bodyAsText().contains("upstream_key_rate_limit_exceeded"))
+        }
+
+        assertTrue(fake.requests.isEmpty())
+    }
+
+    @Test
     fun `rate limited primary key falls back to an unlimited backup key`() = runBlocking {
         val channel = app.channelRepository.create(
             name = "rate-limit-fallback",
@@ -567,6 +615,49 @@ class GatewayIntegrationTest {
             app.channelKeyRateLimiter.release(lease)
             awaitCancellation()
         }
+    }
+
+    @Test
+    fun `channel key concurrency lease is released when timeout budget expires before sending`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(totalTimeoutMs = 0))
+        val channel = app.channelRepository.create(
+            name = "concurrency-expired-budget",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "group-expired-budget",
+                    credential = app.credentialCipher.encrypt("expired-budget-secret"),
+                    models = listOf("m1"),
+                    rateLimit = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        createAlias("concurrency-expired-budget", channel to "m1")
+        val clientKey = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"concurrency-expired-budget","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.GatewayTimeout, response.status)
+            assertTrue(response.bodyAsText().contains("upstream_timeout"))
+            val lease = assertIs<ChannelKeyRateLimitDecision.Allowed>(
+                app.channelKeyRateLimiter.acquire(channel.keys.single()),
+            ).lease
+            assertNotNull(lease)
+            app.channelKeyRateLimiter.release(lease)
+        }
+
+        assertTrue(fake.requests.isEmpty())
     }
 
     @Test
