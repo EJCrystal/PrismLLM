@@ -1104,7 +1104,11 @@ class GatewayIntegrationTest {
         testApplication {
             application { app.install(this) }
             // key-route 的 401 错误体带 invalid_api_key：首条永久规则命中，而不是兜底的临时规则。
-            assertEquals(HttpStatusCode.BadGateway, client.sendAutoDisableRequest(key).status)
+            val firstResponse = client.sendAutoDisableRequest(key)
+            assertEquals(HttpStatusCode.BadGateway, firstResponse.status)
+            val firstBody = firstResponse.bodyAsText()
+            assertFalse(firstBody.contains("invalid key"), firstBody)
+            assertFalse(firstBody.contains("authentication_error"), firstBody)
             assertEquals(
                 ChannelKeyState.ACTIVE,
                 assertNotNull(app.channelRepository.find(channel.id)).keys.single().state,
