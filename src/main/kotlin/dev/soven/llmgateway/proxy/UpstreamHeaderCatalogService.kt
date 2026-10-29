@@ -163,7 +163,7 @@ class UpstreamHeaderCatalogService(
             state.get()
         } catch (cause: Throwable) {
             val message = "refresh_failed"
-            logger.warn("upstream header catalog refresh failed", cause)
+            logger.warn("upstream header catalog refresh failed: {}", safeErrorCategory(cause))
             persistFailure(now(), message)
             state.get()
         }
@@ -176,7 +176,7 @@ class UpstreamHeaderCatalogService(
             state.updateAndGet { it.copy(refreshing = false) }
             throw cause
         } catch (persistenceError: Throwable) {
-            logger.warn("failed to persist header catalog refresh error", persistenceError)
+            logger.warn("failed to persist header catalog refresh error: {}", persistenceError::class.simpleName ?: "error")
             state.updateAndGet { it.copy(refreshing = false, lastError = error.take(1_000)) }
         }
     }
@@ -267,7 +267,7 @@ class UpstreamHeaderCatalogService(
         val validProfiles = record.profiles.filter {
             upstreamHeaderProfileValidationError(it) == null
         }.associateBy { it.id }
-        var invalid = record.profiles.any { upstreamHeaderProfileValidationError(it) != null }
+        var invalid = record.hasCorruptRecords || record.profiles.any { upstreamHeaderProfileValidationError(it) != null }
         val profiles = PROFILE_ORDER.map { id -> validProfiles[id] ?: defaults.getValue(id) }
         val history = record.history.mapValues { (id, values) ->
             values.filter {

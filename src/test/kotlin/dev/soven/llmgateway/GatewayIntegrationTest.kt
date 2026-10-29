@@ -6742,6 +6742,16 @@ class GatewayIntegrationTest {
                        values ('claude', '9.9.9', 'Poisoned', '{"Authorization":"secret"}', 'test', 9999)""",
                 )
                 statement.executeUpdate(
+                    """insert into upstream_header_profile_versions
+                       (profile_id, version, name, headers, source, fetched_at)
+                       values ('claude', '9.9.8', 'MalformedJson', '{invalid json}', 'test', 9998)""",
+                )
+                statement.executeUpdate(
+                    """insert into upstream_header_profile_versions
+                       (profile_id, version, name, headers, source, fetched_at)
+                       values ('codex', 'invalid version!', 'BadVersion', '{}', 'test', 9997)""",
+                )
+                statement.executeUpdate(
                     """update upstream_header_catalog_state
                        set last_error = 'https://user:secret@internal.example/path?token=secret' where id = 1""",
                 )
@@ -6759,6 +6769,10 @@ class GatewayIntegrationTest {
         assertEquals(
             UpstreamHeaderProfiles.defaults.first { it.id == "claude" }.version,
             snapshot.profiles.first { it.id == "claude" }.version,
+        )
+        assertEquals(
+            UpstreamHeaderProfiles.defaults.first { it.id == "codex" }.version,
+            snapshot.profiles.first { it.id == "codex" }.version,
         )
         assertTrue(snapshot.lastError!!.contains("catalog:invalid_persisted_profile"))
         assertTrue(snapshot.lastError.contains("catalog:stored_error_redacted"))

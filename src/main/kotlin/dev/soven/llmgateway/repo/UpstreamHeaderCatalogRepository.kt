@@ -28,14 +28,17 @@ data class UpstreamHeaderCatalogRecord(
     val checkedAt: Long = 0,
     val successAt: Long? = null,
     val lastError: String? = null,
+    val hasCorruptRecords: Boolean = false,
 )
 
 /** Persists versioned header profiles, pins, and the latest refresh result. */
 class UpstreamHeaderCatalogRepository(private val database: Database) {
     suspend fun load(defaults: List<UpstreamHeaderProfile>): UpstreamHeaderCatalogRecord = suspendTransaction(database) {
-        val versions = UpstreamHeaderProfileVersions.selectAll()
+        val allRows = UpstreamHeaderProfileVersions.selectAll()
             .orderBy(UpstreamHeaderProfileVersions.fetchedAt to SortOrder.DESC)
-            .map(::toProfile)
+            .toList()
+        val versions = allRows.mapNotNull(::toProfile)
+        val hasCorruptRecords = versions.size < allRows.size
         val history = versions.groupBy { it.id }
         val pins = UpstreamHeaderProfilePins.selectAll().associate {
             it[UpstreamHeaderProfilePins.profileId] to it[UpstreamHeaderProfilePins.version]
@@ -57,6 +60,7 @@ class UpstreamHeaderCatalogRepository(private val database: Database) {
             checkedAt = state?.get(UpstreamHeaderCatalogState.checkedAt) ?: 0,
             successAt = state?.get(UpstreamHeaderCatalogState.successAt),
             lastError = state?.get(UpstreamHeaderCatalogState.lastError),
+            hasCorruptRecords = hasCorruptRecords,
         )
     }
 
@@ -160,16 +164,18 @@ class UpstreamHeaderCatalogRepository(private val database: Database) {
     }
 
     private fun loadInTransaction(): UpstreamHeaderCatalogRecord {
-        val versions = UpstreamHeaderProfileVersions.selectAll()
+        val allRows = UpstreamHeaderProfileVersions.selectAll()
             .orderBy(UpstreamHeaderProfileVersions.fetchedAt to SortOrder.DESC)
-            .map(::toProfile)
+            .toList()
+        val versions = allRows.mapNotNull(::toProfile)
+        val hasCorruptRecords = versions.size < allRows.size
         val history = versions.groupBy { it.id }
         val pins = UpstreamHeaderProfilePins.selectAll().associate {
             it[UpstreamHeaderProfilePins.profileId] to it[UpstreamHeaderProfilePins.version]
         }
         val state = UpstreamHeaderCatalogState.selectAll()
             .where { UpstreamHeaderCatalogState.id eq SINGLETON_ID }
-            .single()
+            .singleOrNull()
         val latest = history.mapValues { it.value.first() }
         return UpstreamHeaderCatalogRecord(
             profiles = DEFAULT_PROFILE_IDS.mapNotNull { id ->
@@ -178,28 +184,33 @@ class UpstreamHeaderCatalogRepository(private val database: Database) {
             },
             history = history,
             pins = pins,
-            checkedAt = state[UpstreamHeaderCatalogState.checkedAt],
-            successAt = state[UpstreamHeaderCatalogState.successAt],
-            lastError = state[UpstreamHeaderCatalogState.lastError],
+            checkedAt = state?.get(UpstreamHeaderCatalogState.checkedAt) ?: 0,
+            successAt = state?.get(UpstreamHeaderCatalogState.successAt),
+            lastError = state?.get(UpstreamHeaderCatalogState.lastError),
+            hasCorruptRecords = hasCorruptRecords,
         )
     }
 
-    private fun toProfile(row: org.jetbrains.exposed.v1.core.ResultRow): UpstreamHeaderProfile {
-        val headers = decodeHeaders(row[UpstreamHeaderProfileVersions.headers])
-        return UpstreamHeaderProfile(
-            id = row[UpstreamHeaderProfileVersions.profileId],
-            name = row[UpstreamHeaderProfileVersions.name],
-            version = row[UpstreamHeaderProfileVersions.version],
-            headers = headers,
-            source = row[UpstreamHeaderProfileVersions.sourceLabel],
-            fetchedAt = row[UpstreamHeaderProfileVersions.fetchedAt],
-        )
+    private fun toProfile(row: org.jetbrains.exposed.v1.core.ResultRow): UpstreamHeaderProfile? {
+        return runCatching {
+            val headers = decodeHeaders(row[UpstreamHeaderProfileVersions.headers]) ?: return null
+            UpstreamHeaderProfile(
+                id = row[UpstreamHeaderProfileVersions.profileId],
+                name = row[UpstreamHeaderProfileVersions.name],
+                version = row[UpstreamHeaderProfileVersions.version],
+                headers = headers,
+                source = row[UpstreamHeaderProfileVersions.sourceLabel],
+                fetchedAt = row[UpstreamHeaderProfileVersions.fetchedAt],
+            )
+        }.getOrNull()
     }
 
-    private fun decodeHeaders(encoded: String): Map<String, String> = Json.decodeFromString(
-        MapSerializer(String.serializer(), String.serializer()),
-        encoded,
-    )
+    private fun decodeHeaders(encoded: String): Map<String, String>? = runCatching {
+        Json.decodeFromString(
+            MapSerializer(String.serializer(), String.serializer()),
+            encoded,
+        )
+    }.getOrNull()
 
     private companion object {
         const val SINGLETON_ID = 1
