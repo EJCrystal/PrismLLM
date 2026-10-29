@@ -442,11 +442,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
             val request = call.receive<ProtocolProbeRequest>()
             val key = resolveChannelKey(channel, request.keyId)
+            val globalOverrides = app.upstreamRequestSettingsRepository.load().overrides
+            val headerProfiles = app.upstreamHeaderCatalogService.profiles()
             val model = request.model?.takeIf { it.isNotBlank() } ?: run {
                 val models = fetchUpstreamModels(
                     channel, key, app.credentialCipher, app.httpClient,
-                    globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-                    headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                    globalOverrides = globalOverrides,
+                    headerProfiles = headerProfiles,
                 )
                 models.firstOrNull()?.id ?: throw GatewayException(
                     HttpStatusCode.BadGateway,
@@ -457,8 +459,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
             }
             val results = probeUpstreamProtocols(
                 channel, key, model, app.credentialCipher, app.httpClient,
-                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                globalOverrides = globalOverrides,
+                headerProfiles = headerProfiles,
             )
             call.respond(
                 ProtocolProbeResponse(

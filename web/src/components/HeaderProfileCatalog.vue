@@ -34,7 +34,6 @@ async function refresh() {
       notify('请求头预设目录已刷新')
     }
   } catch (cause) {
-    event.target.value = props.catalog.pins?.[profile.id] || ''
     notify(cause.message, 'error')
   } finally {
     busy.value = ''
@@ -52,6 +51,7 @@ async function selectVersion(profile, event) {
     emit('updated', response)
     notify(version ? `已固定 ${profile.name} ${version}` : `${profile.name} 已恢复最新版本`)
   } catch (cause) {
+    event.target.value = props.catalog.pins?.[profile.id] || ''
     notify(cause.message, 'error')
   } finally {
     busy.value = ''
