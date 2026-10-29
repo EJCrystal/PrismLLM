@@ -178,6 +178,24 @@ class ProtocolConversionTest {
     }
 
     @Test
+    fun `interleaved responses text and tool events keep first-seen output order`() {
+        val converter = ProtocolConversion.streamConverter(GatewayProtocol.RESPONSES, GatewayProtocol.RESPONSES, "m")
+        assertEquals(null, converter, "同协议不转换")
+
+        val chat = ProtocolConversion.streamConverter(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, "m")!!
+        val output = buildString {
+            append(chat.feed("""data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"f","arguments":""}}""") + chat.feed(""))
+            append(chat.feed("""data: {"type":"response.output_text.delta","output_index":0,"delta":"Hi"}""") + chat.feed(""))
+            append(chat.feed("""data: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}""") + chat.feed(""))
+        }
+        val toolIndex = output.indexOf("tool_calls")
+        val contentIndex = output.indexOf("\"content\":\"Hi\"")
+        assertTrue(toolIndex >= 0 && contentIndex >= 0, output)
+        assertTrue(toolIndex < contentIndex, output)
+        assertTrue(output.contains("\"finish_reason\":\"tool_calls\""), output)
+    }
+
+    @Test
     fun `streaming chat converts to responses events`() {
         val converter = ProtocolConversion.streamConverter(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, "public")!!
         val first = converter.feed("""data: {"id":"chat_1","model":"gpt","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}""") + converter.feed("")
