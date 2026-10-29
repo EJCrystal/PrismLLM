@@ -327,6 +327,13 @@ class FakeUpstream {
                 call.respondText(ANTHROPIC_ERROR_500, ContentType.Application.Json, HttpStatusCode.InternalServerError)
                 return
             }
+            "unsupported-response" -> {
+                call.respondText(
+                    """{"id":"msg_fake","type":"message","role":"assistant","content":[{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{}}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}""",
+                    ContentType.Application.Json,
+                )
+                return
+            }
         }
         if (!stream) {
             call.respondText(ANTHROPIC_NON_STREAM_BODY, ContentType.Application.Json)

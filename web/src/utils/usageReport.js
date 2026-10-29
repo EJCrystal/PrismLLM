@@ -41,8 +41,11 @@ export function usageReportPresetRange(preset, now = Date.now()) {
   switch (preset) {
     case 'today':
       return { from: todayStart, to: now }
-    case 'yesterday':
-      return { from: todayStart - 86_400_000, to: todayStart - 1 }
+    case 'yesterday': {
+      const d = new Date(todayStart)
+      d.setDate(d.getDate() - 1)
+      return { from: d.getTime(), to: todayStart - 1 }
+    }
     case 'last24h':
       return { from: now - 86_400_000, to: now }
     case 'last7d':
@@ -157,9 +160,10 @@ export function usageTrendMax(rows, primary, secondary = null) {
   return Math.max(0, ...values)
 }
 
-export function csvCell(value) {
-  const text = value == null ? '' : String(value)
-  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
+export function csvCell(value, { text = false } = {}) {
+  let textValue = value == null ? '' : String(value)
+  if (text && /^[=+\-@\t\r]/.test(textValue)) textValue = `'${textValue}`
+  return /[",\n\r]/.test(textValue) ? `"${textValue.replaceAll('"', '""')}"` : textValue
 }
 
 export function usageReportCsv(report, dimensionRows, dimensionLabel) {
@@ -184,5 +188,5 @@ export function usageReportCsv(report, dimensionRows, dimensionLabel) {
       costs,
     ])
   }
-  return `${lines.map((line) => line.map(csvCell).join(',')).join('\n')}\n`
+  return `${lines.map((line) => line.map((value, index) => csvCell(value, { text: index === 0 || index === 13 })).join(',')).join('\n')}\n`
 }

@@ -196,6 +196,17 @@ describe('usageReport: 增强报表数据', () => {
     assert.ok(csv.includes('CNY 2 / USD 0.5'))
   })
 
+  it('CSV 导出中和以公式字符开头的文本', () => {
+    const csv = usageReportCsv({ from: 0, to: 1 }, [{
+      id: '=cmd',
+      name: '=SUM(A1)',
+      requests: 1,
+      errors: 0,
+      costs: {},
+    }], '按渠道')
+    assert.ok(csv.includes("'=SUM(A1)"), csv)
+  })
+
   it('时区偏移按浏览器约定返回分钟数', () => {
     assert.equal(reportTimezoneOffset(new Date('2026-01-01T00:00:00Z')), -new Date('2026-01-01T00:00:00Z').getTimezoneOffset())
   })

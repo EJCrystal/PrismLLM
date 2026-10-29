@@ -84,7 +84,7 @@ class KeyAutoDisableRepository(
             it[enabled] = policy.enabled
             it[rules] = keyDisableJson.encodeToString(policy.rules)
             // 旧字段保留给尚未升级的管理台读取，实际判定只使用 rules。
-            it[authFailureThreshold] = policy.legacyAuthThreshold()
+            it[authFailureThreshold] = policy.legacyAuthThreshold().coerceIn(1, 100)
             it[failureThreshold] = policy.legacyFailureThreshold()
             it[failureWindowMinutes] = policy.legacyFailureWindowMinutes()
             it[revision] = after.revision

@@ -154,6 +154,9 @@ object ProtocolConversion {
             }))
         }
         request["tool_choice"]?.let { choice -> put("tool_choice", anthropicToolChoiceToChat(choice as? JsonObject)) }
+        if ((request["tool_choice"] as? JsonObject)?.boolean("disable_parallel_tool_use") == true) {
+            put("parallel_tool_calls", false)
+        }
     }
 
     private fun responsesToChatRequest(request: JsonObject): JsonObject = buildJsonObject {
@@ -238,6 +241,7 @@ object ProtocolConversion {
                         put("name", tool.string("name") ?: unsupported("tools[$index].name", "工具缺少 name"))
                         tool.string("description")?.let { put("description", it) }
                         put("parameters", tool["parameters"] ?: buildJsonObject { put("type", "object") })
+                        tool.boolean("strict")?.let { put("strict", it) }
                     }
                 }
             }))
@@ -252,16 +256,17 @@ object ProtocolConversion {
         chat: JsonObject,
         upstreamModel: String,
     ): JsonObject = when (protocol) {
-        GatewayProtocol.CHAT_COMPLETIONS -> chat.withModel(upstreamModel)
+        GatewayProtocol.CHAT_COMPLETIONS -> chat.withModel(upstreamModel).let { request ->
+            if (request.boolean("stream") != true) return@let request
+            val options = request["stream_options"] as? JsonObject ?: JsonObject(emptyMap())
+            JsonObject(request + ("stream_options" to JsonObject(options + ("include_usage" to JsonPrimitive(true)))))
+        }
         GatewayProtocol.MESSAGES -> chatToMessagesRequest(chat, upstreamModel)
         GatewayProtocol.RESPONSES -> chatToResponsesRequest(chat, upstreamModel)
     }
 
     private fun chatToMessagesRequest(chat: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {
         rejectUnknownFields(chat, chatRequestFields, "request")
-        if (chat["parallel_tool_calls"] != null) {
-            unsupported("parallel_tool_calls", "Anthropic Messages 不支持 parallel_tool_calls")
-        }
         put("model", upstreamModel)
         chat.boolean("stream")?.let { put("stream", it) }
         chat.number("temperature")?.let { put("temperature", it) }
@@ -319,7 +324,17 @@ object ProtocolConversion {
                 }
             }))
         }
-        chat["tool_choice"]?.let { choice -> put("tool_choice", chatToolChoiceToAnthropic(choice)) }
+        val disableParallelToolUse = chat.boolean("parallel_tool_calls") == false
+        val hasTools = (chat["tools"] as? JsonArray)?.isNotEmpty() == true
+        val toolChoice = chat["tool_choice"]
+        if (toolChoice != null) {
+            put("tool_choice", chatToolChoiceToAnthropic(toolChoice, disableParallelToolUse))
+        } else if (disableParallelToolUse && hasTools) {
+            putJsonObject("tool_choice") {
+                put("type", "auto")
+                put("disable_parallel_tool_use", true)
+            }
+        }
     }
 
     private fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {
@@ -344,15 +359,19 @@ object ProtocolConversion {
             when (message.string("role")) {
                 "system", "developer" -> system += message.textContentStrict("content", "messages[$index].content")
                 "user", "assistant" -> {
-                    input += buildJsonObject {
-                        put("type", "message")
-                        put("role", message.string("role"))
-                        put("content", buildJsonArray {
-                            add(buildJsonObject {
-                                put("type", "input_text")
-                                put("text", message.textContentStrict("content", "messages[$index].content"))
+                    val role = message.string("role")
+                    val text = message.textContentStrict("content", "messages[$index].content")
+                    if (text.isNotEmpty() || message["tool_calls"] == null) {
+                        input += buildJsonObject {
+                            put("type", "message")
+                            put("role", role)
+                            put("content", buildJsonArray {
+                                add(buildJsonObject {
+                                    put("type", if (role == "assistant") "output_text" else "input_text")
+                                    put("text", text)
+                                })
                             })
-                        })
+                        }
                     }
                     (message["tool_calls"] as? JsonArray)?.forEachIndexed { callIndex, callElement ->
                         val call = callElement as? JsonObject ?: unsupported("messages[$index].tool_calls[$callIndex]", "工具调用必须是对象")
@@ -385,6 +404,7 @@ object ProtocolConversion {
                     put("name", function.string("name") ?: unsupported("tools[$index].function.name", "工具缺少 name"))
                     function.string("description")?.let { put("description", it) }
                     put("parameters", function["parameters"] ?: buildJsonObject { put("type", "object") })
+                    function.boolean("strict")?.let { put("strict", it) }
                 }
             }))
         }
@@ -412,7 +432,7 @@ object ProtocolConversion {
                     put("type", "function")
                     putJsonObject("function") {
                         put("name", block.string("name").orEmpty())
-                        put("arguments", block["input"]?.toString() ?: "{}")
+                        put("arguments", block["input"]?.takeIf { it !is JsonNull }?.toString() ?: "{}")
                     }
                 }
                 "thinking" -> block.string("thinking")?.takeIf { it.isNotEmpty() }?.let { reasoning += it }
@@ -491,7 +511,13 @@ object ProtocolConversion {
                         put("content", content.joinToString("\n").ifEmpty { null })
                         if (toolCalls.isNotEmpty()) put("tool_calls", JsonArray(toolCalls))
                     }
-                    put("finish_reason", if (response.string("status") == "incomplete") "length" else if (toolCalls.isNotEmpty()) "tool_calls" else "stop")
+                    val incompleteReason = (response["incomplete_details"] as? JsonObject)?.string("reason")
+                    put("finish_reason", when {
+                        response.string("status") == "incomplete" && incompleteReason == "content_filter" -> "content_filter"
+                        response.string("status") == "incomplete" -> "length"
+                        toolCalls.isNotEmpty() -> "tool_calls"
+                        else -> "stop"
+                    })
                 })
             })
             responsesUsageToChat(response["usage"] as? JsonObject)?.let { put("usage", it) }
@@ -583,11 +609,18 @@ object ProtocolConversion {
                 put("status", "completed")
             }
         }
+        val finishReason = choice?.string("finish_reason")
+        val incomplete = finishReason == "length" || finishReason == "content_filter"
         return buildJsonObject {
             put("id", chat.string("id") ?: "resp_${System.currentTimeMillis()}")
             put("object", "response")
             put("created_at", chat.long("created") ?: System.currentTimeMillis() / 1000)
-            put("status", if (choice?.string("finish_reason") == "length") "incomplete" else "completed")
+            put("status", if (incomplete) "incomplete" else "completed")
+            if (incomplete) {
+                putJsonObject("incomplete_details") {
+                    put("reason", if (finishReason == "content_filter") "content_filter" else "max_output_tokens")
+                }
+            }
             put("model", model)
             put("output", JsonArray(output))
             chatUsageToResponses(chat["usage"] as? JsonObject)?.let { put("usage", it) }
@@ -660,14 +693,29 @@ object ProtocolConversion {
         put("type", "function")
         putJsonObject("function") {
             put("name", block.string("name") ?: unsupported("$path.name", "tool_use 缺少 name"))
-            put("arguments", block["input"]?.toString() ?: "{}")
+            put("arguments", block["input"]?.takeIf { it !is JsonNull }?.toString() ?: "{}")
         }
     }
 
     private fun chatToolMessageFromAnthropic(block: JsonObject, path: String): JsonObject = buildJsonObject {
         put("role", "tool")
         put("tool_call_id", block.string("tool_use_id") ?: unsupported("$path.tool_use_id", "tool_result 缺少 tool_use_id"))
-        put("content", block.textContentStrict("content", "$path.content"))
+        put("content", block.toolResultContent("$path.content"))
+    }
+
+    /** Anthropic tool_result 的 content 既可以是字符串，也可以是 text/image 内容块数组。 */
+    private fun JsonObject.toolResultContent(path: String): String = when (val value = this["content"]) {
+        is JsonPrimitive -> value.contentOrNull.orEmpty()
+        is JsonArray -> value.mapIndexed { index, element ->
+            val obj = element as? JsonObject ?: unsupported("$path[$index]", "tool_result 内容块必须是对象")
+            when (obj.string("type")) {
+                "text" -> obj.string("text").orEmpty()
+                "image" -> unsupported("$path[$index].type", "Chat Completions 不支持 tool_result 图片内容")
+                else -> unsupported("$path[$index].type", "第一版不支持 tool_result 内容类型 ${obj.string("type")}")
+            }
+        }.joinToString("\n")
+        JsonNull, null -> ""
+        else -> unsupported(path, "无法识别的 tool_result 内容")
     }
 
     private fun anthropicToolChoiceToChat(choice: JsonObject?): JsonElement {
@@ -698,7 +746,7 @@ object ProtocolConversion {
         }
     }
 
-    private fun chatToolChoiceToAnthropic(choice: JsonElement): JsonElement {
+    private fun chatToolChoiceToAnthropic(choice: JsonElement, disableParallelToolUse: Boolean = false): JsonElement {
         if (choice is JsonPrimitive) {
             return buildJsonObject {
                 put("type", when (choice.contentOrNull) {
@@ -706,14 +754,22 @@ object ProtocolConversion {
                     "none" -> "none"
                     else -> "auto"
                 })
+                if (disableParallelToolUse) put("disable_parallel_tool_use", true)
             }
         }
-        val obj = choice as? JsonObject ?: return buildJsonObject { put("type", "auto") }
+        val obj = choice as? JsonObject ?: return buildJsonObject {
+            put("type", "auto")
+            if (disableParallelToolUse) put("disable_parallel_tool_use", true)
+        }
         val function = obj["function"] as? JsonObject
         return if (function != null) buildJsonObject {
             put("type", "tool")
             put("name", function.string("name").orEmpty())
-        } else buildJsonObject { put("type", "auto") }
+            if (disableParallelToolUse) put("disable_parallel_tool_use", true)
+        } else buildJsonObject {
+            put("type", "auto")
+            if (disableParallelToolUse) put("disable_parallel_tool_use", true)
+        }
     }
 
     private fun chatToolChoiceToResponses(choice: JsonElement): JsonElement {
@@ -962,6 +1018,7 @@ class ProtocolStreamConverter(
     private var responseModel: String = model
     private var nextResponseOutputIndex = 0
     private var responseTextIndex: Int? = null
+    private var responseToolSeen = false
     private var usage: JsonObject? = null
     private var lastId: String = "chatcmpl-${System.currentTimeMillis()}"
     private var pendingFinish: ChatChunk? = null
@@ -998,7 +1055,10 @@ class ProtocolStreamConverter(
         }
         val json = runCatching {
             kotlinx.serialization.json.Json.parseToJsonElement(payload).jsonObject
-        }.getOrNull() ?: return emptyList()
+        }.getOrNull() ?: run {
+            finished = true
+            return emitError("上游流返回了无法解析的 JSON 帧")
+        }
         val chunks = when (outbound) {
             GatewayProtocol.CHAT_COMPLETIONS -> listOfNotNull(parseChatChunk(json))
             GatewayProtocol.MESSAGES -> parseMessagesChunks(json)
@@ -1093,11 +1153,12 @@ class ProtocolStreamConverter(
             "response.output_item.added" -> {
                 val item = json["item"] as? JsonObject
                 if (item?.string("type") == "function_call") {
+                    responseToolSeen = true
                     listOf(ChatChunk(id, responseModel, toolCalls = listOf(ToolCallDelta(
                         index = json.long("output_index")?.toInt() ?: 0,
                         id = item.string("call_id") ?: item.string("id"),
                         name = item.string("name"),
-                        arguments = "",
+                        arguments = item.string("arguments"),
                     ))))
                 } else emptyList()
             }
@@ -1107,7 +1168,9 @@ class ProtocolStreamConverter(
             ))))
             "response.completed" -> {
                 usage = response?.get("usage") as? JsonObject
-                listOf(ChatChunk(id, responseModel, finishReason = "stop", done = true))
+                val hasTool = responseToolSeen ||
+                    (response?.get("output") as? JsonArray)?.any { (it as? JsonObject)?.string("type") == "function_call" } == true
+                listOf(ChatChunk(id, responseModel, finishReason = if (hasTool) "tool_calls" else "stop", done = true))
             }
             "response.incomplete" -> {
                 usage = response?.get("usage") as? JsonObject
@@ -1115,7 +1178,11 @@ class ProtocolStreamConverter(
                 listOf(ChatChunk(
                     id,
                     responseModel,
-                    finishReason = if (reason == "max_output_tokens") "length" else "stop",
+                    finishReason = when (reason) {
+                        "max_output_tokens" -> "length"
+                        "content_filter" -> "content_filter"
+                        else -> if (responseToolSeen) "tool_calls" else "stop"
+                    },
                     done = true,
                 ))
             }
@@ -1131,20 +1198,21 @@ class ProtocolStreamConverter(
     }
 
     private fun emitChunk(chunk: ChatChunk): List<String> {
+        chunk.error?.let { error ->
+            finished = true
+            return emitError(error)
+        }
         if (chunk.done) {
             finished = true
             val output = mutableListOf<String>()
-            val finish = pendingFinish
-            if (finish?.finishReason != null) {
-                output += emitFinal(finish)
-            } else if (chunk.finishReason != null) {
-                output += emitFinal(chunk)
-            }
+            val finish = pendingFinish?.takeIf { it.finishReason != null }
+                ?: chunk.takeIf { it.finishReason != null }
+                ?: ChatChunk(chunk.id, chunk.model, finishReason = "stop")
+            output += emitFinal(finish)
             pendingFinish = null
             output += doneLines()
             return output
         }
-        chunk.error?.let { error -> return emitError(error) }
         if (chunk.usage != null) usage = chunk.usage
         lastId = chunk.id
         // Chat 上游常把 finish_reason 与最终 usage 拆成两个 chunk；延后到 [DONE] 再收尾，
@@ -1342,8 +1410,23 @@ class ProtocolStreamConverter(
                 }
             }
             val output = JsonArray(outputItems.sortedBy { it.first }.map { it.second })
-            lines += "event: response.completed"
-            lines += "data: ${buildJsonObject { put("type", "response.completed"); putJsonObject("response") { put("id", chunk.id); put("object", "response"); put("status", "completed"); put("model", model); put("output", output); canonicalUsage()?.let { put("usage", chatUsageToResponses(it)) } } }}"
+            val incomplete = chunk.finishReason == "length"
+            val eventType = if (incomplete) "response.incomplete" else "response.completed"
+            lines += "event: $eventType"
+            lines += "data: ${buildJsonObject {
+                put("type", eventType)
+                putJsonObject("response") {
+                    put("id", chunk.id)
+                    put("object", "response")
+                    put("status", if (incomplete) "incomplete" else "completed")
+                    put("model", model)
+                    put("output", output)
+                    if (incomplete) {
+                        putJsonObject("incomplete_details") { put("reason", "max_output_tokens") }
+                    }
+                    canonicalUsage()?.let { put("usage", chatUsageToResponses(it)) }
+                }
+            }}"
             lines += ""
         }
         return lines

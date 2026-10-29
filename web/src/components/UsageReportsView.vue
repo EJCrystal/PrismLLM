@@ -28,7 +28,7 @@ import { createRetentionReportState } from '../utils/retentionReportState'
 const preset = ref('last7d')
 const rangeDraft = ref(createRangeDraft('last7d'))
 const rangeError = ref('')
-const maxDatetimeLocal = computed(() => toDatetimeLocalValue(Date.now()))
+const maxDatetimeLocal = ref(toDatetimeLocalValue(Date.now()))
 const filters = ref({ clientKeyId: '', channelId: '', model: '', protocol: '' })
 const report = ref(null)
 const retention = ref(null)
@@ -173,6 +173,12 @@ function selectPreset(presetId) {
   load()
 }
 
+function refresh() {
+  if (preset.value) rangeDraft.value = createRangeDraft(preset.value)
+  maxDatetimeLocal.value = toDatetimeLocalValue(Date.now())
+  load({ quiet: true })
+}
+
 function onRangeInput() {
   // 手动修改时间后退出快捷项高亮，提交时再统一校验。
   preset.value = ''
@@ -299,7 +305,7 @@ onMounted(() => {
     <div class="section-head report-head">
       <p class="report-head-note">费用按计费币种分别汇总，不做汇率换算。</p>
       <div class="report-head-actions">
-        <button type="button" class="button subtle" :disabled="loading || refreshing" @click="load({ quiet: true })">
+        <button type="button" class="button subtle" :disabled="loading || refreshing" @click="refresh">
           <Icon name="refresh" :size="16" /> {{ refreshing ? '刷新中…' : '刷新' }}
         </button>
         <button type="button" class="button subtle" :disabled="!report" @click="exportCsv">

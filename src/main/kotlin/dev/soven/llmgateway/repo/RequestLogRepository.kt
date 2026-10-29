@@ -51,6 +51,15 @@ import java.math.BigDecimal
  * @since 2026-10-21
  */
 class RequestLogRepository(private val database: Database) {
+    private val failoverAggregate: org.jetbrains.exposed.v1.core.Expression<Long?> = run {
+        val attempts = coalesce(RequestLogs.upstreamAttempts, org.jetbrains.exposed.v1.core.intLiteral(1))
+            .castTo(LongColumnType())
+        val normalized = Case()
+            .When(attempts less org.jetbrains.exposed.v1.core.longLiteral(1L), org.jetbrains.exposed.v1.core.longLiteral(1L))
+            .Else(attempts)
+        normalized.sum() - RequestLogs.id.count()
+    }
+
     private companion object {
         const val UNASSIGNED_CLIENT_KEY = "__unassigned_key__"
         const val UNASSIGNED_CHANNEL = "__unrouted__"
@@ -155,7 +164,7 @@ class RequestLogRepository(private val database: Database) {
             .When(failure, org.jetbrains.exposed.v1.core.longLiteral(1L))
             .Else(org.jetbrains.exposed.v1.core.longLiteral(0L))
             .sum()
-        val failovers = failoverExpression()
+        val failovers = failoverAggregate
         return RequestLogs.select(
             RequestLogs.id.count(),
             errorCount,
@@ -200,7 +209,7 @@ class RequestLogRepository(private val database: Database) {
             reasoningTokens = this[RequestLogs.reasoningTokens.sum()] ?: 0L,
             totalTokens = this[RequestLogs.totalTokens.sum()] ?: 0L,
             activeClientKeys = this[RequestLogs.clientKeyId.countDistinct()],
-            failovers = (this[failoverExpression()]?.toLong() ?: 0L).coerceAtLeast(0L),
+            failovers = (this[failoverAggregate]?.toLong() ?: 0L).coerceAtLeast(0L),
             avgFirstTokenMs = this[RequestLogs.firstTokenMs.avg()]?.toLong(),
             avgTotalMs = this[RequestLogs.totalMs.avg()]?.toLong(),
             costs = emptyMap(),
@@ -225,9 +234,11 @@ class RequestLogRepository(private val database: Database) {
         val cachedWrite = RequestLogs.cachedWriteTokens.sum()
         val reasoning = RequestLogs.reasoningTokens.sum()
         val tokens = RequestLogs.totalTokens.sum()
-        val failovers = failoverExpression()
-        val firstToken = RequestLogs.firstTokenMs.avg()
-        val total = RequestLogs.totalMs.avg()
+        val failovers = failoverAggregate
+        val firstTokenSum = RequestLogs.firstTokenMs.sum()
+        val firstTokenCount = RequestLogs.firstTokenMs.count()
+        val totalSum = RequestLogs.totalMs.sum()
+        val totalCount = RequestLogs.totalMs.count()
         val rows = RequestLogs.select(
             idColumn,
             nameColumn,
@@ -240,8 +251,10 @@ class RequestLogRepository(private val database: Database) {
             reasoning,
             tokens,
             failovers,
-            firstToken,
-            total,
+            firstTokenSum,
+            firstTokenCount,
+            totalSum,
+            totalCount,
         )
             .where { where }
             .groupBy(idColumn, nameColumn)
@@ -263,8 +276,10 @@ class RequestLogRepository(private val database: Database) {
                 reasoningTokens = grouped.sumOf { it[reasoning] ?: 0L },
                 totalTokens = grouped.sumOf { it[tokens] ?: 0L },
                 failovers = grouped.sumOf { it[failovers]?.toLong() ?: 0L }.coerceAtLeast(0L),
-                avgFirstTokenMs = grouped.firstNotNullOfOrNull { it[firstToken]?.toLong() },
-                avgTotalMs = grouped.firstNotNullOfOrNull { it[total]?.toLong() },
+                avgFirstTokenMs = grouped.sumOf { it[firstTokenCount] }.takeIf { it > 0 }
+                    ?.let { count -> grouped.sumOf { row -> row[firstTokenSum] ?: 0L } / count },
+                avgTotalMs = grouped.sumOf { it[totalCount] }.takeIf { it > 0 }
+                    ?.let { count -> grouped.sumOf { row -> row[totalSum] ?: 0L } / count },
                 costs = costs[id].orEmpty(),
             )
         }.sortedByDescending { it.totalTokens }
@@ -289,11 +304,6 @@ class RequestLogRepository(private val database: Database) {
                 }.groupingBy { it.first }.fold(BigDecimal.ZERO) { total, entry -> total + entry.second }
             }
     }
-
-    private fun failoverExpression() =
-        coalesce(RequestLogs.upstreamAttempts, org.jetbrains.exposed.v1.core.intLiteral(1))
-            .castTo(LongColumnType())
-            .sum() - RequestLogs.id.count()
 
     private fun trendQuery(transaction: JdbcTransaction, query: UsageReportQuery): List<UsageTrendPoint> {
         val granularity = reportGranularity(query.from, query.to)

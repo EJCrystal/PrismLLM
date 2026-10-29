@@ -5736,6 +5736,32 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `protocol conversion response errors are reported as conversion failures`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "messages-unsupported-response",
+            baseUrl = fake.baseUrl + "/unsupported-response/v1",
+            protocols = listOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("converted-response-unsupported", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"converted-response-unsupported","messages":[{"role":"user","content":"hi"}]}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status, response.bodyAsText())
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("protocol_conversion_unsupported", body["error"]!!.jsonObject["code"]!!.jsonPrimitive.content)
+            assertEquals(1, fake.requests.size)
+        }
+    }
+
+    @Test
     fun `messages request converts to chat-only channel`() = runBlocking {
         val channel = createChannelWithBaseUrl(
             name = "messages-to-chat",

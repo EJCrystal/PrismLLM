@@ -189,6 +189,17 @@ class ProtocolConversionTest {
     }
 
     @Test
+    fun `streaming chat length finishes responses as incomplete`() {
+        val converter = ProtocolConversion.streamConverter(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, "public")!!
+        converter.feed("""data: {"id":"chat_1","model":"gpt","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}""")
+        converter.feed("")
+        val last = converter.feed("""data: {"id":"chat_1","model":"gpt","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}""") +
+            converter.feed("") + converter.feed("data: [DONE]") + converter.feed("")
+        assertTrue(last.any { it.contains("response.incomplete") }, last.toString())
+        assertTrue(last.any { it.contains("max_output_tokens") }, last.toString())
+    }
+
+    @Test
     fun `unsupported multimodal content is rejected`() {
         val request = json(
             """{"model":"x","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
@@ -362,6 +373,18 @@ class ProtocolConversionTest {
     }
 
     @Test
+    fun `anthropic tool result array content converts to chat text`() {
+        val request = json(
+            """{"model":"m","max_tokens":8,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"sunny"},{"type":"text","text":"25C"}]}]}]}""",
+        )
+        val converted = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, request, "m")
+        val tool = converted["messages"]!!.jsonArray[0].jsonObject
+        assertEquals("tool", tool["role"]!!.jsonPrimitive.content)
+        assertEquals("call_1", tool["tool_call_id"]!!.jsonPrimitive.content)
+        assertEquals("sunny\n25C", tool["content"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `chat string stop converts to anthropic stop sequences`() {
         val request = json("""{"model":"m","messages":[{"role":"user","content":"hi"}],"stop":"END"}""")
         val converted = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, request, "m")
@@ -401,5 +424,56 @@ class ProtocolConversionTest {
         )
         val responsesBack = ProtocolConversion.convertResponse(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, chat, "m")
         assertEquals("reasoning", responsesBack["output"]!!.jsonArray[0].jsonObject["type"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `stream done without finish reason still emits terminal events`() {
+        fun feed(converter: ProtocolStreamConverter): String = buildString {
+            append(converter.feed("""data: {"id":"chat_1","model":"gpt","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}""") + converter.feed(""))
+            append(converter.feed("data: [DONE]") + converter.feed(""))
+        }
+        val messages = feed(ProtocolConversion.streamConverter(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, "m")!!)
+        assertTrue(messages.contains("message_delta"), messages)
+        assertTrue(messages.contains("message_stop"), messages)
+        val responses = feed(ProtocolConversion.streamConverter(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, "m")!!)
+        assertTrue(responses.contains("response.completed"), responses)
+    }
+
+    @Test
+    fun `function tool strict flag survives responses chat conversion`() {
+        val responses = json(
+            """{"model":"m","input":"hi","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"},"strict":true}]}""",
+        )
+        val chat = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, responses, "m")
+        assertEquals("true", chat["tools"]!!.jsonArray[0].jsonObject["function"]!!.jsonObject["strict"]!!.jsonPrimitive.content)
+        val back = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, chat, "m")
+        assertEquals("true", back["tools"]!!.jsonArray[0].jsonObject["strict"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `parallel tool call preference maps between chat and messages`() {
+        val chat = json(
+            """{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}],"parallel_tool_calls":false}""",
+        )
+        val messages = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, chat, "m")
+        assertEquals("true", messages["tool_choice"]!!.jsonObject["disable_parallel_tool_use"]!!.jsonPrimitive.content)
+        val back = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, messages, "m")
+        assertEquals("false", back["parallel_tool_calls"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `content filter incomplete reason survives responses chat conversion`() {
+        val responses = json(
+            """{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}""",
+        )
+        val chat = ProtocolConversion.convertResponse(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, responses, "m")
+        assertEquals("content_filter", chat["choices"]!!.jsonArray[0].jsonObject["finish_reason"]!!.jsonPrimitive.content)
+
+        val filteredChat = json(
+            """{"id":"chat_1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"content_filter"}]}""",
+        )
+        val back = ProtocolConversion.convertResponse(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, filteredChat, "m")
+        assertEquals("incomplete", back["status"]!!.jsonPrimitive.content)
+        assertEquals("content_filter", back["incomplete_details"]!!.jsonObject["reason"]!!.jsonPrimitive.content)
     }
 }

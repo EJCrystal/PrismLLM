@@ -944,6 +944,8 @@ private suspend fun proxyStream(
             "timeout_error",
             retryable = !state.committed,
         )
+    } catch (e: ProtocolConversionException) {
+        throw e
     } catch (e: GatewayException) {
         throw e
     } catch (e: CancellationException) {
@@ -992,8 +994,9 @@ private suspend fun proxyJson(
                     allowNativeMessagesError = protocol == upstreamProtocol,
                 )
             }
-            val json = Json.parseToJsonElement(text).jsonObject
+            val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
             state.usage = runCatching {
+                json ?: return@runCatching null
                 when (upstreamProtocol) {
                     GatewayProtocol.CHAT_COMPLETIONS -> UsageParser.fromJson(json)
                     GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
@@ -1003,7 +1006,8 @@ private suspend fun proxyJson(
             val clientBody = if (protocol == upstreamProtocol) {
                 text
             } else {
-                ProtocolConversion.convertResponse(protocol, upstreamProtocol, json, model = alias).toString()
+                val parsed = json ?: throw transportFailure(false)
+                ProtocolConversion.convertResponse(protocol, upstreamProtocol, parsed, model = alias).toString()
             }
             state.committed = true
             state.statusCode = response.status.value
@@ -1019,6 +1023,8 @@ private suspend fun proxyJson(
             "timeout_error",
             retryable = !state.committed,
         )
+    } catch (e: ProtocolConversionException) {
+        throw e
     } catch (e: GatewayException) {
         throw e
     } catch (e: CancellationException) {
@@ -1228,7 +1234,7 @@ private fun isFirstResponsesToken(line: String): Boolean {
     val type = runCatching {
         Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull
     }.getOrNull()
-    return type in RESPONSES_END_EVENTS || type?.endsWith(".delta") == true
+    return type in RESPONSES_END_EVENTS || type == "error" || type?.endsWith(".delta") == true
 }
 
 private fun markTerminalStreamFailure(
@@ -1243,7 +1249,7 @@ private fun markTerminalStreamFailure(
     when (protocol) {
         GatewayProtocol.CHAT_COMPLETIONS -> Unit
         GatewayProtocol.RESPONSES -> when (type) {
-            "response.failed" -> state.errorCode = "responses_failed"
+            "response.failed", "error" -> state.errorCode = "responses_failed"
             "response.incomplete" -> state.errorCode = "responses_incomplete"
         }
         GatewayProtocol.MESSAGES -> if (type == "error") state.errorCode = "messages_failed"
@@ -1258,7 +1264,7 @@ private fun isStreamDone(line: String, protocol: GatewayProtocol): Boolean {
     }.getOrNull()
     return when (protocol) {
         GatewayProtocol.CHAT_COMPLETIONS -> false
-        GatewayProtocol.RESPONSES -> type in RESPONSES_END_EVENTS
+        GatewayProtocol.RESPONSES -> type in RESPONSES_END_EVENTS || type == "error"
         GatewayProtocol.MESSAGES -> type == "message_stop" || type == "error"
     }
 }

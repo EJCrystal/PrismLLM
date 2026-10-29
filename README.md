@@ -305,7 +305,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 管理界面的“用量报表”按时间范围汇总请求数、错误数、输入/输出/总 token，以及按实际计费币种分别累计的费用；同时提供按调用方密钥的明细。
 
-报表接口：`GET /admin/api/usage-report?from=<epoch-ms>&to=<epoch-ms>`，可选 `clientKeyId` 过滤。默认最近 7 天，单次查询范围最多 366 天。费用不做跨币种换算。
+报表接口：`GET /admin/api/usage-report?from=<epoch-ms>&to=<epoch-ms>`，可选 `clientKeyId`、`channelId`、`model`、`protocol`、`timezoneOffsetMinutes` 过滤。默认最近 7 天，单次查询范围最多 30 天。费用不做跨币种换算。
 
 请求日志保留策略由以下环境变量控制：
 
