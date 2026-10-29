@@ -4194,6 +4194,16 @@ class GatewayIntegrationTest {
                     .map { it.jsonObject["clientKeyName"]!!.jsonPrimitive.content }
                     .toSet(),
             )
+            val reportAfterDelete = client.get("/admin/api/usage-report?from=${System.currentTimeMillis() - 86_400_000L}&to=${System.currentTimeMillis() + 60_000L}") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, reportAfterDelete.status, reportAfterDelete.bodyAsText())
+            val byKeyAfterDelete = Json.parseToJsonElement(reportAfterDelete.bodyAsText())
+                .jsonObject["byClientKey"]!!.jsonArray.single().jsonObject
+            assertTrue(
+                byKeyAfterDelete["name"]!!.jsonPrimitive.content in setOf("test-key", "renamed-key"),
+                reportAfterDelete.bodyAsText(),
+            )
             assertEquals("2", byKey["failovers"]!!.jsonPrimitive.content)
             assertEquals(
                 channel.id,
