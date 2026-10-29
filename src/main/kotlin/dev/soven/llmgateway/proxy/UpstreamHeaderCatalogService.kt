@@ -122,7 +122,14 @@ class UpstreamHeaderCatalogService(
                     updatedProfiles += source.profileId
                     successfulSources += 1
                 }.onFailure { cause ->
-                    errors += source.profileId + ":" + safeErrorCategory(cause)
+                    val category = safeErrorCategory(cause)
+                    logger.warn(
+                        "upstream header source failed, profile={}, category={}, type={}",
+                        source.profileId,
+                        category,
+                        cause::class.simpleName ?: "error",
+                    )
+                    errors += source.profileId + ":" + category
                 }
             }
 
@@ -135,7 +142,13 @@ class UpstreamHeaderCatalogService(
                         successfulSources += 1
                     }
                     .onFailure { cause ->
-                        errors += "manifest:" + safeErrorCategory(cause)
+                        val category = safeErrorCategory(cause)
+                        logger.warn(
+                            "upstream header manifest failed, category={}, type={}",
+                            category,
+                            cause::class.simpleName ?: "error",
+                        )
+                        errors += "manifest:" + category
                     }
             }
 
@@ -183,14 +196,18 @@ class UpstreamHeaderCatalogService(
 
     suspend fun pin(profileId: String, version: String): UpstreamHeaderCatalogSnapshot {
         require(profileId in PROFILE_ORDER) { "未知请求头预设" }
-        publish(repository.pin(profileId, version))
-        return state.get()
+        return refreshMutex.withLock {
+            publish(repository.pin(profileId, version))
+            state.get()
+        }
     }
 
     suspend fun unpin(profileId: String): UpstreamHeaderCatalogSnapshot {
         require(profileId in PROFILE_ORDER) { "未知请求头预设" }
-        publish(repository.unpin(profileId))
-        return state.get()
+        return refreshMutex.withLock {
+            publish(repository.unpin(profileId))
+            state.get()
+        }
     }
 
     private suspend fun fetchManifest(url: String, checkedAt: Long): List<UpstreamHeaderProfile> {
@@ -205,7 +222,7 @@ class UpstreamHeaderCatalogService(
             require(upstreamHeaderProfileValidationError(profile) == null) {
                 upstreamHeaderProfileValidationError(profile) ?: "profile 无效"
             }
-            profile.copy(source = sanitizeSource(profile.source), fetchedAt = checkedAt)
+            profile.copy(source = sanitizeCatalogSource(profile.source), fetchedAt = checkedAt)
         }
     }
 
@@ -241,7 +258,12 @@ class UpstreamHeaderCatalogService(
             }
             else -> return base
         }
-        return base.copy(version = version, headers = headers, source = source, fetchedAt = fetchedAt)
+        return base.copy(
+            version = version,
+            headers = headers,
+            source = sanitizeCatalogSource(source),
+            fetchedAt = fetchedAt,
+        )
     }
 
     private fun publish(record: UpstreamHeaderCatalogRecord) {
@@ -268,11 +290,14 @@ class UpstreamHeaderCatalogService(
             upstreamHeaderProfileValidationError(it) == null
         }.associateBy { it.id }
         var invalid = record.hasCorruptRecords || record.profiles.any { upstreamHeaderProfileValidationError(it) != null }
-        val profiles = PROFILE_ORDER.map { id -> validProfiles[id] ?: defaults.getValue(id) }
+        val profiles = PROFILE_ORDER.map { id ->
+            val profile = validProfiles[id] ?: defaults.getValue(id)
+            profile.copy(source = sanitizeCatalogSource(profile.source))
+        }
         val history = record.history.mapValues { (id, values) ->
             values.filter {
                 it.id == id && upstreamHeaderProfileValidationError(it) == null
-            }
+            }.map { it.copy(source = sanitizeCatalogSource(it.source)) }
         }.filterValues { it.isNotEmpty() }
         if (history.values.sumOf { it.size } != record.history.values.sumOf { it.size }) invalid = true
         val validVersions = history.mapValues { (_, values) -> values.mapTo(mutableSetOf()) { it.version } }
@@ -354,20 +379,6 @@ class UpstreamHeaderCatalogService(
             else -> "invalid_response"
         }
 
-        fun sanitizeSource(value: String): String {
-            if (value.isBlank()) return "manifest"
-            if (!value.startsWith("https://") && !value.startsWith("http://")) return value.take(200)
-            return runCatching {
-                val uri = URI(value)
-                buildString {
-                    append(uri.scheme)
-                    append("://")
-                    append(uri.host ?: "manifest")
-                    append(uri.path.orEmpty())
-                }.take(500)
-            }.getOrDefault("manifest")
-        }
-
         fun sanitizeStoredError(value: String?): String? {
             if (value.isNullOrBlank()) return null
             val safe = value.split("; ").filter { part ->
@@ -388,6 +399,30 @@ internal fun decodeCatalogSource(bytes: ByteArray): String {
     require(bytes.size <= MAX_SOURCE_BYTES) { "响应超过 1MB" }
     return bytes.toString(Charsets.UTF_8)
 }
+
+internal fun sanitizeCatalogSource(value: String): String {
+    val trimmed = value.trim()
+    if (trimmed.isBlank()) return "manifest"
+    if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) {
+        return runCatching {
+            val uri = URI(trimmed)
+            buildString {
+                append(uri.scheme)
+                append("://")
+                append(uri.host ?: "manifest")
+                append(uri.path.orEmpty())
+            }.take(500)
+        }.getOrDefault("manifest")
+    }
+    return when {
+        trimmed == "builtin" -> "builtin"
+        trimmed == "manifest" -> "manifest"
+        SAFE_CATALOG_SOURCE.matches(trimmed) -> trimmed
+        else -> "custom"
+    }
+}
+
+private val SAFE_CATALOG_SOURCE = Regex("(?:npm|github):[0-9A-Za-z@][0-9A-Za-z._/@+-]{0,199}")
 
 private const val MAX_SOURCE_BYTES = 1_048_576
 

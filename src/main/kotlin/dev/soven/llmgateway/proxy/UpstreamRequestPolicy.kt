@@ -99,7 +99,7 @@ class UpstreamRequestPolicy(
             layer.userAgent?.let { result["user-agent"] = it.takeIf(String::isNotEmpty) }
             layer.headers.forEach { (name, value) -> result[name.lowercase()] = value }
         }
-        if (selectedHeaders.containsKey("originator")) {
+        if (selectedHeaders.keys.any { it.equals("originator", ignoreCase = true) }) {
             val identity = CODEX_USER_AGENT.find(result["user-agent"].orEmpty())
             if (identity != null) {
                 val explicit = layers.flatMap { it.headers.keys }.map(String::lowercase).toSet()

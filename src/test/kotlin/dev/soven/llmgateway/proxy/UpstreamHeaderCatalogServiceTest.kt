@@ -25,4 +25,18 @@ class UpstreamHeaderCatalogServiceTest {
             decodeCatalogSource(ByteArray(1_048_577))
         }
     }
+
+    @Test
+    fun `sanitizes catalog sources to controlled labels`() {
+        assertEquals("npm:@anthropic-ai/claude-code", sanitizeCatalogSource("npm:@anthropic-ai/claude-code"))
+        assertEquals("github:openai/codex", sanitizeCatalogSource("github:openai/codex"))
+        assertEquals("builtin", sanitizeCatalogSource("builtin"))
+        assertEquals("manifest", sanitizeCatalogSource("  "))
+        assertEquals(
+            "https://example.com/catalog",
+            sanitizeCatalogSource("https://user:secret@example.com/catalog?token=secret#fragment"),
+        )
+        assertEquals("custom", sanitizeCatalogSource("token=super-secret"))
+        assertEquals("custom", sanitizeCatalogSource("npm:unsafe source"))
+    }
 }

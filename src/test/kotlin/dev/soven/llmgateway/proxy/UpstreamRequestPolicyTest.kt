@@ -109,6 +109,27 @@ class UpstreamRequestPolicyTest {
     }
 
     @Test
+    fun `Codex identity headers recognize originator case-insensitively`() {
+        val profiles = UpstreamHeaderProfiles.defaults.map { profile ->
+            if (profile.id == "codex") {
+                profile.copy(
+                    headers = mapOf(
+                        "User-Agent" to "codex_cli_rs/9.9.9 (Linux; x86_64)",
+                        "Originator" to "codex_cli_rs",
+                    ),
+                )
+            } else profile
+        }
+        val builder = HttpRequestBuilder()
+        UpstreamRequestPolicy(
+            UpstreamRequestOverrides(userAgent = "codex_cli_rs/0.150.0 (Linux; x86_64)"),
+            UpstreamRequestOverrides(), GatewayProtocol.RESPONSES, "bearer", profiles,
+        ).applyHeaders(builder)
+        assertEquals("0.150.0", builder.headers["version"])
+        assertEquals("codex_cli_rs", builder.headers["originator"])
+    }
+
+    @Test
     fun `merge patches delete fields replace arrays and preserve original across attempts`() {
         val original = json("{\"model\":\"public\",\"stream\":true,\"store\":true,\"reasoning\":{\"effort\":\"low\",\"summary\":\"auto\"},\"tools\":[1]}")
         val global = UpstreamRequestOverrides(body = json("{\"store\":null,\"reasoning\":{\"effort\":\"high\"},\"tools\":[2,3]}"))
