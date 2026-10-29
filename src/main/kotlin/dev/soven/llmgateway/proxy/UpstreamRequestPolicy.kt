@@ -160,7 +160,7 @@ fun validateUpstreamRequestOverrides(overrides: UpstreamRequestOverrides) {
             if (name.length !in 1..128 || !HEADER_NAME.matches(name)) invalid("请求头名称无效")
             val lower = name.lowercase()
             if (!names.add(lower)) invalid("请求头名称不能重复（不区分大小写）")
-            if (lower in MANAGED_HEADERS) invalid("请求头 $name 由网关管理，请通过渠道鉴权配置修改凭据")
+            if (lower in MANAGED_HEADERS) invalid("请求头 $name 由网关管理，不能通过请求覆盖修改")
             if (value != null && !validHeaderValue(value)) invalid("请求头 $name 包含非法字符或超过 8192 字符")
         }
         if (layer.body.keys.any { it == "model" || it == "stream" }) {
@@ -185,6 +185,6 @@ private val HEADER_NAME = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 private val CODEX_USER_AGENT = Regex("^(codex_cli_rs|codex_vscode|codex-tui)/([0-9]+(?:\\.[0-9]+){1,3}(?:-[0-9A-Za-z.]+)?)(?:\\s|$)")
 private val MANAGED_HEADERS = setOf(
     "authorization", "proxy-authorization", "x-api-key", "x-goog-api-key", "cookie", "set-cookie",
-    "host", "content-length", "content-type", "transfer-encoding", "connection", "te", "trailer",
+    "host", "content-length", "content-type", "content-encoding", "transfer-encoding", "connection", "te", "trailer",
     "upgrade", "expect", "traceparent",
 )

@@ -9,7 +9,7 @@ export const REQUEST_OVERRIDE_SCOPES = [
 const PROFILES = new Set(['auto', 'none', 'claude', 'codex', 'google', 'antigravity'])
 const MANAGED_HEADERS = new Set([
   'authorization', 'proxy-authorization', 'x-api-key', 'x-goog-api-key', 'cookie', 'set-cookie',
-  'host', 'content-length', 'content-type', 'transfer-encoding', 'connection', 'te', 'trailer',
+  'host', 'content-length', 'content-type', 'content-encoding', 'transfer-encoding', 'connection', 'te', 'trailer',
   'upgrade', 'expect', 'traceparent',
 ])
 

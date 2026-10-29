@@ -41,11 +41,16 @@ describe('上游请求覆盖配置', () => {
     assert.equal(drafts.messages.bodyText, '{broken')
   })
 
-  it('拒绝非法请求头、凭据覆盖和 model/stream 改写', () => {
-    for (const headers of [{ Authorization: 'secret' }, { 'X-A': 'a', 'x-a': 'b' }, { 'X-A': 'x\r\ny' }, { 'X-A': 1 }]) {
-      const drafts = createRequestOverrideDrafts()
-      drafts.common.headersText = JSON.stringify(headers)
-      assert.throws(() => buildRequestOverrides(drafts))
+  it('拒绝非法请求头、凭据和传输头覆盖，以及 model/stream 改写', () => {
+    for (const headers of [
+      { Authorization: 'secret' }, { 'Content-Encoding': 'gzip' }, { 'cOnTeNt-EnCoDiNg': 'br' },
+      { 'Content-Encoding': null }, { 'X-A': 'a', 'x-a': 'b' }, { 'X-A': 'x\r\ny' }, { 'X-A': 1 },
+    ]) {
+      for (const scope of ['common', 'gemini']) {
+        const drafts = createRequestOverrideDrafts()
+        drafts[scope].headersText = JSON.stringify(headers)
+        assert.throws(() => buildRequestOverrides(drafts))
+      }
     }
     for (const body of [{ model: 'other' }, { stream: null }, [], null]) {
       const drafts = createRequestOverrideDrafts()

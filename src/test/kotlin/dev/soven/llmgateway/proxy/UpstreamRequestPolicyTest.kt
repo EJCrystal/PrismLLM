@@ -129,12 +129,17 @@ class UpstreamRequestPolicyTest {
     }
 
     @Test
-    fun `rejects illegal headers managed credentials and protected body fields at save time`() {
+    fun `rejects illegal headers managed credentials transport headers and protected body fields at save time`() {
         val invalid = listOf(
             UpstreamRequestOverrides(userAgent = "ua\r\nX-Injected: yes"),
             UpstreamRequestOverrides(headers = mapOf("Authorization" to "plaintext")),
             UpstreamRequestOverrides(headers = mapOf("x-goog-api-key" to "plaintext")),
             UpstreamRequestOverrides(headers = mapOf("Host" to "other-host")),
+            UpstreamRequestOverrides(headers = mapOf("Content-Encoding" to "gzip")),
+            UpstreamRequestOverrides(headers = mapOf("Content-Encoding" to null)),
+            UpstreamRequestOverrides(protocols = mapOf("responses" to UpstreamProtocolOverrides(
+                headers = mapOf("cOnTeNt-EnCoDiNg" to "br"),
+            ))),
             UpstreamRequestOverrides(headers = mapOf("Bad Header" to "value")),
             UpstreamRequestOverrides(headers = mapOf("X-A" to "one", "x-a" to "two")),
             UpstreamRequestOverrides(body = json("{\"stream\":null}")),

@@ -237,7 +237,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels \
 ## 校验与管理测试
 
 - 请求头与 UA 必须合法；每层最多 64 个请求头，每个值最多 8192 字符，整体请求覆盖配置最多 64KB，JSON 嵌套最多 32 层。
-- 补丁不能修改顶层 `model` / `stream`，也不能覆盖鉴权、Cookie、Host、连接/长度/类型头及 `traceparent`。凭据通过渠道密钥配置，模型名通过模型映射配置。
+- 补丁不能修改顶层 `model` / `stream`，也不能覆盖鉴权、Cookie、Host、连接/长度/类型/编码头及 `traceparent`。例如 `Content-Encoding: gzip` 会声明请求体已压缩，但网关发送的是明文 JSON，因此该头也禁止设置或删除。凭据通过渠道密钥配置，模型名通过模型映射配置。
 - 生成请求、连通性测试和协议探测均应用请求体补丁；模型列表使用请求头规则，不使用请求体补丁。改写后的生成请求仍受请求体大小上限约束。
 - 模型发现支持尚未保存的渠道请求头规则；连通性测试和协议探测使用已保存规则，编辑后先保存再测试。输出预算仍分别限制为 128 / 1 token，包括 Chat 的 `max_completion_tokens`。
 - Google / Antigravity 预设只设置请求头，不实现订阅 OAuth 登录、自动续期或 Antigravity 内部请求封装。上游必须支持当前请求协议与配置的凭据类型。
