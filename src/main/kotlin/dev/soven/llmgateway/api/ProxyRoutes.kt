@@ -16,11 +16,15 @@ import dev.soven.llmgateway.proxy.TraceContextFactory
 import dev.soven.llmgateway.proxy.applyUpstreamAuthentication
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.UsageParser
+import dev.soven.llmgateway.proxy.protocol.ProtocolConversion
+import dev.soven.llmgateway.proxy.protocol.ProtocolConversionException
+import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.KeyAutoDisablePendingException
 import dev.soven.llmgateway.resilience.CandidateCooldown
+import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.resilience.CooldownPermit
 import dev.soven.llmgateway.resilience.FailureKind
-import dev.soven.llmgateway.resilience.KeyAttemptOutcome
+import dev.soven.llmgateway.resilience.KeyAttemptSignal
 import dev.soven.llmgateway.security.ClientKeyHasher
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -136,6 +140,7 @@ private suspend fun handleProxy(
     var channelKeyId: String? = null
     var channelKeyName: String? = null
     var upstreamModel: String? = null
+    var upstreamProtocol: GatewayProtocol? = null
     var pricingModelId: String? = null
     var streamMode: Boolean? = null
     var reasoningEffort: String? = null
@@ -170,35 +175,45 @@ private suspend fun handleProxy(
         streamMode = stream
         phase = FailureStage.ROUTING
         val aliasCandidates = app.aliasRepository.findEnabledCandidates(alias)
-        var candidates = aliasCandidates.filter { protocol in it.channel.protocols }
-        if (aliasCandidates.isNotEmpty() && candidates.isEmpty()) {
-            throw protocolNotSupported(alias, protocol)
+        val allCandidates = if (aliasCandidates.isNotEmpty()) {
+            aliasCandidates
+        } else if (app.aliasRepository.findByAlias(alias) == null) {
+            app.modelCatalog.findCandidates(alias, null)
+        } else {
+            emptyList()
         }
-        if (aliasCandidates.isEmpty() && app.aliasRepository.findByAlias(alias) == null) {
-            candidates = app.modelCatalog.findCandidates(alias, protocol)
-            if (candidates.isEmpty() && app.modelCatalog.findCandidates(alias, null).isNotEmpty()) {
-                throw protocolNotSupported(alias, protocol)
-            }
-        }
-        if (candidates.isEmpty()) {
+        if (allCandidates.isEmpty()) {
             throw notFound("model_not_found", "模型别名 $alias 不存在或没有可用渠道")
         }
+        val nativeCandidates = allCandidates.filter { protocol in it.channel.protocols }
+        val conversionCandidates = allCandidates.filter {
+            protocol !in it.channel.protocols && it.channel.protocols.isNotEmpty()
+        }
+        // 原生协议始终优先；只有原生候选耗尽后才使用转换候选。
+        // fail-open 仍按原生在前、组内原始顺序遍历。
+        val candidates = nativeCandidates + conversionCandidates
 
         phase = FailureStage.UPSTREAM
         // 先按冷却分拣：可尝试的候选进同档轮询，冷却中的保序作为 fail-open 兜底，
         // 轮询份额只在可尝试候选间分摊，不被冷却候选扭曲。
-        val eligible = mutableListOf<RouteCandidate>()
+        val eligibleNative = mutableListOf<RouteCandidate>()
+        val eligibleConversion = mutableListOf<RouteCandidate>()
         val blocked = mutableListOf<RouteCandidate>()
         for (candidate in candidates) {
             if (app.candidateCooldown.isBlocked(candidate.channel.id, candidate.key.id, candidate.upstreamModel)) {
                 app.metrics.upstreamCooldownSkipped(candidate.channel.name)
                 blocked.add(candidate)
+            } else if (protocol in candidate.channel.protocols) {
+                eligibleNative.add(candidate)
             } else {
-                eligible.add(candidate)
+                eligibleConversion.add(candidate)
             }
         }
-        val ordered = app.tierSharing.order(alias, eligible)
+        // 每个 scope 每请求只推进一次轮询计数，避免同档两渠道时起点固定。
+        val ordered = app.tierSharing.order(alias, eligibleNative) +
+            app.tierSharing.order("$alias|conversion", eligibleConversion)
         var lastError: GatewayException? = null
+        var conversionError: ProtocolConversionException? = null
         var retryFrom: String? = null
         var retryReason: String? = null
         var rateLimitRetryAfterMs: Long? = null
@@ -239,16 +254,38 @@ private suspend fun handleProxy(
             channelKeyId = candidate.key.id
             channelKeyName = candidate.key.name
             upstreamModel = candidate.upstreamModel
+            upstreamProtocol = if (protocol in candidate.channel.protocols) protocol else candidate.channel.protocols.first()
+            upstreamProtocol?.takeIf { it != protocol }?.let { target ->
+                app.metrics.protocolConversion(protocol.value, target.value)
+            }
             pricingModelId = candidate.pricingModelId
             retryFrom?.let { from ->
                 app.metrics.upstreamRetry(from, candidate.channel.name, retryReason ?: "upstream_error")
                 retryFrom = null
                 retryReason = null
             }
+            var probeClaimed = false
             try {
                 app.keyAvailabilityGate.withReader(candidate.key.id) {
                     if (!app.keyAutoDisableRepository.isAvailable(candidate.key)) {
                         throw CandidateUnavailableException()
+                    }
+                    // 到期临时密钥先原子抢探测租约；抢不到说明已有并发探测，直接换候选。
+                    if (candidate.key.state == ChannelKeyState.AUTO_TEMPORARY) {
+                        val leaseMs = maxOf(
+                            KeyAutoDisableRepository.PROBE_LEASE_MS,
+                            app.config.firstTokenTimeoutMs + 5_000,
+                            app.config.totalTimeoutMs + 5_000,
+                        )
+                        // 请求转换在抢租约前完成，避免转换失败留下未释放的探测租约。
+                        ProtocolConversion.convertRequest(
+                            protocol,
+                            upstreamProtocol ?: protocol,
+                            requestJson,
+                            candidate.upstreamModel,
+                        )
+                        probeClaimed = app.keyAutoDisableRepository.claimProbe(candidate.key, leaseMs = leaseMs)
+                        if (!probeClaimed) throw CandidateUnavailableException()
                     }
                     if (stream) {
                         proxyStream(
@@ -263,11 +300,15 @@ private suspend fun handleProxy(
                             remainingMs,
                             state,
                             protocol,
+                            upstreamProtocol ?: protocol,
                             traceContext.traceparent,
                             allowUpstreamErrorFailover = upstreamAttempts < app.config.maxAttempts && upstreamAttempts < candidates.size,
                         )
                     } else {
-                        proxyJson(app, call, requestJson, candidate, remainingMs, state, protocol, traceContext.traceparent)
+                        proxyJson(
+                            app, call, requestJson, alias, candidate, remainingMs, state, protocol,
+                            upstreamProtocol ?: protocol, traceContext.traceparent,
+                        )
                     }
                 }
                 statusCode = state.statusCode
@@ -277,14 +318,12 @@ private suspend fun handleProxy(
                 )
                 if (state.errorCode == null) {
                     app.candidateCooldown.recordSuccess(permit)
-                    recordKeyOutcome(app, candidate, KeyAttemptOutcome.SUCCESS, requestId, state.statusCode)
+                    recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed)
                 } else {
+                    // 首 token 之后才出现的流异常不算凭据失效，只进入渠道冷却。
                     app.candidateCooldown
                         .recordFailure(permit, FailureKind.TRANSPORT)
                         ?.let { app.metrics.upstreamCooldownStarted(candidate.channel.name, it.reason) }
-                    recordKeyOutcome(
-                        app, candidate, KeyAttemptOutcome.FAILURE, requestId, state.statusCode, state.errorCode,
-                    )
                 }
                 null
             } catch (_: CandidateUnavailableException) {
@@ -325,15 +364,28 @@ private suspend fun handleProxy(
                             }
                         }
                 }
-                val outcome = when (kind) {
-                    FailureKind.AUTH_REJECTED -> KeyAttemptOutcome.AUTH_FAILURE
-                    FailureKind.TRANSPORT, FailureKind.SERVER_ERROR, FailureKind.RATE_LIMITED -> KeyAttemptOutcome.FAILURE
-                    else -> if (e.upstreamStatus != null) KeyAttemptOutcome.OTHER_RESPONSE else null
-                }
-                if (outcome != null) {
-                    recordKeyOutcome(app, candidate, outcome, requestId, e.upstreamStatus, e.code)
+                val signal = e.toKeyAttemptSignal()
+                if (signal != null) {
+                    recordKeyOutcome(app, candidate, signal, requestId, probeClaimed)
                 }
                 e
+            } catch (e: ProtocolConversionException) {
+                app.candidateCooldown.release(permit)
+                // 上游已返回 2xx 但响应无法转换：说明凭据可用，按成功结算并释放探测租约。
+                if (probeClaimed) {
+                    recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed = true)
+                }
+                if (state.committed) throw e
+                // 单个候选无法转换时继续尝试其他候选，全部失败后再返回转换错误。
+                upstreamAttempts -= 1
+                conversionError = e
+                GatewayException(
+                    HttpStatusCode.BadGateway,
+                    "no_candidate",
+                    "协议转换不支持，尝试其他候选",
+                    "api_error",
+                    retryable = true,
+                )
             } catch (e: Throwable) {
                 app.candidateCooldown.release(permit)
                 throw e
@@ -406,7 +458,9 @@ private suspend fun handleProxy(
                 retryAfterMs = rateLimitRetryAfterMs,
             )
         }
-        throw lastError ?: GatewayException(
+        throw lastError ?: conversionError?.let { e ->
+            badRequest("protocol_conversion_unsupported", "${e.field}: ${e.message}")
+        } ?: GatewayException(
             HttpStatusCode.BadGateway,
             "no_candidate",
             "没有可用候选",
@@ -450,6 +504,18 @@ private suspend fun handleProxy(
         failureStage = FailureStage.CLIENT
         errorMessage = "客户端取消请求"
         throw e
+    } catch (e: ProtocolConversionException) {
+        app.metrics.protocolConversionFailed(
+            protocol.value,
+            (upstreamProtocol ?: protocol).value,
+            "unsupported_field",
+        )
+        statusCode = if (state.committed) HttpStatusCode.OK.value else HttpStatusCode.BadRequest.value
+        errorCode = if (state.committed) "stream_interrupted" else "protocol_conversion_unsupported"
+        failureStage = if (state.committed) FailureStage.STREAMING else FailureStage.REQUEST
+        errorMessage = "${e.field}: ${e.message}".asLogMessage()
+        if (state.committed) throw e
+        throw badRequest("protocol_conversion_unsupported", "${e.field}: ${e.message}")
     } catch (e: Throwable) {
         statusCode = if (state.committed) HttpStatusCode.OK.value else HttpStatusCode.InternalServerError.value
         errorCode = if (state.committed) "stream_interrupted" else "internal_error"
@@ -511,6 +577,7 @@ private suspend fun handleProxy(
                 upstreamModel = upstreamModel,
                 pricingModelId = pricingModelId,
                 protocol = protocol,
+                upstreamProtocol = upstreamProtocol,
                 stream = streamMode,
                 statusCode = statusCode,
                 firstTokenMs = state.firstTokenMs,
@@ -545,21 +612,20 @@ private fun String?.asLogMessage(): String? = this?.trim()?.take(1000)?.takeIf {
 private suspend fun recordKeyOutcome(
     app: GatewayApplication,
     candidate: RouteCandidate,
-    outcome: KeyAttemptOutcome,
+    signal: KeyAttemptSignal,
     requestId: String,
-    httpStatus: Int? = null,
-    errorCode: String? = null,
+    probeClaimed: Boolean = false,
 ) {
     currentCoroutineContext().ensureActive()
     try {
         val reason = try {
             app.keyAutoDisableRepository.recordOutcome(
-                candidate.key, outcome, requestId, httpStatus, errorCode, allowDisable = false,
+                candidate.key, signal, requestId, allowDisable = false, probeClaimed = probeClaimed,
             )
         } catch (_: KeyAutoDisablePendingException) {
             app.keyAvailabilityGate.withWriter(candidate.key.id) {
                 app.keyAutoDisableRepository.recordOutcome(
-                    candidate.key, outcome, requestId, httpStatus, errorCode, allowDisable = true,
+                    candidate.key, signal, requestId, allowDisable = true, probeClaimed = probeClaimed,
                 )
             }
         }
@@ -579,6 +645,19 @@ private suspend fun recordKeyOutcome(
             candidate.key.id, requestId, cause.javaClass.simpleName,
         )
     }
+}
+
+/** 把上游异常映射成规则引擎信号；请求侧错误（400/404/422）交给规则自行决定是否计数。 */
+private fun GatewayException.toKeyAttemptSignal(): KeyAttemptSignal? = when {
+    code == "client_disconnect" -> null
+    upstreamStatus != null -> KeyAttemptSignal.UpstreamResponse(
+        statusCode = upstreamStatus,
+        errorBody = upstreamErrorBody.orEmpty(),
+        upstreamCode = upstreamCode,
+    )
+    code in setOf("upstream_unreachable", "upstream_empty_stream", "upstream_timeout", "stream_interrupted") ->
+        KeyAttemptSignal.TransportFailure(message)
+    else -> null
 }
 
 private class CandidateUnavailableException : RuntimeException(null, null, false, false)
@@ -750,12 +829,14 @@ private suspend fun proxyStream(
     timeoutMs: Long,
     state: ProxyState,
     protocol: GatewayProtocol,
+    upstreamProtocol: GatewayProtocol,
     traceparent: String,
     allowUpstreamErrorFailover: Boolean,
 ) {
-    val upstreamUrl = buildUpstreamUrl(candidate, protocol)
+    val upstreamUrl = buildUpstreamUrl(candidate, upstreamProtocol)
     val credential = decryptCredential(app, candidate)
-    val body = requestJson.withModel(candidate.upstreamModel).toString()
+    val body = ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel).toString()
+    val converter = ProtocolConversion.streamConverter(protocol, upstreamProtocol, alias)
 
     try {
         withTimeout(timeoutMs) {
@@ -763,7 +844,7 @@ private suspend fun proxyStream(
                 applyUpstreamAuthentication(
                     credential = credential,
                     authType = candidate.channel.authType,
-                    protocol = protocol,
+                    protocol = upstreamProtocol,
                     anthropicVersion = call.request.headers["anthropic-version"],
                     anthropicBeta = call.request.headers["anthropic-beta"],
                 )
@@ -777,7 +858,8 @@ private suspend fun proxyStream(
                         response.status,
                         response.bodyAsText(),
                         retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
-                        protocol,
+                        upstreamProtocol,
+                        allowNativeMessagesError = protocol == upstreamProtocol,
                     )
                 }
                 val upstream = response.bodyAsChannel()
@@ -789,7 +871,7 @@ private suspend fun proxyStream(
                             val next = upstream.readUTF8Line() ?: break
                             prefixLines.add(next)
                             if (
-                                protocol == GatewayProtocol.MESSAGES &&
+                                upstreamProtocol == GatewayProtocol.MESSAGES &&
                                 allowUpstreamErrorFailover &&
                                 isAnthropicStreamError(next)
                             ) {
@@ -799,7 +881,7 @@ private suspend fun proxyStream(
                                     throw error
                                 }
                             }
-                            if (next.trim().startsWith("data:") && isFirstStreamData(next, protocol)) {
+                            if (next.trim().startsWith("data:") && isFirstStreamData(next, upstreamProtocol)) {
                                 found = next
                             }
                         }
@@ -831,11 +913,11 @@ private suspend fun proxyStream(
                         try {
                             var sawDone = false
                             for (line in prefixLines) {
-                                writeSseLine(line)
-                                markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
-                                recordUsage(line, state, protocol)
-                                if (isStreamDone(line, protocol)) {
-                                    markTerminalStreamFailure(line, protocol, state)
+                                converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
+                                markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
+                                recordUsage(line, state, upstreamProtocol)
+                                if (isStreamDone(line, upstreamProtocol)) {
+                                    markTerminalStreamFailure(line, upstreamProtocol, state)
                                     writeSseLine("")
                                     sawDone = true
                                     break
@@ -853,17 +935,18 @@ private suspend fun proxyStream(
                                             "timeout_error",
                                         )
                                     } ?: break
-                                    writeSseLine(line)
-                                    markFirstToken(line, protocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
-                                    recordUsage(line, state, protocol)
-                                    if (isStreamDone(line, protocol)) {
-                                        markTerminalStreamFailure(line, protocol, state)
+                                    converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
+                                    markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
+                                    recordUsage(line, state, upstreamProtocol)
+                                    if (isStreamDone(line, upstreamProtocol)) {
+                                        markTerminalStreamFailure(line, upstreamProtocol, state)
                                         writeSseLine("")
                                         sawDone = true
                                         break
                                     }
                                 }
                             }
+                            converter?.finish()?.forEach { writeSseLine(it) }
                             if (!sawDone) state.errorCode = "stream_interrupted"
                             completion.complete(Unit)
                         } catch (e: Throwable) {
@@ -888,6 +971,8 @@ private suspend fun proxyStream(
             "timeout_error",
             retryable = !state.committed,
         )
+    } catch (e: ProtocolConversionException) {
+        throw e
     } catch (e: GatewayException) {
         throw e
     } catch (e: CancellationException) {
@@ -901,22 +986,24 @@ private suspend fun proxyJson(
     app: GatewayApplication,
     call: ApplicationCall,
     requestJson: JsonObject,
+    alias: String,
     candidate: RouteCandidate,
     timeoutMs: Long,
     state: ProxyState,
     protocol: GatewayProtocol,
+    upstreamProtocol: GatewayProtocol,
     traceparent: String,
 ) {
-    val upstreamUrl = buildUpstreamUrl(candidate, protocol)
+    val upstreamUrl = buildUpstreamUrl(candidate, upstreamProtocol)
     val credential = decryptCredential(app, candidate)
-    val body = requestJson.withModel(candidate.upstreamModel).toString()
+    val body = ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel).toString()
     try {
         withTimeout(timeoutMs) {
             val response = app.httpClient.post(upstreamUrl) {
                 applyUpstreamAuthentication(
                     credential = credential,
                     authType = candidate.channel.authType,
-                    protocol = protocol,
+                    protocol = upstreamProtocol,
                     anthropicVersion = call.request.headers["anthropic-version"],
                     anthropicBeta = call.request.headers["anthropic-beta"],
                 )
@@ -930,20 +1017,28 @@ private suspend fun proxyJson(
                     response.status,
                     text,
                     retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
-                    protocol,
+                    upstreamProtocol,
+                    allowNativeMessagesError = protocol == upstreamProtocol,
                 )
             }
-            state.committed = true
-            state.statusCode = response.status.value
+            val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
             state.usage = runCatching {
-                val json = Json.parseToJsonElement(text).jsonObject
-                when (protocol) {
+                json ?: return@runCatching null
+                when (upstreamProtocol) {
                     GatewayProtocol.CHAT_COMPLETIONS -> UsageParser.fromJson(json)
                     GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
                     GatewayProtocol.MESSAGES -> UsageParser.fromAnthropicJson(json)
                 }
             }.getOrNull()
-            call.respondText(text, ContentType.Application.Json, response.status)
+            val clientBody = if (protocol == upstreamProtocol) {
+                text
+            } else {
+                val parsed = json ?: throw transportFailure(false)
+                ProtocolConversion.convertResponse(protocol, upstreamProtocol, parsed, model = alias).toString()
+            }
+            state.committed = true
+            state.statusCode = response.status.value
+            call.respondText(clientBody, ContentType.Application.Json, response.status)
         }
     } catch (e: ChannelWriteException) {
         throw clientDisconnected()
@@ -955,6 +1050,8 @@ private suspend fun proxyJson(
             "timeout_error",
             retryable = !state.committed,
         )
+    } catch (e: ProtocolConversionException) {
+        throw e
     } catch (e: GatewayException) {
         throw e
     } catch (e: CancellationException) {
@@ -1003,13 +1100,18 @@ private fun clientDisconnected(): GatewayException =
         "api_error",
     )
 
+private const val MAX_KEY_MATCH_BODY_CHARS = 8_192
+
 private fun upstreamException(
     status: HttpStatusCode,
     body: String,
     retryAfterMs: Long?,
     protocol: GatewayProtocol,
+    allowNativeMessagesError: Boolean = true,
 ): GatewayException {
-    val nativeResponseBody = body.takeIf { protocol == GatewayProtocol.MESSAGES && isAnthropicErrorBody(it) }
+    val nativeResponseBody = body.takeIf {
+        allowNativeMessagesError && protocol == GatewayProtocol.MESSAGES && isAnthropicErrorBody(it)
+    }
     val upstreamCode = runCatching {
         val error = Json.parseToJsonElement(body).jsonObject["error"] as? JsonObject
         (error?.get("code") as? JsonPrimitive)?.contentOrNull
@@ -1029,15 +1131,16 @@ private fun upstreamException(
     }
     val retryable = status.value == 429 || status.value >= 500 || status.value == 401 || status.value == 403 || status.value == 404
     return GatewayException(
-        mapped,
-        "upstream_error",
-        message,
-        "api_error",
-        upstreamCode,
-        retryable,
-        retryAfterMs.takeIf { retryable },
-        status.value,
-        nativeResponseBody,
+        status = mapped,
+        code = "upstream_error",
+        message = message,
+        type = "api_error",
+        upstreamCode = upstreamCode,
+        retryable = retryable,
+        retryAfterMs = retryAfterMs.takeIf { retryable },
+        upstreamStatus = status.value,
+        nativeResponseBody = nativeResponseBody,
+        upstreamErrorBody = body.take(MAX_KEY_MATCH_BODY_CHARS),
     )
 }
 
@@ -1158,7 +1261,7 @@ private fun isFirstResponsesToken(line: String): Boolean {
     val type = runCatching {
         Json.parseToJsonElement(payload).jsonObject["type"]?.jsonPrimitive?.contentOrNull
     }.getOrNull()
-    return type in RESPONSES_END_EVENTS || type?.endsWith(".delta") == true
+    return type in RESPONSES_END_EVENTS || type == "error" || type?.endsWith(".delta") == true
 }
 
 private fun markTerminalStreamFailure(
@@ -1173,7 +1276,7 @@ private fun markTerminalStreamFailure(
     when (protocol) {
         GatewayProtocol.CHAT_COMPLETIONS -> Unit
         GatewayProtocol.RESPONSES -> when (type) {
-            "response.failed" -> state.errorCode = "responses_failed"
+            "response.failed", "error" -> state.errorCode = "responses_failed"
             "response.incomplete" -> state.errorCode = "responses_incomplete"
         }
         GatewayProtocol.MESSAGES -> if (type == "error") state.errorCode = "messages_failed"
@@ -1188,7 +1291,7 @@ private fun isStreamDone(line: String, protocol: GatewayProtocol): Boolean {
     }.getOrNull()
     return when (protocol) {
         GatewayProtocol.CHAT_COMPLETIONS -> false
-        GatewayProtocol.RESPONSES -> type in RESPONSES_END_EVENTS
+        GatewayProtocol.RESPONSES -> type in RESPONSES_END_EVENTS || type == "error"
         GatewayProtocol.MESSAGES -> type == "message_stop" || type == "error"
     }
 }
