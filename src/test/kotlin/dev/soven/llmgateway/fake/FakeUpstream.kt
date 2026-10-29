@@ -187,6 +187,11 @@ class FakeUpstream {
                     return
                 }
             }
+            "hold-500" -> {
+                chatHold.get()?.await()
+                call.respondText(ERROR_500, ContentType.Application.Json, HttpStatusCode.InternalServerError)
+                return
+            }
         }
         if (!stream) {
             call.respondText(NON_STREAM_BODY, ContentType.Application.Json)

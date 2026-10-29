@@ -45,7 +45,7 @@ client --client key--> gateway --configured auth--> protocol-compatible upstream
 
 Gemini 模型映射在 URL 中完成，不向请求体插入 OpenAI 的 `model` 或 `stream`。流式响应保留原生 `data:` 帧并读取 `finishReason` 之后可能出现的用量帧，不添加 `[DONE]`。模型发现会分页读取 Google `nextPageToken`，整个发现共享 15 秒超时和 2 MB 响应上限。
 
-管理面「渠道 → 上游请求配置」设置全局默认值；渠道编辑页可覆盖并选择是否继承全局。预设按实际出站协议选择：Messages → Claude Code，Chat/Responses → Codex，Gemini → Google Gen AI SDK，Gemini 可显式改选 Antigravity。覆盖顺序为预设 → 全局通用 → 全局协议 → 渠道通用 → 渠道协议；同层 `headers.User-Agent` 高于 `userAgent`。请求体使用 RFC 7396 JSON Merge Patch。完整字段、优先级与示例见 [上游请求配置指南](docs/upstream-request-overrides.md)。
+管理面「渠道 → 上游请求配置」设置全局默认值；渠道编辑页可覆盖并选择是否继承全局。预设按实际出站协议选择：Messages → Claude Code，Chat/Responses → Codex，Gemini → Google Gen AI SDK，Gemini 可显式改选 Antigravity。Claude、Codex、Google 版本由后台目录定时刷新并持久化，管理面可手动刷新、固定历史版本或恢复最新；Antigravity 可由可选 HTTPS manifest 覆盖。覆盖顺序为预设 → 全局通用 → 全局协议 → 渠道通用 → 渠道协议；同层 `headers.User-Agent` 高于 `userAgent`。请求体使用 RFC 7396 JSON Merge Patch。完整字段、优先级与示例见 [上游请求配置指南](docs/upstream-request-overrides.md)。
 
 ## 快速开始
 
@@ -100,6 +100,9 @@ Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `ht
 | `COOLDOWN_RATE_LIMIT_MAX_MS` | `60000` | 429 冷却时长上限（遵从 `Retry-After` 并封顶） |
 | `COOLDOWN_AUTH_FAILURE_MS` | `600000` | 401/403 密钥级冷却时长；达到自动禁用阈值后不再路由到该密钥 |
 | `KEY_AUTO_RECOVERY_INTERVAL_MS` | `30000` | 临时停用到期清理间隔，最小 1000、最大 3600000 毫秒 |
+| `UPSTREAM_HEADER_REFRESH_ENABLED` | `true` | 是否定时刷新 Claude、Codex 与 Google 请求头预设 |
+| `UPSTREAM_HEADER_REFRESH_INTERVAL_MS` | `3600000` | 请求头预设刷新间隔，范围 60000..604800000 毫秒 |
+| `UPSTREAM_HEADER_CATALOG_URL` | 空 | 可选 HTTPS manifest，用于覆盖完整请求头模板 |
 | `TTFT_SLOW_THRESHOLD_MS` | `10000` | 流式请求首 token 软阈值 |
 | `TTFT_SLOW_STREAK` | `3` | 首 token 连续超过软阈值多少次后触发候选冷却 |
 | `DRAIN_TIMEOUT_MS` | `30000` | 优雅停机 drain 时间 |

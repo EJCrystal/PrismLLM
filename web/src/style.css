@@ -2817,6 +2817,50 @@ input:disabled {
   min-width: 0;
 }
 
+.request-scope-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.request-scope-chip {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+  text-align: left;
+}
+
+.request-scope-chip span,
+.request-scope-chip small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-scope-chip small {
+  color: var(--muted);
+}
+
+.request-scope-chip.configured {
+  border-color: color-mix(in srgb, var(--info) 30%, var(--line));
+}
+
+.request-scope-chip.active {
+  border-color: var(--info);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 14%, transparent);
+}
+
+@media (max-width: 900px) {
+  .request-scope-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .request-overrides-fields {
   padding-top: 16px;
 }
@@ -2837,6 +2881,84 @@ input:disabled {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.6;
+}
+
+.header-catalog-panel {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg);
+}
+
+.header-catalog-heading,
+.header-catalog-status,
+.header-catalog-row,
+.header-catalog-version {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header-catalog-heading {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.header-catalog-heading p {
+  margin: 4px 0 0;
+}
+
+.header-catalog-status {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.header-catalog-error {
+  margin: 0;
+  color: var(--warning);
+}
+
+.header-catalog-list {
+  display: grid;
+  gap: 8px;
+}
+
+.header-catalog-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(120px, auto) minmax(180px, 220px);
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.header-catalog-row > div {
+  min-width: 0;
+}
+
+.header-catalog-row .small {
+  overflow-wrap: anywhere;
+}
+
+.header-catalog-row select {
+  width: 100%;
+  min-width: 0;
+}
+
+.header-catalog-version {
+  justify-content: flex-start;
+}
+
+@media (max-width: 640px) {
+  .header-catalog-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .header-catalog-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .form-grid {

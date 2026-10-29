@@ -20,6 +20,9 @@ watch(() => props.value, (value) => {
   Object.assign(drafts, createRequestOverrideDrafts(value))
   inheritGlobal.value = value.inheritGlobal !== false
 }, { immediate: true })
+watch(() => props.profiles, (profiles) => {
+  if (profiles) availableProfiles.value = profiles
+}, { deep: true })
 watch([drafts, inheritGlobal], () => emit('changed'), { deep: true })
 
 if (props.profiles === null) {
@@ -29,6 +32,29 @@ if (props.profiles === null) {
 }
 
 const current = computed(() => drafts[scope.value])
+const scopeHint = computed(() => ({
+  common: '应用于全部出站协议，也用于模型发现、连通性测试和协议探测。适合团队标识等通用请求头。',
+  chat_completions: '仅作用于实际发往上游的 Chat Completions 请求；覆盖同层通用配置。',
+  responses: '仅作用于实际发往上游的 Responses 请求；可单独设置 reasoning、store 等参数。',
+  messages: '仅作用于实际发往上游的 Anthropic Messages 请求；可单独设置 anthropic-* 请求头。',
+  gemini: '仅作用于实际发往上游的 Gemini 请求；可单独设置 generationConfig 等参数。',
+}[scope.value]))
+const scopeSummaries = computed(() => REQUEST_OVERRIDE_SCOPES.map(({ id, label, errorLabel }) => {
+  const layer = drafts[id]
+  const fields = []
+  if (layer.headerProfile) {
+    fields.push(layer.headerProfile === 'none' ? '无预设' : layer.headerProfile === 'auto' ? '自动预设' : layer.headerProfile)
+  }
+  if (layer.omitUserAgent) fields.push('清空 UA')
+  else if (layer.userAgent?.trim()) fields.push('UA')
+  if (layer.headersText?.trim() && layer.headersText.trim() !== '{}') fields.push('请求头')
+  if (layer.bodyText?.trim() && layer.bodyText.trim() !== '{}') fields.push('请求体')
+  return {
+    id,
+    label: errorLabel || label,
+    summary: fields.length ? fields.join(' · ') : '继承 / 未配置',
+  }
+}))
 const previewProfile = computed(() => {
   const selected = current.value.headerProfile || drafts.common.headerProfile || 'auto'
   if (selected === 'auto' && scope.value === 'common') return null
@@ -52,17 +78,32 @@ defineExpose({ getValue: () => buildRequestOverrides(drafts, props.global || inh
       <select v-model="scope" :disabled="disabled">
         <option v-for="item in REQUEST_OVERRIDE_SCOPES" :key="item.id" :value="item.id">{{ item.label }}</option>
       </select>
-      <small>通用配置适用于全部请求；按协议配置会覆盖同一层的通用配置。</small>
+      <small>{{ scopeHint }}</small>
     </label>
+    <div class="request-scope-summary" aria-label="各配置范围状态">
+      <button
+        v-for="item in scopeSummaries"
+        :key="item.id"
+        type="button"
+        class="request-scope-chip"
+        :class="{ active: scope === item.id, configured: item.summary !== '继承 / 未配置' }"
+        :disabled="disabled"
+        @click="scope = item.id"
+      >
+        <span>{{ item.label }}</span>
+        <small>{{ item.summary }}</small>
+      </button>
+    </div>
     <label class="field">
       <span>请求头预设</span>
       <select v-model="current.headerProfile" :disabled="disabled">
-        <option value="">{{ global ? '跟随通用配置 / 按协议自动' : '跟随全局 / 通用配置' }}</option>
+        <option v-if="global && scope === 'common' && !current.headerProfile" value="" disabled>请选择预设</option>
+        <option v-if="!(global && scope === 'common')" value="">{{ global ? '跟随通用配置 / 下级配置' : '跟随全局 / 通用配置' }}</option>
         <option value="auto">按协议自动：Claude / Codex / Google SDK</option>
         <option value="none">不使用预设</option>
         <option v-for="profile in availableProfiles" :key="profile.id" :value="profile.id">{{ profile.name }}</option>
       </select>
-      <small>Anthropic 使用 Claude；Chat、Responses 使用 Codex；Gemini 使用 Google SDK，也可选择 Antigravity。</small>
+      <small>“继承”表示不覆盖较低层；显式自动会按实际出站协议选择 Claude、Codex 或 Google SDK。</small>
       <small v-if="profileError" class="text-danger">预设信息加载失败：{{ profileError }}。可关闭后重新打开。</small>
     </label>
     <label class="field">
@@ -92,7 +133,7 @@ defineExpose({ getValue: () => buildRequestOverrides(drafts, props.global || inh
     <details v-if="previewProfile" class="request-overrides-details">
       <summary>{{ previewProfile.name }} 预设请求头</summary>
       <pre class="request-overrides-preview">{{ previewHeaders }}</pre>
-      <small>预设版本固定；可通过 UA 和请求头覆盖更新版本。仅设置请求头，不改变所选协议的请求格式。</small>
+      <small>此处展示当前缓存版本；完整版本历史、手动刷新和固定版本可在全局配置的「动态预设目录」中管理。</small>
     </details>
   </div>
 </template>

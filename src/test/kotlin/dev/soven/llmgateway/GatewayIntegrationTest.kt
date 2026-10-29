@@ -14,6 +14,7 @@ import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
+import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.repo.AliasWithCandidates
 import dev.soven.llmgateway.repo.NewCandidate
@@ -21,6 +22,10 @@ import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
+import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
+import dev.soven.llmgateway.proxy.HeaderProfileVersionSource
+import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
+import dev.soven.llmgateway.proxy.UpstreamHeaderProfiles
 import dev.soven.llmgateway.resilience.KeyAttemptOutcome
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.resilience.FailureKind
@@ -58,6 +63,7 @@ import io.ktor.util.cio.ChannelWriteException
 import org.flywaydb.core.Flyway
 import org.flywaydb.core.api.MigrationVersion
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -4964,7 +4970,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("36", result.getString(1))
+                        assertEquals("37", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -6145,6 +6151,8 @@ class GatewayIntegrationTest {
             ttftSlowStreak = ttftSlowStreak,
         ),
         keyAutoRecoveryIntervalMs = keyAutoRecoveryIntervalMs,
+        upstreamHeaderRefreshEnabled = false,
+        upstreamHeaderRefreshIntervalMs = 3_600_000,
     )
 
     private fun requestLog(requestId: String, createdAt: Long) = RequestLogRecord(
@@ -6520,6 +6528,79 @@ class GatewayIntegrationTest {
 
     @Test
     @Tag("upstream-request-overrides")
+    fun headerCatalogSnapshotIsStableAcrossFailoverAttempts() = runBlocking {
+        val repository = app.upstreamHeaderCatalogRepository
+        val codex = UpstreamHeaderProfiles.defaults.first { it.id == "codex" }
+        val oldProfile = codex.copy(
+            version = "9.9.1",
+            headers = codex.headers + mapOf(
+                "User-Agent" to "codex_cli_rs/9.9.1 (Linux; x86_64)",
+                "version" to "9.9.1",
+            ),
+        )
+        val newProfile = oldProfile.copy(
+            version = "9.9.2",
+            headers = oldProfile.headers + mapOf(
+                "User-Agent" to "codex_cli_rs/9.9.2 (Linux; x86_64)",
+                "version" to "9.9.2",
+            ),
+        )
+        repository.saveRefresh(
+            UpstreamHeaderProfiles.defaults.map { if (it.id == "codex") oldProfile else it },
+            checkedAt = 1_000,
+            successAt = 1_000,
+            lastError = null,
+        )
+        app.upstreamHeaderCatalogService.initialize()
+        val bad = createChannelWithBaseUrl(
+            "snapshot-bad", fake.baseUrl + "/hold-500/v1", modelMappings = mappingsOf("m1"),
+        )
+        val good = createChannelWithBaseUrl(
+            "snapshot-good", fake.baseUrl + "/ok/v1", modelMappings = mappingsOf("m2"),
+        )
+        createAlias("snapshot-model", bad to "m1", good to "m2")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val release = fake.holdChatRequests()
+            val response = async {
+                client.post("/v1/chat/completions") {
+                    header(HttpHeaders.Authorization, "Bearer $key")
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"model":"snapshot-model","messages":[]}""")
+                }
+            }
+            try {
+                awaitCondition("first attempt reaches the upstream") { fake.requests.size == 1 }
+                repository.saveRefresh(
+                    UpstreamHeaderProfiles.defaults.map { if (it.id == "codex") newProfile else it },
+                    checkedAt = 2_000,
+                    successAt = 2_000,
+                    lastError = null,
+                )
+                app.upstreamHeaderCatalogService.initialize()
+                release.complete(Unit)
+                val result = response.await()
+                assertEquals(HttpStatusCode.OK, result.status)
+                result.bodyAsText()
+                assertEquals(2, fake.requests.size)
+                assertEquals(
+                    listOf(
+                        "codex_cli_rs/9.9.1 (Linux; x86_64)",
+                        "codex_cli_rs/9.9.1 (Linux; x86_64)",
+                    ),
+                    fake.requests.map { it.requestHeaders["user-agent"]?.single() },
+                )
+            } finally {
+                release.complete(Unit)
+                response.cancel()
+                fake.clearChatHold()
+            }
+        }
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
     fun globalOverridesApiValidatesPersistsAndAuditsWithoutValues() = runBlocking {
         val session = app.sessions.create("admin")
         testApplication {
@@ -6540,6 +6621,37 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, saved.status)
             val settings = Json.parseToJsonElement(saved.bodyAsText()).jsonObject
             assertEquals(4, settings["profiles"]!!.jsonArray.size)
+            val catalog = settings["headerCatalog"]!!.jsonObject
+            assertEquals(4, catalog["profiles"]!!.jsonArray.size)
+            assertFalse(catalog["autoRefreshEnabled"]!!.jsonPrimitive.boolean)
+            app.upstreamHeaderCatalogRepository.saveRefresh(
+                UpstreamHeaderProfiles.defaults,
+                checkedAt = 1_000,
+                successAt = 1_000,
+                lastError = null,
+            )
+            app.upstreamHeaderCatalogService.initialize()
+            val pinned = client.put("/admin/api/upstream-request-settings/header-profiles/claude/pin") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"version":"2.1.312"}""")
+            }
+            assertEquals(HttpStatusCode.OK, pinned.status)
+            assertEquals(
+                "2.1.312",
+                Json.parseToJsonElement(pinned.bodyAsText()).jsonObject["headerCatalog"]!!
+                    .jsonObject["pins"]!!.jsonObject["claude"]!!.jsonPrimitive.content,
+            )
+            val unpinned = client.delete("/admin/api/upstream-request-settings/header-profiles/claude/pin") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+            }
+            assertEquals(HttpStatusCode.OK, unpinned.status)
+            assertFalse(
+                Json.parseToJsonElement(unpinned.bodyAsText()).jsonObject["headerCatalog"]!!
+                    .jsonObject["pins"]!!.jsonObject.containsKey("claude"),
+            )
             assertEquals("private-UA", app.upstreamRequestSettingsRepository.load().overrides.userAgent)
             val invalidRules = listOf(
                 """{"headers":{"Authorization":"plaintext"}}""",
@@ -6563,6 +6675,246 @@ class GatewayIntegrationTest {
             assertFalse(audit.contains("private-UA"))
             assertFalse(audit.contains("plaintext"))
         }
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogRefreshesPersistsAndPinsVersions() = runBlocking {
+        var clock = 1_000L
+        var claudeVersion = "2.1.400"
+        var codexVersion = "0.170.0"
+        var claudeFailure = false
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val sources = listOf(
+            HeaderProfileVersionSource("claude", "test:npm") {
+                if (claudeFailure) error("registry unavailable") else claudeVersion
+            },
+            HeaderProfileVersionSource("codex", "test:github") { codexVersion },
+            HeaderProfileVersionSource("google", "test:npm") { error("registry unavailable") },
+        )
+        fun service() = UpstreamHeaderCatalogService(
+            httpClient = app.httpClient,
+            repository = repository,
+            refreshIntervalMs = 60_000,
+            autoRefreshEnabled = false,
+            versionSources = sources,
+            now = { clock },
+        )
+
+        val catalog = service()
+        catalog.initialize()
+        val first = catalog.refreshNow()
+        assertEquals("2.1.400", first.profiles.first { it.id == "claude" }.version)
+        assertEquals("0.170.0", first.profiles.first { it.id == "codex" }.version)
+        assertEquals(UpstreamHeaderProfiles.defaults.first { it.id == "google" }.version, first.profiles.first { it.id == "google" }.version)
+        assertTrue(first.lastError!!.contains("google"))
+
+        catalog.pin("claude", "2.1.400")
+        clock = 2_000L
+        claudeVersion = "2.1.401"
+        codexVersion = "0.171.0"
+        val refreshed = catalog.refreshNow()
+        assertEquals("2.1.400", refreshed.profiles.first { it.id == "claude" }.version)
+        assertEquals("2.1.400", refreshed.pins["claude"])
+        assertEquals("2.1.401", refreshed.history["claude"]!!.first().version)
+        assertEquals("0.171.0", refreshed.profiles.first { it.id == "codex" }.version)
+
+        clock = 3_000L
+        claudeFailure = true
+        val failedPinnedRefresh = catalog.refreshNow()
+        assertEquals("2.1.400", failedPinnedRefresh.profiles.first { it.id == "claude" }.version)
+
+        val reloaded = service()
+        reloaded.initialize()
+        assertEquals("2.1.400", reloaded.profiles().first { it.id == "claude" }.version)
+        val unpinned = reloaded.unpin("claude")
+        assertEquals("2.1.401", unpinned.profiles.first { it.id == "claude" }.version)
+        assertEquals(2, unpinned.history["claude"]!!.size)
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogConcurrentUpsertsAndPinnedVersionSurvivePruning() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val base = UpstreamHeaderProfiles.defaults.first { it.id == "claude" }
+        val first = base.copy(version = "1.0.0")
+        coroutineScope {
+            (1..8).map { index ->
+                async(Dispatchers.IO) {
+                    repository.saveRefresh(listOf(first), index.toLong(), index.toLong(), null)
+                }
+            }.awaitAll()
+        }
+        repository.pin("claude", first.version)
+        repeat(25) { index ->
+            repository.saveRefresh(
+                listOf(base.copy(version = "2.0." + index)),
+                checkedAt = 100L + index,
+                successAt = 100L + index,
+                lastError = null,
+            )
+        }
+        val loaded = repository.load(UpstreamHeaderProfiles.defaults)
+        assertEquals(first.version, loaded.pins["claude"])
+        assertTrue(loaded.history["claude"]!!.any { it.version == first.version })
+        val deletePinned = runCatching {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.prepareStatement(
+                    "delete from upstream_header_profile_versions where profile_id = ? and version = ?",
+                ).use { statement ->
+                    statement.setString(1, "claude")
+                    statement.setString(2, first.version)
+                    statement.executeUpdate()
+                }
+            }
+        }
+        assertTrue(deletePinned.isFailure)
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogRejectsInvalidPersistedProfilesAndRedactsStoredErrors() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        repository.saveRefresh(UpstreamHeaderProfiles.defaults, 1_000, 1_000, null)
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeUpdate(
+                    """insert into upstream_header_profile_versions
+                       (profile_id, version, name, headers, source, fetched_at)
+                       values ('claude', '9.9.9', 'Poisoned', '{"Authorization":"secret"}', 'test', 9999)""",
+                )
+                statement.executeUpdate(
+                    """insert into upstream_header_profile_versions
+                       (profile_id, version, name, headers, source, fetched_at)
+                       values ('claude', '9.9.8', 'MalformedJson', '{invalid json}', 'test', 9998)""",
+                )
+                statement.executeUpdate(
+                    """insert into upstream_header_profile_versions
+                       (profile_id, version, name, headers, source, fetched_at)
+                       values ('codex', 'invalid version!', 'BadVersion', '{}', 'test', 9997)""",
+                )
+                statement.executeUpdate(
+                    """update upstream_header_catalog_state
+                       set last_error = 'https://user:secret@internal.example/path?token=secret' where id = 1""",
+                )
+            }
+        }
+        val service = UpstreamHeaderCatalogService(
+            httpClient = app.httpClient,
+            repository = repository,
+            refreshIntervalMs = 60_000,
+            autoRefreshEnabled = false,
+            versionSources = emptyList(),
+        )
+        service.initialize()
+        val snapshot = service.snapshot()
+        assertEquals(
+            UpstreamHeaderProfiles.defaults.first { it.id == "claude" }.version,
+            snapshot.profiles.first { it.id == "claude" }.version,
+        )
+        assertEquals(
+            UpstreamHeaderProfiles.defaults.first { it.id == "codex" }.version,
+            snapshot.profiles.first { it.id == "codex" }.version,
+        )
+        assertTrue(snapshot.lastError!!.contains("catalog:invalid_persisted_profile"))
+        assertTrue(snapshot.lastError.contains("catalog:stored_error_redacted"))
+        assertFalse(snapshot.lastError.contains("secret"))
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogRefreshErrorsExposeOnlyStableCategories() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val service = UpstreamHeaderCatalogService(
+            httpClient = app.httpClient,
+            repository = repository,
+            refreshIntervalMs = 60_000,
+            autoRefreshEnabled = false,
+            versionSources = listOf(
+                HeaderProfileVersionSource("claude", "test") {
+                    error("https://user:secret@internal.example/path?token=secret")
+                },
+            ),
+        )
+        service.initialize()
+        val snapshot = service.refreshNow()
+        assertEquals("claude:invalid_response", snapshot.lastError)
+        assertEquals(
+            UpstreamHeaderProfiles.defaults.map { it.id to it.version },
+            snapshot.profiles.map { it.id to it.version },
+        )
+        assertFalse(snapshot.lastError!!.contains("secret"))
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogInvalidSourceVersionDoesNotAbortOtherSources() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val service = UpstreamHeaderCatalogService(
+            httpClient = app.httpClient,
+            repository = repository,
+            refreshIntervalMs = 60_000,
+            autoRefreshEnabled = false,
+            versionSources = listOf(
+                HeaderProfileVersionSource("claude", "test") { "not a version!" },
+                HeaderProfileVersionSource("codex", "test") { "0.171.0" },
+            ),
+        )
+        service.initialize()
+        val snapshot = service.refreshNow()
+        assertEquals(
+            UpstreamHeaderProfiles.defaults.first { it.id == "claude" }.version,
+            snapshot.profiles.first { it.id == "claude" }.version,
+        )
+        assertEquals("0.171.0", snapshot.profiles.first { it.id == "codex" }.version)
+        assertTrue(snapshot.lastError!!.contains("claude:invalid_response"))
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogVersionIdentityCannotBeOverwritten() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val original = UpstreamHeaderProfiles.defaults.first { it.id == "claude" }
+        repository.saveRefresh(UpstreamHeaderProfiles.defaults, 1_000, 1_000, null)
+        repository.pin("claude", original.version)
+        val changed = original.copy(headers = original.headers + ("X-Changed" to "yes"))
+        val partial = repository.saveRefresh(
+            UpstreamHeaderProfiles.defaults.map { if (it.id == "claude") changed else it },
+            2_000,
+            2_000,
+            null,
+        )
+        assertEquals(original.headers, partial.profiles.first { it.id == "claude" }.headers)
+        assertTrue(partial.lastError!!.contains("claude:version_conflict"))
+        assertEquals(2_000, partial.successAt)
+
+        val allConflict = repository.saveRefresh(listOf(changed), 3_000, 3_000, null)
+        assertEquals(original.headers, allConflict.profiles.first { it.id == "claude" }.headers)
+        assertTrue(allConflict.lastError!!.contains("claude:version_conflict"))
+        assertEquals(2_000, allConflict.successAt)
+        assertEquals(3_000, allConflict.checkedAt)
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogRefreshPropagatesCancellationAndResetsRefreshingState() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val service = UpstreamHeaderCatalogService(
+            httpClient = app.httpClient,
+            repository = repository,
+            refreshIntervalMs = 60_000,
+            autoRefreshEnabled = false,
+            versionSources = listOf(
+                HeaderProfileVersionSource("claude", "test") {
+                    throw CancellationException("simulated cancellation")
+                },
+            ),
+        )
+        service.initialize()
+        assertFailsWith<CancellationException> {
+            service.refreshNow()
+        }
+        assertFalse(service.snapshot().refreshing)
     }
 
     @Test
@@ -7171,7 +7523,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, key_auto_disable_settings, request_logs, alias_candidates, model_aliases, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, alias_candidates, model_aliases, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }

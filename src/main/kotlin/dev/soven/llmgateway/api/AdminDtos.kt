@@ -13,8 +13,8 @@ import dev.soven.llmgateway.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.domain.ModelTestSettingsRecord
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamRequestSettingsRecord
-import dev.soven.llmgateway.proxy.UpstreamHeaderProfile
-import dev.soven.llmgateway.proxy.UpstreamHeaderProfiles
+import dev.soven.llmgateway.domain.UpstreamHeaderCatalogSnapshot
+import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.proxy.ModelConnectivityTestResult
 import dev.soven.llmgateway.proxy.Usage
@@ -260,14 +260,48 @@ fun ChannelRecord.toResponse() = ChannelResponse(
 data class UpstreamRequestSettingsRequest(val overrides: UpstreamRequestOverrides)
 
 @Serializable
+data class HeaderProfilePinRequest(val version: String)
+
+@Serializable
+data class UpstreamHeaderCatalogResponse(
+    val revision: String,
+    val checkedAt: Long,
+    val successAt: Long?,
+    val lastError: String?,
+    val refreshing: Boolean,
+    val autoRefreshEnabled: Boolean,
+    val refreshIntervalMs: Long,
+    val profiles: List<UpstreamHeaderProfile>,
+    val history: Map<String, List<UpstreamHeaderProfile>>,
+    val pins: Map<String, String>,
+)
+
+@Serializable
 data class UpstreamRequestSettingsResponse(
     val overrides: UpstreamRequestOverrides,
     val profiles: List<UpstreamHeaderProfile>,
     val updatedAt: Long,
+    val headerCatalog: UpstreamHeaderCatalogResponse,
 )
 
-fun UpstreamRequestSettingsRecord.toResponse() = UpstreamRequestSettingsResponse(
-    overrides, UpstreamHeaderProfiles.profiles, updatedAt,
+fun UpstreamHeaderCatalogSnapshot.toResponse() = UpstreamHeaderCatalogResponse(
+    revision = revision,
+    checkedAt = checkedAt,
+    successAt = successAt,
+    lastError = lastError,
+    refreshing = refreshing,
+    autoRefreshEnabled = autoRefreshEnabled,
+    refreshIntervalMs = refreshIntervalMs,
+    profiles = profiles,
+    history = history,
+    pins = pins,
+)
+
+fun UpstreamRequestSettingsRecord.toResponse(catalog: UpstreamHeaderCatalogSnapshot) = UpstreamRequestSettingsResponse(
+    overrides = overrides,
+    profiles = catalog.profiles,
+    updatedAt = updatedAt,
+    headerCatalog = catalog.toResponse(),
 )
 
 /**

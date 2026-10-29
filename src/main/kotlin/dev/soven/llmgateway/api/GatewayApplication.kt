@@ -11,6 +11,7 @@ import dev.soven.llmgateway.proxy.ModelPricingService
 import dev.soven.llmgateway.proxy.UpstreamModelCatalog
 import dev.soven.llmgateway.proxy.ModelPriceReferenceService
 import dev.soven.llmgateway.proxy.CurrencyExchangeService
+import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.repo.AdminUserRepository
 import dev.soven.llmgateway.repo.AdminAuditRepository
 import dev.soven.llmgateway.repo.AliasRepository
@@ -22,6 +23,7 @@ import dev.soven.llmgateway.repo.RequestLogRepository
 import dev.soven.llmgateway.repo.RetentionSettingsRepository
 import dev.soven.llmgateway.repo.ModelTestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
+import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.ChannelKeyStateChangedException
 import dev.soven.llmgateway.repo.ChannelKeyReenableRequiresCredentialException
@@ -111,6 +113,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val upstreamRequestSettingsRepository = UpstreamRequestSettingsRepository(databaseFactory.database)
+    val upstreamHeaderCatalogRepository = UpstreamHeaderCatalogRepository(databaseFactory.database)
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
     val modelDefaultPriceRepository = ModelDefaultPriceRepository(databaseFactory.database)
     val modelPricingService = ModelPricingService(modelPriceRepository, modelDefaultPriceRepository)
@@ -140,10 +143,18 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val modelCatalog = UpstreamModelCatalog(channelRepository)
     val modelPriceReferenceService = ModelPriceReferenceService(httpClient)
     val currencyExchangeService = CurrencyExchangeService(httpClient)
+    val upstreamHeaderCatalogService = UpstreamHeaderCatalogService(
+        httpClient = httpClient,
+        repository = upstreamHeaderCatalogRepository,
+        refreshIntervalMs = config.upstreamHeaderRefreshIntervalMs,
+        autoRefreshEnabled = config.upstreamHeaderRefreshEnabled,
+        manifestUrl = config.upstreamHeaderCatalogUrl,
+    )
 
     fun install(app: Application) {
         databaseFactory.migrate()
         runBlocking { upstreamRequestSettingsRepository.load() }
+        runBlocking { upstreamHeaderCatalogService.initialize() }
         runBlocking { seedAdmin() }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
         runBlocking {
@@ -307,6 +318,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         }
         app.monitor.subscribe(ApplicationStopped) { close() }
         modelPriceReferenceService.start(scope)
+        if (config.upstreamHeaderRefreshEnabled) upstreamHeaderCatalogService.start(scope)
         startKeyAutoRecovery()
         runBlocking { syncLogRetentionJob() }
     }

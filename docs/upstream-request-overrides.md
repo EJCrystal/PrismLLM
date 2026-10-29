@@ -11,6 +11,13 @@
 
 两处均可选择通用配置或某个协议。协议键为 `chat_completions`、`responses`、`messages`、`gemini`；通用配置直接放在 `overrides` / `requestOverrides` 顶层，协议配置放在 `protocols` 下。
 
+「配置范围」只决定正在编辑哪一层，不会切换或限制渠道路由：
+
+- **通用配置**：应用于全部出站协议，也用于模型发现、连通性测试和协议探测。适合团队标识、通用 UA 等所有协议都能接受的请求头。
+- **协议专用配置**：只在实际出站协议匹配时应用。可以分别给 Chat、Responses、Messages 和 Gemini 设置不同 UA、请求头和请求体参数，例如 Responses 的 `reasoning`、Messages 的 `anthropic-beta`、Gemini 的 `generationConfig`。
+
+同一层的协议专用配置高于通用配置。完整的全局/渠道组合顺序仍是：最终预设 → 全局通用 → 全局协议 → 渠道通用 → 渠道协议。
+
 保存后新请求立即使用新配置，重启后保留。全局写入会整体替换 `overrides`；渠道写入时，省略整个 `requestOverrides` 字段会保留原配置，传入该字段则整体替换渠道请求配置。修改其中一个协议时，也要保留还需要的其他协议规则。
 
 全局配置在单实例网关启动时加载到进程内缓存，后续请求复用该快照。通过管理接口保存并完成数据库提交后立即更新缓存；保存失败时继续使用原快照，重启后重新读取持久化配置。正在进行的请求保持自己的快照，下一次请求使用新配置。
@@ -57,16 +64,49 @@
 
 `auto` 按实际出站协议选择，不根据模型名称猜测，也不受渠道使用 Bearer 或 API key 鉴权的影响。
 
-| 出站协议 | `auto` 选择 | 当前预设 UA |
+| 出站协议 | `auto` 选择 | 内置默认 UA |
 | --- | --- | --- |
-| `messages` | `claude`（Claude Code） | `claude-cli/2.1.258 (external, cli)` |
-| `chat_completions` | `codex` | `codex_cli_rs/0.146.0 (Linux; x86_64)` |
-| `responses` | `codex` | `codex_cli_rs/0.146.0 (Linux; x86_64)` |
-| `gemini` | `google`（Google Gen AI SDK） | `google-genai-sdk/2.31.0` |
+| `messages` | `claude`（Claude Code） | `claude-cli/2.1.312 (external, cli)` |
+| `chat_completions` | `codex` | `codex_cli_rs/0.165.0 (Linux; x86_64)` |
+| `responses` | `codex` | `codex_cli_rs/0.165.0 (Linux; x86_64)` |
+| `gemini` | `google`（Google Gen AI SDK） | `google-genai-sdk/2.32.0` |
 
 也可显式选择 `antigravity`，其当前 UA 为 `antigravity/hub/2.23.0 windows/amd64`。例如希望 Gemini 使用它，可在全局或渠道的 Gemini 范围选择 Antigravity，即设置 `protocols.gemini.headerProfile`。
 
-Claude 预设还提供 `x-app` 和 `x-stainless-*`；Codex 提供 `originator` / `version`；Google SDK 提供 `x-goog-api-client`。完整预设头可在管理面展开查看，也可从 `GET /admin/api/upstream-request-settings` 响应的 `profiles` 获取。预设版本固定，不自动追随上游客户端版本。
+Claude 预设还提供 `x-app` 和 `x-stainless-*`；Codex 提供 `originator` / `version`；Google SDK 提供 `x-goog-api-client`。完整预设头可在管理面展开查看，也可从 `GET /admin/api/upstream-request-settings` 响应的 `profiles` 获取。
+
+网关每小时检查 Claude Code npm 包、Codex GitHub Release 和 Google Gen AI SDK npm 包的最新版本，并将版本写入完整请求头模板。刷新结果持久化到 PostgreSQL；远端失败时继续使用最近成功快照，进程重启后也不会丢失。当前请求只在开始时读取一次快照，因此同一请求的所有故障转移尝试使用同一组请求头。
+
+管理面的「动态预设目录」可以立即刷新、查看当前与历史版本，并固定某个完整请求头快照。固定版本不会随自动刷新变化；恢复「跟随最新版本」后会立即采用历史中按抓取时间排序的最新快照，无需等待下一次刷新。每个 profile 保留最近 20 个版本。
+
+刷新配置：
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `UPSTREAM_HEADER_REFRESH_ENABLED` | `true` | 是否启动后台自动刷新 |
+| `UPSTREAM_HEADER_REFRESH_INTERVAL_MS` | `3600000` | 刷新间隔，范围 60000..604800000 毫秒 |
+| `UPSTREAM_HEADER_CATALOG_URL` | 空 | 可选的 HTTPS manifest，用于覆盖完整请求头，包括 Antigravity |
+
+manifest 格式如下。只接受已知的 `claude`、`codex`、`google`、`antigravity` ID；每个 profile 必须包含 `User-Agent`，且不能覆盖鉴权、Host、长度、编码、连接和 Trace 等网关管理头：
+
+```json
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "antigravity",
+      "name": "Antigravity",
+      "version": "2.24.0",
+      "headers": {
+        "User-Agent": "antigravity/hub/2.24.0 windows/amd64"
+      },
+      "source": "https://example.com/antigravity/releases"
+    }
+  ]
+}
+```
+
+管理 API：`POST /admin/api/upstream-request-settings/header-catalog/refresh` 立即刷新；`PUT /admin/api/upstream-request-settings/header-profiles/{id}/pin` 以 `{"version":"..."}` 固定版本；`DELETE` 同一路径恢复最新版本。
 
 规范 Codex UA（例如 `codex_cli_rs/0.150.0 (Linux; x86_64)`）更新版本时，Codex 预设会自动配对 `originator` / `version`；任何层显式设置或删除这两个头时，以显式配置为准。其他预设的版本头需要按需单独覆盖。
 

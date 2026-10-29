@@ -4,6 +4,7 @@ import { api } from '../api'
 import { notify } from '../toast'
 import Modal from './Modal.vue'
 import RequestOverridesEditor from './RequestOverridesEditor.vue'
+import HeaderProfileCatalog from './HeaderProfileCatalog.vue'
 
 const emit = defineEmits(['close', 'saved'])
 const settings = ref(null)
@@ -45,6 +46,15 @@ async function save() {
     saving.value = false
   }
 }
+
+function applyCatalog(response) {
+  if (!settings.value) return
+  settings.value = {
+    ...settings.value,
+    profiles: response.profiles,
+    headerCatalog: response.headerCatalog,
+  }
+}
 onMounted(load)
 </script>
 
@@ -56,7 +66,15 @@ onMounted(load)
       <p class="text-danger">加载失败：{{ error }}</p>
       <button type="button" class="button subtle" @click="load">重新加载</button>
     </div>
-    <RequestOverridesEditor v-else-if="settings" ref="editor" :value="settings.overrides" :profiles="settings.profiles" global :disabled="saving" />
+    <template v-else-if="settings">
+      <HeaderProfileCatalog
+        v-if="settings.headerCatalog"
+        :catalog="settings.headerCatalog"
+        :disabled="saving"
+        @updated="applyCatalog"
+      />
+      <RequestOverridesEditor ref="editor" :value="settings.overrides" :profiles="settings.profiles" global :disabled="saving" />
+    </template>
     <template #footer>
       <button type="button" class="button ghost" @click="$emit('close')">取消</button>
       <button type="button" class="button primary" :disabled="loading || !!error || saving" @click="save">

@@ -6,6 +6,7 @@ import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamModel
+import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
@@ -41,6 +42,7 @@ suspend fun fetchUpstreamModels(
     httpClient: HttpClient,
     authorizedOnly: Boolean = true,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
+    headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): List<UpstreamModel> {
     if (authorizedOnly && key.models.isEmpty()) return emptyList()
     val credential = runCatching {
@@ -57,6 +59,7 @@ suspend fun fetchUpstreamModels(
     val models = fetchUpstreamModels(
         channel.baseUrl, credential, httpClient, channel.authType,
         protocol = channel.modelListProtocol(), globalOverrides = globalOverrides, channelOverrides = channel.requestOverrides,
+        headerProfiles = headerProfiles,
     )
     return if (authorizedOnly) models.filter { it.id in key.models } else models
 }
@@ -72,9 +75,10 @@ suspend fun fetchUpstreamModels(
     protocol: GatewayProtocol? = null,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     channelOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
+    headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): List<UpstreamModel> {
     val url = baseUrl.trimEnd('/') + "/models"
-    val policy = UpstreamRequestPolicy(globalOverrides, channelOverrides, protocol, authType)
+    val policy = UpstreamRequestPolicy(globalOverrides, channelOverrides, protocol, authType, headerProfiles)
     try {
         return withTimeout(MODEL_LIST_TIMEOUT_MS) {
             val models = mutableListOf<UpstreamModel>()

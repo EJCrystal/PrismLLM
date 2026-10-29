@@ -1,9 +1,9 @@
 export const REQUEST_OVERRIDE_SCOPES = [
-  { id: 'common', label: '通用配置' },
-  { id: 'chat_completions', label: 'Chat Completions' },
-  { id: 'responses', label: 'Responses' },
-  { id: 'messages', label: 'Anthropic Messages' },
-  { id: 'gemini', label: 'Gemini' },
+  { id: 'common', label: '通用配置（所有协议）', errorLabel: '通用配置' },
+  { id: 'chat_completions', label: 'Chat Completions（仅该协议）', errorLabel: 'Chat Completions' },
+  { id: 'responses', label: 'Responses（仅该协议）', errorLabel: 'Responses' },
+  { id: 'messages', label: 'Anthropic Messages（仅该协议）', errorLabel: 'Anthropic Messages' },
+  { id: 'gemini', label: 'Gemini（仅该协议）', errorLabel: 'Gemini' },
 ]
 
 const PROFILES = new Set(['auto', 'none', 'claude', 'codex', 'google', 'antigravity'])
@@ -99,15 +99,16 @@ function validateLayer(layer, label) {
 
 export function buildRequestOverrides(drafts, inheritGlobal = true) {
   const layers = {}
-  for (const { id, label } of REQUEST_OVERRIDE_SCOPES) {
+  for (const { id, label, errorLabel } of REQUEST_OVERRIDE_SCOPES) {
     const draft = drafts[id]
+    const validationLabel = errorLabel || label
     const layer = {
       headerProfile: draft.headerProfile || null,
       userAgent: draft.omitUserAgent ? '' : (draft.userAgent.trim() || null),
-      headers: parseObject(draft.headersText, `${label}请求头`),
-      body: parseObject(draft.bodyText, `${label}请求体`),
+      headers: parseObject(draft.headersText, `${validationLabel}请求头`),
+      body: parseObject(draft.bodyText, `${validationLabel}请求体`),
     }
-    validateLayer(layer, label)
+    validateLayer(layer, validationLabel)
     layers[id] = layer
   }
   const result = { inheritGlobal, ...layers.common, protocols: {} }

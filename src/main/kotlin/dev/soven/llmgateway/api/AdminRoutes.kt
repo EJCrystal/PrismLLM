@@ -258,14 +258,50 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/upstream-request-settings") {
             call.requireAdmin(app)
-            call.respond(app.upstreamRequestSettingsRepository.load().toResponse())
+            call.respond(
+                app.upstreamRequestSettingsRepository.load().toResponse(app.upstreamHeaderCatalogService.snapshot()),
+            )
         }
 
         put("/upstream-request-settings") {
             call.requireAdmin(app)
             val request = call.receive<UpstreamRequestSettingsRequest>()
             validateUpstreamRequestOverrides(request.overrides)
-            call.respond(app.upstreamRequestSettingsRepository.save(request.overrides).toResponse())
+            call.respond(
+                app.upstreamRequestSettingsRepository.save(request.overrides)
+                    .toResponse(app.upstreamHeaderCatalogService.snapshot()),
+            )
+        }
+
+        post("/upstream-request-settings/header-catalog/refresh") {
+            call.requireAdmin(app)
+            val catalog = app.upstreamHeaderCatalogService.refreshNow()
+            call.respond(app.upstreamRequestSettingsRepository.load().toResponse(catalog))
+        }
+
+        put("/upstream-request-settings/header-profiles/{profileId}/pin") {
+            call.requireAdmin(app)
+            val profileId = call.requiredParam("profileId", "缺少请求头预设 id")
+            val request = call.receive<HeaderProfilePinRequest>()
+            val version = request.version.trim()
+            if (version.isEmpty()) throw badRequest("invalid_header_profile", "预设版本不能为空")
+            val catalog = try {
+                app.upstreamHeaderCatalogService.pin(profileId, version)
+            } catch (cause: IllegalArgumentException) {
+                throw badRequest("invalid_header_profile", cause.message ?: "请求头预设版本无效")
+            }
+            call.respond(app.upstreamRequestSettingsRepository.load().toResponse(catalog))
+        }
+
+        delete("/upstream-request-settings/header-profiles/{profileId}/pin") {
+            call.requireAdmin(app)
+            val profileId = call.requiredParam("profileId", "缺少请求头预设 id")
+            val catalog = try {
+                app.upstreamHeaderCatalogService.unpin(profileId)
+            } catch (cause: IllegalArgumentException) {
+                throw badRequest("invalid_header_profile", cause.message ?: "请求头预设无效")
+            }
+            call.respond(app.upstreamRequestSettingsRepository.load().toResponse(catalog))
         }
 
         get("/key-auto-disable-settings") {
@@ -310,6 +346,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val models = fetchUpstreamModels(
                 channel, key, app.credentialCipher, app.httpClient, authorizedOnly = false,
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
             )
                 .map {
                     val mapping = mappingByUpstream[it.id]
@@ -384,6 +421,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 protocol = discoveryProtocol,
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
                 channelOverrides = request.requestOverrides ?: saved?.requestOverrides ?: UpstreamRequestOverrides(),
+                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
             )
                 .map {
                     val mapping = mappingByUpstream[it.id]
@@ -404,10 +442,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
             val request = call.receive<ProtocolProbeRequest>()
             val key = resolveChannelKey(channel, request.keyId)
+            val globalOverrides = app.upstreamRequestSettingsRepository.load().overrides
+            val headerProfiles = app.upstreamHeaderCatalogService.profiles()
             val model = request.model?.takeIf { it.isNotBlank() } ?: run {
                 val models = fetchUpstreamModels(
                     channel, key, app.credentialCipher, app.httpClient,
-                    globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                    globalOverrides = globalOverrides,
+                    headerProfiles = headerProfiles,
                 )
                 models.firstOrNull()?.id ?: throw GatewayException(
                     HttpStatusCode.BadGateway,
@@ -418,7 +459,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
             }
             val results = probeUpstreamProtocols(
                 channel, key, model, app.credentialCipher, app.httpClient,
-                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                globalOverrides = globalOverrides,
+                headerProfiles = headerProfiles,
             )
             call.respond(
                 ProtocolProbeResponse(
@@ -470,6 +512,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 credentialCipher = app.credentialCipher,
                 httpClient = app.httpClient,
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
             )
             call.respond(result.toResponse(model, protocol, key.id, key.name, prompt))
         }

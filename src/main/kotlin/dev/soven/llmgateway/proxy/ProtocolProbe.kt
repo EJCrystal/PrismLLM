@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
@@ -49,6 +50,7 @@ suspend fun probeUpstreamProtocols(
     httpClient: HttpClient,
     timeoutMs: Long = 20_000,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
+    headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): List<ProtocolProbeResult> {
     val credential = runCatching {
         credentialCipher.decrypt(key.credentialCiphertext, key.credentialNonce)
@@ -64,7 +66,9 @@ suspend fun probeUpstreamProtocols(
     return GatewayProtocol.entries.map { protocol ->
         try {
             withTimeout(timeoutMs) {
-                val policy = UpstreamRequestPolicy(globalOverrides, channel.requestOverrides, protocol, channel.authType)
+                val policy = UpstreamRequestPolicy(
+                    globalOverrides, channel.requestOverrides, protocol, channel.authType, headerProfiles,
+                )
                 val body = policy.body(
                     kotlinx.serialization.json.Json.parseToJsonElement(probeBody(protocol, model)) as kotlinx.serialization.json.JsonObject,
                     model,

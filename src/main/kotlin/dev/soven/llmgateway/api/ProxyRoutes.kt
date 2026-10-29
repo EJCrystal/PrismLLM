@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.RouteCandidate
+import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
 import dev.soven.llmgateway.proxy.upstreamRequestUrl
@@ -235,6 +236,7 @@ private suspend fun handleProxy(
         val candidates = nativeCandidates + conversionCandidates
         if (candidates.isEmpty()) throw protocolNotSupported(alias, protocol)
         val globalOverrides = app.upstreamRequestSettingsRepository.load().overrides
+        val headerProfiles = app.upstreamHeaderCatalogService.profiles()
 
         phase = FailureStage.UPSTREAM
         // 先按冷却分拣：可尝试的候选进同档轮询，冷却中的保序作为 fail-open 兜底，
@@ -351,11 +353,12 @@ private suspend fun handleProxy(
                             traceContext.traceparent,
                             allowUpstreamErrorFailover = upstreamAttempts < app.config.maxAttempts && upstreamAttempts < candidates.size,
                             globalOverrides = globalOverrides,
+                            headerProfiles = headerProfiles,
                         )
                     } else {
                         proxyJson(
                             app, call, requestJson, alias, candidate, remainingMs, state, protocol,
-                            upstreamProtocol ?: protocol, traceContext.traceparent, globalOverrides,
+                            upstreamProtocol ?: protocol, traceContext.traceparent, globalOverrides, headerProfiles,
                         )
                     }
                 }
@@ -884,11 +887,13 @@ private suspend fun proxyStream(
     traceparent: String,
     allowUpstreamErrorFailover: Boolean,
     globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
 ) {
     val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel, stream = true)
     val credential = decryptCredential(app, candidate)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, candidate.channel.authType,
+        headerProfiles,
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson
@@ -1056,11 +1061,13 @@ private suspend fun proxyJson(
     upstreamProtocol: GatewayProtocol,
     traceparent: String,
     globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
 ) {
     val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel)
     val credential = decryptCredential(app, candidate)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, candidate.channel.authType,
+        headerProfiles,
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson

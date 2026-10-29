@@ -23,4 +23,4 @@
 - 自定义 UA 允许覆盖版本；规范 Codex UA 的 originator/version 自动配对，管理员显式设置时保持该值。UA 删除以空值表达，避免 Java HTTP 客户端补回默认 UA。
 - 旧渠道更新省略 requestOverrides 时保持配置；空对象恢复默认继承，Flyway 迁移给已有渠道写入空对象。
 - 模型发现可使用未保存的请求头配置；测试与探测使用已保存配置，并保持 128 / 1 token 的输出预算。所有相关管理写操作继续进入脱敏审计。
-- 预设版本是固定默认值，Google/Antigravity 预设只设置请求头；不实现订阅 OAuth 流程、Antigravity 内部请求封装或协议互转。
+- Claude、Codex、Google 预设从公开版本源定时刷新，并持久化最近成功快照、版本历史和固定版本；Antigravity 可由可选 HTTPS manifest 覆盖，默认使用内置模板。Google/Antigravity 预设只设置请求头；不实现订阅 OAuth 流程、Antigravity 内部请求封装或协议互转。
