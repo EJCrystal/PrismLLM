@@ -7,8 +7,8 @@ import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderProfileVersionConflictException
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.timeout
-import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.prepareGet
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.HttpHeaders
@@ -228,13 +228,14 @@ class UpstreamHeaderCatalogService(
 
     private suspend fun fetchText(url: String): String {
         require(url.startsWith("https://")) { "请求头目录 URL 必须使用 HTTPS" }
-        val response = httpClient.get(url) {
+        return httpClient.prepareGet(url) {
             header(HttpHeaders.UserAgent, "llm-gateway-header-catalog/1.0")
             header(HttpHeaders.Accept, "application/json")
             timeout { requestTimeoutMillis = 15_000 }
+        }.execute { response ->
+            if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
+            readLimitedText(response)
         }
-        if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
-        return readLimitedText(response)
     }
 
     private fun applyVersion(
@@ -342,24 +343,24 @@ class UpstreamHeaderCatalogService(
             },
         )
 
-        suspend fun fetchNpmVersion(client: HttpClient, url: String): String {
-            val response = client.get(url) {
+        suspend fun fetchNpmVersion(client: HttpClient, url: String): String =
+            client.prepareGet(url) {
                 header(HttpHeaders.UserAgent, "llm-gateway-header-catalog/1.0")
                 timeout { requestTimeoutMillis = 15_000 }
+            }.execute { response ->
+                if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
+                parseNpmVersionResponse(readLimitedText(response))
             }
-            if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
-            return parseNpmVersionResponse(readLimitedText(response))
-        }
 
-        suspend fun fetchCodexVersion(client: HttpClient): String {
-            val response = client.get("https://api.github.com/repos/openai/codex/releases/latest") {
+        suspend fun fetchCodexVersion(client: HttpClient): String =
+            client.prepareGet("https://api.github.com/repos/openai/codex/releases/latest") {
                 header(HttpHeaders.UserAgent, "llm-gateway-header-catalog/1.0")
                 header(HttpHeaders.Accept, "application/vnd.github+json")
                 timeout { requestTimeoutMillis = 15_000 }
+            }.execute { response ->
+                if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
+                parseCodexReleaseTag(readLimitedText(response))
             }
-            if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
-            return parseCodexReleaseTag(readLimitedText(response))
-        }
 
         suspend fun readLimitedText(response: HttpResponse): String {
             val bytes = response.bodyAsChannel().readRemaining(MAX_SOURCE_BYTES.toLong() + 1L).readBytes()

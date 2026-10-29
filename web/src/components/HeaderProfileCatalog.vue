@@ -34,6 +34,7 @@ async function refresh() {
       notify('请求头预设目录已刷新')
     }
   } catch (cause) {
+    event.target.value = props.catalog.pins?.[profile.id] || ''
     notify(cause.message, 'error')
   } finally {
     busy.value = ''
@@ -105,6 +106,6 @@ async function selectVersion(profile, event) {
         </select>
       </div>
     </div>
-    <p class="muted small">固定版本会保留完整请求头快照；恢复“跟随最新版本”后，下一次成功刷新即采用最新目录。</p>
+    <p class="muted small">固定版本会保留完整请求头快照；恢复“跟随最新版本”后立即采用历史中的最新快照。</p>
   </section>
 </template>
