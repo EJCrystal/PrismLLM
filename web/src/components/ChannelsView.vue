@@ -21,7 +21,7 @@ import {
   visibleModels,
   hiddenModelsTitle,
 } from '../utils/channelDisplay'
-import { buildChannelPayload, buildPriorityUpdatePayload } from '../utils/channelForm'
+import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols } from '../utils/channelForm'
 import {
   channelKeyRateLimitSummary,
   normalizeChannelKeyRateLimit,
@@ -72,6 +72,23 @@ const form = reactive({
   priority: 1,
 })
 
+const protocolOptions = [
+  { value: 'chat_completions', label: 'Chat Completions' },
+  { value: 'responses', label: 'Responses' },
+  { value: 'messages', label: 'Anthropic Messages' },
+]
+
+function protocolLabel(value) {
+  return protocolOptions.find((item) => item.value === value)?.label || value
+}
+
+function moveProtocol(index, delta) {
+  const next = index + delta
+  if (next < 0 || next >= form.protocols.length) return
+  const [item] = form.protocols.splice(index, 1)
+  form.protocols.splice(next, 0, item)
+}
+
 watchChannelRequestInputs(form, {
   modelRequests,
   probeRequests,
@@ -119,16 +136,18 @@ const canProbeProtocols = computed(() => {
 })
 
 function newKeyDraft(overrides = {}) {
+  const state = overrides.state || (overrides.enabled === false ? 'MANUAL_DISABLED' : 'ACTIVE')
   return {
     localId: `key-${++keyDraftSeq}`,
     id: overrides.id || null,
     name: overrides.name || '',
     credential: '',
-    enabled: overrides.enabled ?? true,
+    state,
+    originalState: overrides.state || state,
     priority: overrides.priority ?? 1,
     stateVersion: overrides.stateVersion ?? null,
-    autoDisabledAt: overrides.autoDisabledAt ?? null,
     autoDisableReason: overrides.autoDisableReason ?? null,
+    autoDisableUntil: overrides.autoDisableUntil ?? null,
     rateLimit: normalizeChannelKeyRateLimit(overrides.rateLimit),
     models: [...(overrides.models || [])],
     availableModels: [],
@@ -136,6 +155,25 @@ function newKeyDraft(overrides = {}) {
     modelsError: '',
     modelsRequestId: 0,
   }
+}
+
+function keyStateBadge(state) {
+  switch (state) {
+    case 'ACTIVE':
+      return { label: '正常', class: 'success' }
+    case 'MANUAL_DISABLED':
+      return { label: '人工停用', class: 'neutral' }
+    case 'AUTO_TEMPORARY':
+      return { label: '临时停用', class: 'warning' }
+    case 'AUTO_PERMANENT':
+      return { label: '永久停用', class: 'danger' }
+    default:
+      return { label: state || '正常', class: 'neutral' }
+  }
+}
+
+function toggleKeyState(key) {
+  key.state = key.state === 'ACTIVE' ? 'MANUAL_DISABLED' : 'ACTIVE'
 }
 
 function addKey() {
@@ -239,7 +277,7 @@ function canTestModel(modelId) {
   const channel = savedEditingChannel()
   if (!channel?.protocols?.length) return false
   return channel.keys?.length
-    ? channel.keys.some((key) => key.enabled && key.models.includes(modelId))
+    ? channel.keys.some((key) => isKeyRoutable(key) && key.models.includes(modelId))
     : channel.models.includes(modelId)
 }
 
@@ -250,7 +288,7 @@ function openModelTest(modelId) {
     return
   }
   const supported = channel.keys?.length
-    ? channel.keys.some((key) => key.enabled && key.models.includes(modelId))
+    ? channel.keys.some((key) => isKeyRoutable(key) && key.models.includes(modelId))
     : channel.models.includes(modelId)
   if (!supported) {
     notify('该模型尚未保存到渠道，请先保存渠道后再测试', 'warning')
@@ -450,7 +488,7 @@ function openEdit(channel) {
   modelRequests.invalidate()
   const savedKeys = channel.keys?.length
     ? channel.keys
-    : [{ name: '默认密钥', enabled: true, priority: 1, models: channel.models || [] }]
+    : [{ name: '默认密钥', state: 'ACTIVE', priority: 1, models: channel.models || [] }]
   channelKeys.value = savedKeys.map((key) => newKeyDraft(key))
   clearMappings()
   ;(channel.modelMappings || []).forEach((mapping) => {
@@ -539,7 +577,7 @@ async function probeProtocols() {
     probeResults.value = response?.results || []
     const supported = probeResults.value.filter((item) => item.supported).map((item) => item.protocol)
     if (supported.length > 0) {
-      form.protocols = supported
+      form.protocols = mergeProbedProtocols(form.protocols, supported)
       probeDerivedProtocols = true
     }
     notify(
@@ -589,8 +627,8 @@ async function save() {
       notify(`新建密钥「${name}」必须提供上游凭据`, 'error')
       return
     }
-    if (key.autoDisabledAt && key.enabled && !key.credential.trim()) {
-      notify(`密钥「${name}」自动禁用后重新启用需要更换上游凭据`, 'error')
+    if (key.originalState === 'AUTO_PERMANENT' && key.state === 'ACTIVE' && !key.credential.trim()) {
+      notify(`密钥「${name}」因凭据失效被永久停用，重新启用前必须更换上游凭据`, 'error')
       return
     }
     if (!key.models.length) {
@@ -725,7 +763,7 @@ onMounted(load)
         @action="openCreate"
       />
       <div v-else class="table-scroll">
-        <table class="data-table">
+        <table class="data-table channels-table">
           <thead>
             <tr>
               <th>名称</th>
@@ -748,10 +786,10 @@ onMounted(load)
                 </div>
                 <div class="muted small">
                   {{ channel.keys?.length || 0 }} 个密钥
-                  <template v-if="channel.keys?.length">· {{ channel.keys.filter((key) => key.enabled).length }} 个启用</template>
+                  <template v-if="channel.keys?.length">· {{ channel.keys.filter((key) => isKeyRoutable(key)).length }} 个启用</template>
                 </div>
-                <div v-if="channel.keys?.some((key) => key.autoDisabledAt)" class="text-danger small">
-                  {{ channel.keys.filter((key) => key.autoDisabledAt).length }} 个自动禁用
+                <div v-if="channel.keys?.some((key) => key.state === 'AUTO_PERMANENT' || key.state === 'AUTO_TEMPORARY')" class="text-danger small">
+                  {{ channel.keys.filter((key) => key.state === 'AUTO_PERMANENT' || key.state === 'AUTO_TEMPORARY').length }} 个自动禁用
                 </div>
               </td>
               <td><span class="mono address">{{ channel.baseUrl }}</span></td>
@@ -879,11 +917,19 @@ onMounted(load)
           <small>Anthropic 原生渠道选 Anthropic API key；调用方密钥仍由网关单独鉴权。</small>
         </label>
         <div class="field">
-          <span>支持协议</span>
+          <span>支持协议与转换优先级</span>
           <div class="protocol-options">
-            <label><input v-model="form.protocols" type="checkbox" value="chat_completions" /> Chat Completions</label>
-            <label><input v-model="form.protocols" type="checkbox" value="responses" /> Responses</label>
-            <label><input v-model="form.protocols" type="checkbox" value="messages" /> Anthropic Messages</label>
+            <label v-for="item in protocolOptions" :key="item.value">
+              <input v-model="form.protocols" type="checkbox" :value="item.value" /> {{ item.label }}
+            </label>
+          </div>
+          <div v-if="form.protocols.length" class="protocol-order-list">
+            <small>同协议优先；需要转换时按以下顺序选择目标协议。</small>
+            <div v-for="(protocol, index) in form.protocols" :key="protocol" class="protocol-order-item">
+              <span class="badge info">{{ protocolLabel(protocol) }}</span>
+              <button type="button" class="icon-button" :disabled="index === 0" title="上移" @click="moveProtocol(index, -1)">↑</button>
+              <button type="button" class="icon-button" :disabled="index === form.protocols.length - 1" title="下移" @click="moveProtocol(index, 1)">↓</button>
+            </div>
           </div>
           <div class="protocol-probe-row">
             <button
@@ -935,20 +981,32 @@ onMounted(load)
                 </label>
                 <div class="channel-key-toggle-field">
                   <span>状态</span>
-                  <label class="switch-row channel-key-toggle">
-                    <input v-model="key.enabled" type="checkbox" />
-                    <span class="switch"></span>
-                    <span><strong>启用</strong></span>
-                  </label>
+                  <div class="channel-key-status-row">
+                    <span class="badge" :class="keyStateBadge(key.state).class">{{ keyStateBadge(key.state).label }}</span>
+                    <button
+                      type="button"
+                      class="button subtle mini channel-key-state-btn"
+                      @click="toggleKeyState(key)"
+                    >
+                      {{ key.state === 'ACTIVE' ? '停用' : '启用' }}
+                    </button>
+                  </div>
                 </div>
                 <div class="channel-key-action-field">
                   <span>操作</span>
                   <button type="button" class="button ghost mini channel-key-delete" @click="removeKey(index)">删除</button>
                 </div>
               </div>
-              <div v-if="key.autoDisabledAt" class="callout warning">
-                <strong>{{ key.enabled ? '保存后重新启用' : '已自动禁用' }}：{{ key.autoDisableReason }}</strong>
-                <p>禁用时间：{{ formatTime(key.autoDisabledAt) }}。请更换上游凭据，再打开启用开关并保存；保存后会清空失败计数。</p>
+              <div v-if="key.originalState === 'AUTO_PERMANENT'" class="callout" :class="key.state === 'ACTIVE' ? 'info' : 'danger'">
+                <strong>{{ key.state === 'ACTIVE' ? '保存后重新启用' : '已自动永久停用' }}<template v-if="key.autoDisableReason">：{{ key.autoDisableReason }}</template></strong>
+                <p>{{ key.state === 'ACTIVE' ? '保存前必须在下方输入新的上游凭据；保存后将恢复为正常状态并重置失败计数。' : '上游鉴权持续失败或凭据失效。重新启用前必须更换上游凭据。' }}</p>
+              </div>
+              <div v-else-if="key.originalState === 'AUTO_TEMPORARY'" class="callout" :class="key.state === 'ACTIVE' ? 'info' : 'warning'">
+                <strong>{{ key.state === 'ACTIVE' ? '保存后提前启用' : '已自动临时停用' }}<template v-if="key.autoDisableReason">：{{ key.autoDisableReason }}</template></strong>
+                <p>
+                  <template v-if="key.autoDisableUntil">恢复时间：{{ formatTime(key.autoDisableUntil) }}（到期后自动可用）。</template>
+                  {{ key.state === 'ACTIVE' ? '提前启用无需更换凭据，保存后立即恢复为正常状态。' : '可等待到期自动恢复，或点击「启用」并在保存后提前恢复。' }}
+                </p>
               </div>
               <label class="field">
                 <span>上游凭据</span>

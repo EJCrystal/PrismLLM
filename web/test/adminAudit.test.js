@@ -27,17 +27,26 @@ describe('adminAudit: 管理操作审计展示', () => {
   it('展示自动禁用原因、计数和规则变更', () => {
     const entry = {
       action: 'channel_key.auto_disable',
-      details: { channelName: 'openai', keyName: 'primary', message: '连续 3 次 401/403',
-        authFailureStreak: 3, authFailureThreshold: 3, failureCount: 3, failureThreshold: 5, failureWindowMinutes: 5, httpStatus: 403 },
+      details: {
+        channelName: 'openai', keyName: 'primary', message: '鉴权被拒 3 次',
+        ruleId: 'auth_rejected', ruleName: '鉴权被拒', count: 3, threshold: 3,
+        action: 'TEMPORARY', state: 'AUTO_TEMPORARY', disableUntil: 1_700_000_000_000,
+        httpStatus: 403, upstreamErrorCode: 'invalid_api_key',
+      },
     }
     assert.equal(auditActionLabel(entry.action), '自动禁用上游密钥')
-    assert.equal(auditDetailsSummary(entry), 'openai / primary：连续 3 次 401/403')
+    assert.equal(auditDetailsSummary(entry), 'openai / primary：鉴权被拒 3 次')
     assert.deepEqual(auditDetailsRows(entry).find(([label]) => label === '上游 HTTP'), ['上游 HTTP', 403])
-    const update = { action: 'key_auto_disable_settings.update', details: { before: { enabled: false }, after: {
-      enabled: true, authFailureThreshold: 3, failureThreshold: 5, failureWindowMinutes: 5,
-    } } }
+    assert.deepEqual(auditDetailsRows(entry).find(([label]) => label === '命中规则'), ['命中规则', '鉴权被拒（auth_rejected）'])
+    const update = {
+      action: 'key_auto_disable_settings.update',
+      details: {
+        before: { enabled: false, rules: [] },
+        after: { enabled: true, rules: [{ name: '凭据失效' }, { name: '上游不稳定' }] },
+      },
+    }
     assert.equal(auditDetailsRows(update)[0][1], '已关闭自动禁用')
-    assert.equal(auditDetailsSummary(update), '连续 3 次 401/403，或 5 分钟内失败 5 次')
+    assert.equal(auditDetailsSummary(update), '凭据失效、上游不稳定')
     assert.deepEqual(auditDetailsRows({ action: 'admin.login' }), [])
   })
 })

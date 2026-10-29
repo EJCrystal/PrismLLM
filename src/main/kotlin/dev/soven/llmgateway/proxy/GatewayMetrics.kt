@@ -100,6 +100,20 @@ class GatewayMetrics {
         registry.counter("gateway_quota_rejections_total", Tags.of("reason", reason)).increment()
     }
 
+    fun protocolConversion(from: String, to: String) {
+        registry.counter(
+            "gateway_protocol_conversions_total",
+            Tags.of("from", from, "to", to),
+        ).increment()
+    }
+
+    fun protocolConversionFailed(from: String, to: String, reason: String) {
+        registry.counter(
+            "gateway_protocol_conversion_failures_total",
+            Tags.of("from", from, "to", to, "reason", reason),
+        ).increment()
+    }
+
     fun adminAuditWriteFailed() {
         adminAuditWriteFailures.increment()
     }

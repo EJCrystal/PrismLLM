@@ -42,7 +42,7 @@ const meta = {
   },
   'usage-reports': {
     title: '用量报表',
-    desc: '按调用方密钥汇总请求、token 与费用。',
+    desc: '查看请求、token、费用、延迟与故障转移趋势，并按密钥、渠道和模型分析。',
   },
   'audit-logs': {
     title: '操作审计',

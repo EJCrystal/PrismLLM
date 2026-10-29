@@ -1,5 +1,7 @@
 package dev.soven.llmgateway.quota
 
+import dev.soven.llmgateway.resilience.ChannelKeyState
+
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import kotlinx.coroutines.CompletableDeferred
@@ -253,7 +255,7 @@ private fun key(
     credentialCiphertext = "ciphertext",
     credentialNonce = "nonce",
     credentialKeyVersion = 1,
-    enabled = true,
+    state = ChannelKeyState.ACTIVE,
     priority = 1,
     models = models,
     rateLimit = rateLimit,

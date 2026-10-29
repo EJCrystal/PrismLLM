@@ -8,6 +8,7 @@ import io.ktor.server.application.ApplicationCall
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.request.receiveText
+import io.ktor.server.request.path
 import io.ktor.server.response.header
 import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.response.respondText
@@ -98,7 +99,10 @@ class FakeUpstream {
         if (scenario != "key-health") return false
         val credential = call.request.headers[HttpHeaders.Authorization] ?: call.request.headers["x-api-key"]
         val status = credential?.let(keyStatuses::get) ?: 200
-        if (status < 400) return false
+        if (status < 400) {
+            chatHold.get()?.await()
+            return false
+        }
         call.respondText(
             """{"error":{"message":"fake key failure","code":"fake_key_failure"}}""",
             ContentType.Application.Json, HttpStatusCode.fromValue(status),
@@ -114,6 +118,7 @@ class FakeUpstream {
                 body = body,
                 authorization = call.request.headers[HttpHeaders.Authorization],
                 traceparent = call.request.headers["traceparent"],
+                path = call.request.path(),
             ),
         )
         val json = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull()
@@ -208,6 +213,7 @@ class FakeUpstream {
                 body = body,
                 authorization = call.request.headers[HttpHeaders.Authorization],
                 traceparent = call.request.headers["traceparent"],
+                path = call.request.path(),
             ),
         )
         val stream = runCatching {
@@ -301,6 +307,7 @@ class FakeUpstream {
                 body = body,
                 authorization = call.request.headers[HttpHeaders.Authorization],
                 traceparent = call.request.headers["traceparent"],
+                path = call.request.path(),
                 xApiKey = call.request.headers["x-api-key"],
                 anthropicVersion = call.request.headers["anthropic-version"],
                 anthropicBeta = call.request.headers["anthropic-beta"],
@@ -451,4 +458,5 @@ data class FakeRequest(
     val xApiKey: String? = null,
     val anthropicVersion: String? = null,
     val anthropicBeta: String? = null,
+    val path: String? = null,
 )

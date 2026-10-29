@@ -3,6 +3,7 @@ package dev.soven.llmgateway
 import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.FailureStage
@@ -15,7 +16,13 @@ import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.resilience.KeyAttemptOutcome
+import dev.soven.llmgateway.resilience.ChannelKeyState
+import dev.soven.llmgateway.resilience.FailureKind
 import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
+import dev.soven.llmgateway.resilience.KeyDisableAction
+import dev.soven.llmgateway.resilience.KeyDisablePolicy
+import dev.soven.llmgateway.resilience.KeyDisableRule
+import dev.soven.llmgateway.resilience.toKeyDisablePolicy
 import dev.soven.llmgateway.security.ClientKeyHasher
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
@@ -640,7 +647,7 @@ class GatewayIntegrationTest {
                         ChannelKeyUpdate(
                             id = key.id,
                             name = key.name,
-                            enabled = key.id != backup.id,
+                            state = if (key.id != backup.id) ChannelKeyState.ACTIVE else ChannelKeyState.MANUAL_DISABLED,
                             priority = key.priority,
                             models = key.models,
                             stateVersion = key.stateVersion,
@@ -1051,8 +1058,8 @@ class GatewayIntegrationTest {
                 fake.keyStatuses["Bearer key-primary"] = if (index == 2) 403 else 401
                 assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key, requestId = "auto-auth-$index").status)
                 val current = assertNotNull(app.channelRepository.find(channel.id))
-                assertEquals(index < 2, current.keys.first { it.name == "primary" }.enabled)
-                assertTrue(current.keys.first { it.name == "backup" }.enabled)
+                assertEquals(index < 2, current.keys.first { it.name == "primary" }.state == ChannelKeyState.ACTIVE)
+                assertTrue(current.keys.first { it.name == "backup" }.state == ChannelKeyState.ACTIVE)
                 delay(5)
             }
             assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key).status)
@@ -1065,21 +1072,377 @@ class GatewayIntegrationTest {
             assertEquals("system", audit.actor)
             assertEquals("auto-auth-2", audit.requestId)
             assertEquals("403", audit.details?.get("httpStatus")?.jsonPrimitive?.content)
-            assertEquals("3", audit.details?.get("authFailureStreak")?.jsonPrimitive?.content)
-            assertEquals(KeyAutoDisablePolicy.REASON_AUTH_STREAK, audit.details?.get("reason")?.jsonPrimitive?.content)
+            assertEquals("3", audit.details?.get("count")?.jsonPrimitive?.content)
+            assertEquals("auth_rejected", audit.details?.get("ruleId")?.jsonPrimitive?.content)
+            assertEquals("TEMPORARY", audit.details?.get("action")?.jsonPrimitive?.content)
+            assertEquals("AUTO_TEMPORARY", audit.details?.get("state")?.jsonPrimitive?.content)
+            assertNotNull(audit.details?.get("disableUntil")?.jsonPrimitive?.content)
             val text = audit.details.toString()
             assertFalse(text.contains("key-primary"))
             assertFalse(text.contains("private-test-prompt"))
         }
         app = GatewayApplication(config())
         val restored = assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.name == "primary" }
-        assertFalse(restored.enabled)
+        assertEquals(ChannelKeyState.AUTO_TEMPORARY, restored.state)
         assertNotNull(restored.autoDisabledAt)
-        assertEquals("连续 3 次 401/403", restored.autoDisableReason)
+        assertNotNull(restored.autoDisableUntil)
+        assertEquals("鉴权被拒 3 次", restored.autoDisableReason)
+    }
+
+    @Test
+    fun keyAutoDisableMatchesUpstreamErrorBodyBeforeStatusFallback() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "auto-disable-body",
+            baseUrl = "${fake.baseUrl}/key-route/v1",
+            keys = listOf(NewChannelKey("primary", app.credentialCipher.encrypt("key-primary"), models = listOf("m1"))),
+            authType = "bearer",
+            protocols = GatewayProtocol.entries.toList(),
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            // key-route 的 401 错误体带 invalid_api_key：首条永久规则命中，而不是兜底的临时规则。
+            assertEquals(HttpStatusCode.BadGateway, client.sendAutoDisableRequest(key).status)
+            assertEquals(
+                ChannelKeyState.ACTIVE,
+                assertNotNull(app.channelRepository.find(channel.id)).keys.single().state,
+            )
+            assertEquals(HttpStatusCode.BadGateway, client.sendAutoDisableRequest(key).status)
+            val disabled = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+            assertEquals(ChannelKeyState.AUTO_PERMANENT, disabled.state)
+            assertNull(disabled.autoDisableUntil)
+            val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_disable" }
+            assertEquals("credential_invalid", audit.details?.get("ruleId")?.jsonPrimitive?.content)
+            assertEquals("PERMANENT", audit.details?.get("action")?.jsonPrimitive?.content)
+            assertEquals("AUTO_PERMANENT", audit.details?.get("state")?.jsonPrimitive?.content)
+            assertEquals("2", audit.details?.get("count")?.jsonPrimitive?.content)
+            assertEquals(
+                "invalid[\\s_-]*(x-)?api[\\s_-]?key",
+                audit.details?.get("matchedPattern")?.jsonPrimitive?.content,
+            )
+            assertNull(audit.details?.get("disableUntil"))
+            assertFalse(audit.details.toString().contains("key-primary"))
+        }
+    }
+
+    @Test
+    fun keyAutoDisableDefaultUpstreamUnstableRuleUsesTemporaryState() = runBlocking {
+        val channel = createAutoDisablePool(withBackup = false)
+        val key = createClientKey()
+        fake.keyStatuses["Bearer key-primary"] = 500
+        testApplication {
+            application { app.install(this) }
+            repeat(8) { assertEquals(HttpStatusCode.BadGateway, client.sendAutoDisableRequest(key).status) }
+            val disabled = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+            assertEquals(ChannelKeyState.AUTO_TEMPORARY, disabled.state)
+            assertNotNull(disabled.autoDisableUntil)
+            val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_disable" }
+            assertEquals("upstream_unstable", audit.details?.get("ruleId")?.jsonPrimitive?.content)
+            assertEquals("TEMPORARY", audit.details?.get("action")?.jsonPrimitive?.content)
+            assertEquals("AUTO_TEMPORARY", audit.details?.get("state")?.jsonPrimitive?.content)
+            assertEquals("8", audit.details?.get("count")?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun keyAutoDisableTemporaryRecoveryClearsKeyCooldown() = runBlocking {
+        app.close()
+        app = GatewayApplication(config())
+        app.keyAutoDisableRepository.saveSettings(
+            KeyDisablePolicy(
+                rules = listOf(
+                    KeyDisableRule(
+                        id = "temp_auth",
+                        name = "临时鉴权失败",
+                        statusCodes = listOf(401, 403),
+                        threshold = 1,
+                        action = KeyDisableAction.TEMPORARY,
+                        disableMinutes = 1,
+                    ),
+                ),
+            ),
+        )
+        val channel = createAutoDisablePool(withBackup = false)
+        val primary = channel.keys.single()
+        val key = createClientKey()
+        fake.keyStatuses["Bearer key-primary"] = 401
+        testApplication {
+            application { app.install(this) }
+            assertEquals(HttpStatusCode.BadGateway, client.sendAutoDisableRequest(key).status)
+            val disabled = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+            assertEquals(ChannelKeyState.AUTO_TEMPORARY, disabled.state)
+            assertTrue(app.candidateCooldown.isBlocked(channel.id, primary.id, "m1"))
+
+            // 只把密钥停用到期时间拨到过去，认证冷却仍在有效期内。
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.prepareStatement("update channel_keys set auto_disable_until = ? where id = ?").use { statement ->
+                    statement.setLong(1, System.currentTimeMillis() - 1)
+                    statement.setString(2, primary.id)
+                    statement.executeUpdate()
+                }
+            }
+            fake.keyStatuses["Bearer key-primary"] = 200
+            assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key).status)
+            val recovered = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+            assertEquals(ChannelKeyState.ACTIVE, recovered.state)
+            assertNull(recovered.autoDisableUntil)
+            assertNull(recovered.probeUntil)
+            assertFalse(app.candidateCooldown.isBlocked(channel.id, primary.id, "m1"))
+            val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_recover" }
+            assertEquals("probe_success", audit.details?.get("reason")?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun keyAutoDisableExpiredTemporaryFailureRearmsDisableWindow() = runBlocking {
+        app.close()
+        app = GatewayApplication(config())
+        app.keyAutoDisableRepository.saveSettings(
+            KeyDisablePolicy(
+                rules = listOf(
+                    KeyDisableRule(
+                        id = "temp_auth",
+                        name = "临时鉴权失败",
+                        statusCodes = listOf(401),
+                        threshold = 1,
+                        action = KeyDisableAction.TEMPORARY,
+                        disableMinutes = 1,
+                    ),
+                ),
+            ),
+        )
+        val channel = createAutoDisablePool(withBackup = false)
+        val primary = channel.keys.single()
+        val key = createClientKey()
+        fake.keyStatuses["Bearer key-primary"] = 401
+        testApplication {
+            application { app.install(this) }
+            assertEquals(HttpStatusCode.BadGateway, client.sendAutoDisableRequest(key).status)
+            val firstUntil = assertNotNull(
+                assertNotNull(app.channelRepository.find(channel.id)).keys.single().autoDisableUntil,
+            )
+
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.prepareStatement("update channel_keys set auto_disable_until = ? where id = ?").use { statement ->
+                    statement.setLong(1, System.currentTimeMillis() - 1)
+                    statement.setString(2, primary.id)
+                    statement.executeUpdate()
+                }
+            }
+            assertEquals(HttpStatusCode.BadGateway, client.sendAutoDisableRequest(key).status)
+            val rearmed = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+            assertEquals(ChannelKeyState.AUTO_TEMPORARY, rearmed.state)
+            val secondUntil = assertNotNull(rearmed.autoDisableUntil)
+            assertTrue(secondUntil > firstUntil)
+            assertNull(rearmed.probeUntil)
+            assertEquals("临时鉴权失败 探测失败", rearmed.autoDisableReason)
+        }
+    }
+
+    @Test
+    fun keyAutoDisableProbeLeaseAllowsOnlyOneClaim() = runBlocking {
+        val channel = createAutoDisablePool(withBackup = false)
+        val primary = channel.keys.single()
+        val now = System.currentTimeMillis()
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement(
+                "update channel_keys set state = 'AUTO_TEMPORARY', auto_disabled_at = ?, auto_disable_until = ? where id = ?",
+            ).use { statement ->
+                statement.setLong(1, now - 2)
+                statement.setLong(2, now - 1)
+                statement.setString(3, primary.id)
+                statement.executeUpdate()
+            }
+        }
+        val expired = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+        assertTrue(app.keyAutoDisableRepository.isAvailable(expired))
+        assertTrue(app.keyAutoDisableRepository.claimProbe(expired))
+        assertFalse(app.keyAutoDisableRepository.claimProbe(expired))
+        val claimed = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+        assertFalse(app.keyAutoDisableRepository.isAvailable(claimed))
+        assertTrue(
+            app.keyAutoDisableRepository.isAvailable(
+                claimed,
+                now = assertNotNull(claimed.probeUntil),
+            ),
+        )
+    }
+
+    @Test
+    fun keyAutoDisableExpiredProbeAllowsOnlyOneConcurrentRequest() = runBlocking {
+        app.close()
+        app = GatewayApplication(config())
+        app.keyAutoDisableRepository.saveSettings(
+            KeyDisablePolicy(
+                rules = listOf(
+                    KeyDisableRule(
+                        id = "temp_auth",
+                        name = "临时鉴权失败",
+                        statusCodes = listOf(401),
+                        threshold = 1,
+                        action = KeyDisableAction.TEMPORARY,
+                        disableMinutes = 1,
+                    ),
+                ),
+            ),
+        )
+        val channel = createAutoDisablePool(withBackup = false)
+        val primary = channel.keys.single()
+        val key = createClientKey()
+        fake.keyStatuses["Bearer key-primary"] = 401
+        testApplication {
+            application { app.install(this) }
+            assertEquals(HttpStatusCode.BadGateway, client.sendAutoDisableRequest(key).status)
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.prepareStatement("update channel_keys set auto_disable_until = ? where id = ?").use { statement ->
+                    statement.setLong(1, System.currentTimeMillis() - 1)
+                    statement.setString(2, primary.id)
+                    statement.executeUpdate()
+                }
+            }
+            fake.keyStatuses["Bearer key-primary"] = 200
+            val release = fake.holdChatRequests()
+            val before = fake.requests.size
+            val probe = async { client.sendAutoDisableRequest(key) }
+            try {
+                awaitCondition("probe request reaches upstream") { fake.requests.size == before + 1 }
+                val concurrent = client.sendAutoDisableRequest(key)
+                assertNotEquals(HttpStatusCode.OK, concurrent.status)
+                assertEquals(before + 1, fake.requests.size, "探测租约期间不得再打上游")
+
+                release.complete(Unit)
+                assertEquals(HttpStatusCode.OK, probe.await().status)
+            } finally {
+                release.complete(Unit)
+                probe.cancel()
+                fake.clearChatHold()
+            }
+            awaitCondition("probe success recovers the key") {
+                app.channelRepository.find(channel.id)?.keys?.single()?.state == ChannelKeyState.ACTIVE
+            }
+            val recovered = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+            assertNull(recovered.probeUntil)
+        }
+    }
+
+    @Test
+    fun keyAutoDisableCleanupRecoversOnlyExpiredUnprobedKeys() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "cleanup-keys",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey("expired", app.credentialCipher.encrypt("k-expired"), models = listOf("m1")),
+                NewChannelKey("future", app.credentialCipher.encrypt("k-future"), models = listOf("m1")),
+                NewChannelKey(
+                    "manual",
+                    app.credentialCipher.encrypt("k-manual"),
+                    state = ChannelKeyState.MANUAL_DISABLED,
+                    models = listOf("m1"),
+                ),
+                NewChannelKey(
+                    "permanent",
+                    app.credentialCipher.encrypt("k-permanent"),
+                    state = ChannelKeyState.AUTO_PERMANENT,
+                    models = listOf("m1"),
+                ),
+                NewChannelKey("probing", app.credentialCipher.encrypt("k-probing"), models = listOf("m1")),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        val now = System.currentTimeMillis()
+        val keys = channel.keys.associateBy { it.name }
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement(
+                "update channel_keys set state = 'AUTO_TEMPORARY', auto_disabled_at = ?, auto_disable_until = ?, probe_until = ? where id = ?",
+            ).use { statement ->
+                fun expire(key: ChannelKeyRecord, until: Long, probeUntil: Long?) {
+                    statement.setLong(1, now - 2)
+                    statement.setLong(2, until)
+                    if (probeUntil == null) statement.setNull(3, java.sql.Types.BIGINT) else statement.setLong(3, probeUntil)
+                    statement.setString(4, key.id)
+                    statement.executeUpdate()
+                }
+                expire(keys.getValue("expired"), now - 1, null)
+                expire(keys.getValue("future"), now + 600_000, null)
+                expire(keys.getValue("probing"), now - 1, now + 60_000)
+            }
+            connection.prepareStatement(
+                "insert into channel_key_health (key_id, policy_revision, auth_failure_streak, recent_failures, rule_counters) values (?, 0, 0, '[]', '{}')",
+            ).use { statement ->
+                statement.setString(1, keys.getValue("expired").id)
+                statement.executeUpdate()
+            }
+        }
+
+        val recovered = app.keyAutoDisableRepository.recoverExpired(now)
+        assertEquals(listOf(keys.getValue("expired").id), recovered.map { it.keyId })
+        val after = assertNotNull(app.channelRepository.find(channel.id)).keys.associateBy { it.name }
+        assertEquals(ChannelKeyState.ACTIVE, after.getValue("expired").state)
+        assertNull(after.getValue("expired").autoDisabledAt)
+        assertNull(after.getValue("expired").autoDisableUntil)
+        assertNull(after.getValue("expired").probeUntil)
+        assertEquals(ChannelKeyState.AUTO_TEMPORARY, after.getValue("future").state)
+        assertEquals(ChannelKeyState.AUTO_TEMPORARY, after.getValue("probing").state)
+        assertEquals(ChannelKeyState.MANUAL_DISABLED, after.getValue("manual").state)
+        assertEquals(ChannelKeyState.AUTO_PERMANENT, after.getValue("permanent").state)
+        val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_recover" }
+        assertEquals(keys.getValue("expired").id, audit.details?.get("keyId")?.jsonPrimitive?.content)
+        assertEquals("expired", audit.details?.get("reason")?.jsonPrimitive?.content)
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("select count(*) from channel_key_health where key_id = ?").use { statement ->
+                statement.setString(1, keys.getValue("expired").id)
+                statement.executeQuery().use { result ->
+                    assertTrue(result.next())
+                    assertEquals(0, result.getInt(1))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun keyAutoDisableCleanupJobRecoversExpiredKeyAndClearsCooldown() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(keyAutoRecoveryIntervalMs = 1_000))
+        testApplication {
+            application { app.install(this) }
+            // 触发测试宿主启动，后台任务才会随 install 一起启动。
+            assertEquals(HttpStatusCode.OK, client.get("/health/live").status)
+            val channel = createAutoDisablePool(withBackup = false)
+            val primary = channel.keys.single()
+            val now = System.currentTimeMillis()
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.prepareStatement(
+                    "update channel_keys set state = 'AUTO_TEMPORARY', auto_disabled_at = ?, auto_disable_until = ? where id = ?",
+                ).use { statement ->
+                    statement.setLong(1, now - 2)
+                    statement.setLong(2, now - 1)
+                    statement.setString(3, primary.id)
+                    statement.executeUpdate()
+                }
+            }
+            val permit = assertNotNull(app.candidateCooldown.acquire(channel.id, primary.id, "m1"))
+            app.candidateCooldown.recordFailure(permit, FailureKind.AUTH_REJECTED)
+            assertTrue(app.candidateCooldown.isBlocked(channel.id, primary.id, "m1"))
+
+            awaitCondition("cleanup job recovers the expired key", timeoutMs = 5_000) {
+                app.channelRepository.find(channel.id)?.keys?.single()?.state == ChannelKeyState.ACTIVE
+            }
+            assertFalse(app.candidateCooldown.isBlocked(channel.id, primary.id, "m1"))
+            val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_recover" }
+            assertEquals("expired", audit.details?.get("reason")?.jsonPrimitive?.content)
+        }
     }
 
     @Test
     fun keyAutoDisableWindowKeepsFailuresAcrossSuccessAndStopsFailOpen() = runBlocking {
+        app.keyAutoDisableRepository.saveSettings(
+            KeyAutoDisablePolicy(authFailureThreshold = 100, failureThreshold = 5),
+        )
         val channel = createAutoDisablePool(withBackup = false)
         val key = createClientKey()
         fake.keyStatuses["Bearer key-primary"] = 500
@@ -1091,14 +1454,13 @@ class GatewayIntegrationTest {
             fake.keyStatuses["Bearer key-primary"] = 500
             repeat(3) { assertEquals(HttpStatusCode.BadGateway, client.sendAutoDisableRequest(key).status) }
             val disabled = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
-            assertFalse(disabled.enabled)
-            assertEquals("5 分钟内失败 5 次", disabled.autoDisableReason)
+            assertEquals(ChannelKeyState.AUTO_PERMANENT, disabled.state)
+            assertEquals("时间窗口内多次失败 5 次", disabled.autoDisableReason)
             assertEquals(HttpStatusCode.NotFound, client.sendAutoDisableRequest(key).status)
             assertEquals(6, fake.requests.size)
             val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_disable" }
-            assertEquals(KeyAutoDisablePolicy.REASON_FAILURE_WINDOW, audit.details?.get("reason")?.jsonPrimitive?.content)
-            assertEquals("5", audit.details?.get("failureCount")?.jsonPrimitive?.content)
-            assertEquals("0", audit.details?.get("authFailureStreak")?.jsonPrimitive?.content)
+            assertEquals("legacy_failure_window", audit.details?.get("ruleId")?.jsonPrimitive?.content)
+            assertEquals("5", audit.details?.get("count")?.jsonPrimitive?.content)
         }
     }
 
@@ -1120,32 +1482,33 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key, model = "shared").status)
             assertEquals(listOf("Bearer key-primary", "Bearer key-backup"), fake.requests.map { it.authorization })
             assertEquals(2, awaitRequestLog().upstreamAttempts)
-            assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.name == "primary" }.enabled)
+            assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.name == "primary" }.state == ChannelKeyState.ACTIVE)
         }
     }
 
     @Test
     fun keyAutoDisableIsSharedAcrossProtocolsAndIgnoresRequestErrors() = runBlocking {
         val channel = createAutoDisablePool(withBackup = false)
-        app.keyAutoDisableRepository.saveSettings(KeyAutoDisablePolicy(failureThreshold = 100))
+        app.keyAutoDisableRepository.saveSettings(
+            KeyAutoDisablePolicy(authFailureThreshold = 3, failureThreshold = 100),
+        )
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
-            for (neutral in listOf(200, 400, 404, 422)) {
-                fake.keyStatuses["Bearer key-primary"] = 401
-                repeat(2) { client.sendAutoDisableRequest(key).bodyAsText() }
+            // 请求侧错误既不计数也不打断连续鉴权失败。
+            for (neutral in listOf(400, 404, 422)) {
                 fake.keyStatuses["Bearer key-primary"] = neutral
                 client.sendAutoDisableRequest(key).bodyAsText()
-                assertTrue(assertNotNull(app.channelRepository.find(channel.id)).keys.single().enabled)
+                assertTrue(assertNotNull(app.channelRepository.find(channel.id)).keys.single().state == ChannelKeyState.ACTIVE)
             }
             for ((index, path) in listOf("/v1/chat/completions", "/v1/responses", "/v1/messages").withIndex()) {
                 fake.keyStatuses["Bearer key-primary"] = if (index == 1) 403 else 401
                 client.sendAutoDisableRequest(key, path = path).bodyAsText()
             }
-            assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.single().enabled)
+            assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.single().state == ChannelKeyState.ACTIVE)
             val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_disable" }
-            assertEquals("3", audit.details?.get("authFailureStreak")?.jsonPrimitive?.content)
-            assertEquals("11", audit.details?.get("failureCount")?.jsonPrimitive?.content)
+            assertEquals("legacy_auth_streak", audit.details?.get("ruleId")?.jsonPrimitive?.content)
+            assertEquals("3", audit.details?.get("count")?.jsonPrimitive?.content)
         }
     }
 
@@ -1155,19 +1518,22 @@ class GatewayIntegrationTest {
         val primary = channel.keys.single()
         app.keyAutoDisableRepository.saveSettings(KeyAutoDisablePolicy(enabled = false))
         repeat(8) { app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "off-$it", 401) }
-        assertTrue(assertNotNull(app.channelRepository.find(channel.id)).keys.single().enabled)
+        assertTrue(assertNotNull(app.channelRepository.find(channel.id)).keys.single().state == ChannelKeyState.ACTIVE)
         app.keyAutoDisableRepository.saveSettings(KeyAutoDisablePolicy(failureThreshold = 100))
         repeat(2) { app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "before-$it", 401) }
         app.keyAutoDisableRepository.saveSettings(KeyAutoDisablePolicy(authFailureThreshold = 2, failureThreshold = 100))
         assertNull(app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "after-1", 403))
-        assertTrue(assertNotNull(app.channelRepository.find(channel.id)).keys.single().enabled)
+        assertTrue(assertNotNull(app.channelRepository.find(channel.id)).keys.single().state == ChannelKeyState.ACTIVE)
         assertNotNull(app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "after-2", 401))
         app.keyAutoDisableRepository.saveSettings(KeyAutoDisablePolicy(enabled = false))
-        assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.single().enabled)
+        assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.single().state == ChannelKeyState.ACTIVE)
     }
 
     @Test
     fun keyAutoDisableCountsSurviveRestartAndWindowExpires() = runBlocking {
+        app.keyAutoDisableRepository.saveSettings(
+            KeyAutoDisablePolicy(authFailureThreshold = 3, failureThreshold = 5),
+        )
         val channel = createAutoDisablePool(withBackup = false)
         val primary = channel.keys.single()
         var now = 0L
@@ -1176,15 +1542,15 @@ class GatewayIntegrationTest {
         repository = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository) { now }
         assertNotNull(repository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "auth-3", 403))
         val restored = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
-        assertFalse(restored.enabled)
+        assertEquals(ChannelKeyState.AUTO_PERMANENT, restored.state)
         val reset = assertNotNull(app.channelRepository.update(
             id = channel.id, name = channel.name, baseUrl = channel.baseUrl, authType = channel.authType,
             enabled = true, keys = listOf(ChannelKeyUpdate(
                 id = restored.id, name = restored.name, credential = app.credentialCipher.encrypt("repaired-key"),
-                enabled = true, models = restored.models, stateVersion = restored.stateVersion,
+                state = ChannelKeyState.ACTIVE, models = restored.models, stateVersion = restored.stateVersion,
             )),
         )).keys.single()
-        assertTrue(reset.enabled)
+        assertEquals(ChannelKeyState.ACTIVE, reset.state)
         assertNull(reset.autoDisabledAt)
         repeat(4) { assertNull(repository.recordOutcome(reset, KeyAttemptOutcome.FAILURE, "window-$it", 500)) }
         now = 300_000
@@ -1206,21 +1572,21 @@ class GatewayIntegrationTest {
         }
         assertEquals(1, outcomes.count { it != null })
         val current = assertNotNull(app.channelRepository.find(channel.id))
-        assertFalse(current.keys.first { it.name == "primary" }.enabled)
-        assertTrue(current.keys.first { it.name == "backup" }.enabled)
+        assertFalse(current.keys.first { it.name == "primary" }.state == ChannelKeyState.ACTIVE)
+        assertTrue(current.keys.first { it.name == "backup" }.state == ChannelKeyState.ACTIVE)
         assertEquals(1, app.adminAuditRepository.list(100).count { it.action == "channel_key.auto_disable" })
         val updated = assertNotNull(app.channelRepository.update(
             id = channel.id, name = channel.name, baseUrl = channel.baseUrl, authType = channel.authType, enabled = true,
             keys = current.keys.map { ChannelKeyUpdate(
                 id = it.id, name = it.name, credential = if (it.id == primary.id) app.credentialCipher.encrypt("repaired-key") else null,
-                enabled = true, priority = it.priority, models = it.models, stateVersion = it.stateVersion,
+                state = ChannelKeyState.ACTIVE, priority = it.priority, models = it.models, stateVersion = it.stateVersion,
             ) },
         )).keys.first { it.name == "primary" }
         assertFalse(app.keyAutoDisableRepository.isAvailable(primary))
         assertTrue(app.keyAutoDisableRepository.isAvailable(updated))
         repeat(5) { assertNull(app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "late-$it", 401)) }
         repeat(2) { assertNull(app.keyAutoDisableRepository.recordOutcome(updated, KeyAttemptOutcome.AUTH_FAILURE, "new-$it", 403)) }
-        assertTrue(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.name == "primary" }.enabled)
+        assertTrue(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.name == "primary" }.state == ChannelKeyState.ACTIVE)
     }
 
     @Test
@@ -1237,14 +1603,14 @@ class GatewayIntegrationTest {
             assertFailsWith<Exception> {
                 app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "audit-failure", 403)
             }
-            assertTrue(assertNotNull(app.channelRepository.find(primary.channelId)).keys.single().enabled)
+            assertTrue(assertNotNull(app.channelRepository.find(primary.channelId)).keys.single().state == ChannelKeyState.ACTIVE)
             assertTrue(app.adminAuditRepository.list(100).none { it.action == "channel_key.auto_disable" })
         } finally {
             constraint("alter table admin_audit_logs drop constraint test_auto_disable_audit_failure")
         }
         assertNotNull(app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "retry", 403))
         val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_disable" }
-        assertEquals("3", audit.details?.get("authFailureStreak")?.jsonPrimitive?.content)
+        assertEquals("3", audit.details?.get("count")?.jsonPrimitive?.content)
     }
 
     @Test
@@ -1267,7 +1633,7 @@ class GatewayIntegrationTest {
                 failNextWrite.set(true)
                 val response = client.sendAutoDisableRequest(key)
                 assertEquals(499, response.status.value)
-                assertTrue(assertNotNull(app.channelRepository.find(channel.id)).keys.single().enabled)
+                assertTrue(assertNotNull(app.channelRepository.find(channel.id)).keys.single().state == ChannelKeyState.ACTIVE)
             }
             assertEquals(5, fake.requests.size)
             assertTrue(app.adminAuditRepository.list(100).none { it.action == "channel_key.auto_disable" })
@@ -1276,21 +1642,24 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun keyAutoDisableRecoversCorruptFailureWindow() = runBlocking {
+    fun keyAutoDisableRecoversCorruptRuleCounters() = runBlocking {
         val channel = createAutoDisablePool(withBackup = false)
         val primary = channel.keys.first()
         app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "corrupt-1", 401)
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
-            connection.prepareStatement("update channel_key_health set recent_failures = ? where key_id = ?").use { statement ->
+            connection.prepareStatement("update channel_key_health set rule_counters = ? where key_id = ?").use { statement ->
                 statement.setString(1, "{not-json")
                 statement.setString(2, primary.id)
                 statement.executeUpdate()
             }
         }
-        repeat(2) { index ->
+        repeat(3) { index ->
             app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "corrupt-${index + 2}", 401)
         }
-        assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }.enabled)
+        assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }.state == ChannelKeyState.ACTIVE)
+        val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_disable" }
+        assertEquals("auth_rejected", audit.details?.get("ruleId")?.jsonPrimitive?.content)
+        assertEquals("3", audit.details?.get("count")?.jsonPrimitive?.content)
     }
 
     @Test
@@ -1315,8 +1684,8 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, initial.status)
             val initialJson = Json.parseToJsonElement(initial.bodyAsText()).jsonObject
             assertEquals("true", initialJson["enabled"]?.jsonPrimitive?.content)
-            assertEquals("3", initialJson["authFailureThreshold"]?.jsonPrimitive?.content)
-            assertEquals("5", initialJson["failureThreshold"]?.jsonPrimitive?.content)
+            assertEquals("2", initialJson["authFailureThreshold"]?.jsonPrimitive?.content)
+            assertEquals("8", initialJson["failureThreshold"]?.jsonPrimitive?.content)
             assertEquals("5", initialJson["failureWindowMinutes"]?.jsonPrimitive?.content)
             suspend fun put(body: String, csrfToken: String? = csrf) = client.put("/admin/api/key-auto-disable-settings") {
                 header(HttpHeaders.Cookie, cookie)
@@ -1336,7 +1705,7 @@ class GatewayIntegrationTest {
             )) assertEquals(HttpStatusCode.BadRequest, put(body).status, body)
             assertEquals(HttpStatusCode.OK, put(valid).status)
             val persisted = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository).loadSettings()
-            assertEquals(KeyAutoDisablePolicy(false, 4, 10, 15), persisted.policy)
+            assertEquals(KeyAutoDisablePolicy(false, 4, 10, 15).toKeyDisablePolicy(), persisted.policy)
             val audit = app.adminAuditRepository.list(100).first { it.action == "key_auto_disable_settings.update" && it.result == "success" }
             assertEquals("settings-change", audit.requestId)
             assertEquals("true", audit.details?.get("before")?.jsonObject?.get("enabled")?.jsonPrimitive?.content)
@@ -1346,6 +1715,9 @@ class GatewayIntegrationTest {
 
     @Test
     fun keyAutoDisableRejectsStaleEditsAndManualReenableClearsCooldown() = runBlocking {
+        app.keyAutoDisableRepository.saveSettings(
+            KeyAutoDisablePolicy(authFailureThreshold = 3, failureThreshold = 100),
+        )
         val channel = createAutoDisablePool()
         val primary = channel.keys.first { it.name == "primary" }
         val failedPermit = assertNotNull(app.candidateCooldown.acquire(channel.id, primary.id, "m1"))
@@ -1357,29 +1729,28 @@ class GatewayIntegrationTest {
             suspend fun update(
                 source: ChannelRecord,
                 replaceCredential: Boolean = false,
-                keyEnabled: Boolean = true,
+                keyState: String = "ACTIVE",
             ) = client.put("/admin/api/channels/${channel.id}") {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
                 setBody("""{"name":"${channel.name}","baseUrl":"${channel.baseUrl}","enabled":true,"keys":[${
-                    source.keys.joinToString { """{"id":"${it.id}","name":"${it.name}","enabled":${keyEnabled},"stateVersion":${it.stateVersion},"priority":${it.priority},"models":["m1","m2"]${if (replaceCredential && it.id == primary.id) ",\"credential\":\"repaired-key\"" else ""}}""" }
+                    source.keys.joinToString { """{"id":"${it.id}","name":"${it.name}","state":"${keyState}","stateVersion":${it.stateVersion},"priority":${it.priority},"models":["m1","m2"]${if (replaceCredential && it.id == primary.id) ",\"credential\":\"repaired-key\"" else ""}}""" }
                 }]}""")
             }
             val stale = update(channel)
             assertEquals(HttpStatusCode.Conflict, stale.status)
             assertTrue(stale.bodyAsText().contains("channel_key_state_changed"))
-            assertFalse(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }.enabled)
-            assertEquals(HttpStatusCode.OK, update(assertNotNull(app.channelRepository.find(channel.id)), keyEnabled = false).status)
-            assertNotNull(assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }.autoDisabledAt)
-            assertEquals(HttpStatusCode.BadRequest, update(assertNotNull(app.channelRepository.find(channel.id))).status)
             val disabled = assertNotNull(app.channelRepository.find(channel.id))
+            assertEquals(ChannelKeyState.AUTO_PERMANENT, disabled.keys.first { it.id == primary.id }.state)
+            assertNotNull(disabled.keys.first { it.id == primary.id }.autoDisabledAt)
+            assertEquals(HttpStatusCode.BadRequest, update(disabled).status)
             assertFailsWith<dev.soven.llmgateway.repo.ChannelKeyReenableRequiresCredentialException> {
                 app.channelRepository.update(
                     id = channel.id, name = channel.name, baseUrl = channel.baseUrl,
                     authType = channel.authType, enabled = true,
                     keys = disabled.keys.map { current -> ChannelKeyUpdate(
-                        id = current.id, name = current.name, enabled = true, priority = current.priority,
+                        id = current.id, name = current.name, state = ChannelKeyState.ACTIVE, priority = current.priority,
                         models = current.models, // 旧客户端可省略版本，但不能用原凭据覆盖自动禁用。
                         credential = if (current.id == primary.id) app.credentialCipher.encrypt("key-primary") else null,
                     ) },
@@ -1387,13 +1758,44 @@ class GatewayIntegrationTest {
             }
             assertEquals(HttpStatusCode.OK, update(assertNotNull(app.channelRepository.find(channel.id)), replaceCredential = true).status)
             val enabled = assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }
-            assertTrue(enabled.enabled)
+            assertEquals(ChannelKeyState.ACTIVE, enabled.state)
             assertNull(enabled.autoDisabledAt)
             assertFalse(app.candidateCooldown.isBlocked(channel.id, primary.id, "m1"))
             val key = createClientKey()
             assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key).status)
             assertEquals("Bearer repaired-key", fake.requests.last().authorization)
         }
+    }
+
+    @Test
+    fun `permanent disable cannot be downgraded to manual to bypass credential rotation`() = runBlocking {
+        app.keyAutoDisableRepository.saveSettings(KeyAutoDisablePolicy(authFailureThreshold = 1))
+        val channel = createAutoDisablePool(withBackup = false)
+        val primary = channel.keys.single()
+        assertNotNull(app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "perm", 401))
+        val disabled = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+        assertEquals(ChannelKeyState.AUTO_PERMANENT, disabled.state)
+
+        // 先改成人工停用再启用，不能绕过永久停用的换凭据要求。
+        val downgraded = assertNotNull(app.channelRepository.update(
+            id = channel.id, name = channel.name, baseUrl = channel.baseUrl, authType = channel.authType, enabled = true,
+            keys = listOf(ChannelKeyUpdate(
+                id = disabled.id, name = disabled.name, state = ChannelKeyState.MANUAL_DISABLED,
+                priority = disabled.priority, models = disabled.models, stateVersion = disabled.stateVersion,
+            )),
+        )).keys.single()
+        assertEquals(ChannelKeyState.AUTO_PERMANENT, downgraded.state)
+
+        assertFailsWith<dev.soven.llmgateway.repo.ChannelKeyReenableRequiresCredentialException> {
+            app.channelRepository.update(
+                id = channel.id, name = channel.name, baseUrl = channel.baseUrl, authType = channel.authType, enabled = true,
+                keys = listOf(ChannelKeyUpdate(
+                    id = downgraded.id, name = downgraded.name, state = ChannelKeyState.ACTIVE,
+                    priority = downgraded.priority, models = downgraded.models, stateVersion = downgraded.stateVersion,
+                )),
+            )
+        }
+        Unit
     }
 
     @Test
@@ -1557,7 +1959,7 @@ class GatewayIntegrationTest {
                 NewChannelKey(
                     name = "disabled",
                     credential = app.credentialCipher.encrypt("key-disabled"),
-                    enabled = false,
+                    state = ChannelKeyState.MANUAL_DISABLED,
                     models = listOf("gpt-4o-mini"),
                 ),
             ),
@@ -1589,6 +1991,169 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.BadRequest, tested.status)
             assertTrue(tested.bodyAsText().contains("channel_key_disabled"))
         }
+    }
+
+    @Test
+    fun `admin rejects temporarily disabled keys with specific error code`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "temp-disabled-key",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "primary",
+                    credential = app.credentialCipher.encrypt("key-primary"),
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+        )
+        val key = channel.keys.single()
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.execute("update channel_keys set state = 'AUTO_TEMPORARY', auto_disable_until = ${System.currentTimeMillis() + 600_000} where id = '${key.id}'")
+            }
+        }
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val discovery = client.post("/admin/api/channels/model-discovery") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"baseUrl":"${channel.baseUrl}","channelId":"${channel.id}","keyId":"${key.id}"}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, discovery.status)
+            assertTrue(discovery.bodyAsText().contains("channel_key_temporarily_disabled"))
+
+            val tested = client.post("/admin/api/channels/${channel.id}/model-test") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","protocol":"chat_completions","keyId":"${key.id}","prompt":"ping"}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, tested.status)
+            assertTrue(tested.bodyAsText().contains("channel_key_temporarily_disabled"))
+
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { conn ->
+                conn.prepareStatement(
+                    "update channel_keys set auto_disable_until = ?, probe_until = ? where id = ?",
+                ).use { statement ->
+                    val now = System.currentTimeMillis()
+                    statement.setLong(1, now - 1)
+                    statement.setLong(2, now + 60_000)
+                    statement.setString(3, key.id)
+                    statement.executeUpdate()
+                }
+            }
+            val probing = client.post("/admin/api/channels/model-discovery") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"baseUrl":"${channel.baseUrl}","channelId":"${channel.id}","keyId":"${key.id}"}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, probing.status)
+            assertTrue(probing.bodyAsText().contains("正在探测恢复"))
+        }
+    }
+
+    @Test
+    fun `admin rejects client-submitted auto disable states`() = runBlocking {
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            for (autoState in listOf("AUTO_TEMPORARY", "AUTO_PERMANENT")) {
+                val response = client.post("/admin/api/channels") {
+                    header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                    header("X-CSRF-Token", session.session.csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        """
+                        {
+                          "name":"auto-state-$autoState",
+                          "baseUrl":"${fake.baseUrl}/ok/v1",
+                          "keys":[{"name":"primary","credential":"secret","state":"$autoState","models":["m1"]}],
+                          "modelMappings":[{"upstreamModel":"m1"}],
+                          "enabled":true
+                        }
+                        """.trimIndent(),
+                    )
+                }
+                assertEquals(HttpStatusCode.BadRequest, response.status)
+                assertTrue(response.bodyAsText().contains("invalid_channel"))
+            }
+        }
+    }
+
+    @Test
+    fun `reenabling manual disabled or temporary key does not require changing credential`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "reenable-test",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "manual-key",
+                    credential = app.credentialCipher.encrypt("secret-1"),
+                    state = ChannelKeyState.MANUAL_DISABLED,
+                    models = listOf("m1"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        val manualKey = channel.keys.single()
+        val reenabled = assertNotNull(app.channelRepository.update(
+            id = channel.id,
+            name = channel.name,
+            baseUrl = channel.baseUrl,
+            authType = channel.authType,
+            enabled = true,
+            keys = listOf(
+                ChannelKeyUpdate(
+                    id = manualKey.id,
+                    name = manualKey.name,
+                    state = ChannelKeyState.ACTIVE,
+                    models = manualKey.models,
+                    stateVersion = manualKey.stateVersion,
+                ),
+            ),
+        )).keys.single()
+        assertEquals(ChannelKeyState.ACTIVE, reenabled.state)
+
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.execute("update channel_keys set state = 'AUTO_TEMPORARY', auto_disable_until = 1000 where id = '${manualKey.id}'")
+            }
+        }
+        val tempKey = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+        assertEquals(ChannelKeyState.AUTO_TEMPORARY, tempKey.state)
+        assertTrue(app.keyAutoDisableRepository.isAvailable(tempKey, now = 1000))
+        assertFalse(app.keyAutoDisableRepository.isAvailable(tempKey, now = 999))
+
+        val reenabledTemp = assertNotNull(app.channelRepository.update(
+            id = channel.id,
+            name = channel.name,
+            baseUrl = channel.baseUrl,
+            authType = channel.authType,
+            enabled = true,
+            keys = listOf(
+                ChannelKeyUpdate(
+                    id = tempKey.id,
+                    name = tempKey.name,
+                    state = ChannelKeyState.ACTIVE,
+                    models = tempKey.models,
+                    stateVersion = tempKey.stateVersion,
+                ),
+            ),
+        )).keys.single()
+        assertEquals(ChannelKeyState.ACTIVE, reenabledTemp.state)
+        assertNull(reenabledTemp.autoDisableUntil)
     }
 
     @Test
@@ -2424,7 +2989,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithBaseUrl(
             name = "anthropic-partial-update",
             baseUrl = "${fake.baseUrl}/ok/v1",
-            protocols = setOf(GatewayProtocol.MESSAGES),
+            protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
@@ -2515,7 +3080,7 @@ class GatewayIntegrationTest {
 
     @Test
     fun `responses protocol streams and records usage`() = runBlocking {
-        val channel = createChannelWithProtocols("responses", "ok", setOf(GatewayProtocol.RESPONSES))
+        val channel = createChannelWithProtocols("responses", "ok", listOf(GatewayProtocol.RESPONSES))
         createAlias("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
@@ -2551,7 +3116,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithProtocols(
             "responses-created-stall",
             "responses-created-stall",
-            setOf(GatewayProtocol.RESPONSES),
+            listOf(GatewayProtocol.RESPONSES),
         )
         createAlias("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
@@ -2579,9 +3144,9 @@ class GatewayIntegrationTest {
         val primary = createChannelWithProtocols(
             "responses-stall",
             "responses-created-stall",
-            setOf(GatewayProtocol.RESPONSES),
+            listOf(GatewayProtocol.RESPONSES),
         )
-        val secondary = createChannelWithProtocols("responses-ok", "ok", setOf(GatewayProtocol.RESPONSES))
+        val secondary = createChannelWithProtocols("responses-ok", "ok", listOf(GatewayProtocol.RESPONSES))
         createAlias("fast-chat", primary to "gpt-4o-mini", secondary to "gpt-4o-mini")
         val key = createClientKey()
 
@@ -2609,7 +3174,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithProtocols(
             "responses-function-call",
             "responses-function-call",
-            setOf(GatewayProtocol.RESPONSES),
+            listOf(GatewayProtocol.RESPONSES),
         )
         createAlias("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
@@ -2637,7 +3202,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithProtocols(
             "responses-failed",
             "responses-failed",
-            setOf(GatewayProtocol.RESPONSES),
+            listOf(GatewayProtocol.RESPONSES),
         )
         createAlias("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
@@ -2666,7 +3231,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithProtocols(
             "responses-incomplete",
             "responses-incomplete",
-            setOf(GatewayProtocol.RESPONSES),
+            listOf(GatewayProtocol.RESPONSES),
         )
         createAlias("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
@@ -2692,7 +3257,7 @@ class GatewayIntegrationTest {
 
     @Test
     fun `responses protocol records usage for non-streaming`() = runBlocking {
-        val channel = createChannelWithProtocols("responses", "ok", setOf(GatewayProtocol.RESPONSES))
+        val channel = createChannelWithProtocols("responses", "ok", listOf(GatewayProtocol.RESPONSES))
         createAlias("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
@@ -3045,7 +3610,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithProtocols(
             "openai",
             "ok",
-            setOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES),
+            listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES),
         )
         createAlias("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
@@ -3075,7 +3640,7 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `rejects responses request when channel only supports chat completions`() = runBlocking {
+    fun `responses request converts to chat-only channel`() = runBlocking {
         val channel = createChannel("chat-only", "ok")
         createAlias("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
@@ -3088,15 +3653,26 @@ class GatewayIntegrationTest {
                 setBody("""{"model":"fast-chat","stream":false,"input":"hi"}""")
             }
 
-            assertEquals(HttpStatusCode.BadRequest, response.status)
-            assertTrue(response.bodyAsText().contains("protocol_not_supported"))
-            assertTrue(fake.requests.isEmpty())
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("response", body["object"]!!.jsonPrimitive.content)
+            assertEquals("completed", body["status"]!!.jsonPrimitive.content)
+            val output = body["output"]!!.jsonArray.single().jsonObject
+            assertEquals("message", output["type"]!!.jsonPrimitive.content)
+            assertEquals(
+                "Hello!",
+                output["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content,
+            )
+            val upstream = fake.requests.single()
+            assertEquals("/ok/v1/chat/completions", upstream.path)
+            val upstreamBody = Json.parseToJsonElement(upstream.body).jsonObject
+            assertEquals("gpt-4o-mini", upstreamBody["model"]!!.jsonPrimitive.content)
+            assertTrue(upstreamBody["messages"]!!.jsonArray.isNotEmpty())
+            assertFalse(upstreamBody.containsKey("input"))
             val log = awaitRequestLog()
-            assertEquals(FailureStage.ROUTING, log.failureStage)
-            assertEquals("protocol_not_supported", log.errorCode)
-            assertTrue(log.errorMessage!!.contains("没有支持 responses"))
-            assertNull(log.channelId)
-            assertNull(log.channelName)
+            assertEquals(channel.id, log.channelId)
+            assertEquals(GatewayProtocol.RESPONSES, log.protocol)
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.upstreamProtocol)
         }
     }
 
@@ -3187,7 +3763,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithBaseUrl(
             "model-test-messages",
             "${fake.baseUrl}/ok/v1",
-            protocols = setOf(GatewayProtocol.MESSAGES),
+            protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
         )
 
@@ -3235,7 +3811,7 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `direct mode reports protocol mismatch`() = runBlocking {
+    fun `direct mode converts responses request to chat-only channel`() = runBlocking {
         app.close()
         app = GatewayApplication(config())
         createChannel("chat-only", "ok")
@@ -3249,8 +3825,19 @@ class GatewayIntegrationTest {
                 setBody("""{"model":"gpt-4o-mini","stream":false,"input":"hi"}""")
             }
 
-            assertEquals(HttpStatusCode.BadRequest, response.status)
-            assertTrue(response.bodyAsText().contains("protocol_not_supported"))
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("response", body["object"]!!.jsonPrimitive.content)
+            val output = body["output"]!!.jsonArray.single().jsonObject
+            assertEquals("Hello!", output["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+            val upstream = fake.requests.single()
+            assertEquals("/ok/v1/chat/completions", upstream.path)
+            val upstreamBody = Json.parseToJsonElement(upstream.body).jsonObject
+            assertTrue(upstreamBody["messages"]!!.jsonArray.isNotEmpty())
+            assertFalse(upstreamBody.containsKey("input"))
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.RESPONSES, log.protocol)
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.upstreamProtocol)
         }
     }
 
@@ -3259,7 +3846,7 @@ class GatewayIntegrationTest {
         createChannelWithProtocols(
             "both",
             "ok",
-            setOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES),
+            listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES),
         )
         val session = app.sessions.create("admin")
 
@@ -3273,6 +3860,63 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, response.status)
             assertTrue(body.contains("chat_completions"), "BODY=[$body]")
             assertTrue(body.contains("responses"), "BODY=[$body]")
+        }
+    }
+
+    @Test
+    fun `admin channel create and update preserve protocol priority order`() = runBlocking {
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val created = client.post("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"protocol-order","baseUrl":"${fake.baseUrl}/ok/v1","credential":"sk-test","protocols":[" messages ","responses","messages","chat_completions"],"enabled":true}""",
+                )
+            }
+            assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
+            val createdJson = Json.parseToJsonElement(created.bodyAsText()).jsonObject
+            val id = createdJson["id"]!!.jsonPrimitive.content
+            val createdOrder = listOf("messages", "responses", "chat_completions")
+            assertEquals(createdOrder, createdJson["protocols"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals(createdOrder, assertNotNull(app.channelRepository.find(id)).protocols.map { it.value })
+
+            val updated = client.put("/admin/api/channels/$id") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"protocol-order","baseUrl":"${fake.baseUrl}/ok/v1","protocols":["responses","chat_completions","messages"],"enabled":true}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, updated.status, updated.bodyAsText())
+            val updatedJson = Json.parseToJsonElement(updated.bodyAsText()).jsonObject
+            val updatedOrder = listOf("responses", "chat_completions", "messages")
+            assertEquals(updatedOrder, updatedJson["protocols"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals(updatedOrder, assertNotNull(app.channelRepository.find(id)).protocols.map { it.value })
+
+            val listed = client.get("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            assertEquals(HttpStatusCode.OK, listed.status, listed.bodyAsText())
+            val listedChannel = Json.parseToJsonElement(listed.bodyAsText()).jsonArray
+                .map { it.jsonObject }
+                .single { it["id"]!!.jsonPrimitive.content == id }
+            assertEquals(updatedOrder, listedChannel["protocols"]!!.jsonArray.map { it.jsonPrimitive.content })
+
+            val partial = client.put("/admin/api/channels/$id") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"protocol-order","baseUrl":"${fake.baseUrl}/ok/v1","enabled":true,"priority":9}""")
+            }
+            assertEquals(HttpStatusCode.OK, partial.status, partial.bodyAsText())
+            val partialJson = Json.parseToJsonElement(partial.bodyAsText()).jsonObject
+            assertEquals(updatedOrder, partialJson["protocols"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals(updatedOrder, assertNotNull(app.channelRepository.find(id)).protocols.map { it.value })
         }
     }
 
@@ -3426,6 +4070,21 @@ class GatewayIntegrationTest {
                     errorCode = "stream_interrupted",
                 ),
             )
+            app.requestLogRepository.insert(
+                requestLog("retried", createdAt = System.currentTimeMillis()).copy(
+                    clientKeyId = app.clientKeyRepository.list().single().id,
+                    clientKeyName = "test-key",
+                    channelId = channel.id,
+                    channelName = channel.name,
+                    channelKeyId = channel.keys.single().id,
+                    channelKeyName = channel.keys.single().name,
+                    upstreamModel = "gpt-4o-mini",
+                    cachedTokens = 3,
+                    reasoningTokens = 2,
+                    upstreamAttempts = 3,
+                    firstTokenMs = 120,
+                ),
+            )
             val login = client.post("/admin/api/login") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"username":"admin","password":"test-password"}""")
@@ -3438,13 +4097,60 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, report.status, report.bodyAsText())
             val json = Json.parseToJsonElement(report.bodyAsText()).jsonObject
             val total = json["total"]!!.jsonObject
-            assertEquals("5", total["requests"]!!.jsonPrimitive.content)
+            assertEquals("6", total["requests"]!!.jsonPrimitive.content)
             assertEquals("2", total["errors"]!!.jsonPrimitive.content)
-            assertEquals("32", total["totalTokens"]!!.jsonPrimitive.content)
+            assertEquals("34", total["totalTokens"]!!.jsonPrimitive.content)
+            assertEquals("3", total["cachedTokens"]!!.jsonPrimitive.content)
+            assertEquals("2", total["reasoningTokens"]!!.jsonPrimitive.content)
+            assertEquals("2", total["failovers"]!!.jsonPrimitive.content)
             assertEquals("0.000037", total["costs"]!!.jsonObject["USD"]!!.jsonPrimitive.content)
             val byKey = json["byClientKey"]!!.jsonArray.single().jsonObject
             assertEquals(app.clientKeyRepository.list().single().id, byKey["id"]!!.jsonPrimitive.content)
             assertTrue(byKey["name"]!!.jsonPrimitive.content in setOf("test-key", "renamed-key"))
+            assertEquals("2", byKey["failovers"]!!.jsonPrimitive.content)
+            assertEquals(
+                channel.id,
+                json["byChannel"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.single { it == channel.id },
+            )
+            assertTrue(json["byModel"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.contains("gpt-4o-mini"))
+            assertEquals(
+                setOf("stream_interrupted", "500"),
+                json["byErrorCode"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet(),
+            )
+            assertTrue(json["trend"]!!.jsonArray.isNotEmpty())
+
+            val rangeNow = System.currentTimeMillis()
+            suspend fun reportStatus(from: Long, to: Long): Pair<HttpStatusCode, String> {
+                val response = client.get("/admin/api/usage-report?from=$from&to=$to") {
+                    header(HttpHeaders.Cookie, cookie)
+                }
+                return response.status to response.bodyAsText()
+            }
+
+            val (atLimitStatus, atLimitBody) = reportStatus(rangeNow - 30 * 86_400_000L, rangeNow)
+            assertEquals(HttpStatusCode.OK, atLimitStatus, atLimitBody)
+            val (overByOneMsStatus, overByOneMsBody) = reportStatus(rangeNow - 30 * 86_400_000L - 1, rangeNow)
+            assertEquals(HttpStatusCode.BadRequest, overByOneMsStatus, overByOneMsBody)
+            assertEquals(
+                "invalid_report_range",
+                Json.parseToJsonElement(overByOneMsBody).jsonObject["error"]!!.jsonObject["code"]!!.jsonPrimitive.content,
+            )
+            val (invertedStatus, invertedBody) = reportStatus(rangeNow, rangeNow - 86_400_000L)
+            assertEquals(HttpStatusCode.BadRequest, invertedStatus, invertedBody)
+            assertEquals(
+                "invalid_report_range",
+                Json.parseToJsonElement(invertedBody).jsonObject["error"]!!.jsonObject["code"]!!.jsonPrimitive.content,
+            )
+            val (sameInstantStatus, sameInstantBody) = reportStatus(rangeNow, rangeNow)
+            assertEquals(HttpStatusCode.OK, sameInstantStatus, sameInstantBody)
+            val overLimit = client.get("/admin/api/usage-report?from=${rangeNow - 31 * 86_400_000L}&to=$rangeNow") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.BadRequest, overLimit.status, overLimit.bodyAsText())
+            assertEquals(
+                "invalid_report_range",
+                Json.parseToJsonElement(overLimit.bodyAsText()).jsonObject["error"]!!.jsonObject["code"]!!.jsonPrimitive.content,
+            )
         }
     }
 
@@ -3949,7 +4655,7 @@ class GatewayIntegrationTest {
                 ChannelKeyUpdate(
                     id = channel.keys.single().id,
                     name = "group-a",
-                    enabled = true,
+                    state = ChannelKeyState.ACTIVE,
                     priority = 1,
                     models = listOf("m1"),
                     rateLimit = disabledPolicy,
@@ -3970,7 +4676,7 @@ class GatewayIntegrationTest {
                 ChannelKeyUpdate(
                     id = channel.keys.single().id,
                     name = "group-a",
-                    enabled = true,
+                    state = ChannelKeyState.ACTIVE,
                     priority = 1,
                     models = listOf("m1"),
                 ),
@@ -4092,6 +4798,41 @@ class GatewayIntegrationTest {
                 }
             }
 
+            // 迁到 V31，构造三种旧密钥验证 V32 回填规则
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("31"))
+                .load()
+                .migrate()
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into channels (id, name, base_url, auth_type, enabled, created_at, updated_at)
+                        values ('v32-channel', 'v32-channel', 'https://example.com/v1', 'bearer', true, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into channels (id, name, base_url, auth_type, enabled, protocols, created_at, updated_at)
+                        values ('v34-empty', 'v34-empty', 'https://example.com/v1', 'bearer', true, '', 1, 1),
+                               ('v34-order', 'v34-order', 'https://example.com/v1', 'bearer', true, 'messages, responses,chat_completions,responses,unknown', 1, 1),
+                               ('v34-unknown', 'v34-unknown', 'https://example.com/v1', 'bearer', true, 'unknown', 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into channel_keys (id, channel_id, name, credential_ciphertext, credential_nonce, credential_key_version, enabled, auto_disabled_at, priority, created_at, updated_at)
+                        values ('key-active', 'v32-channel', 'key-active', 'c', 'n', 1, true, null, 1, 1, 1),
+                               ('key-auto-perm', 'v32-channel', 'key-auto-perm', 'c', 'n', 1, false, 1000, 1, 1, 1),
+                               ('key-manual-dis', 'v32-channel', 'key-manual-dis', 'c', 'n', 1, false, null, 1, 1, 1)
+                        """.trimIndent(),
+                    )
+                }
+            }
+
             Flyway.configure()
                 .dataSource(migrationUrl, postgres.username, postgres.password)
                 .locations("classpath:db/migration")
@@ -4126,7 +4867,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("31", result.getString(1))
+                        assertEquals("35", result.getString(1))
                     }
                     statement.executeQuery("select enabled, auth_failure_threshold, failure_threshold, failure_window_minutes from key_auto_disable_settings where id = 1").use { result ->
                         assertTrue(result.next())
@@ -4135,9 +4876,51 @@ class GatewayIntegrationTest {
                         assertEquals(5, result.getInt(3))
                         assertEquals(5, result.getInt(4))
                     }
-                    statement.executeQuery("select count(*) from information_schema.columns where table_name = 'channel_keys' and column_name in ('state_version', 'auto_disabled_at', 'auto_disable_reason')").use { result ->
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'channel_keys' and column_name in ('state_version', 'auto_disabled_at', 'auto_disable_reason', 'auto_disable_until')",
+                    ).use { result ->
                         assertTrue(result.next())
-                        assertEquals(3, result.getInt(1))
+                        assertEquals(4, result.getInt(1))
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'channel_keys' and column_name in ('state', 'enabled')",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V32 应新增 state 并删除 enabled")
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'channel_keys' and column_name = 'probe_until'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V35 应新增 probe_until")
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name in ('key_auto_disable_settings','channel_key_health') and column_name in ('rules','rule_counters')",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(2, result.getInt(1), "V33 应新增 rules 与 rule_counters 列")
+                    }
+                    statement.executeQuery(
+                        "select id, state, auto_disable_until from channel_keys where id in ('key-active', 'key-auto-perm', 'key-manual-dis') order by id",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals("key-active", result.getString(1))
+                        assertEquals("ACTIVE", result.getString(2), "enabled=true 应回填为 ACTIVE")
+                        assertNull(result.getObject(3))
+                        assertTrue(result.next())
+                        assertEquals("key-auto-perm", result.getString(1))
+                        assertEquals("AUTO_PERMANENT", result.getString(2), "enabled=false 且 auto_disabled_at 非空应回填为 AUTO_PERMANENT")
+                        assertNull(result.getObject(3))
+                        assertTrue(result.next())
+                        assertEquals("key-manual-dis", result.getString(1))
+                        assertEquals("MANUAL_DISABLED", result.getString(2), "enabled=false 且 auto_disabled_at 为空应回填为 MANUAL_DISABLED")
+                        assertNull(result.getObject(3))
+                    }
+                    statement.executeQuery(
+                        "select state from channel_keys where channel_id = 'migration-channel'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals("ACTIVE", result.getString(1), "启用密钥应回填为 ACTIVE")
                     }
                     statement.executeQuery(
                         "select name, credential_ciphertext from channel_keys where channel_id = 'migration-channel'",
@@ -4226,6 +5009,27 @@ class GatewayIntegrationTest {
                     ).use { result ->
                         assertTrue(result.next())
                         assertEquals(1, result.getInt(1))
+                    }
+                    statement.executeQuery(
+                        "select id, protocols from channels where id like 'v34-%' order by id",
+                    ).use { result ->
+                        val expected = mapOf(
+                            "v34-empty" to "chat_completions",
+                            "v34-order" to "chat_completions,responses,messages",
+                            "v34-unknown" to "chat_completions",
+                        )
+                        expected.forEach { (id, protocols) ->
+                            assertTrue(result.next())
+                            assertEquals(id, result.getString(1))
+                            assertEquals(protocols, result.getString(2), "V34 应按优先级规范化旧渠道协议")
+                        }
+                        assertFalse(result.next())
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'request_logs' and column_name = 'upstream_protocol'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V34 应新增 upstream_protocol 列")
                     }
                     statement.executeQuery(
                         "select is_nullable from information_schema.columns where table_name = 'request_logs' and column_name = 'stream'",
@@ -4786,11 +5590,210 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `native protocol candidate wins over higher priority conversion candidate`() = runBlocking {
+        val conversion = createChannelWithBaseUrl(
+            name = "conversion-first",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        val native = createChannelWithBaseUrl(
+            name = "native-second",
+            baseUrl = fake.baseUrl + "/500/v1",
+            protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
+            modelMappings = listOf(ChannelModelRecord("gpt-4o-mini")),
+        )
+        // 转换候选放在 position 0，原生候选放在 position 1；原生协议仍应先尝试。
+        createAlias("native-priority", conversion to "claude-sonnet-4-5", native to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"native-priority","messages":[{"role":"user","content":"hi"}],"max_tokens":32}""")
+            }
+            val response = send()
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            assertEquals(
+                listOf("/500/v1/chat/completions", "/ok/v1/messages"),
+                fake.requests.map { it.path },
+            )
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals(
+                "Hello!",
+                body["choices"]!!.jsonArray[0].jsonObject["message"]!!.jsonObject["content"]!!.jsonPrimitive.content,
+            )
+            val log = awaitRequestLog()
+            assertEquals(2, log.upstreamAttempts)
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.protocol)
+            assertEquals(GatewayProtocol.MESSAGES, log.upstreamProtocol)
+
+            // 原生候选进入冷却后，后续请求直接走转换候选，不再产生一次无效尝试。
+            val second = send()
+            assertEquals(HttpStatusCode.OK, second.status, second.bodyAsText())
+            awaitRequestLogCount(2)
+            val secondLog = app.requestLogRepository.list(10).first()
+            assertEquals(1, secondLog.upstreamAttempts)
+            assertEquals(GatewayProtocol.MESSAGES, secondLog.upstreamProtocol)
+        }
+    }
+
+    @Test
+    fun `chat request converts to messages-only channel`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "chat-to-messages",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("converted-claude", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"converted-claude","messages":[{"role":"user","content":"hi"}],"max_tokens":32}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("Hello!", body["choices"]!!.jsonArray[0].jsonObject["message"]!!.jsonObject["content"]!!.jsonPrimitive.content)
+            val upstream = fake.requests.last()
+            assertEquals("/ok/v1/messages", upstream.path)
+            assertEquals("upstream-secret", upstream.xApiKey)
+            val upstreamBody = Json.parseToJsonElement(upstream.body).jsonObject
+            assertEquals("claude-sonnet-4-5", upstreamBody["model"]!!.jsonPrimitive.content)
+            assertTrue(upstreamBody["messages"]!!.jsonArray.isNotEmpty())
+
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.protocol)
+            assertEquals(GatewayProtocol.MESSAGES, log.upstreamProtocol)
+        }
+    }
+
+    @Test
+    fun `chat streaming request converts to messages stream`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "chat-stream-to-messages",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("converted-claude-stream", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"converted-claude-stream","stream":true,"messages":[{"role":"user","content":"hi"}]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = response.bodyAsText()
+            assertTrue(body.contains("chat.completion.chunk"), body)
+            assertTrue(body.contains("Hello!"), body)
+            assertTrue(body.contains("[DONE]"), body)
+        }
+    }
+
+    @Test
+    fun `protocol conversion rejects unsupported fields before upstream`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "chat-to-messages-unsupported",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("converted-unsupported", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"model":"converted-unsupported","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("protocol_conversion_unsupported", body["error"]!!.jsonObject["code"]!!.jsonPrimitive.content)
+            assertTrue(fake.requests.isEmpty())
+        }
+    }
+
+    @Test
+    fun `messages request converts to chat-only channel`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "messages-to-chat",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
+            modelMappings = listOf(ChannelModelRecord("gpt-4o-mini")),
+        )
+        createAlias("converted-chat", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/messages") {
+                header("x-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"converted-chat","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("Hello!", body["content"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content)
+            assertEquals("/ok/v1/chat/completions", fake.requests.last().path)
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.MESSAGES, log.protocol)
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.upstreamProtocol)
+        }
+    }
+
+    @Test
+    fun `responses request converts to messages-only channel`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "responses-to-messages",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("converted-responses", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"converted-responses","input":"hi","max_output_tokens":32}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("Hello!", body["output"]!!.jsonArray[0].jsonObject["content"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content)
+            assertEquals("/ok/v1/messages", fake.requests.last().path)
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.RESPONSES, log.protocol)
+            assertEquals(GatewayProtocol.MESSAGES, log.upstreamProtocol)
+        }
+    }
+
+    @Test
     fun `records request cost with cache write rate for anthropic messages`() = runBlocking {
         val channel = createChannelWithBaseUrl(
             name = "anthropic-cache-write",
             baseUrl = fake.baseUrl + "/ok/v1",
-            protocols = setOf(GatewayProtocol.MESSAGES),
+            protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
@@ -4870,6 +5873,7 @@ class GatewayIntegrationTest {
         cooldownRateLimitMaxMs: Long = 60_000,
         ttftSlowThresholdMs: Long = 600_000,
         ttftSlowStreak: Int = 100,
+        keyAutoRecoveryIntervalMs: Long = 3_600_000,
     ): GatewayConfig = GatewayConfig(
         port = 0,
         databaseUrl = postgres.jdbcUrl,
@@ -4898,6 +5902,7 @@ class GatewayIntegrationTest {
             ttftSlowThresholdMs = ttftSlowThresholdMs,
             ttftSlowStreak = ttftSlowStreak,
         ),
+        keyAutoRecoveryIntervalMs = keyAutoRecoveryIntervalMs,
     )
 
     private fun requestLog(requestId: String, createdAt: Long) = RequestLogRecord(
@@ -4945,7 +5950,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithBaseUrl(
             name = "anthropic",
             baseUrl = fake.baseUrl + "/ok/v1",
-            protocols = setOf(GatewayProtocol.MESSAGES),
+            protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
@@ -4997,7 +6002,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithBaseUrl(
             name = "anthropic",
             baseUrl = fake.baseUrl + "/ok/v1",
-            protocols = setOf(GatewayProtocol.MESSAGES),
+            protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
@@ -5029,7 +6034,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithBaseUrl(
             name = "anthropic-error",
             baseUrl = fake.baseUrl + "/sse-error/v1",
-            protocols = setOf(GatewayProtocol.MESSAGES),
+            protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
@@ -5060,7 +6065,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithBaseUrl(
             name = "anthropic-empty-completion",
             baseUrl = fake.baseUrl + "/empty-message/v1",
-            protocols = setOf(GatewayProtocol.MESSAGES),
+            protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
@@ -5098,14 +6103,14 @@ class GatewayIntegrationTest {
         val primary = createChannelWithBaseUrl(
             name = "anthropic-overloaded",
             baseUrl = fake.baseUrl + "/sse-error/v1",
-            protocols = setOf(GatewayProtocol.MESSAGES),
+            protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
         val secondary = createChannelWithBaseUrl(
             name = "anthropic-backup",
             baseUrl = fake.baseUrl + "/ok/v1",
-            protocols = setOf(GatewayProtocol.MESSAGES),
+            protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
@@ -5159,7 +6164,7 @@ class GatewayIntegrationTest {
         val channel = createChannelWithBaseUrl(
             name = "anthropic-error",
             baseUrl = fake.baseUrl + "/500/v1",
-            protocols = setOf(GatewayProtocol.MESSAGES),
+            protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
@@ -5192,7 +6197,7 @@ class GatewayIntegrationTest {
         keys = listOf(NewChannelKey("primary", app.credentialCipher.encrypt("key-primary"), models = listOf("m1", "m2"))) +
             if (withBackup) listOf(NewChannelKey("backup", app.credentialCipher.encrypt("key-backup"), priority = 2, models = listOf("m1", "m2")))
             else emptyList(),
-        authType = "bearer", protocols = GatewayProtocol.entries.toSet(), enabled = true, modelMappings = mappingsOf("m1", "m2"),
+        authType = "bearer", protocols = GatewayProtocol.entries.toList(), enabled = true, modelMappings = mappingsOf("m1", "m2"),
     )
 
     private suspend fun HttpClient.sendAutoDisableRequest(
@@ -5214,7 +6219,7 @@ class GatewayIntegrationTest {
     private suspend fun createChannelWithBaseUrl(
         name: String,
         baseUrl: String,
-        protocols: Set<GatewayProtocol> = GatewayProtocol.default,
+        protocols: List<GatewayProtocol> = GatewayProtocol.default,
         modelMappings: List<ChannelModelRecord> = mappingsOf("gpt-4o-mini", "deepseek-chat", "m1", "m2"),
         priority: Int = 0,
         authType: String = "bearer",
@@ -5244,7 +6249,7 @@ class GatewayIntegrationTest {
     private suspend fun createChannelWithProtocols(
         name: String,
         scenario: String,
-        protocols: Set<GatewayProtocol>,
+        protocols: List<GatewayProtocol>,
     ): ChannelRecord = createChannelWithBaseUrl(name, "${fake.baseUrl}/$scenario/v1", protocols)
 
     private suspend fun createAlias(alias: String, vararg candidates: Pair<ChannelRecord, String>): AliasWithCandidates =
@@ -5321,7 +6326,7 @@ class GatewayIntegrationTest {
     private suspend fun awaitCondition(
         description: String,
         timeoutMs: Long = 3_000,
-        condition: () -> Boolean,
+        condition: suspend () -> Boolean,
     ) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {

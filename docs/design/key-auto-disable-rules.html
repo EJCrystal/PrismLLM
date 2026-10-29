@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>密钥自动禁用规则 · 设计方案</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --card: #ffffff; --line: #e3e6ea;
+    --text: #17191c; --muted: #5b6472; --faint: #8a93a1;
+    --primary: #2f6fed; --primary-soft: #eaf1ff;
+    --ok: #147a4b; --ok-soft: #e7f6ee;
+    --warn: #9a5b00; --warn-soft: #fff3dc;
+    --danger: #b42318; --danger-soft: #fdecea;
+    --code: #f0f2f5; --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --card: #1c1f24; --line: #2c3138;
+      --text: #eceef2; --muted: #a9b1bd; --faint: #7d8694;
+      --primary: #7aa7ff; --primary-soft: #1e2b45;
+      --ok: #6cd39c; --ok-soft: #182c22;
+      --warn: #f0b45c; --warn-soft: #33260f;
+      --danger: #ff8a80; --danger-soft: #3a1f1d;
+      --code: #23272e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px 64px; background: var(--bg); color: var(--text);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; display: grid; gap: 18px; min-width: 0; }
+  main > * { min-width: 0; }
+  header.hero { display: grid; gap: 8px; padding: 4px 2px 6px; }
+  .eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+  h1 { margin: 0; font-size: clamp(21px, 5vw, 27px); line-height: 1.28; letter-spacing: -.01em; }
+  h2 { margin: 0; font-size: 17px; line-height: 1.4; }
+  h3 { margin: 0; font-size: 14.5px; line-height: 1.45; }
+  p { margin: 0; }
+  .lead { color: var(--muted); font-size: 14.5px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; display: grid; gap: 12px; min-width: 0; }
+  .card > * { min-width: 0; }
+  .card.tight { padding: 14px; gap: 10px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--primary-soft); color: var(--primary); font-size: 12px; font-weight: 600; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.danger { background: var(--danger-soft); color: var(--danger); }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 5px; }
+  pre { margin: 0; background: var(--code); border-radius: 10px; padding: 12px; overflow-x: auto; max-width: 100%; line-height: 1.55; }
+  .callout { border-radius: 10px; padding: 12px 14px; display: grid; gap: 6px; font-size: 13.5px; border: 1px solid transparent; }
+  .callout.info { background: var(--primary-soft); }
+  .callout.warn { background: var(--warn-soft); }
+  .callout.danger { background: var(--danger-soft); }
+  ul, ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+  li::marker { color: var(--faint); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+  tr:last-child td { border-bottom: none; }
+  .table-wrap { overflow-x: auto; margin: 0 -4px; }
+  .refs { display: grid; gap: 10px; }
+  .ref { display: grid; gap: 3px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; min-width: 0; overflow-wrap: anywhere; }
+  .ref b { font-size: 13.5px; }
+  .ref span { color: var(--muted); font-size: 13px; }
+  .rules { display: grid; gap: 10px; }
+  .rule { border: 1px solid var(--line); border-radius: 11px; padding: 12px; display: grid; gap: 8px; }
+  .rule-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; align-items: baseline; }
+  .rule-name { font-weight: 650; font-size: 13.5px; }
+  .rule-action { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: var(--code); color: var(--muted); }
+  .cond { font-size: 13px; color: var(--muted); }
+  .cond b { color: var(--text); font-weight: 600; }
+  .steps { counter-reset: s; display: grid; gap: 10px; min-width: 0; }
+  .refs, .rules, .split, .table-wrap { min-width: 0; }
+  .step { min-width: 0; }
+  .step-body { min-width: 0; overflow-wrap: anywhere; }
+  .step { display: grid; grid-template-columns: 24px 1fr; gap: 10px; align-items: start; }
+  .step::before { counter-increment: s; content: counter(s); width: 24px; height: 24px; border-radius: 50%;
+    display: grid; place-items: center; background: var(--primary-soft); color: var(--primary); font-size: 12px; font-weight: 700; }
+  .step-body { display: grid; gap: 3px; padding-top: 1px; }
+  .step-body b { font-size: 13.5px; }
+  .step-body span { color: var(--muted); font-size: 13px; }
+  .sim { display: grid; gap: 12px; }
+  .sim-grid { display: grid; gap: 10px; grid-template-columns: 1fr; }
+  @media (min-width: 640px) { .sim-grid { grid-template-columns: 1.2fr 1fr 1fr; } }
+  .field { display: grid; gap: 5px; }
+  .field label { font-size: 12.5px; color: var(--muted); }
+  input, select { width: 100%; padding: 9px 10px; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); font: inherit; font-size: 13.5px; }
+  input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+  .result { display: grid; gap: 8px; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
+  .result-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+  .result-title { font-weight: 650; font-size: 13.5px; }
+  .meter { height: 7px; border-radius: 999px; background: var(--line); overflow: hidden; }
+  .meter > i { display: block; height: 100%; width: 0; background: var(--primary); border-radius: 999px; transition: width .18s ease; }
+  .log { font-size: 12.5px; color: var(--muted); display: grid; gap: 4px; }
+  .split { display: grid; gap: 14px; }
+  @media (min-width: 700px) { .split { grid-template-columns: 1fr 1fr; } }
+  .footer { text-align: center; color: var(--faint); font-size: 12px; padding-top: 4px; }
+  .toc { display: flex; flex-wrap: wrap; gap: 6px; }
+  .toc a { text-decoration: none; font-size: 12.5px; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .toc a:active { background: var(--primary-soft); }
+</style>
+</head>
+<body>
+<main>
+
+  <header class="hero">
+    <div class="eyebrow">llm-gateway · 设计方案</div>
+    <h1>密钥禁用规则：状态码 / 正则 / 临时与永久 / 自动恢复</h1>
+    <p class="lead">结论先说：值得做，但只做「错误分类 + 动作 + 能否自动恢复」三件事，不做通用规则引擎。下面每一节都对应现有代码里的一个落点。</p>
+    <div class="row">
+      <span class="pill">方案已定</span>
+      <span class="pill ok">不引入 Redis</span>
+      <span class="pill ok">单实例语义</span>
+      <span class="pill warn">需 1 次迁移</span>
+    </div>
+  </header>
+
+  <nav class="card tight toc" aria-label="目录">
+    <a href="#verdict">结论</a>
+    <a href="#refs">三项目对照</a>
+    <a href="#model">规则模型</a>
+    <a href="#defaults">默认规则</a>
+    <a href="#recover">自动恢复</a>
+    <a href="#sim">规则试跑</a>
+    <a href="#code">代码落点</a>
+    <a href="#steps">分阶段</a>
+  </nav>
+
+  <section id="verdict" class="card">
+    <h2>一、需不需要丰富规则</h2>
+    <p>需要，但方向不是「让管理员写一堆 if」。现有实现有两个真实问题：</p>
+    <ul>
+      <li><b>401/403 有两条阈值路径。</b><span class="muted">连续鉴权失败计数和窗口失败计数都会停用密钥，两个门槛对同一类拒绝重复表达，配置项之间没有互补关系。</span></li>
+      <li><b>只认「结果类型」，不认「拒绝原因」。</b><span class="muted">上游用 403 返回「地区不支持」、用 401 返回「模型未开通」时，会和「密钥失效」一起计数，最后停掉一把其实还能用的密钥。</span></li>
+    </ul>
+    <div class="callout info">
+      <b>真正缺的是「凭什么判定这把钥匙坏了」。</b>
+      <span class="small">状态码负责粗筛，错误文本中的稳定特征负责确认，动作决定临时还是永久，恢复策略决定谁来解封。四件事彼此独立，但不需要第 5 件事。</span>
+    </div>
+    <div class="callout warn small">
+      不建议做的事：在管理台暴露任意条规则 + 任意逻辑组合 + 每规则独立窗口。三个参考项目都没有走到那一步，你的渠道是自有 API key，规模也不需要策略编排。
+    </div>
+  </section>
+
+  <section id="refs" class="card">
+    <h2>二、三个参考项目怎么做的</h2>
+    <div class="refs">
+      <div class="ref">
+        <b>sub2api</b>
+        <span>账号级临时不可调度（<code>temp_unschedulable_until</code>）。规则结构是 <code>error_code + keywords[] + duration_minutes + scope</code>，关键词用小写包含匹配，不启用正则；请求体截断 64 KB、原因截断 2 KB 后入库。401 首次命中先临时停调度给 token 刷新窗口；同一 401 再次命中则升级为账号 error。配额类 429 走另一条路，不击杀账号。</span>
+      </div>
+      <div class="ref">
+        <b>axonhub</b>
+        <span>规则结构是 <code>statusCodes[] + keywordPatterns[] + times + action</code>，关键词先按正则编译，编译失败退化成大小写不敏感的字面量包含。动作有 <code>temporary_disable</code>、<code>permanent_disable</code>、<code>permanent_disable_delete</code>、<code>disable_until_cron</code>。停用记录带 <code>expiresAt</code>，后台清理任务到期自动恢复；所有 key 都停用后整条渠道一起停用。</span>
+      </div>
+      <div class="ref">
+        <b>CLIProxyAPI</b>
+        <span>不做「规则表」，做错误分类。<code>ErrorCodeRequestScoped</code>、<code>ErrorCodeConnectionLifecycle</code>、<code>ErrorCodeTransientTransport</code>、<code>ErrorCodeForceCooldown</code>、<code>ErrorCodeTransientRateLimit</code> 这些码决定这次失败该不该算到凭据头上；终态 401 标记为不可调度，且只有 token 变化才解除；429/503 走按模型或按凭据的冷却，冷却到期自动放行探测。</span>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>能力</th><th>sub2api</th><th>axonhub</th><th>CLIProxyAPI</th><th>本方案</th></tr></thead>
+        <tbody>
+          <tr><td>状态码筛选</td><td>单值</td><td>列表</td><td>错误码分类</td><td>列表</td></tr>
+          <tr><td>文本匹配</td><td>关键词包含</td><td>正则 → 关键词回退</td><td>错误码</td><td>正则 → 关键词回退</td></tr>
+          <tr><td>临时禁用</td><td>有</td><td>有</td><td>有（冷却）</td><td>有</td></tr>
+          <tr><td>永久禁用</td><td>升级为 error</td><td>有</td><td>终态 401</td><td>有</td></tr>
+          <tr><td>自动恢复</td><td>到期恢复调度</td><td>到期清理</td><td>到期探测</td><td>到期恢复 + 成功探测</td></tr>
+          <tr><td>删除凭据</td><td>无</td><td>有</td><td>无</td><td>不做（只停用）</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small muted">共同点很明确：<b>状态码是主键，文本只做二次确认</b>；临时禁用一定有到期时间；永久禁用一定需要人工处理；恢复要么按时，要么靠一次真实成功。这四条直接照抄，足够了。</p>
+  </section>
+
+  <section id="model" class="card">
+    <h2>三、规则模型</h2>
+    <p class="small muted">一个密钥健康策略 = 一个全局开关 + 一组有序规则。命中第一条即停止，规则之间不叠加计数。</p>
+    <pre>KeyDisableRule {
+  id            string            // 稳定标识，用于审计与计数键
+  name          string            // 管理台展示名
+  statusCodes   int[]             // 空 = 不按状态码过滤
+  bodyPatterns  string[]          // 空 = 不按文本过滤；先试正则，失败退化为字面量
+  threshold     int               // 触发阈值，1..1000
+  windowMinutes int               // 计数窗口，1..1440
+  streak        bool              // true = 连续计数（成功清零）；false = 窗口计数（成功不清零）
+  action        Action            // TEMPORARY | PERMANENT
+  disableMinutes int?             // TEMPORARY 必填，1..10080
+  recovery      Recovery          // NONE | ON_EXPIRY | ON_PROBE
+}</pre>
+    <div class="split">
+      <div class="callout info">
+        <b>为什么保留 streak 和 window 两种</b>
+        <span class="small">鉴权失效适合「连续」——中间成功一次就说明钥匙是好的。限流和 5xx 适合「窗口」——夹杂成功不代表上游稳定。这正是现有两段配置的真实差异，保留它，但把它从「两个必填阈值」变成「规则自己的属性」。</span>
+      </div>
+      <div class="callout warn">
+        <b>为什么不做任意条件组合</b>
+        <span class="small">AND/OR 一出现，管理台就需要表达式编辑器、校验器和解释器，排障时也没人愿意读。规则按顺序匹配、首条命中生效，已经能表达全部真实场景。</span>
+      </div>
+    </div>
+    <h3>匹配与计数语义</h3>
+    <ul class="small">
+      <li><b>只统计真实上游响应。</b><span class="muted">客户端取消、网关本地限流、请求体错误不进入任何规则；请求在首 token 前失败才可能计数。</span></li>
+      <li><b>文本来源是上游错误体。</b><span class="muted">复用 <code>upstreamException</code> 已经解析出的 body（目前只给 Anthropic 原生透传保留），截断后参与匹配，绝不上报给调用方，也不落请求日志。</span></li>
+      <li><b>正则必须先编译再保存。</b><span class="muted">保存时拒绝非法表达式，而不是运行时静默忽略；限制模式长度 ≤ 200 字符，并只对截断后的错误体匹配。</span></li>
+      <li><b>规则 revision 变更即重新计数。</b><span class="muted">沿用现有 <code>KeyAutoDisableSettings.revision</code> 机制，旧计数作废，不需要迁移历史计数。</span></li>
+      <li><b>只有成功才打断连续计数。</b><span class="muted">未命中任何规则的上游响应（400/404/422）既不计数也不清零；请求参数错误不能证明凭据可用，否则调用方可以用无效请求掩盖一把坏钥匙。</span></li>
+      <li><b>404 默认不参与。</b><span class="muted">模型不存在通常是配置问题，不是钥匙问题；要做也应单独一条规则，明确针对某个上游。</span></li>
+    </ul>
+  </section>
+
+  <section id="defaults" class="card">
+    <h2>四、默认规则（建议直接内置）</h2>
+    <div class="rules">
+      <div class="rule">
+        <div class="rule-head"><span class="rule-name">凭据失效</span><span class="rule-action">永久 · 人工处理</span></div>
+        <p class="cond">状态码 <b>401 / 403</b>，错误文本命中 <code>invalid_api_key</code>、<code>incorrect api key</code>、<code>authentication_error</code>、<code>invalid_grant</code>，连续 <b>2</b> 次。</p>
+      </div>
+      <div class="rule">
+        <div class="rule-head"><span class="rule-name">上游账号被停</span><span class="rule-action">永久 · 人工处理</span></div>
+        <p class="cond">状态码 <b>401 / 403</b>，命中 <code>account.*(disabled|suspended|deactivated)</code>、<code>billing</code>、<code>payment</code>，<b>1</b> 次。</p>
+      </div>
+      <div class="rule">
+        <div class="rule-head"><span class="rule-name">未知鉴权拒绝</span><span class="rule-action">临时 30 分钟 · 到期自动恢复</span></div>
+        <p class="cond">状态码 <b>401 / 403</b>，没有命中上面两条，窗口 5 分钟内累计 <b>3</b> 次。</p>
+      </div>
+      <div class="rule">
+        <div class="rule-head"><span class="rule-name">上游不稳定</span><span class="rule-action">临时 10 分钟 · 到期自动恢复</span></div>
+        <p class="cond">状态码 <b>429 / 5xx</b>，或传输层失败（连接失败、超时、空流），窗口 5 分钟内累计 <b>8</b> 次。</p>
+      </div>
+      <div class="rule">
+        <div class="rule-head"><span class="rule-name">模型级拒绝</span><span class="rule-action">不参与禁用</span></div>
+        <p class="cond">状态码 <b>400 / 404 / 422</b>，只记录日志与冷却，不累计密钥失败。</p>
+      </div>
+    </div>
+    <div class="callout info small">
+      这套默认值把「真正失效」和「暂时不好用」分开了：前者要求换钥匙，后者等一会儿自己回来。现有默认 3 次 401 永久停用会误杀短期 401（例如 token 轮换窗口），建议按上表调整。
+    </div>
+  </section>
+
+  <section id="recover" class="card">
+    <h2>五、禁用之后能不能自动恢复</h2>
+    <p>能，而且必须分两种恢复方式。密钥状态需要从单一 <code>enabled</code> 扩展成明确的状态机：</p>
+    <pre>MANUAL_DISABLED  人工停用          → 只能人工启用
+AUTO_TEMPORARY   自动临时禁用      → 到期自动恢复，或探测成功提前恢复
+AUTO_PERMANENT   自动永久禁用      → 只能人工换凭据后启用
+ACTIVE           正常</pre>
+    <div class="steps">
+      <div class="step"><div class="step-body"><b>临时禁用写到期时间</b><span>停用与审计在同一事务写 <code>auto_disable_until</code>；请求路径每次选到候选时检查 <code>until &gt; now</code>，过期即视作可用。不依赖定时任务才能恢复，重启也不丢。</span></div></div>
+      <div class="step"><div class="step-body"><b>后台清理只做收尾</b><span>复用 <code>GatewayApplication.scope</code> 起一个低频任务（如每 30 秒），把已到期的临时禁用写回 ACTIVE 并清计数；即使任务停了，请求路径的到期判断仍然生效。</span></div></div>
+      <div class="step"><div class="step-body"><b>到期后用单个探测请求验证</b><span>和现有候选冷却一致：到期后通过 <code>probe_until</code> 原子抢占探测租约，只放行一个真实请求；成功则恢复并清零健康计数，失败则按命中规则重新计时或转永久停用。这就是 axonhub 的「到期清理」加 CLIProxyAPI 的「探测」。</span></div></div>
+      <div class="step"><div class="step-body"><b>永久禁用永不自动恢复</b><span>凭据类错误自动解封只会再撞一次 401，没有意义。管理台必须提供「已换新凭据 → 启用」的显式动作，并保留现有 <code>stateVersion</code> 保护。</span></div></div>
+      <div class="step"><div class="step-body"><b>人工停用不受自动恢复影响</b><span>现有代码用 <code>enabled=false</code> 同时表达两种停用，必须拆开，否则清理任务会把管理员主动停掉的密钥重新放出来。这是本方案里最不能省的一处。</span></div></div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>触发</th><th>状态</th><th>路由是否尝试</th><th>如何解除</th></tr></thead>
+        <tbody>
+          <tr><td>凭据失效规则</td><td><span class="pill danger">永久</span></td><td>否</td><td>换凭据 + 人工启用</td></tr>
+          <tr><td>未知 401/403</td><td><span class="pill warn">临时</span></td><td>否</td><td>到期 / 探测成功</td></tr>
+          <tr><td>429 / 5xx / 超时</td><td><span class="pill warn">临时</span></td><td>否</td><td>到期 / 探测成功</td></tr>
+          <tr><td>管理员停用</td><td><span class="pill">人工</span></td><td>否</td><td>人工启用</td></tr>
+          <tr><td>候选冷却（独立机制）</td><td><span class="pill ok">不落库</span></td><td>到期后单探测</td><td>成功自动恢复</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small muted">注意：候选冷却已经在做「短时间后置 + 单探测」，不要让新规则把它的职责盖掉。分工是：冷却负责「这个候选现在不好」，自动禁用负责「这把钥匙坏了」。</p>
+  </section>
+
+  <section id="sim" class="card">
+    <h2>六、规则试跑</h2>
+    <p class="small muted">用来验证默认规则是否会把真实错误分错类。改状态码或错误文本，立刻看到命中哪条规则、累计到第几次。逻辑与本方案一致：按顺序首条命中，连续计数成功清零，窗口计数成功不清零。</p>
+    <div class="sim">
+      <div class="sim-grid">
+        <div class="field">
+          <label for="sim-status">上游状态码</label>
+          <select id="sim-status">
+            <option>401</option><option>403</option><option selected>429</option>
+            <option>500</option><option>502</option><option>503</option>
+            <option>400</option><option>404</option><option>422</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="sim-outcome">结果类型</label>
+          <select id="sim-outcome">
+            <option value="error">上游错误响应</option>
+            <option value="transport">传输层失败</option>
+            <option value="success">成功响应</option>
+            <option value="ignored">客户端取消 / 本地拒绝</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="sim-count">连续触发次数</label>
+          <input id="sim-count" type="number" min="1" max="20" step="1" value="3" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="sim-body">上游错误文本（可留空）</label>
+        <input id="sim-body" type="text" value='{"error":{"type":"insufficient_quota","message":"You exceeded your current quota"}}' />
+      </div>
+      <div class="field">
+        <label for="sim-midfail">中途插入一次成功（用于区分连续 / 窗口）</label>
+        <select id="sim-midfail"><option value="no">不插入</option><option value="yes">插入一次成功</option></select>
+      </div>
+      <div class="result" aria-live="polite">
+        <div class="result-head">
+          <span class="result-title" id="sim-verdict">—</span>
+          <span class="pill" id="sim-rule">未命中</span>
+        </div>
+        <div class="meter" aria-hidden="true"><i id="sim-meter"></i></div>
+        <div class="log" id="sim-log"></div>
+      </div>
+      <div class="callout info small">
+        <b>怎么读这个结果</b>
+        <span id="sim-explain">选择错误类型后，这里会解释为什么命中或未命中，以及在实际网关里会进入哪种状态。</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="code" class="card">
+    <h2>七、代码落点</h2>
+    <div class="refs">
+      <div class="ref"><b>规则定义</b><span><code>resilience/KeyAutoDisable.kt</code>：把 <code>KeyAutoDisablePolicy</code> 从四个标量换成 <code>rules: List&lt;KeyDisableRule&gt;</code>，<code>record()</code> 返回 <code>(ruleId, matchedPattern, count, action)</code>。纯函数，先把单测写满。</span></div>
+      <div class="ref"><b>错误体透传</b><span><code>api/ProxyRoutes.kt</code>：<code>upstreamException</code> 增加一个仅内部使用的截断错误体字段（如 <code>upstreamErrorBody</code>，最多 8 KB），<code>recordKeyOutcome</code> 把它传给 repository。注意不要再复制一份到请求日志。</span></div>
+      <div class="ref"><b>状态与迁移</b><span>新增迁移（V32）：<code>channel_keys.state</code> 枚举替换原 <code>enabled</code> 列，新增 <code>auto_disable_until</code> 列。旧数据按 <code>enabled=true → ACTIVE</code>、<code>enabled=false 且 auto_disabled_at 非空 → AUTO_PERMANENT</code>、其余 <code>MANUAL_DISABLED</code> 回填。</span></div>
+      <div class="ref"><b>计数与停用</b><span><code>repo/KeyAutoDisableRepository.kt</code>：按 <code>keyId + ruleId</code> 存计数（现有单行 JSON 可扩展成 map）；停用时写 kind / until / reason；保留行锁与「停用 + 审计同事务」。</span></div>
+      <div class="ref"><b>路由判断</b><span><code>domain/Records.kt#keysFor</code> 与 <code>KeyAutoDisableRepository.isAvailable</code>：把「临时到期」算作可用；候选加载时直接过滤已停用，减少一次无谓的上游尝试。</span></div>
+      <div class="ref"><b>自动恢复</b><span>在 <code>GatewayApplication</code> 的 scope 里挂一个低频清理任务，只收尾已到期且没有 <code>probe_until</code> 租约的临时停用；启用时清 <code>ChannelKeyHealth</code> 与 <code>candidateCooldown.clearKey</code>，并写一条 <code>channel_key.auto_recover</code> 审计。</span></div>
+      <div class="ref"><b>管理面</b><span>现有 <code>KeyAutoDisableSettingsModal.vue</code> 改成规则列表（可折叠、上移下移、开关），并保留一句人类可读的摘要；API 从 4 个字段改为 <code>rules[]</code>，老字段只读兼容一次。</span></div>
+      <div class="ref"><b>可观测性</b><span>指标维度加 <code>rule</code> 与 <code>action</code>：<code>gateway_key_auto_disabled_total{channel,reason,rule,action}</code>、<code>gateway_key_auto_recovered_total{to}</code>。审计详情记录命中规则、模式、计数，不记录完整错误体。</span></div>
+    </div>
+    <div class="callout danger small">
+      <b>安全边界</b>
+      <span>正则只用于本地上游错误体，作用在已截断的字符串上；保存时编译校验；单条模式长度上限 200；不把错误体写日志、不写入审计、不返回调用方。凭据明文仍然只在密文列。</span>
+    </div>
+  </section>
+
+  <section id="steps" class="card">
+    <h2>八、实施顺序</h2>
+    <div class="steps">
+      <div class="step"><div class="step-body"><b>第 1 步：纯函数与单测（0.5 天）</b><span>规则匹配、首条命中、连续 / 窗口计数、revision 失效。此时不碰数据库。</span></div></div>
+      <div class="step"><div class="step-body"><b>第 2 步：状态与迁移（0.5 天）</b><span>拆出人工停用 / 自动临时 / 自动永久；回填旧数据；补 <code>auto_disable_until</code>。</span></div></div>
+      <div class="step"><div class="step-body"><b>第 3 步：接入请求路径（1 天）</b><span>错误体传递、命中后停用、到期判断、审计与指标。用集成测试覆盖「401 永久」「429 临时」「400 不计数」「客户端取消不计数」。</span></div></div>
+      <div class="step"><div class="step-body"><b>第 4 步：自动恢复任务（0.5 天）</b><span>清理任务 + 单探测恢复 + 人工停用不被误恢复的测试。</span></div></div>
+      <div class="step"><div class="step-body"><b>第 5 步：管理台与文档（1 天）</b><span>规则列表 UI、规则摘要、ADR 更新、README 的 API 示例。</span></div></div>
+    </div>
+    <div class="callout warn small">
+      合计约 3.5 人日。第 1、2 步可独立合并，第 3 步是唯一的危险点：它改动请求路径的停用判断，必须先有集成测试再改。
+    </div>
+  </section>
+
+  <p class="footer">基于 llm-gateway 当前实现（V31 迁移，含 <code>KeyAutoDisableRepository</code>）与 2026-10-28 拉取的 sub2api / axonhub / CLIProxyAPI 源码整理。</p>
+</main>
+
+<script>
+(() => {
+  const status = document.getElementById('sim-status')
+  const outcome = document.getElementById('sim-outcome')
+  const count = document.getElementById('sim-count')
+  const body = document.getElementById('sim-body')
+  const midfail = document.getElementById('sim-midfail')
+  const verdict = document.getElementById('sim-verdict')
+  const ruleEl = document.getElementById('sim-rule')
+  const meter = document.getElementById('sim-meter')
+  const log = document.getElementById('sim-log')
+  const explain = document.getElementById('sim-explain')
+
+  const rules = [
+    { id: 'credential_invalid', name: '凭据失效', action: 'PERMANENT', actionLabel: '永久禁用',
+      threshold: 2, windowMinutes: 5, streak: true, codes: [401, 403],
+      patterns: [/invalid[_-]?api[_-]?key/i, /incorrect api key/i, /authentication_error/i, /invalid_grant/i],
+      reason: '凭据已被上游判定失效，自动解封会再次 401' },
+    { id: 'account_blocked', name: '上游账号被停', action: 'PERMANENT', actionLabel: '永久禁用',
+      threshold: 1, windowMinutes: 5, streak: true, codes: [401, 403],
+      patterns: [/account[^\n]{0,40}(disabled|suspended|deactivated)/i, /\bbilling\b/i, /\bpayment\b/i],
+      reason: '账号或结算状态异常，只能人工处理' },
+    { id: 'auth_unknown', name: '未知鉴权拒绝', action: 'TEMPORARY', actionLabel: '临时 30 分钟',
+      threshold: 3, windowMinutes: 5, streak: false, disableMinutes: 30, codes: [401, 403], patterns: [],
+      reason: '可能是 token 轮换或上游抖动，到期自动恢复' },
+    { id: 'unstable', name: '上游不稳定', action: 'TEMPORARY', actionLabel: '临时 10 分钟',
+      threshold: 8, windowMinutes: 5, streak: false, disableMinutes: 10,
+      codes: [429], codesAtLeast: 500, transport: true, patterns: [],
+      reason: '限流或服务端故障，恢复后自动放行' },
+    { id: 'model_scoped', name: '模型级拒绝', action: 'NONE', actionLabel: '不参与禁用',
+      threshold: 0, windowMinutes: 0, streak: false, codes: [400, 404, 422], exclude: true,
+      patterns: [], reason: '请求或模型配置问题，不是钥匙问题' },
+  ]
+
+  function matches(rule, code, text, kind) {
+    if (rule.exclude) return rule.codes.includes(code)
+    if (kind === 'transport') return Boolean(rule.transport)
+    if (!rule.codes.includes(code) && !(rule.codesAtLeast && code >= rule.codesAtLeast)) return false
+    if (!rule.patterns.length) return true
+    return rule.patterns.some((p) => p.test(text))
+  }
+
+  function render() {
+    const code = Number(status.value)
+    const kind = outcome.value
+    const times = Math.max(1, Math.min(20, Number(count.value) || 1))
+    const text = body.value.trim()
+    const insertSuccess = midfail.value === 'yes'
+
+    meter.style.width = '0%'
+    log.replaceChildren()
+
+    if (kind === 'ignored') {
+      verdict.textContent = '不参与统计'
+      ruleEl.textContent = '忽略'
+      ruleEl.className = 'pill'
+      const p = document.createElement('p')
+      p.textContent = '客户端取消、网关本地限流或请求体错误不会写入密钥健康计数。'
+      log.append(p)
+      explain.textContent = '这类结果既不奖也不罚，避免调用方行为影响上游密钥判断。'
+      return
+    }
+
+    if (kind === 'success') {
+      verdict.textContent = '成功响应，清零连续计数'
+      ruleEl.textContent = '恢复'
+      ruleEl.className = 'pill ok'
+      const p = document.createElement('p')
+      p.textContent = '窗口计数保留：成功只证明这次可用，不抹掉近期失败记录。'
+      log.append(p)
+      explain.textContent = '如果该密钥当前是临时禁用且已到期，这次成功会让它提前恢复并清零健康计数。'
+      return
+    }
+
+    const rule = rules.find((r) => matches(r, code, text, kind))
+    if (!rule || rule.action === 'NONE') {
+      verdict.textContent = '不触发禁用'
+      ruleEl.textContent = rule ? rule.name : '未命中'
+      ruleEl.className = 'pill ok'
+      const p = document.createElement('p')
+      p.textContent = rule ? rule.reason : '没有任何规则接受这组状态码与错误文本。'
+      log.append(p)
+      explain.textContent = '未命中只代表不参与自动禁用，候选冷却仍可能独立生效。'
+      return
+    }
+
+    const effective = rule.streak && insertSuccess ? 1 : times
+    const triggered = effective >= rule.threshold
+    meter.style.width = Math.round(Math.min(1, effective / rule.threshold) * 100) + '%'
+    meter.style.background = triggered ? 'var(--danger)' : 'var(--primary)'
+
+    verdict.textContent = triggered
+      ? '触发 · ' + rule.actionLabel
+      : '累计 ' + effective + ' / ' + rule.threshold + ' 次，尚未触发'
+    ruleEl.textContent = rule.name
+    ruleEl.className = 'pill ' + (triggered ? (rule.action === 'PERMANENT' ? 'danger' : 'warn') : '')
+
+    const lines = []
+    if (rule.streak && insertSuccess) lines.push('规则按连续计数：中途成功一次，前面的计数清零。')
+    if (!rule.streak) lines.push('规则按窗口计数：成功不打断，只统计 ' + rule.windowMinutes + ' 分钟内的失败。')
+    if (rule.patterns.length) {
+      const hit = rule.patterns.find((p) => p.test(text))
+      lines.push(hit ? '文本命中：' + hit.source : '状态码命中，但错误文本没有命中，规则按状态码放行。')
+    }
+    if (triggered) lines.push(rule.reason + '。')
+    lines.forEach((line) => {
+      const p = document.createElement('p')
+      p.textContent = line
+      log.append(p)
+    })
+
+    explain.textContent = triggered
+      ? (rule.action === 'PERMANENT'
+        ? '写入永久禁用：只能换新凭据后人工启用，后台任务不会自动解封。'
+        : '写入临时禁用：到期后放行单个探测请求，成功即恢复，失败重新计时。')
+      : '继续路由到该密钥；达到阈值前不会停用它，候选冷却仍独立工作。'
+  }
+
+  ;[status, outcome, count, body, midfail].forEach((el) => {
+    el.addEventListener('input', render)
+    el.addEventListener('change', render)
+  })
+  render()
+})()
+</script>
+</body>
+</html>

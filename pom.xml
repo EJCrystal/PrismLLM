@@ -25,6 +25,7 @@
         <logstash.version>9.0</logstash.version>
         <micrometer.version>1.17.1</micrometer.version>
         <guava.version>33.5.0-jre</guava.version>
+        <re2j.version>1.8</re2j.version>
         <bcprov.version>1.86</bcprov.version>
         <junit.version>5.13.4</junit.version>
         <mockk.version>1.14.11</mockk.version>
@@ -171,6 +172,11 @@
             <groupId>org.bouncycastle</groupId>
             <artifactId>bcprov-jdk18on</artifactId>
             <version>${bcprov.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.re2j</groupId>
+            <artifactId>re2j</artifactId>
+            <version>${re2j.version}</version>
         </dependency>
 
         <dependency>

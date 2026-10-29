@@ -29,4 +29,12 @@ class GatewayProtocolTest {
         assertEquals("messages", GatewayProtocol.MESSAGES.value)
         assertEquals("/messages", GatewayProtocol.MESSAGES.path)
     }
+
+    @Test
+    fun `protocol parse preserves configured conversion order`() {
+        assertEquals(
+            listOf(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES),
+            GatewayProtocol.parse("messages,chat_completions,responses,messages"),
+        )
+    }
 }

@@ -1,14 +1,14 @@
 # llm-gateway
 
-面向内部团队的 LLM 网关，原生透传 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages。网关按渠道授权与对外模型 ID 路由，只重写上游模型名，透传 SSE 流，并记录用量与请求元数据。
+面向内部团队的 LLM 网关，支持 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 的原生透传和跨协议转换。网关按渠道授权与对外模型 ID 路由，同协议优先，必要时按渠道协议顺序转换，并记录用量与请求元数据。
 
 ## 能力边界
 
-- 原生协议入口 `/v1/chat/completions`、`/v1/responses` 与 `/v1/messages`，支持流式和非流式请求，不在协议之间转换。
-- 渠道按 `chat_completions`、`responses`、`messages` 声明支持的协议，路由时按请求协议过滤候选。
+- 协议入口 `/v1/chat/completions`、`/v1/responses` 与 `/v1/messages`，支持流式和非流式请求，并可在三种协议间互相转换。
+- 渠道按有序的 `chat_completions`、`responses`、`messages` 声明支持协议；同协议候选优先，原生候选不可用后按该顺序选择转换目标。
 - 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。渠道启用即参与直连暴露。
 - 渠道支持密钥池：每个密钥独立保存凭据、启用状态、优先级和可用模型；同一渠道内按密钥优先级分档，同档密钥轮询。
-- 上游密钥支持可配置的自动禁用：默认连续 3 次 401/403，或 5 分钟内失败 5 次；触发原因写入操作审计。
+- 上游密钥支持可配置的自动禁用：规则按状态码、错误文本、连续/窗口计数匹配，动作区分临时停用与永久停用；命中规则与停用状态写入操作审计。
 - 自定义对外模型 ID 会替代上游名对外暴露；同一渠道的多个上游模型可共享一个对外模型 ID，多个渠道配置相同 ID 时也会自动聚合并参与候选分摊。
 - 调用方密钥鉴权，支持按密钥限制每分钟请求数和并发数；上游凭据使用 AES-256-GCM 加密存储。
 - 流式响应不缓冲、客户端断开向上游传播。
@@ -19,7 +19,7 @@
   - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
 - PostgreSQL + Flyway；单实例部署。
 
-明确不做：协议间相互转换（各协议仅原生透传）、Gemini 原生入口、多租户 RBAC、语义缓存、MCP、多副本。
+明确不做：Gemini 原生入口、多租户 RBAC、语义缓存、MCP、多副本。协议转换第一版不支持图片、文件、音频、Provider 内置工具和 Responses 有状态续接。
 
 ## 架构
 
@@ -92,6 +92,7 @@ Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `ht
 | `COOLDOWN_RATE_LIMIT_DEFAULT_MS` | `30000` | 429 无 `Retry-After` 时的默认冷却时长 |
 | `COOLDOWN_RATE_LIMIT_MAX_MS` | `60000` | 429 冷却时长上限（遵从 `Retry-After` 并封顶） |
 | `COOLDOWN_AUTH_FAILURE_MS` | `600000` | 401/403 密钥级冷却时长；达到自动禁用阈值后不再路由到该密钥 |
+| `KEY_AUTO_RECOVERY_INTERVAL_MS` | `30000` | 临时停用到期清理间隔，最小 1000、最大 3600000 毫秒 |
 | `TTFT_SLOW_THRESHOLD_MS` | `10000` | 流式请求首 token 软阈值 |
 | `TTFT_SLOW_STREAK` | `3` | 首 token 连续超过软阈值多少次后触发候选冷却 |
 | `DRAIN_TIMEOUT_MS` | `30000` | 优雅停机 drain 时间 |
@@ -132,7 +133,7 @@ curl http://localhost:8080/v1/messages \
   -d '{"model":"claude-fast","max_tokens":128,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-模型列表：`GET /v1/models` 返回当前启用的别名与启用渠道的可直连模型 ID。请求日志会记录本次请求使用的协议。
+模型列表：`GET /v1/models` 返回当前启用的别名与启用渠道的可直连模型 ID。请求日志会记录入站协议和实际出站协议。
 
 管理 API 示例：
 
@@ -160,7 +161,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
   -d '{"baseUrl":"https://api.openai.com/v1","credential":"sk-..."}'
 ```
 
-编辑渠道时可只传 `channelId` 和可选的 `keyId`，复用已保存密钥。保存渠道时通过 `keys` 数组提交密钥池；每个密钥包含 `name`、`credential`、`enabled`、`priority`、`models` 和可选的 `rateLimit`。旧版单凭据字段仍兼容：新建时自动生成“默认密钥”，更新时只作用于唯一的默认密钥并保留已有 `rateLimit`。取消仍被别名候选引用的模型授权会返回 `409 channel_model_in_use`。
+编辑渠道时可只传 `channelId` 和可选的 `keyId`，复用已保存密钥。保存渠道时通过 `keys` 数组提交密钥池；每个密钥包含 `name`、`credential`、`state`（`ACTIVE` 正常，`MANUAL_DISABLED` 人工停用；默认 `ACTIVE`）、`priority`、`models` 和可选的 `rateLimit`。请求与响应彻底使用 `state` 枚举替换原 `enabled` 布尔字段，不再接受 `enabled`；客户端提交 `AUTO_*` 自动状态会被拒绝（自动状态只由系统维护）。旧版单凭据字段仍兼容：新建时自动生成“默认密钥”，更新时只作用于唯一的默认密钥并保留已有 `rateLimit`。取消仍被别名候选引用的模型授权会返回 `409 channel_model_in_use`。
 
 渠道密钥池示例：
 
@@ -179,11 +180,12 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
     {
       "name": "primary",
       "credential": "sk-primary",
+      "state": "ACTIVE",
       "priority": 1,
       "models": ["gpt-4o-mini"],
       "rateLimit": {"enabled": true, "requestsPerMinute": 60, "maxConcurrentRequests": 3}
     },
-    {"name": "backup", "credential": "sk-backup", "priority": 2, "models": ["gpt-4o-mini", "deepseek-chat"]}
+    {"name": "backup", "credential": "sk-backup", "state": "ACTIVE", "priority": 2, "models": ["gpt-4o-mini", "deepseek-chat"]}
   ]
 }
 ```
@@ -210,14 +212,16 @@ RPM 使用平滑令牌桶，每个实际上游请求尝试消耗一个令牌；�
 
 ### 上游密钥自动禁用
 
-管理台的「上游接入点 → 密钥自动禁用」可修改全局规则。默认启用，按每个 key 的实际上游尝试（跨模型、跨协议）聚合：**连续 3 次 401/403**，或**5 分钟内失败 5 次**，任一条件达到即停用该 key，备用 key 继续接流量。窗口失败包含 401/403、429、5xx、连接失败、超时及流异常；成功不会清除窗口内失败，但会重置连续鉴权失败。404、400/422 等请求错误及客户端取消不计入。冷却规则照常运行，但已停用的 key 不参与 fail-open。
+管理台的「上游接入点 → 密钥自动禁用」可修改全局规则。规则按顺序匹配，首条命中生效；每条规则包含状态码、状态码下限、错误文本正则、连续/窗口计数、动作（临时/永久）和临时停用时长。默认规则：401/403 且命中 `invalid_api_key`、`authentication_error`、`invalid_grant` 等稳定特征 → 连续 2 次永久停用；401/403 账号停用或结算类 → 1 次永久停用；其余 401/403 → 5 分钟内 3 次临时停用 30 分钟；429/5xx/连接失败/超时 → 5 分钟内 8 次临时停用 10 分钟；400/404/422 不命中任何规则。成功只清零连续计数，窗口计数保留；客户端取消、网关本地限流和请求体错误不提交结果；首 token 之后才出现的流异常也不参与密钥禁用。冷却规则照常运行，但已停用的 key 不参与 fail-open。
 
-规则、失败计数和停用状态都保存在 PostgreSQL，重启后仍有效；修改规则从零开始计数，关闭自动禁用后已有停用状态保持。并发请求按 key 串行结算，只有第一次达到阈值会停用并写入一条系统审计；审计包含渠道/密钥名称、触发原因、计数及对应请求 ID，不含凭据或请求正文。更换凭据或手动切换启用状态会清空该 key 的失败计数与密钥级冷却。**自动禁用后的 key 需要更换上游凭据，再手动启用**；编辑请求可传返回的 `stateVersion`，状态发生变化时返回 `409 channel_key_state_changed`，避免旧页面覆盖自动禁用。
+规则、按规则分桶的失败计数和停用状态都保存在 PostgreSQL，重启后仍有效；修改规则从零开始计数，关闭自动禁用后已有停用状态保持。并发请求按 key 串行结算，只有第一次达到阈值会停用并写入一条系统审计；审计包含渠道/密钥名称、命中规则、计数、动作、状态、到期时间及对应请求 ID，不含凭据或请求正文。更换凭据或手动切换启用状态会清空该 key 的失败计数与密钥级冷却。
 
-管理 API：`GET/PUT /admin/api/key-auto-disable-settings`，写入仍需管理员会话与 CSRF。四个字段为 `enabled`（布尔值）、`authFailureThreshold`（1..100）、`failureThreshold`（1..1000）和 `failureWindowMinutes`（1..1440）。例如：
+密钥状态包含四态：`ACTIVE`（正常）、`MANUAL_DISABLED`（人工停用）、`AUTO_TEMPORARY`（自动临时停用）和 `AUTO_PERMANENT`（自动永久停用）。自动状态只由系统在达到规则阈值时维护，客户端只能提交人工状态（`ACTIVE` 或 `MANUAL_DISABLED`）。临时停用（`AUTO_TEMPORARY`）带到期时间 `autoDisableUntil`，到期即自动视作可用恢复路由；到期后通过 `probe_until` 原子抢占单探测租约，并发请求不会同时打上游，探测成功恢复、失败按命中规则重新计时。后台任务按 `KEY_AUTO_RECOVERY_INTERVAL_MS` 收尾已到期且没有有效租约的临时停用。人工停用与永久停用永不自动放行。**因凭据失效被永久停用的密钥，重新启用前必须更换上游凭据**；从临时停用或人工停用启用无需更换凭据。编辑请求可传返回的 `stateVersion`，状态发生变化时返回 `409 channel_key_state_changed`，避免旧页面覆盖自动禁用。
+
+管理 API：`GET/PUT /admin/api/key-auto-disable-settings`，写入仍需管理员会话与 CSRF。请求体为 `enabled` 与 `rules` 数组；旧客户端仍可提交 `authFailureThreshold`、`failureThreshold`、`failureWindowMinutes`，后端会翻译成两条兼容规则。规则字段包括 `id`、`name`、`statusCodes`、`statusCodeAtLeast`、`bodyPatterns`（RE2 正则）、`threshold`、`windowMinutes`、`streak`、`action`（`TEMPORARY` / `PERMANENT`）、`disableMinutes` 和 `includeTransportFailures`。例如：
 
 ```json
-{"enabled":true,"authFailureThreshold":3,"failureThreshold":5,"failureWindowMinutes":5}
+{"enabled":true,"rules":[{"id":"credential_invalid","name":"凭据失效","statusCodes":[401,403],"bodyPatterns":["invalid[\\s_-]*(x-)?api[\\s_-]?key"],"threshold":2,"windowMinutes":5,"streak":true,"action":"PERMANENT"}]}
 ```
 
 共享同一对外 ID 时，路由先按渠道优先级分档；同一渠道内先按上游模型名稳定排序，首个名称作为主入口，只有失败、冷却或不可用时才回退到同渠道的其他名称。每个上游模型下再按密钥优先级分档，同档密钥轮询。这样既避免把同一模型的多个上游别名误当成独立容量，也能把同一模型在多个密钥上的容量聚合起来。
@@ -369,7 +373,7 @@ GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行
 mvn test
 ```
 
-包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions、Responses 与 Anthropic Messages 的 SSE 用量解析与透传、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、渠道密钥分组 RPM/并发限流与取消安全释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
+包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：三种协议的 SSE 用量解析与透传、六方向协议转换、工具调用、协议优先级回退、不兼容字段 400、对外模型 ID 重写与直连、首 token 前故障转移、Retry-After 冷却、档位分摊轮询、渠道密钥限流与管理面权限边界。
 
 只运行渠道密钥 RPM、最大并发和故障转移的端到端验证：
 

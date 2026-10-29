@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import { isKeyRoutable } from '../utils/channelForm'
 import {
   buildModelTestRequest,
   formatModelTestUsage,
@@ -22,7 +23,7 @@ const protocols = computed(() => props.channel.protocols?.length
   ? props.channel.protocols
   : ['chat_completions'])
 const supportingKeys = computed(() => (props.channel.keys || [])
-  .filter((key) => key.enabled && key.models?.includes(props.model)))
+  .filter((key) => isKeyRoutable(key) && key.models?.includes(props.model)))
 const settings = ref(normalizeModelTestSettings(null))
 const form = reactive({
   keyId: supportingKeys.value[0]?.id || '',
