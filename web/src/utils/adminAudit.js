@@ -54,7 +54,8 @@ export function auditDetailsSummary(entry) {
     return `${details.channelName || '—'} / ${details.keyName || '—'}：${details.message || '已禁用'}`
   }
   if (entry.action === 'channel_key.auto_recover') {
-    return `${details.channelName || '—'} / ${details.keyName || '—'}：探测成功恢复`
+    const reason = details.reason === 'expired' ? '到期自动恢复' : '探测成功恢复'
+    return `${details.channelName || '—'} / ${details.keyName || '—'}：${reason}`
   }
   if (entry.action === 'key_auto_disable_settings.update') return keyAutoDisableRuleLabel(details.after)
   return ''
@@ -86,7 +87,7 @@ export function auditDetailsRows(entry) {
       ['密钥 ID', details.keyId],
       ['原状态', details.previousState ?? '—'],
       ['当前状态', details.state ?? '—'],
-      ['恢复原因', details.reason === 'probe_success' ? '到期探测成功' : details.reason ?? '—'],
+      ['恢复原因', details.reason === 'probe_success' ? '到期探测成功' : details.reason === 'expired' ? '到期自动恢复' : details.reason ?? '—'],
     ]
   }
   if (entry.action === 'key_auto_disable_settings.update') {

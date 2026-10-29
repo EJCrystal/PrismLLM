@@ -49,4 +49,13 @@ describe('adminAudit: 管理操作审计展示', () => {
     assert.equal(auditDetailsSummary(update), '凭据失效、上游不稳定')
     assert.deepEqual(auditDetailsRows({ action: 'admin.login' }), [])
   })
+
+  it('区分探测成功恢复与后台到期恢复', () => {
+    const base = { channelName: 'openai', keyName: 'primary', channelId: 'c1', keyId: 'k1', previousState: 'AUTO_TEMPORARY', state: 'ACTIVE' }
+    const probe = { action: 'channel_key.auto_recover', details: { ...base, reason: 'probe_success' } }
+    const expired = { action: 'channel_key.auto_recover', details: { ...base, reason: 'expired' } }
+    assert.equal(auditDetailsSummary(probe), 'openai / primary：探测成功恢复')
+    assert.equal(auditDetailsSummary(expired), 'openai / primary：到期自动恢复')
+    assert.deepEqual(auditDetailsRows(expired).find(([label]) => label === '恢复原因'), ['恢复原因', '到期自动恢复'])
+  })
 })

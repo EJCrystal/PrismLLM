@@ -213,6 +213,7 @@ private suspend fun handleProxy(
         val ordered = app.tierSharing.order(alias, eligibleNative) +
             app.tierSharing.order("$alias|conversion", eligibleConversion)
         var lastError: GatewayException? = null
+        var conversionError: ProtocolConversionException? = null
         var retryFrom: String? = null
         var retryReason: String? = null
         var rateLimitRetryAfterMs: Long? = null
@@ -374,7 +375,17 @@ private suspend fun handleProxy(
                 if (probeClaimed) {
                     recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed = true)
                 }
-                throw e
+                if (state.committed) throw e
+                // 单个候选无法转换时继续尝试其他候选，全部失败后再返回转换错误。
+                upstreamAttempts -= 1
+                conversionError = e
+                GatewayException(
+                    HttpStatusCode.BadGateway,
+                    "no_candidate",
+                    "协议转换不支持，尝试其他候选",
+                    "api_error",
+                    retryable = true,
+                )
             } catch (e: Throwable) {
                 app.candidateCooldown.release(permit)
                 throw e
@@ -447,7 +458,9 @@ private suspend fun handleProxy(
                 retryAfterMs = rateLimitRetryAfterMs,
             )
         }
-        throw lastError ?: GatewayException(
+        throw lastError ?: conversionError?.let { e ->
+            badRequest("protocol_conversion_unsupported", "${e.field}: ${e.message}")
+        } ?: GatewayException(
             HttpStatusCode.BadGateway,
             "no_candidate",
             "没有可用候选",

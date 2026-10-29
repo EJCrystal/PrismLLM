@@ -161,6 +161,8 @@ function createRangeDraft(presetId, now = Date.now()) {
 }
 
 function currentRange() {
+  // 预设使用毫秒精度，避免 datetime-local 截断到分钟而漏掉最后一分钟。
+  if (preset.value) return usageReportPresetRange(preset.value)
   const from = fromDatetimeLocalValue(rangeDraft.value.from)
   const to = fromDatetimeLocalValue(rangeDraft.value.to)
   return { from, to }

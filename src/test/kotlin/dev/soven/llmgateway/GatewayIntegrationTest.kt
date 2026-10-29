@@ -5842,6 +5842,41 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `conversion failure falls back to native candidate instead of aborting`() = runBlocking {
+        val conversion = createChannelWithBaseUrl(
+            name = "conversion-rejects-image",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        val native = createChannelWithBaseUrl(
+            name = "native-handles-image",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
+            modelMappings = listOf(ChannelModelRecord("gpt-4o-mini")),
+        )
+        createAlias("conversion-fallback", conversion to "claude-sonnet-4-5", native to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"model":"conversion-fallback","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            assertEquals(listOf("/ok/v1/chat/completions"), fake.requests.map { it.path })
+            val log = awaitRequestLog()
+            assertEquals(native.id, log.channelId)
+            assertEquals(1, log.upstreamAttempts)
+        }
+    }
+
+    @Test
     fun `messages request converts to chat-only channel`() = runBlocking {
         val channel = createChannelWithBaseUrl(
             name = "messages-to-chat",
