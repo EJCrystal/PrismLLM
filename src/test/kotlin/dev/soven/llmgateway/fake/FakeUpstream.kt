@@ -9,6 +9,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.request.receiveText
 import io.ktor.server.request.uri
+import io.ktor.server.request.path
 import io.ktor.server.response.header
 import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.response.respondText
@@ -116,6 +117,7 @@ class FakeUpstream {
             scenario, "", call.request.headers[HttpHeaders.Authorization],
             requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
             uri = call.request.uri,
+            path = call.request.path(),
         ))
     }
 
@@ -124,7 +126,10 @@ class FakeUpstream {
         val credential = call.request.headers[HttpHeaders.Authorization] ?: call.request.headers["x-api-key"]
             ?: call.request.headers["x-goog-api-key"]
         val status = credential?.let(keyStatuses::get) ?: 200
-        if (status < 400) return false
+        if (status < 400) {
+            chatHold.get()?.await()
+            return false
+        }
         call.respondText(
             """{"error":{"message":"fake key failure","code":"fake_key_failure"}}""",
             ContentType.Application.Json, HttpStatusCode.fromValue(status),
@@ -142,6 +147,7 @@ class FakeUpstream {
                 traceparent = call.request.headers["traceparent"],
                 requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
                 uri = call.request.uri,
+                path = call.request.path(),
             ),
         )
         val json = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull()
@@ -238,6 +244,7 @@ class FakeUpstream {
                 traceparent = call.request.headers["traceparent"],
                 requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
                 uri = call.request.uri,
+                path = call.request.path(),
             ),
         )
         val stream = runCatching {
@@ -331,6 +338,7 @@ class FakeUpstream {
                 body = body,
                 authorization = call.request.headers[HttpHeaders.Authorization],
                 traceparent = call.request.headers["traceparent"],
+                path = call.request.path(),
                 xApiKey = call.request.headers["x-api-key"],
                 anthropicVersion = call.request.headers["anthropic-version"],
                 anthropicBeta = call.request.headers["anthropic-beta"],
@@ -350,6 +358,13 @@ class FakeUpstream {
             }
             "500" -> {
                 call.respondText(ANTHROPIC_ERROR_500, ContentType.Application.Json, HttpStatusCode.InternalServerError)
+                return
+            }
+            "unsupported-response" -> {
+                call.respondText(
+                    """{"id":"msg_fake","type":"message","role":"assistant","content":[{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{}}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}""",
+                    ContentType.Application.Json,
+                )
                 return
             }
         }
@@ -402,6 +417,7 @@ class FakeUpstream {
             traceparent = call.request.headers["traceparent"],
             requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
             uri = call.request.uri,
+            path = call.request.path(),
         ))
         if (scenario == "chat-only") {
             call.respondText(GEMINI_ERROR_404, ContentType.Application.Json, HttpStatusCode.NotFound)
@@ -557,4 +573,5 @@ data class FakeRequest(
     val anthropicBeta: String? = null,
     val requestHeaders: Map<String, List<String>> = emptyMap(),
     val uri: String? = null,
+    val path: String? = null,
 )

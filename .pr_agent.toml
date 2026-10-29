@@ -54,6 +54,22 @@ num_code_suggestions_per_chunk = 3
 focus_only_on_problems = true
 suggestions_score_threshold = 7
 
+[pr_questions]
+use_conversation_history = true
+# 仅当 PR-Agent 核对当前代码后确认问题已解决时，自动 resolve 行内线程。
+resolve_threads = true
+extra_instructions = """
+当开发者回复行内审查意见时，请把回复视为新的技术输入，而不是自动接受“已修复”的声明。
+必须结合当前 PR 最新 diff、所选代码行、线程历史和相关测试核对：
+
+1. 原问题是否仍在当前代码中存在。
+2. 修复是否覆盖了原评论指出的错误路径、边界条件和兼容性约束。
+3. 开发者引用的测试是否真实覆盖行为；没有证据时说明仍未验证。
+4. 若开发者是在解释设计而非提交修复，判断该解释是否消解了原问题。
+
+只有问题已经完整解决时才输出 [THREAD_RESOLVED]。若仍有遗漏、反例或未验证风险，直接指出剩余事项，不要 resolve 线程。
+"""
+
 [pr_description]
 publish_description_as_comment = false
 add_original_user_description = true

@@ -26,6 +26,8 @@ import dev.soven.llmgateway.report.UsageReport
 import dev.soven.llmgateway.report.UsageTotal
 import dev.soven.llmgateway.repo.AliasWithCandidates
 import dev.soven.llmgateway.resilience.KeyAutoDisableSettingsRecord
+import dev.soven.llmgateway.resilience.ChannelKeyState
+import dev.soven.llmgateway.resilience.KeyDisableRule
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.Serializable
@@ -90,12 +92,18 @@ data class ChannelKeyRateLimitRequest(
     val maxConcurrentRequests: Int? = null,
 )
 
+/**
+ * 渠道密钥写请求。id 为空表示新建；credential 为空表示保持原凭据。
+ *
+ * state 只接受 ACTIVE 与 MANUAL_DISABLED：自动停用状态只能由系统写入，
+ * 否则客户端可以伪造 AUTO_TEMPORARY 绕过永久停用的换凭据要求。
+ */
 @Serializable
 data class ChannelKeyRequest(
     val id: String? = null,
     val name: String,
     val credential: String? = null,
-    val enabled: Boolean = true,
+    val state: ChannelKeyState = ChannelKeyState.ACTIVE,
     val priority: Int? = null,
     val models: List<String> = emptyList(),
     val rateLimit: ChannelKeyRateLimitRequest? = null,
@@ -108,7 +116,7 @@ data class ChannelRequest(
     val baseUrl: String,
     val credential: String? = null,
     val authType: String? = null,
-    val protocols: List<String> = listOf(GatewayProtocol.CHAT_COMPLETIONS.value),
+    val protocols: List<String>? = null,
     val enabled: Boolean = true,
     val models: List<String>? = null,
     val modelMappings: List<ChannelModelMappingRequest>? = null,
@@ -158,52 +166,64 @@ fun ChannelKeyRateLimitPolicy.toResponse() = ChannelKeyRateLimitResponse(
 data class ChannelKeyResponse(
     val id: String,
     val name: String,
-    val enabled: Boolean,
+    val state: ChannelKeyState,
     val priority: Int,
     val credentialSet: Boolean,
     val models: List<String>,
     val rateLimit: ChannelKeyRateLimitResponse = ChannelKeyRateLimitResponse(),
     val stateVersion: Long = 0,
-    val autoDisabledAt: Long? = null,
+    val autoDisableUntil: Long? = null,
     val autoDisableReason: String? = null,
 )
 
 fun ChannelKeyRecord.toResponse() = ChannelKeyResponse(
     id = id,
     name = name,
-    enabled = enabled,
+    state = state,
     priority = priority,
     credentialSet = credentialSet,
     models = models,
     rateLimit = rateLimit.toResponse(),
     stateVersion = stateVersion,
-    autoDisabledAt = autoDisabledAt,
+    autoDisableUntil = autoDisableUntil,
     autoDisableReason = autoDisableReason,
 )
 
+/**
+ * 自动禁用设置。新客户端提交 rules；旧客户端仍可提交四个标量字段，
+ * 后端会把它们翻译成两条兼容规则。
+ */
 @Serializable
 data class KeyAutoDisableSettingsRequest(
     val enabled: Boolean,
-    val authFailureThreshold: Int,
-    val failureThreshold: Int,
-    val failureWindowMinutes: Int,
+    val rules: List<KeyDisableRule>? = null,
+    val authFailureThreshold: Int? = null,
+    val failureThreshold: Int? = null,
+    val failureWindowMinutes: Int? = null,
 )
 
 @Serializable
 data class KeyAutoDisableSettingsResponse(
     val enabled: Boolean,
+    val rules: List<KeyDisableRule>,
+    val revision: Long,
+    val updatedAt: Long,
+    // 旧管理台读取的兼容字段；实际判定只使用 rules。
     val authFailureThreshold: Int,
     val failureThreshold: Int,
     val failureWindowMinutes: Int,
-    val updatedAt: Long,
 )
 
 fun KeyAutoDisableSettingsRecord.toResponse() = KeyAutoDisableSettingsResponse(
     enabled = policy.enabled,
-    authFailureThreshold = policy.authFailureThreshold,
-    failureThreshold = policy.failureThreshold,
-    failureWindowMinutes = policy.failureWindowMinutes,
+    rules = policy.rules,
+    revision = revision,
     updatedAt = updatedAt,
+    authFailureThreshold = policy.rules.firstOrNull { 401 in it.statusCodes && it.streak }?.threshold ?: 3,
+    failureThreshold = policy.rules.firstOrNull { it.includeTransportFailures }?.threshold
+        ?: policy.rules.firstOrNull { !it.streak }?.threshold ?: 5,
+    failureWindowMinutes = policy.rules.firstOrNull { it.includeTransportFailures }?.windowMinutes
+        ?: policy.rules.firstOrNull { !it.streak }?.windowMinutes ?: 5,
 )
 
 @Serializable
@@ -218,7 +238,7 @@ fun ChannelRecord.toResponse() = ChannelResponse(
     name = name,
     baseUrl = baseUrl,
     authType = authType,
-    protocols = protocols.map { it.value }.sorted(),
+    protocols = protocols.map { it.value },
     enabled = enabled,
     credentialSet = keys.any { it.credentialSet },
     createdAt = createdAt,
@@ -427,8 +447,15 @@ data class ClientKeyQuotaUsageResponse(
 data class UsageReportResponse(
     val from: Long,
     val to: Long,
+    val granularity: String,
     val total: UsageTotalResponse,
+    val trend: List<UsageTrendResponse>,
     val byClientKey: List<UsageGroupResponse>,
+    val byChannel: List<UsageGroupResponse>,
+    val byModel: List<UsageGroupResponse>,
+    val byChannelKey: List<UsageGroupResponse>,
+    val byProtocol: List<UsageGroupResponse>,
+    val byErrorCode: List<UsageGroupResponse>,
 )
 
 @Serializable
@@ -437,7 +464,14 @@ data class UsageTotalResponse(
     val errors: Long,
     val inputTokens: Long,
     val outputTokens: Long,
+    val cachedTokens: Long,
+    val cachedWriteTokens: Long,
+    val reasoningTokens: Long,
     val totalTokens: Long,
+    val activeClientKeys: Long,
+    val failovers: Long,
+    val avgFirstTokenMs: Long? = null,
+    val avgTotalMs: Long? = null,
     val costs: Map<String, String>,
 )
 
@@ -449,6 +483,26 @@ data class UsageGroupResponse(
     val errors: Long,
     val inputTokens: Long,
     val outputTokens: Long,
+    val cachedTokens: Long,
+    val cachedWriteTokens: Long,
+    val reasoningTokens: Long,
+    val totalTokens: Long,
+    val failovers: Long,
+    val avgFirstTokenMs: Long? = null,
+    val avgTotalMs: Long? = null,
+    val costs: Map<String, String>,
+)
+
+@Serializable
+data class UsageTrendResponse(
+    val bucketStart: Long,
+    val requests: Long,
+    val errors: Long,
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val cachedTokens: Long,
+    val cachedWriteTokens: Long,
+    val reasoningTokens: Long,
     val totalTokens: Long,
     val costs: Map<String, String>,
 )
@@ -473,8 +527,15 @@ data class CleanupResultResponse(val deleted: Long, val cutoff: Long)
 fun UsageReport.toResponse() = UsageReportResponse(
     from = from,
     to = to,
+    granularity = granularity,
     total = total.toResponse(),
+    trend = trend.map { it.toResponse() },
     byClientKey = byClientKey.map { it.toResponse() },
+    byChannel = byChannel.map { it.toResponse() },
+    byModel = byModel.map { it.toResponse() },
+    byChannelKey = byChannelKey.map { it.toResponse() },
+    byProtocol = byProtocol.map { it.toResponse() },
+    byErrorCode = byErrorCode.map { it.toResponse() },
 )
 
 fun UsageTotal.toResponse() = UsageTotalResponse(
@@ -482,7 +543,14 @@ fun UsageTotal.toResponse() = UsageTotalResponse(
     errors = errors,
     inputTokens = inputTokens,
     outputTokens = outputTokens,
+    cachedTokens = cachedTokens,
+    cachedWriteTokens = cachedWriteTokens,
+    reasoningTokens = reasoningTokens,
     totalTokens = totalTokens,
+    activeClientKeys = activeClientKeys,
+    failovers = failovers,
+    avgFirstTokenMs = avgFirstTokenMs,
+    avgTotalMs = avgTotalMs,
     costs = costs.mapValues { (_, value) -> value.stripTrailingZeros().toPlainString() },
 )
 
@@ -493,6 +561,25 @@ fun UsageGroup.toResponse() = UsageGroupResponse(
     errors = errors,
     inputTokens = inputTokens,
     outputTokens = outputTokens,
+    cachedTokens = cachedTokens,
+    cachedWriteTokens = cachedWriteTokens,
+    reasoningTokens = reasoningTokens,
+    totalTokens = totalTokens,
+    failovers = failovers,
+    avgFirstTokenMs = avgFirstTokenMs,
+    avgTotalMs = avgTotalMs,
+    costs = costs.mapValues { (_, value) -> value.stripTrailingZeros().toPlainString() },
+)
+
+fun dev.soven.llmgateway.report.UsageTrendPoint.toResponse() = UsageTrendResponse(
+    bucketStart = bucketStart,
+    requests = requests,
+    errors = errors,
+    inputTokens = inputTokens,
+    outputTokens = outputTokens,
+    cachedTokens = cachedTokens,
+    cachedWriteTokens = cachedWriteTokens,
+    reasoningTokens = reasoningTokens,
     totalTokens = totalTokens,
     costs = costs.mapValues { (_, value) -> value.stripTrailingZeros().toPlainString() },
 )
@@ -786,6 +873,7 @@ data class RequestLogResponse(
     val channelKeyName: String? = null,
     val upstreamModel: String?,
     val protocol: String,
+    val upstreamProtocol: String? = null,
     val stream: Boolean?,
     val statusCode: Int,
     val firstTokenMs: Long?,
@@ -828,6 +916,7 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     channelKeyName = channelKeyName,
     upstreamModel = upstreamModel,
     protocol = protocol.value,
+    upstreamProtocol = upstreamProtocol?.value,
     stream = stream,
     statusCode = statusCode,
     firstTokenMs = firstTokenMs,

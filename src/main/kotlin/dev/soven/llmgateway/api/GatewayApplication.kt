@@ -62,12 +62,16 @@ import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respondText
 import io.ktor.server.response.header
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -76,6 +80,7 @@ import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 网关运行时装配。负责数据库迁移、管理员初始化、插件安装和资源生命周期。
@@ -122,6 +127,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val logRetentionService = LogRetentionService(requestLogRepository, config.retention)
     private val logRetentionJob = java.util.concurrent.atomic.AtomicReference<Job?>(null)
     private val logRetentionMutex = Mutex()
+    private val keyAutoRecoveryJob = AtomicReference<Job?>(null)
 
     val httpClient = HttpClient(Java) {
         install(HttpTimeout) {
@@ -301,6 +307,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         }
         app.monitor.subscribe(ApplicationStopped) { close() }
         modelPriceReferenceService.start(scope)
+        startKeyAutoRecovery()
         runBlocking { syncLogRetentionJob() }
     }
 
@@ -332,6 +339,29 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         logRetentionJob.getAndSet(null)?.cancelAndJoin()
     }
 
+    private fun startKeyAutoRecovery() {
+        if (keyAutoRecoveryJob.get() != null) return
+        val intervalMs = config.keyAutoRecoveryIntervalMs
+        logger.info("channel key auto recovery started, intervalMs={}", intervalMs)
+        keyAutoRecoveryJob.set(scope.launch {
+            delay(intervalMs)
+            while (isActive) {
+                try {
+                    val recovered = keyAutoDisableRepository.recoverExpired()
+                    recovered.forEach { candidateCooldown.clearKey(it.channelId, it.keyId) }
+                    if (recovered.isNotEmpty()) {
+                        logger.info("recovered {} expired channel keys", recovered.size)
+                    }
+                } catch (cause: CancellationException) {
+                    throw cause
+                } catch (cause: Throwable) {
+                    logger.error("channel key auto recovery cleanup failed", cause)
+                }
+                delay(intervalMs)
+            }
+        })
+    }
+
     private suspend fun seedAdmin() {
         if (adminUserRepository.count() == 0L) {
             check(config.adminPassword.isNotBlank()) { "首次启动必须设置 ADMIN_PASSWORD" }
@@ -346,6 +376,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         runBlocking { requestLogWriter.closeAndDrain(5_000) }
         runBlocking { cooldownStateWriter.closeAndDrain(1_000) }
         runBlocking { logRetentionJob.getAndSet(null)?.cancelAndJoin() }
+        runBlocking { keyAutoRecoveryJob.getAndSet(null)?.cancelAndJoin() }
         scope.cancel()
         httpClient.close()
         databaseFactory.close()

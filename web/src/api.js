@@ -145,9 +145,13 @@ export const api = {
     if (beforeId != null) params.set('beforeId', String(beforeId))
     return request('/request-logs?' + params)
   },
-  getUsageReport: ({ from, to, clientKeyId = null }) => {
+  getUsageReport: ({ from, to, clientKeyId = null, channelId = null, model = null, protocol = null, timezoneOffsetMinutes = 0 }) => {
     const params = new URLSearchParams({ from: String(from), to: String(to) })
     if (clientKeyId) params.set('clientKeyId', clientKeyId)
+    if (channelId) params.set('channelId', channelId)
+    if (model) params.set('model', model)
+    if (protocol) params.set('protocol', protocol)
+    if (timezoneOffsetMinutes) params.set('timezoneOffsetMinutes', String(timezoneOffsetMinutes))
     return request(`/usage-report?${params}`)
   },
   getRetentionPolicy: () => request('/request-log-retention'),

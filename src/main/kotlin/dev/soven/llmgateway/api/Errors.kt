@@ -19,6 +19,8 @@ class GatewayException(
     val retryAfterMs: Long? = null,
     val upstreamStatus: Int? = null,
     val nativeResponseBody: String? = null,
+    /** 仅用于密钥规则匹配与审计的内部错误体，已截断，不返回调用方、不落请求日志。 */
+    val upstreamErrorBody: String? = null,
 ) : RuntimeException(message)
 
 /**

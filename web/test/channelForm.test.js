@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildChannelPayload, buildPriorityUpdatePayload } from '../src/utils/channelForm.js'
+import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols } from '../src/utils/channelForm.js'
 
 describe('channelForm: 渠道保存请求体', () => {
   const baseForm = {
@@ -79,7 +79,7 @@ describe('channelForm: 渠道保存请求体', () => {
       name: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
       authType: 'anthropic',
-      protocols: ['messages'],
+      protocols: ['messages', 'chat_completions', 'responses'],
       enabled: true,
       priority: 1,
     }
@@ -88,10 +88,18 @@ describe('channelForm: 渠道保存请求体', () => {
       name: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
       authType: 'anthropic',
-      protocols: ['messages'],
+      protocols: ['messages', 'chat_completions', 'responses'],
       enabled: true,
       priority: 4,
     })
+  })
+
+  it('探测协议时保留已有优先级并追加新协议', () => {
+    assert.deepEqual(
+      mergeProbedProtocols(['messages', 'chat_completions'], ['chat_completions', 'responses', 'messages']),
+      ['messages', 'chat_completions', 'responses'],
+    )
+    assert.deepEqual(mergeProbedProtocols([], ['chat_completions', 'responses']), ['chat_completions', 'responses'])
   })
 
   it('未修改的映射保留原 mappingSource', () => {
@@ -133,18 +141,18 @@ describe('channelForm: 渠道保存请求体', () => {
       {},
       {},
       [
-        { id: 'key-1', name: ' primary ', credential: '', enabled: true, priority: 1, models: ['m1', 'm1'] },
-        { name: 'backup', credential: ' secret ', enabled: false, priority: 2, models: ['m2'] },
+        { id: 'key-1', name: ' primary ', credential: '', state: 'ACTIVE', priority: 1, models: ['m1', 'm1'] },
+        { name: 'backup', credential: ' secret ', state: 'MANUAL_DISABLED', priority: 2, models: ['m2'] },
       ],
     )
 
     assert.deepEqual(payload.keys, [
       {
-        id: 'key-1', name: 'primary', credential: null, enabled: true, priority: 1, models: ['m1'],
+        id: 'key-1', name: 'primary', credential: null, state: 'ACTIVE', priority: 1, models: ['m1'],
         rateLimit: { enabled: false, requestsPerMinute: null, maxConcurrentRequests: null },
       },
       {
-        id: null, name: 'backup', credential: 'secret', enabled: false, priority: 2, models: ['m2'],
+        id: null, name: 'backup', credential: 'secret', state: 'MANUAL_DISABLED', priority: 2, models: ['m2'],
         rateLimit: { enabled: false, requestsPerMinute: null, maxConcurrentRequests: null },
       },
     ])
@@ -152,10 +160,10 @@ describe('channelForm: 渠道保存请求体', () => {
 
   it('编辑已保存的密钥携带状态版本，避免覆盖同时发生的自动禁用', () => {
     const payload = buildChannelPayload(baseForm, ['m1'], {}, {}, [
-      { id: 'key-1', stateVersion: 0, name: 'primary', enabled: false, priority: 1, models: ['m1'] },
+      { id: 'key-1', stateVersion: 0, name: 'primary', state: 'MANUAL_DISABLED', priority: 1, models: ['m1'] },
     ])
     assert.equal(payload.keys[0].stateVersion, 0)
-    assert.equal(payload.keys[0].enabled, false)
+    assert.equal(payload.keys[0].state, 'MANUAL_DISABLED')
     assert.equal(payload.keys[0].credential, null)
     assert.deepEqual(payload.keys[0].rateLimit, {
       enabled: false,
@@ -170,7 +178,7 @@ describe('channelForm: 渠道保存请求体', () => {
         id: 'key-1',
         name: 'primary',
         credential: '',
-        enabled: true,
+        state: 'ACTIVE',
         priority: 1,
         models: ['m1'],
         rateLimit: { enabled: true, requestsPerMinute: 60, maxConcurrentRequests: 3 },
@@ -182,5 +190,32 @@ describe('channelForm: 渠道保存请求体', () => {
       requestsPerMinute: 60,
       maxConcurrentRequests: 3,
     })
+  })
+
+  it('提交 AUTO_* 状态被拒', () => {
+    assert.throws(
+      () => buildChannelPayload(baseForm, ['m1'], {}, {}, [
+        { id: 'key-1', name: 'primary', state: 'AUTO_TEMPORARY', models: ['m1'] },
+      ]),
+      /ACTIVE 或 MANUAL_DISABLED/,
+    )
+    assert.throws(
+      () => buildChannelPayload(baseForm, ['m1'], {}, {}, [
+        { id: 'key-1', name: 'primary', state: 'AUTO_PERMANENT', models: ['m1'] },
+      ]),
+      /ACTIVE 或 MANUAL_DISABLED/,
+    )
+  })
+
+  it('isKeyRoutable 判断密钥可路由性与临时到期边界', () => {
+    const now = 1000
+    assert.equal(isKeyRoutable({ state: 'ACTIVE' }, now), true)
+    assert.equal(isKeyRoutable({ state: 'MANUAL_DISABLED' }, now), false)
+    assert.equal(isKeyRoutable({ state: 'AUTO_PERMANENT' }, now), false)
+    assert.equal(isKeyRoutable({ state: 'AUTO_TEMPORARY', autoDisableUntil: 1001 }, now), false)
+    assert.equal(isKeyRoutable({ state: 'AUTO_TEMPORARY', autoDisableUntil: 1000 }, now), true)
+    assert.equal(isKeyRoutable({ state: 'AUTO_TEMPORARY', autoDisableUntil: 999 }, now), true)
+    assert.equal(isKeyRoutable({ state: 'AUTO_TEMPORARY', autoDisableUntil: null }, now), false)
+    assert.equal(isKeyRoutable(null, now), false)
   })
 })

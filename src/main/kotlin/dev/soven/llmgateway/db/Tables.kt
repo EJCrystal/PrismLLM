@@ -34,10 +34,14 @@ object ChannelKeys : Table("channel_keys") {
     val credentialCiphertext = text("credential_ciphertext")
     val credentialNonce = text("credential_nonce")
     val credentialKeyVersion = integer("credential_key_version")
-    val enabled = bool("enabled")
+    /** 四态：ACTIVE / MANUAL_DISABLED / AUTO_TEMPORARY / AUTO_PERMANENT。 */
+    val state = varchar("state", 20)
     val stateVersion = long("state_version").default(0)
     val autoDisabledAt = long("auto_disabled_at").nullable()
     val autoDisableReason = varchar("auto_disable_reason", 40).nullable()
+    val autoDisableUntil = long("auto_disable_until").nullable()
+    /** 临时停用到期后的探测租约；同一密钥同时只允许一个探测请求。 */
+    val probeUntil = long("probe_until").nullable()
     val priority = integer("priority").default(1)
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
@@ -76,6 +80,9 @@ object ChannelKeyHealth : Table("channel_key_health") {
     val authFailureStreak = integer("auth_failure_streak")
     val recentFailures = text("recent_failures")
 
+    /** 按规则 id 分桶的失败时间戳；为空表示尚未累计。 */
+    val ruleCounters = text("rule_counters").nullable()
+
     override val primaryKey = PrimaryKey(keyId)
 }
 
@@ -87,6 +94,9 @@ object KeyAutoDisableSettings : Table("key_auto_disable_settings") {
     val failureWindowMinutes = integer("failure_window_minutes")
     val revision = long("revision")
     val updatedAt = long("updated_at")
+
+    /** 规则列表 JSON；为空表示使用代码内置的默认规则。 */
+    val rules = text("rules").nullable()
 
     override val primaryKey = PrimaryKey(id)
 }
@@ -328,6 +338,7 @@ object RequestLogs : Table("request_logs") {
     val channelKeyName = varchar("channel_key_name", 100).nullable()
     val upstreamModel = varchar("upstream_model", 200).nullable()
     val protocol = varchar("protocol", 40)
+    val upstreamProtocol = varchar("upstream_protocol", 40).nullable()
     val stream = bool("stream").nullable()
     val statusCode = integer("status_code")
     val firstTokenMs = long("first_token_ms").nullable()

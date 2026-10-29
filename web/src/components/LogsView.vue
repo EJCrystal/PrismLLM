@@ -38,6 +38,22 @@ const stageLabels = {
   client: '客户端',
 }
 
+const protocolLabels = {
+  chat_completions: 'Chat Completions',
+  responses: 'Responses',
+  messages: 'Messages',
+}
+
+function protocolLabel(value) {
+  return protocolLabels[value] || value || '—'
+}
+
+function protocolPairLabel(log) {
+  const inbound = protocolLabel(log.protocol)
+  const upstream = log.upstreamProtocol ? protocolLabel(log.upstreamProtocol) : inbound
+  return upstream !== inbound ? `${inbound} → ${upstream}` : inbound
+}
+
 const filtered = computed(() => {
   return filterRequestLogs(logs.value, query.value)
 })
@@ -258,7 +274,7 @@ onMounted(load)
                 <div class="stacked-cell">
                   <span class="badge info">{{ log.alias }}</span>
                   <div class="request-meta">
-                    <span class="muted small">{{ log.protocol || '—' }}</span>
+                    <span class="muted small">{{ protocolPairLabel(log) }}</span>
                     <span class="mode-badge" :class="`mode-${requestModeClass(log.stream)}`">{{ requestModeLabel(log.stream) }}</span>
                     <span class="reasoning-badge" :class="reasoningEffortClass(log.reasoningEffort)">
                       推理 {{ reasoningEffortLabel(log.reasoningEffort) }}
@@ -371,7 +387,7 @@ onMounted(load)
               </div>
               <div class="detail-item">
                 <span>协议</span>
-                <strong>{{ selected.protocol || '—' }}</strong>
+                <strong>{{ protocolPairLabel(selected) }}</strong>
               </div>
               <div class="detail-item">
                 <span>模式</span>

@@ -14,6 +14,7 @@ const actionLabels = {
   'channel.update': '更新渠道',
   'channel.delete': '删除渠道',
   'channel_key.auto_disable': '自动禁用上游密钥',
+  'channel_key.auto_recover': '自动恢复上游密钥',
   'key_auto_disable_settings.update': '更新密钥自动禁用规则',
   'alias.create': '创建模型别名',
   'alias.update': '更新模型别名',
@@ -53,6 +54,10 @@ export function auditDetailsSummary(entry) {
   if (entry.action === 'channel_key.auto_disable') {
     return `${details.channelName || '—'} / ${details.keyName || '—'}：${details.message || '已禁用'}`
   }
+  if (entry.action === 'channel_key.auto_recover') {
+    const reason = details.reason === 'expired' ? '到期自动恢复' : '探测成功恢复'
+    return `${details.channelName || '—'} / ${details.keyName || '—'}：${reason}`
+  }
   if (entry.action === 'key_auto_disable_settings.update') return keyAutoDisableRuleLabel(details.after)
   return ''
 }
@@ -61,13 +66,29 @@ export function auditDetailsRows(entry) {
   const details = entry?.details
   if (!details) return []
   if (entry.action === 'channel_key.auto_disable') {
+    const count = details.count ?? details.authFailureStreak ?? details.failureCount
+    const threshold = details.threshold ?? details.authFailureThreshold ?? details.failureThreshold
+    const action = details.action === 'TEMPORARY'
+      ? '临时停用'
+      : details.action === 'PERMANENT' ? '永久停用' : '—'
     return [
       ['渠道 ID', details.channelId],
       ['密钥 ID', details.keyId],
-      ['连续 401/403', `${details.authFailureStreak} 次 / 阈值 ${details.authFailureThreshold} 次`],
-      ['失败窗口', `${details.failureWindowMinutes} 分钟内 ${details.failureCount} 次 / 阈值 ${details.failureThreshold} 次`],
+      ['命中规则', details.ruleName ? `${details.ruleName}（${details.ruleId ?? '—'}）` : details.reason ?? '—'],
+      ['命中次数', count != null ? `${count} 次 / 阈值 ${threshold ?? '—'} 次` : '—'],
+      ['动作', action],
+      ['恢复时间', details.disableUntil ? new Date(details.disableUntil).toLocaleString('zh-CN') : '—'],
       ['上游 HTTP', details.httpStatus ?? '—'],
-      ['上游错误码', details.errorCode ?? '—'],
+      ['上游错误码', details.upstreamErrorCode ?? details.errorCode ?? '—'],
+    ]
+  }
+  if (entry.action === 'channel_key.auto_recover') {
+    return [
+      ['渠道 ID', details.channelId],
+      ['密钥 ID', details.keyId],
+      ['原状态', details.previousState ?? '—'],
+      ['当前状态', details.state ?? '—'],
+      ['恢复原因', details.reason === 'probe_success' ? '到期探测成功' : details.reason === 'expired' ? '到期自动恢复' : details.reason ?? '—'],
     ]
   }
   if (entry.action === 'key_auto_disable_settings.update') {

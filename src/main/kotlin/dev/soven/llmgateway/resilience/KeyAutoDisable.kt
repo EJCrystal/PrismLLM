@@ -39,6 +39,37 @@ data class KeyAutoDisablePolicy(
 /** 客户端取消和网关本地错误不提交结果；其他 HTTP 响应打断鉴权连续失败。 */
 enum class KeyAttemptOutcome { SUCCESS, AUTH_FAILURE, FAILURE, OTHER_RESPONSE }
 
+/**
+ * 把 V30 的两个标量门槛翻译成两条兼容规则，供旧管理 API 与旧测试使用。
+ * 新规则列表通过 [KeyDisablePolicy] 直接保存；这里只保证旧入口不会失效。
+ */
+fun KeyAutoDisablePolicy.toKeyDisablePolicy(): KeyDisablePolicy =
+    KeyDisablePolicy(
+        enabled = enabled,
+        rules = listOf(
+            KeyDisableRule(
+                id = "legacy_auth_streak",
+                name = "连续鉴权失败",
+                statusCodes = listOf(401, 403),
+                threshold = authFailureThreshold,
+                windowMinutes = 1440,
+                streak = true,
+                action = KeyDisableAction.PERMANENT,
+            ),
+            KeyDisableRule(
+                id = "legacy_failure_window",
+                name = "时间窗口内多次失败",
+                statusCodes = listOf(401, 403, 429),
+                statusCodeAtLeast = 500,
+                includeTransportFailures = true,
+                threshold = failureThreshold,
+                windowMinutes = failureWindowMinutes,
+                streak = false,
+                action = KeyDisableAction.PERMANENT,
+            ),
+        ),
+    )
+
 data class KeyFailureState(
     val authFailureStreak: Int = 0,
     val recentFailures: List<Long> = emptyList(),
@@ -47,7 +78,7 @@ data class KeyFailureState(
 data class KeyFailureUpdate(val state: KeyFailureState, val reason: String? = null)
 
 data class KeyAutoDisableSettingsRecord(
-    val policy: KeyAutoDisablePolicy = KeyAutoDisablePolicy(),
+    val policy: KeyDisablePolicy = KeyDisablePolicy(),
     val revision: Long = 0,
     val updatedAt: Long = 0,
 )

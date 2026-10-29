@@ -102,17 +102,21 @@ API 已有 Bearer 鉴权，关掉机器人挑战不影响安全性；管理面�
 ## 用法
 
 - 非草稿 PR 在创建、重新打开、标记 ready，以及推送新提交（synchronize）时都会自动审查；草稿 PR 的自动审查会全部跳过
-- 修复审查意见后推送新的修复提交即可，等待 synchronize 自动审查完成；只回复行内评论或解决线程不会让 PR-Agent 重新审查最新代码
+- 在 PR-Agent 的行内审查线程下直接回复，PR-Agent 会自动结合最新代码、线程历史和该回复继续回答；无需手动添加 `/ask`
+- PR-Agent 只有在核对当前代码后确认原问题已解决时，才会回复并自动 resolve 该线程；仍有问题时会在同一线程说明剩余事项。手动 `/ask` 只回答，不会自动 resolve
 - 仅当自动审查未启动或需要手动重跑时，在 PR 顶层评论 `/review`；每次 push 已经会触发一次审查，无需再额外发送
 - 删除分支等关闭事件不会触发审查；每次 push 都会消耗 token，审查使用 PR 当前分支中的最新配置
 - PR 顶层评论里可用 `/review`、`/describe`、`/improve`、`/ask 这里的取消为什么会丢`
 - 代码行内评论可用 `/ask 这条修复是否合理`；PR-Agent 会结合该行、线程和 PR diff 回复
-- 行内 `/ask` 只接受仓库 `OWNER`、`MEMBER`、`COLLABORATOR` 的评论，普通回复不会自动触发
+- 自动线程回复和行内 `/ask` 都只接受仓库 `OWNER`、`MEMBER`、`COLLABORATOR` 的评论；非 PR-Agent 线程会被忽略
+- 自动 resolve 需要工作流具备 `contents: write`，当前权限已配置在 `.github/workflows/pr-agent.yml`
+- 若线程已回复但未 resolve，检查 `Settings -> Actions -> General -> Workflow permissions` 是否允许工作流读写仓库内容
 
 ## 成本
 
 PR-Agent 只按你网关的渠道计费，成本取决于实际成功响应的模型：
 
+- 每条自动线程回复都会触发一次模型调用，包括简短的确认回复
 - 一次 20K 输入 + 4K 输出的审查，DeepSeek V4 Flash 约 `$0.005`，Gemini 3.8 Flash 约 `$0.03`
 - 具体单价见各厂商定价页；这里不再复制价格，避免过期
 

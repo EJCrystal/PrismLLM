@@ -3308,6 +3308,24 @@ input:disabled {
   min-height: auto;
 }
 
+.protocol-order-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.protocol-order-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.protocol-order-item .icon-button {
+  width: 26px;
+  height: 26px;
+  font-size: 12px;
+}
+
 .channel-model-auth {
   padding: 14px;
   border: 1px solid var(--line);
@@ -3339,7 +3357,7 @@ input:disabled {
 
 .channel-key-card-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 110px 110px 64px;
+  grid-template-columns: minmax(0, 1fr) 100px 140px 64px;
   align-items: end;
   gap: 10px;
 }
@@ -3356,6 +3374,19 @@ input:disabled {
   color: #344054;
   font-size: 12px;
   font-weight: 700;
+}
+
+.channel-key-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  height: 40px;
+}
+
+.channel-key-state-btn {
+  height: 32px;
+  padding: 0 10px;
 }
 
 .channel-key-toggle {
@@ -4223,6 +4254,25 @@ input:disabled {
   display: grid;
   gap: 5px;
   width: min(100%, 320px);
+}
+
+.channels-table th:nth-child(5),
+.channels-table td:nth-child(5) {
+  width: 220px;
+  min-width: 220px;
+}
+
+.channels-table .actions-col {
+  text-align: left;
+}
+
+/* 操作按钮宽 32px、图标 16px，表头额外缩进 8px 以对齐图标图形起点。 */
+.channels-table th.actions-col {
+  padding-left: 26px;
+}
+
+.channels-table .row-actions {
+  justify-content: flex-start;
 }
 
 .channel-model-entry {
@@ -5110,5 +5160,622 @@ input:disabled {
 
   .models-dev-matches {
     max-width: none;
+  }
+}
+
+/* Usage reports */
+.report-head {
+  align-items: flex-start;
+}
+
+.report-head-note {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.report-head-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.report-range-bar {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 12px 16px;
+}
+
+.report-presets {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+}
+
+.report-preset {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.report-preset:hover {
+  color: var(--ink);
+}
+
+.report-preset.active {
+  background: var(--panel);
+  color: var(--brand);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.09);
+}
+
+.report-custom-range {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.report-range-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.report-range-field > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.report-range-field input {
+  min-width: 0;
+  height: 38px;
+  padding: 7px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  outline: 0;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.report-range-field input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 14%, transparent);
+}
+
+.report-range-sep {
+  padding-bottom: 11px;
+  color: var(--muted);
+}
+
+.report-range-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.report-range-error {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.report-filter-bar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+}
+
+.report-filter-fields {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.report-filter-field {
+  display: grid;
+  gap: 5px;
+  min-width: 150px;
+  flex: 1 1 150px;
+  max-width: 220px;
+}
+
+.report-filter-field > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.report-filter-field .select-input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 7px 30px 7px 10px;
+  font-size: 12px;
+}
+
+.report-reset {
+  height: 38px;
+  white-space: nowrap;
+}
+
+.report-range-copy {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.report-range-copy span:last-child {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+}
+
+.usage-kpis {
+  margin-top: 0;
+}
+
+.usage-secondary-kpis {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px 18px;
+  margin-top: -7px;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.usage-secondary-kpis b {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.usage-trend-panel,
+.usage-dimension-panel,
+.usage-insight-card {
+  min-width: 0;
+}
+
+.usage-segmented {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 3px;
+  overflow-x: auto;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  scrollbar-width: none;
+}
+
+.usage-trend-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.usage-currency-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.usage-currency-select .select-input {
+  width: auto;
+  min-width: 82px;
+  height: 32px;
+}
+
+.usage-segmented::-webkit-scrollbar {
+  display: none;
+}
+
+.usage-segmented button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.usage-segmented button:hover {
+  color: var(--ink);
+}
+
+.usage-segmented button.active {
+  background: var(--panel);
+  color: var(--brand);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.09);
+}
+
+.usage-chart-wrap {
+  padding: 14px 18px 15px;
+}
+
+.usage-chart {
+  display: block;
+  width: 100%;
+  height: 170px;
+  overflow: visible;
+}
+
+.usage-chart-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+  stroke-dasharray: 3 5;
+}
+
+.usage-chart-area {
+  fill: url(#usage-fill);
+}
+
+.usage-chart-line {
+  fill: none;
+  stroke: var(--brand);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.usage-chart-line.secondary {
+  stroke: var(--warning);
+  stroke-width: 1.6;
+  stroke-dasharray: 4 4;
+  opacity: 0.8;
+}
+
+.usage-chart-axis {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.usage-chart-axis span {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-chart-axis .is-hidden {
+  visibility: hidden;
+}
+
+.usage-chart-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 11px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.usage-chart-legend .dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 999px;
+  background: var(--brand);
+}
+
+.usage-chart-legend .dot.secondary {
+  background: var(--warning);
+}
+
+.usage-chart-empty {
+  padding: 28px 18px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.usage-dimension-head {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.usage-dimension-table th,
+.usage-dimension-table td {
+  padding-right: 12px;
+  padding-left: 12px;
+}
+
+.usage-dimension-table td {
+  vertical-align: top;
+}
+
+.usage-dimension-name {
+  min-width: 150px;
+  max-width: 300px;
+}
+
+.usage-dimension-name strong,
+.usage-dimension-name small,
+.usage-dimension-table td small {
+  display: block;
+}
+
+.usage-dimension-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-dimension-name small {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-dimension-table td small {
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.usage-insight-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.usage-error-list,
+.usage-summary-list {
+  display: grid;
+  gap: 12px;
+  padding: 15px 18px 17px;
+}
+
+.usage-error-row {
+  display: grid;
+  gap: 6px;
+}
+
+.usage-error-row > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.usage-error-row code {
+  overflow: hidden;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-error-code {
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.usage-error-row span {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.usage-error-track {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg);
+}
+
+.usage-error-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--danger);
+  opacity: 0.7;
+}
+
+.usage-summary-list {
+  gap: 0;
+  padding-top: 8px;
+  padding-bottom: 10px;
+}
+
+.usage-summary-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.usage-summary-list > div:last-child {
+  border-bottom: 0;
+}
+
+.usage-summary-list span {
+  color: var(--muted);
+}
+
+.usage-summary-list strong {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1100px) {
+  .report-filter-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .report-filter-fields {
+    width: 100%;
+  }
+
+  .report-filter-field {
+    max-width: none;
+  }
+
+  .report-range-copy {
+    align-self: flex-end;
+  }
+}
+
+@media (max-width: 900px) {
+  .report-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .report-head-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .usage-insight-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .usage-trend-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 900px) {
+  .report-range-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .report-range-hint {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 600px) {
+  .report-custom-range {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .report-range-sep {
+    display: none;
+  }
+
+  .report-range-field input {
+    width: 100%;
+  }
+}
+
+@media (max-width: 600px) {
+  .report-head-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .report-filter-fields {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .report-filter-field {
+    max-width: none;
+  }
+
+  .report-range-copy {
+    align-self: flex-start;
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+
+  .usage-chart-wrap {
+    padding: 10px 12px 13px;
+  }
+
+  .usage-chart {
+    height: 145px;
+  }
+
+  .usage-trend-controls {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .usage-chart-axis {
+    display: none;
+  }
+
+  .usage-dimension-tabs {
+    width: 100%;
+  }
+
+  .usage-dimension-tabs button {
+    flex: 1 0 auto;
   }
 }

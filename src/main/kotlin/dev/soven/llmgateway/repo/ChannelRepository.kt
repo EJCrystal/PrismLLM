@@ -13,6 +13,7 @@ import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import kotlinx.serialization.json.Json
+import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.security.EncryptedCredential
 import org.jetbrains.exposed.v1.core.ResultRow
@@ -34,7 +35,7 @@ import java.util.UUID
 data class NewChannelKey(
     val name: String,
     val credential: EncryptedCredential,
-    val enabled: Boolean = true,
+    val state: ChannelKeyState = ChannelKeyState.ACTIVE,
     val priority: Int = 1,
     val models: List<String> = emptyList(),
     val rateLimit: ChannelKeyRateLimitPolicy = ChannelKeyRateLimitPolicy(),
@@ -45,7 +46,7 @@ data class ChannelKeyUpdate(
     val id: String? = null,
     val name: String,
     val credential: EncryptedCredential? = null,
-    val enabled: Boolean = true,
+    val state: ChannelKeyState = ChannelKeyState.ACTIVE,
     val priority: Int = 1,
     val models: List<String> = emptyList(),
     /** `null` 表示保留该密钥已有的限流规则。 */
@@ -55,7 +56,7 @@ data class ChannelKeyUpdate(
 
 class ChannelKeyStateChangedException : RuntimeException("密钥状态已变化，请重新打开渠道编辑页面后再保存")
 class ChannelKeyReenableRequiresCredentialException(name: String) : RuntimeException(
-    "密钥「$name」因错误自动禁用，重新启用前必须更换上游凭据",
+    "密钥「$name」因凭据失效被永久停用，重新启用前必须更换上游凭据",
 )
 
 /**
@@ -91,13 +92,15 @@ class ChannelRepository(private val database: Database, private val credentialCi
         baseUrl: String,
         keys: List<NewChannelKey>,
         authType: String,
-        protocols: Set<GatewayProtocol> = GatewayProtocol.default,
+        protocols: List<GatewayProtocol> = GatewayProtocol.default,
         enabled: Boolean,
         modelMappings: List<ChannelModelRecord> = emptyList(),
         priority: Int = 1,
         requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     ): ChannelRecord = suspendTransaction(database) {
         require(keys.isNotEmpty()) { "channel requires at least one key" }
+        val storedProtocols = protocols.distinct()
+        require(storedProtocols.isNotEmpty()) { "channel requires at least one protocol" }
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
         Channels.insert {
@@ -105,7 +108,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
             it[Channels.name] = name
             it[Channels.baseUrl] = baseUrl
             it[Channels.authType] = authType
-            it[Channels.protocols] = protocols.joinToString(",") { protocol -> protocol.value }
+            it[Channels.protocols] = storedProtocols.joinToString(",") { protocol -> protocol.value }
             it[Channels.enabled] = enabled
             it[Channels.priority] = priority
             it[Channels.requestOverrides] = Json.encodeToString(requestOverrides)
@@ -117,7 +120,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
             ChannelKeyUpdate(
                 name = key.name,
                 credential = key.credential,
-                enabled = key.enabled,
+                state = key.state,
                 priority = key.priority,
                 models = key.models,
                 rateLimit = key.rateLimit,
@@ -132,7 +135,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
         baseUrl: String,
         keys: List<ChannelKeyUpdate>? = null,
         authType: String?,
-        protocols: Set<GatewayProtocol> = GatewayProtocol.default,
+        protocols: List<GatewayProtocol>? = null,
         enabled: Boolean,
         modelMappings: List<ChannelModelRecord>? = null,
         priority: Int? = null,
@@ -147,7 +150,11 @@ class ChannelRepository(private val database: Database, private val credentialCi
             it[Channels.name] = name
             it[Channels.baseUrl] = baseUrl
             if (authType != null) it[Channels.authType] = authType
-            it[Channels.protocols] = protocols.joinToString(",") { protocol -> protocol.value }
+            protocols?.let { values ->
+                val storedProtocols = values.distinct()
+                require(storedProtocols.isNotEmpty()) { "channel requires at least one protocol" }
+                it[Channels.protocols] = storedProtocols.joinToString(",") { protocol -> protocol.value }
+            }
             it[Channels.enabled] = enabled
             if (priority != null) it[Channels.priority] = priority
             if (requestOverrides != null) it[Channels.requestOverrides] = Json.encodeToString(requestOverrides)
@@ -226,24 +233,33 @@ class ChannelRepository(private val database: Database, private val credentialCi
                 if (key.stateVersion != null && key.stateVersion != previous[ChannelKeys.stateVersion]) {
                     throw ChannelKeyStateChangedException()
                 }
-                if (previous[ChannelKeys.autoDisabledAt] != null) {
-                    if (key.enabled && key.credential == null) {
-                        throw ChannelKeyReenableRequiresCredentialException(previous[ChannelKeys.name])
-                    }
-                    if (key.credential != null) {
-                        val oldValue = credentialCipher.decrypt(
-                            previous[ChannelKeys.credentialCiphertext], previous[ChannelKeys.credentialNonce],
-                        ).toByteArray(Charsets.UTF_8)
-                        val newValue = credentialCipher.decrypt(
-                            key.credential.ciphertext, key.credential.nonce,
-                        ).toByteArray(Charsets.UTF_8)
-                        val unchanged = MessageDigest.isEqual(oldValue, newValue)
-                        oldValue.fill(0)
-                        newValue.fill(0)
-                        if (unchanged) throw ChannelKeyReenableRequiresCredentialException(previous[ChannelKeys.name])
-                    }
+                // 只有凭据失效导致的永久停用必须换凭据；临时停用与人工停用可直接启用。
+                val previousState = ChannelKeyState.fromValue(previous[ChannelKeys.state])
+                    ?: throw IllegalStateException("未知的渠道密钥状态: ${previous[ChannelKeys.state]}")
+                // 永久停用不能被“先改成人工停用、再启用”的两步操作绕过；
+                // 对永久停用密钥提交 MANUAL_DISABLED 视为保持原状态。
+                val targetState = if (previousState == ChannelKeyState.AUTO_PERMANENT &&
+                    key.state == ChannelKeyState.MANUAL_DISABLED
+                ) {
+                    ChannelKeyState.AUTO_PERMANENT
+                } else {
+                    key.state
                 }
-                val resetHealth = key.credential != null || key.enabled != previous[ChannelKeys.enabled]
+                if (previousState == ChannelKeyState.AUTO_PERMANENT && targetState == ChannelKeyState.ACTIVE) {
+                    val credential = key.credential
+                        ?: throw ChannelKeyReenableRequiresCredentialException(previous[ChannelKeys.name])
+                    val oldValue = credentialCipher.decrypt(
+                        previous[ChannelKeys.credentialCiphertext], previous[ChannelKeys.credentialNonce],
+                    ).toByteArray(Charsets.UTF_8)
+                    val newValue = credentialCipher.decrypt(
+                        credential.ciphertext, credential.nonce,
+                    ).toByteArray(Charsets.UTF_8)
+                    val unchanged = MessageDigest.isEqual(oldValue, newValue)
+                    oldValue.fill(0)
+                    newValue.fill(0)
+                    if (unchanged) throw ChannelKeyReenableRequiresCredentialException(previous[ChannelKeys.name])
+                }
+                val resetHealth = key.credential != null || targetState.value != previous[ChannelKeys.state]
                 ChannelKeys.update({ ChannelKeys.id eq keyId }) {
                     it[name] = key.name
                     key.credential?.let { credential ->
@@ -251,13 +267,16 @@ class ChannelRepository(private val database: Database, private val credentialCi
                         it[credentialNonce] = credential.nonce
                         it[credentialKeyVersion] = credential.keyVersion
                     }
-                    it[enabled] = key.enabled
+                    it[state] = targetState.value
                     it[priority] = key.priority
                     it[updatedAt] = now
                     if (resetHealth) {
                         it[stateVersion] = previous[ChannelKeys.stateVersion] + 1
+                        // 人工启停与换凭据都会清空自动停用元数据；临时停用到期时间同样作废。
                         it[autoDisabledAt] = null
                         it[autoDisableReason] = null
+                        it[autoDisableUntil] = null
+                        it[probeUntil] = null
                     }
                 }
                 if (resetHealth) ChannelKeyHealth.deleteWhere { ChannelKeyHealth.keyId eq keyId }
@@ -271,7 +290,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
                     it[credentialCiphertext] = credential.ciphertext
                     it[credentialNonce] = credential.nonce
                     it[credentialKeyVersion] = credential.keyVersion
-                    it[enabled] = key.enabled
+                    it[state] = key.state.value
                     it[priority] = key.priority
                     it[createdAt] = now
                     it[updatedAt] = now
@@ -382,7 +401,8 @@ internal fun loadChannelKeysInTransaction(
                 credentialCiphertext = row[ChannelKeys.credentialCiphertext],
                 credentialNonce = row[ChannelKeys.credentialNonce],
                 credentialKeyVersion = row[ChannelKeys.credentialKeyVersion],
-                enabled = row[ChannelKeys.enabled],
+                state = ChannelKeyState.fromValue(row[ChannelKeys.state])
+                    ?: throw IllegalStateException("未知的渠道密钥状态: ${row[ChannelKeys.state]}"),
                 priority = row[ChannelKeys.priority],
                 models = modelsByKey[row[ChannelKeys.id]].orEmpty(),
                 rateLimit = rateLimitsByKey[row[ChannelKeys.id]] ?: ChannelKeyRateLimitPolicy(),
@@ -391,6 +411,8 @@ internal fun loadChannelKeysInTransaction(
                 stateVersion = row[ChannelKeys.stateVersion],
                 autoDisabledAt = row[ChannelKeys.autoDisabledAt],
                 autoDisableReason = row[ChannelKeys.autoDisableReason],
+                autoDisableUntil = row[ChannelKeys.autoDisableUntil],
+                probeUntil = row[ChannelKeys.probeUntil],
             )
         }
     }

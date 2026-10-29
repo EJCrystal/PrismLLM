@@ -2,6 +2,7 @@ package dev.soven.llmgateway.domain
 
 import java.math.BigDecimal
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
+import dev.soven.llmgateway.resilience.ChannelKeyState
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -50,7 +51,7 @@ data class ChannelKeyRecord(
     val credentialCiphertext: String,
     val credentialNonce: String,
     val credentialKeyVersion: Int,
-    val enabled: Boolean,
+    val state: ChannelKeyState,
     val priority: Int,
     val models: List<String> = emptyList(),
     val rateLimit: ChannelKeyRateLimitPolicy = ChannelKeyRateLimitPolicy(),
@@ -59,8 +60,28 @@ data class ChannelKeyRecord(
     val stateVersion: Long = 0,
     val autoDisabledAt: Long? = null,
     val autoDisableReason: String? = null,
+    val autoDisableUntil: Long? = null,
+    /** 临时停用到期后的探测租约；非空且未到期时其他请求不得再探测。 */
+    val probeUntil: Long? = null,
 ) {
     val credentialSet: Boolean get() = credentialCiphertext.isNotBlank()
+
+    /** 是否处于启用状态；自动停用与人工停用都不算启用。 */
+    val enabled: Boolean get() = state == ChannelKeyState.ACTIVE
+
+    /** 只有临时停用会到期自动恢复。 */
+    val autoRecoverable: Boolean get() = state == ChannelKeyState.AUTO_TEMPORARY
+
+    /**
+     * 是否允许路由。临时停用到期即视为可用，不依赖后台清理任务；
+     * 人工停用与永久停用永不自动放行。
+     */
+    fun isRoutable(now: Long = System.currentTimeMillis()): Boolean = when (state) {
+        ChannelKeyState.ACTIVE -> true
+        ChannelKeyState.AUTO_TEMPORARY -> autoDisableUntil != null && now >= autoDisableUntil &&
+            (probeUntil == null || now >= probeUntil)
+        ChannelKeyState.MANUAL_DISABLED, ChannelKeyState.AUTO_PERMANENT -> false
+    }
 
     fun supports(upstreamModel: String): Boolean = upstreamModel in models
 }
@@ -70,7 +91,7 @@ data class ChannelRecord(
     val name: String,
     val baseUrl: String,
     val authType: String,
-    val protocols: Set<GatewayProtocol>,
+    val protocols: List<GatewayProtocol>,
     val enabled: Boolean,
     val createdAt: Long,
     val updatedAt: Long,
@@ -81,10 +102,13 @@ data class ChannelRecord(
 ) {
     val models: List<String> get() = modelMappings.map { it.upstreamModel }
 
-    /** 支持指定上游模型的启用密钥，按密钥优先级、名称和 id 稳定排序。 */
-    fun keysFor(upstreamModel: String): List<ChannelKeyRecord> = keys
+    /**
+     * 支持指定上游模型的可路由密钥，按密钥优先级、名称和 id 稳定排序。
+     * 临时停用到期后重新参与路由，人工与永久停用永不参与。
+     */
+    fun keysFor(upstreamModel: String, now: Long = System.currentTimeMillis()): List<ChannelKeyRecord> = keys
         .asSequence()
-        .filter { it.enabled && it.supports(upstreamModel) }
+        .filter { it.isRoutable(now) && it.supports(upstreamModel) }
         .sortedWith(compareBy({ it.priority }, { it.name }, { it.id }))
         .toList()
 }
@@ -263,6 +287,7 @@ data class RequestLogRecord(
     val channelKeyName: String? = null,
     val upstreamModel: String?,
     val protocol: GatewayProtocol,
+    val upstreamProtocol: GatewayProtocol? = null,
     val stream: Boolean? = null,
     val statusCode: Int,
     val firstTokenMs: Long?,

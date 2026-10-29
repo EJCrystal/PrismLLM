@@ -31,6 +31,7 @@ data class GatewayConfig(
     val cookieSecure: Boolean,
     val retention: RetentionPolicy,
     val cooldown: CooldownPolicy = CooldownPolicy(),
+    val keyAutoRecoveryIntervalMs: Long = 30_000,
 ) {
     companion object {
         fun fromEnv(env: Map<String, String> = System.getenv()): GatewayConfig {
@@ -57,6 +58,7 @@ data class GatewayConfig(
             val cooldownAuthFailureMs = longValue("COOLDOWN_AUTH_FAILURE_MS", 600_000)
             val ttftSlowThresholdMs = longValue("TTFT_SLOW_THRESHOLD_MS", 10_000)
             val ttftSlowStreak = longValue("TTFT_SLOW_STREAK", 3).toInt()
+            val keyAutoRecoveryIntervalMs = longValue("KEY_AUTO_RECOVERY_INTERVAL_MS", 30_000)
             require(cooldownTransientBaseMs in 1_000..3_600_000) { "COOLDOWN_TRANSIENT_BASE_MS 必须在 1000..3600000 之间" }
             require(cooldownTransientMaxMs in cooldownTransientBaseMs..86_400_000) {
                 "COOLDOWN_TRANSIENT_MAX_MS 必须在 COOLDOWN_TRANSIENT_BASE_MS..86400000 之间"
@@ -68,6 +70,9 @@ data class GatewayConfig(
             require(cooldownAuthFailureMs in 10_000..86_400_000) { "COOLDOWN_AUTH_FAILURE_MS 必须在 10000..86400000 之间" }
             require(ttftSlowThresholdMs in 100..600_000) { "TTFT_SLOW_THRESHOLD_MS 必须在 100..600000 之间" }
             require(ttftSlowStreak in 1..100) { "TTFT_SLOW_STREAK 必须在 1..100 之间" }
+            require(keyAutoRecoveryIntervalMs in 1_000..3_600_000) {
+                "KEY_AUTO_RECOVERY_INTERVAL_MS 必须在 1000..3600000 之间"
+            }
 
             return GatewayConfig(
                 port = longValue("PORT", 8080).toInt(),
@@ -104,6 +109,7 @@ data class GatewayConfig(
                     ttftSlowThresholdMs = ttftSlowThresholdMs,
                     ttftSlowStreak = ttftSlowStreak,
                 ),
+                keyAutoRecoveryIntervalMs = keyAutoRecoveryIntervalMs,
             )
         }
     }

@@ -1,15 +1,15 @@
 # llm-gateway
 
-面向内部团队的 LLM 网关，原生透传 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 Gemini。网关按渠道授权与对外模型 ID 路由，支持全局与渠道级请求头、UA 和请求体覆盖，透传 SSE 流，并记录用量与请求元数据。
+面向内部团队的 LLM 网关，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 Gemini 的原生透传，以及前三种协议间的跨协议转换。网关按渠道授权与对外模型 ID 路由，同协议优先，必要时按渠道协议顺序转换，并支持全局/渠道级 UA、请求头和请求体覆盖。
 
 ## 能力边界
 
-- 原生协议入口 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 与 `/v1beta/models/{model}:generateContent` / `:streamGenerateContent`，支持流式和非流式请求，不在协议之间转换。
-- 渠道按 `chat_completions`、`responses`、`messages`、`gemini` 声明支持的协议，路由时按请求协议过滤候选。
-- 上游请求按协议使用 Claude、Codex 或 Google SDK 请求头预设，可选 Antigravity；全局和渠道均可覆盖 UA、请求头及 JSON 请求体。
+- 协议入口 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 与 Gemini `/v1beta/models/{model}:generateContent` / `:streamGenerateContent`，支持流式和非流式请求；前三种协议可互相转换。
+- 渠道按有序的 `chat_completions`、`responses`、`messages`、`gemini` 声明支持协议；同协议候选优先，原生候选不可用后按该顺序选择前三种协议中的转换目标。
+- 全局和渠道均可覆盖上游 UA、请求头及 JSON 请求体，按实际出站协议应用 Claude、Codex、Google SDK 或 Antigravity 预设。
 - 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。渠道启用即参与直连暴露。
 - 渠道支持密钥池：每个密钥独立保存凭据、启用状态、优先级和可用模型；同一渠道内按密钥优先级分档，同档密钥轮询。
-- 上游密钥支持可配置的自动禁用：默认连续 3 次 401/403，或 5 分钟内失败 5 次；触发原因写入操作审计。
+- 上游密钥支持可配置的自动禁用：规则按状态码、错误文本、连续/窗口计数匹配，动作区分临时停用与永久停用；命中规则与停用状态写入操作审计。
 - 自定义对外模型 ID 会替代上游名对外暴露；同一渠道的多个上游模型可共享一个对外模型 ID，多个渠道配置相同 ID 时也会自动聚合并参与候选分摊。
 - 调用方密钥鉴权，支持按密钥限制每分钟请求数和并发数；上游凭据使用 AES-256-GCM 加密存储。
 - 流式响应不缓冲、客户端断开向上游传播。
@@ -20,7 +20,7 @@
   - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
 - PostgreSQL + Flyway；单实例部署。
 
-明确不做：协议间相互转换（各协议仅原生透传）、订阅 OAuth 登录与自动续期、多租户 RBAC、语义缓存、MCP、多副本。
+明确不做：多租户 RBAC、语义缓存、MCP、多副本。协议转换第一版不支持 Gemini、图片、文件、音频、Provider 内置工具和 Responses 有状态续接。
 
 ## 架构
 
@@ -30,16 +30,22 @@ client --client key--> gateway --configured auth--> protocol-compatible upstream
                                 +-- PostgreSQL: channels, channel models, client keys, model prices, request logs, admin audit logs
 ```
 
-数据面：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/models`。
+数据面：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/models`、`/v1beta/models` 及 Gemini 动态生成端点。
 管理面：`/admin/api/*`，由会话 Cookie + CSRF Token 保护。
 运维面：`/health/live`、`/health/ready`、`/metrics`。
 
-渠道的 `baseUrl` 必须包含上游要求的版本路径，例如 `https://api.openai.com/v1`、`https://api.anthropic.com/v1` 或 `https://generativelanguage.googleapis.com/v1beta`。网关按请求协议追加对应端点，不会自动补版本。Anthropic Messages 请求可使用 `Authorization: Bearer <gateway-key>` 或 `x-api-key: <gateway-key>`；Gemini 请求可使用 Bearer、`x-goog-api-key: <gateway-key>` 或 `?key=<gateway-key>`。渠道上游鉴权可选择 Bearer、Anthropic `x-api-key` 或 Google `x-goog-api-key`，上游始终使用渠道凭据。`anthropic-version` 缺省为 `2023-06-01`。
+渠道的 `baseUrl` 必须包含上游要求的版本路径，例如 `https://api.openai.com/v1`、`https://api.anthropic.com/v1` 或 `https://generativelanguage.googleapis.com/v1beta`。网关不会自动补版本；固定协议端点由配置追加，Gemini 使用 `{baseUrl}/models/{model}:generateContent` 等动态路径。Anthropic Messages 请求可使用 `Authorization: Bearer <gateway-key>` 或 `x-api-key: <gateway-key>`；Gemini 请求可使用 Bearer、`x-goog-api-key` 或 `?key=`。渠道上游鉴权可选择 Bearer、Anthropic `x-api-key` 或 Google `x-goog-api-key`，`anthropic-version` 缺省为 `2023-06-01`。
 
 启用渠道的对外模型 ID 会出现在 `/v1/models` 并可直接路由。满足条件后：
 - **未配置对外模型 ID（留空）**：对外使用上游模型名；
 - **配置了对外模型 ID**：对外只显示该 ID，调用时网关会将它重写为实际上游模型名。
 单独配置的模型别名不依赖渠道直连暴露，但别名候选要求其渠道处于启用状态。
+
+### Gemini 与上游请求覆盖
+
+Gemini 模型映射在 URL 中完成，不向请求体插入 OpenAI 的 `model` 或 `stream`。流式响应保留原生 `data:` 帧并读取 `finishReason` 之后可能出现的用量帧，不添加 `[DONE]`。模型发现会分页读取 Google `nextPageToken`，整个发现共享 15 秒超时和 2 MB 响应上限。
+
+管理面「渠道 → 上游请求配置」设置全局默认值；渠道编辑页可覆盖并选择是否继承全局。预设按实际出站协议选择：Messages → Claude Code，Chat/Responses → Codex，Gemini → Google Gen AI SDK，Gemini 可显式改选 Antigravity。覆盖顺序为预设 → 全局通用 → 全局协议 → 渠道通用 → 渠道协议；同层 `headers.User-Agent` 高于 `userAgent`。请求体使用 RFC 7396 JSON Merge Patch。完整字段、优先级与示例见 [上游请求配置指南](docs/upstream-request-overrides.md)。
 
 ## 快速开始
 
@@ -93,6 +99,7 @@ Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `ht
 | `COOLDOWN_RATE_LIMIT_DEFAULT_MS` | `30000` | 429 无 `Retry-After` 时的默认冷却时长 |
 | `COOLDOWN_RATE_LIMIT_MAX_MS` | `60000` | 429 冷却时长上限（遵从 `Retry-After` 并封顶） |
 | `COOLDOWN_AUTH_FAILURE_MS` | `600000` | 401/403 密钥级冷却时长；达到自动禁用阈值后不再路由到该密钥 |
+| `KEY_AUTO_RECOVERY_INTERVAL_MS` | `30000` | 临时停用到期清理间隔，最小 1000、最大 3600000 毫秒 |
 | `TTFT_SLOW_THRESHOLD_MS` | `10000` | 流式请求首 token 软阈值 |
 | `TTFT_SLOW_STREAK` | `3` | 首 token 连续超过软阈值多少次后触发候选冷却 |
 | `DRAIN_TIMEOUT_MS` | `30000` | 优雅停机 drain 时间 |
@@ -133,54 +140,7 @@ curl http://localhost:8080/v1/messages \
   -d '{"model":"claude-fast","max_tokens":128,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Gemini 原生调用：
-
-```bash
-curl http://localhost:8080/v1beta/models/gemini-fast:generateContent \
-  -H "x-goog-api-key: sk-gw-..." \
-  -H "Content-Type: application/json" \
-  -d '{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}'
-```
-
-流式调用使用 `:streamGenerateContent`；上游自动携带 `alt=sse`，响应保持 Gemini 的 `data:` 帧，不添加 `[DONE]`。生成入口也支持 `/v1/models/{model}:generateContent` / `:streamGenerateContent`。Gemini 的模型映射在 URL 中完成，不往请求体插入 OpenAI 的 `model` 或 `stream`。
-
-模型列表：`GET /v1/models` 返回当前启用的别名与启用渠道的可直连模型 ID；`GET /v1beta/models` 返回 Google 形状的列表，仅包含支持 Gemini 的对外模型。请求日志会记录本次请求使用的协议。
-
-### 上游请求头、UA 与请求体覆盖
-
-管理面「渠道 → 上游请求配置」设置全局默认值；新建/编辑渠道中的「上游请求配置」设置渠道覆盖。两处均可切换配置范围，分别编辑通用配置、Chat、Responses、Anthropic 和 Gemini。保存后立即生效，配置在重启后保留；模型列表、模型测试和协议探测使用同一套请求头规则，生成请求还会应用请求体覆盖。
-
-完整说明、逐字段结果与可直接提交的 JSON 示例见 [上游请求配置指南](docs/upstream-request-overrides.md)。
-
-请求头预设按**实际发往上游的协议**选择：Messages 使用 Claude Code，Chat/Responses 使用 Codex，Gemini 使用 Google Gen AI SDK；Gemini 可显式改选 Antigravity。同一个 Gemini 模型通过 Chat 协议调用时仍使用 Codex，除非显式选择其他预设。预设只提供请求头，不做协议转换或 Antigravity 内部请求封装；预设版本固定，可通过 UA 或请求头覆盖更新。Codex 的规范 UA 改变版本时会同步 `originator` / `version`，显式配置这些头时以配置为准。
-
-管理 API 为 `GET/PUT /admin/api/upstream-request-settings`，写请求使用 `{"overrides":{...}}`，读响应还包含 `profiles` 与 `updatedAt`。渠道创建/更新 API 接受可选字段 `requestOverrides`：
-
-```json
-{
-  "requestOverrides": {
-    "inheritGlobal": true,
-    "userAgent": "my-upstream-client/1.0",
-    "headers": {"X-App": "cli", "X-Unwanted": null},
-    "body": {"temperature": 0.7, "store": null},
-    "protocols": {
-      "responses": {"body": {"reasoning": {"effort": "high"}}},
-      "messages": {"userAgent": "claude-cli/2.1.258 (external, cli)"},
-      "gemini": {"headerProfile": "antigravity"}
-    }
-  }
-}
-```
-
-先从渠道当前协议、渠道通用、全局当前协议、全局通用中，按此顺序选择第一个已配置（非 `null`）的 `headerProfile`，都未配置时使用 `auto`。只选择一个最终预设，不叠加不同客户端的预设头。
-
-随后按低到高应用覆盖：**协议预设 → 全局通用 → 全局当前协议 → 渠道通用 → 渠道当前协议**。渠道通用也高于全局的协议配置；同层 `headers` 中的 `User-Agent` 高于 `userAgent`。所有显式 UA / 请求头配置都高于预设，因此切换预设不会清除继承的自定义 UA。
-
-`headerProfile` 可选 `auto`、`none`、`claude`、`codex`、`google`、`antigravity`；`none` 只关闭预设，`inheritGlobal:false` 只跳过全局层，两者可以组合。UA 输入框留空表示本层不覆盖，勾选「清空 User-Agent」则发送空值，避免 HTTP 客户端自动补 UA。
-
-请求头名称不区分大小写，字符串设置，`null` 删除（UA 特殊处理为空值）。请求体使用 RFC 7396 JSON Merge Patch：对象递归合并，数组/标量整体替换，`null` 删除字段；每次故障转移从原始请求重新应用规则，渠道间不会互相污染。`model`、`stream`、鉴权头、连接/长度/类型头和 Trace 头由网关管理，不能通过覆盖配置修改。覆盖配置最多 64KB、每层最多 64 个请求头，请求体改写后仍遵守请求体大小上限。
-
-旧调用方更新渠道时省略 `requestOverrides` 会保留原配置，提交 `{}` 恢复继承默认设置。模型发现 API 也接受尚未保存的 `requestOverrides` 与 `protocols`，编辑 UA 后可直接重新加载模型；协议探测和连通性测试使用已保存配置。测试/探测的输出预算仍限制为 128 / 1 token。
+模型列表：`GET /v1/models` 返回当前启用的别名与启用渠道的可直连模型 ID；`GET /v1beta/models` 返回 Gemini 形状的模型列表。请求日志会记录入站协议和实际出站协议。
 
 管理 API 示例：
 
@@ -192,7 +152,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 
 写操作需要把登录响应里的 `gw_csrf` Cookie 值放到 `X-CSRF-Token` 请求头。
 
-拉取某个渠道的上游模型列表（网关会请求 `{baseUrl}/models`，`baseUrl` 包含上游要求的版本路径、不含 `/models` 端点）。Gemini 会通过 `nextPageToken` 拉取所有页面，每页使用相同鉴权与请求头覆盖，整个发现共享 15 秒超时和 2 MB 响应大小上限。未指定 `keyId` 时使用优先级最高的启用密钥：
+拉取某个渠道的上游模型列表（网关会请求 `{baseUrl}/models`，因此 `baseUrl` 应包含版本路径且不含 `/models`）。Gemini 会通过 `nextPageToken` 读取全部页面；所有页面共享 15 秒超时和 2 MB 响应上限。未指定 `keyId` 时使用优先级最高的启用密钥：
 
 ```bash
 curl -b cookies.txt 'http://localhost:8080/admin/api/channels/<channel-id>/models?keyId=<key-id>'
@@ -208,7 +168,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
   -d '{"baseUrl":"https://api.openai.com/v1","credential":"sk-..."}'
 ```
 
-编辑渠道时可只传 `channelId` 和可选的 `keyId`，复用已保存密钥。保存渠道时通过 `keys` 数组提交密钥池；每个密钥包含 `name`、`credential`、`enabled`、`priority`、`models` 和可选的 `rateLimit`。旧版单凭据字段仍兼容：新建时自动生成“默认密钥”，更新时只作用于唯一的默认密钥并保留已有 `rateLimit`。取消仍被别名候选引用的模型授权会返回 `409 channel_model_in_use`。
+编辑渠道时可只传 `channelId` 和可选的 `keyId`，复用已保存密钥。保存渠道时通过 `keys` 数组提交密钥池；每个密钥包含 `name`、`credential`、`state`（`ACTIVE` 正常，`MANUAL_DISABLED` 人工停用；默认 `ACTIVE`）、`priority`、`models` 和可选的 `rateLimit`。请求与响应彻底使用 `state` 枚举替换原 `enabled` 布尔字段，不再接受 `enabled`；客户端提交 `AUTO_*` 自动状态会被拒绝（自动状态只由系统维护）。旧版单凭据字段仍兼容：新建时自动生成“默认密钥”，更新时只作用于唯一的默认密钥并保留已有 `rateLimit`。取消仍被别名候选引用的模型授权会返回 `409 channel_model_in_use`。
 
 渠道密钥池示例：
 
@@ -227,11 +187,12 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
     {
       "name": "primary",
       "credential": "sk-primary",
+      "state": "ACTIVE",
       "priority": 1,
       "models": ["gpt-4o-mini"],
       "rateLimit": {"enabled": true, "requestsPerMinute": 60, "maxConcurrentRequests": 3}
     },
-    {"name": "backup", "credential": "sk-backup", "priority": 2, "models": ["gpt-4o-mini", "deepseek-chat"]}
+    {"name": "backup", "credential": "sk-backup", "state": "ACTIVE", "priority": 2, "models": ["gpt-4o-mini", "deepseek-chat"]}
   ]
 }
 ```
@@ -258,14 +219,16 @@ RPM 使用平滑令牌桶，每个实际上游请求尝试消耗一个令牌；�
 
 ### 上游密钥自动禁用
 
-管理台的「上游接入点 → 密钥自动禁用」可修改全局规则。默认启用，按每个 key 的实际上游尝试（跨模型、跨协议）聚合：**连续 3 次 401/403**，或**5 分钟内失败 5 次**，任一条件达到即停用该 key，备用 key 继续接流量。窗口失败包含 401/403、429、5xx、连接失败、超时及流异常；成功不会清除窗口内失败，但会重置连续鉴权失败。404、400/422 等请求错误及客户端取消不计入。冷却规则照常运行，但已停用的 key 不参与 fail-open。
+管理台的「上游接入点 → 密钥自动禁用」可修改全局规则。规则按顺序匹配，首条命中生效；每条规则包含状态码、状态码下限、错误文本正则、连续/窗口计数、动作（临时/永久）和临时停用时长。默认规则：401/403 且命中 `invalid_api_key`、`authentication_error`、`invalid_grant` 等稳定特征 → 连续 2 次永久停用；401/403 账号停用或结算类 → 1 次永久停用；其余 401/403 → 5 分钟内 3 次临时停用 30 分钟；429/5xx/连接失败/超时 → 5 分钟内 8 次临时停用 10 分钟；400/404/422 不命中任何规则。成功只清零连续计数，窗口计数保留；客户端取消、网关本地限流和请求体错误不提交结果；首 token 之后才出现的流异常也不参与密钥禁用。冷却规则照常运行，但已停用的 key 不参与 fail-open。
 
-规则、失败计数和停用状态都保存在 PostgreSQL，重启后仍有效；修改规则从零开始计数，关闭自动禁用后已有停用状态保持。并发请求按 key 串行结算，只有第一次达到阈值会停用并写入一条系统审计；审计包含渠道/密钥名称、触发原因、计数及对应请求 ID，不含凭据或请求正文。更换凭据或手动切换启用状态会清空该 key 的失败计数与密钥级冷却。**自动禁用后的 key 需要更换上游凭据，再手动启用**；编辑请求可传返回的 `stateVersion`，状态发生变化时返回 `409 channel_key_state_changed`，避免旧页面覆盖自动禁用。
+规则、按规则分桶的失败计数和停用状态都保存在 PostgreSQL，重启后仍有效；修改规则从零开始计数，关闭自动禁用后已有停用状态保持。并发请求按 key 串行结算，只有第一次达到阈值会停用并写入一条系统审计；审计包含渠道/密钥名称、命中规则、计数、动作、状态、到期时间及对应请求 ID，不含凭据或请求正文。更换凭据或手动切换启用状态会清空该 key 的失败计数与密钥级冷却。
 
-管理 API：`GET/PUT /admin/api/key-auto-disable-settings`，写入仍需管理员会话与 CSRF。四个字段为 `enabled`（布尔值）、`authFailureThreshold`（1..100）、`failureThreshold`（1..1000）和 `failureWindowMinutes`（1..1440）。例如：
+密钥状态包含四态：`ACTIVE`（正常）、`MANUAL_DISABLED`（人工停用）、`AUTO_TEMPORARY`（自动临时停用）和 `AUTO_PERMANENT`（自动永久停用）。自动状态只由系统在达到规则阈值时维护，客户端只能提交人工状态（`ACTIVE` 或 `MANUAL_DISABLED`）。临时停用（`AUTO_TEMPORARY`）带到期时间 `autoDisableUntil`，到期即自动视作可用恢复路由；到期后通过 `probe_until` 原子抢占单探测租约，并发请求不会同时打上游，探测成功恢复、失败按命中规则重新计时。后台任务按 `KEY_AUTO_RECOVERY_INTERVAL_MS` 收尾已到期且没有有效租约的临时停用。人工停用与永久停用永不自动放行。**因凭据失效被永久停用的密钥，重新启用前必须更换上游凭据**；从临时停用或人工停用启用无需更换凭据。编辑请求可传返回的 `stateVersion`，状态发生变化时返回 `409 channel_key_state_changed`，避免旧页面覆盖自动禁用。
+
+管理 API：`GET/PUT /admin/api/key-auto-disable-settings`，写入仍需管理员会话与 CSRF。请求体为 `enabled` 与 `rules` 数组；旧客户端仍可提交 `authFailureThreshold`、`failureThreshold`、`failureWindowMinutes`，后端会翻译成两条兼容规则。规则字段包括 `id`、`name`、`statusCodes`、`statusCodeAtLeast`、`bodyPatterns`（RE2 正则）、`threshold`、`windowMinutes`、`streak`、`action`（`TEMPORARY` / `PERMANENT`）、`disableMinutes` 和 `includeTransportFailures`。例如：
 
 ```json
-{"enabled":true,"authFailureThreshold":3,"failureThreshold":5,"failureWindowMinutes":5}
+{"enabled":true,"rules":[{"id":"credential_invalid","name":"凭据失效","statusCodes":[401,403],"bodyPatterns":["invalid[\\s_-]*(x-)?api[\\s_-]?key"],"threshold":2,"windowMinutes":5,"streak":true,"action":"PERMANENT"}]}
 ```
 
 共享同一对外 ID 时，路由先按渠道优先级分档；同一渠道内先按上游模型名稳定排序，首个名称作为主入口，只有失败、冷却或不可用时才回退到同渠道的其他名称。每个上游模型下再按密钥优先级分档，同档密钥轮询。这样既避免把同一模型的多个上游别名误当成独立容量，也能把同一模型在多个密钥上的容量聚合起来。
@@ -292,9 +255,9 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
   -d '{"model":"gpt-4o-mini"}'
 ```
 
-返回每个协议的 `supported`、`statusCode` 和说明。该管理操作主动发现全部四种协议，包括尚未勾选的协议，结果用于编辑渠道支持协议，保存后才生效；数据面仍只选择声明了请求协议的渠道。探测会使用已保存凭据发送最小请求（Chat/Messages `max_tokens=1`、Responses `max_output_tokens=1`、Gemini `generationConfig.maxOutputTokens=1`）；Chat 显式配置 `max_completion_tokens` 时改用该字段并限制为 1。探测可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
+返回每个协议的 `supported`、`statusCode` 和说明。该管理操作会探测全部四种协议（包括尚未勾选的协议），结果用于编辑渠道配置，保存后才影响数据面。探测使用已保存凭据发送最小请求（Chat/Messages `max_tokens=1`、Responses `max_output_tokens=1`、Gemini `generationConfig.maxOutputTokens=1`），可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
 
-渠道编辑弹窗的授权模型列表提供「测试」入口，可对指定模型发送一次真实请求，并指定协议和测试提示词。测试使用已保存的渠道凭据，不经过数据面、不写入请求日志，也不消耗调用方密钥额度；最多输出 128 token，超时 45 秒。默认不指定推理强度，显式请求覆盖除外。
+渠道编辑弹窗的授权模型列表提供「测试」入口，可对指定模型发送一次真实请求，并指定协议和测试提示词。测试使用已保存的渠道凭据，不经过数据面、不写入请求日志，也不消耗调用方密钥额度；最多输出 128 token，超时 45 秒。连通性测试不指定推理强度。
 
 ```bash
 curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id>/model-test \
@@ -349,7 +312,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 管理界面的“用量报表”按时间范围汇总请求数、错误数、输入/输出/总 token，以及按实际计费币种分别累计的费用；同时提供按调用方密钥的明细。
 
-报表接口：`GET /admin/api/usage-report?from=<epoch-ms>&to=<epoch-ms>`，可选 `clientKeyId` 过滤。默认最近 7 天，单次查询范围最多 366 天。费用不做跨币种换算。
+报表接口：`GET /admin/api/usage-report?from=<epoch-ms>&to=<epoch-ms>`，可选 `clientKeyId`、`channelId`、`model`、`protocol`、`timezoneOffsetMinutes` 过滤。默认最近 7 天，单次查询范围最多 30 天。费用不做跨币种换算。
 
 请求日志保留策略由以下环境变量控制：
 
@@ -417,13 +380,7 @@ GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行
 mvn test
 ```
 
-包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions、Responses、Anthropic Messages、Gemini 的 SSE 用量解析与透传、全局/渠道/协议请求覆盖与重试隔离、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、渠道密钥分组 RPM/并发限流与取消安全释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
-
-只运行请求覆盖与 Gemini 原生端到端验证：
-
-```bash
-mvn -Dgroups=upstream-request-overrides,gemini test
-```
+包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：四种协议的 SSE 用量解析与透传、三种协议六方向转换、Gemini 模型分页与原生错误、全局/渠道/协议请求覆盖与重试隔离、工具调用、协议优先级回退、不兼容字段 400、对外模型 ID 重写与直连、首 token 前故障转移、Retry-After 冷却、档位分摊轮询、渠道密钥限流与管理面权限边界。
 
 只运行渠道密钥 RPM、最大并发和故障转移的端到端验证：
 

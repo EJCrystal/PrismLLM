@@ -7,6 +7,7 @@ const SEARCH_FIELDS = [
   'channelKeyName',
   'upstreamModel',
   'protocol',
+  'upstreamProtocol',
   'statusCode',
   'errorCode',
   'errorMessage',

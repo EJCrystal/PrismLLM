@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.domain
 
 /**
- * 网关入口与渠道上游支持的原生协议。不同协议之间不自动转换。
+ * 网关入口与渠道上游支持的原生协议。渠道列表顺序同时作为协议转换优先级。
  * endpointPath 仅表示固定生成端点；Gemini 的模型和动作位于动态 URL 中。
  *
  * @author 文杰
@@ -15,14 +15,14 @@ enum class GatewayProtocol(val value: String, val endpointPath: String?) {
     ;
 
     companion object {
-        val default: Set<GatewayProtocol> = setOf(CHAT_COMPLETIONS)
+        val default: List<GatewayProtocol> = listOf(CHAT_COMPLETIONS)
 
         fun fromValue(value: String): GatewayProtocol? = entries.firstOrNull { it.value == value }
 
-        fun parse(value: String): Set<GatewayProtocol> =
+        fun parse(value: String): List<GatewayProtocol> =
             value.split(',')
                 .mapNotNull { fromValue(it.trim()) }
-                .toSet()
+                .distinct()
                 .ifEmpty { default }
     }
 }

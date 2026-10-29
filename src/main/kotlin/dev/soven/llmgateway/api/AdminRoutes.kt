@@ -17,6 +17,9 @@ import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.KeyAutoDisableSettingsAuditContext
+import dev.soven.llmgateway.resilience.ChannelKeyState
+import dev.soven.llmgateway.resilience.KeyDisablePolicy
+import dev.soven.llmgateway.resilience.toKeyDisablePolicy
 import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.parseDailyCostLimit
@@ -274,9 +277,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val request = call.receive<KeyAutoDisableSettingsRequest>()
             val policy = try {
-                KeyAutoDisablePolicy(
-                    request.enabled, request.authFailureThreshold, request.failureThreshold, request.failureWindowMinutes,
-                )
+                when {
+                    request.rules != null -> KeyDisablePolicy(request.enabled, request.rules)
+                    request.authFailureThreshold != null && request.failureThreshold != null &&
+                        request.failureWindowMinutes != null -> KeyAutoDisablePolicy(
+                        request.enabled, request.authFailureThreshold, request.failureThreshold, request.failureWindowMinutes,
+                    ).toKeyDisablePolicy()
+                    else -> throw IllegalArgumentException("必须提供 rules 或完整的旧版阈值")
+                }
             } catch (cause: IllegalArgumentException) {
                 throw badRequest("invalid_key_auto_disable_settings", cause.message ?: "自动禁用规则无效")
             }
@@ -332,10 +340,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val savedKey = saved?.let { channel ->
                 request.keyId?.takeIf { it.isNotBlank() }?.let { keyId ->
                     channel.keys.firstOrNull { it.id == keyId }?.also { key ->
-                        if (!key.enabled) throw badRequest("channel_key_disabled", "渠道密钥已停用")
+                        if (!key.isRoutable()) throw channelKeyUnavailable(key)
                     }
                         ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
-                } ?: channel.keys.filter { it.enabled }.minWithOrNull(compareBy({ it.priority }, { it.name }))
+                } ?: channel.keys.filter { it.isRoutable() }.minWithOrNull(compareBy({ it.priority }, { it.name }))
                     ?: channel.keys.minWithOrNull(compareBy({ it.priority }, { it.name }))
             }
             val authType = request.authType ?: saved?.authType ?: "bearer"
@@ -470,7 +478,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val request = call.receive<ChannelRequest>()
             validateChannel(request, credentialRequired = true)
-            val protocols = parseProtocols(request.protocols)
+            val protocols = parseProtocols(request.protocols ?: GatewayProtocol.default.map { it.value })
             if (app.channelRepository.findByName(request.name) != null) {
                 throw conflict("channel_name_exists", "渠道名称已存在")
             }
@@ -495,7 +503,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val id = call.requiredParam("id", "缺少渠道 id")
             val request = call.receive<ChannelRequest>()
             validateChannel(request, credentialRequired = false)
-            val protocols = parseProtocols(request.protocols)
+            val protocols = request.protocols?.let(::parseProtocols)
             val updated = channelUpdateMutex.withLock {
                 val existing = app.channelRepository.find(id)
                     ?: throw notFound("channel_not_found", "渠道不存在")
@@ -882,12 +890,16 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val to = call.queryLongOrNull("to") ?: now
             val from = call.queryLongOrNull("from") ?: (to - 7 * 86_400_000L)
             if (from > to) throw badRequest("invalid_report_range", "报表开始时间不能晚于结束时间")
-            if (to - from > 366 * 86_400_000L) throw badRequest("invalid_report_range", "报表时间范围不能超过 366 天")
+            if (to - from > 30 * 86_400_000L) throw badRequest("invalid_report_range", "报表时间范围不能超过 30 天")
             val report = app.requestLogRepository.report(
                 UsageReportQuery(
                     from = from,
                     to = to,
                     clientKeyId = call.request.queryParameters["clientKeyId"]?.takeIf { it.isNotBlank() },
+                    channelId = call.request.queryParameters["channelId"]?.takeIf { it.isNotBlank() },
+                    model = call.request.queryParameters["model"]?.takeIf { it.isNotBlank() },
+                    protocol = call.request.queryParameters["protocol"]?.takeIf { it.isNotBlank() },
+                    timezoneOffsetMinutes = call.queryInt("timezoneOffsetMinutes", default = 0, min = -840, max = 840),
                 ),
             )
             call.respond(report.toResponse())
@@ -1003,24 +1015,38 @@ private val JPEG_MAGIC = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte()
 private const val MAX_AVATAR_DATA_URL_CHARS = 600_000
 private const val MAX_AVATAR_BYTES = 400_000
 
-private fun parseProtocols(values: List<String>): Set<GatewayProtocol> {
+private fun parseProtocols(values: List<String>): List<GatewayProtocol> {
     if (values.isEmpty()) throw badRequest("invalid_channel", "渠道至少需要支持一个协议")
     return values.map { value ->
-        GatewayProtocol.fromValue(value)
+        val normalized = value.trim()
+        GatewayProtocol.fromValue(normalized)
             ?: throw badRequest("invalid_channel", "不支持的协议: $value")
-    }.toSet()
+    }.distinct()
 }
+
+/** 停用密钥的错误：临时停用未到期与人工/永久停用使用不同错误码，便于排障。 */
+private fun channelKeyUnavailable(key: ChannelKeyRecord): GatewayException =
+    if (key.state == ChannelKeyState.AUTO_TEMPORARY) {
+        val message = if (key.probeUntil?.let { it > System.currentTimeMillis() } == true) {
+            "密钥「${key.name}」正在探测恢复中"
+        } else {
+            "密钥「${key.name}」临时停用中，尚未到恢复时间"
+        }
+        badRequest("channel_key_temporarily_disabled", message)
+    } else {
+        badRequest("channel_key_disabled", "渠道密钥已停用")
+    }
 
 /** 选择显式指定的密钥；未指定时使用优先级最高的启用密钥。 */
 private fun resolveChannelKey(channel: ChannelRecord, keyId: String?): ChannelKeyRecord {
     if (!keyId.isNullOrBlank()) {
         val key = channel.keys.firstOrNull { it.id == keyId }
             ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
-        if (!key.enabled) throw badRequest("channel_key_disabled", "渠道密钥已停用")
+        if (!key.isRoutable()) throw channelKeyUnavailable(key)
         return key
     }
     return channel.keys
-        .filter { it.enabled }
+        .filter { it.isRoutable() }
         .minWithOrNull(compareBy({ it.priority }, { it.name }, { it.id }))
         ?: throw badRequest("channel_key_unavailable", "渠道没有可用的启用密钥")
 }
@@ -1034,7 +1060,7 @@ private fun resolveChannelKeyForModel(
     if (!keyId.isNullOrBlank()) {
         val key = channel.keys.firstOrNull { it.id == keyId }
             ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
-        if (!key.enabled) throw badRequest("channel_key_disabled", "渠道密钥已停用")
+        if (!key.isRoutable()) throw channelKeyUnavailable(key)
         if (model !in channel.models) {
             throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
         }
@@ -1094,7 +1120,7 @@ private fun normalizeNewKeys(
         NewChannelKey(
             name = key.name,
             credential = key.credential ?: throw badRequest("invalid_channel", "新建渠道的每个密钥都必须提供上游凭据"),
-            enabled = key.enabled,
+            state = key.state,
             priority = key.priority,
             models = key.models,
             rateLimit = key.rateLimit ?: ChannelKeyRateLimitPolicy(),
@@ -1130,7 +1156,7 @@ private fun normalizeUpdatedKeys(
                 id = key.id,
                 name = key.name,
                 credential = key.credential,
-                enabled = key.enabled,
+                state = key.state,
                 priority = key.priority,
                 models = key.models,
                 rateLimit = key.rateLimit,
@@ -1146,7 +1172,8 @@ private fun normalizeUpdatedKeys(
             id = current.id,
             name = current.name,
             credential = encryptedCredential,
-            enabled = current.enabled,
+            // 旧客户端未提交 state，保持现有状态，避免把自动停用误改成启用。
+            state = current.state,
             priority = current.priority,
             models = if (modelMappings != null) channelModels.toList() else current.models,
             rateLimit = null,
@@ -1159,7 +1186,7 @@ private data class NormalizedKey(
     val id: String?,
     val name: String,
     val credential: dev.soven.llmgateway.security.EncryptedCredential?,
-    val enabled: Boolean,
+    val state: ChannelKeyState,
     val priority: Int,
     val models: List<String>,
     val rateLimit: ChannelKeyRateLimitPolicy?,
@@ -1187,6 +1214,12 @@ private fun normalizeKeys(
         if (key.stateVersion != null && key.stateVersion < 0) {
             throw badRequest("invalid_channel", "密钥状态版本不能为负数")
         }
+        if (!key.state.manuallyAssignable) {
+            throw badRequest(
+                "invalid_channel",
+                "密钥「$name」的状态只能提交 ACTIVE 或 MANUAL_DISABLED；自动停用状态由系统维护",
+            )
+        }
         val models = key.models.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         models.forEach { model ->
             if (model.length > 200) throw badRequest("invalid_channel", "上游模型名长度不能超过 200 个字符")
@@ -1200,7 +1233,7 @@ private fun normalizeKeys(
             id = keyId,
             name = name,
             credential = key.credential?.takeIf { it.isNotBlank() }?.let(app.credentialCipher::encrypt),
-            enabled = key.enabled,
+            state = key.state,
             priority = priority,
             models = models,
             rateLimit = rateLimit,
