@@ -200,6 +200,14 @@ class ProtocolConversionTest {
     }
 
     @Test
+    fun `malformed upstream sse frame emits protocol error`() {
+        val converter = ProtocolConversion.streamConverter(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, "public")!!
+        val output = converter.feed("data: {not-json") + converter.feed("")
+        assertTrue(output.any { it.contains("data: {\"error\"") }, output.toString())
+        assertTrue(output.any { it.contains("无法解析的 JSON 帧") }, output.toString())
+    }
+
+    @Test
     fun `unsupported multimodal content is rejected`() {
         val request = json(
             """{"model":"x","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
