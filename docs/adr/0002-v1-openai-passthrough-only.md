@@ -1,6 +1,6 @@
 # v1 只做 OpenAI 兼容透传
 
-> 状态（2026-10-29）：部分取代于 [ADR 0010](0010-anthropic-messages-passthrough.md) 与 [ADR 0013](0013-protocol-conversion.md)——新增 Anthropic Messages 入口，并允许 Chat Completions、Responses、Messages 之间转换；Gemini 原生协议继续推迟。
+> 状态（2026-10-29）：部分取代于 [ADR 0010](0010-anthropic-messages-passthrough.md)、[ADR 0013](0013-protocol-conversion.md) 与 [ADR 0014](0014-upstream-request-overrides-and-gemini.md)——新增 Anthropic Messages 和 Gemini 原生入口，并允许 Chat Completions、Responses、Messages 之间转换；Gemini 不参与跨协议转换。
 
 v1 只接受 OpenAI Chat Completions 与 Responses 兼容请求，只接入 OpenAI 兼容上游。Anthropic、Gemini 原生协议转换、计费、多租户和语义缓存全部推迟。
 

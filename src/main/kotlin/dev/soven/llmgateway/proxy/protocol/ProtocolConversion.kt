@@ -80,6 +80,7 @@ object ProtocolConversion {
         GatewayProtocol.CHAT_COMPLETIONS -> request
         GatewayProtocol.MESSAGES -> messagesToChatRequest(request)
         GatewayProtocol.RESPONSES -> responsesToChatRequest(request)
+        GatewayProtocol.GEMINI -> rejectGeminiConversion()
     }
 
     private fun messagesToChatRequest(request: JsonObject): JsonObject = buildJsonObject {
@@ -263,6 +264,7 @@ object ProtocolConversion {
         }
         GatewayProtocol.MESSAGES -> chatToMessagesRequest(chat, upstreamModel)
         GatewayProtocol.RESPONSES -> chatToResponsesRequest(chat, upstreamModel)
+        GatewayProtocol.GEMINI -> rejectGeminiConversion()
     }
 
     private fun chatToMessagesRequest(chat: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {
@@ -417,6 +419,7 @@ object ProtocolConversion {
         GatewayProtocol.CHAT_COMPLETIONS -> response
         GatewayProtocol.MESSAGES -> messagesToChatResponse(response, model)
         GatewayProtocol.RESPONSES -> responsesToChatResponse(response, model)
+        GatewayProtocol.GEMINI -> rejectGeminiConversion()
     }
 
     private fun messagesToChatResponse(response: JsonObject, model: String): JsonObject {
@@ -530,6 +533,7 @@ object ProtocolConversion {
         GatewayProtocol.CHAT_COMPLETIONS -> chat
         GatewayProtocol.MESSAGES -> chatToMessagesResponse(chat, model)
         GatewayProtocol.RESPONSES -> chatToResponsesResponse(chat, model)
+        GatewayProtocol.GEMINI -> rejectGeminiConversion()
     }
 
     private fun chatToMessagesResponse(chat: JsonObject, model: String): JsonObject {
@@ -1063,6 +1067,7 @@ class ProtocolStreamConverter(
             GatewayProtocol.CHAT_COMPLETIONS -> listOfNotNull(parseChatChunk(json))
             GatewayProtocol.MESSAGES -> parseMessagesChunks(json)
             GatewayProtocol.RESPONSES -> parseResponsesChunks(json)
+            GatewayProtocol.GEMINI -> rejectGeminiConversion()
         }
         val lines = mutableListOf<String>()
         chunks.forEach { chunk -> lines += emitChunk(chunk) }
@@ -1225,6 +1230,7 @@ class ProtocolStreamConverter(
             GatewayProtocol.CHAT_COMPLETIONS -> emitChat(chunk)
             GatewayProtocol.MESSAGES -> emitMessages(chunk)
             GatewayProtocol.RESPONSES -> emitResponses(chunk)
+            GatewayProtocol.GEMINI -> rejectGeminiConversion()
         }
     }
 
@@ -1234,6 +1240,7 @@ class ProtocolStreamConverter(
             GatewayProtocol.CHAT_COMPLETIONS -> emitChat(finalChunk)
             GatewayProtocol.MESSAGES -> emitMessages(finalChunk)
             GatewayProtocol.RESPONSES -> emitResponses(finalChunk)
+            GatewayProtocol.GEMINI -> rejectGeminiConversion()
         }
     }
 
@@ -1243,6 +1250,7 @@ class ProtocolStreamConverter(
             GatewayProtocol.CHAT_COMPLETIONS -> current
             GatewayProtocol.MESSAGES -> ProtocolConversion.messagesUsageToChat(current)
             GatewayProtocol.RESPONSES -> ProtocolConversion.responsesUsageToChat(current)
+            GatewayProtocol.GEMINI -> rejectGeminiConversion()
         }
     }
 
@@ -1452,6 +1460,7 @@ class ProtocolStreamConverter(
         GatewayProtocol.CHAT_COMPLETIONS -> listOf("data: ${buildJsonObject { put("error", buildJsonObject { put("message", error); put("type", "api_error") }) }}", "", "data: [DONE]", "")
         GatewayProtocol.RESPONSES -> listOf("event: response.failed", "data: ${buildJsonObject { put("type", "response.failed"); put("error", buildJsonObject { put("message", error); put("type", "api_error") }) }}", "")
         GatewayProtocol.MESSAGES -> listOf("event: error", "data: ${buildJsonObject { put("type", "error"); put("error", buildJsonObject { put("type", "api_error"); put("message", error) }) }}", "")
+        GatewayProtocol.GEMINI -> rejectGeminiConversion()
     }
 
     private fun chatFinishFromAnthropic(stop: String?): String? = when (stop) {
@@ -1532,3 +1541,6 @@ class ProtocolStreamConverter(
         var outputIndex: Int = -1,
     )
 }
+
+private fun rejectGeminiConversion(): Nothing =
+    throw ProtocolConversionException("protocol", "Gemini 原生协议不支持转换")

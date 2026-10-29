@@ -88,6 +88,9 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getModelTestSettings: () => request('/model-test-settings'),
+  getUpstreamRequestSettings: () => request('/upstream-request-settings'),
+  updateUpstreamRequestSettings: (payload) =>
+    request('/upstream-request-settings', { method: 'PUT', body: JSON.stringify(payload) }),
   updateModelTestSettings: (payload) =>
     request('/model-test-settings', { method: 'PUT', body: JSON.stringify(payload) }),
   getKeyAutoDisableSettings: () => request('/key-auto-disable-settings'),

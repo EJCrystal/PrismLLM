@@ -1,5 +1,8 @@
 package dev.soven.llmgateway
 
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.classic.spi.ThrowableProxyUtil
+import ch.qos.logback.core.AppenderBase
 import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.domain.ChannelRecord
@@ -9,12 +12,15 @@ import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.repo.AliasWithCandidates
 import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
+import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.resilience.KeyAttemptOutcome
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.resilience.FailureKind
@@ -71,6 +77,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
+import org.slf4j.LoggerFactory
 import org.testcontainers.containers.PostgreSQLContainer
 import java.io.IOException
 import java.math.BigDecimal
@@ -78,6 +85,7 @@ import java.nio.file.Path
 import java.sql.DriverManager
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -85,6 +93,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
 
@@ -115,6 +124,7 @@ class GatewayIntegrationTest {
     @BeforeEach
     fun setUp() {
         fake.requests.clear()
+        fake.modelRequests.clear()
         fake.cancellations.set(0)
         fake.failingModels.clear()
         fake.keyStatuses.clear()
@@ -3818,7 +3828,18 @@ class GatewayIntegrationTest {
     fun `direct mode converts responses request to chat-only channel`() = runBlocking {
         app.close()
         app = GatewayApplication(config())
-        createChannel("chat-only", "ok")
+        createChannelWithBaseUrl(
+            "chat-only",
+            "${fake.baseUrl}/ok/v1",
+            listOf(GatewayProtocol.CHAT_COMPLETIONS),
+            requestOverrides = UpstreamRequestOverrides(
+                userAgent = "converted-UA",
+                protocols = mapOf("chat_completions" to UpstreamProtocolOverrides(
+                    headers = mapOf("X-Target-Protocol" to "chat"),
+                    body = Json.parseToJsonElement("""{"temperature":0.2}""").jsonObject,
+                )),
+            ),
+        )
         val key = createClientKey()
 
         testApplication {
@@ -3836,12 +3857,41 @@ class GatewayIntegrationTest {
             assertEquals("Hello!", output["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
             val upstream = fake.requests.single()
             assertEquals("/ok/v1/chat/completions", upstream.path)
+            assertEquals(listOf("converted-UA"), upstream.requestHeaders["user-agent"])
+            assertEquals(listOf("chat"), upstream.requestHeaders["x-target-protocol"])
             val upstreamBody = Json.parseToJsonElement(upstream.body).jsonObject
             assertTrue(upstreamBody["messages"]!!.jsonArray.isNotEmpty())
             assertFalse(upstreamBody.containsKey("input"))
+            assertEquals("0.2", upstreamBody["temperature"]!!.jsonPrimitive.content)
             val log = awaitRequestLog()
             assertEquals(GatewayProtocol.RESPONSES, log.protocol)
             assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.upstreamProtocol)
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun `Gemini channels are not protocol conversion targets`() = runBlocking {
+        createChannelWithBaseUrl(
+            "gemini-only",
+            "${fake.baseUrl}/ok/v1beta",
+            listOf(GatewayProtocol.GEMINI),
+            mappingsOf("gemini-2.5-pro"),
+            authType = "google",
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gemini-2.5-pro","stream":false,"messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("protocol_not_supported"))
+            assertTrue(fake.requests.isEmpty())
         }
     }
 
@@ -4871,7 +4921,11 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("35", result.getString(1))
+                        assertEquals("36", result.getString(1))
+                    }
+                    statement.executeQuery("select request_overrides from channels where id = 'migration-channel'").use { result ->
+                        assertTrue(result.next())
+                        assertEquals("{}", result.getString(1), "历史渠道应默认继承全局请求配置")
                     }
                     statement.executeQuery("select enabled, auth_failure_threshold, failure_threshold, failure_window_minutes from key_auto_disable_settings where id = 1").use { result ->
                         assertTrue(result.next())
@@ -6336,6 +6390,574 @@ class GatewayIntegrationTest {
         }
     }
 
+    @Test
+    @Tag("upstream-request-overrides")
+    fun globalAndChannelOverridesApplyToDirectAndAliasRoutes() = runBlocking {
+        app.upstreamRequestSettingsRepository.save(UpstreamRequestOverrides(
+            userAgent = "global-UA", headers = mapOf("X-Feature" to "global", "X-Remove" to "gone"),
+            body = Json.parseToJsonElement("""{"store":null,"metadata":{"global":true,"remove":"old"}}""").jsonObject,
+            protocols = mapOf("responses" to UpstreamProtocolOverrides(userAgent = "global-responses-UA")),
+        ))
+        val channel = createChannelWithBaseUrl(
+            "override-channel", fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("m1", "public-model")),
+            requestOverrides = UpstreamRequestOverrides(
+                userAgent = "channel-UA", headers = mapOf("x-feature" to "channel", "x-remove" to null),
+                body = Json.parseToJsonElement("""{"metadata":{"channel":true,"remove":null}}""").jsonObject,
+                protocols = mapOf("messages" to UpstreamProtocolOverrides(
+                    userAgent = "channel-messages-UA", headers = mapOf("anthropic-version" to "2023-06-01"),
+                )),
+            ),
+        )
+        createAlias("alias-model", channel to "m1")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            for (model in listOf("public-model", "alias-model")) {
+                for (protocol in listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES)) {
+                    val response = client.post("/v1" + assertNotNull(protocol.endpointPath)) {
+                        header(HttpHeaders.Authorization, "Bearer $key")
+                        header("User-Agent", "caller-UA")
+                        header("X-Caller-Private", "do not forward")
+                        contentType(ContentType.Application.Json)
+                        setBody("""{"model":"$model","messages":[],"input":"hi","max_tokens":8,"store":true,"stream":false}""")
+                    }
+                    assertEquals(HttpStatusCode.OK, response.status)
+                    response.bodyAsText()
+                    val sent = fake.requests.last()
+                    assertEquals(listOf(if (protocol == GatewayProtocol.MESSAGES) "channel-messages-UA" else "channel-UA"), sent.requestHeaders["user-agent"])
+                    assertEquals(listOf("channel"), sent.requestHeaders["x-feature"])
+                    assertNull(sent.requestHeaders["x-remove"])
+                    assertNull(sent.requestHeaders["x-caller-private"])
+                    assertEquals("Bearer upstream-secret", sent.authorization)
+                    val body = Json.parseToJsonElement(sent.body).jsonObject
+                    assertEquals("m1", body["model"]!!.jsonPrimitive.content)
+                    assertFalse(body.containsKey("store"))
+                    assertEquals("""{"global":true,"channel":true}""", body["metadata"].toString())
+                    assertEquals("false", body["stream"]!!.jsonPrimitive.content)
+                }
+            }
+        }
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun channelOverridesDoNotLeakIntoTheNextAttempt() = runBlocking {
+        app.upstreamRequestSettingsRepository.save(UpstreamRequestOverrides(
+            headers = mapOf("X-Shared" to "yes"), body = Json.parseToJsonElement("""{"metadata":{"shared":true}}""").jsonObject,
+        ))
+        val bad = createChannelWithBaseUrl(
+            "a-bad", fake.baseUrl + "/500/v1", modelMappings = mappingsOf("m1"),
+            requestOverrides = UpstreamRequestOverrides(userAgent = "bad-UA", body = Json.parseToJsonElement("""{"metadata":{"bad":true}}""").jsonObject),
+        )
+        val good = createChannelWithBaseUrl(
+            "b-good", fake.baseUrl + "/ok/v1", modelMappings = mappingsOf("m2"),
+            requestOverrides = UpstreamRequestOverrides(userAgent = "good-UA", body = Json.parseToJsonElement("""{"metadata":{"good":true}}""").jsonObject),
+        )
+        createAlias("retry-model", bad to "m1", good to "m2")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"retry-model","messages":[],"stream":true}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(response.bodyAsText().contains("[DONE]"))
+            assertEquals(2, fake.requests.size)
+            val sent = fake.requests.last()
+            assertEquals(listOf("good-UA"), sent.requestHeaders["user-agent"])
+            val body = Json.parseToJsonElement(sent.body).jsonObject
+            assertEquals("m2", body["model"]!!.jsonPrimitive.content)
+            assertEquals("""{"shared":true,"good":true}""", body["metadata"].toString())
+        }
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun globalOverridesApiValidatesPersistsAndAuditsWithoutValues() = runBlocking {
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/admin/api/upstream-request-settings").status)
+            val missingCsrf = client.put("/admin/api/upstream-request-settings") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                contentType(ContentType.Application.Json)
+                setBody("""{"overrides":{"userAgent":"private-UA"}}""")
+            }
+            assertEquals(HttpStatusCode.Forbidden, missingCsrf.status)
+            val saved = client.put("/admin/api/upstream-request-settings") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"overrides":{"userAgent":"private-UA","headers":{"X-Feature":"yes"}}}""")
+            }
+            assertEquals(HttpStatusCode.OK, saved.status)
+            val settings = Json.parseToJsonElement(saved.bodyAsText()).jsonObject
+            assertEquals(4, settings["profiles"]!!.jsonArray.size)
+            assertEquals("private-UA", app.upstreamRequestSettingsRepository.load().overrides.userAgent)
+            val invalidRules = listOf(
+                """{"headers":{"Authorization":"plaintext"}}""",
+                """{"userAgent":"bad\r\nX-Injected: true"}""",
+                """{"body":{"stream":true}}""",
+                """{"protocols":{"invalid":{"userAgent":"x"}}}""",
+            )
+            for (rules in invalidRules) {
+                val invalid = client.put("/admin/api/upstream-request-settings") {
+                    header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                    header("X-CSRF-Token", session.session.csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"overrides":$rules}""")
+                }
+                assertEquals(HttpStatusCode.BadRequest, invalid.status)
+                assertTrue(invalid.bodyAsText().contains("invalid_request_overrides"))
+            }
+            assertEquals("private-UA", app.upstreamRequestSettingsRepository.load().overrides.userAgent)
+            val audit = client.get("/admin/api/audit-logs") { header(HttpHeaders.Cookie, "gw_session=" + session.token) }.bodyAsText()
+            assertTrue(audit.contains("upstream_request_settings.update"))
+            assertFalse(audit.contains("private-UA"))
+            assertFalse(audit.contains("plaintext"))
+        }
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun legacyChannelUpdatesKeepOverridesAndEmptyObjectResetsThem() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            "legacy", fake.baseUrl + "/ok/v1", requestOverrides = UpstreamRequestOverrides(userAgent = "kept-UA"),
+        )
+        val session = app.sessions.create("admin")
+        val baseUrl = channel.baseUrl
+        testApplication {
+            application { app.install(this) }
+            val legacyUpdate = client.put("/admin/api/channels/" + channel.id) {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"legacy","baseUrl":"$baseUrl","priority":2}""")
+            }
+            assertEquals(HttpStatusCode.OK, legacyUpdate.status)
+            assertEquals("kept-UA", app.channelRepository.find(channel.id)!!.requestOverrides.userAgent)
+            val reset = client.put("/admin/api/channels/" + channel.id) {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"legacy","baseUrl":"$baseUrl","requestOverrides":{}}""")
+            }
+            assertEquals(HttpStatusCode.OK, reset.status)
+            assertEquals(UpstreamRequestOverrides(), app.channelRepository.find(channel.id)!!.requestOverrides)
+        }
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun discoveryTestsAndProbesUseOverridesWithBoundedOutput() = runBlocking {
+        app.upstreamRequestSettingsRepository.save(UpstreamRequestOverrides(
+            userAgent = "global-UA", body = Json.parseToJsonElement("""{"temperature":0.4,"max_tokens":10000}""").jsonObject,
+            protocols = mapOf("chat_completions" to UpstreamProtocolOverrides(
+                body = Json.parseToJsonElement("""{"max_completion_tokens":10000}""").jsonObject,
+            )),
+        ))
+        val channel = createChannelWithBaseUrl(
+            "admin-overrides", fake.baseUrl + "/ok/v1", requestOverrides = UpstreamRequestOverrides(userAgent = "channel-UA"),
+        )
+        val baseUrl = channel.baseUrl
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val models = client.get("/admin/api/channels/" + channel.id + "/models") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+            }
+            assertEquals(HttpStatusCode.OK, models.status)
+            assertEquals(listOf("channel-UA"), fake.modelRequests.last().requestHeaders["user-agent"])
+            val discover = client.post("/admin/api/channels/model-discovery") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"baseUrl":"$baseUrl","channelId":"${channel.id}","requestOverrides":{"userAgent":"draft-UA"}}""")
+            }
+            assertEquals(HttpStatusCode.OK, discover.status)
+            assertEquals(listOf("draft-UA"), fake.modelRequests.last().requestHeaders["user-agent"])
+            val test = client.post("/admin/api/channels/" + channel.id + "/model-test") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"m1","protocol":"chat_completions"}""")
+            }
+            assertEquals(HttpStatusCode.OK, test.status)
+            assertEquals(listOf("channel-UA"), fake.requests.last().requestHeaders["user-agent"])
+            val testBody = Json.parseToJsonElement(fake.requests.last().body).jsonObject
+            assertEquals("128", testBody["max_completion_tokens"]!!.jsonPrimitive.content)
+            assertFalse(testBody.containsKey("max_tokens"), "使用 max_completion_tokens 时不应再发送旧参数")
+            assertEquals("0.4", testBody["temperature"]!!.jsonPrimitive.content)
+            fake.requests.clear()
+            val probe = client.post("/admin/api/channels/" + channel.id + "/probe-protocols") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"m1"}""")
+            }
+            assertEquals(HttpStatusCode.OK, probe.status)
+            assertEquals(4, fake.requests.size)
+            fake.requests.forEach { assertEquals(listOf("channel-UA"), it.requestHeaders["user-agent"]) }
+            val chatBody = Json.parseToJsonElement(fake.requests.first().body).jsonObject
+            assertEquals("1", chatBody["max_completion_tokens"]!!.jsonPrimitive.content)
+            assertFalse(chatBody.containsKey("max_tokens"))
+            val messagesBody = Json.parseToJsonElement(fake.requests.first { it.uri?.endsWith("/messages") == true }.body).jsonObject
+            assertEquals("1", messagesBody["max_tokens"]!!.jsonPrimitive.content)
+            assertTrue(app.requestLogRepository.list(10).isEmpty())
+        }
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun globalRequestSettingsCacheLoadsAndPublishesPersistedSnapshots() = runBlocking {
+        val repository = app.upstreamRequestSettingsRepository
+        val snapshots = coroutineScope { (1..10).map { async(Dispatchers.IO) { repository.load() } }.awaitAll() }
+        assertEquals(UpstreamRequestOverrides(), snapshots.first().overrides)
+        snapshots.forEach { assertSame(snapshots.first(), it) }
+
+        val headers = mutableMapOf<String, String?>("X-Test" to "saved")
+        val saved = repository.save(UpstreamRequestOverrides(userAgent = "cached-UA", headers = headers))
+        headers["X-Test"] = "unsaved"
+        assertSame(saved, repository.load())
+        assertEquals("saved", repository.load().overrides.headers["X-Test"])
+        assertEquals(saved, UpstreamRequestSettingsRepository(app.databaseFactory.database).load())
+
+        val cleared = repository.save(UpstreamRequestOverrides())
+        assertSame(cleared, repository.load())
+        assertEquals(UpstreamRequestOverrides(), cleared.overrides)
+        assertEquals(cleared, UpstreamRequestSettingsRepository(app.databaseFactory.database).load())
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun failedGlobalSettingsSavePreservesTheCachedSnapshot() = runBlocking {
+        val repository = app.upstreamRequestSettingsRepository
+        val saved = repository.save(UpstreamRequestOverrides(userAgent = "working-UA"))
+        app.databaseFactory.close()
+        assertSame(saved, repository.load(), "缓存命中不应访问数据库")
+        assertFailsWith<java.sql.SQLException> { repository.save(UpstreamRequestOverrides(userAgent = "failed-UA")) }
+        assertSame(saved, repository.load(), "失败的写入不应替换快照")
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun modelDiscoveryTreatsEmptyProtocolsAsUnspecifiedAndValidatesNonemptyLists() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            "discovery-protocols", fake.baseUrl + "/ok/v1", listOf(GatewayProtocol.CHAT_COMPLETIONS),
+            requestOverrides = UpstreamRequestOverrides(protocols = mapOf(
+                "chat_completions" to UpstreamProtocolOverrides(userAgent = "saved-chat-UA"),
+                "responses" to UpstreamProtocolOverrides(userAgent = "draft-responses-UA"),
+            )),
+        )
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            for ((protocols, expectedUA) in listOf("[]" to "saved-chat-UA", "[\"responses\"]" to "draft-responses-UA")) {
+                val response = client.post("/admin/api/channels/model-discovery") {
+                    header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                    header("X-CSRF-Token", session.session.csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"baseUrl":"${channel.baseUrl}","channelId":"${channel.id}","protocols":$protocols}""")
+                }
+                assertEquals(HttpStatusCode.OK, response.status)
+                assertEquals(listOf(expectedUA), fake.modelRequests.last().requestHeaders["user-agent"])
+            }
+            val unsaved = client.post("/admin/api/channels/model-discovery") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"baseUrl":"${channel.baseUrl}","credential":"draft-secret","protocols":[],"requestOverrides":{"userAgent":"new-UA"}}""")
+            }
+            assertEquals(HttpStatusCode.OK, unsaved.status)
+            assertEquals(listOf("new-UA"), fake.modelRequests.last().requestHeaders["user-agent"])
+            val invalid = client.post("/admin/api/channels/model-discovery") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"baseUrl":"${channel.baseUrl}","channelId":"${channel.id}","protocols":["invalid"]}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, invalid.status)
+            assertTrue(invalid.bodyAsText().contains("invalid_channel"))
+            assertEquals(3, fake.modelRequests.size)
+        }
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun explicitEmptyUserAgentDoesNotFallBackToJavaIdentity() = runBlocking {
+        createChannelWithBaseUrl("empty-UA", fake.baseUrl + "/ok/v1", requestOverrides = UpstreamRequestOverrides(userAgent = ""))
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"m1","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            response.bodyAsText()
+            assertEquals(listOf(""), fake.requests.single().requestHeaders["user-agent"])
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun geminiQueryCredentialsAreExcludedFromLogsAndUpstreamUrls() = runBlocking {
+        createChannelWithBaseUrl(
+            "gemini-query-logging", fake.baseUrl + "/ok/v1beta", listOf(GatewayProtocol.GEMINI),
+            modelMappings = mappingsOf("gemini-2.5-pro"), authType = "google",
+        )
+        val key = createClientKey()
+        val rejectedKey = "query-client-secret-for-log-test"
+        val queryTag = "private-query-tag"
+        val events = ConcurrentLinkedQueue<ILoggingEvent>()
+        val rootLogger = LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME) as ch.qos.logback.classic.Logger
+        val appender = object : AppenderBase<ILoggingEvent>() {
+            override fun append(event: ILoggingEvent) {
+                event.prepareForDeferredProcessing()
+                events.add(event)
+            }
+        }.apply { context = rootLogger.loggerContext; start() }
+        rootLogger.addAppender(appender)
+        try {
+            testApplication {
+                application { app.install(this) }
+                for (action in listOf("generateContent", "streamGenerateContent")) {
+                    val response = client.post("/v1beta/models/gemini-2.5-pro:$action?key=$key&tracking=$queryTag") {
+                        contentType(ContentType.Application.Json)
+                        setBody("""{"contents":[]}""")
+                    }
+                    assertEquals(HttpStatusCode.OK, response.status)
+                    assertFalse(response.bodyAsText().contains(key))
+                }
+                val rejected = client.get("/v1beta/models?key=$rejectedKey&tracking=$queryTag")
+                assertEquals(HttpStatusCode.Unauthorized, rejected.status)
+                assertFalse(rejected.bodyAsText().contains(rejectedKey))
+                val malformed = client.post("/v1beta/models/gemini-2.5-pro:generateContent?key=$key&tracking=$queryTag") {
+                    contentType(ContentType.Application.Json)
+                    setBody("{")
+                }
+                assertEquals(HttpStatusCode.BadRequest, malformed.status)
+                assertFalse(malformed.bodyAsText().contains(key))
+                awaitRequestLogCount(2)
+                val requestLogs = app.requestLogRepository.list(10).toString()
+                assertFalse(requestLogs.contains(key))
+                assertFalse(requestLogs.contains(queryTag))
+            }
+            val messages = events.map { it.formattedMessage }
+            assertEquals(4, messages.count { it.contains(" - /v1beta/models") })
+            val captured = events.joinToString("\n") { event ->
+                event.formattedMessage + event.mdcPropertyMap.values.joinToString() +
+                    (event.throwableProxy?.let(ThrowableProxyUtil::asString) ?: "")
+            }
+            for (secret in listOf(key, rejectedKey, queryTag, "upstream-secret")) {
+                assertFalse(captured.contains(secret), "日志不应包含凭据或查询参数")
+            }
+            assertEquals(2, fake.requests.size)
+            fake.requests.forEach {
+                val uri = assertNotNull(it.uri)
+                assertFalse(uri.contains(key))
+                assertFalse(uri.contains("key="))
+                assertFalse(uri.contains(queryTag))
+                assertEquals(listOf("upstream-secret"), it.requestHeaders["x-goog-api-key"])
+            }
+        } finally {
+            rootLogger.detachAppender(appender)
+            appender.stop()
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun geminiNativeJsonUsesMappedUrlAndGoogleCredential() = runBlocking {
+        createChannelWithBaseUrl(
+            "gemini-native", fake.baseUrl + "/ok/v1beta", listOf(GatewayProtocol.GEMINI),
+            modelMappings = listOf(ChannelModelRecord("gemini-2.5-pro", "google/fast-gemini")), authType = "google",
+            requestOverrides = UpstreamRequestOverrides(protocols = mapOf("gemini" to UpstreamProtocolOverrides(
+                body = Json.parseToJsonElement("""{"generationConfig":{"temperature":0.3}}""").jsonObject,
+            ))),
+        )
+        createChannel("chat-only", "ok")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val list = client.get("/v1beta/models") { header("x-goog-api-key", key) }
+            val names = Json.parseToJsonElement(list.bodyAsText()).jsonObject["models"]!!.jsonArray
+            assertEquals(1, names.size)
+            assertEquals("models/google/fast-gemini", names.single().jsonObject["name"]!!.jsonPrimitive.content)
+            val response = client.post("/v1beta/models/google/fast-gemini:generateContent?key=$key") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(response.bodyAsText().contains("Hello!"))
+            val sent = fake.requests.single()
+            assertEquals("/ok/v1beta/models/gemini-2.5-pro:generateContent", sent.uri)
+            assertEquals(listOf("upstream-secret"), sent.requestHeaders["x-goog-api-key"])
+            assertNull(sent.authorization)
+            assertTrue(sent.requestHeaders["user-agent"]!!.single().startsWith("google-genai-sdk/"))
+            val body = Json.parseToJsonElement(sent.body).jsonObject
+            assertFalse(body.containsKey("model"))
+            assertFalse(body.containsKey("stream"))
+            assertEquals("0.3", body["generationConfig"]!!.jsonObject["temperature"]!!.jsonPrimitive.content)
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.GEMINI, log.protocol)
+            assertEquals("google/fast-gemini", log.alias)
+            assertEquals("gemini-2.5-pro", log.upstreamModel)
+            assertEquals(10L, log.inputTokens)
+            assertEquals(5L, log.outputTokens)
+            assertEquals(2L, log.reasoningTokens)
+            assertEquals(15L, log.totalTokens)
+            assertEquals("high", log.reasoningEffort)
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun geminiSseKeepsNativeFramesAndUsageAfterFinishReason() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            "gemini-sse", fake.baseUrl + "/ok/v1beta", listOf(GatewayProtocol.GEMINI),
+            modelMappings = mappingsOf("gemini-2.5-pro"),
+            requestOverrides = UpstreamRequestOverrides(protocols = mapOf("gemini" to UpstreamProtocolOverrides(headerProfile = "antigravity"))),
+        )
+        createAlias("fast-gemini", channel to "gemini-2.5-pro")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/models/fast-gemini:streamGenerateContent") {
+                header("x-goog-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val text = response.bodyAsText()
+            assertTrue(text.contains("finishReason"))
+            assertTrue(text.contains("totalTokenCount"))
+            assertFalse(text.contains("[DONE]"))
+            val sent = fake.requests.single()
+            assertTrue(sent.uri!!.endsWith(":streamGenerateContent?alt=sse"))
+            assertTrue(sent.requestHeaders["user-agent"]!!.single().startsWith("antigravity/"))
+            assertNull(sent.requestHeaders["originator"])
+            assertEquals("Bearer upstream-secret", sent.authorization)
+            val log = awaitRequestLog()
+            assertEquals(15L, log.totalTokens)
+            assertEquals(5L, log.outputTokens)
+            assertNotNull(log.firstTokenMs)
+            assertNull(log.errorCode)
+            assertTrue(log.stream == true)
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun geminiServerErrorBeforeContentCanFailOver() = runBlocking {
+        val bad = createChannelWithBaseUrl("a-error", fake.baseUrl + "/sse-error/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
+        val good = createChannelWithBaseUrl("b-good", fake.baseUrl + "/ok/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
+        createAlias("fast-gemini", bad to "gemini-2.5-pro", good to "gemini-2.5-pro")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1beta/models/fast-gemini:streamGenerateContent") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val text = response.bodyAsText()
+            assertTrue(text.contains("Hello!"))
+            assertFalse(text.contains("upstream down"))
+            assertEquals(2, fake.requests.size)
+            assertEquals(2, awaitRequestLog().upstreamAttempts)
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun geminiErrorFrameAfterContentIsLoggedAsUpstreamFailureWithoutFailover() = runBlocking {
+        val bad = createChannelWithBaseUrl(
+            "a-error", fake.baseUrl + "/sse-error-after-content/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"),
+        )
+        val backup = createChannelWithBaseUrl("b-backup", fake.baseUrl + "/ok/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
+        createAlias("fast-gemini", bad to "gemini-2.5-pro", backup to "gemini-2.5-pro")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1beta/models/fast-gemini:streamGenerateContent") {
+                header("x-goog-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = response.bodyAsText()
+            assertTrue(body.contains("Hello!"))
+            assertTrue(body.contains("INTERNAL"))
+            assertEquals(1, fake.requests.size)
+            val log = awaitRequestLog()
+            assertEquals("gemini_failed", log.errorCode)
+            assertEquals("上游响应失败", log.errorMessage)
+            assertEquals(FailureStage.STREAMING, log.failureStage)
+            assertEquals(1, log.upstreamAttempts)
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun geminiUnexpectedEofAfterContentIsLoggedWithoutFailover() = runBlocking {
+        val bad = createChannelWithBaseUrl("a-eof", fake.baseUrl + "/no-terminal/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
+        val backup = createChannelWithBaseUrl("b-backup", fake.baseUrl + "/ok/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
+        createAlias("fast-gemini", bad to "gemini-2.5-pro", backup to "gemini-2.5-pro")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1beta/models/fast-gemini:streamGenerateContent") {
+                header("x-goog-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[]}""")
+            }
+            assertTrue(response.bodyAsText().contains("Hello!"))
+            assertEquals(1, fake.requests.size)
+            val log = awaitRequestLog()
+            assertEquals("stream_interrupted", log.errorCode)
+            assertNotNull(log.firstTokenMs)
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun geminiNativeErrorsAndProtocolFilteringRemainNative() = runBlocking {
+        createChannelWithBaseUrl("native-error", fake.baseUrl + "/429/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
+        createChannel("chat-channel", "ok")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val unauth = client.post("/v1beta/models/gemini-2.5-pro:generateContent") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[]}""")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, unauth.status)
+            assertTrue(unauth.bodyAsText().contains("UNAUTHENTICATED"))
+            val incompatible = client.post("/v1beta/models/m1:generateContent") {
+                header("x-goog-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[]}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, incompatible.status)
+            assertTrue(incompatible.bodyAsText().contains("INVALID_ARGUMENT"))
+            val rateLimited = client.post("/v1beta/models/gemini-2.5-pro:generateContent") {
+                header("x-goog-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[]}""")
+            }
+            assertEquals(HttpStatusCode.TooManyRequests, rateLimited.status)
+            assertEquals("""{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"rate limited"}}""", rateLimited.bodyAsText())
+            assertEquals(1, fake.requests.size)
+        }
+    }
+
     private suspend fun createAutoDisablePool(withBackup: Boolean = true): ChannelRecord = app.channelRepository.create(
         name = "auto-disable-pool",
         baseUrl = "${fake.baseUrl}/key-health/v1",
@@ -6368,6 +6990,7 @@ class GatewayIntegrationTest {
         modelMappings: List<ChannelModelRecord> = mappingsOf("gpt-4o-mini", "deepseek-chat", "m1", "m2"),
         priority: Int = 0,
         authType: String = "bearer",
+        requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     ): ChannelRecord {
         val encrypted = app.credentialCipher.encrypt("upstream-secret")
         return app.channelRepository.create(
@@ -6385,6 +7008,7 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = modelMappings,
             priority = priority,
+            requestOverrides = requestOverrides,
         )
     }
 
@@ -6504,7 +7128,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table admin_audit_logs, retention_settings, model_test_settings, key_auto_disable_settings, request_logs, alias_candidates, model_aliases, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, key_auto_disable_settings, request_logs, alias_candidates, model_aliases, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }

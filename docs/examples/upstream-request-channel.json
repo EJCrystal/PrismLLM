@@ -1,0 +1,46 @@
+{
+  "name": "custom-responses",
+  "baseUrl": "https://upstream.example.com/v1",
+  "authType": "bearer",
+  "protocols": [
+    "responses"
+  ],
+  "modelMappings": [
+    {
+      "upstreamModel": "upstream-model",
+      "canonicalModelId": "custom-reasoner"
+    }
+  ],
+  "keys": [
+    {
+      "name": "primary",
+      "credential": "replace-with-upstream-key",
+      "models": [
+        "upstream-model"
+      ]
+    }
+  ],
+  "requestOverrides": {
+    "inheritGlobal": true,
+    "userAgent": "my-channel-client/1.0",
+    "headers": {
+      "X-Gateway-Team": "channel-a",
+      "X-Remove": null
+    },
+    "protocols": {
+      "responses": {
+        "userAgent": "codex_cli_rs/0.150.0 (Linux; x86_64)",
+        "headers": {
+          "x-client": "channel-responses"
+        },
+        "body": {
+          "store": null,
+          "reasoning": {
+            "effort": "medium",
+            "summary": null
+          }
+        }
+      }
+    }
+  }
+}

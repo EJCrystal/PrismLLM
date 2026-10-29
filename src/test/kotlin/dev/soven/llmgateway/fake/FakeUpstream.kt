@@ -8,6 +8,7 @@ import io.ktor.server.application.ApplicationCall
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.request.receiveText
+import io.ktor.server.request.uri
 import io.ktor.server.request.path
 import io.ktor.server.response.header
 import io.ktor.server.response.respondBytesWriter
@@ -45,6 +46,7 @@ class FakeUpstream {
 
     val baseUrl: String get() = "http://127.0.0.1:$port"
     val requests = ConcurrentLinkedQueue<FakeRequest>()
+    val modelRequests = ConcurrentLinkedQueue<FakeRequest>()
     val cancellations = AtomicInteger()
     val failingModels = ConcurrentHashMap.newKeySet<String>()
     val keyStatuses = ConcurrentHashMap<String, Int>()
@@ -69,10 +71,20 @@ class FakeUpstream {
     private fun Application.fakeModule() {
         routing {
             get("/{scenario}/v1/models") {
+                recordModelRequest(call, call.parameters["scenario"] ?: "ok")
                 call.respondText(MODELS_BODY, ContentType.Application.Json)
             }
             get("/v1/models") {
+                recordModelRequest(call, "ok")
                 call.respondText(MODELS_BODY, ContentType.Application.Json)
+            }
+            get("/{scenario}/v1beta/models") {
+                recordModelRequest(call, call.parameters["scenario"] ?: "ok")
+                call.respondText(GEMINI_MODELS_BODY, ContentType.Application.Json)
+            }
+            get("/v1beta/models") {
+                recordModelRequest(call, "ok")
+                call.respondText(GEMINI_MODELS_BODY, ContentType.Application.Json)
             }
             post("/{scenario}/v1/chat/completions") {
                 handle(call, call.parameters["scenario"] ?: "ok")
@@ -92,12 +104,27 @@ class FakeUpstream {
             post("/v1/messages") {
                 handleMessages(call, "ok")
             }
+            listOf("/v1", "/v1beta", "/{scenario}/v1", "/{scenario}/v1beta").forEach { prefix ->
+                post("$prefix/models/{modelAction...}") {
+                    handleGemini(call, call.parameters["scenario"] ?: "ok")
+                }
+            }
         }
+    }
+
+    private fun recordModelRequest(call: ApplicationCall, scenario: String) {
+        modelRequests.add(FakeRequest(
+            scenario, "", call.request.headers[HttpHeaders.Authorization],
+            requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
+            uri = call.request.uri,
+            path = call.request.path(),
+        ))
     }
 
     private suspend fun respondKeyHealth(call: ApplicationCall, scenario: String): Boolean {
         if (scenario != "key-health") return false
         val credential = call.request.headers[HttpHeaders.Authorization] ?: call.request.headers["x-api-key"]
+            ?: call.request.headers["x-goog-api-key"]
         val status = credential?.let(keyStatuses::get) ?: 200
         if (status < 400) {
             chatHold.get()?.await()
@@ -118,6 +145,8 @@ class FakeUpstream {
                 body = body,
                 authorization = call.request.headers[HttpHeaders.Authorization],
                 traceparent = call.request.headers["traceparent"],
+                requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
+                uri = call.request.uri,
                 path = call.request.path(),
             ),
         )
@@ -213,6 +242,8 @@ class FakeUpstream {
                 body = body,
                 authorization = call.request.headers[HttpHeaders.Authorization],
                 traceparent = call.request.headers["traceparent"],
+                requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
+                uri = call.request.uri,
                 path = call.request.path(),
             ),
         )
@@ -311,6 +342,8 @@ class FakeUpstream {
                 xApiKey = call.request.headers["x-api-key"],
                 anthropicVersion = call.request.headers["anthropic-version"],
                 anthropicBeta = call.request.headers["anthropic-beta"],
+                requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
+                uri = call.request.uri,
             ),
         )
         val stream = runCatching {
@@ -370,6 +403,67 @@ class FakeUpstream {
                 writeSseEvent("content_block_stop", ANTHROPIC_CONTENT_BLOCK_STOP)
                 writeSseEvent("message_delta", ANTHROPIC_MESSAGE_DELTA)
                 writeSseEvent("message_stop", ANTHROPIC_MESSAGE_STOP)
+                completed = true
+            }
+        } finally {
+            if (!completed) cancellations.incrementAndGet()
+        }
+    }
+
+    private suspend fun handleGemini(call: ApplicationCall, scenario: String) {
+        val body = call.receiveText()
+        requests.add(FakeRequest(
+            scenario, body, call.request.headers[HttpHeaders.Authorization],
+            traceparent = call.request.headers["traceparent"],
+            requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
+            uri = call.request.uri,
+            path = call.request.path(),
+        ))
+        if (scenario == "chat-only") {
+            call.respondText(GEMINI_ERROR_404, ContentType.Application.Json, HttpStatusCode.NotFound)
+            return
+        }
+        if (scenario == "429" || scenario == "500") {
+            call.respondText(
+                if (scenario == "429") GEMINI_ERROR_429 else GEMINI_ERROR_500, ContentType.Application.Json,
+                if (scenario == "429") HttpStatusCode.TooManyRequests else HttpStatusCode.InternalServerError,
+            )
+            return
+        }
+        if (respondKeyHealth(call, scenario)) return
+        if (!call.request.uri.contains(":streamGenerateContent")) {
+            call.respondText(GEMINI_NON_STREAM_BODY, ContentType.Application.Json)
+            return
+        }
+        if (scenario == "sse-error") {
+            call.respondBytesWriter(ContentType.Text.EventStream) { writeEvent(GEMINI_ERROR_500) }
+            return
+        }
+        var completed = false
+        try {
+            call.respondBytesWriter(ContentType.Text.EventStream) {
+                writeEvent("{\"usageMetadata\":{\"promptTokenCount\":10}}")
+                if (scenario == "gemini-meta-stall") {
+                    delay(2_000)
+                    completed = true
+                    return@respondBytesWriter
+                }
+                if (scenario != "empty-message") {
+                    writeEvent("{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello!\"}],\"role\":\"model\"}}]}")
+                }
+                if (scenario == "disconnect") throw IOException("fake Gemini disconnect")
+                if (scenario == "sse-error-after-content") {
+                    writeEvent(GEMINI_ERROR_500)
+                    completed = true
+                    return@respondBytesWriter
+                }
+                if (scenario == "no-terminal") {
+                    completed = true
+                    return@respondBytesWriter
+                }
+                writeEvent("{\"candidates\":[{\"finishReason\":\"STOP\",\"index\":0}]}")
+                delay(10)
+                if (scenario != "no-usage") writeEvent(GEMINI_USAGE_CHUNK)
                 completed = true
             }
         } finally {
@@ -448,6 +542,18 @@ class FakeUpstream {
             """{"type":"error","error":{"type":"api_error","message":"upstream down"}}"""
         private const val ANTHROPIC_STREAM_ERROR =
             """{"type":"error","error":{"type":"overloaded_error","message":"upstream overloaded"}}"""
+        private const val GEMINI_MODELS_BODY =
+            """{"models":[{"name":"models/gemini-2.5-pro","supportedGenerationMethods":["generateContent"]}]}"""
+        private const val GEMINI_NON_STREAM_BODY =
+            """{"candidates":[{"content":{"parts":[{"text":"Hello!"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"thoughtsTokenCount":2,"cachedContentTokenCount":2,"totalTokenCount":15}}"""
+        private const val GEMINI_USAGE_CHUNK =
+            """{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"thoughtsTokenCount":2,"cachedContentTokenCount":2,"totalTokenCount":15}}"""
+        private const val GEMINI_ERROR_404 =
+            """{"error":{"code":404,"status":"NOT_FOUND","message":"not found"}}"""
+        private const val GEMINI_ERROR_429 =
+            """{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"rate limited"}}"""
+        private const val GEMINI_ERROR_500 =
+            """{"error":{"code":500,"status":"INTERNAL","message":"upstream down"}}"""
     }
 }
 
@@ -465,5 +571,7 @@ data class FakeRequest(
     val xApiKey: String? = null,
     val anthropicVersion: String? = null,
     val anthropicBeta: String? = null,
+    val requestHeaders: Map<String, List<String>> = emptyMap(),
+    val uri: String? = null,
     val path: String? = null,
 )

@@ -11,6 +11,8 @@ import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import kotlinx.serialization.json.Json
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.security.EncryptedCredential
@@ -94,6 +96,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
         enabled: Boolean,
         modelMappings: List<ChannelModelRecord> = emptyList(),
         priority: Int = 1,
+        requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     ): ChannelRecord = suspendTransaction(database) {
         require(keys.isNotEmpty()) { "channel requires at least one key" }
         val storedProtocols = protocols.distinct()
@@ -108,6 +111,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
             it[Channels.protocols] = storedProtocols.joinToString(",") { protocol -> protocol.value }
             it[Channels.enabled] = enabled
             it[Channels.priority] = priority
+            it[Channels.requestOverrides] = Json.encodeToString(requestOverrides)
             it[createdAt] = now
             it[updatedAt] = now
         }
@@ -135,6 +139,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
         enabled: Boolean,
         modelMappings: List<ChannelModelRecord>? = null,
         priority: Int? = null,
+        requestOverrides: UpstreamRequestOverrides? = null,
     ): ChannelRecord? = suspendTransaction(database) {
         val now = System.currentTimeMillis()
         Channels.selectAll()
@@ -152,6 +157,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
             }
             it[Channels.enabled] = enabled
             if (priority != null) it[Channels.priority] = priority
+            if (requestOverrides != null) it[Channels.requestOverrides] = Json.encodeToString(requestOverrides)
             it[updatedAt] = now
         }
         if (updated == 0) {
@@ -340,6 +346,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
         priority = row[Channels.priority],
         createdAt = row[Channels.createdAt],
         updatedAt = row[Channels.updatedAt],
+        requestOverrides = Json.decodeFromString<UpstreamRequestOverrides>(row[Channels.requestOverrides]),
     )
 }
 

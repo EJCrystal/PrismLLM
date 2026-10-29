@@ -1,11 +1,12 @@
 # llm-gateway
 
-面向内部团队的 LLM 网关，支持 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 的原生透传和跨协议转换。网关按渠道授权与对外模型 ID 路由，同协议优先，必要时按渠道协议顺序转换，并记录用量与请求元数据。
+面向内部团队的 LLM 网关，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 Gemini 的原生透传，以及前三种协议间的跨协议转换。网关按渠道授权与对外模型 ID 路由，同协议优先，必要时按渠道协议顺序转换，并支持全局/渠道级 UA、请求头和请求体覆盖。
 
 ## 能力边界
 
-- 协议入口 `/v1/chat/completions`、`/v1/responses` 与 `/v1/messages`，支持流式和非流式请求，并可在三种协议间互相转换。
-- 渠道按有序的 `chat_completions`、`responses`、`messages` 声明支持协议；同协议候选优先，原生候选不可用后按该顺序选择转换目标。
+- 协议入口 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 与 Gemini `/v1beta/models/{model}:generateContent` / `:streamGenerateContent`，支持流式和非流式请求；前三种协议可互相转换。
+- 渠道按有序的 `chat_completions`、`responses`、`messages`、`gemini` 声明支持协议；同协议候选优先，原生候选不可用后按该顺序选择前三种协议中的转换目标。
+- 全局和渠道均可覆盖上游 UA、请求头及 JSON 请求体，按实际出站协议应用 Claude、Codex、Google SDK 或 Antigravity 预设。
 - 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。渠道启用即参与直连暴露。
 - 渠道支持密钥池：每个密钥独立保存凭据、启用状态、优先级和可用模型；同一渠道内按密钥优先级分档，同档密钥轮询。
 - 上游密钥支持可配置的自动禁用：规则按状态码、错误文本、连续/窗口计数匹配，动作区分临时停用与永久停用；命中规则与停用状态写入操作审计。
@@ -19,7 +20,7 @@
   - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
 - PostgreSQL + Flyway；单实例部署。
 
-明确不做：Gemini 原生入口、多租户 RBAC、语义缓存、MCP、多副本。协议转换第一版不支持图片、文件、音频、Provider 内置工具和 Responses 有状态续接。
+明确不做：多租户 RBAC、语义缓存、MCP、多副本。协议转换第一版不支持 Gemini、图片、文件、音频、Provider 内置工具和 Responses 有状态续接。
 
 ## 架构
 
@@ -29,16 +30,22 @@ client --client key--> gateway --configured auth--> protocol-compatible upstream
                                 +-- PostgreSQL: channels, channel models, client keys, model prices, request logs, admin audit logs
 ```
 
-数据面：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/models`。
+数据面：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/models`、`/v1beta/models` 及 Gemini 动态生成端点。
 管理面：`/admin/api/*`，由会话 Cookie + CSRF Token 保护。
 运维面：`/health/live`、`/health/ready`、`/metrics`。
 
-渠道的 `baseUrl` 必须包含上游要求的版本路径，例如 `https://api.openai.com/v1` 或 `https://api.anthropic.com/v1`。网关按请求协议追加 `/chat/completions`、`/responses` 或 `/messages`，不会自动补 `/v1`。Anthropic Messages 请求可使用 `Authorization: Bearer <gateway-key>` 或 `x-api-key: <gateway-key>`；渠道上游鉴权可选择 Bearer 或 Anthropic `x-api-key`，`anthropic-version` 缺省为 `2023-06-01`。
+渠道的 `baseUrl` 必须包含上游要求的版本路径，例如 `https://api.openai.com/v1`、`https://api.anthropic.com/v1` 或 `https://generativelanguage.googleapis.com/v1beta`。网关不会自动补版本；固定协议端点由配置追加，Gemini 使用 `{baseUrl}/models/{model}:generateContent` 等动态路径。Anthropic Messages 请求可使用 `Authorization: Bearer <gateway-key>` 或 `x-api-key: <gateway-key>`；Gemini 请求可使用 Bearer、`x-goog-api-key` 或 `?key=`。渠道上游鉴权可选择 Bearer、Anthropic `x-api-key` 或 Google `x-goog-api-key`，`anthropic-version` 缺省为 `2023-06-01`。
 
 启用渠道的对外模型 ID 会出现在 `/v1/models` 并可直接路由。满足条件后：
 - **未配置对外模型 ID（留空）**：对外使用上游模型名；
 - **配置了对外模型 ID**：对外只显示该 ID，调用时网关会将它重写为实际上游模型名。
 单独配置的模型别名不依赖渠道直连暴露，但别名候选要求其渠道处于启用状态。
+
+### Gemini 与上游请求覆盖
+
+Gemini 模型映射在 URL 中完成，不向请求体插入 OpenAI 的 `model` 或 `stream`。流式响应保留原生 `data:` 帧并读取 `finishReason` 之后可能出现的用量帧，不添加 `[DONE]`。模型发现会分页读取 Google `nextPageToken`，整个发现共享 15 秒超时和 2 MB 响应上限。
+
+管理面「渠道 → 上游请求配置」设置全局默认值；渠道编辑页可覆盖并选择是否继承全局。预设按实际出站协议选择：Messages → Claude Code，Chat/Responses → Codex，Gemini → Google Gen AI SDK，Gemini 可显式改选 Antigravity。覆盖顺序为预设 → 全局通用 → 全局协议 → 渠道通用 → 渠道协议；同层 `headers.User-Agent` 高于 `userAgent`。请求体使用 RFC 7396 JSON Merge Patch。完整字段、优先级与示例见 [上游请求配置指南](docs/upstream-request-overrides.md)。
 
 ## 快速开始
 
@@ -133,7 +140,7 @@ curl http://localhost:8080/v1/messages \
   -d '{"model":"claude-fast","max_tokens":128,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-模型列表：`GET /v1/models` 返回当前启用的别名与启用渠道的可直连模型 ID。请求日志会记录入站协议和实际出站协议。
+模型列表：`GET /v1/models` 返回当前启用的别名与启用渠道的可直连模型 ID；`GET /v1beta/models` 返回 Gemini 形状的模型列表。请求日志会记录入站协议和实际出站协议。
 
 管理 API 示例：
 
@@ -145,7 +152,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 
 写操作需要把登录响应里的 `gw_csrf` Cookie 值放到 `X-CSRF-Token` 请求头。
 
-拉取某个渠道的上游模型列表（网关会请求 `{baseUrl}/models`）。未指定 `keyId` 时使用优先级最高的启用密钥：
+拉取某个渠道的上游模型列表（网关会请求 `{baseUrl}/models`，因此 `baseUrl` 应包含版本路径且不含 `/models`）。Gemini 会通过 `nextPageToken` 读取全部页面；所有页面共享 15 秒超时和 2 MB 响应上限。未指定 `keyId` 时使用优先级最高的启用密钥：
 
 ```bash
 curl -b cookies.txt 'http://localhost:8080/admin/api/channels/<channel-id>/models?keyId=<key-id>'
@@ -248,7 +255,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
   -d '{"model":"gpt-4o-mini"}'
 ```
 
-返回每个协议的 `supported`、`statusCode` 和说明。探测会使用已保存凭据发送最小请求（Chat `max_tokens=1`、Responses `max_output_tokens=1`、Messages `max_tokens=1`），可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
+返回每个协议的 `supported`、`statusCode` 和说明。该管理操作会探测全部四种协议（包括尚未勾选的协议），结果用于编辑渠道配置，保存后才影响数据面。探测使用已保存凭据发送最小请求（Chat/Messages `max_tokens=1`、Responses `max_output_tokens=1`、Gemini `generationConfig.maxOutputTokens=1`），可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
 
 渠道编辑弹窗的授权模型列表提供「测试」入口，可对指定模型发送一次真实请求，并指定协议和测试提示词。测试使用已保存的渠道凭据，不经过数据面、不写入请求日志，也不消耗调用方密钥额度；最多输出 128 token，超时 45 秒。连通性测试不指定推理强度。
 
@@ -373,7 +380,7 @@ GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行
 mvn test
 ```
 
-包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：三种协议的 SSE 用量解析与透传、六方向协议转换、工具调用、协议优先级回退、不兼容字段 400、对外模型 ID 重写与直连、首 token 前故障转移、Retry-After 冷却、档位分摊轮询、渠道密钥限流与管理面权限边界。
+包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：四种协议的 SSE 用量解析与透传、三种协议六方向转换、Gemini 模型分页与原生错误、全局/渠道/协议请求覆盖与重试隔离、工具调用、协议优先级回退、不兼容字段 400、对外模型 ID 重写与直连、首 token 前故障转移、Retry-After 冷却、档位分摊轮询、渠道密钥限流与管理面权限边界。
 
 只运行渠道密钥 RPM、最大并发和故障转移的端到端验证：
 

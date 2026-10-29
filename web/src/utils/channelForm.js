@@ -60,6 +60,7 @@ export function buildChannelPayload(
       }
     })
   }
+  if (form.requestOverrides != null) payload.requestOverrides = form.requestOverrides
   return payload
 }
 

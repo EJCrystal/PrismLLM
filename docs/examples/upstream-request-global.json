@@ -1,0 +1,23 @@
+{
+  "overrides": {
+    "headerProfile": "auto",
+    "headers": {
+      "X-Gateway-Team": "platform",
+      "X-Remove": "global-default"
+    },
+    "protocols": {
+      "responses": {
+        "headers": {
+          "X-Client": "global-responses"
+        },
+        "body": {
+          "store": false,
+          "reasoning": {
+            "effort": "high",
+            "summary": "auto"
+          }
+        }
+      }
+    }
+  }
+}

@@ -125,5 +125,17 @@ object UsageParser {
         )
     }
 
+    /** Gemini prompt tokens include cached tokens; generated thoughts are billed as output tokens. */
+    fun fromGeminiJson(json: JsonObject): Usage? {
+        val metadata = json["usageMetadata"] as? JsonObject ?: return null
+        val input = metadata.long("promptTokenCount")
+        val candidates = metadata.long("candidatesTokenCount")
+        val reasoning = metadata.long("thoughtsTokenCount")
+        val output = listOfNotNull(candidates, reasoning).takeIf { it.isNotEmpty() }?.sum()
+        val cached = metadata.long("cachedContentTokenCount")
+        val total = metadata.long("totalTokenCount")
+        return Usage(input, output, cached, reasoning = reasoning, total = total).takeIf { it.known }
+    }
+
     private fun JsonObject.long(key: String): Long? = (this[key] as? JsonPrimitive)?.longOrNull
 }

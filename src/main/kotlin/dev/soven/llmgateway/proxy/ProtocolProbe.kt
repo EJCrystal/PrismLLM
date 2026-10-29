@@ -4,6 +4,7 @@ import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
@@ -34,7 +35,8 @@ data class ProtocolProbeResult(
 )
 
 /**
- * 用最小请求探测渠道是否提供 Chat Completions 与 Responses 端点。
+ * 管理面主动发现渠道支持的四种协议，包括尚未声明的协议，以便填写渠道配置。
+ * 每个协议发送一次最多 1 token 的最小请求；数据面仍只路由到声明了对应协议的渠道。
  *
  * @author 文杰
  * @since 2026-10-22
@@ -46,6 +48,7 @@ suspend fun probeUpstreamProtocols(
     credentialCipher: CredentialCipher,
     httpClient: HttpClient,
     timeoutMs: Long = 20_000,
+    globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
 ): List<ProtocolProbeResult> {
     val credential = runCatching {
         credentialCipher.decrypt(key.credentialCiphertext, key.credentialNonce)
@@ -61,10 +64,16 @@ suspend fun probeUpstreamProtocols(
     return GatewayProtocol.entries.map { protocol ->
         try {
             withTimeout(timeoutMs) {
-                val response = httpClient.post(probeUrl(channel, protocol)) {
+                val policy = UpstreamRequestPolicy(globalOverrides, channel.requestOverrides, protocol, channel.authType)
+                val body = policy.body(
+                    kotlinx.serialization.json.Json.parseToJsonElement(probeBody(protocol, model)) as kotlinx.serialization.json.JsonObject,
+                    model,
+                )
+                val response = httpClient.post(upstreamRequestUrl(channel.baseUrl, protocol, model)) {
                     applyUpstreamAuthentication(credential, channel.authType, protocol)
                     header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-                    setBody(TextContent(probeBody(protocol, model), ContentType.Application.Json))
+                    policy.applyHeaders(this)
+                    setBody(TextContent(limitModelTestTokens(body, protocol, 1).toString(), ContentType.Application.Json))
                 }
                 val status = response.status.value
                 response.bodyAsText()
@@ -82,9 +91,6 @@ suspend fun probeUpstreamProtocols(
         }
     }
 }
-
-private fun probeUrl(channel: ChannelRecord, protocol: GatewayProtocol): String =
-    channel.baseUrl.trimEnd('/') + protocol.path
 
 private fun probeBody(protocol: GatewayProtocol, model: String): String = when (protocol) {
     GatewayProtocol.CHAT_COMPLETIONS -> buildJsonObject {
@@ -125,6 +131,7 @@ private fun probeBody(protocol: GatewayProtocol, model: String): String = when (
             },
         )
     }.toString()
+    GatewayProtocol.GEMINI -> buildModelTestBody(protocol, model, "ping", 1)
 }
 
 private fun statusMessage(status: Int): String = when {

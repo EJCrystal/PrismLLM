@@ -4,6 +4,7 @@ export const MODEL_TEST_PROTOCOL_LABELS = {
   chat_completions: 'Chat Completions',
   responses: 'Responses',
   messages: 'Anthropic Messages',
+  gemini: 'Gemini',
 }
 
 export function normalizeModelTestSettings(settings) {

@@ -32,6 +32,7 @@ const actionLabels = {
   'model_default_price.update': '更新模型默认价',
   'model_default_price.delete': '删除模型默认价',
   'model_test_settings.update': '更新模型测试设置',
+  'upstream_request_settings.update': '更新上游请求配置',
   'request_log.cleanup': '清理请求日志',
 }
 

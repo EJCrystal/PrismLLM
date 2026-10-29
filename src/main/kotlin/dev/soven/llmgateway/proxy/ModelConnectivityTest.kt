@@ -4,6 +4,7 @@ import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
@@ -26,6 +27,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.intOrNull
 
 /** 一次渠道模型连通性测试的结果。 */
 data class ModelConnectivityTestResult(
@@ -52,6 +54,7 @@ suspend fun testChannelModelConnectivity(
     httpClient: HttpClient,
     timeoutMs: Long = 45_000,
     maxOutputTokens: Int = 128,
+    globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
 ): ModelConnectivityTestResult {
     val credential = runCatching {
         credentialCipher.decrypt(key.credentialCiphertext, key.credentialNonce)
@@ -67,12 +70,17 @@ suspend fun testChannelModelConnectivity(
     val startedAt = System.currentTimeMillis()
     return try {
         withTimeout(timeoutMs) {
-            val response = httpClient.post(channel.baseUrl.trimEnd('/') + protocol.path) {
+            val policy = UpstreamRequestPolicy(globalOverrides, channel.requestOverrides, protocol, channel.authType)
+            val requestBody = policy.body(
+                Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject, model,
+            )
+            val response = httpClient.post(upstreamRequestUrl(channel.baseUrl, protocol, model)) {
                 applyUpstreamAuthentication(credential, channel.authType, protocol)
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                policy.applyHeaders(this)
                 setBody(
                     TextContent(
-                        buildModelTestBody(protocol, model, prompt, maxOutputTokens),
+                        limitModelTestTokens(requestBody, protocol, maxOutputTokens).toString(),
                         ContentType.Application.Json,
                     ),
                 )
@@ -148,6 +156,42 @@ internal fun buildModelTestBody(
         put("max_tokens", maxOutputTokens)
         put("messages", userMessages(prompt))
     }.toString()
+    GatewayProtocol.GEMINI -> buildJsonObject {
+        put("contents", buildJsonArray {
+            add(buildJsonObject {
+                put("role", "user")
+                put("parts", buildJsonArray { add(buildJsonObject { put("text", prompt) }) })
+            })
+        })
+        put("generationConfig", buildJsonObject { put("maxOutputTokens", maxOutputTokens) })
+    }.toString()
+}
+
+/** Administrative checks keep their documented token budget after applying user overrides. */
+internal fun limitModelTestTokens(body: JsonObject, protocol: GatewayProtocol, maxTokens: Int): JsonObject {
+    val field = when (protocol) {
+        GatewayProtocol.CHAT_COMPLETIONS -> if ("max_completion_tokens" in body) "max_completion_tokens" else "max_tokens"
+        GatewayProtocol.RESPONSES -> "max_output_tokens"
+        GatewayProtocol.GEMINI -> "maxOutputTokens"
+        else -> "max_tokens"
+    }
+    val parent = when {
+        protocol == GatewayProtocol.GEMINI -> when (val generationConfig = body["generationConfig"]) {
+            null -> JsonObject(emptyMap())
+            is JsonObject -> generationConfig
+            else -> throw GatewayException(
+                HttpStatusCode.BadRequest,
+                "invalid_request_overrides",
+                "Gemini generationConfig 必须是 JSON 对象",
+                "invalid_request_error",
+            )
+        }
+        field == "max_completion_tokens" -> JsonObject(body - "max_tokens")
+        else -> body
+    }
+    val configured = (parent[field] as? JsonPrimitive)?.intOrNull
+    val bounded = JsonObject(parent + (field to JsonPrimitive(configured?.coerceIn(1, maxTokens) ?: maxTokens)))
+    return if (protocol == GatewayProtocol.GEMINI) JsonObject(body + ("generationConfig" to bounded)) else bounded
 }
 
 internal fun extractModelTestResponseText(protocol: GatewayProtocol, json: JsonObject?): String? {
@@ -163,6 +207,7 @@ internal fun extractModelTestResponseText(protocol: GatewayProtocol, json: JsonO
             collectText(json["output_text"]) ?: collectText(json["output"]) ?: collectText(json["response"])
         }
         GatewayProtocol.MESSAGES -> collectText(json["content"])
+        GatewayProtocol.GEMINI -> collectText(json["candidates"])
     }
 }
 
@@ -184,6 +229,7 @@ private fun extractModelTestUsage(protocol: GatewayProtocol, json: JsonObject?):
         GatewayProtocol.CHAT_COMPLETIONS -> UsageParser.fromJson(json)
         GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
         GatewayProtocol.MESSAGES -> UsageParser.fromAnthropicJson(json)
+        GatewayProtocol.GEMINI -> UsageParser.fromGeminiJson(json)
     }
 }
 
@@ -201,7 +247,7 @@ private fun collectText(element: JsonElement?): String? = when (element) {
     null -> null
     is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() }
     is JsonArray -> element.mapNotNull(::collectText).joinToString("").takeIf { it.isNotBlank() }
-    is JsonObject -> collectText(element["text"]) ?: collectText(element["content"])
+    is JsonObject -> collectText(element["text"]) ?: collectText(element["content"]) ?: collectText(element["parts"])
     else -> null
 }
 
