@@ -5,6 +5,8 @@ import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.proxy.validateUpstreamRequestOverrides
 import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.proxy.CatalogModel
@@ -251,6 +253,18 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(app.channelRepository.list().map { it.toResponse() })
         }
 
+        get("/upstream-request-settings") {
+            call.requireAdmin(app)
+            call.respond(app.upstreamRequestSettingsRepository.load().toResponse())
+        }
+
+        put("/upstream-request-settings") {
+            call.requireAdmin(app)
+            val request = call.receive<UpstreamRequestSettingsRequest>()
+            validateUpstreamRequestOverrides(request.overrides)
+            call.respond(app.upstreamRequestSettingsRepository.save(request.overrides).toResponse())
+        }
+
         get("/key-auto-disable-settings") {
             call.requireAdmin(app)
             call.respond(app.keyAutoDisableRepository.loadSettings().toResponse())
@@ -285,7 +299,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
             val key = resolveChannelKey(channel, call.request.queryParameters["keyId"])
             val mappingByUpstream = channel.modelMappings.associateBy { it.upstreamModel }
-            val models = fetchUpstreamModels(channel, key, app.credentialCipher, app.httpClient, authorizedOnly = false)
+            val models = fetchUpstreamModels(
+                channel, key, app.credentialCipher, app.httpClient, authorizedOnly = false,
+                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+            )
                 .map {
                     val mapping = mappingByUpstream[it.id]
                     ChannelModelResponse(
@@ -322,9 +339,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     ?: channel.keys.minWithOrNull(compareBy({ it.priority }, { it.name }))
             }
             val authType = request.authType ?: saved?.authType ?: "bearer"
-            if (authType !in setOf("bearer", "anthropic")) {
-                throw badRequest("invalid_channel", "上游鉴权方式必须是 bearer 或 anthropic")
+            if (authType !in setOf("bearer", "anthropic", "google")) {
+                throw badRequest("invalid_channel", "上游鉴权方式必须是 bearer、anthropic 或 google")
             }
+            request.requestOverrides?.let(::validateUpstreamRequestOverrides)
             val credential = request.credential
                 ?.takeIf { it.isNotBlank() }
                 ?: saved?.let { channel ->
@@ -346,7 +364,18 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 ?: throw badRequest("invalid_channel", "发现上游模型需要提供凭据")
             val authorized = savedKey?.models?.toSet().orEmpty()
             val mappingByUpstream = saved?.modelMappings?.associateBy { it.upstreamModel }.orEmpty()
-            val models = fetchUpstreamModels(baseUrl, credential, app.httpClient, authType)
+            val discoveryProtocols = request.protocols?.let(::parseProtocols) ?: saved?.protocols.orEmpty()
+            val discoveryProtocol = when (authType) {
+                "anthropic" -> GatewayProtocol.MESSAGES
+                "google" -> GatewayProtocol.GEMINI
+                else -> discoveryProtocols.singleOrNull()
+            }
+            val models = fetchUpstreamModels(
+                baseUrl, credential, app.httpClient, authType,
+                protocol = discoveryProtocol,
+                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                channelOverrides = request.requestOverrides ?: saved?.requestOverrides ?: UpstreamRequestOverrides(),
+            )
                 .map {
                     val mapping = mappingByUpstream[it.id]
                     ChannelModelResponse(
@@ -367,7 +396,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val request = call.receive<ProtocolProbeRequest>()
             val key = resolveChannelKey(channel, request.keyId)
             val model = request.model?.takeIf { it.isNotBlank() } ?: run {
-                val models = fetchUpstreamModels(channel, key, app.credentialCipher, app.httpClient)
+                val models = fetchUpstreamModels(
+                    channel, key, app.credentialCipher, app.httpClient,
+                    globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                )
                 models.firstOrNull()?.id ?: throw GatewayException(
                     HttpStatusCode.BadGateway,
                     "no_upstream_models",
@@ -375,7 +407,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     "api_error",
                 )
             }
-            val results = probeUpstreamProtocols(channel, key, model, app.credentialCipher, app.httpClient)
+            val results = probeUpstreamProtocols(
+                channel, key, model, app.credentialCipher, app.httpClient,
+                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+            )
             call.respond(
                 ProtocolProbeResponse(
                     model = model,
@@ -425,6 +460,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 prompt = prompt,
                 credentialCipher = app.credentialCipher,
                 httpClient = app.httpClient,
+                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
             )
             call.respond(result.toResponse(model, protocol, key.id, key.name, prompt))
         }
@@ -448,6 +484,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 enabled = request.enabled,
                 modelMappings = modelMappings,
                 priority = request.priority ?: 1,
+                requestOverrides = request.requestOverrides ?: UpstreamRequestOverrides(),
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
         }
@@ -496,6 +533,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         enabled = request.enabled,
                         modelMappings = modelMappings,
                         priority = request.priority,
+                        requestOverrides = request.requestOverrides,
                     ) ?: throw notFound("channel_not_found", "渠道不存在")
                     updated.keys.filter { key ->
                         existing.keys.firstOrNull { it.id == key.id }?.stateVersion != key.stateVersion
@@ -1013,9 +1051,10 @@ private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean
     if (!request.baseUrl.startsWith("http://") && !request.baseUrl.startsWith("https://")) {
         throw badRequest("invalid_channel", "渠道地址必须以 http:// 或 https:// 开头")
     }
-    if (request.authType != null && request.authType !in setOf("bearer", "anthropic")) {
-        throw badRequest("invalid_channel", "上游鉴权方式必须是 bearer 或 anthropic")
+    if (request.authType != null && request.authType !in setOf("bearer", "anthropic", "google")) {
+        throw badRequest("invalid_channel", "上游鉴权方式必须是 bearer、anthropic 或 google")
     }
+    request.requestOverrides?.let(::validateUpstreamRequestOverrides)
     if (request.priority != null && request.priority !in 1..1000) {
         throw badRequest("invalid_channel", "渠道优先级必须在 1..1000 之间")
     }

@@ -54,6 +54,7 @@ export function buildChannelPayload(
       rateLimit: buildChannelKeyRateLimitPayload(key.rateLimit),
     }))
   }
+  if (form.requestOverrides != null) payload.requestOverrides = form.requestOverrides
   return payload
 }
 

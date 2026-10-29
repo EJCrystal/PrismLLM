@@ -1,11 +1,12 @@
 # llm-gateway
 
-面向内部团队的 LLM 网关，原生透传 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages。网关按渠道授权与对外模型 ID 路由，只重写上游模型名，透传 SSE 流，并记录用量与请求元数据。
+面向内部团队的 LLM 网关，原生透传 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 Gemini。网关按渠道授权与对外模型 ID 路由，支持全局与渠道级请求头、UA 和请求体覆盖，透传 SSE 流，并记录用量与请求元数据。
 
 ## 能力边界
 
-- 原生协议入口 `/v1/chat/completions`、`/v1/responses` 与 `/v1/messages`，支持流式和非流式请求，不在协议之间转换。
-- 渠道按 `chat_completions`、`responses`、`messages` 声明支持的协议，路由时按请求协议过滤候选。
+- 原生协议入口 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 与 `/v1beta/models/{model}:generateContent` / `:streamGenerateContent`，支持流式和非流式请求，不在协议之间转换。
+- 渠道按 `chat_completions`、`responses`、`messages`、`gemini` 声明支持的协议，路由时按请求协议过滤候选。
+- 上游请求按协议使用 Claude、Codex 或 Google SDK 请求头预设，可选 Antigravity；全局和渠道均可覆盖 UA、请求头及 JSON 请求体。
 - 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。渠道启用即参与直连暴露。
 - 渠道支持密钥池：每个密钥独立保存凭据、启用状态、优先级和可用模型；同一渠道内按密钥优先级分档，同档密钥轮询。
 - 上游密钥支持可配置的自动禁用：默认连续 3 次 401/403，或 5 分钟内失败 5 次；触发原因写入操作审计。
@@ -19,7 +20,7 @@
   - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
 - PostgreSQL + Flyway；单实例部署。
 
-明确不做：协议间相互转换（各协议仅原生透传）、Gemini 原生入口、多租户 RBAC、语义缓存、MCP、多副本。
+明确不做：协议间相互转换（各协议仅原生透传）、订阅 OAuth 登录与自动续期、多租户 RBAC、语义缓存、MCP、多副本。
 
 ## 架构
 
@@ -33,7 +34,7 @@ client --client key--> gateway --configured auth--> protocol-compatible upstream
 管理面：`/admin/api/*`，由会话 Cookie + CSRF Token 保护。
 运维面：`/health/live`、`/health/ready`、`/metrics`。
 
-渠道的 `baseUrl` 必须包含上游要求的版本路径，例如 `https://api.openai.com/v1` 或 `https://api.anthropic.com/v1`。网关按请求协议追加 `/chat/completions`、`/responses` 或 `/messages`，不会自动补 `/v1`。Anthropic Messages 请求可使用 `Authorization: Bearer <gateway-key>` 或 `x-api-key: <gateway-key>`；渠道上游鉴权可选择 Bearer 或 Anthropic `x-api-key`，`anthropic-version` 缺省为 `2023-06-01`。
+渠道的 `baseUrl` 必须包含上游要求的版本路径，例如 `https://api.openai.com/v1`、`https://api.anthropic.com/v1` 或 `https://generativelanguage.googleapis.com/v1beta`。网关按请求协议追加对应端点，不会自动补版本。Anthropic Messages 请求可使用 `Authorization: Bearer <gateway-key>` 或 `x-api-key: <gateway-key>`；Gemini 请求可使用 Bearer、`x-goog-api-key: <gateway-key>` 或 `?key=<gateway-key>`。渠道上游鉴权可选择 Bearer、Anthropic `x-api-key` 或 Google `x-goog-api-key`，上游始终使用渠道凭据。`anthropic-version` 缺省为 `2023-06-01`。
 
 启用渠道的对外模型 ID 会出现在 `/v1/models` 并可直接路由。满足条件后：
 - **未配置对外模型 ID（留空）**：对外使用上游模型名；
@@ -132,7 +133,54 @@ curl http://localhost:8080/v1/messages \
   -d '{"model":"claude-fast","max_tokens":128,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-模型列表：`GET /v1/models` 返回当前启用的别名与启用渠道的可直连模型 ID。请求日志会记录本次请求使用的协议。
+Gemini 原生调用：
+
+```bash
+curl http://localhost:8080/v1beta/models/gemini-fast:generateContent \
+  -H "x-goog-api-key: sk-gw-..." \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}'
+```
+
+流式调用使用 `:streamGenerateContent`；上游自动携带 `alt=sse`，响应保持 Gemini 的 `data:` 帧，不添加 `[DONE]`。生成入口也支持 `/v1/models/{model}:generateContent` / `:streamGenerateContent`。Gemini 的模型映射在 URL 中完成，不往请求体插入 OpenAI 的 `model` 或 `stream`。
+
+模型列表：`GET /v1/models` 返回当前启用的别名与启用渠道的可直连模型 ID；`GET /v1beta/models` 返回 Google 形状的列表，仅包含支持 Gemini 的对外模型。请求日志会记录本次请求使用的协议。
+
+### 上游请求头、UA 与请求体覆盖
+
+管理面「渠道 → 上游请求配置」设置全局默认值；新建/编辑渠道中的「上游请求配置」设置渠道覆盖。两处均可切换配置范围，分别编辑通用配置、Chat、Responses、Anthropic 和 Gemini。保存后立即生效，配置在重启后保留；模型列表、模型测试和协议探测使用同一套请求头规则，生成请求还会应用请求体覆盖。
+
+完整说明、逐字段结果与可直接提交的 JSON 示例见 [上游请求配置指南](docs/upstream-request-overrides.md)。
+
+请求头预设按**实际发往上游的协议**选择：Messages 使用 Claude Code，Chat/Responses 使用 Codex，Gemini 使用 Google Gen AI SDK；Gemini 可显式改选 Antigravity。同一个 Gemini 模型通过 Chat 协议调用时仍使用 Codex，除非显式选择其他预设。预设只提供请求头，不做协议转换或 Antigravity 内部请求封装；预设版本固定，可通过 UA 或请求头覆盖更新。Codex 的规范 UA 改变版本时会同步 `originator` / `version`，显式配置这些头时以配置为准。
+
+管理 API 为 `GET/PUT /admin/api/upstream-request-settings`，写请求使用 `{"overrides":{...}}`，读响应还包含 `profiles` 与 `updatedAt`。渠道创建/更新 API 接受可选字段 `requestOverrides`：
+
+```json
+{
+  "requestOverrides": {
+    "inheritGlobal": true,
+    "userAgent": "my-upstream-client/1.0",
+    "headers": {"X-App": "cli", "X-Unwanted": null},
+    "body": {"temperature": 0.7, "store": null},
+    "protocols": {
+      "responses": {"body": {"reasoning": {"effort": "high"}}},
+      "messages": {"userAgent": "claude-cli/2.1.258 (external, cli)"},
+      "gemini": {"headerProfile": "antigravity"}
+    }
+  }
+}
+```
+
+先从渠道当前协议、渠道通用、全局当前协议、全局通用中，按此顺序选择第一个已配置（非 `null`）的 `headerProfile`，都未配置时使用 `auto`。只选择一个最终预设，不叠加不同客户端的预设头。
+
+随后按低到高应用覆盖：**协议预设 → 全局通用 → 全局当前协议 → 渠道通用 → 渠道当前协议**。渠道通用也高于全局的协议配置；同层 `headers` 中的 `User-Agent` 高于 `userAgent`。所有显式 UA / 请求头配置都高于预设，因此切换预设不会清除继承的自定义 UA。
+
+`headerProfile` 可选 `auto`、`none`、`claude`、`codex`、`google`、`antigravity`；`none` 只关闭预设，`inheritGlobal:false` 只跳过全局层，两者可以组合。UA 输入框留空表示本层不覆盖，勾选「清空 User-Agent」则发送空值，避免 HTTP 客户端自动补 UA。
+
+请求头名称不区分大小写，字符串设置，`null` 删除（UA 特殊处理为空值）。请求体使用 RFC 7396 JSON Merge Patch：对象递归合并，数组/标量整体替换，`null` 删除字段；每次故障转移从原始请求重新应用规则，渠道间不会互相污染。`model`、`stream`、鉴权头、连接/长度/类型头和 Trace 头由网关管理，不能通过覆盖配置修改。覆盖配置最多 64KB、每层最多 64 个请求头，请求体改写后仍遵守请求体大小上限。
+
+旧调用方更新渠道时省略 `requestOverrides` 会保留原配置，提交 `{}` 恢复继承默认设置。模型发现 API 也接受尚未保存的 `requestOverrides` 与 `protocols`，编辑 UA 后可直接重新加载模型；协议探测和连通性测试使用已保存配置。测试/探测的输出预算仍限制为 128 / 1 token。
 
 管理 API 示例：
 
@@ -244,9 +292,9 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
   -d '{"model":"gpt-4o-mini"}'
 ```
 
-返回每个协议的 `supported`、`statusCode` 和说明。探测会使用已保存凭据发送最小请求（Chat `max_tokens=1`、Responses `max_output_tokens=1`、Messages `max_tokens=1`），可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
+返回每个协议的 `supported`、`statusCode` 和说明。探测会使用已保存凭据发送最小请求（Chat/Messages `max_tokens=1`、Responses `max_output_tokens=1`、Gemini `generationConfig.maxOutputTokens=1`）；Chat 显式配置 `max_completion_tokens` 时改用该字段并限制为 1。探测可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
 
-渠道编辑弹窗的授权模型列表提供「测试」入口，可对指定模型发送一次真实请求，并指定协议和测试提示词。测试使用已保存的渠道凭据，不经过数据面、不写入请求日志，也不消耗调用方密钥额度；最多输出 128 token，超时 45 秒。连通性测试不指定推理强度。
+渠道编辑弹窗的授权模型列表提供「测试」入口，可对指定模型发送一次真实请求，并指定协议和测试提示词。测试使用已保存的渠道凭据，不经过数据面、不写入请求日志，也不消耗调用方密钥额度；最多输出 128 token，超时 45 秒。默认不指定推理强度，显式请求覆盖除外。
 
 ```bash
 curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id>/model-test \
@@ -369,7 +417,13 @@ GitHub Actions 的 `CI` 工作流会在拉取请求和推送到 `main` 时运行
 mvn test
 ```
 
-包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions、Responses 与 Anthropic Messages 的 SSE 用量解析与透传、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、渠道密钥分组 RPM/并发限流与取消安全释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
+包含全套单元测试与基于 Testcontainers 的集成测试。核心覆盖：Chat Completions、Responses、Anthropic Messages、Gemini 的 SSE 用量解析与透传、全局/渠道/协议请求覆盖与重试隔离、协议路由过滤、对外模型 ID 重写与直连、CallExtensions 参数提取与 400 校验、首 token 前故障转移（含连接失败）、Retry-After 冷却、候选冷却探测门控与 fail-open、档位分摊轮询、首 token 软阈值冷却、上游尝试次数记录、渠道密钥分组 RPM/并发限流与取消安全释放、管理面会话与 CSRF 权限边界、密钥轮换与撤销、管理操作审计脱敏。
+
+只运行请求覆盖与 Gemini 原生端到端验证：
+
+```bash
+mvn -Dgroups=upstream-request-overrides,gemini test
+```
 
 只运行渠道密钥 RPM、最大并发和故障转移的端到端验证：
 

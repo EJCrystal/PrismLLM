@@ -9,6 +9,8 @@ import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import kotlinx.serialization.json.Json
 import dev.soven.llmgateway.domain.RouteCandidate
 import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.SortOrder
@@ -69,12 +71,13 @@ class AliasRepository(private val database: Database) {
         ))
     }
 
-    suspend fun listAvailableAliases(): List<String> = suspendTransaction(database) {
+    suspend fun listAvailableAliases(protocol: GatewayProtocol? = null): List<String> = suspendTransaction(database) {
         AliasCandidates
             .join(Channels, JoinType.INNER, AliasCandidates.channelId, Channels.id)
             .join(ModelAliases, JoinType.INNER, AliasCandidates.aliasId, ModelAliases.id)
             .selectAll()
             .where { (ModelAliases.enabled eq true) and (Channels.enabled eq true) }
+            .filter { protocol == null || protocol in GatewayProtocol.parse(it[Channels.protocols]) }
             .map { it[ModelAliases.alias] }
             .distinct()
             .sorted()
@@ -210,6 +213,7 @@ class AliasRepository(private val database: Database) {
         updatedAt = this[Channels.updatedAt],
         modelMappings = modelMappings,
         keys = keys,
+        requestOverrides = Json.decodeFromString<UpstreamRequestOverrides>(this[Channels.requestOverrides]),
     )
 }
 

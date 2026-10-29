@@ -77,6 +77,7 @@ data class ChannelRecord(
     val modelMappings: List<ChannelModelRecord> = emptyList(),
     val priority: Int = 0,
     val keys: List<ChannelKeyRecord> = emptyList(),
+    val requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
 ) {
     val models: List<String> get() = modelMappings.map { it.upstreamModel }
 

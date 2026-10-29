@@ -10,6 +10,7 @@ enum class GatewayProtocol(val value: String, val path: String) {
     CHAT_COMPLETIONS("chat_completions", "/chat/completions"),
     RESPONSES("responses", "/responses"),
     MESSAGES("messages", "/messages"),
+    GEMINI("gemini", "/models"),
     ;
 
     companion object {

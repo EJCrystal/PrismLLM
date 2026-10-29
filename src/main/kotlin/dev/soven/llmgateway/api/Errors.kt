@@ -59,6 +59,25 @@ data class AnthropicErrorBody(
     val message: String,
 )
 
+@Serializable
+data class GeminiErrorEnvelope(val error: GeminiErrorBody)
+
+@Serializable
+data class GeminiErrorBody(val code: Int, val message: String, val status: String)
+
+fun GatewayException.toGeminiEnvelope() = GeminiErrorEnvelope(
+    GeminiErrorBody(status.value, message, when (status.value) {
+        400, 413, 415, 422 -> "INVALID_ARGUMENT"
+        401 -> "UNAUTHENTICATED"
+        403 -> "PERMISSION_DENIED"
+        404 -> "NOT_FOUND"
+        429 -> "RESOURCE_EXHAUSTED"
+        503 -> "UNAVAILABLE"
+        504 -> "DEADLINE_EXCEEDED"
+        else -> "INTERNAL"
+    }),
+)
+
 fun GatewayException.toEnvelope(): ErrorEnvelope = ErrorEnvelope(
     ErrorBody(
         message = message,

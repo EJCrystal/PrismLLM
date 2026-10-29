@@ -5,6 +5,9 @@ import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.RouteCandidate
+import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
+import dev.soven.llmgateway.proxy.upstreamRequestUrl
 import dev.soven.llmgateway.proxy.BillingCalculator
 import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
 import dev.soven.llmgateway.quota.ChannelKeyRateLimitLease
@@ -57,6 +60,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -65,6 +69,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 import java.util.UUID
 import org.slf4j.LoggerFactory
@@ -103,9 +108,39 @@ fun Route.proxyRoutes(app: GatewayApplication) {
         )
     }
 
-    GatewayProtocol.entries.forEach { protocol ->
+    GatewayProtocol.entries.filter { it != GatewayProtocol.GEMINI }.forEach { protocol ->
         post("/v1${protocol.path}") {
             handleProxy(app, call, protocol)
+        }
+    }
+    get("/v1beta/models") {
+        authenticate(call, app, GatewayProtocol.GEMINI)
+        val models = listExposedModels(app, GatewayProtocol.GEMINI)
+        call.respond(buildJsonObject {
+            put("models", buildJsonArray {
+                models.forEach { model ->
+                    add(buildJsonObject {
+                        put("name", "models/${model.id}")
+                        put("displayName", model.id)
+                        put("supportedGenerationMethods", buildJsonArray {
+                            add(JsonPrimitive("generateContent"))
+                            add(JsonPrimitive("streamGenerateContent"))
+                        })
+                    })
+                }
+            })
+        })
+    }
+    listOf("/v1beta", "/v1").forEach { version ->
+        post("$version/models/{modelAction...}") {
+            val modelAction = call.parameters.getAll("modelAction")?.joinToString("/").orEmpty()
+            val action = modelAction.substringAfterLast(':', "")
+            if (action !in setOf("generateContent", "streamGenerateContent")) {
+                throw notFound("unsupported_gemini_action", "仅支持 generateContent 和 streamGenerateContent")
+            }
+            val model = modelAction.substringBeforeLast(':').takeIf { it.isNotBlank() }
+                ?: throw badRequest("invalid_model", "模型名不能为空")
+            handleProxy(app, call, GatewayProtocol.GEMINI, model, action == "streamGenerateContent")
         }
     }
 }
@@ -114,6 +149,8 @@ private suspend fun handleProxy(
     app: GatewayApplication,
     call: ApplicationCall,
     protocol: GatewayProtocol,
+    nativeModel: String? = null,
+    nativeStream: Boolean? = null,
 ) {
     val traceContext = TraceContextFactory.fromHeaderOrCreate(call.request.headers["traceparent"])
     call.response.header("traceparent", traceContext.traceparent)
@@ -153,13 +190,13 @@ private suspend fun handleProxy(
         val requestJson = call.receiveLimitedJson(app.config.requestBodyLimitBytes)
         reasoningEffort = ReasoningEffort.fromRequest(requestJson, protocol)
         val modelElement = requestJson["model"] as? JsonPrimitive
-        alias = modelElement
+        alias = nativeModel ?: modelElement
             ?.takeIf { it.isString }
             ?.content
             ?.takeIf { it.isNotBlank() }
             ?: throw badRequest("invalid_model", "model 必须是非空字符串")
         val streamElement = requestJson["stream"]
-        val stream = when (streamElement) {
+        val stream = nativeStream ?: when (streamElement) {
             null -> false
             is JsonPrimitive -> {
                 if (streamElement.isString) throw badRequest("invalid_stream", "stream 必须是布尔值")
@@ -183,6 +220,7 @@ private suspend fun handleProxy(
         if (candidates.isEmpty()) {
             throw notFound("model_not_found", "模型别名 $alias 不存在或没有可用渠道")
         }
+        val globalOverrides = app.upstreamRequestSettingsRepository.load().overrides
 
         phase = FailureStage.UPSTREAM
         // 先按冷却分拣：可尝试的候选进同档轮询，冷却中的保序作为 fail-open 兜底，
@@ -265,9 +303,10 @@ private suspend fun handleProxy(
                             protocol,
                             traceContext.traceparent,
                             allowUpstreamErrorFailover = upstreamAttempts < app.config.maxAttempts && upstreamAttempts < candidates.size,
+                            globalOverrides = globalOverrides,
                         )
                     } else {
-                        proxyJson(app, call, requestJson, candidate, remainingMs, state, protocol, traceContext.traceparent)
+                        proxyJson(app, call, requestJson, candidate, remainingMs, state, protocol, traceContext.traceparent, globalOverrides)
                     }
                 }
                 statusCode = state.statusCode
@@ -702,6 +741,8 @@ private suspend fun authenticate(
         authorization.removePrefix("Bearer ").trim()
     } else if (protocol == GatewayProtocol.MESSAGES) {
         call.request.headers["x-api-key"]?.trim() ?: throw unauthorized()
+    } else if (protocol == GatewayProtocol.GEMINI) {
+        (call.request.headers["x-goog-api-key"] ?: call.request.queryParameters["key"])?.trim() ?: throw unauthorized()
     } else {
         throw unauthorized()
     }
@@ -752,10 +793,12 @@ private suspend fun proxyStream(
     protocol: GatewayProtocol,
     traceparent: String,
     allowUpstreamErrorFailover: Boolean,
+    globalOverrides: UpstreamRequestOverrides,
 ) {
-    val upstreamUrl = buildUpstreamUrl(candidate, protocol)
+    val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, protocol, candidate.upstreamModel, stream = true)
     val credential = decryptCredential(app, candidate)
-    val body = requestJson.withModel(candidate.upstreamModel).toString()
+    val policy = UpstreamRequestPolicy(globalOverrides, candidate.channel.requestOverrides, protocol, candidate.channel.authType)
+    val body = policy.body(requestJson, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
 
     try {
         withTimeout(timeoutMs) {
@@ -770,6 +813,7 @@ private suspend fun proxyStream(
                 header("traceparent", traceparent)
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 header(HttpHeaders.Accept, ContentType.Text.EventStream.toString())
+                policy.applyHeaders(this)
                 setBody(TextContent(body, ContentType.Application.Json))
             }.execute { response ->
                 if (!response.status.isSuccess()) {
@@ -789,11 +833,12 @@ private suspend fun proxyStream(
                             val next = upstream.readUTF8Line() ?: break
                             prefixLines.add(next)
                             if (
-                                protocol == GatewayProtocol.MESSAGES &&
                                 allowUpstreamErrorFailover &&
-                                isAnthropicStreamError(next)
+                                ((protocol == GatewayProtocol.MESSAGES && isAnthropicStreamError(next)) ||
+                                    (protocol == GatewayProtocol.GEMINI && isGeminiStreamError(next)))
                             ) {
-                                val error = anthropicStreamException(next)
+                                val error = if (protocol == GatewayProtocol.GEMINI) geminiStreamException(next)
+                                    else anthropicStreamException(next)
                                 if (error.retryable) {
                                     upstream.cancel(error)
                                     throw error
@@ -836,12 +881,14 @@ private suspend fun proxyStream(
                                 recordUsage(line, state, protocol)
                                 if (isStreamDone(line, protocol)) {
                                     markTerminalStreamFailure(line, protocol, state)
-                                    writeSseLine("")
                                     sawDone = true
-                                    break
+                                    if (protocol != GatewayProtocol.GEMINI) {
+                                        writeSseLine("")
+                                        break
+                                    }
                                 }
                             }
-                            if (!sawDone) {
+                            if (!sawDone || protocol == GatewayProtocol.GEMINI) {
                                 while (true) {
                                     val line = try {
                                         withTimeout(app.config.idleTimeoutMs) { upstream.readUTF8Line() }
@@ -858,9 +905,11 @@ private suspend fun proxyStream(
                                     recordUsage(line, state, protocol)
                                     if (isStreamDone(line, protocol)) {
                                         markTerminalStreamFailure(line, protocol, state)
-                                        writeSseLine("")
                                         sawDone = true
-                                        break
+                                        if (protocol != GatewayProtocol.GEMINI) {
+                                            writeSseLine("")
+                                            break
+                                        }
                                     }
                                 }
                             }
@@ -906,10 +955,12 @@ private suspend fun proxyJson(
     state: ProxyState,
     protocol: GatewayProtocol,
     traceparent: String,
+    globalOverrides: UpstreamRequestOverrides,
 ) {
-    val upstreamUrl = buildUpstreamUrl(candidate, protocol)
+    val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, protocol, candidate.upstreamModel)
     val credential = decryptCredential(app, candidate)
-    val body = requestJson.withModel(candidate.upstreamModel).toString()
+    val policy = UpstreamRequestPolicy(globalOverrides, candidate.channel.requestOverrides, protocol, candidate.channel.authType)
+    val body = policy.body(requestJson, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
     try {
         withTimeout(timeoutMs) {
             val response = app.httpClient.post(upstreamUrl) {
@@ -922,6 +973,7 @@ private suspend fun proxyJson(
                 )
                 header("traceparent", traceparent)
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                policy.applyHeaders(this)
                 setBody(TextContent(body, ContentType.Application.Json))
             }
             val text = response.bodyAsText()
@@ -941,6 +993,7 @@ private suspend fun proxyJson(
                     GatewayProtocol.CHAT_COMPLETIONS -> UsageParser.fromJson(json)
                     GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
                     GatewayProtocol.MESSAGES -> UsageParser.fromAnthropicJson(json)
+                    GatewayProtocol.GEMINI -> UsageParser.fromGeminiJson(json)
                 }
             }.getOrNull()
             call.respondText(text, ContentType.Application.Json, response.status)
@@ -971,9 +1024,6 @@ private fun protocolNotSupported(alias: String, protocol: GatewayProtocol): Gate
         "模型别名 $alias 没有支持 ${protocol.value} 的渠道",
         "invalid_request_error",
     )
-
-private fun buildUpstreamUrl(candidate: RouteCandidate, protocol: GatewayProtocol): String =
-    candidate.channel.baseUrl.trimEnd('/') + protocol.path
 
 private fun decryptCredential(app: GatewayApplication, candidate: RouteCandidate): String = runCatching {
     app.credentialCipher.decrypt(candidate.key.credentialCiphertext, candidate.key.credentialNonce)
@@ -1009,7 +1059,10 @@ private fun upstreamException(
     retryAfterMs: Long?,
     protocol: GatewayProtocol,
 ): GatewayException {
-    val nativeResponseBody = body.takeIf { protocol == GatewayProtocol.MESSAGES && isAnthropicErrorBody(it) }
+    val nativeResponseBody = body.takeIf {
+        (protocol == GatewayProtocol.MESSAGES && isAnthropicErrorBody(it)) ||
+            (protocol == GatewayProtocol.GEMINI && isGeminiErrorBody(it))
+    }
     val upstreamCode = runCatching {
         val error = Json.parseToJsonElement(body).jsonObject["error"] as? JsonObject
         (error?.get("code") as? JsonPrimitive)?.contentOrNull
@@ -1080,6 +1133,7 @@ private fun markFirstToken(
         GatewayProtocol.CHAT_COMPLETIONS -> true
         GatewayProtocol.RESPONSES -> isFirstResponsesToken(line)
         GatewayProtocol.MESSAGES -> isFirstAnthropicToken(line)
+        GatewayProtocol.GEMINI -> isFirstGeminiToken(line)
     }
     if (isFirst) {
         val nowNanos = System.nanoTime()
@@ -1108,6 +1162,7 @@ private fun recordUsage(line: String, state: ProxyState, protocol: GatewayProtoc
         GatewayProtocol.CHAT_COMPLETIONS -> UsageParser.fromJson(json)
         GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
         GatewayProtocol.MESSAGES -> UsageParser.fromAnthropicJson(json)
+        GatewayProtocol.GEMINI -> UsageParser.fromGeminiJson(json)
     }
     if (usage != null) state.usage = state.usage?.mergeWith(usage, protocol) ?: usage
 }
@@ -1116,6 +1171,7 @@ private fun isFirstStreamData(line: String, protocol: GatewayProtocol): Boolean 
     GatewayProtocol.CHAT_COMPLETIONS -> true
     GatewayProtocol.RESPONSES -> isFirstResponsesToken(line)
     GatewayProtocol.MESSAGES -> isFirstAnthropicToken(line) || isStreamDone(line, protocol)
+    GatewayProtocol.GEMINI -> isFirstGeminiToken(line) || isStreamDone(line, protocol)
 }
 
 private fun isFirstAnthropicToken(line: String): Boolean {
@@ -1177,6 +1233,7 @@ private fun markTerminalStreamFailure(
             "response.incomplete" -> state.errorCode = "responses_incomplete"
         }
         GatewayProtocol.MESSAGES -> if (type == "error") state.errorCode = "messages_failed"
+        GatewayProtocol.GEMINI -> if (isGeminiStreamError(line)) state.errorCode = "gemini_failed"
     }
 }
 
@@ -1190,6 +1247,7 @@ private fun isStreamDone(line: String, protocol: GatewayProtocol): Boolean {
         GatewayProtocol.CHAT_COMPLETIONS -> false
         GatewayProtocol.RESPONSES -> type in RESPONSES_END_EVENTS
         GatewayProtocol.MESSAGES -> type == "message_stop" || type == "error"
+        GatewayProtocol.GEMINI -> isGeminiStreamTerminal(line)
     }
 }
 
@@ -1220,5 +1278,35 @@ private fun ssePayload(line: String): String? {
 
 private val RESPONSES_END_EVENTS = setOf("response.completed", "response.failed", "response.incomplete")
 
-private fun JsonObject.withModel(model: String): JsonObject =
-    JsonObject(toMap() + ("model" to JsonPrimitive(model)))
+private fun geminiSseJson(line: String): JsonObject? = ssePayload(line)?.let {
+    runCatching { Json.parseToJsonElement(it) as? JsonObject }.getOrNull()
+}
+
+private fun isFirstGeminiToken(line: String): Boolean =
+    (geminiSseJson(line)?.get("candidates") as? JsonArray)?.any { candidate ->
+        val content = (candidate as? JsonObject)?.get("content") as? JsonObject
+        (content?.get("parts") as? JsonArray)?.isNotEmpty() == true
+    } == true
+
+private fun isGeminiStreamError(line: String): Boolean = geminiSseJson(line)?.get("error") is JsonObject
+
+private fun isGeminiStreamTerminal(line: String): Boolean {
+    val json = geminiSseJson(line) ?: return false
+    if (json["error"] is JsonObject) return true
+    if ((json["promptFeedback"] as? JsonObject)?.get("blockReason") is JsonPrimitive) return true
+    val candidates = json["candidates"] as? JsonArray ?: return false
+    return candidates.isNotEmpty() && candidates.all {
+        ((it as? JsonObject)?.get("finishReason") as? JsonPrimitive)?.contentOrNull?.isNotBlank() == true
+    }
+}
+
+private fun isGeminiErrorBody(body: String): Boolean = runCatching {
+    val error = (Json.parseToJsonElement(body) as? JsonObject)?.get("error") as? JsonObject
+    (error?.get("code") as? JsonPrimitive)?.intOrNull != null && error["message"] is JsonPrimitive
+}.getOrDefault(false)
+
+private fun geminiStreamException(line: String): GatewayException {
+    val status = ((geminiSseJson(line)?.get("error") as? JsonObject)?.get("code") as? JsonPrimitive)
+        ?.intOrNull?.takeIf { it in 400..599 } ?: 500
+    return upstreamException(HttpStatusCode.fromValue(status), ssePayload(line).orEmpty(), null, GatewayProtocol.GEMINI)
+}

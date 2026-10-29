@@ -15,6 +15,7 @@ object Channels : Table("channels") {
     val baseUrl = varchar("base_url", 500)
     val authType = varchar("auth_type", 20)
     val protocols = varchar("protocols", 100)
+    val requestOverrides = text("request_overrides").default("{}")
     val enabled = bool("enabled")
     val priority = integer("priority").default(1)
     val createdAt = long("created_at")
@@ -297,6 +298,14 @@ object ModelTestSettings : Table("model_test_settings") {
     val defaultPrompt = text("default_prompt")
     val updatedAt = long("updated_at")
 
+    override val primaryKey = PrimaryKey(id)
+}
+
+/** Singleton global upstream header and JSON merge-patch settings. */
+object UpstreamRequestSettings : Table("upstream_request_settings") {
+    val id = integer("id")
+    val overrides = text("overrides")
+    val updatedAt = long("updated_at")
     override val primaryKey = PrimaryKey(id)
 }
 

@@ -3,6 +3,8 @@ package dev.soven.llmgateway.proxy
 import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamModel
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
@@ -35,6 +37,7 @@ suspend fun fetchUpstreamModels(
     credentialCipher: CredentialCipher,
     httpClient: HttpClient,
     authorizedOnly: Boolean = true,
+    globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
 ): List<UpstreamModel> {
     if (authorizedOnly && key.models.isEmpty()) return emptyList()
     val credential = runCatching {
@@ -48,7 +51,10 @@ suspend fun fetchUpstreamModels(
         )
     }
 
-    val models = fetchUpstreamModels(channel.baseUrl, credential, httpClient, channel.authType)
+    val models = fetchUpstreamModels(
+        channel.baseUrl, credential, httpClient, channel.authType,
+        protocol = channel.modelListProtocol(), globalOverrides = globalOverrides, channelOverrides = channel.requestOverrides,
+    )
     return if (authorizedOnly) models.filter { it.id in key.models } else models
 }
 
@@ -60,13 +66,18 @@ suspend fun fetchUpstreamModels(
     credential: String,
     httpClient: HttpClient,
     authType: String = "bearer",
+    protocol: GatewayProtocol? = null,
+    globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
+    channelOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
 ): List<UpstreamModel> {
     val url = baseUrl.trimEnd('/') + "/models"
+    val policy = UpstreamRequestPolicy(globalOverrides, channelOverrides, protocol, authType)
     try {
         return withTimeout(MODEL_LIST_TIMEOUT_MS) {
             val response = httpClient.get(url) {
-                applyUpstreamAuthentication(credential, authType)
+                applyUpstreamAuthentication(credential, authType, protocol)
                 header(HttpHeaders.Accept, "application/json")
+                policy.applyHeaders(this)
             }
             if (!response.status.isSuccess()) {
                 val message = when (response.status.value) {
@@ -90,7 +101,9 @@ suspend fun fetchUpstreamModels(
                     "api_error",
                 )
             }
-            parseModelList(bytes.toString(Charsets.UTF_8))
+            parseModelList(bytes.toString(Charsets.UTF_8)).map { model ->
+                if (protocol == GatewayProtocol.GEMINI) model.copy(id = model.id.removePrefix("models/")) else model
+            }
         }
     } catch (e: GatewayException) {
         throw e

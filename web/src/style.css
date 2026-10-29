@@ -2810,6 +2810,35 @@ input:disabled {
   opacity: 0.8;
 }
 
+.request-overrides-editor,
+.request-overrides-fields {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.request-overrides-fields {
+  padding-top: 16px;
+}
+
+.request-overrides-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.request-overrides-editor textarea,
+.request-overrides-preview {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.request-overrides-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
 .form-grid {
   display: grid;
   gap: 18px;

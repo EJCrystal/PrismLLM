@@ -11,6 +11,10 @@ import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.domain.ModelTestSettingsRecord
+import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.domain.UpstreamRequestSettingsRecord
+import dev.soven.llmgateway.proxy.UpstreamHeaderProfile
+import dev.soven.llmgateway.proxy.UpstreamHeaderProfiles
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.proxy.ModelConnectivityTestResult
 import dev.soven.llmgateway.proxy.Usage
@@ -110,6 +114,7 @@ data class ChannelRequest(
     val modelMappings: List<ChannelModelMappingRequest>? = null,
     val priority: Int? = null,
     val keys: List<ChannelKeyRequest>? = null,
+    val requestOverrides: UpstreamRequestOverrides? = null,
 )
 
 /**
@@ -133,6 +138,7 @@ data class ChannelResponse(
     val modelMappings: List<ChannelModelMappingResponse>,
     val priority: Int,
     val keys: List<ChannelKeyResponse> = emptyList(),
+    val requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
 )
 
 @Serializable
@@ -227,6 +233,21 @@ fun ChannelRecord.toResponse() = ChannelResponse(
     },
     priority = priority,
     keys = keys.map { it.toResponse() },
+    requestOverrides = requestOverrides,
+)
+
+@Serializable
+data class UpstreamRequestSettingsRequest(val overrides: UpstreamRequestOverrides)
+
+@Serializable
+data class UpstreamRequestSettingsResponse(
+    val overrides: UpstreamRequestOverrides,
+    val profiles: List<UpstreamHeaderProfile>,
+    val updatedAt: Long,
+)
+
+fun UpstreamRequestSettingsRecord.toResponse() = UpstreamRequestSettingsResponse(
+    overrides, UpstreamHeaderProfiles.profiles, updatedAt,
 )
 
 /**
@@ -939,6 +960,8 @@ data class ChannelModelDiscoveryRequest(
     val channelId: String? = null,
     val keyId: String? = null,
     val authType: String? = null,
+    val protocols: List<String>? = null,
+    val requestOverrides: UpstreamRequestOverrides? = null,
 )
 
 /**

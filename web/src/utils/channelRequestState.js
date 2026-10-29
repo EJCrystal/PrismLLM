@@ -1,4 +1,5 @@
 import { watch } from 'vue'
+import { normalizeRequestOverrides } from './requestOverrides.js'
 
 export function createRequestTracker(onInvalidate = () => {}) {
   let requestId = 0
@@ -20,10 +21,10 @@ export function createRequestTracker(onInvalidate = () => {}) {
 
 export function watchChannelRequestInputs(
   form,
-  { modelRequests, probeRequests, onInputsChanged, credentialSource = () => form.credential },
+  { modelRequests, probeRequests, onInputsChanged, credentialSource = () => form.credential, settingsSource = () => undefined },
 ) {
   return watch(
-    () => [form.baseUrl, credentialSource(), form.authType],
+    () => [form.baseUrl, credentialSource(), form.authType, settingsSource()],
     () => {
       modelRequests.invalidate()
       probeRequests.invalidate()
@@ -33,9 +34,12 @@ export function watchChannelRequestInputs(
   )
 }
 
-export function canProbeSavedChannel(savedChannel, { baseUrl, credential, authType }) {
+export function canProbeSavedChannel(savedChannel, { baseUrl, credential, authType, requestOverrides }) {
   if (!savedChannel) return false
+  if (requestOverrides === null) return false
   return String(baseUrl ?? '').trim() === String(savedChannel.baseUrl ?? '').trim()
     && !String(credential ?? '').trim()
     && authType === (savedChannel.authType || 'bearer')
+    && (requestOverrides === undefined || JSON.stringify(normalizeRequestOverrides(requestOverrides))
+      === JSON.stringify(normalizeRequestOverrides(savedChannel.requestOverrides)))
 }

@@ -22,6 +22,8 @@ object ReasoningEffort {
             GatewayProtocol.CHAT_COMPLETIONS -> request["reasoning_effort"]
             GatewayProtocol.RESPONSES -> (request["reasoning"] as? JsonObject)?.get("effort")
             GatewayProtocol.MESSAGES -> null
+            GatewayProtocol.GEMINI -> ((request["generationConfig"] as? JsonObject)
+                ?.get("thinkingConfig") as? JsonObject)?.get("thinkingLevel")
         }
         return (raw as? JsonPrimitive)
             ?.takeIf { it.isString }

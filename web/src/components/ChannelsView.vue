@@ -10,6 +10,8 @@ import PriceEditorModal from './PriceEditorModal.vue'
 import DefaultPriceModal from './DefaultPriceModal.vue'
 import ModelTestModal from './ModelTestModal.vue'
 import ModelTestSettingsModal from './ModelTestSettingsModal.vue'
+import UpstreamRequestSettingsModal from './UpstreamRequestSettingsModal.vue'
+import RequestOverridesEditor from './RequestOverridesEditor.vue'
 import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import SecretInput from './SecretInput.vue'
@@ -43,6 +45,9 @@ const priceEditor = ref(null)
 const showDefaultPrices = ref(false)
 const testTarget = ref(null)
 const showTestSettings = ref(false)
+const showRequestSettings = ref(false)
+const overrideEditor = ref(null)
+const overrideRevision = ref(0)
 const showAutoDisableSettings = ref(false)
 const rateLimitTarget = ref(null)
 const pricePromptChannelId = ref(null)
@@ -70,12 +75,14 @@ const form = reactive({
   protocols: ['chat_completions'],
   enabled: true,
   priority: 1,
+  requestOverrides: {},
 })
 
 watchChannelRequestInputs(form, {
   modelRequests,
   probeRequests,
   credentialSource: () => channelKeys.value.map((key) => key.credential).join('\u0000'),
+  settingsSource: () => overrideRevision.value,
   onInputsChanged: () => {
     channelKeys.value.forEach((key) => {
       key.availableModels = []
@@ -111,10 +118,17 @@ const mappingCount = computed(() => authorizedModels.value.filter((modelId) => c
 const canProbeProtocols = computed(() => {
   const savedChannel = channels.value.find((channel) => channel.id === editingId.value)
   if (!savedChannel?.keys?.length) return false
+  let requestOverrides
+  try {
+    requestOverrides = overrideEditor.value?.getValue() || form.requestOverrides
+  } catch {
+    return false
+  }
   return canProbeSavedChannel(savedChannel, {
     baseUrl: form.baseUrl,
     credential: channelKeys.value.some((key) => key.credential.trim()) ? 'draft' : '',
     authType: form.authType,
+    requestOverrides,
   })
 })
 
@@ -212,6 +226,8 @@ async function loadKeyModels(key) {
       authType,
       channelId: editingId.value,
       keyId: credential ? null : (key.id || null),
+      protocols: [...form.protocols],
+      requestOverrides: overrideEditor.value?.getValue() || form.requestOverrides,
     })
     if (
       requestId !== key.modelsRequestId ||
@@ -437,6 +453,7 @@ function openCreate() {
     protocols: ['chat_completions'],
     enabled: true,
     priority: 1,
+    requestOverrides: {},
   })
   showForm.value = true
 }
@@ -469,13 +486,19 @@ function openEdit(channel) {
     protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
     enabled: channel.enabled,
     priority: channel.priority ?? 1,
+    requestOverrides: channel.requestOverrides || {},
   })
   showForm.value = true
 }
 
 function closeChannelForm() {
-  if (testTarget.value || showTestSettings.value || showAutoDisableSettings.value || rateLimitTarget.value) return
+  if (testTarget.value || showTestSettings.value || showRequestSettings.value || showAutoDisableSettings.value || rateLimitTarget.value) return
   showForm.value = false
+}
+
+function onRequestSettingsSaved() {
+  channels.value.forEach((channel) => clearUpstreamModelCache(channel.id))
+  overrideRevision.value += 1
 }
 
 function clearMapping(modelId) {
@@ -611,6 +634,7 @@ async function save() {
 
   saving.value = true
   try {
+    form.requestOverrides = overrideEditor.value.getValue()
     const payload = buildChannelPayload(
       form,
       authorizedModels.value,
@@ -664,9 +688,13 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>上游接入点</h2>
-        <p>一个渠道对应一个上游接入点，可选择支持 Chat Completions、Responses、Anthropic Messages 或其组合。</p>
+        <p>一个渠道对应一个上游接入点，可选择 Chat Completions、Responses、Anthropic Messages、Gemini 或其组合。</p>
       </div>
       <div class="section-head-actions">
+        <button type="button" class="button subtle" @click="showRequestSettings = true">
+          <Icon name="bolt" :size="16" />
+          上游请求配置
+        </button>
         <button type="button" class="button subtle" @click="showAutoDisableSettings = true">
           <Icon name="shield" :size="16" />
           密钥自动禁用
@@ -875,8 +903,9 @@ onMounted(load)
           <select v-model="form.authType">
             <option value="bearer">Bearer token</option>
             <option value="anthropic">Anthropic API key（x-api-key）</option>
+            <option value="google">Google API key（x-goog-api-key）</option>
           </select>
-          <small>Anthropic 原生渠道选 Anthropic API key；调用方密钥仍由网关单独鉴权。</small>
+          <small>Anthropic / Gemini 原生渠道选择对应 API key；使用 OAuth 凭据时选择 Bearer token。</small>
         </label>
         <div class="field">
           <span>支持协议</span>
@@ -884,6 +913,7 @@ onMounted(load)
             <label><input v-model="form.protocols" type="checkbox" value="chat_completions" /> Chat Completions</label>
             <label><input v-model="form.protocols" type="checkbox" value="responses" /> Responses</label>
             <label><input v-model="form.protocols" type="checkbox" value="messages" /> Anthropic Messages</label>
+            <label><input v-model="form.protocols" type="checkbox" value="gemini" /> Gemini</label>
           </div>
           <div class="protocol-probe-row">
             <button
@@ -895,7 +925,7 @@ onMounted(load)
               {{ probing ? '探测中…' : '探测协议' }}
             </button>
             <span v-if="!editingId" class="muted small">保存渠道后可探测</span>
-            <span v-else-if="!canProbeProtocols" class="muted small">保存地址、密钥凭据或鉴权方式后可探测</span>
+            <span v-else-if="!canProbeProtocols" class="muted small">保存地址、凭据、鉴权方式或请求配置后可探测</span>
             <span v-else class="muted small">使用已保存密钥发送最小请求（1 token）</span>
           </div>
           <div v-if="probeResults.length" class="probe-results">
@@ -911,6 +941,12 @@ onMounted(load)
           </div>
           <small>请求只会路由到支持对应协议的渠道。</small>
         </div>
+        <details class="request-overrides-details">
+          <summary>上游请求配置 · 自定义 UA、请求头与请求体</summary>
+          <div class="request-overrides-fields">
+            <RequestOverridesEditor ref="overrideEditor" :value="form.requestOverrides" :disabled="saving" @changed="overrideRevision += 1" />
+          </div>
+        </details>
         <div class="field channel-key-pool">
           <div class="channel-model-auth-head">
             <div>
@@ -1116,6 +1152,8 @@ onMounted(load)
       v-if="showTestSettings"
       @close="showTestSettings = false"
     />
+
+    <UpstreamRequestSettingsModal v-if="showRequestSettings" @close="showRequestSettings = false" @saved="onRequestSettingsSaved" />
 
     <PriceEditorModal
       v-if="priceEditor"

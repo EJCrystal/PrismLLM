@@ -1,5 +1,7 @@
 package dev.soven.llmgateway.api
 
+import dev.soven.llmgateway.domain.GatewayProtocol
+
 /**
  * `/v1/models` 对外暴露的一个模型及其来源。
  *
@@ -23,10 +25,11 @@ enum class ExposedModelSource(val value: String) {
 /**
  * 数据面与管理面共用的对外模型聚合逻辑，保证管理页展示结果与 `/v1/models` 一致。
  */
-suspend fun listExposedModels(app: GatewayApplication): List<ExposedModel> {
-    val aliases = app.aliasRepository.listAvailableAliases()
+suspend fun listExposedModels(app: GatewayApplication, protocol: GatewayProtocol? = null): List<ExposedModel> {
+    val aliases = app.aliasRepository.listAvailableAliases(protocol)
     val aliasNames = app.aliasRepository.listAllAliasNames()
     val directModels = app.modelCatalog.listDirectModels()
+        .filter { protocol == null || protocol in it.channel.protocols }
         .filterNot { it.publicId in aliasNames }
         .groupBy { it.publicId }
         .map { (publicId, entries) ->

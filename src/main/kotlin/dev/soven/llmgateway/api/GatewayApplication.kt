@@ -3,6 +3,7 @@ package dev.soven.llmgateway.api
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.proxy.GatewayMetrics
+import dev.soven.llmgateway.proxy.isGeminiRequestPath
 import dev.soven.llmgateway.proxy.RequestLogWriter
 import dev.soven.llmgateway.repo.ModelPriceRepository
 import dev.soven.llmgateway.repo.ModelDefaultPriceRepository
@@ -20,6 +21,7 @@ import dev.soven.llmgateway.repo.CooldownStateRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
 import dev.soven.llmgateway.repo.RetentionSettingsRepository
 import dev.soven.llmgateway.repo.ModelTestSettingsRepository
+import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.ChannelKeyStateChangedException
 import dev.soven.llmgateway.repo.ChannelKeyReenableRequiresCredentialException
@@ -101,6 +103,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
+    val upstreamRequestSettingsRepository = UpstreamRequestSettingsRepository(databaseFactory.database)
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
     val modelDefaultPriceRepository = ModelDefaultPriceRepository(databaseFactory.database)
     val modelPricingService = ModelPricingService(modelPriceRepository, modelDefaultPriceRepository)
@@ -206,7 +209,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
                     val retryAfterSeconds = ((retryAfterMs + 999) / 1_000).coerceAtLeast(1)
                     call.response.header(HttpHeaders.RetryAfter, retryAfterSeconds.toString())
                 }
-                if (call.request.path() == "/v1/messages" && cause.nativeResponseBody != null) {
+                if ((call.request.path() == "/v1/messages" || isGeminiRequestPath(call.request.path())) && cause.nativeResponseBody != null) {
                     call.respondText(
                         cause.nativeResponseBody,
                         ContentType.Application.Json,
@@ -219,6 +222,13 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
                         gatewayJson.encodeToString(AnthropicErrorEnvelope.serializer(), cause.toAnthropicEnvelope()),
                         ContentType.Application.Json,
                         cause.status,
+                    )
+                    return@exception
+                }
+                if (isGeminiRequestPath(call.request.path())) {
+                    call.respondText(
+                        gatewayJson.encodeToString(GeminiErrorEnvelope.serializer(), cause.toGeminiEnvelope()),
+                        ContentType.Application.Json, cause.status,
                     )
                     return@exception
                 }
@@ -249,6 +259,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             allowMethod(HttpMethod.Delete)
             allowHeader(HttpHeaders.Authorization)
             allowHeader("x-api-key")
+            allowHeader("x-goog-api-key")
             allowHeader("anthropic-version")
             allowHeader("anthropic-beta")
             allowHeader(HttpHeaders.ContentType)
@@ -267,7 +278,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         }
         app.install(CallLogging) {
             level = Level.INFO
-            filter { call -> call.request.path().startsWith("/v1/") }
+            filter { call -> call.request.path().startsWith("/v1/") || call.request.path().startsWith("/v1beta/") }
         }
         app.install(MicrometerMetrics) {
             registry = metrics.registry
@@ -346,6 +357,14 @@ private suspend fun io.ktor.server.application.ApplicationCall.respondGatewayErr
     message: String,
     type: String,
 ) {
+    if (isGeminiRequestPath(request.path())) {
+        respondText(
+            GatewayApplication.gatewayJson.encodeToString(
+                GeminiErrorEnvelope.serializer(), GatewayException(status, code, message, type).toGeminiEnvelope(),
+            ), ContentType.Application.Json, status,
+        )
+        return
+    }
     if (request.path() == "/v1/messages") {
         respondText(
             GatewayApplication.gatewayJson.encodeToString(

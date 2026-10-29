@@ -53,4 +53,29 @@ describe('channel request state', () => {
       authType: 'anthropic',
     }), false)
   })
+
+  it('请求覆盖变更会丢弃正在返回的模型列表和协议探测', () => {
+    const revision = ref(0)
+    const form = reactive({ baseUrl: 'https://example.com/v1', authType: 'bearer' })
+    const models = createRequestTracker()
+    const probes = createRequestTracker()
+    const modelId = models.begin()
+    const probeId = probes.begin()
+    const stop = watchChannelRequestInputs(form, {
+      modelRequests: models, probeRequests: probes, onInputsChanged: () => {}, settingsSource: () => revision.value,
+    })
+    revision.value += 1
+    assert.equal(models.isCurrent(modelId), false)
+    assert.equal(probes.isCurrent(probeId), false)
+    stop()
+  })
+
+  it('修改或清空 UA 后需保存再探测，缺省新配置时仍兼容旧调用', () => {
+    const saved = { baseUrl: 'https://example.com/v1', authType: 'bearer', requestOverrides: { userAgent: 'saved-UA' } }
+    const inputs = { baseUrl: saved.baseUrl, authType: saved.authType, credential: '' }
+    assert.equal(canProbeSavedChannel(saved, inputs), true)
+    assert.equal(canProbeSavedChannel(saved, { ...inputs, requestOverrides: { userAgent: 'saved-UA' } }), true)
+    assert.equal(canProbeSavedChannel(saved, { ...inputs, requestOverrides: { userAgent: '' } }), false)
+    assert.equal(canProbeSavedChannel(saved, { ...inputs, requestOverrides: null }), false)
+  })
 })

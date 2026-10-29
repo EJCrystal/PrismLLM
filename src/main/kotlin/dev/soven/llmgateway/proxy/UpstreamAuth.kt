@@ -17,6 +17,7 @@ fun HttpRequestBuilder.applyUpstreamAuthentication(
 ) {
     when (authType) {
         "anthropic" -> header("x-api-key", credential)
+        "google" -> header("x-goog-api-key", credential)
         else -> header(HttpHeaders.Authorization, "Bearer $credential")
     }
     if (protocol == GatewayProtocol.MESSAGES || authType == "anthropic") {
