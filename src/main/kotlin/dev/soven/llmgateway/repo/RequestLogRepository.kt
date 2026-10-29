@@ -17,6 +17,7 @@ import dev.soven.llmgateway.report.UsageTrendPoint
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.Op
 import org.jetbrains.exposed.v1.core.Case
+import org.jetbrains.exposed.v1.core.Column
 import org.jetbrains.exposed.v1.core.LongColumnType
 import org.jetbrains.exposed.v1.core.TextColumnType
 import org.jetbrains.exposed.v1.core.and
@@ -123,23 +124,23 @@ class RequestLogRepository(private val database: Database) {
     }
 
     suspend fun listForDisplay(limit: Int, beforeId: Long? = null): List<RequestLogRecord> = suspendTransaction(database) {
-        val clientKeyNames = currentNames(ClientKeys.id, ClientKeys.name)
-        val channelNames = currentNames(Channels.id, Channels.name)
-        val channelKeyNames = currentNames(ChannelKeys.id, ChannelKeys.name)
-        logQuery(beforeId)
+        val records = logQuery(beforeId)
             .orderBy(RequestLogs.id, org.jetbrains.exposed.v1.core.SortOrder.DESC)
             .limit(limit.coerceIn(1, 500))
-            .map { row ->
-                val record = toRecord(row)
-                record.copy(
-                    clientKeyName = record.clientKeyId?.let { clientKeyNames[it] }?.takeIf { it.isNotBlank() }
-                        ?: record.clientKeyName,
-                    channelName = record.channelId?.let { channelNames[it] }?.takeIf { it.isNotBlank() }
-                        ?: record.channelName,
-                    channelKeyName = record.channelKeyId?.let { channelKeyNames[it] }?.takeIf { it.isNotBlank() }
-                        ?: record.channelKeyName,
-                )
-            }
+            .map(::toRecord)
+        val clientKeyNames = currentNames(ClientKeys.id, ClientKeys.name, records.mapNotNull { it.clientKeyId })
+        val channelNames = currentNames(Channels.id, Channels.name, records.mapNotNull { it.channelId })
+        val channelKeyNames = currentNames(ChannelKeys.id, ChannelKeys.name, records.mapNotNull { it.channelKeyId })
+        records.map { record ->
+            record.copy(
+                clientKeyName = record.clientKeyId?.let { clientKeyNames[it] }?.takeIf { it.isNotBlank() }
+                    ?: record.clientKeyName,
+                channelName = record.channelId?.let { channelNames[it] }?.takeIf { it.isNotBlank() }
+                    ?: record.channelName,
+                channelKeyName = record.channelKeyId?.let { channelKeyNames[it] }?.takeIf { it.isNotBlank() }
+                    ?: record.channelKeyName,
+            )
+        }
     }
 
     private fun logQuery(beforeId: Long?): Query {
@@ -150,10 +151,6 @@ class RequestLogRepository(private val database: Database) {
     suspend fun report(query: UsageReportQuery): UsageReport = suspendTransaction(database) {
         val where = reportWhere(query)
         val totals = totalQuery(where).singleOrNull()?.toUsageTotal() ?: UsageTotal()
-        // 报表按实体 ID 展示当前名称；实体删除后回退到请求日志中的名称快照。
-        val clientKeyNames = currentNames(ClientKeys.id, ClientKeys.name)
-        val channelNames = currentNames(Channels.id, Channels.name)
-        val channelKeyNames = currentNames(ChannelKeys.id, ChannelKeys.name)
         UsageReport(
             from = query.from,
             to = query.to,
@@ -165,14 +162,14 @@ class RequestLogRepository(private val database: Database) {
                 RequestLogs.clientKeyName,
                 where,
                 unassignedId = UNASSIGNED_CLIENT_KEY,
-                currentNames = clientKeyNames,
+                resolveCurrentNames = { ids -> currentNames(ClientKeys.id, ClientKeys.name, ids) },
             ),
             byChannel = groupedQuery(
                 RequestLogs.channelId,
                 RequestLogs.channelName,
                 where,
                 unassignedId = UNASSIGNED_CHANNEL,
-                currentNames = channelNames,
+                resolveCurrentNames = { ids -> currentNames(Channels.id, Channels.name, ids) },
             ),
             byModel = groupedQuery(RequestLogs.upstreamModel, RequestLogs.upstreamModel, where, unassignedId = UNASSIGNED_MODEL),
             byChannelKey = groupedQuery(
@@ -180,7 +177,7 @@ class RequestLogRepository(private val database: Database) {
                 RequestLogs.channelKeyName,
                 where,
                 unassignedId = UNASSIGNED_CHANNEL_KEY,
-                currentNames = channelKeyNames,
+                resolveCurrentNames = { ids -> currentNames(ChannelKeys.id, ChannelKeys.name, ids) },
             ),
             byProtocol = groupedQuery(RequestLogs.protocol, RequestLogs.protocol, where, unassignedId = UNASSIGNED_PROTOCOL),
             byErrorCode = errorQuery(this, query),
@@ -266,11 +263,11 @@ class RequestLogRepository(private val database: Database) {
     }
 
     private fun <T : String?> groupedQuery(
-        idColumn: org.jetbrains.exposed.v1.core.Column<T>,
-        nameColumn: org.jetbrains.exposed.v1.core.Column<T>,
+        idColumn: Column<T>,
+        nameColumn: Column<T>,
         where: Op<Boolean>,
         unassignedId: String = UNASSIGNED_CLIENT_KEY,
-        currentNames: Map<String, String> = emptyMap(),
+        resolveCurrentNames: (Set<String>) -> Map<String, String> = { emptyMap() },
     ): List<UsageGroup> {
         val count = RequestLogs.id.count()
         val failure = (RequestLogs.statusCode greaterEq 400) or (RequestLogs.errorCode.isNotNull())
@@ -310,9 +307,12 @@ class RequestLogRepository(private val database: Database) {
             .groupBy(idColumn, nameColumn)
             .toList()
         val costs = groupedCosts(idColumn, where, unassignedId)
-        return rows.groupBy { row ->
+        val groups = rows.groupBy { row ->
             row[idColumn]?.takeIf { it.isNotBlank() } ?: unassignedId
-        }.map { (id, grouped) ->
+        }
+        // 只查询当前分组实际出现的实体，避免每次报表读取整张配置表。
+        val currentNames = resolveCurrentNames(groups.keys - unassignedId)
+        return groups.map { (id, grouped) ->
             val groupRequests = grouped.sumOf { it[count] }
             UsageGroup(
                 id = id,
@@ -336,16 +336,22 @@ class RequestLogRepository(private val database: Database) {
         }.sortedByDescending { it.totalTokens }
     }
 
-    private fun <T : String?> currentNames(
-        idColumn: org.jetbrains.exposed.v1.core.Column<T>,
-        nameColumn: org.jetbrains.exposed.v1.core.Column<T>,
-    ): Map<String, String> = idColumn.table.select(idColumn, nameColumn)
-        .mapNotNull { row ->
-            val id = row[idColumn]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val name = row[nameColumn]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            id to name
-        }
-        .toMap()
+    private fun currentNames(
+        idColumn: Column<String>,
+        nameColumn: Column<String>,
+        ids: Collection<String>,
+    ): Map<String, String> {
+        val distinctIds = ids.asSequence().filter { it.isNotBlank() }.distinct().toList()
+        if (distinctIds.isEmpty()) return emptyMap()
+        return idColumn.table.select(idColumn, nameColumn)
+            .where { idColumn inList distinctIds }
+            .mapNotNull { row ->
+                val id = row[idColumn].takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val name = row[nameColumn].takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                id to name
+            }
+            .toMap()
+    }
 
     private fun <T : String?> groupedCosts(
         idColumn: org.jetbrains.exposed.v1.core.Column<T>,
