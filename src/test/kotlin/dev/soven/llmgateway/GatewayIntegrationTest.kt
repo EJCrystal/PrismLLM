@@ -5226,7 +5226,7 @@ class GatewayIntegrationTest {
             application { app.install(this) }
             for (model in listOf("public-model", "alias-model")) {
                 for (protocol in listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES)) {
-                    val response = client.post("/v1" + protocol.path) {
+                    val response = client.post("/v1" + assertNotNull(protocol.endpointPath)) {
                         header(HttpHeaders.Authorization, "Bearer $key")
                         header("User-Agent", "caller-UA")
                         header("X-Caller-Private", "do not forward")

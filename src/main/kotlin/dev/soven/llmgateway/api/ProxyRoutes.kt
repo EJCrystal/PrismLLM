@@ -108,8 +108,9 @@ fun Route.proxyRoutes(app: GatewayApplication) {
         )
     }
 
-    GatewayProtocol.entries.filter { it != GatewayProtocol.GEMINI }.forEach { protocol ->
-        post("/v1${protocol.path}") {
+    GatewayProtocol.entries.forEach { protocol ->
+        val endpointPath = protocol.endpointPath ?: return@forEach
+        post("/v1$endpointPath") {
             handleProxy(app, call, protocol)
         }
     }
