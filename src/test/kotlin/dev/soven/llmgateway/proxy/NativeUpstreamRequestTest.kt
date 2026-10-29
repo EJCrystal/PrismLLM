@@ -1,10 +1,13 @@
 package dev.soven.llmgateway.proxy
 
+import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.GatewayProtocol
+import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -35,6 +38,18 @@ class NativeUpstreamRequestTest {
             Json.parseToJsonElement("{\"generationConfig\":{\"maxOutputTokens\":128,\"temperature\":0.5}}"),
             limitModelTestTokens(inflated, GatewayProtocol.GEMINI, 128),
         )
+    }
+
+    @Test
+    fun `Gemini model test rejects a non-object generationConfig instead of replacing it`() {
+        listOf("null", "\"invalid\"", "1", "[]").forEach { value ->
+            val body = Json.parseToJsonElement("""{"generationConfig":$value}""").jsonObject
+            val error = assertFailsWith<GatewayException> {
+                limitModelTestTokens(body, GatewayProtocol.GEMINI, 128)
+            }
+            assertEquals(HttpStatusCode.BadRequest, error.status)
+            assertEquals("invalid_request_overrides", error.code)
+        }
     }
 
     @Test

@@ -1,7 +1,12 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { reactive, ref } from 'vue'
-import { canProbeSavedChannel, createRequestTracker, watchChannelRequestInputs } from '../src/utils/channelRequestState.js'
+import {
+  canProbeSavedChannel,
+  createRequestTracker,
+  sameProtocolSelection,
+  watchChannelRequestInputs,
+} from '../src/utils/channelRequestState.js'
 
 describe('channel request state', () => {
   it('clears loading and invalidates model discovery and probing when auth changes', () => {
@@ -77,5 +82,12 @@ describe('channel request state', () => {
     assert.equal(canProbeSavedChannel(saved, { ...inputs, requestOverrides: { userAgent: 'saved-UA' } }), true)
     assert.equal(canProbeSavedChannel(saved, { ...inputs, requestOverrides: { userAgent: '' } }), false)
     assert.equal(canProbeSavedChannel(saved, { ...inputs, requestOverrides: null }), false)
+  })
+
+  it('协议快照按集合比较，任何增删都使模型发现结果过期', () => {
+    assert.equal(sameProtocolSelection(['chat_completions', 'responses'], ['responses', 'chat_completions']), true)
+    assert.equal(sameProtocolSelection(['chat_completions'], []), false)
+    assert.equal(sameProtocolSelection(['chat_completions'], ['chat_completions', 'gemini']), false)
+    assert.equal(sameProtocolSelection(['gemini'], ['responses']), false)
   })
 })

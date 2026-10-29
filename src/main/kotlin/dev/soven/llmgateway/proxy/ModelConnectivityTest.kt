@@ -176,7 +176,16 @@ internal fun limitModelTestTokens(body: JsonObject, protocol: GatewayProtocol, m
         else -> "max_tokens"
     }
     val parent = when {
-        protocol == GatewayProtocol.GEMINI -> body["generationConfig"] as? JsonObject ?: JsonObject(emptyMap())
+        protocol == GatewayProtocol.GEMINI -> when (val generationConfig = body["generationConfig"]) {
+            null -> JsonObject(emptyMap())
+            is JsonObject -> generationConfig
+            else -> throw GatewayException(
+                HttpStatusCode.BadRequest,
+                "invalid_request_overrides",
+                "Gemini generationConfig 必须是 JSON 对象",
+                "invalid_request_error",
+            )
+        }
         field == "max_completion_tokens" -> JsonObject(body - "max_tokens")
         else -> body
     }

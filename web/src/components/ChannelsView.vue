@@ -29,7 +29,12 @@ import {
   normalizeChannelKeyRateLimit,
   validateChannelKeyRateLimit,
 } from '../utils/channelKeyRateLimit.js'
-import { canProbeSavedChannel, createRequestTracker, watchChannelRequestInputs } from '../utils/channelRequestState'
+import {
+  canProbeSavedChannel,
+  createRequestTracker,
+  sameProtocolSelection,
+  watchChannelRequestInputs,
+} from '../utils/channelRequestState'
 import {
   buildPricePrompt,
   channelPriceSummaries,
@@ -208,6 +213,7 @@ async function loadKeyModels(key) {
   const baseUrl = form.baseUrl.trim()
   const credential = key.credential.trim()
   const authType = form.authType
+  const protocols = [...form.protocols]
   if (!baseUrl) {
     notify('请先填写基础地址', 'warning')
     return
@@ -226,14 +232,15 @@ async function loadKeyModels(key) {
       authType,
       channelId: editingId.value,
       keyId: credential ? null : (key.id || null),
-      protocols: [...form.protocols],
+      protocols,
       requestOverrides: overrideEditor.value?.getValue() || form.requestOverrides,
     })
     if (
       requestId !== key.modelsRequestId ||
       form.baseUrl.trim() !== baseUrl ||
       form.authType !== authType ||
-      key.credential.trim() !== credential
+      key.credential.trim() !== credential ||
+      !sameProtocolSelection(form.protocols, protocols)
     ) return
     key.availableModels = response?.data || []
     if (key.models.length === 0) {
@@ -241,7 +248,10 @@ async function loadKeyModels(key) {
       key.models = authorized.length ? authorized : (key.id ? [] : key.availableModels.map((model) => model.id))
     }
   } catch (cause) {
-    if (requestId === key.modelsRequestId) key.modelsError = cause.message
+    if (
+      requestId === key.modelsRequestId &&
+      sameProtocolSelection(form.protocols, protocols)
+    ) key.modelsError = cause.message
   } finally {
     if (requestId === key.modelsRequestId) key.modelsLoading = false
   }

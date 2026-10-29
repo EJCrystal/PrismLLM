@@ -43,3 +43,8 @@ export function canProbeSavedChannel(savedChannel, { baseUrl, credential, authTy
     && (requestOverrides === undefined || JSON.stringify(normalizeRequestOverrides(requestOverrides))
       === JSON.stringify(normalizeRequestOverrides(savedChannel.requestOverrides)))
 }
+
+export function sameProtocolSelection(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+  return left.every((protocol) => right.includes(protocol))
+}
