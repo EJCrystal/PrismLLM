@@ -101,7 +101,12 @@ class UpstreamHeaderCatalogService(
         val checkedAt = now()
         state.updateAndGet { it.copy(refreshing = true) }
         try {
-            val current = state.get().profiles.associateBy { it.id }.toMutableMap()
+            val snapshot = state.get()
+            val current = snapshot.profiles.associateBy { it.id }.toMutableMap()
+            snapshot.history.forEach { (id, versions) ->
+                versions.firstOrNull()?.let { current[id] = it }
+            }
+            val updatedProfiles = mutableSetOf<String>()
             val errors = mutableListOf<String>()
             var successfulSources = 0
 
@@ -114,6 +119,7 @@ class UpstreamHeaderCatalogService(
                 result.onSuccess { version ->
                     val base = current[source.profileId] ?: return@onSuccess
                     current[source.profileId] = applyVersion(base, version, source.source, checkedAt)
+                    updatedProfiles += source.profileId
                     successfulSources += 1
                 }.onFailure { cause ->
                     errors += source.profileId + ":" + safeErrorCategory(cause)
@@ -125,6 +131,7 @@ class UpstreamHeaderCatalogService(
                 capture { fetchManifest(catalogUrl, checkedAt) }
                     .onSuccess { profiles ->
                         profiles.forEach { current[it.id] = it }
+                        updatedProfiles += profiles.map { it.id }
                         successfulSources += 1
                     }
                     .onFailure { cause ->
@@ -135,7 +142,9 @@ class UpstreamHeaderCatalogService(
             val error = errors.joinToString("; ").takeIf { it.isNotBlank() }
             val record = if (successfulSources > 0) {
                 repository.saveRefresh(
-                    profiles = current.values.sortedBy { PROFILE_ORDER.indexOf(it.id) },
+                    profiles = current.values
+                        .filter { it.id in updatedProfiles }
+                        .sortedBy { PROFILE_ORDER.indexOf(it.id) },
                     checkedAt = checkedAt,
                     successAt = checkedAt,
                     lastError = error,

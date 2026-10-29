@@ -6567,9 +6567,12 @@ class GatewayIntegrationTest {
         var clock = 1_000L
         var claudeVersion = "2.1.400"
         var codexVersion = "0.170.0"
+        var claudeFailure = false
         val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
         val sources = listOf(
-            HeaderProfileVersionSource("claude", "test:npm") { claudeVersion },
+            HeaderProfileVersionSource("claude", "test:npm") {
+                if (claudeFailure) error("registry unavailable") else claudeVersion
+            },
             HeaderProfileVersionSource("codex", "test:github") { codexVersion },
             HeaderProfileVersionSource("google", "test:npm") { error("registry unavailable") },
         )
@@ -6599,6 +6602,11 @@ class GatewayIntegrationTest {
         assertEquals("2.1.400", refreshed.pins["claude"])
         assertEquals("2.1.401", refreshed.history["claude"]!!.first().version)
         assertEquals("0.171.0", refreshed.profiles.first { it.id == "codex" }.version)
+
+        clock = 3_000L
+        claudeFailure = true
+        val failedPinnedRefresh = catalog.refreshNow()
+        assertEquals("2.1.400", failedPinnedRefresh.profiles.first { it.id == "claude" }.version)
 
         val reloaded = service()
         reloaded.initialize()
