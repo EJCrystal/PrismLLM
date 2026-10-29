@@ -8,8 +8,9 @@ import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamModel
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
-import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.parameter
+import io.ktor.client.request.prepareGet
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -21,12 +22,14 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
 /**
- * 拉取 OpenAI 兼容上游的模型列表。渠道 baseUrl 已包含版本路径时，请求会落到 `/v1/models`。
+ * 拉取上游模型列表。baseUrl 必须包含上游要求的版本路径、不含端点；统一追加 `/models`。
+ * Gemini 使用 nextPageToken 拉取全部页面，所有页面共享超时与响应大小预算。
  *
  * @author 文杰
  * @since 2026-10-22
@@ -74,36 +77,61 @@ suspend fun fetchUpstreamModels(
     val policy = UpstreamRequestPolicy(globalOverrides, channelOverrides, protocol, authType)
     try {
         return withTimeout(MODEL_LIST_TIMEOUT_MS) {
-            val response = httpClient.get(url) {
-                applyUpstreamAuthentication(credential, authType, protocol)
-                header(HttpHeaders.Accept, "application/json")
-                policy.applyHeaders(this)
-            }
-            if (!response.status.isSuccess()) {
-                val message = when (response.status.value) {
-                    401, 403 -> "上游凭据无效或无权访问模型列表"
-                    404 -> "上游没有提供 /models 接口"
-                    else -> "上游模型列表返回错误 ${response.status.value}"
+            val models = mutableListOf<UpstreamModel>()
+            val seenPageTokens = mutableSetOf<String>()
+            var pageToken: String? = null
+            var remainingBytes = MODEL_LIST_MAX_BYTES
+            do {
+                pageToken = httpClient.prepareGet(url) {
+                    applyUpstreamAuthentication(credential, authType, protocol)
+                    header(HttpHeaders.Accept, "application/json")
+                    policy.applyHeaders(this)
+                    if (protocol == GatewayProtocol.GEMINI) {
+                        parameter("pageSize", 1000)
+                        pageToken?.let { parameter("pageToken", it) }
+                    }
+                }.execute { response ->
+                    if (!response.status.isSuccess()) {
+                        val message = when (response.status.value) {
+                            401, 403 -> "上游凭据无效或无权访问模型列表"
+                            404 -> "上游没有提供 /models 接口"
+                            else -> "上游模型列表返回错误 ${response.status.value}"
+                        }
+                        throw GatewayException(
+                            HttpStatusCode.BadGateway, "upstream_models_error", message, "api_error",
+                        )
+                    }
+                    val bytes = response.bodyAsChannel().readRemaining(remainingBytes.toLong() + 1).readBytes()
+                    remainingBytes -= bytes.size
+                    if (remainingBytes < 0) {
+                        throw GatewayException(
+                            HttpStatusCode.BadGateway,
+                            "upstream_models_too_large",
+                            "上游模型列表超过 2MB",
+                            "api_error",
+                        )
+                    }
+                    val root = runCatching { Json.parseToJsonElement(bytes.toString(Charsets.UTF_8)) }.getOrNull()
+                    models += parseModelList(root)
+                    if (protocol == GatewayProtocol.GEMINI) {
+                        ((root as? JsonObject)?.get("nextPageToken") as? JsonPrimitive)
+                            ?.contentOrNull?.takeIf { it.isNotBlank() }
+                    } else {
+                        null
+                    }
                 }
-                throw GatewayException(
-                    HttpStatusCode.BadGateway,
-                    "upstream_models_error",
-                    message,
-                    "api_error",
-                )
-            }
-            val bytes = response.bodyAsChannel().readRemaining(MODEL_LIST_MAX_BYTES.toLong() + 1).readBytes()
-            if (bytes.size > MODEL_LIST_MAX_BYTES) {
-                throw GatewayException(
-                    HttpStatusCode.BadGateway,
-                    "upstream_models_too_large",
-                    "上游模型列表超过 2MB",
-                    "api_error",
-                )
-            }
-            parseModelList(bytes.toString(Charsets.UTF_8)).map { model ->
+                if (pageToken != null && !seenPageTokens.add(pageToken)) {
+                    throw GatewayException(
+                        HttpStatusCode.BadGateway,
+                        "upstream_models_invalid",
+                        "上游模型列表返回重复分页标记",
+                        "api_error",
+                    )
+                }
+            } while (pageToken != null)
+            models.map { model ->
                 if (protocol == GatewayProtocol.GEMINI) model.copy(id = model.id.removePrefix("models/")) else model
-            }
+            }.distinctBy { it.id }.sortedBy { it.id }
         }
     } catch (e: GatewayException) {
         throw e
@@ -126,8 +154,10 @@ suspend fun fetchUpstreamModels(
     }
 }
 
-internal fun parseModelList(text: String): List<UpstreamModel> {
-    val root = runCatching { Json.parseToJsonElement(text) }.getOrNull()
+internal fun parseModelList(text: String): List<UpstreamModel> =
+    parseModelList(runCatching { Json.parseToJsonElement(text) }.getOrNull())
+
+private fun parseModelList(root: JsonElement?): List<UpstreamModel> {
     val array = when (root) {
         is JsonArray -> root
         is JsonObject -> (root["data"] as? JsonArray)

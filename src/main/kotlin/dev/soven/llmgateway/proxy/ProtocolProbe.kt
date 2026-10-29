@@ -35,7 +35,8 @@ data class ProtocolProbeResult(
 )
 
 /**
- * 用最小请求探测渠道是否提供 Chat Completions 与 Responses 端点。
+ * 管理面主动发现渠道支持的四种协议，包括尚未声明的协议，以便填写渠道配置。
+ * 每个协议发送一次最多 1 token 的最小请求；数据面仍只路由到声明了对应协议的渠道。
  *
  * @author 文杰
  * @since 2026-10-22

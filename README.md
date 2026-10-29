@@ -192,7 +192,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 
 写操作需要把登录响应里的 `gw_csrf` Cookie 值放到 `X-CSRF-Token` 请求头。
 
-拉取某个渠道的上游模型列表（网关会请求 `{baseUrl}/models`）。未指定 `keyId` 时使用优先级最高的启用密钥：
+拉取某个渠道的上游模型列表（网关会请求 `{baseUrl}/models`，`baseUrl` 包含上游要求的版本路径、不含 `/models` 端点）。Gemini 会通过 `nextPageToken` 拉取所有页面，每页使用相同鉴权与请求头覆盖，整个发现共享 15 秒超时和 2 MB 响应大小上限。未指定 `keyId` 时使用优先级最高的启用密钥：
 
 ```bash
 curl -b cookies.txt 'http://localhost:8080/admin/api/channels/<channel-id>/models?keyId=<key-id>'
@@ -292,7 +292,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
   -d '{"model":"gpt-4o-mini"}'
 ```
 
-返回每个协议的 `supported`、`statusCode` 和说明。探测会使用已保存凭据发送最小请求（Chat/Messages `max_tokens=1`、Responses `max_output_tokens=1`、Gemini `generationConfig.maxOutputTokens=1`）；Chat 显式配置 `max_completion_tokens` 时改用该字段并限制为 1。探测可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
+返回每个协议的 `supported`、`statusCode` 和说明。该管理操作主动发现全部四种协议，包括尚未勾选的协议，结果用于编辑渠道支持协议，保存后才生效；数据面仍只选择声明了请求协议的渠道。探测会使用已保存凭据发送最小请求（Chat/Messages `max_tokens=1`、Responses `max_output_tokens=1`、Gemini `generationConfig.maxOutputTokens=1`）；Chat 显式配置 `max_completion_tokens` 时改用该字段并限制为 1。探测可能产生少量 token 费用；不传 `model` 时使用渠道已授权模型中的第一个。
 
 渠道编辑弹窗的授权模型列表提供「测试」入口，可对指定模型发送一次真实请求，并指定协议和测试提示词。测试使用已保存的渠道凭据，不经过数据面、不写入请求日志，也不消耗调用方密钥额度；最多输出 128 token，超时 45 秒。默认不指定推理强度，显式请求覆盖除外。
 

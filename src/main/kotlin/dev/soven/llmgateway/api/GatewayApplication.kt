@@ -52,11 +52,13 @@ import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.plugins.ContentTransformationException
 import io.ktor.server.plugins.UnsupportedMediaTypeException
 import io.ktor.server.plugins.calllogging.CallLogging
+import io.ktor.server.plugins.calllogging.processingTimeMillis
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.metrics.micrometer.MicrometerMetrics
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.path
+import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respondText
 import io.ktor.server.response.header
 import io.ktor.server.routing.routing
@@ -279,6 +281,12 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         app.install(CallLogging) {
             level = Level.INFO
             filter { call -> call.request.path().startsWith("/v1/") || call.request.path().startsWith("/v1beta/") }
+            disableDefaultColors()
+            // Gemini accepts query credentials; keep the access-log contract independent of Ktor defaults.
+            format { call ->
+                "${call.response.status() ?: "Unhandled"}: ${call.request.httpMethod.value} - " +
+                    "${call.request.path()} in ${call.processingTimeMillis()}ms"
+            }
         }
         app.install(MicrometerMetrics) {
             registry = metrics.registry

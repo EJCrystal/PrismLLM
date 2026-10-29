@@ -1,5 +1,8 @@
 package dev.soven.llmgateway
 
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.classic.spi.ThrowableProxyUtil
+import ch.qos.logback.core.AppenderBase
 import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.domain.ChannelRecord
@@ -66,6 +69,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
+import org.slf4j.LoggerFactory
 import org.testcontainers.containers.PostgreSQLContainer
 import java.io.IOException
 import java.math.BigDecimal
@@ -73,6 +77,7 @@ import java.nio.file.Path
 import java.sql.DriverManager
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -5416,6 +5421,49 @@ class GatewayIntegrationTest {
 
     @Test
     @Tag("upstream-request-overrides")
+    fun modelDiscoveryTreatsEmptyProtocolsAsUnspecifiedAndValidatesNonemptyLists() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            "discovery-protocols", fake.baseUrl + "/ok/v1", setOf(GatewayProtocol.CHAT_COMPLETIONS),
+            requestOverrides = UpstreamRequestOverrides(protocols = mapOf(
+                "chat_completions" to UpstreamProtocolOverrides(userAgent = "saved-chat-UA"),
+                "responses" to UpstreamProtocolOverrides(userAgent = "draft-responses-UA"),
+            )),
+        )
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            for ((protocols, expectedUA) in listOf("[]" to "saved-chat-UA", "[\"responses\"]" to "draft-responses-UA")) {
+                val response = client.post("/admin/api/channels/model-discovery") {
+                    header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                    header("X-CSRF-Token", session.session.csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"baseUrl":"${channel.baseUrl}","channelId":"${channel.id}","protocols":$protocols}""")
+                }
+                assertEquals(HttpStatusCode.OK, response.status)
+                assertEquals(listOf(expectedUA), fake.modelRequests.last().requestHeaders["user-agent"])
+            }
+            val unsaved = client.post("/admin/api/channels/model-discovery") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"baseUrl":"${channel.baseUrl}","credential":"draft-secret","protocols":[],"requestOverrides":{"userAgent":"new-UA"}}""")
+            }
+            assertEquals(HttpStatusCode.OK, unsaved.status)
+            assertEquals(listOf("new-UA"), fake.modelRequests.last().requestHeaders["user-agent"])
+            val invalid = client.post("/admin/api/channels/model-discovery") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"baseUrl":"${channel.baseUrl}","channelId":"${channel.id}","protocols":["invalid"]}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, invalid.status)
+            assertTrue(invalid.bodyAsText().contains("invalid_channel"))
+            assertEquals(3, fake.modelRequests.size)
+        }
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
     fun explicitEmptyUserAgentDoesNotFallBackToJavaIdentity() = runBlocking {
         createChannelWithBaseUrl("empty-UA", fake.baseUrl + "/ok/v1", requestOverrides = UpstreamRequestOverrides(userAgent = ""))
         val key = createClientKey()
@@ -5429,6 +5477,73 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, response.status)
             response.bodyAsText()
             assertEquals(listOf(""), fake.requests.single().requestHeaders["user-agent"])
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun geminiQueryCredentialsAreExcludedFromLogsAndUpstreamUrls() = runBlocking {
+        createChannelWithBaseUrl(
+            "gemini-query-logging", fake.baseUrl + "/ok/v1beta", setOf(GatewayProtocol.GEMINI),
+            modelMappings = mappingsOf("gemini-2.5-pro"), authType = "google",
+        )
+        val key = createClientKey()
+        val rejectedKey = "query-client-secret-for-log-test"
+        val queryTag = "private-query-tag"
+        val events = ConcurrentLinkedQueue<ILoggingEvent>()
+        val rootLogger = LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME) as ch.qos.logback.classic.Logger
+        val appender = object : AppenderBase<ILoggingEvent>() {
+            override fun append(event: ILoggingEvent) {
+                event.prepareForDeferredProcessing()
+                events.add(event)
+            }
+        }.apply { context = rootLogger.loggerContext; start() }
+        rootLogger.addAppender(appender)
+        try {
+            testApplication {
+                application { app.install(this) }
+                for (action in listOf("generateContent", "streamGenerateContent")) {
+                    val response = client.post("/v1beta/models/gemini-2.5-pro:$action?key=$key&tracking=$queryTag") {
+                        contentType(ContentType.Application.Json)
+                        setBody("""{"contents":[]}""")
+                    }
+                    assertEquals(HttpStatusCode.OK, response.status)
+                    assertFalse(response.bodyAsText().contains(key))
+                }
+                val rejected = client.get("/v1beta/models?key=$rejectedKey&tracking=$queryTag")
+                assertEquals(HttpStatusCode.Unauthorized, rejected.status)
+                assertFalse(rejected.bodyAsText().contains(rejectedKey))
+                val malformed = client.post("/v1beta/models/gemini-2.5-pro:generateContent?key=$key&tracking=$queryTag") {
+                    contentType(ContentType.Application.Json)
+                    setBody("{")
+                }
+                assertEquals(HttpStatusCode.BadRequest, malformed.status)
+                assertFalse(malformed.bodyAsText().contains(key))
+                awaitRequestLogCount(2)
+                val requestLogs = app.requestLogRepository.list(10).toString()
+                assertFalse(requestLogs.contains(key))
+                assertFalse(requestLogs.contains(queryTag))
+            }
+            val messages = events.map { it.formattedMessage }
+            assertEquals(4, messages.count { it.contains(" - /v1beta/models") })
+            val captured = events.joinToString("\n") { event ->
+                event.formattedMessage + event.mdcPropertyMap.values.joinToString() +
+                    (event.throwableProxy?.let(ThrowableProxyUtil::asString) ?: "")
+            }
+            for (secret in listOf(key, rejectedKey, queryTag, "upstream-secret")) {
+                assertFalse(captured.contains(secret), "日志不应包含凭据或查询参数")
+            }
+            assertEquals(2, fake.requests.size)
+            fake.requests.forEach {
+                val uri = assertNotNull(it.uri)
+                assertFalse(uri.contains(key))
+                assertFalse(uri.contains("key="))
+                assertFalse(uri.contains(queryTag))
+                assertEquals(listOf("upstream-secret"), it.requestHeaders["x-goog-api-key"])
+            }
+        } finally {
+            rootLogger.detachAppender(appender)
+            appender.stop()
         }
     }
 

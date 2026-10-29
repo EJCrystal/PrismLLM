@@ -364,7 +364,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 ?: throw badRequest("invalid_channel", "发现上游模型需要提供凭据")
             val authorized = savedKey?.models?.toSet().orEmpty()
             val mappingByUpstream = saved?.modelMappings?.associateBy { it.upstreamModel }.orEmpty()
-            val discoveryProtocols = request.protocols?.let(::parseProtocols) ?: saved?.protocols.orEmpty()
+            val discoveryProtocols = request.protocols?.takeIf { it.isNotEmpty() }?.let(::parseProtocols)
+                ?: saved?.protocols.orEmpty()
             val discoveryProtocol = when (authType) {
                 "anthropic" -> GatewayProtocol.MESSAGES
                 "google" -> GatewayProtocol.GEMINI

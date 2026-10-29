@@ -926,7 +926,7 @@ onMounted(load)
             </button>
             <span v-if="!editingId" class="muted small">保存渠道后可探测</span>
             <span v-else-if="!canProbeProtocols" class="muted small">保存地址、凭据、鉴权方式或请求配置后可探测</span>
-            <span v-else class="muted small">使用已保存密钥发送最小请求（1 token）</span>
+            <span v-else class="muted small">使用已保存密钥探测全部四种协议（含未勾选项），每种最多 1 token</span>
           </div>
           <div v-if="probeResults.length" class="probe-results">
             <span

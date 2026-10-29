@@ -70,6 +70,34 @@ Claude 预设还提供 `x-app` 和 `x-stainless-*`；Codex 提供 `originator` /
 
 模型发现请求不属于生成协议：优先按渠道鉴权类型识别 Anthropic / Google，否则按渠道唯一声明的协议识别；不能确定协议时只应用通用覆盖，并按鉴权类型选择自动预设。
 
+模型发现 API 中省略 `protocols` 或提交 `protocols:[]` 都表示未指定，回退到已保存渠道的协议；新渠道没有已保存协议时，按上述鉴权规则判断。非空列表仍会校验协议名称，并优先使用这次提交的协议。保存渠道时仍要求至少勾选一个协议。
+
+## 模型发现、协议探测与地址约定
+
+`baseUrl` 是包含上游要求的版本路径的基础地址，不包含 `/models`、`/chat/completions` 等端点。生成与模型发现都在它后面追加端点，不会猜测或补充版本；兼容上游可使用其自身要求的路径。
+
+| 上游 | `baseUrl` 示例 | 模型发现 URL |
+| --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | `https://api.openai.com/v1/models` |
+| Anthropic | `https://api.anthropic.com/v1` | `https://api.anthropic.com/v1/models` |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta` | `https://generativelanguage.googleapis.com/v1beta/models` |
+
+Google 官方根地址 `https://generativelanguage.googleapis.com` 和完整模型列表地址 `https://generativelanguage.googleapis.com/v1beta/models` 都不应填入 `baseUrl`；前者缺少版本，后者会重复追加端点。使用其他版本时需确认上游支持该版本。
+
+Gemini 模型发现每页请求 `pageSize=1000`，通过 `nextPageToken` 拉取后续页面，去掉模型 ID 的 `models/` 前缀后跨页去重并排序。每页使用相同的渠道凭据及请求头覆盖。整个发现过程共享 15 秒超时和 2 MB 响应大小上限；后续页失败、累计超限或返回重复分页标记时，整个发现返回错误，不返回不完整列表。GET 模型发现不应用请求体补丁。
+
+例如保存前发现 Google 模型：
+
+```bash
+curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-discovery \
+  -H 'X-CSRF-Token: <csrf>' -H 'Content-Type: application/json' \
+  -d '{"baseUrl":"https://generativelanguage.googleapis.com/v1beta","credential":"<google-api-key>","authType":"google","protocols":["gemini"],"requestOverrides":{"protocols":{"gemini":{"headerProfile":"google"}}}}'
+```
+
+管理面「探测协议」是主动发现操作：会请求 Chat、Responses、Messages、Gemini 四种端点，包括尚未勾选的协议，帮助填写渠道支持协议。每个协议最多输出 1 token，可能产生少量费用；结果在编辑界面预选支持协议，保存后才修改渠道配置。数据面请求始终只选择声明了对应协议的渠道。
+
+Gemini 入站兼容 `?key=<gateway-key>`，出站仅使用渠道凭据，不转发调用方查询参数。应用访问日志显式只记录方法、路径、状态和耗时，省略全部查询参数；有反向代理或外部追踪时，也应将访问日志配置为不记录查询参数。支持请求头的调用方可使用 `x-goog-api-key` 或 Bearer 鉴权。
+
 ## 字段如何继承、覆盖和删除
 
 | 配置 | 含义 |
