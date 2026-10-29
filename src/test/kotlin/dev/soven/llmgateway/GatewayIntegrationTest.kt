@@ -64,6 +64,7 @@ import io.ktor.util.cio.ChannelWriteException
 import org.flywaydb.core.Flyway
 import org.flywaydb.core.api.MigrationVersion
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -6485,6 +6486,79 @@ class GatewayIntegrationTest {
 
     @Test
     @Tag("upstream-request-overrides")
+    fun headerCatalogSnapshotIsStableAcrossFailoverAttempts() = runBlocking {
+        val repository = app.upstreamHeaderCatalogRepository
+        val codex = UpstreamHeaderProfiles.defaults.first { it.id == "codex" }
+        val oldProfile = codex.copy(
+            version = "9.9.1",
+            headers = codex.headers + mapOf(
+                "User-Agent" to "codex_cli_rs/9.9.1 (Linux; x86_64)",
+                "version" to "9.9.1",
+            ),
+        )
+        val newProfile = oldProfile.copy(
+            version = "9.9.2",
+            headers = oldProfile.headers + mapOf(
+                "User-Agent" to "codex_cli_rs/9.9.2 (Linux; x86_64)",
+                "version" to "9.9.2",
+            ),
+        )
+        repository.saveRefresh(
+            UpstreamHeaderProfiles.defaults.map { if (it.id == "codex") oldProfile else it },
+            checkedAt = 1_000,
+            successAt = 1_000,
+            lastError = null,
+        )
+        app.upstreamHeaderCatalogService.initialize()
+        val bad = createChannelWithBaseUrl(
+            "snapshot-bad", fake.baseUrl + "/hold-500/v1", modelMappings = mappingsOf("m1"),
+        )
+        val good = createChannelWithBaseUrl(
+            "snapshot-good", fake.baseUrl + "/ok/v1", modelMappings = mappingsOf("m2"),
+        )
+        createAlias("snapshot-model", bad to "m1", good to "m2")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val release = fake.holdChatRequests()
+            val response = async {
+                client.post("/v1/chat/completions") {
+                    header(HttpHeaders.Authorization, "Bearer $key")
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"model":"snapshot-model","messages":[]}""")
+                }
+            }
+            try {
+                awaitCondition("first attempt reaches the upstream") { fake.requests.size == 1 }
+                repository.saveRefresh(
+                    UpstreamHeaderProfiles.defaults.map { if (it.id == "codex") newProfile else it },
+                    checkedAt = 2_000,
+                    successAt = 2_000,
+                    lastError = null,
+                )
+                app.upstreamHeaderCatalogService.initialize()
+                release.complete(Unit)
+                val result = response.await()
+                assertEquals(HttpStatusCode.OK, result.status)
+                result.bodyAsText()
+                assertEquals(2, fake.requests.size)
+                assertEquals(
+                    listOf(
+                        "codex_cli_rs/9.9.1 (Linux; x86_64)",
+                        "codex_cli_rs/9.9.1 (Linux; x86_64)",
+                    ),
+                    fake.requests.map { it.requestHeaders["user-agent"]?.single() },
+                )
+            } finally {
+                release.complete(Unit)
+                response.cancel()
+                fake.clearChatHold()
+            }
+        }
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
     fun globalOverridesApiValidatesPersistsAndAuditsWithoutValues() = runBlocking {
         val session = app.sessions.create("admin")
         testApplication {
@@ -6734,6 +6808,28 @@ class GatewayIntegrationTest {
         }
         val pinned = repository.load(UpstreamHeaderProfiles.defaults).profiles.first { it.id == "claude" }
         assertEquals(original.headers, pinned.headers)
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogRefreshPropagatesCancellationAndResetsRefreshingState() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val service = UpstreamHeaderCatalogService(
+            httpClient = app.httpClient,
+            repository = repository,
+            refreshIntervalMs = 60_000,
+            autoRefreshEnabled = false,
+            versionSources = listOf(
+                HeaderProfileVersionSource("claude", "test") {
+                    throw CancellationException("simulated cancellation")
+                },
+            ),
+        )
+        service.initialize()
+        assertFailsWith<CancellationException> {
+            service.refreshNow()
+        }
+        assertFalse(service.snapshot().refreshing)
     }
 
     @Test

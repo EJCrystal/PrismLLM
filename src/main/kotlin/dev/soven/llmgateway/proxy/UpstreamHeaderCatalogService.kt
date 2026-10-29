@@ -159,25 +159,25 @@ class UpstreamHeaderCatalogService(
             throw cause
         } catch (cause: UpstreamHeaderProfileVersionConflictException) {
             logger.warn("upstream header catalog version conflict")
-            runCatching { repository.saveFailedRefresh(now(), "catalog:version_conflict") }
-                .onSuccess(::publish)
-                .onFailure { persistenceError ->
-                    logger.warn("failed to persist header catalog version conflict", persistenceError)
-                    state.updateAndGet {
-                        it.copy(refreshing = false, lastError = "catalog:version_conflict")
-                    }
-                }
+            persistFailure(now(), "catalog:version_conflict")
             state.get()
         } catch (cause: Throwable) {
             val message = "refresh_failed"
             logger.warn("upstream header catalog refresh failed", cause)
-            runCatching { repository.saveFailedRefresh(now(), message) }
-                .onSuccess(::publish)
-                .onFailure { persistenceError ->
-                    logger.warn("failed to persist header catalog refresh error", persistenceError)
-                    state.updateAndGet { it.copy(refreshing = false, lastError = message.take(1_000)) }
-                }
+            persistFailure(now(), message)
             state.get()
+        }
+    }
+
+    private suspend fun persistFailure(checkedAt: Long, error: String) {
+        try {
+            publish(repository.saveFailedRefresh(checkedAt, error))
+        } catch (cause: CancellationException) {
+            state.updateAndGet { it.copy(refreshing = false) }
+            throw cause
+        } catch (persistenceError: Throwable) {
+            logger.warn("failed to persist header catalog refresh error", persistenceError)
+            state.updateAndGet { it.copy(refreshing = false, lastError = error.take(1_000)) }
         }
     }
 
