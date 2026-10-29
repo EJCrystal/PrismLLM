@@ -39,4 +39,12 @@ class UpstreamHeaderCatalogServiceTest {
         assertEquals("custom", sanitizeCatalogSource("token=super-secret"))
         assertEquals("custom", sanitizeCatalogSource("npm:unsafe source"))
     }
+
+    @Test
+    fun `rejects duplicate header names ignoring case`() {
+        val profile = UpstreamHeaderProfiles.defaults.first().copy(
+            headers = linkedMapOf("User-Agent" to "one", "user-agent" to "two"),
+        )
+        assertEquals("profile 请求头名称重复", upstreamHeaderProfileValidationError(profile))
+    }
 }

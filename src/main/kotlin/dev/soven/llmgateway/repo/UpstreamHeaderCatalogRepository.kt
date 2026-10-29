@@ -18,9 +18,6 @@ import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
 import org.jetbrains.exposed.v1.jdbc.upsert
 
-class UpstreamHeaderProfileVersionConflictException :
-    IllegalStateException("同一请求头版本不能变更内容")
-
 data class UpstreamHeaderCatalogRecord(
     val profiles: List<UpstreamHeaderProfile>,
     val history: Map<String, List<UpstreamHeaderProfile>>,
@@ -70,6 +67,8 @@ class UpstreamHeaderCatalogRepository(private val database: Database) {
         successAt: Long?,
         lastError: String?,
     ): UpstreamHeaderCatalogRecord = suspendTransaction(database) {
+        var persistedAnyProfile = false
+        val conflictingProfileIds = mutableListOf<String>()
         profiles.forEach { profile ->
             val encodedHeaders = Json.encodeToString(
                 MapSerializer(String.serializer(), String.serializer()),
@@ -90,7 +89,8 @@ class UpstreamHeaderCatalogRepository(private val database: Database) {
                 }.single()
                 val existingHeaders = decodeHeaders(existing[UpstreamHeaderProfileVersions.headers])
                 if (existingHeaders != profile.headers) {
-                    throw UpstreamHeaderProfileVersionConflictException()
+                    conflictingProfileIds += profile.id
+                    return@forEach
                 }
                 UpstreamHeaderProfileVersions.update({
                     (UpstreamHeaderProfileVersions.profileId eq profile.id) and
@@ -99,6 +99,7 @@ class UpstreamHeaderCatalogRepository(private val database: Database) {
                     it[fetchedAt] = checkedAt
                 }
             }
+            persistedAnyProfile = true
             val ids = UpstreamHeaderProfileVersions.selectAll()
                 .where { UpstreamHeaderProfileVersions.profileId eq profile.id }
                 .orderBy(UpstreamHeaderProfileVersions.fetchedAt to SortOrder.DESC)
@@ -120,11 +121,16 @@ class UpstreamHeaderCatalogRepository(private val database: Database) {
             .where { UpstreamHeaderCatalogState.id eq SINGLETON_ID }
             .singleOrNull()
             ?.get(UpstreamHeaderCatalogState.successAt)
+        val storedError = (
+            listOfNotNull(lastError?.takeIf { it.isNotBlank() }) +
+                conflictingProfileIds.map { "$it:version_conflict" }
+            ).joinToString("; ").takeIf { it.isNotBlank() }?.take(1_000)
         UpstreamHeaderCatalogState.upsert(UpstreamHeaderCatalogState.id) {
             it[id] = SINGLETON_ID
             it[UpstreamHeaderCatalogState.checkedAt] = checkedAt
-            it[UpstreamHeaderCatalogState.successAt] = successAt ?: previousSuccessAt
-            it[UpstreamHeaderCatalogState.lastError] = lastError
+            it[UpstreamHeaderCatalogState.successAt] =
+                if (persistedAnyProfile) successAt ?: previousSuccessAt else previousSuccessAt
+            it[UpstreamHeaderCatalogState.lastError] = storedError
         }
         loadInTransaction()
     }

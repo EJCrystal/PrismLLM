@@ -19,7 +19,7 @@ const intervalLabel = computed(() => {
 })
 
 function history(profile) {
-  return props.catalog.history?.[profile.id] || [profile]
+  return props.catalog.history?.[profile.id] || []
 }
 
 async function refresh() {

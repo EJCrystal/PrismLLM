@@ -4,7 +4,6 @@ import dev.soven.llmgateway.domain.UpstreamHeaderCatalogSnapshot
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRecord
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
-import dev.soven.llmgateway.repo.UpstreamHeaderProfileVersionConflictException
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.header
@@ -112,25 +111,22 @@ class UpstreamHeaderCatalogService(
 
             val sourceResults = supervisorScope {
                 versionSources.map { source ->
-                    async { source to capture { source.fetch(httpClient) } }
+                    val base = current[source.profileId]
+                    async {
+                        source to capture {
+                            if (base == null) return@capture null
+                            applyVersion(base, source.fetch(httpClient), source.source, checkedAt)
+                        }
+                    }
                 }.awaitAll()
             }
             sourceResults.forEach { (source, result) ->
-                result.onSuccess { version ->
-                    val base = current[source.profileId] ?: return@onSuccess
-                    current[source.profileId] = applyVersion(base, version, source.source, checkedAt)
+                result.onSuccess { profile ->
+                    if (profile == null) return@onSuccess
+                    current[source.profileId] = profile
                     updatedProfiles += source.profileId
                     successfulSources += 1
-                }.onFailure { cause ->
-                    val category = safeErrorCategory(cause)
-                    logger.warn(
-                        "upstream header source failed, profile={}, category={}, type={}",
-                        source.profileId,
-                        category,
-                        cause::class.simpleName ?: "error",
-                    )
-                    errors += source.profileId + ":" + category
-                }
+                }.onFailure { cause -> recordSourceFailure(source, cause, errors) }
             }
 
             val catalogUrl = manifestUrl
@@ -170,10 +166,6 @@ class UpstreamHeaderCatalogService(
         } catch (cause: CancellationException) {
             state.updateAndGet { it.copy(refreshing = false) }
             throw cause
-        } catch (cause: UpstreamHeaderProfileVersionConflictException) {
-            logger.warn("upstream header catalog version conflict")
-            persistFailure(now(), "catalog:version_conflict")
-            state.get()
         } catch (cause: Throwable) {
             val message = "refresh_failed"
             logger.warn("upstream header catalog refresh failed: {}", safeErrorCategory(cause))
@@ -192,6 +184,21 @@ class UpstreamHeaderCatalogService(
             logger.warn("failed to persist header catalog refresh error: {}", persistenceError::class.simpleName ?: "error")
             state.updateAndGet { it.copy(refreshing = false, lastError = error.take(1_000)) }
         }
+    }
+
+    private fun recordSourceFailure(
+        source: HeaderProfileVersionSource,
+        cause: Throwable,
+        errors: MutableList<String>,
+    ) {
+        val category = safeErrorCategory(cause)
+        logger.warn(
+            "upstream header source failed, profile={}, category={}, type={}",
+            source.profileId,
+            category,
+            cause::class.simpleName ?: "error",
+        )
+        errors += source.profileId + ":" + category
     }
 
     suspend fun pin(profileId: String, version: String): UpstreamHeaderCatalogSnapshot {
@@ -391,7 +398,8 @@ class UpstreamHeaderCatalogService(
         }
 
         val SAFE_ERROR = Regex(
-            "(?:claude|codex|google|manifest):(?:http_[0-9]{3}|timeout|request_failed|invalid_response)|refresh_failed",
+            "(?:claude|codex|google|antigravity|manifest):" +
+                "(?:http_[0-9]{3}|timeout|request_failed|invalid_response|version_conflict)|refresh_failed",
         )
     }
 }
@@ -436,6 +444,9 @@ internal fun upstreamHeaderProfileValidationError(profile: UpstreamHeaderProfile
         return "profile 必须包含 User-Agent"
     }
     val headerName = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+    if (profile.headers.keys.map(String::lowercase).distinct().size != profile.headers.size) {
+        return "profile 请求头名称重复"
+    }
     profile.headers.forEach { (name, value) ->
         if (name.length !in 1..128 || !headerName.matches(name)) return "profile 请求头名称无效"
         if (name.lowercase() in MANAGED_HEADERS) return "profile 不能覆盖网关管理请求头"

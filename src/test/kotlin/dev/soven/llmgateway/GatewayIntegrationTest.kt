@@ -23,7 +23,6 @@ import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
-import dev.soven.llmgateway.repo.UpstreamHeaderProfileVersionConflictException
 import dev.soven.llmgateway.proxy.HeaderProfileVersionSource
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.proxy.UpstreamHeaderProfiles
@@ -6806,22 +6805,51 @@ class GatewayIntegrationTest {
 
     @Test
     @Tag("upstream-request-overrides")
+    fun headerCatalogInvalidSourceVersionDoesNotAbortOtherSources() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val service = UpstreamHeaderCatalogService(
+            httpClient = app.httpClient,
+            repository = repository,
+            refreshIntervalMs = 60_000,
+            autoRefreshEnabled = false,
+            versionSources = listOf(
+                HeaderProfileVersionSource("claude", "test") { "not a version!" },
+                HeaderProfileVersionSource("codex", "test") { "0.171.0" },
+            ),
+        )
+        service.initialize()
+        val snapshot = service.refreshNow()
+        assertEquals(
+            UpstreamHeaderProfiles.defaults.first { it.id == "claude" }.version,
+            snapshot.profiles.first { it.id == "claude" }.version,
+        )
+        assertEquals("0.171.0", snapshot.profiles.first { it.id == "codex" }.version)
+        assertTrue(snapshot.lastError!!.contains("claude:invalid_response"))
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
     fun headerCatalogVersionIdentityCannotBeOverwritten() = runBlocking {
         val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
         val original = UpstreamHeaderProfiles.defaults.first { it.id == "claude" }
         repository.saveRefresh(UpstreamHeaderProfiles.defaults, 1_000, 1_000, null)
         repository.pin("claude", original.version)
         val changed = original.copy(headers = original.headers + ("X-Changed" to "yes"))
-        assertFailsWith<UpstreamHeaderProfileVersionConflictException> {
-            repository.saveRefresh(
-                UpstreamHeaderProfiles.defaults.map { if (it.id == "claude") changed else it },
-                2_000,
-                2_000,
-                null,
-            )
-        }
-        val pinned = repository.load(UpstreamHeaderProfiles.defaults).profiles.first { it.id == "claude" }
-        assertEquals(original.headers, pinned.headers)
+        val partial = repository.saveRefresh(
+            UpstreamHeaderProfiles.defaults.map { if (it.id == "claude") changed else it },
+            2_000,
+            2_000,
+            null,
+        )
+        assertEquals(original.headers, partial.profiles.first { it.id == "claude" }.headers)
+        assertTrue(partial.lastError!!.contains("claude:version_conflict"))
+        assertEquals(2_000, partial.successAt)
+
+        val allConflict = repository.saveRefresh(listOf(changed), 3_000, 3_000, null)
+        assertEquals(original.headers, allConflict.profiles.first { it.id == "claude" }.headers)
+        assertTrue(allConflict.lastError!!.contains("claude:version_conflict"))
+        assertEquals(2_000, allConflict.successAt)
+        assertEquals(3_000, allConflict.checkedAt)
     }
 
     @Test
