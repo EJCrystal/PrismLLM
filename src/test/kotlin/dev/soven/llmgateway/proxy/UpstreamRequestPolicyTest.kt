@@ -137,6 +137,11 @@ class UpstreamRequestPolicyTest {
             UpstreamRequestOverrides(headers = mapOf("Host" to "other-host")),
             UpstreamRequestOverrides(headers = mapOf("Content-Encoding" to "gzip")),
             UpstreamRequestOverrides(headers = mapOf("Content-Encoding" to null)),
+            UpstreamRequestOverrides(headers = mapOf("Accept-Encoding" to "gzip")),
+            UpstreamRequestOverrides(headers = mapOf("Accept-Encoding" to null)),
+            UpstreamRequestOverrides(protocols = mapOf("gemini" to UpstreamProtocolOverrides(
+                headers = mapOf("aCcEpT-EnCoDiNg" to "br"),
+            ))),
             UpstreamRequestOverrides(protocols = mapOf("responses" to UpstreamProtocolOverrides(
                 headers = mapOf("cOnTeNt-EnCoDiNg" to "br"),
             ))),

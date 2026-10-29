@@ -19,6 +19,7 @@ import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
+import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.resilience.KeyAttemptOutcome
 import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
 import dev.soven.llmgateway.security.ClientKeyHasher
@@ -85,6 +86,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
 
@@ -5421,6 +5423,38 @@ class GatewayIntegrationTest {
 
     @Test
     @Tag("upstream-request-overrides")
+    fun globalRequestSettingsCacheLoadsAndPublishesPersistedSnapshots() = runBlocking {
+        val repository = app.upstreamRequestSettingsRepository
+        val snapshots = coroutineScope { (1..10).map { async(Dispatchers.IO) { repository.load() } }.awaitAll() }
+        assertEquals(UpstreamRequestOverrides(), snapshots.first().overrides)
+        snapshots.forEach { assertSame(snapshots.first(), it) }
+
+        val headers = mutableMapOf<String, String?>("X-Test" to "saved")
+        val saved = repository.save(UpstreamRequestOverrides(userAgent = "cached-UA", headers = headers))
+        headers["X-Test"] = "unsaved"
+        assertSame(saved, repository.load())
+        assertEquals("saved", repository.load().overrides.headers["X-Test"])
+        assertEquals(saved, UpstreamRequestSettingsRepository(app.databaseFactory.database).load())
+
+        val cleared = repository.save(UpstreamRequestOverrides())
+        assertSame(cleared, repository.load())
+        assertEquals(UpstreamRequestOverrides(), cleared.overrides)
+        assertEquals(cleared, UpstreamRequestSettingsRepository(app.databaseFactory.database).load())
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun failedGlobalSettingsSavePreservesTheCachedSnapshot() = runBlocking {
+        val repository = app.upstreamRequestSettingsRepository
+        val saved = repository.save(UpstreamRequestOverrides(userAgent = "working-UA"))
+        app.databaseFactory.close()
+        assertSame(saved, repository.load(), "缓存命中不应访问数据库")
+        assertFailsWith<java.sql.SQLException> { repository.save(UpstreamRequestOverrides(userAgent = "failed-UA")) }
+        assertSame(saved, repository.load(), "失败的写入不应替换快照")
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
     fun modelDiscoveryTreatsEmptyProtocolsAsUnspecifiedAndValidatesNonemptyLists() = runBlocking {
         val channel = createChannelWithBaseUrl(
             "discovery-protocols", fake.baseUrl + "/ok/v1", setOf(GatewayProtocol.CHAT_COMPLETIONS),
@@ -5648,6 +5682,35 @@ class GatewayIntegrationTest {
             assertFalse(text.contains("upstream down"))
             assertEquals(2, fake.requests.size)
             assertEquals(2, awaitRequestLog().upstreamAttempts)
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun geminiErrorFrameAfterContentIsLoggedAsUpstreamFailureWithoutFailover() = runBlocking {
+        val bad = createChannelWithBaseUrl(
+            "a-error", fake.baseUrl + "/sse-error-after-content/v1beta", setOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"),
+        )
+        val backup = createChannelWithBaseUrl("b-backup", fake.baseUrl + "/ok/v1beta", setOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
+        createAlias("fast-gemini", bad to "gemini-2.5-pro", backup to "gemini-2.5-pro")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1beta/models/fast-gemini:streamGenerateContent") {
+                header("x-goog-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = response.bodyAsText()
+            assertTrue(body.contains("Hello!"))
+            assertTrue(body.contains("INTERNAL"))
+            assertEquals(1, fake.requests.size)
+            val log = awaitRequestLog()
+            assertEquals("gemini_failed", log.errorCode)
+            assertEquals("上游响应失败", log.errorMessage)
+            assertEquals(FailureStage.STREAMING, log.failureStage)
+            assertEquals(1, log.upstreamAttempts)
         }
     }
 

@@ -2,7 +2,7 @@
 
 ## 决策
 
-在渠道上新增可选 `requestOverrides`，并以独立单行表保存全局请求覆盖。两层均支持通用和按协议配置的 `headerProfile`、`userAgent`、`headers` 与 JSON Merge Patch `body`。数据面每个请求只读取一次全局配置，在每次候选尝试时从原始请求重新构造上游请求。
+在渠道上新增可选 `requestOverrides`，并以独立单行表保存全局请求覆盖。两层均支持通用和按协议配置的 `headerProfile`、`userAgent`、`headers` 与 JSON Merge Patch `body`。单实例启动时加载全局配置到缓存，保存事务提交后更新缓存；数据面每个请求持有一份缓存快照，在每次候选尝试时从原始请求重新构造上游请求。
 
 按实际出站协议选择默认请求头：Messages → Claude Code，Chat/Responses → Codex，Gemini → Google Gen AI SDK；另提供 Antigravity 与关闭预设选项。最终预设只选择一次，然后顺序应用全局通用、全局协议、渠道通用、渠道协议，避免切换预设后遗留其他客户端头。渠道可关闭全局继承。
 
@@ -19,7 +19,7 @@
 ## 约束与兼容
 
 - 请求体只能使用 JSON 对象补丁；嵌套对象合并，数组替换，null 删除字段。暂不引入模板执行、字段重命名或脚本。
-- model、stream、鉴权、连接/长度/类型及 traceparent 不能通过补丁修改，凭据仍由渠道密钥提供。请求头必须合法，整体配置不超过 64KB，请求体改写后继续检查大小。
+- model、stream、鉴权、连接/长度/类型/编码及 traceparent 不能通过补丁修改，凭据仍由渠道密钥提供。Content-Encoding 与 Accept-Encoding 均由网关管理，避免明文 JSON/SSE 与压缩编码声明不符。请求头必须合法，整体配置不超过 64KB，请求体改写后继续检查大小。
 - 自定义 UA 允许覆盖版本；规范 Codex UA 的 originator/version 自动配对，管理员显式设置时保持该值。UA 删除以空值表达，避免 Java HTTP 客户端补回默认 UA。
 - 旧渠道更新省略 requestOverrides 时保持配置；空对象恢复默认继承，Flyway 迁移给已有渠道写入空对象。
 - 模型发现可使用未保存的请求头配置；测试与探测使用已保存配置，并保持 128 / 1 token 的输出预算。所有相关管理写操作继续进入脱敏审计。

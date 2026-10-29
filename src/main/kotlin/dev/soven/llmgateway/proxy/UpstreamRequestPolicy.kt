@@ -186,5 +186,5 @@ private val CODEX_USER_AGENT = Regex("^(codex_cli_rs|codex_vscode|codex-tui)/([0
 private val MANAGED_HEADERS = setOf(
     "authorization", "proxy-authorization", "x-api-key", "x-goog-api-key", "cookie", "set-cookie",
     "host", "content-length", "content-type", "content-encoding", "transfer-encoding", "connection", "te", "trailer",
-    "upgrade", "expect", "traceparent",
+    "accept-encoding", "upgrade", "expect", "traceparent",
 )

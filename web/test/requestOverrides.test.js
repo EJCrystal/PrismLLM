@@ -44,6 +44,7 @@ describe('上游请求覆盖配置', () => {
   it('拒绝非法请求头、凭据和传输头覆盖，以及 model/stream 改写', () => {
     for (const headers of [
       { Authorization: 'secret' }, { 'Content-Encoding': 'gzip' }, { 'cOnTeNt-EnCoDiNg': 'br' },
+      { 'Accept-Encoding': 'gzip' }, { 'aCcEpT-EnCoDiNg': 'br' }, { 'Accept-Encoding': null },
       { 'Content-Encoding': null }, { 'X-A': 'a', 'x-a': 'b' }, { 'X-A': 'x\r\ny' }, { 'X-A': 1 },
     ]) {
       for (const scope of ['common', 'gemini']) {

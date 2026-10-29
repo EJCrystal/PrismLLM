@@ -506,6 +506,7 @@ private suspend fun handleProxy(
                 "responses_failed" -> "上游响应失败"
                 "responses_incomplete" -> "上游响应未完成"
                 "messages_failed" -> "上游响应失败"
+                "gemini_failed" -> "上游响应失败"
                 else -> "上游流未正常结束（缺少结束帧）"
             }
         }

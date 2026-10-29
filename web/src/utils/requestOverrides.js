@@ -10,7 +10,7 @@ const PROFILES = new Set(['auto', 'none', 'claude', 'codex', 'google', 'antigrav
 const MANAGED_HEADERS = new Set([
   'authorization', 'proxy-authorization', 'x-api-key', 'x-goog-api-key', 'cookie', 'set-cookie',
   'host', 'content-length', 'content-type', 'content-encoding', 'transfer-encoding', 'connection', 'te', 'trailer',
-  'upgrade', 'expect', 'traceparent',
+  'accept-encoding', 'upgrade', 'expect', 'traceparent',
 ])
 
 function isObject(value) {

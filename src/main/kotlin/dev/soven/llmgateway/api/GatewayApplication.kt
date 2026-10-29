@@ -137,6 +137,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
 
     fun install(app: Application) {
         databaseFactory.migrate()
+        runBlocking { upstreamRequestSettingsRepository.load() }
         runBlocking { seedAdmin() }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
         runBlocking {

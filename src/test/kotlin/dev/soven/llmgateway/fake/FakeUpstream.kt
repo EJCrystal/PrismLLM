@@ -436,6 +436,11 @@ class FakeUpstream {
                     writeEvent("{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello!\"}],\"role\":\"model\"}}]}")
                 }
                 if (scenario == "disconnect") throw IOException("fake Gemini disconnect")
+                if (scenario == "sse-error-after-content") {
+                    writeEvent(GEMINI_ERROR_500)
+                    completed = true
+                    return@respondBytesWriter
+                }
                 if (scenario == "no-terminal") {
                     completed = true
                     return@respondBytesWriter
