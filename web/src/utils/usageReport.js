@@ -44,6 +44,8 @@ export function usageReportPresetRange(preset, now = Date.now()) {
     case 'yesterday': {
       const d = new Date(todayStart)
       d.setDate(d.getDate() - 1)
+      // 某些时区会在午夜跳时，setDate 会保留跳时后的小时；这里强制回到本地零点。
+      d.setHours(0, 0, 0, 0)
       return { from: d.getTime(), to: todayStart - 1 }
     }
     case 'last24h':

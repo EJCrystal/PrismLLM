@@ -218,6 +218,17 @@ class ProtocolConversionTest {
     }
 
     @Test
+    fun `streaming chat content filter finishes responses as incomplete`() {
+        val converter = ProtocolConversion.streamConverter(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, "public")!!
+        converter.feed("""data: {"id":"chat_1","model":"gpt","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}""")
+        converter.feed("")
+        val last = converter.feed("""data: {"id":"chat_1","model":"gpt","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}]}""") +
+            converter.feed("") + converter.feed("data: [DONE]") + converter.feed("")
+        assertTrue(last.any { it.contains("response.incomplete") }, last.toString())
+        assertTrue(last.any { it.contains("content_filter") }, last.toString())
+    }
+
+    @Test
     fun `malformed upstream sse frame emits protocol error`() {
         val converter = ProtocolConversion.streamConverter(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, "public")!!
         val output = converter.feed("data: {not-json") + converter.feed("")

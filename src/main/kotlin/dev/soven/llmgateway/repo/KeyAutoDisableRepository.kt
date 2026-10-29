@@ -154,6 +154,17 @@ class KeyAutoDisableRepository(
         } == 1
     }
 
+    /** 请求转换失败等未产生上游结果的情况：只释放探测租约，不改变停用状态。 */
+    suspend fun releaseProbe(key: ChannelKeyRecord): Boolean = suspendTransaction(database) {
+        ChannelKeys.update({
+            (ChannelKeys.id eq key.id) and
+                (ChannelKeys.stateVersion eq key.stateVersion) and
+                (ChannelKeys.state eq ChannelKeyState.AUTO_TEMPORARY.value)
+        }) {
+            it[probeUntil] = null
+        } == 1
+    }
+
     /**
      * 后台收尾：把已到期且没有探测租约的临时停用写回 ACTIVE，并清理健康计数。
      * 返回恢复的密钥，供调用方清理内存冷却。

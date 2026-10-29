@@ -62,6 +62,16 @@ describe('usageReport: 用量报表展示', () => {
     })
   })
 
+  it('昨天范围始终从本地零点开始', () => {
+    const now = new Date(2026, 9, 29, 15, 30, 0, 0).getTime()
+    const { from } = usageReportPresetRange('yesterday', now)
+    const start = new Date(from)
+    assert.equal(start.getHours(), 0)
+    assert.equal(start.getMinutes(), 0)
+    assert.equal(start.getSeconds(), 0)
+    assert.equal(start.getMilliseconds(), 0)
+  })
+
   it('滚动窗口快捷项与 30 天上限一致', () => {
     const now = 10_000_000_000
     assert.deepEqual(usageReportPresetRange('last24h', now), { from: now - 86_400_000, to: now })

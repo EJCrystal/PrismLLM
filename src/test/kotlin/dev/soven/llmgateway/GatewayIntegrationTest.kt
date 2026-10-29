@@ -5762,6 +5762,86 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `probe lease is released when request conversion fails`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "probe-conversion-request",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("probe-conversion-request", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+        val now = System.currentTimeMillis()
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement(
+                "update channel_keys set state = 'AUTO_TEMPORARY', auto_disabled_at = ?, auto_disable_until = ? where channel_id = ?",
+            ).use { statement ->
+                statement.setLong(1, now - 2)
+                statement.setLong(2, now - 1)
+                statement.setString(3, channel.id)
+                statement.executeUpdate()
+            }
+        }
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"model":"probe-conversion-request","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status, response.bodyAsText())
+            assertTrue(fake.requests.isEmpty())
+            val keyRow = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+            assertEquals(ChannelKeyState.AUTO_TEMPORARY, keyRow.state)
+            assertNull(keyRow.probeUntil)
+            assertTrue(app.keyAutoDisableRepository.isAvailable(keyRow, now = now))
+        }
+    }
+
+    @Test
+    fun `probe lease is released as success when response conversion fails`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "probe-conversion-response",
+            baseUrl = fake.baseUrl + "/unsupported-response/v1",
+            protocols = listOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        createAlias("probe-conversion-response", channel to "claude-sonnet-4-5")
+        val key = createClientKey()
+        val now = System.currentTimeMillis()
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement(
+                "update channel_keys set state = 'AUTO_TEMPORARY', auto_disabled_at = ?, auto_disable_until = ? where channel_id = ?",
+            ).use { statement ->
+                statement.setLong(1, now - 2)
+                statement.setLong(2, now - 1)
+                statement.setString(3, channel.id)
+                statement.executeUpdate()
+            }
+        }
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"probe-conversion-response","messages":[{"role":"user","content":"hi"}]}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status, response.bodyAsText())
+            assertEquals(1, fake.requests.size)
+            val recovered = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+            assertEquals(ChannelKeyState.ACTIVE, recovered.state)
+            assertNull(recovered.probeUntil)
+            assertNull(recovered.autoDisableUntil)
+        }
+    }
+
+    @Test
     fun `messages request converts to chat-only channel`() = runBlocking {
         val channel = createChannelWithBaseUrl(
             name = "messages-to-chat",

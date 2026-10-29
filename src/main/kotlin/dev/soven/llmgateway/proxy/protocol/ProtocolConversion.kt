@@ -1410,7 +1410,7 @@ class ProtocolStreamConverter(
                 }
             }
             val output = JsonArray(outputItems.sortedBy { it.first }.map { it.second })
-            val incomplete = chunk.finishReason == "length"
+            val incomplete = chunk.finishReason == "length" || chunk.finishReason == "content_filter"
             val eventType = if (incomplete) "response.incomplete" else "response.completed"
             lines += "event: $eventType"
             lines += "data: ${buildJsonObject {
@@ -1422,7 +1422,9 @@ class ProtocolStreamConverter(
                     put("model", model)
                     put("output", output)
                     if (incomplete) {
-                        putJsonObject("incomplete_details") { put("reason", "max_output_tokens") }
+                        putJsonObject("incomplete_details") {
+                            put("reason", if (chunk.finishReason == "content_filter") "content_filter" else "max_output_tokens")
+                        }
                     }
                     canonicalUsage()?.let { put("usage", chatUsageToResponses(it)) }
                 }

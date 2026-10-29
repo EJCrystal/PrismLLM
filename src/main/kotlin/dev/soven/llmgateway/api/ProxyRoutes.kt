@@ -276,6 +276,13 @@ private suspend fun handleProxy(
                             app.config.firstTokenTimeoutMs + 5_000,
                             app.config.totalTimeoutMs + 5_000,
                         )
+                        // 请求转换在抢租约前完成，避免转换失败留下未释放的探测租约。
+                        ProtocolConversion.convertRequest(
+                            protocol,
+                            upstreamProtocol ?: protocol,
+                            requestJson,
+                            candidate.upstreamModel,
+                        )
                         probeClaimed = app.keyAutoDisableRepository.claimProbe(candidate.key, leaseMs = leaseMs)
                         if (!probeClaimed) throw CandidateUnavailableException()
                     }
@@ -361,6 +368,13 @@ private suspend fun handleProxy(
                     recordKeyOutcome(app, candidate, signal, requestId, probeClaimed)
                 }
                 e
+            } catch (e: ProtocolConversionException) {
+                app.candidateCooldown.release(permit)
+                // 上游已返回 2xx 但响应无法转换：说明凭据可用，按成功结算并释放探测租约。
+                if (probeClaimed) {
+                    recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed = true)
+                }
+                throw e
             } catch (e: Throwable) {
                 app.candidateCooldown.release(permit)
                 throw e
