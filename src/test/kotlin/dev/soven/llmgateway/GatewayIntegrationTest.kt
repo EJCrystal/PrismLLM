@@ -23,6 +23,7 @@ import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
+import dev.soven.llmgateway.repo.UpstreamHeaderProfileVersionConflictException
 import dev.soven.llmgateway.proxy.HeaderProfileVersionSource
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.proxy.UpstreamHeaderProfiles
@@ -6605,6 +6606,126 @@ class GatewayIntegrationTest {
         val unpinned = reloaded.unpin("claude")
         assertEquals("2.1.401", unpinned.profiles.first { it.id == "claude" }.version)
         assertEquals(2, unpinned.history["claude"]!!.size)
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogConcurrentUpsertsAndPinnedVersionSurvivePruning() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val base = UpstreamHeaderProfiles.defaults.first { it.id == "claude" }
+        val first = base.copy(version = "1.0.0")
+        coroutineScope {
+            (1..8).map { index ->
+                async(Dispatchers.IO) {
+                    repository.saveRefresh(listOf(first), index.toLong(), index.toLong(), null)
+                }
+            }.awaitAll()
+        }
+        repository.pin("claude", first.version)
+        repeat(25) { index ->
+            repository.saveRefresh(
+                listOf(base.copy(version = "2.0." + index)),
+                checkedAt = 100L + index,
+                successAt = 100L + index,
+                lastError = null,
+            )
+        }
+        val loaded = repository.load(UpstreamHeaderProfiles.defaults)
+        assertEquals(first.version, loaded.pins["claude"])
+        assertTrue(loaded.history["claude"]!!.any { it.version == first.version })
+        val deletePinned = runCatching {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.prepareStatement(
+                    "delete from upstream_header_profile_versions where profile_id = ? and version = ?",
+                ).use { statement ->
+                    statement.setString(1, "claude")
+                    statement.setString(2, first.version)
+                    statement.executeUpdate()
+                }
+            }
+        }
+        assertTrue(deletePinned.isFailure)
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogRejectsInvalidPersistedProfilesAndRedactsStoredErrors() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        repository.saveRefresh(UpstreamHeaderProfiles.defaults, 1_000, 1_000, null)
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeUpdate(
+                    """insert into upstream_header_profile_versions
+                       (profile_id, version, name, headers, source, fetched_at)
+                       values ('claude', '9.9.9', 'Poisoned', '{"Authorization":"secret"}', 'test', 9999)""",
+                )
+                statement.executeUpdate(
+                    """update upstream_header_catalog_state
+                       set last_error = 'https://user:secret@internal.example/path?token=secret' where id = 1""",
+                )
+            }
+        }
+        val service = UpstreamHeaderCatalogService(
+            httpClient = app.httpClient,
+            repository = repository,
+            refreshIntervalMs = 60_000,
+            autoRefreshEnabled = false,
+            versionSources = emptyList(),
+        )
+        service.initialize()
+        val snapshot = service.snapshot()
+        assertEquals(
+            UpstreamHeaderProfiles.defaults.first { it.id == "claude" }.version,
+            snapshot.profiles.first { it.id == "claude" }.version,
+        )
+        assertTrue(snapshot.lastError!!.contains("catalog:invalid_persisted_profile"))
+        assertTrue(snapshot.lastError.contains("catalog:stored_error_redacted"))
+        assertFalse(snapshot.lastError.contains("secret"))
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogRefreshErrorsExposeOnlyStableCategories() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val service = UpstreamHeaderCatalogService(
+            httpClient = app.httpClient,
+            repository = repository,
+            refreshIntervalMs = 60_000,
+            autoRefreshEnabled = false,
+            versionSources = listOf(
+                HeaderProfileVersionSource("claude", "test") {
+                    error("https://user:secret@internal.example/path?token=secret")
+                },
+            ),
+        )
+        service.initialize()
+        val snapshot = service.refreshNow()
+        assertEquals("claude:invalid_response", snapshot.lastError)
+        assertEquals(
+            UpstreamHeaderProfiles.defaults.map { it.id to it.version },
+            snapshot.profiles.map { it.id to it.version },
+        )
+        assertFalse(snapshot.lastError!!.contains("secret"))
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogVersionIdentityCannotBeOverwritten() = runBlocking {
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val original = UpstreamHeaderProfiles.defaults.first { it.id == "claude" }
+        repository.saveRefresh(UpstreamHeaderProfiles.defaults, 1_000, 1_000, null)
+        repository.pin("claude", original.version)
+        val changed = original.copy(headers = original.headers + ("X-Changed" to "yes"))
+        assertFailsWith<UpstreamHeaderProfileVersionConflictException> {
+            repository.saveRefresh(
+                UpstreamHeaderProfiles.defaults.map { if (it.id == "claude") changed else it },
+                2_000,
+                2_000,
+                null,
+            )
+        }
+        val pinned = repository.load(UpstreamHeaderProfiles.defaults).profiles.first { it.id == "claude" }
+        assertEquals(original.headers, pinned.headers)
     }
 
     @Test

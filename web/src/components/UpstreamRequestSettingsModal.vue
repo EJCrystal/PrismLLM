@@ -48,7 +48,12 @@ async function save() {
 }
 
 function applyCatalog(response) {
-  settings.value = response
+  if (!settings.value) return
+  settings.value = {
+    ...settings.value,
+    profiles: response.profiles,
+    headerCatalog: response.headerCatalog,
+  }
 }
 onMounted(load)
 </script>

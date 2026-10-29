@@ -22,5 +22,9 @@ create index upstream_header_profile_versions_fetched_idx
 create table upstream_header_profile_pins (
     profile_id varchar(40) primary key,
     version varchar(100) not null,
-    pinned_at bigint not null
+    pinned_at bigint not null,
+    constraint upstream_header_profile_pins_version_fk
+        foreign key (profile_id, version)
+        references upstream_header_profile_versions(profile_id, version)
+        on delete restrict
 );

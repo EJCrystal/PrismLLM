@@ -4,13 +4,18 @@ import dev.soven.llmgateway.domain.UpstreamHeaderCatalogSnapshot
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRecord
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
+import dev.soven.llmgateway.repo.UpstreamHeaderProfileVersionConflictException
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
-import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
+import io.ktor.utils.io.core.readBytes
+import io.ktor.utils.io.readRemaining
+import java.net.URI
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -41,6 +46,8 @@ private data class HeaderCatalogManifest(
     val schemaVersion: Int = 1,
     val profiles: List<UpstreamHeaderProfile>,
 )
+
+private class HeaderCatalogHttpException(val status: Int) : RuntimeException()
 
 /** Refreshes client versions in the background and publishes immutable request snapshots. */
 class UpstreamHeaderCatalogService(
@@ -109,7 +116,7 @@ class UpstreamHeaderCatalogService(
                     current[source.profileId] = applyVersion(base, version, source.source, checkedAt)
                     successfulSources += 1
                 }.onFailure { cause ->
-                    errors += source.profileId + ": " + (cause.message ?: cause::class.simpleName)
+                    errors += source.profileId + ":" + safeErrorCategory(cause)
                 }
             }
 
@@ -121,7 +128,7 @@ class UpstreamHeaderCatalogService(
                         successfulSources += 1
                     }
                     .onFailure { cause ->
-                        errors += "manifest: " + (cause.message ?: cause::class.simpleName)
+                        errors += "manifest:" + safeErrorCategory(cause)
                     }
             }
 
@@ -141,9 +148,20 @@ class UpstreamHeaderCatalogService(
         } catch (cause: CancellationException) {
             state.updateAndGet { it.copy(refreshing = false) }
             throw cause
+        } catch (cause: UpstreamHeaderProfileVersionConflictException) {
+            logger.warn("upstream header catalog version conflict")
+            runCatching { repository.saveFailedRefresh(now(), "catalog:version_conflict") }
+                .onSuccess(::publish)
+                .onFailure { persistenceError ->
+                    logger.warn("failed to persist header catalog version conflict", persistenceError)
+                    state.updateAndGet {
+                        it.copy(refreshing = false, lastError = "catalog:version_conflict")
+                    }
+                }
+            state.get()
         } catch (cause: Throwable) {
-            val message = cause.message ?: cause::class.simpleName ?: "刷新失败"
-            logger.warn("upstream header catalog refresh failed: {}", message)
+            val message = "refresh_failed"
+            logger.warn("upstream header catalog refresh failed", cause)
             runCatching { repository.saveFailedRefresh(now(), message) }
                 .onSuccess(::publish)
                 .onFailure { persistenceError ->
@@ -175,8 +193,10 @@ class UpstreamHeaderCatalogService(
             "请求头目录包含重复 profile"
         }
         return manifest.profiles.map { profile ->
-            validateProfile(profile)
-            profile.copy(source = profile.source.takeIf { it.isNotBlank() } ?: url, fetchedAt = checkedAt)
+            require(upstreamHeaderProfileValidationError(profile) == null) {
+                upstreamHeaderProfileValidationError(profile) ?: "profile 无效"
+            }
+            profile.copy(source = sanitizeSource(profile.source), fetchedAt = checkedAt)
         }
     }
 
@@ -187,25 +207,8 @@ class UpstreamHeaderCatalogService(
             header(HttpHeaders.Accept, "application/json")
             timeout { requestTimeoutMillis = 15_000 }
         }
-        require(response.status.isSuccess()) { "HTTP " + response.status.value }
-        val text = response.bodyAsText()
-        require(text.length <= MAX_SOURCE_CHARS) { "响应超过 1MB" }
-        return text
-    }
-
-    private fun validateProfile(profile: UpstreamHeaderProfile) {
-        require(profile.id in PROFILE_ORDER) { "未知 profile: " + profile.id }
-        require(profile.name.isNotBlank() && profile.name.length <= 100) { "profile 名称无效" }
-        require(VERSION.matches(profile.version)) { "profile 版本格式无效" }
-        require(profile.headers.isNotEmpty() && profile.headers.size <= 64) { "profile 请求头数量无效" }
-        require(profile.headers.keys.any { it.equals(HttpHeaders.UserAgent, ignoreCase = true) }) {
-            "profile 必须包含 User-Agent"
-        }
-        profile.headers.forEach { (name, value) ->
-            require(name.length in 1..128 && HEADER_NAME.matches(name)) { "profile 请求头名称无效" }
-            require(name.lowercase() !in MANAGED_HEADERS) { "profile 不能覆盖网关管理请求头 " + name }
-            require(validHeaderValue(value)) { "profile 请求头 " + name + " 的值无效" }
-        }
+        if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
+        return readLimitedText(response)
     }
 
     private fun applyVersion(
@@ -233,19 +236,50 @@ class UpstreamHeaderCatalogService(
     }
 
     private fun publish(record: UpstreamHeaderCatalogRecord) {
+        val sanitized = sanitizeRecord(record)
         state.set(
             UpstreamHeaderCatalogSnapshot(
-                revision = record.profiles.joinToString("|") { it.id + "@" + it.version },
-                checkedAt = record.checkedAt,
-                successAt = record.successAt,
-                lastError = record.lastError,
+                revision = sanitized.profiles.joinToString("|") { it.id + "@" + it.version },
+                checkedAt = sanitized.checkedAt,
+                successAt = sanitized.successAt,
+                lastError = sanitized.lastError,
                 refreshing = false,
                 autoRefreshEnabled = autoRefreshEnabled,
                 refreshIntervalMs = refreshIntervalMs,
-                profiles = record.profiles,
-                history = record.history,
-                pins = record.pins,
+                profiles = sanitized.profiles,
+                history = sanitized.history,
+                pins = sanitized.pins,
             ),
+        )
+    }
+
+    private fun sanitizeRecord(record: UpstreamHeaderCatalogRecord): UpstreamHeaderCatalogRecord {
+        val defaults = UpstreamHeaderProfiles.defaults.associateBy { it.id }
+        val validProfiles = record.profiles.filter {
+            upstreamHeaderProfileValidationError(it) == null
+        }.associateBy { it.id }
+        var invalid = record.profiles.any { upstreamHeaderProfileValidationError(it) != null }
+        val profiles = PROFILE_ORDER.map { id -> validProfiles[id] ?: defaults.getValue(id) }
+        val history = record.history.mapValues { (id, values) ->
+            values.filter {
+                it.id == id && upstreamHeaderProfileValidationError(it) == null
+            }
+        }.filterValues { it.isNotEmpty() }
+        if (history.values.sumOf { it.size } != record.history.values.sumOf { it.size }) invalid = true
+        val validVersions = history.mapValues { (_, values) -> values.mapTo(mutableSetOf()) { it.version } }
+        val pins = record.pins.filter { (id, version) ->
+            id in PROFILE_ORDER && version in validVersions[id].orEmpty()
+        }
+        if (pins.size != record.pins.size) invalid = true
+        val errors = buildList {
+            sanitizeStoredError(record.lastError)?.let(::add)
+            if (invalid) add("catalog:invalid_persisted_profile")
+        }.distinct()
+        return record.copy(
+            profiles = profiles,
+            history = history,
+            pins = pins,
+            lastError = errors.joinToString("; ").takeIf { it.isNotBlank() },
         )
     }
 
@@ -258,7 +292,6 @@ class UpstreamHeaderCatalogService(
     }
 
     private companion object {
-        const val MAX_SOURCE_CHARS = 1_048_576
         val PROFILE_ORDER = listOf("claude", "codex", "google", "antigravity")
         val VERSION = Regex("[0-9A-Za-z][0-9A-Za-z._+-]{0,99}")
         val HEADER_NAME = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
@@ -280,8 +313,8 @@ class UpstreamHeaderCatalogService(
                 header(HttpHeaders.UserAgent, "llm-gateway-header-catalog/1.0")
                 timeout { requestTimeoutMillis = 15_000 }
             }
-            require(response.status.isSuccess()) { "HTTP " + response.status.value }
-            return parseNpmVersionResponse(response.bodyAsText())
+            if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
+            return parseNpmVersionResponse(readLimitedText(response))
         }
 
         suspend fun fetchCodexVersion(client: HttpClient): String {
@@ -290,10 +323,80 @@ class UpstreamHeaderCatalogService(
                 header(HttpHeaders.Accept, "application/vnd.github+json")
                 timeout { requestTimeoutMillis = 15_000 }
             }
-            require(response.status.isSuccess()) { "HTTP " + response.status.value }
-            return parseCodexReleaseTag(response.bodyAsText())
+            if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
+            return parseCodexReleaseTag(readLimitedText(response))
         }
+
+        suspend fun readLimitedText(response: HttpResponse): String {
+            val bytes = response.bodyAsChannel().readRemaining(MAX_SOURCE_BYTES.toLong() + 1L).readBytes()
+            return decodeCatalogSource(bytes)
+        }
+
+        fun safeErrorCategory(cause: Throwable): String = when (cause) {
+            is HeaderCatalogHttpException -> "http_" + cause.status
+            is java.net.SocketTimeoutException,
+            is java.net.http.HttpTimeoutException,
+            is io.ktor.client.plugins.HttpRequestTimeoutException,
+            -> "timeout"
+            is java.net.ConnectException,
+            is java.net.UnknownHostException,
+            is java.io.IOException,
+            -> "request_failed"
+            else -> "invalid_response"
+        }
+
+        fun sanitizeSource(value: String): String {
+            if (value.isBlank()) return "manifest"
+            if (!value.startsWith("https://") && !value.startsWith("http://")) return value.take(200)
+            return runCatching {
+                val uri = URI(value)
+                buildString {
+                    append(uri.scheme)
+                    append("://")
+                    append(uri.host ?: "manifest")
+                    append(uri.path.orEmpty())
+                }.take(500)
+            }.getOrDefault("manifest")
+        }
+
+        fun sanitizeStoredError(value: String?): String? {
+            if (value.isNullOrBlank()) return null
+            val safe = value.split("; ").filter { part ->
+                SAFE_ERROR.matches(part) ||
+                    part == "catalog:invalid_persisted_profile" ||
+                    part == "catalog:version_conflict"
+            }
+            return safe.joinToString("; ").takeIf { it.isNotBlank() } ?: "catalog:stored_error_redacted"
+        }
+
+        val SAFE_ERROR = Regex(
+            "(?:claude|codex|google|manifest):(?:http_[0-9]{3}|timeout|request_failed|invalid_response)|refresh_failed",
+        )
     }
+}
+
+internal fun decodeCatalogSource(bytes: ByteArray): String {
+    require(bytes.size <= MAX_SOURCE_BYTES) { "响应超过 1MB" }
+    return bytes.toString(Charsets.UTF_8)
+}
+
+private const val MAX_SOURCE_BYTES = 1_048_576
+
+internal fun upstreamHeaderProfileValidationError(profile: UpstreamHeaderProfile): String? {
+    if (profile.id !in listOf("claude", "codex", "google", "antigravity")) return "未知 profile"
+    if (profile.name.isBlank() || profile.name.length > 100) return "profile 名称无效"
+    if (!Regex("[0-9A-Za-z][0-9A-Za-z._+-]{0,99}").matches(profile.version)) return "profile 版本格式无效"
+    if (profile.headers.isEmpty() || profile.headers.size > 64) return "profile 请求头数量无效"
+    if (profile.headers.keys.none { it.equals(HttpHeaders.UserAgent, ignoreCase = true) }) {
+        return "profile 必须包含 User-Agent"
+    }
+    val headerName = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+    profile.headers.forEach { (name, value) ->
+        if (name.length !in 1..128 || !headerName.matches(name)) return "profile 请求头名称无效"
+        if (name.lowercase() in MANAGED_HEADERS) return "profile 不能覆盖网关管理请求头"
+        if (!validHeaderValue(value)) return "profile 请求头值无效"
+    }
+    return null
 }
 
 internal fun parseNpmVersionResponse(text: String): String =

@@ -17,4 +17,12 @@ class UpstreamHeaderCatalogServiceTest {
         assertEquals("1.2.3", parseCodexReleaseTag("""{"tag_name":"v1.2.3"}"""))
         assertFailsWith<IllegalStateException> { parseCodexReleaseTag("{}") }
     }
+
+    @Test
+    fun `rejects source responses larger than one MB`() {
+        assertEquals("{}", decodeCatalogSource("{}".toByteArray()))
+        assertFailsWith<IllegalArgumentException> {
+            decodeCatalogSource(ByteArray(1_048_577))
+        }
+    }
 }

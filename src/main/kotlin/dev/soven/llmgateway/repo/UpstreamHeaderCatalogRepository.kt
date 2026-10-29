@@ -12,11 +12,14 @@ import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
-import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.insertIgnore
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
 import org.jetbrains.exposed.v1.jdbc.upsert
+
+class UpstreamHeaderProfileVersionConflictException :
+    IllegalStateException("同一请求头版本不能变更内容")
 
 data class UpstreamHeaderCatalogRecord(
     val profiles: List<UpstreamHeaderProfile>,
@@ -68,29 +71,27 @@ class UpstreamHeaderCatalogRepository(private val database: Database) {
                 MapSerializer(String.serializer(), String.serializer()),
                 profile.headers,
             )
-            val existing = UpstreamHeaderProfileVersions.selectAll()
-                .where {
+            val inserted = UpstreamHeaderProfileVersions.insertIgnore {
+                it[profileId] = profile.id
+                it[version] = profile.version
+                it[name] = profile.name
+                it[headers] = encodedHeaders
+                it[sourceLabel] = profile.source
+                it[fetchedAt] = checkedAt
+            }
+            if (inserted.insertedCount == 0) {
+                val existing = UpstreamHeaderProfileVersions.selectAll().where {
                     (UpstreamHeaderProfileVersions.profileId eq profile.id) and
                         (UpstreamHeaderProfileVersions.version eq profile.version)
+                }.single()
+                val existingHeaders = decodeHeaders(existing[UpstreamHeaderProfileVersions.headers])
+                if (existingHeaders != profile.headers) {
+                    throw UpstreamHeaderProfileVersionConflictException()
                 }
-                .singleOrNull()
-            if (existing == null) {
-                UpstreamHeaderProfileVersions.insert {
-                    it[profileId] = profile.id
-                    it[version] = profile.version
-                    it[name] = profile.name
-                    it[headers] = encodedHeaders
-                    it[sourceLabel] = profile.source
-                    it[fetchedAt] = checkedAt
-                }
-            } else {
                 UpstreamHeaderProfileVersions.update({
                     (UpstreamHeaderProfileVersions.profileId eq profile.id) and
                         (UpstreamHeaderProfileVersions.version eq profile.version)
                 }) {
-                    it[name] = profile.name
-                    it[headers] = encodedHeaders
-                    it[sourceLabel] = profile.source
                     it[fetchedAt] = checkedAt
                 }
             }
@@ -111,35 +112,30 @@ class UpstreamHeaderCatalogRepository(private val database: Database) {
                 }
             }
         }
-        val stateUpdated = UpstreamHeaderCatalogState.update({ UpstreamHeaderCatalogState.id eq SINGLETON_ID }) {
+        val previousSuccessAt = UpstreamHeaderCatalogState.selectAll()
+            .where { UpstreamHeaderCatalogState.id eq SINGLETON_ID }
+            .singleOrNull()
+            ?.get(UpstreamHeaderCatalogState.successAt)
+        UpstreamHeaderCatalogState.upsert(UpstreamHeaderCatalogState.id) {
+            it[id] = SINGLETON_ID
             it[UpstreamHeaderCatalogState.checkedAt] = checkedAt
-            if (successAt != null) it[UpstreamHeaderCatalogState.successAt] = successAt
+            it[UpstreamHeaderCatalogState.successAt] = successAt ?: previousSuccessAt
             it[UpstreamHeaderCatalogState.lastError] = lastError
-        }
-        if (stateUpdated == 0) {
-            UpstreamHeaderCatalogState.insert {
-                it[UpstreamHeaderCatalogState.id] = SINGLETON_ID
-                it[UpstreamHeaderCatalogState.checkedAt] = checkedAt
-                it[UpstreamHeaderCatalogState.successAt] = successAt
-                it[UpstreamHeaderCatalogState.lastError] = lastError
-            }
         }
         loadInTransaction()
     }
 
     suspend fun saveFailedRefresh(checkedAt: Long, error: String): UpstreamHeaderCatalogRecord =
         suspendTransaction(database) {
-            val updated = UpstreamHeaderCatalogState.update({ UpstreamHeaderCatalogState.id eq SINGLETON_ID }) {
+            val previousSuccessAt = UpstreamHeaderCatalogState.selectAll()
+                .where { UpstreamHeaderCatalogState.id eq SINGLETON_ID }
+                .singleOrNull()
+                ?.get(UpstreamHeaderCatalogState.successAt)
+            UpstreamHeaderCatalogState.upsert(UpstreamHeaderCatalogState.id) {
+                it[id] = SINGLETON_ID
                 it[UpstreamHeaderCatalogState.checkedAt] = checkedAt
-                it[lastError] = error.take(1_000)
-            }
-            if (updated == 0) {
-                UpstreamHeaderCatalogState.insert {
-                    it[UpstreamHeaderCatalogState.id] = SINGLETON_ID
-                    it[UpstreamHeaderCatalogState.checkedAt] = checkedAt
-                    it[UpstreamHeaderCatalogState.successAt] = null
-                    it[UpstreamHeaderCatalogState.lastError] = error.take(1_000)
-                }
+                it[UpstreamHeaderCatalogState.successAt] = previousSuccessAt
+                it[UpstreamHeaderCatalogState.lastError] = error.take(1_000)
             }
             loadInTransaction()
         }
@@ -189,10 +185,7 @@ class UpstreamHeaderCatalogRepository(private val database: Database) {
     }
 
     private fun toProfile(row: org.jetbrains.exposed.v1.core.ResultRow): UpstreamHeaderProfile {
-        val headers = Json.decodeFromString(
-            MapSerializer(String.serializer(), String.serializer()),
-            row[UpstreamHeaderProfileVersions.headers],
-        )
+        val headers = decodeHeaders(row[UpstreamHeaderProfileVersions.headers])
         return UpstreamHeaderProfile(
             id = row[UpstreamHeaderProfileVersions.profileId],
             name = row[UpstreamHeaderProfileVersions.name],
@@ -202,6 +195,11 @@ class UpstreamHeaderCatalogRepository(private val database: Database) {
             fetchedAt = row[UpstreamHeaderProfileVersions.fetchedAt],
         )
     }
+
+    private fun decodeHeaders(encoded: String): Map<String, String> = Json.decodeFromString(
+        MapSerializer(String.serializer(), String.serializer()),
+        encoded,
+    )
 
     private companion object {
         const val SINGLETON_ID = 1
