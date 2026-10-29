@@ -221,7 +221,7 @@ RPM 使用平滑令牌桶，每个实际上游请求尝试消耗一个令牌；�
 
 管理台的「上游接入点 → 密钥自动禁用」可修改全局规则。规则按顺序匹配，首条命中生效；每条规则包含状态码、状态码下限、错误文本正则、连续/窗口计数、动作（临时/永久）和临时停用时长。默认规则：401/403 且命中 `invalid_api_key`、`authentication_error`、`invalid_grant` 等稳定特征 → 连续 2 次永久停用；401/403 账号停用或结算类 → 1 次永久停用；其余 401/403 → 5 分钟内 3 次临时停用 30 分钟；429/5xx/连接失败/超时 → 5 分钟内 8 次临时停用 10 分钟；400/404/422 不命中任何规则。成功只清零连续计数，窗口计数保留；客户端取消、网关本地限流和请求体错误不提交结果；首 token 之后才出现的流异常也不参与密钥禁用。冷却规则照常运行，但已停用的 key 不参与 fail-open。
 
-规则、按规则分桶的失败计数和停用状态都保存在 PostgreSQL，重启后仍有效；修改规则从零开始计数，关闭自动禁用后已有停用状态保持。并发请求按 key 串行结算，只有第一次达到阈值会停用并写入一条系统审计；审计包含渠道/密钥名称、命中规则、计数、动作、状态、到期时间及对应请求 ID，不含凭据或请求正文。更换凭据或手动切换启用状态会清空该 key 的失败计数与密钥级冷却。
+规则、按规则分桶的失败计数和停用状态都保存在 PostgreSQL，重启后仍有效；修改规则从零开始计数，关闭自动禁用后已有停用状态保持。并发请求按 key 串行结算，只有第一次达到阈值会停用并写入一条系统审计；审计包含事件发生时的渠道/密钥名称快照、命中规则、计数、动作、状态、到期时间及对应请求 ID，不含凭据或请求正文。更换凭据或手动切换启用状态会清空该 key 的失败计数与密钥级冷却。
 
 密钥状态包含四态：`ACTIVE`（正常）、`MANUAL_DISABLED`（人工停用）、`AUTO_TEMPORARY`（自动临时停用）和 `AUTO_PERMANENT`（自动永久停用）。自动状态只由系统在达到规则阈值时维护，客户端只能提交人工状态（`ACTIVE` 或 `MANUAL_DISABLED`）。临时停用（`AUTO_TEMPORARY`）带到期时间 `autoDisableUntil`，到期即自动视作可用恢复路由；到期后通过 `probe_until` 原子抢占单探测租约，并发请求不会同时打上游，探测成功恢复、失败按命中规则重新计时。后台任务按 `KEY_AUTO_RECOVERY_INTERVAL_MS` 收尾已到期且没有有效租约的临时停用。人工停用与永久停用永不自动放行。**因凭据失效被永久停用的密钥，重新启用前必须更换上游凭据**；从临时停用或人工停用启用无需更换凭据。编辑请求可传返回的 `stateVersion`，状态发生变化时返回 `409 channel_key_state_changed`，避免旧页面覆盖自动禁用。
 
@@ -277,7 +277,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 冷却后置且独立于自动禁用：路由优先尝试未冷却候选，冷却到期后放行单个探测请求（探测成功完全恢复，失败翻倍重新冷却）；所有已启用候选都在冷却中时仍按档位顺序照常尝试（fail-open），自动禁用的密钥不会参与。客户端主动断开记录为 `client_disconnect`，不奖不罚。冷却状态内存为准、状态变更异步写透 PostgreSQL 并在启动时恢复；请求日志的 `upstreamAttempts` 记录实际调用的上游次数，`gateway_upstream_cooldown_started_total{channel,reason}` 与 `gateway_upstream_cooldown_skips_total{channel}` 提供观测。
 
-失败请求会在日志中记录 `failureStage`（`request` / `routing` / `upstream` / `streaming` / `client`）、`errorMessage` 和上游返回的 `upstreamErrorCode`。 请求日志同时展示输入、输出、推理和总 token、输出速率（输出 token / 总耗时）与缓存命中率（`cached_tokens / input_tokens`），并记录调用方密钥名称和请求中的推理强度；上游未返回的字段显示“—”，不做估算。渠道列显示请求发生时的渠道名称快照，同时保留 `channelId` 用于精确关联；渠道改名不会改写历史日志。请求日志列表只显示错误码和阶段，完整原因在“详情”弹层中查看；上游响应正文仍然不落库。
+失败请求会在日志中记录 `failureStage`（`request` / `routing` / `upstream` / `streaming` / `client`）、`errorMessage` 和上游返回的 `upstreamErrorCode`。 请求日志同时展示输入、输出、推理和总 token、输出速率（输出 token / 总耗时）与缓存命中率（`cached_tokens / input_tokens`），并记录调用方密钥名称和请求中的推理强度；上游未返回的字段显示“—”，不做估算。渠道列显示当前渠道名称；渠道已删除或当前名称为空白时，回退到请求发生时的名称快照。同时保留 `channelId` 用于精确关联；渠道改名不会改写历史日志。请求日志列表只显示错误码和阶段，完整原因在“详情”弹层中查看；上游响应正文仍然不落库。
 
 请求日志接口 `GET /admin/api/request-logs?limit=50&beforeId=<id>` 使用只读的日志 `id` 作为游标，按 ID 倒序分页。管理界面与操作审计共用游标分页器，每页可选择 25、50 或 100 条；切换条数会丢弃旧游标并重新加载第一页，点击“加载更早记录”后继续读取，不会一次加载全部历史数据。
 
@@ -313,6 +313,8 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 管理界面的“用量报表”按时间范围汇总请求数、错误数、输入/输出/总 token，以及按实际计费币种分别累计的费用；同时提供按调用方密钥的明细。
 
 报表接口：`GET /admin/api/usage-report?from=<epoch-ms>&to=<epoch-ms>`，可选 `clientKeyId`、`channelId`、`model`、`protocol`、`timezoneOffsetMinutes` 过滤。默认最近 7 天，单次查询范围最多 30 天。费用不做跨币种换算。
+
+报表分组和请求日志详情中的调用方密钥、渠道、渠道密钥名称取当前配置；实体删除后回退到请求日志中的名称快照。请求日志仍保留写入时的名称快照用于审计。
 
 请求日志保留策略由以下环境变量控制：
 

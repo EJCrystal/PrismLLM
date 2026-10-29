@@ -35,7 +35,7 @@ onMounted(load)
     <div class="section-head">
       <div>
         <h2>管理操作审计</h2>
-        <p>记录管理写操作与密钥自动禁用，展示操作者、触发原因和请求 ID，不保存请求正文。</p>
+        <p>记录管理写操作与密钥自动禁用，展示操作者、触发原因和请求 ID，不保存请求正文。自动禁用事件中的渠道/密钥名称按事件发生时的快照展示。</p>
       </div>
       <button type="button" class="button ghost" :disabled="loading || loadingMore" @click="refresh">
         <Icon name="refresh" :size="16" />

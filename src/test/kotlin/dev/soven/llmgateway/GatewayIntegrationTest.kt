@@ -4139,6 +4139,14 @@ class GatewayIntegrationTest {
                     firstTokenMs = 120,
                 ),
             )
+            val currentKey = app.clientKeyRepository.list().single()
+            app.clientKeyRepository.update(
+                id = currentKey.id,
+                name = "paid",
+                enabled = currentKey.enabled,
+                expiresAt = currentKey.expiresAt,
+                quotas = currentKey.quotas,
+            )
             val login = client.post("/admin/api/login") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"username":"admin","password":"test-password"}""")
@@ -4159,8 +4167,43 @@ class GatewayIntegrationTest {
             assertEquals("2", total["failovers"]!!.jsonPrimitive.content)
             assertEquals("0.000037", total["costs"]!!.jsonObject["USD"]!!.jsonPrimitive.content)
             val byKey = json["byClientKey"]!!.jsonArray.single().jsonObject
-            assertEquals(app.clientKeyRepository.list().single().id, byKey["id"]!!.jsonPrimitive.content)
-            assertTrue(byKey["name"]!!.jsonPrimitive.content in setOf("test-key", "renamed-key"))
+            assertEquals(currentKey.id, byKey["id"]!!.jsonPrimitive.content)
+            assertEquals("paid", byKey["name"]!!.jsonPrimitive.content)
+            assertEquals(
+                setOf("test-key", "renamed-key"),
+                app.requestLogRepository.list(10).mapNotNull { it.clientKeyName }.toSet(),
+            )
+            val logsResponse = client.get("/admin/api/request-logs") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, logsResponse.status, logsResponse.bodyAsText())
+            val displayedLogs = Json.parseToJsonElement(logsResponse.bodyAsText()).jsonArray
+            assertTrue(displayedLogs.isNotEmpty())
+            assertTrue(
+                displayedLogs.all { it.jsonObject["clientKeyName"]!!.jsonPrimitive.content == "paid" },
+                logsResponse.bodyAsText(),
+            )
+            app.clientKeyRepository.delete(currentKey.id)
+            val logsAfterDelete = client.get("/admin/api/request-logs") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, logsAfterDelete.status, logsAfterDelete.bodyAsText())
+            assertEquals(
+                setOf("test-key", "renamed-key"),
+                Json.parseToJsonElement(logsAfterDelete.bodyAsText()).jsonArray
+                    .map { it.jsonObject["clientKeyName"]!!.jsonPrimitive.content }
+                    .toSet(),
+            )
+            val reportAfterDelete = client.get("/admin/api/usage-report?from=${System.currentTimeMillis() - 86_400_000L}&to=${System.currentTimeMillis() + 60_000L}") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, reportAfterDelete.status, reportAfterDelete.bodyAsText())
+            val byKeyAfterDelete = Json.parseToJsonElement(reportAfterDelete.bodyAsText())
+                .jsonObject["byClientKey"]!!.jsonArray.single().jsonObject
+            assertTrue(
+                byKeyAfterDelete["name"]!!.jsonPrimitive.content in setOf("test-key", "renamed-key"),
+                reportAfterDelete.bodyAsText(),
+            )
             assertEquals("2", byKey["failovers"]!!.jsonPrimitive.content)
             assertEquals(
                 channel.id,
