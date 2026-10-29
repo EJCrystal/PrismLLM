@@ -889,6 +889,7 @@ private suspend fun proxyStream(
     val credential = decryptCredential(app, candidate)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, candidate.channel.authType,
+        app.upstreamHeaderCatalogService.profiles(),
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson
@@ -1061,6 +1062,7 @@ private suspend fun proxyJson(
     val credential = decryptCredential(app, candidate)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, candidate.channel.authType,
+        app.upstreamHeaderCatalogService.profiles(),
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson

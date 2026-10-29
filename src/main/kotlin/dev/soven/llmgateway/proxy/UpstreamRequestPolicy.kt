@@ -4,10 +4,10 @@ import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.api.badRequest
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
+import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.http.HttpStatusCode
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -15,48 +15,46 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-@Serializable
-data class UpstreamHeaderProfile(
-    val id: String,
-    val name: String,
-    val headers: Map<String, String>,
-)
-
-/** Header presets are editable defaults, selected by the outbound protocol rather than the model name. */
+/** Bundled header templates and protocol-based profile selection. */
 object UpstreamHeaderProfiles {
-    val profiles = listOf(
+    val defaults = listOf(
         UpstreamHeaderProfile(
-            "claude", "Claude Code", linkedMapOf(
-                "User-Agent" to "claude-cli/2.1.258 (external, cli)",
+            "claude", "Claude Code", "2.1.312", linkedMapOf(
+                "User-Agent" to "claude-cli/2.1.312 (external, cli)",
                 "x-app" to "cli",
                 "x-stainless-lang" to "js",
                 "x-stainless-package-version" to "0.94.0",
                 "x-stainless-runtime" to "node",
                 "x-stainless-retry-count" to "0",
-            ),
+            ), "npm:@anthropic-ai/claude-code",
         ),
         UpstreamHeaderProfile(
-            "codex", "Codex", linkedMapOf(
-                "User-Agent" to "codex_cli_rs/0.146.0 (Linux; x86_64)",
+            "codex", "Codex", "0.165.0", linkedMapOf(
+                "User-Agent" to "codex_cli_rs/0.165.0 (Linux; x86_64)",
                 "originator" to "codex_cli_rs",
-                "version" to "0.146.0",
-            ),
+                "version" to "0.165.0",
+            ), "github:openai/codex",
         ),
         UpstreamHeaderProfile(
-            "google", "Google Gen AI SDK", linkedMapOf(
-                "User-Agent" to "google-genai-sdk/2.31.0",
-                "x-goog-api-client" to "google-genai-sdk/2.31.0",
-            ),
+            "google", "Google Gen AI SDK", "2.32.0", linkedMapOf(
+                "User-Agent" to "google-genai-sdk/2.32.0",
+                "x-goog-api-client" to "google-genai-sdk/2.32.0",
+            ), "npm:@google/genai",
         ),
         UpstreamHeaderProfile(
-            "antigravity", "Antigravity", linkedMapOf(
+            "antigravity", "Antigravity", "2.23.0", linkedMapOf(
                 "User-Agent" to "antigravity/hub/2.23.0 windows/amd64",
-            ),
+            ), "builtin",
         ),
     )
-    val ids = profiles.map { it.id }.toSet() + setOf("auto", "none")
+    val ids = defaults.map { it.id }.toSet() + setOf("auto", "none")
 
-    fun headers(profile: String, protocol: GatewayProtocol?, authType: String): Map<String, String> {
+    fun headers(
+        profile: String,
+        protocol: GatewayProtocol?,
+        authType: String,
+        profiles: List<UpstreamHeaderProfile> = defaults,
+    ): Map<String, String> {
         val selected = if (profile == "auto") {
             when (protocol) {
                 GatewayProtocol.MESSAGES -> "claude"
@@ -79,6 +77,7 @@ class UpstreamRequestPolicy(
     channel: UpstreamRequestOverrides,
     private val protocol: GatewayProtocol?,
     private val authType: String,
+    private val profiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ) {
     private val layers: List<UpstreamProtocolOverrides> = buildList {
         if (channel.inheritGlobal) {
@@ -92,14 +91,15 @@ class UpstreamRequestPolicy(
 
     fun applyHeaders(builder: HttpRequestBuilder) {
         val result = linkedMapOf<String, String?>()
-        UpstreamHeaderProfiles.headers(profile, protocol, authType).forEach { (name, value) ->
+        val selectedHeaders = UpstreamHeaderProfiles.headers(profile, protocol, authType, profiles)
+        selectedHeaders.forEach { (name, value) ->
             result[name.lowercase()] = value
         }
         layers.forEach { layer ->
             layer.userAgent?.let { result["user-agent"] = it.takeIf(String::isNotEmpty) }
             layer.headers.forEach { (name, value) -> result[name.lowercase()] = value }
         }
-        if (UpstreamHeaderProfiles.headers(profile, protocol, authType).containsKey("originator")) {
+        if (selectedHeaders.containsKey("originator")) {
             val identity = CODEX_USER_AGENT.find(result["user-agent"].orEmpty())
             if (identity != null) {
                 val explicit = layers.flatMap { it.headers.keys }.map(String::lowercase).toSet()
@@ -171,7 +171,7 @@ fun validateUpstreamRequestOverrides(overrides: UpstreamRequestOverrides) {
     if (Json.encodeToString(overrides).toByteArray(Charsets.UTF_8).size > 65_536) invalid("请求覆盖配置不能超过 64KB")
 }
 
-private fun validHeaderValue(value: String): Boolean = value.length <= 8192 &&
+internal fun validHeaderValue(value: String): Boolean = value.length <= 8192 &&
     value.all { it == '\t' || it in ' '..'~' }
 
 private fun jsonDepth(value: JsonElement, depth: Int = 0): Int = when {
@@ -183,7 +183,7 @@ private fun jsonDepth(value: JsonElement, depth: Int = 0): Int = when {
 
 private val HEADER_NAME = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 private val CODEX_USER_AGENT = Regex("^(codex_cli_rs|codex_vscode|codex-tui)/([0-9]+(?:\\.[0-9]+){1,3}(?:-[0-9A-Za-z.]+)?)(?:\\s|$)")
-private val MANAGED_HEADERS = setOf(
+internal val MANAGED_HEADERS = setOf(
     "authorization", "proxy-authorization", "x-api-key", "x-goog-api-key", "cookie", "set-cookie",
     "host", "content-length", "content-type", "content-encoding", "transfer-encoding", "connection", "te", "trailer",
     "accept-encoding", "upgrade", "expect", "traceparent",

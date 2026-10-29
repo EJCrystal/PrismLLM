@@ -1,9 +1,14 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildRequestOverrides, createRequestOverrideDrafts, normalizeRequestOverrides } from '../src/utils/requestOverrides.js'
+import { buildRequestOverrides, createRequestOverrideDrafts, normalizeRequestOverrides, REQUEST_OVERRIDE_SCOPES } from '../src/utils/requestOverrides.js'
 import { buildChannelPayload, buildPriorityUpdatePayload } from '../src/utils/channelForm.js'
 
 describe('上游请求覆盖配置', () => {
+  it('配置范围明确区分通用配置和协议专用覆盖', () => {
+    assert.equal(REQUEST_OVERRIDE_SCOPES[0].label, '通用配置（所有协议）')
+    assert.ok(REQUEST_OVERRIDE_SCOPES.slice(1).every((scope) => scope.label.endsWith('（仅该协议）')))
+  })
+
   it('切换协议的草稿分别保留，保存时一起提交', () => {
     const drafts = createRequestOverrideDrafts()
     drafts.common.userAgent = 'global-UA'

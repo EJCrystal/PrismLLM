@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.security.CredentialCipher
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
@@ -55,6 +56,7 @@ suspend fun testChannelModelConnectivity(
     timeoutMs: Long = 45_000,
     maxOutputTokens: Int = 128,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
+    headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): ModelConnectivityTestResult {
     val credential = runCatching {
         credentialCipher.decrypt(key.credentialCiphertext, key.credentialNonce)
@@ -70,7 +72,9 @@ suspend fun testChannelModelConnectivity(
     val startedAt = System.currentTimeMillis()
     return try {
         withTimeout(timeoutMs) {
-            val policy = UpstreamRequestPolicy(globalOverrides, channel.requestOverrides, protocol, channel.authType)
+            val policy = UpstreamRequestPolicy(
+                globalOverrides, channel.requestOverrides, protocol, channel.authType, headerProfiles,
+            )
             val requestBody = policy.body(
                 Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject, model,
             )

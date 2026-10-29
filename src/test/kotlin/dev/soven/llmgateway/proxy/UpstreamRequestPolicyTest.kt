@@ -4,6 +4,7 @@ import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.json.Json
@@ -34,6 +35,28 @@ class UpstreamRequestPolicyTest {
                 .applyHeaders(builder)
             assertTrue(builder.headers["User-Agent"]!!.startsWith(prefix))
         }
+    }
+
+    @Test
+    fun `uses the supplied dynamic catalog snapshot instead of bundled versions`() {
+        val profiles = UpstreamHeaderProfiles.defaults.map { profile ->
+            if (profile.id == "codex") {
+                profile.copy(
+                    version = "9.9.9",
+                    headers = mapOf(
+                        "User-Agent" to "codex_cli_rs/9.9.9 (Linux; x86_64)",
+                        "originator" to "codex_cli_rs",
+                        "version" to "9.9.9",
+                    ),
+                )
+            } else profile
+        }
+        val builder = HttpRequestBuilder()
+        UpstreamRequestPolicy(
+            UpstreamRequestOverrides(), UpstreamRequestOverrides(), GatewayProtocol.RESPONSES, "bearer", profiles,
+        ).applyHeaders(builder)
+        assertEquals(listOf("codex_cli_rs/9.9.9 (Linux; x86_64)"), builder.headers.getAll("User-Agent"))
+        assertEquals("9.9.9", builder.headers["version"])
     }
 
     @Test

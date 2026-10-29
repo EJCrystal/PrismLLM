@@ -91,6 +91,17 @@ export const api = {
   getUpstreamRequestSettings: () => request('/upstream-request-settings'),
   updateUpstreamRequestSettings: (payload) =>
     request('/upstream-request-settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  refreshUpstreamHeaderCatalog: () =>
+    request('/upstream-request-settings/header-catalog/refresh', { method: 'POST' }),
+  pinUpstreamHeaderProfile: (profileId, version) =>
+    request(`/upstream-request-settings/header-profiles/${encodeURIComponent(profileId)}/pin`, {
+      method: 'PUT',
+      body: JSON.stringify({ version }),
+    }),
+  unpinUpstreamHeaderProfile: (profileId) =>
+    request(`/upstream-request-settings/header-profiles/${encodeURIComponent(profileId)}/pin`, {
+      method: 'DELETE',
+    }),
   updateModelTestSettings: (payload) =>
     request('/model-test-settings', { method: 'PUT', body: JSON.stringify(payload) }),
   getKeyAutoDisableSettings: () => request('/key-auto-disable-settings'),

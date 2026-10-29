@@ -32,6 +32,9 @@ data class GatewayConfig(
     val retention: RetentionPolicy,
     val cooldown: CooldownPolicy = CooldownPolicy(),
     val keyAutoRecoveryIntervalMs: Long = 30_000,
+    val upstreamHeaderRefreshIntervalMs: Long = 3_600_000,
+    val upstreamHeaderCatalogUrl: String? = null,
+    val upstreamHeaderRefreshEnabled: Boolean = true,
 ) {
     companion object {
         fun fromEnv(env: Map<String, String> = System.getenv()): GatewayConfig {
@@ -59,6 +62,7 @@ data class GatewayConfig(
             val ttftSlowThresholdMs = longValue("TTFT_SLOW_THRESHOLD_MS", 10_000)
             val ttftSlowStreak = longValue("TTFT_SLOW_STREAK", 3).toInt()
             val keyAutoRecoveryIntervalMs = longValue("KEY_AUTO_RECOVERY_INTERVAL_MS", 30_000)
+            val upstreamHeaderRefreshIntervalMs = longValue("UPSTREAM_HEADER_REFRESH_INTERVAL_MS", 3_600_000)
             require(cooldownTransientBaseMs in 1_000..3_600_000) { "COOLDOWN_TRANSIENT_BASE_MS 必须在 1000..3600000 之间" }
             require(cooldownTransientMaxMs in cooldownTransientBaseMs..86_400_000) {
                 "COOLDOWN_TRANSIENT_MAX_MS 必须在 COOLDOWN_TRANSIENT_BASE_MS..86400000 之间"
@@ -72,6 +76,9 @@ data class GatewayConfig(
             require(ttftSlowStreak in 1..100) { "TTFT_SLOW_STREAK 必须在 1..100 之间" }
             require(keyAutoRecoveryIntervalMs in 1_000..3_600_000) {
                 "KEY_AUTO_RECOVERY_INTERVAL_MS 必须在 1000..3600000 之间"
+            }
+            require(upstreamHeaderRefreshIntervalMs in 60_000..604_800_000) {
+                "UPSTREAM_HEADER_REFRESH_INTERVAL_MS 必须在 60000..604800000 之间"
             }
 
             return GatewayConfig(
@@ -110,6 +117,11 @@ data class GatewayConfig(
                     ttftSlowStreak = ttftSlowStreak,
                 ),
                 keyAutoRecoveryIntervalMs = keyAutoRecoveryIntervalMs,
+                upstreamHeaderRefreshIntervalMs = upstreamHeaderRefreshIntervalMs,
+                upstreamHeaderCatalogUrl = env["UPSTREAM_HEADER_CATALOG_URL"]?.takeIf { it.isNotBlank() },
+                upstreamHeaderRefreshEnabled = value("UPSTREAM_HEADER_REFRESH_ENABLED", "true")
+                    .toBooleanStrictOrNull()
+                    ?: error("UPSTREAM_HEADER_REFRESH_ENABLED 必须是 true 或 false"),
             )
         }
     }

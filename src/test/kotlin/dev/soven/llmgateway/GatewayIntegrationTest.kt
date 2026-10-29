@@ -14,6 +14,7 @@ import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
+import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.repo.AliasWithCandidates
 import dev.soven.llmgateway.repo.NewCandidate
@@ -21,6 +22,10 @@ import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
+import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
+import dev.soven.llmgateway.proxy.HeaderProfileVersionSource
+import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
+import dev.soven.llmgateway.proxy.UpstreamHeaderProfiles
 import dev.soven.llmgateway.resilience.KeyAttemptOutcome
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.resilience.FailureKind
@@ -4921,7 +4926,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("36", result.getString(1))
+                        assertEquals("37", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -6102,6 +6107,8 @@ class GatewayIntegrationTest {
             ttftSlowStreak = ttftSlowStreak,
         ),
         keyAutoRecoveryIntervalMs = keyAutoRecoveryIntervalMs,
+        upstreamHeaderRefreshEnabled = false,
+        upstreamHeaderRefreshIntervalMs = 3_600_000,
     )
 
     private fun requestLog(requestId: String, createdAt: Long) = RequestLogRecord(
@@ -6497,6 +6504,37 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, saved.status)
             val settings = Json.parseToJsonElement(saved.bodyAsText()).jsonObject
             assertEquals(4, settings["profiles"]!!.jsonArray.size)
+            val catalog = settings["headerCatalog"]!!.jsonObject
+            assertEquals(4, catalog["profiles"]!!.jsonArray.size)
+            assertFalse(catalog["autoRefreshEnabled"]!!.jsonPrimitive.boolean)
+            app.upstreamHeaderCatalogRepository.saveRefresh(
+                UpstreamHeaderProfiles.defaults,
+                checkedAt = 1_000,
+                successAt = 1_000,
+                lastError = null,
+            )
+            app.upstreamHeaderCatalogService.initialize()
+            val pinned = client.put("/admin/api/upstream-request-settings/header-profiles/claude/pin") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"version":"2.1.312"}""")
+            }
+            assertEquals(HttpStatusCode.OK, pinned.status)
+            assertEquals(
+                "2.1.312",
+                Json.parseToJsonElement(pinned.bodyAsText()).jsonObject["headerCatalog"]!!
+                    .jsonObject["pins"]!!.jsonObject["claude"]!!.jsonPrimitive.content,
+            )
+            val unpinned = client.delete("/admin/api/upstream-request-settings/header-profiles/claude/pin") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+            }
+            assertEquals(HttpStatusCode.OK, unpinned.status)
+            assertFalse(
+                Json.parseToJsonElement(unpinned.bodyAsText()).jsonObject["headerCatalog"]!!
+                    .jsonObject["pins"]!!.jsonObject.containsKey("claude"),
+            )
             assertEquals("private-UA", app.upstreamRequestSettingsRepository.load().overrides.userAgent)
             val invalidRules = listOf(
                 """{"headers":{"Authorization":"plaintext"}}""",
@@ -6520,6 +6558,53 @@ class GatewayIntegrationTest {
             assertFalse(audit.contains("private-UA"))
             assertFalse(audit.contains("plaintext"))
         }
+    }
+
+    @Test
+    @Tag("upstream-request-overrides")
+    fun headerCatalogRefreshesPersistsAndPinsVersions() = runBlocking {
+        var clock = 1_000L
+        var claudeVersion = "2.1.400"
+        var codexVersion = "0.170.0"
+        val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
+        val sources = listOf(
+            HeaderProfileVersionSource("claude", "test:npm") { claudeVersion },
+            HeaderProfileVersionSource("codex", "test:github") { codexVersion },
+            HeaderProfileVersionSource("google", "test:npm") { error("registry unavailable") },
+        )
+        fun service() = UpstreamHeaderCatalogService(
+            httpClient = app.httpClient,
+            repository = repository,
+            refreshIntervalMs = 60_000,
+            autoRefreshEnabled = false,
+            versionSources = sources,
+            now = { clock },
+        )
+
+        val catalog = service()
+        catalog.initialize()
+        val first = catalog.refreshNow()
+        assertEquals("2.1.400", first.profiles.first { it.id == "claude" }.version)
+        assertEquals("0.170.0", first.profiles.first { it.id == "codex" }.version)
+        assertEquals(UpstreamHeaderProfiles.defaults.first { it.id == "google" }.version, first.profiles.first { it.id == "google" }.version)
+        assertTrue(first.lastError!!.contains("google"))
+
+        catalog.pin("claude", "2.1.400")
+        clock = 2_000L
+        claudeVersion = "2.1.401"
+        codexVersion = "0.171.0"
+        val refreshed = catalog.refreshNow()
+        assertEquals("2.1.400", refreshed.profiles.first { it.id == "claude" }.version)
+        assertEquals("2.1.400", refreshed.pins["claude"])
+        assertEquals("2.1.401", refreshed.history["claude"]!!.first().version)
+        assertEquals("0.171.0", refreshed.profiles.first { it.id == "codex" }.version)
+
+        val reloaded = service()
+        reloaded.initialize()
+        assertEquals("2.1.400", reloaded.profiles().first { it.id == "claude" }.version)
+        val unpinned = reloaded.unpin("claude")
+        assertEquals("2.1.401", unpinned.profiles.first { it.id == "claude" }.version)
+        assertEquals(2, unpinned.history["claude"]!!.size)
     }
 
     @Test
@@ -7128,7 +7213,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, key_auto_disable_settings, request_logs, alias_candidates, model_aliases, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, alias_candidates, model_aliases, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }
