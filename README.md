@@ -39,7 +39,7 @@ client --client key--> gateway --configured auth--> protocol-compatible upstream
 启用渠道的对外模型 ID 会出现在 `/v1/models` 并可直接路由。满足条件后：
 - **未配置对外模型 ID（留空）**：对外使用上游模型名；
 - **配置了对外模型 ID**：对外只显示该 ID，调用时网关会将它重写为实际上游模型名。
-单独配置的模型别名不依赖渠道直连暴露，但别名候选要求其渠道处于启用状态。
+对外模型 ID 由渠道模型映射的 canonical ID 决定；同一 canonical ID 的不同上游模型名视为同一个模型，跨渠道自动聚合。
 
 ### Gemini 与上游请求覆盖
 
@@ -143,7 +143,7 @@ curl http://localhost:8080/v1/messages \
   -d '{"model":"claude-fast","max_tokens":128,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-模型列表：`GET /v1/models` 返回当前启用的别名与启用渠道的可直连模型 ID；`GET /v1beta/models` 返回 Gemini 形状的模型列表。请求日志会记录入站协议和实际出站协议。
+模型列表：`GET /v1/models` 返回启用渠道的可直连模型 ID；`GET /v1beta/models` 返回 Gemini 形状的模型列表。请求日志会记录入站协议和实际出站协议。
 
 管理 API 示例：
 
@@ -171,7 +171,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
   -d '{"baseUrl":"https://api.openai.com/v1","credential":"sk-..."}'
 ```
 
-编辑渠道时可只传 `channelId` 和可选的 `keyId`，复用已保存密钥。保存渠道时通过 `keys` 数组提交密钥池；每个密钥包含 `name`、`credential`、`state`（`ACTIVE` 正常，`MANUAL_DISABLED` 人工停用；默认 `ACTIVE`）、`priority`、`models` 和可选的 `rateLimit`。请求与响应彻底使用 `state` 枚举替换原 `enabled` 布尔字段，不再接受 `enabled`；客户端提交 `AUTO_*` 自动状态会被拒绝（自动状态只由系统维护）。旧版单凭据字段仍兼容：新建时自动生成“默认密钥”，更新时只作用于唯一的默认密钥并保留已有 `rateLimit`。取消仍被别名候选引用的模型授权会返回 `409 channel_model_in_use`。
+编辑渠道时可只传 `channelId` 和可选的 `keyId`，复用已保存密钥。保存渠道时通过 `keys` 数组提交密钥池；每个密钥包含 `name`、`credential`、`state`（`ACTIVE` 正常，`MANUAL_DISABLED` 人工停用；默认 `ACTIVE`）、`priority`、`models` 和可选的 `rateLimit`。请求与响应彻底使用 `state` 枚举替换原 `enabled` 布尔字段，不再接受 `enabled`；客户端提交 `AUTO_*` 自动状态会被拒绝（自动状态只由系统维护）。旧版单凭据字段仍兼容：新建时自动生成“默认密钥”，更新时只作用于唯一的默认密钥并保留已有 `rateLimit`。
 
 渠道密钥池示例：
 
@@ -234,7 +234,7 @@ RPM 使用平滑令牌桶，每个实际上游请求尝试消耗一个令牌；�
 {"enabled":true,"rules":[{"id":"credential_invalid","name":"凭据失效","statusCodes":[401,403],"bodyPatterns":["invalid[\\s_-]*(x-)?api[\\s_-]?key"],"threshold":2,"windowMinutes":5,"streak":true,"action":"PERMANENT"}]}
 ```
 
-共享同一对外 ID 时，路由先按渠道优先级分档；同一渠道内先按上游模型名稳定排序，首个名称作为主入口，只有失败、冷却或不可用时才回退到同渠道的其他名称。每个上游模型下再按密钥优先级分档，同档密钥轮询。这样既避免把同一模型的多个上游别名误当成独立容量，也能把同一模型在多个密钥上的容量聚合起来。
+共享同一对外 ID 时，路由先按渠道优先级分档；同一渠道内先按密钥优先级分档，同档密钥轮询。相同 canonical ID 的上游模型名视为同一个模型（例如 `deepseek-v4.1-flash` 与 `deepseek-flash` 都映射到 `deepseek-flash`），不会因为模型名不同而被拆成互不相干的容量；同一密钥支持多个上游模型名时，首个名称作为主入口，只有失败、冷却或不可用时才回退到同密钥的其他名称。这样既避免把同一模型的多个上游别名误当成独立容量，也能把同一模型在多个密钥上的容量聚合起来。
 
 查看调用方通过 `/v1/models` 获取到的对外结果：
 
@@ -242,7 +242,7 @@ RPM 使用平滑令牌桶，每个实际上游请求尝试消耗一个令牌；�
 curl -b cookies.txt http://localhost:8080/admin/api/exposed-models
 ```
 
-返回 `object` 和 `data`，每条记录包含 `id`、`source`（`alias` / `upstream` / `canonical`）与 `ownedBy`。配置了对外 canonical ID 的上游模型会标记为 `canonical`。管理界面的“模型列表”菜单展示同一结果，并提供原始 JSON 响应预览。
+返回 `object` 和 `data`，每条记录包含 `id`、`source`（`canonical` / `upstream`）与 `ownedBy`。配置了对外 canonical ID 的上游模型会标记为 `canonical`。管理界面的“模型列表”菜单展示同一结果，并提供原始 JSON 响应预览。
 
 同一页面还会加载 models.dev 目录，展示模型 ID、`canonical_model_id`、模型开发者和服务提供方，并在对外模型表中标记匹配结果。目录接口：`GET /admin/api/models-dev`。目录在后台缓存 24 小时，并在到期前 1 小时刷新；刷新失败时继续使用上一份完整快照并每分钟重试。上游 `/models` 返回的 `owned_by` 只表示上游元数据，不作为模型开发者；例如 Qwen 通过 OpenAI 兼容接口返回 `owned_by=openai` 时，仍按 canonical ID 的 `alibaba` 命名空间识别开发者。
 
@@ -272,7 +272,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 ### 候选档位、分摊与候选冷却
 
-别名候选的 `position` 是优先级档位：同档候选轮询分摊流量（例如几个有优惠的渠道共扛同一模型），后续档位只在前面档位失败或冷却时启用。创建/更新别名时每个候选可显式传 `position`（0..999，同档填同一个数），省略时按数组顺序递增；直连暴露的候选同处第 0 档，天然参与分摊。
+候选档位来自渠道优先级：同档渠道轮询分摊流量（例如几个有优惠的渠道共扛同一模型），更低档渠道只在前面档位失败或冷却时启用。
 
 上游在首 token 前发生连接失败、超时、429、5xx、401、403 或 404 时，按档位顺序尝试下一个候选，最多执行 `MAX_ATTEMPTS` 次实际上游请求。400、422 等请求参数错误直接返回；首 token 已提交后的流中断不切换渠道。候选之间不做退避等待——下一个候选是不同的上游，立即切换。
 
@@ -281,6 +281,8 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 冷却后置且独立于自动禁用：路由优先尝试未冷却候选，冷却到期后放行单个探测请求（探测成功完全恢复，失败翻倍重新冷却）；所有已启用候选都在冷却中时仍按档位顺序照常尝试（fail-open），自动禁用的密钥不会参与。客户端主动断开记录为 `client_disconnect`，不奖不罚。冷却状态内存为准、状态变更异步写透 PostgreSQL 并在启动时恢复；请求日志的 `upstreamAttempts` 记录实际调用的上游次数，`gateway_upstream_cooldown_started_total{channel,reason}` 与 `gateway_upstream_cooldown_skips_total{channel}` 提供观测。
 
 失败请求会在日志中记录 `failureStage`（`request` / `routing` / `upstream` / `streaming` / `client`）、`errorMessage`、上游返回的 `upstreamErrorCode` 和 `upstreamErrorBody`。 请求日志同时展示输入、输出、推理和总 token、输出速率（输出 token / 总耗时）与缓存命中率（`cached_tokens / input_tokens`），并记录调用方密钥名称和请求中的推理强度；上游未返回的字段显示“—”，不做估算。渠道列显示当前渠道名称；渠道已删除或当前名称为空白时，回退到请求发生时的名称快照。同时保留 `channelId` 用于精确关联；渠道改名不会改写历史日志。请求日志列表只显示错误码和阶段，完整原因在“详情”弹层中查看。`upstreamErrorBody` 只保存失败请求的上游错误正文，最多 8 KB（按 UTF-8 字节截断），入库前对常见密钥字段、Bearer token 和 `sk-` 前缀密钥脱敏；成功响应正文、客户端原始 prompt 和完整 SSE 流不落库（若上游错误正文回显了输入片段，仅作为错误信息上下文保存，仅管理员可见）。
+
+详情弹层会逐条列出每次实际尝试（最多 `MAX_ATTEMPTS` 条）：渠道、密钥、上游模型、出站协议、上游状态码、错误码与原因、本次耗时和首 token 耗时；未拿到上游响应的连接失败状态码显示“—”，被本地跳过（密钥停用或限流）的候选不计入尝试。入站请求协议（`protocol`）与实际上游协议（`upstreamProtocol`）分开记录和展示，协议转换时两者不同；明细保存在 `request_logs.attempts_json`，历史记录为空数组。
 
 请求日志接口 `GET /admin/api/request-logs?limit=50&beforeId=<id>` 使用只读的日志 `id` 作为游标，按 ID 倒序分页。管理界面与操作审计共用游标分页器，每页可选择 25、50 或 100 条；切换条数会丢弃旧游标并重新加载第一页，点击“加载更早记录”后继续读取，不会一次加载全部历史数据。
 
@@ -307,7 +309,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 
 `POST /admin/api/client-keys/{id}/revoke` 将密钥永久标记为撤销并停用。重复调用保持原撤销时间，便于安全重试。撤销后的密钥不能重新启用、编辑或轮换，数据面请求直接返回 HTTP `401`。普通停用仍可通过 `PUT /admin/api/client-keys/{id}` 恢复，二者在接口、管理界面和 `revokedAt` 字段中明确区分。
 
-管理面的所有写操作（包括登录、渠道和别名配置、单价修改、日志清理及密钥生命周期操作）都会写入 `admin_audit_logs`；系统自动禁用上游密钥也会写入同一表。记录包含操作者、动作、HTTP 方法、路径、结果、状态码、`X-Request-Id`、来源地址、错误码及可选的规则/禁用原因元数据，不包含请求体、prompt、响应正文、CSRF、Cookie、密钥明文或哈希。请求未提供有效 `X-Request-Id` 时，网关生成一个 UUID，并在响应中返回。
+管理面的所有写操作（包括登录、渠道和模型映射配置、单价修改、日志清理及密钥生命周期操作）都会写入 `admin_audit_logs`；系统自动禁用上游密钥也会写入同一表。记录包含操作者、动作、HTTP 方法、路径、结果、状态码、`X-Request-Id`、来源地址、错误码及可选的规则/禁用原因元数据，不包含请求体、prompt、响应正文、CSRF、Cookie、密钥明文或哈希。请求未提供有效 `X-Request-Id` 时，网关生成一个 UUID，并在响应中返回。
 
 审计记录接口为 `GET /admin/api/audit-logs?limit=100&beforeId=<id>`，按 ID 倒序分页，最多返回 500 条。接口只读，不提供修改或删除操作；管理界面“操作审计”页可直接查看。`sourceIp` 取当前连接的对端地址；部署在反向代理后时通常显示代理地址，网关不信任可伪造的转发头。
 

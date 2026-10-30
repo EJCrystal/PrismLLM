@@ -20,7 +20,6 @@ const catalogSource = ref('https://models.dev/catalog.json')
 const catalogSearch = ref('')
 const catalogLimit = ref(150)
 
-const aliasCount = computed(() => models.value.filter((model) => model.source === 'alias').length)
 const canonicalCount = computed(() => models.value.filter((model) => model.source === 'canonical').length)
 const upstreamCount = computed(() => models.value.filter((model) => model.source === 'upstream').length)
 const matchedCount = computed(() => models.value.filter((model) => matchesFor(model.id).length > 0).length)
@@ -111,13 +110,11 @@ async function copyJson() {
 }
 
 function sourceLabel(source) {
-  if (source === 'alias') return '别名'
   if (source === 'canonical') return '规范映射'
   return '上游直连'
 }
 
 function sourceClass(source) {
-  if (source === 'alias') return 'info'
   if (source === 'canonical') return 'success'
   return 'warning'
 }
@@ -141,16 +138,11 @@ onMounted(() => {
       </button>
     </div>
 
-    <div class="stat-row four">
+    <div class="stat-row">
       <div class="stat-card accent">
         <span>对外模型总数</span>
         <strong>{{ models.length }}</strong>
         <small>任意有效调用方密钥都能看到</small>
-      </div>
-      <div class="stat-card">
-        <span>别名模型</span>
-        <strong>{{ aliasCount }}</strong>
-        <small>来自启用的模型别名</small>
       </div>
       <div class="stat-card">
         <span>规范映射</span>

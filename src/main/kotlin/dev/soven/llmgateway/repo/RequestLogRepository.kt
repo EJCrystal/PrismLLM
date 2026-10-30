@@ -113,6 +113,7 @@ class RequestLogRepository(private val database: Database) {
             it[upstreamErrorCode] = record.upstreamErrorCode
             it[upstreamErrorBody] = record.upstreamErrorBody
             it[upstreamAttempts] = record.upstreamAttempts
+            it[attemptsJson] = UpstreamAttemptCodec.encode(record.attempts)
             it[createdAt] = record.createdAt
         }
     }
@@ -576,6 +577,7 @@ class RequestLogRepository(private val database: Database) {
         upstreamErrorBody = row[RequestLogs.upstreamErrorBody],
         createdAt = row[RequestLogs.createdAt],
         upstreamAttempts = row[RequestLogs.upstreamAttempts],
+        attempts = UpstreamAttemptCodec.decode(row[RequestLogs.attemptsJson]),
         id = row[RequestLogs.id],
     )
 

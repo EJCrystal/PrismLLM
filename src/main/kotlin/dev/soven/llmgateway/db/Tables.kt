@@ -102,41 +102,6 @@ object KeyAutoDisableSettings : Table("key_auto_disable_settings") {
 }
 
 /**
- * 模型别名表。
- *
- * @author 文杰
- * @since 2026-10-21
- */
-object ModelAliases : Table("model_aliases") {
-    val id = varchar("id", 36)
-    val alias = varchar("alias", 100).uniqueIndex()
-    val enabled = bool("enabled")
-    val createdAt = long("created_at")
-    val updatedAt = long("updated_at")
-
-    override val primaryKey = PrimaryKey(id)
-}
-
-/**
- * 模型别名候选表。position 是优先级档位，同档候选分摊流量，后续档位在失败或冷却时启用。
- *
- * @author 文杰
- * @since 2026-10-21
- */
-object AliasCandidates : Table("alias_candidates") {
-    val id = varchar("id", 36)
-    val aliasId = varchar("alias_id", 36).references(ModelAliases.id, onDelete = ReferenceOption.CASCADE)
-    val channelId = varchar("channel_id", 36).references(Channels.id, onDelete = ReferenceOption.RESTRICT)
-    val upstreamModel = varchar("upstream_model", 200)
-    val position = integer("position")
-
-    override val primaryKey = PrimaryKey(id)
-    init {
-        index(false, aliasId, position)
-    }
-}
-
-/**
  * 候选冷却状态快照。内存为准，持久化只为重启恢复。
  *
  * @author 文杰
@@ -394,6 +359,7 @@ object RequestLogs : Table("request_logs") {
     val upstreamErrorCode = varchar("upstream_error_code", 200).nullable()
     val upstreamErrorBody = text("upstream_error_body").nullable()
     val upstreamAttempts = integer("upstream_attempts").nullable()
+    val attemptsJson = text("attempts_json")
     val createdAt = long("created_at")
 
     override val primaryKey = PrimaryKey(id)

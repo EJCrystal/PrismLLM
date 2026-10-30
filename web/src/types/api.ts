@@ -195,35 +195,6 @@ export interface UpstreamRequestSettings {
   headerCatalog: UpstreamHeaderCatalog
 }
 
-export interface CandidateRequest {
-  channelId: string
-  upstreamModel: string
-  position?: number | null
-}
-
-export interface AliasRequest {
-  alias: string
-  enabled: boolean
-  candidates: CandidateRequest[]
-}
-
-export interface Candidate {
-  id: string
-  channelId: string
-  channelName: string
-  upstreamModel: string
-  position: number
-}
-
-export interface Alias {
-  id: string
-  alias: string
-  enabled: boolean
-  candidates: Candidate[]
-  createdAt: number
-  updatedAt: number
-}
-
 export interface ClientKeyQuotaUsage {
   dailyTokens: number
   dailyUsdCost: string
@@ -445,6 +416,25 @@ export interface RequestLog {
   upstreamErrorBody: string | null
   createdAt: number
   upstreamAttempts: number | null
+  attempts: RequestLogAttempt[]
+}
+
+export interface RequestLogAttempt {
+  index: number
+  channelId: string | null
+  channelName: string | null
+  channelKeyId: string | null
+  channelKeyName: string | null
+  upstreamModel: string | null
+  upstreamProtocol: string | null
+  statusCode: number | null
+  errorCode: string | null
+  upstreamErrorCode: string | null
+  errorMessage: string | null
+  elapsedMs: number
+  firstTokenMs: number | null
+  committed: boolean
+  retryable: boolean
 }
 
 export interface ChannelModel {

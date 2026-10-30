@@ -8,7 +8,7 @@
     <artifactId>llm-gateway</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <name>llm-gateway</name>
-    <description>OpenAI-compatible LLM gateway with alias routing, streaming pass-through and admin API.</description>
+    <description>OpenAI-compatible LLM gateway with canonical model routing, streaming pass-through and admin API.</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

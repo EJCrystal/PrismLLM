@@ -7,8 +7,8 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * 档位分摊：候选按档位升序使用，同档内轮询分摊流量。
  *
- * 外层按渠道优先级分档，同档渠道轮询；渠道内按密钥优先级分档，同档密钥轮询。
- * 同一渠道内不同上游模型仍保持稳定顺序，作为同模型的主入口/回退。
+ * 外层按渠道优先级分档，同档渠道轮询；渠道内先按密钥优先级分档，同档密钥轮询。
+ * 同一密钥支持多个上游模型名时保持稳定顺序，首个名称作为主入口、其余作为回退。
  *
  * @author 文杰
  * @since 2026-10-25
@@ -32,26 +32,21 @@ class TierSharing {
     private fun orderTier(scope: String, tier: List<RouteCandidate>, channelOffset: Long): List<RouteCandidate> {
         val channels = tier.groupBy { it.channel.id }.values.toList()
         return rotateGroups(channels, channelOffset).flatMapIndexed { channelIndex, channelCandidates ->
+            val channelId = channelCandidates.first().channel.id
+            val counterKey = "$scope|$channelId"
+            // 只推进当前首选渠道的密钥计数，避免渠道轮转与密钥轮转同步造成组合偏置。
+            val keyOffset = if (channelIndex == 0) {
+                keyCounters.computeIfAbsent(counterKey) { AtomicLong() }.getAndIncrement()
+            } else {
+                keyCounters[counterKey]?.get() ?: 0L
+            }
             channelCandidates
-                .groupBy { it.upstreamModel }
-                .values
-                .flatMap { modelCandidates ->
-                    val channelId = modelCandidates.first().channel.id
-                    val upstreamModel = modelCandidates.first().upstreamModel
-                    val counterKey = "$scope|$channelId|$upstreamModel"
-                    // 只推进当前首选渠道的密钥计数，避免渠道轮转与密钥轮转同步造成组合偏置。
-                    val keyOffset = if (channelIndex == 0) {
-                        keyCounters.computeIfAbsent(counterKey) { AtomicLong() }.getAndIncrement()
-                    } else {
-                        keyCounters[counterKey]?.get() ?: 0L
-                    }
-                    modelCandidates
-                        .groupBy { it.key.priority }
-                        .toSortedMap()
-                        .flatMap { (_, keyTier) ->
-                            val keys = keyTier.groupBy { it.key.id }.values.toList()
-                            rotateGroups(keys, keyOffset).flatten()
-                        }
+                .groupBy { it.key.priority }
+                .toSortedMap()
+                .flatMap { (_, keyTier) ->
+                    // 同档密钥轮询；同一密钥内的多个上游模型名保持候选原有稳定顺序。
+                    val keys = keyTier.groupBy { it.key.id }.values.toList()
+                    rotateGroups(keys, keyOffset).flatten()
                 }
         }
     }

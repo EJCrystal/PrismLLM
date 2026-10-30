@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.RouteCandidate
+import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
@@ -190,6 +191,7 @@ private suspend fun handleProxy(
     var upstreamErrorCode: String? = null
     var upstreamErrorBody: String? = null
     var upstreamAttempts = 0
+    val attemptRecords = mutableListOf<UpstreamAttemptRecord>()
     var phase = FailureStage.REQUEST
 
     try {
@@ -214,16 +216,9 @@ private suspend fun handleProxy(
         }
         streamMode = stream
         phase = FailureStage.ROUTING
-        val aliasCandidates = app.aliasRepository.findEnabledCandidates(alias)
-        val allCandidates = if (aliasCandidates.isNotEmpty()) {
-            aliasCandidates
-        } else if (app.aliasRepository.findByAlias(alias) == null) {
-            app.modelCatalog.findCandidates(alias, null)
-        } else {
-            emptyList()
-        }
+        val allCandidates = app.modelCatalog.findCandidates(alias, null)
         if (allCandidates.isEmpty()) {
-            throw notFound("model_not_found", "模型别名 $alias 不存在或没有可用渠道")
+            throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
         }
         val nativeCandidates = allCandidates.filter { protocol in it.channel.protocols }
         val conversionCandidates = if (protocol == GatewayProtocol.GEMINI) {
@@ -294,18 +289,21 @@ private suspend fun handleProxy(
             }
             // 首 token 软阈值按本次尝试计时，不继承前面候选消耗掉的时间。
             val attemptStartedNanos = System.nanoTime()
+            state.attemptFirstTokenMs = null
+            state.upstreamStatus = null
             upstreamAttempts += 1
             channelId = candidate.channel.id
             channelName = candidate.channel.name
             channelKeyId = candidate.key.id
             channelKeyName = candidate.key.name
             upstreamModel = candidate.upstreamModel
-            upstreamProtocol = if (protocol in candidate.channel.protocols) {
+            val attemptProtocol = if (protocol in candidate.channel.protocols) {
                 protocol
             } else {
                 candidate.channel.protocols.firstOrNull { it != GatewayProtocol.GEMINI }
             }
-            upstreamProtocol?.takeIf { it != protocol }?.let { target ->
+            upstreamProtocol = attemptProtocol
+            attemptProtocol?.takeIf { it != protocol }?.let { target ->
                 app.metrics.protocolConversion(protocol.value, target.value)
             }
             pricingModelId = candidate.pricingModelId
@@ -313,6 +311,30 @@ private suspend fun handleProxy(
                 app.metrics.upstreamRetry(from, candidate.channel.name, retryReason ?: "upstream_error")
                 retryFrom = null
                 retryReason = null
+            }
+            var attemptRecorded = false
+            fun recordAttempt(status: Int?, error: GatewayException?, committed: Boolean, errorCode: String? = null) {
+                if (attemptRecorded) return
+                // 候选在进入上游前被跳过（密钥停用）不计入实际上游尝试，也不进入明细。
+                if (errorCode == "no_candidate" || error?.code == "no_candidate") return
+                attemptRecorded = true
+                attemptRecords += UpstreamAttemptRecord(
+                    index = attemptRecords.size + 1,
+                    channelId = candidate.channel.id,
+                    channelName = candidate.channel.name,
+                    channelKeyId = candidate.key.id,
+                    channelKeyName = candidate.key.name,
+                    upstreamModel = candidate.upstreamModel,
+                    upstreamProtocol = attemptProtocol,
+                    statusCode = status,
+                    errorCode = errorCode ?: error?.code,
+                    upstreamErrorCode = error?.upstreamCode,
+                    errorMessage = error?.message?.asLogMessage(),
+                    elapsedMs = (System.nanoTime() - attemptStartedNanos) / 1_000_000,
+                    firstTokenMs = state.attemptFirstTokenMs,
+                    committed = committed,
+                    retryable = error?.retryable ?: false,
+                )
             }
             var probeClaimed = false
             try {
@@ -377,6 +399,7 @@ private suspend fun handleProxy(
                         .recordFailure(permit, FailureKind.TRANSPORT)
                         ?.let { app.metrics.upstreamCooldownStarted(candidate.channel.name, it.reason) }
                 }
+                recordAttempt(state.statusCode, null, state.committed, state.errorCode)
                 null
             } catch (_: CandidateUnavailableException) {
                 upstreamAttempts -= 1
@@ -388,12 +411,14 @@ private suspend fun handleProxy(
             } catch (e: GatewayException) {
                 if (e.code == "client_disconnect") {
                     app.candidateCooldown.release(permit)
+                    recordAttempt(state.statusCode.takeIf { state.committed }, e, state.committed)
                     throw e
                 }
                 try {
                     currentCoroutineContext().ensureActive()
                 } catch (cancelled: CancellationException) {
                     app.candidateCooldown.release(permit)
+                    recordAttempt(state.statusCode.takeIf { state.committed }, null, state.committed, "client_cancelled")
                     throw cancelled
                 }
                 app.metrics.upstreamError(candidate.channel.name, e.code)
@@ -420,6 +445,12 @@ private suspend fun handleProxy(
                 if (signal != null) {
                     recordKeyOutcome(app, candidate, signal, requestId, probeClaimed)
                 }
+                val failureCommitted = state.committed || e.code == "stream_interrupted" || e.code == "stream_timeout"
+                recordAttempt(
+                    e.upstreamStatus ?: state.upstreamStatus ?: state.statusCode.takeIf { failureCommitted },
+                    e,
+                    failureCommitted,
+                )
                 e
             } catch (e: ProtocolConversionException) {
                 app.candidateCooldown.release(permit)
@@ -427,7 +458,22 @@ private suspend fun handleProxy(
                 if (probeClaimed) {
                     recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed = true)
                 }
-                if (state.committed) throw e
+                if (state.committed) {
+                    recordAttempt(state.statusCode, null, true, "stream_interrupted")
+                    throw e
+                }
+                // 请求在本地转换阶段就失败时没有真正调用上游，不写入尝试明细。
+                if (state.upstreamStatus != null) {
+                    recordAttempt(
+                        state.upstreamStatus,
+                        GatewayException(
+                            HttpStatusCode.BadGateway,
+                            "protocol_conversion_unsupported",
+                            "${e.field}: ${e.message}",
+                        ),
+                        false,
+                    )
+                }
                 // 单个候选无法转换时继续尝试其他候选，全部失败后再返回转换错误。
                 upstreamAttempts -= 1
                 conversionError = e
@@ -440,6 +486,11 @@ private suspend fun handleProxy(
                 )
             } catch (e: Throwable) {
                 app.candidateCooldown.release(permit)
+                recordAttempt(
+                    state.statusCode.takeIf { state.committed },
+                    GatewayException(HttpStatusCode.InternalServerError, "internal_error", e.message ?: e::class.simpleName.toString()),
+                    state.committed,
+                )
                 throw e
             }
         } finally {
@@ -659,6 +710,7 @@ private suspend fun handleProxy(
                 upstreamErrorBody = upstreamErrorBody,
                 createdAt = System.currentTimeMillis(),
                 upstreamAttempts = upstreamAttempts,
+                attempts = attemptRecords.toList(),
             ),
         )
     }
@@ -826,6 +878,10 @@ private class ProxyState {
     var statusCode = HttpStatusCode.OK.value
     var usage: Usage? = null
     var firstTokenMs: Long? = null
+    /** 本次尝试的首 token 耗时，每次尝试开始时重置。 */
+    var attemptFirstTokenMs: Long? = null
+    /** 本次尝试收到的上游 HTTP 状态码；连接失败时为 null。 */
+    var upstreamStatus: Int? = null
     var errorCode: String? = null
     var upstreamErrorBody: String? = null
 }
@@ -926,6 +982,7 @@ private suspend fun proxyStream(
                 policy.applyHeaders(this)
                 setBody(TextContent(body, ContentType.Application.Json))
             }.execute { response ->
+                state.upstreamStatus = response.status.value
                 if (!response.status.isSuccess()) {
                     throw upstreamException(
                         response.status,
@@ -1098,6 +1155,7 @@ private suspend fun proxyJson(
                 setBody(TextContent(body, ContentType.Application.Json))
             }
             val text = response.bodyAsText()
+            state.upstreamStatus = response.status.value
             if (!response.status.isSuccess()) {
                 throw upstreamException(
                     response.status,
@@ -1275,8 +1333,9 @@ private fun markFirstToken(
         state.firstTokenMs = (nowNanos - startedAt) / 1_000_000
         app.metrics.firstToken(alias, candidate.channel.name, state.firstTokenMs!!)
         // 首 token 软阈值按本次尝试计时：快速兜底不应继承前面候选撞掉的秒数。
-        val attemptFirstTokenMs = (nowNanos - attemptStartedNanos) / 1_000_000
-        if (app.candidateCooldown.recordFirstToken(
+            val attemptFirstTokenMs = (nowNanos - attemptStartedNanos) / 1_000_000
+            state.attemptFirstTokenMs = attemptFirstTokenMs
+            if (app.candidateCooldown.recordFirstToken(
                 permit,
                 attemptFirstTokenMs,
             )

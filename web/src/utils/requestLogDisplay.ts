@@ -27,3 +27,39 @@ export function tokenUsageState(log: TokenUsageInput | null | undefined): 'known
 export function tokenUsageLabel(log: TokenUsageInput | null | undefined): string {
   return tokenUsageState(log) === 'no-request' ? '无请求' : '未知'
 }
+
+const PROTOCOL_LABELS: Record<string, string> = {
+  chat_completions: 'Chat Completions',
+  responses: 'Responses',
+  messages: 'Messages',
+  gemini: 'Gemini',
+}
+
+export function protocolLabel(value: string | null | undefined): string {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return '—'
+  return PROTOCOL_LABELS[normalized] || normalized
+}
+
+export interface AttemptDisplayInput {
+  statusCode?: number | null
+  errorCode?: string | null
+  upstreamErrorCode?: string | null
+  errorMessage?: string | null
+  committed?: boolean
+  retryable?: boolean
+}
+
+export function attemptResultLabel(attempt: AttemptDisplayInput | null | undefined): string {
+  if (!attempt) return '—'
+  if (attempt.errorCode === 'client_disconnect') return '客户端断开'
+  if (attempt.errorCode === 'client_cancelled') return '客户端取消'
+  if (attempt.statusCode == null && attempt.errorCode) return '未到达上游'
+  if (attempt.errorCode) return attempt.retryable ? '失败，已切换' : '失败，终止'
+  return attempt.committed ? '成功' : '完成'
+}
+
+export function attemptFailureReason(attempt: AttemptDisplayInput | null | undefined): string {
+  if (!attempt) return '—'
+  return attempt.errorMessage || attempt.upstreamErrorCode || attempt.errorCode || '—'
+}

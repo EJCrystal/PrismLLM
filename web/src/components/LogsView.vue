@@ -8,7 +8,15 @@ import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { createCursorPager } from '../utils/cursorPager'
 import { requestModeClass, requestModeLabel } from '../utils/requestMode'
-import { reasoningEffortClass, reasoningEffortLabel, tokenUsageLabel, tokenUsageState } from '../utils/requestLogDisplay'
+import {
+  attemptFailureReason,
+  attemptResultLabel,
+  protocolLabel,
+  reasoningEffortClass,
+  reasoningEffortLabel,
+  tokenUsageLabel,
+  tokenUsageState,
+} from '../utils/requestLogDisplay'
 import { filterRequestLogs } from '../utils/requestLogSearch'
 import {
   formatTime,
@@ -38,21 +46,35 @@ const stageLabels = {
   client: '客户端',
 }
 
-const protocolLabels = {
-  chat_completions: 'Chat Completions',
-  responses: 'Responses',
-  messages: 'Messages',
+function attemptProtocolLabel(attempt, log) {
+  return protocolLabel(attempt.upstreamProtocol || log.upstreamProtocol || log.protocol)
 }
 
-function protocolLabel(value) {
-  return protocolLabels[value] || value || '—'
+function attemptStatusClass(attempt) {
+  if (attempt.statusCode == null) return attempt.errorCode ? 'danger' : 'neutral'
+  return statusClass(attempt.statusCode)
 }
 
-function protocolPairLabel(log) {
-  const inbound = protocolLabel(log.protocol)
-  const upstream = log.upstreamProtocol ? protocolLabel(log.upstreamProtocol) : inbound
-  return upstream !== inbound ? `${inbound} → ${upstream}` : inbound
-}
+const selectedAttempts = computed(() => {
+  const attempts = selected.value?.attempts || []
+  if (attempts.length > 0) return attempts
+  if (!selected.value?.channelId) return []
+  return [{
+    index: 1,
+    channelName: selected.value.channelName,
+    channelKeyName: selected.value.channelKeyName,
+    upstreamModel: selected.value.upstreamModel,
+    upstreamProtocol: selected.value.upstreamProtocol,
+    statusCode: selected.value.statusCode,
+    errorCode: selected.value.errorCode,
+    upstreamErrorCode: selected.value.upstreamErrorCode,
+    errorMessage: selected.value.errorMessage,
+    elapsedMs: selected.value.totalMs,
+    firstTokenMs: selected.value.firstTokenMs,
+    committed: true,
+    retryable: false,
+  }]
+})
 
 const filtered = computed(() => {
   return filterRequestLogs(logs.value, query.value)
@@ -252,7 +274,7 @@ onMounted(load)
             <tr>
               <th>时间</th>
               <th>请求 ID</th>
-              <th>请求模型 / 协议 / 模式</th>
+              <th>请求模型 / 入站与出站协议 / 模式</th>
               <th>渠道 / 上游模型</th>
               <th>状态 / 错误</th>
               <th>首 token / 总耗时</th>
@@ -274,7 +296,8 @@ onMounted(load)
                 <div class="stacked-cell">
                   <span class="badge info">{{ log.alias }}</span>
                   <div class="request-meta">
-                    <span class="muted small">{{ protocolPairLabel(log) }}</span>
+                    <span class="muted small">入站 {{ protocolLabel(log.protocol) }}</span>
+                    <span class="muted small">出站 {{ protocolLabel(log.upstreamProtocol || log.protocol) }}</span>
                     <span class="mode-badge" :class="`mode-${requestModeClass(log.stream)}`">{{ requestModeLabel(log.stream) }}</span>
                     <span class="reasoning-badge" :class="reasoningEffortClass(log.reasoningEffort)">
                       推理 {{ reasoningEffortLabel(log.reasoningEffort) }}
@@ -304,17 +327,19 @@ onMounted(load)
                 </div>
               </td>
               <td class="usage-cell" :class="usageStateClass(log)">
-                <template v-if="log.usageKnown">
-                  <span :title="`输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 总 ${formatTokens(log.totalTokens)}`">
-                    输入 {{ formatTokensCompact(log.inputTokens) }} · 输出 {{ formatTokensCompact(log.outputTokens) }} · 总
-                    {{ formatTokensCompact(log.totalTokens) }}
-                  </span>
-                  <span class="muted" :title="usageDetailTitle(log)">
-                    推理 {{ formatTokensCompact(log.reasoningTokens) }} · 速率 {{ formatThroughput(log) }} tok/s · 缓存
-                    {{ formatCacheHit(log) }}
-                  </span>
-                </template>
-                <span v-else class="usage-state-label">{{ tokenUsageLabel(log) }}</span>
+                <div class="usage-cell-body">
+                  <template v-if="log.usageKnown">
+                    <span :title="`输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 总 ${formatTokens(log.totalTokens)}`">
+                      输入 {{ formatTokensCompact(log.inputTokens) }} · 输出 {{ formatTokensCompact(log.outputTokens) }} · 总
+                      {{ formatTokensCompact(log.totalTokens) }}
+                    </span>
+                    <span class="muted" :title="usageDetailTitle(log)">
+                      推理 {{ formatTokensCompact(log.reasoningTokens) }} · 速率 {{ formatThroughput(log) }} tok/s · 缓存
+                      {{ formatCacheHit(log) }}
+                    </span>
+                  </template>
+                  <span v-else class="usage-state-label">{{ tokenUsageLabel(log) }}</span>
+                </div>
               </td>
               <td class="nowrap" :title="costTitle(log)">
                 <span v-if="log.costAmount != null" class="cost-line log-cost">
@@ -386,8 +411,12 @@ onMounted(load)
                 <strong><span class="badge" :class="statusClass(selected.statusCode)">{{ selected.statusCode }}</span></strong>
               </div>
               <div class="detail-item">
-                <span>协议</span>
-                <strong>{{ protocolPairLabel(selected) }}</strong>
+                <span>入站协议</span>
+                <strong>{{ protocolLabel(selected.protocol) }}</strong>
+              </div>
+              <div class="detail-item">
+                <span>出站协议</span>
+                <strong>{{ protocolLabel(selected.upstreamProtocol || selected.protocol) }}</strong>
               </div>
               <div class="detail-item">
                 <span>模式</span>
@@ -503,6 +532,58 @@ onMounted(load)
               <span>错误信息</span>
               <p v-if="selected.errorMessage" class="detail-message">{{ selected.errorMessage }}</p>
               <p v-else class="muted">无错误信息</p>
+            </div>
+
+            <div class="detail-block">
+              <span>
+                尝试记录（{{ selectedAttempts.length }} 条 · 上游调用 {{ selected.upstreamAttempts ?? selectedAttempts.length }} 次）
+              </span>
+              <div class="attempt-list">
+                <div v-for="attempt in selectedAttempts" :key="attempt.index" class="attempt-row">
+                  <div class="attempt-head">
+                    <span class="attempt-index">#{{ attempt.index }}</span>
+                    <span class="badge" :class="attemptStatusClass(attempt)">
+                      {{ attempt.statusCode ?? '—' }}
+                    </span>
+                    <span class="attempt-result">{{ attemptResultLabel(attempt) }}</span>
+                    <span class="attempt-duration">{{ formatDuration(attempt.elapsedMs) }}</span>
+                  </div>
+                  <div class="attempt-route">
+                    <div class="attempt-field">
+                      <span class="attempt-label">渠道</span>
+                      <span class="attempt-value" :title="attempt.channelName || attempt.channelId || ''">
+                        {{ attempt.channelName || (attempt.channelId ? attempt.channelId.slice(0, 8) : '—') }}
+                      </span>
+                    </div>
+                    <div class="attempt-field">
+                      <span class="attempt-label">密钥</span>
+                      <span class="attempt-value" :title="attempt.channelKeyName || ''">{{ attempt.channelKeyName || '—' }}</span>
+                    </div>
+                    <div class="attempt-field">
+                      <span class="attempt-label">上游模型</span>
+                      <span class="attempt-value mono" :title="attempt.upstreamModel || ''">{{ attempt.upstreamModel || '—' }}</span>
+                    </div>
+                    <div class="attempt-field">
+                      <span class="attempt-label">出站协议</span>
+                      <span class="attempt-value">{{ attemptProtocolLabel(attempt, selected) }}</span>
+                    </div>
+                  </div>
+                  <div class="attempt-detail">
+                    <div class="attempt-field">
+                      <span class="attempt-label">首 token</span>
+                      <span class="attempt-value">{{ formatDuration(attempt.firstTokenMs) }}</span>
+                    </div>
+                    <div class="attempt-field">
+                      <span class="attempt-label">上游错误码</span>
+                      <span class="attempt-value mono">{{ attempt.upstreamErrorCode || '—' }}</span>
+                    </div>
+                    <div class="attempt-field attempt-field-wide">
+                      <span class="attempt-label">原因</span>
+                      <span class="attempt-value">{{ attemptFailureReason(attempt) }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div v-if="selected.upstreamErrorBody" class="detail-block">
