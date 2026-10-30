@@ -313,6 +313,7 @@ data class RequestLogRecord(
     val failureStage: FailureStage?,
     val errorMessage: String?,
     val upstreamErrorCode: String?,
+    val upstreamErrorBody: String? = null,
     val createdAt: Long,
     val upstreamAttempts: Int? = null,
     val pricingModelId: String? = null,

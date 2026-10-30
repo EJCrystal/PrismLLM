@@ -933,6 +933,7 @@ data class RequestLogResponse(
     val failureStage: String?,
     val errorMessage: String?,
     val upstreamErrorCode: String?,
+    val upstreamErrorBody: String?,
     val createdAt: Long,
     val upstreamAttempts: Int?,
 )
@@ -976,6 +977,7 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     failureStage = failureStage?.value,
     errorMessage = errorMessage,
     upstreamErrorCode = upstreamErrorCode,
+    upstreamErrorBody = upstreamErrorBody,
     createdAt = createdAt,
     upstreamAttempts = upstreamAttempts,
 )

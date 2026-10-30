@@ -11,7 +11,16 @@
 ## Consequences
 
 - 失败请求的日志写入开销略有增加，但仍在异步日志队列中完成，不影响数据面响应。
-- 错误信息限制为 1000 字符；上游响应正文仍然不落库。
+- 错误信息限制为 1000 字符；上游响应正文默认不落库，失败请求的截断脱敏错误正文见下文更新。
 - 历史日志的三个新字段为空，界面显示为“—”。
 - `failure_stage` 取值为 `request`、`routing`、`upstream`、`streaming`、`client`。
 - Responses 的 `response.failed` / `response.incomplete` 仍按 HTTP 200 转发结束事件，但日志记为 `streaming` 阶段的 `responses_failed` / `responses_incomplete`。
+
+## 2026-10-29 更新：失败请求保存上游错误正文
+
+上游可能返回 `11115` 这类非标准业务错误码，只有错误码无法判断具体原因。请求日志新增 `upstream_error_body`，但只保存失败请求的上游错误正文：
+
+- 上游返回非 2xx 响应时保存响应体；
+- 流式响应出现终止性错误事件时保存该事件 payload，包括 `response.failed`、`error` 和 Gemini error。
+
+正文最多保存 8 KB，入库前对 `api_key` / `authorization` / `token` / `secret` / `password` 字段、Bearer token 和 `sk-` 前缀密钥做脱敏。成功响应正文、prompt 和完整 SSE 流仍然不落库。日志保留期沿用请求日志保留策略，详情仅管理员可见。

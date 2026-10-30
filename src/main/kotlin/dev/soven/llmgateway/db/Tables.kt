@@ -392,6 +392,7 @@ object RequestLogs : Table("request_logs") {
     val failureStage = varchar("failure_stage", 20).nullable()
     val errorMessage = text("error_message").nullable()
     val upstreamErrorCode = varchar("upstream_error_code", 200).nullable()
+    val upstreamErrorBody = text("upstream_error_body").nullable()
     val upstreamAttempts = integer("upstream_attempts").nullable()
     val createdAt = long("created_at")
 

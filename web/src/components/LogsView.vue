@@ -505,8 +505,16 @@ onMounted(load)
               <p v-else class="muted">无错误信息</p>
             </div>
 
+            <div v-if="selected.upstreamErrorBody" class="detail-block">
+              <div class="detail-block-head">
+                <span>上游响应正文</span>
+                <CopyButton :text="selected.upstreamErrorBody" title="复制上游响应正文" :size="13" />
+              </div>
+              <pre class="detail-code">{{ selected.upstreamErrorBody }}</pre>
+            </div>
+
             <p class="muted small detail-hint">
-              输出速率为输出 token / 总耗时；缓存命中为 cached / input。费用按渠道 + 上游模型的单价快照计算，推理 token 已包含在输出 token 中。缺失字段显示“—”，不做估算。日志不保存 prompt 与响应正文。
+              输出速率为输出 token / 总耗时；缓存命中为 cached / input。费用按渠道 + 上游模型的单价快照计算，推理 token 已包含在输出 token 中。缺失字段显示“—”，不做估算。日志不保存 prompt 与成功响应正文；失败请求的上游错误正文会截断并脱敏后保存。
             </p>
           </div>
 

@@ -188,6 +188,7 @@ private suspend fun handleProxy(
     var failureStage: FailureStage? = null
     var errorMessage: String? = null
     var upstreamErrorCode: String? = null
+    var upstreamErrorBody: String? = null
     var upstreamAttempts = 0
     var phase = FailureStage.REQUEST
 
@@ -548,6 +549,7 @@ private suspend fun handleProxy(
         }
         errorMessage = e.message.asLogMessage()
         upstreamErrorCode = e.upstreamCode?.take(200)
+        upstreamErrorBody = sanitizeUpstreamErrorBody(e.upstreamErrorBody)
         throw e
     } catch (e: CancellationException) {
         statusCode = if (state.committed) HttpStatusCode.OK.value else 499
@@ -587,6 +589,9 @@ private suspend fun handleProxy(
                 "gemini_failed" -> "上游响应失败"
                 else -> "上游流未正常结束（缺少结束帧）"
             }
+        }
+        if (upstreamErrorBody == null) {
+            upstreamErrorBody = sanitizeUpstreamErrorBody(state.upstreamErrorBody)
         }
         val usage = state.usage
         settleRequestLimitOnExit(
@@ -651,6 +656,7 @@ private suspend fun handleProxy(
                 failureStage = failureStage,
                 errorMessage = errorMessage,
                 upstreamErrorCode = upstreamErrorCode,
+                upstreamErrorBody = upstreamErrorBody,
                 createdAt = System.currentTimeMillis(),
                 upstreamAttempts = upstreamAttempts,
             ),
@@ -821,6 +827,7 @@ private class ProxyState {
     var usage: Usage? = null
     var firstTokenMs: Long? = null
     var errorCode: String? = null
+    var upstreamErrorBody: String? = null
 }
 
 private suspend fun authenticate(
@@ -1357,11 +1364,23 @@ private fun markTerminalStreamFailure(
     when (protocol) {
         GatewayProtocol.CHAT_COMPLETIONS -> Unit
         GatewayProtocol.RESPONSES -> when (type) {
-            "response.failed", "error" -> state.errorCode = "responses_failed"
-            "response.incomplete" -> state.errorCode = "responses_incomplete"
+            "response.failed", "error" -> {
+                state.errorCode = "responses_failed"
+                state.upstreamErrorBody = payload
+            }
+            "response.incomplete" -> {
+                state.errorCode = "responses_incomplete"
+                state.upstreamErrorBody = payload
+            }
         }
-        GatewayProtocol.MESSAGES -> if (type == "error") state.errorCode = "messages_failed"
-        GatewayProtocol.GEMINI -> if (isGeminiStreamError(line)) state.errorCode = "gemini_failed"
+        GatewayProtocol.MESSAGES -> if (type == "error") {
+            state.errorCode = "messages_failed"
+            state.upstreamErrorBody = payload
+        }
+        GatewayProtocol.GEMINI -> if (isGeminiStreamError(line)) {
+            state.errorCode = "gemini_failed"
+            state.upstreamErrorBody = payload
+        }
     }
 }
 

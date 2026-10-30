@@ -2663,6 +2663,9 @@ class GatewayIntegrationTest {
             assertEquals(FailureStage.UPSTREAM, log.failureStage)
             assertEquals("上游限流", log.errorMessage)
             assertEquals("rate_limit_exceeded", log.upstreamErrorCode)
+            assertNotNull(log.upstreamErrorBody)
+            assertTrue(log.upstreamErrorBody!!.contains("rate limited"))
+            assertTrue(log.upstreamErrorBody!!.contains("\"code\":\"rate_limit_exceeded\""))
             assertTrue(app.metrics.scrape().contains("gateway_upstream_errors_total"))
         }
     }
@@ -3243,6 +3246,8 @@ class GatewayIntegrationTest {
             assertEquals("responses_failed", log.errorCode)
             assertEquals(FailureStage.STREAMING, log.failureStage)
             assertEquals("上游响应失败", log.errorMessage)
+            assertNotNull(log.upstreamErrorBody)
+            assertTrue(log.upstreamErrorBody!!.contains("upstream failed"))
         }
     }
 
@@ -4970,7 +4975,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("37", result.getString(1))
+                        assertEquals("38", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
