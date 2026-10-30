@@ -24,6 +24,7 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       backend: ${{ steps.filter.outputs.backend }}
       monitoring: ${{ steps.filter.outputs.monitoring }}
+      ci: ${{ steps.filter.outputs.ci }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -49,6 +50,25 @@ jobs:
               - 'Dockerfile'
             monitoring:
               - 'monitoring/**'
+            ci:
+              - '.github/workflows/ci.yml'
+
+  workflow:
+    name: Validate workflow
+    needs: changes
+    if: needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate workflow YAML and expressions
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color .github/workflows/*.yml
 
   frontend:
     name: Test frontend
