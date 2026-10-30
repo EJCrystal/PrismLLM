@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 private const val MAX_UPSTREAM_ERROR_BODY_BYTES = 8_192
+private const val MAX_INPUT_PRE_TRUNCATE_CHARS = 32_768
 
 private val SECRET_KEY_PATTERN = Regex(
     """(?i)^[\w-]*?(?:api[_-]?key|authorization|token|secret|password)$""",
@@ -16,9 +17,9 @@ private val UPSTREAM_SECRET_JSON_FIELD = Regex(
     """(?i)("[\w-]*?(?:api[_-]?key|authorization|token|secret|password)"\s*:\s*")((?:[^"\\]|\\.)*+)("?)""",
 )
 private val UPSTREAM_SECRET_KEY_VALUE = Regex(
-    """(?i)((?:^|[\s&?,;])[\w-]*?(?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:Bearer\s+[A-Za-z0-9._~+/=-]+|"(?:[^"\\]|\\.)*+"?|'(?:[^'\\]|\\.)*+'?|[^\s&,;]+)""",
+    """(?i)((?:^|[\s&?,;])[\w-]*?(?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|"(?:[^"\\]|\\.)*+"?|'(?:[^'\\]|\\.)*+'?|[^\s&,;]+)""",
 )
-private val UPSTREAM_BEARER_TOKEN = Regex("""(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+""")
+private val UPSTREAM_AUTH_SCHEME_TOKEN = Regex("""(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+""")
 private val UPSTREAM_SK_TOKEN = Regex("""(?i)\bsk-[A-Za-z0-9_-]{8,}\b""")
 
 private val looseJson = Json {
@@ -35,7 +36,8 @@ private val looseJson = Json {
  */
 internal fun sanitizeUpstreamErrorBody(body: String?): String? {
     val trimmed = body?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-    val sanitized = sanitizeJsonIfValid(trimmed) ?: sanitizeWithRegex(trimmed)
+    val bounded = trimmed.take(MAX_INPUT_PRE_TRUNCATE_CHARS)
+    val sanitized = sanitizeJsonIfValid(bounded) ?: sanitizeWithRegex(bounded)
     val printable = sanitized.filter { it == '\n' || it == '\r' || it == '\t' || it >= ' ' }
     return truncateUtf8Bytes(printable, MAX_UPSTREAM_ERROR_BODY_BYTES)
 }
@@ -92,8 +94,8 @@ private fun sanitizeWithRegex(text: String): String {
 
 private fun sanitizePlainText(text: String): String {
     return text
-        .replace(UPSTREAM_BEARER_TOKEN) { match ->
-            "${match.groupValues[1]}[REDACTED]"
+        .replace(UPSTREAM_AUTH_SCHEME_TOKEN) { match ->
+            "${match.groupValues[1]} [REDACTED]"
         }
         .replace(UPSTREAM_SK_TOKEN, "sk-[REDACTED]")
         .replace(UPSTREAM_SECRET_KEY_VALUE) { match ->
