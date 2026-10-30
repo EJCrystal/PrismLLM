@@ -24,7 +24,6 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       backend: ${{ steps.filter.outputs.backend }}
       monitoring: ${{ steps.filter.outputs.monitoring }}
-      ci: ${{ steps.filter.outputs.ci }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -50,13 +49,11 @@ jobs:
               - 'Dockerfile'
             monitoring:
               - 'monitoring/**'
-            ci:
-              - '.github/workflows/ci.yml'
 
   frontend:
     name: Test frontend
     needs: changes
-    if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.ci == 'true'
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -87,7 +84,7 @@ jobs:
   backend:
     name: Test backend
     needs: changes
-    if: needs.changes.outputs.backend == 'true' || needs.changes.outputs.ci == 'true'
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -109,7 +106,7 @@ jobs:
   monitoring:
     name: Validate monitoring
     needs: changes
-    if: needs.changes.outputs.monitoring == 'true' || needs.changes.outputs.ci == 'true'
+    if: needs.changes.outputs.monitoring == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
