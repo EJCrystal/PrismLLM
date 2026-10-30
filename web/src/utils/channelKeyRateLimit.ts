@@ -23,28 +23,30 @@ export function normalizeChannelKeyRateLimit(rule: unknown = {}): ChannelKeyRate
 
 export function validateChannelKeyRateLimit(rule: unknown = {}): ChannelKeyRateLimit & Record<string, unknown> {
   const normalized = normalizeChannelKeyRateLimit(rule)
-  if (normalized.requestsPerMinute !== null) {
-    assertIntegerInRange(normalized.requestsPerMinute as number, 1, 1_000_000, '每分钟请求数必须是 1..1000000 的整数')
-  }
-  if (normalized.maxConcurrentRequests !== null) {
-    assertIntegerInRange(normalized.maxConcurrentRequests as number, 1, 100_000, '最大并发请求数必须是 1..100000 的整数')
-  }
-  if (normalized.enabled && normalized.requestsPerMinute === null && normalized.maxConcurrentRequests === null) {
+  const requestsPerMinute = validateOptionalInteger(
+    normalized.requestsPerMinute,
+    1,
+    1_000_000,
+    '每分钟请求数必须是 1..1000000 的整数',
+  )
+  const maxConcurrentRequests = validateOptionalInteger(
+    normalized.maxConcurrentRequests,
+    1,
+    100_000,
+    '最大并发请求数必须是 1..100000 的整数',
+  )
+  if (normalized.enabled && requestsPerMinute === null && maxConcurrentRequests === null) {
     throw new Error('启用限流时至少填写每分钟请求数或最大并发请求数')
   }
-  return {
-    ...normalized,
-    requestsPerMinute: normalized.requestsPerMinute as number | null,
-    maxConcurrentRequests: normalized.maxConcurrentRequests as number | null,
-  }
+  return { ...normalized, requestsPerMinute, maxConcurrentRequests }
 }
 
 export function buildChannelKeyRateLimitPayload(rule: unknown = {}): ChannelKeyRateLimitRequest {
   const normalized = validateChannelKeyRateLimit(rule)
   return {
     ...normalized,
-    requestsPerMinute: normalized.requestsPerMinute as number | null,
-    maxConcurrentRequests: normalized.maxConcurrentRequests as number | null,
+    requestsPerMinute: normalized.requestsPerMinute,
+    maxConcurrentRequests: normalized.maxConcurrentRequests,
   }
 }
 
@@ -67,8 +69,16 @@ function optionalNumber(value: unknown): number | string | null {
   return Number.isFinite(number) ? number : String(value)
 }
 
-function assertIntegerInRange(value: number | string, min: number, max: number, message: string): void {
-  if (!Number.isInteger(value) || Number(value) < min || Number(value) > max) throw new Error(message)
+function validateOptionalInteger(
+  value: number | string | null,
+  min: number,
+  max: number,
+  message: string,
+): number | null {
+  if (value === null) return null
+  const number = Number(value)
+  if (!Number.isInteger(number) || number < min || number > max) throw new Error(message)
+  return number
 }
 
 function formatNumber(value: unknown): string {

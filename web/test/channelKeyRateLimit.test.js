@@ -54,6 +54,25 @@ describe('channelKeyRateLimit: 渠道密钥限流规则', () => {
     )
   })
 
+  it('合法数字字符串校验后收敛为 number，浮点值保留拒绝', () => {
+    const normalized = buildChannelKeyRateLimitPayload({
+      enabled: true,
+      requestsPerMinute: '60',
+      maxConcurrentRequests: '4',
+    })
+    assert.equal(typeof normalized.requestsPerMinute, 'number')
+    assert.equal(typeof normalized.maxConcurrentRequests, 'number')
+    assert.deepEqual(normalized, {
+      enabled: true,
+      requestsPerMinute: 60,
+      maxConcurrentRequests: 4,
+    })
+    assert.throws(
+      () => buildChannelKeyRateLimitPayload({ enabled: true, requestsPerMinute: 1.2 }),
+      /每分钟请求数必须是 1\.\.1000000 的整数/,
+    )
+  })
+
   it('非数字文本按非法值拒绝，不能静默变成不限流', () => {
     assert.throws(
       () => buildChannelKeyRateLimitPayload({ enabled: true, requestsPerMinute: 'abc' }),
