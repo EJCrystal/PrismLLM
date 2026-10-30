@@ -13,7 +13,7 @@ private val SECRET_KEY_PATTERN = Regex(
 )
 
 private val UPSTREAM_SECRET_JSON_FIELD = Regex(
-    """(?i)("[\w-]*?(?:api[_-]?key|authorization|token|secret|password)"\s*:\s*")((?:[^"\\]|\\.)*)("?)""",
+    """(?i)("[\w-]*?(?:api[_-]?key|authorization|token|secret|password)"\s*:\s*")((?:[^"\\]|\\.)*+)("?)""",
 )
 private val UPSTREAM_SECRET_KEY_VALUE = Regex(
     """(?i)((?:^|[\s&?,;])[\w-]*?(?:api[_-]?key|authorization|token|secret|password)\s*=\s*)([^\s&"'\\]+)""",
