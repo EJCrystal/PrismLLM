@@ -398,9 +398,9 @@ export interface ModelPriceReference {
 
 export interface ExchangeRates {
   base: string
-  rates: Record<string, number>
-  updatedAt: number
+  date: string
   source: string
+  rates: Record<string, string>
 }
 
 export interface RequestLog {

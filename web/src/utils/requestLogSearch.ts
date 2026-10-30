@@ -15,11 +15,9 @@ const SEARCH_FIELDS = [
   'upstreamErrorCode',
   'reasoningEffort',
   'clientKeyName',
-]
+] as const
 
-export interface SearchableLog {
-  [field: string]: unknown
-}
+export type SearchableLog = Partial<Record<typeof SEARCH_FIELDS[number], unknown>>
 
 export function filterRequestLogs<T extends SearchableLog>(logs: T[], query: string | null | undefined): T[] {
   const keyword = String(query ?? '').trim().toLowerCase()

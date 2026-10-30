@@ -151,7 +151,10 @@ export function fillTrendBuckets(
   return result
 }
 
-export function usageModelOptions(report: Pick<UsageReport, 'byModel'> | null | undefined, channels: Array<Pick<PriceChannel, 'models'>> = []): string[] {
+export function usageModelOptions(
+  report: Partial<Pick<UsageReport, 'byModel'>> | null | undefined,
+  channels: Array<Partial<Pick<PriceChannel, 'models'>> | null> | null = [],
+): string[] {
   const configured = (channels || []).flatMap((channel) => channel?.models || [])
   const observed = (report?.byModel || []).map((row) => row.id)
   return [...new Set([...configured, ...observed]

@@ -44,6 +44,23 @@ describe('密钥自动禁用规则', () => {
     assert.deepEqual(payload.rules, [customRule()])
   })
 
+  it('仅有状态码下限的规则允许为空状态码列表', () => {
+    const rule = {
+      id: 'all_failures',
+      name: '全部失败',
+      statusCodes: [],
+      statusCodeAtLeast: 500,
+      bodyPatterns: [],
+      threshold: 3,
+      windowMinutes: 5,
+      streak: false,
+      action: 'TEMPORARY',
+      disableMinutes: 10,
+      includeTransportFailures: false,
+    }
+    assert.deepEqual(fromKeyDisableRuleDraft(toKeyDisableRuleDraft(rule)).statusCodes, [])
+  })
+
   it('编辑草稿与提交规则可以往返', () => {
     const rule = customRule()
     const draft = fromKeyDisableRuleDraft(toKeyDisableRuleDraft(rule))

@@ -237,8 +237,9 @@ export function fromKeyDisableRuleDraft(draft: KeyDisableRuleDraft): KeyDisableR
     disableMinutes: draft.action === 'TEMPORARY' ? draft.disableMinutes : null,
     statusCodes: String(draft.statusCodesText ?? '')
       .split(',')
-      .map((code) => integer(code.trim(), 100, 599, '状态码'))
-      .filter((code): code is number => code != null),
+      .map((code) => code.trim())
+      .filter(Boolean)
+      .map((code) => integer(code, 100, 599, '状态码')),
     bodyPatterns: String(draft.bodyPatternsText ?? '')
       .split('\n')
       .map((pattern) => pattern.trim())
