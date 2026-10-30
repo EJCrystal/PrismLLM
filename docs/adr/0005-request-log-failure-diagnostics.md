@@ -21,6 +21,6 @@
 上游可能返回 `11115` 这类非标准业务错误码，只有错误码无法判断具体原因。请求日志新增 `upstream_error_body`，但只保存失败请求的上游错误正文：
 
 - 上游返回非 2xx 响应时保存响应体；
-- 流式响应出现终止性错误事件时保存该事件 payload，包括 `response.failed`、`error` 和 Gemini error。
+- 流式响应出现终止性错误事件时保存该事件 payload，包括 `response.failed`、`response.incomplete`、`error` 和 Gemini error。
 
 正文最多保存 8 KB，入库前对 `api_key` / `authorization` / `token` / `secret` / `password` 字段、Bearer token 和 `sk-` 前缀密钥做脱敏。成功响应正文、prompt 和完整 SSE 流仍然不落库。日志保留期沿用请求日志保留策略，详情仅管理员可见。
