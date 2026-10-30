@@ -76,12 +76,13 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   if (response.status === 204) return null as T
 
   const text = await response.text()
-  let data = null
+  let data: unknown = null
+  let parseFailed = false
   if (text) {
     try {
-      data = JSON.parse(text) as ApiErrorBody
+      data = JSON.parse(text)
     } catch {
-      data = null
+      parseFailed = true
     }
   }
 
@@ -89,11 +90,16 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (response.status === 401 && path !== '/login') {
       window.dispatchEvent(new CustomEvent('gateway:unauthorized'))
     }
+    const body = data as ApiErrorBody | null
     throw new ApiError(
-      data?.error?.message || `请求失败（${response.status}）`,
+      body?.error?.message || `请求失败（${response.status}）`,
       response.status,
-      data?.error?.code,
+      body?.error?.code,
     )
+  }
+
+  if (parseFailed) {
+    throw new ApiError('网关返回了无效的 JSON 响应', response.status, 'invalid_response')
   }
 
   return data as T
