@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols } from '../src/utils/channelForm.js'
+import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols } from '../src/utils/channelForm'
 
 describe('channelForm: 渠道保存请求体', () => {
   const baseForm = {

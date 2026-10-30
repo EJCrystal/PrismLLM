@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildClientKeyPayload, quotaSummary } from '../src/utils/clientKeyQuota.js'
+import { buildClientKeyPayload, quotaSummary } from '../src/utils/clientKeyQuota'
 
 describe('clientKeyQuota: 调用方密钥额度配置', () => {
   it('空限额不提交为 0，保持不限制语义', () => {

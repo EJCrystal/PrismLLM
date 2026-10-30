@@ -11,7 +11,7 @@ import {
   formatPriceSnapshot,
   toLocalInput,
   fromLocalInput,
-} from '../src/utils/format.js'
+} from '../src/utils/format'
 
 describe('utils: format 格式化工具函数库', () => {
   describe('formatTime', () => {

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { createCursorPager } from '../src/utils/cursorPager.js'
-import { filterRequestLogs } from '../src/utils/requestLogSearch.js'
+import { createCursorPager } from '../src/utils/cursorPager'
+import { filterRequestLogs } from '../src/utils/requestLogSearch'
 
 function deferred() {
   let resolve

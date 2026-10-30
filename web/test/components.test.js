@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { copyText } from '../src/clipboard.js'
+import { copyText } from '../src/clipboard'
 
 describe('components & utils: 基础交互组件逻辑', () => {
   describe('clipboard: copyText 复制通用能力', () => {

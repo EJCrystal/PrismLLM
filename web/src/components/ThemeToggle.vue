@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { useTheme } from '../composables/useTheme.js'
+import { useTheme } from '../composables/useTheme'
 import Icon from './Icon.vue'
 
 defineProps({

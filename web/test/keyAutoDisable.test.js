@@ -7,7 +7,7 @@ import {
   keyAutoDisableRuleLabel,
   normalizeKeyAutoDisableSettings,
   toKeyDisableRuleDraft,
-} from '../src/utils/keyAutoDisable.js'
+} from '../src/utils/keyAutoDisable'
 
 function customRule(overrides = {}) {
   return {

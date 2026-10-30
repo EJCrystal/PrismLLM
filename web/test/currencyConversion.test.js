@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { createConversionRequestGuard } from '../src/utils/currencyConversion.js'
+import { createConversionRequestGuard } from '../src/utils/currencyConversion'
 
 describe('currencyConversion: 丢弃过期的币种换算结果', () => {
   it('切换币种后选择了另一条价格，旧请求不再可应用', () => {

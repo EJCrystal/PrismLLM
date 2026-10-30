@@ -4,12 +4,12 @@ import {
   channelModelChoiceMode,
   channelModelOptionsForChannel,
   channelModelPriceOptions,
-} from '../src/utils/modelPrice.js'
+} from '../src/utils/modelPrice'
 import {
   refreshedPriceToApply,
   resolveModelSelectionTarget,
-} from '../src/utils/modelSelection.js'
-import { emptyPriceDraft } from '../src/utils/priceForm.js'
+} from '../src/utils/modelSelection'
+import { emptyPriceDraft } from '../src/utils/priceForm'
 
 const channelId = 'channel-a'
 const prices = [

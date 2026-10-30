@@ -10,7 +10,7 @@ import {
   getSavedTheme,
   nextTheme,
   applyTheme,
-} from '../src/utils/theme.js'
+} from '../src/utils/theme'
 
 function createMockStorage(initial = {}) {
   const store = new Map(Object.entries(initial))

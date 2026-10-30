@@ -1,7 +1,7 @@
 <script setup>
 import { onBeforeUnmount, ref } from 'vue'
-import { copyText } from '../clipboard.js'
-import { notify } from '../toast.js'
+import { copyText } from '../clipboard'
+import { notify } from '../toast'
 import Icon from './Icon.vue'
 
 const props = defineProps({

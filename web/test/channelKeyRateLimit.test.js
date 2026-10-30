@@ -4,7 +4,7 @@ import {
   buildChannelKeyRateLimitPayload,
   channelKeyRateLimitSummary,
   normalizeChannelKeyRateLimit,
-} from '../src/utils/channelKeyRateLimit.js'
+} from '../src/utils/channelKeyRateLimit'
 
 describe('channelKeyRateLimit: 渠道密钥限流规则', () => {
   it('未配置规则默认不限流', () => {
@@ -51,6 +51,13 @@ describe('channelKeyRateLimit: 渠道密钥限流规则', () => {
     assert.throws(
       () => buildChannelKeyRateLimitPayload({ enabled: true }),
       /至少填写每分钟请求数或最大并发请求数/,
+    )
+  })
+
+  it('非数字文本按非法值拒绝，不能静默变成不限流', () => {
+    assert.throws(
+      () => buildChannelKeyRateLimitPayload({ enabled: true, requestsPerMinute: 'abc' }),
+      /每分钟请求数必须是 1\.\.1000000 的整数/,
     )
   })
 

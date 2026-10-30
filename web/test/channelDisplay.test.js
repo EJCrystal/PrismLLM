@@ -5,7 +5,7 @@ import {
   channelDisplayModels,
   visibleModels,
   hiddenModelsTitle,
-} from '../src/utils/channelDisplay.js'
+} from '../src/utils/channelDisplay'
 
 describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
   it('常量 VISIBLE_MODEL_LIMIT 应为 3', () => {

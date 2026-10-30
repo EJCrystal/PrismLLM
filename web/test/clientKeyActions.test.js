@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { useClientKeyActions } from '../src/utils/clientKeyActions.js'
-import { useSecretReveal } from '../src/utils/secretReveal.js'
+import { useClientKeyActions } from '../src/utils/clientKeyActions'
+import { useSecretReveal } from '../src/utils/secretReveal'
 
 function deferred() {
   let resolve

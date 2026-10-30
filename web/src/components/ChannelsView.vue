@@ -28,7 +28,7 @@ import {
   channelKeyRateLimitSummary,
   normalizeChannelKeyRateLimit,
   validateChannelKeyRateLimit,
-} from '../utils/channelKeyRateLimit.js'
+} from '../utils/channelKeyRateLimit'
 import {
   canProbeSavedChannel,
   createRequestTracker,

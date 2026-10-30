@@ -1,0 +1,99 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+import { ApiError } from '../src/types/api'
+import { normalizeChannelKeyRateLimit } from '../src/utils/channelKeyRateLimit'
+import { priceFormState, buildPricePayload } from '../src/utils/priceForm'
+import { normalizeKeyAutoDisableSettings } from '../src/utils/keyAutoDisable'
+import { fillTrendBuckets } from '../src/utils/usageReport'
+
+describe('API 契约的运行时形状', () => {
+  it('API 错误保留 HTTP 状态码和错误码', () => {
+    const error = new ApiError('请求失败', 409, 'conflict')
+    assert.equal(error.name, 'ApiError')
+    assert.equal(error.status, 409)
+    assert.equal(error.code, 'conflict')
+    assert.equal(error instanceof Error, true)
+  })
+
+  it('渠道密钥限流结果保留后端扩展字段', () => {
+    assert.deepEqual(
+      normalizeChannelKeyRateLimit({ enabled: true, requestsPerMinute: '60', futureWindowSeconds: 30 }),
+      {
+        enabled: true,
+        requestsPerMinute: 60,
+        maxConcurrentRequests: null,
+        futureWindowSeconds: 30,
+      },
+    )
+  })
+
+  it('价格表单与请求体使用后端约定字段', () => {
+    assert.deepEqual(priceFormState({
+      currency: 'CNY',
+      inputPricePerMillion: '1.5',
+      outputPricePerMillion: '2',
+      pricingMode: 'token',
+      priceTiers: [],
+    }), {
+      currency: 'CNY',
+      inputPricePerMillion: '1.5',
+      outputPricePerMillion: '2',
+      cachedInputPricePerMillion: '',
+      cachedInputWritePricePerMillion: '',
+      pricingMode: 'token',
+      perRequestPrice: '',
+      priceTiers: [],
+    })
+    assert.deepEqual(buildPricePayload({
+      currency: 'USD',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      cachedInputPricePerMillion: '',
+      cachedInputWritePricePerMillion: '',
+      pricingMode: 'token',
+      perRequestPrice: '',
+      priceTiers: [],
+    }, 'channel-1', 'gpt-4.1'), {
+      channelId: 'channel-1',
+      upstreamModel: 'gpt-4.1',
+      currency: 'USD',
+      pricingMode: 'token',
+      inputPricePerMillion: '1',
+      outputPricePerMillion: '2',
+      cachedInputPricePerMillion: null,
+      cachedInputWritePricePerMillion: null,
+      perRequestPrice: null,
+      priceTiers: [],
+    })
+  })
+
+  it('自动禁用规则接受后端返回的完整结构', () => {
+    const settings = normalizeKeyAutoDisableSettings({
+      enabled: true,
+      rules: [{
+        id: 'rule_one',
+        name: '规则一',
+        statusCodes: [401],
+        statusCodeAtLeast: null,
+        bodyPatterns: [],
+        threshold: 2,
+        windowMinutes: 5,
+        streak: true,
+        action: 'PERMANENT',
+        disableMinutes: null,
+        includeTransportFailures: false,
+      }],
+    })
+    assert.equal(settings.enabled, true)
+    assert.equal(settings.rules[0].action, 'PERMANENT')
+    assert.deepEqual(settings.rules[0].statusCodes, [401])
+  })
+
+  it('报表补齐的桶保留后端成本键和零值字段', () => {
+    const rows = fillTrendBuckets([], 0, 3_600_000, 'hour', 0)
+    assert.equal(rows.length, 2)
+    assert.equal(rows[0].requests, 0)
+    assert.deepEqual(rows[0].costs, {})
+    assert.equal(rows[0].cachedWriteTokens, 0)
+  })
+})

@@ -6,7 +6,7 @@ import {
   createRequestTracker,
   sameProtocolSelection,
   watchChannelRequestInputs,
-} from '../src/utils/channelRequestState.js'
+} from '../src/utils/channelRequestState'
 
 describe('channel request state', () => {
   it('clears loading and invalidates model discovery and probing when auth changes', () => {
