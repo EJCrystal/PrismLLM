@@ -138,7 +138,8 @@
 }
 
 [data-theme="dark"] select:disabled,
-[data-theme="dark"] input:disabled {
+[data-theme="dark"] input:disabled,
+[data-theme="dark"] textarea:disabled {
   background-color: #0d1424;
   color: var(--muted);
   border-color: var(--line);
@@ -564,7 +565,8 @@
 }
 
 [data-theme="sepia"] select:disabled,
-[data-theme="sepia"] input:disabled {
+[data-theme="sepia"] input:disabled,
+[data-theme="sepia"] textarea:disabled {
   background-color: #f2ebd9;
   color: var(--muted);
   border-color: var(--line);
@@ -2762,7 +2764,8 @@ select:focus,
 }
 
 select:disabled,
-input:disabled {
+input:disabled,
+textarea:disabled {
   opacity: 0.75;
   cursor: not-allowed;
   background-color: var(--bg);
@@ -2780,6 +2783,7 @@ input:disabled {
 
 .field input,
 .field select,
+.field textarea,
 .search-box input {
   width: 100%;
   min-height: 40px;
@@ -2793,18 +2797,27 @@ input:disabled {
   transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
 
+.field textarea {
+  resize: vertical;
+  min-height: 80px;
+  max-height: 360px;
+  line-height: 1.5;
+}
+
 .field select {
   padding-right: 32px;
 }
 
 .field input:focus,
 .field select:focus,
+.field textarea:focus,
 .search-box input:focus {
   border-color: #84adff;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
 .field input::placeholder,
+.field textarea::placeholder,
 .search-box input::placeholder {
   color: var(--muted);
   opacity: 0.8;
