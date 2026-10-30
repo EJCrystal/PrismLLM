@@ -16,7 +16,7 @@ private val UPSTREAM_SECRET_JSON_FIELD = Regex(
     """(?i)("[\w-]*?(?:api[_-]?key|authorization|token|secret|password)"\s*:\s*")((?:[^"\\]|\\.)*+)("?)""",
 )
 private val UPSTREAM_SECRET_KEY_VALUE = Regex(
-    """(?i)((?:^|[\s&?,;])[\w-]*?(?:api[_-]?key|authorization|token|secret|password)\s*=\s*)(?:"(?:[^"\\]|\\.)*+"?|'(?:[^'\\]|\\.)*+'?|[^\s&,;]+)""",
+    """(?i)((?:^|[\s&?,;])[\w-]*?(?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:Bearer\s+[A-Za-z0-9._~+/=-]+|"(?:[^"\\]|\\.)*+"?|'(?:[^'\\]|\\.)*+'?|[^\s&,;]+)""",
 )
 private val UPSTREAM_BEARER_TOKEN = Regex("""(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+""")
 private val UPSTREAM_SK_TOKEN = Regex("""(?i)\bsk-[A-Za-z0-9_-]{8,}\b""")
@@ -92,13 +92,13 @@ private fun sanitizeWithRegex(text: String): String {
 
 private fun sanitizePlainText(text: String): String {
     return text
-        .replace(UPSTREAM_SECRET_KEY_VALUE) { match ->
-            "${match.groupValues[1]}[REDACTED]"
-        }
         .replace(UPSTREAM_BEARER_TOKEN) { match ->
             "${match.groupValues[1]}[REDACTED]"
         }
         .replace(UPSTREAM_SK_TOKEN, "sk-[REDACTED]")
+        .replace(UPSTREAM_SECRET_KEY_VALUE) { match ->
+            "${match.groupValues[1]}[REDACTED]"
+        }
 }
 
 private fun truncateUtf8Bytes(text: String, maxBytes: Int): String {

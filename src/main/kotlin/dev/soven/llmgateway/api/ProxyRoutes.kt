@@ -1366,11 +1366,11 @@ private fun markTerminalStreamFailure(
         GatewayProtocol.RESPONSES -> when (type) {
             "response.failed", "error" -> {
                 state.errorCode = "responses_failed"
-                state.upstreamErrorBody = payload
+                state.upstreamErrorBody = extractResponsesDiagnosticPayload(payload)
             }
             "response.incomplete" -> {
                 state.errorCode = "responses_incomplete"
-                state.upstreamErrorBody = payload
+                state.upstreamErrorBody = extractResponsesDiagnosticPayload(payload)
             }
         }
         GatewayProtocol.MESSAGES -> if (type == "error") {
@@ -1382,6 +1382,20 @@ private fun markTerminalStreamFailure(
             state.upstreamErrorBody = payload
         }
     }
+}
+
+private fun extractResponsesDiagnosticPayload(payload: String): String {
+    return runCatching {
+        val root = Json.parseToJsonElement(payload).jsonObject
+        val response = root["response"] as? JsonObject
+        if (response != null && "output" in response) {
+            val sanitizedResponse = JsonObject(response.filterKeys { it != "output" })
+            val sanitizedRoot = JsonObject(root.toMutableMap().apply { put("response", sanitizedResponse) })
+            Json.encodeToString(JsonObject.serializer(), sanitizedRoot)
+        } else {
+            payload
+        }
+    }.getOrDefault(payload)
 }
 
 private fun isStreamDone(line: String, protocol: GatewayProtocol): Boolean {

@@ -32,17 +32,22 @@ class UpstreamErrorBodySanitizerTest {
 
     @Test
     fun `redacts key-value pairs and truncated secrets without closing quote`() {
-        val kvBody = "upstream error occurred: x-api-key=secret123&other=val access_token=secret456 api_key=\"quoted-secret-123\" token='quoted-secret-456'"
+        val kvBody = "upstream error occurred: x-api-key=secret123&other=val access_token=secret456 api_key=\"quoted-secret-123\" token='quoted-secret-456' api_key: colon-secret Authorization: secret-auth-token message=\"Authorization=Bearer abc.def.ghi\""
         val sanitizedKv = sanitizeUpstreamErrorBody(kvBody)
         assertNotNull(sanitizedKv)
         assertFalse(sanitizedKv.contains("secret123"))
         assertFalse(sanitizedKv.contains("secret456"))
         assertFalse(sanitizedKv.contains("quoted-secret-123"))
         assertFalse(sanitizedKv.contains("quoted-secret-456"))
+        assertFalse(sanitizedKv.contains("colon-secret"))
+        assertFalse(sanitizedKv.contains("secret-auth-token"))
+        assertFalse(sanitizedKv.contains("abc.def.ghi"))
         assertTrue(sanitizedKv.contains("x-api-key=[REDACTED]"))
         assertTrue(sanitizedKv.contains("access_token=[REDACTED]"))
         assertTrue(sanitizedKv.contains("api_key=[REDACTED]"))
         assertTrue(sanitizedKv.contains("token=[REDACTED]"))
+        assertTrue(sanitizedKv.contains("api_key: [REDACTED]"))
+        assertTrue(sanitizedKv.contains("Authorization: [REDACTED]"))
 
         val truncatedBody = """{"x-api-key":"unclosed-secret-at-end"""
         val sanitizedTruncated = sanitizeUpstreamErrorBody(truncatedBody)
