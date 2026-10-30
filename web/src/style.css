@@ -2979,6 +2979,16 @@ input:disabled {
   }
 }
 
+@container (max-width: 440px) {
+  .header-catalog-row {
+    grid-template-columns: 1fr;
+  }
+
+  .header-catalog-version {
+    justify-content: flex-start;
+  }
+}
+
 .form-grid {
   display: grid;
   gap: 18px;
@@ -3497,7 +3507,7 @@ input:disabled {
 }
 
 .protocol-order-item .icon-button:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--brand) 45%, transparent);
+  outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 
