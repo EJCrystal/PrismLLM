@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { reasoningEffortClass, reasoningEffortLabel, tokenUsageLabel, tokenUsageState } from '../src/utils/requestLogDisplay.js'
+import { reasoningEffortClass, reasoningEffortLabel, tokenUsageLabel, tokenUsageState } from '../src/utils/requestLogDisplay'
 
 describe('requestLogDisplay: 请求日志状态展示', () => {
   it('把缺省推理强度明确展示为 none，并为等级提供样式类别', () => {

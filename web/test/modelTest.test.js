@@ -6,7 +6,7 @@ import {
   formatModelTestUsage,
   modelTestProtocolLabel,
   normalizeModelTestSettings,
-} from '../src/utils/modelTest.js'
+} from '../src/utils/modelTest'
 
 describe('modelTest: 渠道模型连通性测试', () => {
   it('设置缺失时回退到默认提示词', () => {

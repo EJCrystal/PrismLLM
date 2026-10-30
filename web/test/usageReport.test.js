@@ -10,7 +10,7 @@ import {
   validateUsageReportRange,
   USAGE_REPORT_MAX_SPAN_MS,
   USAGE_REPORT_PRESETS,
-} from '../src/utils/usageReport.js'
+} from '../src/utils/usageReport'
 
 describe('usageReport: 用量报表展示', () => {
   it('费用条目按币种排序并剔除空值，不隐含换算', () => {
@@ -107,7 +107,7 @@ import {
   usageModelOptions,
   usageReportCsv,
   reportTimezoneOffset,
-} from '../src/utils/usageReport.js'
+} from '../src/utils/usageReport'
 
 describe('usageReport: 增强报表数据', () => {
   it('成功率按请求与错误计算并限制在 0 到 1', () => {

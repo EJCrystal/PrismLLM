@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols } from '../src/utils/channelForm.js'
+import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols } from '../src/utils/channelForm'
 
 describe('channelForm: 渠道保存请求体', () => {
   const baseForm = {
@@ -156,6 +156,18 @@ describe('channelForm: 渠道保存请求体', () => {
         rateLimit: { enabled: false, requestsPerMinute: null, maxConcurrentRequests: null },
       },
     ])
+  })
+
+  it('多密钥模式下不提交顶层凭据，避免与 keys 互斥校验冲突', () => {
+    const payload = buildChannelPayload(
+      { ...baseForm, credential: 'legacy-secret' },
+      ['m1'],
+      {},
+      {},
+      [{ name: 'primary', credential: 'secret', state: 'ACTIVE', priority: 1, models: ['m1'] }],
+    )
+    assert.equal(payload.credential, null)
+    assert.deepEqual(payload.keys.map((key) => key.name), ['primary'])
   })
 
   it('编辑已保存的密钥携带状态版本，避免覆盖同时发生的自动禁用', () => {

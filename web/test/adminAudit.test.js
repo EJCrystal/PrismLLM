@@ -6,7 +6,7 @@ import {
   auditResultLabel,
   auditDetailsRows,
   auditDetailsSummary,
-} from '../src/utils/adminAudit.js'
+} from '../src/utils/adminAudit'
 
 describe('adminAudit: 管理操作审计展示', () => {
   it('把已知动作翻译为可读文案，未知动作保留原值', () => {

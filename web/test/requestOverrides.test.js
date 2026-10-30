@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildRequestOverrides, createRequestOverrideDrafts, normalizeRequestOverrides, REQUEST_OVERRIDE_SCOPES } from '../src/utils/requestOverrides.js'
-import { buildChannelPayload, buildPriorityUpdatePayload } from '../src/utils/channelForm.js'
+import { buildRequestOverrides, createRequestOverrideDrafts, normalizeRequestOverrides, REQUEST_OVERRIDE_SCOPES } from '../src/utils/requestOverrides'
+import { buildChannelPayload, buildPriorityUpdatePayload } from '../src/utils/channelForm'
 
 describe('上游请求覆盖配置', () => {
   it('配置范围明确区分通用配置和协议专用覆盖', () => {

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { createLatestRequestGuard } from '../src/utils/latestRequest.js'
+import { createLatestRequestGuard } from '../src/utils/latestRequest'
 
 describe('latestRequest: 丢弃过期报表响应', () => {
   it('只让最后开始的请求提交结果', async () => {

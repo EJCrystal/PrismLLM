@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { createRetentionReportState } from '../src/utils/retentionReportState.js'
+import { createRetentionReportState } from '../src/utils/retentionReportState'
 
 describe('retentionReportState: 报表刷新与保留开关协调', () => {
   it('刷新期间没有切换开关时应用最新保留策略', () => {

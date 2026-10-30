@@ -8,8 +8,8 @@ import {
   priceDraftHasChanges,
   priceDraftKey,
   priceDraftSnapshot,
-} from '../src/utils/priceDraftState.js'
-import { emptyPriceDraft } from '../src/utils/priceForm.js'
+} from '../src/utils/priceDraftState'
+import { emptyPriceDraft } from '../src/utils/priceForm'
 
 function draft(channelId, modelId, patch = {}, price = null, baseline = null) {
   const baselineForm = emptyPriceDraft()

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { filterRequestLogs } from '../src/utils/requestLogSearch.js'
+import { filterRequestLogs } from '../src/utils/requestLogSearch'
 
 const logs = [
   {

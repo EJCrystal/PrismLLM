@@ -12,7 +12,7 @@ import {
   priceFormError,
   priceFormState,
   resetPriceForm,
-} from '../src/utils/priceForm.js'
+} from '../src/utils/priceForm'
 
 describe('priceForm: 计费单价的币种与金额', () => {
   it('编辑已有非 USD 单价时保留原币种和金额', () => {

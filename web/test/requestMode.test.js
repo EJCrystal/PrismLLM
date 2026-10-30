@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { requestModeClass, requestModeLabel } from '../src/utils/requestMode.js'
+import { requestModeClass, requestModeLabel } from '../src/utils/requestMode'
 
 describe('requestModeLabel', () => {
   it('distinguishes streaming and non-streaming requests', () => {

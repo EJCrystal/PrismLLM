@@ -19,8 +19,8 @@ import {
   resolveSavedChannel,
   unpricedChannelModels,
   shouldSelectInitialModel,
-} from '../src/utils/modelPrice.js'
-import { channelDisplayModels } from '../src/utils/channelDisplay.js'
+} from '../src/utils/modelPrice'
+import { channelDisplayModels } from '../src/utils/channelDisplay'
 
 describe('modelPrice: 按渠道和上游模型查找单价', () => {
   const prices = [

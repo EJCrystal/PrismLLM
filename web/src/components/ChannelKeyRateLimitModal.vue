@@ -4,7 +4,7 @@ import {
   buildChannelKeyRateLimitPayload,
   channelKeyRateLimitSummary,
   normalizeChannelKeyRateLimit,
-} from '../utils/channelKeyRateLimit.js'
+} from '../utils/channelKeyRateLimit'
 import Modal from './Modal.vue'
 
 const props = defineProps({
