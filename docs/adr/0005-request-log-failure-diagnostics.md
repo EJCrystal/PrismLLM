@@ -23,4 +23,4 @@
 - 上游返回非 2xx 响应时保存响应体；
 - 流式响应出现终止性错误事件时保存该事件 payload，包括 `response.failed`、`response.incomplete`、`error` 和 Gemini error。
 
-正文最多保存 8 KB，入库前对 `api_key` / `authorization` / `token` / `secret` / `password` 字段、Bearer token 和 `sk-` 前缀密钥做脱敏。成功响应正文、prompt 和完整 SSE 流仍然不落库。日志保留期沿用请求日志保留策略，详情仅管理员可见。
+正文最多保存 8 KB（按 UTF-8 字节截断并保持完整字符边界），入库前对 `api_key` / `authorization` / `token` / `secret` / `password` 字段（含各类前缀变体及转义引号）、Bearer token 和 `sk-` 前缀密钥做脱敏。成功响应正文、客户端 prompt 和完整 SSE 流仍然不落库；若上游错误正文中包含上游回显的输入片段，仅作为失败诊断的正文副本保存，网关自身不记录客户端 prompt。日志保留期沿用请求日志保留策略，详情仅管理员可见。

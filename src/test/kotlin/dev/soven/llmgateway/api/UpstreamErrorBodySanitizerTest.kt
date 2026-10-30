@@ -65,6 +65,17 @@ class UpstreamErrorBodySanitizerTest {
     }
 
     @Test
+    fun `redacts secret fields with escaped quotes completely`() {
+        val jsonWithEscapedQuote = """{"api_key":"prefix\"SECRET_SUFFIX","message":"normal"}"""
+        val sanitized = sanitizeUpstreamErrorBody(jsonWithEscapedQuote)
+        assertNotNull(sanitized)
+        assertFalse(sanitized.contains("SECRET_SUFFIX"))
+        assertFalse(sanitized.contains("prefix"))
+        assertTrue(sanitized.contains("\"api_key\":\"[REDACTED]\""))
+        assertTrue(sanitized.contains("\"message\":\"normal\""))
+    }
+
+    @Test
     fun `blank upstream error body is not stored`() {
         assertNull(sanitizeUpstreamErrorBody(null))
         assertNull(sanitizeUpstreamErrorBody("  \n "))
