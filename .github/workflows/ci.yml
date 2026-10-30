@@ -51,7 +51,7 @@ jobs:
             monitoring:
               - 'monitoring/**'
             ci:
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/**'
 
   workflow:
     name: Validate workflow

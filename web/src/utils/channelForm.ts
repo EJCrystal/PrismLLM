@@ -49,7 +49,7 @@ export function buildChannelPayload(
   const payload: ChannelRequest = {
     name: form.name.trim(),
     baseUrl: form.baseUrl.trim(),
-    credential: String(form.credential ?? '').trim() || null,
+    credential: keys.length ? null : String(form.credential ?? '').trim() || null,
     authType: form.authType || 'bearer',
     protocols: [...form.protocols],
     enabled: form.enabled,
