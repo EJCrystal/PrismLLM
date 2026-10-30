@@ -66,9 +66,13 @@ jobs:
           persist-credentials: false
 
       - name: Validate workflow YAML and expressions
-        uses: docker://rhysd/actionlint:1.7.7
-        with:
-          args: -color .github/workflows/*.yml
+        run: |
+          mapfile -t workflow_files < <(find .github/workflows -maxdepth 1 -name '*.yml' -print | sort)
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -w /repo \
+            rhysd/actionlint:1.7.7 \
+            -color "${workflow_files[@]}"
 
   frontend:
     name: Test frontend
