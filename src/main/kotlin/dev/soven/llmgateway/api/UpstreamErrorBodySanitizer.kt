@@ -16,7 +16,7 @@ private val UPSTREAM_SECRET_JSON_FIELD = Regex(
     """(?i)("[\w-]*?(?:api[_-]?key|authorization|token|secret|password)"\s*:\s*")((?:[^"\\]|\\.)*+)("?)""",
 )
 private val UPSTREAM_SECRET_KEY_VALUE = Regex(
-    """(?i)((?:^|[\s&?,;])[\w-]*?(?:api[_-]?key|authorization|token|secret|password)\s*=\s*)([^\s&"'\\]+)""",
+    """(?i)((?:^|[\s&?,;])[\w-]*?(?:api[_-]?key|authorization|token|secret|password)\s*=\s*)(?:"(?:[^"\\]|\\.)*+"?|'(?:[^'\\]|\\.)*+'?|[^\s&,;]+)""",
 )
 private val UPSTREAM_BEARER_TOKEN = Regex("""(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+""")
 private val UPSTREAM_SK_TOKEN = Regex("""(?i)\bsk-[A-Za-z0-9_-]{8,}\b""")

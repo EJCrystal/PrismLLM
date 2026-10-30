@@ -32,13 +32,17 @@ class UpstreamErrorBodySanitizerTest {
 
     @Test
     fun `redacts key-value pairs and truncated secrets without closing quote`() {
-        val kvBody = "upstream error occurred: x-api-key=secret123&other=val access_token=secret456"
+        val kvBody = "upstream error occurred: x-api-key=secret123&other=val access_token=secret456 api_key=\"quoted-secret-123\" token='quoted-secret-456'"
         val sanitizedKv = sanitizeUpstreamErrorBody(kvBody)
         assertNotNull(sanitizedKv)
         assertFalse(sanitizedKv.contains("secret123"))
         assertFalse(sanitizedKv.contains("secret456"))
+        assertFalse(sanitizedKv.contains("quoted-secret-123"))
+        assertFalse(sanitizedKv.contains("quoted-secret-456"))
         assertTrue(sanitizedKv.contains("x-api-key=[REDACTED]"))
         assertTrue(sanitizedKv.contains("access_token=[REDACTED]"))
+        assertTrue(sanitizedKv.contains("api_key=[REDACTED]"))
+        assertTrue(sanitizedKv.contains("token=[REDACTED]"))
 
         val truncatedBody = """{"x-api-key":"unclosed-secret-at-end"""
         val sanitizedTruncated = sanitizeUpstreamErrorBody(truncatedBody)
