@@ -105,6 +105,15 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return data as T
 }
 
+async function requestList<T>(path: string, options: RequestOptions = {}): Promise<T[]> {
+  const data = await request<T[] | null>(path, options)
+  if (data === null) return []
+  if (!Array.isArray(data)) {
+    throw new ApiError('网关返回的列表格式无效', 200, 'invalid_response')
+  }
+  return data
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<MeResponse>('/login', { method: 'POST', body: JSON.stringify({ username, password } satisfies LoginRequest) }),
@@ -118,7 +127,7 @@ export const api = {
   getExposedModels: () => request<ExposedModelsResponse>('/exposed-models'),
   getModelsDevCatalog: () => request<ModelsDevCatalog>('/models-dev'),
 
-  listChannels: () => request<Channel[]>('/channels'),
+  listChannels: () => requestList<Channel>('/channels'),
   createChannel: (payload: ChannelRequest) => request<Channel>('/channels', { method: 'POST', body: JSON.stringify(payload) }),
   updateChannel: (id: string, payload: ChannelRequest) =>
     request<Channel>(`/channels/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
@@ -159,13 +168,13 @@ export const api = {
   updateKeyAutoDisableSettings: (payload: KeyAutoDisableSettingsRequest) =>
     request<KeyAutoDisableSettingsResponse>('/key-auto-disable-settings', { method: 'PUT', body: JSON.stringify(payload) }),
 
-  listAliases: () => request<Alias[]>('/aliases'),
+  listAliases: () => requestList<Alias>('/aliases'),
   createAlias: (payload: AliasRequest) => request<Alias>('/aliases', { method: 'POST', body: JSON.stringify(payload) }),
   updateAlias: (id: string, payload: AliasRequest) =>
     request<Alias>(`/aliases/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteAlias: (id: string) => request<null>(`/aliases/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  listClientKeys: () => request<ClientKey[]>('/client-keys'),
+  listClientKeys: () => requestList<ClientKey>('/client-keys'),
   createClientKey: (payload: ClientKeyRequest) =>
     request<ClientKeyCreated>('/client-keys', { method: 'POST', body: JSON.stringify(payload) }),
   updateClientKey: (id: string, payload: ClientKeyRequest) =>
@@ -181,11 +190,11 @@ export const api = {
   listAuditLogs: ({ limit = 100, beforeId = null }: PageOptions = {}) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (beforeId != null) params.set('beforeId', String(beforeId))
-    return request<AdminAuditLog[]>('/audit-logs?' + params)
+    return requestList<AdminAuditLog>('/audit-logs?' + params)
   },
 
-  listModelPrices: () => request<ModelPrice[]>('/model-prices'),
-  getModelPrices: () => request<ModelPrice[]>('/model-prices'),
+  listModelPrices: () => requestList<ModelPrice>('/model-prices'),
+  getModelPrices: () => requestList<ModelPrice>('/model-prices'),
   getModelPriceReference: (model: string) =>
     request<ModelPriceReference>(`/model-prices/reference?model=${encodeURIComponent(model)}`),
   createModelPrice: (payload: ModelPriceRequest) =>
@@ -194,7 +203,7 @@ export const api = {
     request<ModelPrice>(`/model-prices/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteModelPrice: (id: string) =>
     request<null>(`/model-prices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  listModelDefaultPrices: () => request<ModelDefaultPrice[]>('/model-default-prices'),
+  listModelDefaultPrices: () => requestList<ModelDefaultPrice>('/model-default-prices'),
   createModelDefaultPrice: (payload: ModelDefaultPriceRequest) =>
     request<ModelDefaultPrice>('/model-default-prices', { method: 'POST', body: JSON.stringify(payload) }),
   updateModelDefaultPrice: (id: string, payload: ModelDefaultPriceRequest) =>
@@ -205,7 +214,7 @@ export const api = {
   listRequestLogs: ({ limit = 100, beforeId = null }: PageOptions = {}) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (beforeId != null) params.set('beforeId', String(beforeId))
-    return request<RequestLog[]>('/request-logs?' + params)
+    return requestList<RequestLog>('/request-logs?' + params)
   },
   getUsageReport: ({ from, to, clientKeyId = null, channelId = null, model = null, protocol = null, timezoneOffsetMinutes = 0 }: UsageReportQuery) => {
     const params = new URLSearchParams({ from: String(from), to: String(to) })

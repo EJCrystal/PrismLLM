@@ -382,9 +382,9 @@ async function load() {
       api.listModelPrices(),
       api.listModelDefaultPrices(),
     ])
-    channels.value = channelsData
-    prices.value = pricesData
-    defaultPrices.value = defaultPricesData
+    channels.value = channelsData ?? []
+    prices.value = pricesData ?? []
+    defaultPrices.value = defaultPricesData ?? []
   } catch (cause) {
     error.value = cause.message
   } finally {

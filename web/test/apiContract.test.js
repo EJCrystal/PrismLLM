@@ -16,7 +16,7 @@ describe('API 契约的运行时形状', () => {
     assert.equal(error instanceof Error, true)
   })
 
-  it('成功响应必须提供可解析的 JSON；空响应继续返回 null', async (t) => {
+  it('列表端点的成功响应必须提供 JSON 数组；空响应归一为空数组', async (t) => {
     const originalFetch = globalThis.fetch
     const responses = [
       new Response(JSON.stringify([{ id: 'channel-1' }]), { status: 200 }),
@@ -25,7 +25,18 @@ describe('API 契约的运行时形状', () => {
     t.after(() => { globalThis.fetch = originalFetch })
     globalThis.fetch = async () => responses.shift()
     assert.deepEqual(await api.listChannels(), [{ id: 'channel-1' }])
-    assert.equal(await api.listChannels(), null)
+    assert.deepEqual(await api.listChannels(), [])
+  })
+
+  it('列表端点拒绝非数组 JSON，不把对象误交给页面', async (t) => {
+    const originalFetch = globalThis.fetch
+    t.after(() => { globalThis.fetch = originalFetch })
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [] }), { status: 200 })
+    await assert.rejects(api.listChannels(), (error) => {
+      assert.equal(error instanceof ApiError, true)
+      assert.equal(error.code, 'invalid_response')
+      return true
+    })
   })
 
   it('非空成功响应无法解析时抛出明确错误', async (t) => {

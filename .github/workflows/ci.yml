@@ -67,7 +67,7 @@ jobs:
 
       - name: Validate workflow YAML and expressions
         run: |
-          mapfile -t workflow_files < <(find .github/workflows -maxdepth 1 -name '*.yml' -print | sort)
+          mapfile -t workflow_files < <(find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) -print | sort)
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             -w /repo \
