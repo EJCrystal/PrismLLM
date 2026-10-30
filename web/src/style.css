@@ -4901,6 +4901,25 @@ textarea:disabled {
   font-weight: 600;
 }
 
+/* neutral 徽标不能只靠底色区分：补边框，保证 sepia 与高对比度主题下仍可辨。 */
+.attempt-status.badge.neutral {
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--ink);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .attempt-duration {
   margin-left: auto;
   color: var(--muted);

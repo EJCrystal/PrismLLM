@@ -459,7 +459,16 @@ private suspend fun handleProxy(
                     recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed = true)
                 }
                 if (state.committed) {
-                    recordAttempt(state.statusCode, null, true, "stream_interrupted")
+                    // 响应已提交后才发生转换失败：保留真实原因，便于和普通流中断区分。
+                    recordAttempt(
+                        state.upstreamStatus,
+                        GatewayException(
+                            HttpStatusCode.OK,
+                            "protocol_conversion_failed",
+                            "${e.field}: ${e.message}",
+                        ),
+                        true,
+                    )
                     throw e
                 }
                 // 请求在本地转换阶段就失败时没有真正调用上游，不写入尝试明细。

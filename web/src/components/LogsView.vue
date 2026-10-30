@@ -55,6 +55,11 @@ function attemptStatusClass(attempt) {
   return statusClass(attempt.statusCode)
 }
 
+function attemptStatusAriaLabel(attempt) {
+  const status = attempt.statusCode == null ? '无上游状态码' : `上游状态码 ${attempt.statusCode}`
+  return `${status}，${attemptResultLabel(attempt)}`
+}
+
 const selectedAttempts = computed(() => {
   const attempts = selected.value?.attempts || []
   if (attempts.length > 0) return attempts
@@ -542,10 +547,15 @@ onMounted(load)
                 <div v-for="attempt in selectedAttempts" :key="attempt.index" class="attempt-row">
                   <div class="attempt-head">
                     <span class="attempt-index">#{{ attempt.index }}</span>
-                    <span class="badge" :class="attemptStatusClass(attempt)">
+                    <span
+                      class="badge attempt-status"
+                      :class="attemptStatusClass(attempt)"
+                      :aria-label="attemptStatusAriaLabel(attempt)"
+                    >
                       {{ attempt.statusCode ?? '—' }}
                     </span>
-                    <span class="attempt-result">{{ attemptResultLabel(attempt) }}</span>
+                    <span class="attempt-result" role="status">{{ attemptResultLabel(attempt) }}</span>
+                    <span class="sr-only">第 {{ attempt.index }} 次尝试</span>
                     <span class="attempt-duration">{{ formatDuration(attempt.elapsedMs) }}</span>
                   </div>
                   <div class="attempt-route">
