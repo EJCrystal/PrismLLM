@@ -42,7 +42,8 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     assert.equal(attemptResultLabel({ statusCode: 200, committed: true }), '成功')
     assert.equal(attemptResultLabel({ statusCode: 500, errorCode: 'upstream_error', retryable: true }), '失败，已切换')
     assert.equal(attemptResultLabel({ statusCode: 400, errorCode: 'upstream_error', retryable: false }), '失败，终止')
-    assert.equal(attemptResultLabel({ statusCode: null, errorCode: 'upstream_unreachable', retryable: true }), '未到达上游')
+    assert.equal(attemptResultLabel({ statusCode: null, errorCode: 'upstream_unreachable', retryable: true }), '未连接到上游')
+    assert.equal(attemptResultLabel({ statusCode: null, errorCode: 'upstream_timeout', retryable: true }), '未收到上游响应')
     assert.equal(attemptResultLabel({ errorCode: 'client_disconnect' }), '客户端断开')
   })
 

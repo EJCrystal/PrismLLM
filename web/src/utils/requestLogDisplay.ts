@@ -54,7 +54,10 @@ export function attemptResultLabel(attempt: AttemptDisplayInput | null | undefin
   if (!attempt) return '—'
   if (attempt.errorCode === 'client_disconnect') return '客户端断开'
   if (attempt.errorCode === 'client_cancelled') return '客户端取消'
-  if (attempt.statusCode == null && attempt.errorCode) return '未到达上游'
+  // 缺少状态码只说明没收到响应：连接失败与超时前都已发出请求，不能一律判为未到达上游。
+  if (attempt.statusCode == null && attempt.errorCode) {
+    return attempt.errorCode === 'upstream_unreachable' ? '未连接到上游' : '未收到上游响应'
+  }
   if (attempt.errorCode) return attempt.retryable ? '失败，已切换' : '失败，终止'
   return attempt.committed ? '成功' : '完成'
 }

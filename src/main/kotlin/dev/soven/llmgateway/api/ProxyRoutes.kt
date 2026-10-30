@@ -447,7 +447,8 @@ private suspend fun handleProxy(
                 }
                 val failureCommitted = state.committed || e.code == "stream_interrupted" || e.code == "stream_timeout"
                 recordAttempt(
-                    e.upstreamStatus ?: state.upstreamStatus ?: state.statusCode.takeIf { failureCommitted },
+                    // 优先记录实际收到的 HTTP 状态码；流内错误事件里的状态码只是事件语义。
+                    state.upstreamStatus ?: e.upstreamStatus ?: state.statusCode.takeIf { failureCommitted },
                     e,
                     failureCommitted,
                 )
@@ -471,20 +472,28 @@ private suspend fun handleProxy(
                     )
                     throw e
                 }
-                // 请求在本地转换阶段就失败时没有真正调用上游，不写入尝试明细。
-                if (state.upstreamStatus != null) {
-                    recordAttempt(
-                        state.upstreamStatus,
-                        GatewayException(
-                            HttpStatusCode.BadGateway,
-                            "protocol_conversion_unsupported",
-                            "${e.field}: ${e.message}",
-                        ),
-                        false,
+                // 请求在本地转换阶段就失败时没有真正调用上游，不写入尝试明细，也不消耗尝试预算。
+                if (state.upstreamStatus == null) {
+                    upstreamAttempts -= 1
+                    conversionError = e
+                    return GatewayException(
+                        HttpStatusCode.BadGateway,
+                        "no_candidate",
+                        "协议转换不支持，尝试其他候选",
+                        "api_error",
+                        retryable = true,
                     )
                 }
-                // 单个候选无法转换时继续尝试其他候选，全部失败后再返回转换错误。
-                upstreamAttempts -= 1
+                // 上游已经被调用过：写明细并保留这次尝试的预算，避免继续切换时突破 MAX_ATTEMPTS。
+                recordAttempt(
+                    state.upstreamStatus,
+                    GatewayException(
+                        HttpStatusCode.BadGateway,
+                        "protocol_conversion_unsupported",
+                        "${e.field}: ${e.message}",
+                    ),
+                    false,
+                )
                 conversionError = e
                 GatewayException(
                     HttpStatusCode.BadGateway,
@@ -495,6 +504,15 @@ private suspend fun handleProxy(
                 )
             } catch (e: Throwable) {
                 app.candidateCooldown.release(permit)
+                if (e is CancellationException) {
+                    recordAttempt(
+                        state.statusCode.takeIf { state.committed },
+                        null,
+                        state.committed,
+                        "client_cancelled",
+                    )
+                    throw e
+                }
                 recordAttempt(
                     state.statusCode.takeIf { state.committed },
                     GatewayException(HttpStatusCode.InternalServerError, "internal_error", e.message ?: e::class.simpleName.toString()),
@@ -1163,8 +1181,8 @@ private suspend fun proxyJson(
                 policy.applyHeaders(this)
                 setBody(TextContent(body, ContentType.Application.Json))
             }
-            val text = response.bodyAsText()
             state.upstreamStatus = response.status.value
+            val text = response.bodyAsText()
             if (!response.status.isSuccess()) {
                 throw upstreamException(
                     response.status,

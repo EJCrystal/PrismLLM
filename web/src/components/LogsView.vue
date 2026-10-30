@@ -47,7 +47,8 @@ const stageLabels = {
 }
 
 function attemptProtocolLabel(attempt, log) {
-  return protocolLabel(attempt.upstreamProtocol || log.upstreamProtocol || log.protocol)
+  // 出站协议缺失时保持未知，不要把入站协议当成出站协议展示。
+  return protocolLabel(attempt.upstreamProtocol || log.upstreamProtocol)
 }
 
 function attemptStatusClass(attempt) {
@@ -60,26 +61,10 @@ function attemptStatusAriaLabel(attempt) {
   return `${status}，${attemptResultLabel(attempt)}`
 }
 
-const selectedAttempts = computed(() => {
-  const attempts = selected.value?.attempts || []
-  if (attempts.length > 0) return attempts
-  if (!selected.value?.channelId) return []
-  return [{
-    index: 1,
-    channelName: selected.value.channelName,
-    channelKeyName: selected.value.channelKeyName,
-    upstreamModel: selected.value.upstreamModel,
-    upstreamProtocol: selected.value.upstreamProtocol,
-    statusCode: selected.value.statusCode,
-    errorCode: selected.value.errorCode,
-    upstreamErrorCode: selected.value.upstreamErrorCode,
-    errorMessage: selected.value.errorMessage,
-    elapsedMs: selected.value.totalMs,
-    firstTokenMs: selected.value.firstTokenMs,
-    committed: true,
-    retryable: false,
-  }]
-})
+// 历史日志没有逐次明细（V39 回填为空数组）。不要用汇总字段伪造一条尝试记录：
+// totalMs 是整个请求耗时，upstreamAttempts 也可能是多次调用。
+const selectedAttempts = computed(() => selected.value?.attempts || [])
+const hasAttemptDetail = computed(() => selectedAttempts.value.length > 0)
 
 const filtered = computed(() => {
   return filterRequestLogs(logs.value, query.value)
@@ -302,7 +287,7 @@ onMounted(load)
                   <span class="badge info">{{ log.alias }}</span>
                   <div class="request-meta">
                     <span class="muted small">入站 {{ protocolLabel(log.protocol) }}</span>
-                    <span class="muted small">出站 {{ protocolLabel(log.upstreamProtocol || log.protocol) }}</span>
+                    <span class="muted small">出站 {{ protocolLabel(log.upstreamProtocol) }}</span>
                     <span class="mode-badge" :class="`mode-${requestModeClass(log.stream)}`">{{ requestModeLabel(log.stream) }}</span>
                     <span class="reasoning-badge" :class="reasoningEffortClass(log.reasoningEffort)">
                       推理 {{ reasoningEffortLabel(log.reasoningEffort) }}
@@ -421,7 +406,7 @@ onMounted(load)
               </div>
               <div class="detail-item">
                 <span>出站协议</span>
-                <strong>{{ protocolLabel(selected.upstreamProtocol || selected.protocol) }}</strong>
+                <strong>{{ protocolLabel(selected.upstreamProtocol) }}</strong>
               </div>
               <div class="detail-item">
                 <span>模式</span>
@@ -540,10 +525,12 @@ onMounted(load)
             </div>
 
             <div class="detail-block">
-              <span>
+              <span v-if="hasAttemptDetail">
                 尝试记录（{{ selectedAttempts.length }} 条 · 上游调用 {{ selected.upstreamAttempts ?? selectedAttempts.length }} 次）
               </span>
-              <div class="attempt-list">
+              <span v-else>尝试记录</span>
+              <p v-if="!hasAttemptDetail" class="muted small">无尝试明细（历史日志只保存汇总数据）</p>
+              <div v-else class="attempt-list">
                 <div v-for="attempt in selectedAttempts" :key="attempt.index" class="attempt-row">
                   <div class="attempt-head">
                     <span class="attempt-index">#{{ attempt.index }}</span>
