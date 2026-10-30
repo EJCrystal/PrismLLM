@@ -21,7 +21,8 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      code: ${{ steps.filter.outputs.code }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
       monitoring: ${{ steps.filter.outputs.monitoring }}
     steps:
       - name: Check out repository
@@ -39,24 +40,54 @@ jobs:
           base: ${{ github.event.pull_request.base.sha || github.event.before }}
           predicate-quantifier: 'some-with-excludes'
           filters: |
-            code:
-              - '**'
-              - '!**/*.md'
-              - '!docs/**'
+            frontend:
+              - 'web/**'
+              - 'Dockerfile'
+              - '.github/workflows/ci.yml'
+            backend:
+              - 'src/**'
+              - 'pom.xml'
+              - 'Dockerfile'
+              - '.github/workflows/ci.yml'
             monitoring:
               - 'monitoring/**'
+              - '.github/workflows/ci.yml'
 
-  test:
-    name: Test and build
+  frontend:
+    name: Test frontend
     needs: changes
-    # Keep the required check present for docs-only PRs: the job is skipped
-    # instead of the whole workflow, so GitHub treats it as a successful check.
-    if: |
-      !cancelled() && (
-        needs.changes.result != 'success' ||
-        needs.changes.outputs.code == 'true' ||
-        needs.changes.outputs.monitoring == 'true'
-      )
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix web --no-audit --no-fund
+
+      - name: Type check frontend
+        run: npm --prefix web run typecheck
+
+      - name: Test frontend
+        run: npm --prefix web test
+
+      - name: Build frontend
+        run: npm --prefix web run build
+
+  backend:
+    name: Test backend
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -72,21 +103,20 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Test backend
+        run: mvn --batch-mode test
+
+  monitoring:
+    name: Validate monitoring
+    needs: changes
+    if: needs.changes.outputs.monitoring == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
         with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install frontend dependencies
-        run: npm ci --prefix web --no-audit --no-fund
-
-      - name: Test frontend
-        run: npm --prefix web test
-
-      - name: Build frontend
-        run: npm --prefix web run build
+          persist-credentials: false
 
       - name: Validate Prometheus configuration
         run: |
@@ -98,6 +128,3 @@ jobs:
             -v "$GITHUB_WORKSPACE/monitoring/prometheus:/etc/prometheus:ro" \
             --entrypoint /bin/promtool prom/prometheus:v3.7.2 \
             check rules /etc/prometheus/alerts.yml
-
-      - name: Test backend
-        run: mvn --batch-mode test
