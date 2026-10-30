@@ -73,7 +73,7 @@ private fun sanitizeJsonElement(element: JsonElement): JsonElement {
         is JsonPrimitive -> {
             if (element.isString) {
                 val content = element.content
-                val sanitized = sanitizePlainText(content)
+                val sanitized = sanitizeJsonIfValid(content) ?: sanitizeWithRegex(content)
                 if (sanitized != content) JsonPrimitive(sanitized) else element
             } else {
                 element

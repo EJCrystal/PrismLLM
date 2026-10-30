@@ -76,6 +76,16 @@ class UpstreamErrorBodySanitizerTest {
     }
 
     @Test
+    fun `redacts nested json credentials in message string`() {
+        val nestedJson = """{"error":{"message":"{\"api_key\":\"secret-value-123\"}","code":"upstream_err"}}"""
+        val sanitized = sanitizeUpstreamErrorBody(nestedJson)
+        assertNotNull(sanitized)
+        assertFalse(sanitized.contains("secret-value-123"))
+        assertTrue(sanitized.contains("[REDACTED]"))
+        assertTrue(sanitized.contains("\"code\":\"upstream_err\""))
+    }
+
+    @Test
     fun `blank upstream error body is not stored`() {
         assertNull(sanitizeUpstreamErrorBody(null))
         assertNull(sanitizeUpstreamErrorBody("  \n "))
