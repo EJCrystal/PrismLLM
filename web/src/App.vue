@@ -38,7 +38,7 @@ const meta = {
 
   logs: {
     title: '请求日志',
-    desc: '查看请求元数据、状态、耗时与 token 用量。默认不记录正文。',
+    desc: '查看请求元数据、状态、耗时与 token 用量。失败请求的上游错误正文会截断脱敏后保存。',
   },
   'usage-reports': {
     title: '用量报表',

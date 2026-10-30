@@ -207,7 +207,7 @@
     <h3>匹配与计数语义</h3>
     <ul class="small">
       <li><b>只统计真实上游响应。</b><span class="muted">客户端取消、网关本地限流、请求体错误不进入任何规则；请求在首 token 前失败才可能计数。</span></li>
-      <li><b>文本来源是上游错误体。</b><span class="muted">复用 <code>upstreamException</code> 已经解析出的 body（目前只给 Anthropic 原生透传保留），截断后参与匹配，绝不上报给调用方，也不落请求日志。</span></li>
+      <li><b>文本来源是上游错误体。</b><span class="muted">复用 <code>upstreamException</code> 已经解析出的 body（目前只给 Anthropic 原生透传保留），截断后参与匹配，绝不上报给调用方；同一份正文会在失败请求日志中截断脱敏后保存。</span></li>
       <li><b>正则必须先编译再保存。</b><span class="muted">保存时拒绝非法表达式，而不是运行时静默忽略；限制模式长度 ≤ 200 字符，并只对截断后的错误体匹配。</span></li>
       <li><b>规则 revision 变更即重新计数。</b><span class="muted">沿用现有 <code>KeyAutoDisableSettings.revision</code> 机制，旧计数作废，不需要迁移历史计数。</span></li>
       <li><b>只有成功才打断连续计数。</b><span class="muted">未命中任何规则的上游响应（400/404/422）既不计数也不清零；请求参数错误不能证明凭据可用，否则调用方可以用无效请求掩盖一把坏钥匙。</span></li>
@@ -328,7 +328,7 @@ ACTIVE           正常</pre>
     <h2>七、代码落点</h2>
     <div class="refs">
       <div class="ref"><b>规则定义</b><span><code>resilience/KeyAutoDisable.kt</code>：把 <code>KeyAutoDisablePolicy</code> 从四个标量换成 <code>rules: List&lt;KeyDisableRule&gt;</code>，<code>record()</code> 返回 <code>(ruleId, matchedPattern, count, action)</code>。纯函数，先把单测写满。</span></div>
-      <div class="ref"><b>错误体透传</b><span><code>api/ProxyRoutes.kt</code>：<code>upstreamException</code> 增加一个仅内部使用的截断错误体字段（如 <code>upstreamErrorBody</code>，最多 8 KB），<code>recordKeyOutcome</code> 把它传给 repository。注意不要再复制一份到请求日志。</span></div>
+      <div class="ref"><b>错误体透传</b><span><code>api/ProxyRoutes.kt</code>：<code>upstreamException</code> 增加一个仅内部使用的截断错误体字段（如 <code>upstreamErrorBody</code>，最多 8 KB），<code>recordKeyOutcome</code> 把它传给 repository。请求日志会保存同一份正文的截断脱敏副本，避免重复读取响应体。</span></div>
       <div class="ref"><b>状态与迁移</b><span>新增迁移（V32）：<code>channel_keys.state</code> 枚举替换原 <code>enabled</code> 列，新增 <code>auto_disable_until</code> 列。旧数据按 <code>enabled=true → ACTIVE</code>、<code>enabled=false 且 auto_disabled_at 非空 → AUTO_PERMANENT</code>、其余 <code>MANUAL_DISABLED</code> 回填。</span></div>
       <div class="ref"><b>计数与停用</b><span><code>repo/KeyAutoDisableRepository.kt</code>：按 <code>keyId + ruleId</code> 存计数（现有单行 JSON 可扩展成 map）；停用时写 kind / until / reason；保留行锁与「停用 + 审计同事务」。</span></div>
       <div class="ref"><b>路由判断</b><span><code>domain/Records.kt#keysFor</code> 与 <code>KeyAutoDisableRepository.isAvailable</code>：把「临时到期」算作可用；候选加载时直接过滤已停用，减少一次无谓的上游尝试。</span></div>
@@ -338,7 +338,7 @@ ACTIVE           正常</pre>
     </div>
     <div class="callout danger small">
       <b>安全边界</b>
-      <span>正则只用于本地上游错误体，作用在已截断的字符串上；保存时编译校验；单条模式长度上限 200；不把错误体写日志、不写入审计、不返回调用方。凭据明文仍然只在密文列。</span>
+      <span>正则只用于本地上游错误体，作用在已截断的字符串上；保存时编译校验；单条模式长度上限 200；原始正文不写入应用日志或审计记录；请求日志仅保存截断脱敏后的副本（原生 Messages 与 Gemini 的非 2xx 响应按各协议语义向调用方透传上游错误）。凭据明文仍然只在密文列。</span>
     </div>
   </section>
 

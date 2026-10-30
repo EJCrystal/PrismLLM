@@ -4679,7 +4679,8 @@ input:disabled {
 
 .detail-id > span,
 .detail-item > span,
-.detail-block > span {
+.detail-block > span,
+.detail-block-head > span {
   color: var(--muted);
   font-size: 11px;
   font-weight: 650;
@@ -4729,6 +4730,35 @@ input:disabled {
 .detail-block {
   display: grid;
   gap: 7px;
+}
+
+.detail-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.detail-block-head .icon-button {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+
+.detail-code {
+  max-height: 320px;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .detail-price-snapshot {
