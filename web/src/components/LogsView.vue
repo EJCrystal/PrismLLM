@@ -529,7 +529,7 @@ onMounted(load)
                 尝试记录（{{ selectedAttempts.length }} 条 · 上游调用 {{ selected.upstreamAttempts ?? selectedAttempts.length }} 次）
               </span>
               <span v-else>尝试记录</span>
-              <p v-if="!hasAttemptDetail" class="muted small">无尝试明细（历史日志只保存汇总数据）</p>
+              <p v-if="!hasAttemptDetail" class="muted small">无尝试明细</p>
               <div v-else class="attempt-list">
                 <div v-for="attempt in selectedAttempts" :key="attempt.index" class="attempt-row">
                   <div class="attempt-head">

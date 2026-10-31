@@ -418,7 +418,7 @@ private suspend fun handleProxy(
                     currentCoroutineContext().ensureActive()
                 } catch (cancelled: CancellationException) {
                     app.candidateCooldown.release(permit)
-                    recordAttempt(state.statusCode.takeIf { state.committed }, null, state.committed, "client_cancelled")
+                    recordAttempt(state.upstreamStatus ?: state.statusCode.takeIf { state.committed }, null, state.committed, "client_cancelled")
                     throw cancelled
                 }
                 app.metrics.upstreamError(candidate.channel.name, e.code)
@@ -506,7 +506,7 @@ private suspend fun handleProxy(
                 app.candidateCooldown.release(permit)
                 if (e is CancellationException) {
                     recordAttempt(
-                        state.statusCode.takeIf { state.committed },
+                        state.upstreamStatus ?: state.statusCode.takeIf { state.committed },
                         null,
                         state.committed,
                         "client_cancelled",
