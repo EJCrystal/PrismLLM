@@ -27,7 +27,7 @@ import {
   hiddenModelsTitle,
 } from '../utils/channelDisplay'
 import type { ChannelFormDraft, OriginalModelMapping } from '../utils/channelForm'
-import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols, parseManualModelIds } from '../utils/channelForm'
+import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols, parseManualModelIds, removeProbeAddedProtocols } from '../utils/channelForm'
 import {
   channelKeyRateLimitSummary,
   normalizeChannelKeyRateLimit,
@@ -147,7 +147,7 @@ const probeRequests = createRequestTracker(() => {
   probing.value = false
 })
 const modelRequests = createRequestTracker()
-let probeDerivedProtocols = false
+let probeAddedProtocols: string[] = []
 
 const form = reactive<ChannelFormState>({
   name: '',
@@ -186,6 +186,10 @@ function setProtocolAuthTypeFromEvent(protocol: string, event: Event): void {
   if (event.target instanceof HTMLSelectElement) setProtocolAuthType(protocol, event.target.value)
 }
 
+function keepProtocolAsManual(protocol: string): void {
+  probeAddedProtocols = probeAddedProtocols.filter((added) => added !== protocol)
+}
+
 function moveProtocol(index: number, delta: number): void {
   const next = index + delta
   if (next < 0 || next >= form.protocols.length) return
@@ -205,10 +209,10 @@ watchChannelRequestInputs(form, {
       key.modelsError = ''
       key.modelsRequestId = (key.modelsRequestId || 0) + 1
     })
-    if (!probeResults.value.length && !probeDerivedProtocols) return
+    if (!probeResults.value.length && !probeAddedProtocols.length) return
     probeResults.value = []
-    if (probeDerivedProtocols) form.protocols = []
-    probeDerivedProtocols = false
+    if (probeAddedProtocols.length) form.protocols = removeProbeAddedProtocols(form.protocols, probeAddedProtocols)
+    probeAddedProtocols = []
   },
 })
 
@@ -648,7 +652,7 @@ function openCreate() {
   probeRequests.invalidate()
   probing.value = false
   probeResults.value = []
-  probeDerivedProtocols = false
+  probeAddedProtocols = []
   modelRequests.invalidate()
   channelKeys.value = [newKeyDraft({ name: '默认密钥', priority: 1 })]
   selectedChannelKeyId.value = channelKeys.value[0].localId
@@ -671,7 +675,7 @@ function openEdit(channel: Channel): void {
   probeRequests.invalidate()
   probing.value = false
   probeResults.value = []
-  probeDerivedProtocols = false
+  probeAddedProtocols = []
   modelRequests.invalidate()
   const savedKeys = channel.keys?.length
     ? channel.keys
@@ -779,8 +783,9 @@ async function probeProtocols(): Promise<void> {
     probeResults.value = response?.results || []
     const supported = probeResults.value.filter((item) => item.supported).map((item) => item.protocol)
     if (supported.length > 0) {
+      const manuallySelected = [...form.protocols]
       form.protocols = mergeProbedProtocols(form.protocols, supported)
-      probeDerivedProtocols = true
+      probeAddedProtocols = supported.filter((protocol) => !manuallySelected.includes(protocol))
     }
     notify(
       supported.length > 0 ? `探测到：${supported.join(' / ')}` : '未探测到可用协议',
@@ -872,7 +877,7 @@ async function save(): Promise<void> {
     showForm.value = false
     probeRequests.invalidate()
     probeResults.value = []
-    probeDerivedProtocols = false
+    probeAddedProtocols = []
     await load()
     const savedChannel = resolveSavedChannel(channels.value, saved, currentEditingId, form.name)
     const unpricedCount = updatePricePrompt(savedChannel)
@@ -1137,7 +1142,7 @@ onMounted(load)
           <span>支持协议与转换优先级</span>
           <div class="protocol-options">
             <label v-for="item in protocolOptions" :key="item.value">
-              <input v-model="form.protocols" type="checkbox" :value="item.value" /> {{ item.label }}
+              <input v-model="form.protocols" type="checkbox" :value="item.value" @change="keepProtocolAsManual(item.value)" /> {{ item.label }}
             </label>
           </div>
           <div v-if="form.protocols.length" class="protocol-order-list">

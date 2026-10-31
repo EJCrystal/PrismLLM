@@ -178,7 +178,7 @@ class QuotaProvidersTest {
         replies["/site/api/status"] = Reply(200, """{"data":{"quota_per_unit":500000,"display_in_currency":true}}""")
         NewApiQuotaProvider().use { provider ->
             val result = provider.query(query().copy(
-                baseUrl = "http://quota-origin.invalid/site/v1",
+                baseUrl = base + "/site/v1",
                 credential = "system-secret",
                 configJson = """{"authMode":"system","userId":"123","proxyUrl":"$base"}""",
             ))
@@ -186,7 +186,7 @@ class QuotaProvidersTest {
             assertEquals("2.00000000", result.remaining!!.toPlainString())
             assertEquals("USD", result.unit)
         }
-        assertEquals(listOf("http://quota-origin.invalid/site/api/user/self", "http://quota-origin.invalid/site/api/status"), requestUris.toList())
+        assertEquals(listOf(base + "/site/api/user/self", base + "/site/api/status"), requestUris.toList())
         assertEquals(listOf("/site/api/user/self" to "Bearer system-secret", "/site/api/status" to null), requests.toList())
         assertEquals(listOf("/site/api/user/self" to "123", "/site/api/status" to null), userHeaders.toList())
     }
@@ -197,7 +197,7 @@ class QuotaProvidersTest {
         replies["/direct/v1/usage"] = Reply(200, """{"balance":34,"unit":"USD"}""")
         Sub2ApiQuotaProvider().use { provider ->
             val proxied = CompletableFuture.supplyAsync { provider.query(query().copy(
-                baseUrl = "http://quota-origin.invalid/site/v1",
+                baseUrl = base + "/site/v1",
                 configJson = """{"proxyUrl":"$base"}""",
             )) }
             val direct = CompletableFuture.supplyAsync { provider.query(query().copy(
@@ -206,7 +206,7 @@ class QuotaProvidersTest {
             assertEquals("12", proxied.get(5, TimeUnit.SECONDS).remaining!!.toPlainString())
             assertEquals("34", direct.get(5, TimeUnit.SECONDS).remaining!!.toPlainString())
         }
-        assertEquals(setOf("http://quota-origin.invalid/site/v1/usage", "/direct/v1/usage"), requestUris.toSet())
+        assertEquals(setOf(base + "/site/v1/usage", "/direct/v1/usage"), requestUris.toSet())
         assertEquals(setOf("/site/v1/usage" to "Bearer test-secret", "/direct/v1/usage" to "Bearer direct-secret"), requests.toSet())
     }
 
@@ -232,6 +232,29 @@ class QuotaProvidersTest {
     }
 
     @Test
+    fun quotaTargetsRequireHttpsExceptForIpv4Loopback() {
+        val provider = object : HttpQuotaProvider() {
+            override val id = "target-validation-test"
+            override val displayName = "Target validation test"
+            fun resolve(request: ChannelQuotaQuery, config: JsonObject): String = siteBase(request, config)
+            override fun queryRemote(
+                request: ChannelQuotaQuery,
+                config: JsonObject,
+                client: HttpClient,
+            ): ChannelQuotaResult = ChannelQuotaResult(ChannelQuotaStatus.AVAILABLE, message = siteBase(request, config))
+        }
+        try {
+            assertTrue(provider.resolve(query(), JsonObject(emptyMap())).startsWith("http://127.0.0.1:"))
+            assertEquals("https://quota-origin.invalid/site", provider.resolve(
+                query().copy(baseUrl = "https://quota-origin.invalid/site/v1"), JsonObject(emptyMap()),
+            ))
+            assertFails { provider.resolve(query().copy(baseUrl = "http://quota-origin.invalid/site/v1"), JsonObject(emptyMap())) }
+        } finally {
+            provider.close()
+        }
+    }
+
+    @Test
     fun emptyProxyKeepsDirectBehaviorAndProxyDoesNotFollowRedirects() {
         replies["/site/v1/usage"] = Reply(200, """{"balance":12}""")
         Sub2ApiQuotaProvider().use { provider ->
@@ -244,12 +267,12 @@ class QuotaProvidersTest {
             requestUris.clear()
             replies["/site/v1/usage"] = Reply(302, "private test-secret", mapOf("Location" to "http://other.invalid/stolen"))
             val result = provider.query(query().copy(
-                baseUrl = "http://quota-origin.invalid/site/v1",
+                baseUrl = base + "/site/v1",
                 configJson = """{"proxyUrl":"$base"}""",
             ))
             assertEquals(ChannelQuotaStatus.ERROR, result.status)
             assertFalse(result.toString().contains("test-secret"))
-            assertEquals(listOf("http://quota-origin.invalid/site/v1/usage"), requestUris.toList())
+            assertEquals(listOf(base + "/site/v1/usage"), requestUris.toList())
         }
     }
 

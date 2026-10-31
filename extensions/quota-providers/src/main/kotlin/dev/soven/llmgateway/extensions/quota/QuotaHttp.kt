@@ -66,7 +66,10 @@ abstract class HttpQuotaProvider : ChannelQuotaProvider {
         val original = URI(request.baseUrl.trimEnd('/'))
         val configured = config.string("baseUrl")?.takeIf { it.isNotBlank() }
         val target = URI(configured ?: request.baseUrl.trimEnd('/').replace(Regex("/v1(?:beta)?$"), ""))
-        require(target.scheme in setOf("http", "https") && target.host != null)
+        require(
+            target.host != null &&
+                (target.scheme == "https" || (target.scheme == "http" && target.host == "127.0.0.1")),
+        )
         require(target.userInfo == null && target.rawQuery == null && target.rawFragment == null)
         fun port(uri: URI) = if (uri.port >= 0) uri.port else if (uri.scheme == "https") 443 else 80
         require(target.scheme == original.scheme && target.host.equals(original.host, ignoreCase = true) && port(target) == port(original))

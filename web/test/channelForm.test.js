@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols, parseManualModelIds } from '../src/utils/channelForm'
+import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols, parseManualModelIds, removeProbeAddedProtocols } from '../src/utils/channelForm'
 
 describe('channelForm: 手动添加上游模型', () => {
   it('批量粘贴时忽略空白和重复 ID，保留模型名中的符号与大小写', () => {
@@ -132,6 +132,17 @@ describe('channelForm: 渠道保存请求体', () => {
       ['messages', 'chat_completions', 'responses'],
     )
     assert.deepEqual(mergeProbedProtocols([], ['chat_completions', 'responses']), ['chat_completions', 'responses'])
+  })
+
+  it('鉴权设置变化时只撤销协议探测新增的协议', () => {
+    const manuallySelected = ['messages', 'chat_completions']
+    const supported = ['chat_completions', 'responses', 'messages']
+    const selected = mergeProbedProtocols(manuallySelected, supported)
+    const probeAdded = supported.filter((protocol) => !manuallySelected.includes(protocol))
+
+    assert.deepEqual(selected, ['messages', 'chat_completions', 'responses'])
+    assert.deepEqual(removeProbeAddedProtocols(selected, probeAdded), manuallySelected)
+    assert.deepEqual(removeProbeAddedProtocols(['messages', 'responses'], []), ['messages', 'responses'])
   })
 
   it('未修改的映射保留原 mappingSource', () => {

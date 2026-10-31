@@ -116,6 +116,11 @@ export function mergeProbedProtocols(existing: string[], supported: string[]): s
   return [...retained, ...supported.filter((protocol) => !retained.includes(protocol))]
 }
 
+export function removeProbeAddedProtocols(selected: string[], probeAdded: string[]): string[] {
+  const probeAddedSet = new Set(probeAdded)
+  return selected.filter((protocol) => !probeAddedSet.has(protocol))
+}
+
 /**
  * 判断密钥是否可路由。
  * ACTIVE 为真；AUTO_TEMPORARY 且到期时间小于等于当前时间为真；其余为假。
