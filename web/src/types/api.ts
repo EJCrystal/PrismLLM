@@ -427,7 +427,7 @@ export interface RequestLogAttempt {
   channelKeyName: string | null
   upstreamModel: string | null
   upstreamProtocol: string | null
-  statusCode: number | null
+  statusCode?: number | null
   upstreamErrorStatusCode?: number | null
   errorCode: string | null
   upstreamErrorCode: string | null
