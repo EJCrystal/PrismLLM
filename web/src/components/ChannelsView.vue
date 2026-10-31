@@ -845,7 +845,8 @@ onMounted(load)
                   v-if="priorityEditingId === channel.id"
                   v-model.number="priorityDraft"
                   class="priority-input"
-                  aria-label="渠道优先级"
+                  aria-label="渠道优先级，数值越小越优先"
+                  title="数值越小越优先；Enter 保存，Esc 取消"
                   type="number"
                   min="1"
                   max="1000"
@@ -1023,7 +1024,15 @@ onMounted(load)
                 </label>
                 <label class="field">
                   <span>密钥优先级</span>
-                  <input v-model.number="key.priority" type="number" min="1" max="1000" step="1" />
+                  <input
+                    v-model.number="key.priority"
+                    type="number"
+                    min="1"
+                    max="1000"
+                    step="1"
+                    title="数值越小越优先；同优先级密钥轮询"
+                  />
+                  <small>数值越小越优先（1..1000）；同优先级密钥轮询分摊。</small>
                 </label>
                 <div class="channel-key-toggle-field">
                   <span>状态</span>
@@ -1103,7 +1112,7 @@ onMounted(load)
             </div>
           </div>
           <button type="button" class="button ghost mini channel-key-add" @click="addKey">添加密钥</button>
-          <small>同一模型可以配置在多个密钥上；同优先级密钥轮询，低优先级密钥只在高优先级密钥失败或冷却时启用。</small>
+          <small>同一模型可以配置在多个密钥上；低优先级密钥只在高优先级密钥失败、冷却或不可用时启用。</small>
         </div>
         <div v-if="authorizedModels.length" class="channel-canonical-section">
           <div class="channel-model-auth-head">
@@ -1181,7 +1190,7 @@ onMounted(load)
         <label class="field">
           <span>渠道优先级</span>
           <input v-model.number="form.priority" type="number" min="1" max="1000" step="1" />
-          <small>数值越小越优先（1..1000），仅影响直连路由：同优先级渠道轮询分摊，低优先级只在高优先级全部失败或冷却时启用；别名候选档位由别名自行声明。</small>
+          <small>数值越小越优先（1..1000）：同优先级渠道轮询分摊，低优先级只在高优先级全部失败或冷却时启用。</small>
         </label>
         <label class="switch-row">
           <input v-model="form.enabled" type="checkbox" />

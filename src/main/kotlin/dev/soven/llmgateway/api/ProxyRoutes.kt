@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.RouteCandidate
+import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
@@ -190,6 +191,7 @@ private suspend fun handleProxy(
     var upstreamErrorCode: String? = null
     var upstreamErrorBody: String? = null
     var upstreamAttempts = 0
+    val attemptRecords = mutableListOf<UpstreamAttemptRecord>()
     var phase = FailureStage.REQUEST
 
     try {
@@ -214,16 +216,9 @@ private suspend fun handleProxy(
         }
         streamMode = stream
         phase = FailureStage.ROUTING
-        val aliasCandidates = app.aliasRepository.findEnabledCandidates(alias)
-        val allCandidates = if (aliasCandidates.isNotEmpty()) {
-            aliasCandidates
-        } else if (app.aliasRepository.findByAlias(alias) == null) {
-            app.modelCatalog.findCandidates(alias, null)
-        } else {
-            emptyList()
-        }
+        val allCandidates = app.modelCatalog.findCandidates(alias, null)
         if (allCandidates.isEmpty()) {
-            throw notFound("model_not_found", "模型别名 $alias 不存在或没有可用渠道")
+            throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
         }
         val nativeCandidates = allCandidates.filter { protocol in it.channel.protocols }
         val conversionCandidates = if (protocol == GatewayProtocol.GEMINI) {
@@ -294,18 +289,23 @@ private suspend fun handleProxy(
             }
             // 首 token 软阈值按本次尝试计时，不继承前面候选消耗掉的时间。
             val attemptStartedNanos = System.nanoTime()
+            state.attemptFirstTokenMs = null
+            state.upstreamStatus = null
+            state.upstreamCallStarted = false
+            state.streamError = null
+            upstreamProtocol = null
             upstreamAttempts += 1
             channelId = candidate.channel.id
             channelName = candidate.channel.name
             channelKeyId = candidate.key.id
             channelKeyName = candidate.key.name
             upstreamModel = candidate.upstreamModel
-            upstreamProtocol = if (protocol in candidate.channel.protocols) {
+            val attemptProtocol = if (protocol in candidate.channel.protocols) {
                 protocol
             } else {
                 candidate.channel.protocols.firstOrNull { it != GatewayProtocol.GEMINI }
             }
-            upstreamProtocol?.takeIf { it != protocol }?.let { target ->
+            attemptProtocol?.takeIf { it != protocol }?.let { target ->
                 app.metrics.protocolConversion(protocol.value, target.value)
             }
             pricingModelId = candidate.pricingModelId
@@ -313,6 +313,35 @@ private suspend fun handleProxy(
                 app.metrics.upstreamRetry(from, candidate.channel.name, retryReason ?: "upstream_error")
                 retryFrom = null
                 retryReason = null
+            }
+            var attemptRecorded = false
+            fun recordAttempt(status: Int?, error: GatewayException?, committed: Boolean, errorCode: String? = null) {
+                if (attemptRecorded) return
+                attemptRecorded = true
+                if (!state.upstreamCallStarted) {
+                    upstreamAttempts -= 1
+                    return
+                }
+                upstreamProtocol = attemptProtocol
+                val upstreamError = state.streamError ?: error
+                attemptRecords += UpstreamAttemptRecord(
+                    index = attemptRecords.size + 1,
+                    channelId = candidate.channel.id,
+                    channelName = candidate.channel.name,
+                    channelKeyId = candidate.key.id,
+                    channelKeyName = candidate.key.name,
+                    upstreamModel = candidate.upstreamModel,
+                    upstreamProtocol = attemptProtocol,
+                    statusCode = state.upstreamStatus ?: status,
+                    upstreamErrorStatusCode = upstreamError?.upstreamStatus,
+                    errorCode = errorCode ?: error?.code,
+                    upstreamErrorCode = upstreamError?.upstreamCode?.take(200),
+                    errorMessage = upstreamError?.message?.asLogMessage(),
+                    elapsedMs = (System.nanoTime() - attemptStartedNanos) / 1_000_000,
+                    firstTokenMs = state.attemptFirstTokenMs,
+                    committed = committed,
+                    retryable = error?.retryable ?: false,
+                )
             }
             var probeClaimed = false
             try {
@@ -330,7 +359,7 @@ private suspend fun handleProxy(
                         // 请求转换在抢租约前完成，避免转换失败留下未释放的探测租约。
                         ProtocolConversion.convertRequest(
                             protocol,
-                            upstreamProtocol ?: protocol,
+                            attemptProtocol ?: protocol,
                             requestJson,
                             candidate.upstreamModel,
                         )
@@ -350,7 +379,7 @@ private suspend fun handleProxy(
                             remainingMs,
                             state,
                             protocol,
-                            upstreamProtocol ?: protocol,
+                            attemptProtocol ?: protocol,
                             traceContext.traceparent,
                             allowUpstreamErrorFailover = upstreamAttempts < app.config.maxAttempts && upstreamAttempts < candidates.size,
                             globalOverrides = globalOverrides,
@@ -359,7 +388,7 @@ private suspend fun handleProxy(
                     } else {
                         proxyJson(
                             app, call, requestJson, alias, candidate, remainingMs, state, protocol,
-                            upstreamProtocol ?: protocol, traceContext.traceparent, globalOverrides, headerProfiles,
+                            attemptProtocol ?: protocol, traceContext.traceparent, globalOverrides, headerProfiles,
                         )
                     }
                 }
@@ -368,6 +397,7 @@ private suspend fun handleProxy(
                     candidate.channel.name,
                     state.statusCode < 400 && state.errorCode == null,
                 )
+                recordAttempt(state.statusCode, null, state.committed, state.errorCode)
                 if (state.errorCode == null) {
                     app.candidateCooldown.recordSuccess(permit)
                     recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed)
@@ -388,12 +418,14 @@ private suspend fun handleProxy(
             } catch (e: GatewayException) {
                 if (e.code == "client_disconnect") {
                     app.candidateCooldown.release(permit)
+                    recordAttempt(state.statusCode.takeIf { state.committed }, e, state.committed)
                     throw e
                 }
                 try {
                     currentCoroutineContext().ensureActive()
                 } catch (cancelled: CancellationException) {
                     app.candidateCooldown.release(permit)
+                    recordAttempt(state.upstreamStatus ?: state.statusCode.takeIf { state.committed }, null, state.committed, "client_cancelled")
                     throw cancelled
                 }
                 app.metrics.upstreamError(candidate.channel.name, e.code)
@@ -416,6 +448,13 @@ private suspend fun handleProxy(
                             }
                         }
                 }
+                val failureCommitted = state.committed || e.code == "stream_interrupted" || e.code == "stream_timeout"
+                recordAttempt(
+                    // 优先记录实际收到的 HTTP 状态码；流内错误事件里的状态码只是事件语义。
+                    state.upstreamStatus ?: e.upstreamStatus ?: state.statusCode.takeIf { failureCommitted },
+                    e,
+                    failureCommitted,
+                )
                 val signal = e.toKeyAttemptSignal()
                 if (signal != null) {
                     recordKeyOutcome(app, candidate, signal, requestId, probeClaimed)
@@ -423,13 +462,37 @@ private suspend fun handleProxy(
                 e
             } catch (e: ProtocolConversionException) {
                 app.candidateCooldown.release(permit)
+                if (state.upstreamCallStarted) {
+                    recordAttempt(
+                        state.upstreamStatus,
+                        GatewayException(
+                            if (state.committed) HttpStatusCode.OK else HttpStatusCode.BadGateway,
+                            if (state.committed) "protocol_conversion_failed" else "protocol_conversion_unsupported",
+                            "${e.field}: ${e.message}",
+                        ),
+                        state.committed,
+                    )
+                }
                 // 上游已返回 2xx 但响应无法转换：说明凭据可用，按成功结算并释放探测租约。
                 if (probeClaimed) {
                     recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed = true)
                 }
-                if (state.committed) throw e
-                // 单个候选无法转换时继续尝试其他候选，全部失败后再返回转换错误。
-                upstreamAttempts -= 1
+                if (state.committed) {
+                    // 响应已提交后才发生转换失败：保留真实原因，便于和普通流中断区分。
+                    throw e
+                }
+                // 请求在本地转换阶段就失败时没有真正调用上游，不写入尝试明细，也不消耗尝试预算。
+                if (!state.upstreamCallStarted) {
+                    upstreamAttempts -= 1
+                    conversionError = e
+                    return GatewayException(
+                        HttpStatusCode.BadGateway,
+                        "no_candidate",
+                        "协议转换不支持，尝试其他候选",
+                        "api_error",
+                        retryable = true,
+                    )
+                }
                 conversionError = e
                 GatewayException(
                     HttpStatusCode.BadGateway,
@@ -440,6 +503,20 @@ private suspend fun handleProxy(
                 )
             } catch (e: Throwable) {
                 app.candidateCooldown.release(permit)
+                if (e is CancellationException) {
+                    recordAttempt(
+                        state.upstreamStatus ?: state.statusCode.takeIf { state.committed },
+                        null,
+                        state.committed,
+                        "client_cancelled",
+                    )
+                    throw e
+                }
+                recordAttempt(
+                    state.statusCode.takeIf { state.committed },
+                    GatewayException(HttpStatusCode.InternalServerError, "internal_error", e.message ?: e::class.simpleName.toString()),
+                    state.committed,
+                )
                 throw e
             }
         } finally {
@@ -659,6 +736,7 @@ private suspend fun handleProxy(
                 upstreamErrorBody = upstreamErrorBody,
                 createdAt = System.currentTimeMillis(),
                 upstreamAttempts = upstreamAttempts,
+                attempts = attemptRecords.toList(),
             ),
         )
     }
@@ -826,6 +904,12 @@ private class ProxyState {
     var statusCode = HttpStatusCode.OK.value
     var usage: Usage? = null
     var firstTokenMs: Long? = null
+    /** 本次尝试的首 token 耗时，每次尝试开始时重置。 */
+    var attemptFirstTokenMs: Long? = null
+    /** 本次尝试收到的上游 HTTP 状态码；连接失败时为 null。 */
+    var upstreamStatus: Int? = null
+    var upstreamCallStarted = false
+    var streamError: GatewayException? = null
     var errorCode: String? = null
     var upstreamErrorBody: String? = null
 }
@@ -912,6 +996,7 @@ private suspend fun proxyStream(
 
     try {
         withTimeout(timeoutMs) {
+            state.upstreamCallStarted = true
             app.httpClient.preparePost(upstreamUrl) {
                 applyUpstreamAuthentication(
                     credential = credential,
@@ -926,6 +1011,7 @@ private suspend fun proxyStream(
                 policy.applyHeaders(this)
                 setBody(TextContent(body, ContentType.Application.Json))
             }.execute { response ->
+                state.upstreamStatus = response.status.value
                 if (!response.status.isSuccess()) {
                     throw upstreamException(
                         response.status,
@@ -950,6 +1036,7 @@ private suspend fun proxyStream(
                             ) {
                                 val error = if (upstreamProtocol == GatewayProtocol.GEMINI) geminiStreamException(next)
                                     else anthropicStreamException(next)
+                                state.streamError = error
                                 if (error.retryable) {
                                     upstream.cancel(error)
                                     throw error
@@ -1084,6 +1171,7 @@ private suspend fun proxyJson(
     val body = policy.body(convertedRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
     try {
         withTimeout(timeoutMs) {
+            state.upstreamCallStarted = true
             val response = app.httpClient.post(upstreamUrl) {
                 applyUpstreamAuthentication(
                     credential = credential,
@@ -1097,6 +1185,7 @@ private suspend fun proxyJson(
                 policy.applyHeaders(this)
                 setBody(TextContent(body, ContentType.Application.Json))
             }
+            state.upstreamStatus = response.status.value
             val text = response.bodyAsText()
             if (!response.status.isSuccess()) {
                 throw upstreamException(
@@ -1275,8 +1364,9 @@ private fun markFirstToken(
         state.firstTokenMs = (nowNanos - startedAt) / 1_000_000
         app.metrics.firstToken(alias, candidate.channel.name, state.firstTokenMs!!)
         // 首 token 软阈值按本次尝试计时：快速兜底不应继承前面候选撞掉的秒数。
-        val attemptFirstTokenMs = (nowNanos - attemptStartedNanos) / 1_000_000
-        if (app.candidateCooldown.recordFirstToken(
+            val attemptFirstTokenMs = (nowNanos - attemptStartedNanos) / 1_000_000
+            state.attemptFirstTokenMs = attemptFirstTokenMs
+            if (app.candidateCooldown.recordFirstToken(
                 permit,
                 attemptFirstTokenMs,
             )
@@ -1376,10 +1466,12 @@ private fun markTerminalStreamFailure(
         GatewayProtocol.MESSAGES -> if (type == "error") {
             state.errorCode = "messages_failed"
             state.upstreamErrorBody = payload
+            state.streamError = anthropicStreamException(line)
         }
         GatewayProtocol.GEMINI -> if (isGeminiStreamError(line)) {
             state.errorCode = "gemini_failed"
             state.upstreamErrorBody = payload
+            state.streamError = geminiStreamException(line)
         }
     }
 }

@@ -17,7 +17,6 @@ data class ExposedModel(
 )
 
 enum class ExposedModelSource(val value: String) {
-    ALIAS("alias"),
     CANONICAL("canonical"),
     UPSTREAM("upstream"),
 }
@@ -26,11 +25,8 @@ enum class ExposedModelSource(val value: String) {
  * 数据面与管理面共用的对外模型聚合逻辑，保证管理页展示结果与 `/v1/models` 一致。
  */
 suspend fun listExposedModels(app: GatewayApplication, protocol: GatewayProtocol? = null): List<ExposedModel> {
-    val aliases = app.aliasRepository.listAvailableAliases(protocol)
-    val aliasNames = app.aliasRepository.listAllAliasNames()
     val directModels = app.modelCatalog.listDirectModels()
         .filter { protocol == null || protocol in it.channel.protocols }
-        .filterNot { it.publicId in aliasNames }
         .groupBy { it.publicId }
         .map { (publicId, entries) ->
             ExposedModel(
@@ -45,7 +41,5 @@ suspend fun listExposedModels(app: GatewayApplication, protocol: GatewayProtocol
                 channelNames = entries.map { it.channel.name }.distinct().sorted(),
             )
         }
-    return (aliases.map { ExposedModel(it, ExposedModelSource.ALIAS) } + directModels)
-        .distinctBy { it.id }
-        .sortedBy { it.id }
+    return directModels.sortedBy { it.id }
 }

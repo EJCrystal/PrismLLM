@@ -61,10 +61,10 @@ class UpstreamModelCatalog(
             .sortedWith(compareBy(
                 { it.position },
                 { it.channel.name },
-                { it.upstreamModel },
                 { it.key.priority },
                 { it.key.name },
                 { it.key.id },
+                { it.upstreamModel },
             ))
 
     private suspend fun directExposureChannels(): List<ChannelRecord> =

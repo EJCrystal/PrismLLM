@@ -20,7 +20,6 @@ const catalogSource = ref('https://models.dev/catalog.json')
 const catalogSearch = ref('')
 const catalogLimit = ref(150)
 
-const aliasCount = computed(() => models.value.filter((model) => model.source === 'alias').length)
 const canonicalCount = computed(() => models.value.filter((model) => model.source === 'canonical').length)
 const upstreamCount = computed(() => models.value.filter((model) => model.source === 'upstream').length)
 const matchedCount = computed(() => models.value.filter((model) => matchesFor(model.id).length > 0).length)
@@ -111,13 +110,11 @@ async function copyJson() {
 }
 
 function sourceLabel(source) {
-  if (source === 'alias') return '别名'
   if (source === 'canonical') return '规范映射'
   return '上游直连'
 }
 
 function sourceClass(source) {
-  if (source === 'alias') return 'info'
   if (source === 'canonical') return 'success'
   return 'warning'
 }
@@ -141,16 +138,11 @@ onMounted(() => {
       </button>
     </div>
 
-    <div class="stat-row four">
+    <div class="stat-row">
       <div class="stat-card accent">
         <span>对外模型总数</span>
         <strong>{{ models.length }}</strong>
         <small>任意有效调用方密钥都能看到</small>
-      </div>
-      <div class="stat-card">
-        <span>别名模型</span>
-        <strong>{{ aliasCount }}</strong>
-        <small>来自启用的模型别名</small>
       </div>
       <div class="stat-card">
         <span>规范映射</span>
@@ -177,7 +169,7 @@ onMounted(() => {
         :empty="models.length === 0"
         icon="models"
         title="当前没有对外暴露的模型"
-        desc="启用渠道并授权模型，或创建别名后，这里会显示对应模型。若预期出现的模型缺失，请检查渠道是否启用及其授权模型列表。"
+        desc="启用渠道并授权模型后，这里会显示对应模型。若预期出现的模型缺失，请检查渠道是否启用及其授权模型列表。"
       />
       <div v-else class="table-scroll">
         <table class="data-table">
@@ -306,7 +298,7 @@ onMounted(() => {
     </div>
 
     <p class="muted small exposed-models-note">
-      别名优先于同名上游模型。渠道模型配置了规范 ID 时，对外展示规范 ID 并路由到对应上游模型；未配置时回退上游 ID。建议以 models.dev 的 canonical ID 作为规范 ID。页面结果不区分调用方密钥，只要密钥有效，<code>/v1/models</code> 返回的内容一致。
+      渠道模型配置了规范 ID 时，对外展示规范 ID 并路由到对应上游模型；未配置时回退上游 ID。规范 ID 相同的上游模型按同一对外模型路由。建议以 models.dev 的 canonical ID 作为规范 ID。页面结果不区分调用方密钥，只要密钥有效，<code>/v1/models</code> 返回的内容一致。
     </p>
   </section>
 </template>

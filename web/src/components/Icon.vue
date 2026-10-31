@@ -8,7 +8,6 @@ const props = defineProps({
 
 const paths = {
   channels: ['M4 7h16', 'M4 12h10', 'M4 17h7', 'M17 12l3 3-3 3'],
-  aliases: ['M8 7h12', 'M8 12h8', 'M8 17h5', 'M4 7h.01', 'M4 12h.01', 'M4 17h.01'],
   models: ['M4 6h16v12H4z', 'M8 10h8', 'M8 14h5'],
   list: ['M8 6h12', 'M8 12h12', 'M8 18h12', 'M4 6h.01', 'M4 12h.01', 'M4 18h.01'],
   keys: ['M14 7a4 4 0 1 0-3.5 3.97L5 16.5V19h2.5l1-1v-1.5H10l1-1v-1.5h1.5L14 12.5'],

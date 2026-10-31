@@ -114,34 +114,6 @@ data class ChannelRecord(
 }
 
 /**
- * 模型别名记录。
- *
- * @author 文杰
- * @since 2026-10-21
- */
-data class AliasRecord(
-    val id: String,
-    val alias: String,
-    val enabled: Boolean,
-    val createdAt: Long,
-    val updatedAt: Long,
-)
-
-/**
- * 模型别名下的一个候选。
- *
- * @author 文杰
- * @since 2026-10-21
- */
-data class CandidateRecord(
-    val id: String,
-    val aliasId: String,
-    val channelId: String,
-    val upstreamModel: String,
-    val position: Int,
-)
-
-/**
  * 解析后的路由候选，只包含数据面需要的字段。
  *
  * @author 文杰
@@ -151,6 +123,7 @@ data class RouteCandidate(
     val channel: ChannelRecord,
     val key: ChannelKeyRecord,
     val upstreamModel: String,
+    /** 选路档位：直连候选取渠道优先级，数值越小越优先。 */
     val position: Int,
 ) {
     /** 计费使用的模型 ID：优先渠道配置的规范 ID，未配置时回退上游模型。 */
@@ -316,6 +289,37 @@ data class RequestLogRecord(
     val upstreamErrorBody: String? = null,
     val createdAt: Long,
     val upstreamAttempts: Int? = null,
+    /** 每次实际上游尝试的明细，按发生顺序排列。 */
+    val attempts: List<UpstreamAttemptRecord> = emptyList(),
     val pricingModelId: String? = null,
     val id: Long = 0,
+)
+
+/**
+ * 单次上游尝试的日志明细。只记录路由与结果元数据，不保存 prompt 或响应正文。
+ *
+ * @author 文杰
+ * @since 2026-10-30
+ */
+data class UpstreamAttemptRecord(
+    val index: Int,
+    val channelId: String? = null,
+    val channelName: String? = null,
+    val channelKeyId: String? = null,
+    val channelKeyName: String? = null,
+    val upstreamModel: String? = null,
+    val upstreamProtocol: GatewayProtocol? = null,
+    /** 未拿到上游 HTTP 响应时为 null。 */
+    val statusCode: Int? = null,
+    val upstreamErrorStatusCode: Int? = null,
+    /** 本次尝试的网关错误码；成功为 null。 */
+    val errorCode: String? = null,
+    /** 上游返回的错误码；成功或非上游错误为 null。 */
+    val upstreamErrorCode: String? = null,
+    val errorMessage: String? = null,
+    val elapsedMs: Long,
+    val firstTokenMs: Long? = null,
+    /** 本次尝试已向客户端提交响应。 */
+    val committed: Boolean = false,
+    val retryable: Boolean = false,
 )

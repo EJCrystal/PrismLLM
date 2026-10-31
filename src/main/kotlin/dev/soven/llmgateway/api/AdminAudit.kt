@@ -128,9 +128,6 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "POST" && path == "/admin/api/channels" -> "channel.create"
     method == "PUT" && CHANNEL_ITEM_PATTERN.matches(path) -> "channel.update"
     method == "DELETE" && CHANNEL_ITEM_PATTERN.matches(path) -> "channel.delete"
-    method == "POST" && path == "/admin/api/aliases" -> "alias.create"
-    method == "PUT" && ALIAS_ITEM_PATTERN.matches(path) -> "alias.update"
-    method == "DELETE" && ALIAS_ITEM_PATTERN.matches(path) -> "alias.delete"
     method == "POST" && path == "/admin/api/client-keys" -> "client_key.create"
     method == "PUT" && CLIENT_KEY_ITEM_PATTERN.matches(path) -> "client_key.update"
     method == "DELETE" && CLIENT_KEY_ITEM_PATTERN.matches(path) -> "client_key.delete"
@@ -166,7 +163,6 @@ private fun sanitizeRequestId(value: String?): String {
 private val CHANNEL_PROBE_PATTERN = Regex("^/admin/api/channels/[^/]+/probe-protocols$")
 private val CHANNEL_MODEL_TEST_PATTERN = Regex("^/admin/api/channels/[^/]+/model-test$")
 private val CHANNEL_ITEM_PATTERN = Regex("^/admin/api/channels/[^/]+$")
-private val ALIAS_ITEM_PATTERN = Regex("^/admin/api/aliases/[^/]+$")
 private val CLIENT_KEY_ITEM_PATTERN = Regex("^/admin/api/client-keys/[^/]+$")
 private val CLIENT_KEY_ROTATE_PATTERN = Regex("^/admin/api/client-keys/[^/]+/rotate$")
 private val CLIENT_KEY_REVOKE_PATTERN = Regex("^/admin/api/client-keys/[^/]+/revoke$")

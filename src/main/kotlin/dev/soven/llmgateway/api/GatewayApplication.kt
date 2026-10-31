@@ -14,7 +14,6 @@ import dev.soven.llmgateway.proxy.CurrencyExchangeService
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.repo.AdminUserRepository
 import dev.soven.llmgateway.repo.AdminAuditRepository
-import dev.soven.llmgateway.repo.AliasRepository
 import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.ClientKeyRepository
 import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
@@ -99,7 +98,6 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val databaseFactory = DatabaseFactory(config)
     val credentialCipher = CredentialCipher(config.masterKey)
     val channelRepository = ChannelRepository(databaseFactory.database, credentialCipher)
-    val aliasRepository = AliasRepository(databaseFactory.database)
     val clientKeyRepository = ClientKeyRepository(databaseFactory.database)
     val clientKeyQuotaRepository = ClientKeyQuotaRepository(databaseFactory.database)
     val clientKeyQuotaService = ClientKeyQuotaService(clientKeyQuotaRepository)

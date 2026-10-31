@@ -37,7 +37,7 @@ async function submit() {
       <div class="login-copy">
         <p class="eyebrow light">LLM Gateway</p>
         <h1>把模型接入，<br />收进一个入口。</h1>
-        <p>OpenAI 兼容、流式透传、别名路由。只暴露一把调用方密钥，上游凭据留在网关内。</p>
+        <p>OpenAI 兼容、流式透传、统一模型路由。只暴露一把调用方密钥，上游凭据留在网关内。</p>
         <div class="login-points">
           <span><i></i>SSE 不缓冲</span>
           <span><i></i>首 token 前切换</span>

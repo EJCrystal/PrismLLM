@@ -13,7 +13,6 @@ import dev.soven.llmgateway.proxy.CatalogModel
 import dev.soven.llmgateway.proxy.fetchUpstreamModels
 import dev.soven.llmgateway.proxy.probeUpstreamProtocols
 import dev.soven.llmgateway.proxy.testChannelModelConnectivity
-import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.KeyAutoDisableSettingsAuditContext
@@ -561,18 +560,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     } else {
                         requestedMappings
                     }
-                if (modelMappings != null) {
-                    val removed = existing.models.toSet() - modelMappings.map { it.upstreamModel }.toSet()
-                    removed.forEach { model ->
-                        val aliases = app.aliasRepository.findAliasNamesUsingModel(existing.id, model)
-                        if (aliases.isNotEmpty()) {
-                            throw conflict(
-                                "channel_model_in_use",
-                                "模型「$model」仍被别名「${aliases.joinToString("、")}」引用，请先调整别名候选",
-                            )
-                        }
-                    }
-                }
                 val keys = normalizeUpdatedKeys(app, existing, request, modelMappings, encrypted)
                 withContext(NonCancellable) {
                     val updated = app.channelRepository.update(
@@ -609,58 +596,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val id = call.requiredParam("id", "缺少渠道 id")
             channelUpdateMutex.withLock {
-                if (app.aliasRepository.isChannelInUse(id)) {
-                    throw conflict("channel_in_use", "渠道仍被模型别名引用，不能删除")
-                }
                 val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
                 withContext(NonCancellable) {
                     if (!app.channelRepository.delete(id)) throw notFound("channel_not_found", "渠道不存在")
                     channel.keys.forEach { app.channelKeyRateLimiter.clearKey(channel.id, it.id) }
                 }
             }
-            call.respond(HttpStatusCode.NoContent)
-        }
-
-        get("/aliases") {
-            call.requireAdmin(app)
-            call.respond(app.aliasRepository.list().map { it.toResponse() })
-        }
-
-        post("/aliases") {
-            call.requireAdmin(app)
-            val request = call.receive<AliasRequest>()
-            validateAlias(app, request)
-            if (app.aliasRepository.findByAlias(request.alias) != null) {
-                throw conflict("alias_exists", "模型别名已存在")
-            }
-            val record = app.aliasRepository.create(
-                alias = request.alias,
-                enabled = request.enabled,
-                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel.trim(), it.position) },
-            )
-            call.respond(HttpStatusCode.Created, record.toResponse())
-        }
-
-        put("/aliases/{id}") {
-            call.requireAdmin(app)
-            val id = call.requiredParam("id", "缺少别名 id")
-            val request = call.receive<AliasRequest>()
-            validateAlias(app, request)
-            val sameAlias = app.aliasRepository.findByAlias(request.alias)
-            if (sameAlias != null && sameAlias.id != id) throw conflict("alias_exists", "模型别名已存在")
-            val record = app.aliasRepository.update(
-                id = id,
-                alias = request.alias,
-                enabled = request.enabled,
-                candidates = request.candidates.map { NewCandidate(it.channelId, it.upstreamModel.trim(), it.position) },
-            ) ?: throw notFound("alias_not_found", "模型别名不存在")
-            call.respond(record.toResponse())
-        }
-
-        delete("/aliases/{id}") {
-            call.requireAdmin(app)
-            val id = call.requiredParam("id", "缺少别名 id")
-            if (!app.aliasRepository.delete(id)) throw notFound("alias_not_found", "模型别名不存在")
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -1358,26 +1299,6 @@ private fun CatalogModel.toResponse() = ModelsDevModelResponse(
     developerId = developerId,
 )
 
-private suspend fun validateAlias(app: GatewayApplication, request: AliasRequest) {
-    if (!ALIAS_PATTERN.matches(request.alias)) {
-        throw badRequest("invalid_alias", "模型别名只能包含字母、数字、点、下划线和短横线，长度 1..100")
-    }
-    if (request.candidates.isEmpty()) throw badRequest("invalid_alias", "模型别名至少需要一个候选")
-    request.candidates.forEach { candidate ->
-        if (candidate.upstreamModel.isBlank()) throw badRequest("invalid_alias", "上游模型名不能为空")
-        if (candidate.position != null && candidate.position !in 0..999) {
-            throw badRequest("invalid_alias", "候选档位必须在 0..999 之间")
-        }
-        val channel = app.channelRepository.find(candidate.channelId)
-        if (channel == null) {
-            throw badRequest("invalid_alias", "候选渠道 ${candidate.channelId} 不存在")
-        }
-        if (candidate.upstreamModel.trim() !in channel.models) {
-            throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「${candidate.upstreamModel}」")
-        }
-    }
-}
-
 private data class ValidatedPriceValues(
     val currency: String,
     val input: BigDecimal,
@@ -1619,7 +1540,6 @@ private fun adminUnauthorized(message: String): GatewayException =
 private fun adminForbidden(code: String, message: String): GatewayException =
     GatewayException(HttpStatusCode.Forbidden, code, message, "permission_error")
 
-private val ALIAS_PATTERN = Regex("[A-Za-z0-9._-]{1,100}")
 private val CURRENCY_PATTERN = Regex("[A-Za-z]{3,8}")
 private const val MAX_MODEL_SUGGESTIONS = 500
 private const val MAPPING_SOURCE_MANUAL = "manual"

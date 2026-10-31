@@ -1,8 +1,6 @@
 import { ApiError } from './types/api'
 import type {
   AdminAuditLog,
-  Alias,
-  AliasRequest,
   ApiErrorBody,
   AvatarRequest,
   ChangePasswordRequest,
@@ -167,12 +165,6 @@ export const api = {
   getKeyAutoDisableSettings: () => request<KeyAutoDisableSettingsResponse>('/key-auto-disable-settings'),
   updateKeyAutoDisableSettings: (payload: KeyAutoDisableSettingsRequest) =>
     request<KeyAutoDisableSettingsResponse>('/key-auto-disable-settings', { method: 'PUT', body: JSON.stringify(payload) }),
-
-  listAliases: () => requestList<Alias>('/aliases'),
-  createAlias: (payload: AliasRequest) => request<Alias>('/aliases', { method: 'POST', body: JSON.stringify(payload) }),
-  updateAlias: (id: string, payload: AliasRequest) =>
-    request<Alias>(`/aliases/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
-  deleteAlias: (id: string) => request<null>(`/aliases/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   listClientKeys: () => requestList<ClientKey>('/client-keys'),
   createClientKey: (payload: ClientKeyRequest) =>

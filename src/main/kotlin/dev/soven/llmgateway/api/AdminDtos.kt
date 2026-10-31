@@ -24,7 +24,6 @@ import dev.soven.llmgateway.report.RetentionPolicy
 import dev.soven.llmgateway.report.UsageGroup
 import dev.soven.llmgateway.report.UsageReport
 import dev.soven.llmgateway.report.UsageTotal
-import dev.soven.llmgateway.repo.AliasWithCandidates
 import dev.soven.llmgateway.resilience.KeyAutoDisableSettingsRecord
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.resilience.KeyDisableRule
@@ -302,80 +301,6 @@ fun UpstreamRequestSettingsRecord.toResponse(catalog: UpstreamHeaderCatalogSnaps
     profiles = catalog.profiles,
     updatedAt = updatedAt,
     headerCatalog = catalog.toResponse(),
-)
-
-/**
- * 候选写请求。position 是优先级档位，省略时按数组顺序；同档候选分摊流量。
- *
- * @author 文杰
- * @since 2026-10-21
- */
-@Serializable
-data class CandidateRequest(
-    val channelId: String,
-    val upstreamModel: String,
-    val position: Int? = null,
-)
-
-/**
- * 模型别名写请求。
- *
- * @author 文杰
- * @since 2026-10-21
- */
-@Serializable
-data class AliasRequest(
-    val alias: String,
-    val enabled: Boolean = true,
-    val candidates: List<CandidateRequest>,
-)
-
-/**
- * 候选读响应。
- *
- * @author 文杰
- * @since 2026-10-21
- */
-@Serializable
-data class CandidateResponse(
-    val id: String,
-    val channelId: String,
-    val channelName: String,
-    val upstreamModel: String,
-    val position: Int,
-)
-
-/**
- * 模型别名读响应。
- *
- * @author 文杰
- * @since 2026-10-21
- */
-@Serializable
-data class AliasResponse(
-    val id: String,
-    val alias: String,
-    val enabled: Boolean,
-    val candidates: List<CandidateResponse>,
-    val createdAt: Long,
-    val updatedAt: Long,
-)
-
-fun AliasWithCandidates.toResponse() = AliasResponse(
-    id = alias.id,
-    alias = alias.alias,
-    enabled = alias.enabled,
-    candidates = candidates.map {
-        CandidateResponse(
-            id = it.candidate.id,
-            channelId = it.candidate.channelId,
-            channelName = it.channelName,
-            upstreamModel = it.candidate.upstreamModel,
-            position = it.candidate.position,
-        )
-    },
-    createdAt = alias.createdAt,
-    updatedAt = alias.updatedAt,
 )
 
 /**
@@ -936,6 +861,28 @@ data class RequestLogResponse(
     val upstreamErrorBody: String?,
     val createdAt: Long,
     val upstreamAttempts: Int?,
+    val attempts: List<UpstreamAttemptResponse> = emptyList(),
+)
+
+/** 单次上游尝试的日志明细。 */
+@Serializable
+data class UpstreamAttemptResponse(
+    val index: Int,
+    val channelId: String? = null,
+    val channelName: String? = null,
+    val channelKeyId: String? = null,
+    val channelKeyName: String? = null,
+    val upstreamModel: String? = null,
+    val upstreamProtocol: String? = null,
+    val statusCode: Int? = null,
+    val upstreamErrorStatusCode: Int? = null,
+    val errorCode: String? = null,
+    val upstreamErrorCode: String? = null,
+    val errorMessage: String? = null,
+    val elapsedMs: Long,
+    val firstTokenMs: Long? = null,
+    val committed: Boolean = false,
+    val retryable: Boolean = false,
 )
 
 fun RequestLogRecord.toResponse() = RequestLogResponse(
@@ -980,6 +927,26 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
     upstreamErrorBody = upstreamErrorBody,
     createdAt = createdAt,
     upstreamAttempts = upstreamAttempts,
+    attempts = attempts.map { attempt ->
+        UpstreamAttemptResponse(
+            index = attempt.index,
+            channelId = attempt.channelId,
+            channelName = attempt.channelName,
+            channelKeyId = attempt.channelKeyId,
+            channelKeyName = attempt.channelKeyName,
+            upstreamModel = attempt.upstreamModel,
+            upstreamProtocol = attempt.upstreamProtocol?.value,
+            statusCode = attempt.statusCode,
+            upstreamErrorStatusCode = attempt.upstreamErrorStatusCode,
+            errorCode = attempt.errorCode,
+            upstreamErrorCode = attempt.upstreamErrorCode,
+            errorMessage = attempt.errorMessage,
+            elapsedMs = attempt.elapsedMs,
+            firstTokenMs = attempt.firstTokenMs,
+            committed = attempt.committed,
+            retryable = attempt.retryable,
+        )
+    },
 )
 
 /**

@@ -378,9 +378,9 @@ class FakeUpstream {
             return
         }
 
-        if (scenario == "sse-error") {
+        if (scenario == "sse-error" || scenario == "sse-rate-limit") {
             call.respondBytesWriter(ContentType.Text.EventStream) {
-                writeSseEvent("error", ANTHROPIC_STREAM_ERROR)
+                writeSseEvent("error", if (scenario == "sse-rate-limit") ANTHROPIC_ERROR_429 else ANTHROPIC_STREAM_ERROR)
             }
             return
         }
@@ -405,6 +405,11 @@ class FakeUpstream {
                 writeSseEvent("message_start", ANTHROPIC_MESSAGE_START)
                 writeSseEvent("content_block_start", ANTHROPIC_CONTENT_BLOCK_START)
                 writeSseEvent("content_block_delta", ANTHROPIC_CONTENT_BLOCK_DELTA)
+                if (scenario == "sse-rate-limit-after-content") {
+                    writeSseEvent("error", ANTHROPIC_ERROR_429)
+                    completed = true
+                    return@respondBytesWriter
+                }
                 writeSseEvent("content_block_stop", ANTHROPIC_CONTENT_BLOCK_STOP)
                 writeSseEvent("message_delta", ANTHROPIC_MESSAGE_DELTA)
                 writeSseEvent("message_stop", ANTHROPIC_MESSAGE_STOP)
@@ -440,8 +445,10 @@ class FakeUpstream {
             call.respondText(GEMINI_NON_STREAM_BODY, ContentType.Application.Json)
             return
         }
-        if (scenario == "sse-error") {
-            call.respondBytesWriter(ContentType.Text.EventStream) { writeEvent(GEMINI_ERROR_500) }
+        if (scenario == "sse-error" || scenario == "sse-rate-limit") {
+            call.respondBytesWriter(ContentType.Text.EventStream) {
+                writeEvent(if (scenario == "sse-rate-limit") GEMINI_ERROR_429 else GEMINI_ERROR_500)
+            }
             return
         }
         var completed = false
@@ -457,8 +464,8 @@ class FakeUpstream {
                     writeEvent("{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello!\"}],\"role\":\"model\"}}]}")
                 }
                 if (scenario == "disconnect") throw IOException("fake Gemini disconnect")
-                if (scenario == "sse-error-after-content") {
-                    writeEvent(GEMINI_ERROR_500)
+                if (scenario == "sse-error-after-content" || scenario == "sse-rate-limit-after-content") {
+                    writeEvent(if (scenario == "sse-rate-limit-after-content") GEMINI_ERROR_429 else GEMINI_ERROR_500)
                     completed = true
                     return@respondBytesWriter
                 }

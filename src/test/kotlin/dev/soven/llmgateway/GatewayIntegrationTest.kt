@@ -16,8 +16,6 @@ import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.fake.FakeUpstream
-import dev.soven.llmgateway.repo.AliasWithCandidates
-import dev.soven.llmgateway.repo.NewCandidate
 import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
@@ -207,7 +205,7 @@ class GatewayIntegrationTest {
     @Test
     fun `propagates and records W3C trace context`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeUnderCanonicalId("fast-chat", listOf(channel.id to "gpt-4o-mini"))
         val key = createClientKey()
         val traceId = "4bf92f3577b34da6a3ce929d0e0e4736"
         val incomingParent = "00f067aa0ba902b7"
@@ -235,7 +233,7 @@ class GatewayIntegrationTest {
     @Test
     fun `streams chunks and records usage`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -275,7 +273,7 @@ class GatewayIntegrationTest {
     fun `falls back to next candidate before first token`() = runBlocking {
         val primary = createChannel("primary", "500")
         val secondary = createChannel("secondary", "ok")
-        createAlias("fast-chat", primary to "m1", secondary to "m2")
+        exposeAsModel("fast-chat", primary to "m1", secondary to "m2")
         val key = createClientKey()
 
         testApplication {
@@ -293,6 +291,24 @@ class GatewayIntegrationTest {
             assertEquals(secondary.id, log.channelId)
             assertEquals(200, log.statusCode)
             assertEquals(2, log.upstreamAttempts)
+            // 每次尝试都应保留渠道、密钥、上游模型、状态码、错误原因和耗时。
+            assertEquals(listOf(1, 2), log.attempts.map { it.index })
+            val failedAttempt = log.attempts.first()
+            assertEquals(primary.id, failedAttempt.channelId)
+            assertEquals("primary", failedAttempt.channelName)
+            assertEquals(primary.keys.single().id, failedAttempt.channelKeyId)
+            assertEquals("m1", failedAttempt.upstreamModel)
+            assertEquals(500, failedAttempt.statusCode)
+            assertEquals("upstream_error", failedAttempt.errorCode)
+            assertTrue(failedAttempt.errorMessage!!.contains("上游服务不可用"), failedAttempt.errorMessage)
+            assertTrue(failedAttempt.retryable)
+            assertTrue(failedAttempt.elapsedMs >= 0, "attempt elapsed should be recorded")
+            val succeededAttempt = log.attempts.last()
+            assertEquals(secondary.id, succeededAttempt.channelId)
+            assertEquals(200, succeededAttempt.statusCode)
+            assertNull(succeededAttempt.errorCode)
+            assertTrue(succeededAttempt.committed)
+            assertNotNull(succeededAttempt.firstTokenMs)
             assertTrue(app.metrics.scrape().contains("gateway_upstream_retries_total"))
         }
     }
@@ -316,8 +332,8 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1", "m2"),
         )
-        createAlias("limited-model-one", channel to "m1")
-        createAlias("limited-model-two", channel to "m2")
+        exposeAsModel("limited-model-one", channel to "m1")
+        exposeAsModel("limited-model-two", channel to "m2")
         val clientKey = createClientKey()
 
         testApplication {
@@ -370,8 +386,8 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1", "m2"),
         )
-        createAlias("rpm-shared-a", channel to "m1")
-        createAlias("rpm-shared-b", channel to "m2")
+        exposeAsModel("rpm-shared-a", channel to "m1")
+        exposeAsModel("rpm-shared-b", channel to "m2")
         val clientKey = createClientKey()
 
         testApplication {
@@ -436,7 +452,7 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
-        createAlias("concurrency-end-to-end", channel to "m1")
+        exposeAsModel("concurrency-end-to-end", channel to "m1")
         val clientKey = createClientKey()
 
         testApplication {
@@ -528,7 +544,7 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
-        createAlias("all-keys-locally-limited", channel to "m1")
+        exposeAsModel("all-keys-locally-limited", channel to "m1")
         val clientKey = createClientKey()
         channel.keys.forEach { key -> app.channelKeyRateLimiter.acquire(key) }
 
@@ -572,7 +588,7 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
-        createAlias("rate-limit-fallback", channel to "m1")
+        exposeAsModel("rate-limit-fallback", channel to "m1")
         val clientKey = createClientKey()
         app.channelKeyRateLimiter.acquire(channel.keys.first { it.name == "primary" })
 
@@ -619,7 +635,7 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
-        createAlias("partial-rate-limit", channel to "m1")
+        exposeAsModel("partial-rate-limit", channel to "m1")
         val clientKey = createClientKey()
         val primary = channel.keys.first { it.name == "primary" }
         val backup = channel.keys.first { it.name == "backup" }
@@ -723,8 +739,8 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
-        createAlias("concurrency-success", successChannel to "m1")
-        createAlias("concurrency-failure", failureChannel to "m1")
+        exposeAsModel("concurrency-success", successChannel to "m1")
+        exposeAsModel("concurrency-failure", failureChannel to "m1")
         val clientKey = createClientKey()
 
         testApplication {
@@ -775,7 +791,7 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
-        createAlias("concurrency-timeout", channel to "m1")
+        exposeAsModel("concurrency-timeout", channel to "m1")
         val clientKey = createClientKey()
 
         testApplication {
@@ -817,7 +833,7 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
-        createAlias("concurrency-expired-budget", channel to "m1")
+        exposeAsModel("concurrency-expired-budget", channel to "m1")
         val clientKey = createClientKey()
 
         testApplication {
@@ -858,7 +874,7 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
-        createAlias("concurrency-client-disconnect", channel to "m1")
+        exposeAsModel("concurrency-client-disconnect", channel to "m1")
         val clientKey = createClientKey()
         val failNextWrite = AtomicBoolean(false)
 
@@ -896,7 +912,7 @@ class GatewayIntegrationTest {
         app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
         val primary = createChannel("primary", "500")
         val secondary = createChannel("secondary", "ok")
-        createAlias("fast-chat", primary to "m1", secondary to "m2")
+        exposeAsModel("fast-chat", primary to "m1", secondary to "m2")
         val key = createClientKey()
 
         testApplication {
@@ -1059,6 +1075,53 @@ class GatewayIntegrationTest {
             val logs = app.requestLogRepository.list(10)
             assertEquals(setOf("backup"), logs.map { it.channelKeyName }.toSet())
             assertEquals(listOf(1, 2), logs.mapNotNull { it.upstreamAttempts }.sorted())
+        }
+    }
+
+    @Test
+    fun `higher priority key wins when canonical id maps to a different upstream model name`() = runBlocking {
+        app.channelRepository.create(
+            name = "canonical-priority",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "welfare",
+                    credential = app.credentialCipher.encrypt("key-welfare"),
+                    priority = 10,
+                    models = listOf("deepseek-v4.1-flash"),
+                ),
+                NewChannelKey(
+                    name = "guomo",
+                    credential = app.credentialCipher.encrypt("key-guomo"),
+                    priority = 100,
+                    models = listOf("deepseek-flash"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = listOf(
+                ChannelModelRecord(upstreamModel = "deepseek-v4.1-flash", canonicalModelId = "deepseek-flash"),
+                ChannelModelRecord(upstreamModel = "deepseek-flash"),
+            ),
+            priority = 1,
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"deepseek-flash","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            assertEquals(listOf("Bearer key-welfare"), fake.requests.map { it.authorization })
+
+            val log = awaitRequestLog()
+            assertEquals("welfare", log.channelKeyName)
+            assertEquals("deepseek-v4.1-flash", log.upstreamModel)
+            assertEquals(1, log.upstreamAttempts)
         }
     }
 
@@ -2208,7 +2271,7 @@ class GatewayIntegrationTest {
         app.close()
         app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
         val primary = createChannel("primary", "500")
-        createAlias("fast-chat", primary to "m1")
+        exposeAsModel("fast-chat", primary to "m1")
         val key = createClientKey()
 
         testApplication {
@@ -2237,7 +2300,7 @@ class GatewayIntegrationTest {
     fun `spreads requests across same-tier candidates`() = runBlocking {
         val primary = createChannel("primary", "ok")
         val secondary = createChannel("secondary", "ok")
-        createTieredAlias("fast-chat", Triple(primary, "m1", 0), Triple(secondary, "m2", 0))
+        exposeUnderCanonicalIdInOrder("fast-chat", Triple(primary, "m1", 0), Triple(secondary, "m2", 0))
         val key = createClientKey()
 
         testApplication {
@@ -2402,9 +2465,10 @@ class GatewayIntegrationTest {
                 ttftSlowStreak = 2,
             ),
         )
-        val primary = createChannel("slow", "slow")
-        val secondary = createChannel("secondary", "ok")
-        createAlias("fast-chat", primary to "m1", secondary to "m2")
+        // 直连档位来自渠道优先级：慢渠道必须排在前面，等价于旧别名里 position 0/1 的主备顺序。
+        val primary = createChannelWithBaseUrl("slow", "${fake.baseUrl}/slow/v1", priority = 0)
+        val secondary = createChannelWithBaseUrl("secondary", "${fake.baseUrl}/ok/v1", priority = 10)
+        exposeAsModel("fast-chat", primary to "m1", secondary to "m2")
         val key = createClientKey()
 
         testApplication {
@@ -2438,10 +2502,10 @@ class GatewayIntegrationTest {
                 cooldownTransientBaseMs = 300,
             ),
         )
-        val primary = createChannel("primary", "500")
-        val secondary = createChannel("secondary", "500")
-        val tertiary = createChannel("tertiary", "ok")
-        createAlias("fast-chat", primary to "m1", secondary to "m2", tertiary to "deepseek-chat")
+        val primary = createChannelWithBaseUrl("primary", "${fake.baseUrl}/500/v1", priority = 0)
+        val secondary = createChannelWithBaseUrl("secondary", "${fake.baseUrl}/500/v1", priority = 10)
+        val tertiary = createChannelWithBaseUrl("tertiary", "${fake.baseUrl}/ok/v1", priority = 20)
+        exposeAsModel("fast-chat", primary to "m1", secondary to "m2", tertiary to "deepseek-chat")
         val key = createClientKey()
 
         testApplication {
@@ -2467,7 +2531,7 @@ class GatewayIntegrationTest {
     fun `retries next candidate on rate limit before first token`() = runBlocking {
         val primary = createChannel("limited", "429")
         val secondary = createChannel("secondary", "ok")
-        createAlias("fast-chat", primary to "m1", secondary to "m2")
+        exposeAsModel("fast-chat", primary to "m1", secondary to "m2")
         val key = createClientKey()
 
         testApplication {
@@ -2492,7 +2556,7 @@ class GatewayIntegrationTest {
     fun `rate limit cooldown honors Retry-After on next request`() = runBlocking {
         val primary = createChannel("limited", "429-retry-after")
         val secondary = createChannel("secondary", "ok")
-        createAlias("fast-chat", primary to "m1", secondary to "m2")
+        exposeAsModel("fast-chat", primary to "m1", secondary to "m2")
         val key = createClientKey()
 
         testApplication {
@@ -2520,7 +2584,7 @@ class GatewayIntegrationTest {
     fun `falls back when upstream connection fails before first token`() = runBlocking {
         val primary = createChannelWithBaseUrl("unreachable", "http://127.0.0.1:1/v1")
         val secondary = createChannel("secondary", "ok")
-        createAlias("fast-chat", primary to "m1", secondary to "m2")
+        exposeAsModel("fast-chat", primary to "m1", secondary to "m2")
         val key = createClientKey()
 
         testApplication {
@@ -2544,7 +2608,7 @@ class GatewayIntegrationTest {
     fun `does not switch candidate after first token`() = runBlocking {
         val primary = createChannel("primary", "disconnect")
         val secondary = createChannel("secondary", "ok")
-        createAlias("fast-chat", primary to "m1", secondary to "m2")
+        exposeAsModel("fast-chat", primary to "m1", secondary to "m2")
         val key = createClientKey()
 
         testApplication {
@@ -2571,7 +2635,7 @@ class GatewayIntegrationTest {
         app.close()
         app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
         val channel = createChannel("primary", "disconnect")
-        createAlias("fast-chat", channel to "m1")
+        exposeAsModel("fast-chat", channel to "m1")
         val key = createClientKey()
 
         testApplication {
@@ -2599,7 +2663,7 @@ class GatewayIntegrationTest {
         app.close()
         app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
         val channel = createChannel("primary", "ok")
-        createAlias("fast-chat", channel to "m1")
+        exposeAsModel("fast-chat", channel to "m1")
         val key = createClientKey()
         val failNextWrite = AtomicBoolean(false)
 
@@ -2643,7 +2707,7 @@ class GatewayIntegrationTest {
     @Test
     fun `maps upstream rate limit to client error`() = runBlocking {
         val channel = createChannel("limited", "429")
-        createAlias("fast-chat", channel to "m1")
+        exposeAsModel("fast-chat", channel to "m1")
         val key = createClientKey()
 
         testApplication {
@@ -2675,7 +2739,7 @@ class GatewayIntegrationTest {
         app.close()
         app = GatewayApplication(config(firstTokenTimeoutMs = 300, idleTimeoutMs = 300, totalTimeoutMs = 2_000))
         val channel = createChannel("slow", "slow")
-        createAlias("fast-chat", channel to "m1")
+        exposeAsModel("fast-chat", channel to "m1")
         val key = createClientKey()
 
         testApplication {
@@ -2699,7 +2763,7 @@ class GatewayIntegrationTest {
     @Test
     fun `marks usage unknown when upstream omits it`() = runBlocking {
         val channel = createChannel("no-usage", "no-usage")
-        createAlias("fast-chat", channel to "m1")
+        exposeAsModel("fast-chat", channel to "m1")
         val key = createClientKey()
 
         testApplication {
@@ -2720,7 +2784,7 @@ class GatewayIntegrationTest {
     @Test
     fun `rejects invalid model and stream types`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        createAlias("fast-chat", channel to "m1")
+        exposeAsModel("fast-chat", channel to "m1")
         val key = createClientKey()
 
         testApplication {
@@ -2745,9 +2809,9 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `models excludes aliases without enabled channel`() = runBlocking {
+    fun `models excludes canonical ids without enabled channel`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        createAlias("fast-chat", channel to "m1")
+        exposeUnderCanonicalId("fast-chat", listOf(channel.id to "m1"))
         app.channelRepository.update(
             id = channel.id,
             name = channel.name,
@@ -2838,7 +2902,6 @@ class GatewayIntegrationTest {
                 ChannelModelRecord("gpt-4o-mini"),
             ),
         )
-        createAlias("custom-qwen", channel to "Qwen3.8-Flash")
         val key = createClientKey()
         val session = app.sessions.create("admin")
 
@@ -2850,7 +2913,6 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, models.status)
             val body = models.bodyAsText()
             assertTrue(body.contains("qwen3.8-flash"), "BODY=[$body]")
-            assertTrue(body.contains("custom-qwen"), "BODY=[$body]")
             assertTrue(body.contains("gpt-4o-mini"), "BODY=[$body]")
             assertTrue(!body.contains("Qwen3.8-Flash"), "BODY=[$body]")
 
@@ -2877,13 +2939,13 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.NotFound, rawUpstreamRequest.status)
             assertTrue(rawUpstreamRequest.bodyAsText().contains("model_not_found"))
 
-            val aliasRequest = client.post("/v1/chat/completions") {
+            // 同一上游模型只按 canonical ID 对外暴露一次。
+            val duplicateNameRequest = client.post("/v1/chat/completions") {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
                 setBody("""{"model":"custom-qwen","stream":false,"messages":[]}""")
             }
-            assertEquals(HttpStatusCode.OK, aliasRequest.status)
-            assertTrue(fake.requests.last().body.contains("\"model\":\"Qwen3.8-Flash\""))
+            assertEquals(HttpStatusCode.NotFound, duplicateNameRequest.status)
         }
     }
 
@@ -3067,7 +3129,7 @@ class GatewayIntegrationTest {
         app.close()
         app = GatewayApplication(config())
         val channel = createChannel("openai", "ok")
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
         val session = app.sessions.create("admin")
 
@@ -3089,11 +3151,12 @@ class GatewayIntegrationTest {
 
             assertEquals(publicIds, adminData.keys.sorted())
             assertEquals(
-                setOf("fast-chat", "gpt-4o-mini", "deepseek-chat", "m1", "m2"),
+                // gpt-4o-mini 已映射到 fast-chat，同一个上游模型不会再以原名对外暴露。
+                setOf("fast-chat", "deepseek-chat", "m1", "m2"),
                 publicIds.toSet(),
             )
-            assertEquals("alias", adminData.getValue("fast-chat").jsonObject["source"]!!.jsonPrimitive.content)
-            assertEquals("upstream", adminData.getValue("gpt-4o-mini").jsonObject["source"]!!.jsonPrimitive.content)
+            assertEquals("canonical", adminData.getValue("fast-chat").jsonObject["source"]!!.jsonPrimitive.content)
+            assertEquals("upstream", adminData.getValue("m1").jsonObject["source"]!!.jsonPrimitive.content)
             assertEquals(
                 "llm-gateway",
                 adminData.getValue("fast-chat").jsonObject["ownedBy"]!!.jsonPrimitive.content,
@@ -3104,7 +3167,7 @@ class GatewayIntegrationTest {
     @Test
     fun `responses protocol streams and records usage`() = runBlocking {
         val channel = createChannelWithProtocols("responses", "ok", listOf(GatewayProtocol.RESPONSES))
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -3141,7 +3204,7 @@ class GatewayIntegrationTest {
             "responses-created-stall",
             listOf(GatewayProtocol.RESPONSES),
         )
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -3170,7 +3233,7 @@ class GatewayIntegrationTest {
             listOf(GatewayProtocol.RESPONSES),
         )
         val secondary = createChannelWithProtocols("responses-ok", "ok", listOf(GatewayProtocol.RESPONSES))
-        createAlias("fast-chat", primary to "gpt-4o-mini", secondary to "gpt-4o-mini")
+        exposeAsModel("fast-chat", primary to "gpt-4o-mini", secondary to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -3199,7 +3262,7 @@ class GatewayIntegrationTest {
             "responses-function-call",
             listOf(GatewayProtocol.RESPONSES),
         )
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -3227,7 +3290,7 @@ class GatewayIntegrationTest {
             "responses-failed",
             listOf(GatewayProtocol.RESPONSES),
         )
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -3258,7 +3321,7 @@ class GatewayIntegrationTest {
             "responses-incomplete",
             listOf(GatewayProtocol.RESPONSES),
         )
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -3283,7 +3346,7 @@ class GatewayIntegrationTest {
     @Test
     fun `responses protocol records usage for non-streaming`() = runBlocking {
         val channel = createChannelWithProtocols("responses", "ok", listOf(GatewayProtocol.RESPONSES))
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -3309,7 +3372,7 @@ class GatewayIntegrationTest {
     @Test
     fun `records request cost from configured model price`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        createAlias("priced-chat", channel to "gpt-4o-mini")
+        exposeAsModel("priced-chat", channel to "gpt-4o-mini")
         createPrice(channel, "gpt-4o-mini", input = "1", output = "2")
         val key = createClientKey()
 
@@ -3333,7 +3396,7 @@ class GatewayIntegrationTest {
     @Test
     fun `records request cost from model default price when channel has no override`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        createAlias("default-priced-chat", channel to "gpt-4o-mini")
+        exposeAsModel("default-priced-chat", channel to "gpt-4o-mini")
         createDefaultPrice("gpt-4o-mini", input = "3", output = "4")
         val key = createClientKey()
 
@@ -3357,7 +3420,7 @@ class GatewayIntegrationTest {
     @Test
     fun `channel price overrides model default price`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        createAlias("override-priced-chat", channel to "gpt-4o-mini")
+        exposeAsModel("override-priced-chat", channel to "gpt-4o-mini")
         createDefaultPrice("gpt-4o-mini", input = "3", output = "4")
         createPrice(channel, "gpt-4o-mini", input = "1", output = "2")
         val key = createClientKey()
@@ -3385,7 +3448,7 @@ class GatewayIntegrationTest {
             "${fake.baseUrl}/ok/v1",
             modelMappings = listOf(ChannelModelRecord("gpt-4o-mini", "gpt-4o-mini-canonical")),
         )
-        createAlias("fallback-priced-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fallback-priced-chat", channel to "gpt-4o-mini")
         createDefaultPrice("gpt-4o-mini", input = "1", output = "2")
         val key = createClientKey()
 
@@ -3482,7 +3545,7 @@ class GatewayIntegrationTest {
     @Test
     fun `rejects next request after daily token limit is consumed`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey(ClientKeyQuotaLimits(dailyTokens = 13))
 
         testApplication {
@@ -3507,7 +3570,7 @@ class GatewayIntegrationTest {
     @Test
     fun `rejects next request after daily cost limit is consumed`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         createPrice(channel, "gpt-4o-mini", input = "1", output = "2")
         val key = createClientKey(
             ClientKeyQuotaLimits(dailyCosts = mapOf("USD" to BigDecimal("0.000016"))),
@@ -3531,7 +3594,7 @@ class GatewayIntegrationTest {
     @Test
     fun `daily cost limit uses model default price when channel has no override`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        createAlias("default-cost-chat", channel to "gpt-4o-mini")
+        exposeAsModel("default-cost-chat", channel to "gpt-4o-mini")
         createDefaultPrice("gpt-4o-mini", input = "1", output = "2")
         val key = createClientKey(
             ClientKeyQuotaLimits(dailyCosts = mapOf("USD" to BigDecimal("0.000016"))),
@@ -3555,7 +3618,7 @@ class GatewayIntegrationTest {
     @Test
     fun `rejects concurrent request beyond limit and releases slot afterward`() = runBlocking {
         val channel = createChannel("openai", "slow")
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey(ClientKeyQuotaLimits(maxConcurrentRequests = 1))
 
         testApplication {
@@ -3599,7 +3662,7 @@ class GatewayIntegrationTest {
             assertTrue(metrics.contains("alias=\"unresolved\""))
             assertTrue(!metrics.contains("alias=\"missing-model\""))
             val channel = createChannel("openai", "ok")
-            createAlias("fast-chat", channel to "gpt-4o-mini")
+            exposeAsModel("fast-chat", channel to "gpt-4o-mini")
             assertEquals(HttpStatusCode.OK, send("fast-chat").status)
         }
     }
@@ -3637,7 +3700,7 @@ class GatewayIntegrationTest {
             "ok",
             listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES),
         )
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -3667,7 +3730,7 @@ class GatewayIntegrationTest {
     @Test
     fun `responses request converts to chat-only channel`() = runBlocking {
         val channel = createChannel("chat-only", "ok")
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -4015,28 +4078,8 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.Created, createdChannel.status)
             val channelId = Json.parseToJsonElement(createdChannel.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
 
-            val createdAlias = client.post("/admin/api/aliases") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"alias":"fast-chat","candidates":[{"channelId":"$channelId","upstreamModel":" gpt-4o-mini "}]}""")
-            }
-            assertEquals(HttpStatusCode.Created, createdAlias.status)
-            val createdAliasJson = Json.parseToJsonElement(createdAlias.bodyAsText()).jsonObject
-            val aliasId = createdAliasJson["id"]!!.jsonPrimitive.content
-            val createdModel = createdAliasJson["candidates"]!!.jsonArray[0].jsonObject["upstreamModel"]!!.jsonPrimitive.content
-            assertEquals("gpt-4o-mini", createdModel)
-
-            val updatedAlias = client.put("/admin/api/aliases/$aliasId") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"alias":"fast-chat","candidates":[{"channelId":"$channelId","upstreamModel":" gpt-4o-mini "}]}""")
-            }
-            assertEquals(HttpStatusCode.OK, updatedAlias.status)
-            val updatedAliasJson = Json.parseToJsonElement(updatedAlias.bodyAsText()).jsonObject
-            val updatedModel = updatedAliasJson["candidates"]!!.jsonArray[0].jsonObject["upstreamModel"]!!.jsonPrimitive.content
-            assertEquals("gpt-4o-mini", updatedModel)
+            // 渠道授权的上游模型直接对外暴露，不再需要别名层。
+            assertTrue(app.modelCatalog.listEnabledModels().contains("gpt-4o-mini"))
 
             val createdKey = client.post("/admin/api/client-keys") {
                 header(HttpHeaders.Cookie, sessionCookie)
@@ -4051,7 +4094,7 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Authorization, "Bearer $key")
             }
             assertEquals(HttpStatusCode.OK, models.status)
-            assertTrue(models.bodyAsText().contains("fast-chat"))
+            assertTrue(models.bodyAsText().contains("gpt-4o-mini"))
         }
     }
 
@@ -4098,7 +4141,7 @@ class GatewayIntegrationTest {
     @Test
     fun `usage report aggregates requests tokens and costs by key`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        createAlias("fast-chat", channel to "gpt-4o-mini")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         createPrice(channel, "gpt-4o-mini", input = "1", output = "2")
         val key = createClientKey()
         testApplication {
@@ -4573,34 +4616,6 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `alias rejects un-authorized channel model`() = runBlocking {
-        val channel = createChannelWithBaseUrl("alias-auth", "${fake.baseUrl}/ok/v1").let { created ->
-            app.channelRepository.update(
-                id = created.id,
-                name = created.name,
-                baseUrl = created.baseUrl,
-                authType = created.authType,
-                protocols = created.protocols,
-                enabled = true,
-                modelMappings = mappingsOf("gpt-4o-mini"),
-            )!!
-        }
-        val session = app.sessions.create("admin")
-
-        testApplication {
-            application { app.install(this) }
-            val response = client.post("/admin/api/aliases") {
-                header(HttpHeaders.Cookie, "gw_session=${session.token}")
-                header("X-CSRF-Token", session.session.csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"alias":"unauthorized-route","candidates":[{"channelId":"${channel.id}","upstreamModel":"deepseek-chat"}]}""")
-            }
-            assertEquals(HttpStatusCode.BadRequest, response.status)
-            assertTrue(response.bodyAsText().contains("model_not_authorized"))
-        }
-    }
-
-    @Test
     fun `admin discovers upstream models before saving a channel`() = runBlocking {
         val channel = createChannelWithBaseUrl("discover", "${fake.baseUrl}/ok/v1").let { created ->
             app.channelRepository.update(
@@ -4669,38 +4684,6 @@ class GatewayIntegrationTest {
             }
             assertEquals(HttpStatusCode.BadRequest, changedBaseUrl.status)
             assertTrue(changedBaseUrl.bodyAsText().contains("请重新输入上游凭据"))
-        }
-    }
-
-    @Test
-    fun `admin cannot revoke model authorization used by alias`() = runBlocking {
-        val channel = createChannelWithBaseUrl("guarded", "${fake.baseUrl}/ok/v1").let { created ->
-            app.channelRepository.update(
-                id = created.id,
-                name = created.name,
-                baseUrl = created.baseUrl,
-                authType = created.authType,
-                protocols = created.protocols,
-                enabled = true,
-                modelMappings = mappingsOf("gpt-4o-mini", "deepseek-chat"),
-            )!!
-        }
-        createAlias("guarded-alias", channel to "deepseek-chat")
-        val session = app.sessions.create("admin")
-
-        testApplication {
-            application { app.install(this) }
-            val response = client.put("/admin/api/channels/${channel.id}") {
-                header(HttpHeaders.Cookie, "gw_session=${session.token}")
-                header("X-CSRF-Token", session.session.csrf)
-                contentType(ContentType.Application.Json)
-                setBody(
-                    """{"name":"guarded","baseUrl":"${fake.baseUrl}/ok/v1","protocols":["chat_completions"],"enabled":true,"models":["gpt-4o-mini"]}""",
-                )
-            }
-
-            assertEquals(HttpStatusCode.Conflict, response.status)
-            assertTrue(response.bodyAsText().contains("channel_model_in_use"))
         }
     }
 
@@ -4864,12 +4847,6 @@ class GatewayIntegrationTest {
                         """.trimIndent(),
                     )
                     statement.execute(
-                        "insert into model_aliases (id, alias, enabled, created_at, updated_at) values ('migration-alias', 'migration-alias', true, 1, 1)",
-                    )
-                    statement.execute(
-                        "insert into alias_candidates (id, alias_id, channel_id, upstream_model, position) values ('migration-candidate', 'migration-alias', 'migration-channel', 'duplicate-model ', 0)",
-                    )
-                    statement.execute(
                         """
                         insert into model_prices (id, channel_id, upstream_model, currency, input_price_per_million, output_price_per_million, cached_input_price_per_million, created_at, updated_at)
                         values ('migration-price', 'migration-channel', 'duplicate-model', 'USD', 1, 2, null, 1, 1)
@@ -4968,14 +4945,14 @@ class GatewayIntegrationTest {
                         assertEquals(1, result.getInt(1))
                     }
                     statement.executeQuery(
-                        "select upstream_model from alias_candidates where id = 'migration-candidate'",
+                        "select count(*) from information_schema.tables where table_name in ('model_aliases', 'alias_candidates')",
                     ).use { result ->
                         assertTrue(result.next())
-                        assertEquals("duplicate-model", result.getString(1), "V24 应同步归一化历史别名候选")
+                        assertEquals(0, result.getInt(1), "V40 应删除别名两张表")
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("38", result.getString(1))
+                        assertEquals("40", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -5142,6 +5119,18 @@ class GatewayIntegrationTest {
                     ).use { result ->
                         assertTrue(result.next())
                         assertEquals(1, result.getInt(1), "V34 应新增 upstream_protocol 列")
+                    }
+                    statement.executeQuery(
+                        "select count(*) from information_schema.columns where table_name = 'request_logs' and column_name = 'attempts_json'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "V39 应新增 attempts_json 列")
+                    }
+                    statement.executeQuery(
+                        "select attempts_json from request_logs where request_id = 'legacy-request-log'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals("[]", result.getString(1), "历史日志的 attempts_json 应回填为空数组")
                     }
                     statement.executeQuery(
                         "select is_nullable from information_schema.columns where table_name = 'request_logs' and column_name = 'stream'",
@@ -5581,8 +5570,8 @@ class GatewayIntegrationTest {
     fun `records request cost with per_request pricing and skips failed request`() = runBlocking {
         val okChannel = createChannel("ok-channel", "ok")
         val failChannel = createChannel("fail-channel", "500")
-        createAlias("req-chat-ok", okChannel to "gpt-4o-mini")
-        createAlias("req-chat-fail", failChannel to "gpt-4o-mini")
+        exposeAsModel("req-chat-ok", okChannel to "gpt-4o-mini")
+        exposeAsModel("req-chat-fail", failChannel to "gpt-4o-mini")
         app.modelPriceRepository.create(
             channelId = okChannel.id,
             upstreamModel = "gpt-4o-mini",
@@ -5632,7 +5621,7 @@ class GatewayIntegrationTest {
     @Test
     fun `per_request pricing does not charge interrupted stream`() = runBlocking {
         val channel = createChannel("stream-disc", "disconnect")
-        createAlias("per-req-stream-disc", channel to "m1")
+        exposeAsModel("per-req-stream-disc", channel to "m1")
         app.modelPriceRepository.create(
             channelId = channel.id,
             upstreamModel = "m1",
@@ -5662,7 +5651,7 @@ class GatewayIntegrationTest {
     @Test
     fun `records request cost with tiered pricing`() = runBlocking {
         val channel = createChannel("tiered-channel", "ok")
-        createAlias("tiered-chat", channel to "gpt-4o-mini")
+        exposeAsModel("tiered-chat", channel to "gpt-4o-mini")
         app.modelPriceRepository.create(
             channelId = channel.id,
             upstreamModel = "gpt-4o-mini",
@@ -5717,7 +5706,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("gpt-4o-mini")),
         )
         // 转换候选放在 position 0，原生候选放在 position 1；原生协议仍应先尝试。
-        createAlias("native-priority", conversion to "claude-sonnet-4-5", native to "gpt-4o-mini")
+        exposeAsModel("native-priority", conversion to "claude-sonnet-4-5", native to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -5762,7 +5751,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("converted-claude", channel to "claude-sonnet-4-5")
+        exposeAsModel("converted-claude", channel to "claude-sonnet-4-5")
         val key = createClientKey()
 
         testApplication {
@@ -5797,7 +5786,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("converted-claude-stream", channel to "claude-sonnet-4-5")
+        exposeAsModel("converted-claude-stream", channel to "claude-sonnet-4-5")
         val key = createClientKey()
 
         testApplication {
@@ -5824,7 +5813,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("converted-unsupported", channel to "claude-sonnet-4-5")
+        exposeAsModel("converted-unsupported", channel to "claude-sonnet-4-5")
         val key = createClientKey()
 
         testApplication {
@@ -5852,7 +5841,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("converted-response-unsupported", channel to "claude-sonnet-4-5")
+        exposeAsModel("converted-response-unsupported", channel to "claude-sonnet-4-5")
         val key = createClientKey()
 
         testApplication {
@@ -5878,7 +5867,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("probe-conversion-request", channel to "claude-sonnet-4-5")
+        exposeAsModel("probe-conversion-request", channel to "claude-sonnet-4-5")
         val key = createClientKey()
         val now = System.currentTimeMillis()
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
@@ -5919,7 +5908,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("probe-conversion-response", channel to "claude-sonnet-4-5")
+        exposeAsModel("probe-conversion-response", channel to "claude-sonnet-4-5")
         val key = createClientKey()
         val now = System.currentTimeMillis()
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
@@ -5964,7 +5953,7 @@ class GatewayIntegrationTest {
             protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
             modelMappings = listOf(ChannelModelRecord("gpt-4o-mini")),
         )
-        createAlias("conversion-fallback", conversion to "claude-sonnet-4-5", native to "gpt-4o-mini")
+        exposeAsModel("conversion-fallback", conversion to "claude-sonnet-4-5", native to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -5992,7 +5981,7 @@ class GatewayIntegrationTest {
             protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
             modelMappings = listOf(ChannelModelRecord("gpt-4o-mini")),
         )
-        createAlias("converted-chat", channel to "gpt-4o-mini")
+        exposeAsModel("converted-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -6021,7 +6010,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("converted-responses", channel to "claude-sonnet-4-5")
+        exposeAsModel("converted-responses", channel to "claude-sonnet-4-5")
         val key = createClientKey()
 
         testApplication {
@@ -6050,7 +6039,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("claude-cache", channel to "claude-sonnet-4-5")
+        exposeAsModel("claude-cache", channel to "claude-sonnet-4-5")
         app.modelPriceRepository.create(
             channelId = channel.id,
             upstreamModel = "claude-sonnet-4-5",
@@ -6209,7 +6198,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("claude-fast", channel to "claude-sonnet-4-5")
+        exposeAsModel("claude-fast", channel to "claude-sonnet-4-5")
         val key = createClientKey()
 
         testApplication {
@@ -6261,7 +6250,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("claude-fast", channel to "claude-sonnet-4-5")
+        exposeAsModel("claude-fast", channel to "claude-sonnet-4-5")
         val key = createClientKey()
 
         testApplication {
@@ -6293,7 +6282,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("claude-fast", channel to "claude-sonnet-4-5")
+        exposeAsModel("claude-fast", channel to "claude-sonnet-4-5")
         val key = createClientKey()
 
         testApplication {
@@ -6324,7 +6313,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("claude-fast", channel to "claude-sonnet-4-5")
+        exposeAsModel("claude-fast", channel to "claude-sonnet-4-5")
         val key = createClientKey()
 
         testApplication {
@@ -6361,6 +6350,7 @@ class GatewayIntegrationTest {
             protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
+            priority = 0,
         )
         val secondary = createChannelWithBaseUrl(
             name = "anthropic-backup",
@@ -6368,8 +6358,9 @@ class GatewayIntegrationTest {
             protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
+            priority = 10,
         )
-        createAlias("claude-fast", primary to "claude-sonnet-4-5", secondary to "claude-sonnet-4-5")
+        exposeAsModel("claude-fast", primary to "claude-sonnet-4-5", secondary to "claude-sonnet-4-5")
         val key = createClientKey()
 
         testApplication {
@@ -6423,7 +6414,7 @@ class GatewayIntegrationTest {
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
         )
-        createAlias("claude-fast", channel to "claude-sonnet-4-5")
+        exposeAsModel("claude-fast", channel to "claude-sonnet-4-5")
         val key = createClientKey()
 
         testApplication {
@@ -6448,7 +6439,7 @@ class GatewayIntegrationTest {
 
     @Test
     @Tag("upstream-request-overrides")
-    fun globalAndChannelOverridesApplyToDirectAndAliasRoutes() = runBlocking {
+    fun globalAndChannelOverridesApplyToDirectRoutes() = runBlocking {
         app.upstreamRequestSettingsRepository.save(UpstreamRequestOverrides(
             userAgent = "global-UA", headers = mapOf("X-Feature" to "global", "X-Remove" to "gone"),
             body = Json.parseToJsonElement("""{"store":null,"metadata":{"global":true,"remove":"old"}}""").jsonObject,
@@ -6466,11 +6457,10 @@ class GatewayIntegrationTest {
                 )),
             ),
         )
-        createAlias("alias-model", channel to "m1")
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
-            for (model in listOf("public-model", "alias-model")) {
+            for (model in listOf("public-model")) {
                 for (protocol in listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES)) {
                     val response = client.post("/v1" + assertNotNull(protocol.endpointPath)) {
                         header(HttpHeaders.Authorization, "Bearer $key")
@@ -6504,14 +6494,14 @@ class GatewayIntegrationTest {
             headers = mapOf("X-Shared" to "yes"), body = Json.parseToJsonElement("""{"metadata":{"shared":true}}""").jsonObject,
         ))
         val bad = createChannelWithBaseUrl(
-            "a-bad", fake.baseUrl + "/500/v1", modelMappings = mappingsOf("m1"),
+            "a-bad", fake.baseUrl + "/500/v1", modelMappings = mappingsOf("m1"), priority = 0,
             requestOverrides = UpstreamRequestOverrides(userAgent = "bad-UA", body = Json.parseToJsonElement("""{"metadata":{"bad":true}}""").jsonObject),
         )
         val good = createChannelWithBaseUrl(
-            "b-good", fake.baseUrl + "/ok/v1", modelMappings = mappingsOf("m2"),
+            "b-good", fake.baseUrl + "/ok/v1", modelMappings = mappingsOf("m2"), priority = 10,
             requestOverrides = UpstreamRequestOverrides(userAgent = "good-UA", body = Json.parseToJsonElement("""{"metadata":{"good":true}}""").jsonObject),
         )
-        createAlias("retry-model", bad to "m1", good to "m2")
+        exposeAsModel("retry-model", bad to "m1", good to "m2")
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -6563,7 +6553,7 @@ class GatewayIntegrationTest {
         val good = createChannelWithBaseUrl(
             "snapshot-good", fake.baseUrl + "/ok/v1", modelMappings = mappingsOf("m2"),
         )
-        createAlias("snapshot-model", bad to "m1", good to "m2")
+        exposeAsModel("snapshot-model", bad to "m1", good to "m2")
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -7224,7 +7214,7 @@ class GatewayIntegrationTest {
             modelMappings = mappingsOf("gemini-2.5-pro"),
             requestOverrides = UpstreamRequestOverrides(protocols = mapOf("gemini" to UpstreamProtocolOverrides(headerProfile = "antigravity"))),
         )
-        createAlias("fast-gemini", channel to "gemini-2.5-pro")
+        exposeAsModel("fast-gemini", channel to "gemini-2.5-pro")
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -7257,7 +7247,7 @@ class GatewayIntegrationTest {
     fun geminiServerErrorBeforeContentCanFailOver() = runBlocking {
         val bad = createChannelWithBaseUrl("a-error", fake.baseUrl + "/sse-error/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
         val good = createChannelWithBaseUrl("b-good", fake.baseUrl + "/ok/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
-        createAlias("fast-gemini", bad to "gemini-2.5-pro", good to "gemini-2.5-pro")
+        exposeAsModel("fast-gemini", bad to "gemini-2.5-pro", good to "gemini-2.5-pro")
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -7282,7 +7272,7 @@ class GatewayIntegrationTest {
             "a-error", fake.baseUrl + "/sse-error-after-content/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"),
         )
         val backup = createChannelWithBaseUrl("b-backup", fake.baseUrl + "/ok/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
-        createAlias("fast-gemini", bad to "gemini-2.5-pro", backup to "gemini-2.5-pro")
+        exposeAsModel("fast-gemini", bad to "gemini-2.5-pro", backup to "gemini-2.5-pro")
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -7309,7 +7299,7 @@ class GatewayIntegrationTest {
     fun geminiUnexpectedEofAfterContentIsLoggedWithoutFailover() = runBlocking {
         val bad = createChannelWithBaseUrl("a-eof", fake.baseUrl + "/no-terminal/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
         val backup = createChannelWithBaseUrl("b-backup", fake.baseUrl + "/ok/v1beta", listOf(GatewayProtocol.GEMINI), mappingsOf("gemini-2.5-pro"))
-        createAlias("fast-gemini", bad to "gemini-2.5-pro", backup to "gemini-2.5-pro")
+        exposeAsModel("fast-gemini", bad to "gemini-2.5-pro", backup to "gemini-2.5-pro")
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -7421,21 +7411,39 @@ class GatewayIntegrationTest {
         protocols: List<GatewayProtocol>,
     ): ChannelRecord = createChannelWithBaseUrl(name, "${fake.baseUrl}/$scenario/v1", protocols)
 
-    private suspend fun createAlias(alias: String, vararg candidates: Pair<ChannelRecord, String>): AliasWithCandidates =
-        app.aliasRepository.create(
-            alias = alias,
-            enabled = true,
-            candidates = candidates.map { NewCandidate(it.first.id, it.second) },
-        )
+    /**
+     * 把给定渠道的上游模型映射到同一个对外模型 ID，等价于旧测试里“建一个同名别名”。
+     * 现在只有直连暴露，跨渠道聚合靠渠道模型映射的 canonical ID。
+     */
+    private suspend fun exposeAsModel(publicId: String, vararg candidates: Pair<ChannelRecord, String>) {
+        exposeUnderCanonicalId(publicId, candidates.map { it.first.id to it.second })
+    }
 
-    private suspend fun createTieredAlias(
-        alias: String,
-        vararg candidates: Triple<ChannelRecord, String, Int>,
-    ): AliasWithCandidates = app.aliasRepository.create(
-        alias = alias,
-        enabled = true,
-        candidates = candidates.map { NewCandidate(it.first.id, it.second, it.third) },
-    )
+    /** 同 [exposeAsModel]；档位由渠道优先级决定，候选里的 position 不再生效。 */
+    private suspend fun exposeUnderCanonicalIdInOrder(publicId: String, vararg candidates: Triple<ChannelRecord, String, Int>) {
+        exposeUnderCanonicalId(publicId, candidates.map { it.first.id to it.second })
+    }
+
+    private suspend fun exposeUnderCanonicalId(publicId: String, mappings: List<Pair<String, String>>) {
+        val byChannel = mappings.groupBy({ it.first }, { it.second })
+        byChannel.forEach { (channelId, upstreamModels) ->
+            val channel = assertNotNull(app.channelRepository.find(channelId))
+            val targets = upstreamModels.toSet()
+            val updatedMappings = channel.modelMappings.map { mapping ->
+                if (mapping.upstreamModel in targets) mapping.copy(canonicalModelId = publicId) else mapping
+            }
+            app.channelRepository.update(
+                id = channel.id,
+                name = channel.name,
+                baseUrl = channel.baseUrl,
+                authType = channel.authType,
+                protocols = channel.protocols,
+                enabled = channel.enabled,
+                modelMappings = updatedMappings,
+                priority = channel.priority,
+            )
+        }
+    }
 
     private suspend fun createClientKey(
         quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits(),
@@ -7528,7 +7536,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, alias_candidates, model_aliases, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }
