@@ -1,7 +1,7 @@
-<script setup>
-const props = defineProps({
-  form: { type: Object, required: true },
-})
+<script setup lang="ts">
+import type { PriceForm } from '../utils/priceForm'
+
+const props = defineProps<{ form: PriceForm }>()
 
 const modes = [
   { value: 'token', label: '按 Token' },
@@ -23,7 +23,7 @@ function addTier() {
   })
 }
 
-function removeTier(index) {
+function removeTier(index: number) {
   props.form.priceTiers.splice(index, 1)
   const last = props.form.priceTiers[props.form.priceTiers.length - 1]
   if (last) last.upToTokens = ''

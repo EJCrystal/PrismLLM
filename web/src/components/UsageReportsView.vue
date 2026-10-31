@@ -1,7 +1,8 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import type { Channel, ClientKey, RetentionPolicy, UsageGroup, UsageReport, UsageTotal, UsageTrend } from '../types/api'
 import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatNumber, formatTokensCompact, formatDuration } from '../utils/format'
@@ -25,15 +26,47 @@ import {
 import { createLatestRequestGuard } from '../utils/latestRequest'
 import { createRetentionReportState } from '../utils/retentionReportState'
 
+type DimensionId = 'clientKey' | 'channel' | 'model' | 'channelKey' | 'protocol' | 'error'
+type DimensionKey = 'byClientKey' | 'byChannel' | 'byModel' | 'byChannelKey' | 'byProtocol' | 'byErrorCode'
+type TrendMetricId = 'requests' | 'tokens' | 'cost'
+
+interface RangeDraft {
+  from: string
+  to: string
+}
+
+interface UsageFilters {
+  clientKeyId: string
+  channelId: string
+  model: string
+  protocol: string
+}
+
+interface DimensionOption {
+  id: DimensionId
+  label: string
+  title: string
+  key: DimensionKey
+}
+
+interface TrendMetric {
+  id: TrendMetricId
+  label: string
+  primaryLabel: string
+  secondaryLabel?: string
+  value: (row: UsageTrend) => number
+  secondary?: (row: UsageTrend) => number
+}
+
 const preset = ref('last7d')
-const rangeDraft = ref(createRangeDraft('last7d'))
+const rangeDraft = ref<RangeDraft>(createRangeDraft('last7d'))
 const rangeError = ref('')
 const maxDatetimeLocal = ref(toDatetimeLocalValue(Date.now()))
-const filters = ref({ clientKeyId: '', channelId: '', model: '', protocol: '' })
-const report = ref(null)
-const retention = ref(null)
-const channels = ref([])
-const clientKeys = ref([])
+const filters = ref<UsageFilters>({ clientKeyId: '', channelId: '', model: '', protocol: '' })
+const report = ref<UsageReport | null>(null)
+const retention = ref<RetentionPolicy | null>(null)
+const channels = ref<Channel[]>([])
+const clientKeys = ref<ClientKey[]>([])
 const loading = ref(true)
 const refreshing = ref(false)
 const error = ref('')
@@ -41,11 +74,11 @@ const cleaning = ref(false)
 const updatingRetention = ref(false)
 const retentionState = createRetentionReportState()
 const requests = createLatestRequestGuard()
-const dimension = ref('clientKey')
-const trendMetric = ref('requests')
+const dimension = ref<DimensionId>('clientKey')
+const trendMetric = ref<TrendMetricId>('requests')
 const costMetricCurrency = ref('')
 
-const dimensions = [
+const dimensions: DimensionOption[] = [
   { id: 'clientKey', label: '调用方密钥', title: '按调用方密钥', key: 'byClientKey' },
   { id: 'channel', label: '渠道', title: '按渠道', key: 'byChannel' },
   { id: 'model', label: '模型', title: '按模型', key: 'byModel' },
@@ -53,32 +86,33 @@ const dimensions = [
   { id: 'protocol', label: '协议', title: '按协议', key: 'byProtocol' },
   { id: 'error', label: '错误', title: '按错误码', key: 'byErrorCode' },
 ]
-const trendMetrics = [
+const trendMetrics: TrendMetric[] = [
   { id: 'requests', label: '请求与错误', primaryLabel: '请求', secondaryLabel: '错误', value: (row) => row.requests, secondary: (row) => row.errors },
   { id: 'tokens', label: '输入 / 输出 token', primaryLabel: '输入 token', secondaryLabel: '输出 token', value: (row) => row.inputTokens, secondary: (row) => row.outputTokens },
   { id: 'cost', label: '费用', primaryLabel: '费用', value: (row) => usageCostForCurrency(row.costs, costMetricCurrency.value) },
 ]
-const protocolLabels = { chat_completions: 'Chat Completions', responses: 'Responses', messages: 'Messages' }
+const protocolLabels: Record<string, string> = { chat_completions: 'Chat Completions', responses: 'Responses', messages: 'Messages' }
 
-const total = computed(() => report.value?.total || {
+const emptyTotal: UsageTotal = {
   requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, cachedWriteTokens: 0,
   reasoningTokens: 0, totalTokens: 0, activeClientKeys: 0, failovers: 0, avgFirstTokenMs: null, avgTotalMs: null, costs: {},
-})
+}
+const total = computed<UsageTotal>(() => report.value?.total || emptyTotal)
 const successRate = computed(() => usagePercent(total.value.requests, total.value.errors))
 const activeDimension = computed(() => dimensions.find((item) => item.id === dimension.value) || dimensions[0])
-const dimensionRows = computed(() => report.value?.[activeDimension.value.key] || [])
+const dimensionRows = computed<UsageGroup[]>(() => report.value?.[activeDimension.value.key] || [])
 const trendRows = computed(() => fillTrendBuckets(
   report.value?.trend || [],
-  report.value?.from,
-  report.value?.to,
-  report.value?.granularity,
+  report.value?.from ?? NaN,
+  report.value?.to ?? NaN,
+  report.value?.granularity ?? 'day',
   reportTimezoneOffset(),
 ))
 const activeTrendMetric = computed(() => trendMetrics.find((item) => item.id === trendMetric.value) || trendMetrics[0])
 const trendMaxValue = computed(() => usageTrendMax(
   trendRows.value,
   activeTrendMetric.value.value,
-  activeTrendMetric.value.secondary,
+  activeTrendMetric.value.secondary || null,
 ))
 const trendPrimaryPoints = computed(() => buildTrendPoints(
   trendRows.value,
@@ -92,13 +126,18 @@ const trendSecondaryPoints = computed(() => {
   if (!activeTrendMetric.value.secondary) return ''
   return buildTrendPoints(trendRows.value, activeTrendMetric.value.secondary, 640, 150, 8, trendMaxValue.value)
 })
-const trendSecondaryMax = computed(() => activeTrendMetric.value.secondary
-  ? Math.max(0, ...trendRows.value.map((row) => Number(activeTrendMetric.value.secondary(row)) || 0))
-  : 0)
+const trendSecondaryMax = computed(() => {
+  const secondary = activeTrendMetric.value.secondary
+  return secondary
+    ? Math.max(0, ...trendRows.value.map((row) => Number(secondary(row)) || 0))
+    : 0
+})
 const trendArea = computed(() => {
   if (!trendPrimaryPoints.value) return ''
   const points = trendPrimaryPoints.value.split(' ')
-  return `8,142 ${trendPrimaryPoints.value} ${points.at(-1).split(',')[0]},142`
+  const lastPoint = points.at(-1)
+  if (!lastPoint) return ''
+  return `8,142 ${trendPrimaryPoints.value} ${lastPoint.split(',')[0]},142`
 })
 const costCurrencies = computed(() => usageCostEntries(total.value.costs).map((entry) => entry.currency))
 const modelOptions = computed(() => usageModelOptions(report.value, channels.value))
@@ -108,26 +147,26 @@ const activePreset = computed(() => preset.value)
 const topError = computed(() => (report.value?.byErrorCode || [])[0] || null)
 const failoverRate = computed(() => total.value.requests ? `${((total.value.failovers / total.value.requests) * 100).toFixed(1)}%` : '0%')
 
-function formatTimeRange(value) {
+function formatTimeRange(value: number): string {
   return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 }
 
-function formatBucket(value) {
-  const options = report.value?.granularity === 'hour'
+function formatBucket(value: number): string {
+  const options: Intl.DateTimeFormatOptions = report.value?.granularity === 'hour'
     ? { month: 'numeric', day: 'numeric', hour: '2-digit' }
     : { month: 'numeric', day: 'numeric' }
   return new Intl.DateTimeFormat('zh-CN', options).format(new Date(value))
 }
 
-function formatTrendValue(value) {
+function formatTrendValue(value: number): string {
   if (trendMetric.value === 'cost') {
     return `${costMetricCurrency.value} ${Number(value).toFixed(4)}`
   }
   return formatTokensCompact(value)
 }
 
-function displayName(row) {
-  const fallback = {
+function displayName(row: UsageGroup): string {
+  const fallback: Record<string, string> = {
     __unassigned_key__: '未关联调用方密钥',
     __unrouted__: '未完成路由',
     __unresolved_model__: '未解析模型',
@@ -138,29 +177,29 @@ function displayName(row) {
   return fallback[row.id] || row.name || row.id
 }
 
-function protocolLabel(value) {
+function protocolLabel(value: string): string {
   return protocolLabels[value] || value
 }
 
-function costText(costs) {
+function costText(costs: Record<string, string>): string {
   const entries = usageCostEntries(costs)
   return entries.length ? entries.map((entry) => `${entry.currency} ${entry.value}`).join(' / ') : '—'
 }
 
-function latency(value) {
+function latency(value: number | null): string {
   return value == null ? '—' : formatDuration(value)
 }
 
-function errorRate(row) {
+function errorRate(row: UsageGroup): string {
   return usagePercent(row.requests, row.errors)
 }
 
-function createRangeDraft(presetId, now = Date.now()) {
+function createRangeDraft(presetId: string, now = Date.now()): RangeDraft {
   const { from, to } = usageReportPresetRange(presetId, now)
   return { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(to) }
 }
 
-function currentRange() {
+function currentRange(): { from: number; to: number } {
   // 预设使用毫秒精度，避免 datetime-local 截断到分钟而漏掉最后一分钟。
   if (preset.value) return usageReportPresetRange(preset.value)
   const from = fromDatetimeLocalValue(rangeDraft.value.from)
@@ -168,7 +207,7 @@ function currentRange() {
   return { from, to }
 }
 
-function selectPreset(presetId) {
+function selectPreset(presetId: string) {
   preset.value = presetId
   rangeDraft.value = createRangeDraft(presetId)
   rangeError.value = ''
@@ -193,7 +232,11 @@ function onRangeChange() {
   if (!message) load()
 }
 
-async function load({ quiet = false } = {}) {
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : String(cause)
+}
+
+async function load({ quiet = false }: { quiet?: boolean } = {}): Promise<void> {
   const { from, to } = currentRange()
   const message = validateUsageReportRange(from, to)
   rangeError.value = message
@@ -218,17 +261,17 @@ async function load({ quiet = false } = {}) {
         api.getRetentionPolicy(),
       ])
       return { nextReport, nextRetention }
-    }).catch((cause) => ({ error: cause, isLatest: cause.isLatest }))
+    })
     if (!result.isLatest) return
-    if (result.error) error.value = result.error.message
-    else {
-      report.value = result.value.nextReport
-      const currencies = usageCostEntries(result.value.nextReport?.total?.costs).map((entry) => entry.currency)
-      if (!currencies.includes(costMetricCurrency.value)) costMetricCurrency.value = currencies[0] || 'USD'
-      if (retentionState.shouldApplyRetention(requestRetentionVersion)) {
-        retention.value = result.value.nextRetention
-      }
+    report.value = result.value.nextReport
+    const currencies = usageCostEntries(result.value.nextReport?.total?.costs).map((entry) => entry.currency)
+    if (!currencies.includes(costMetricCurrency.value)) costMetricCurrency.value = currencies[0] || 'USD'
+    if (retentionState.shouldApplyRetention(requestRetentionVersion)) {
+      retention.value = result.value.nextRetention
     }
+  } catch (cause) {
+    const isLatest = !(cause instanceof Error && 'isLatest' in cause) || Boolean(cause.isLatest)
+    if (isLatest) error.value = errorMessage(cause)
   } finally {
     if (!requests.hasActive()) {
       loading.value = false
@@ -247,7 +290,7 @@ async function loadFilters() {
   }
 }
 
-function resetFilters() {
+function resetFilters(): void {
   filters.value = { clientKeyId: '', channelId: '', model: '', protocol: '' }
   load()
 }
@@ -272,15 +315,16 @@ async function cleanup() {
     notify(`已清理 ${formatNumber(result.deleted)} 条请求日志`)
     await load()
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(errorMessage(cause), 'error')
   } finally {
     cleaning.value = false
   }
 }
 
-async function toggleCleanup(event) {
+async function toggleCleanup(event: Event): Promise<void> {
   if (!retention.value || updatingRetention.value) return
-  const input = event.currentTarget
+  const input = event.currentTarget as HTMLInputElement
+  const previous = retention.value
   const enabled = input.checked
   updatingRetention.value = true
   retentionState.beginToggle()
@@ -288,8 +332,8 @@ async function toggleCleanup(event) {
     retention.value = await api.updateRetentionPolicy({ cleanupEnabled: enabled })
     notify('自动清理已' + (enabled ? '开启' : '关闭'))
   } catch (cause) {
-    input.checked = retention.value.cleanupEnabled
-    notify(cause.message, 'error')
+    input.checked = previous.cleanupEnabled
+    notify(errorMessage(cause), 'error')
   } finally {
     retentionState.endToggle()
     updatingRetention.value = false

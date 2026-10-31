@@ -1,7 +1,8 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import type { Channel, ChannelModelTestResult } from '../types/api'
 import { isKeyRoutable } from '../utils/channelForm'
 import {
   buildModelTestRequest,
@@ -13,11 +14,13 @@ import {
 } from '../utils/modelTest'
 import Modal from './Modal.vue'
 
-const props = defineProps({
-  channel: { type: Object, required: true },
-  model: { type: String, required: true },
-})
-const emit = defineEmits(['close'])
+const props = defineProps<{
+  channel: Channel
+  model: string
+}>()
+const emit = defineEmits<{
+  (event: 'close'): void
+}>()
 
 const protocols = computed(() => props.channel.protocols?.length
   ? props.channel.protocols
@@ -32,15 +35,19 @@ const form = reactive({
 })
 const loadingSettings = ref(true)
 const testing = ref(false)
-const result = ref(null)
+const result = ref<ChannelModelTestResult | null>(null)
 const usageText = computed(() => formatModelTestUsage(result.value?.usage))
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : String(cause)
+}
 
 onMounted(async () => {
   try {
     settings.value = normalizeModelTestSettings(await api.getModelTestSettings())
     form.prompt = settings.value.defaultPrompt
   } catch (cause) {
-    notify(cause.message, 'warning')
+    notify(errorMessage(cause), 'warning')
     form.prompt = settings.value.defaultPrompt
   } finally {
     loadingSettings.value = false
@@ -71,8 +78,21 @@ async function runTest() {
     )
     notify(result.value.success ? '模型连通性测试成功' : '模型连通性测试失败', result.value.success ? 'success' : 'error')
   } catch (cause) {
-    result.value = { success: false, errorMessage: cause.message, latencyMs: 0, prompt }
-    notify(cause.message, 'error')
+    result.value = {
+      success: false,
+      model: props.model,
+      protocol: form.protocol,
+      keyId: form.keyId || null,
+      keyName: supportingKeys.value.find((key) => key.id === form.keyId)?.name || null,
+      statusCode: null,
+      latencyMs: 0,
+      prompt,
+      reasoningEffort: null,
+      responseText: null,
+      errorMessage: errorMessage(cause),
+      usage: null,
+    }
+    notify(errorMessage(cause), 'error')
   } finally {
     testing.value = false
   }

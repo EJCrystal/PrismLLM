@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
@@ -14,7 +14,7 @@ onMounted(async () => {
   try {
     Object.assign(form, normalizeModelTestSettings(await api.getModelTestSettings()))
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(cause instanceof Error ? cause.message : String(cause), 'error')
   } finally {
     loading.value = false
   }
@@ -33,7 +33,7 @@ async function save() {
     emit('saved')
     emit('close')
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(cause instanceof Error ? cause.message : String(cause), 'error')
   } finally {
     saving.value = false
   }

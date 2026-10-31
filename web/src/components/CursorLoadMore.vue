@@ -1,4 +1,5 @@
-<script setup>
+<script setup lang="ts">
+import type { PropType } from 'vue'
 import Icon from './Icon.vue'
 
 defineProps({
@@ -23,12 +24,21 @@ defineProps({
     required: true,
   },
   pageSizes: {
-    type: Array,
+    type: Array as PropType<number[]>,
     default: () => [25, 50, 100],
   },
 })
 
-defineEmits(['load-more', 'page-size-change'])
+const emit = defineEmits<{
+  (event: 'load-more'): void
+  (event: 'page-size-change', pageSize: number): void
+}>()
+
+function handlePageSizeChange(event: Event) {
+  if (event.target instanceof HTMLSelectElement) {
+    emit('page-size-change', Number(event.target.value))
+  }
+}
 </script>
 
 <template>
@@ -43,7 +53,7 @@ defineEmits(['load-more', 'page-size-change'])
           :value="pageSize"
           :disabled="loading || loadingMore"
           aria-label="每页显示条数"
-          @change="$emit('page-size-change', Number($event.target.value))"
+          @change="handlePageSizeChange"
         >
           <option v-for="size in pageSizes" :key="size" :value="size">{{ size }} 条</option>
         </select>
@@ -53,7 +63,7 @@ defineEmits(['load-more', 'page-size-change'])
         type="button"
         class="button ghost"
         :disabled="loading || loadingMore"
-        @click="$emit('load-more')"
+        @click="emit('load-more')"
       >
         <Icon name="down" :size="15" />
         {{ loadingMore ? '正在加载…' : '加载更早记录' }}

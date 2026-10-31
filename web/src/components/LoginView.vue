@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue'
 import { api } from '../api'
 import SecretInput from './SecretInput.vue'
@@ -21,7 +21,7 @@ async function submit() {
     const user = await api.login(username.value.trim(), password.value)
     emit('authenticated', user)
   } catch (cause) {
-    error.value = cause.message
+    error.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
     loading.value = false
   }

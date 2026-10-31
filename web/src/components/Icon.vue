@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
 
 const props = defineProps({
@@ -67,7 +67,7 @@ const paths = {
   ],
 }
 
-const iconPaths = computed(() => paths[props.name] || paths.channels)
+const iconPaths = computed(() => paths[props.name as keyof typeof paths] || paths.channels)
 </script>
 
 <template>

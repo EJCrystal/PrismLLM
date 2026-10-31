@@ -1,6 +1,7 @@
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
+import type { AdminAuditLog } from '../types/api'
 import { auditActionLabel, auditDetailsRows, auditDetailsSummary, auditResultClass, auditResultLabel } from '../utils/adminAudit'
 import { createCursorPager } from '../utils/cursorPager'
 import { formatTime } from '../utils/format'
@@ -9,12 +10,12 @@ import CursorLoadMore from './CursorLoadMore.vue'
 import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 
-const { items: logs, pageSize, loading, loadingMore, error, hasMore, load, loadMore, setPageSize } = createCursorPager({
+const { items: logs, pageSize, loading, loadingMore, error, hasMore, load, loadMore, setPageSize } = createCursorPager<AdminAuditLog>({
   fetchPage: (options) => api.listAuditLogs(options),
 })
 
 const failureCount = computed(() => logs.value.filter((item) => item.result === 'failure').length)
-const tableScroll = ref(null)
+const tableScroll = ref<HTMLDivElement | null>(null)
 
 async function refresh() {
   await load()

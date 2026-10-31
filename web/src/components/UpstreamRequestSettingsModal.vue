@@ -1,17 +1,29 @@
-<script setup>
+<script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import type { UpstreamRequestOverrides, UpstreamRequestSettings } from '../types/api'
 import Modal from './Modal.vue'
 import RequestOverridesEditor from './RequestOverridesEditor.vue'
 import HeaderProfileCatalog from './HeaderProfileCatalog.vue'
 
-const emit = defineEmits(['close', 'saved'])
-const settings = ref(null)
-const editor = ref(null)
+interface RequestOverridesEditorExpose {
+  getValue: () => UpstreamRequestOverrides
+}
+
+const emit = defineEmits<{
+  (event: 'close'): void
+  (event: 'saved'): void
+}>()
+const settings = ref<UpstreamRequestSettings | null>(null)
+const editor = ref<RequestOverridesEditorExpose | null>(null)
 const loading = ref(true)
 const saving = ref(false)
 const error = ref('')
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : String(cause)
+}
 
 async function load() {
   loading.value = true
@@ -19,7 +31,7 @@ async function load() {
   try {
     settings.value = await api.getUpstreamRequestSettings()
   } catch (cause) {
-    error.value = cause.message
+    error.value = errorMessage(cause)
   } finally {
     loading.value = false
   }
@@ -27,11 +39,11 @@ async function load() {
 
 async function save() {
   if (saving.value || !editor.value) return
-  let overrides
+  let overrides: UpstreamRequestOverrides
   try {
     overrides = editor.value.getValue()
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(errorMessage(cause), 'error')
     return
   }
   saving.value = true
@@ -41,13 +53,13 @@ async function save() {
     emit('saved')
     emit('close')
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(errorMessage(cause), 'error')
   } finally {
     saving.value = false
   }
 }
 
-function applyCatalog(response) {
+function applyCatalog(response: UpstreamRequestSettings) {
   if (!settings.value) return
   settings.value = {
     ...settings.value,

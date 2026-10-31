@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue'
 import Icon from './Icon.vue'
 
@@ -33,9 +33,18 @@ defineProps({
   },
 })
 
-defineEmits(['update:modelValue', 'focus', 'blur'])
+const emit = defineEmits<{
+  (event: 'update:modelValue', value: string): void
+  (event: 'focus' | 'blur', value: FocusEvent): void
+}>()
 
 const show = ref(false)
+
+function updateModelValue(event: Event) {
+  if (event.target instanceof HTMLInputElement) {
+    emit('update:modelValue', event.target.value)
+  }
+}
 </script>
 
 <template>
@@ -49,9 +58,9 @@ const show = ref(false)
       :autocomplete="autocomplete"
       :disabled="disabled"
       :readonly="readonly"
-      @input="$emit('update:modelValue', $event.target.value)"
-      @focus="$emit('focus', $event)"
-      @blur="$emit('blur', $event)"
+      @input="updateModelValue"
+      @focus="emit('focus', $event)"
+      @blur="emit('blur', $event)"
     />
     <button
       type="button"

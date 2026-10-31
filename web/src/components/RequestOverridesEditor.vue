@@ -1,19 +1,32 @@
-<script setup>
+<script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
-import { buildRequestOverrides, createRequestOverrideDrafts, REQUEST_OVERRIDE_SCOPES } from '../utils/requestOverrides'
+import type { UpstreamHeaderProfile, UpstreamRequestOverrides } from '../types/api'
+import {
+  buildRequestOverrides,
+  createRequestOverrideDrafts,
+  REQUEST_OVERRIDE_SCOPES,
+} from '../utils/requestOverrides'
+import type { RequestOverrideDrafts } from '../utils/requestOverrides'
 
-const props = defineProps({
-  value: { type: Object, default: () => ({}) },
-  global: { type: Boolean, default: false },
-  disabled: { type: Boolean, default: false },
-  profiles: { type: Array, default: null },
+const props = withDefaults(defineProps<{
+  value?: Partial<UpstreamRequestOverrides>
+  global?: boolean
+  disabled?: boolean
+  profiles?: UpstreamHeaderProfile[] | null
+}>(), {
+  value: () => ({}),
+  global: false,
+  disabled: false,
+  profiles: null,
 })
-const emit = defineEmits(['changed'])
+const emit = defineEmits<{
+  (event: 'changed'): void
+}>()
 const scope = ref('common')
 const inheritGlobal = ref(true)
-const drafts = reactive(createRequestOverrideDrafts(props.value))
-const availableProfiles = ref(props.profiles || [])
+const drafts = reactive<RequestOverrideDrafts>(createRequestOverrideDrafts(props.value))
+const availableProfiles = ref<UpstreamHeaderProfile[]>(props.profiles || [])
 const profileError = ref('')
 
 watch(() => props.value, (value) => {
@@ -28,17 +41,18 @@ watch([drafts, inheritGlobal], () => emit('changed'), { deep: true })
 if (props.profiles === null) {
   api.getUpstreamRequestSettings().then((settings) => {
     availableProfiles.value = settings.profiles
-  }).catch((cause) => { profileError.value = cause.message })
+  }).catch((cause) => { profileError.value = errorMessage(cause) })
 }
 
 const current = computed(() => drafts[scope.value])
-const scopeHint = computed(() => ({
+const scopeHints: Record<string, string> = {
   common: '应用于全部出站协议，也用于模型发现、连通性测试和协议探测。适合团队标识等通用请求头。',
   chat_completions: '仅作用于实际发往上游的 Chat Completions 请求；覆盖同层通用配置。',
   responses: '仅作用于实际发往上游的 Responses 请求；可单独设置 reasoning、store 等参数。',
   messages: '仅作用于实际发往上游的 Anthropic Messages 请求；可单独设置 anthropic-* 请求头。',
   gemini: '仅作用于实际发往上游的 Gemini 请求；可单独设置 generationConfig 等参数。',
-}[scope.value]))
+}
+const scopeHint = computed(() => scopeHints[scope.value] || '')
 const scopeSummaries = computed(() => REQUEST_OVERRIDE_SCOPES.map(({ id, label, errorLabel }) => {
   const layer = drafts[id]
   const fields = []
@@ -64,7 +78,15 @@ const previewProfile = computed(() => {
 const uaPlaceholder = computed(() => previewProfile.value?.headers?.['User-Agent'] || '留空使用全局配置或协议预设')
 const previewHeaders = computed(() => JSON.stringify(previewProfile.value?.headers || {}, null, 2))
 
-defineExpose({ getValue: () => buildRequestOverrides(drafts, props.global || inheritGlobal.value) })
+function getValue(): UpstreamRequestOverrides {
+  return buildRequestOverrides(drafts, props.global || inheritGlobal.value)
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : String(cause)
+}
+
+defineExpose({ getValue })
 </script>
 
 <template>

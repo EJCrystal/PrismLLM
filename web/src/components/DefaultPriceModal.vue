@@ -1,7 +1,8 @@
-<script setup>
+<script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import type { Channel, ModelDefaultPrice } from '../types/api'
 import { formatPriceSummary } from '../utils/format'
 import { defaultPriceModelOptions } from '../utils/modelPrice'
 import {
@@ -11,22 +12,29 @@ import {
   hasPriceDraft,
   priceFormError,
 } from '../utils/priceForm'
+import type { PriceForm } from '../utils/priceForm'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import PriceFields from './PriceFields.vue'
 
-const props = defineProps({
-  prices: { type: Array, default: () => [] },
-  channels: { type: Array, default: () => [] },
+const props = withDefaults(defineProps<{
+  prices?: ModelDefaultPrice[]
+  channels?: Channel[]
+}>(), {
+  prices: () => [],
+  channels: () => [],
 })
-const emit = defineEmits(['close', 'saved'])
+const emit = defineEmits<{
+  (event: 'close'): void
+  (event: 'saved'): void
+}>()
 
-const activePrice = ref(null)
+const activePrice = ref<ModelDefaultPrice | null>(null)
 const saving = ref(false)
-const deletingId = ref(null)
+const deletingId = ref<string | null>(null)
 const fetchingReference = ref(false)
 const referenceHint = ref('')
-const form = reactive({ modelId: '', ...defaultPriceFormState(null) })
+const form = reactive<PriceForm & { modelId: string }>(defaultPriceFormState(null))
 let referenceRequestId = 0
 
 function referenceDraftKey() {
@@ -66,7 +74,7 @@ const filteredModelOptions = computed(() => {
     model.upstreamModels.some((upstream) => upstream.toLowerCase().includes(query)))
 })
 
-function applyPrice(price) {
+function applyPrice(price: ModelDefaultPrice) {
   cancelReferenceLookup()
   activePrice.value = price
   Object.assign(form, defaultPriceFormState(price))
@@ -76,7 +84,7 @@ function applyPrice(price) {
 function startNewPrice() {
   cancelReferenceLookup()
   activePrice.value = null
-  Object.assign(form, { modelId: '', ...defaultPriceFormState(null) })
+  Object.assign(form, defaultPriceFormState(null))
   referenceHint.value = ''
 }
 
@@ -112,7 +120,7 @@ async function fetchReferencePrice() {
     notify(`已填入「${res.matchedModel}」USD 参考单价`)
   } catch (cause) {
     if (requestId === referenceRequestId) {
-      notify(cause.message || '未在参考库中找到该模型，请手动输入', 'warning')
+      notify(cause instanceof Error && cause.message ? cause.message : '未在参考库中找到该模型，请手动输入', 'warning')
     }
   } finally {
     if (requestId === referenceRequestId) fetchingReference.value = false
@@ -143,13 +151,13 @@ async function save() {
     emit('saved')
     emit('close')
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(cause instanceof Error ? cause.message : String(cause), 'error')
   } finally {
     saving.value = false
   }
 }
 
-async function remove(price) {
+async function remove(price: ModelDefaultPrice) {
   if (!price?.id) return
   if (!window.confirm(`确定删除模型「${price.modelId}」的默认价？`)) return
   deletingId.value = price.id
@@ -159,7 +167,7 @@ async function remove(price) {
     notify('模型默认价已删除')
     emit('saved')
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(cause instanceof Error ? cause.message : String(cause), 'error')
   } finally {
     deletingId.value = null
   }
