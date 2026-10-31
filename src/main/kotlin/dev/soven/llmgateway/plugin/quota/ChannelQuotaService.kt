@@ -20,6 +20,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 
@@ -57,19 +58,23 @@ class ChannelQuotaService(
                 }
             }
             val attribution = AtomicReference(QueryAttribution())
+            val cacheable = AtomicBoolean(true)
             val queried = when {
                 target.quota.providerId.isEmpty() -> snapshot(target, "DISABLED", if (keyId == null) "此渠道未启用额度查询" else "此密钥未启用额度查询，请先单独配置其所属账户")
                 else -> {
                     val provider = registry.find(target.quota.providerId)
                     if (provider == null) snapshot(target, "UNSUPPORTED", "额度插件未安装或加载失败，请检查插件目录并重启网关")
-                    else withTimeoutOrNull(timeoutMs) { execute(target, provider, attribution, keyId != null) }
-                        ?: snapshot(target, "ERROR", "额度查询超时，请稍后重试")
+                    else withTimeoutOrNull(timeoutMs) { execute(target, provider, attribution, keyId != null, cacheable) }
+                        ?: run {
+                            cacheable.set(false)
+                            snapshot(target, "ERROR", "额度查询超时，请稍后重试")
+                        }
                 }
             }
             val source = attribution.get()
             val result = queried.copy(queryKey = source.keys.lastOrNull(), attemptedKeys = source.keys, credentialSource = source.source,
                 scope = if (keyId == null) "CHANNEL" else "KEY", targetKeyId = keyId)
-            cache.put(cacheKey, Cached(target, result, now()))
+            if (cacheable.get()) cache.put(cacheKey, Cached(target, result, now()))
             result
         }
     }
@@ -79,6 +84,7 @@ class ChannelQuotaService(
         provider: ChannelQuotaProvider,
         attribution: AtomicReference<QueryAttribution>,
         specificKey: Boolean,
+        cacheable: AtomicBoolean,
     ): ChannelQuotaSnapshot =
         suspendCancellableCoroutine { continuation ->
             val task = FutureTask {
@@ -95,6 +101,7 @@ class ChannelQuotaService(
             try {
                 executor.execute(task)
             } catch (_: RejectedExecutionException) {
+                cacheable.set(false)
                 continuation.resume(snapshot(channel, "ERROR", "额度查询繁忙，请稍后重试"))
             }
         }

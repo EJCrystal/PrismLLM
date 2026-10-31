@@ -150,7 +150,9 @@ class ChannelQuotaServiceTest {
     @Test
     fun timeoutInterruptsPluginAndReturnsNoAmount() = runBlocking {
         val interrupted = CountDownLatch(1)
+        val calls = AtomicInteger()
         withService(provider {
+            calls.incrementAndGet()
             try { Thread.sleep(10_000); available("10") }
             catch (cause: InterruptedException) { interrupted.countDown(); throw cause }
         }, timeoutMs = 150) { service ->
@@ -161,6 +163,9 @@ class ChannelQuotaServiceTest {
             assertNotNull(result.queryKey)
             assertEquals(1, result.attemptedKeys.size)
             assertTrue(withContext(Dispatchers.IO) { interrupted.await(3, TimeUnit.SECONDS) })
+            val retried = service.query(channel())
+            assertFalse(retried.cached)
+            assertEquals(2, calls.get())
         }
     }
 
@@ -180,6 +185,7 @@ class ChannelQuotaServiceTest {
                 assertTrue(rejected.message!!.contains("繁忙"))
                 assertNull(rejected.queryKey)
                 assertTrue(rejected.attemptedKeys.isEmpty())
+                assertFalse(service.query(channel().copy(id = "e")).cached)
             } finally { release.countDown() }
             assertTrue(queries.awaitAll().all { it.status == "AVAILABLE" })
         }
