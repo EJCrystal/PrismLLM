@@ -58,10 +58,10 @@ function attemptStatusClass(attempt) {
   return statusClass(attempt.statusCode)
 }
 
-function attemptStatusAriaLabel(attempt) {
+function attemptStatusAriaLabel(attempt, hasFollowingAttempt) {
   const status = attempt.statusCode == null ? '无上游 HTTP 状态码' : `上游 HTTP 状态码 ${attempt.statusCode}`
   const errorStatus = attempt.upstreamErrorStatusCode == null ? '' : `，错误状态码 ${attempt.upstreamErrorStatusCode}`
-  return `${status}${errorStatus}，${attemptResultLabel(attempt)}`
+  return `${status}${errorStatus}，${attemptResultLabel(attempt, hasFollowingAttempt)}`
 }
 
 // 历史日志没有逐次明细（V39 回填为空数组）。不要用汇总字段伪造一条尝试记录：
@@ -534,13 +534,13 @@ onMounted(load)
               <span v-else>尝试记录</span>
               <p v-if="!hasAttemptDetail" class="muted small">无尝试明细</p>
               <div v-else class="attempt-list">
-                <div v-for="attempt in selectedAttempts" :key="attempt.index" class="attempt-row">
+                <div v-for="(attempt, attemptIndex) in selectedAttempts" :key="attempt.index" class="attempt-row">
                   <div class="attempt-head">
                     <span class="attempt-index">#{{ attempt.index }}</span>
                     <span
                       class="badge attempt-status"
                       :class="attemptStatusClass(attempt)"
-                      :aria-label="attemptStatusAriaLabel(attempt)"
+                      :aria-label="attemptStatusAriaLabel(attempt, attemptIndex < selectedAttempts.length - 1)"
                     >
                       HTTP {{ attempt.statusCode ?? '—' }}
                     </span>
@@ -548,7 +548,7 @@ onMounted(load)
                       v-if="attempt.upstreamErrorStatusCode != null && attempt.upstreamErrorStatusCode !== attempt.statusCode"
                       class="badge danger"
                     >错误状态 {{ attempt.upstreamErrorStatusCode }}</span>
-                    <span class="attempt-result" role="status">{{ attemptResultLabel(attempt) }}</span>
+                    <span class="attempt-result" role="status">{{ attemptResultLabel(attempt, attemptIndex < selectedAttempts.length - 1) }}</span>
                     <span class="sr-only">第 {{ attempt.index }} 次尝试</span>
                     <span class="attempt-duration">{{ formatDuration(attempt.elapsedMs) }}</span>
                   </div>

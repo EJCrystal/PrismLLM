@@ -41,7 +41,7 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
 
   it('尝试记录区分成功、失败后切换和终止', () => {
     assert.equal(attemptResultLabel({ statusCode: 200, committed: true }), '成功')
-    assert.equal(attemptResultLabel({ statusCode: 500, errorCode: 'upstream_error', retryable: true }), '失败，已切换')
+    assert.equal(attemptResultLabel({ statusCode: 500, errorCode: 'upstream_error', retryable: true }, true), '失败，已切换')
     assert.equal(attemptResultLabel({ statusCode: 400, errorCode: 'upstream_error', retryable: false }), '失败，终止')
     assert.equal(attemptResultLabel({ statusCode: null, errorCode: 'upstream_unreachable', retryable: true }), '未连接到上游')
     assert.equal(attemptResultLabel({ statusCode: null, errorCode: 'upstream_timeout', retryable: true }), '未收到上游响应')
@@ -62,5 +62,13 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     assert.equal(attemptFailureReason(attempt), 'rate_limit_error')
     assert.equal(attemptHasError({ statusCode: 200, committed: true }), false)
     assert.equal(attemptResultLabel({ statusCode: 200, committed: true }), '成功')
+  })
+
+  it('仅在存在下一条实际尝试时显示已切换', () => {
+    const exhausted = { statusCode: 500, errorCode: 'upstream_error', retryable: true }
+    assert.equal(attemptResultLabel(exhausted), '失败，终止')
+    assert.equal(attemptResultLabel(exhausted, false), '失败，终止')
+    assert.equal(attemptResultLabel(exhausted, true), '失败，已切换')
+    assert.equal(attemptResultLabel({ statusCode: 200, errorCode: 'protocol_conversion_unsupported', retryable: false }, true), '失败，已切换')
   })
 })

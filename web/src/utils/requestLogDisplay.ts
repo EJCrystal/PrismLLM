@@ -55,7 +55,7 @@ export function attemptHasError(attempt: AttemptDisplayInput | null | undefined)
   return Boolean(attempt?.errorCode || (attempt?.statusCode ?? 0) >= 400 || (attempt?.upstreamErrorStatusCode ?? 0) >= 400)
 }
 
-export function attemptResultLabel(attempt: AttemptDisplayInput | null | undefined): string {
+export function attemptResultLabel(attempt: AttemptDisplayInput | null | undefined, hasFollowingAttempt = false): string {
   if (!attempt) return '—'
   if (attempt.errorCode === 'client_disconnect') return '客户端断开'
   if (attempt.errorCode === 'client_cancelled') return '客户端取消'
@@ -63,7 +63,7 @@ export function attemptResultLabel(attempt: AttemptDisplayInput | null | undefin
   if (attempt.statusCode == null && attempt.errorCode) {
     return attempt.errorCode === 'upstream_unreachable' ? '未连接到上游' : '未收到上游响应'
   }
-  if (attemptHasError(attempt)) return attempt.retryable ? '失败，已切换' : '失败，终止'
+  if (attemptHasError(attempt)) return hasFollowingAttempt ? '失败，已切换' : '失败，终止'
   return attempt.committed ? '成功' : '完成'
 }
 
