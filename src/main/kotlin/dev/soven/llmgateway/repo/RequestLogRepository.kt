@@ -85,7 +85,7 @@ class RequestLogRepository(private val database: Database) {
             it[channelKeyName] = record.channelKeyName
             it[upstreamModel] = record.upstreamModel
             it[protocol] = record.protocol.value
-            it[upstreamProtocol] = (record.upstreamProtocol ?: record.protocol).value
+            it[upstreamProtocol] = record.upstreamProtocol?.value
             it[stream] = record.stream
             it[statusCode] = record.statusCode
             it[firstTokenMs] = record.firstTokenMs

@@ -90,6 +90,7 @@ class ProxyAttemptLoggingIntegrationTest {
                 val log = awaitRequestLog(requestId)
                 assertEquals("upstream_credential_invalid", log.errorCode)
                 assertEquals(0, log.upstreamAttempts)
+                assertNull(log.upstreamProtocol)
                 assertTrue(log.attempts.isEmpty())
             }
         }

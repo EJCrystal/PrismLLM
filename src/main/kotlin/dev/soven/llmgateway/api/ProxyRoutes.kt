@@ -293,6 +293,7 @@ private suspend fun handleProxy(
             state.upstreamStatus = null
             state.upstreamCallStarted = false
             state.streamError = null
+            upstreamProtocol = null
             upstreamAttempts += 1
             channelId = candidate.channel.id
             channelName = candidate.channel.name
@@ -304,7 +305,6 @@ private suspend fun handleProxy(
             } else {
                 candidate.channel.protocols.firstOrNull { it != GatewayProtocol.GEMINI }
             }
-            upstreamProtocol = attemptProtocol
             attemptProtocol?.takeIf { it != protocol }?.let { target ->
                 app.metrics.protocolConversion(protocol.value, target.value)
             }
@@ -322,6 +322,7 @@ private suspend fun handleProxy(
                     upstreamAttempts -= 1
                     return
                 }
+                upstreamProtocol = attemptProtocol
                 val upstreamError = state.streamError ?: error
                 attemptRecords += UpstreamAttemptRecord(
                     index = attemptRecords.size + 1,
@@ -358,7 +359,7 @@ private suspend fun handleProxy(
                         // 请求转换在抢租约前完成，避免转换失败留下未释放的探测租约。
                         ProtocolConversion.convertRequest(
                             protocol,
-                            upstreamProtocol ?: protocol,
+                            attemptProtocol ?: protocol,
                             requestJson,
                             candidate.upstreamModel,
                         )
@@ -378,7 +379,7 @@ private suspend fun handleProxy(
                             remainingMs,
                             state,
                             protocol,
-                            upstreamProtocol ?: protocol,
+                            attemptProtocol ?: protocol,
                             traceContext.traceparent,
                             allowUpstreamErrorFailover = upstreamAttempts < app.config.maxAttempts && upstreamAttempts < candidates.size,
                             globalOverrides = globalOverrides,
@@ -387,7 +388,7 @@ private suspend fun handleProxy(
                     } else {
                         proxyJson(
                             app, call, requestJson, alias, candidate, remainingMs, state, protocol,
-                            upstreamProtocol ?: protocol, traceContext.traceparent, globalOverrides, headerProfiles,
+                            attemptProtocol ?: protocol, traceContext.traceparent, globalOverrides, headerProfiles,
                         )
                     }
                 }
