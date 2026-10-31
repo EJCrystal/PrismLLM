@@ -18,8 +18,8 @@ fun ChannelRecord.modelListProtocol(): GatewayProtocol? =
 
 /**
  * The model-list endpoint is protocol-neutral, but its URL and auth headers
- * still need one protocol context. Prefer explicit native special-protocol overrides;
- * otherwise retain the legacy channel-level selection.
+ * still need one protocol context. Prefer explicit Gemini/Messages overrides, then
+ * legacy special auth, other configured overrides, and a single declared protocol.
  */
 fun modelListProtocol(
     protocols: List<GatewayProtocol>,
@@ -33,11 +33,12 @@ fun modelListProtocol(
         it == GatewayProtocol.MESSAGES && protocolAuthTypes.containsKey(it.value)
     }
     val explicitOther = protocols.firstOrNull { protocolAuthTypes.containsKey(it.value) }
-    return explicitGemini ?: explicitMessages ?: explicitOther ?: when (authType) {
+    val legacySpecial = when (authType) {
         "anthropic" -> GatewayProtocol.MESSAGES
         "google" -> GatewayProtocol.GEMINI
-        else -> protocols.singleOrNull()
+        else -> null
     }
+    return explicitGemini ?: explicitMessages ?: legacySpecial ?: explicitOther ?: protocols.singleOrNull()
 }
 
 fun isGeminiRequestPath(path: String): Boolean =

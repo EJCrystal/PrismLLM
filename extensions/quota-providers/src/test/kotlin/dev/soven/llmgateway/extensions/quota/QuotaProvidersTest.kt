@@ -2,10 +2,12 @@ package dev.soven.llmgateway.extensions.quota
 
 import com.sun.net.httpserver.HttpServer
 import dev.soven.llmgateway.spi.quota.*
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import java.net.InetSocketAddress
+import java.net.http.HttpClient
 import java.util.ServiceLoader
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -48,6 +50,25 @@ class QuotaProvidersTest {
         val providers = ServiceLoader.load(ChannelQuotaProvider::class.java).toList()
         try { assertEquals(setOf("sub2api", "new-api"), providers.map { it.id }.toSet()) }
         finally { providers.forEach { it.close() } }
+    }
+
+    @Test
+    fun interruptedQueryPropagatesCancellationAndRestoresTheInterruptFlag() {
+        val interruption = InterruptedException("query cancelled")
+        val provider = object : HttpQuotaProvider() {
+            override val id = "interrupted-test"
+            override val displayName = "Interrupted test"
+            override fun queryRemote(request: ChannelQuotaQuery, config: JsonObject, client: HttpClient): ChannelQuotaResult {
+                throw interruption
+            }
+        }
+        try {
+            assertSame(interruption, assertFailsWith<InterruptedException> { provider.query(query()) })
+            assertTrue(Thread.currentThread().isInterrupted)
+        } finally {
+            Thread.interrupted()
+            provider.close()
+        }
     }
 
     @Test

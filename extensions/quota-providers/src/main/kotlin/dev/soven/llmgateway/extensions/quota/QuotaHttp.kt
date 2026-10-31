@@ -31,9 +31,9 @@ abstract class HttpQuotaProvider : ChannelQuotaProvider {
         }
     } catch (cause: QuotaHttpFailure) {
         ChannelQuotaResult(cause.status, message = cause.message)
-    } catch (_: InterruptedException) {
+    } catch (cause: InterruptedException) {
         Thread.currentThread().interrupt()
-        ChannelQuotaResult(ChannelQuotaStatus.ERROR, message = "额度查询已取消")
+        throw cause
     } catch (_: Exception) {
         ChannelQuotaResult(ChannelQuotaStatus.ERROR, message = "上游额度响应无效或查询超时，请检查地址及配置")
     }

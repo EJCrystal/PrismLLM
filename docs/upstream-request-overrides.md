@@ -110,7 +110,14 @@ manifest 格式如下。只接受已知的 `claude`、`codex`、`google`、`anti
 
 规范 Codex UA（例如 `codex_cli_rs/0.150.0 (Linux; x86_64)`）更新版本时，Codex 预设会自动配对 `originator` / `version`；任何层显式设置或删除这两个头时，以显式配置为准。其他预设的版本头需要按需单独覆盖。
 
-模型发现请求不属于生成协议：优先使用已配置的 Messages / Gemini 协议级鉴权覆盖识别请求头，其次按渠道鉴权类型识别 Anthropic / Google，再按渠道唯一声明的协议识别；不能确定协议时只应用通用覆盖，并按实际选择的鉴权类型选择自动预设。
+模型发现请求不属于生成协议，其协议上下文按以下顺序选择：
+
+1. 渠道已声明且配置了鉴权覆盖的 Gemini 协议，其次是 Messages 协议。
+2. 旧版渠道级特殊鉴权：`authType=google` 选择 Gemini，`authType=anthropic` 选择 Messages。
+3. 按渠道声明的协议顺序，选择第一个配置了鉴权覆盖的其他协议。例如渠道默认 `authType=bearer`，仅配置 `responses: google` 覆盖时，模型发现选择 Responses，并使用 Google 鉴权。
+4. 渠道唯一声明的协议；多个协议仍无法确定时，只应用通用覆盖。
+
+确定上下文后，使用该协议的鉴权覆盖，未覆盖时继承渠道级 `authType`；自动预设按实际选择的鉴权类型识别。Gemini 上下文仍保留分页与 `models/` 前缀处理，普通协议覆盖不会抢占旧版 Google / Anthropic 渠道的模型发现。
 
 模型发现 API 中省略 `protocols` 或提交 `protocols:[]` 都表示未指定，回退到已保存渠道的协议；新渠道没有已保存协议时，按上述鉴权规则判断。非空列表仍会校验协议名称，并优先使用这次提交的协议。保存渠道时仍要求至少勾选一个协议。
 

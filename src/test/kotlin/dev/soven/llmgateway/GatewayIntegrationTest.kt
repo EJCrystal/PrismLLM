@@ -227,6 +227,38 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun channelKeyQuotaUpdatesReturnFreshSettingsAndPreserveOrClearCredentials() = runBlocking {
+        val channel = createChannelWithBaseUrl("quota-readback", fake.baseUrl + "/ok/v1")
+        val keyId = channel.keys.single().id
+        val settings = ChannelQuotaSettings("new-api")
+        val initial = assertNotNull(app.channelRepository.updateKeyQuota(channel.id, keyId, settings))
+        assertEquals(settings, initial.keys.single().quota)
+        assertNull(initial.keys.single().quotaCredential)
+        assertEquals(initial, app.channelRepository.find(channel.id))
+
+        val credential = app.credentialCipher.encrypt("readback-system-secret")
+        val dedicated = settings.copy(
+            credentialSource = ChannelQuotaCredentialSource.DEDICATED,
+            config = Json.parseToJsonElement("""{"authMode":"system","userId":"101"}""").jsonObject,
+        )
+        val saved = assertNotNull(app.channelRepository.updateKeyQuota(channel.id, keyId, dedicated, credential))
+        assertEquals(dedicated, saved.keys.single().quota)
+        assertEquals(credential, saved.keys.single().quotaCredential)
+        assertEquals(saved, app.channelRepository.find(channel.id))
+
+        val changed = dedicated.copy(config = Json.parseToJsonElement("""{"authMode":"system","userId":"202"}""").jsonObject)
+        val preserved = assertNotNull(app.channelRepository.updateKeyQuota(channel.id, keyId, changed))
+        assertEquals(changed, preserved.keys.single().quota)
+        assertEquals(credential, preserved.keys.single().quotaCredential)
+        assertEquals(preserved, app.channelRepository.find(channel.id))
+
+        val cleared = assertNotNull(app.channelRepository.updateKeyQuota(channel.id, keyId, changed, clearCredential = true))
+        assertEquals(changed, cleared.keys.single().quota)
+        assertNull(cleared.keys.single().quotaCredential)
+        assertEquals(cleared, app.channelRepository.find(channel.id))
+    }
+
+    @Test
     fun channelKeyQuotaEndpointsValidateSessionCsrfSettingsAndKeyOwnership() = runBlocking {
         val channel = createChannel("key-quota-validation", "ok")
         val other = createChannel("other-key-quota-validation", "ok")
