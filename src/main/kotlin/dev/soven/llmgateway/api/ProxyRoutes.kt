@@ -291,6 +291,8 @@ private suspend fun handleProxy(
             val attemptStartedNanos = System.nanoTime()
             state.attemptFirstTokenMs = null
             state.upstreamStatus = null
+            state.upstreamCallStarted = false
+            state.streamError = null
             upstreamAttempts += 1
             channelId = candidate.channel.id
             channelName = candidate.channel.name
@@ -315,9 +317,12 @@ private suspend fun handleProxy(
             var attemptRecorded = false
             fun recordAttempt(status: Int?, error: GatewayException?, committed: Boolean, errorCode: String? = null) {
                 if (attemptRecorded) return
-                // 候选在进入上游前被跳过（密钥停用）不计入实际上游尝试，也不进入明细。
-                if (errorCode == "no_candidate" || error?.code == "no_candidate") return
                 attemptRecorded = true
+                if (!state.upstreamCallStarted) {
+                    upstreamAttempts -= 1
+                    return
+                }
+                val upstreamError = state.streamError ?: error
                 attemptRecords += UpstreamAttemptRecord(
                     index = attemptRecords.size + 1,
                     channelId = candidate.channel.id,
@@ -326,10 +331,11 @@ private suspend fun handleProxy(
                     channelKeyName = candidate.key.name,
                     upstreamModel = candidate.upstreamModel,
                     upstreamProtocol = attemptProtocol,
-                    statusCode = status,
+                    statusCode = state.upstreamStatus ?: status,
+                    upstreamErrorStatusCode = upstreamError?.upstreamStatus,
                     errorCode = errorCode ?: error?.code,
-                    upstreamErrorCode = error?.upstreamCode,
-                    errorMessage = error?.message?.asLogMessage(),
+                    upstreamErrorCode = upstreamError?.upstreamCode,
+                    errorMessage = upstreamError?.message?.asLogMessage(),
                     elapsedMs = (System.nanoTime() - attemptStartedNanos) / 1_000_000,
                     firstTokenMs = state.attemptFirstTokenMs,
                     committed = committed,
@@ -473,7 +479,7 @@ private suspend fun handleProxy(
                     throw e
                 }
                 // 请求在本地转换阶段就失败时没有真正调用上游，不写入尝试明细，也不消耗尝试预算。
-                if (state.upstreamStatus == null) {
+                if (!state.upstreamCallStarted) {
                     upstreamAttempts -= 1
                     conversionError = e
                     return GatewayException(
@@ -909,6 +915,8 @@ private class ProxyState {
     var attemptFirstTokenMs: Long? = null
     /** 本次尝试收到的上游 HTTP 状态码；连接失败时为 null。 */
     var upstreamStatus: Int? = null
+    var upstreamCallStarted = false
+    var streamError: GatewayException? = null
     var errorCode: String? = null
     var upstreamErrorBody: String? = null
 }
@@ -995,6 +1003,7 @@ private suspend fun proxyStream(
 
     try {
         withTimeout(timeoutMs) {
+            state.upstreamCallStarted = true
             app.httpClient.preparePost(upstreamUrl) {
                 applyUpstreamAuthentication(
                     credential = credential,
@@ -1034,6 +1043,7 @@ private suspend fun proxyStream(
                             ) {
                                 val error = if (upstreamProtocol == GatewayProtocol.GEMINI) geminiStreamException(next)
                                     else anthropicStreamException(next)
+                                state.streamError = error
                                 if (error.retryable) {
                                     upstream.cancel(error)
                                     throw error
@@ -1168,6 +1178,7 @@ private suspend fun proxyJson(
     val body = policy.body(convertedRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
     try {
         withTimeout(timeoutMs) {
+            state.upstreamCallStarted = true
             val response = app.httpClient.post(upstreamUrl) {
                 applyUpstreamAuthentication(
                     credential = credential,
@@ -1462,10 +1473,12 @@ private fun markTerminalStreamFailure(
         GatewayProtocol.MESSAGES -> if (type == "error") {
             state.errorCode = "messages_failed"
             state.upstreamErrorBody = payload
+            state.streamError = anthropicStreamException(line)
         }
         GatewayProtocol.GEMINI -> if (isGeminiStreamError(line)) {
             state.errorCode = "gemini_failed"
             state.upstreamErrorBody = payload
+            state.streamError = geminiStreamException(line)
         }
     }
 }

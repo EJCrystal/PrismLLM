@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   attemptFailureReason,
+  attemptHasError,
   attemptResultLabel,
   protocolLabel,
   reasoningEffortClass,
@@ -52,5 +53,14 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     assert.equal(attemptFailureReason({ upstreamErrorCode: 'invalid_api_key' }), 'invalid_api_key')
     assert.equal(attemptFailureReason({ errorCode: 'upstream_timeout' }), 'upstream_timeout')
     assert.equal(attemptFailureReason({ statusCode: 200 }), '—')
+  })
+
+  it('HTTP 200 中的上游错误状态仍按失败展示', () => {
+    const attempt = { statusCode: 200, upstreamErrorStatusCode: 429, upstreamErrorCode: 'rate_limit_error', committed: true }
+    assert.equal(attemptHasError(attempt), true)
+    assert.equal(attemptResultLabel(attempt), '失败，终止')
+    assert.equal(attemptFailureReason(attempt), 'rate_limit_error')
+    assert.equal(attemptHasError({ statusCode: 200, committed: true }), false)
+    assert.equal(attemptResultLabel({ statusCode: 200, committed: true }), '成功')
   })
 })

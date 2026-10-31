@@ -43,11 +43,16 @@ export function protocolLabel(value: string | null | undefined): string {
 
 export interface AttemptDisplayInput {
   statusCode?: number | null
+  upstreamErrorStatusCode?: number | null
   errorCode?: string | null
   upstreamErrorCode?: string | null
   errorMessage?: string | null
   committed?: boolean
   retryable?: boolean
+}
+
+export function attemptHasError(attempt: AttemptDisplayInput | null | undefined): boolean {
+  return Boolean(attempt?.errorCode || (attempt?.statusCode ?? 0) >= 400 || (attempt?.upstreamErrorStatusCode ?? 0) >= 400)
 }
 
 export function attemptResultLabel(attempt: AttemptDisplayInput | null | undefined): string {
@@ -58,7 +63,7 @@ export function attemptResultLabel(attempt: AttemptDisplayInput | null | undefin
   if (attempt.statusCode == null && attempt.errorCode) {
     return attempt.errorCode === 'upstream_unreachable' ? '未连接到上游' : '未收到上游响应'
   }
-  if (attempt.errorCode) return attempt.retryable ? '失败，已切换' : '失败，终止'
+  if (attemptHasError(attempt)) return attempt.retryable ? '失败，已切换' : '失败，终止'
   return attempt.committed ? '成功' : '完成'
 }
 

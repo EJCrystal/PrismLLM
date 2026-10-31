@@ -311,6 +311,7 @@ data class UpstreamAttemptRecord(
     val upstreamProtocol: GatewayProtocol? = null,
     /** 未拿到上游 HTTP 响应时为 null。 */
     val statusCode: Int? = null,
+    val upstreamErrorStatusCode: Int? = null,
     /** 本次尝试的网关错误码；成功为 null。 */
     val errorCode: String? = null,
     /** 上游返回的错误码；成功或非上游错误为 null。 */

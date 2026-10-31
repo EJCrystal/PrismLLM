@@ -10,6 +10,7 @@ import { createCursorPager } from '../utils/cursorPager'
 import { requestModeClass, requestModeLabel } from '../utils/requestMode'
 import {
   attemptFailureReason,
+  attemptHasError,
   attemptResultLabel,
   protocolLabel,
   reasoningEffortClass,
@@ -52,13 +53,15 @@ function attemptProtocolLabel(attempt, log) {
 }
 
 function attemptStatusClass(attempt) {
-  if (attempt.statusCode == null) return attempt.errorCode ? 'danger' : 'neutral'
+  if (attemptHasError(attempt)) return 'danger'
+  if (attempt.statusCode == null) return 'neutral'
   return statusClass(attempt.statusCode)
 }
 
 function attemptStatusAriaLabel(attempt) {
-  const status = attempt.statusCode == null ? '无上游状态码' : `上游状态码 ${attempt.statusCode}`
-  return `${status}，${attemptResultLabel(attempt)}`
+  const status = attempt.statusCode == null ? '无上游 HTTP 状态码' : `上游 HTTP 状态码 ${attempt.statusCode}`
+  const errorStatus = attempt.upstreamErrorStatusCode == null ? '' : `，错误状态码 ${attempt.upstreamErrorStatusCode}`
+  return `${status}${errorStatus}，${attemptResultLabel(attempt)}`
 }
 
 // 历史日志没有逐次明细（V39 回填为空数组）。不要用汇总字段伪造一条尝试记录：
@@ -539,8 +542,12 @@ onMounted(load)
                       :class="attemptStatusClass(attempt)"
                       :aria-label="attemptStatusAriaLabel(attempt)"
                     >
-                      {{ attempt.statusCode ?? '—' }}
+                      HTTP {{ attempt.statusCode ?? '—' }}
                     </span>
+                    <span
+                      v-if="attempt.upstreamErrorStatusCode != null && attempt.upstreamErrorStatusCode !== attempt.statusCode"
+                      class="badge danger"
+                    >错误状态 {{ attempt.upstreamErrorStatusCode }}</span>
                     <span class="attempt-result" role="status">{{ attemptResultLabel(attempt) }}</span>
                     <span class="sr-only">第 {{ attempt.index }} 次尝试</span>
                     <span class="attempt-duration">{{ formatDuration(attempt.elapsedMs) }}</span>
