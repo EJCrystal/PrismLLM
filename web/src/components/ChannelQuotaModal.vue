@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import type { Channel, ChannelQuotaSettings, ChannelQuotaSettingsRequest, ChannelQuotaSnapshot, QuotaProvider } from '../types/api'
-import { buildQuotaSettings, buildNewApiQuotaSettings, quotaBalance, quotaStatus } from '../utils/channelQuota'
+import { buildProviderQuotaSettings, buildNewApiQuotaSettings, quotaBalance, quotaStatus } from '../utils/channelQuota'
 import { formatTime } from '../utils/format'
 import Modal from './Modal.vue'
 import SecretInput from './SecretInput.vue'
@@ -23,6 +23,7 @@ const selectedKey = computed(() => props.channel.keys?.find((key) => key.id === 
 const currentQuota = computed(() => targetKeyId.value ? selectedKey.value?.quota : props.channel.quota)
 const providerId = ref('')
 const newApiMode = ref<'system' | 'token'>('system')
+const credentialSource = ref<NonNullable<ChannelQuotaSettings['credentialSource']>>('CHANNEL_KEY')
 const userId = ref('')
 const credential = ref('')
 const credentialSet = ref(false)
@@ -34,24 +35,22 @@ function editableConfig(config: ChannelQuotaSettings['config']): ChannelQuotaSet
 }
 const configText = ref('{}')
 const systemMode = computed(() => providerId.value === 'new-api' && newApiMode.value === 'system')
+const dedicatedMode = computed(() => systemMode.value || Boolean(providerId.value && providerId.value !== 'new-api' && credentialSource.value === 'DEDICATED'))
 function buildSettings(): ChannelQuotaSettingsRequest {
   if (providerId.value === 'new-api') return buildNewApiQuotaSettings(configText.value, {
     mode: newApiMode.value, userId: userId.value, credential: credential.value, clearCredential: clearCredential.value,
   })
-  const settings = buildQuotaSettings(providerId.value, configText.value)
-  // 保留其他插件已通过 API 配置的独立凭据来源。
-  if (providerId.value === currentQuota.value?.providerId && currentQuota.value?.credentialSource === 'DEDICATED') {
-    settings.credentialSource = 'DEDICATED'
-  }
-  return settings
+  return buildProviderQuotaSettings(providerId.value, configText.value, {
+    credentialSource: credentialSource.value, credential: credential.value, clearCredential: clearCredential.value,
+  })
 }
 function settingsSignature() {
   try { return JSON.stringify(buildSettings()) } catch { return null }
 }
 const savedSettings = ref<string | null>(settingsSignature())
-function resetForm() {
-  const quota = currentQuota.value
+function syncForm(quota: ChannelQuotaSettings | null | undefined) {
   providerId.value = quota?.providerId || ''
+  credentialSource.value = quota?.credentialSource ?? 'CHANNEL_KEY'
   newApiMode.value = quota?.providerId === 'new-api' && quota.config?.authMode !== 'system' ? 'token' : 'system'
   userId.value = String(quota?.config?.userId || '')
   configText.value = JSON.stringify(editableConfig(quota?.config || {}), null, 2)
@@ -61,6 +60,16 @@ function resetForm() {
   result.value = null
   error.value = ''
   savedSettings.value = settingsSignature()
+}
+function resetForm() { syncForm(currentQuota.value) }
+function resetCredentialInput() {
+  credential.value = ''
+  clearCredential.value = false
+}
+function changeProvider() {
+  credentialSource.value = 'CHANNEL_KEY'
+  credentialSet.value = providerId.value === currentQuota.value?.providerId && Boolean(currentQuota.value?.credentialSet)
+  resetCredentialInput()
 }
 resetForm()
 watch(targetKeyId, resetForm)
@@ -85,20 +94,15 @@ async function save() {
   saving.value = true
   try {
     const settings = buildSettings()
-    if (systemMode.value && !credentialSet.value && !settings.credential && !settings.clearCredential) {
-      throw new Error('请填写系统访问令牌')
+    if (dedicatedMode.value && !credentialSet.value && !settings.credential && !settings.clearCredential) {
+      throw new Error(systemMode.value ? '请填写系统访问令牌' : '请填写专用查询凭据')
     }
     const channel = targetKeyId.value
       ? await api.updateChannelKeyQuota(props.channel.id, targetKeyId.value, settings)
       : await api.updateChannelQuota(props.channel.id, settings)
     const quota = targetKeyId.value ? channel.keys.find((key) => key.id === targetKeyId.value)?.quota : channel.quota
     if (!quota) throw new Error('保存成功，但未返回目标密钥的额度配置')
-    configText.value = JSON.stringify(editableConfig(quota.config), null, 2)
-    credential.value = ''
-    clearCredential.value = false
-    credentialSet.value = Boolean(quota.credentialSet)
-    savedSettings.value = settingsSignature()
-    result.value = null
+    syncForm(quota)
     emit('saved', channel)
   } catch (cause) { error.value = cause instanceof Error ? cause.message : String(cause) }
   finally { saving.value = false }
@@ -133,7 +137,7 @@ onMounted(loadProviders)
       </label>
       <label class="field">
         <span>额度查询插件</span>
-        <select v-model="providerId" :disabled="loading || saving || querying">
+        <select v-model="providerId" :disabled="loading || saving || querying" @change="changeProvider">
           <option value="">不启用</option>
           <option v-if="missing" :value="providerId">{{ providerId }}（未加载）</option>
           <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.displayName }}</option>
@@ -153,23 +157,32 @@ onMounted(loadProviders)
             <option value="token">渠道模型密钥（需要上游支持账户额度）</option>
           </select>
         </label>
-        <template v-if="systemMode">
-          <label class="field">
-            <span>New API 用户 ID</span>
-            <input v-model="userId" type="text" inputmode="numeric" maxlength="19" placeholder="例如 123" :disabled="saving || querying" />
-            <small>填写系统访问令牌所属账户的用户 ID，必须与上游账户一致。</small>
-          </label>
-          <label class="field" for="quota-system-token">
-            <span>系统访问令牌 <span v-if="credentialSet && !clearCredential" class="badge success">已保存</span></span>
-            <SecretInput id="quota-system-token" v-model="credential" :placeholder="credentialSet ? '留空保留原令牌，输入新令牌可替换' : '填写系统访问令牌，不含 Bearer 前缀'" autocomplete="new-password" :disabled="saving || querying || clearCredential" />
-            <small>从上游账户设置中生成。令牌单独加密保存，仅用于额度查询。</small>
-          </label>
-          <div v-if="credentialSet">
-            <button type="button" class="button ghost mini" :disabled="saving || querying || Boolean(credential)" @click="clearCredential = !clearCredential">{{ clearCredential ? '撤销清除' : '清除已保存令牌' }}</button>
-            <span v-if="clearCredential" class="muted small">保存设置后清除令牌。</span>
-          </div>
-        </template>
-        <p v-else class="muted small">仅适用于会返回账户额度的上游版本。若提示不支持，请改用系统访问令牌 + 用户 ID。</p>
+        <label v-if="systemMode" class="field">
+          <span>New API 用户 ID</span>
+          <input v-model="userId" type="text" inputmode="numeric" maxlength="19" placeholder="例如 123" :disabled="saving || querying" />
+          <small>填写系统访问令牌所属账户的用户 ID，必须与上游账户一致。</small>
+        </label>
+        <p v-if="!systemMode" class="muted small">仅适用于会返回账户额度的上游版本。若提示不支持，请改用系统访问令牌 + 用户 ID。</p>
+      </template>
+      <label v-else-if="providerId" class="field">
+        <span>查询凭据来源</span>
+        <select v-model="credentialSource" :disabled="saving || querying" @change="resetCredentialInput">
+          <option value="CHANNEL_KEY">渠道模型密钥</option>
+          <option value="DEDICATED">专用查询凭据</option>
+        </select>
+        <small>模型密钥受限而无法查询账户余额时，可选择同一上游账户的专用查询凭据。</small>
+      </label>
+      <template v-if="dedicatedMode">
+        <label class="field" for="quota-query-credential">
+          <span>{{ systemMode ? '系统访问令牌' : '专用查询凭据' }} <span v-if="credentialSet && !clearCredential" class="badge success">已保存</span></span>
+          <SecretInput id="quota-query-credential" v-model="credential" :placeholder="credentialSet ? '留空保留原凭据，输入新凭据可替换' : '填写同一上游账户的查询凭据，不含 Bearer 前缀'" autocomplete="new-password" :disabled="saving || querying || clearCredential" />
+          <small v-if="systemMode">从上游账户设置中生成系统访问令牌。令牌单独加密保存，仅用于额度查询。</small>
+          <small v-else>凭据独立加密保存，仅用于当前查询对象的账户额度查询，不参与模型请求。</small>
+        </label>
+        <div v-if="credentialSet">
+          <button type="button" class="button ghost mini" :disabled="saving || querying || Boolean(credential)" @click="clearCredential = !clearCredential">{{ clearCredential ? '撤销清除' : '清除已保存凭据' }}</button>
+          <span v-if="clearCredential" class="muted small">保存设置后清除凭据。</span>
+        </div>
       </template>
       <details v-if="providerId" class="quota-config">
         <summary>插件配置（可选）</summary>
@@ -224,7 +237,7 @@ onMounted(loadProviders)
     <template #footer>
       <button type="button" class="button ghost" @click="$emit('close')">关闭</button>
       <button type="button" class="button subtle" :disabled="!dirty || saving || querying || loading" @click="save">{{ saving ? '保存中…' : '保存设置' }}</button>
-      <button type="button" class="button primary" :disabled="!providerId || dirty || missing || saving || querying || loading || (systemMode && !credentialSet)" @click="query">{{ querying ? '查询中…' : '查询额度' }}</button>
+      <button type="button" class="button primary" :disabled="!providerId || dirty || missing || saving || querying || loading || (dedicatedMode && !credentialSet)" @click="query">{{ querying ? '查询中…' : '查询额度' }}</button>
     </template>
   </Modal>
 </template>

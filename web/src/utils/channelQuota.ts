@@ -9,6 +9,21 @@ export function buildQuotaSettings(providerId: string, configText: string): Chan
   return { providerId, config: config as ChannelQuotaSettings['config'] }
 }
 
+export function buildProviderQuotaSettings(providerId: string, configText: string, options: {
+  credentialSource: NonNullable<ChannelQuotaSettings['credentialSource']>; credential?: string; clearCredential?: boolean
+}): ChannelQuotaSettingsRequest {
+  const settings: ChannelQuotaSettingsRequest = buildQuotaSettings(providerId, configText)
+  if (!providerId) return settings
+  settings.credentialSource = options.credentialSource
+  if (options.credentialSource === 'DEDICATED') {
+    const credential = options.credential?.trim()
+    if (credential && options.clearCredential) throw new Error('不能同时更换和清除查询凭据')
+    if (credential) settings.credential = credential
+    if (options.clearCredential) settings.clearCredential = true
+  }
+  return settings
+}
+
 export function buildNewApiQuotaSettings(configText: string, options: {
   mode: 'token' | 'system'; userId: string; credential?: string; clearCredential?: boolean
 }): ChannelQuotaSettingsRequest {

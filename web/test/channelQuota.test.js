@@ -1,9 +1,40 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildQuotaSettings, buildNewApiQuotaSettings, quotaBalance, quotaStatus } from '../src/utils/channelQuota'
+import { buildQuotaSettings, buildProviderQuotaSettings, buildNewApiQuotaSettings, quotaBalance, quotaStatus } from '../src/utils/channelQuota'
 import { api } from '../src/api'
 
 describe('渠道额度插件', () => {
+  it('非 New API 插件可显式使用、替换、保留或清除专用凭据', () => {
+    const dedicated = { credentialSource: 'DEDICATED' }
+    const settings = buildProviderQuotaSettings('sub2api', '{"baseUrl":"https://upstream.example/site"}', {
+      ...dedicated, credential: ' account-query-secret ',
+    })
+    assert.deepEqual(settings, {
+      providerId: 'sub2api', config: { baseUrl: 'https://upstream.example/site' },
+      credentialSource: 'DEDICATED', credential: 'account-query-secret',
+    })
+    assert.equal(JSON.stringify(settings.config).includes('account-query-secret'), false)
+    assert.deepEqual(buildProviderQuotaSettings('sub2api', '{}', { ...dedicated, credential: ' ' }), {
+      providerId: 'sub2api', config: {}, credentialSource: 'DEDICATED',
+    })
+    assert.equal(buildProviderQuotaSettings('sub2api', '{}', { ...dedicated, credential: 'replacement' }).credential, 'replacement')
+    assert.deepEqual(buildProviderQuotaSettings('custom', '{}', { ...dedicated, clearCredential: true }), {
+      providerId: 'custom', config: {}, credentialSource: 'DEDICATED', clearCredential: true,
+    })
+    assert.throws(() => buildProviderQuotaSettings('sub2api', '{}', {
+      ...dedicated, credential: 'secret', clearCredential: true,
+    }), /同时/)
+  })
+
+  it('仅按明确选择的来源保存，不因已有凭据启用专用来源或提交隐藏输入', () => {
+    assert.deepEqual(buildProviderQuotaSettings('sub2api', '{}', {
+      credentialSource: 'CHANNEL_KEY', credentialSet: true, credential: 'hidden-secret', clearCredential: true,
+    }), { providerId: 'sub2api', config: {}, credentialSource: 'CHANNEL_KEY' })
+    assert.deepEqual(buildProviderQuotaSettings('', '{invalid', {
+      credentialSource: 'DEDICATED', credential: 'not-forwarded', clearCredential: true,
+    }), { providerId: '', config: {} })
+  })
+
   it('系统令牌与用户 ID 使用独立字段，令牌不会进入插件 JSON', () => {
     const settings = buildNewApiQuotaSettings('{"baseUrl":"https://upstream.example/site"}', {
       mode: 'system', userId: ' 00123 ', credential: ' system-secret ',
