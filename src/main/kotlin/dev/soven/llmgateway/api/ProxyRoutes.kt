@@ -396,6 +396,7 @@ private suspend fun handleProxy(
                     candidate.channel.name,
                     state.statusCode < 400 && state.errorCode == null,
                 )
+                recordAttempt(state.statusCode, null, state.committed, state.errorCode)
                 if (state.errorCode == null) {
                     app.candidateCooldown.recordSuccess(permit)
                     recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed)
@@ -405,7 +406,6 @@ private suspend fun handleProxy(
                         .recordFailure(permit, FailureKind.TRANSPORT)
                         ?.let { app.metrics.upstreamCooldownStarted(candidate.channel.name, it.reason) }
                 }
-                recordAttempt(state.statusCode, null, state.committed, state.errorCode)
                 null
             } catch (_: CandidateUnavailableException) {
                 upstreamAttempts -= 1
@@ -447,10 +447,6 @@ private suspend fun handleProxy(
                             }
                         }
                 }
-                val signal = e.toKeyAttemptSignal()
-                if (signal != null) {
-                    recordKeyOutcome(app, candidate, signal, requestId, probeClaimed)
-                }
                 val failureCommitted = state.committed || e.code == "stream_interrupted" || e.code == "stream_timeout"
                 recordAttempt(
                     // 优先记录实际收到的 HTTP 状态码；流内错误事件里的状态码只是事件语义。
@@ -458,24 +454,30 @@ private suspend fun handleProxy(
                     e,
                     failureCommitted,
                 )
+                val signal = e.toKeyAttemptSignal()
+                if (signal != null) {
+                    recordKeyOutcome(app, candidate, signal, requestId, probeClaimed)
+                }
                 e
             } catch (e: ProtocolConversionException) {
                 app.candidateCooldown.release(permit)
+                if (state.upstreamCallStarted) {
+                    recordAttempt(
+                        state.upstreamStatus,
+                        GatewayException(
+                            if (state.committed) HttpStatusCode.OK else HttpStatusCode.BadGateway,
+                            if (state.committed) "protocol_conversion_failed" else "protocol_conversion_unsupported",
+                            "${e.field}: ${e.message}",
+                        ),
+                        state.committed,
+                    )
+                }
                 // 上游已返回 2xx 但响应无法转换：说明凭据可用，按成功结算并释放探测租约。
                 if (probeClaimed) {
                     recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed = true)
                 }
                 if (state.committed) {
                     // 响应已提交后才发生转换失败：保留真实原因，便于和普通流中断区分。
-                    recordAttempt(
-                        state.upstreamStatus,
-                        GatewayException(
-                            HttpStatusCode.OK,
-                            "protocol_conversion_failed",
-                            "${e.field}: ${e.message}",
-                        ),
-                        true,
-                    )
                     throw e
                 }
                 // 请求在本地转换阶段就失败时没有真正调用上游，不写入尝试明细，也不消耗尝试预算。
@@ -490,16 +492,6 @@ private suspend fun handleProxy(
                         retryable = true,
                     )
                 }
-                // 上游已经被调用过：写明细并保留这次尝试的预算，避免继续切换时突破 MAX_ATTEMPTS。
-                recordAttempt(
-                    state.upstreamStatus,
-                    GatewayException(
-                        HttpStatusCode.BadGateway,
-                        "protocol_conversion_unsupported",
-                        "${e.field}: ${e.message}",
-                    ),
-                    false,
-                )
                 conversionError = e
                 GatewayException(
                     HttpStatusCode.BadGateway,

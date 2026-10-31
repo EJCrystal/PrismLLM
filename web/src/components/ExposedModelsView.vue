@@ -169,7 +169,7 @@ onMounted(() => {
         :empty="models.length === 0"
         icon="models"
         title="当前没有对外暴露的模型"
-        desc="启用渠道并授权模型，或创建别名后，这里会显示对应模型。若预期出现的模型缺失，请检查渠道是否启用及其授权模型列表。"
+        desc="启用渠道并授权模型后，这里会显示对应模型。若预期出现的模型缺失，请检查渠道是否启用及其授权模型列表。"
       />
       <div v-else class="table-scroll">
         <table class="data-table">
@@ -298,7 +298,7 @@ onMounted(() => {
     </div>
 
     <p class="muted small exposed-models-note">
-      别名优先于同名上游模型。渠道模型配置了规范 ID 时，对外展示规范 ID 并路由到对应上游模型；未配置时回退上游 ID。建议以 models.dev 的 canonical ID 作为规范 ID。页面结果不区分调用方密钥，只要密钥有效，<code>/v1/models</code> 返回的内容一致。
+      渠道模型配置了规范 ID 时，对外展示规范 ID 并路由到对应上游模型；未配置时回退上游 ID。规范 ID 相同的上游模型按同一对外模型路由。建议以 models.dev 的 canonical ID 作为规范 ID。页面结果不区分调用方密钥，只要密钥有效，<code>/v1/models</code> 返回的内容一致。
     </p>
   </section>
 </template>

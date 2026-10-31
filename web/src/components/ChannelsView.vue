@@ -1190,7 +1190,7 @@ onMounted(load)
         <label class="field">
           <span>渠道优先级</span>
           <input v-model.number="form.priority" type="number" min="1" max="1000" step="1" />
-          <small>数值越小越优先（1..1000），仅影响直连路由：同优先级渠道轮询分摊，低优先级只在高优先级全部失败或冷却时启用；别名候选档位由别名自行声明。</small>
+          <small>数值越小越优先（1..1000）：同优先级渠道轮询分摊，低优先级只在高优先级全部失败或冷却时启用。</small>
         </label>
         <label class="switch-row">
           <input v-model="form.enabled" type="checkbox" />
