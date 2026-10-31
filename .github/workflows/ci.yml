@@ -46,6 +46,7 @@ jobs:
               - 'Dockerfile'
             backend:
               - 'src/**'
+              - 'extensions/**'
               - 'pom.xml'
               - 'Dockerfile'
             monitoring:
@@ -124,8 +125,11 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Test backend
-        run: mvn --batch-mode test
+      - name: Test backend and install plugin SPI
+        run: mvn --batch-mode install
+
+      - name: Test optional quota providers
+        run: mvn --batch-mode -f extensions/quota-providers/pom.xml verify
 
   monitoring:
     name: Validate monitoring

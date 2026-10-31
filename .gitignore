@@ -1,4 +1,5 @@
 target/
+plugins/*.jar
 .env
 *.log
 .idea/

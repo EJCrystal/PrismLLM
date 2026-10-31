@@ -8,6 +8,7 @@ import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.domain.authTypeFor
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
 import dev.soven.llmgateway.proxy.upstreamRequestUrl
 import dev.soven.llmgateway.proxy.BillingCalculator
@@ -982,8 +983,9 @@ private suspend fun proxyStream(
 ) {
     val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel, stream = true)
     val credential = decryptCredential(app, candidate)
+    val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
-        globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, candidate.channel.authType,
+        globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType,
         headerProfiles,
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
@@ -1000,7 +1002,7 @@ private suspend fun proxyStream(
             app.httpClient.preparePost(upstreamUrl) {
                 applyUpstreamAuthentication(
                     credential = credential,
-                    authType = candidate.channel.authType,
+                    authType = authType,
                     protocol = upstreamProtocol,
                     anthropicVersion = call.request.headers["anthropic-version"],
                     anthropicBeta = call.request.headers["anthropic-beta"],
@@ -1159,8 +1161,9 @@ private suspend fun proxyJson(
 ) {
     val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel)
     val credential = decryptCredential(app, candidate)
+    val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
-        globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, candidate.channel.authType,
+        globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType,
         headerProfiles,
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
@@ -1175,7 +1178,7 @@ private suspend fun proxyJson(
             val response = app.httpClient.post(upstreamUrl) {
                 applyUpstreamAuthentication(
                     credential = credential,
-                    authType = candidate.channel.authType,
+                    authType = authType,
                     protocol = upstreamProtocol,
                     anthropicVersion = call.request.headers["anthropic-version"],
                     anthropicBeta = call.request.headers["anthropic-beta"],

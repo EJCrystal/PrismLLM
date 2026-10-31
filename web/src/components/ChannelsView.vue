@@ -1,8 +1,10 @@
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { clearUpstreamModelCache } from '../upstreamModelCache'
+import { ApiError } from '../types/api'
+import type { Channel, ChannelKeyState, ModelDefaultPrice, ModelPrice, ProtocolProbeResult, UpstreamRequestOverrides } from '../types/api'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
@@ -14,6 +16,7 @@ import UpstreamRequestSettingsModal from './UpstreamRequestSettingsModal.vue'
 import RequestOverridesEditor from './RequestOverridesEditor.vue'
 import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
+import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
@@ -23,7 +26,8 @@ import {
   visibleModels,
   hiddenModelsTitle,
 } from '../utils/channelDisplay'
-import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols } from '../utils/channelForm'
+import type { ChannelFormDraft, OriginalModelMapping } from '../utils/channelForm'
+import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols, parseManualModelIds } from '../utils/channelForm'
 import {
   channelKeyRateLimitSummary,
   normalizeChannelKeyRateLimit,
@@ -35,6 +39,9 @@ import {
   sameProtocolSelection,
   watchChannelRequestInputs,
 } from '../utils/channelRequestState'
+import { normalizeRequestOverrides } from '../utils/requestOverrides'
+import type { ChannelDisplayModel } from '../utils/channelDisplay'
+import type { ChannelKeyRateLimitDraft } from '../utils/channelKeyRateLimit'
 import {
   buildPricePrompt,
   channelPriceSummaries,
@@ -43,58 +50,143 @@ import {
   resolveSavedChannel,
 } from '../utils/modelPrice'
 
-const channels = ref([])
-const prices = ref([])
-const defaultPrices = ref([])
-const priceEditor = ref(null)
+interface RequestOverridesEditorExpose {
+  getValue: () => UpstreamRequestOverrides
+}
+
+interface KeyModelOption {
+  id: string
+  ownedBy?: string | null
+  authorized?: boolean
+}
+
+interface ChannelKeyEditorDraft {
+  localId: string
+  id: string | null
+  name: string
+  credential: string
+  state: ChannelKeyState
+  originalState: ChannelKeyState
+  priority: number | string | null
+  stateVersion: number | null
+  autoDisableReason: string | null
+  autoDisableUntil: number | null
+  rateLimit: ChannelKeyRateLimitDraft & Record<string, unknown>
+  models: string[]
+  availableModels: KeyModelOption[]
+  manualModels: string[]
+  showManualModels: boolean
+  manualModelsText: string
+  manualModelsError: string
+  modelsLoading: boolean
+  modelsError: string
+  modelsRequestId: number
+}
+
+type NewKeyOverrides = Partial<Pick<ChannelKeyEditorDraft, 'id' | 'name' | 'state' | 'priority' | 'stateVersion' | 'autoDisableReason' | 'autoDisableUntil' | 'models'>> & {
+  enabled?: boolean
+  rateLimit?: unknown
+}
+
+interface ChannelFormState extends Omit<ChannelFormDraft, 'requestOverrides' | 'authType' | 'protocolAuthTypes'> {
+  authType: string
+  protocolAuthTypes: Record<string, string>
+  requestOverrides: UpstreamRequestOverrides
+}
+
+interface ModelTestTarget {
+  channel: Channel
+  model: string
+}
+
+interface PriceEditorTarget {
+  channels: Channel[]
+  price: ModelPrice | null
+  initialTarget: { channelId: string; modelId: string }
+}
+
+interface RateLimitTarget {
+  key: ChannelKeyEditorDraft
+  rule: ChannelKeyRateLimitDraft & Record<string, unknown>
+}
+
+const channels = ref<Channel[]>([])
+const prices = ref<ModelPrice[]>([])
+const defaultPrices = ref<ModelDefaultPrice[]>([])
+const priceEditor = ref<PriceEditorTarget | null>(null)
 const showDefaultPrices = ref(false)
-const testTarget = ref(null)
+const testTarget = ref<ModelTestTarget | null>(null)
 const showTestSettings = ref(false)
 const showRequestSettings = ref(false)
-const overrideEditor = ref(null)
+const overrideEditor = ref<RequestOverridesEditorExpose | null>(null)
 const overrideRevision = ref(0)
 const showAutoDisableSettings = ref(false)
-const rateLimitTarget = ref(null)
-const pricePromptChannelId = ref(null)
+const rateLimitTarget = ref<RateLimitTarget | null>(null)
+const quotaTarget = ref<Channel | null>(null)
+
+function onQuotaSaved(channel: Channel) {
+  const index = channels.value.findIndex((item) => item.id === channel.id)
+  if (index >= 0) channels.value[index] = channel
+  if (quotaTarget.value?.id === channel.id) quotaTarget.value = channel
+  notify('额度查询设置已保存')
+}
+const pricePromptChannelId = ref<string | null>(null)
 const loading = ref(true)
 const error = ref('')
 const showForm = ref(false)
 const saving = ref(false)
-const editingId = ref(null)
+const editingId = ref<string | null>(null)
 const probing = ref(false)
-const probeResults = ref([])
-const channelKeys = ref([])
+const probeResults = ref<ProtocolProbeResult[]>([])
+const channelKeys = ref<ChannelKeyEditorDraft[]>([])
+const selectedChannelKeyId = ref<string | null>(null)
 let keyDraftSeq = 0
-const canonicalModels = reactive({})
-const originalMappings = reactive({})
+const canonicalModels = reactive<Record<string, string>>({})
+const originalMappings = reactive<Record<string, OriginalModelMapping>>({})
 const probeRequests = createRequestTracker(() => {
   probing.value = false
 })
 const modelRequests = createRequestTracker()
 let probeDerivedProtocols = false
 
-const form = reactive({
+const form = reactive<ChannelFormState>({
   name: '',
   baseUrl: '',
   authType: 'bearer',
+  protocolAuthTypes: {},
   protocols: ['chat_completions'],
   enabled: true,
   priority: 1,
-  requestOverrides: {},
+  requestOverrides: normalizeRequestOverrides(),
 })
 
-const protocolOptions = [
+const protocolOptions: Array<{ value: string; label: string }> = [
   { value: 'chat_completions', label: 'Chat Completions' },
   { value: 'responses', label: 'Responses' },
   { value: 'messages', label: 'Anthropic Messages' },
   { value: 'gemini', label: 'Gemini' },
 ]
 
-function protocolLabel(value) {
+function protocolLabel(value: string): string {
   return protocolOptions.find((item) => item.value === value)?.label || value
 }
 
-function moveProtocol(index, delta) {
+function authTypeLabel(value: string): string {
+  if (value === 'anthropic') return 'Anthropic API key（x-api-key）'
+  if (value === 'google') return 'Google API key（x-goog-api-key）'
+  return 'Bearer token'
+}
+
+function setProtocolAuthType(protocol: string, value: string): void {
+  if (value) form.protocolAuthTypes[protocol] = value
+  else delete form.protocolAuthTypes[protocol]
+}
+
+function setProtocolAuthTypeFromEvent(protocol: string, event: Event): void {
+  if (event.target instanceof HTMLSelectElement) setProtocolAuthType(protocol, event.target.value)
+}
+
+function moveProtocol(index: number, delta: number): void {
   const next = index + delta
   if (next < 0 || next >= form.protocols.length) return
   const [item] = form.protocols.splice(index, 1)
@@ -133,7 +225,7 @@ watch(pricePrompt, (value) => {
   if (!value && pricePromptChannelId.value) pricePromptChannelId.value = null
 })
 const authorizedModels = computed(() => {
-  const models = new Set()
+  const models = new Set<string>()
   channelKeys.value.forEach((key) => key.models.forEach((model) => models.add(model)))
   return [...models].sort()
 })
@@ -141,7 +233,7 @@ const mappingCount = computed(() => authorizedModels.value.filter((modelId) => c
 const canProbeProtocols = computed(() => {
   const savedChannel = channels.value.find((channel) => channel.id === editingId.value)
   if (!savedChannel?.keys?.length) return false
-  let requestOverrides
+  let requestOverrides: UpstreamRequestOverrides
   try {
     requestOverrides = overrideEditor.value?.getValue() || form.requestOverrides
   } catch {
@@ -151,12 +243,17 @@ const canProbeProtocols = computed(() => {
     baseUrl: form.baseUrl,
     credential: channelKeys.value.some((key) => key.credential.trim()) ? 'draft' : '',
     authType: form.authType,
+    protocolAuthTypes: form.protocolAuthTypes,
     requestOverrides,
   })
 })
 
-function newKeyDraft(overrides = {}) {
-  const state = overrides.state || (overrides.enabled === false ? 'MANUAL_DISABLED' : 'ACTIVE')
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : String(cause)
+}
+
+function newKeyDraft(overrides: NewKeyOverrides = {}): ChannelKeyEditorDraft {
+  const state: ChannelKeyState = overrides.state || (overrides.enabled === false ? 'MANUAL_DISABLED' : 'ACTIVE')
   return {
     localId: `key-${++keyDraftSeq}`,
     id: overrides.id || null,
@@ -171,13 +268,17 @@ function newKeyDraft(overrides = {}) {
     rateLimit: normalizeChannelKeyRateLimit(overrides.rateLimit),
     models: [...(overrides.models || [])],
     availableModels: [],
+    manualModels: [...(overrides.models || [])],
+    showManualModels: false,
+    manualModelsText: '',
+    manualModelsError: '',
     modelsLoading: false,
     modelsError: '',
     modelsRequestId: 0,
   }
 }
 
-function keyStateBadge(state) {
+function keyStateBadge(state: ChannelKeyState): { label: string; class: string } {
   switch (state) {
     case 'ACTIVE':
       return { label: '正常', class: 'success' }
@@ -192,7 +293,7 @@ function keyStateBadge(state) {
   }
 }
 
-function toggleKeyState(key) {
+function toggleKeyState(key: ChannelKeyEditorDraft): void {
   key.state = key.state === 'ACTIVE' ? 'MANUAL_DISABLED' : 'ACTIVE'
 }
 
@@ -200,58 +301,112 @@ function addKey() {
   const names = new Set(channelKeys.value.map((key) => key.name.trim()))
   let index = channelKeys.value.length + 1
   while (names.has(`密钥 ${index}`)) index += 1
-  channelKeys.value.push(newKeyDraft({ name: `密钥 ${index}`, priority: 1 }))
+  const key = newKeyDraft({ name: `密钥 ${index}`, priority: 1 })
+  channelKeys.value.push(key)
+  selectedChannelKeyId.value = key.localId
+  focusChannelKeyTab(key.localId)
 }
 
-function removeKey(index) {
+function removeKey(index: number): void {
   if (channelKeys.value.length <= 1) {
     notify('至少保留一个密钥', 'warning')
     return
   }
-  channelKeys.value.splice(index, 1)
+  const [removed] = channelKeys.value.splice(index, 1)
+  if (selectedChannelKeyId.value === removed.localId) {
+    const nextKey = channelKeys.value[Math.min(index, channelKeys.value.length - 1)]
+    selectedChannelKeyId.value = nextKey.localId
+    focusChannelKeyTab(nextKey.localId)
+  }
 }
 
-function openRateLimitEditor(key) {
+function channelKeyTabId(localId: string): string {
+  return `channel-key-tab-${localId}`
+}
+
+function focusChannelKeyTab(localId: string): void {
+  nextTick(() => document.getElementById(channelKeyTabId(localId))?.focus())
+}
+
+function handleChannelKeyTabKeydown(event: KeyboardEvent, index: number): void {
+  let nextIndex = index
+  if (event.key === 'ArrowRight') nextIndex = (index + 1) % channelKeys.value.length
+  else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + channelKeys.value.length) % channelKeys.value.length
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = channelKeys.value.length - 1
+  else return
+
+  event.preventDefault()
+  const nextKey = channelKeys.value[nextIndex]
+  selectedChannelKeyId.value = nextKey.localId
+  focusChannelKeyTab(nextKey.localId)
+}
+
+function openRateLimitEditor(key: ChannelKeyEditorDraft): void {
   rateLimitTarget.value = {
     key,
     rule: normalizeChannelKeyRateLimit(key.rateLimit),
   }
 }
 
-function applyRateLimit(rule) {
+function applyRateLimit(rule: unknown): void {
   if (!rateLimitTarget.value) return
   rateLimitTarget.value.key.rateLimit = normalizeChannelKeyRateLimit(rule)
   rateLimitTarget.value = null
 }
 
-function keyModelOptions(key) {
-  const options = new Map()
+function keyModelOptions(key: ChannelKeyEditorDraft): KeyModelOption[] {
+  const options = new Map<string, KeyModelOption>()
   ;(key.availableModels || []).forEach((model) => options.set(model.id, model))
-  ;(key.models || []).forEach((modelId) => {
+  ;[...(key.manualModels || []), ...(key.models || [])].forEach((modelId) => {
     if (!options.has(modelId)) options.set(modelId, { id: modelId })
   })
   return [...options.values()].sort((left, right) => left.id.localeCompare(right.id))
 }
 
-function toggleKeyModel(key, modelId) {
+function openManualKeyModels(key: ChannelKeyEditorDraft): void {
+  key.showManualModels = true
+  nextTick(() => document.getElementById(`manual-models-${key.localId}`)?.focus())
+}
+
+function closeManualKeyModels(key: ChannelKeyEditorDraft): void {
+  key.showManualModels = false
+  key.manualModelsText = ''
+  key.manualModelsError = ''
+  nextTick(() => document.getElementById(`manual-models-button-${key.localId}`)?.focus())
+}
+
+function addManualKeyModels(key: ChannelKeyEditorDraft): void {
+  try {
+    const models = parseManualModelIds(key.manualModelsText)
+    key.manualModels = [...new Set([...key.manualModels, ...models])]
+    key.models = [...new Set([...key.models, ...models])].sort()
+    closeManualKeyModels(key)
+  } catch (cause) {
+    key.manualModelsError = errorMessage(cause)
+  }
+}
+
+function toggleKeyModel(key: ChannelKeyEditorDraft, modelId: string): void {
   const selected = new Set(key.models)
   if (selected.has(modelId)) selected.delete(modelId)
   else selected.add(modelId)
   key.models = [...selected].sort()
 }
 
-function selectAllKeyModels(key) {
+function selectAllKeyModels(key: ChannelKeyEditorDraft): void {
   key.models = keyModelOptions(key).map((model) => model.id)
 }
 
-function clearKeyModels(key) {
+function clearKeyModels(key: ChannelKeyEditorDraft): void {
   key.models = []
 }
 
-async function loadKeyModels(key) {
+async function loadKeyModels(key: ChannelKeyEditorDraft): Promise<void> {
   const baseUrl = form.baseUrl.trim()
   const credential = key.credential.trim()
   const authType = form.authType
+  const protocolAuthTypes = { ...form.protocolAuthTypes }
   const protocols = [...form.protocols]
   if (!baseUrl) {
     notify('请先填写基础地址', 'warning')
@@ -269,6 +424,7 @@ async function loadKeyModels(key) {
       baseUrl,
       credential: credential || null,
       authType,
+      protocolAuthTypes,
       channelId: editingId.value,
       keyId: credential ? null : (key.id || null),
       protocols,
@@ -278,6 +434,7 @@ async function loadKeyModels(key) {
       requestId !== key.modelsRequestId ||
       form.baseUrl.trim() !== baseUrl ||
       form.authType !== authType ||
+      JSON.stringify(form.protocolAuthTypes || {}) !== JSON.stringify(protocolAuthTypes) ||
       key.credential.trim() !== credential ||
       !sameProtocolSelection(form.protocols, protocols)
     ) return
@@ -290,17 +447,17 @@ async function loadKeyModels(key) {
     if (
       requestId === key.modelsRequestId &&
       sameProtocolSelection(form.protocols, protocols)
-    ) key.modelsError = cause.message
+    ) key.modelsError = errorMessage(cause)
   } finally {
     if (requestId === key.modelsRequestId) key.modelsLoading = false
   }
 }
 
-function savedEditingChannel() {
+function savedEditingChannel(): Channel | null {
   return channels.value.find((channel) => channel.id === editingId.value) || null
 }
 
-function canTestModel(modelId) {
+function canTestModel(modelId: string): boolean {
   const channel = savedEditingChannel()
   if (!channel?.protocols?.length) return false
   return channel.keys?.length
@@ -308,7 +465,7 @@ function canTestModel(modelId) {
     : channel.models.includes(modelId)
 }
 
-function openModelTest(modelId) {
+function openModelTest(modelId: string): void {
   const channel = savedEditingChannel()
   if (!channel) {
     notify('请先保存渠道后再测试模型', 'warning')
@@ -328,11 +485,11 @@ function openModelTest(modelId) {
   testTarget.value = { channel, model: modelId }
 }
 
-const priorityEditingId = ref(null)
-const priorityDraft = ref(1)
+const priorityEditingId = ref<string | null>(null)
+const priorityDraft = ref<number | string>(1)
 let prioritySaving = false
 
-function startPriorityEdit(channel) {
+function startPriorityEdit(channel: Channel): void {
   if (prioritySaving) {
     notify('正在保存上一处优先级修改，请稍候', 'warning')
     return
@@ -340,17 +497,17 @@ function startPriorityEdit(channel) {
   priorityEditingId.value = channel.id
   priorityDraft.value = channel.priority ?? 1
   nextTick(() => {
-    const input = document.querySelector('.priority-input')
+    const input = document.querySelector('.priority-input') as HTMLInputElement | null
     input?.focus()
     input?.select()
   })
 }
 
-function cancelPriorityEdit() {
+function cancelPriorityEdit(): void {
   priorityEditingId.value = null
 }
 
-async function commitPriorityEdit(channel) {
+async function commitPriorityEdit(channel: Channel): Promise<void> {
   if (prioritySaving) return
   if (priorityEditingId.value !== channel.id) return
   const next = Number(priorityDraft.value)
@@ -366,7 +523,7 @@ async function commitPriorityEdit(channel) {
     channel.priority = next
     notify('渠道优先级已更新', 'success')
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(errorMessage(cause), 'error')
     await load()
   } finally {
     prioritySaving = false
@@ -386,13 +543,13 @@ async function load() {
     prices.value = pricesData ?? []
     defaultPrices.value = defaultPricesData ?? []
   } catch (cause) {
-    error.value = cause.message
+    error.value = errorMessage(cause)
   } finally {
     loading.value = false
   }
 }
 
-function openPrice(channel, upstreamModel = null) {
+function openPrice(channel: Channel, upstreamModel: string | null = null): void {
   const existingPrice = upstreamModel
     ? findModelPrice(prices.value, channel.id, upstreamModel)
     : null
@@ -406,43 +563,43 @@ function openPrice(channel, upstreamModel = null) {
   }
 }
 
-function priceSummary(channel) {
+function priceSummary(channel: Channel): { unpriced: string[]; count: number } {
   return priceSummaries.value.get(channel.id) || { unpriced: [], count: 0 }
 }
 
-function unpricedDisplayModels(channel, item) {
+function unpricedDisplayModels(channel: Channel, item: ChannelDisplayModel): string[] {
   const unpriced = priceSummary(channel).unpriced
   return (item.upstreamModels || []).filter((model) => unpriced.includes(String(model).trim()))
 }
 
-function priceSourceForDisplay(channel, item) {
+function priceSourceForDisplay(channel: Channel, item: ChannelDisplayModel): 'channel' | 'default' | 'mixed' | 'none' {
   return resolveDisplayPriceSource(channel, item.upstreamModels, prices.value, defaultPrices.value)
 }
 
-function priceSourceLabel(source) {
+function priceSourceLabel(source: string): string {
   if (source === 'channel') return '渠道价'
   if (source === 'default') return '默认价'
   if (source === 'mixed') return '混合价'
   return '未定价'
 }
 
-function modelTitle(channel, item) {
+function modelTitle(channel: Channel, item: ChannelDisplayModel): string {
   const base = item.title || item.displayName
   const unpriced = unpricedDisplayModels(channel, item)
   return unpriced.length ? `${base}；未配置单价: ${unpriced.join('、')}` : base
 }
 
-function configureChannelPrices(channel) {
+function configureChannelPrices(channel: Channel): void {
   openPrice(channel, priceSummary(channel).unpriced[0] || null)
 }
 
-function updatePricePrompt(channel) {
+function updatePricePrompt(channel: Channel | null): number {
   const count = channel ? priceSummary(channel).count : 0
   pricePromptChannelId.value = channel && count > 0 ? channel.id : null
   return count
 }
 
-function dismissPricePrompt() {
+function dismissPricePrompt(): void {
   pricePromptChannelId.value = null
 }
 
@@ -494,20 +651,22 @@ function openCreate() {
   probeDerivedProtocols = false
   modelRequests.invalidate()
   channelKeys.value = [newKeyDraft({ name: '默认密钥', priority: 1 })]
+  selectedChannelKeyId.value = channelKeys.value[0].localId
   clearMappings()
   Object.assign(form, {
     name: '',
     baseUrl: '',
     authType: 'bearer',
+    protocolAuthTypes: {},
     protocols: ['chat_completions'],
     enabled: true,
     priority: 1,
-    requestOverrides: {},
+    requestOverrides: normalizeRequestOverrides(),
   })
   showForm.value = true
 }
 
-function openEdit(channel) {
+function openEdit(channel: Channel): void {
   editingId.value = channel.id
   probeRequests.invalidate()
   probing.value = false
@@ -516,8 +675,9 @@ function openEdit(channel) {
   modelRequests.invalidate()
   const savedKeys = channel.keys?.length
     ? channel.keys
-    : [{ name: '默认密钥', state: 'ACTIVE', priority: 1, models: channel.models || [] }]
+    : [{ name: '默认密钥', state: 'ACTIVE' as const, priority: 1, models: channel.models || [] }]
   channelKeys.value = savedKeys.map((key) => newKeyDraft(key))
+  selectedChannelKeyId.value = channelKeys.value[0]?.localId || null
   clearMappings()
   ;(channel.modelMappings || []).forEach((mapping) => {
     originalMappings[mapping.upstreamModel] = {
@@ -532,6 +692,7 @@ function openEdit(channel) {
     name: channel.name,
     baseUrl: channel.baseUrl,
     authType: channel.authType || 'bearer',
+    protocolAuthTypes: { ...(channel.protocolAuthTypes || {}) },
     protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
     enabled: channel.enabled,
     priority: channel.priority ?? 1,
@@ -550,14 +711,14 @@ function onRequestSettingsSaved() {
   overrideRevision.value += 1
 }
 
-function clearMapping(modelId) {
+function clearMapping(modelId: string): void {
   canonicalModels[modelId] = ''
 }
 
-function copyUpstreamToCanonical(modelId) {
+function copyUpstreamToCanonical(modelId: string): void {
   canonicalModels[modelId] = modelId
   nextTick(() => {
-    const el = document.getElementById(`canonical-input-${modelId}`)
+    const el = document.getElementById(`canonical-input-${modelId}`) as HTMLInputElement | null
     if (el) {
       el.focus()
       el.select()
@@ -570,26 +731,32 @@ function clearMappings() {
   Object.keys(originalMappings).forEach((key) => delete originalMappings[key])
 }
 
-function channelPublicModelCount(channel) {
+function channelPublicModelCount(channel: Channel): number {
   return channelDisplayModels(channel).length
 }
 
-function probeState(result) {
+function probeState(result: ProtocolProbeResult): { label: string; className: string } {
   if (result.supported) return { label: '支持', className: 'success' }
   if (result.statusCode === 404 || result.statusCode === 405) return { label: '不支持', className: 'neutral' }
   return { label: '未知', className: 'warning' }
 }
 
-async function probeProtocols() {
+async function probeProtocols(): Promise<void> {
   const channelId = editingId.value
+  if (!channelId) {
+    notify('请先保存渠道后再探测协议', 'error')
+    return
+  }
   const probeBaseUrl = form.baseUrl.trim()
   const probeCredential = channelKeys.value.map((key) => key.credential).join('\u0000')
   const probeAuthType = form.authType
+  const probeProtocolAuthTypes = { ...form.protocolAuthTypes }
   const savedChannel = channels.value.find((channel) => channel.id === channelId)
   if (!canProbeSavedChannel(savedChannel, {
     baseUrl: probeBaseUrl,
     credential: probeCredential,
     authType: probeAuthType,
+    protocolAuthTypes: probeProtocolAuthTypes,
   })) {
     notify('请先保存基础地址、凭据或鉴权方式，再探测协议', 'error')
     return
@@ -604,7 +771,8 @@ async function probeProtocols() {
       editingId.value !== channelId ||
       form.baseUrl.trim() !== probeBaseUrl ||
       channelKeys.value.map((key) => key.credential).join('\u0000') !== probeCredential ||
-      form.authType !== probeAuthType
+      form.authType !== probeAuthType ||
+      JSON.stringify(form.protocolAuthTypes || {}) !== JSON.stringify(probeProtocolAuthTypes)
     ) {
       return
     }
@@ -620,14 +788,14 @@ async function probeProtocols() {
     )
   } catch (cause) {
     if (probeRequests.isCurrent(requestId) && editingId.value === channelId) {
-      notify(cause.message, 'error')
+      notify(errorMessage(cause), 'error')
     }
   } finally {
     if (probeRequests.isCurrent(requestId)) probing.value = false
   }
 }
 
-async function save() {
+async function save(): Promise<void> {
   if (saving.value) return
   if (!form.name.trim() || !form.baseUrl.trim()) {
     notify('请填写渠道名称和基础地址', 'error')
@@ -672,7 +840,7 @@ async function save() {
     try {
       validateChannelKeyRateLimit(key.rateLimit)
     } catch (cause) {
-      notify(`密钥「${name}」限流规则无效：${cause.message}`, 'error')
+      notify(`密钥「${name}」限流规则无效：${errorMessage(cause)}`, 'error')
       return
     }
   }
@@ -683,6 +851,10 @@ async function save() {
 
   saving.value = true
   try {
+    if (!overrideEditor.value) {
+      notify('请求配置尚未加载完成，请稍后重试', 'error')
+      return
+    }
     form.requestOverrides = overrideEditor.value.getValue()
     const payload = buildChannelPayload(
       form,
@@ -691,17 +863,18 @@ async function save() {
       originalMappings,
       channelKeys.value,
     )
-    const wasEditing = !!editingId.value
+    const currentEditingId = editingId.value
+    const wasEditing = currentEditingId !== null
     const saved = wasEditing
-      ? await api.updateChannel(editingId.value, payload)
+      ? await api.updateChannel(currentEditingId, payload)
       : await api.createChannel(payload)
-    if (wasEditing) clearUpstreamModelCache(editingId.value)
+    if (wasEditing) clearUpstreamModelCache(currentEditingId)
     showForm.value = false
     probeRequests.invalidate()
     probeResults.value = []
     probeDerivedProtocols = false
     await load()
-    const savedChannel = resolveSavedChannel(channels.value, saved, editingId.value, form.name)
+    const savedChannel = resolveSavedChannel(channels.value, saved, currentEditingId, form.name)
     const unpricedCount = updatePricePrompt(savedChannel)
     if (unpricedCount > 0) {
       notify(`渠道已保存，还有 ${unpricedCount} 个上游模型未配置单价`, 'warning')
@@ -709,14 +882,14 @@ async function save() {
       notify(wasEditing ? '渠道已更新' : '渠道已创建')
     }
   } catch (cause) {
-    notify(cause.message, 'error')
-    if (cause.code === 'channel_key_state_changed') await load()
+    notify(errorMessage(cause), 'error')
+    if (cause instanceof ApiError && cause.code === 'channel_key_state_changed') await load()
   } finally {
     saving.value = false
   }
 }
 
-async function remove(channel) {
+async function remove(channel: Channel): Promise<void> {
   if (!window.confirm(`确定删除渠道「${channel.name}」？`)) return
   try {
     await api.deleteChannel(channel.id)
@@ -725,7 +898,7 @@ async function remove(channel) {
     notify('渠道已删除')
     await load()
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(errorMessage(cause), 'error')
   }
 }
 
@@ -919,6 +1092,7 @@ onMounted(load)
               <td class="muted">{{ formatTime(channel.updatedAt) }}</td>
               <td class="actions-col">
                 <div class="row-actions">
+                  <button type="button" class="button ghost mini" :title="'按密钥查询 ' + channel.name + ' 的账户额度'" @click="quotaTarget = channel">额度</button>
                   <button type="button" class="icon-button" title="配置模型单价" @click="openPrice(channel)">
                     <Icon name="price" :size="16" />
                   </button>
@@ -936,6 +1110,8 @@ onMounted(load)
       </div>
     </div>
 
+    <ChannelQuotaModal v-if="quotaTarget" :key="quotaTarget.id" :channel="quotaTarget" @close="quotaTarget = null" @saved="onQuotaSaved" />
+
     <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide @close="closeChannelForm">
       <form class="form-grid" @submit.prevent="save">
         <label class="field">
@@ -946,7 +1122,7 @@ onMounted(load)
         <label class="field">
           <span>基础地址</span>
           <input v-model="form.baseUrl" placeholder="https://api.openai.com/v1" autocomplete="off" />
-          <small>网关会按请求协议在此地址后追加对应端点，并用 <code>/models</code> 拉取模型列表。</small>
+          <small>网关会按请求协议在此地址后追加对应端点。模型列表可通过 <code>/models</code> 读取，也可手动添加。</small>
         </label>
         <label class="field">
           <span>上游鉴权</span>
@@ -955,7 +1131,7 @@ onMounted(load)
             <option value="anthropic">Anthropic API key（x-api-key）</option>
             <option value="google">Google API key（x-goog-api-key）</option>
           </select>
-          <small>Anthropic / Gemini 原生渠道选择对应 API key；使用 OAuth 凭据时选择 Bearer token。</small>
+          <small>这是未单独配置协议时的默认鉴权方式；各协议可在下方单独覆盖。</small>
         </label>
         <div class="field">
           <span>支持协议与转换优先级</span>
@@ -970,6 +1146,22 @@ onMounted(load)
               <span class="badge info">{{ protocolLabel(protocol) }}</span>
               <button type="button" class="icon-button" :disabled="index === 0" title="上移" @click="moveProtocol(index, -1)">↑</button>
               <button type="button" class="icon-button" :disabled="index === form.protocols.length - 1" title="下移" @click="moveProtocol(index, 1)">↓</button>
+            </div>
+          </div>
+          <div v-if="form.protocols.length" class="protocol-auth-settings">
+            <small>协议级鉴权（可选）：选择“继承渠道默认”即可继续使用上方设置。</small>
+            <div v-for="protocol in form.protocols" :key="'auth-' + protocol" class="protocol-auth-row">
+              <span class="badge info">{{ protocolLabel(protocol) }}</span>
+              <select
+                :value="form.protocolAuthTypes[protocol] || ''"
+                :aria-label="protocolLabel(protocol) + '鉴权方式'"
+                @change="setProtocolAuthTypeFromEvent(protocol, $event)"
+              >
+                <option value="">继承渠道默认（{{ authTypeLabel(form.authType) }}）</option>
+                <option value="bearer">Bearer token</option>
+                <option value="anthropic">Anthropic API key（x-api-key）</option>
+                <option value="google">Google API key（x-goog-api-key）</option>
+              </select>
             </div>
           </div>
           <div class="protocol-probe-row">
@@ -1008,15 +1200,39 @@ onMounted(load)
           <div class="channel-model-auth-head">
             <div>
               <span>上游密钥</span>
-              <small>同一渠道的密钥共用基础地址、鉴权方式和协议；密钥优先级只在当前渠道内生效。</small>
+              <small>同一渠道的密钥共用基础地址、协议和协议级鉴权配置；未覆盖的协议继承渠道默认鉴权方式。</small>
             </div>
             <div class="section-head-actions">
               <span class="badge info">{{ channelKeys.length }} 个密钥</span>
               <button type="button" class="button ghost mini" @click="showAutoDisableSettings = true">自动禁用规则</button>
             </div>
           </div>
+          <div class="channel-key-tabs" role="tablist" aria-label="渠道密钥">
+            <button
+              v-for="(key, index) in channelKeys"
+              :id="channelKeyTabId(key.localId)"
+              :key="key.localId"
+              type="button"
+              class="channel-key-tab"
+              role="tab"
+              :aria-selected="selectedChannelKeyId === key.localId"
+              :aria-controls="`channel-key-panel-${key.localId}`"
+              :tabindex="selectedChannelKeyId === key.localId ? 0 : -1"
+              @click="selectedChannelKeyId = key.localId"
+              @keydown="handleChannelKeyTabKeydown($event, index)"
+            >{{ key.name.trim() || `密钥 ${index + 1}` }}</button>
+          </div>
           <div class="channel-key-list">
-            <div v-for="(key, index) in channelKeys" :key="key.localId" class="channel-key-card">
+            <div
+              v-for="(key, index) in channelKeys"
+              :id="`channel-key-panel-${key.localId}`"
+              :key="key.localId"
+              v-show="selectedChannelKeyId === key.localId"
+              class="channel-key-card"
+              role="tabpanel"
+              tabindex="0"
+              :aria-labelledby="channelKeyTabId(key.localId)"
+            >
               <div class="channel-key-card-head">
                 <label class="field">
                   <span>密钥名称</span>
@@ -1086,10 +1302,43 @@ onMounted(load)
                   <button type="button" class="button subtle mini" :disabled="key.modelsLoading" @click="loadKeyModels(key)">
                     {{ key.modelsLoading ? '读取中…' : '读取模型' }}
                   </button>
+                  <button
+                    :id="`manual-models-button-${key.localId}`"
+                    type="button"
+                    class="button subtle mini"
+                    :aria-expanded="key.showManualModels"
+                    :aria-controls="`manual-models-panel-${key.localId}`"
+                    @click="openManualKeyModels(key)"
+                  >手动添加</button>
                   <button type="button" class="button ghost mini" @click="selectAllKeyModels(key)">全选</button>
                   <button type="button" class="button ghost mini" @click="clearKeyModels(key)">清空</button>
                 </div>
-                <div v-if="key.modelsError" class="callout danger">{{ key.modelsError }}</div>
+                <div v-if="key.showManualModels" :id="`manual-models-panel-${key.localId}`" class="channel-key-manual-models">
+                  <label class="field" :for="`manual-models-${key.localId}`">
+                    <span>上游模型 ID</span>
+                    <textarea
+                      :id="`manual-models-${key.localId}`"
+                      v-model="key.manualModelsText"
+                      rows="3"
+                      placeholder="填写上游实际使用的模型 ID，可批量粘贴"
+                      spellcheck="false"
+                      autocapitalize="off"
+                      :aria-invalid="!!key.manualModelsError"
+                      :aria-describedby="`manual-models-hint-${key.localId}`"
+                      @input="key.manualModelsError = ''"
+                    ></textarea>
+                    <small :id="`manual-models-hint-${key.localId}`">支持换行、逗号、分号或空格分隔；添加后自动勾选，重复 ID 会合并。</small>
+                  </label>
+                  <div v-if="key.manualModelsError" class="callout danger" role="alert">{{ key.manualModelsError }}</div>
+                  <div class="channel-key-manual-model-actions">
+                    <button type="button" class="button subtle mini" :disabled="!key.manualModelsText.trim()" @click="addManualKeyModels(key)">添加并选中</button>
+                    <button type="button" class="button ghost mini" @click="closeManualKeyModels(key)">取消</button>
+                  </div>
+                </div>
+                <div v-if="key.modelsError" class="callout danger">
+                  {{ key.modelsError }}
+                  <p>可点击“手动添加”填写上游模型 ID，然后保存渠道。</p>
+                </div>
                 <div v-if="keyModelOptions(key).length" class="channel-model-auth-body">
                   <div class="channel-model-auth-list">
                     <label v-for="model in keyModelOptions(key)" :key="model.id" class="channel-model-option">
@@ -1106,7 +1355,7 @@ onMounted(load)
                   </div>
                 </div>
                 <div v-else class="channel-model-auth-placeholder">
-                  填写凭据后点击“读取模型”，再选择该密钥可用的模型。
+                  点击“读取模型”获取列表，或点击“手动添加”填写该密钥可用的上游模型 ID。
                 </div>
               </div>
             </div>
@@ -1269,6 +1518,19 @@ onMounted(load)
   width: 72px;
   padding: 4px 6px;
   font: inherit;
+}
+
+.channel-key-manual-models {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 8px;
+}
+
+.channel-key-manual-model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .channel-key-rate-limit-row {

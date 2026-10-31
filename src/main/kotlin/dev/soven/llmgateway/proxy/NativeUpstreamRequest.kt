@@ -13,10 +13,31 @@ fun upstreamRequestUrl(baseUrl: String, protocol: GatewayProtocol, model: String
     return "$base/models/$modelPath:$action" + if (stream) "?alt=sse" else ""
 }
 
-fun ChannelRecord.modelListProtocol(): GatewayProtocol? = when (authType) {
-    "anthropic" -> GatewayProtocol.MESSAGES
-    "google" -> GatewayProtocol.GEMINI
-    else -> protocols.singleOrNull()
+fun ChannelRecord.modelListProtocol(): GatewayProtocol? =
+    modelListProtocol(protocols, authType, protocolAuthTypes)
+
+/**
+ * The model-list endpoint is protocol-neutral, but its URL and auth headers
+ * still need one protocol context. Prefer explicit native special-protocol overrides;
+ * otherwise retain the legacy channel-level selection.
+ */
+fun modelListProtocol(
+    protocols: List<GatewayProtocol>,
+    authType: String,
+    protocolAuthTypes: Map<String, String> = emptyMap(),
+): GatewayProtocol? {
+    val explicitGemini = protocols.firstOrNull {
+        it == GatewayProtocol.GEMINI && protocolAuthTypes.containsKey(it.value)
+    }
+    val explicitMessages = protocols.firstOrNull {
+        it == GatewayProtocol.MESSAGES && protocolAuthTypes.containsKey(it.value)
+    }
+    val explicitOther = protocols.firstOrNull { protocolAuthTypes.containsKey(it.value) }
+    return explicitGemini ?: explicitMessages ?: explicitOther ?: when (authType) {
+        "anthropic" -> GatewayProtocol.MESSAGES
+        "google" -> GatewayProtocol.GEMINI
+        else -> protocols.singleOrNull()
+    }
 }
 
 fun isGeminiRequestPath(path: String): Boolean =

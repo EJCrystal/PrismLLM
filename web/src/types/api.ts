@@ -49,6 +49,7 @@ export interface ChannelKeyRateLimit {
 export interface ChannelKey {
   id: string
   name: string
+  quota?: ChannelQuotaSettings | null
   state: ChannelKeyState
   priority: number
   credentialSet: boolean
@@ -88,6 +89,7 @@ export interface Channel {
   name: string
   baseUrl: string
   authType: string
+  protocolAuthTypes: Record<string, string>
   protocols: string[]
   enabled: boolean
   credentialSet: boolean
@@ -98,6 +100,52 @@ export interface Channel {
   priority: number
   keys: ChannelKey[]
   requestOverrides: UpstreamRequestOverrides
+  quota: ChannelQuotaSettings
+}
+
+export interface ChannelQuotaSettings {
+  providerId: string
+  config: JsonObject
+  credentialSource?: 'CHANNEL_KEY' | 'DEDICATED'
+  credentialSet?: boolean
+}
+
+export interface ChannelQuotaSettingsRequest extends Omit<ChannelQuotaSettings, 'credentialSet'> {
+  credential?: string
+  clearCredential?: boolean
+}
+
+export interface QuotaProvider {
+  id: string
+  displayName: string
+  apiVersion: number
+}
+
+export type ChannelQuotaStatus = 'AVAILABLE' | 'UNLIMITED' | 'UNSUPPORTED' | 'AUTHENTICATION_FAILED' | 'RATE_LIMITED' | 'ERROR' | 'DISABLED'
+
+export interface ChannelQuotaKeyRef {
+  id: string
+  name: string
+}
+
+export interface ChannelQuotaSnapshot {
+  channelId: string
+  providerId: string
+  status: ChannelQuotaStatus
+  scope: 'CHANNEL' | 'KEY'
+  targetKeyId?: string | null
+  remaining?: string | null
+  used?: string | null
+  limit?: string | null
+  unit?: string | null
+  planName?: string | null
+  message?: string | null
+  checkedAt: number
+  sharedKeyCount: number
+  cached: boolean
+  queryKey?: ChannelQuotaKeyRef | null
+  attemptedKeys?: ChannelQuotaKeyRef[]
+  credentialSource?: 'CHANNEL_KEY' | 'DEDICATED' | null
 }
 
 export interface ChannelKeyRateLimitRequest {
@@ -128,6 +176,7 @@ export interface ChannelRequest {
   baseUrl: string
   credential?: string | null
   authType?: string | null
+  protocolAuthTypes?: Record<string, string> | null
   protocols?: string[]
   enabled?: boolean
   models?: string[]
@@ -135,6 +184,7 @@ export interface ChannelRequest {
   priority?: number | null
   keys?: ChannelKeyRequest[]
   requestOverrides?: UpstreamRequestOverrides
+  quota?: ChannelQuotaSettingsRequest
 }
 
 export interface KeyDisableRule {
@@ -488,6 +538,7 @@ export interface ModelDiscoveryRequest {
   channelId?: string | null
   keyId?: string | null
   authType?: string | null
+  protocolAuthTypes?: Record<string, string> | null
   protocols?: string[]
   requestOverrides?: UpstreamRequestOverrides
 }

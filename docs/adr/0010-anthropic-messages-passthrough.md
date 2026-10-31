@@ -5,7 +5,7 @@
 ## 鉴权与请求头
 
 - 仅 `/v1/messages` 同时接受调用方 `Authorization: Bearer <gateway-key>` 与 `x-api-key: <gateway-key>`，二者认证同一组网关密钥。网关不会把调用方密钥发给上游。
-- 渠道的 `authType=bearer` 使用 `Authorization: Bearer <upstream-credential>`；`authType=anthropic` 使用上游 `x-api-key`。
+- 渠道未配置 `protocolAuthTypes.messages` 时，按兼容旧配置使用渠道级 `authType`：`bearer` 使用 `Authorization: Bearer <upstream-credential>`；`anthropic` 使用上游 `x-api-key`。配置 `protocolAuthTypes.messages` 后，Messages 出站请求按该覆盖值选择鉴权方式，其他协议不受影响。
 - Messages 请求的 `anthropic-version` 原样转发；缺省时使用 `2023-06-01`。`anthropic-beta` 存在时也会转发。
 
 ## 响应、流与用量

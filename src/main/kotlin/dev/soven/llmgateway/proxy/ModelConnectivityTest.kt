@@ -4,6 +4,7 @@ import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.authTypeFor
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.security.CredentialCipher
@@ -72,14 +73,15 @@ suspend fun testChannelModelConnectivity(
     val startedAt = System.currentTimeMillis()
     return try {
         withTimeout(timeoutMs) {
+            val authType = channel.authTypeFor(protocol)
             val policy = UpstreamRequestPolicy(
-                globalOverrides, channel.requestOverrides, protocol, channel.authType, headerProfiles,
+                globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles,
             )
             val requestBody = policy.body(
                 Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject, model,
             )
             val response = httpClient.post(upstreamRequestUrl(channel.baseUrl, protocol, model)) {
-                applyUpstreamAuthentication(credential, channel.authType, protocol)
+                applyUpstreamAuthentication(credential, authType, protocol)
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 policy.applyHeaders(this)
                 setBody(

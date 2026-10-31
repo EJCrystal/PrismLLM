@@ -1,4 +1,7 @@
 target
+**/target
+plugins
+midscene_run
 web/node_modules
 web/dist
 .env

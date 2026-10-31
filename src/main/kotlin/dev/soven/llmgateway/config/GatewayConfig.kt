@@ -35,6 +35,8 @@ data class GatewayConfig(
     val upstreamHeaderRefreshIntervalMs: Long = 3_600_000,
     val upstreamHeaderCatalogUrl: String? = null,
     val upstreamHeaderRefreshEnabled: Boolean = true,
+    /** 可信额度插件 JAR 所在目录；不存在时视为空目录。 */
+    val quotaPluginDir: Path = Path.of("plugins"),
 ) {
     companion object {
         fun fromEnv(env: Map<String, String> = System.getenv()): GatewayConfig {
@@ -122,6 +124,7 @@ data class GatewayConfig(
                 upstreamHeaderRefreshEnabled = value("UPSTREAM_HEADER_REFRESH_ENABLED", "true")
                     .toBooleanStrictOrNull()
                     ?: error("UPSTREAM_HEADER_REFRESH_ENABLED 必须是 true 或 false"),
+                quotaPluginDir = Path.of(value("QUOTA_PLUGIN_DIR", "plugins")),
             )
         }
     }

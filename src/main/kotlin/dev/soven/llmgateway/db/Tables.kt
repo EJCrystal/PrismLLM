@@ -14,8 +14,13 @@ object Channels : Table("channels") {
     val name = varchar("name", 100).uniqueIndex()
     val baseUrl = varchar("base_url", 500)
     val authType = varchar("auth_type", 20)
+    val protocolAuthTypes = text("protocol_auth_types").default("{}")
     val protocols = varchar("protocols", 100)
     val requestOverrides = text("request_overrides").default("{}")
+    val quotaSettings = text("quota_settings").default("{}")
+    val quotaCredentialCiphertext = text("quota_credential_ciphertext").default("")
+    val quotaCredentialNonce = text("quota_credential_nonce").default("")
+    val quotaCredentialKeyVersion = integer("quota_credential_key_version").default(1)
     val enabled = bool("enabled")
     val priority = integer("priority").default(1)
     val createdAt = long("created_at")
@@ -51,6 +56,17 @@ object ChannelKeys : Table("channel_keys") {
         uniqueIndex(channelId, name)
         index(false, channelId, priority)
     }
+}
+
+/** 每个密钥独立的账户额度配置；无记录表示未配置，不继承其他账户凭据。 */
+object ChannelKeyQuotaSettings : Table("channel_key_quota_settings") {
+    val keyId = varchar("key_id", 36).references(ChannelKeys.id, onDelete = ReferenceOption.CASCADE)
+    val settings = text("settings").default("{}")
+    val credentialCiphertext = text("credential_ciphertext").default("")
+    val credentialNonce = text("credential_nonce").default("")
+    val credentialKeyVersion = integer("credential_key_version").default(1)
+    val updatedAt = long("updated_at")
+    override val primaryKey = PrimaryKey(keyId)
 }
 
 /** 渠道密钥显式授权的上游模型。 */

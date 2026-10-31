@@ -5,6 +5,9 @@ import type {
   AvatarRequest,
   ChangePasswordRequest,
   Channel,
+  ChannelQuotaSettingsRequest,
+  ChannelQuotaSnapshot,
+  QuotaProvider,
   ChannelModelTestRequest,
   ChannelModelTestResult,
   ChannelModelsResponse,
@@ -126,6 +129,14 @@ export const api = {
   getModelsDevCatalog: () => request<ModelsDevCatalog>('/models-dev'),
 
   listChannels: () => requestList<Channel>('/channels'),
+  listQuotaProviders: () => requestList<QuotaProvider>('/quota-providers'),
+  updateChannelQuota: (id: string, payload: ChannelQuotaSettingsRequest) =>
+    request<Channel>('/channels/' + encodeURIComponent(id) + '/quota-settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  queryChannelQuota: (id: string) => request<ChannelQuotaSnapshot>('/channels/' + encodeURIComponent(id) + '/quota', { method: 'POST' }),
+  updateChannelKeyQuota: (id: string, keyId: string, payload: ChannelQuotaSettingsRequest) =>
+    request<Channel>('/channels/' + encodeURIComponent(id) + '/keys/' + encodeURIComponent(keyId) + '/quota-settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  queryChannelKeyQuota: (id: string, keyId: string) =>
+    request<ChannelQuotaSnapshot>('/channels/' + encodeURIComponent(id) + '/keys/' + encodeURIComponent(keyId) + '/quota', { method: 'POST' }),
   createChannel: (payload: ChannelRequest) => request<Channel>('/channels', { method: 'POST', body: JSON.stringify(payload) }),
   updateChannel: (id: string, payload: ChannelRequest) =>
     request<Channel>(`/channels/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),

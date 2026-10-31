@@ -16,6 +16,7 @@ export interface ChannelFormDraft {
   baseUrl: string
   credential?: string | null
   authType?: string | null
+  protocolAuthTypes?: Record<string, string> | null
   protocols: string[]
   enabled: boolean
   priority?: number | string | null
@@ -39,6 +40,15 @@ export interface OriginalModelMapping {
   mappingSource: string | null
 }
 
+export function parseManualModelIds(text: string): string[] {
+  const models = [...new Set(text.split(/[\s,，;；]+/u).filter(Boolean))]
+  if (!models.length) throw new Error('请填写至少一个上游模型 ID')
+  if (models.some((model) => model.length > 200)) {
+    throw new Error('每个上游模型 ID 不能超过 200 个字符')
+  }
+  return models
+}
+
 export function buildChannelPayload(
   form: ChannelFormDraft,
   authorizedModels: string[],
@@ -51,6 +61,7 @@ export function buildChannelPayload(
     baseUrl: form.baseUrl.trim(),
     credential: keys.length ? null : String(form.credential ?? '').trim() || null,
     authType: form.authType || 'bearer',
+    protocolAuthTypes: { ...(form.protocolAuthTypes || {}) },
     protocols: [...form.protocols],
     enabled: form.enabled,
     modelMappings: authorizedModels.map((upstreamModel) => {
@@ -118,11 +129,14 @@ export function isKeyRoutable(key: Pick<import('../types/api').ChannelKey, 'stat
   return false
 }
 
-export function buildPriorityUpdatePayload(channel: Pick<Channel, 'name' | 'baseUrl' | 'authType' | 'protocols' | 'enabled'>, priority: number): ChannelRequest {
+export function buildPriorityUpdatePayload(channel: Pick<Channel, 'name' | 'baseUrl' | 'authType' | 'protocolAuthTypes' | 'protocols' | 'enabled'>, priority: number): ChannelRequest {
   return {
     name: channel.name,
     baseUrl: channel.baseUrl,
     authType: channel.authType || 'bearer',
+    ...(Object.keys(channel.protocolAuthTypes || {}).length
+      ? { protocolAuthTypes: { ...(channel.protocolAuthTypes || {}) } }
+      : {}),
     protocols: [...(channel.protocols || [])],
     enabled: channel.enabled,
     priority,
