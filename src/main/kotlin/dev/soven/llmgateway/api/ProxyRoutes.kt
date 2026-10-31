@@ -334,7 +334,7 @@ private suspend fun handleProxy(
                     statusCode = state.upstreamStatus ?: status,
                     upstreamErrorStatusCode = upstreamError?.upstreamStatus,
                     errorCode = errorCode ?: error?.code,
-                    upstreamErrorCode = upstreamError?.upstreamCode,
+                    upstreamErrorCode = upstreamError?.upstreamCode?.take(200),
                     errorMessage = upstreamError?.message?.asLogMessage(),
                     elapsedMs = (System.nanoTime() - attemptStartedNanos) / 1_000_000,
                     firstTokenMs = state.attemptFirstTokenMs,
