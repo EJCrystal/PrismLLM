@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import {
   buildChannelKeyRateLimitPayload,
@@ -21,7 +21,7 @@ function save() {
     error.value = ''
     emit('save', buildChannelKeyRateLimitPayload(form))
   } catch (cause) {
-    error.value = cause.message
+    error.value = cause instanceof Error ? cause.message : String(cause)
   }
 }
 </script>

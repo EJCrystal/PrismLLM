@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
 import { copyText } from '../clipboard'
 import { notify } from '../toast'
@@ -28,7 +28,7 @@ const props = defineProps({
 })
 
 const copied = ref(false)
-let timer = null
+let timer: ReturnType<typeof setTimeout> | null = null
 
 async function handleCopy() {
   if (!props.text) return

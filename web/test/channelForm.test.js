@@ -1,6 +1,38 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols } from '../src/utils/channelForm'
+import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols, parseManualModelIds, removeProbeAddedProtocols } from '../src/utils/channelForm'
+
+describe('channelForm: 手动添加上游模型', () => {
+  it('批量粘贴时忽略空白和重复 ID，保留模型名中的符号与大小写', () => {
+    assert.deepEqual(
+      parseManualModelIds('  vendor/Model-1:latest\nmodel-2,model-3，model-4;model-5；model-6\tmodel-7  vendor/Model-1:latest  '),
+      ['vendor/Model-1:latest', 'model-2', 'model-3', 'model-4', 'model-5', 'model-6', 'model-7'],
+    )
+  })
+
+  it('拒绝空列表和超过后端长度限制的 ID', () => {
+    assert.throws(() => parseManualModelIds(' \n,，;；\t'), /至少一个上游模型 ID/)
+    assert.throws(() => parseManualModelIds(`valid-model,${'x'.repeat(201)}`), /不能超过 200 个字符/)
+    assert.deepEqual(parseManualModelIds('x'.repeat(200)), ['x'.repeat(200)])
+  })
+
+  it('无需上游发现结果即可保存手动模型及对外 ID 映射', () => {
+    const models = parseManualModelIds('vendor/model-1,model-2,vendor/model-1')
+    const payload = buildChannelPayload(
+      { name: 'manual-channel', baseUrl: 'https://example.com/v1', protocols: ['chat_completions'], enabled: true },
+      models,
+      { 'vendor/model-1': 'public-model' },
+      {},
+      [{ name: '默认密钥', credential: 'secret', models }],
+    )
+
+    assert.deepEqual(payload.keys[0].models, ['vendor/model-1', 'model-2'])
+    assert.deepEqual(payload.modelMappings, [
+      { upstreamModel: 'vendor/model-1', canonicalModelId: 'public-model', mappingSource: 'manual' },
+      { upstreamModel: 'model-2', canonicalModelId: null, mappingSource: null },
+    ])
+  })
+})
 
 describe('channelForm: 渠道保存请求体', () => {
   const baseForm = {
@@ -100,6 +132,17 @@ describe('channelForm: 渠道保存请求体', () => {
       ['messages', 'chat_completions', 'responses'],
     )
     assert.deepEqual(mergeProbedProtocols([], ['chat_completions', 'responses']), ['chat_completions', 'responses'])
+  })
+
+  it('鉴权设置变化时只撤销协议探测新增的协议', () => {
+    const manuallySelected = ['messages', 'chat_completions']
+    const supported = ['chat_completions', 'responses', 'messages']
+    const selected = mergeProbedProtocols(manuallySelected, supported)
+    const probeAdded = supported.filter((protocol) => !manuallySelected.includes(protocol))
+
+    assert.deepEqual(selected, ['messages', 'chat_completions', 'responses'])
+    assert.deepEqual(removeProbeAddedProtocols(selected, probeAdded), manuallySelected)
+    assert.deepEqual(removeProbeAddedProtocols(['messages', 'responses'], []), ['messages', 'responses'])
   })
 
   it('未修改的映射保留原 mappingSource', () => {

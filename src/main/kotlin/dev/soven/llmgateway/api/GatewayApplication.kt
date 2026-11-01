@@ -33,6 +33,8 @@ import dev.soven.llmgateway.quota.RequestLimitService
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.security.PasswordHasher
+import dev.soven.llmgateway.plugin.quota.ChannelQuotaProviderRegistry
+import dev.soven.llmgateway.plugin.quota.ChannelQuotaService
 import dev.soven.llmgateway.resilience.CandidateCooldown
 import dev.soven.llmgateway.resilience.CooldownStateWriter
 import dev.soven.llmgateway.resilience.KeyAvailabilityGate
@@ -148,6 +150,9 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         autoRefreshEnabled = config.upstreamHeaderRefreshEnabled,
         manifestUrl = config.upstreamHeaderCatalogUrl,
     )
+    /** 额度插件仅在管理面查询阶段使用，不参与请求转发。 */
+    val channelQuotaProviderRegistry = ChannelQuotaProviderRegistry(config.quotaPluginDir)
+    val channelQuotaService = ChannelQuotaService(channelQuotaProviderRegistry, credentialCipher)
 
     fun install(app: Application) {
         databaseFactory.migrate()
@@ -389,6 +394,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         runBlocking { keyAutoRecoveryJob.getAndSet(null)?.cancelAndJoin() }
         scope.cancel()
         httpClient.close()
+        channelQuotaService.close()
+        channelQuotaProviderRegistry.close()
         databaseFactory.close()
     }
 

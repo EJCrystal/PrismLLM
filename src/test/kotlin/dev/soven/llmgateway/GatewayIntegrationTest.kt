@@ -6,6 +6,8 @@ import ch.qos.logback.core.AppenderBase
 import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.ChannelQuotaSettings
+import dev.soven.llmgateway.domain.ChannelQuotaCredentialSource
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
@@ -81,6 +83,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
+import org.junit.jupiter.api.io.TempDir
 import org.slf4j.LoggerFactory
 import org.testcontainers.containers.PostgreSQLContainer
 import java.io.IOException
@@ -109,6 +112,8 @@ import kotlin.test.assertFailsWith
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class GatewayIntegrationTest {
+    @TempDir
+    lateinit var quotaPluginDirectory: Path
     private lateinit var postgres: PostgreSQLContainer<*>
     private lateinit var fake: FakeUpstream
     private lateinit var app: GatewayApplication
@@ -141,6 +146,346 @@ class GatewayIntegrationTest {
     @AfterEach
     fun tearDown() {
         if (::app.isInitialized) app.close()
+    }
+
+    @Test
+    fun channelKeyQuotaAccountsAreIndependentEncryptedAndPreservedByKeyEdits() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "multi-account-quota", baseUrl = fake.baseUrl + "/ok/v1", authType = "bearer", enabled = true,
+            keys = listOf(
+                NewChannelKey("账户 A", app.credentialCipher.encrypt("model-a"), models = listOf("m1")),
+                NewChannelKey("账户 B", app.credentialCipher.encrypt("model-b"), models = listOf("m1")),
+            ), modelMappings = mappingsOf("m1"),
+            quota = ChannelQuotaSettings("new-api", credentialSource = ChannelQuotaCredentialSource.DEDICATED),
+            quotaCredential = app.credentialCipher.encrypt("legacy-system"),
+        )
+        val first = channel.keys.first()
+        val second = channel.keys.last()
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val path = "/admin/api/channels/" + channel.id
+            suspend fun save(keyId: String, userId: String, extra: String = "") = client.put("$path/keys/$keyId/quota-settings") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"providerId":"new-api","credentialSource":"DEDICATED","config":{"authMode":"system","userId":"$userId"}$extra}""")
+            }
+            val aResponse = save(first.id, "101", ""","credential":"account-a-system"""")
+            assertEquals(HttpStatusCode.OK, aResponse.status)
+            val responseText = aResponse.bodyAsText()
+            assertFalse(responseText.contains("account-a-system"))
+            assertFalse(responseText.contains("ciphertext"))
+            assertEquals(HttpStatusCode.OK, save(second.id, "202", ""","credential":"account-b-system"""").status)
+            val stored = app.channelRepository.find(channel.id)!!
+            val aCredential = assertNotNull(stored.keys.first().quotaCredential)
+            val bCredential = assertNotNull(stored.keys.last().quotaCredential)
+            assertNotEquals("account-a-system", aCredential.ciphertext)
+            assertEquals("account-a-system", app.credentialCipher.decrypt(aCredential.ciphertext, aCredential.nonce))
+            assertEquals("account-b-system", app.credentialCipher.decrypt(bCredential.ciphertext, bCredential.nonce))
+            assertEquals("101", stored.keys.first().quota!!.config["userId"]!!.jsonPrimitive.content)
+            assertEquals("202", stored.keys.last().quota!!.config["userId"]!!.jsonPrimitive.content)
+            assertEquals(channel.quotaCredential, stored.quotaCredential)
+            assertEquals(channel.keys.map { it.credentialCiphertext }, stored.keys.map { it.credentialCiphertext })
+            assertEquals(HttpStatusCode.OK, save(first.id, "101").status)
+            assertEquals(aCredential, app.channelRepository.find(channel.id)!!.keys.first().quotaCredential)
+            val update = client.put(path) {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"multi-account-quota","baseUrl":"${channel.baseUrl}","keys":[{"id":"${first.id}","name":"账户 A","models":["m1"]},{"id":"${second.id}","name":"账户 B","models":["m1"]}]}""")
+            }
+            assertEquals(HttpStatusCode.OK, update.status)
+            assertEquals(stored.keys.map { it.quota }, app.channelRepository.find(channel.id)!!.keys.map { it.quota })
+            assertEquals(aCredential, app.channelRepository.find(channel.id)!!.keys.first().quotaCredential)
+            val query = client.post("$path/keys/${first.id}/quota") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+            }
+            assertEquals(HttpStatusCode.OK, query.status)
+            assertEquals("no-store", query.headers["Cache-Control"])
+            val snapshot = Json.parseToJsonElement(query.bodyAsText()).jsonObject
+            assertEquals("KEY", snapshot["scope"]!!.jsonPrimitive.content)
+            assertEquals(first.id, snapshot["targetKeyId"]!!.jsonPrimitive.content)
+            assertEquals("UNSUPPORTED", snapshot["status"]!!.jsonPrimitive.content)
+            assertEquals(HttpStatusCode.OK, save(first.id, "101", ""","credential":"account-a-rotated"""").status)
+            val rotated = app.channelRepository.find(channel.id)!!.keys.first().quotaCredential!!
+            assertEquals("account-a-rotated", app.credentialCipher.decrypt(rotated.ciphertext, rotated.nonce))
+            assertEquals(HttpStatusCode.OK, save(first.id, "101", ""","clearCredential":true""").status)
+            val cleared = app.channelRepository.find(channel.id)!!
+            assertNull(cleared.keys.first().quotaCredential)
+            assertEquals(bCredential, cleared.keys.last().quotaCredential)
+            assertEquals(channel.quotaCredential, cleared.quotaCredential)
+            val listing = client.get("/admin/api/channels") { header(HttpHeaders.Cookie, "gw_session=" + session.token) }
+            assertFalse(listing.bodyAsText().contains("account-b-system"))
+            app.channelRepository.update(channel.id, channel.name, channel.baseUrl, keys = listOf(
+                ChannelKeyUpdate(id = second.id, name = second.name, models = listOf("m1")),
+            ), authType = null, enabled = true)
+            assertEquals(1, scalarInt("select count(*) from channel_key_quota_settings"))
+            assertEquals(second.id, app.channelRepository.find(channel.id)!!.keys.single().id)
+        }
+    }
+
+    @Test
+    fun channelKeyQuotaUpdatesReturnFreshSettingsAndPreserveOrClearCredentials() = runBlocking {
+        val channel = createChannelWithBaseUrl("quota-readback", fake.baseUrl + "/ok/v1")
+        val keyId = channel.keys.single().id
+        val settings = ChannelQuotaSettings("new-api")
+        val initial = assertNotNull(app.channelRepository.updateKeyQuota(channel.id, keyId, settings))
+        assertEquals(settings, initial.keys.single().quota)
+        assertNull(initial.keys.single().quotaCredential)
+        assertEquals(initial, app.channelRepository.find(channel.id))
+
+        val credential = app.credentialCipher.encrypt("readback-system-secret")
+        val dedicated = settings.copy(
+            credentialSource = ChannelQuotaCredentialSource.DEDICATED,
+            config = Json.parseToJsonElement("""{"authMode":"system","userId":"101"}""").jsonObject,
+        )
+        val saved = assertNotNull(app.channelRepository.updateKeyQuota(channel.id, keyId, dedicated, credential))
+        assertEquals(dedicated, saved.keys.single().quota)
+        assertEquals(credential, saved.keys.single().quotaCredential)
+        assertEquals(saved, app.channelRepository.find(channel.id))
+
+        val changed = dedicated.copy(config = Json.parseToJsonElement("""{"authMode":"system","userId":"202"}""").jsonObject)
+        val preserved = assertNotNull(app.channelRepository.updateKeyQuota(channel.id, keyId, changed))
+        assertEquals(changed, preserved.keys.single().quota)
+        assertEquals(credential, preserved.keys.single().quotaCredential)
+        assertEquals(preserved, app.channelRepository.find(channel.id))
+
+        val cleared = assertNotNull(app.channelRepository.updateKeyQuota(channel.id, keyId, changed, clearCredential = true))
+        assertEquals(changed, cleared.keys.single().quota)
+        assertNull(cleared.keys.single().quotaCredential)
+        assertEquals(cleared, app.channelRepository.find(channel.id))
+    }
+
+    @Test
+    fun channelKeyQuotaEndpointsValidateSessionCsrfSettingsAndKeyOwnership() = runBlocking {
+        val channel = createChannel("key-quota-validation", "ok")
+        val other = createChannel("other-key-quota-validation", "ok")
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val path = "/admin/api/channels/${channel.id}/keys/${channel.keys.single().id}"
+            assertEquals(HttpStatusCode.Unauthorized, client.post("$path/quota").status)
+            assertEquals(HttpStatusCode.Forbidden, client.post("$path/quota") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+            }.status)
+            assertEquals(HttpStatusCode.Forbidden, client.put("$path/quota-settings") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                contentType(ContentType.Application.Json)
+                setBody("{}")
+            }.status)
+            for (body in listOf(
+                """{"providerId":"INVALID ID"}""",
+                """{"providerId":"test","config":[]}""",
+                """{"providerId":"test","credential":"secret","clearCredential":true}""",
+                """{"providerId":"test","credential":"bad\r\nheader"}""",
+            )) {
+                assertEquals(HttpStatusCode.BadRequest, client.put("$path/quota-settings") {
+                    header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                    header("X-CSRF-Token", session.session.csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
+                }.status)
+            }
+            val wrongPath = "/admin/api/channels/${channel.id}/keys/${other.keys.single().id}"
+            assertEquals(HttpStatusCode.NotFound, client.put("$wrongPath/quota-settings") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"providerId":"new-api"}""")
+            }.status)
+            assertEquals(HttpStatusCode.NotFound, client.post("$wrongPath/quota") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+            }.status)
+            val disabled = client.post("$path/quota") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+            }
+            assertEquals("DISABLED", Json.parseToJsonElement(disabled.bodyAsText()).jsonObject["status"]!!.jsonPrimitive.content)
+            assertNull(app.channelRepository.find(channel.id)!!.keys.single().quota)
+            assertNull(app.channelRepository.find(other.id)!!.keys.single().quota)
+        }
+    }
+
+    @Test
+    fun channelQuotaSettingsAreOptionalPersistentAndPreservedByLegacyUpdates() = runBlocking {
+        val channel = createChannel("quota", "ok")
+        val session = app.sessions.create("admin")
+        val baseUrl = channel.baseUrl
+        testApplication {
+            application { app.install(this) }
+            val path = "/admin/api/channels/" + channel.id
+            val providers = client.get("/admin/api/quota-providers") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+            }
+            assertEquals(HttpStatusCode.OK, providers.status)
+            assertTrue(Json.parseToJsonElement(providers.bodyAsText()).jsonArray.isEmpty())
+            val disabled = client.post(path + "/quota") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+            }
+            assertEquals(HttpStatusCode.OK, disabled.status)
+            assertEquals("no-store", disabled.headers[HttpHeaders.CacheControl])
+            val disabledBody = Json.parseToJsonElement(disabled.bodyAsText()).jsonObject
+            assertEquals("DISABLED", disabledBody["status"]!!.jsonPrimitive.content)
+            assertEquals("CHANNEL", disabledBody["scope"]!!.jsonPrimitive.content)
+            val save = client.put(path + "/quota-settings") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"providerId":"custom-provider","config":{"baseUrl":"https://upstream.example/site"}}""")
+            }
+            assertEquals(HttpStatusCode.OK, save.status)
+            val stored = app.channelRepository.find(channel.id)!!.quota
+            assertEquals("custom-provider", stored.providerId)
+            assertEquals("https://upstream.example/site", stored.config["baseUrl"]!!.jsonPrimitive.content)
+            val update = client.put(path) {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"renamed","baseUrl":"$baseUrl"}""")
+            }
+            assertEquals(HttpStatusCode.OK, update.status)
+            assertEquals(stored, app.channelRepository.find(channel.id)!!.quota)
+            val missingPlugin = client.post(path + "/quota") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+            }
+            assertEquals(HttpStatusCode.OK, missingPlugin.status)
+            val text = missingPlugin.bodyAsText()
+            assertEquals("UNSUPPORTED", Json.parseToJsonElement(text).jsonObject["status"]!!.jsonPrimitive.content)
+            assertFalse(text.contains("upstream-secret"))
+            assertEquals(channel.keys.map { it.state }, app.channelRepository.find(channel.id)!!.keys.map { it.state })
+        }
+    }
+
+    @Test
+    fun channelQuotaEndpointsRequireAdminCsrfAndValidConfiguration() = runBlocking {
+        val channel = createChannel("quota-validation", "ok")
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val path = "/admin/api/channels/" + channel.id
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/admin/api/quota-providers").status)
+            assertEquals(HttpStatusCode.Unauthorized, client.post(path + "/quota").status)
+            assertEquals(HttpStatusCode.Forbidden, client.post(path + "/quota") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+            }.status)
+            assertEquals(HttpStatusCode.Forbidden, client.put(path + "/quota-settings") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                contentType(ContentType.Application.Json)
+                setBody("{}")
+            }.status)
+            val bodies = listOf("""{"providerId":"INVALID ID"}""",
+                """{"providerId":"test","config":[]}""",
+                """{"providerId":"test","credentialSource":"UNKNOWN"}""",
+                """{"providerId":"test","credential":"secret","clearCredential":true}""",
+                """{"providerId":"test","credential":"bad\r\nheader"}""",
+                "{\"providerId\":\"test\",\"credential\":\"" + "s".repeat(4097) + "\"}",
+                "{\"providerId\":\"test\",\"config\":{\"large\":\"" + "界".repeat(3000) + "\"}}")
+            for (body in bodies) {
+                val invalid = client.put(path + "/quota-settings") {
+                    header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                    header("X-CSRF-Token", session.session.csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
+                }
+                assertEquals(HttpStatusCode.BadRequest, invalid.status)
+            }
+            assertEquals("", app.channelRepository.find(channel.id)!!.quota.providerId)
+            assertEquals(HttpStatusCode.NotFound, client.post("/admin/api/channels/missing/quota") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+            }.status)
+        }
+    }
+
+    @Test
+    fun channelQuotaDedicatedCredentialsAreEncryptedWriteOnlyAndExplicitlyCleared() = runBlocking {
+        val channel = createChannel("quota-system", "ok")
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val path = "/admin/api/channels/" + channel.id
+            suspend fun save(extra: String) = client.put(path + "/quota-settings") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"providerId":"new-api","credentialSource":"DEDICATED","config":{"authMode":"system","userId":"123"}$extra}""")
+            }
+            val response = save(""","credential":"system-one-secret"""")
+            assertEquals(HttpStatusCode.OK, response.status)
+            val text = response.bodyAsText()
+            assertFalse(text.contains("system-one-secret"))
+            assertFalse(text.contains("ciphertext"))
+            val returned = Json.parseToJsonElement(text).jsonObject["quota"]!!.jsonObject
+            assertTrue(returned["credentialSet"]!!.jsonPrimitive.boolean)
+            assertEquals("DEDICATED", returned["credentialSource"]!!.jsonPrimitive.content)
+            val first = app.channelRepository.find(channel.id)!!
+            val encrypted = assertNotNull(first.quotaCredential)
+            assertNotEquals("system-one-secret", encrypted.ciphertext)
+            assertEquals("system-one-secret", app.credentialCipher.decrypt(encrypted.ciphertext, encrypted.nonce))
+            assertFalse(first.quota.toString().contains("system-one-secret"))
+            assertEquals(channel.keys, first.keys)
+            assertEquals(HttpStatusCode.OK, save(""","credential":""""").status)
+            assertEquals(encrypted, app.channelRepository.find(channel.id)!!.quotaCredential)
+            val legacyUpdate = client.put(path) {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"quota-system-renamed","baseUrl":"${channel.baseUrl}"}""")
+            }
+            assertEquals(HttpStatusCode.OK, legacyUpdate.status)
+            assertEquals(encrypted, app.channelRepository.find(channel.id)!!.quotaCredential)
+            val listing = client.get("/admin/api/channels") { header(HttpHeaders.Cookie, "gw_session=" + session.token) }
+            assertFalse(listing.bodyAsText().contains("system-one-secret"))
+            assertEquals(HttpStatusCode.OK, save(""","credential":"system-two-secret"""").status)
+            val replaced = assertNotNull(app.channelRepository.find(channel.id)!!.quotaCredential)
+            assertNotEquals(encrypted, replaced)
+            assertEquals("system-two-secret", app.credentialCipher.decrypt(replaced.ciphertext, replaced.nonce))
+            val cleared = save(""","clearCredential":true""")
+            assertEquals(HttpStatusCode.OK, cleared.status)
+            assertNull(app.channelRepository.find(channel.id)!!.quotaCredential)
+            assertFalse(Json.parseToJsonElement(cleared.bodyAsText()).jsonObject["quota"]!!.jsonObject["credentialSet"]!!.jsonPrimitive.boolean)
+        }
+    }
+
+    @Test
+    fun channelQuotaDedicatedCredentialsCanBeSetDuringChannelCreationAndUpdate() = runBlocking {
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val created = client.post("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"quota-created","baseUrl":"https://upstream.example/v1","credential":"model-secret","quota":{"providerId":"new-api","credentialSource":"DEDICATED","config":{"authMode":"system","userId":123},"credential":"system-secret"}}""")
+            }
+            assertEquals(HttpStatusCode.Created, created.status)
+            val body = created.bodyAsText()
+            assertFalse(body.contains("system-secret"))
+            assertFalse(body.contains("model-secret"))
+            val id = Json.parseToJsonElement(body).jsonObject["id"]!!.jsonPrimitive.content
+            val record = app.channelRepository.find(id)!!
+            val system = assertNotNull(record.quotaCredential)
+            assertEquals("system-secret", app.credentialCipher.decrypt(system.ciphertext, system.nonce))
+            val key = record.keys.single()
+            assertEquals("model-secret", app.credentialCipher.decrypt(key.credentialCiphertext, key.credentialNonce))
+            val updated = client.put("/admin/api/channels/$id") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"quota-created","baseUrl":"https://upstream.example/v1","quota":{"providerId":"new-api","credentialSource":"DEDICATED","config":{"authMode":"system","userId":123},"credential":"updated-system-secret"}}""")
+            }
+            assertEquals(HttpStatusCode.OK, updated.status)
+            val after = app.channelRepository.find(id)!!
+            assertEquals(record.keys, after.keys)
+            val replaced = assertNotNull(after.quotaCredential)
+            assertEquals("updated-system-secret", app.credentialCipher.decrypt(replaced.ciphertext, replaced.nonce))
+            assertFalse(updated.bodyAsText().contains("updated-system-secret"))
+        }
     }
 
     @Test
@@ -3196,6 +3541,71 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `protocol authentication overrides apply per outbound protocol and legacy auth remains fallback`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "protocol-auth-overrides",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "默认密钥",
+                    credential = app.credentialCipher.encrypt("upstream-secret"),
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocolAuthTypes = mapOf(
+                GatewayProtocol.RESPONSES.value to "anthropic",
+                GatewayProtocol.MESSAGES.value to "google",
+            ),
+            protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES),
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val chat = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","messages":[],"stream":false}""")
+            }
+            assertEquals(HttpStatusCode.OK, chat.status, chat.bodyAsText())
+            val chatRequest = fake.requests.last()
+            assertEquals("Bearer upstream-secret", chatRequest.authorization)
+            assertNull(chatRequest.requestHeaders["x-api-key"])
+            assertNull(chatRequest.requestHeaders["x-goog-api-key"])
+
+            val responses = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","input":"hi","stream":false}""")
+            }
+            assertEquals(HttpStatusCode.OK, responses.status, responses.bodyAsText())
+            val responsesRequest = fake.requests.last()
+            assertNull(responsesRequest.authorization)
+            assertEquals(listOf("upstream-secret"), responsesRequest.requestHeaders["x-api-key"])
+            assertEquals(listOf("2023-06-01"), responsesRequest.requestHeaders["anthropic-version"])
+            assertNull(responsesRequest.requestHeaders["x-goog-api-key"])
+
+            val messages = client.post("/v1/messages") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","max_tokens":8,"messages":[],"stream":false}""")
+            }
+            assertEquals(HttpStatusCode.OK, messages.status, messages.bodyAsText())
+            val messagesRequest = fake.requests.last()
+            assertNull(messagesRequest.authorization)
+            assertNull(messagesRequest.requestHeaders["x-api-key"])
+            assertEquals(listOf("upstream-secret"), messagesRequest.requestHeaders["x-goog-api-key"])
+
+            assertEquals("bearer", channel.authType)
+            assertEquals("anthropic", channel.protocolAuthTypes[GatewayProtocol.RESPONSES.value])
+            assertEquals("google", channel.protocolAuthTypes[GatewayProtocol.MESSAGES.value])
+        }
+    }
+
+    @Test
     fun `responses first token timeout ignores response created event`() = runBlocking {
         app.close()
         app = GatewayApplication(config(firstTokenTimeoutMs = 300, idleTimeoutMs = 300, totalTimeoutMs = 2_000))
@@ -4002,7 +4412,7 @@ class GatewayIntegrationTest {
                 header("X-CSRF-Token", session.session.csrf)
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"name":"protocol-order","baseUrl":"${fake.baseUrl}/ok/v1","credential":"sk-test","protocols":[" messages ","responses","messages","chat_completions"],"enabled":true}""",
+                    """{"name":"protocol-order","baseUrl":"${fake.baseUrl}/ok/v1","credential":"sk-test","authType":"bearer","protocolAuthTypes":{"messages":"anthropic","responses":"google"},"protocols":[" messages ","responses","messages","chat_completions"],"enabled":true}""",
                 )
             }
             assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
@@ -4010,6 +4420,8 @@ class GatewayIntegrationTest {
             val id = createdJson["id"]!!.jsonPrimitive.content
             val createdOrder = listOf("messages", "responses", "chat_completions")
             assertEquals(createdOrder, createdJson["protocols"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals("anthropic", createdJson["protocolAuthTypes"]!!.jsonObject["messages"]!!.jsonPrimitive.content)
+            assertEquals("google", createdJson["protocolAuthTypes"]!!.jsonObject["responses"]!!.jsonPrimitive.content)
             assertEquals(createdOrder, assertNotNull(app.channelRepository.find(id)).protocols.map { it.value })
 
             val updated = client.put("/admin/api/channels/$id") {
@@ -4044,6 +4456,8 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, partial.status, partial.bodyAsText())
             val partialJson = Json.parseToJsonElement(partial.bodyAsText()).jsonObject
             assertEquals(updatedOrder, partialJson["protocols"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals("anthropic", partialJson["protocolAuthTypes"]!!.jsonObject["messages"]!!.jsonPrimitive.content)
+            assertEquals("google", partialJson["protocolAuthTypes"]!!.jsonObject["responses"]!!.jsonPrimitive.content)
             assertEquals(updatedOrder, assertNotNull(app.channelRepository.find(id)).protocols.map { it.value })
         }
     }
@@ -4952,11 +5366,15 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("40", result.getString(1))
+                        assertEquals("44", result.getString(1))
                     }
-                    statement.executeQuery("select request_overrides from channels where id = 'migration-channel'").use { result ->
+                    statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
                         assertEquals("{}", result.getString(1), "历史渠道应默认继承全局请求配置")
+                        assertEquals("{}", result.getString(2), "历史渠道应默认关闭额度插件")
+                        assertEquals("", result.getString(3), "历史渠道没有独立额度凭据")
+                        assertEquals("", result.getString(4))
+                        assertEquals("{}", result.getString(5), "历史渠道应默认继承渠道级鉴权方式")
                     }
                     statement.executeQuery("select enabled, auth_failure_threshold, failure_threshold, failure_window_minutes from key_auto_disable_settings where id = 1").use { result ->
                         assertTrue(result.next())
@@ -6133,6 +6551,7 @@ class GatewayIntegrationTest {
         maxAttempts = maxAttempts,
         drainTimeoutMs = 1_000,
         staticDir = Path.of("web/dist"),
+        quotaPluginDir = quotaPluginDirectory,
         cookieSecure = false,
         retention = RetentionPolicy(cleanupEnabled = false),
         cooldown = CooldownPolicy(

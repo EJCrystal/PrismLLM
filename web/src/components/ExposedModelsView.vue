@@ -1,24 +1,29 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { copyText } from '../clipboard'
 import { notify } from '../toast'
+import type { ExposedModel, ModelsDevModel } from '../types/api'
 import Icon from './Icon.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
 
-const models = ref([])
+const models = ref<ExposedModel[]>([])
 const loading = ref(true)
 const error = ref('')
 const loadedAt = ref('')
-const catalog = ref([])
-const catalogMatches = ref({})
+const catalog = ref<ModelsDevModel[]>([])
+const catalogMatches = ref<Record<string, ModelsDevModel[]>>({})
 const catalogLoading = ref(true)
 const catalogLoaded = ref(false)
 const catalogError = ref('')
 const catalogSource = ref('https://models.dev/catalog.json')
 const catalogSearch = ref('')
 const catalogLimit = ref(150)
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : String(cause)
+}
 
 const canonicalCount = computed(() => models.value.filter((model) => model.source === 'canonical').length)
 const upstreamCount = computed(() => models.value.filter((model) => model.source === 'upstream').length)
@@ -48,7 +53,7 @@ async function loadExposedModels() {
     models.value = response?.data || []
     loadedAt.value = formatTime(new Date(), { style: 'timeOnly' })
   } catch (cause) {
-    error.value = cause.message
+    error.value = errorMessage(cause)
   } finally {
     loading.value = false
   }
@@ -65,7 +70,7 @@ async function loadCatalog() {
     catalogError.value = response?.error || ''
     catalogSource.value = response?.source || catalogSource.value
   } catch (cause) {
-    catalogError.value = cause.message
+    catalogError.value = errorMessage(cause)
   } finally {
     catalogLoading.value = false
   }
@@ -75,11 +80,11 @@ async function refreshAll() {
   await Promise.all([loadExposedModels(), loadCatalog()])
 }
 
-function matchesFor(modelId) {
+function matchesFor(modelId: string): ModelsDevModel[] {
   return catalogMatches.value[modelId] || []
 }
 
-function uniqueMatchesFor(modelId) {
+function uniqueMatchesFor(modelId: string): ModelsDevModel[] {
   const seen = new Set()
   return matchesFor(modelId).filter((match) => {
     const key = match.id.toLowerCase()
@@ -89,7 +94,7 @@ function uniqueMatchesFor(modelId) {
   })
 }
 
-function matchProviders(modelId, modelName) {
+function matchProviders(modelId: string, modelName: string): string[] {
   return matchesFor(modelId)
     .filter((match) => match.id.toLowerCase() === modelName.toLowerCase())
     .map((match) => match.provider)
@@ -109,12 +114,12 @@ async function copyJson() {
   }
 }
 
-function sourceLabel(source) {
+function sourceLabel(source: string): string {
   if (source === 'canonical') return '规范映射'
   return '上游直连'
 }
 
-function sourceClass(source) {
+function sourceClass(source: string): string {
   if (source === 'canonical') return 'success'
   return 'warning'
 }

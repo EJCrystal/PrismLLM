@@ -98,7 +98,7 @@ export function buildPricePayload(form: PriceForm, channelId: string, upstreamMo
 }
 
 /** Build the editable model default price form. */
-export function defaultPriceFormState(price: PriceEditable | null | undefined): PriceForm & { modelId: string } {
+export function defaultPriceFormState(price: PriceEditable | ModelDefaultPrice | null | undefined): PriceForm & { modelId: string } {
   return {
     modelId: price?.modelId || '',
     ...priceFormState(price),

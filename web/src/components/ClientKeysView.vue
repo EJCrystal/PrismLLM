@@ -1,7 +1,8 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import type { ClientKey } from '../types/api'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
@@ -11,12 +12,24 @@ import { buildClientKeyPayload, quotaSummary } from '../utils/clientKeyQuota'
 import { useClientKeyActions } from '../utils/clientKeyActions'
 import { useSecretReveal } from '../utils/secretReveal'
 
-const keys = ref([])
+interface ClientKeyForm {
+  name: string
+  enabled: boolean
+  expiresAt: string
+  dailyTokenLimit: number | string | null
+  dailyUsdLimit: number | string | null
+  dailyCnyLimit: number | string | null
+  dailyEurLimit: number | string | null
+  maxConcurrentRequests: number | string | null
+  requestsPerMinute: number | string | null
+}
+
+const keys = ref<ClientKey[]>([])
 const loading = ref(true)
 const error = ref('')
 const showForm = ref(false)
 const saving = ref(false)
-const editingId = ref(null)
+const editingId = ref<string | null>(null)
 const { secret, secretMode, showSecret, closeSecret } = useSecretReveal()
 const { pendingKeyId, pendingAction, rotate, revoke } = useClientKeyActions({
   confirmAction: (message) => window.confirm(message),
@@ -27,7 +40,7 @@ const { pendingKeyId, pendingAction, rotate, revoke } = useClientKeyActions({
   showSecret,
 })
 
-const form = reactive({
+const form = reactive<ClientKeyForm>({
   name: '',
   enabled: true,
   expiresAt: '',
@@ -42,13 +55,17 @@ const form = reactive({
 const enabledCount = computed(() => keys.value.filter((item) => item.enabled).length)
 const revokedCount = computed(() => keys.value.filter((item) => item.revokedAt != null).length)
 
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : String(cause)
+}
+
 async function load() {
   loading.value = true
   error.value = ''
   try {
     keys.value = await api.listClientKeys()
   } catch (cause) {
-    error.value = cause.message
+    error.value = errorMessage(cause)
   } finally {
     loading.value = false
   }
@@ -70,7 +87,7 @@ function openCreate() {
   showForm.value = true
 }
 
-function openEdit(key) {
+function openEdit(key: ClientKey) {
   if (pendingKeyId.value != null || key.revokedAt != null) return
   editingId.value = key.id
   Object.assign(form, {
@@ -106,13 +123,13 @@ async function save() {
     showForm.value = false
     await load()
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(errorMessage(cause), 'error')
   } finally {
     saving.value = false
   }
 }
 
-async function toggle(key) {
+async function toggle(key: ClientKey) {
   if (pendingKeyId.value != null || key.revokedAt != null) return
   try {
     await api.updateClientKey(key.id, {
@@ -129,11 +146,11 @@ async function toggle(key) {
     notify(key.enabled ? '密钥已停用' : '密钥已启用')
     await load()
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(errorMessage(cause), 'error')
   }
 }
 
-async function remove(key) {
+async function remove(key: ClientKey) {
   if (pendingKeyId.value != null) return
   if (!window.confirm(`确定删除调用方密钥「${key.name}」？已发出的请求会立即失效。`)) return
   try {
@@ -141,18 +158,18 @@ async function remove(key) {
     notify('调用方密钥已删除')
     await load()
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(errorMessage(cause), 'error')
   }
 }
 
-function toLocalInput(value) {
+function toLocalInput(value: number | null): string {
   if (!value) return ''
   const date = new Date(value)
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
   return local.toISOString().slice(0, 16)
 }
 
-function fromLocalInput(value) {
+function fromLocalInput(value: string): number | null {
   return value ? new Date(value).getTime() : null
 }
 

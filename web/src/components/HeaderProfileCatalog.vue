@@ -1,14 +1,19 @@
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import type { UpstreamHeaderCatalog, UpstreamHeaderProfile, UpstreamRequestSettings } from '../types/api'
 import { formatTime } from '../utils/format'
 
-const props = defineProps({
-  catalog: { type: Object, required: true },
-  disabled: { type: Boolean, default: false },
+const props = withDefaults(defineProps<{
+  catalog: UpstreamHeaderCatalog
+  disabled?: boolean
+}>(), {
+  disabled: false,
 })
-const emit = defineEmits(['updated'])
+const emit = defineEmits<{
+  (event: 'updated', settings: UpstreamRequestSettings): void
+}>()
 const busy = ref('')
 
 const intervalLabel = computed(() => {
@@ -18,8 +23,12 @@ const intervalLabel = computed(() => {
   return `${hours} 小时`
 })
 
-function history(profile) {
+function history(profile: UpstreamHeaderProfile): UpstreamHeaderProfile[] {
   return props.catalog.history?.[profile.id] || []
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : String(cause)
 }
 
 async function refresh() {
@@ -34,15 +43,16 @@ async function refresh() {
       notify('请求头预设目录已刷新')
     }
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(errorMessage(cause), 'error')
   } finally {
     busy.value = ''
   }
 }
 
-async function selectVersion(profile, event) {
+async function selectVersion(profile: UpstreamHeaderProfile, event: Event) {
   if (busy.value || props.disabled) return
-  const version = event.target.value
+  const target = event.target as HTMLSelectElement
+  const version = target.value
   busy.value = profile.id
   try {
     const response = version
@@ -51,8 +61,8 @@ async function selectVersion(profile, event) {
     emit('updated', response)
     notify(version ? `已固定 ${profile.name} ${version}` : `${profile.name} 已恢复最新版本`)
   } catch (cause) {
-    event.target.value = props.catalog.pins?.[profile.id] || ''
-    notify(cause.message, 'error')
+    target.value = props.catalog.pins?.[profile.id] || ''
+    notify(errorMessage(cause), 'error')
   } finally {
     busy.value = ''
   }

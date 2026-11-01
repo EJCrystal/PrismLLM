@@ -1,7 +1,8 @@
-<script setup>
+<script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import type { Channel, ChannelModel, ModelDefaultPrice, ModelPrice } from '../types/api'
 import { getAuthorizedUpstreamModelCache, hasUpstreamModelCache, setUpstreamModelCache } from '../upstreamModelCache'
 import {
   channelDisplayName,
@@ -21,6 +22,7 @@ import {
   priceFormState,
   resetPriceForm,
 } from '../utils/priceForm'
+import type { PriceForm } from '../utils/priceForm'
 import {
   refreshedPriceToApply,
   resolveModelSelectionTarget,
@@ -34,41 +36,54 @@ import {
   priceDraftKey,
   priceDraftSnapshot,
 } from '../utils/priceDraftState'
+import type { PriceDraft } from '../utils/priceDraftState'
 import { formatPriceSummary } from '../utils/format'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import PriceFields from './PriceFields.vue'
 
-const props = defineProps({
-  channels: { type: Array, required: true },
-  price: { type: Object, default: null },
-  prices: { type: Array, default: () => [] },
-  defaultPrices: { type: Array, default: () => [] },
-  initialTarget: { type: Object, default: null },
+type PriceModelTarget = { channelId?: string; modelId?: string } | null
+type ChannelModelPriceOption = ChannelModel & { price: ModelPrice | null; defaultPrice: ModelDefaultPrice | null }
+
+const props = withDefaults(defineProps<{
+  channels: Channel[]
+  price?: ModelPrice | null
+  prices?: ModelPrice[]
+  defaultPrices?: ModelDefaultPrice[]
+  initialTarget?: PriceModelTarget
+}>(), {
+  price: null,
+  prices: () => [],
+  defaultPrices: () => [],
+  initialTarget: null,
 })
-const emit = defineEmits(['close', 'saved', 'changed'])
-const channelModels = ref([])
+const emit = defineEmits<{
+  (event: 'close'): void
+  (event: 'saved'): void
+  (event: 'changed'): void
+}>()
+const channelModels = ref<ChannelModel[]>([])
 const modelsLoading = ref(false)
 const modelsError = ref('')
 const fetchingReference = ref(false)
 const referenceHint = ref('')
 const saving = ref(false)
-const deletingPriceId = ref(null)
-const activePrice = ref(props.price)
+const deletingPriceId = ref<string | null>(null)
+const activePrice = ref<ModelPrice | null>(props.price)
 let modelsRequestId = 0
 let referenceRequestId = 0
 const manuallyEnteredModel = ref(false)
-const draftStates = reactive(new Map())
-const locallyDeletedPriceIds = ref(new Set())
+const draftStates = reactive(new Map<string, PriceDraft>())
+const locallyDeletedPriceIds = ref(new Set<string>())
 const activeDraftKey = ref('')
 
 const initialPrice = priceFormState(props.price)
-const form = reactive({
+const form = reactive<PriceForm & { channelId: string; upstreamModel: string }>({
   channelId: props.price?.channelId || props.initialTarget?.channelId || props.channels[0]?.id || '',
   upstreamModel: props.price?.upstreamModel || props.initialTarget?.modelId || '',
   ...initialPrice,
 })
-const currentBaseline = ref(priceDraftSnapshot(form))
+const currentBaseline = ref<string>(priceDraftSnapshot(form))
 
 const currentChannelName = computed(() => channelDisplayName(props.channels, form.channelId))
 const currentDraftDirty = computed(() => priceDraftSnapshot(form) !== currentBaseline.value)
@@ -131,7 +146,7 @@ const saveButtonLabel = computed(() => {
   return dirtyDraftCount.value > 1 ? `保存全部（${dirtyDraftCount.value} 个模型）` : '保存单价'
 })
 
-function isModelDirty(modelId) {
+function isModelDirty(modelId: string) {
   const normalized = String(modelId ?? '').trim()
   if (!normalized) return false
   if (normalized === form.upstreamModel.trim()) return currentDraftDirty.value
@@ -163,7 +178,7 @@ watch(
       setUpstreamModelCache(channelId, models)
       if (requestId === modelsRequestId) channelModels.value = models
     } catch (cause) {
-      if (requestId === modelsRequestId) modelsError.value = cause.message
+      if (requestId === modelsRequestId) modelsError.value = cause instanceof Error ? cause.message : String(cause)
     } finally {
       if (requestId === modelsRequestId) modelsLoading.value = false
     }
@@ -188,13 +203,13 @@ watch(
   { immediate: true },
 )
 
-function applyExistingPrice(price) {
+function applyExistingPrice(price: ModelPrice) {
   cancelReferenceLookup()
   activePrice.value = price
   Object.assign(form, priceFormState(price))
 }
 
-function currentPriceDraft() {
+function currentPriceDraft(): PriceDraft {
   return createPriceDraft({
     channelId: form.channelId,
     modelId: form.upstreamModel,
@@ -204,23 +219,23 @@ function currentPriceDraft() {
   })
 }
 
-function stashCurrentDraft() {
+function stashCurrentDraft(): PriceDraft | null {
   if (!form.channelId || !form.upstreamModel.trim()) return null
   const draft = currentPriceDraft()
   draftStates.set(draft.key, draft)
   return draft
 }
 
-function restorePriceDraft(draft, key) {
+function restorePriceDraft(draft: PriceDraft, key: string) {
   cancelReferenceLookup()
-  activePrice.value = draft.price || null
+  activePrice.value = draft.price && 'channelId' in draft.price ? draft.price : null
   Object.assign(form, clonePriceDraftForm(draft.form))
   currentBaseline.value = draft.baseline ?? priceDraftSnapshot(form)
   activeDraftKey.value = key
 }
 
 watch(
-  () => [form.channelId, form.upstreamModel],
+  () => [form.channelId, form.upstreamModel] as const,
   ([channelId, upstreamModel]) => {
     const key = priceDraftKey(channelId, upstreamModel)
     const stored = draftStates.get(key)
@@ -256,7 +271,7 @@ watch(
   },
 )
 
-function selectChannelModel(model) {
+function selectChannelModel(model: Pick<ChannelModel, 'id'> | null | undefined) {
   const nextModel = String(model?.id ?? '').trim()
   if (!nextModel || nextModel === form.upstreamModel.trim()) return
   stashCurrentDraft()
@@ -265,7 +280,7 @@ function selectChannelModel(model) {
   form.upstreamModel = nextModel
 }
 
-function editPrice(price) {
+function editPrice(price: ModelPrice) {
   const modelId = String(price?.upstreamModel ?? '').trim()
   if (!modelId) return
   const targetKey = priceDraftKey(form.channelId, modelId)
@@ -320,28 +335,35 @@ function applyDefaultPrice() {
   form.cachedInputWritePricePerMillion = price.cachedInputWritePricePerMillion ?? ''
   form.pricingMode = price.pricingMode || 'token'
   form.perRequestPrice = price.perRequestPrice ?? ''
-  form.priceTiers = (price.priceTiers || []).map((tier) => ({ ...tier }))
+  form.priceTiers = (price.priceTiers || []).map((tier) => ({
+    upToTokens: tier.upToTokens ?? '',
+    inputPricePerMillion: tier.inputPricePerMillion ?? '',
+    outputPricePerMillion: tier.outputPricePerMillion ?? '',
+    cachedInputPricePerMillion: tier.cachedInputPricePerMillion ?? '',
+    cachedInputWritePricePerMillion: tier.cachedInputWritePricePerMillion ?? '',
+  }))
 }
 
-function priceSourceLabel(model) {
+function priceSourceLabel(model: ChannelModelPriceOption) {
   if (model?.price) return '渠道覆盖'
   if (model?.defaultPrice) return '默认价'
   return '未定价'
 }
 
-function priceSourceClass(model) {
+function priceSourceClass(model: ChannelModelPriceOption) {
   if (model?.price) return 'success'
   if (model?.defaultPrice) return 'info'
   return 'warning'
 }
 
-function pricingModeLabel(price) {
-  return ({
+function pricingModeLabel(price: { pricingMode?: string | null } | null | undefined) {
+  const labels: Record<string, string> = {
     token: '按 Token',
     per_request: '按次',
     tiered: '阶梯价',
     volume: '阶梯总量价',
-  })[price?.pricingMode || 'token'] || '按 Token'
+  }
+  return labels[price?.pricingMode || 'token'] || '按 Token'
 }
 
 async function fetchReferencePrice() {
@@ -376,7 +398,7 @@ async function fetchReferencePrice() {
     notify(`已填入「${res.matchedModel}」USD 参考单价`)
   } catch (cause) {
     if (requestId === referenceRequestId) {
-      notify(cause.message || '未在参考库中找到该模型，请手动输入', 'warning')
+      notify(cause instanceof Error && cause.message ? cause.message : '未在参考库中找到该模型，请手动输入', 'warning')
     }
   } finally {
     if (requestId === referenceRequestId) fetchingReference.value = false
@@ -415,7 +437,7 @@ async function save() {
 
   saving.value = true
   let savedCount = 0
-  const failures = []
+  const failures: string[] = []
   try {
     for (const draft of drafts) {
       try {
@@ -431,7 +453,7 @@ async function save() {
         }
         savedCount += 1
       } catch (cause) {
-        failures.push(`${draft.modelId}：${cause.message}`)
+        failures.push(draft.modelId + '：' + (cause instanceof Error ? cause.message : String(cause)))
       }
     }
     if (savedCount > 0) emit('saved')
@@ -447,7 +469,7 @@ async function save() {
   }
 }
 
-async function removePrice(price) {
+async function removePrice(price: ModelPrice) {
   if (!price?.id) return
   const modelId = String(price.upstreamModel ?? '').trim()
   if (!modelId) return
@@ -476,7 +498,7 @@ async function removePrice(price) {
       : `「${modelId}」的渠道覆盖价已删除，已恢复为未定价`)
     emit('changed')
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(cause instanceof Error ? cause.message : String(cause), 'error')
   } finally {
     deletingPriceId.value = null
   }

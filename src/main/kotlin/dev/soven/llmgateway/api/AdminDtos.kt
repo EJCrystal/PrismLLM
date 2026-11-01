@@ -1,5 +1,8 @@
 package dev.soven.llmgateway.api
 
+import dev.soven.llmgateway.domain.ChannelQuotaSettings
+import dev.soven.llmgateway.domain.ChannelQuotaCredentialSource
+
 import dev.soven.llmgateway.domain.AdminAuditRecord
 import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.domain.ChannelRecord
@@ -122,6 +125,30 @@ data class ChannelRequest(
     val priority: Int? = null,
     val keys: List<ChannelKeyRequest>? = null,
     val requestOverrides: UpstreamRequestOverrides? = null,
+    /** Optional protocol-specific overrides; omitted entries inherit authType. */
+    val protocolAuthTypes: Map<String, String>? = null,
+    val quota: ChannelQuotaSettingsRequest? = null,
+)
+
+/** 写入凭据后只返回 credentialSet；省略或留空保留，clearCredential 显式清除。 */
+@Serializable
+data class ChannelQuotaSettingsRequest(
+    val providerId: String = "",
+    val config: kotlinx.serialization.json.JsonObject = kotlinx.serialization.json.JsonObject(emptyMap()),
+    val credentialSource: ChannelQuotaCredentialSource = ChannelQuotaCredentialSource.CHANNEL_KEY,
+    val credential: String? = null,
+    val clearCredential: Boolean = false,
+) {
+    fun toSettings() = ChannelQuotaSettings(providerId, config, credentialSource)
+    override fun toString() = "ChannelQuotaSettingsRequest(providerId=$providerId, credential=[REDACTED])"
+}
+
+@Serializable
+data class ChannelQuotaSettingsResponse(
+    val providerId: String = "",
+    val config: kotlinx.serialization.json.JsonObject = kotlinx.serialization.json.JsonObject(emptyMap()),
+    val credentialSource: ChannelQuotaCredentialSource = ChannelQuotaCredentialSource.CHANNEL_KEY,
+    val credentialSet: Boolean = false,
 )
 
 /**
@@ -146,6 +173,8 @@ data class ChannelResponse(
     val priority: Int,
     val keys: List<ChannelKeyResponse> = emptyList(),
     val requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
+    val protocolAuthTypes: Map<String, String> = emptyMap(),
+    val quota: ChannelQuotaSettingsResponse = ChannelQuotaSettingsResponse(),
 )
 
 @Serializable
@@ -173,6 +202,7 @@ data class ChannelKeyResponse(
     val stateVersion: Long = 0,
     val autoDisableUntil: Long? = null,
     val autoDisableReason: String? = null,
+    val quota: ChannelQuotaSettingsResponse? = null,
 )
 
 fun ChannelKeyRecord.toResponse() = ChannelKeyResponse(
@@ -186,6 +216,7 @@ fun ChannelKeyRecord.toResponse() = ChannelKeyResponse(
     stateVersion = stateVersion,
     autoDisableUntil = autoDisableUntil,
     autoDisableReason = autoDisableReason,
+    quota = quota?.let { ChannelQuotaSettingsResponse(it.providerId, it.config, it.credentialSource, quotaCredential != null) },
 )
 
 /**
@@ -237,6 +268,7 @@ fun ChannelRecord.toResponse() = ChannelResponse(
     name = name,
     baseUrl = baseUrl,
     authType = authType,
+    protocolAuthTypes = protocolAuthTypes,
     protocols = protocols.map { it.value },
     enabled = enabled,
     credentialSet = keys.any { it.credentialSet },
@@ -253,7 +285,11 @@ fun ChannelRecord.toResponse() = ChannelResponse(
     priority = priority,
     keys = keys.map { it.toResponse() },
     requestOverrides = requestOverrides,
+    quota = ChannelQuotaSettingsResponse(quota.providerId, quota.config, quota.credentialSource, quotaCredential != null),
 )
+
+@Serializable
+data class QuotaProviderResponse(val id: String, val displayName: String, val apiVersion: Int)
 
 @Serializable
 data class UpstreamRequestSettingsRequest(val overrides: UpstreamRequestOverrides)
@@ -1054,6 +1090,7 @@ data class ChannelModelDiscoveryRequest(
     val authType: String? = null,
     val protocols: List<String>? = null,
     val requestOverrides: UpstreamRequestOverrides? = null,
+    val protocolAuthTypes: Map<String, String>? = null,
 )
 
 /**

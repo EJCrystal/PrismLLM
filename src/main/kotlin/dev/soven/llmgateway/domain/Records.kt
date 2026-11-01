@@ -3,6 +3,7 @@ package dev.soven.llmgateway.domain
 import java.math.BigDecimal
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.resilience.ChannelKeyState
+import dev.soven.llmgateway.security.EncryptedCredential
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -63,6 +64,9 @@ data class ChannelKeyRecord(
     val autoDisableUntil: Long? = null,
     /** 临时停用到期后的探测租约；非空且未到期时其他请求不得再探测。 */
     val probeUntil: Long? = null,
+    /** null 表示尚未单独配置；不继承渠道的账户身份。 */
+    val quota: ChannelQuotaSettings? = null,
+    val quotaCredential: EncryptedCredential? = null,
 ) {
     val credentialSet: Boolean get() = credentialCiphertext.isNotBlank()
 
@@ -99,6 +103,11 @@ data class ChannelRecord(
     val priority: Int = 0,
     val keys: List<ChannelKeyRecord> = emptyList(),
     val requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
+    val quota: ChannelQuotaSettings = ChannelQuotaSettings(),
+    /** 仅供额度插件使用，不加入模型转发密钥集合。 */
+    val quotaCredential: EncryptedCredential? = null,
+    /** Optional per-protocol overrides; an absent entry inherits [authType]. */
+    val protocolAuthTypes: Map<String, String> = emptyMap(),
 ) {
     val models: List<String> get() = modelMappings.map { it.upstreamModel }
 

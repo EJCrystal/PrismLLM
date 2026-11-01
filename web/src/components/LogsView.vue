@@ -1,7 +1,8 @@
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import type { RequestLog, RequestLogAttempt } from '../types/api'
 import CopyButton from './CopyButton.vue'
 import CursorLoadMore from './CursorLoadMore.vue'
 import Icon from './Icon.vue'
@@ -30,16 +31,16 @@ import {
   formatPriceSnapshot,
 } from '../utils/format'
 
-const { items: logs, pageSize, loading, loadingMore, error, hasMore, load, loadMore, setPageSize } = createCursorPager({
+const { items: logs, pageSize, loading, loadingMore, error, hasMore, load, loadMore, setPageSize } = createCursorPager<RequestLog>({
   fetchPage: (options) => api.listRequestLogs(options),
 })
 const query = ref('')
-const selected = ref(null)
-const detailDialog = ref(null)
-const tableScroll = ref(null)
-let detailTrigger = null
+const selected = ref<RequestLog | null>(null)
+const detailDialog = ref<HTMLDivElement | null>(null)
+const tableScroll = ref<HTMLElement | null>(null)
+let detailTrigger: HTMLElement | null = null
 
-const stageLabels = {
+const stageLabels: Record<string, string> = {
   request: '请求',
   routing: '路由',
   upstream: '上游',
@@ -47,18 +48,18 @@ const stageLabels = {
   client: '客户端',
 }
 
-function attemptProtocolLabel(attempt, log) {
+function attemptProtocolLabel(attempt: RequestLogAttempt, log: RequestLog): string {
   // 出站协议缺失时保持未知，不要把入站协议当成出站协议展示。
   return protocolLabel(attempt.upstreamProtocol || log.upstreamProtocol)
 }
 
-function attemptStatusClass(attempt) {
+function attemptStatusClass(attempt: RequestLogAttempt): string {
   if (attemptHasError(attempt)) return 'danger'
   if (attempt.statusCode == null) return 'neutral'
   return statusClass(attempt.statusCode)
 }
 
-function attemptStatusAriaLabel(attempt, hasFollowingAttempt) {
+function attemptStatusAriaLabel(attempt: RequestLogAttempt, hasFollowingAttempt: boolean): string {
   const status = attempt.statusCode == null ? '无上游 HTTP 状态码' : `上游 HTTP 状态码 ${attempt.statusCode}`
   const errorStatus = attempt.upstreamErrorStatusCode == null ? '' : `，错误状态码 ${attempt.upstreamErrorStatusCode}`
   return `${status}${errorStatus}，${attemptResultLabel(attempt, hasFollowingAttempt)}`
@@ -66,7 +67,7 @@ function attemptStatusAriaLabel(attempt, hasFollowingAttempt) {
 
 // 历史日志没有逐次明细（V39 回填为空数组）。不要用汇总字段伪造一条尝试记录：
 // totalMs 是整个请求耗时，upstreamAttempts 也可能是多次调用。
-const selectedAttempts = computed(() => selected.value?.attempts || [])
+const selectedAttempts = computed<RequestLogAttempt[]>(() => selected.value?.attempts || [])
 const hasAttemptDetail = computed(() => selectedAttempts.value.length > 0)
 
 const filtered = computed(() => {
@@ -97,26 +98,26 @@ watch(query, async () => {
   tableScroll.value?.scrollTo({ top: 0 })
 })
 
-function formatCostAmount(log) {
+function formatCostAmount(log: RequestLog): string | null {
   return formatCostUtil(log.costAmount, '')
 }
 
-function formatThroughput(log) {
+function formatThroughput(log: RequestLog): string {
   if (log.outputTokens == null || log.totalMs <= 0) return '—'
   return (log.outputTokens / (log.totalMs / 1000)).toFixed(1)
 }
 
-function formatCacheHit(log) {
+function formatCacheHit(log: RequestLog): string {
   if (log.cachedTokens == null || log.inputTokens == null || log.inputTokens <= 0) return '—'
   return `${Math.round((log.cachedTokens / log.inputTokens) * 100)}%`
 }
 
-function cacheTitle(log) {
+function cacheTitle(log: RequestLog): string {
   if (log.cachedTokens == null) return '上游未返回缓存用量'
   return `缓存 ${formatTokens(log.cachedTokens)} / 输入 ${formatTokens(log.inputTokens)}`
 }
 
-function costTitle(log) {
+function costTitle(log: RequestLog): string {
   if (log.costAmount == null) {
     if (!log.usageKnown) return '用量未知，费用无法计算'
     return log.channelId && log.upstreamModel ? '该渠道和上游模型尚未配置计费单价' : '没有可计费的路由信息'
@@ -124,34 +125,34 @@ function costTitle(log) {
   return formatPriceSummary(log)
 }
 
-function usageDetailTitle(log) {
+function usageDetailTitle(log: RequestLog): string {
   return `推理 ${formatTokens(log.reasoningTokens)} · 输出速率 ${formatThroughput(log)} tok/s · ${cacheTitle(log)}`
 }
 
-function usageStateClass(log) {
+function usageStateClass(log: RequestLog): string {
   return `usage-${tokenUsageState(log)}`
 }
 
-function stageLabel(stage) {
+function stageLabel(stage: string | null): string {
   return stage ? stageLabels[stage] || stage : '—'
 }
 
-function statusClass(code) {
+function statusClass(code: number): string {
   if (code >= 500 || code === 499) return 'danger'
   if (code >= 400) return 'warning'
   return 'success'
 }
 
-function openDetail(log, event) {
-  detailTrigger = event?.currentTarget || null
+function openDetail(log: RequestLog, event: MouseEvent): void {
+  detailTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   selected.value = log
 }
 
-function closeDetail() {
+function closeDetail(): void {
   selected.value = null
 }
 
-function onDetailKeydown(event) {
+function onDetailKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     event.preventDefault()
     closeDetail()
@@ -159,7 +160,7 @@ function onDetailKeydown(event) {
   }
   if (event.key !== 'Tab' || !detailDialog.value) return
   const focusables = Array.from(
-    detailDialog.value.querySelectorAll(
+    detailDialog.value.querySelectorAll<HTMLElement>(
       'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
     ),
   ).filter((element) => !element.hasAttribute('disabled'))
@@ -188,7 +189,7 @@ function onDetailKeydown(event) {
 watch(selected, async (value) => {
   if (value) {
     await nextTick()
-    const autofocus = detailDialog.value?.querySelector('[data-autofocus]')
+    const autofocus = detailDialog.value?.querySelector<HTMLElement>('[data-autofocus]')
     ;(autofocus || detailDialog.value)?.focus()
     return
   }
@@ -302,7 +303,7 @@ onMounted(load)
                 <div class="primary-cell small">{{ log.channelName || (log.channelId ? log.channelId.slice(0, 8) : '—') }}</div>
                 <div v-if="log.channelKeyName" class="muted small">密钥 {{ log.channelKeyName }}</div>
                 <div class="mono muted small">{{ log.upstreamModel || '—' }}</div>
-                <span v-if="log.upstreamAttempts > 1" class="badge warning">尝试 {{ log.upstreamAttempts }} 次</span>
+                <span v-if="log.upstreamAttempts != null && log.upstreamAttempts > 1" class="badge warning">尝试 {{ log.upstreamAttempts }} 次</span>
               </td>
               <td>
                 <div class="stacked-cell">

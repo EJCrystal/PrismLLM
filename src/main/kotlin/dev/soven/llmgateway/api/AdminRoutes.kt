@@ -1,16 +1,21 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.ChannelQuotaSettings
+import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
+import dev.soven.llmgateway.domain.effectiveAuthType
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.proxy.validateUpstreamRequestOverrides
 import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.proxy.CatalogModel
 import dev.soven.llmgateway.proxy.fetchUpstreamModels
+import dev.soven.llmgateway.proxy.modelListProtocol
 import dev.soven.llmgateway.proxy.probeUpstreamProtocols
 import dev.soven.llmgateway.proxy.testChannelModelConnectivity
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
@@ -255,6 +260,54 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(app.channelRepository.list().map { it.toResponse() })
         }
 
+        get("/quota-providers") {
+            call.requireAdmin(app)
+            call.respond(app.channelQuotaProviderRegistry.providerInfos.map {
+                QuotaProviderResponse(it.id, it.displayName, it.apiVersion)
+            })
+        }
+
+        post("/channels/{id}/quota") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少渠道 id")
+            val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(app.channelQuotaService.query(channel))
+        }
+
+        post("/channels/{id}/keys/{keyId}/quota") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少渠道 id")
+            val keyId = call.requiredParam("keyId", "缺少密钥 id")
+            val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
+            if (channel.keys.none { it.id == keyId }) throw notFound("channel_key_not_found", "该渠道下的密钥不存在")
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(app.channelQuotaService.query(channel, keyId))
+        }
+
+        put("/channels/{id}/keys/{keyId}/quota-settings") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少渠道 id")
+            val keyId = call.requiredParam("keyId", "缺少密钥 id")
+            val settings = call.receive<ChannelQuotaSettingsRequest>()
+            validateQuotaSettings(settings)
+            val credential = settings.credential?.trim()?.takeIf { it.isNotEmpty() }?.let(app.credentialCipher::encrypt)
+            val updated = app.channelRepository.updateKeyQuota(id, keyId, settings.toSettings(), credential, settings.clearCredential)
+                ?: throw notFound("channel_key_not_found", "渠道或该渠道下的密钥不存在")
+            call.respond(updated.toResponse())
+        }
+
+        put("/channels/{id}/quota-settings") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少渠道 id")
+            val settings = call.receive<ChannelQuotaSettingsRequest>()
+            validateQuotaSettings(settings)
+            val credential = settings.credential?.trim()?.takeIf { it.isNotEmpty() }?.let(app.credentialCipher::encrypt)
+            val updated = app.channelRepository.updateQuota(id, settings.toSettings(), credential, settings.clearCredential)
+                ?: throw notFound("channel_not_found", "渠道不存在")
+            call.respond(updated.toResponse())
+        }
+
         get("/upstream-request-settings") {
             call.requireAdmin(app)
             call.respond(
@@ -383,9 +436,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     ?: channel.keys.minWithOrNull(compareBy({ it.priority }, { it.name }))
             }
             val authType = request.authType ?: saved?.authType ?: "bearer"
-            if (authType !in setOf("bearer", "anthropic", "google")) {
+            if (authType !in SUPPORTED_UPSTREAM_AUTH_TYPES) {
                 throw badRequest("invalid_channel", "上游鉴权方式必须是 bearer、anthropic 或 google")
             }
+            validateProtocolAuthTypes(request.protocolAuthTypes)
             request.requestOverrides?.let(::validateUpstreamRequestOverrides)
             val credential = request.credential
                 ?.takeIf { it.isNotBlank() }
@@ -410,13 +464,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val mappingByUpstream = saved?.modelMappings?.associateBy { it.upstreamModel }.orEmpty()
             val discoveryProtocols = request.protocols?.takeIf { it.isNotEmpty() }?.let(::parseProtocols)
                 ?: saved?.protocols.orEmpty()
-            val discoveryProtocol = when (authType) {
-                "anthropic" -> GatewayProtocol.MESSAGES
-                "google" -> GatewayProtocol.GEMINI
-                else -> discoveryProtocols.singleOrNull()
-            }
+            val protocolAuthTypes = request.protocolAuthTypes ?: saved?.protocolAuthTypes.orEmpty()
+            val discoveryProtocol = modelListProtocol(discoveryProtocols, authType, protocolAuthTypes)
+            val discoveryAuthType = effectiveAuthType(authType, protocolAuthTypes, discoveryProtocol)
             val models = fetchUpstreamModels(
-                baseUrl, credential, app.httpClient, authType,
+                baseUrl, credential, app.httpClient, discoveryAuthType,
                 protocol = discoveryProtocol,
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
                 channelOverrides = request.requestOverrides ?: saved?.requestOverrides ?: UpstreamRequestOverrides(),
@@ -532,10 +584,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 keys = keys,
                 authType = request.authType ?: "bearer",
                 protocols = protocols,
+                protocolAuthTypes = request.protocolAuthTypes ?: emptyMap(),
                 enabled = request.enabled,
                 modelMappings = modelMappings,
                 priority = request.priority ?: 1,
                 requestOverrides = request.requestOverrides ?: UpstreamRequestOverrides(),
+                quota = request.quota?.toSettings() ?: ChannelQuotaSettings(),
+                quotaCredential = request.quota?.credential?.trim()?.takeIf { it.isNotEmpty() }?.let(app.credentialCipher::encrypt),
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
         }
@@ -569,10 +624,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         keys = keys,
                         authType = request.authType,
                         protocols = protocols,
+                        protocolAuthTypes = request.protocolAuthTypes,
                         enabled = request.enabled,
                         modelMappings = modelMappings,
                         priority = request.priority,
                         requestOverrides = request.requestOverrides,
+                        quota = request.quota?.toSettings(),
+                        quotaCredential = request.quota?.credential?.trim()?.takeIf { it.isNotEmpty() }?.let(app.credentialCipher::encrypt),
+                        clearQuotaCredential = request.quota?.clearCredential == true,
                     ) ?: throw notFound("channel_not_found", "渠道不存在")
                     updated.keys.filter { key ->
                         existing.keys.firstOrNull { it.id == key.id }?.stateVersion != key.stateVersion
@@ -1062,10 +1121,12 @@ private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean
     if (!request.baseUrl.startsWith("http://") && !request.baseUrl.startsWith("https://")) {
         throw badRequest("invalid_channel", "渠道地址必须以 http:// 或 https:// 开头")
     }
-    if (request.authType != null && request.authType !in setOf("bearer", "anthropic", "google")) {
+    if (request.authType != null && request.authType !in SUPPORTED_UPSTREAM_AUTH_TYPES) {
         throw badRequest("invalid_channel", "上游鉴权方式必须是 bearer、anthropic 或 google")
     }
+    validateProtocolAuthTypes(request.protocolAuthTypes)
     request.requestOverrides?.let(::validateUpstreamRequestOverrides)
+    request.quota?.let(::validateQuotaSettings)
     if (request.priority != null && request.priority !in 1..1000) {
         throw badRequest("invalid_channel", "渠道优先级必须在 1..1000 之间")
     }
@@ -1077,6 +1138,37 @@ private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean
         if (request.keys.any { it.credential.isNullOrBlank() }) {
             throw badRequest("invalid_channel", "新建渠道的每个密钥都必须提供上游凭据")
         }
+    }
+}
+
+private fun validateProtocolAuthTypes(protocolAuthTypes: Map<String, String>?) {
+    protocolAuthTypes ?: return
+    if (protocolAuthTypes.size > GatewayProtocol.entries.size) {
+        throw badRequest("invalid_channel", "协议级鉴权配置数量无效")
+    }
+    protocolAuthTypes.forEach { (protocol, authType) ->
+        if (GatewayProtocol.fromValue(protocol) == null) {
+            throw badRequest("invalid_channel", "协议级鉴权配置包含未知协议：$protocol")
+        }
+        if (authType !in SUPPORTED_UPSTREAM_AUTH_TYPES) {
+            throw badRequest("invalid_channel", "协议级鉴权方式必须是 bearer、anthropic 或 google")
+        }
+    }
+}
+
+private fun validateQuotaSettings(settings: ChannelQuotaSettingsRequest) {
+    if (settings.providerId.isNotEmpty() && !Regex(ChannelQuotaProvider.ID_PATTERN).matches(settings.providerId)) {
+        throw badRequest("invalid_quota_settings", "额度插件 ID 格式无效")
+    }
+    if (settings.config.toString().toByteArray(Charsets.UTF_8).size > 8192) {
+        throw badRequest("invalid_quota_settings", "额度插件配置不能超过 8 KB")
+    }
+    val credential = settings.credential?.trim().orEmpty()
+    if (credential.length > 4096 || credential.any { it.isISOControl() }) {
+        throw badRequest("invalid_quota_settings", "额度查询凭据不能超过 4096 个字符或包含控制字符")
+    }
+    if (settings.clearCredential && credential.isNotEmpty()) {
+        throw badRequest("invalid_quota_settings", "不能同时更换和清除额度查询凭据")
     }
 }
 

@@ -3,6 +3,7 @@ package dev.soven.llmgateway.repo
 import dev.soven.llmgateway.db.ChannelKeyModels
 import dev.soven.llmgateway.db.ChannelKeyHealth
 import dev.soven.llmgateway.db.ChannelKeyRateLimits
+import dev.soven.llmgateway.db.ChannelKeyQuotaSettings
 import dev.soven.llmgateway.db.ChannelKeys
 import dev.soven.llmgateway.db.ChannelModels
 import dev.soven.llmgateway.db.Channels
@@ -10,6 +11,7 @@ import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import kotlinx.serialization.json.Json
@@ -22,6 +24,7 @@ import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.notInList
+import org.jetbrains.exposed.v1.core.statements.UpdateBuilder
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
@@ -97,6 +100,9 @@ class ChannelRepository(private val database: Database, private val credentialCi
         modelMappings: List<ChannelModelRecord> = emptyList(),
         priority: Int = 1,
         requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
+        quota: ChannelQuotaSettings = ChannelQuotaSettings(),
+        quotaCredential: EncryptedCredential? = null,
+        protocolAuthTypes: Map<String, String> = emptyMap(),
     ): ChannelRecord = suspendTransaction(database) {
         require(keys.isNotEmpty()) { "channel requires at least one key" }
         val storedProtocols = protocols.distinct()
@@ -108,10 +114,13 @@ class ChannelRepository(private val database: Database, private val credentialCi
             it[Channels.name] = name
             it[Channels.baseUrl] = baseUrl
             it[Channels.authType] = authType
+            it[Channels.protocolAuthTypes] = Json.encodeToString(protocolAuthTypes)
             it[Channels.protocols] = storedProtocols.joinToString(",") { protocol -> protocol.value }
             it[Channels.enabled] = enabled
             it[Channels.priority] = priority
             it[Channels.requestOverrides] = Json.encodeToString(requestOverrides)
+            it[Channels.quotaSettings] = Json.encodeToString(quota)
+            it.setQuotaCredential(quotaCredential, clear = false)
             it[createdAt] = now
             it[updatedAt] = now
         }
@@ -140,6 +149,10 @@ class ChannelRepository(private val database: Database, private val credentialCi
         modelMappings: List<ChannelModelRecord>? = null,
         priority: Int? = null,
         requestOverrides: UpstreamRequestOverrides? = null,
+        quota: ChannelQuotaSettings? = null,
+        quotaCredential: EncryptedCredential? = null,
+        clearQuotaCredential: Boolean = false,
+        protocolAuthTypes: Map<String, String>? = null,
     ): ChannelRecord? = suspendTransaction(database) {
         val now = System.currentTimeMillis()
         Channels.selectAll()
@@ -150,6 +163,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
             it[Channels.name] = name
             it[Channels.baseUrl] = baseUrl
             if (authType != null) it[Channels.authType] = authType
+            protocolAuthTypes?.let { value -> it[Channels.protocolAuthTypes] = Json.encodeToString(value) }
             protocols?.let { values ->
                 val storedProtocols = values.distinct()
                 require(storedProtocols.isNotEmpty()) { "channel requires at least one protocol" }
@@ -158,6 +172,8 @@ class ChannelRepository(private val database: Database, private val credentialCi
             it[Channels.enabled] = enabled
             if (priority != null) it[Channels.priority] = priority
             if (requestOverrides != null) it[Channels.requestOverrides] = Json.encodeToString(requestOverrides)
+            if (quota != null) it[Channels.quotaSettings] = Json.encodeToString(quota)
+            it.setQuotaCredential(quotaCredential, clearQuotaCredential)
             it[updatedAt] = now
         }
         if (updated == 0) {
@@ -173,11 +189,57 @@ class ChannelRepository(private val database: Database, private val credentialCi
         Channels.deleteWhere { Channels.id eq id } > 0
     }
 
+    suspend fun updateQuota(
+        id: String,
+        settings: ChannelQuotaSettings,
+        credential: EncryptedCredential? = null,
+        clearCredential: Boolean = false,
+    ): ChannelRecord? = suspendTransaction(database) {
+        val changed = Channels.update({ Channels.id eq id }) {
+            it[quotaSettings] = Json.encodeToString(settings)
+            it.setQuotaCredential(credential, clearCredential)
+            it[updatedAt] = System.currentTimeMillis()
+        }
+        if (changed == 0) null else Channels.selectAll().where { Channels.id eq id }.single().let(::toRecordWithRelations)
+    }
+
     suspend fun modelsFor(channelId: String): Set<String> = suspendTransaction(database) {
         ChannelModels.selectAll()
             .where { ChannelModels.channelId eq channelId }
             .map { it[ChannelModels.upstreamModel] }
             .toSet()
+    }
+
+    suspend fun updateKeyQuota(
+        channelId: String,
+        keyId: String,
+        settings: ChannelQuotaSettings,
+        credential: EncryptedCredential? = null,
+        clearCredential: Boolean = false,
+    ): ChannelRecord? = suspendTransaction(database) {
+        require(credential == null || !clearCredential)
+        // 与整渠道编辑共用父行锁，避免密钥删除/替换时留下悬空配置或覆盖其他账户。
+        val channel = Channels.selectAll().where { Channels.id eq channelId }.forUpdate().singleOrNull()
+            ?: return@suspendTransaction null
+        ChannelKeys.selectAll().where { (ChannelKeys.id eq keyId) and (ChannelKeys.channelId eq channelId) }
+            .forUpdate().singleOrNull() ?: return@suspendTransaction null
+        val previous = ChannelKeyQuotaSettings.selectAll().where { ChannelKeyQuotaSettings.keyId eq keyId }.singleOrNull()
+        val now = System.currentTimeMillis()
+        fun UpdateBuilder<*>.setValues() {
+            this[ChannelKeyQuotaSettings.settings] = Json.encodeToString(settings)
+            this[ChannelKeyQuotaSettings.updatedAt] = now
+            if (credential != null || clearCredential) {
+                this[ChannelKeyQuotaSettings.credentialCiphertext] = credential?.ciphertext.orEmpty()
+                this[ChannelKeyQuotaSettings.credentialNonce] = credential?.nonce.orEmpty()
+                this[ChannelKeyQuotaSettings.credentialKeyVersion] = credential?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
+            }
+        }
+        if (previous == null) ChannelKeyQuotaSettings.insert {
+            it[ChannelKeyQuotaSettings.keyId] = keyId
+            it.setValues()
+        } else ChannelKeyQuotaSettings.update({ ChannelKeyQuotaSettings.keyId eq keyId }) { it.setValues() }
+        Channels.update({ Channels.id eq channelId }) { it[updatedAt] = now }
+        toRecordWithRelations(channel).copy(updatedAt = now)
     }
 
     private fun saveModels(channelId: String, modelMappings: List<ChannelModelRecord>, now: Long) {
@@ -341,13 +403,27 @@ class ChannelRepository(private val database: Database, private val credentialCi
         name = row[Channels.name],
         baseUrl = row[Channels.baseUrl],
         authType = row[Channels.authType],
+        protocolAuthTypes = Json.decodeFromString<Map<String, String>>(row[Channels.protocolAuthTypes]),
         protocols = GatewayProtocol.parse(row[Channels.protocols]),
         enabled = row[Channels.enabled],
         priority = row[Channels.priority],
         createdAt = row[Channels.createdAt],
         updatedAt = row[Channels.updatedAt],
         requestOverrides = Json.decodeFromString<UpstreamRequestOverrides>(row[Channels.requestOverrides]),
+        quota = Json.decodeFromString<ChannelQuotaSettings>(row[Channels.quotaSettings]),
+        quotaCredential = row[Channels.quotaCredentialCiphertext].takeIf { it.isNotEmpty() }?.let {
+            EncryptedCredential(it, row[Channels.quotaCredentialNonce], row[Channels.quotaCredentialKeyVersion])
+        },
     )
+
+    private fun UpdateBuilder<*>.setQuotaCredential(credential: EncryptedCredential?, clear: Boolean) {
+        require(credential == null || !clear) { "cannot replace and clear quota credential together" }
+        if (credential != null || clear) {
+            this[Channels.quotaCredentialCiphertext] = credential?.ciphertext.orEmpty()
+            this[Channels.quotaCredentialNonce] = credential?.nonce.orEmpty()
+            this[Channels.quotaCredentialKeyVersion] = credential?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
+        }
+    }
 }
 
 /** Batch-loads channel model mappings inside the caller's transaction. */
@@ -392,8 +468,12 @@ internal fun loadChannelKeysInTransaction(
                 maxConcurrentRequests = row[ChannelKeyRateLimits.maxConcurrentRequests],
             )
         }
+    val quotasByKey = ChannelKeyQuotaSettings.selectAll()
+        .where { ChannelKeyQuotaSettings.keyId inList keyRows.map { it[ChannelKeys.id] } }
+        .associateBy { it[ChannelKeyQuotaSettings.keyId] }
     return keyRows.groupBy { it[ChannelKeys.channelId] }.mapValues { (_, rows) ->
         rows.map { row ->
+            val quotaRow = quotasByKey[row[ChannelKeys.id]]
             ChannelKeyRecord(
                 id = row[ChannelKeys.id],
                 channelId = row[ChannelKeys.channelId],
@@ -413,6 +493,12 @@ internal fun loadChannelKeysInTransaction(
                 autoDisableReason = row[ChannelKeys.autoDisableReason],
                 autoDisableUntil = row[ChannelKeys.autoDisableUntil],
                 probeUntil = row[ChannelKeys.probeUntil],
+                quota = quotaRow?.let { Json.decodeFromString<ChannelQuotaSettings>(it[ChannelKeyQuotaSettings.settings]) },
+                quotaCredential = quotaRow?.let { entry ->
+                    entry[ChannelKeyQuotaSettings.credentialCiphertext].takeIf { it.isNotEmpty() }?.let { ciphertext ->
+                        EncryptedCredential(ciphertext, entry[ChannelKeyQuotaSettings.credentialNonce], entry[ChannelKeyQuotaSettings.credentialKeyVersion])
+                    }
+                },
             )
         }
     }

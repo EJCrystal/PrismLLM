@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
@@ -10,10 +10,11 @@ import {
   normalizeKeyAutoDisableSettings,
   toKeyDisableRuleDraft,
 } from '../utils/keyAutoDisable'
+import type { KeyDisableRuleDraft } from '../utils/keyAutoDisable'
 import Modal from './Modal.vue'
 
 const emit = defineEmits(['close', 'saved'])
-const form = reactive({
+const form = reactive<{ enabled: boolean; rules: KeyDisableRuleDraft[] }>({
   enabled: DEFAULT_KEY_AUTO_DISABLE_SETTINGS.enabled,
   rules: DEFAULT_KEY_AUTO_DISABLE_SETTINGS.rules.map(toKeyDisableRuleDraft),
 })
@@ -29,7 +30,7 @@ async function load() {
     form.enabled = normalized.enabled
     form.rules = normalized.rules.map(toKeyDisableRuleDraft)
   } catch (cause) {
-    loadError.value = cause.message
+    loadError.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
     loading.value = false
   }
@@ -39,20 +40,20 @@ function addRule() {
   form.rules.push(newKeyDisableRule(form.rules))
 }
 
-function removeRule(index) {
+function removeRule(index: number) {
   form.rules.splice(index, 1)
 }
 
 async function save() {
   if (loading.value || saving.value || loadError.value) return
-  let payload
+  let payload: ReturnType<typeof buildKeyAutoDisableSettingsPayload>
   try {
     payload = buildKeyAutoDisableSettingsPayload({
       enabled: form.enabled,
       rules: form.rules.map(fromKeyDisableRuleDraft),
     })
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(cause instanceof Error ? cause.message : String(cause), 'error')
     return
   }
   saving.value = true
@@ -62,7 +63,7 @@ async function save() {
     emit('saved')
     emit('close')
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(cause instanceof Error ? cause.message : String(cause), 'error')
   } finally {
     saving.value = false
   }

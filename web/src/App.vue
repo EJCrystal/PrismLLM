@@ -1,6 +1,7 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from './api'
+import type { MeResponse } from './types/api'
 import Icon from './components/Icon.vue'
 import ToastStack from './components/ToastStack.vue'
 import LoginView from './components/LoginView.vue'
@@ -20,7 +21,7 @@ const navItems = [
   { id: 'logs', label: '请求日志', icon: 'logs' },
   { id: 'usage-reports', label: '用量报表', icon: 'chart' },
   { id: 'audit-logs', label: '操作审计', icon: 'shield' },
-]
+] as const
 
 const meta = {
   channels: {
@@ -51,8 +52,8 @@ const meta = {
 }
 
 const booting = ref(true)
-const user = ref(null)
-const view = ref('channels')
+const user = ref<MeResponse | null>(null)
+const view = ref<keyof typeof meta>('channels')
 const navOpen = ref(false)
 const accountOpen = ref(false)
 const currentMeta = computed(() => meta[view.value] || meta.channels)
@@ -68,13 +69,13 @@ async function restoreSession() {
   }
 }
 
-function onAuthenticated(authenticatedUser) {
+function onAuthenticated(authenticatedUser: MeResponse) {
   user.value = authenticatedUser
   view.value = 'channels'
   accountOpen.value = false
 }
 
-function selectView(id) {
+function selectView(id: keyof typeof meta) {
   view.value = id
   navOpen.value = false
 }
@@ -93,7 +94,7 @@ function handleUnauthorized() {
   accountOpen.value = false
 }
 
-function onAvatarUpdated(updatedUser) {
+function onAvatarUpdated(updatedUser: MeResponse) {
   user.value = updatedUser
 }
 

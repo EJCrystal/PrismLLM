@@ -4,6 +4,7 @@ import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.authTypeFor
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamModel
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
@@ -56,9 +57,10 @@ suspend fun fetchUpstreamModels(
         )
     }
 
+    val protocol = channel.modelListProtocol()
     val models = fetchUpstreamModels(
-        channel.baseUrl, credential, httpClient, channel.authType,
-        protocol = channel.modelListProtocol(), globalOverrides = globalOverrides, channelOverrides = channel.requestOverrides,
+        channel.baseUrl, credential, httpClient, channel.authTypeFor(protocol),
+        protocol = protocol, globalOverrides = globalOverrides, channelOverrides = channel.requestOverrides,
         headerProfiles = headerProfiles,
     )
     return if (authorizedOnly) models.filter { it.id in key.models } else models

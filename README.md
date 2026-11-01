@@ -9,6 +9,7 @@
 - 全局和渠道均可覆盖上游 UA、请求头及 JSON 请求体，按实际出站协议应用 Claude、Codex、Google SDK 或 Antigravity 预设。
 - 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。渠道启用即参与直连暴露。
 - 渠道支持密钥池：每个密钥独立保存凭据、启用状态、优先级和可用模型；同一渠道内按密钥优先级分档，同档密钥轮询。
+- 渠道保留渠道级 `authType` 作为默认鉴权方式，也可通过 `protocolAuthTypes` 按 `chat_completions`、`responses`、`messages`、`gemini` 分别覆盖；未覆盖的协议继续继承默认值。
 - 上游密钥支持可配置的自动禁用：规则按状态码、错误文本、连续/窗口计数匹配，动作区分临时停用与永久停用；命中规则与停用状态写入操作审计。
 - 自定义对外模型 ID 会替代上游名对外暴露；同一渠道的多个上游模型可共享一个对外模型 ID，多个渠道配置相同 ID 时也会自动聚合并参与候选分摊。
 - 调用方密钥鉴权，支持按密钥限制每分钟请求数和并发数；上游凭据使用 AES-256-GCM 加密存储。
@@ -19,6 +20,7 @@
   - 模型列表：查看 `/v1/models` 实际对外暴露结果与每日缓存的 models.dev 目录对比。
   - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
 - PostgreSQL + Flyway；单实例部署。
+- 可选的渠道共享额度查询：独立的 Sub2API / New API 插件包，支持通过 JVM ServiceLoader 加载自定义可信 JAR。
 
 明确不做：多租户 RBAC、语义缓存、MCP、多副本。协议转换第一版不支持 Gemini、图片、文件、音频、Provider 内置工具和 Responses 有状态续接。
 
@@ -34,7 +36,7 @@ client --client key--> gateway --configured auth--> protocol-compatible upstream
 管理面：`/admin/api/*`，由会话 Cookie + CSRF Token 保护。
 运维面：`/health/live`、`/health/ready`、`/metrics`。
 
-渠道的 `baseUrl` 必须包含上游要求的版本路径，例如 `https://api.openai.com/v1`、`https://api.anthropic.com/v1` 或 `https://generativelanguage.googleapis.com/v1beta`。网关不会自动补版本；固定协议端点由配置追加，Gemini 使用 `{baseUrl}/models/{model}:generateContent` 等动态路径。Anthropic Messages 请求可使用 `Authorization: Bearer <gateway-key>` 或 `x-api-key: <gateway-key>`；Gemini 请求可使用 Bearer、`x-goog-api-key` 或 `?key=`。渠道上游鉴权可选择 Bearer、Anthropic `x-api-key` 或 Google `x-goog-api-key`，`anthropic-version` 缺省为 `2023-06-01`。
+渠道的 `baseUrl` 必须包含上游要求的版本路径，例如 `https://api.openai.com/v1`、`https://api.anthropic.com/v1` 或 `https://generativelanguage.googleapis.com/v1beta`。网关不会自动补版本；固定协议端点由配置追加，Gemini 使用 `{baseUrl}/models/{model}:generateContent` 等动态路径。Anthropic Messages 请求可使用 `Authorization: Bearer <gateway-key>` 或 `x-api-key: <gateway-key>`；Gemini 请求可使用 Bearer、`x-goog-api-key` 或 `?key=`。渠道上游鉴权可选择 Bearer、Anthropic `x-api-key` 或 Google `x-goog-api-key`，`anthropic-version` 缺省为 `2023-06-01`。`authType` 是兼容旧配置的渠道默认值；同一渠道需要让不同协议使用不同请求头时，增加例如 `"protocolAuthTypes":{"responses":"anthropic","messages":"bearer"}`，只对对应出站协议生效。
 
 启用渠道的对外模型 ID 会出现在 `/v1/models` 并可直接路由。满足条件后：
 - **未配置对外模型 ID（留空）**：对外使用上游模型名；
@@ -76,6 +78,23 @@ npm run dev
 
 Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `http://localhost:5173/admin/`。
 
+## 可选的上游额度插件
+
+渠道列表的「额度」入口可选择已安装插件，保存后手动查询上游账户额度。默认关闭；不安装插件也能正常使用网关。结果显示实际查询密钥的名称、ID 与鉴权回退顺序，缓存 60 秒。不同账户的密钥可能不共享余额，不跨密钥累加；查询失败和零余额均不会自动停用密钥。
+
+官方适配器是独立项目，按需构建并安装：
+
+~~~bash
+mvn -DskipTests install
+mvn -f extensions/quota-providers/pom.xml package
+mkdir -p plugins
+cp extensions/quota-providers/target/llm-gateway-quota-providers-0.1.0-SNAPSHOT.jar plugins/
+# 重新构建网关镜像并启动，以加载当前代码与插件
+docker compose up -d --build gateway
+~~~
+
+New API 可选择「系统访问令牌 + 用户 ID」，通过账户接口查询余额；令牌独立加密保存，仅用于额度查询。较新上游也可选择渠道模型密钥方式，但需要上游返回账户额度。上游只提供单个令牌限额时不会将其当成账户余额。插件安装、接口、能力边界与自行开发方式见 [渠道额度插件指南](docs/plugins/channel-quota-provider.md)。
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
@@ -108,6 +127,7 @@ Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `ht
 | `DRAIN_TIMEOUT_MS` | `30000` | 优雅停机 drain 时间 |
 | `STATIC_DIR` | `web/dist` | 管理界面静态目录 |
 | `COOKIE_SECURE` | `false` | 管理面 Cookie 是否只走 HTTPS；生产应为 `true` |
+| `QUOTA_PLUGIN_DIR` | `plugins` | 可选的渠道额度插件 JAR 目录；不存在时不加载插件 |
 
 生成 master key：
 
@@ -180,7 +200,8 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/model-disco
   "name": "openai-primary",
   "baseUrl": "https://api.openai.com/v1",
   "authType": "bearer",
-  "protocols": ["chat_completions"],
+  "protocolAuthTypes": {"responses": "anthropic"},
+  "protocols": ["chat_completions", "responses"],
   "enabled": true,
   "modelMappings": [
     {"upstreamModel": "gpt-4o-mini"},

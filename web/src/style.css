@@ -3435,6 +3435,29 @@ textarea:disabled {
   margin-top: 8px;
 }
 
+.protocol-auth-settings {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.protocol-auth-row {
+  display: grid;
+  grid-template-columns: minmax(0, 150px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.protocol-auth-row .badge {
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .protocol-order-item {
   display: grid;
   grid-template-columns: minmax(0, 150px) repeat(2, 34px);
@@ -3515,10 +3538,53 @@ textarea:disabled {
   background: var(--panel);
 }
 
+.channel-key-tabs {
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  margin-top: 12px;
+  padding: 1px 1px 5px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+.channel-key-tab {
+  flex: 0 0 auto;
+  max-width: min(220px, 70vw);
+  min-height: 38px;
+  padding: 7px 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-key-tab:hover {
+  border-color: var(--line-strong);
+}
+
+.channel-key-tab[aria-selected="true"] {
+  border-color: var(--brand);
+  background: var(--info-soft);
+  color: var(--brand-deep);
+}
+
+.channel-key-tab:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
 .channel-key-list {
   display: grid;
-  gap: 12px;
-  margin-top: 12px;
+  margin-top: 7px;
 }
 
 .channel-key-card {
@@ -3904,6 +3970,11 @@ textarea:disabled {
 }
 
 @media (max-width: 640px) {
+  .protocol-auth-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
   .channel-key-card-head {
     grid-template-columns: 1fr;
   }

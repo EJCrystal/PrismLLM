@@ -1,17 +1,20 @@
-<script setup>
+<script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { api } from '../api'
+import type { MeResponse } from '../types/api'
 import { notify } from '../toast'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import SecretInput from './SecretInput.vue'
 
-const props = defineProps({
-  user: { type: Object, required: true },
-})
+const props = defineProps<{ user: MeResponse }>()
 
-const emit = defineEmits(['close', 'avatar-updated', 'password-changed'])
-const fileInput = ref(null)
+const emit = defineEmits<{
+  (event: 'close'): void
+  (event: 'avatar-updated', user: MeResponse): void
+  (event: 'password-changed'): void
+}>()
+const fileInput = ref<HTMLInputElement | null>(null)
 const avatarDraft = ref(props.user.avatarDataUrl || null)
 const avatarSaving = ref(false)
 const passwordSaving = ref(false)
@@ -28,9 +31,11 @@ function chooseAvatar() {
   fileInput.value?.click()
 }
 
-async function handleAvatarFile(event) {
-  const file = event.target.files?.[0]
-  event.target.value = ''
+async function handleAvatarFile(event: Event) {
+  if (!(event.target instanceof HTMLInputElement)) return
+  const input = event.target
+  const file = input.files?.[0]
+  input.value = ''
   if (!file) return
   if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
     notify('头像仅支持 PNG、JPEG 或 WebP', 'error')
@@ -57,7 +62,7 @@ async function handleAvatarFile(event) {
     if (dataUrl.length > 500_000) dataUrl = canvas.toDataURL('image/jpeg', 0.72)
     avatarDraft.value = dataUrl
   } catch (cause) {
-    notify(cause.message || '无法读取图片', 'error')
+    notify(cause instanceof Error ? cause.message : '无法读取图片', 'error')
   }
 }
 
@@ -68,7 +73,7 @@ async function saveAvatar() {
     emit('avatar-updated', updated)
     notify(avatarDraft.value ? '头像已更新' : '已恢复默认头像')
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(cause instanceof Error ? cause.message : String(cause), 'error')
   } finally {
     avatarSaving.value = false
   }
@@ -100,7 +105,7 @@ async function changePassword() {
     notify('密码已更新，请使用新密码重新登录')
     emit('password-changed')
   } catch (cause) {
-    notify(cause.message, 'error')
+    notify(cause instanceof Error ? cause.message : String(cause), 'error')
   } finally {
     passwordSaving.value = false
   }

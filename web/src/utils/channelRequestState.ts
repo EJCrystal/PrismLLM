@@ -30,6 +30,7 @@ export interface ChannelRequestForm {
   baseUrl: string
   credential?: string | null
   authType: string
+  protocolAuthTypes?: Record<string, string> | null
   requestOverrides?: UpstreamRequestOverrides | null
 }
 
@@ -50,7 +51,7 @@ export function watchChannelRequestInputs(
   },
 ) {
   return watch(
-    () => [form.baseUrl, credentialSource(), form.authType, settingsSource()],
+    () => [form.baseUrl, credentialSource(), form.authType, JSON.stringify(form.protocolAuthTypes || {}), settingsSource()],
     () => {
       modelRequests.invalidate()
       probeRequests.invalidate()
@@ -66,11 +67,13 @@ export function canProbeSavedChannel(
     baseUrl,
     credential,
     authType,
+    protocolAuthTypes,
     requestOverrides,
   }: {
     baseUrl: string | null | undefined
     credential: string | null | undefined
     authType: string | null | undefined
+    protocolAuthTypes?: Record<string, string> | null
     requestOverrides?: UpstreamRequestOverrides | null
   },
 ): boolean {
@@ -79,6 +82,7 @@ export function canProbeSavedChannel(
   return String(baseUrl ?? '').trim() === String(savedChannel.baseUrl ?? '').trim()
     && !String(credential ?? '').trim()
     && authType === (savedChannel.authType || 'bearer')
+    && JSON.stringify(protocolAuthTypes || {}) === JSON.stringify(savedChannel.protocolAuthTypes || {})
     && (requestOverrides === undefined || JSON.stringify(normalizeRequestOverrides(requestOverrides))
       === JSON.stringify(normalizeRequestOverrides(savedChannel.requestOverrides)))
 }
