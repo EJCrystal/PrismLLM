@@ -79,6 +79,13 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
           <div class="health-history">
             <button v-for="(bucket, index) in detail.trend" :key="bucket.from" type="button" class="health-history-bar" :data-state="healthBucketState(bucket.metrics, detail.report.minimumSamples, detail.report.warningErrorRate, detail.report.criticalErrorRate)" :class="{ selected: selectedBucket === index, 'is-empty': bucket.metrics.attempts === 0 }" :title="bucketLabel(bucket)" :aria-label="bucketLabel(bucket)" :aria-pressed="selectedBucket === index" @click="selectedBucket = index" />
           </div>
+          <div class="health-history-legend" aria-label="成功率趋势图例">
+            <span><i class="health-legend-swatch healthy" aria-hidden="true" />正常</span>
+            <span><i class="health-legend-swatch warning" aria-hidden="true" />需关注：失败率 ≥ {{ healthPercent(detail.report.warningErrorRate) }}</span>
+            <span><i class="health-legend-swatch insufficient" aria-hidden="true" />样本不足：少于 {{ detail.report.minimumSamples }} 次，暂不判定</span>
+            <span><i class="health-legend-swatch critical" aria-hidden="true" />异常</span>
+            <span><i class="health-legend-swatch empty" aria-hidden="true" />无请求</span>
+          </div>
           <div class="health-history-axis muted small"><span>{{ formatTime(detail.report.from) }}</span><span>{{ formatTime(detail.report.to) }}</span></div>
           <p v-if="activeBucket" class="small" role="status">{{ bucketLabel(activeBucket) }}；失败 {{ activeBucket.metrics.failures }} 次，P95 首 token {{ formatDuration(activeBucket.metrics.p95FirstTokenMs) }}。</p>
           <p v-else class="muted small">点击时间块查看样本；绿色正常，黄色需关注或样本不足，红色异常。无请求时段留空，以虚线边框显示。</p>
@@ -137,9 +144,17 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
 .health-history-bar[data-state='HEALTHY'] { background: var(--success); }
 .health-history-bar[data-state='WARNING'] { background: var(--warning); }
 .health-history-bar[data-state='CRITICAL'] { background: var(--danger); }
-.health-history-bar[data-state='UNKNOWN'] { background: color-mix(in srgb, var(--warning) 55%, transparent); outline: 1px dashed var(--warning); outline-offset: -1px; }
+.health-history-bar[data-state='UNKNOWN'] { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning) 18%, var(--panel)) 0 7px, color-mix(in srgb, var(--warning) 48%, var(--panel)) 7px 11px); outline: 1px solid color-mix(in srgb, var(--warning) 72%, var(--line)); outline-offset: -1px; }
 .health-history-bar.is-empty { background: transparent; outline: 1px dashed var(--line-strong); outline-offset: -1px; }
 .health-history-bar.selected, .health-history-bar:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; opacity: 1; }
+.health-history-legend { display: flex; flex-wrap: wrap; gap: 7px 14px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.health-history-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.health-legend-swatch { display: inline-block; width: 20px; height: 10px; flex: 0 0 20px; border-radius: 2px; }
+.health-legend-swatch.healthy { background: var(--success); }
+.health-legend-swatch.warning { background: var(--warning); }
+.health-legend-swatch.insufficient { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning) 18%, var(--panel)) 0 4px, color-mix(in srgb, var(--warning) 48%, var(--panel)) 4px 7px); border: 1px solid color-mix(in srgb, var(--warning) 72%, var(--line)); }
+.health-legend-swatch.critical { background: var(--danger); }
+.health-legend-swatch.empty { background: transparent; border: 1px dashed var(--line-strong); }
 .health-history-axis { display: flex; justify-content: space-between; gap: 12px; }
 .health-breakdown { min-width: 620px; }
 .health-breakdown td:first-child { max-width: 260px; overflow-wrap: anywhere; }
