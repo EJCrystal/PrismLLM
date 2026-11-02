@@ -77,11 +77,11 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
         <section class="health-section" aria-label="健康度历史">
           <h3>成功率趋势 <small class="muted">{{ window === '24h' ? '每小时' : '每 24 小时' }}</small></h3>
           <div class="health-history">
-            <button v-for="(bucket, index) in detail.trend" :key="bucket.from" type="button" class="health-history-bar" :data-state="healthBucketState(bucket.metrics, detail.report.minimumSamples, detail.report.warningErrorRate, detail.report.criticalErrorRate)" :class="{ selected: selectedBucket === index }" :title="bucketLabel(bucket)" :aria-label="bucketLabel(bucket)" :aria-pressed="selectedBucket === index" @click="selectedBucket = index" />
+            <button v-for="(bucket, index) in detail.trend" :key="bucket.from" type="button" class="health-history-bar" :data-state="healthBucketState(bucket.metrics, detail.report.minimumSamples, detail.report.warningErrorRate, detail.report.criticalErrorRate)" :class="{ selected: selectedBucket === index, 'is-empty': bucket.metrics.attempts === 0 }" :title="bucketLabel(bucket)" :aria-label="bucketLabel(bucket)" :aria-pressed="selectedBucket === index" @click="selectedBucket = index" />
           </div>
           <div class="health-history-axis muted small"><span>{{ formatTime(detail.report.from) }}</span><span>{{ formatTime(detail.report.to) }}</span></div>
           <p v-if="activeBucket" class="small" role="status">{{ bucketLabel(activeBucket) }}；失败 {{ activeBucket.metrics.failures }} 次，P95 首 token {{ formatDuration(activeBucket.metrics.p95FirstTokenMs) }}。</p>
-          <p v-else class="muted small">点击时间块查看样本；绿色正常，黄色需关注或样本不足，红色异常。无请求以虚线显示。</p>
+          <p v-else class="muted small">点击时间块查看样本；绿色正常，黄色需关注或样本不足，红色异常。无请求时段留空，以虚线边框显示。</p>
         </section>
         <section class="health-section">
           <div class="health-window-tabs" role="group" aria-label="健康度统计维度">
@@ -133,11 +133,12 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
 .health-section h3 { font-size: 14px; }
 .health-section h3 small { font-size: 12px; font-weight: normal; }
 .health-history { display: flex; gap: 4px; }
-.health-history-bar { flex: 1 1 0; min-width: 0; height: 14px; padding: 0; border: 0; border-radius: 3px; cursor: pointer; }
+.health-history-bar { flex: 1 1 0; min-width: 0; height: 38px; padding: 0; border: 0; border-radius: 3px; cursor: pointer; }
 .health-history-bar[data-state='HEALTHY'] { background: var(--success); }
 .health-history-bar[data-state='WARNING'] { background: var(--warning); }
 .health-history-bar[data-state='CRITICAL'] { background: var(--danger); }
 .health-history-bar[data-state='UNKNOWN'] { background: color-mix(in srgb, var(--warning) 55%, transparent); outline: 1px dashed var(--warning); outline-offset: -1px; }
+.health-history-bar.is-empty { background: transparent; outline: 1px dashed var(--line-strong); outline-offset: -1px; }
 .health-history-bar.selected, .health-history-bar:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; opacity: 1; }
 .health-history-axis { display: flex; justify-content: space-between; gap: 12px; }
 .health-breakdown { min-width: 620px; }
