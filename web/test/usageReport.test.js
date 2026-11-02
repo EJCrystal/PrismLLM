@@ -20,6 +20,8 @@ describe('usageReport: 用量报表展示', () => {
     assert.equal(usageDeltaTone(80, 100), 'warning')
     assert.equal(usageDeltaTone(80, 100, true), 'success')
     assert.equal(usageDeltaTone(0, 0), 'neutral')
+    assert.equal(usageDeltaTone(120, 0), 'neutral')
+    assert.equal(usageDeltaTone(120, 0, true), 'neutral')
   })
 
   it('费用条目按币种排序并剔除空值，不隐含换算', () => {

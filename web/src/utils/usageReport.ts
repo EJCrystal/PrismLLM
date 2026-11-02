@@ -26,7 +26,7 @@ export function usageCostForCurrency(costs: Record<string, string | number | nul
 }
 
 export function usageDeltaTone(current: number, previous: number, inverse = false): string {
-  const delta = previous === 0 ? (current === 0 ? null : 100) : ((current - previous) / previous) * 100
+  const delta = previous === 0 ? null : ((current - previous) / previous) * 100
   if (delta == null || delta === 0) return 'neutral'
   const positive = delta > 0
   return (positive !== inverse) ? 'success' : 'warning'

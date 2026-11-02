@@ -81,6 +81,7 @@ const cleaning = ref(false)
 const updatingRetention = ref(false)
 const retentionState = createRetentionReportState()
 const requests = createLatestRequestGuard()
+const comparisonRequests = createLatestRequestGuard()
 const dimension = ref<DimensionId>('clientKey')
 const trendMetric = ref<TrendMetricId>('requests')
 const costMetricCurrency = ref('')
@@ -123,6 +124,13 @@ const trendMaxValue = computed(() => usageTrendMax(
 ))
 const chartScale = computed(() => usageChartScale(trendMaxValue.value))
 const chartIndex = ref<number | null>(null)
+const chartSliderIndex = computed(() => Math.max(0, Math.min(trendRows.value.length - 1, chartIndex.value ?? trendRows.value.length - 1)))
+const chartValueText = computed(() => {
+  const row = trendRows.value[chartSliderIndex.value]
+  if (!row) return ''
+  const metric = activeTrendMetric.value
+  return `${formatTimeRange(row.bucketStart)}，${metric.primaryLabel} ${formatTrendValue(metric.value(row))}${metric.secondary ? `，${metric.secondaryLabel} ${formatTrendValue(metric.secondary(row))}` : ''}`
+})
 const chartRow = computed(() => chartIndex.value == null ? null : trendRows.value[chartIndex.value] || null)
 const chartPrimaryPoint = computed(() => chartRow.value == null ? null : usageChartPoint(chartIndex.value!, trendRows.value.length, activeTrendMetric.value.value(chartRow.value), chartScale.value.max))
 const chartSecondaryPoint = computed(() => chartRow.value == null || !activeTrendMetric.value.secondary ? null : usageChartPoint(chartIndex.value!, trendRows.value.length, activeTrendMetric.value.secondary(chartRow.value), chartScale.value.max))
@@ -137,12 +145,12 @@ function chartKey(event: KeyboardEvent) {
     selectChartBucket()
     return
   }
-  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key)) return
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Escape'].includes(event.key)) return
   event.preventDefault()
   if (event.key === 'Escape') { chartIndex.value = null; return }
   const last = trendRows.value.length - 1
   if (last < 0) return
-  chartIndex.value = event.key === 'Home' ? 0 : event.key === 'End' ? last : Math.max(0, Math.min(last, (chartIndex.value ?? last) + (event.key === 'ArrowLeft' ? -1 : 1)))
+  chartIndex.value = event.key === 'Home' ? 0 : event.key === 'End' ? last : Math.max(0, Math.min(last, (chartIndex.value ?? last) + (['ArrowLeft', 'ArrowDown'].includes(event.key) ? -1 : 1)))
 }
 function chartFocusOut(event: FocusEvent) {
   const container = event.currentTarget as HTMLElement
@@ -204,7 +212,7 @@ const activePreset = computed(() => preset.value)
 const topError = computed(() => (report.value?.byErrorCode || [])[0] || null)
 const failoverRate = computed(() => total.value.requests ? `${((total.value.failovers / total.value.requests) * 100).toFixed(1)}%` : '0%')
 function deltaPercent(current: number, previous: number): number | null {
-  if (previous === 0) return current === 0 ? null : 100
+  if (previous === 0) return null
   return ((current - previous) / previous) * 100
 }
 function deltaText(current: number, previous: number): string {
@@ -334,9 +342,10 @@ async function load({ quiet = false }: { quiet?: boolean } = {}): Promise<void> 
   error.value = ''
   const requestRetentionVersion = retentionState.beginLoad()
   const previousSpan = Math.max(to - from, 60_000)
+  comparisonRequests.invalidate()
   try {
     const result = await requests.run(async () => {
-      const [nextReport, nextRetention, nextPreviousReport] = await Promise.all([
+      const [nextReport, nextRetention] = await Promise.all([
         api.getUsageReport({
           from,
           to,
@@ -344,18 +353,20 @@ async function load({ quiet = false }: { quiet?: boolean } = {}): Promise<void> 
           timezoneOffsetMinutes: reportTimezoneOffset(),
         }),
         api.getRetentionPolicy(),
-        api.getUsageReport({
-          from: from - previousSpan,
-          to: from,
-          ...filters.value,
-          timezoneOffsetMinutes: reportTimezoneOffset(),
-        }).catch(() => null),
       ])
-      return { nextReport, nextRetention, nextPreviousReport }
+      return { nextReport, nextRetention }
     })
     if (!result.isLatest) return
     report.value = result.value.nextReport
-    previousReport.value = result.value.nextPreviousReport
+    previousReport.value = null
+    void comparisonRequests.run(async () => api.getUsageReport({
+      from: from - previousSpan,
+      to: from,
+      ...filters.value,
+      timezoneOffsetMinutes: reportTimezoneOffset(),
+    }).catch(() => null)).then((comparison) => {
+      if (comparison.isLatest) previousReport.value = comparison.value
+    })
     const currencies = usageCostEntries(result.value.nextReport?.total?.costs).map((entry) => entry.currency)
     if (!currencies.includes(costMetricCurrency.value)) costMetricCurrency.value = currencies[0] || 'USD'
     if (retentionState.shouldApplyRetention(requestRetentionVersion)) {
@@ -571,7 +582,7 @@ onMounted(() => {
           </div>
           <div class="usage-chart-with-axis">
           <div class="usage-chart-y-axis" aria-hidden="true"><span v-for="tick in chartScale.ticks" :key="tick" :style="{ top: `${(142 - tick / chartScale.max * 134) / 150 * 100}%` }">{{ trendMetric === 'cost' ? Number(tick.toPrecision(6)).toLocaleString('zh-CN', { maximumFractionDigits: 8 }) : formatTokensCompact(tick) }}</span></div>
-          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="img" tabindex="0" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? costMetricCurrency : trendMetric === 'tokens' ? '单位 token' : '单位 次'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @click="selectChartBucket" @keydown="chartKey">
+          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? costMetricCurrency : trendMetric === 'tokens' ? '单位 token' : '单位 次'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @click="selectChartBucket" @keydown="chartKey">
             <defs><linearGradient id="usage-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0.01"/></linearGradient></defs>
             <line v-for="tick in chartScale.ticks" :key="tick" x1="8" :y1="142 - tick / chartScale.max * 134" x2="632" :y2="142 - tick / chartScale.max * 134" class="usage-chart-grid" />
             <polygon :points="trendArea" class="usage-chart-area" />

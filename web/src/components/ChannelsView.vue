@@ -663,11 +663,9 @@ async function load() {
     prices.value = pricesData ?? []
     defaultPrices.value = defaultPricesData ?? []
     void loadHealth()
-    try {
-      recentProbes.value = (await api.listAuditLogs({ limit: 200, action: 'channel.probe_protocols' })) ?? []
-    } catch {
-      recentProbes.value = []
-    }
+    void api.listAuditLogs({ limit: 200, action: 'channel.probe_protocols' })
+      .then((entries) => { recentProbes.value = entries ?? [] })
+      .catch(() => { recentProbes.value = [] })
   } catch (cause) {
     error.value = errorMessage(cause)
   } finally {
