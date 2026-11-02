@@ -97,15 +97,24 @@ New API 可选择「系统访问令牌 + 用户 ID」，通过账户接口查询
 
 ## 环境变量
 
-### 容器统一使用宿主机代理
+### 容器出站代理（可选）
 
-Dockerfile 的最终运行阶段和 Docker Compose 均已保存默认代理配置：网关容器通过 `http://host.docker.internal:7897` 访问公网。Compose 将 `host.docker.internal` 映射到宿主机，代理须允许 Docker 网桥访问。配置不依赖本地 `.env` 中的代理变量，容器重启、重新创建或重新构建后仍会保留；构建阶段不使用该运行时代理。
+镜像和 Docker Compose 默认不启用代理，容器直接连接上游。需要代理时，在部署环境的 `.env` 或容器环境变量中配置 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`；不要把某台机器的代理地址写入镜像或通用 Compose 配置。
 
-网关使用 Ktor Java HTTP 引擎，仅设置 `HTTP_PROXY` / `HTTPS_PROXY` 不会改变其模型请求出口；还需要 JVM 的 `http.proxyHost` / `http.proxyPort`、`https.proxyHost` / `https.proxyPort`。`http.nonProxyHosts` 使用 `|` 分隔，与 `NO_PROXY` 一起让数据库、本机及私网服务保持直连。此设置影响整个容器的 HTTP(S) 出站请求，不限于单个渠道；它不是透明网络隧道，不会代理 JDBC 等其他协议。
+网关使用 Ktor Java HTTP 引擎，仅设置 `HTTP_PROXY` / `HTTPS_PROXY` 不会改变模型请求出口；还需通过 `JAVA_TOOL_OPTIONS` 为 Java 配置 `http.proxyHost`、`http.proxyPort`、`https.proxyHost` 和 `https.proxyPort`。例如代理地址为 `proxy.example:8080` 时：
 
-Compose 的 `gateway.environment` 优先于 `.env` 和镜像内的默认值。修改代理地址时，同时调整 `HTTP_PROXY`、`HTTPS_PROXY` 和 `JAVA_TOOL_OPTIONS` 中的主机、端口，再执行 `docker compose up -d --no-build --no-deps gateway`。禁用代理时，在 Compose 中将这两个代理变量和 `JAVA_TOOL_OPTIONS` 显式设为空字符串；仅删除它们会重新继承镜像默认代理。已有其他 JVM 参数时，应保留其他参数，仅移除代理相关的 `-D` 选项。
+```dotenv
+HTTP_PROXY=http://proxy.example:8080
+HTTPS_PROXY=http://proxy.example:8080
+NO_PROXY=localhost,127.0.0.1,::1,postgres
+JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=proxy.example -Dhttp.proxyPort=8080 -Dhttps.proxyHost=proxy.example -Dhttps.proxyPort=8080 -Dhttp.nonProxyHosts=localhost|127.*|[::1]|postgres
+```
 
-修改 Dockerfile 后使用 `docker compose up -d --build gateway` 重建并重新创建容器。直接使用 `docker run` 启动镜像时，Linux 还需要传入 `--add-host=host.docker.internal:host-gateway`。
+`http.nonProxyHosts` 使用 `|` 分隔；应为数据库、本机及需要直连的私网服务配置例外。若已有 `JAVA_TOOL_OPTIONS`，请保留其他 JVM 参数并合并代理参数。此设置作用于容器内 Java 的 HTTP(S) 出站请求，不代理 JDBC 等其他协议。代理地址可以是容器可访问的代理主机；随附 Compose 已提供 `host.docker.internal:host-gateway` 映射，使用宿主机代理时应确保代理监听地址允许容器访问。直接使用 `docker run` 时，Linux 上可传入 `--add-host=host.docker.internal:host-gateway`。
+
+调整环境变量后，重新创建网关容器使配置生效：`docker compose up -d --no-build --no-deps gateway`。修改 Dockerfile 后则使用 `docker compose up -d --build gateway`。
+
+恢复直连时，移除 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及 `JAVA_TOOL_OPTIONS` 中的代理参数，保留其他 JVM 参数，然后重新创建容器。这些运行时配置不会用于 Docker 镜像构建。
 
 ### 配置项
 
