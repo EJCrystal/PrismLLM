@@ -88,7 +88,7 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
           </div>
           <div class="health-history-axis muted small"><span>{{ formatTime(detail.report.from) }}</span><span>{{ formatTime(detail.report.to) }}</span></div>
           <p v-if="activeBucket" class="small" role="status">{{ bucketLabel(activeBucket) }}；失败 {{ activeBucket.metrics.failures }} 次，P95 首 token {{ formatDuration(activeBucket.metrics.p95FirstTokenMs) }}。</p>
-          <p v-else class="muted small">点击时间块查看样本；绿色正常，黄色需关注或样本不足，红色异常。无请求时段留空，以虚线边框显示。</p>
+          <p v-else class="muted small">点击时间块查看样本；绿色实色表示正常，深黄色实色表示需关注（失败率 ≥ {{ healthPercent(detail.report.warningErrorRate) }}），浅黄色斜纹表示样本不足（少于 {{ detail.report.minimumSamples }} 次，暂不判定），红色表示异常；虚线空白表示无请求。</p>
         </section>
         <section class="health-section">
           <div class="health-window-tabs" role="group" aria-label="健康度统计维度">
