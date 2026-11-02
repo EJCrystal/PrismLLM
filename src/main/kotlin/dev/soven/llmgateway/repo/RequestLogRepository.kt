@@ -18,6 +18,7 @@ import dev.soven.llmgateway.report.UsageTotal
 import dev.soven.llmgateway.report.UsageTrendPoint
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.Op
+import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.Case
 import org.jetbrains.exposed.v1.core.Column
 import org.jetbrains.exposed.v1.core.LongColumnType
@@ -128,7 +129,8 @@ class RequestLogRepository(private val database: Database) {
     suspend fun indexHealthBatch(cutoff: Long, limit: Int = 250): Int = suspendTransaction(database) {
         val records = RequestLogs.selectAll()
             .where { (RequestLogs.healthIndexed eq false) and (RequestLogs.createdAt greaterEq cutoff) }
-            .orderBy(RequestLogs.id).limit(limit).map(::toRecord)
+            .orderBy(RequestLogs.createdAt to SortOrder.ASC, RequestLogs.id to SortOrder.ASC)
+            .limit(limit).map(::toRecord)
         for (record in records) {
             indexAttempts(record.id, record)
             RequestLogs.update({ RequestLogs.id eq record.id }) { it[healthIndexed] = true }

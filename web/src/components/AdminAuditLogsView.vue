@@ -236,7 +236,7 @@ onMounted(load)
                     <span>连续登录 {{ row.entries.length }} 次，已折叠</span>
                     <details>
                       <summary>展开记录</summary>
-                      <ul><li v-for="entry in row.entries" :key="entry.id">{{ formatTime(entry.createdAt) }} · {{ entry.method }} {{ entry.path }} · {{ entry.requestId }}</li></ul>
+                      <ul><li v-for="entry in row.entries" :key="entry.id">{{ formatTime(entry.createdAt) }} · {{ entry.sourceIp || '—' }} · HTTP {{ entry.statusCode }}<template v-if="entry.errorCode"> · {{ entry.errorCode }}</template> · {{ entry.method }} {{ entry.path }} · {{ entry.requestId }}</li></ul>
                     </details>
                   </div>
                 </td>

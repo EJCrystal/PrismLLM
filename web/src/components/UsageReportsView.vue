@@ -223,7 +223,7 @@ function deltaText(current: number, previous: number): string {
 const comparison = computed(() => {
   const previous = previousReport.value?.total
   if (!previous) return null
-  const currency = costCurrencies.value[0] || usageCostEntries(previous.costs)[0]?.currency || 'USD'
+  const currency = costMetricCurrency.value || costCurrencies.value[0] || usageCostEntries(previous.costs)[0]?.currency || 'USD'
   const currentCost = usageCostForCurrency(total.value.costs, currency)
   const previousCost = usageCostForCurrency(previous.costs, currency)
   return {
