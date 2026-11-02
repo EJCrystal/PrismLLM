@@ -6889,7 +6889,7 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .usage-chart-filter { margin-left: auto; }
 .loading-state { display: grid; gap: 14px; padding: 26px 18px; color: var(--muted); }
 .loading-state-head { display: flex; align-items: center; gap: 9px; }
-.loading-skeleton { display: grid; gap: 9px; max-width: 480px; }
+.loading-skeleton { display: grid; gap: 9px; width: min(480px, 100%); }
 .loading-skeleton span { display: block; height: 10px; border-radius: 99px; background: color-mix(in srgb, var(--brand) 10%, var(--line)); animation: loading-pulse 1.2s ease-in-out infinite alternate; }
 @keyframes loading-pulse { from { opacity: .45; } to { opacity: .9; } }
 .table-toolbar { align-items: center; }

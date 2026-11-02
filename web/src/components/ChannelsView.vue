@@ -26,6 +26,7 @@ import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
 import FilterSelect from './FilterSelect.vue'
 import { formatTime, formatDuration } from '../utils/format'
+import { refreshUntilCurrent } from '../utils/latestRequest'
 import {
   channelDisplayModels,
   channelMatchesFilters,
@@ -120,6 +121,7 @@ interface RateLimitTarget {
 
 const channels = ref<Channel[]>([])
 let listRevision = 0
+let listDisposed = false
 const healthWindow = ref<HealthWindow>('24h')
 const healthReport = ref<ChannelHealthReport | null>(null)
 const healthTarget = ref<Channel | null>(null)
@@ -146,7 +148,7 @@ async function loadHealth() {
   } finally { if (request === healthRevision) healthLoading.value = false }
 }
 watch(healthWindow, loadHealth)
-onBeforeUnmount(() => { healthRevision++; listRevision++ })
+onBeforeUnmount(() => { listDisposed = true; healthRevision++; listRevision++ })
 const recentProbes = ref<AdminAuditLog[]>([])
 const prices = ref<ModelPrice[]>([])
 const defaultPrices = ref<ModelDefaultPrice[]>([])
@@ -661,7 +663,7 @@ async function toggleChannelEnabled(channel: Channel): Promise<void> {
   }
 }
 
-async function load() {
+async function load(): Promise<boolean> {
   const request = ++listRevision
   loading.value = true
   error.value = ''
@@ -671,7 +673,7 @@ async function load() {
       api.listModelPrices(),
       api.listModelDefaultPrices(),
     ])
-    if (request !== listRevision) return
+    if (request !== listRevision) return false
     channels.value = channelsData ?? []
     prices.value = pricesData ?? []
     defaultPrices.value = defaultPricesData ?? []
@@ -684,6 +686,7 @@ async function load() {
   } finally {
     if (request === listRevision) loading.value = false
   }
+  return request === listRevision
 }
 
 function openPrice(channel: Channel, upstreamModel: string | null = null): void {
@@ -1026,7 +1029,8 @@ async function save(): Promise<void> {
     probeRequests.invalidate()
     probeResults.value = []
     probeAddedProtocols = []
-    await load()
+    await refreshUntilCurrent(load, () => listDisposed)
+    if (listDisposed) return
     const savedChannel = resolveSavedChannel(channels.value, saved, currentEditingId, form.name)
     const unpricedCount = updatePricePrompt(savedChannel)
     if (unpricedCount > 0) {
@@ -1036,7 +1040,7 @@ async function save(): Promise<void> {
     }
   } catch (cause) {
     notify(errorMessage(cause), 'error')
-    if (cause instanceof ApiError && cause.code === 'channel_key_state_changed') await load()
+    if (cause instanceof ApiError && cause.code === 'channel_key_state_changed') await refreshUntilCurrent(load, () => listDisposed)
   } finally {
     saving.value = false
   }

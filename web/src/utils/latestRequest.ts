@@ -5,6 +5,13 @@ export interface LatestRequestResult<T> {
   isLatest: boolean
 }
 
+/** A save must await a refresh that was not superseded by another list mutation. */
+export async function refreshUntilCurrent(load: () => Promise<boolean>, isDisposed: () => boolean): Promise<void> {
+  while (!isDisposed()) {
+    if (await load()) return
+  }
+}
+
 export function createLatestRequestGuard() {
   let latest = 0
   let active = 0
