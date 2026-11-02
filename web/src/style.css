@@ -4614,19 +4614,11 @@ textarea:disabled {
   padding-left: 10px;
 }
 
-.logs-table th:nth-child(2) { width: 116px; }
-.logs-table th:nth-child(3) { width: 208px; }
-.logs-table th:nth-child(4) { width: 184px; }
-.logs-table th:nth-child(5) { width: 136px; }
-.logs-table th:nth-child(6) { width: 112px; }
-.logs-table th:nth-child(7) { width: 218px; }
-.logs-table th:nth-child(8) { width: 106px; }
-
 .logs-table .request-id-cell {
   white-space: nowrap;
 }
 
-.logs-table td:nth-child(5) .badge {
+.logs-table .log-col-status .badge {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;

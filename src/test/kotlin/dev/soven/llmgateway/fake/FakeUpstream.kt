@@ -226,8 +226,12 @@ class FakeUpstream {
                         writeEvent(FINAL_NO_USAGE)
                         writeDone()
                     }
-                    "reported-model" -> {
+                    "reported-model", "reported-model-malformed" -> {
                         writeEvent(REPORTED_MODEL_CHUNK)
+                        if (scenario == "reported-model-malformed") {
+                            writeEvent("{not-json}")
+                            writeEvent("[]")
+                        }
                         writeEvent(CHUNK_LO)
                         writeEvent(FINAL_WITH_USAGE)
                         writeDone()

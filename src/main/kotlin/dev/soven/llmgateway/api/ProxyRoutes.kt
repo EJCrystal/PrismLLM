@@ -1406,7 +1406,12 @@ private fun recordUsage(line: String, state: ProxyState, protocol: GatewayProtoc
 private fun recordReportedModel(line: String, state: ProxyState, protocol: GatewayProtocol) {
     val payload = ssePayload(line) ?: return
     if (payload == "[DONE]") return
-    val json = runCatching { Json.parseToJsonElement(payload).jsonObject }.getOrNull() ?: return
+    // Metadata is best effort; do not catch cancellation or transport failures.
+    val json = try {
+        Json.parseToJsonElement(payload) as? JsonObject ?: return
+    } catch (_: kotlinx.serialization.SerializationException) {
+        return
+    }
     extractReportedModel(protocol, json)?.let { state.upstreamReportedModel = it }
 }
 

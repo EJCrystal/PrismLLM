@@ -44,7 +44,7 @@ import {
   sameProtocolSelection,
   watchChannelRequestInputs,
 } from '../utils/channelRequestState'
-import { normalizeRequestOverrides } from '../utils/requestOverrides'
+import { createRequestOverrideDrafts, normalizeRequestOverrides, requestOverrideDraftSnapshot } from '../utils/requestOverrides'
 import type { ChannelDisplayModel } from '../utils/channelDisplay'
 import type { ChannelKeyRateLimitDraft } from '../utils/channelKeyRateLimit'
 import {
@@ -57,6 +57,7 @@ import {
 
 interface RequestOverridesEditorExpose {
   getValue: () => UpstreamRequestOverrides
+  getSnapshot: () => string
 }
 
 interface KeyModelOption {
@@ -159,7 +160,11 @@ const showAutoDisableSettings = ref(false)
 const rateLimitTarget = ref<RateLimitTarget | null>(null)
 const quotaTarget = ref<Channel | null>(null)
 const formSnapshot = ref('')
-const isFormDirty = computed(() => showForm.value && formSnapshot.value !== channelFormSnapshot())
+const isFormDirty = computed(() => {
+  if (!showForm.value) return false
+  overrideRevision.value
+  return formSnapshot.value !== channelFormSnapshot()
+})
 const recentProbeByChannel = computed(() => {
   const result = new Map<string, AdminAuditLog>()
   for (const entry of recentProbes.value) {
@@ -169,7 +174,7 @@ const recentProbeByChannel = computed(() => {
   return result
 })
 
-function channelFormSnapshot(): string {
+function channelFormSnapshot(useEditor = true): string {
   return JSON.stringify({
     form: {
       name: form.name,
@@ -179,7 +184,9 @@ function channelFormSnapshot(): string {
       protocols: form.protocols,
       enabled: form.enabled,
       priority: form.priority,
-      requestOverrides: form.requestOverrides,
+      requestOverrides: useEditor && overrideEditor.value
+        ? overrideEditor.value.getSnapshot()
+        : requestOverrideDraftSnapshot(createRequestOverrideDrafts(form.requestOverrides), form.requestOverrides.inheritGlobal !== false),
     },
     keys: channelKeys.value.map((key) => ({
       id: key.id, name: key.name, credential: key.credential, state: key.state, priority: key.priority,
@@ -655,11 +662,12 @@ async function load() {
     channels.value = channelsData ?? []
     prices.value = pricesData ?? []
     defaultPrices.value = defaultPricesData ?? []
-    const [, probeLogsResult] = await Promise.allSettled([
-      loadHealth(),
-      api.listAuditLogs({ limit: 200, action: 'channel.probe_protocols' }),
-    ])
-    recentProbes.value = probeLogsResult.status === 'fulfilled' ? probeLogsResult.value ?? [] : []
+    void loadHealth()
+    try {
+      recentProbes.value = (await api.listAuditLogs({ limit: 200, action: 'channel.probe_protocols' })) ?? []
+    } catch {
+      recentProbes.value = []
+    }
   } catch (cause) {
     error.value = errorMessage(cause)
   } finally {
@@ -793,7 +801,7 @@ function openCreate() {
     requestOverrides: normalizeRequestOverrides(),
   })
   showForm.value = true
-  formSnapshot.value = channelFormSnapshot()
+  formSnapshot.value = channelFormSnapshot(false)
 }
 
 function openEdit(channel: Channel): void {
@@ -829,7 +837,7 @@ function openEdit(channel: Channel): void {
     requestOverrides: channel.requestOverrides || {},
   })
   showForm.value = true
-  formSnapshot.value = channelFormSnapshot()
+  formSnapshot.value = channelFormSnapshot(false)
 }
 
 function closeChannelForm() {

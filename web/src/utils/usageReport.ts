@@ -25,6 +25,13 @@ export function usageCostForCurrency(costs: Record<string, string | number | nul
   return Number(value) || 0
 }
 
+export function usageDeltaTone(current: number, previous: number, inverse = false): string {
+  const delta = previous === 0 ? (current === 0 ? null : 100) : ((current - previous) / previous) * 100
+  if (delta == null || delta === 0) return 'neutral'
+  const positive = delta > 0
+  return (positive !== inverse) ? 'success' : 'warning'
+}
+
 export const USAGE_REPORT_MAX_SPAN_MS = 30 * 86_400_000
 
 export const USAGE_REPORT_PRESETS = [

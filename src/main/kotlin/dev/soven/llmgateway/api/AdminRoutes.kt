@@ -127,8 +127,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val limit = call.queryInt("limit", default = 100, min = 1, max = 500)
             val beforeId = call.queryLongOrNull("beforeId")
-            val from = call.queryLongOrNull("from")
-            val to = call.queryLongOrNull("to")
+            val rawFrom = call.request.queryParameters["from"]
+            val rawTo = call.request.queryParameters["to"]
+            val from = rawFrom?.trim()?.toLongOrNull()
+            val to = rawTo?.trim()?.toLongOrNull()
+            if ((rawFrom != null && from == null) || (rawTo != null && to == null)) {
+                throw badRequest("invalid_audit_time_range", "审计时间范围无效")
+            }
             if (from != null && to != null && from >= to) {
                 throw badRequest("invalid_audit_time_range", "审计时间范围无效")
             }

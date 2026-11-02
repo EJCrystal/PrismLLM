@@ -51,6 +51,12 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
       ],
     }
     assert.deepEqual(reportedModelStatus(log), { state: 'match', reportedModel: 'model-a' })
+    for (const suffix of ['-2024-07-18', '-20240718', '@20240718']) {
+      assert.deepEqual(reportedModelStatus({
+        ...log,
+        attempts: [{ channelId: 'final-channel', channelKeyId: 'final-key', upstreamModel: 'model-a', upstreamReportedModel: `model-a${suffix}` }],
+      }), { state: 'mismatch', reportedModel: `model-a${suffix}` })
+    }
     assert.deepEqual(reportedModelStatus({
       ...log,
       attempts: [{ channelId: 'final-channel', channelKeyId: 'final-key', upstreamModel: 'model-a', upstreamReportedModel: 'model-b' }],

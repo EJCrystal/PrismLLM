@@ -231,7 +231,7 @@ onMounted(load)
               <template v-else-if="row.kind === 'login-group'">
                 <td colspan="6" class="audit-login-group-cell">
                   <div class="audit-login-group">
-                    <span class="badge success">{{ auditResultLabel(row.result) }}</span>
+                    <span class="badge" :class="auditResultClass(row.result)">{{ auditResultLabel(row.result) }}</span>
                     <strong>{{ row.actor }}</strong>
                     <span>连续登录 {{ row.entries.length }} 次，已折叠</span>
                     <details>

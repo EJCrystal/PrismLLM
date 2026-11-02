@@ -5019,6 +5019,12 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Cookie, sessionCookie)
             }
             assertEquals(HttpStatusCode.BadRequest, invalidRange.status)
+            for (invalidTime in listOf("from=abc", "to=abc")) {
+                val invalidValue = client.get("/admin/api/audit-logs?$invalidTime") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                }
+                assertEquals(HttpStatusCode.BadRequest, invalidValue.status)
+            }
         }
     }
 

@@ -140,6 +140,25 @@ class ProxyAttemptLoggingIntegrationTest {
     }
 
     @Test
+    fun `malformed stream metadata does not interrupt delivery or erase reported model`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val modelId = "reported-model-malformed"
+            createChannel(modelId, "${fake.baseUrl}/reported-model-malformed/v1")
+            val requestId = UUID.randomUUID().toString()
+            val response = client.sendRequest(modelId, true, requestId)
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = response.bodyAsText()
+            assertTrue(body.contains("{not-json}"))
+            assertTrue(body.contains("data: []"))
+            assertTrue(body.contains("[DONE]"))
+            val log = awaitRequestLog(requestId)
+            assertNull(log.errorCode)
+            assertEquals("reported-by-upstream", log.attempts.single().upstreamReportedModel)
+        }
+    }
+
+    @Test
     fun `stream errors retain HTTP and error status when retrying successfully`() = runBlocking {
         testApplication {
             application { app.install(this) }

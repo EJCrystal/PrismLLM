@@ -4,6 +4,7 @@ import {
   usageCostAmount,
   usageCostEntries,
   usageCostForCurrency,
+  usageDeltaTone,
   usageReportPresetRange,
   toDatetimeLocalValue,
   fromDatetimeLocalValue,
@@ -13,6 +14,14 @@ import {
 } from '../src/utils/usageReport'
 
 describe('usageReport: 用量报表展示', () => {
+  it('请求增加为成功色，错误和费用增加为警示色', () => {
+    assert.equal(usageDeltaTone(120, 100), 'success')
+    assert.equal(usageDeltaTone(120, 100, true), 'warning')
+    assert.equal(usageDeltaTone(80, 100), 'warning')
+    assert.equal(usageDeltaTone(80, 100, true), 'success')
+    assert.equal(usageDeltaTone(0, 0), 'neutral')
+  })
+
   it('费用条目按币种排序并剔除空值，不隐含换算', () => {
     assert.deepEqual(usageCostEntries({ USD: '0.25', CNY: '2' }), [
       { currency: 'CNY', value: '2' },

@@ -13,6 +13,7 @@ import { formatNumber, formatTokensCompact, formatDuration } from '../utils/form
 import {
   usageCostEntries,
   usageCostForCurrency,
+  usageDeltaTone,
   USAGE_REPORT_PRESETS,
   usageReportPresetRange,
   toDatetimeLocalValue,
@@ -131,12 +132,21 @@ function inspectChart(event: PointerEvent) {
   chartIndex.value = index < 0 ? null : index
 }
 function chartKey(event: KeyboardEvent) {
+  if (event.key === 'Enter' && chartRow.value) {
+    event.preventDefault()
+    selectChartBucket()
+    return
+  }
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key)) return
   event.preventDefault()
   if (event.key === 'Escape') { chartIndex.value = null; return }
   const last = trendRows.value.length - 1
   if (last < 0) return
   chartIndex.value = event.key === 'Home' ? 0 : event.key === 'End' ? last : Math.max(0, Math.min(last, (chartIndex.value ?? last) + (event.key === 'ArrowLeft' ? -1 : 1)))
+}
+function chartFocusOut(event: FocusEvent) {
+  const container = event.currentTarget as HTMLElement
+  if (!container.contains(event.relatedTarget as Node | null)) chartIndex.value = null
 }
 function selectChartBucket(): void {
   const row = chartRow.value
@@ -202,12 +212,6 @@ function deltaText(current: number, previous: number): string {
   if (delta == null) return '—'
   return `${delta >= 0 ? '↑' : '↓'} ${Math.abs(delta).toFixed(1)}%`
 }
-function deltaTone(current: number, previous: number, inverse = false): string {
-  const delta = deltaPercent(current, previous)
-  if (delta == null || delta === 0) return 'neutral'
-  const positive = delta > 0
-  return (positive !== inverse) ? 'warning' : 'success'
-}
 const comparison = computed(() => {
   const previous = previousReport.value?.total
   if (!previous) return null
@@ -218,11 +222,11 @@ const comparison = computed(() => {
     from: previousReport.value?.from || 0,
     to: previousReport.value?.to || 0,
     requests: deltaText(total.value.requests, previous.requests),
-    requestsTone: deltaTone(total.value.requests, previous.requests),
+    requestsTone: usageDeltaTone(total.value.requests, previous.requests),
     errors: deltaText(total.value.errors, previous.errors),
-    errorsTone: deltaTone(total.value.errors, previous.errors, true),
+    errorsTone: usageDeltaTone(total.value.errors, previous.errors, true),
     cost: deltaText(currentCost, previousCost),
-    costTone: deltaTone(currentCost, previousCost, true),
+    costTone: usageDeltaTone(currentCost, previousCost, true),
     currency,
   }
 })
@@ -560,14 +564,14 @@ onMounted(() => {
           </div>
         </div>
         <div v-if="!trendRows.length" class="usage-chart-empty">该时间范围没有请求。</div>
-        <div v-else class="usage-chart-wrap">
+        <div v-else class="usage-chart-wrap" @focusout="chartFocusOut">
           <div class="usage-chart-readout" aria-live="polite" aria-atomic="true">
             <template v-if="chartRow"><strong>{{ formatTimeRange(chartRow.bucketStart) }}</strong><span>{{ activeTrendMetric.primaryLabel }} <b>{{ formatTrendValue(activeTrendMetric.value(chartRow)) }}</b></span><span v-if="activeTrendMetric.secondary">{{ activeTrendMetric.secondaryLabel }} <b>{{ formatTrendValue(activeTrendMetric.secondary(chartRow)) }}</b></span><button type="button" class="button ghost mini usage-chart-filter" @click="selectChartBucket">只看此时间段</button></template>
             <span v-else class="muted">悬停或点按曲线查看读数，也可用左右方向键选择。</span>
           </div>
           <div class="usage-chart-with-axis">
           <div class="usage-chart-y-axis" aria-hidden="true"><span v-for="tick in chartScale.ticks" :key="tick" :style="{ top: `${(142 - tick / chartScale.max * 134) / 150 * 100}%` }">{{ trendMetric === 'cost' ? Number(tick.toPrecision(6)).toLocaleString('zh-CN', { maximumFractionDigits: 8 }) : formatTokensCompact(tick) }}</span></div>
-          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="img" tabindex="0" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? costMetricCurrency : trendMetric === 'tokens' ? '单位 token' : '单位 次'}，使用左右方向键查看读数，点击选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @click="selectChartBucket" @keydown="chartKey" @blur="chartIndex = null">
+          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="img" tabindex="0" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? costMetricCurrency : trendMetric === 'tokens' ? '单位 token' : '单位 次'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @click="selectChartBucket" @keydown="chartKey">
             <defs><linearGradient id="usage-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0.01"/></linearGradient></defs>
             <line v-for="tick in chartScale.ticks" :key="tick" x1="8" :y1="142 - tick / chartScale.max * 134" x2="632" :y2="142 - tick / chartScale.max * 134" class="usage-chart-grid" />
             <polygon :points="trendArea" class="usage-chart-area" />

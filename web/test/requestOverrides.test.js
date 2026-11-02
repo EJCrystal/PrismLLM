@@ -1,9 +1,28 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildRequestOverrides, createRequestOverrideDrafts, normalizeRequestOverrides, REQUEST_OVERRIDE_SCOPES } from '../src/utils/requestOverrides'
+import { buildRequestOverrides, createRequestOverrideDrafts, normalizeRequestOverrides, requestOverrideDraftSnapshot, REQUEST_OVERRIDE_SCOPES } from '../src/utils/requestOverrides'
+import { computed, reactive, ref } from 'vue'
 import { buildChannelPayload, buildPriorityUpdatePayload } from '../src/utils/channelForm'
 
 describe('上游请求覆盖配置', () => {
+  it('草稿快照追踪无效 JSON 和继承设置，恢复后不再标记未保存', () => {
+    const drafts = reactive(createRequestOverrideDrafts({ userAgent: 'saved-UA' }))
+    const inherit = ref(true)
+    const baseline = requestOverrideDraftSnapshot(drafts, inherit.value)
+    const dirty = computed(() => requestOverrideDraftSnapshot(drafts, inherit.value) !== baseline)
+    assert.equal(dirty.value, false)
+    drafts.responses.bodyText = '{unfinished'
+    assert.equal(dirty.value, true)
+    assert.throws(() => buildRequestOverrides(drafts), /不是有效的 JSON/)
+    assert.equal(dirty.value, true)
+    drafts.responses.bodyText = '{}'
+    assert.equal(dirty.value, false)
+    inherit.value = false
+    assert.equal(dirty.value, true)
+    inherit.value = true
+    assert.equal(dirty.value, false)
+  })
+
   it('配置范围明确区分通用配置和协议专用覆盖', () => {
     assert.equal(REQUEST_OVERRIDE_SCOPES[0].label, '通用配置（所有协议）')
     assert.ok(REQUEST_OVERRIDE_SCOPES.slice(1).every((scope) => scope.label.endsWith('（仅该协议）')))
