@@ -119,6 +119,7 @@ interface RateLimitTarget {
 }
 
 const channels = ref<Channel[]>([])
+let listRevision = 0
 const healthWindow = ref<HealthWindow>('24h')
 const healthReport = ref<ChannelHealthReport | null>(null)
 const healthTarget = ref<Channel | null>(null)
@@ -145,7 +146,7 @@ async function loadHealth() {
   } finally { if (request === healthRevision) healthLoading.value = false }
 }
 watch(healthWindow, loadHealth)
-onBeforeUnmount(() => { healthRevision++ })
+onBeforeUnmount(() => { healthRevision++; listRevision++ })
 const recentProbes = ref<AdminAuditLog[]>([])
 const prices = ref<ModelPrice[]>([])
 const defaultPrices = ref<ModelDefaultPrice[]>([])
@@ -619,6 +620,8 @@ async function commitPriorityEdit(channel: Channel): Promise<void> {
   prioritySaving = true
   try {
     await api.updateChannel(channel.id, buildPriorityUpdatePayload(channel, next))
+    listRevision++
+    loading.value = false
     channel.priority = next
     notify('渠道优先级已更新', 'success')
   } catch (cause) {
@@ -638,6 +641,8 @@ async function toggleChannelEnabled(channel: Channel): Promise<void> {
       ...buildPriorityUpdatePayload(channel, channel.priority ?? 1),
       enabled,
     })
+    listRevision++
+    loading.value = false
     const index = channels.value.findIndex((item) => item.id === channel.id)
     if (index >= 0) channels.value[index] = updated
     clearUpstreamModelCache(channel.id)
@@ -651,6 +656,7 @@ async function toggleChannelEnabled(channel: Channel): Promise<void> {
 }
 
 async function load() {
+  const request = ++listRevision
   loading.value = true
   error.value = ''
   try {
@@ -659,17 +665,18 @@ async function load() {
       api.listModelPrices(),
       api.listModelDefaultPrices(),
     ])
+    if (request !== listRevision) return
     channels.value = channelsData ?? []
     prices.value = pricesData ?? []
     defaultPrices.value = defaultPricesData ?? []
     void loadHealth()
     void api.listAuditLogs({ limit: 200, action: 'channel.probe_protocols' })
-      .then((entries) => { recentProbes.value = entries ?? [] })
-      .catch(() => { recentProbes.value = [] })
+      .then((entries) => { if (request === listRevision) recentProbes.value = entries ?? [] })
+      .catch(() => { if (request === listRevision) recentProbes.value = [] })
   } catch (cause) {
-    error.value = errorMessage(cause)
+    if (request === listRevision) error.value = errorMessage(cause)
   } finally {
-    loading.value = false
+    if (request === listRevision) loading.value = false
   }
 }
 

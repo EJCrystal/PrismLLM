@@ -903,7 +903,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.response.headers.append("Cache-Control", "no-store")
             val window = call.request.queryParameters["window"] ?: "24h"
             if (window !in dev.soven.llmgateway.report.healthWindows) throw badRequest("invalid_health_window", "时间范围仅支持 24h、7d、15d、30d")
-            call.respond(app.channelHealthRepository.report(window, app.channelRepository.list(), app.config.retention.retentionDays))
+            call.respond(app.channelHealthRepository.report(window, app.channelRepository.listHealthChannels(), app.config.retention.retentionDays))
         }
 
         get("/channels/{id}/health") {

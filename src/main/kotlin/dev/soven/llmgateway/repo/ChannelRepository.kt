@@ -29,6 +29,7 @@ import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
 import java.security.MessageDigest
@@ -69,6 +70,12 @@ class ChannelKeyReenableRequiresCredentialException(name: String) : RuntimeExcep
  * @since 2026-10-21
  */
 class ChannelRepository(private val database: Database, private val credentialCipher: CredentialCipher) {
+    /** Health overview needs only channel identities and enabled state, never credentials or relations. */
+    suspend fun listHealthChannels(): Map<String, Boolean> = suspendTransaction(database) {
+        Channels.select(Channels.id, Channels.enabled).toList()
+            .associate { row -> row[Channels.id] to row[Channels.enabled] }
+    }
+
     suspend fun list(): List<ChannelRecord> = suspendTransaction(database) {
         val rows = Channels.selectAll().orderBy(Channels.name).toList()
         val ids = rows.map { it[Channels.id] }

@@ -8,6 +8,7 @@ import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.report.HealthMetrics
+import dev.soven.llmgateway.security.CredentialCipher
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -55,7 +56,33 @@ class ChannelHealthRepositoryTest {
     }
 
     @BeforeEach
-    fun clear() = sql("truncate table request_logs cascade")
+    fun clear() {
+        sql("truncate table request_logs cascade")
+        sql("truncate table channels cascade")
+    }
+
+    @Test
+    fun overviewLoadsChannelIdentityAndEnabledStateWithoutDecodingFullRecords() = runBlocking {
+        val cipher = CredentialCipher(ByteArray(32) { 7 })
+        val channels = ChannelRepository(factory.database, cipher)
+        val active = channels.create(
+            name = "enabled", baseUrl = "https://example.invalid/v1",
+            keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"))),
+            authType = "bearer", enabled = true,
+        )
+        val disabled = channels.create(
+            name = "disabled", baseUrl = "https://example.invalid/v1",
+            keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"))),
+            authType = "bearer", enabled = false,
+        )
+        // Full channel loading rejects this JSON; the overview only needs identity and enabled state.
+        sql("update channels set request_overrides = 'invalid-json'")
+        val identities = channels.listHealthChannels()
+        assertEquals(mapOf(active.id to true, disabled.id to false), identities)
+        val report = health.report("24h", identities, 30, now)
+        assertEquals("DISABLED", report.channels.first { it.channelId == disabled.id }.state)
+        assertEquals("UNKNOWN", report.channels.first { it.channelId == active.id }.state)
+    }
 
     @Test
     fun failoverExclusionsAndStreamFailuresAreAggregatedIndependently() = runBlocking {
@@ -67,7 +94,7 @@ class ChannelHealthRepositoryTest {
         logs.insert(log(listOf(attempt("a").copy(errorCode = "client_cancelled")), failed = true))
         logs.insert(log(listOf(attempt("a").copy(upstreamErrorCode = "stream_error")), failed = true))
 
-        val report = health.report("24h", listOf(a, b, channel("empty")), 30, now)
+        val report = health.report("24h", mapOf("a" to true, "b" to true, "empty" to true), 30, now)
         val observedA = report.channels.first()
         assertFalse(report.indexing)
         assertEquals(3, observedA.metrics.attempts)
@@ -99,7 +126,7 @@ class ChannelHealthRepositoryTest {
         for (offset in listOf(day + 1, day, 1L, 0L)) {
             logs.insert(log(listOf(attempt("a")), createdAt = now - offset, stream = false))
         }
-        val report = health.report("24h", listOf(a), 30, now)
+        val report = health.report("24h", mapOf("a" to true), 30, now)
         val metrics = report.channels.single().metrics
         assertEquals(2, metrics.attempts)
         assertEquals(0, metrics.firstTokenSamples)
@@ -120,16 +147,16 @@ class ChannelHealthRepositoryTest {
         logs.insert(log(emptyList()))
         sql("delete from request_attempts")
         sql("update request_logs set health_indexed = false")
-        assertTrue(health.report("24h", listOf(a), 30, now).indexing)
+        assertTrue(health.report("24h", mapOf("a" to true), 30, now).indexing)
         assertEquals(1, logs.indexHealthBatch(now - 86_400_000, 1))
         assertEquals(1, logs.indexHealthBatch(now - 86_400_000, 1))
         assertEquals(0, logs.indexHealthBatch(now - 86_400_000, 1))
-        val report = health.report("24h", listOf(a), 30, now)
+        val report = health.report("24h", mapOf("a" to true), 30, now)
         assertFalse(report.indexing)
         assertEquals(1, report.channels.single().metrics.attempts)
         assertEquals(1, report.channels.single().requests.legacyRequests)
         sql("delete from request_logs")
-        assertEquals(0, health.report("24h", listOf(a), 30, now).channels.single().metrics.attempts)
+        assertEquals(0, health.report("24h", mapOf("a" to true), 30, now).channels.single().metrics.attempts)
     }
 
     @Test
@@ -137,13 +164,13 @@ class ChannelHealthRepositoryTest {
         for (index in 1..20) {
             logs.insert(log(listOf(attempt("a").copy(firstTokenMs = index * 10L))))
         }
-        val metrics = health.report("24h", listOf(a), 30, now).channels.single().metrics
+        val metrics = health.report("24h", mapOf("a" to true), 30, now).channels.single().metrics
         assertEquals(105.0, metrics.p50FirstTokenMs!!, 0.001)
         assertEquals(190.5, metrics.p95FirstTokenMs!!, 0.001)
-        assertEquals("HEALTHY", health.report("24h", listOf(a), 30, now).channels.single().state)
+        assertEquals("HEALTHY", health.report("24h", mapOf("a" to true), 30, now).channels.single().state)
         val longError = "upstream_" + "a".repeat(180)
         logs.insert(log(listOf(attempt("a", 503).copy(upstreamErrorCode = longError)), failed = true))
-        assertEquals(21, health.report("24h", listOf(a), 30, now).channels.single().metrics.attempts)
+        assertEquals(21, health.report("24h", mapOf("a" to true), 30, now).channels.single().metrics.attempts)
         assertEquals(longError, health.detail("24h", a, 30, emptyList(), now).errors.single().code)
     }
 
