@@ -160,10 +160,13 @@ function selectChartBucket(): void {
   const row = chartRow.value
   if (!row || !report.value) return
   const width = ({ hour: 3_600_000, day: 86_400_000, week: 7 * 86_400_000 } as Record<string, number>)[report.value.granularity] || 86_400_000
-  const from = Math.max(report.value.from, row.bucketStart)
-  const to = Math.min(report.value.to, Math.max(from + 60_000, row.bucketStart + width))
+  // datetime-local has minute precision, so round the start up and the end down
+  // to avoid selecting requests outside the bucket/report interval.
+  const from = Math.ceil(Math.max(report.value.from, row.bucketStart) / 60_000) * 60_000
+  const to = Math.floor(Math.min(report.value.to, row.bucketStart + width) / 60_000) * 60_000
+  if (to <= from) return
   preset.value = ''
-  rangeDraft.value = { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(Math.max(from, to)) }
+  rangeDraft.value = { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(to) }
   rangeError.value = ''
   load()
 }

@@ -98,6 +98,18 @@ describe('usageReport: 用量报表展示', () => {
     assert.ok(Number.isNaN(fromDatetimeLocalValue('')))
   })
 
+  it('趋势钻取按 datetime-local 分钟精度向内对齐区间边界', () => {
+    const from = new Date(2026, 9, 29, 9, 5, 31).getTime()
+    const to = new Date(2026, 9, 29, 10, 30, 29).getTime()
+    const drilledFrom = Math.ceil(from / 60_000) * 60_000
+    const drilledTo = Math.floor(to / 60_000) * 60_000
+    assert.equal(toDatetimeLocalValue(drilledFrom), '2026-10-29T09:06')
+    assert.equal(toDatetimeLocalValue(drilledTo), '2026-10-29T10:30')
+    assert.ok(drilledFrom >= from)
+    assert.ok(drilledTo <= to)
+    assert.ok(drilledTo > drilledFrom)
+  })
+
   it('自定义范围拒绝倒序、缺值和超过 30 天', () => {
     const day = 86_400_000
     assert.equal(validateUsageReportRange(1, 2), '')
