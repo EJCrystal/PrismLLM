@@ -173,7 +173,8 @@ export function buildTrendPoints<T>(
 ): string {
   const values = (rows || []).map((row) => Math.max(0, Number(value(row)) || 0))
   if (!values.length) return ''
-  const max = Math.max(Number(maxValue) || 0, ...values, 1)
+  const maximum = Math.max(Number(maxValue) || 0, ...values)
+  const max = maximum > 0 ? maximum : 1
   const innerWidth = width - padding * 2
   const innerHeight = height - padding * 2
   return values.map((amount, index) => {

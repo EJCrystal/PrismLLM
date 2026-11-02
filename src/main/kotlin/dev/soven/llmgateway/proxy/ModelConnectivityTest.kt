@@ -39,6 +39,7 @@ data class ModelConnectivityTestResult(
     val responseText: String?,
     val errorMessage: String?,
     val usage: Usage?,
+    val upstreamReportedModel: String? = null,
 )
 
 /**
@@ -103,6 +104,7 @@ suspend fun testChannelModelConnectivity(
                     responseText = extractModelTestResponseText(protocol, json)?.take(MAX_RESPONSE_CHARS),
                     errorMessage = null,
                     usage = extractModelTestUsage(protocol, json),
+                    upstreamReportedModel = extractReportedModel(protocol, json),
                 )
             } else {
                 ModelConnectivityTestResult(

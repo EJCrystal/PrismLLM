@@ -5,6 +5,7 @@ import {
   attemptHasError,
   attemptResultLabel,
   protocolLabel,
+  reportedModelStatus,
   reasoningEffortClass,
   reasoningEffortLabel,
   tokenUsageLabel,
@@ -37,6 +38,29 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     assert.equal(protocolLabel('gemini'), 'Gemini')
     assert.equal(protocolLabel(null), '—')
     assert.equal(protocolLabel('custom_protocol'), 'custom_protocol')
+  })
+
+  it('比较最终路由上游自报模型，兼容缺少自报值的历史尝试', () => {
+    const log = {
+      channelId: 'final-channel',
+      channelKeyId: 'final-key',
+      upstreamModel: 'model-a',
+      attempts: [
+        { channelId: 'failed-channel', channelKeyId: 'other-key', upstreamModel: 'model-a', upstreamReportedModel: 'model-b' },
+        { channelId: 'final-channel', channelKeyId: 'final-key', upstreamModel: 'model-a', upstreamReportedModel: ' model-a ' },
+      ],
+    }
+    assert.deepEqual(reportedModelStatus(log), { state: 'match', reportedModel: 'model-a' })
+    assert.deepEqual(reportedModelStatus({
+      ...log,
+      attempts: [{ channelId: 'final-channel', channelKeyId: 'final-key', upstreamModel: 'model-a', upstreamReportedModel: 'model-b' }],
+    }), { state: 'mismatch', reportedModel: 'model-b' })
+    assert.deepEqual(reportedModelStatus({
+      ...log,
+      attempts: [{ channelId: 'final-channel', channelKeyId: 'final-key', upstreamModel: 'model-a' }],
+    }), { state: 'unknown', reportedModel: null })
+    assert.deepEqual(reportedModelStatus({ ...log, channelId: 'missing-channel' }), { state: 'unknown', reportedModel: null })
+    assert.equal(reportedModelStatus({ ...log, upstreamModel: null }), null)
   })
 
   it('尝试记录区分成功、失败后切换和终止', () => {

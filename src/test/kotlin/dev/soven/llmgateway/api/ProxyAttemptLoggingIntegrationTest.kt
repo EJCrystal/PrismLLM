@@ -7,9 +7,12 @@ import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.report.RetentionPolicy
+import dev.soven.llmgateway.report.ChannelHealthReport
+import dev.soven.llmgateway.report.ChannelHealthDetail
 import dev.soven.llmgateway.security.ClientKeyHasher
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -20,6 +23,7 @@ import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
@@ -118,6 +122,24 @@ class ProxyAttemptLoggingIntegrationTest {
     }
 
     @Test
+    fun `records upstream reported model for non-stream and stream attempts`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            for (stream in listOf(false, true)) {
+                val modelId = "requested-model-$stream"
+                createChannel(modelId, "${fake.baseUrl}/reported-model/v1")
+                val requestId = UUID.randomUUID().toString()
+                val response = client.sendRequest(modelId, stream, requestId)
+                assertEquals(HttpStatusCode.OK, response.status)
+                val attempt = awaitRequestLog(requestId).attempts.single()
+                assertEquals(modelId, attempt.upstreamModel)
+                assertEquals("reported-by-upstream", attempt.upstreamReportedModel)
+                assertEquals("reported-by-upstream", awaitRequestLog(requestId).toResponse().attempts.single().upstreamReportedModel)
+            }
+        }
+    }
+
+    @Test
     fun `stream errors retain HTTP and error status when retrying successfully`() = runBlocking {
         testApplication {
             application { app.install(this) }
@@ -170,6 +192,46 @@ class ProxyAttemptLoggingIntegrationTest {
                 assertEquals("上游限流", attempt.errorMessage)
                 assertTrue(attempt.committed)
             }
+        }
+    }
+
+    @Test
+    fun `health endpoints enforce authentication validate windows and observe real proxy requests`() = runBlocking {
+        val modelId = "health-live-request"
+        createChannel(modelId, "${fake.baseUrl}/ok/v1")
+        val channel = app.channelRepository.list().single { it.name == "1-$modelId" }
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/admin/api/channel-health").status)
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/admin/api/channels/${channel.id}/health").status)
+            suspend fun healthGet(path: String) = client.get(path) {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            assertEquals(HttpStatusCode.BadRequest, healthGet("/admin/api/channel-health?window=90d").status)
+            assertEquals(HttpStatusCode.BadRequest, healthGet("/admin/api/channels/${channel.id}/health?window=90d").status)
+            assertEquals(HttpStatusCode.NotFound, healthGet("/admin/api/channels/missing/health").status)
+            val requestId = UUID.randomUUID().toString()
+            val response = client.sendRequest(modelId, true, requestId)
+            assertEquals(HttpStatusCode.OK, response.status)
+            response.bodyAsText()
+            awaitRequestLog(requestId)
+            val overview = healthGet("/admin/api/channel-health?window=24h")
+            assertEquals(HttpStatusCode.OK, overview.status)
+            assertEquals("no-store", overview.headers["Cache-Control"])
+            val report = Json.decodeFromString<ChannelHealthReport>(overview.bodyAsText())
+            val summary = report.channels.single { it.channelId == channel.id }
+            assertEquals(1, summary.metrics.attempts)
+            assertEquals(1, summary.metrics.successes)
+            assertEquals("UNKNOWN", summary.state)
+            val detailResponse = healthGet("/admin/api/channels/${channel.id}/health?window=7d")
+            assertEquals(HttpStatusCode.OK, detailResponse.status)
+            assertEquals("no-store", detailResponse.headers["Cache-Control"])
+            val detail = Json.decodeFromString<ChannelHealthDetail>(detailResponse.bodyAsText())
+            assertEquals(7, detail.trend.size)
+            assertEquals(modelId, detail.byModel.single().id)
+            assertEquals("ACTIVE", detail.availability.single().state)
+            assertTrue(!detailResponse.bodyAsText().contains("upstream-secret"))
         }
     }
 

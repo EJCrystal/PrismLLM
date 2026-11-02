@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import type { Channel, ClientKey, RetentionPolicy, UsageGroup, UsageReport, UsageTotal, UsageTrend } from '../types/api'
 import Icon from './Icon.vue'
+import FilterPanel from './FilterPanel.vue'
+import { vScrollHint } from '../directives/scrollHint'
 import TablePlaceholder from './TablePlaceholder.vue'
+import ErrorState from './ErrorState.vue'
+import FilterSelect from './FilterSelect.vue'
 import { formatNumber, formatTokensCompact, formatDuration } from '../utils/format'
 import {
   usageCostEntries,
@@ -25,6 +29,7 @@ import {
 } from '../utils/usageReport'
 import { createLatestRequestGuard } from '../utils/latestRequest'
 import { createRetentionReportState } from '../utils/retentionReportState'
+import { usageChartIndex, usageChartPoint, usageChartScale } from '../utils/usageChart'
 
 type DimensionId = 'clientKey' | 'channel' | 'model' | 'channelKey' | 'protocol' | 'error'
 type DimensionKey = 'byClientKey' | 'byChannel' | 'byModel' | 'byChannelKey' | 'byProtocol' | 'byErrorCode'
@@ -64,6 +69,7 @@ const rangeError = ref('')
 const maxDatetimeLocal = ref(toDatetimeLocalValue(Date.now()))
 const filters = ref<UsageFilters>({ clientKeyId: '', channelId: '', model: '', protocol: '' })
 const report = ref<UsageReport | null>(null)
+const previousReport = ref<UsageReport | null>(null)
 const retention = ref<RetentionPolicy | null>(null)
 const channels = ref<Channel[]>([])
 const clientKeys = ref<ClientKey[]>([])
@@ -114,17 +120,47 @@ const trendMaxValue = computed(() => usageTrendMax(
   activeTrendMetric.value.value,
   activeTrendMetric.value.secondary || null,
 ))
+const chartScale = computed(() => usageChartScale(trendMaxValue.value))
+const chartIndex = ref<number | null>(null)
+const chartRow = computed(() => chartIndex.value == null ? null : trendRows.value[chartIndex.value] || null)
+const chartPrimaryPoint = computed(() => chartRow.value == null ? null : usageChartPoint(chartIndex.value!, trendRows.value.length, activeTrendMetric.value.value(chartRow.value), chartScale.value.max))
+const chartSecondaryPoint = computed(() => chartRow.value == null || !activeTrendMetric.value.secondary ? null : usageChartPoint(chartIndex.value!, trendRows.value.length, activeTrendMetric.value.secondary(chartRow.value), chartScale.value.max))
+function inspectChart(event: PointerEvent) {
+  const rect = (event.currentTarget as SVGElement).getBoundingClientRect()
+  const index = usageChartIndex(event.clientX, rect.left, rect.width, trendRows.value.length)
+  chartIndex.value = index < 0 ? null : index
+}
+function chartKey(event: KeyboardEvent) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key)) return
+  event.preventDefault()
+  if (event.key === 'Escape') { chartIndex.value = null; return }
+  const last = trendRows.value.length - 1
+  if (last < 0) return
+  chartIndex.value = event.key === 'Home' ? 0 : event.key === 'End' ? last : Math.max(0, Math.min(last, (chartIndex.value ?? last) + (event.key === 'ArrowLeft' ? -1 : 1)))
+}
+function selectChartBucket(): void {
+  const row = chartRow.value
+  if (!row || !report.value) return
+  const width = ({ hour: 3_600_000, day: 86_400_000, week: 7 * 86_400_000 } as Record<string, number>)[report.value.granularity] || 86_400_000
+  const from = row.bucketStart
+  const to = Math.max(from + 60_000, Math.min(report.value.to, from + width))
+  preset.value = ''
+  rangeDraft.value = { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(to) }
+  rangeError.value = ''
+  load()
+}
+watch([trendRows, trendMetric, costMetricCurrency], () => { chartIndex.value = null })
 const trendPrimaryPoints = computed(() => buildTrendPoints(
   trendRows.value,
   activeTrendMetric.value.value,
   640,
   150,
   8,
-  trendMaxValue.value,
+  chartScale.value.max,
 ))
 const trendSecondaryPoints = computed(() => {
   if (!activeTrendMetric.value.secondary) return ''
-  return buildTrendPoints(trendRows.value, activeTrendMetric.value.secondary, 640, 150, 8, trendMaxValue.value)
+  return buildTrendPoints(trendRows.value, activeTrendMetric.value.secondary, 640, 150, 8, chartScale.value.max)
 })
 const trendSecondaryMax = computed(() => {
   const secondary = activeTrendMetric.value.secondary
@@ -142,10 +178,54 @@ const trendArea = computed(() => {
 const costCurrencies = computed(() => usageCostEntries(total.value.costs).map((entry) => entry.currency))
 const modelOptions = computed(() => usageModelOptions(report.value, channels.value))
 const hasFilters = computed(() => Object.values(filters.value).some(Boolean))
+const filterChips = computed(() => {
+  const labels: Record<keyof UsageFilters, string> = {
+    clientKeyId: '密钥：' + (clientKeys.value.find(item => item.id === filters.value.clientKeyId)?.name || filters.value.clientKeyId),
+    channelId: '渠道：' + (channels.value.find(item => item.id === filters.value.channelId)?.name || filters.value.channelId),
+    model: '模型：' + filters.value.model,
+    protocol: protocolLabel(filters.value.protocol),
+  }
+  return (Object.keys(filters.value) as (keyof UsageFilters)[]).filter(key => filters.value[key]).map(key => ({ key, label: labels[key] }))
+})
+function removeFilter(key: keyof UsageFilters) { filters.value[key] = ''; load() }
+const filterRangeSummary = computed(() => USAGE_REPORT_PRESETS.find(item => item.id === preset.value)?.label || '自定义时间')
 const rangeLabel = computed(() => report.value ? `${formatTimeRange(report.value.from)} — ${formatTimeRange(report.value.to)}` : '')
 const activePreset = computed(() => preset.value)
 const topError = computed(() => (report.value?.byErrorCode || [])[0] || null)
 const failoverRate = computed(() => total.value.requests ? `${((total.value.failovers / total.value.requests) * 100).toFixed(1)}%` : '0%')
+function deltaPercent(current: number, previous: number): number | null {
+  if (previous === 0) return current === 0 ? null : 100
+  return ((current - previous) / previous) * 100
+}
+function deltaText(current: number, previous: number): string {
+  const delta = deltaPercent(current, previous)
+  if (delta == null) return '—'
+  return `${delta >= 0 ? '↑' : '↓'} ${Math.abs(delta).toFixed(1)}%`
+}
+function deltaTone(current: number, previous: number, inverse = false): string {
+  const delta = deltaPercent(current, previous)
+  if (delta == null || delta === 0) return 'neutral'
+  const positive = delta > 0
+  return (positive !== inverse) ? 'warning' : 'success'
+}
+const comparison = computed(() => {
+  const previous = previousReport.value?.total
+  if (!previous) return null
+  const currency = costCurrencies.value[0] || usageCostEntries(previous.costs)[0]?.currency || 'USD'
+  const currentCost = usageCostForCurrency(total.value.costs, currency)
+  const previousCost = usageCostForCurrency(previous.costs, currency)
+  return {
+    from: previousReport.value?.from || 0,
+    to: previousReport.value?.to || 0,
+    requests: deltaText(total.value.requests, previous.requests),
+    requestsTone: deltaTone(total.value.requests, previous.requests),
+    errors: deltaText(total.value.errors, previous.errors),
+    errorsTone: deltaTone(total.value.errors, previous.errors, true),
+    cost: deltaText(currentCost, previousCost),
+    costTone: deltaTone(currentCost, previousCost, true),
+    currency,
+  }
+})
 
 function formatTimeRange(value: number): string {
   return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
@@ -160,9 +240,9 @@ function formatBucket(value: number): string {
 
 function formatTrendValue(value: number): string {
   if (trendMetric.value === 'cost') {
-    return `${costMetricCurrency.value} ${Number(value).toFixed(4)}`
+    return `${costMetricCurrency.value} ${Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 8 })}`
   }
-  return formatTokensCompact(value)
+  return trendMetric.value === 'requests' ? formatNumber(value) : formatTokensCompact(value)
 }
 
 function displayName(row: UsageGroup): string {
@@ -249,9 +329,10 @@ async function load({ quiet = false }: { quiet?: boolean } = {}): Promise<void> 
   else loading.value = true
   error.value = ''
   const requestRetentionVersion = retentionState.beginLoad()
+  const previousSpan = Math.max(to - from, 60_000)
   try {
     const result = await requests.run(async () => {
-      const [nextReport, nextRetention] = await Promise.all([
+      const [nextReport, nextRetention, nextPreviousReport] = await Promise.all([
         api.getUsageReport({
           from,
           to,
@@ -259,11 +340,18 @@ async function load({ quiet = false }: { quiet?: boolean } = {}): Promise<void> 
           timezoneOffsetMinutes: reportTimezoneOffset(),
         }),
         api.getRetentionPolicy(),
+        api.getUsageReport({
+          from: from - previousSpan,
+          to: from,
+          ...filters.value,
+          timezoneOffsetMinutes: reportTimezoneOffset(),
+        }).catch(() => null),
       ])
-      return { nextReport, nextRetention }
+      return { nextReport, nextRetention, nextPreviousReport }
     })
     if (!result.isLatest) return
     report.value = result.value.nextReport
+    previousReport.value = result.value.nextPreviousReport
     const currencies = usageCostEntries(result.value.nextReport?.total?.costs).map((entry) => entry.currency)
     if (!currencies.includes(costMetricCurrency.value)) costMetricCurrency.value = currencies[0] || 'USD'
     if (retentionState.shouldApplyRetention(requestRetentionVersion)) {
@@ -351,7 +439,7 @@ onMounted(() => {
     <div class="section-head report-head">
       <p class="report-head-note">费用按计费币种分别汇总，不做汇率换算。</p>
       <div class="report-head-actions">
-        <button type="button" class="button subtle" :disabled="loading || refreshing" @click="refresh">
+        <button type="button" class="button ghost refresh-button" :disabled="loading || refreshing" :aria-busy="refreshing" @click="refresh">
           <Icon name="refresh" :size="16" /> {{ refreshing ? '刷新中…' : '刷新' }}
         </button>
         <button type="button" class="button subtle" :disabled="!report" @click="exportCsv">
@@ -360,6 +448,7 @@ onMounted(() => {
       </div>
     </div>
 
+    <FilterPanel label="时间与筛选" :summary="filterRangeSummary" :count="filterChips.length">
     <div class="panel report-range-bar">
       <div class="report-presets" role="group" aria-label="快捷时间范围">
         <button
@@ -390,38 +479,22 @@ onMounted(() => {
 
     <div class="panel report-filter-bar">
       <div class="report-filter-fields">
-        <label class="report-filter-field"><span>调用方密钥</span>
-          <select v-model="filters.clientKeyId" class="select-input" @change="load()">
-            <option value="">全部密钥</option>
-            <option v-for="key in clientKeys" :key="key.id" :value="key.id">{{ key.name }} · {{ key.keyPrefix }}</option>
-          </select>
-        </label>
-        <label class="report-filter-field"><span>渠道</span>
-          <select v-model="filters.channelId" class="select-input" @change="load()">
-            <option value="">全部渠道</option>
-            <option v-for="channel in channels" :key="channel.id" :value="channel.id">{{ channel.name }}</option>
-          </select>
-        </label>
-        <label class="report-filter-field"><span>模型</span>
-          <select v-model="filters.model" class="select-input" @change="load()">
-            <option value="">全部模型</option>
-            <option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option>
-          </select>
-        </label>
-        <label class="report-filter-field"><span>协议</span>
-          <select v-model="filters.protocol" class="select-input" @change="load()">
-            <option value="">全部协议</option>
-            <option value="chat_completions">Chat Completions</option>
-            <option value="responses">Responses</option>
-            <option value="messages">Messages</option>
-          </select>
-        </label>
+        <FilterSelect v-model="filters.clientKeyId" label="调用方密钥" searchable :disabled="loading || refreshing" :options="[{ value: '', label: '全部密钥' }, ...clientKeys.map(key => ({ value: key.id, label: key.name + ' · ' + key.keyPrefix }))]" @update:model-value="load()" />
+        <FilterSelect v-model="filters.channelId" label="渠道" searchable :disabled="loading || refreshing" :options="[{ value: '', label: '全部渠道' }, ...channels.map(channel => ({ value: channel.id, label: channel.name }))]" @update:model-value="load()" />
+        <FilterSelect v-model="filters.model" label="模型" searchable :disabled="loading || refreshing" :options="[{ value: '', label: '全部模型' }, ...modelOptions.map(model => ({ value: model, label: model }))]" @update:model-value="load()" />
+        <FilterSelect v-model="filters.protocol" label="协议" :disabled="loading || refreshing" :options="[{ value: '', label: '全部协议' }, { value: 'chat_completions', label: 'Chat Completions' }, { value: 'responses', label: 'Responses' }, { value: 'messages', label: 'Messages' }]" @update:model-value="load()" />
         <button v-if="hasFilters" type="button" class="button ghost report-reset" @click="resetFilters">清除筛选</button>
       </div>
       <div class="report-range-copy"><span>{{ rangeLabel }}</span><span>{{ usageGranularityLabel(report?.granularity) }}</span></div>
     </div>
 
-    <div v-if="error" class="callout danger">{{ error }}</div>
+    <template #chips>
+      <button v-if="preset !== 'last7d'" type="button" class="filter-chip" aria-label="恢复默认时间：最近 7 天" @click="selectPreset('last7d')"><span>{{ filterRangeSummary }}</span><Icon name="close" :size="13" /></button>
+      <button v-for="chip in filterChips" :key="chip.key" type="button" class="filter-chip" :aria-label="'移除筛选：' + chip.label" @click="removeFilter(chip.key)"><span>{{ chip.label }}</span><Icon name="close" :size="13" /></button>
+    </template>
+    </FilterPanel>
+
+    <ErrorState v-if="error" :message="error" :busy="loading || refreshing" @retry="load" />
     <TablePlaceholder v-if="loading && !report" :loading="true" loading-text="正在汇总请求日志…" />
     <template v-else-if="report">
       <div class="stat-row four usage-kpis">
@@ -448,6 +521,15 @@ onMounted(() => {
           <span>平均首 token</span><strong>{{ latency(total.avgFirstTokenMs) }}</strong>
           <small>平均总耗时 {{ latency(total.avgTotalMs) }}</small>
         </div>
+      </div>
+      <div v-if="comparison" class="usage-period-comparison">
+        <div class="usage-period-comparison-copy">
+          <strong>较上一周期</strong>
+          <span>{{ formatTimeRange(comparison.from) }} — {{ formatTimeRange(comparison.to) }}</span>
+        </div>
+        <div class="usage-period-comparison-item"><span>请求</span><b :class="`text-${comparison.requestsTone}`">{{ comparison.requests }}</b></div>
+        <div class="usage-period-comparison-item"><span>错误</span><b :class="`text-${comparison.errorsTone}`">{{ comparison.errors }}</b></div>
+        <div class="usage-period-comparison-item"><span>费用（{{ comparison.currency }}）</span><b :class="`text-${comparison.costTone}`">{{ comparison.cost }}</b></div>
       </div>
 
       <div class="usage-secondary-kpis">
@@ -479,13 +561,21 @@ onMounted(() => {
         </div>
         <div v-if="!trendRows.length" class="usage-chart-empty">该时间范围没有请求。</div>
         <div v-else class="usage-chart-wrap">
-          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="img" :aria-label="`${activeTrendMetric.label}趋势`">
+          <div class="usage-chart-readout" aria-live="polite" aria-atomic="true">
+            <template v-if="chartRow"><strong>{{ formatTimeRange(chartRow.bucketStart) }}</strong><span>{{ activeTrendMetric.primaryLabel }} <b>{{ formatTrendValue(activeTrendMetric.value(chartRow)) }}</b></span><span v-if="activeTrendMetric.secondary">{{ activeTrendMetric.secondaryLabel }} <b>{{ formatTrendValue(activeTrendMetric.secondary(chartRow)) }}</b></span><button type="button" class="button ghost mini usage-chart-filter" @click="selectChartBucket">只看此时间段</button></template>
+            <span v-else class="muted">悬停或点按曲线查看读数，也可用左右方向键选择。</span>
+          </div>
+          <div class="usage-chart-with-axis">
+          <div class="usage-chart-y-axis" aria-hidden="true"><span v-for="tick in chartScale.ticks" :key="tick" :style="{ top: `${(142 - tick / chartScale.max * 134) / 150 * 100}%` }">{{ trendMetric === 'cost' ? Number(tick.toPrecision(6)).toLocaleString('zh-CN', { maximumFractionDigits: 8 }) : formatTokensCompact(tick) }}</span></div>
+          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="img" tabindex="0" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? costMetricCurrency : trendMetric === 'tokens' ? '单位 token' : '单位 次'}，使用左右方向键查看读数，点击选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @click="selectChartBucket" @keydown="chartKey" @blur="chartIndex = null">
             <defs><linearGradient id="usage-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0.01"/></linearGradient></defs>
-            <line v-for="n in 4" :key="n" x1="8" :y1="8 + (n - 1) * 42" x2="632" :y2="8 + (n - 1) * 42" class="usage-chart-grid" />
+            <line v-for="tick in chartScale.ticks" :key="tick" x1="8" :y1="142 - tick / chartScale.max * 134" x2="632" :y2="142 - tick / chartScale.max * 134" class="usage-chart-grid" />
             <polygon :points="trendArea" class="usage-chart-area" />
             <polyline v-if="trendSecondaryPoints" :points="trendSecondaryPoints" class="usage-chart-line secondary" />
             <polyline :points="trendPrimaryPoints" class="usage-chart-line" />
+            <template v-if="chartPrimaryPoint"><line :x1="chartPrimaryPoint.x" :x2="chartPrimaryPoint.x" y1="8" y2="142" class="usage-chart-crosshair" /><circle :cx="chartPrimaryPoint.x" :cy="chartPrimaryPoint.y" r="4" class="usage-chart-point" /><circle v-if="chartSecondaryPoint" :cx="chartSecondaryPoint.x" :cy="chartSecondaryPoint.y" r="3.5" class="usage-chart-point secondary" /></template>
           </svg>
+          </div>
           <div class="usage-chart-axis">
             <span v-for="(row, index) in trendRows" :key="row.bucketStart" :class="{ 'is-hidden': trendRows.length > 12 && index % Math.ceil(trendRows.length / 8) !== 0 }">{{ formatBucket(row.bucketStart) }}</span>
           </div>
@@ -508,7 +598,7 @@ onMounted(() => {
           </div>
         </div>
         <TablePlaceholder v-if="!dimensionRows.length" :empty="true" compact title="该维度没有数据" desc="调整筛选条件或时间范围后再试。" />
-        <div v-else-if="dimension === 'error'" class="table-scroll">
+        <div v-else-if="dimension === 'error'" v-scroll-hint class="table-scroll">
           <table class="data-table compact-table usage-dimension-table">
             <thead><tr><th>错误码</th><th>失败请求</th><th>占全部请求</th></tr></thead>
             <tbody>
@@ -520,7 +610,7 @@ onMounted(() => {
             </tbody>
           </table>
         </div>
-        <div v-else class="table-scroll">
+        <div v-else v-scroll-hint class="table-scroll">
           <table class="data-table compact-table usage-dimension-table">
             <thead>
               <tr><th>{{ activeDimension.label }}</th><th>请求</th><th>成功率</th><th>Token</th><th>延迟</th><th>费用</th></tr>

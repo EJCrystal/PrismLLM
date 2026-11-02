@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import {
   VISIBLE_MODEL_LIMIT,
   channelDisplayModels,
+  channelMatchesFilters,
+  channelModelFilterOptions,
   visibleModels,
   hiddenModelsTitle,
 } from '../src/utils/channelDisplay'
@@ -91,6 +93,26 @@ describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
         visible[0].title,
         'deepseek-flash (上游模型: deepseek-flash、deepseek-v4.1-flash)',
       )
+    })
+  })
+
+  describe('渠道列表模型筛选', () => {
+    const channels = [
+      { id: 'one', enabled: true, models: ['wire-a', 'model-z'], modelMappings: [{ upstreamModel: 'wire-a', canonicalModelId: 'public-a' }] },
+      { id: 'two', enabled: false, models: ['model-b', 'public-a'], modelMappings: [] },
+    ]
+
+    it('模型选项按表格中显示的对外模型去重并排序', () => {
+      assert.deepEqual(channelModelFilterOptions(channels), ['model-b', 'model-z', 'public-a'])
+      assert.deepEqual(channelModelFilterOptions(null), [])
+    })
+
+    it('模型和渠道状态筛选可以叠加，映射模型按对外名称匹配', () => {
+      assert.equal(channelMatchesFilters(channels[0], 'enabled', 'public-a'), true)
+      assert.equal(channelMatchesFilters(channels[1], 'disabled', 'public-a'), true)
+      assert.equal(channelMatchesFilters(channels[0], 'disabled', 'public-a'), false)
+      assert.equal(channelMatchesFilters(channels[0], 'enabled', 'wire-a'), false)
+      assert.equal(channelMatchesFilters(channels[1], 'all', ''), true)
     })
   })
 

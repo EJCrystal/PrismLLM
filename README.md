@@ -97,6 +97,18 @@ New API 可选择「系统访问令牌 + 用户 ID」，通过账户接口查询
 
 ## 环境变量
 
+### 容器统一使用宿主机代理
+
+Dockerfile 的最终运行阶段和 Docker Compose 均已保存默认代理配置：网关容器通过 `http://host.docker.internal:7897` 访问公网。Compose 将 `host.docker.internal` 映射到宿主机，代理须允许 Docker 网桥访问。配置不依赖本地 `.env` 中的代理变量，容器重启、重新创建或重新构建后仍会保留；构建阶段不使用该运行时代理。
+
+网关使用 Ktor Java HTTP 引擎，仅设置 `HTTP_PROXY` / `HTTPS_PROXY` 不会改变其模型请求出口；还需要 JVM 的 `http.proxyHost` / `http.proxyPort`、`https.proxyHost` / `https.proxyPort`。`http.nonProxyHosts` 使用 `|` 分隔，与 `NO_PROXY` 一起让数据库、本机及私网服务保持直连。此设置影响整个容器的 HTTP(S) 出站请求，不限于单个渠道；它不是透明网络隧道，不会代理 JDBC 等其他协议。
+
+Compose 的 `gateway.environment` 优先于 `.env` 和镜像内的默认值。修改代理地址时，同时调整 `HTTP_PROXY`、`HTTPS_PROXY` 和 `JAVA_TOOL_OPTIONS` 中的主机、端口，再执行 `docker compose up -d --no-build --no-deps gateway`。禁用代理时，在 Compose 中将这两个代理变量和 `JAVA_TOOL_OPTIONS` 显式设为空字符串；仅删除它们会重新继承镜像默认代理。已有其他 JVM 参数时，应保留其他参数，仅移除代理相关的 `-D` 选项。
+
+修改 Dockerfile 后使用 `docker compose up -d --build gateway` 重建并重新创建容器。直接使用 `docker run` 启动镜像时，Linux 还需要传入 `--add-host=host.docker.internal:host-gateway`。
+
+### 配置项
+
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP 端口 |
@@ -108,7 +120,7 @@ New API 可选择「系统访问令牌 + 用户 ID」，通过账户接口查询
 | `ADMIN_PASSWORD` | 无 | 首次启动创建的管理员密码，必填；后续密码修改以数据库为准 |
 | `CORS_ORIGINS` | 空 | 允许的浏览器来源，逗号分隔 |
 | `REQUEST_BODY_LIMIT_BYTES` | `10485760` | 请求体上限 |
-| `CONNECT_TIMEOUT_MS` | `5000` | 上游连接超时 |
+| `CONNECT_TIMEOUT_MS` | `30000` | 上游连接超时（30 秒） |
 | `FIRST_TOKEN_TIMEOUT_MS` | `120000` | 流式上游首 token 超时 |
 | `IDLE_TIMEOUT_MS` | `60000` | 流空闲超时 |
 | `TOTAL_TIMEOUT_MS` | `600000` | 单请求总超时 |
@@ -257,17 +269,7 @@ RPM 使用平滑令牌桶，每个实际上游请求尝试消耗一个令牌；�
 
 共享同一对外 ID 时，路由先按渠道优先级分档；同一渠道内先按密钥优先级分档，同档密钥轮询。相同 canonical ID 的上游模型名视为同一个模型（例如 `deepseek-v4.1-flash` 与 `deepseek-flash` 都映射到 `deepseek-flash`），不会因为模型名不同而被拆成互不相干的容量；同一密钥支持多个上游模型名时，首个名称作为主入口，只有失败、冷却或不可用时才回退到同密钥的其他名称。这样既避免把同一模型的多个上游别名误当成独立容量，也能把同一模型在多个密钥上的容量聚合起来。
 
-查看调用方通过 `/v1/models` 获取到的对外结果：
-
-```bash
-curl -b cookies.txt http://localhost:8080/admin/api/exposed-models
-```
-
-返回 `object` 和 `data`，每条记录包含 `id`、`source`（`canonical` / `upstream`）与 `ownedBy`。配置了对外 canonical ID 的上游模型会标记为 `canonical`。管理界面的“模型列表”菜单展示同一结果，并提供原始 JSON 响应预览。
-
-同一页面还会加载 models.dev 目录，展示模型 ID、`canonical_model_id`、模型开发者和服务提供方，并在对外模型表中标记匹配结果。目录接口：`GET /admin/api/models-dev`。目录在后台缓存 24 小时，并在到期前 1 小时刷新；刷新失败时继续使用上一份完整快照并每分钟重试。上游 `/models` 返回的 `owned_by` 只表示上游元数据，不作为模型开发者；例如 Qwen 通过 OpenAI 兼容接口返回 `owned_by=openai` 时，仍按 canonical ID 的 `alibaba` 命名空间识别开发者。
-
-渠道编辑弹窗支持手动填写对外模型 ID，也可点击上游模型名或箭头将原名快速填入。模型列表页展示实际对外 ID、来源、上游模型和渠道，并提供 models.dev 目录用于查询与对照；目录信息不会自动修改渠道配置。
+调用方可通过 `GET /v1/models` 查看当前可用的对外模型。渠道编辑弹窗支持手动填写对外模型 ID，也可点击上游模型名或箭头将原名快速填入。models.dev 目录仍用于模型 ID 匹配和价格参考，信息不会自动修改渠道配置。
 
 命名建议：可参考 models.dev 的 `canonical_model_id` 填写对外模型 ID；调用方使用该 ID 时，网关会路由到对应的上游原始模型名。配置对外模型 ID 会替代上游名作为直连入口；渠道停用时其所有直连 ID 停止路由。
 
@@ -333,6 +335,14 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id
 管理面的所有写操作（包括登录、渠道和模型映射配置、单价修改、日志清理及密钥生命周期操作）都会写入 `admin_audit_logs`；系统自动禁用上游密钥也会写入同一表。记录包含操作者、动作、HTTP 方法、路径、结果、状态码、`X-Request-Id`、来源地址、错误码及可选的规则/禁用原因元数据，不包含请求体、prompt、响应正文、CSRF、Cookie、密钥明文或哈希。请求未提供有效 `X-Request-Id` 时，网关生成一个 UUID，并在响应中返回。
 
 审计记录接口为 `GET /admin/api/audit-logs?limit=100&beforeId=<id>`，按 ID 倒序分页，最多返回 500 条。接口只读，不提供修改或删除操作；管理界面“操作审计”页可直接查看。`sourceIp` 取当前连接的对端地址；部署在反向代理后时通常显示代理地址，网关不信任可伪造的转发头。
+
+### 渠道健康度
+
+管理界面的“渠道”列表会根据真实请求被动汇总渠道健康度，支持 24 小时、7 天、15 天和 30 天窗口。点击健康状态可查看上游单次尝试成功率、最终用户请求成功率、重试 / 切换率、首 token P50/P95、总耗时 P50/P95、估算输出速度，以及按模型、出站协议和渠道密钥拆分的数据、历史成功率趋势和主要错误。健康度只使用已经完成的请求，不主动探测上游，也不会自动改动渠道优先级。
+
+健康状态按有效上游尝试计算：少于 20 个样本或最近一小时没有样本显示“未知”；失败率达到 5% 显示“需关注”，达到 20% 显示“异常”；停用渠道显示“已停用”。有至少 20 个成功流式样本且 P95 首 token 超过 `TTFT_SLOW_THRESHOLD_MS` 时也会提示关注。客户端取消、HTTP 400/422 参数错误和网关协议转换失败从上游可用性样本中排除，但 HTTP 200 后发生的流式错误仍计入失败。
+
+健康度接口为 `GET /admin/api/channel-health?window=24h` 和 `GET /admin/api/channels/{id}/health?window=24h`，`window` 支持 `24h`、`7d`、`15d`、`30d`。升级后最近 30 天历史请求的 `attempts_json` 由后台分批补齐到 `request_attempts`，缺少尝试明细的旧请求单独提示；补齐期间接口返回 `indexing=true`，不会阻塞网关启动。统计时间为请求完成时间，采用 `[from, to)`；日志保留策略同时作用于请求和单次尝试记录。
 
 ### 用量报表与日志保留
 

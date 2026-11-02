@@ -1,5 +1,32 @@
 export type ProtocolId = 'chat_completions' | 'responses' | 'messages' | 'gemini'
 
+export type HealthWindow = '24h' | '7d' | '15d' | '30d'
+export type HealthState = 'HEALTHY' | 'WARNING' | 'CRITICAL' | 'UNKNOWN' | 'DISABLED'
+export interface HealthMetrics {
+  attempts: number; successes: number; failures: number; excluded: number; successRate: number | null
+  firstTokenSamples: number; p50FirstTokenMs: number | null; p95FirstTokenMs: number | null
+  p50TotalMs: number | null; p95TotalMs: number | null
+  outputTokensPerSecond: number | null; throughputSamples: number
+  lastSuccessAt: number | null; lastFailureAt: number | null; lastObservedAt: number | null
+}
+export interface ChannelHealthSummary {
+  channelId: string; metrics: HealthMetrics; state: HealthState; reason: string
+  requests: { requests: number; successes: number; successRate: number | null; failoverRequests: number; failoverRate: number | null; legacyRequests: number }
+}
+export interface ChannelHealthReport {
+  window: HealthWindow; from: number; to: number; retentionDays: number; indexing: boolean
+  minimumSamples: number; staleAfterMs: number; warningErrorRate: number; criticalErrorRate: number; slowFirstTokenMs: number
+  channels: ChannelHealthSummary[]
+}
+export interface HealthBreakdown { id: string; name: string; metrics: HealthMetrics }
+export interface ChannelHealthDetail {
+  report: ChannelHealthReport
+  trend: { from: number; to: number; metrics: HealthMetrics }[]
+  byModel: HealthBreakdown[]; byProtocol: HealthBreakdown[]; byKey: HealthBreakdown[]
+  errors: { code: string; count: number; lastAt: number }[]
+  availability: { keyId: string; keyName: string; model: string; state: string; reason: string | null; until: number | null }[]
+}
+
 export type ChannelKeyState = 'ACTIVE' | 'MANUAL_DISABLED' | 'AUTO_TEMPORARY' | 'AUTO_PERMANENT'
 
 export interface ApiErrorBody {
@@ -476,6 +503,7 @@ export interface RequestLogAttempt {
   channelKeyId: string | null
   channelKeyName: string | null
   upstreamModel: string | null
+  upstreamReportedModel?: string | null
   upstreamProtocol: string | null
   statusCode?: number | null
   upstreamErrorStatusCode?: number | null
@@ -501,20 +529,6 @@ export interface ChannelModelsResponse {
   data: ChannelModel[]
 }
 
-export interface ExposedModel {
-  id: string
-  source: string
-  ownedBy: string
-  canonicalModelId: string | null
-  upstreamModels: string[]
-  channelNames: string[]
-}
-
-export interface ExposedModelsResponse {
-  object: string
-  data: ExposedModel[]
-}
-
 export interface ModelsDevModel {
   id: string
   canonicalId: string
@@ -522,14 +536,6 @@ export interface ModelsDevModel {
   providerId: string
   developer: string
   developerId: string
-}
-
-export interface ModelsDevCatalog {
-  source: string
-  loaded: boolean
-  error: string | null
-  data: ModelsDevModel[]
-  matches: Record<string, ModelsDevModel[]>
 }
 
 export interface ModelDiscoveryRequest {
@@ -601,6 +607,7 @@ export interface ChannelModelTestResult {
   prompt: string
   reasoningEffort: string | null
   responseText: string | null
+  upstreamReportedModel?: string | null
   errorMessage: string | null
   usage: ChannelModelTestUsage | null
 }
@@ -608,6 +615,14 @@ export interface ChannelModelTestResult {
 export interface PageOptions {
   limit?: number
   beforeId?: number | null
+}
+
+export interface AuditLogPageOptions extends PageOptions {
+  from?: number | null
+  to?: number | null
+  actor?: string | null
+  action?: string | null
+  result?: 'success' | 'failure' | null
 }
 
 export interface UsageReportQuery {

@@ -34,6 +34,10 @@ const actionLabels: Record<string, string> = {
   'request_log.cleanup': '清理请求日志',
 }
 
+export const auditActionOptions = Object.entries(actionLabels)
+  .map(([value, label]) => ({ value, label }))
+  .sort((left, right) => left.label.localeCompare(right.label, 'zh-CN'))
+
 export function auditActionLabel(action: string): string {
   return actionLabels[action] || action
 }

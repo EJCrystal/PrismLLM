@@ -194,7 +194,10 @@ class FakeUpstream {
             }
         }
         if (!stream) {
-            call.respondText(NON_STREAM_BODY, ContentType.Application.Json)
+            call.respondText(
+                if (scenario == "reported-model") REPORTED_MODEL_NON_STREAM_BODY else NON_STREAM_BODY,
+                ContentType.Application.Json,
+            )
             return
         }
         if (scenario == "concurrency-hold") {
@@ -221,6 +224,12 @@ class FakeUpstream {
                         writeEvent(CHUNK_HEL)
                         writeEvent(CHUNK_LO)
                         writeEvent(FINAL_NO_USAGE)
+                        writeDone()
+                    }
+                    "reported-model" -> {
+                        writeEvent(REPORTED_MODEL_CHUNK)
+                        writeEvent(CHUNK_LO)
+                        writeEvent(FINAL_WITH_USAGE)
                         writeDone()
                     }
                     else -> {
@@ -520,6 +529,10 @@ class FakeUpstream {
             """{"id":"fake","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"""
         private const val NON_STREAM_BODY =
             """{"id":"fake","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}"""
+        private const val REPORTED_MODEL_NON_STREAM_BODY =
+            """{"id":"fake","object":"chat.completion","model":"reported-by-upstream","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}"""
+        private const val REPORTED_MODEL_CHUNK =
+            """{"id":"fake","object":"chat.completion.chunk","model":"reported-by-upstream","choices":[{"index":0,"delta":{"content":"Hel"},"finish_reason":null}]}"""
         private const val ERROR_429 =
             """{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}"""
         private const val ERROR_401 =

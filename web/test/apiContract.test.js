@@ -39,6 +39,28 @@ describe('API 契约的运行时形状', () => {
     })
   })
 
+  it('审计查询把所有筛选项和游标一并传给服务端', async (t) => {
+    const originalFetch = globalThis.fetch
+    let requestedUrl = ''
+    t.after(() => { globalThis.fetch = originalFetch })
+    globalThis.fetch = async (input) => {
+      requestedUrl = String(input)
+      return new Response('[]', { status: 200 })
+    }
+    await api.listAuditLogs({
+      limit: 25, beforeId: 90, from: 1_700_000_000_000, to: 1_700_000_060_000,
+      actor: 'admin-user', action: 'channel.update', result: 'success',
+    })
+    const params = new URL(requestedUrl, 'http://localhost').searchParams
+    assert.equal(params.get('limit'), '25')
+    assert.equal(params.get('beforeId'), '90')
+    assert.equal(params.get('from'), '1700000000000')
+    assert.equal(params.get('to'), '1700000060000')
+    assert.equal(params.get('actor'), 'admin-user')
+    assert.equal(params.get('action'), 'channel.update')
+    assert.equal(params.get('result'), 'success')
+  })
+
   it('非空成功响应无法解析时抛出明确错误', async (t) => {
     const originalFetch = globalThis.fetch
     t.after(() => { globalThis.fetch = originalFetch })

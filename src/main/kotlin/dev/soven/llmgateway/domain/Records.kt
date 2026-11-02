@@ -317,6 +317,8 @@ data class UpstreamAttemptRecord(
     val channelKeyId: String? = null,
     val channelKeyName: String? = null,
     val upstreamModel: String? = null,
+    /** 上游响应自报的模型标识；历史记录或上游未提供时为 null。 */
+    val upstreamReportedModel: String? = null,
     val upstreamProtocol: GatewayProtocol? = null,
     /** 未拿到上游 HTTP 响应时为 null。 */
     val statusCode: Int? = null,

@@ -152,6 +152,11 @@ async function runTest() {
           <span v-if="result.statusCode" class="badge" :class="modelTestResultTone(result)">HTTP {{ result.statusCode }}</span>
           <span class="muted small">{{ result.latencyMs }} ms</span>
         </div>
+        <div v-if="result.success" class="model-test-reported-model">
+          <span class="muted small">上游响应中的模型标识</span>
+          <code>{{ result.upstreamReportedModel || '上游未返回' }}</code>
+          <small class="muted">这是上游响应声明的值，不能独立证明实际执行的模型。</small>
+        </div>
         <p v-if="result.errorMessage" class="model-test-error">{{ result.errorMessage }}</p>
         <pre v-if="result.responseText" class="model-test-response">{{ result.responseText }}</pre>
         <small v-if="usageText" class="muted">{{ usageText }}</small>
@@ -209,6 +214,16 @@ async function runTest() {
 
 .model-test-error {
   margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.model-test-reported-model {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.model-test-reported-model code {
   overflow-wrap: anywhere;
 }
 

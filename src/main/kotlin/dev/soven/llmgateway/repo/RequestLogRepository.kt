@@ -4,6 +4,8 @@ import dev.soven.llmgateway.db.ChannelKeys
 import dev.soven.llmgateway.db.Channels
 import dev.soven.llmgateway.db.ClientKeys
 import dev.soven.llmgateway.db.RequestLogs
+import dev.soven.llmgateway.db.RequestAttempts
+import dev.soven.llmgateway.report.attemptOutcome
 import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
@@ -41,6 +43,8 @@ import org.jetbrains.exposed.v1.core.sum
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.insertIgnore
+import org.jetbrains.exposed.v1.jdbc.update
 import org.jetbrains.exposed.v1.jdbc.Query
 import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.jetbrains.exposed.v1.jdbc.select
@@ -73,7 +77,7 @@ class RequestLogRepository(private val database: Database) {
     }
 
     suspend fun insert(record: RequestLogRecord) = suspendTransaction(database) {
-        RequestLogs.insert {
+        val logId = RequestLogs.insert {
             it[requestId] = record.requestId
             it[traceId] = record.traceId
             it[clientKeyId] = record.clientKeyId
@@ -115,6 +119,42 @@ class RequestLogRepository(private val database: Database) {
             it[upstreamAttempts] = record.upstreamAttempts
             it[attemptsJson] = UpstreamAttemptCodec.encode(record.attempts)
             it[createdAt] = record.createdAt
+            it[healthIndexed] = true
+        }[RequestLogs.id]
+        indexAttempts(logId, record)
+    }
+
+    /** Bounded, restart-safe historical indexing; live writes are indexed atomically above. */
+    suspend fun indexHealthBatch(cutoff: Long, limit: Int = 250): Int = suspendTransaction(database) {
+        val records = RequestLogs.selectAll()
+            .where { (RequestLogs.healthIndexed eq false) and (RequestLogs.createdAt greaterEq cutoff) }
+            .orderBy(RequestLogs.id).limit(limit).map(::toRecord)
+        for (record in records) {
+            indexAttempts(record.id, record)
+            RequestLogs.update({ RequestLogs.id eq record.id }) { it[healthIndexed] = true }
+        }
+        records.size
+    }
+
+    private fun indexAttempts(logId: Long, record: RequestLogRecord) {
+        record.attempts.forEachIndexed { ordinal, attempt ->
+            val channel = attempt.channelId ?: return@forEachIndexed
+            RequestAttempts.insertIgnore {
+                it[this.logId] = logId
+                it[attemptIndex] = ordinal + 1
+                it[channelId] = channel
+                it[channelKeyId] = attempt.channelKeyId
+                it[upstreamModel] = attempt.upstreamModel
+                it[upstreamProtocol] = attempt.upstreamProtocol?.value
+                it[stream] = record.stream
+                it[outcome] = attemptOutcome(attempt).name
+                it[errorCode] = attempt.upstreamErrorCode ?: attempt.errorCode
+                it[statusCode] = attempt.upstreamErrorStatusCode ?: attempt.statusCode
+                it[firstTokenMs] = attempt.firstTokenMs
+                it[elapsedMs] = attempt.elapsedMs
+                it[outputTokens] = record.outputTokens?.takeIf { ordinal == record.attempts.lastIndex && record.usageKnown }
+                it[createdAt] = record.createdAt
+            }
         }
     }
 

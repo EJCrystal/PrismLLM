@@ -5,8 +5,11 @@ import { notify } from '../toast'
 import type { ClientKey } from '../types/api'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
+import ActionMenu from './ActionMenu.vue'
+import { vScrollHint } from '../directives/scrollHint'
 import Modal from './Modal.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
+import ErrorState from './ErrorState.vue'
 import { formatTime } from '../utils/format'
 import { buildClientKeyPayload, quotaSummary } from '../utils/clientKeyQuota'
 import { useClientKeyActions } from '../utils/clientKeyActions'
@@ -173,41 +176,41 @@ function fromLocalInput(value: string): number | null {
   return value ? new Date(value).getTime() : null
 }
 
+function keyMoreAction(id: string, key: ClientKey) {
+  if (id === 'rotate') rotate(key)
+  if (id === 'revoke') revoke(key)
+  if (id === 'delete') remove(key)
+}
+
 onMounted(load)
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="section-head">
-      <div>
-        <h2>访问凭据</h2>
-        <p>调用方用这把密钥访问网关。明文只在创建或轮换时显示一次，请立即保存。</p>
+  <section class="page-stack page-compact">
+    <div class="page-overview">
+      <div class="section-head page-actions">
+        <button type="button" class="button primary" @click="openCreate">
+          <Icon name="plus" :size="17" />
+          新建密钥
+        </button>
       </div>
-      <button type="button" class="button primary" @click="openCreate">
-        <Icon name="plus" :size="17" />
-        新建密钥
-      </button>
+
+      <div class="stat-row two">
+        <div class="stat-card">
+          <span>密钥总数</span>
+          <strong>{{ keys.length }}</strong>
+          <small>已签发的调用方凭据</small>
+        </div>
+        <div class="stat-card">
+          <span>启用中</span>
+          <strong class="text-success">{{ enabledCount }}</strong>
+          <small>可用于访问 /v1；另有 {{ revokedCount }} 个已撤销</small>
+        </div>
+      </div>
+
     </div>
 
-    <div class="stat-row">
-      <div class="stat-card">
-        <span>密钥总数</span>
-        <strong>{{ keys.length }}</strong>
-        <small>已签发的调用方凭据</small>
-      </div>
-      <div class="stat-card">
-        <span>启用中</span>
-        <strong class="text-success">{{ enabledCount }}</strong>
-        <small>可用于访问 /v1；另有 {{ revokedCount }} 个已撤销</small>
-      </div>
-      <div class="stat-card accent">
-        <span>存储方式</span>
-        <strong>SHA-256</strong>
-        <small>只保存哈希与展示前缀</small>
-      </div>
-    </div>
-
-    <div v-if="error" class="callout danger">{{ error }}</div>
+    <ErrorState v-if="error" :message="error" :busy="loading" @retry="load" />
 
     <div class="panel table-panel">
       <TablePlaceholder
@@ -221,8 +224,8 @@ onMounted(load)
         action-text="新建密钥"
         @action="openCreate"
       />
-      <div v-else class="table-scroll">
-        <table class="data-table">
+      <div v-else v-scroll-hint class="table-scroll">
+        <table class="data-table client-keys-table">
           <thead>
             <tr>
               <th>名称</th>
@@ -237,13 +240,13 @@ onMounted(load)
           <tbody>
             <tr v-for="key in keys" :key="key.id">
               <td>
-                <div class="primary-cell">{{ key.name }}</div>
+                <div class="primary-cell" :title="key.name">{{ key.name }}</div>
                 <div class="channel-id-cell">
-                  <span class="mono muted small">{{ key.id }}</span>
+                  <span class="mono muted small" :title="key.id">{{ key.id }}</span>
                   <CopyButton :text="key.id" title="复制密钥 ID" variant="list" :size="12" />
                 </div>
               </td>
-              <td><code class="key-prefix">{{ key.keyPrefix }}…</code></td>
+              <td><code class="key-prefix" :title="key.keyPrefix">{{ key.keyPrefix }}…</code></td>
               <td>
                 <span
                   class="badge"
@@ -273,15 +276,6 @@ onMounted(load)
                   <button
                     v-if="key.revokedAt == null"
                     type="button"
-                    class="button mini"
-                    :disabled="pendingKeyId != null"
-                    @click="rotate(key)"
-                  >
-                    {{ pendingAction === 'rotate' && pendingKeyId === key.id ? '轮换中…' : '轮换' }}
-                  </button>
-                  <button
-                    v-if="key.revokedAt == null"
-                    type="button"
                     class="icon-button"
                     title="编辑"
                     aria-label="编辑调用方密钥"
@@ -290,27 +284,7 @@ onMounted(load)
                   >
                     <Icon name="edit" :size="16" />
                   </button>
-                  <button
-                    v-if="key.revokedAt == null"
-                    type="button"
-                    class="icon-button danger"
-                    title="永久撤销"
-                    aria-label="永久撤销调用方密钥"
-                    :disabled="pendingKeyId != null"
-                    @click="revoke(key)"
-                  >
-                    <Icon name="shield" :size="16" />
-                  </button>
-                  <button
-                    type="button"
-                    class="icon-button danger"
-                    title="删除"
-                    aria-label="删除调用方密钥"
-                    :disabled="pendingKeyId != null"
-                    @click="remove(key)"
-                  >
-                    <Icon name="trash" :size="16" />
-                  </button>
+                  <ActionMenu :label="key.name + '的更多操作'" compact :disabled="pendingKeyId != null" :items="key.revokedAt ? [{ id: 'delete', label: '删除密钥', icon: 'trash', danger: true }] : [{ id: 'rotate', label: pendingAction === 'rotate' && pendingKeyId === key.id ? '轮换中…' : '轮换密钥', icon: 'refresh' }, { id: 'revoke', label: '永久撤销', icon: 'shield', danger: true }, { id: 'delete', label: '删除密钥', icon: 'trash', danger: true }]" @select="keyMoreAction($event, key)" />
                 </div>
               </td>
             </tr>

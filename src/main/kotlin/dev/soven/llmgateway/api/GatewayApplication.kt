@@ -110,6 +110,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val keyAvailabilityGate = KeyAvailabilityGate()
     val channelKeyRateLimiter = ChannelKeyRateLimiter()
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
+    val channelHealthRepository = dev.soven.llmgateway.repo.ChannelHealthRepository(databaseFactory.database, config.cooldown.ttftSlowThresholdMs)
+    private var channelHealthIndexJob: Job? = null
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val upstreamRequestSettingsRepository = UpstreamRequestSettingsRepository(databaseFactory.database)
@@ -156,6 +158,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
 
     fun install(app: Application) {
         databaseFactory.migrate()
+        channelHealthIndexJob = dev.soven.llmgateway.report.startChannelHealthIndexer(requestLogRepository, scope)
         runBlocking { upstreamRequestSettingsRepository.load() }
         runBlocking { upstreamHeaderCatalogService.initialize() }
         runBlocking { seedAdmin() }
@@ -392,6 +395,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         runBlocking { cooldownStateWriter.closeAndDrain(1_000) }
         runBlocking { logRetentionJob.getAndSet(null)?.cancelAndJoin() }
         runBlocking { keyAutoRecoveryJob.getAndSet(null)?.cancelAndJoin() }
+        runBlocking { channelHealthIndexJob?.cancelAndJoin() }
         scope.cancel()
         httpClient.close()
         channelQuotaService.close()

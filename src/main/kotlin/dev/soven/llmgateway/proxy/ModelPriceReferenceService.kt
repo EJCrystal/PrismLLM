@@ -211,8 +211,6 @@ class ModelPriceReferenceService(
     private var lastFailureAtMillis = 0L
     private var refreshJob: Job? = null
 
-    val catalogSource: String get() = catalogUrl
-
     /**
      * 启动后台目录刷新。首次调用立即预热；之后在缓存到期前刷新，失败时每分钟重试。
      */

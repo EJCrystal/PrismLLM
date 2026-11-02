@@ -909,6 +909,7 @@ data class UpstreamAttemptResponse(
     val channelKeyId: String? = null,
     val channelKeyName: String? = null,
     val upstreamModel: String? = null,
+    val upstreamReportedModel: String? = null,
     val upstreamProtocol: String? = null,
     val statusCode: Int? = null,
     val upstreamErrorStatusCode: Int? = null,
@@ -971,6 +972,7 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
             channelKeyId = attempt.channelKeyId,
             channelKeyName = attempt.channelKeyName,
             upstreamModel = attempt.upstreamModel,
+            upstreamReportedModel = attempt.upstreamReportedModel,
             upstreamProtocol = attempt.upstreamProtocol?.value,
             statusCode = attempt.statusCode,
             upstreamErrorStatusCode = attempt.upstreamErrorStatusCode,
@@ -1013,28 +1015,6 @@ data class ChannelModelsResponse(
 )
 
 /**
- * 管理面展示的对外模型条目，source 区分别名与上游直连。
- */
-@Serializable
-data class ExposedModelResponse(
-    val id: String,
-    val source: String,
-    val ownedBy: String = "llm-gateway",
-    val canonicalModelId: String? = null,
-    val upstreamModels: List<String> = emptyList(),
-    val channelNames: List<String> = emptyList(),
-)
-
-/**
- * `/v1/models` 当前对外结果的只读快照。
- */
-@Serializable
-data class ExposedModelsResponse(
-    val `object`: String = "list",
-    val data: List<ExposedModelResponse>,
-)
-
-/**
  * models.dev 目录中的一个模型 ID。
  */
 @Serializable
@@ -1045,18 +1025,6 @@ data class ModelsDevModelResponse(
     val providerId: String,
     val developer: String,
     val developerId: String,
-)
-
-/**
- * models.dev 目录及其与当前对外模型的匹配结果。matches 的 key 是对外模型 ID。
- */
-@Serializable
-data class ModelsDevCatalogResponse(
-    val source: String,
-    val loaded: Boolean,
-    val error: String? = null,
-    val data: List<ModelsDevModelResponse>,
-    val matches: Map<String, List<ModelsDevModelResponse>> = emptyMap(),
 )
 
 /**
@@ -1191,6 +1159,7 @@ data class ChannelModelTestResponse(
     val responseText: String? = null,
     val errorMessage: String? = null,
     val usage: ChannelModelTestUsageResponse? = null,
+    val upstreamReportedModel: String? = null,
 )
 
 fun ModelConnectivityTestResult.toResponse(
@@ -1212,4 +1181,5 @@ fun ModelConnectivityTestResult.toResponse(
     responseText = responseText,
     errorMessage = errorMessage,
     usage = usage?.toTestResponse(),
+    upstreamReportedModel = upstreamReportedModel,
 )

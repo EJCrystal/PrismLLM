@@ -45,8 +45,10 @@ defineEmits(['action'])
 
 <template>
   <div v-if="loading" class="loading-state">
-    <span class="spinner"></span>
-    {{ loadingText }}
+    <div class="loading-state-head"><span class="spinner"></span>{{ loadingText }}</div>
+    <div class="loading-skeleton" aria-hidden="true">
+      <span v-for="index in (compact ? 2 : 4)" :key="index" :style="{ width: `${58 + index * 9}%` }"></span>
+    </div>
   </div>
   <div v-else-if="empty" class="empty-state" :class="{ compact }">
     <div v-if="icon && !compact" class="empty-icon">

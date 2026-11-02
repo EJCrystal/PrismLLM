@@ -72,4 +72,25 @@ class ModelConnectivityTestTest {
         assertEquals("responses ok", extractModelTestResponseText(GatewayProtocol.RESPONSES, responses))
         assertEquals("messages ok", extractModelTestResponseText(GatewayProtocol.MESSAGES, messages))
     }
+
+    @Test
+    fun extracts_model_identifier_reported_in_upstream_response_metadata() {
+        val responses = Json.parseToJsonElement("{\"model\":\" mapped-model \"}").jsonObject
+        val gemini = Json.parseToJsonElement("{\"modelVersion\":\"gemini-test\"}").jsonObject
+        val invalid = Json.parseToJsonElement("{\"model\":42}").jsonObject
+
+        assertEquals("mapped-model", extractReportedModel(GatewayProtocol.RESPONSES, responses))
+        assertEquals("gemini-test", extractReportedModel(GatewayProtocol.GEMINI, gemini))
+        assertNull(extractReportedModel(GatewayProtocol.CHAT_COMPLETIONS, invalid))
+        assertNull(extractReportedModel(GatewayProtocol.MESSAGES, null))
+    }
+
+    @Test
+    fun extracts_model_from_protocol_specific_stream_metadata_shapes() {
+        val responses = Json.parseToJsonElement("{\"response\":{\"model\":\"responses-model\"}}").jsonObject
+        val messages = Json.parseToJsonElement("{\"type\":\"message_start\",\"message\":{\"model\":\"messages-model\"}}").jsonObject
+
+        assertEquals("responses-model", extractReportedModel(GatewayProtocol.RESPONSES, responses))
+        assertEquals("messages-model", extractReportedModel(GatewayProtocol.MESSAGES, messages))
+    }
 }

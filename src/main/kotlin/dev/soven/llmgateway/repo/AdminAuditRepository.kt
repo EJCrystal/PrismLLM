@@ -4,6 +4,10 @@ import dev.soven.llmgateway.db.AdminAuditLogs
 import dev.soven.llmgateway.domain.AdminAuditRecord
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.Op
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.greaterEq
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.insertReturning
@@ -74,13 +78,26 @@ class AdminAuditRepository(private val database: Database) {
         )
     }
 
-    suspend fun list(limit: Int, beforeId: Long? = null): List<AdminAuditRecord> =
+    suspend fun list(
+        limit: Int,
+        beforeId: Long? = null,
+        from: Long? = null,
+        to: Long? = null,
+        actor: String? = null,
+        action: String? = null,
+        result: String? = null,
+    ): List<AdminAuditRecord> =
         suspendTransaction(database) {
+            val conditions = mutableListOf<Op<Boolean>>()
+            beforeId?.let { conditions += AdminAuditLogs.id less it }
+            from?.let { conditions += AdminAuditLogs.createdAt greaterEq it }
+            to?.let { conditions += AdminAuditLogs.createdAt less it }
+            actor?.takeIf(String::isNotBlank)?.let { conditions += AdminAuditLogs.actor eq it }
+            action?.takeIf(String::isNotBlank)?.let { conditions += AdminAuditLogs.action eq it }
+            result?.takeIf(String::isNotBlank)?.let { conditions += AdminAuditLogs.result eq it }
             val query = AdminAuditLogs.selectAll()
-            val filtered = if (beforeId != null) {
-                query.where { AdminAuditLogs.id less beforeId }
-            } else {
-                query
+            val filtered = if (conditions.isEmpty()) query else query.where {
+                conditions.reduce { combined, condition -> combined and condition }
             }
             filtered.orderBy(AdminAuditLogs.id, SortOrder.DESC)
                 .limit(limit.coerceIn(1, 500))

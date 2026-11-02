@@ -41,6 +41,48 @@ export function protocolLabel(value: string | null | undefined): string {
   return PROTOCOL_LABELS[normalized] || normalized
 }
 
+export interface ReportedModelAttemptInput {
+  channelId?: string | null
+  channelKeyId?: string | null
+  upstreamModel?: string | null
+  upstreamReportedModel?: string | null
+}
+
+export interface ReportedModelLogInput {
+  channelId?: string | null
+  channelKeyId?: string | null
+  upstreamModel?: string | null
+  attempts?: ReportedModelAttemptInput[] | null
+}
+
+export interface ReportedModelStatus {
+  state: 'match' | 'mismatch' | 'unknown'
+  reportedModel: string | null
+}
+
+/** Resolve the final route's report so retries from other channels cannot mislabel the summary row. */
+export function reportedModelStatus(log: ReportedModelLogInput | null | undefined): ReportedModelStatus | null {
+  const channelId = String(log?.channelId ?? '').trim()
+  const upstreamModel = String(log?.upstreamModel ?? '').trim()
+  if (!channelId || !upstreamModel) return null
+
+  const attempt = [...(log?.attempts ?? [])].reverse().find((candidate) =>
+    candidate.channelId === channelId &&
+    (log?.channelKeyId == null || candidate.channelKeyId === log.channelKeyId) &&
+    String(candidate.upstreamModel ?? '').trim() === upstreamModel,
+  )
+  if (!attempt) return { state: 'unknown', reportedModel: null }
+
+  const reportedModel = String(attempt.upstreamReportedModel ?? '').trim() || null
+  if (!reportedModel) return { state: 'unknown', reportedModel: null }
+
+  const normalize = (value: string) => value.replace(/\s+/g, ' ')
+  return {
+    state: normalize(reportedModel) === normalize(upstreamModel) ? 'match' : 'mismatch',
+    reportedModel,
+  }
+}
+
 export interface AttemptDisplayInput {
   statusCode?: number | null
   upstreamErrorStatusCode?: number | null

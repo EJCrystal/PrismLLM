@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { clearUpstreamModelCache } from '../upstreamModelCache'
 import { ApiError } from '../types/api'
-import type { Channel, ChannelKeyState, ModelDefaultPrice, ModelPrice, ProtocolProbeResult, UpstreamRequestOverrides } from '../types/api'
+import type { AdminAuditLog, Channel, ChannelHealthReport, ChannelKeyState, HealthState, HealthWindow, ModelDefaultPrice, ModelPrice, ProtocolProbeResult, UpstreamRequestOverrides } from '../types/api'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
+import ActionMenu from './ActionMenu.vue'
+import { vScrollHint } from '../directives/scrollHint'
 import Modal from './Modal.vue'
 import PriceEditorModal from './PriceEditorModal.vue'
 import DefaultPriceModal from './DefaultPriceModal.vue'
@@ -17,14 +19,17 @@ import RequestOverridesEditor from './RequestOverridesEditor.vue'
 import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
+import ChannelHealthModal from './ChannelHealthModal.vue'
+import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthSymbol } from '../utils/channelHealth'
 import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
-import { formatTime } from '../utils/format'
+import ErrorState from './ErrorState.vue'
+import FilterSelect from './FilterSelect.vue'
+import { formatTime, formatDuration } from '../utils/format'
 import {
-  VISIBLE_MODEL_LIMIT,
   channelDisplayModels,
-  visibleModels,
-  hiddenModelsTitle,
+  channelMatchesFilters,
+  channelModelFilterOptions,
 } from '../utils/channelDisplay'
 import type { ChannelFormDraft, OriginalModelMapping } from '../utils/channelForm'
 import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols, parseManualModelIds, removeProbeAddedProtocols } from '../utils/channelForm'
@@ -105,12 +110,42 @@ interface PriceEditorTarget {
   initialTarget: { channelId: string; modelId: string }
 }
 
+type ChannelStatusFilter = 'all' | 'enabled' | 'disabled'
+
 interface RateLimitTarget {
   key: ChannelKeyEditorDraft
   rule: ChannelKeyRateLimitDraft & Record<string, unknown>
 }
 
 const channels = ref<Channel[]>([])
+const healthWindow = ref<HealthWindow>('24h')
+const healthReport = ref<ChannelHealthReport | null>(null)
+const healthTarget = ref<Channel | null>(null)
+const healthLoading = ref(false)
+const healthError = ref('')
+let healthRevision = 0
+const healthByChannel = computed(() => new Map(healthReport.value?.window === healthWindow.value ? healthReport.value.channels.map(row => [row.channelId, row]) : []))
+function channelHealthState(channel: Channel): HealthState {
+  return !channel.enabled ? 'DISABLED' : healthByChannel.value.get(channel.id)?.state || 'UNKNOWN'
+}
+function channelHealthTitle(channel: Channel): string {
+  const row = healthByChannel.value.get(channel.id)
+  return `${channel.name}：${row?.reason || (healthLoading.value ? '正在汇总' : '健康度未读取')}；点击查看成功率、延迟、密钥和模型明细`
+}
+async function loadHealth() {
+  const request = ++healthRevision
+  healthLoading.value = true
+  healthError.value = ''
+  try {
+    const result = await api.getChannelHealth(healthWindow.value)
+    if (request === healthRevision) healthReport.value = result
+  } catch (cause) {
+    if (request === healthRevision) { healthReport.value = null; healthError.value = errorMessage(cause) }
+  } finally { if (request === healthRevision) healthLoading.value = false }
+}
+watch(healthWindow, loadHealth)
+onBeforeUnmount(() => { healthRevision++ })
+const recentProbes = ref<AdminAuditLog[]>([])
 const prices = ref<ModelPrice[]>([])
 const defaultPrices = ref<ModelDefaultPrice[]>([])
 const priceEditor = ref<PriceEditorTarget | null>(null)
@@ -123,6 +158,40 @@ const overrideRevision = ref(0)
 const showAutoDisableSettings = ref(false)
 const rateLimitTarget = ref<RateLimitTarget | null>(null)
 const quotaTarget = ref<Channel | null>(null)
+const formSnapshot = ref('')
+const isFormDirty = computed(() => showForm.value && formSnapshot.value !== channelFormSnapshot())
+const recentProbeByChannel = computed(() => {
+  const result = new Map<string, AdminAuditLog>()
+  for (const entry of recentProbes.value) {
+    const match = entry.path.match(/\/channels\/([^/]+)\/probe-protocols/)
+    if (match?.[1] && !result.has(match[1])) result.set(decodeURIComponent(match[1]), entry)
+  }
+  return result
+})
+
+function channelFormSnapshot(): string {
+  return JSON.stringify({
+    form: {
+      name: form.name,
+      baseUrl: form.baseUrl,
+      authType: form.authType,
+      protocolAuthTypes: form.protocolAuthTypes,
+      protocols: form.protocols,
+      enabled: form.enabled,
+      priority: form.priority,
+      requestOverrides: form.requestOverrides,
+    },
+    keys: channelKeys.value.map((key) => ({
+      id: key.id, name: key.name, credential: key.credential, state: key.state, priority: key.priority,
+      stateVersion: key.stateVersion, models: key.models, rateLimit: key.rateLimit,
+    })),
+    canonicalModels: canonicalModels,
+  })
+}
+
+function recentProbe(channel: Channel): AdminAuditLog | null {
+  return recentProbeByChannel.value.get(channel.id) || null
+}
 
 function onQuotaSaved(channel: Channel) {
   const index = channels.value.findIndex((item) => item.id === channel.id)
@@ -133,6 +202,10 @@ function onQuotaSaved(channel: Channel) {
 const pricePromptChannelId = ref<string | null>(null)
 const loading = ref(true)
 const error = ref('')
+const channelStatusFilter = ref<ChannelStatusFilter>('all')
+const channelModelFilter = ref('')
+const prioritySortDirection = ref<'asc' | 'desc'>('asc')
+const channelToggleSavingIds = ref<string[]>([])
 const showForm = ref(false)
 const saving = ref(false)
 const editingId = ref<string | null>(null)
@@ -217,6 +290,21 @@ watchChannelRequestInputs(form, {
 })
 
 const enabledCount = computed(() => channels.value.filter((channel) => channel.enabled).length)
+const channelStatusOptions = computed(() => [
+  { id: 'all' as const, label: '全部', count: channels.value.length },
+  { id: 'enabled' as const, label: '启用', count: enabledCount.value },
+  { id: 'disabled' as const, label: '停用', count: channels.value.length - enabledCount.value },
+])
+const channelModelOptions = computed(() => channelModelFilterOptions(channels.value))
+watch(channelModelOptions, (models) => {
+  if (channelModelFilter.value && !models.includes(channelModelFilter.value)) channelModelFilter.value = ''
+})
+const displayedChannels = computed(() => channels.value
+  .filter((channel) => channelMatchesFilters(channel, channelStatusFilter.value, channelModelFilter.value))
+  .sort((left, right) => {
+    const comparison = (left.priority ?? 1) - (right.priority ?? 1)
+    return prioritySortDirection.value === 'asc' ? comparison : -comparison
+  }))
 const priceSummaries = computed(() => channelPriceSummaries(channels.value, prices.value, defaultPrices.value))
 const pricePrompt = computed(() => {
   const channelId = pricePromptChannelId.value
@@ -534,6 +622,27 @@ async function commitPriorityEdit(channel: Channel): Promise<void> {
   }
 }
 
+async function toggleChannelEnabled(channel: Channel): Promise<void> {
+  if (channelToggleSavingIds.value.includes(channel.id)) return
+  channelToggleSavingIds.value = [...channelToggleSavingIds.value, channel.id]
+  const enabled = !channel.enabled
+  try {
+    const updated = await api.updateChannel(channel.id, {
+      ...buildPriorityUpdatePayload(channel, channel.priority ?? 1),
+      enabled,
+    })
+    const index = channels.value.findIndex((item) => item.id === channel.id)
+    if (index >= 0) channels.value[index] = updated
+    clearUpstreamModelCache(channel.id)
+    notify(`渠道「${channel.name}」已${enabled ? '启用' : '停用'}`, 'success')
+  } catch (cause) {
+    notify(errorMessage(cause), 'error')
+    await load()
+  } finally {
+    channelToggleSavingIds.value = channelToggleSavingIds.value.filter((id) => id !== channel.id)
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -546,6 +655,11 @@ async function load() {
     channels.value = channelsData ?? []
     prices.value = pricesData ?? []
     defaultPrices.value = defaultPricesData ?? []
+    const [, probeLogsResult] = await Promise.allSettled([
+      loadHealth(),
+      api.listAuditLogs({ limit: 200, action: 'channel.probe_protocols' }),
+    ])
+    recentProbes.value = probeLogsResult.status === 'fulfilled' ? probeLogsResult.value ?? [] : []
   } catch (cause) {
     error.value = errorMessage(cause)
   } finally {
@@ -591,6 +705,17 @@ function modelTitle(channel: Channel, item: ChannelDisplayModel): string {
   const base = item.title || item.displayName
   const unpriced = unpricedDisplayModels(channel, item)
   return unpriced.length ? `${base}；未配置单价: ${unpriced.join('、')}` : base
+}
+
+function channelLandingUrl(baseUrl: string): string | null {
+  try {
+    const url = new URL(baseUrl)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/v1$/i, '') || '/'
+    return url.toString()
+  } catch {
+    return null
+  }
 }
 
 function configureChannelPrices(channel: Channel): void {
@@ -668,6 +793,7 @@ function openCreate() {
     requestOverrides: normalizeRequestOverrides(),
   })
   showForm.value = true
+  formSnapshot.value = channelFormSnapshot()
 }
 
 function openEdit(channel: Channel): void {
@@ -703,11 +829,14 @@ function openEdit(channel: Channel): void {
     requestOverrides: channel.requestOverrides || {},
   })
   showForm.value = true
+  formSnapshot.value = channelFormSnapshot()
 }
 
 function closeChannelForm() {
   if (testTarget.value || showTestSettings.value || showRequestSettings.value || showAutoDisableSettings.value || rateLimitTarget.value) return
+  if (isFormDirty.value && !window.confirm('当前渠道配置尚未保存，确定关闭吗？')) return
   showForm.value = false
+  formSnapshot.value = ''
 }
 
 function onRequestSettingsSaved() {
@@ -733,10 +862,6 @@ function copyUpstreamToCanonical(modelId: string): void {
 function clearMappings() {
   Object.keys(canonicalModels).forEach((key) => delete canonicalModels[key])
   Object.keys(originalMappings).forEach((key) => delete originalMappings[key])
-}
-
-function channelPublicModelCount(channel: Channel): number {
-  return channelDisplayModels(channel).length
 }
 
 function probeState(result: ProtocolProbeResult): { label: string; className: string } {
@@ -875,6 +1000,7 @@ async function save(): Promise<void> {
       : await api.createChannel(payload)
     if (wasEditing) clearUpstreamModelCache(currentEditingId)
     showForm.value = false
+    formSnapshot.value = ''
     probeRequests.invalidate()
     probeResults.value = []
     probeAddedProtocols = []
@@ -907,33 +1033,35 @@ async function remove(channel: Channel): Promise<void> {
   }
 }
 
+const configActions = [
+  { id: 'request', label: '上游请求配置', icon: 'bolt' },
+  { id: 'disable', label: '密钥自动禁用', icon: 'shield' },
+  { id: 'test', label: '全局测试配置', icon: 'bolt' },
+  { id: 'prices', label: '模型默认价', icon: 'price' },
+]
+function openConfig(id: string) {
+  if (id === 'request') showRequestSettings.value = true
+  if (id === 'disable') showAutoDisableSettings.value = true
+  if (id === 'test') showTestSettings.value = true
+  if (id === 'prices') showDefaultPrices.value = true
+}
+function channelAction(id: string, channel: Channel) {
+  if (id === 'prices') openPrice(channel)
+  if (id === 'delete') remove(channel)
+}
+
 onMounted(load)
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="section-head">
-      <div>
-        <h2>上游接入点</h2>
-        <p>一个渠道对应一个上游接入点，可选择 Chat Completions、Responses、Anthropic Messages、Gemini 或其组合。</p>
-      </div>
-      <div class="section-head-actions">
-        <button type="button" class="button subtle" @click="showRequestSettings = true">
-          <Icon name="bolt" :size="16" />
-          上游请求配置
-        </button>
-        <button type="button" class="button subtle" @click="showAutoDisableSettings = true">
-          <Icon name="shield" :size="16" />
-          密钥自动禁用
-        </button>
-        <button type="button" class="button subtle" @click="showTestSettings = true">
-          <Icon name="bolt" :size="16" />
-          全局测试配置
-        </button>
-        <button type="button" class="button subtle" @click="showDefaultPrices = true">
-          <Icon name="price" :size="16" />
-          模型默认价
-        </button>
+  <section class="page-stack page-compact">
+    <div class="channel-page-head">
+      <dl class="channel-summary" aria-label="渠道概况">
+        <div><dt>渠道总数</dt><dd>{{ channels.length }}</dd></div>
+        <div><dt>启用中</dt><dd class="text-success">{{ enabledCount }}</dd></div>
+      </dl>
+      <div class="section-head-actions channel-page-actions">
+        <ActionMenu label="配置" icon="settings" :items="configActions" @select="openConfig" />
         <button type="button" class="button primary" @click="openCreate">
           <Icon name="plus" :size="17" />
           新建渠道
@@ -941,20 +1069,7 @@ onMounted(load)
       </div>
     </div>
 
-    <div class="stat-row two">
-      <div class="stat-card">
-        <span>渠道总数</span>
-        <strong>{{ channels.length }}</strong>
-        <small>所有已配置接入点</small>
-      </div>
-      <div class="stat-card">
-        <span>启用中</span>
-        <strong class="text-success">{{ enabledCount }}</strong>
-        <small>已启用并提供服务</small>
-      </div>
-    </div>
-
-    <div v-if="error" class="callout danger">{{ error }}</div>
+    <ErrorState v-if="error" :message="error" :busy="loading" @retry="load" />
 
     <div v-if="pricePrompt" class="callout warning channel-price-callout">
       <div>
@@ -968,6 +1083,17 @@ onMounted(load)
     </div>
 
     <div class="panel table-panel">
+      <div v-if="channels.length" class="channel-list-toolbar">
+        <span class="channel-sort-note">数字越小，路由优先级越高</span>
+        <div class="channel-list-filters" role="group" aria-label="渠道筛选">
+          <FilterSelect v-model="healthWindow" label="健康观察" :clearable="false" :options="HEALTH_WINDOWS.map(option => ({ value: option.id, label: option.label }))" />
+          <FilterSelect v-model="channelStatusFilter" label="状态" default-value="all" :options="channelStatusOptions.map(option => ({ value: option.id, label: option.label + '（' + option.count + '）' }))" />
+          <FilterSelect v-model="channelModelFilter" label="模型" searchable :options="[{ value: '', label: '全部模型' }, ...channelModelOptions.map(model => ({ value: model, label: model }))]" />
+          <button v-if="channelStatusFilter !== 'all' || channelModelFilter" type="button" class="filter-reset" @click="channelStatusFilter = 'all'; channelModelFilter = ''">清除筛选</button>
+        </div>
+      </div>
+      <ErrorState v-if="healthError" title="健康度读取失败" :message="healthError" :busy="healthLoading" @retry="loadHealth" />
+      <p v-if="healthReport?.indexing" class="muted small health-indexing-note" role="status">正在分批补齐历史健康度；完成后点击刷新查看完整统计。</p>
       <TablePlaceholder
         v-if="loading || channels.length === 0"
         :loading="loading"
@@ -979,26 +1105,46 @@ onMounted(load)
         action-text="新建渠道"
         @action="openCreate"
       />
-      <div v-else class="table-scroll">
+      <div v-else v-scroll-hint class="table-scroll">
         <table class="data-table channels-table">
           <thead>
             <tr>
-              <th>名称</th>
-              <th>基础地址</th>
-              <th title="数值越小越优先；双击单元格可直接修改">优先级</th>
+              <th class="channel-name-col">名称</th>
+              <th :aria-sort="prioritySortDirection === 'asc' ? 'ascending' : 'descending'">
+                <button
+                  type="button"
+                  class="channel-priority-sort"
+                  :aria-label="prioritySortDirection === 'asc' ? '优先级升序，点击切换为降序' : '优先级降序，点击切换为升序'"
+                  :title="prioritySortDirection === 'asc' ? '点击按优先级降序排列；双击数值可修改优先级' : '点击按优先级升序排列；双击数值可修改优先级'"
+                  @click="prioritySortDirection = prioritySortDirection === 'asc' ? 'desc' : 'asc'"
+                >
+                  优先级 <span class="channel-sort-arrow" aria-hidden="true">{{ prioritySortDirection === 'asc' ? '↑' : '↓' }}</span>
+                </button>
+              </th>
               <th>协议</th>
               <th>授权模型</th>
-              <th>状态</th>
+              <th>状态 / 健康</th>
               <th>更新时间</th>
               <th class="actions-col">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="channel in channels" :key="channel.id">
-              <td>
-                <div class="primary-cell">{{ channel.name }}</div>
+            <tr v-if="!displayedChannels.length">
+              <td colspan="7" class="channel-filter-empty muted">当前筛选条件下没有渠道</td>
+            </tr>
+            <tr v-for="channel in displayedChannels" :key="channel.id">
+              <td class="channel-name-col">
+                <a
+                  v-if="channelLandingUrl(channel.baseUrl)"
+                  class="primary-cell channel-name-link"
+                  :href="channelLandingUrl(channel.baseUrl) || undefined"
+                  :title="`打开上游地址：${channelLandingUrl(channel.baseUrl)}`"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >{{ channel.name }}</a>
+                <div v-else class="primary-cell" :title="channel.name">{{ channel.name }}</div>
                 <div class="channel-id-cell">
-                  <span class="mono muted small">{{ channel.id }}</span>
+                  <span class="mono muted small channel-id-text" :title="channel.id">{{ channel.id }}</span>
                   <CopyButton :text="channel.id" title="复制渠道 ID" variant="list" :size="12" />
                 </div>
                 <div class="muted small">
@@ -1009,7 +1155,6 @@ onMounted(load)
                   {{ channel.keys.filter((key) => key.state === 'AUTO_PERMANENT' || key.state === 'AUTO_TEMPORARY').length }} 个自动禁用
                 </div>
               </td>
-              <td><span class="mono address">{{ channel.baseUrl }}</span></td>
               <td
                 class="priority-cell"
                 tabindex="0"
@@ -1037,7 +1182,7 @@ onMounted(load)
                 <span v-else class="badge neutral">{{ channel.priority ?? 1 }}</span>
               </td>
               <td>
-                <div class="protocol-badges">
+                <div class="protocol-badges channel-protocol-list">
                   <span v-for="protocol in channel.protocols" :key="protocol" class="badge info">
                     {{ protocol }}
                   </span>
@@ -1046,7 +1191,7 @@ onMounted(load)
               <td>
                 <div v-if="channel.models?.length" class="channel-model-list">
                   <span
-                    v-for="item in visibleModels(channel)"
+                    v-for="item in channelDisplayModels(channel)"
                     :key="item.displayName"
                     class="channel-model-entry"
                   >
@@ -1069,13 +1214,6 @@ onMounted(load)
                       {{ priceSourceLabel(priceSourceForDisplay(channel, item)) }}
                     </span>
                   </span>
-                  <span
-                    v-if="channelPublicModelCount(channel) > VISIBLE_MODEL_LIMIT"
-                    class="badge neutral channel-model-name"
-                    :title="hiddenModelsTitle(channel)"
-                  >
-                    +{{ channelPublicModelCount(channel) - VISIBLE_MODEL_LIMIT }}
-                  </span>
                 </div>
                 <span v-else class="badge warning">未授权模型</span>
                 <button
@@ -1090,23 +1228,37 @@ onMounted(load)
                 </button>
               </td>
               <td>
-                <span class="badge" :class="channel.enabled ? 'success' : 'neutral'">
-                  {{ channel.enabled ? '启用' : '停用' }}
-                </span>
+                <button
+                  type="button"
+                  class="channel-status-toggle"
+                  role="switch"
+                  :class="channel.enabled ? 'is-enabled' : 'is-disabled'"
+                  :aria-checked="channel.enabled"
+                  :aria-label="channel.enabled ? '渠道已启用' : '渠道已停用'"
+                  :title="channel.enabled ? '点击停用该渠道' : '点击启用该渠道'"
+                  :disabled="channelToggleSavingIds.includes(channel.id)"
+                  @click="toggleChannelEnabled(channel)"
+                >
+                  <span class="channel-status-track" aria-hidden="true"><span></span></span>
+                  <span class="channel-status-label">{{ channel.enabled ? '启用' : '停用' }}</span>
+                </button>
+                <button type="button" class="channel-observation" :title="channelHealthTitle(channel)" :aria-label="channelHealthTitle(channel)" @click="healthTarget = channel">
+                  <span class="health-status-icon" :data-state="channelHealthState(channel)" aria-hidden="true">{{ healthSymbol(channelHealthState(channel)) }}</span>
+                  <span><strong>{{ healthLoading ? '汇总中…' : healthError ? '读取失败' : healthPercent(healthByChannel.get(channel.id)?.metrics.successRate) }}</strong><small>{{ healthByChannel.get(channel.id)?.metrics.attempts ?? 0 }} 次 · {{ HEALTH_LABELS[channelHealthState(channel)] }}</small></span>
+                </button>
+                <div v-if="healthByChannel.get(channel.id)?.metrics.p95FirstTokenMs != null" class="muted small health-list-latency">P95 首 token {{ formatDuration(healthByChannel.get(channel.id)?.metrics.p95FirstTokenMs) }}</div>
+                <div v-if="recentProbe(channel)" class="channel-health-probe muted small" :title="`最近探测：${formatTime(recentProbe(channel)!.createdAt)}`">
+                  探测 {{ formatTime(recentProbe(channel)!.createdAt) }}
+                </div>
               </td>
               <td class="muted">{{ formatTime(channel.updatedAt) }}</td>
               <td class="actions-col">
                 <div class="row-actions">
                   <button type="button" class="button ghost mini" :title="'按密钥查询 ' + channel.name + ' 的账户额度'" @click="quotaTarget = channel">额度</button>
-                  <button type="button" class="icon-button" title="配置模型单价" @click="openPrice(channel)">
-                    <Icon name="price" :size="16" />
-                  </button>
-                  <button type="button" class="icon-button" title="编辑" @click="openEdit(channel)">
+                  <button type="button" class="icon-button" title="编辑渠道" :aria-label="'编辑渠道 ' + channel.name" @click="openEdit(channel)">
                     <Icon name="edit" :size="16" />
                   </button>
-                  <button type="button" class="icon-button danger" title="删除" @click="remove(channel)">
-                    <Icon name="trash" :size="16" />
-                  </button>
+                  <ActionMenu :label="channel.name + '的更多操作'" compact :items="[{ id: 'prices', label: '配置模型单价', icon: 'price' }, { id: 'delete', label: '删除渠道', icon: 'trash', danger: true }]" @select="channelAction($event, channel)" />
                 </div>
               </td>
             </tr>
@@ -1115,10 +1267,16 @@ onMounted(load)
       </div>
     </div>
 
+    <ChannelHealthModal v-if="healthTarget" :key="healthTarget.id" :channel="healthTarget" :initial-window="healthWindow" @close="healthTarget = null" />
     <ChannelQuotaModal v-if="quotaTarget" :key="quotaTarget.id" :channel="quotaTarget" @close="quotaTarget = null" @saved="onQuotaSaved" />
 
     <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide @close="closeChannelForm">
       <form class="form-grid" @submit.prevent="save">
+        <section class="channel-form-section">
+          <div class="channel-form-section-head">
+            <div><h3>基础连接</h3><p>配置渠道名称、地址和默认鉴权方式。</p></div>
+            <span class="badge info">步骤 1</span>
+          </div>
         <label class="field">
           <span>渠道名称</span>
           <input v-model="form.name" placeholder="例如 openai-primary" autocomplete="off" />
@@ -1138,6 +1296,13 @@ onMounted(load)
           </select>
           <small>这是未单独配置协议时的默认鉴权方式；各协议可在下方单独覆盖。</small>
         </label>
+        </section>
+
+        <section class="channel-form-section">
+          <div class="channel-form-section-head">
+            <div><h3>协议与请求</h3><p>选择支持的协议，分别设置鉴权并调整上游请求覆盖。</p></div>
+            <span class="badge info">步骤 2</span>
+          </div>
         <div class="field">
           <span>支持协议与转换优先级</span>
           <div class="protocol-options">
@@ -1201,6 +1366,13 @@ onMounted(load)
             <RequestOverridesEditor ref="overrideEditor" :value="form.requestOverrides" :disabled="saving" @changed="overrideRevision += 1" />
           </div>
         </details>
+        </section>
+
+        <section class="channel-form-section">
+          <div class="channel-form-section-head">
+            <div><h3>上游密钥</h3><p>密钥共享渠道地址和协议配置，可分别授权模型与限流。</p></div>
+            <span class="badge info">步骤 3</span>
+          </div>
         <div class="field channel-key-pool">
           <div class="channel-model-auth-head">
             <div>
@@ -1368,6 +1540,13 @@ onMounted(load)
           <button type="button" class="button ghost mini channel-key-add" @click="addKey">添加密钥</button>
           <small>同一模型可以配置在多个密钥上；低优先级密钥只在高优先级密钥失败、冷却或不可用时启用。</small>
         </div>
+        </section>
+
+        <section v-if="authorizedModels.length" class="channel-form-section">
+          <div class="channel-form-section-head">
+            <div><h3>模型映射</h3><p>为调用方设置对外模型 ID，并保留上游实际模型名。</p></div>
+            <span class="badge info">步骤 4</span>
+          </div>
         <div v-if="authorizedModels.length" class="channel-canonical-section">
           <div class="channel-model-auth-head">
             <div>
@@ -1441,21 +1620,39 @@ onMounted(load)
             </div>
           </div>
         </div>
+        </section>
+
+        <section class="channel-form-section">
+          <div class="channel-form-section-head">
+            <div><h3>路由状态</h3><p>优先级越小越优先；停用后渠道不会参与路由。</p></div>
+            <span class="badge info">步骤 5</span>
+          </div>
         <label class="field">
           <span>渠道优先级</span>
           <input v-model.number="form.priority" type="number" min="1" max="1000" step="1" />
           <small>数值越小越优先（1..1000）：同优先级渠道轮询分摊，低优先级只在高优先级全部失败或冷却时启用。</small>
         </label>
-        <label class="switch-row">
-          <input v-model="form.enabled" type="checkbox" />
-          <span class="switch"></span>
-          <span>
-            <strong>启用渠道</strong>
-            <small>停用后不会参与模型路由。</small>
-          </span>
-        </label>
+        <div class="field channel-enabled-field">
+          <span>渠道状态</span>
+          <button
+            type="button"
+            class="channel-status-toggle"
+            role="switch"
+            :class="form.enabled ? 'is-enabled' : 'is-disabled'"
+            :aria-checked="form.enabled"
+            :aria-label="form.enabled ? '渠道已启用' : '渠道已停用'"
+            :title="form.enabled ? '点击停用该渠道' : '点击启用该渠道'"
+            @click="form.enabled = !form.enabled"
+          >
+            <span class="channel-status-track" aria-hidden="true"><span></span></span>
+            <span class="channel-status-label">{{ form.enabled ? '启用' : '停用' }}</span>
+          </button>
+          <small>停用后不会参与模型路由。</small>
+        </div>
+        </section>
       </form>
       <template #footer>
+        <span v-if="isFormDirty" class="form-dirty-indicator"><span class="form-dirty-dot"></span>有未保存修改</span>
         <button type="button" class="button ghost" @click="closeChannelForm">取消</button>
         <button type="button" class="button primary" :disabled="saving" @click="save">
           {{ saving ? '保存中…' : '保存渠道' }}
@@ -1525,6 +1722,30 @@ onMounted(load)
   font: inherit;
 }
 
+.channel-enabled-field { align-items: flex-start; }
+.channel-status-toggle { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 7px; min-width: max-content; padding: 2px 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; cursor: pointer; }
+.channel-status-label { flex: 0 0 auto; white-space: nowrap; }
+.channel-status-track { position: relative; display: inline-flex; align-items: center; width: 34px; height: 20px; flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--danger) 58%, var(--line-strong)); border-radius: 999px; background: var(--danger-soft); transition: background .16s ease, border-color .16s ease; }
+.channel-status-track > span { position: absolute; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(16, 24, 40, .2); transition: transform .16s ease; }
+.channel-status-toggle.is-enabled .channel-status-track { border-color: var(--success); background: var(--success); }
+.channel-status-toggle.is-enabled .channel-status-track > span { transform: translateX(14px); }
+.channel-status-toggle.is-enabled .channel-status-label { color: var(--success); }
+.channel-status-toggle.is-disabled .channel-status-track { border-color: var(--danger); background: var(--danger); }
+.channel-status-toggle.is-disabled .channel-status-label { color: var(--danger); }
+.channel-status-toggle:disabled { opacity: .55; cursor: wait; }
+.channel-status-toggle:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; border-radius: 4px; }
+.channel-health-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.channel-health-summary .badge { padding: 3px 6px; font-size: 10px; }
+.channel-health-failure { max-width: 190px; margin-top: 4px; overflow: hidden; color: var(--danger); text-overflow: ellipsis; white-space: nowrap; }
+.channel-health-probe { margin-top: 3px; }
+.channel-form-section { display: grid; gap: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--panel) 94%, var(--bg)); }
+.channel-form-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.channel-form-section-head h3 { margin: 0; font-size: 14px; }
+.channel-form-section-head p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.channel-form-section > .field, .channel-form-section > .request-overrides-details { margin: 0; }
+.form-dirty-indicator { display: inline-flex; align-items: center; gap: 7px; margin-right: auto; color: var(--warning); font-size: 12px; font-weight: 650; }
+.form-dirty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); }
+
 .channel-key-manual-models {
   display: grid;
   gap: 10px;
@@ -1563,5 +1784,7 @@ onMounted(load)
 @media (max-width: 640px) {
   .channel-key-rate-limit-row { align-items: stretch; flex-direction: column; }
   .channel-key-rate-limit-row .button { align-self: flex-start; }
+  .channel-form-section { padding: 13px; border-radius: 12px; }
+  .channel-form-section-head { align-items: flex-start; }
 }
 </style>

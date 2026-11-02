@@ -7,6 +7,23 @@ export interface DisplayChannel {
   modelMappings?: ChannelModelMapping[] | null
 }
 
+export type ChannelStatusFilter = 'all' | 'enabled' | 'disabled'
+
+export function channelModelFilterOptions(channels: readonly DisplayChannel[] | null | undefined): string[] {
+  if (!Array.isArray(channels)) return []
+  return [...new Set(channels.flatMap((channel) => channelDisplayModels(channel).map((model) => model.displayName)))].sort()
+}
+
+export function channelMatchesFilters(
+  channel: DisplayChannel & { enabled: boolean },
+  status: ChannelStatusFilter,
+  model: string,
+): boolean {
+  if (status === 'enabled' && !channel.enabled) return false
+  if (status === 'disabled' && channel.enabled) return false
+  return !model || channelDisplayModels(channel).some((item) => item.displayName === model)
+}
+
 export interface ChannelDisplayModel {
   upstreamModel: string
   upstreamModels: string[]

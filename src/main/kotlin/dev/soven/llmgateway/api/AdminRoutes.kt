@@ -127,8 +127,19 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val limit = call.queryInt("limit", default = 100, min = 1, max = 500)
             val beforeId = call.queryLongOrNull("beforeId")
+            val from = call.queryLongOrNull("from")
+            val to = call.queryLongOrNull("to")
+            if (from != null && to != null && from >= to) {
+                throw badRequest("invalid_audit_time_range", "审计时间范围无效")
+            }
+            val actor = call.request.queryParameters["actor"]?.trim()?.takeIf(String::isNotEmpty)
+            val action = call.request.queryParameters["action"]?.trim()?.takeIf(String::isNotEmpty)
+            val result = call.request.queryParameters["result"]?.trim()?.takeIf(String::isNotEmpty)
+            if (result != null && result !in setOf("success", "failure")) {
+                throw badRequest("invalid_audit_result", "审计结果筛选值无效")
+            }
             call.response.headers.append("Cache-Control", "no-store")
-            call.respond(app.adminAuditRepository.list(limit, beforeId).map { it.toResponse() })
+            call.respond(app.adminAuditRepository.list(limit, beforeId, from, to, actor, action, result).map { it.toResponse() })
         }
 
         put("/account/avatar") {
@@ -170,23 +181,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(app.currencyExchangeService.getRates())
         }
 
-        get("/exposed-models") {
-            call.requireAdmin(app)
-            call.respond(
-                ExposedModelsResponse(
-                    data = listExposedModels(app).map {
-                        ExposedModelResponse(
-                            id = it.id,
-                            source = it.source.value,
-                            canonicalModelId = it.canonicalModelId,
-                            upstreamModels = it.upstreamModels,
-                            channelNames = it.channelNames,
-                        )
-                    },
-                ),
-            )
-        }
-
         post("/model-suggestions") {
             call.requireAdmin(app)
             val request = call.receive<ModelSuggestionRequest>()
@@ -216,27 +210,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     ),
                 )
             }
-        }
-
-        get("/models-dev") {
-            call.requireAdmin(app)
-            val snapshot = app.modelPriceReferenceService.catalogSnapshot()
-            val matches = if (snapshot.loaded) {
-                listExposedModels(app).associate { model ->
-                    model.id to app.modelPriceReferenceService.findCatalogMatches(model.id).map { it.toResponse() }
-                }
-            } else {
-                emptyMap()
-            }
-            call.respond(
-                ModelsDevCatalogResponse(
-                    source = app.modelPriceReferenceService.catalogSource,
-                    loaded = snapshot.loaded,
-                    error = snapshot.error,
-                    data = snapshot.models.map { it.toResponse() },
-                    matches = matches,
-                ),
-            )
         }
 
         get("/model-test-settings") {
@@ -918,6 +891,34 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val id = call.requiredParam("id", "缺少价格 id")
             if (!app.modelPriceRepository.delete(id)) throw notFound("model_price_not_found", "计费单价不存在")
             call.respond(HttpStatusCode.NoContent)
+        }
+
+        get("/channel-health") {
+            call.requireAdmin(app)
+            call.response.headers.append("Cache-Control", "no-store")
+            val window = call.request.queryParameters["window"] ?: "24h"
+            if (window !in dev.soven.llmgateway.report.healthWindows) throw badRequest("invalid_health_window", "时间范围仅支持 24h、7d、15d、30d")
+            call.respond(app.channelHealthRepository.report(window, app.channelRepository.list(), app.config.retention.retentionDays))
+        }
+
+        get("/channels/{id}/health") {
+            call.requireAdmin(app)
+            call.response.headers.append("Cache-Control", "no-store")
+            val window = call.request.queryParameters["window"] ?: "24h"
+            if (window !in dev.soven.llmgateway.report.healthWindows) throw badRequest("invalid_health_window", "时间范围仅支持 24h、7d、15d、30d")
+            val channel = app.channelRepository.find(call.requiredParam("id", "缺少渠道 id"))
+                ?: throw notFound("channel_not_found", "渠道不存在")
+            val availability = channel.keys.flatMap { key ->
+                key.models.map { model ->
+                    val until = app.candidateCooldown.cooldownUntil(channel.id, key.id, model)
+                    dev.soven.llmgateway.report.HealthAvailability(
+                        key.id, key.name, model,
+                        when { !channel.enabled -> "CHANNEL_DISABLED"; !key.isRoutable() -> key.state.name; until != null -> "COOLDOWN"; else -> "ACTIVE" },
+                        key.autoDisableReason, key.autoDisableUntil ?: until,
+                    )
+                }
+            }
+            call.respond(app.channelHealthRepository.detail(window, channel, app.config.retention.retentionDays, availability))
         }
 
         get("/request-logs") {
