@@ -1036,6 +1036,7 @@ private suspend fun proxyStream(
                         while (found == null) {
                             val next = upstream.readUTF8Line() ?: break
                             prefixLines.add(next)
+                            recordReportedModel(next, state, upstreamProtocol)
                             if (
                                 allowUpstreamErrorFailover &&
                                 ((upstreamProtocol == GatewayProtocol.MESSAGES && isAnthropicStreamError(next)) ||
@@ -1081,7 +1082,6 @@ private suspend fun proxyStream(
                         try {
                             var sawDone = false
                             for (line in prefixLines) {
-                                recordReportedModel(line, state, upstreamProtocol)
                                 converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
                                 markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
                                 recordUsage(line, state, upstreamProtocol)

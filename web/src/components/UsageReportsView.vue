@@ -160,10 +160,10 @@ function selectChartBucket(): void {
   const row = chartRow.value
   if (!row || !report.value) return
   const width = ({ hour: 3_600_000, day: 86_400_000, week: 7 * 86_400_000 } as Record<string, number>)[report.value.granularity] || 86_400_000
-  const from = row.bucketStart
-  const to = Math.max(from + 60_000, Math.min(report.value.to, from + width))
+  const from = Math.max(report.value.from, row.bucketStart)
+  const to = Math.min(report.value.to, Math.max(from + 60_000, row.bucketStart + width))
   preset.value = ''
-  rangeDraft.value = { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(to) }
+  rangeDraft.value = { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(Math.max(from, to)) }
   rangeError.value = ''
   load()
 }

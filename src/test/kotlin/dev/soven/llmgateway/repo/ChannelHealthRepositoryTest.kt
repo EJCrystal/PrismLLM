@@ -160,6 +160,18 @@ class ChannelHealthRepositoryTest {
     }
 
     @Test
+    fun pendingLegacyIndexingOnlyMasksTheAffectedChannels() = runBlocking {
+        logs.insert(log(listOf(attempt("a"))))
+        logs.insert(log(listOf(attempt("b"))))
+        sql("update request_logs set health_indexed = false where channel_id = 'b'")
+        val report = health.report("24h", mapOf("a" to true, "b" to true), 30, now)
+        assertEquals("UNKNOWN", report.channels.first { it.channelId == "b" }.state)
+        assertFalse(report.channels.first { it.channelId == "a" }.reason.contains("补齐"))
+        val detailA = health.detail("24h", a, 30, emptyList(), now)
+        assertFalse(detailA.report.channels.single().reason.contains("补齐"))
+    }
+
+    @Test
     fun percentilesAndLongUpstreamErrorCodesDoNotLoseRequestLogs() = runBlocking {
         for (index in 1..20) {
             logs.insert(log(listOf(attempt("a").copy(firstTokenMs = index * 10L))))

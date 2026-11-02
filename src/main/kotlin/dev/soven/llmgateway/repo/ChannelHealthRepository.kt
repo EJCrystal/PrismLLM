@@ -43,7 +43,10 @@ class ChannelHealthRepository(private val database: Database, private val slowFi
     private fun JdbcTransaction.buildReport(window: String, channels: Map<String, Boolean>, retentionDays: Int, now: Long, channelId: String? = null): ChannelHealthReport {
         val from = now - healthWindows.getValue(window)
         val observations = groups(from, now, channelId, "channel_id")
-        val pending = exec("select exists(select 1 from request_logs where not health_indexed and created_at >= ? and created_at < ?)", args(from, now)) { rs -> rs.next(); rs.getBoolean(1) } ?: false
+        val pendingChannels = exec("select distinct channel_id from request_logs where not health_indexed and created_at >= ? and created_at < ? and channel_id is not null" + if (channelId != null) " and channel_id = ?" else "", args(from, now, channelId)) { rs ->
+            buildSet { while (rs.next()) add(rs.getString("channel_id")) }
+        }.orEmpty()
+        val pending = pendingChannels.isNotEmpty()
         val requests = requests(from, now, channelId)
         val legacy = exec("""
             select channel_id, count(*) as n from request_logs
@@ -60,7 +63,7 @@ class ChannelHealthRepository(private val database: Database, private val slowFi
                 val metrics = observations[id] ?: HealthMetrics()
                 val (state, reason) = healthState(metrics, enabled, now, slowFirstTokenMs)
                 ChannelHealthSummary(id, metrics, (requests[id] ?: HealthRequests()).copy(legacyRequests = legacy[id] ?: 0),
-                    if (pending && enabled) "UNKNOWN" else state, if (pending && enabled) "历史数据补齐中" else reason)
+                    if (pendingChannels.contains(id) && enabled) "UNKNOWN" else state, if (pendingChannels.contains(id) && enabled) "历史数据补齐中" else reason)
             },
         )
     }

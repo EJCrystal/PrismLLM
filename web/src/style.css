@@ -941,7 +941,7 @@ code,
   0%,
   80%,
   100% {
-    transform: translateY(0);
+    transform: none;
     opacity: 0.45;
   }
   40% {
@@ -5751,6 +5751,57 @@ textarea:disabled {
   .content-data .table-panel {
     height: clamp(340px, 60dvh, 560px);
     min-height: 0;
+  }
+
+  /* Let the request log table use the viewport space below the compact mobile header.
+     Keep its toolbar and pager visible while rows scroll inside the table area. */
+  .main-data.logs-data {
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .content-data.logs-content {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    padding-bottom: 12px;
+  }
+
+  .content-data.logs-content > .page-stack {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .logs-content .logs-overview {
+    flex: 0 0 auto;
+  }
+
+  .logs-content .table-panel {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+  }
+
+  .logs-content .table-toolbar {
+    flex: 0 0 auto;
+  }
+
+  .logs-content .table-scroll-paged {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .logs-content .cursor-pager {
+    flex: 0 0 auto;
   }
 
   .login-page {

@@ -925,6 +925,9 @@ async function probeProtocols(): Promise<void> {
       form.protocols = mergeProbedProtocols(form.protocols, supported)
       probeAddedProtocols = supported.filter((protocol) => !manuallySelected.includes(protocol))
     }
+    void api.listAuditLogs({ limit: 200, action: 'channel.probe_protocols' })
+      .then((entries) => { recentProbes.value = entries ?? [] })
+      .catch(() => { recentProbes.value = [] })
     notify(
       supported.length > 0 ? `探测到：${supported.join(' / ')}` : '未探测到可用协议',
       supported.length > 0 ? 'success' : 'error',

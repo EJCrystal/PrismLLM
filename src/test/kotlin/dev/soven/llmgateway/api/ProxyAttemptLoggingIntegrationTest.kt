@@ -9,6 +9,7 @@ import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.report.RetentionPolicy
 import dev.soven.llmgateway.report.ChannelHealthReport
 import dev.soven.llmgateway.report.ChannelHealthDetail
+import dev.soven.llmgateway.resilience.FailureKind
 import dev.soven.llmgateway.security.ClientKeyHasher
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
@@ -31,6 +32,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.TestInstance
 import org.testcontainers.containers.PostgreSQLContainer
 import java.net.ServerSocket
+import java.sql.DriverManager
 import java.util.Base64
 import java.util.UUID
 import kotlin.test.Test
@@ -251,6 +253,35 @@ class ProxyAttemptLoggingIntegrationTest {
             assertEquals(modelId, detail.byModel.single().id)
             assertEquals("ACTIVE", detail.availability.single().state)
             assertTrue(!detailResponse.bodyAsText().contains("upstream-secret"))
+        }
+    }
+
+    @Test
+    fun `channel health reports cooldown deadline instead of stale key disable deadline`() = runBlocking {
+        val modelId = "health-cooldown-deadline"
+        createChannel(modelId, "${fake.baseUrl}/ok/v1")
+        val channel = app.channelRepository.list().single { it.name == "1-$modelId" }
+        val key = channel.keys.single()
+        val permit = checkNotNull(app.candidateCooldown.acquire(channel.id, key.id, modelId))
+        app.candidateCooldown.recordFailure(permit, FailureKind.AUTH_REJECTED)
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update channel_keys set state = 'AUTO_TEMPORARY', auto_disable_until = 1 where id = ?").use { statement ->
+                statement.setString(1, key.id)
+                statement.executeUpdate()
+            }
+        }
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val response = client.get("/admin/api/channels/${channel.id}/health") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val detail = Json.decodeFromString<ChannelHealthDetail>(response.bodyAsText())
+            val availability = detail.availability.single()
+            assertEquals("COOLDOWN", availability.state)
+            assertTrue(availability.until != null && availability.until > System.currentTimeMillis())
+            assertTrue(availability.until != 1L)
         }
     }
 

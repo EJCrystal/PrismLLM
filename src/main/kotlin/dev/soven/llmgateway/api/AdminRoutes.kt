@@ -916,10 +916,19 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val availability = channel.keys.flatMap { key ->
                 key.models.map { model ->
                     val until = app.candidateCooldown.cooldownUntil(channel.id, key.id, model)
+                    val state = when {
+                        !channel.enabled -> "CHANNEL_DISABLED"
+                        !key.isRoutable() -> key.state.name
+                        until != null -> "COOLDOWN"
+                        else -> "ACTIVE"
+                    }
                     dev.soven.llmgateway.report.HealthAvailability(
-                        key.id, key.name, model,
-                        when { !channel.enabled -> "CHANNEL_DISABLED"; !key.isRoutable() -> key.state.name; until != null -> "COOLDOWN"; else -> "ACTIVE" },
-                        key.autoDisableReason, key.autoDisableUntil ?: until,
+                        key.id, key.name, model, state, key.autoDisableReason,
+                        when (state) {
+                            "COOLDOWN" -> until
+                            "AUTO_TEMPORARY", "AUTO_PERMANENT" -> key.autoDisableUntil
+                            else -> null
+                        },
                     )
                 }
             }

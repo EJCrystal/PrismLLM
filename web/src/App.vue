@@ -162,7 +162,7 @@ onBeforeUnmount(() => {
 
     <div v-if="navOpen" class="sidebar-scrim" @click="navOpen = false"></div>
 
-    <div class="main" :class="{ 'main-data': isDataView }">
+    <div class="main" :class="{ 'main-data': isDataView, 'logs-data': view === 'logs' }">
       <header class="topbar">
         <div class="topbar-left">
           <button type="button" class="icon-button mobile-menu" aria-label="打开导航" @click="navOpen = true">
@@ -204,7 +204,7 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <main class="content" :class="{ 'content-data': isDataView }">
+      <main class="content" :class="{ 'content-data': isDataView, 'logs-content': view === 'logs' }">
         <ChannelsView v-if="view === 'channels'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
         <LogsView v-else-if="view === 'logs'" />
