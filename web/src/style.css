@@ -11,11 +11,14 @@
   --nav: #0d1526;
   --nav-soft: #162137;
   --nav-muted: #8d9ab3;
-  --success: #34d399;
+  --success: #067647;
+  --success-fill: #34d399;
   --success-soft: rgba(52, 211, 153, 0.14);
-  --warning: #fbbf24;
+  --warning: #b54708;
+  --warning-fill: #fbbf24;
   --warning-soft: rgba(251, 191, 36, 0.14);
-  --danger: #f87171;
+  --danger: #b42318;
+  --danger-fill: #f87171;
   --danger-soft: rgba(248, 113, 113, 0.14);
   --info: #175cd3;
   --info-soft: #eff8ff;
@@ -39,10 +42,13 @@
   --nav-soft: #111827;
   --nav-muted: #8b99b0;
   --success: #34d399;
+  --success-fill: #34d399;
   --success-soft: rgba(52, 211, 153, 0.14);
   --warning: #fbbf24;
+  --warning-fill: #fbbf24;
   --warning-soft: rgba(251, 191, 36, 0.14);
   --danger: #f87171;
+  --danger-fill: #f87171;
   --danger-soft: rgba(248, 113, 113, 0.14);
   --info: #60a5fa;
   --info-soft: rgba(96, 165, 250, 0.14);
@@ -464,11 +470,14 @@
   --nav: #272018;
   --nav-soft: #382e23;
   --nav-muted: #bdaea0;
-  --success: #34d399;
+  --success: #067647;
+  --success-fill: #34d399;
   --success-soft: rgba(52, 211, 153, 0.14);
-  --warning: #fbbf24;
+  --warning: #b54708;
+  --warning-fill: #fbbf24;
   --warning-soft: rgba(251, 191, 36, 0.14);
-  --danger: #f87171;
+  --danger: #b42318;
+  --danger-fill: #f87171;
   --danger-soft: rgba(248, 113, 113, 0.14);
   --info: #855325;
   --info-soft: rgba(133, 83, 37, 0.12);
@@ -2560,19 +2569,19 @@ input[type="password"]::-ms-clear,
 }
 
 .callout.danger {
-  border-color: color-mix(in srgb, var(--danger) 32%, var(--line));
+  border-color: color-mix(in srgb, var(--danger-fill) 32%, var(--line));
   background: var(--danger-soft);
   color: var(--danger);
 }
 
 .callout.warning {
-  border-color: color-mix(in srgb, var(--warning) 32%, var(--line));
+  border-color: color-mix(in srgb, var(--warning-fill) 32%, var(--line));
   background: var(--warning-soft);
   color: var(--warning);
 }
 
 .callout.success {
-  border-color: color-mix(in srgb, var(--success) 32%, var(--line));
+  border-color: color-mix(in srgb, var(--success-fill) 32%, var(--line));
   background: var(--success-soft);
   color: var(--success);
 }
@@ -3160,7 +3169,7 @@ textarea:disabled {
 }
 
 .retention-status.is-on {
-  border-color: color-mix(in srgb, var(--success) 24%, var(--line));
+  border-color: color-mix(in srgb, var(--success-fill) 24%, var(--line));
   background: var(--success-soft);
   color: var(--success);
 }
@@ -5192,7 +5201,7 @@ textarea:disabled {
 }
 
 .mode-sync {
-  border-color: color-mix(in srgb, var(--success) 28%, var(--line));
+  border-color: color-mix(in srgb, var(--success-fill) 28%, var(--line));
   background: var(--success-soft);
   color: var(--success);
 }
@@ -5209,13 +5218,13 @@ textarea:disabled {
 }
 
 .reasoning-minimal {
-  border-color: color-mix(in srgb, var(--success) 22%, var(--line));
+  border-color: color-mix(in srgb, var(--success-fill) 22%, var(--line));
   background: var(--success-soft);
   color: var(--success);
 }
 
 .reasoning-low {
-  border-color: color-mix(in srgb, var(--success) 28%, var(--line));
+  border-color: color-mix(in srgb, var(--success-fill) 28%, var(--line));
   background: var(--success-soft);
   color: var(--success);
 }
@@ -5227,13 +5236,13 @@ textarea:disabled {
 }
 
 .reasoning-high {
-  border-color: color-mix(in srgb, var(--warning) 32%, var(--line));
+  border-color: color-mix(in srgb, var(--warning-fill) 32%, var(--line));
   background: var(--warning-soft);
   color: var(--warning);
 }
 
 .reasoning-xhigh {
-  border-color: color-mix(in srgb, var(--danger) 22%, var(--line));
+  border-color: color-mix(in srgb, var(--danger-fill) 22%, var(--line));
   background: var(--danger-soft);
   color: var(--danger);
 }
@@ -5705,12 +5714,12 @@ textarea:disabled {
   height: 8px;
   flex: 0 0 auto;
   border-radius: 999px;
-  background: var(--success);
+  background: var(--success-fill);
   box-shadow: 0 0 0 4px var(--success-soft);
 }
 
 .toast-error .toast-dot {
-  background: var(--danger);
+  background: var(--danger-fill);
   box-shadow: 0 0 0 4px var(--danger-soft);
 }
 
@@ -6442,7 +6451,7 @@ textarea:disabled {
 }
 
 .usage-chart-line.secondary {
-  stroke: var(--warning);
+  stroke: var(--warning-fill);
   stroke-width: 1.6;
   stroke-dasharray: 4 4;
   opacity: 0.8;
@@ -6491,7 +6500,7 @@ textarea:disabled {
 }
 
 .usage-chart-legend .dot.secondary {
-  background: var(--warning);
+  background: var(--warning-fill);
 }
 
 .usage-chart-empty {
@@ -6610,7 +6619,7 @@ textarea:disabled {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--danger);
+  background: var(--danger-fill);
   opacity: 0.7;
 }
 
@@ -6807,7 +6816,7 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .usage-chart { touch-action: pan-y; cursor: crosshair; border-radius: 4px; outline: none; }
 .usage-chart-crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
 .usage-chart-point { fill: var(--brand); stroke: var(--panel); stroke-width: 2; }
-.usage-chart-point.secondary { fill: var(--warning); }
+.usage-chart-point.secondary { fill: var(--warning-fill); }
 .usage-chart-axis { margin-left: 48px; }
 
 @media (max-width: 640px) {

@@ -141,19 +141,19 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
 .health-section h3 small { font-size: 12px; font-weight: normal; }
 .health-history { display: flex; gap: 4px; }
 .health-history-bar { flex: 1 1 0; min-width: 0; height: 38px; padding: 0; border: 0; border-radius: 3px; cursor: pointer; }
-.health-history-bar[data-state='HEALTHY'] { background: var(--success); }
-.health-history-bar[data-state='WARNING'] { background: var(--warning); }
-.health-history-bar[data-state='CRITICAL'] { background: var(--danger); }
-.health-history-bar[data-state='UNKNOWN'] { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning) 18%, var(--panel)) 0 7px, color-mix(in srgb, var(--warning) 48%, var(--panel)) 7px 11px); outline: 1px solid color-mix(in srgb, var(--warning) 72%, var(--line)); outline-offset: -1px; }
+.health-history-bar[data-state='HEALTHY'] { background: var(--success-fill); }
+.health-history-bar[data-state='WARNING'] { background: var(--warning-fill); }
+.health-history-bar[data-state='CRITICAL'] { background: var(--danger-fill); }
+.health-history-bar[data-state='UNKNOWN'] { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning-fill) 18%, var(--panel)) 0 7px, color-mix(in srgb, var(--warning-fill) 48%, var(--panel)) 7px 11px); outline: 1px solid color-mix(in srgb, var(--warning-fill) 72%, var(--line)); outline-offset: -1px; }
 .health-history-bar.is-empty { background: transparent; outline: 1px dashed var(--line-strong); outline-offset: -1px; }
 .health-history-bar.selected, .health-history-bar:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; opacity: 1; }
 .health-history-legend { display: flex; flex-wrap: wrap; gap: 7px 14px; color: var(--muted); font-size: 11px; line-height: 1.4; }
 .health-history-legend > span { display: inline-flex; align-items: center; gap: 5px; }
 .health-legend-swatch { display: inline-block; width: 20px; height: 10px; flex: 0 0 20px; border-radius: 2px; }
-.health-legend-swatch.healthy { background: var(--success); }
-.health-legend-swatch.warning { background: var(--warning); }
-.health-legend-swatch.insufficient { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning) 18%, var(--panel)) 0 4px, color-mix(in srgb, var(--warning) 48%, var(--panel)) 4px 7px); border: 1px solid color-mix(in srgb, var(--warning) 72%, var(--line)); }
-.health-legend-swatch.critical { background: var(--danger); }
+.health-legend-swatch.healthy { background: var(--success-fill); }
+.health-legend-swatch.warning { background: var(--warning-fill); }
+.health-legend-swatch.insufficient { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning-fill) 18%, var(--panel)) 0 4px, color-mix(in srgb, var(--warning-fill) 48%, var(--panel)) 4px 7px); border: 1px solid color-mix(in srgb, var(--warning-fill) 72%, var(--line)); }
+.health-legend-swatch.critical { background: var(--danger-fill); }
 .health-legend-swatch.empty { background: transparent; border: 1px dashed var(--line-strong); }
 .health-history-axis { display: flex; justify-content: space-between; gap: 12px; }
 .health-breakdown { min-width: 620px; }

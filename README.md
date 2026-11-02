@@ -17,7 +17,6 @@
 - 管理 API 与 Vue 3 管理界面：
   - 渠道管理：接入点、协议、密钥池、对外模型 ID 映射及模型计费单价配置。
   - 多主题支持：浅色（Light）、深色（Dark）、护眼暖色（Sepia）三主题无缝轮转与持久化。
-  - 模型列表：查看 `/v1/models` 实际对外暴露结果与每日缓存的 models.dev 目录对比。
   - 调用方密钥轮换与永久撤销、管理操作审计和请求日志。
 - PostgreSQL + Flyway；单实例部署。
 - 可选的渠道共享额度查询：独立的 Sub2API / New API 插件包，支持通过 JVM ServiceLoader 加载自定义可信 JAR。
