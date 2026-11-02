@@ -160,6 +160,25 @@ class ChannelHealthRepositoryTest {
     }
 
     @Test
+    fun historicalIndexingPrioritizesTheMostRecentPendingRequests() = runBlocking {
+        logs.insert(log(listOf(attempt("a")), createdAt = now - 100))
+        logs.insert(log(listOf(attempt("a")), createdAt = now - 10))
+        sql("delete from request_attempts")
+        sql("update request_logs set health_indexed = false")
+
+        assertEquals(1, logs.indexHealthBatch(now - 86_400_000, 1))
+        val indexedTimestamp = DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery("select created_at from request_logs where health_indexed = true").use { result ->
+                    assertTrue(result.next())
+                    result.getLong(1)
+                }
+            }
+        }
+        assertEquals(now - 10, indexedTimestamp)
+    }
+
+    @Test
     fun pendingLegacyIndexingOnlyMasksTheAffectedChannels() = runBlocking {
         logs.insert(log(listOf(attempt("a"))))
         logs.insert(log(listOf(attempt("b"))))

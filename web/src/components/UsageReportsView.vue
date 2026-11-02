@@ -204,7 +204,7 @@ const filterChips = computed(() => {
     clientKeyId: '密钥：' + (clientKeys.value.find(item => item.id === filters.value.clientKeyId)?.name || filters.value.clientKeyId),
     channelId: '渠道：' + (channels.value.find(item => item.id === filters.value.channelId)?.name || filters.value.channelId),
     model: '模型：' + filters.value.model,
-    protocol: protocolLabel(filters.value.protocol),
+    protocol: '协议：' + protocolLabel(filters.value.protocol),
   }
   return (Object.keys(filters.value) as (keyof UsageFilters)[]).filter(key => filters.value[key]).map(key => ({ key, label: labels[key] }))
 })
@@ -580,7 +580,7 @@ onMounted(() => {
         <div v-if="!trendRows.length" class="usage-chart-empty">该时间范围没有请求。</div>
         <div v-else class="usage-chart-wrap" @focusout="chartFocusOut">
           <div class="usage-chart-readout" aria-live="polite" aria-atomic="true">
-            <template v-if="chartRow"><strong>{{ formatTimeRange(chartRow.bucketStart) }}</strong><span>{{ activeTrendMetric.primaryLabel }} <b>{{ formatTrendValue(activeTrendMetric.value(chartRow)) }}</b></span><span v-if="activeTrendMetric.secondary">{{ activeTrendMetric.secondaryLabel }} <b>{{ formatTrendValue(activeTrendMetric.secondary(chartRow)) }}</b></span><button type="button" class="button ghost mini usage-chart-filter" @click="selectChartBucket">只看此时间段</button></template>
+            <template v-if="chartRow"><strong>{{ formatTimeRange(chartRow.bucketStart) }}</strong><span>{{ activeTrendMetric.primaryLabel }} <b>{{ formatTrendValue(activeTrendMetric.value(chartRow)) }}</b></span><span v-if="activeTrendMetric.secondary">{{ activeTrendMetric.secondaryLabel }} <b>{{ formatTrendValue(activeTrendMetric.secondary(chartRow)) }}</b></span><button type="button" class="button ghost mini usage-chart-filter" @mousedown.prevent @click="selectChartBucket">只看此时间段</button></template>
             <span v-else class="muted">悬停或点按曲线查看读数，也可用左右方向键选择。</span>
           </div>
           <div class="usage-chart-with-axis">

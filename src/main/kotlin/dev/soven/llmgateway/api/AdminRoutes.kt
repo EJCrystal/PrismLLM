@@ -914,7 +914,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val channel = app.channelRepository.find(call.requiredParam("id", "缺少渠道 id"))
                 ?: throw notFound("channel_not_found", "渠道不存在")
             val availability = channel.keys.flatMap { key ->
-                key.models.map { model ->
+                key.models.distinct().map { model ->
                     val until = app.candidateCooldown.cooldownUntil(channel.id, key.id, model)
                     val state = when {
                         !channel.enabled -> "CHANNEL_DISABLED"

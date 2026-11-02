@@ -285,12 +285,30 @@ class ProxyAttemptLoggingIntegrationTest {
         }
     }
 
+    @Test
+    fun `channel health availability deduplicates repeated models on a key`() = runBlocking {
+        val modelId = "health-duplicate-model"
+        createChannel(modelId, "${fake.baseUrl}/ok/v1", models = listOf(modelId, modelId))
+        val channel = app.channelRepository.list().single { it.name == "1-$modelId" }
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val response = client.get("/admin/api/channels/${channel.id}/health") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val detail = Json.decodeFromString<ChannelHealthDetail>(response.bodyAsText())
+            assertEquals(listOf(modelId), detail.availability.map { it.model })
+        }
+    }
+
     private suspend fun createChannel(
         modelId: String,
         baseUrl: String,
         invalidCredential: Boolean = false,
         protocol: GatewayProtocol = GatewayProtocol.CHAT_COMPLETIONS,
         priority: Int = 1,
+        models: List<String> = listOf(modelId),
     ) {
         val credential = app.credentialCipher.encrypt("upstream-secret")
         app.channelRepository.create(
@@ -299,7 +317,7 @@ class ProxyAttemptLoggingIntegrationTest {
             keys = listOf(NewChannelKey(
                 "test-key",
                 if (invalidCredential) credential.copy(ciphertext = "invalid-base64") else credential,
-                models = listOf(modelId),
+                models = models,
             )),
             authType = "bearer",
             protocols = listOf(protocol),

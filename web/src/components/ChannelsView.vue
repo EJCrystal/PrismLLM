@@ -652,7 +652,7 @@ async function toggleChannelEnabled(channel: Channel): Promise<void> {
     const index = channels.value.findIndex((item) => item.id === channel.id)
     if (index >= 0) channels.value[index] = updated
     clearUpstreamModelCache(channel.id)
-    void loadHealth()
+    if (!listDisposed) void loadHealth()
     notify(`渠道「${channel.name}」已${enabled ? '启用' : '停用'}`, 'success')
   } catch (cause) {
     notify(errorMessage(cause), 'error')

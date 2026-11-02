@@ -129,7 +129,7 @@ class RequestLogRepository(private val database: Database) {
     suspend fun indexHealthBatch(cutoff: Long, limit: Int = 250): Int = suspendTransaction(database) {
         val records = RequestLogs.selectAll()
             .where { (RequestLogs.healthIndexed eq false) and (RequestLogs.createdAt greaterEq cutoff) }
-            .orderBy(RequestLogs.createdAt to SortOrder.ASC, RequestLogs.id to SortOrder.ASC)
+            .orderBy(RequestLogs.createdAt to SortOrder.DESC, RequestLogs.id to SortOrder.DESC)
             .limit(limit).map(::toRecord)
         for (record in records) {
             indexAttempts(record.id, record)
