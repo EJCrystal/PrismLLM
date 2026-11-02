@@ -588,10 +588,11 @@ function openModelTest(modelId: string): void {
 const priorityEditingId = ref<string | null>(null)
 const priorityDraft = ref<number | string>(1)
 let prioritySaving = false
+const channelUpdateSavingIds = ref<string[]>([])
 
 function startPriorityEdit(channel: Channel): void {
-  if (prioritySaving) {
-    notify('正在保存上一处优先级修改，请稍候', 'warning')
+  if (prioritySaving || channelUpdateSavingIds.value.includes(channel.id)) {
+    notify('该渠道正在保存修改，请稍候', 'warning')
     return
   }
   priorityEditingId.value = channel.id
@@ -608,7 +609,7 @@ function cancelPriorityEdit(): void {
 }
 
 async function commitPriorityEdit(channel: Channel): Promise<void> {
-  if (prioritySaving) return
+  if (prioritySaving || channelUpdateSavingIds.value.includes(channel.id)) return
   if (priorityEditingId.value !== channel.id) return
   const next = Number(priorityDraft.value)
   priorityEditingId.value = null
@@ -618,6 +619,7 @@ async function commitPriorityEdit(channel: Channel): Promise<void> {
   }
   if (next === (channel.priority ?? 1)) return
   prioritySaving = true
+  channelUpdateSavingIds.value = [...channelUpdateSavingIds.value, channel.id]
   try {
     await api.updateChannel(channel.id, buildPriorityUpdatePayload(channel, next))
     listRevision++
@@ -629,11 +631,13 @@ async function commitPriorityEdit(channel: Channel): Promise<void> {
     await load()
   } finally {
     prioritySaving = false
+    channelUpdateSavingIds.value = channelUpdateSavingIds.value.filter((id) => id !== channel.id)
   }
 }
 
 async function toggleChannelEnabled(channel: Channel): Promise<void> {
-  if (channelToggleSavingIds.value.includes(channel.id)) return
+  if (channelUpdateSavingIds.value.includes(channel.id)) return
+  channelUpdateSavingIds.value = [...channelUpdateSavingIds.value, channel.id]
   channelToggleSavingIds.value = [...channelToggleSavingIds.value, channel.id]
   const enabled = !channel.enabled
   try {
@@ -646,11 +650,13 @@ async function toggleChannelEnabled(channel: Channel): Promise<void> {
     const index = channels.value.findIndex((item) => item.id === channel.id)
     if (index >= 0) channels.value[index] = updated
     clearUpstreamModelCache(channel.id)
+    void loadHealth()
     notify(`渠道「${channel.name}」已${enabled ? '启用' : '停用'}`, 'success')
   } catch (cause) {
     notify(errorMessage(cause), 'error')
     await load()
   } finally {
+    channelUpdateSavingIds.value = channelUpdateSavingIds.value.filter((id) => id !== channel.id)
     channelToggleSavingIds.value = channelToggleSavingIds.value.filter((id) => id !== channel.id)
   }
 }
@@ -1252,7 +1258,7 @@ onMounted(load)
                   :aria-checked="channel.enabled"
                   :aria-label="channel.enabled ? '渠道已启用' : '渠道已停用'"
                   :title="channel.enabled ? '点击停用该渠道' : '点击启用该渠道'"
-                  :disabled="channelToggleSavingIds.includes(channel.id)"
+                  :disabled="channelUpdateSavingIds.includes(channel.id)"
                   @click="toggleChannelEnabled(channel)"
                 >
                   <span class="channel-status-track" aria-hidden="true"><span></span></span>
