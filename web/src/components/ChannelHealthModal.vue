@@ -133,11 +133,11 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
 .health-section h3 { font-size: 14px; }
 .health-section h3 small { font-size: 12px; font-weight: normal; }
 .health-history { display: flex; gap: 4px; }
-.health-history-bar { flex: 1; min-width: 0; height: 38px; padding: 0; border: 1px solid currentColor; border-radius: 3px; cursor: pointer; }
-.health-history-bar[data-state='HEALTHY'] { color: var(--success); background: color-mix(in srgb, var(--success) 24%, var(--panel)); }
-.health-history-bar[data-state='WARNING'] { color: var(--warning); background: color-mix(in srgb, var(--warning) 24%, var(--panel)); }
-.health-history-bar[data-state='CRITICAL'] { color: var(--danger); background: color-mix(in srgb, var(--danger) 24%, var(--panel)); }
-.health-history-bar[data-state='UNKNOWN'] { color: var(--warning); background: transparent; border-style: dashed; opacity: .65; }
+.health-history-bar { flex: 1 1 0; min-width: 0; height: 14px; padding: 0; border: 0; border-radius: 3px; cursor: pointer; }
+.health-history-bar[data-state='HEALTHY'] { background: var(--success); }
+.health-history-bar[data-state='WARNING'] { background: var(--warning); }
+.health-history-bar[data-state='CRITICAL'] { background: var(--danger); }
+.health-history-bar[data-state='UNKNOWN'] { background: color-mix(in srgb, var(--warning) 55%, transparent); outline: 1px dashed var(--warning); outline-offset: -1px; }
 .health-history-bar.selected, .health-history-bar:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; opacity: 1; }
 .health-history-axis { display: flex; justify-content: space-between; gap: 12px; }
 .health-breakdown { min-width: 620px; }
@@ -152,6 +152,6 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
   .health-metric-grid > div:nth-child(even) { border-right: 0; }
   .health-metric-grid > div:nth-child(n+3) { border-bottom: 0; }
   .health-metric-grid strong { font-size: 20px; }
-  .health-history { gap: 2px; }
+  .health-history { gap: 3px; }
 }
 </style>

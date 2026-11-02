@@ -941,7 +941,7 @@ code,
   0%,
   80%,
   100% {
-    transform: none;
+    transform: translateY(0);
     opacity: 0.45;
   }
   40% {
@@ -2049,7 +2049,7 @@ input[type="password"]::-ms-clear,
     opacity: 0;
   }
   to {
-    transform: translateY(0);
+    transform: none;
     opacity: 1;
   }
 }
