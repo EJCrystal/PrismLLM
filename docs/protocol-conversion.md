@@ -12,6 +12,12 @@
 | ChatCompletionToResponses | Chat Completions | Responses | Chat Completions |
 | MessagesToResponses | Messages | Responses | Messages |
 | ResponsesToMessages | Responses | Messages | Responses |
+| ChatCompletionToGemini | Chat Completions | Gemini | Chat Completions |
+| GeminiToChatCompletion | Gemini | Chat Completions | Gemini |
+| MessagesToGemini | Messages | Gemini | Messages |
+| GeminiToMessages | Gemini | Messages | Gemini |
+| ResponsesToGemini | Responses | Gemini | Responses |
+| GeminiToResponses | Gemini | Responses | Gemini |
 
 转换器名称表示**请求方向**；同一转换器的 `convertResponse` 和 `streamConverter` 处理相反的返回方向。新增方向需实现 `ProtocolConverter` 并加入注册表，不允许自动组合其它方向形成隐式中转。
 
@@ -42,8 +48,8 @@
 | 推理响应 | Messages thinking 可转为 Responses reasoning；直转中无法表示的 redacted_thinking 或缺少 Anthropic 签名的 Responses reasoning 明确报错，不伪造 thinking 块 |
 | 流式输出 | 文本、工具参数增量、结束原因、末尾用量与错误；没有结束原因的 EOF 不伪造成功结束，代理层仍检测缺失终止事件的流中断 |
 | 安全停止原因 | Chat `content_filter`、Responses `incomplete/content_filter` 与 Messages `refusal` 相互映射，普通响应与流式返回均不降级为自然结束 |
-| Gemini | 仅原生透传，不参与跨协议转换 |
-| 图片、文件、音频、内置工具 | 仍不支持跨协议转换；Messages 工具仅接受缺省 type 或 custom，其它类型在调用上游前明确拒绝 |
+| Gemini | 四协议全矩阵；Gemini 的模型与 stream 位于 URL，转换后的请求体不携带 model/stream。`cachedContent`、非空 `safetySettings`、`responseModalities` 与非单候选仍明确拒绝 |
+| 图片、文件、音频、内置工具 | 仍不支持跨协议转换；Messages 工具仅接受缺省 type 或 custom，Gemini 仅支持 functionDeclarations，其它类型在调用上游前明确拒绝 |
 | Responses 状态续接与存储 | 拒绝 `previous_response_id`、`store=true`、非空 `include`、自动 `truncation`；允许原有无副作用默认值 |
 | 结构化输出 | Chat ↔ Responses 保留已有映射；转换到 Messages 仍拒绝 |
 | Messages 专有扩展 | `context_management`、`output_config` 等仍明确报错，不通过删除字段绕过 |

@@ -4326,7 +4326,7 @@ class GatewayIntegrationTest {
 
     @Test
     @Tag("gemini")
-    fun `Gemini channels are not protocol conversion targets`() = runBlocking {
+    fun `Gemini channels accept converted chat requests`() = runBlocking {
         createChannelWithBaseUrl(
             "gemini-only",
             "${fake.baseUrl}/ok/v1beta",
@@ -4344,9 +4344,46 @@ class GatewayIntegrationTest {
                 setBody("""{"model":"gemini-2.5-pro","stream":false,"messages":[]}""")
             }
 
-            assertEquals(HttpStatusCode.BadRequest, response.status)
-            assertTrue(response.bodyAsText().contains("protocol_not_supported"))
-            assertTrue(fake.requests.isEmpty())
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("Hello!", body["choices"]!!.jsonArray.single().jsonObject["message"]!!.jsonObject["content"]!!.jsonPrimitive.content)
+            val upstream = fake.requests.single()
+            assertEquals("/ok/v1beta/models/gemini-2.5-pro:generateContent", upstream.uri?.substringBefore('?'))
+            val upstreamBody = Json.parseToJsonElement(upstream.body).jsonObject
+            assertTrue(upstreamBody.containsKey("contents"))
+            assertFalse(upstreamBody.containsKey("model"))
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.protocol)
+            assertEquals(GatewayProtocol.GEMINI, log.upstreamProtocol)
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun `Gemini requests convert to chat channels`() = runBlocking {
+        createChannel("gemini-to-chat", "ok")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1beta/models/gpt-4o-mini:generateContent") {
+                header("x-goog-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("STOP", body["candidates"]!!.jsonArray.single().jsonObject["finishReason"]!!.jsonPrimitive.content)
+            assertEquals("Hello!", body["candidates"]!!.jsonArray.single().jsonObject["content"]!!.jsonObject["parts"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+            val upstream = fake.requests.single()
+            assertEquals("/ok/v1/chat/completions", upstream.path)
+            val upstreamBody = Json.parseToJsonElement(upstream.body).jsonObject
+            assertEquals("gpt-4o-mini", upstreamBody["model"]!!.jsonPrimitive.content)
+            assertTrue(upstreamBody["messages"]!!.jsonArray.isNotEmpty())
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.GEMINI, log.protocol)
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.upstreamProtocol)
         }
     }
 
@@ -7855,8 +7892,9 @@ class GatewayIntegrationTest {
                 contentType(ContentType.Application.Json)
                 setBody("""{"contents":[]}""")
             }
-            assertEquals(HttpStatusCode.BadRequest, incompatible.status)
-            assertTrue(incompatible.bodyAsText().contains("INVALID_ARGUMENT"))
+            assertEquals(HttpStatusCode.OK, incompatible.status)
+            val converted = Json.parseToJsonElement(incompatible.bodyAsText()).jsonObject
+            assertTrue(converted.containsKey("candidates"), incompatible.bodyAsText())
             val rateLimited = client.post("/v1beta/models/gemini-2.5-pro:generateContent") {
                 header("x-goog-api-key", key)
                 contentType(ContentType.Application.Json)
@@ -7864,7 +7902,7 @@ class GatewayIntegrationTest {
             }
             assertEquals(HttpStatusCode.TooManyRequests, rateLimited.status)
             assertEquals("""{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"rate limited"}}""", rateLimited.bodyAsText())
-            assertEquals(1, fake.requests.size)
+            assertEquals(2, fake.requests.size)
         }
     }
 

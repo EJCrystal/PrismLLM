@@ -15,16 +15,18 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class ProtocolConversionContractTest {
-    private val protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES)
+    private val protocols = GatewayProtocol.entries
     private val requests = mapOf(
         GatewayProtocol.CHAT_COMPLETIONS to json("""{"model":"public","messages":[{"role":"user","content":"hello"}],"max_tokens":32}"""),
         GatewayProtocol.RESPONSES to json("""{"model":"public","input":"hello","max_output_tokens":32}"""),
         GatewayProtocol.MESSAGES to json("""{"model":"public","messages":[{"role":"user","content":"hello"}],"max_tokens":32}"""),
+        GatewayProtocol.GEMINI to json("""{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":32}}"""),
     )
     private val responses = mapOf(
         GatewayProtocol.CHAT_COMPLETIONS to json("""{"id":"reply","choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}"""),
         GatewayProtocol.RESPONSES to json("""{"id":"reply","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}"""),
         GatewayProtocol.MESSAGES to json("""{"id":"reply","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":3}}"""),
+        GatewayProtocol.GEMINI to json("""{"responseId":"reply","candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3,"totalTokenCount":10}}"""),
     )
     private val streams = mapOf(
         GatewayProtocol.CHAT_COMPLETIONS to listOf(
@@ -43,14 +45,24 @@ class ProtocolConversionContractTest {
             """{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}""",
             """{"type":"message_stop"}""",
         ),
+        GatewayProtocol.GEMINI to listOf(
+            """{"responseId":"reply","candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]}}]}""",
+            """{"responseId":"reply","candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}}""",
+        ),
     )
 
     @Test
-    fun `six directions preserve request text and rewrite the upstream model`() = eachDirection { inbound, outbound ->
+    fun `twelve directions preserve request text and rewrite the upstream model`() = eachDirection { inbound, outbound ->
         val converted = ProtocolConversion.convertRequest(inbound, outbound, requests.getValue(inbound), "upstream")
-        assertEquals("upstream", converted["model"]!!.jsonPrimitive.content)
-        assertTrue(converted.toString().contains("hello"))
-        assertTrue(converted.toString().contains("32"))
+        if (outbound == GatewayProtocol.GEMINI) {
+            assertFalse(converted.containsKey("model"))
+            assertTrue(converted.toString().contains("hello"))
+            assertTrue(converted.toString().contains("32"))
+        } else {
+            assertEquals("upstream", converted["model"]!!.jsonPrimitive.content)
+            assertTrue(converted.toString().contains("hello"))
+            assertTrue(converted.toString().contains("32"))
+        }
     }
 
     @Test
@@ -80,15 +92,23 @@ class ProtocolConversionContractTest {
     }
 
     @Test
-    fun `six directions return the client protocol and usage`() = eachDirection { inbound, outbound ->
+    fun `twelve directions return the client protocol and usage`() = eachDirection { inbound, outbound ->
         val converted = ProtocolConversion.convertResponse(inbound, outbound, responses.getValue(outbound), "public")
-        assertEquals("public", converted["model"]!!.jsonPrimitive.content)
-        assertTrue(converted.toString().contains("hello"))
-        val usage = converted["usage"]!!.jsonObject
-        val inputField = if (inbound == GatewayProtocol.CHAT_COMPLETIONS) "prompt_tokens" else "input_tokens"
-        val outputField = if (inbound == GatewayProtocol.CHAT_COMPLETIONS) "completion_tokens" else "output_tokens"
-        assertEquals("7", usage[inputField]!!.jsonPrimitive.content)
-        assertEquals("3", usage[outputField]!!.jsonPrimitive.content)
+        if (inbound == GatewayProtocol.GEMINI) {
+            assertEquals("public", converted["modelVersion"]!!.jsonPrimitive.content)
+            assertTrue(converted.toString().contains("hello"))
+            val usage = converted["usageMetadata"]!!.jsonObject
+            assertEquals("7", usage["promptTokenCount"]!!.jsonPrimitive.content)
+            assertEquals("3", usage["candidatesTokenCount"]!!.jsonPrimitive.content)
+        } else {
+            assertEquals("public", converted["model"]!!.jsonPrimitive.content)
+            assertTrue(converted.toString().contains("hello"))
+            val usage = converted["usage"]!!.jsonObject
+            val inputField = if (inbound == GatewayProtocol.CHAT_COMPLETIONS) "prompt_tokens" else "input_tokens"
+            val outputField = if (inbound == GatewayProtocol.CHAT_COMPLETIONS) "completion_tokens" else "output_tokens"
+            assertEquals("7", usage[inputField]!!.jsonPrimitive.content)
+            assertEquals("3", usage[outputField]!!.jsonPrimitive.content)
+        }
     }
 
     @Test
@@ -97,6 +117,7 @@ class ProtocolConversionContractTest {
             GatewayProtocol.CHAT_COMPLETIONS to json("""{"id":"reply","choices":[{"message":{"role":"assistant","content":"filtered"},"finish_reason":"content_filter"}]}"""),
             GatewayProtocol.RESPONSES to json("""{"id":"reply","status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"filtered"}]}]}"""),
             GatewayProtocol.MESSAGES to json("""{"id":"reply","stop_reason":"refusal","content":[{"type":"text","text":"filtered"}]}"""),
+            GatewayProtocol.GEMINI to json("""{"responseId":"reply","candidates":[{"content":{"role":"model","parts":[{"text":"filtered"}]},"finishReason":"SAFETY"}]}"""),
         )
         eachDirection { inbound, outbound ->
             val converted = ProtocolConversion.convertResponse(inbound, outbound, filteredResponses.getValue(outbound), "public")
@@ -107,7 +128,7 @@ class ProtocolConversionContractTest {
                     assertEquals("incomplete", converted.string("status"))
                     assertEquals("content_filter", converted["incomplete_details"]!!.jsonObject.string("reason"))
                 }
-                else -> error("No Gemini conversion")
+                GatewayProtocol.GEMINI -> assertEquals("SAFETY", converted.array("candidates").single().jsonObject.string("finishReason"))
             }
         }
     }
@@ -128,6 +149,10 @@ class ProtocolConversionContractTest {
                 """{"type":"message_delta","delta":{"stop_reason":"refusal"}}""",
                 """{"type":"message_stop"}""",
             ),
+            GatewayProtocol.GEMINI to listOf(
+                """{"responseId":"reply","candidates":[{"content":{"role":"model","parts":[{"text":"filtered"}]}}]}""",
+                """{"responseId":"reply","candidates":[{"content":{"role":"model","parts":[]},"finishReason":"SAFETY"}]}""",
+            ),
         )
         eachDirection { inbound, outbound ->
             val converter = ProtocolConverterRegistry.get(inbound, outbound).streamConverter("public")
@@ -136,7 +161,7 @@ class ProtocolConversionContractTest {
                 GatewayProtocol.MESSAGES -> "\"stop_reason\":\"refusal\""
                 GatewayProtocol.CHAT_COMPLETIONS -> "\"finish_reason\":\"content_filter\""
                 GatewayProtocol.RESPONSES -> "\"reason\":\"content_filter\""
-                else -> error("No Gemini conversion")
+                GatewayProtocol.GEMINI -> "\"finishReason\":\"SAFETY\""
             }
             assertTrue(output.contains(expected), output)
             assertFalse(output.contains("\"stop_reason\":\"end_turn\""), output)
@@ -156,8 +181,10 @@ class ProtocolConversionContractTest {
         }.joinToString("\n")
         assertTrue(output.contains("hello"), output)
         assertTrue(output.contains(terminal(inbound)), output)
-        val inputField = if (inbound == GatewayProtocol.CHAT_COMPLETIONS) "prompt_tokens" else "input_tokens"
-        assertTrue(output.contains("\"$inputField\":7"), output)
+        if (inbound != GatewayProtocol.GEMINI) {
+            val inputField = if (inbound == GatewayProtocol.CHAT_COMPLETIONS) "prompt_tokens" else "input_tokens"
+            assertTrue(output.contains("\"$inputField\":7"), output)
+        }
         assertTrue(converter.finish().isEmpty())
         assertTrue(converter.feed("data: [DONE]").isEmpty())
     }
@@ -206,11 +233,14 @@ class ProtocolConversionContractTest {
     }
 
     @Test
-    fun `registry resolves six explicit request directions with reversed response conversion`() {
+    fun `registry resolves twelve explicit request directions with reversed response conversion`() {
         val expected = setOf(
             MessagesToChatCompletion, ChatCompletionToMessages,
             ResponsesToChatCompletion, ChatCompletionToResponses,
             MessagesToResponses, ResponsesToMessages,
+            ChatCompletionToGemini, GeminiToChatCompletion,
+            MessagesToGemini, GeminiToMessages,
+            ResponsesToGemini, GeminiToResponses,
         )
         val found = mutableSetOf<ProtocolConverter>()
         eachDirection { inbound, outbound ->
@@ -222,7 +252,12 @@ class ProtocolConversionContractTest {
                 ProtocolConversion.convertRequest(inbound, outbound, requests.getValue(inbound), "upstream"),
                 converter.convertRequest(requests.getValue(inbound), "upstream"),
             )
-            assertEquals("public", converter.convertResponse(responses.getValue(outbound), "public")["model"]!!.jsonPrimitive.content)
+            val converted = converter.convertResponse(responses.getValue(outbound), "public")
+            if (inbound == GatewayProtocol.GEMINI) {
+                assertEquals("public", converted["modelVersion"]!!.jsonPrimitive.content)
+            } else {
+                assertEquals("public", converted["model"]!!.jsonPrimitive.content)
+            }
             assertNotSame(converter.streamConverter("public"), converter.streamConverter("public"))
         }
         assertEquals(expected, found)
@@ -239,14 +274,22 @@ class ProtocolConversionContractTest {
     }
 
     @Test
-    fun `Gemini remains unavailable for cross protocol conversion`() {
-        protocols.forEach { protocol ->
-            assertFailsWith<ProtocolConversionException> {
-                ProtocolConversion.convertRequest(protocol, GatewayProtocol.GEMINI, requests.getValue(protocol), "upstream")
-            }
-            assertFailsWith<ProtocolConversionException> {
-                ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, protocol, json("{}"), "upstream")
-            }
+    fun `Gemini rejects unsupported stateful and multimodal fields`() {
+        assertFailsWith<ProtocolConversionException> {
+            ProtocolConversion.convertRequest(
+                GatewayProtocol.GEMINI,
+                GatewayProtocol.CHAT_COMPLETIONS,
+                json("""{"contents":[],"cachedContent":"cachedContents/1"}"""),
+                "upstream",
+            )
+        }
+        assertFailsWith<ProtocolConversionException> {
+            ProtocolConversion.convertRequest(
+                GatewayProtocol.GEMINI,
+                GatewayProtocol.CHAT_COMPLETIONS,
+                json("""{"contents":[],"safetySettings":[{"category":"HARM_CATEGORY_HATE_SPEECH","threshold":"BLOCK_ALL"}]}"""),
+                "upstream",
+            )
         }
     }
 
@@ -258,7 +301,7 @@ class ProtocolConversionContractTest {
         GatewayProtocol.CHAT_COMPLETIONS -> "[DONE]"
         GatewayProtocol.RESPONSES -> "response.completed"
         GatewayProtocol.MESSAGES -> "message_stop"
-        GatewayProtocol.GEMINI -> error("No Gemini conversion")
+        GatewayProtocol.GEMINI -> "\"finishReason\":"
     }
 
     private fun json(value: String): JsonObject = Json.parseToJsonElement(value).jsonObject
