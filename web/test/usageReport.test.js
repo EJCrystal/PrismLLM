@@ -1,9 +1,11 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { usageChartBucketRange } from '../src/utils/usageChart'
 import {
   usageCostAmount,
   usageCostEntries,
   usageCostForCurrency,
+  usageDeltaTone,
   usageReportPresetRange,
   toDatetimeLocalValue,
   fromDatetimeLocalValue,
@@ -13,6 +15,16 @@ import {
 } from '../src/utils/usageReport'
 
 describe('usageReport: 用量报表展示', () => {
+  it('请求增加为成功色，错误和费用增加为警示色', () => {
+    assert.equal(usageDeltaTone(120, 100), 'success')
+    assert.equal(usageDeltaTone(120, 100, true), 'warning')
+    assert.equal(usageDeltaTone(80, 100), 'warning')
+    assert.equal(usageDeltaTone(80, 100, true), 'success')
+    assert.equal(usageDeltaTone(0, 0), 'neutral')
+    assert.equal(usageDeltaTone(120, 0), 'neutral')
+    assert.equal(usageDeltaTone(120, 0, true), 'neutral')
+  })
+
   it('费用条目按币种排序并剔除空值，不隐含换算', () => {
     assert.deepEqual(usageCostEntries({ USD: '0.25', CNY: '2' }), [
       { currency: 'CNY', value: '2' },
@@ -85,6 +97,53 @@ describe('usageReport: 用量报表展示', () => {
     assert.equal(local, '2026-10-29T09:05')
     assert.equal(fromDatetimeLocalValue(local), timestamp)
     assert.ok(Number.isNaN(fromDatetimeLocalValue('')))
+    const exactTimestamp = new Date(2026, 9, 29, 9, 5, 31, 123).getTime()
+    const exactLocal = toDatetimeLocalValue(exactTimestamp, true)
+    assert.equal(exactLocal, '2026-10-29T09:05:31.123')
+    assert.equal(fromDatetimeLocalValue(exactLocal), exactTimestamp)
+  })
+
+  it('趋势钻取保留报表范围与桶范围交集的精确时间戳', () => {
+    const from = new Date(2026, 9, 29, 9, 5, 31).getTime()
+    const to = new Date(2026, 9, 29, 10, 30, 29).getTime()
+    const report = { from, to, granularity: 'hour' }
+
+    const firstBucket = usageChartBucketRange(report, new Date(2026, 9, 29, 9, 0).getTime())
+    assert.deepEqual(firstBucket, {
+      from,
+      to: new Date(2026, 9, 29, 10, 0).getTime(),
+    })
+    assert.equal(toDatetimeLocalValue(firstBucket.from, true), '2026-10-29T09:05:31')
+
+    const lastBucket = usageChartBucketRange(report, new Date(2026, 9, 29, 10, 0).getTime())
+    assert.deepEqual(lastBucket, {
+      from: new Date(2026, 9, 29, 10, 0).getTime(),
+      to,
+    })
+    assert.equal(toDatetimeLocalValue(lastBucket.to, true), '2026-10-29T10:30:29')
+    const partialHour = usageChartBucketRange({ from, to, granularity: 'hour' }, new Date(2026, 9, 29, 9, 30).getTime())
+    assert.deepEqual(partialHour, {
+      from: new Date(2026, 9, 29, 9, 30).getTime(),
+      to: new Date(2026, 9, 29, 10, 30).getTime(),
+    })
+  })
+
+  it('趋势钻取使用正确的桶宽，保留短于一分钟的区间，并拒绝空交集', () => {
+    const start = new Date(2026, 9, 29, 9, 0).getTime()
+    assert.deepEqual(usageChartBucketRange({ from: start, to: start + 7_200_000, granularity: 'hour' }, start), {
+      from: start, to: start + 3_600_000,
+    })
+    assert.deepEqual(usageChartBucketRange({ from: start, to: start + 8 * 86_400_000, granularity: 'week' }, start), {
+      from: start, to: start + 7 * 86_400_000,
+    })
+    assert.deepEqual(usageChartBucketRange({ from: start, to: start + 2 * 86_400_000, granularity: 'day' }, start), {
+      from: start, to: start + 86_400_000,
+    })
+    assert.deepEqual(usageChartBucketRange({ from: start + 1, to: start + 59_999, granularity: 'hour' }, start), {
+      from: start + 1, to: start + 59_999,
+    })
+    assert.equal(usageChartBucketRange({ from: start + 60_000, to: start + 60_000, granularity: 'hour' }, start), null)
+    assert.equal(usageChartBucketRange({ from: start, to: start + 3_600_000, granularity: 'hour' }, start + 3_600_000), null)
   })
 
   it('自定义范围拒绝倒序、缺值和超过 30 天', () => {

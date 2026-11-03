@@ -1,10 +1,14 @@
 import { ApiError } from './types/api'
 import type {
   AdminAuditLog,
+  AuditLogPageOptions,
   ApiErrorBody,
   AvatarRequest,
   ChangePasswordRequest,
   Channel,
+  ChannelHealthReport,
+  ChannelHealthDetail,
+  HealthWindow,
   ChannelQuotaSettingsRequest,
   ChannelQuotaSnapshot,
   QuotaProvider,
@@ -17,7 +21,6 @@ import type {
   ClientKeyCreated,
   ClientKeyRequest,
   ExchangeRates,
-  ExposedModelsResponse,
   KeyAutoDisableSettingsRequest,
   KeyAutoDisableSettingsResponse,
   LoginRequest,
@@ -28,7 +31,6 @@ import type {
   ModelPrice,
   ModelPriceReference,
   ModelPriceRequest,
-  ModelsDevCatalog,
   ModelSuggestionsResponse,
   ModelTestSettings,
   PageOptions,
@@ -125,10 +127,10 @@ export const api = {
   changePassword: (payload: ChangePasswordRequest) =>
     request<null>('/account/password', { method: 'PUT', body: JSON.stringify(payload) }),
   getExchangeRates: () => request<ExchangeRates>('/exchange-rates'),
-  getExposedModels: () => request<ExposedModelsResponse>('/exposed-models'),
-  getModelsDevCatalog: () => request<ModelsDevCatalog>('/models-dev'),
 
   listChannels: () => requestList<Channel>('/channels'),
+  getChannelHealth: (window: HealthWindow = '24h') => request<ChannelHealthReport>('/channel-health?' + new URLSearchParams({ window })),
+  getChannelHealthDetail: (id: string, window: HealthWindow = '24h') => request<ChannelHealthDetail>(`/channels/${encodeURIComponent(id)}/health?` + new URLSearchParams({ window })),
   listQuotaProviders: () => requestList<QuotaProvider>('/quota-providers'),
   updateChannelQuota: (id: string, payload: ChannelQuotaSettingsRequest) =>
     request<Channel>('/channels/' + encodeURIComponent(id) + '/quota-settings', { method: 'PUT', body: JSON.stringify(payload) }),
@@ -190,9 +192,14 @@ export const api = {
   revokeClientKey: (id: string) =>
     request<ClientKey>('/client-keys/' + encodeURIComponent(id) + '/revoke', { method: 'POST' }),
 
-  listAuditLogs: ({ limit = 100, beforeId = null }: PageOptions = {}) => {
+  listAuditLogs: ({ limit = 100, beforeId = null, from = null, to = null, actor = null, action = null, result = null }: AuditLogPageOptions = {}) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (beforeId != null) params.set('beforeId', String(beforeId))
+    if (from != null) params.set('from', String(from))
+    if (to != null) params.set('to', String(to))
+    if (actor) params.set('actor', actor)
+    if (action) params.set('action', action)
+    if (result) params.set('result', result)
     return requestList<AdminAuditLog>('/audit-logs?' + params)
   },
 

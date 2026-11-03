@@ -5,6 +5,7 @@ import type { UpstreamHeaderProfile, UpstreamRequestOverrides } from '../types/a
 import {
   buildRequestOverrides,
   createRequestOverrideDrafts,
+  requestOverrideDraftSnapshot,
   REQUEST_OVERRIDE_SCOPES,
 } from '../utils/requestOverrides'
 import type { RequestOverrideDrafts } from '../utils/requestOverrides'
@@ -82,11 +83,15 @@ function getValue(): UpstreamRequestOverrides {
   return buildRequestOverrides(drafts, props.global || inheritGlobal.value)
 }
 
+function getSnapshot(): string {
+  return requestOverrideDraftSnapshot(drafts, props.global || inheritGlobal.value)
+}
+
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
 }
 
-defineExpose({ getValue })
+defineExpose({ getValue, getSnapshot })
 </script>
 
 <template>

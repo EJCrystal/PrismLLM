@@ -31,8 +31,13 @@ const actionLabels: Record<string, string> = {
   'model_default_price.delete': '删除模型默认价',
   'model_test_settings.update': '更新模型测试设置',
   'upstream_request_settings.update': '更新上游请求配置',
+  'request_log.retention.update': '更新请求日志保留策略',
   'request_log.cleanup': '清理请求日志',
 }
+
+export const auditActionOptions = Object.entries(actionLabels)
+  .map(([value, label]) => ({ value, label }))
+  .sort((left, right) => left.label.localeCompare(right.label, 'zh-CN'))
 
 export function auditActionLabel(action: string): string {
   return actionLabels[action] || action

@@ -7,9 +7,13 @@ import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.report.RetentionPolicy
+import dev.soven.llmgateway.report.ChannelHealthReport
+import dev.soven.llmgateway.report.ChannelHealthDetail
+import dev.soven.llmgateway.resilience.FailureKind
 import dev.soven.llmgateway.security.ClientKeyHasher
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -20,6 +24,7 @@ import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
@@ -27,6 +32,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.TestInstance
 import org.testcontainers.containers.PostgreSQLContainer
 import java.net.ServerSocket
+import java.sql.DriverManager
 import java.util.Base64
 import java.util.UUID
 import kotlin.test.Test
@@ -118,6 +124,43 @@ class ProxyAttemptLoggingIntegrationTest {
     }
 
     @Test
+    fun `records upstream reported model for non-stream and stream attempts`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            for (stream in listOf(false, true)) {
+                val modelId = "requested-model-$stream"
+                createChannel(modelId, "${fake.baseUrl}/reported-model/v1")
+                val requestId = UUID.randomUUID().toString()
+                val response = client.sendRequest(modelId, stream, requestId)
+                assertEquals(HttpStatusCode.OK, response.status)
+                val attempt = awaitRequestLog(requestId).attempts.single()
+                assertEquals(modelId, attempt.upstreamModel)
+                assertEquals("reported-by-upstream", attempt.upstreamReportedModel)
+                assertEquals("reported-by-upstream", awaitRequestLog(requestId).toResponse().attempts.single().upstreamReportedModel)
+            }
+        }
+    }
+
+    @Test
+    fun `malformed stream metadata does not interrupt delivery or erase reported model`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val modelId = "reported-model-malformed"
+            createChannel(modelId, "${fake.baseUrl}/reported-model-malformed/v1")
+            val requestId = UUID.randomUUID().toString()
+            val response = client.sendRequest(modelId, true, requestId)
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = response.bodyAsText()
+            assertTrue(body.contains("{not-json}"))
+            assertTrue(body.contains("data: []"))
+            assertTrue(body.contains("[DONE]"))
+            val log = awaitRequestLog(requestId)
+            assertNull(log.errorCode)
+            assertEquals("reported-by-upstream", log.attempts.single().upstreamReportedModel)
+        }
+    }
+
+    @Test
     fun `stream errors retain HTTP and error status when retrying successfully`() = runBlocking {
         testApplication {
             application { app.install(this) }
@@ -173,12 +216,99 @@ class ProxyAttemptLoggingIntegrationTest {
         }
     }
 
+    @Test
+    fun `health endpoints enforce authentication validate windows and observe real proxy requests`() = runBlocking {
+        val modelId = "health-live-request"
+        createChannel(modelId, "${fake.baseUrl}/ok/v1")
+        val channel = app.channelRepository.list().single { it.name == "1-$modelId" }
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/admin/api/channel-health").status)
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/admin/api/channels/${channel.id}/health").status)
+            suspend fun healthGet(path: String) = client.get(path) {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            assertEquals(HttpStatusCode.BadRequest, healthGet("/admin/api/channel-health?window=90d").status)
+            assertEquals(HttpStatusCode.BadRequest, healthGet("/admin/api/channels/${channel.id}/health?window=90d").status)
+            assertEquals(HttpStatusCode.NotFound, healthGet("/admin/api/channels/missing/health").status)
+            val requestId = UUID.randomUUID().toString()
+            val response = client.sendRequest(modelId, true, requestId)
+            assertEquals(HttpStatusCode.OK, response.status)
+            response.bodyAsText()
+            awaitRequestLog(requestId)
+            val overview = healthGet("/admin/api/channel-health?window=24h")
+            assertEquals(HttpStatusCode.OK, overview.status)
+            assertEquals("no-store", overview.headers["Cache-Control"])
+            val report = Json.decodeFromString<ChannelHealthReport>(overview.bodyAsText())
+            val summary = report.channels.single { it.channelId == channel.id }
+            assertEquals(1, summary.metrics.attempts)
+            assertEquals(1, summary.metrics.successes)
+            assertEquals("UNKNOWN", summary.state)
+            val detailResponse = healthGet("/admin/api/channels/${channel.id}/health?window=7d")
+            assertEquals(HttpStatusCode.OK, detailResponse.status)
+            assertEquals("no-store", detailResponse.headers["Cache-Control"])
+            val detail = Json.decodeFromString<ChannelHealthDetail>(detailResponse.bodyAsText())
+            assertEquals(7, detail.trend.size)
+            assertEquals(modelId, detail.byModel.single().id)
+            assertEquals("ACTIVE", detail.availability.single().state)
+            assertTrue(!detailResponse.bodyAsText().contains("upstream-secret"))
+        }
+    }
+
+    @Test
+    fun `channel health reports cooldown deadline instead of stale key disable deadline`() = runBlocking {
+        val modelId = "health-cooldown-deadline"
+        createChannel(modelId, "${fake.baseUrl}/ok/v1")
+        val channel = app.channelRepository.list().single { it.name == "1-$modelId" }
+        val key = channel.keys.single()
+        val permit = checkNotNull(app.candidateCooldown.acquire(channel.id, key.id, modelId))
+        app.candidateCooldown.recordFailure(permit, FailureKind.AUTH_REJECTED)
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update channel_keys set state = 'AUTO_TEMPORARY', auto_disable_until = 1 where id = ?").use { statement ->
+                statement.setString(1, key.id)
+                statement.executeUpdate()
+            }
+        }
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val response = client.get("/admin/api/channels/${channel.id}/health") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val detail = Json.decodeFromString<ChannelHealthDetail>(response.bodyAsText())
+            val availability = detail.availability.single()
+            assertEquals("COOLDOWN", availability.state)
+            assertTrue(availability.until != null && availability.until > System.currentTimeMillis())
+            assertTrue(availability.until != 1L)
+        }
+    }
+
+    @Test
+    fun `channel health availability deduplicates repeated models on a key`() = runBlocking {
+        val modelId = "health-duplicate-model"
+        createChannel(modelId, "${fake.baseUrl}/ok/v1", models = listOf(modelId, modelId))
+        val channel = app.channelRepository.list().single { it.name == "1-$modelId" }
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val response = client.get("/admin/api/channels/${channel.id}/health") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val detail = Json.decodeFromString<ChannelHealthDetail>(response.bodyAsText())
+            assertEquals(listOf(modelId), detail.availability.map { it.model })
+        }
+    }
+
     private suspend fun createChannel(
         modelId: String,
         baseUrl: String,
         invalidCredential: Boolean = false,
         protocol: GatewayProtocol = GatewayProtocol.CHAT_COMPLETIONS,
         priority: Int = 1,
+        models: List<String> = listOf(modelId),
     ) {
         val credential = app.credentialCipher.encrypt("upstream-secret")
         app.channelRepository.create(
@@ -187,7 +317,7 @@ class ProxyAttemptLoggingIntegrationTest {
             keys = listOf(NewChannelKey(
                 "test-key",
                 if (invalidCredential) credential.copy(ciphertext = "invalid-base64") else credential,
-                models = listOf(modelId),
+                models = models,
             )),
             authType = "bearer",
             protocols = listOf(protocol),

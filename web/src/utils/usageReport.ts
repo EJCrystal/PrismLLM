@@ -25,6 +25,13 @@ export function usageCostForCurrency(costs: Record<string, string | number | nul
   return Number(value) || 0
 }
 
+export function usageDeltaTone(current: number, previous: number, inverse = false): string {
+  const delta = previous === 0 ? null : ((current - previous) / previous) * 100
+  if (delta == null || delta === 0) return 'neutral'
+  const positive = delta > 0
+  return (positive !== inverse) ? 'success' : 'warning'
+}
+
 export const USAGE_REPORT_MAX_SPAN_MS = 30 * 86_400_000
 
 export const USAGE_REPORT_PRESETS = [
@@ -72,10 +79,13 @@ export function usageReportPresetRange(preset: string | null | undefined, now = 
   }
 }
 
-export function toDatetimeLocalValue(timestamp: number): string {
+export function toDatetimeLocalValue(timestamp: number, includeSeconds = false): string {
   const date = new Date(timestamp)
   const pad = (value: number) => String(value).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+  const seconds = includeSeconds
+    ? `:${pad(date.getSeconds())}${date.getMilliseconds() ? `.${String(date.getMilliseconds()).padStart(3, '0')}` : ''}`
+    : ''
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}${seconds}`
 }
 
 export function fromDatetimeLocalValue(value: string | null | undefined): number {
@@ -173,7 +183,8 @@ export function buildTrendPoints<T>(
 ): string {
   const values = (rows || []).map((row) => Math.max(0, Number(value(row)) || 0))
   if (!values.length) return ''
-  const max = Math.max(Number(maxValue) || 0, ...values, 1)
+  const maximum = Math.max(Number(maxValue) || 0, ...values)
+  const max = maximum > 0 ? maximum : 1
   const innerWidth = width - padding * 2
   const innerHeight = height - padding * 2
   return values.map((amount, index) => {

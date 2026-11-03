@@ -1,6 +1,22 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols, parseManualModelIds, removeProbeAddedProtocols } from '../src/utils/channelForm'
+import { buildChannelPayload, buildPriorityUpdatePayload, canonicalModelSnapshot, isKeyRoutable, mergeProbedProtocols, parseManualModelIds, removeProbeAddedProtocols } from '../src/utils/channelForm'
+
+describe('channelForm: 脏状态模型映射快照', () => {
+  it('忽略空白映射，保留非空原值并按键排序', () => {
+    assert.deepEqual(
+      canonicalModelSnapshot({ z: '  mapped-z  ', empty: '', whitespace: '  \t ', a: 'mapped-a' }),
+      [['a', 'mapped-a'], ['z', '  mapped-z  ']],
+    )
+  })
+
+  it('空映射的增删和键插入顺序不影响快照', () => {
+    assert.deepEqual(
+      canonicalModelSnapshot({ second: 'value-2', first: 'value-1', cleared: '' }),
+      canonicalModelSnapshot({ first: 'value-1', second: 'value-2' }),
+    )
+  })
+})
 
 describe('channelForm: 手动添加上游模型', () => {
   it('批量粘贴时忽略空白和重复 ID，保留模型名中的符号与大小写', () => {

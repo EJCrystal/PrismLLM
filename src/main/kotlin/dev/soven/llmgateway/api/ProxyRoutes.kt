@@ -22,6 +22,7 @@ import dev.soven.llmgateway.proxy.TraceContextFactory
 import dev.soven.llmgateway.proxy.applyUpstreamAuthentication
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.UsageParser
+import dev.soven.llmgateway.proxy.extractReportedModel
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversion
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversionException
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
@@ -92,7 +93,7 @@ private val proxyLogger = LoggerFactory.getLogger("dev.soven.llmgateway.api.Prox
 fun Route.proxyRoutes(app: GatewayApplication) {
     get("/v1/models") {
         authenticate(call, app)
-        val models = listExposedModels(app)
+        val models = listExposedModelIds(app)
         call.respond(
             buildJsonObject {
                 put("object", "list")
@@ -102,7 +103,7 @@ fun Route.proxyRoutes(app: GatewayApplication) {
                         models.forEach { model ->
                             add(
                                 buildJsonObject {
-                                    put("id", model.id)
+                                    put("id", model)
                                     put("object", "model")
                                     put("created", 0)
                                     put("owned_by", "llm-gateway")
@@ -123,13 +124,13 @@ fun Route.proxyRoutes(app: GatewayApplication) {
     }
     get("/v1beta/models") {
         authenticate(call, app, GatewayProtocol.GEMINI)
-        val models = listExposedModels(app, GatewayProtocol.GEMINI)
+        val models = listExposedModelIds(app, GatewayProtocol.GEMINI)
         call.respond(buildJsonObject {
             put("models", buildJsonArray {
                 models.forEach { model ->
                     add(buildJsonObject {
-                        put("name", "models/${model.id}")
-                        put("displayName", model.id)
+                        put("name", "models/$model")
+                        put("displayName", model)
                         put("supportedGenerationMethods", buildJsonArray {
                             add(JsonPrimitive("generateContent"))
                             add(JsonPrimitive("streamGenerateContent"))
@@ -292,6 +293,7 @@ private suspend fun handleProxy(
             val attemptStartedNanos = System.nanoTime()
             state.attemptFirstTokenMs = null
             state.upstreamStatus = null
+            state.upstreamReportedModel = null
             state.upstreamCallStarted = false
             state.streamError = null
             upstreamProtocol = null
@@ -332,6 +334,7 @@ private suspend fun handleProxy(
                     channelKeyId = candidate.key.id,
                     channelKeyName = candidate.key.name,
                     upstreamModel = candidate.upstreamModel,
+                    upstreamReportedModel = state.upstreamReportedModel,
                     upstreamProtocol = attemptProtocol,
                     statusCode = state.upstreamStatus ?: status,
                     upstreamErrorStatusCode = upstreamError?.upstreamStatus,
@@ -909,6 +912,8 @@ private class ProxyState {
     var attemptFirstTokenMs: Long? = null
     /** 本次尝试收到的上游 HTTP 状态码；连接失败时为 null。 */
     var upstreamStatus: Int? = null
+    /** 本次尝试的上游响应自报模型。 */
+    var upstreamReportedModel: String? = null
     var upstreamCallStarted = false
     var streamError: GatewayException? = null
     var errorCode: String? = null
@@ -1031,6 +1036,7 @@ private suspend fun proxyStream(
                         while (found == null) {
                             val next = upstream.readUTF8Line() ?: break
                             prefixLines.add(next)
+                            recordReportedModel(next, state, upstreamProtocol)
                             if (
                                 allowUpstreamErrorFailover &&
                                 ((upstreamProtocol == GatewayProtocol.MESSAGES && isAnthropicStreamError(next)) ||
@@ -1098,6 +1104,7 @@ private suspend fun proxyStream(
                                             "timeout_error",
                                         )
                                     } ?: break
+                                    recordReportedModel(line, state, upstreamProtocol)
                                     converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
                                     markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
                                     recordUsage(line, state, upstreamProtocol)
@@ -1200,6 +1207,7 @@ private suspend fun proxyJson(
                 )
             }
             val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+            state.upstreamReportedModel = extractReportedModel(upstreamProtocol, json)
             state.usage = runCatching {
                 json ?: return@runCatching null
                 when (upstreamProtocol) {
@@ -1393,6 +1401,18 @@ private fun recordUsage(line: String, state: ProxyState, protocol: GatewayProtoc
         GatewayProtocol.GEMINI -> UsageParser.fromGeminiJson(json)
     }
     if (usage != null) state.usage = state.usage?.mergeWith(usage, protocol) ?: usage
+}
+
+private fun recordReportedModel(line: String, state: ProxyState, protocol: GatewayProtocol) {
+    val payload = ssePayload(line) ?: return
+    if (payload == "[DONE]") return
+    // Metadata is best effort; do not catch cancellation or transport failures.
+    val json = try {
+        Json.parseToJsonElement(payload) as? JsonObject ?: return
+    } catch (_: kotlinx.serialization.SerializationException) {
+        return
+    }
+    extractReportedModel(protocol, json)?.let { state.upstreamReportedModel = it }
 }
 
 private fun isFirstStreamData(line: String, protocol: GatewayProtocol): Boolean = when (protocol) {

@@ -3248,7 +3248,6 @@ class GatewayIntegrationTest {
             ),
         )
         val key = createClientKey()
-        val session = app.sessions.create("admin")
 
         testApplication {
             application { app.install(this) }
@@ -3260,13 +3259,6 @@ class GatewayIntegrationTest {
             assertTrue(body.contains("qwen3.8-flash"), "BODY=[$body]")
             assertTrue(body.contains("gpt-4o-mini"), "BODY=[$body]")
             assertTrue(!body.contains("Qwen3.8-Flash"), "BODY=[$body]")
-
-            val adminModels = client.get("/admin/api/exposed-models") {
-                header(HttpHeaders.Cookie, "gw_session=${session.token}")
-            }
-            val adminBody = adminModels.bodyAsText()
-            assertTrue(adminBody.contains("\"source\":\"canonical\""), "BODY=[$adminBody]")
-            assertTrue(adminBody.contains("Qwen3.8-Flash"), "BODY=[$adminBody]")
 
             val canonicalRequest = client.post("/v1/chat/completions") {
                 header(HttpHeaders.Authorization, "Bearer $key")
@@ -3356,19 +3348,14 @@ class GatewayIntegrationTest {
             )
             assertEquals(1, app.modelCatalog.listEnabledModels().count { it == "same-id" })
 
-            val exposed = client.get("/admin/api/exposed-models") {
-                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            val publicKey = createClientKey()
+            val exposed = client.get("/v1/models") {
+                header(HttpHeaders.Authorization, "Bearer $publicKey")
             }
             assertEquals(HttpStatusCode.OK, exposed.status)
-            val exposedModel = Json.parseToJsonElement(exposed.bodyAsText())
-                .jsonObject["data"]!!
-                .jsonArray
-                .single { it.jsonObject["id"]!!.jsonPrimitive.content == "same-id" }
-                .jsonObject
-            assertEquals(
-                listOf("deepseek-chat", "gpt-4o-mini"),
-                exposedModel["upstreamModels"]!!.jsonArray.map { it.jsonPrimitive.content }.sorted(),
-            )
+            val exposedIds = Json.parseToJsonElement(exposed.bodyAsText()).jsonObject["data"]!!.jsonArray
+                .map { it.jsonObject["id"]!!.jsonPrimitive.content }
+            assertEquals(listOf("same-id"), exposedIds)
 
             val canonicalConflictsWithUnmapped = client.put("/admin/api/channels/${channel.id}") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
@@ -3470,42 +3457,26 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `admin exposed models matches data plane output`() = runBlocking {
+    fun `public models lists canonical and unmapped upstream ids`() = runBlocking {
         app.close()
         app = GatewayApplication(config())
         val channel = createChannel("openai", "ok")
         exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         val key = createClientKey()
-        val session = app.sessions.create("admin")
 
         testApplication {
             application { app.install(this) }
-            val publicResponse = client.get("/v1/models") {
+            val response = client.get("/v1/models") {
                 header(HttpHeaders.Authorization, "Bearer $key")
             }
-            val adminResponse = client.get("/admin/api/exposed-models") {
-                header(HttpHeaders.Cookie, "gw_session=${session.token}")
-            }
 
-            assertEquals(HttpStatusCode.OK, publicResponse.status)
-            assertEquals(HttpStatusCode.OK, adminResponse.status)
-            val publicIds = Json.parseToJsonElement(publicResponse.bodyAsText()).jsonObject["data"]!!.jsonArray
-                .map { it.jsonObject["id"]!!.jsonPrimitive.content }
-            val adminData = Json.parseToJsonElement(adminResponse.bodyAsText()).jsonObject["data"]!!.jsonArray
-                .associateBy { it.jsonObject["id"]!!.jsonPrimitive.content }
-
-            assertEquals(publicIds, adminData.keys.sorted())
-            assertEquals(
-                // gpt-4o-mini 已映射到 fast-chat，同一个上游模型不会再以原名对外暴露。
-                setOf("fast-chat", "deepseek-chat", "m1", "m2"),
-                publicIds.toSet(),
-            )
-            assertEquals("canonical", adminData.getValue("fast-chat").jsonObject["source"]!!.jsonPrimitive.content)
-            assertEquals("upstream", adminData.getValue("m1").jsonObject["source"]!!.jsonPrimitive.content)
-            assertEquals(
-                "llm-gateway",
-                adminData.getValue("fast-chat").jsonObject["ownedBy"]!!.jsonPrimitive.content,
-            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            val data = Json.parseToJsonElement(response.bodyAsText()).jsonObject["data"]!!.jsonArray
+            val ids = data.map { it.jsonObject["id"]!!.jsonPrimitive.content }
+            // 已映射的上游模型只以 canonical ID 对外暴露。
+            assertEquals(setOf("fast-chat", "deepseek-chat", "m1", "m2"), ids.toSet())
+            assertEquals(ids.sorted(), ids)
+            assertTrue(data.all { it.jsonObject["owned_by"]!!.jsonPrimitive.content == "llm-gateway" })
         }
     }
 
@@ -5006,6 +4977,58 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin audit filters apply with cursor pagination`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, _) = client.loginAdmin()
+
+            app.adminAuditRepository.record(
+                actor = "filter-user", action = "channel.update", method = "PUT", path = "/channels/1",
+                statusCode = 200, requestId = "audit-filter-success-old", sourceIp = null, errorCode = null,
+            )
+            app.adminAuditRepository.record(
+                actor = "filter-user", action = "channel.update", method = "PUT", path = "/channels/1",
+                statusCode = 400, requestId = "audit-filter-failure", sourceIp = null, errorCode = "invalid_channel",
+            )
+            app.adminAuditRepository.record(
+                actor = "other-user", action = "channel.update", method = "PUT", path = "/channels/1",
+                statusCode = 200, requestId = "audit-filter-other-actor", sourceIp = null, errorCode = null,
+            )
+            app.adminAuditRepository.record(
+                actor = "filter-user", action = "channel.update", method = "PUT", path = "/channels/1",
+                statusCode = 200, requestId = "audit-filter-success-new", sourceIp = null, errorCode = null,
+            )
+
+            val query = "limit=1&from=0&to=${System.currentTimeMillis() + 10_000}&actor=filter-user&action=channel.update&result=success"
+            val firstResponse = client.get("/admin/api/audit-logs?$query") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, firstResponse.status, firstResponse.bodyAsText())
+            val first = Json.parseToJsonElement(firstResponse.bodyAsText()).jsonArray.single().jsonObject
+            assertEquals("audit-filter-success-new", first["requestId"]!!.jsonPrimitive.content)
+
+            val secondResponse = client.get("/admin/api/audit-logs?$query&beforeId=${first["id"]!!.jsonPrimitive.content}") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, secondResponse.status, secondResponse.bodyAsText())
+            val second = Json.parseToJsonElement(secondResponse.bodyAsText()).jsonArray.single().jsonObject
+            assertEquals("audit-filter-success-old", second["requestId"]!!.jsonPrimitive.content)
+
+            val invalidRange = client.get("/admin/api/audit-logs?from=10&to=10") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.BadRequest, invalidRange.status)
+            for (invalidTime in listOf("from=abc", "to=abc")) {
+                val invalidValue = client.get("/admin/api/audit-logs?$invalidTime") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                }
+                assertEquals(HttpStatusCode.BadRequest, invalidValue.status)
+            }
+        }
+    }
+
+    @Test
     fun `admin audit tolerates malformed details without dropping records`() = runBlocking {
         val created = app.adminAuditRepository.record(
             actor = "system",
@@ -5366,7 +5389,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("44", result.getString(1))
+                        assertEquals("46", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())

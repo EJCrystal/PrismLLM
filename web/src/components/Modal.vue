@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Dialog, DialogPanel, DialogTitle } from '@headlessui/vue'
+import Icon from './Icon.vue'
 
 defineProps({
   title: { type: String, required: true },
@@ -18,9 +19,7 @@ defineEmits(['close'])
             <DialogTitle as="h2">{{ title }}</DialogTitle>
           </div>
           <button class="icon-button" type="button" aria-label="关闭" @click="$emit('close')">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M6 6l12 12M18 6L6 18" />
-            </svg>
+            <Icon name="close" :size="18" />
           </button>
         </header>
         <div class="modal-body">

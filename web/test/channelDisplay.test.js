@@ -3,11 +3,36 @@ import assert from 'node:assert/strict'
 import {
   VISIBLE_MODEL_LIMIT,
   channelDisplayModels,
+  channelMatchesFilters,
+  channelModelFilterOptions,
   visibleModels,
   hiddenModelsTitle,
+  channelLandingUrl,
+  recentProbeByChannel,
 } from '../src/utils/channelDisplay'
 
 describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
+  it('按解码后的渠道 ID 索引最新协议探测记录，并跳过无效编码', () => {
+    const newest = { id: 1, path: '/admin/api/channels/channel%2Fone/probe-protocols' }
+    const olderDuplicate = { id: 2, path: '/admin/api/channels/channel%2Fone/probe-protocols' }
+    const malformed = { id: 3, path: '/admin/api/channels/bad%ZZ/probe-protocols' }
+    const indexed = recentProbeByChannel([newest, olderDuplicate, malformed])
+
+    assert.equal(indexed.get('channel/one'), newest)
+    assert.equal(indexed.has('bad%ZZ'), false)
+  })
+
+  it('渠道地址链接只清理末尾 v1，保留查询参数和锚点并过滤内部地址', () => {
+    assert.equal(channelLandingUrl('https://user:secret@example.test/v1/?tenant=a#models'), 'https://example.test/?tenant=a#models')
+    assert.equal(channelLandingUrl('https://example.test/gateway/v1'), 'https://example.test/gateway')
+    assert.equal(channelLandingUrl('https://example.test/v1beta'), 'https://example.test/v1beta')
+    assert.equal(channelLandingUrl('https://127.0.0.1/v1'), null)
+    assert.equal(channelLandingUrl('http://10.2.3.4:8080/v1'), null)
+    assert.equal(channelLandingUrl('http://[::1]:8080/v1'), null)
+    assert.equal(channelLandingUrl('http://gateway.internal/v1'), null)
+    assert.equal(channelLandingUrl('file:///tmp/models'), null)
+  })
+
   it('常量 VISIBLE_MODEL_LIMIT 应为 3', () => {
     assert.equal(VISIBLE_MODEL_LIMIT, 3)
   })
@@ -91,6 +116,26 @@ describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
         visible[0].title,
         'deepseek-flash (上游模型: deepseek-flash、deepseek-v4.1-flash)',
       )
+    })
+  })
+
+  describe('渠道列表模型筛选', () => {
+    const channels = [
+      { id: 'one', enabled: true, models: ['wire-a', 'model-z'], modelMappings: [{ upstreamModel: 'wire-a', canonicalModelId: 'public-a' }] },
+      { id: 'two', enabled: false, models: ['model-b', 'public-a'], modelMappings: [] },
+    ]
+
+    it('模型选项按表格中显示的对外模型去重并排序', () => {
+      assert.deepEqual(channelModelFilterOptions(channels), ['model-b', 'model-z', 'public-a'])
+      assert.deepEqual(channelModelFilterOptions(null), [])
+    })
+
+    it('模型和渠道状态筛选可以叠加，映射模型按对外名称匹配', () => {
+      assert.equal(channelMatchesFilters(channels[0], 'enabled', 'public-a'), true)
+      assert.equal(channelMatchesFilters(channels[1], 'disabled', 'public-a'), true)
+      assert.equal(channelMatchesFilters(channels[0], 'disabled', 'public-a'), false)
+      assert.equal(channelMatchesFilters(channels[0], 'enabled', 'wire-a'), false)
+      assert.equal(channelMatchesFilters(channels[1], 'all', ''), true)
     })
   })
 

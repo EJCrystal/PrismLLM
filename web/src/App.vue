@@ -6,17 +6,16 @@ import Icon from './components/Icon.vue'
 import ToastStack from './components/ToastStack.vue'
 import LoginView from './components/LoginView.vue'
 import ChannelsView from './components/ChannelsView.vue'
-import ExposedModelsView from './components/ExposedModelsView.vue'
 import ClientKeysView from './components/ClientKeysView.vue'
 import LogsView from './components/LogsView.vue'
 import UsageReportsView from './components/UsageReportsView.vue'
 import AdminAuditLogsView from './components/AdminAuditLogsView.vue'
 import AccountSettingsModal from './components/AccountSettingsModal.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
+import InfoPopover from './components/InfoPopover.vue'
 
 const navItems = [
   { id: 'channels', label: '渠道', icon: 'channels' },
-  { id: 'exposed-models', label: '模型列表', icon: 'list' },
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
   { id: 'usage-reports', label: '用量报表', icon: 'chart' },
@@ -26,20 +25,16 @@ const navItems = [
 const meta = {
   channels: {
     title: '渠道',
-    desc: '管理上游模型接入点。凭据加密保存，创建后不再回显。',
-  },
-  'exposed-models': {
-    title: '模型列表',
-    desc: '查看调用方通过 /v1/models 获取到的对外模型结果。',
+    desc: '管理上游接入点，支持多协议组合。凭据加密保存，创建后不再回显。',
   },
   'client-keys': {
     title: '调用方密钥',
-    desc: '签发给调用方的访问凭据。服务端只保存哈希和展示前缀。',
+    desc: '调用方凭据只在创建或轮换时显示一次，请立即保存。服务端仅保存 SHA-256 哈希与展示前缀。',
   },
 
   logs: {
     title: '请求日志',
-    desc: '查看请求元数据、状态、耗时与 token 用量。失败请求的上游错误正文会截断脱敏后保存。',
+    desc: '查看请求状态、路由、耗时与 token 用量；点击“详情”查看完整上下文。失败请求的错误正文会截断脱敏保存。',
   },
   'usage-reports': {
     title: '用量报表',
@@ -47,7 +42,7 @@ const meta = {
   },
   'audit-logs': {
     title: '操作审计',
-    desc: '查看管理面写操作的操作者、结果、请求 ID 与来源。',
+    desc: '记录写操作与密钥自动禁用，仅追加、不可修改或删除。名称使用事件快照，不保存请求正文。',
   },
 }
 
@@ -167,15 +162,22 @@ onBeforeUnmount(() => {
 
     <div v-if="navOpen" class="sidebar-scrim" @click="navOpen = false"></div>
 
-    <div class="main" :class="{ 'main-data': isDataView }">
+    <div class="main" :class="{ 'main-data': isDataView, 'logs-data': view === 'logs' }">
       <header class="topbar">
         <div class="topbar-left">
           <button type="button" class="icon-button mobile-menu" aria-label="打开导航" @click="navOpen = true">
             <Icon name="menu" :size="20" />
           </button>
-          <div>
-            <p class="eyebrow">管理面</p>
-            <h1>{{ currentMeta.title }}</h1>
+          <div class="page-heading">
+            <div class="page-title-row">
+              <h1>{{ currentMeta.title }}</h1>
+              <div class="page-help">
+                <InfoPopover :key="view" :label="currentMeta.title + '说明'">
+                  <template #trigger><Icon name="info" :size="16" /></template>
+                  <p class="page-help-copy">{{ currentMeta.desc }}</p>
+                </InfoPopover>
+              </div>
+            </div>
             <p class="page-desc">{{ currentMeta.desc }}</p>
           </div>
         </div>
@@ -202,9 +204,8 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <main class="content" :class="{ 'content-data': isDataView }">
+      <main class="content" :class="{ 'content-data': isDataView, 'logs-content': view === 'logs' }">
         <ChannelsView v-if="view === 'channels'" />
-        <ExposedModelsView v-else-if="view === 'exposed-models'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
         <LogsView v-else-if="view === 'logs'" />
         <UsageReportsView v-else-if="view === 'usage-reports'" />

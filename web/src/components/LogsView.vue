@@ -6,7 +6,11 @@ import type { RequestLog, RequestLogAttempt } from '../types/api'
 import CopyButton from './CopyButton.vue'
 import CursorLoadMore from './CursorLoadMore.vue'
 import Icon from './Icon.vue'
+import InfoPopover from './InfoPopover.vue'
+import { vScrollHint } from '../directives/scrollHint'
 import TablePlaceholder from './TablePlaceholder.vue'
+import ErrorState from './ErrorState.vue'
+import FilterSelect from './FilterSelect.vue'
 import { createCursorPager } from '../utils/cursorPager'
 import { requestModeClass, requestModeLabel } from '../utils/requestMode'
 import {
@@ -16,10 +20,11 @@ import {
   protocolLabel,
   reasoningEffortClass,
   reasoningEffortLabel,
+  reportedModelStatus,
   tokenUsageLabel,
   tokenUsageState,
 } from '../utils/requestLogDisplay'
-import { filterRequestLogs } from '../utils/requestLogSearch'
+import { filterRequestLogs, requestLogFilterOptions } from '../utils/requestLogSearch'
 import {
   formatTime,
   formatDuration,
@@ -35,6 +40,51 @@ const { items: logs, pageSize, loading, loadingMore, error, hasMore, load, loadM
   fetchPage: (options) => api.listRequestLogs(options),
 })
 const query = ref('')
+const channelFilter = ref('')
+const modelFilter = ref('')
+const statusFilter = ref('')
+const filterOptions = computed(() => requestLogFilterOptions(logs.value))
+const hasFilters = computed(() => Boolean(channelFilter.value || modelFilter.value || statusFilter.value))
+function clearFilters() {
+  channelFilter.value = ''
+  modelFilter.value = ''
+  statusFilter.value = ''
+}
+type LogColumnId = 'time' | 'request' | 'model' | 'channel' | 'status' | 'latency' | 'usage' | 'cost'
+const logColumns: Array<{ id: LogColumnId; label: string }> = [
+  { id: 'time', label: '时间' },
+  { id: 'request', label: '请求 ID' },
+  { id: 'model', label: '请求模型' },
+  { id: 'channel', label: '渠道与上游模型' },
+  { id: 'status', label: '状态与错误' },
+  { id: 'latency', label: '耗时' },
+  { id: 'usage', label: 'Token 用量' },
+  { id: 'cost', label: '费用' },
+]
+const defaultLogColumns: Record<LogColumnId, boolean> = { time: true, request: true, model: true, channel: true, status: true, latency: true, usage: true, cost: true }
+function readLogColumns(): Record<LogColumnId, boolean> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem('llm-gateway.logs.columns') || '{}')
+    return { ...defaultLogColumns, ...Object.fromEntries(logColumns.map(({ id }) => [id, parsed[id] !== false])) } as Record<LogColumnId, boolean>
+  } catch {
+    return { ...defaultLogColumns }
+  }
+}
+function readLogDensity(): 'comfortable' | 'compact' {
+  try { return localStorage.getItem('llm-gateway.logs.density') === 'compact' ? 'compact' : 'comfortable' } catch { return 'comfortable' }
+}
+const visibleLogColumns = ref<Record<LogColumnId, boolean>>(readLogColumns())
+const logDensity = ref<'comfortable' | 'compact'>(readLogDensity())
+function logColumnVisible(id: LogColumnId): boolean { return visibleLogColumns.value[id] }
+function toggleLogColumn(id: LogColumnId): void {
+  if (visibleLogColumns.value[id] && Object.values(visibleLogColumns.value).filter(Boolean).length <= 1) return
+  visibleLogColumns.value[id] = !visibleLogColumns.value[id]
+  try { localStorage.setItem('llm-gateway.logs.columns', JSON.stringify(visibleLogColumns.value)) } catch { /* ignore storage failures */ }
+}
+function setLogDensity(value: 'comfortable' | 'compact'): void {
+  logDensity.value = value
+  try { localStorage.setItem('llm-gateway.logs.density', value) } catch { /* ignore storage failures */ }
+}
 const selected = ref<RequestLog | null>(null)
 const detailDialog = ref<HTMLDivElement | null>(null)
 const tableScroll = ref<HTMLElement | null>(null)
@@ -65,13 +115,21 @@ function attemptStatusAriaLabel(attempt: RequestLogAttempt, hasFollowingAttempt:
   return `${status}${errorStatus}，${attemptResultLabel(attempt, hasFollowingAttempt)}`
 }
 
+function reportedModelTitle(log: RequestLog): string {
+  const report = reportedModelStatus(log)
+  if (!report) return ''
+  if (report.state === 'unknown') return '上游未返回自报模型，或该日志早于此功能，无法核验'
+  if (report.state === 'match') return '上游自报模型：' + report.reportedModel + '（与请求模型一致）'
+  return '上游自报模型：' + report.reportedModel + '；实际请求模型：' + log.upstreamModel
+}
+
 // 历史日志没有逐次明细（V39 回填为空数组）。不要用汇总字段伪造一条尝试记录：
 // totalMs 是整个请求耗时，upstreamAttempts 也可能是多次调用。
 const selectedAttempts = computed<RequestLogAttempt[]>(() => selected.value?.attempts || [])
 const hasAttemptDetail = computed(() => selectedAttempts.value.length > 0)
 
 const filtered = computed(() => {
-  return filterRequestLogs(logs.value, query.value)
+  return filterRequestLogs(logs.value, query.value, { channelId: channelFilter.value, model: modelFilter.value, status: statusFilter.value })
 })
 
 const errorCount = computed(() => logs.value.filter((log) => log.statusCode >= 400).length)
@@ -93,7 +151,7 @@ watch(pageSize, async () => {
   tableScroll.value?.scrollTo({ top: 0 })
 })
 
-watch(query, async () => {
+watch([query, channelFilter, modelFilter, statusFilter], async () => {
   await nextTick()
   tableScroll.value?.scrollTo({ top: 0 })
 })
@@ -202,48 +260,56 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="section-head">
-      <div>
-        <h2>最近请求</h2>
-        <p>列表只保留关键信息，点击“详情”查看完整错误与路由上下文。</p>
-      </div>
-      <button type="button" class="button ghost" :disabled="loading" @click="refresh">
-        <Icon name="refresh" :size="17" />
-        刷新
-      </button>
-    </div>
-
-    <div class="stat-row">
-      <div class="stat-card">
-        <span>当前已加载</span>
-        <strong>{{ logs.length }}</strong>
-        <small>按页加载更早请求</small>
-      </div>
-      <div class="stat-card">
-        <span>异常响应</span>
-        <strong :class="errorCount ? 'text-danger' : 'text-success'">{{ errorCount }}</strong>
-        <small>HTTP 4xx / 5xx / 499</small>
-      </div>
-      <div class="stat-card accent">
-        <span>平均总耗时</span>
-        <strong>{{ averageLatency }}</strong>
-        <small>当前列表的简单平均</small>
+  <section class="page-stack page-compact">
+    <div class="logs-overview">
+      <dl class="list-summary logs-summary" aria-label="当前已加载日志统计">
+        <div><dt>已加载</dt><dd>{{ logs.length }}</dd></div>
+        <div><dt>异常响应</dt><dd :class="errorCount ? 'text-danger' : 'text-success'" title="HTTP 4xx / 5xx / 499">{{ errorCount }}</dd></div>
+        <div><dt>平均总耗时</dt><dd title="当前已加载记录的简单平均">{{ averageLatency }}</dd></div>
+      </dl>
+      <div class="logs-toolbar-meta logs-page-actions">
+        <button type="button" class="button ghost refresh-button logs-refresh" :disabled="loading || loadingMore" :aria-busy="loading" @click="refresh">
+          <Icon name="refresh" :size="16" /><span>{{ loading ? '刷新中…' : '刷新' }}</span>
+        </button>
+        <details class="table-view-menu">
+          <summary class="button ghost"><Icon name="settings" :size="16" /> 表格视图</summary>
+          <div class="table-view-popover">
+            <strong>显示列</strong>
+            <label v-for="column in logColumns" :key="column.id"><input type="checkbox" :checked="logColumnVisible(column.id)" @change="toggleLogColumn(column.id)" /> {{ column.label }}</label>
+            <div class="table-view-divider"></div>
+            <strong>行密度</strong>
+            <div class="density-switch" role="group" aria-label="日志行密度">
+              <button type="button" :class="{ active: logDensity === 'comfortable' }" @click="setLogDensity('comfortable')">舒适</button>
+              <button type="button" :class="{ active: logDensity === 'compact' }" @click="setLogDensity('compact')">紧凑</button>
+            </div>
+          </div>
+        </details>
       </div>
     </div>
 
-    <div v-if="error" class="callout danger">{{ error }}</div>
+    <ErrorState v-if="error" :message="error" :busy="loading" @retry="refresh" />
 
     <div class="panel table-panel">
-      <div class="table-toolbar">
-        <label class="search-box logs-search">
-          <Icon name="search" :size="17" />
-          <input
-            v-model="query"
-            placeholder="搜索当前已加载记录：ID、模型、渠道、状态码或错误码"
-          />
-        </label>
-        <span class="muted small">显示 {{ filtered.length }} / {{ logs.length }} 条</span>
+      <div class="table-toolbar logs-toolbar">
+        <div class="logs-search-group">
+          <label class="search-box logs-search">
+            <Icon name="search" :size="17" />
+            <input
+              v-model="query"
+              type="search"
+              aria-label="搜索已加载的请求日志"
+              aria-describedby="logs-filter-scope"
+              placeholder="搜索 ID、模型、渠道、状态码或错误码"
+            />
+          </label>
+          <span id="logs-filter-scope" class="muted small logs-filter-scope">仅筛选已加载记录 · 显示 {{ filtered.length }} / {{ logs.length }} 条</span>
+        </div>
+        <div class="logs-filter-controls" role="group" aria-label="请求日志筛选">
+          <FilterSelect v-model="channelFilter" label="渠道" searchable :options="[{ value: '', label: '全部渠道' }, ...filterOptions.channels]" />
+          <FilterSelect v-model="modelFilter" label="请求模型" searchable :options="[{ value: '', label: '全部请求模型' }, ...filterOptions.models]" />
+          <FilterSelect v-model="statusFilter" label="状态" :options="[{ value: '', label: '全部状态' }, { value: 'success', label: 'HTTP 成功（2xx）' }, { value: 'error', label: 'HTTP 异常（4xx / 5xx）' }, ...filterOptions.statuses]" />
+          <button v-if="hasFilters" type="button" class="filter-reset" @click="clearFilters">清除筛选</button>
+        </div>
       </div>
 
       <TablePlaceholder
@@ -260,33 +326,33 @@ onMounted(load)
         :empty="true"
         compact
         title="没有匹配的请求"
-        desc="换一个关键词试试。"
+        desc="调整关键词或筛选条件，或加载更多记录后重试。"
       />
-      <div v-else ref="tableScroll" class="table-scroll table-scroll-paged">
-        <table class="data-table logs-table">
+      <div v-else ref="tableScroll" v-scroll-hint class="table-scroll table-scroll-paged">
+        <table class="data-table logs-table" :class="`logs-density-${logDensity}`">
           <thead>
             <tr>
-              <th>时间</th>
-              <th>请求 ID</th>
-              <th>请求模型 / 入站与出站协议 / 模式</th>
-              <th>渠道 / 上游模型</th>
-              <th>状态 / 错误</th>
-              <th>首 token / 总耗时</th>
-              <th>Token 用量</th>
-              <th>费用</th>
+              <th v-if="logColumnVisible('time')" class="time-col log-col-time">时间</th>
+              <th v-if="logColumnVisible('request')" class="log-col-request">请求 ID</th>
+              <th v-if="logColumnVisible('model')" class="log-col-model">请求模型 / 协议 / 模式</th>
+              <th v-if="logColumnVisible('channel')" class="log-col-channel">渠道 / 上游模型</th>
+              <th v-if="logColumnVisible('status')" class="log-col-status">状态 / 错误</th>
+              <th v-if="logColumnVisible('latency')" class="log-col-latency">首 token / 总耗时</th>
+              <th v-if="logColumnVisible('usage')" class="log-col-usage">Token 用量</th>
+              <th v-if="logColumnVisible('cost')" class="log-col-cost">费用</th>
               <th class="actions-col"></th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="log in filtered" :key="log.requestId">
-              <td class="muted nowrap">{{ formatTime(log.createdAt, { style: 'medium' }) }}</td>
-              <td>
+              <td v-if="logColumnVisible('time')" class="time-col log-col-time muted nowrap">{{ formatTime(log.createdAt, { style: 'medium' }) }}</td>
+              <td v-if="logColumnVisible('request')" class="log-col-request">
                 <div class="request-id-cell">
                   <code class="request-id" :title="log.requestId">{{ log.requestId.slice(0, 12) }}…</code>
                   <CopyButton :text="log.requestId" title="复制请求 ID" variant="list" :size="13" />
                 </div>
               </td>
-              <td>
+              <td v-if="logColumnVisible('model')" class="log-col-model">
                 <div class="stacked-cell">
                   <span class="badge info">{{ log.alias }}</span>
                   <div class="request-meta">
@@ -299,28 +365,39 @@ onMounted(load)
                   </div>
                 </div>
               </td>
-              <td>
+              <td v-if="logColumnVisible('channel')" class="log-col-channel">
                 <div class="primary-cell small">{{ log.channelName || (log.channelId ? log.channelId.slice(0, 8) : '—') }}</div>
                 <div v-if="log.channelKeyName" class="muted small">密钥 {{ log.channelKeyName }}</div>
-                <div class="mono muted small">{{ log.upstreamModel || '—' }}</div>
+                <div class="mono muted small upstream-model-line">
+                  <span>{{ log.upstreamModel || '—' }}</span>
+                  <InfoPopover v-if="reportedModelStatus(log)" label="上游模型核验" :tone="reportedModelStatus(log)?.state === 'match' ? 'success' : reportedModelStatus(log)?.state === 'mismatch' ? 'danger' : 'warning'">
+                    <template #trigger><span aria-hidden="true">{{ reportedModelStatus(log)?.state === 'match' ? '✅' : reportedModelStatus(log)?.state === 'mismatch' ? '!' : '?' }}</span></template>
+                    <dl class="model-check-values">
+                      <dt>请求上游模型</dt><dd>{{ log.upstreamModel || '—' }}</dd>
+                      <dt>上游自报模型</dt><dd>{{ reportedModelStatus(log)?.reportedModel || '未返回' }}</dd>
+                    </dl>
+                    <p class="model-check-result" :class="reportedModelStatus(log)?.state === 'match' ? 'text-success' : reportedModelStatus(log)?.state === 'mismatch' ? 'text-danger' : 'text-warning'">{{ reportedModelStatus(log)?.state === 'match' ? '与请求模型一致' : reportedModelStatus(log)?.state === 'mismatch' ? '与请求模型不一致' : '暂时无法核验' }}</p>
+                    <p v-if="reportedModelStatus(log)?.state === 'unknown'" class="muted small">上游未返回自报模型，或该日志早于此功能。</p>
+                  </InfoPopover>
+                </div>
                 <span v-if="log.upstreamAttempts != null && log.upstreamAttempts > 1" class="badge warning">尝试 {{ log.upstreamAttempts }} 次</span>
               </td>
-              <td>
+              <td v-if="logColumnVisible('status')" class="log-col-status">
                 <div class="stacked-cell">
                   <span class="badge" :class="statusClass(log.statusCode)">{{ log.statusCode }}</span>
                   <template v-if="log.errorCode">
-                    <span class="badge warning">{{ log.errorCode }}</span>
+                    <span class="badge warning" :title="log.errorCode">{{ log.errorCode }}</span>
                     <span v-if="log.failureStage" class="stage-text">{{ stageLabel(log.failureStage) }}阶段</span>
                   </template>
                 </div>
               </td>
-              <td class="nowrap">
+              <td v-if="logColumnVisible('latency')" class="nowrap log-col-latency">
                 <div class="duration-cell">
                   <span class="duration-first">首 {{ formatDuration(log.firstTokenMs) }}</span>
                   <span class="muted small">总 {{ formatDuration(log.totalMs) }}</span>
                 </div>
               </td>
-              <td class="usage-cell" :class="usageStateClass(log)">
+              <td v-if="logColumnVisible('usage')" class="usage-cell log-col-usage" :class="usageStateClass(log)">
                 <div class="usage-cell-body">
                   <template v-if="log.usageKnown">
                     <span :title="`输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 总 ${formatTokens(log.totalTokens)}`">
@@ -335,7 +412,7 @@ onMounted(load)
                   <span v-else class="usage-state-label">{{ tokenUsageLabel(log) }}</span>
                 </div>
               </td>
-              <td class="nowrap" :title="costTitle(log)">
+              <td v-if="logColumnVisible('cost')" class="nowrap log-col-cost" :title="costTitle(log)">
                 <span v-if="log.costAmount != null" class="cost-line log-cost">
                   <span class="cost-amount">{{ formatCostAmount(log) }}</span>
                   <span class="cost-currency">{{ log.costCurrency || '—' }}</span>

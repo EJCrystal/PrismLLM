@@ -22,6 +22,8 @@ services:
       DATABASE_URL: jdbc:postgresql://postgres:5432/llm_gateway
     ports:
       - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Put trusted quota-provider JARs in ./plugins. The directory is read-only in the container.
     volumes:
       - ./plugins:/app/plugins:ro

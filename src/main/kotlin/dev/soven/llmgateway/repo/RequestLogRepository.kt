@@ -4,9 +4,12 @@ import dev.soven.llmgateway.db.ChannelKeys
 import dev.soven.llmgateway.db.Channels
 import dev.soven.llmgateway.db.ClientKeys
 import dev.soven.llmgateway.db.RequestLogs
+import dev.soven.llmgateway.db.RequestAttempts
+import dev.soven.llmgateway.report.attemptOutcome
 import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.report.CleanupResult
 import dev.soven.llmgateway.report.UsageGroup
@@ -16,6 +19,7 @@ import dev.soven.llmgateway.report.UsageTotal
 import dev.soven.llmgateway.report.UsageTrendPoint
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.Op
+import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.Case
 import org.jetbrains.exposed.v1.core.Column
 import org.jetbrains.exposed.v1.core.LongColumnType
@@ -41,12 +45,16 @@ import org.jetbrains.exposed.v1.core.sum
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.insertIgnore
+import org.jetbrains.exposed.v1.jdbc.update
 import org.jetbrains.exposed.v1.jdbc.Query
 import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import java.math.BigDecimal
+import kotlinx.coroutines.CancellationException
+import org.slf4j.LoggerFactory
 
 /**
  * 请求日志持久化。只写入元数据与用量，不写 prompt 和响应正文。
@@ -55,6 +63,7 @@ import java.math.BigDecimal
  * @since 2026-10-21
  */
 class RequestLogRepository(private val database: Database) {
+    private val logger = LoggerFactory.getLogger(RequestLogRepository::class.java)
     private val failoverAggregate: org.jetbrains.exposed.v1.core.Expression<Long?> = run {
         val attempts = coalesce(RequestLogs.upstreamAttempts, org.jetbrains.exposed.v1.core.intLiteral(1))
             .castTo(LongColumnType())
@@ -73,7 +82,7 @@ class RequestLogRepository(private val database: Database) {
     }
 
     suspend fun insert(record: RequestLogRecord) = suspendTransaction(database) {
-        RequestLogs.insert {
+        val logId = RequestLogs.insert {
             it[requestId] = record.requestId
             it[traceId] = record.traceId
             it[clientKeyId] = record.clientKeyId
@@ -115,6 +124,86 @@ class RequestLogRepository(private val database: Database) {
             it[upstreamAttempts] = record.upstreamAttempts
             it[attemptsJson] = UpstreamAttemptCodec.encode(record.attempts)
             it[createdAt] = record.createdAt
+            it[healthIndexed] = true
+        }[RequestLogs.id]
+        indexAttempts(logId, record)
+    }
+
+    /** Bounded, restart-safe historical indexing; live writes are indexed atomically above. */
+    suspend fun indexHealthBatch(cutoff: Long, limit: Int = 250): Int {
+        // Health indexing does not need pricing metadata. Read only the health
+        // projection so damaged historical price tiers cannot block the batch.
+        val ids = suspendTransaction(database) {
+            RequestLogs.select(RequestLogs.id)
+                .where { (RequestLogs.healthIndexed eq false) and (RequestLogs.createdAt greaterEq cutoff) }
+                .orderBy(RequestLogs.createdAt to SortOrder.DESC, RequestLogs.id to SortOrder.DESC)
+                .limit(limit).map { it[RequestLogs.id] }
+        }
+        return indexSelectedHealthBatch(ids)
+    }
+
+    /** Process IDs selected by one batch, even if another gateway indexes them first. */
+    internal suspend fun indexSelectedHealthBatch(ids: List<Long>): Int {
+        var firstFailure: Exception? = null
+        for (id in ids) {
+            try {
+                indexHealthRecord(id)
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Exception) {
+                // A failed row transaction must not roll back or block its batch peers.
+                logger.warn("Could not index channel health for request log {}", id, cause)
+                if (firstFailure == null) firstFailure = cause
+            }
+        }
+        firstFailure?.let { throw it }
+        // A row may already have been indexed by another instance after this
+        // batch selected it. The batch is still non-empty and the caller must
+        // continue scanning rather than treating it as the end of the backlog.
+        return ids.size
+    }
+
+    private suspend fun indexHealthRecord(id: Long): Boolean = suspendTransaction(database) {
+        val row = RequestLogs.select(
+            RequestLogs.id, RequestLogs.attemptsJson, RequestLogs.stream,
+            RequestLogs.outputTokens, RequestLogs.usageKnown, RequestLogs.createdAt, RequestLogs.healthIndexed,
+        ).where { RequestLogs.id eq id }.singleOrNull() ?: return@suspendTransaction false
+        if (row[RequestLogs.healthIndexed]) return@suspendTransaction false
+        indexAttempts(
+            id, UpstreamAttemptCodec.decode(row[RequestLogs.attemptsJson]),
+            row[RequestLogs.stream], row[RequestLogs.outputTokens],
+            row[RequestLogs.usageKnown], row[RequestLogs.createdAt],
+        )
+        RequestLogs.update({ RequestLogs.id eq id }) { it[healthIndexed] = true }
+        true
+    }
+
+    private fun indexAttempts(logId: Long, record: RequestLogRecord) = indexAttempts(
+        logId, record.attempts, record.stream, record.outputTokens, record.usageKnown, record.createdAt,
+    )
+
+    private fun indexAttempts(
+        logId: Long, attempts: List<UpstreamAttemptRecord>, stream: Boolean?,
+        outputTokens: Long?, usageKnown: Boolean, createdAt: Long,
+    ) {
+        attempts.forEachIndexed { ordinal, attempt ->
+            val channel = attempt.channelId ?: return@forEachIndexed
+            RequestAttempts.insertIgnore {
+                it[this.logId] = logId
+                it[attemptIndex] = ordinal + 1
+                it[channelId] = channel
+                it[channelKeyId] = attempt.channelKeyId
+                it[upstreamModel] = attempt.upstreamModel
+                it[upstreamProtocol] = attempt.upstreamProtocol?.value
+                it[this.stream] = stream
+                it[outcome] = attemptOutcome(attempt).name
+                it[errorCode] = attempt.upstreamErrorCode ?: attempt.errorCode
+                it[statusCode] = attempt.upstreamErrorStatusCode ?: attempt.statusCode
+                it[firstTokenMs] = attempt.firstTokenMs
+                it[elapsedMs] = attempt.elapsedMs
+                it[this.outputTokens] = outputTokens?.takeIf { ordinal == attempts.lastIndex && usageKnown }
+                it[this.createdAt] = createdAt
+            }
         }
     }
 

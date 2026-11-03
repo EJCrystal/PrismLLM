@@ -376,10 +376,30 @@ object RequestLogs : Table("request_logs") {
     val upstreamErrorBody = text("upstream_error_body").nullable()
     val upstreamAttempts = integer("upstream_attempts").nullable()
     val attemptsJson = text("attempts_json")
+    val healthIndexed = bool("health_indexed").default(false)
     val createdAt = long("created_at")
 
     override val primaryKey = PrimaryKey(id)
     init {
         index(false, createdAt)
     }
+}
+
+/** Normalized observations; identifiers survive channel/key deletion, requests own retention. */
+object RequestAttempts : Table("request_attempts") {
+    val logId = long("log_id").references(RequestLogs.id, onDelete = ReferenceOption.CASCADE)
+    val attemptIndex = integer("attempt_index")
+    val channelId = varchar("channel_id", 36)
+    val channelKeyId = varchar("channel_key_id", 36).nullable()
+    val upstreamModel = varchar("upstream_model", 200).nullable()
+    val upstreamProtocol = varchar("upstream_protocol", 40).nullable()
+    val stream = bool("stream").nullable()
+    val outcome = varchar("outcome", 12)
+    val errorCode = text("error_code").nullable()
+    val statusCode = integer("status_code").nullable()
+    val firstTokenMs = long("first_token_ms").nullable()
+    val elapsedMs = long("elapsed_ms")
+    val outputTokens = long("output_tokens").nullable()
+    val createdAt = long("created_at")
+    override val primaryKey = PrimaryKey(logId, attemptIndex)
 }

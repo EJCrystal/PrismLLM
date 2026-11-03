@@ -32,6 +32,11 @@ export interface RequestOverrideEditorDraft {
 
 export type RequestOverrideDrafts = Record<string, RequestOverrideEditorDraft>
 
+/** Snapshot raw editor text too, so invalid or partially typed JSON remains dirty. */
+export function requestOverrideDraftSnapshot(drafts: RequestOverrideDrafts, inheritGlobal: boolean): string {
+  return JSON.stringify({ drafts, inheritGlobal })
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }

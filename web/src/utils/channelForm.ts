@@ -40,6 +40,13 @@ export interface OriginalModelMapping {
   mappingSource: string | null
 }
 
+/** Canonicalize editor mappings for dirty-state comparisons, not persistence. */
+export function canonicalModelSnapshot(canonicalModels: Record<string, string>): Array<[string, string]> {
+  return Object.entries(canonicalModels)
+    .filter(([, value]) => value.trim() !== '')
+    .sort(([left], [right]) => left.localeCompare(right))
+}
+
 export function parseManualModelIds(text: string): string[] {
   const models = [...new Set(text.split(/[\s,，;；]+/u).filter(Boolean))]
   if (!models.length) throw new Error('请填写至少一个上游模型 ID')
