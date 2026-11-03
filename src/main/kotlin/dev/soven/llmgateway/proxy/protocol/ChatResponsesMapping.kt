@@ -50,7 +50,7 @@ internal fun responsesToChatRequest(request: JsonObject): JsonObject = buildJson
                             put("type", "function")
                             putJsonObject("function") {
                                 put("name", item.string("name") ?: unsupported("input[$index].name", "function_call 缺少 name"))
-                                put("arguments", item.string("arguments").orEmpty())
+                                put("arguments", item.string("arguments").orEmpty().ifEmpty { "{}" })
                             }
                         })
                     })
@@ -131,7 +131,7 @@ internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): Js
                         put("type", "function_call")
                         put("call_id", call.string("id") ?: unsupported("messages[$index].tool_calls[$callIndex].id", "工具调用缺少 id"))
                         put("name", function.string("name") ?: unsupported("messages[$index].tool_calls[$callIndex].function.name", "工具调用缺少 name"))
-                        put("arguments", function.string("arguments").orEmpty())
+                        put("arguments", function.string("arguments").orEmpty().ifEmpty { "{}" })
                     }
                 }
             }
@@ -266,7 +266,7 @@ internal fun chatToResponsesResponse(chat: JsonObject, model: String): JsonObjec
             put("id", "fc_${chat.string("id") ?: System.currentTimeMillis()}_$index")
             put("call_id", call.string("id") ?: "call_$index")
             put("name", function.string("name").orEmpty())
-            put("arguments", function.string("arguments").orEmpty())
+            put("arguments", function.string("arguments").orEmpty().ifEmpty { "{}" })
             put("status", "completed")
         }
     }

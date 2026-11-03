@@ -123,6 +123,6 @@ internal interface StreamDecoder {
 
 internal interface StreamEncoder {
     fun emit(event: StreamEvent, usage: TokenUsage?): List<String>
-    fun error(message: String): List<String>
+    fun error(message: String, id: String): List<String>
     fun terminalLines(): List<String> = emptyList()
 }

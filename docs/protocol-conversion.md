@@ -21,6 +21,8 @@
 - 请求转换使用实际上游模型名；跨协议响应使用调用方的对外模型 ID。转换只操作 JSON，不发网络请求，也不选择渠道。
 - 每次调用 `streamConverter` 都创建独立会话，使用 `feed(line)` 输入 SSE 行，最后调用 `finish()` 冲刷尚无空行分隔的末尾事件。结束后再次输入或结束均不重复输出终止事件。
 - 流式解析器与编码器按协议分别实现，共享协议中立的 `StreamEvent`、`FinishReason`、`TokenUsage`，不使用 Chat Completions JSON 或 Chat 事件作为中间协议。Messages ↔ Responses 的普通请求和响应也直接映射。
+- 转换后的 Chat 工具索引按首次出现顺序连续编号；Responses 输出完整的项与内容生命周期，增量和完成事件复用稳定的项 ID，并提供递增事件序号。流式失败通过 `response.failed.response.error` 返回。
+- 跨协议 SSE 单个事件最多累计 1 MiB UTF-8 数据（含多行数据间的换行）；上游行读取也有长度限制，原生透传不受本次限制变更影响。
 - 认证、上游 URL、请求覆盖、限流、冷却、重试、响应提交时机、日志和计费仍属于现有代理层。HTTP 状态码与流内错误状态码继续分别记录。
 
 ## 支持边界

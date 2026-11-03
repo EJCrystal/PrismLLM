@@ -23,6 +23,7 @@ import dev.soven.llmgateway.proxy.applyUpstreamAuthentication
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.UsageParser
 import dev.soven.llmgateway.proxy.extractReportedModel
+import dev.soven.llmgateway.proxy.protocol.MAX_PROTOCOL_EVENT_BYTES
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversion
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversionException
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
@@ -1029,12 +1030,13 @@ private suspend fun proxyStream(
                     )
                 }
                 val upstream = response.bodyAsChannel()
+                val maxLineBytes = if (converter != null) MAX_PROTOCOL_EVENT_BYTES + 6 else Int.MAX_VALUE
                 val prefixLines = mutableListOf<String>()
                 val firstDataLine = try {
                     withTimeout(app.config.firstTokenTimeoutMs) {
                         var found: String? = null
                         while (found == null) {
-                            val next = upstream.readUTF8Line() ?: break
+                            val next = upstream.readUTF8Line(max = maxLineBytes) ?: break
                             prefixLines.add(next)
                             recordReportedModel(next, state, upstreamProtocol)
                             if (
@@ -1095,7 +1097,7 @@ private suspend fun proxyStream(
                             if (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI) {
                                 while (true) {
                                     val line = try {
-                                        withTimeout(app.config.idleTimeoutMs) { upstream.readUTF8Line() }
+                                        withTimeout(app.config.idleTimeoutMs) { upstream.readUTF8Line(max = maxLineBytes) }
                                     } catch (e: TimeoutCancellationException) {
                                         throw GatewayException(
                                             HttpStatusCode.GatewayTimeout,

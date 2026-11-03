@@ -3,11 +3,14 @@ package dev.soven.llmgateway.proxy.protocol
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 
+internal const val MAX_PROTOCOL_EVENT_BYTES = 1024 * 1024
+
 internal class EventStreamConverter(
     private val decoder: StreamDecoder,
     private val encoder: StreamEncoder,
 ) : ProtocolStreamConverter {
     private val dataLines = mutableListOf<String>()
+    private var pendingBytes = 0
     private var finished = false
     private var pendingFinish: StreamEvent? = null
     private var lastId = "response_"+System.currentTimeMillis()
@@ -17,7 +20,17 @@ internal class EventStreamConverter(
         val trimmed = line.trim()
         if (trimmed.isEmpty()) return flushEvent()
         if (trimmed.startsWith("data:")) {
-            dataLines += trimmed.removePrefix("data:").trimStart()
+            val data = trimmed.removePrefix("data:").trimStart()
+            val separatorBytes = if (dataLines.isEmpty()) 0 else 1
+            if (data.length > MAX_PROTOCOL_EVENT_BYTES - pendingBytes - separatorBytes) {
+                return fail("上游流单个事件超过大小上限")
+            }
+            val nextBytes = data.toByteArray(Charsets.UTF_8).size + separatorBytes
+            if (nextBytes > MAX_PROTOCOL_EVENT_BYTES - pendingBytes) {
+                return fail("上游流单个事件超过大小上限")
+            }
+            pendingBytes += nextBytes
+            dataLines += data
             if (dataLines.size == 1 && dataLines.first() == "[DONE]") return flushEvent()
         }
         return emptyList()
@@ -37,6 +50,7 @@ internal class EventStreamConverter(
         if (dataLines.isEmpty()) return emptyList()
         val payload = dataLines.joinToString("\n")
         dataLines.clear()
+        pendingBytes = 0
         if (payload == "[DONE]") return complete(pendingFinish ?: StreamEvent(lastId, finishReason = FinishReason.STOP))
         val json = runCatching { Json.parseToJsonElement(payload).jsonObject }.getOrNull()
             ?: return fail("上游流返回了无法解析的 JSON 帧")
@@ -65,6 +79,8 @@ internal class EventStreamConverter(
     private fun fail(message: String): List<String> {
         finished = true
         pendingFinish = null
-        return encoder.error(message)
+        dataLines.clear()
+        pendingBytes = 0
+        return encoder.error(message, lastId)
     }
 }

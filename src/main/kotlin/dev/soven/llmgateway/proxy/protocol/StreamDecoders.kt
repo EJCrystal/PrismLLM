@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.proxy.protocol
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 
 internal class ChatStreamDecoder : StreamDecoder {
@@ -12,7 +13,7 @@ internal class ChatStreamDecoder : StreamDecoder {
 
     private fun parse(json: JsonObject): StreamEvent? {
         val id = json.string("id") ?: fallbackId
-        json["error"]?.let { return StreamEvent(id, error = it.toString()) }
+        json["error"]?.takeIf { it !is JsonNull }?.let { return StreamEvent(id, error = it.toString()) }
         val usageJson = json["usage"] as? JsonObject
         if (usageJson != null) usage = TokenUsage.fromChat(usageJson)
         val choice = json.array("choices").firstOrNull() as? JsonObject

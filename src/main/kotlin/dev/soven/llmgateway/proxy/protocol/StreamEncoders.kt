@@ -3,6 +3,7 @@ package dev.soven.llmgateway.proxy.protocol
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -10,6 +11,7 @@ import kotlinx.serialization.json.putJsonObject
 
 internal class ChatStreamEncoder(private val model: String) : StreamEncoder {
     private var started = false
+    private val toolIndexes = linkedMapOf<Int, Int>()
 
     override fun emit(chunk: StreamEvent, usage: TokenUsage?): List<String> {
         val delta = buildJsonObject {
@@ -19,7 +21,7 @@ internal class ChatStreamEncoder(private val model: String) : StreamEncoder {
                 put("tool_calls", buildJsonArray {
                     chunk.toolCalls.forEach { tool ->
                         add(buildJsonObject {
-                            put("index", tool.index)
+                            put("index", toolIndexes.getOrPut(tool.index) { toolIndexes.size })
                             tool.id?.let { put("id", it) }
                             put("type", "function")
                             putJsonObject("function") {
@@ -49,7 +51,7 @@ internal class ChatStreamEncoder(private val model: String) : StreamEncoder {
         return listOf("data: $objectJson", "")
     }
 
-    override fun error(message: String): List<String> = listOf("data: "+buildJsonObject {
+    override fun error(message: String, id: String): List<String> = listOf("data: "+buildJsonObject {
         put("error", errorObject(message))
     }, "") + terminalLines()
 
@@ -136,11 +138,13 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
         }
     }
 
-    override fun error(message: String): List<String> = streamError("error", message)
+    override fun error(message: String, id: String): List<String> = streamError("error", message)
 }
 
 internal class ResponsesStreamEncoder(private val model: String) : StreamEncoder {
-    private var responseStarted = false
+    private var responseId: String? = null
+    private var sequenceNumber = 0
+    private val createdAt = System.currentTimeMillis() / 1000
     private val responseText = StringBuilder()
     private val responseTools = linkedMapOf<Int, MutableResponseTool>()
     private var nextResponseOutputIndex = 0
@@ -148,90 +152,163 @@ internal class ResponsesStreamEncoder(private val model: String) : StreamEncoder
 
     override fun emit(chunk: StreamEvent, usage: TokenUsage?): List<String> {
         val lines = mutableListOf<String>()
-        if (!responseStarted) {
-            responseStarted = true
-            lines += "event: response.created"
-            lines += "data: ${buildJsonObject { put("type", "response.created"); putJsonObject("response") { put("id", chunk.id); put("object", "response"); put("status", "in_progress"); put("model", model); put("output", JsonArray(emptyList())) } }}"
-            lines += ""
+        val id = responseId ?: chunk.id.also {
+            responseId = it
+            lines += event("response.created") { put("response", response("in_progress", JsonArray(emptyList()))) }
         }
+        val messageId = "msg_$id"
         chunk.content?.takeIf { it.isNotEmpty() }?.let { text ->
-            val outputIndex = responseTextIndex ?: nextResponseOutputIndex++.also { responseTextIndex = it }
+            val outputIndex = responseTextIndex ?: nextResponseOutputIndex++.also { index ->
+                responseTextIndex = index
+                lines += event("response.output_item.added") {
+                    put("output_index", index)
+                    put("item", textItem("in_progress"))
+                }
+                lines += event("response.content_part.added") {
+                    put("item_id", messageId)
+                    put("output_index", index)
+                    put("content_index", 0)
+                    put("part", textPart(""))
+                }
+            }
             responseText.append(text)
-            lines += "event: response.output_text.delta"
-            lines += "data: ${buildJsonObject { put("type", "response.output_text.delta"); put("output_index", outputIndex); put("content_index", 0); put("delta", text) }}"
-            lines += ""
+            lines += event("response.output_text.delta") {
+                put("item_id", messageId)
+                put("output_index", outputIndex)
+                put("content_index", 0)
+                put("delta", text)
+                put("logprobs", JsonArray(emptyList()))
+            }
         }
         chunk.toolCalls.forEach { tool ->
-            val item = responseTools.getOrPut(tool.index) { MutableResponseTool(tool.index, tool.id, tool.name, StringBuilder()) }
-            if (item.started.not()) {
-                item.started = true
-                item.outputIndex = nextResponseOutputIndex++
-                lines += "event: response.output_item.added"
-                lines += "data: ${buildJsonObject { put("type", "response.output_item.added"); put("output_index", item.outputIndex); putJsonObject("item") { put("type", "function_call"); put("id", "fc_${chunk.id}_${tool.index}"); put("call_id", item.id ?: "call_${tool.index}"); put("name", item.name.orEmpty()); put("arguments", ""); put("status", "in_progress") } }}"
-                lines += ""
+            val item = responseTools.getOrPut(tool.index) {
+                MutableResponseTool("fc_${id}_${tool.index}", tool.id, tool.name, nextResponseOutputIndex++).also { added ->
+                    lines += event("response.output_item.added") {
+                        put("output_index", added.outputIndex)
+                        put("item", toolItem(added, "in_progress"))
+                    }
+                }
             }
-            tool.arguments?.takeIf { it.isNotEmpty() }?.let { args ->
-                item.arguments.append(args)
-                lines += "event: response.function_call_arguments.delta"
-                lines += "data: ${buildJsonObject { put("type", "response.function_call_arguments.delta"); put("output_index", item.outputIndex); put("delta", args) }}"
-                lines += ""
+            tool.id?.let { item.callId = it }
+            tool.name?.let { item.name = it }
+            tool.arguments?.takeIf { it.isNotEmpty() }?.let { arguments ->
+                item.arguments.append(arguments)
+                lines += event("response.function_call_arguments.delta") {
+                    put("item_id", item.id)
+                    put("output_index", item.outputIndex)
+                    put("delta", arguments)
+                }
             }
         }
         if (chunk.finishReason != null) {
-            val outputItems = mutableListOf<Pair<Int, JsonObject>>()
-            if (responseText.isNotEmpty()) {
-                outputItems += (responseTextIndex ?: 0) to buildJsonObject {
-                    put("type", "message")
-                    put("id", "msg_${chunk.id}")
-                    put("role", "assistant")
-                    put("status", "completed")
-                    put("content", buildJsonArray { add(buildJsonObject { put("type", "output_text"); put("text", responseText.toString()); put("annotations", JsonArray(emptyList())) }) })
-                }
-            }
-            responseTools.values.forEach { tool ->
-                outputItems += tool.outputIndex to buildJsonObject {
-                    put("type", "function_call")
-                    put("id", "fc_${chunk.id}_${tool.index}")
-                    put("call_id", tool.id ?: "call_${tool.index}")
-                    put("name", tool.name.orEmpty())
-                    put("arguments", tool.arguments.toString())
-                    put("status", "completed")
-                }
-            }
-            val output = JsonArray(outputItems.sortedBy { it.first }.map { it.second })
             val incomplete = chunk.finishReason == FinishReason.MAX_TOKENS || chunk.finishReason == FinishReason.CONTENT_FILTER
-            val eventType = if (incomplete) "response.incomplete" else "response.completed"
-            lines += "event: $eventType"
-            lines += "data: ${buildJsonObject {
-                put("type", eventType)
-                putJsonObject("response") {
-                    put("id", chunk.id)
-                    put("object", "response")
-                    put("status", if (incomplete) "incomplete" else "completed")
-                    put("model", model)
-                    put("output", output)
-                    if (incomplete) {
-                        putJsonObject("incomplete_details") {
-                            put("reason", if (chunk.finishReason == FinishReason.CONTENT_FILTER) "content_filter" else "max_output_tokens")
-                        }
+            val status = if (incomplete) "incomplete" else "completed"
+            val output = output(status)
+            output.forEachIndexed { index, element ->
+                val item = element as JsonObject
+                if (item.string("type") == "message") {
+                    lines += event("response.output_text.done") {
+                        put("item_id", messageId)
+                        put("output_index", index)
+                        put("content_index", 0)
+                        put("text", responseText.toString())
+                        put("logprobs", JsonArray(emptyList()))
                     }
-                    usage?.let { put("usage", it.toResponses()) }
+                    lines += event("response.content_part.done") {
+                        put("item_id", messageId)
+                        put("output_index", index)
+                        put("content_index", 0)
+                        put("part", textPart(responseText.toString()))
+                    }
+                } else {
+                    lines += event("response.function_call_arguments.done") {
+                        put("item_id", item.string("id"))
+                        put("output_index", index)
+                        put("arguments", item.string("arguments").orEmpty())
+                    }
                 }
-            }}"
-            lines += ""
+                lines += event("response.output_item.done") {
+                    put("output_index", index)
+                    put("item", item)
+                }
+            }
+            lines += event("response.$status") {
+                put("response", response(status, output, usage, chunk.finishReason))
+            }
         }
         return lines
     }
 
-    override fun error(message: String): List<String> = streamError("response.failed", message)
+    override fun error(message: String, id: String): List<String> {
+        if (responseId == null) responseId = id
+        return event("response.failed") {
+            put("response", JsonObject(response("failed", output("incomplete")) + ("error" to buildJsonObject {
+                put("code", "server_error")
+                put("message", message)
+            })))
+        }
+    }
+
+    private fun event(type: String, body: JsonObjectBuilder.() -> Unit): List<String> = listOf(
+        "event: $type",
+        "data: "+buildJsonObject {
+            put("type", type)
+            put("sequence_number", sequenceNumber++)
+            body()
+        },
+        "",
+    )
+
+    private fun response(status: String, output: JsonArray, usage: TokenUsage? = null, finishReason: FinishReason? = null): JsonObject = buildJsonObject {
+        put("id", responseId)
+        put("object", "response")
+        put("created_at", createdAt)
+        put("status", status)
+        put("model", model)
+        put("output", output)
+        if (status == "incomplete") putJsonObject("incomplete_details") {
+            put("reason", if (finishReason == FinishReason.CONTENT_FILTER) "content_filter" else "max_output_tokens")
+        }
+        usage?.let { put("usage", it.toResponses()) }
+    }
+
+    private fun output(status: String): JsonArray {
+        val items = mutableListOf<Pair<Int, JsonObject>>()
+        responseTextIndex?.let { items += it to textItem(status) }
+        responseTools.values.forEach { tool -> items += tool.outputIndex to toolItem(tool, status) }
+        return JsonArray(items.sortedBy { it.first }.map { it.second })
+    }
+
+    private fun textPart(text: String): JsonObject = buildJsonObject {
+        put("type", "output_text")
+        put("text", text)
+        put("annotations", JsonArray(emptyList()))
+        put("logprobs", JsonArray(emptyList()))
+    }
+
+    private fun textItem(status: String): JsonObject = buildJsonObject {
+        put("type", "message")
+        put("id", "msg_$responseId")
+        put("role", "assistant")
+        put("status", status)
+        put("content", if (status == "in_progress") JsonArray(emptyList()) else buildJsonArray { add(textPart(responseText.toString())) })
+    }
+
+    private fun toolItem(tool: MutableResponseTool, status: String): JsonObject = buildJsonObject {
+        put("type", "function_call")
+        put("id", tool.id)
+        put("call_id", tool.callId ?: "call_${tool.outputIndex}")
+        put("name", tool.name.orEmpty())
+        put("arguments", tool.arguments.toString())
+        put("status", status)
+    }
 
     private data class MutableResponseTool(
-        val index: Int,
-        val id: String?,
-        val name: String?,
-        val arguments: StringBuilder,
-        var started: Boolean = false,
-        var outputIndex: Int = -1,
+        val id: String,
+        var callId: String?,
+        var name: String?,
+        val outputIndex: Int,
+        val arguments: StringBuilder = StringBuilder(),
     )
 }
 
