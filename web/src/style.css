@@ -1,6 +1,7 @@
 :root {
   color-scheme: light;
   --bg: #f4f6fb;
+  --table-head-bg: #f4f6fb;
   --panel: #ffffff;
   --ink: #172033;
   --muted: #667085;
@@ -31,6 +32,7 @@
 [data-theme="dark"] {
   color-scheme: dark;
   --bg: #090d16;
+  --table-head-bg: #131a29;
   --panel: #111827;
   --ink: #f1f5f9;
   --muted: #94a3b8;
@@ -180,7 +182,7 @@
 }
 
 [data-theme="dark"] .data-table th {
-  background: #131a29;
+  background: var(--table-head-bg);
   border-bottom-color: var(--line);
   color: #94a3b8;
 }
@@ -459,6 +461,7 @@
 [data-theme="sepia"] {
   color-scheme: light;
   --bg: #f6f1e8;
+  --table-head-bg: #f5eee2;
   --panel: #fcf9f2;
   --ink: #3b2f20;
   --muted: #85725d;
@@ -588,7 +591,7 @@
 }
 
 [data-theme="sepia"] .data-table th {
-  background: #f5eee2;
+  background: var(--table-head-bg);
   border-bottom-color: var(--line);
   color: var(--muted);
 }
@@ -2295,7 +2298,7 @@ input[type="password"]::-ms-clear,
 .data-table th {
   padding: 13px 18px;
   border-bottom: 1px solid var(--line);
-  background: var(--bg);
+  background: var(--table-head-bg);
   color: var(--muted);
   font-size: 10px;
   font-weight: 700;
@@ -4580,7 +4583,7 @@ textarea:disabled {
 
 .logs-table th.time-col {
   z-index: 4;
-  background: var(--bg);
+  background: var(--table-head-bg);
 }
 
 .content-data .table-scroll-paged .logs-table th.time-col,
@@ -4604,7 +4607,7 @@ textarea:disabled {
 
 .logs-table th.actions-col {
   z-index: 4;
-  background: var(--bg);
+  background: var(--table-head-bg);
 }
 
 .logs-table td.actions-col {
@@ -4792,7 +4795,7 @@ textarea:disabled {
 
 .channels-table th.channel-name-col {
   z-index: 4;
-  background: var(--bg);
+  background: var(--table-head-bg);
 }
 
 .channels-table td.channel-name-col {
@@ -4850,7 +4853,7 @@ textarea:disabled {
 
 .channels-table th.actions-col {
   z-index: 5;
-  background: var(--bg);
+  background: var(--table-head-bg);
   padding-left: 14px;
 }
 
@@ -6137,7 +6140,7 @@ textarea:disabled {
 
   .client-keys-table th.actions-col {
     z-index: 4;
-    background: var(--bg);
+    background: var(--table-head-bg);
   }
 
   .client-keys-table td.actions-col {

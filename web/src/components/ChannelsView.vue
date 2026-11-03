@@ -29,6 +29,7 @@ import { formatTime, formatDuration } from '../utils/format'
 import { refreshUntilCurrent } from '../utils/latestRequest'
 import {
   channelDisplayModels,
+  channelLandingUrl,
   channelMatchesFilters,
   channelModelFilterOptions,
 } from '../utils/channelDisplay'
@@ -729,17 +730,6 @@ function modelTitle(channel: Channel, item: ChannelDisplayModel): string {
   return unpriced.length ? `${base}；未配置单价: ${unpriced.join('、')}` : base
 }
 
-function channelLandingUrl(baseUrl: string): string | null {
-  try {
-    const url = new URL(baseUrl)
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-    url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/v1$/i, '') || '/'
-    return url.toString()
-  } catch {
-    return null
-  }
-}
-
 function configureChannelPrices(channel: Channel): void {
   openPrice(channel, priceSummary(channel).unpriced[0] || null)
 }
@@ -1164,7 +1154,7 @@ onMounted(load)
                   v-if="channelLandingUrl(channel.baseUrl)"
                   class="primary-cell channel-name-link"
                   :href="channelLandingUrl(channel.baseUrl) || undefined"
-                  :title="`打开上游地址：${channelLandingUrl(channel.baseUrl)}`"
+                  :title="`在新窗口打开上游地址：${channelLandingUrl(channel.baseUrl)}`"
                   target="_blank"
                   rel="noopener noreferrer"
                 >{{ channel.name }}</a>

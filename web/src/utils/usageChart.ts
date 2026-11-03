@@ -9,10 +9,8 @@ export function usageChartBucketRange(
   bucketStart: number,
 ): { from: number; to: number } | null {
   const bucketWidth = USAGE_BUCKET_WIDTH_MS[report.granularity] || 86_400_000
-  // datetime-local has minute precision, so round inward after intersecting
-  // the bucket with the report range.
-  const from = Math.ceil(Math.max(report.from, bucketStart) / 60_000) * 60_000
-  const to = Math.floor(Math.min(report.to, bucketStart + bucketWidth) / 60_000) * 60_000
+  const from = Math.max(report.from, bucketStart)
+  const to = Math.min(report.to, bucketStart + bucketWidth)
   return to > from ? { from, to } : null
 }
 

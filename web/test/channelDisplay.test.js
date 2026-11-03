@@ -7,9 +7,21 @@ import {
   channelModelFilterOptions,
   visibleModels,
   hiddenModelsTitle,
+  channelLandingUrl,
 } from '../src/utils/channelDisplay'
 
 describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
+  it('渠道地址链接只清理末尾 v1，保留查询参数和锚点并过滤内部地址', () => {
+    assert.equal(channelLandingUrl('https://user:secret@example.test/v1/?tenant=a#models'), 'https://example.test/?tenant=a#models')
+    assert.equal(channelLandingUrl('https://example.test/gateway/v1'), 'https://example.test/gateway')
+    assert.equal(channelLandingUrl('https://example.test/v1beta'), 'https://example.test/v1beta')
+    assert.equal(channelLandingUrl('https://127.0.0.1/v1'), null)
+    assert.equal(channelLandingUrl('http://10.2.3.4:8080/v1'), null)
+    assert.equal(channelLandingUrl('http://[::1]:8080/v1'), null)
+    assert.equal(channelLandingUrl('http://gateway.internal/v1'), null)
+    assert.equal(channelLandingUrl('file:///tmp/models'), null)
+  })
+
   it('常量 VISIBLE_MODEL_LIMIT 应为 3', () => {
     assert.equal(VISIBLE_MODEL_LIMIT, 3)
   })

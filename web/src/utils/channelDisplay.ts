@@ -9,6 +9,44 @@ export interface DisplayChannel {
 
 export type ChannelStatusFilter = 'all' | 'enabled' | 'disabled'
 
+/** Return a safe, user-clicked landing URL for a configured upstream endpoint. */
+export function channelLandingUrl(baseUrl: string): string | null {
+  try {
+    const url = new URL(baseUrl)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    if (isNonPublicHost(hostname)) return null
+    url.username = ''
+    url.password = ''
+    url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/v1$/i, '') || '/'
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+function isNonPublicHost(hostname: string): boolean {
+  if (hostname === 'localhost' || /\.(localhost|local|internal|lan)$/.test(hostname) || hostname === 'home.arpa') return true
+  if (hostname.includes(':')) {
+    const firstHextet = Number.parseInt(hostname.split(':')[0] || '0', 16)
+    return hostname === '::' || hostname === '::1' || hostname.startsWith('::ffff:')
+      || (firstHextet >= 0xfc00 && firstHextet <= 0xfdff)
+      || (firstHextet >= 0xfe80 && firstHextet <= 0xfebf)
+      || firstHextet >= 0xff00
+  }
+  // Do not turn a channel endpoint into a convenient link to a private or
+  // otherwise non-routable IP address in the administrator's browser.
+  const octets = hostname.split('.').map(Number)
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false
+  const [first, second] = octets
+  return first === 0 || first === 10 || first === 127 || first >= 224
+    || (first === 100 && second >= 64 && second <= 127)
+    || (first === 169 && second === 254)
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && (second === 0 || second === 168))
+    || (first === 198 && (second === 18 || second === 19))
+}
+
 export function channelModelFilterOptions(channels: readonly DisplayChannel[] | null | undefined): string[] {
   if (!Array.isArray(channels)) return []
   return [...new Set(channels.flatMap((channel) => channelDisplayModels(channel).map((model) => model.displayName)))].sort()

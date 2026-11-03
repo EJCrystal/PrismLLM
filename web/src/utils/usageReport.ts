@@ -79,10 +79,13 @@ export function usageReportPresetRange(preset: string | null | undefined, now = 
   }
 }
 
-export function toDatetimeLocalValue(timestamp: number): string {
+export function toDatetimeLocalValue(timestamp: number, includeSeconds = false): string {
   const date = new Date(timestamp)
   const pad = (value: number) => String(value).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+  const seconds = includeSeconds
+    ? `:${pad(date.getSeconds())}${date.getMilliseconds() ? `.${String(date.getMilliseconds()).padStart(3, '0')}` : ''}`
+    : ''
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}${seconds}`
 }
 
 export function fromDatetimeLocalValue(value: string | null | undefined): number {

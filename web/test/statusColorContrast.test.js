@@ -41,3 +41,26 @@ test('status text colors meet WCAG AA against theme surfaces and keep separate f
     }
   }
 })
+
+test('sticky table headers use the same theme surface as regular headers', () => {
+  for (const selector of [':root', '[data-theme="dark"]', '[data-theme="sepia"]']) {
+    const tokens = themeTokens(selector)
+    assert.ok(tokens.get('table-head-bg'))
+  }
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+  for (const selector of [
+    '.data-table th',
+    '.logs-table th.time-col',
+    '.logs-table th.actions-col',
+    '.channels-table th.channel-name-col',
+    '.channels-table th.actions-col',
+    '.client-keys-table th.actions-col',
+  ]) {
+    const backgrounds = rules.filter(([, selectors, body]) =>
+      selectors.split(',').some((item) => item.trim() === selector) && /background:/.test(body))
+    assert.ok(backgrounds.length, 'missing header background rule ' + selector)
+    for (const [, , body] of backgrounds) {
+      assert.match(body, /background:\s*var\(--table-head-bg\)/, selector + ' must share the themed header surface')
+    }
+  }
+})

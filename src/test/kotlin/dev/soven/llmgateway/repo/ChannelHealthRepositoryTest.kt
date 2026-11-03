@@ -20,6 +20,7 @@ import java.util.Base64
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -176,6 +177,53 @@ class ChannelHealthRepositoryTest {
             }
         }
         assertEquals(now - 10, indexedTimestamp)
+    }
+
+    @Test
+    fun historicalIndexingContinuesWhenPricingTiersAreCorrupted() = runBlocking {
+        val brokenPrice = log(listOf(attempt("a")), createdAt = now - 1)
+        val validPrice = log(listOf(attempt("a")), createdAt = now - 2)
+        logs.insert(brokenPrice)
+        logs.insert(validPrice)
+        sql("update request_logs set price_tiers_json = 'not-json' where request_id = '${brokenPrice.requestId}'")
+        sql("delete from request_attempts")
+        sql("update request_logs set health_indexed = false")
+
+        assertEquals(2, logs.indexHealthBatch(now - 86_400_000, 10))
+        assertEquals(0, logs.indexHealthBatch(now - 86_400_000, 10))
+        assertEquals(2, health.report("24h", mapOf("a" to true), 30, now).channels.single().metrics.attempts)
+    }
+
+    @Test
+    fun historicalIndexingIsolatesSqlFailuresAndRetriesOnlyTheFailedRow() = runBlocking {
+        logs.insert(log(listOf(attempt("a")), createdAt = now - 1))
+        logs.insert(log(listOf(attempt("a")), createdAt = now - 2))
+        sql("delete from request_attempts")
+        sql("update request_logs set health_indexed = false")
+        sql("alter table request_attempts add constraint reject_test_timestamp check (created_at <> ${now - 1})")
+        try {
+            assertFailsWith<org.jetbrains.exposed.v1.exceptions.ExposedSQLException> {
+                logs.indexHealthBatch(now - 86_400_000, 10)
+            }
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("select created_at, health_indexed from request_logs order by created_at desc").use { result ->
+                        assertTrue(result.next())
+                        assertEquals(now - 1, result.getLong(1))
+                        assertFalse(result.getBoolean(2), "Failed row must remain pending for retry")
+                        assertTrue(result.next())
+                        assertEquals(now - 2, result.getLong(1))
+                        assertTrue(result.getBoolean(2), "Healthy batch peer must commit independently")
+                    }
+                }
+            }
+            assertEquals(1, health.report("24h", mapOf("a" to true), 30, now).channels.single().metrics.attempts)
+        } finally {
+            sql("alter table request_attempts drop constraint reject_test_timestamp")
+        }
+        assertEquals(1, logs.indexHealthBatch(now - 86_400_000, 10))
+        assertEquals(0, logs.indexHealthBatch(now - 86_400_000, 10))
+        assertEquals(2, health.report("24h", mapOf("a" to true), 30, now).channels.single().metrics.attempts)
     }
 
     @Test

@@ -41,6 +41,8 @@ interface RangeDraft {
   to: string
 }
 
+interface ExactRange { from: number; to: number }
+
 interface UsageFilters {
   clientKeyId: string
   channelId: string
@@ -67,9 +69,10 @@ interface TrendMetric {
 const preset = ref('last7d')
 const rangeDraft = ref<RangeDraft>(createRangeDraft('last7d'))
 const rangeError = ref('')
-const maxDatetimeLocal = ref(toDatetimeLocalValue(Date.now()))
+const maxDatetimeLocal = ref(toDatetimeLocalValue(Date.now(), true))
 const filters = ref<UsageFilters>({ clientKeyId: '', channelId: '', model: '', protocol: '' })
 const report = ref<UsageReport | null>(null)
+const exactRange = ref<ExactRange | null>(null)
 const previousReport = ref<UsageReport | null>(null)
 const retention = ref<RetentionPolicy | null>(null)
 const channels = ref<Channel[]>([])
@@ -162,9 +165,10 @@ function selectChartBucket(): void {
   const range = usageChartBucketRange(report.value, row.bucketStart)
   if (!range) return
   preset.value = ''
-  rangeDraft.value = { from: toDatetimeLocalValue(range.from), to: toDatetimeLocalValue(range.to) }
+  exactRange.value = range
+  rangeDraft.value = { from: toDatetimeLocalValue(range.from, true), to: toDatetimeLocalValue(range.to, true) }
   rangeError.value = ''
-  load()
+  load({ range })
 }
 watch([trendRows, trendMetric, costMetricCurrency], () => { chartIndex.value = null })
 const trendPrimaryPoints = computed(() => buildTrendPoints(
@@ -300,6 +304,7 @@ function currentRange(): { from: number; to: number } {
 
 function selectPreset(presetId: string) {
   preset.value = presetId
+  exactRange.value = null
   rangeDraft.value = createRangeDraft(presetId)
   rangeError.value = ''
   load()
@@ -307,13 +312,14 @@ function selectPreset(presetId: string) {
 
 function refresh() {
   if (preset.value) rangeDraft.value = createRangeDraft(preset.value)
-  maxDatetimeLocal.value = toDatetimeLocalValue(Date.now())
+  maxDatetimeLocal.value = toDatetimeLocalValue(Date.now(), true)
   load({ quiet: true })
 }
 
 function onRangeInput() {
   // 手动修改时间后退出快捷项高亮，提交时再统一校验。
   preset.value = ''
+  exactRange.value = null
 }
 
 function onRangeChange() {
@@ -327,8 +333,8 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
 }
 
-async function load({ quiet = false }: { quiet?: boolean } = {}): Promise<void> {
-  const { from, to } = currentRange()
+async function load({ quiet = false, range }: { quiet?: boolean; range?: ExactRange | null } = {}): Promise<void> {
+  const { from, to } = range ?? exactRange.value ?? currentRange()
   const message = validateUsageReportRange(from, to)
   rangeError.value = message
   if (message) {
@@ -477,12 +483,12 @@ onMounted(() => {
       <div class="report-custom-range">
         <label class="report-range-field">
           <span>开始</span>
-          <input v-model="rangeDraft.from" type="datetime-local" :max="rangeDraft.to" @input="onRangeInput" @change="onRangeChange" />
+          <input v-model="rangeDraft.from" type="datetime-local" step="0.001" :max="rangeDraft.to" @input="onRangeInput" @change="onRangeChange" />
         </label>
         <span class="report-range-sep">—</span>
         <label class="report-range-field">
           <span>结束</span>
-          <input v-model="rangeDraft.to" type="datetime-local" :min="rangeDraft.from" :max="maxDatetimeLocal" @input="onRangeInput" @change="onRangeChange" />
+          <input v-model="rangeDraft.to" type="datetime-local" step="0.001" :min="rangeDraft.from" :max="maxDatetimeLocal" @input="onRangeInput" @change="onRangeChange" />
         </label>
       </div>
       <div class="report-range-hint">
