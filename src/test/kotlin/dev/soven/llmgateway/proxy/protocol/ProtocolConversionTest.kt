@@ -69,6 +69,16 @@ class ProtocolConversionTest {
     }
 
     @Test
+    fun `chat refusal and finish reason in one event are emitted once`() {
+        val converter = EventStreamConverter(ChatStreamDecoder(), ResponsesStreamEncoder("public"))
+        val frames = converter.feed("data: {\"id\":\"chat_refusal\",\"choices\":[{\"delta\":{\"refusal\":\"cannot help\"},\"finish_reason\":\"stop\"}]}") +
+            converter.feed("") + converter.feed("data: [DONE]") + converter.feed("")
+        assertEquals(1, frames.count { it.contains("event: response.refusal.delta") })
+        assertEquals(1, frames.count { it.contains("\"delta\":\"cannot help\"") })
+        assertTrue(frames.any { it.contains("response.incomplete") })
+    }
+
+    @Test
     fun `responses completed refusal output is emitted before chat terminal chunk`() {
         val converter = EventStreamConverter(ResponsesStreamDecoder(), ChatStreamEncoder("public"))
         val frames = converter.feed("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_refusal\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"cannot help\"}]}]}}") + converter.feed("")
