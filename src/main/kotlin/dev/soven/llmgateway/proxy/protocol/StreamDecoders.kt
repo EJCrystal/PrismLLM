@@ -9,6 +9,7 @@ internal class ChatStreamDecoder : StreamDecoder {
     override var usage: TokenUsage? = null
         private set
     private val fallbackId = "chatcmpl-"+System.currentTimeMillis()
+    private var responseRefused = false
 
     override fun decode(event: JsonObject): List<StreamEvent> = listOfNotNull(parse(event))
 
@@ -20,6 +21,8 @@ internal class ChatStreamDecoder : StreamDecoder {
         val choice = json.array("choices").firstOrNull() as? JsonObject
         if (choice == null) return if (usageJson != null) StreamEvent(id) else null
         val delta = choice["delta"] as? JsonObject ?: choice["message"] as? JsonObject
+        val refusal = delta?.string("refusal")
+        if (!refusal.isNullOrEmpty()) responseRefused = true
         val tools = mutableListOf<ToolCallDelta>()
         (delta?.get("tool_calls") as? JsonArray)?.forEachIndexed { position, element ->
             val call = element as? JsonObject ?: return@forEachIndexed
@@ -35,8 +38,13 @@ internal class ChatStreamDecoder : StreamDecoder {
             id = id,
             role = delta?.string("role"),
             content = delta?.string("content"),
+            refusal = refusal,
             toolCalls = tools,
-            finishReason = FinishReason.fromChat(choice.string("finish_reason")),
+            finishReason = if (responseRefused && choice.string("finish_reason") == "stop") {
+                FinishReason.CONTENT_FILTER
+            } else {
+                FinishReason.fromChat(choice.string("finish_reason"))
+            },
         )
     }
 }
@@ -94,6 +102,7 @@ internal class ResponsesStreamDecoder : StreamDecoder {
     private var nativeUsage: JsonObject? = null
     private var responseId: String? = null
     private var responseToolSeen = false
+    private var responseRefused = false
     override val usage: TokenUsage? get() = TokenUsage.fromResponses(nativeUsage)
 
     override fun decode(json: JsonObject): List<StreamEvent> {
@@ -104,6 +113,10 @@ internal class ResponsesStreamDecoder : StreamDecoder {
         return when (type) {
             "response.created" -> listOf(StreamEvent(id, role = "assistant"))
             "response.output_text.delta" -> listOf(StreamEvent(id, content = json.string("delta")))
+            "response.refusal.delta" -> {
+                responseRefused = true
+                listOf(StreamEvent(id, refusal = json.string("delta")))
+            }
             "response.output_item.added" -> {
                 val item = json["item"] as? JsonObject
                 if (item?.string("type") == "function_call") {
@@ -124,7 +137,19 @@ internal class ResponsesStreamDecoder : StreamDecoder {
                 nativeUsage = response?.get("usage") as? JsonObject
                 val hasTool = responseToolSeen ||
                     (response?.get("output") as? JsonArray)?.any { (it as? JsonObject)?.string("type") == "function_call" } == true
-                listOf(StreamEvent(id, finishReason = if (hasTool) FinishReason.TOOL_CALLS else FinishReason.STOP, done = true))
+                val refusalTexts = (response?.get("output") as? JsonArray).orEmpty().flatMap { item ->
+                    ((item as? JsonObject)?.array("content") ?: emptyList()).mapNotNull { part ->
+                        (part as? JsonObject)?.takeIf { it.string("type") == "refusal" }?.string("refusal")
+                    }
+                }
+                val hasRefusal = responseRefused || refusalTexts.isNotEmpty()
+                val finishReason = when {
+                    hasRefusal -> FinishReason.CONTENT_FILTER
+                    hasTool -> FinishReason.TOOL_CALLS
+                    else -> FinishReason.STOP
+                }
+                val refusalEvents = if (responseRefused) emptyList() else refusalTexts.map { StreamEvent(id, refusal = it) }
+                refusalEvents + StreamEvent(id, finishReason = finishReason, done = true)
             }
             "response.incomplete" -> {
                 nativeUsage = response?.get("usage") as? JsonObject

@@ -32,6 +32,52 @@ class ProtocolConversionTest {
     }
 
     @Test
+    fun `chat refusal is preserved as responses refusal content`() {
+        val chat = json("""{
+            "id":"chat_refusal",
+            "choices":[{"message":{"role":"assistant","content":null,"refusal":"cannot help"},"finish_reason":"stop"}]
+        }""")
+        val responses = ResponsesToChatCompletion.convertResponse(chat, "public")
+        val message = responses.array("output").single().jsonObject
+        assertEquals("message", message.string("type"))
+        assertEquals("refusal", message.array("content").single().jsonObject.string("type"))
+        assertEquals("cannot help", message.array("content").single().jsonObject.string("refusal"))
+        assertEquals("completed", responses.string("status"))
+    }
+
+    @Test
+    fun `streaming responses refusal reaches chat as refusal and content filter`() {
+        val converter = EventStreamConverter(ResponsesStreamDecoder(), ChatStreamEncoder("public"))
+        val frames = converter.feed("data: {\"type\":\"response.refusal.delta\",\"response\":{\"id\":\"resp_refusal\"},\"delta\":\"cannot help\"}") +
+            converter.feed("") + converter.feed("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_refusal\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"cannot help\"}]}]}}") + converter.feed("")
+        val body = frames.joinToString("\n")
+        assertTrue(body.contains("\"refusal\":\"cannot help\""), body)
+        assertTrue(body.contains("\"finish_reason\":\"content_filter\""), body)
+    }
+
+    @Test
+    fun `streaming chat refusal becomes responses refusal event`() {
+        val converter = EventStreamConverter(ChatStreamDecoder(), ResponsesStreamEncoder("public"))
+        val frames = converter.feed("data: {\"id\":\"chat_refusal\",\"choices\":[{\"delta\":{\"refusal\":\"cannot help\"},\"finish_reason\":null}]}") +
+            converter.feed("") + converter.feed("data: {\"id\":\"chat_refusal\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}") +
+            converter.feed("") + converter.feed("data: [DONE]") + converter.feed("")
+        val body = frames.joinToString("\n")
+        assertTrue(body.contains("event: response.refusal.delta"), body)
+        assertTrue(body.contains("\"delta\":\"cannot help\""), body)
+        assertTrue(body.contains("response.incomplete"), body)
+        assertTrue(body.contains("\"reason\":\"content_filter\""), body)
+    }
+
+    @Test
+    fun `responses completed refusal output is emitted before chat terminal chunk`() {
+        val converter = EventStreamConverter(ResponsesStreamDecoder(), ChatStreamEncoder("public"))
+        val frames = converter.feed("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_refusal\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"cannot help\"}]}]}}") + converter.feed("")
+        val body = frames.joinToString("\n")
+        assertTrue(body.contains("\"refusal\":\"cannot help\""), body)
+        assertTrue(body.contains("\"finish_reason\":\"content_filter\""), body)
+    }
+
+    @Test
     fun `unknown responses incomplete reasons never become successful stop`() {
         for (reason in listOf(null, "unknown_reason", "max_output_tokens")) {
             for (withTool in listOf(false, true)) {

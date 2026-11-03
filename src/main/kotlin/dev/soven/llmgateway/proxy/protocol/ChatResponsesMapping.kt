@@ -253,17 +253,22 @@ internal fun chatToResponsesResponse(chat: JsonObject, model: String): JsonObjec
         }
     }
     val text = message?.string("content").orEmpty()
-    if (text.isNotEmpty()) {
+    val refusal = message?.string("refusal").orEmpty()
+    if (text.isNotEmpty() || refusal.isNotEmpty()) {
         output += buildJsonObject {
             put("type", "message")
             put("id", "msg_${chat.string("id") ?: System.currentTimeMillis()}")
             put("role", "assistant")
             put("status", "completed")
             put("content", buildJsonArray {
-                add(buildJsonObject {
+                if (text.isNotEmpty()) add(buildJsonObject {
                     put("type", "output_text")
                     put("text", text)
                     put("annotations", JsonArray(emptyList()))
+                })
+                if (refusal.isNotEmpty()) add(buildJsonObject {
+                    put("type", "refusal")
+                    put("refusal", refusal)
                 })
             })
         }

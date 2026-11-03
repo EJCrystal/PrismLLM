@@ -103,6 +103,7 @@ internal data class StreamEvent(
     val id: String,
     val role: String? = null,
     val content: String? = null,
+    val refusal: String? = null,
     val toolCalls: List<ToolCallDelta> = emptyList(),
     val finishReason: FinishReason? = null,
     val done: Boolean = false,

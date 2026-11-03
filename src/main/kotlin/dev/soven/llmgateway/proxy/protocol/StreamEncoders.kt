@@ -31,6 +31,7 @@ internal class ChatStreamEncoder(private val model: String) : StreamEncoder {
         val delta = buildJsonObject {
             if (!started) put("role", chunk.role ?: "assistant")
             chunk.content?.let { put("content", it) }
+            chunk.refusal?.let { put("refusal", it) }
             if (toolCalls.isNotEmpty()) {
                 put("tool_calls", buildJsonArray {
                     toolCalls.forEach { tool ->
@@ -99,7 +100,7 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
             lines += "data: $start"
             lines += ""
         }
-        chunk.content?.takeIf { it.isNotEmpty() }?.let { text ->
+        (chunk.content ?: chunk.refusal)?.takeIf { it.isNotEmpty() }?.let { text ->
             val index = openTextBlock ?: nextBlockIndex++.also { block ->
                 openTextBlock = block
                 lines += "event: content_block_start"
@@ -160,9 +161,13 @@ internal class ResponsesStreamEncoder(private val model: String) : StreamEncoder
     private var sequenceNumber = 0
     private val createdAt = System.currentTimeMillis() / 1000
     private val responseText = StringBuilder()
+    private val responseRefusal = StringBuilder()
     private val responseTools = linkedMapOf<Int, MutableResponseTool>()
     private var nextResponseOutputIndex = 0
     private var responseTextIndex: Int? = null
+    private var nextResponseContentIndex = 0
+    private var responseTextContentIndex: Int? = null
+    private var responseRefusalContentIndex: Int? = null
 
     override fun emit(chunk: StreamEvent, usage: TokenUsage?): List<String> {
         val lines = mutableListOf<String>()
@@ -171,6 +176,33 @@ internal class ResponsesStreamEncoder(private val model: String) : StreamEncoder
             lines += event("response.created") { put("response", response("in_progress", JsonArray(emptyList()))) }
         }
         val messageId = "msg_$id"
+        val refusal = chunk.refusal?.takeIf { it.isNotEmpty() }
+        if (refusal != null) {
+            val outputIndex = responseTextIndex ?: nextResponseOutputIndex++.also { index ->
+                responseTextIndex = index
+                lines += event("response.output_item.added") {
+                    put("output_index", index)
+                    put("item", textItem("in_progress"))
+                }
+            }
+            if (responseRefusalContentIndex == null) {
+                val contentIndex = nextResponseContentIndex++
+                responseRefusalContentIndex = contentIndex
+                lines += event("response.content_part.added") {
+                    put("item_id", messageId)
+                    put("output_index", outputIndex)
+                    put("content_index", contentIndex)
+                    put("part", refusalPart(""))
+                }
+            }
+            responseRefusal.append(refusal)
+            lines += event("response.refusal.delta") {
+                put("item_id", messageId)
+                put("output_index", outputIndex)
+                put("content_index", responseRefusalContentIndex)
+                put("delta", refusal)
+            }
+        }
         chunk.content?.takeIf { it.isNotEmpty() }?.let { text ->
             val outputIndex = responseTextIndex ?: nextResponseOutputIndex++.also { index ->
                 responseTextIndex = index
@@ -178,10 +210,13 @@ internal class ResponsesStreamEncoder(private val model: String) : StreamEncoder
                     put("output_index", index)
                     put("item", textItem("in_progress"))
                 }
+            }
+            val contentIndex = responseTextContentIndex ?: nextResponseContentIndex++.also { index ->
+                responseTextContentIndex = index
                 lines += event("response.content_part.added") {
                     put("item_id", messageId)
-                    put("output_index", index)
-                    put("content_index", 0)
+                    put("output_index", outputIndex)
+                    put("content_index", index)
                     put("part", textPart(""))
                 }
             }
@@ -189,7 +224,7 @@ internal class ResponsesStreamEncoder(private val model: String) : StreamEncoder
             lines += event("response.output_text.delta") {
                 put("item_id", messageId)
                 put("output_index", outputIndex)
-                put("content_index", 0)
+                put("content_index", contentIndex)
                 put("delta", text)
                 put("logprobs", JsonArray(emptyList()))
             }
@@ -229,18 +264,34 @@ internal class ResponsesStreamEncoder(private val model: String) : StreamEncoder
             output.forEachIndexed { index, element ->
                 val item = element as JsonObject
                 if (item.string("type") == "message") {
-                    lines += event("response.output_text.done") {
-                        put("item_id", messageId)
-                        put("output_index", index)
-                        put("content_index", 0)
-                        put("text", responseText.toString())
-                        put("logprobs", JsonArray(emptyList()))
+                    if (responseText.isNotEmpty()) {
+                        lines += event("response.output_text.done") {
+                            put("item_id", messageId)
+                            put("output_index", index)
+                            put("content_index", responseTextContentIndex)
+                            put("text", responseText.toString())
+                            put("logprobs", JsonArray(emptyList()))
+                        }
+                        lines += event("response.content_part.done") {
+                            put("item_id", messageId)
+                            put("output_index", index)
+                            put("content_index", responseTextContentIndex)
+                            put("part", textPart(responseText.toString()))
+                        }
                     }
-                    lines += event("response.content_part.done") {
-                        put("item_id", messageId)
-                        put("output_index", index)
-                        put("content_index", 0)
-                        put("part", textPart(responseText.toString()))
+                    if (responseRefusal.isNotEmpty()) {
+                        lines += event("response.refusal.done") {
+                            put("item_id", messageId)
+                            put("output_index", index)
+                            put("content_index", responseRefusalContentIndex)
+                            put("refusal", responseRefusal.toString())
+                        }
+                        lines += event("response.content_part.done") {
+                            put("item_id", messageId)
+                            put("output_index", index)
+                            put("content_index", responseRefusalContentIndex)
+                            put("part", refusalPart(responseRefusal.toString()))
+                        }
                     }
                 } else {
                     lines += event("response.function_call_arguments.done") {
@@ -308,12 +359,22 @@ internal class ResponsesStreamEncoder(private val model: String) : StreamEncoder
         put("logprobs", JsonArray(emptyList()))
     }
 
+    private fun refusalPart(refusal: String): JsonObject = buildJsonObject {
+        put("type", "refusal")
+        put("refusal", refusal)
+    }
+
     private fun textItem(status: String): JsonObject = buildJsonObject {
         put("type", "message")
         put("id", "msg_$responseId")
         put("role", "assistant")
         put("status", status)
-        put("content", if (status == "in_progress") JsonArray(emptyList()) else buildJsonArray { add(textPart(responseText.toString())) })
+        put("content", if (status == "in_progress") JsonArray(emptyList()) else JsonArray(
+            listOfNotNull(
+                responseTextContentIndex?.let { it to textPart(responseText.toString()) },
+                responseRefusalContentIndex?.let { it to refusalPart(responseRefusal.toString()) },
+            ).sortedBy { it.first }.map { it.second },
+        ))
     }
 
     private fun toolItem(tool: MutableResponseTool, status: String): JsonObject = buildJsonObject {
