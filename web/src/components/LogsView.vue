@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import type { RequestLog, RequestLogAttempt } from '../types/api'
@@ -11,6 +12,8 @@ import { vScrollHint } from '../directives/scrollHint'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
 import FilterSelect from './FilterSelect.vue'
+import { useAnchoredPanel } from '../composables/useAnchoredPanel'
+import { useAutoRefresh } from '../composables/useAutoRefresh'
 import { createCursorPager } from '../utils/cursorPager'
 import { requestModeClass, requestModeLabel } from '../utils/requestMode'
 import {
@@ -43,6 +46,24 @@ const query = ref('')
 const channelFilter = ref('')
 const modelFilter = ref('')
 const statusFilter = ref('')
+const autoRefreshOptions = [
+  { label: '关闭', value: 0 },
+  { label: '每 5 秒', value: 5_000 },
+  { label: '每 10 秒', value: 10_000 },
+  { label: '每 30 秒', value: 30_000 },
+] as const
+const autoRefreshStorageKey = 'llm-gateway.logs.autoRefreshIntervalMs'
+function readAutoRefreshInterval(): number {
+  try {
+    const interval = Number(localStorage.getItem(autoRefreshStorageKey))
+    return autoRefreshOptions.some(option => option.value === interval) ? interval : 0
+  } catch {
+    return 0
+  }
+}
+const autoRefreshInterval = ref(readAutoRefreshInterval())
+const autoRefreshing = ref(false)
+const { anchor: refreshMenuAnchor, panelStyle: refreshMenuStyle, place: placeRefreshMenu } = useAnchoredPanel(220, 300)
 const filterOptions = computed(() => requestLogFilterOptions(logs.value))
 const hasFilters = computed(() => Boolean(channelFilter.value || modelFilter.value || statusFilter.value))
 function clearFilters() {
@@ -140,11 +161,30 @@ const averageLatency = computed(() => {
 })
 
 async function refresh() {
+  if (loading.value || loadingMore.value) return
   const loaded = await load()
   await nextTick()
   tableScroll.value?.scrollTo({ top: 0 })
   if (loaded) notify('请求日志已刷新')
 }
+
+async function autoRefresh(): Promise<void> {
+  autoRefreshing.value = true
+  try {
+    await load()
+  } finally {
+    autoRefreshing.value = false
+  }
+}
+
+function setAutoRefreshInterval(interval: number): void {
+  autoRefreshInterval.value = interval
+  try {
+    localStorage.setItem(autoRefreshStorageKey, String(interval))
+  } catch { /* ignore storage failures */ }
+}
+
+useAutoRefresh(autoRefreshInterval, () => { void autoRefresh() }, () => loading.value || loadingMore.value)
 
 watch(pageSize, async () => {
   await nextTick()
@@ -268,9 +308,30 @@ onMounted(load)
         <div><dt>平均总耗时</dt><dd title="当前已加载记录的简单平均">{{ averageLatency }}</dd></div>
       </dl>
       <div class="logs-toolbar-meta logs-page-actions">
-        <button type="button" class="button ghost refresh-button logs-refresh" :disabled="loading || loadingMore" :aria-busy="loading" @click="refresh">
-          <Icon name="refresh" :size="16" /><span>{{ loading ? '刷新中…' : '刷新' }}</span>
-        </button>
+        <Menu as="div" class="logs-refresh-menu">
+          <MenuButton as="template">
+            <button ref="refreshMenuAnchor" type="button" class="button ghost refresh-button logs-refresh" :aria-busy="loading" aria-label="请求日志刷新选项" @click="placeRefreshMenu" @keydown.down="placeRefreshMenu" @keydown.up="placeRefreshMenu" @keydown.enter="placeRefreshMenu" @keydown.space="placeRefreshMenu">
+              <Icon name="refresh" :size="16" class="logs-refresh-icon" :class="{ 'is-spinning': autoRefreshInterval > 0 || loading }" />
+              <span class="logs-refresh-label"><span>{{ loading ? '刷新中…' : '刷新' }}</span><span v-if="autoRefreshInterval" class="logs-refresh-interval">{{ autoRefreshInterval / 1000 }}s</span></span>
+              <Icon name="chevron" :size="14" />
+            </button>
+          </MenuButton>
+          <Teleport to="body">
+            <MenuItems class="floating-menu logs-refresh-menu-panel" :style="refreshMenuStyle" aria-label="请求日志刷新选项">
+              <MenuItem v-slot="{ active }" :disabled="loading || loadingMore" as="template">
+                <button type="button" class="floating-menu-item" :class="{ active }" :disabled="loading || loadingMore" @click="refresh">
+                  <Icon name="refresh" :size="16" /><span>立即刷新</span>
+                </button>
+              </MenuItem>
+              <div class="logs-refresh-menu-heading" aria-hidden="true">自动刷新</div>
+              <MenuItem v-for="option in autoRefreshOptions" :key="option.value" v-slot="{ active }" as="template">
+                <button type="button" :aria-label="'自动刷新：' + option.label + (autoRefreshInterval === option.value ? '（已选中）' : '')" class="floating-menu-item logs-refresh-option" :class="{ active, 'is-selected': autoRefreshInterval === option.value }" @click="setAutoRefreshInterval(option.value)">
+                  <span>{{ option.label }}</span><Icon v-if="autoRefreshInterval === option.value" name="check" :size="16" />
+                </button>
+              </MenuItem>
+            </MenuItems>
+          </Teleport>
+        </Menu>
         <details class="table-view-menu">
           <summary class="button ghost"><Icon name="settings" :size="16" /> 表格视图</summary>
           <div class="table-view-popover">
@@ -313,7 +374,7 @@ onMounted(load)
       </div>
 
       <TablePlaceholder
-        v-if="loading || logs.length === 0"
+        v-if="(loading && !autoRefreshing) || logs.length === 0"
         :loading="loading"
         loading-text="正在读取请求日志…"
         :empty="logs.length === 0"
