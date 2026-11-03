@@ -37,6 +37,7 @@ import java.util.Base64
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -301,6 +302,82 @@ class ProxyAttemptLoggingIntegrationTest {
             assertEquals(listOf(modelId), detail.availability.map { it.model })
         }
     }
+
+    @Test
+    fun oversizedProtocolLinesBeforeContentAreNotRetried() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            for (inbound in listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES)) {
+                val modelId = "oversized-before-" + inbound.value
+                val upstream = if (inbound == GatewayProtocol.CHAT_COMPLETIONS) GatewayProtocol.RESPONSES else GatewayProtocol.CHAT_COMPLETIONS
+                createChannel(modelId, fake.baseUrl + "/oversized-line-before-content/v1", protocol = upstream)
+                createChannel(modelId, fake.baseUrl + "/ok/v1", protocol = upstream, priority = 2)
+                val requestId = UUID.randomUUID().toString()
+                val count = fake.requests.size
+                val response = client.sendProtocolStreamRequest(modelId, inbound, requestId)
+                assertEquals(HttpStatusCode.BadGateway, response.status)
+                val body = response.bodyAsText()
+                assertFalse(body.contains("private-upstream-payload"))
+                assertEquals(count + 1, fake.requests.size)
+                val log = awaitRequestLog(requestId)
+                assertEquals("upstream_event_too_large", log.errorCode)
+                val attempt = log.attempts.single()
+                assertEquals(200, attempt.statusCode)
+                assertEquals("upstream_event_too_large", attempt.errorCode)
+                assertFalse(attempt.retryable)
+                assertFalse(attempt.committed)
+            }
+        }
+    }
+
+    @Test
+    fun oversizedProtocolLinesAfterContentEmitFailureFramesAndKeepAttemptDiagnostics() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            for (inbound in listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES)) {
+                val modelId = "oversized-after-" + inbound.value
+                val upstream = if (inbound == GatewayProtocol.CHAT_COMPLETIONS) GatewayProtocol.RESPONSES else GatewayProtocol.CHAT_COMPLETIONS
+                createChannel(modelId, fake.baseUrl + "/oversized-line-after-content/v1", protocol = upstream)
+                createChannel(modelId, fake.baseUrl + "/ok/v1", protocol = upstream, priority = 2)
+                val requestId = UUID.randomUUID().toString()
+                val count = fake.requests.size
+                val response = client.sendProtocolStreamRequest(modelId, inbound, requestId)
+                assertEquals(HttpStatusCode.OK, response.status)
+                val body = response.bodyAsText()
+                assertTrue(body.contains("Hel"), body)
+                assertFalse(body.contains("private-upstream-payload"))
+                assertFalse(body.contains("response.completed"))
+                assertFalse(body.contains("message_stop"))
+                val terminal = when (inbound) {
+                    GatewayProtocol.RESPONSES -> "event: response.failed"
+                    GatewayProtocol.MESSAGES -> "event: error"
+                    else -> "data: [DONE]"
+                }
+                assertEquals(1, body.lineSequence().count { it == terminal }, body)
+                assertEquals(count + 1, fake.requests.size)
+                val log = awaitRequestLog(requestId)
+                assertEquals("stream_interrupted", log.errorCode)
+                val attempt = log.attempts.single()
+                assertEquals(200, attempt.statusCode)
+                assertEquals("upstream_event_too_large", attempt.errorCode)
+                assertFalse(attempt.retryable)
+                assertTrue(attempt.committed)
+            }
+        }
+    }
+
+    private suspend fun HttpClient.sendProtocolStreamRequest(modelId: String, protocol: GatewayProtocol, requestId: String) =
+        post(when (protocol) {
+            GatewayProtocol.RESPONSES -> "/v1/responses"
+            GatewayProtocol.MESSAGES -> "/v1/messages"
+            else -> "/v1/chat/completions"
+        }) {
+            header(HttpHeaders.Authorization, "Bearer " + clientKey)
+            header("X-Request-Id", requestId)
+            contentType(ContentType.Application.Json)
+            val input = if (protocol == GatewayProtocol.RESPONSES) "input" else "messages"
+            setBody("""{"model":"$modelId","$input":[],"stream":true}""")
+        }
 
     private suspend fun createChannel(
         modelId: String,

@@ -56,7 +56,9 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.util.cio.ChannelWriteException
+import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.charsets.TooLongLineException
 import io.ktor.utils.io.core.readBytes
 import io.ktor.utils.io.readRemaining
 import io.ktor.utils.io.readUTF8Line
@@ -1036,7 +1038,7 @@ private suspend fun proxyStream(
                     withTimeout(app.config.firstTokenTimeoutMs) {
                         var found: String? = null
                         while (found == null) {
-                            val next = upstream.readUTF8Line(max = maxLineBytes) ?: break
+                            val next = readProtocolLine(upstream, maxLineBytes) ?: break
                             prefixLines.add(next)
                             recordReportedModel(next, state, upstreamProtocol)
                             if (
@@ -1083,6 +1085,7 @@ private suspend fun proxyStream(
                     call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
                         try {
                             var sawDone = false
+                            var streamFailure: GatewayException? = null
                             for (line in prefixLines) {
                                 converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
                                 markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
@@ -1097,7 +1100,7 @@ private suspend fun proxyStream(
                             if (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI) {
                                 while (true) {
                                     val line = try {
-                                        withTimeout(app.config.idleTimeoutMs) { upstream.readUTF8Line(max = maxLineBytes) }
+                                        withTimeout(app.config.idleTimeoutMs) { readProtocolLine(upstream, maxLineBytes) }
                                     } catch (e: TimeoutCancellationException) {
                                         throw GatewayException(
                                             HttpStatusCode.GatewayTimeout,
@@ -1105,6 +1108,11 @@ private suspend fun proxyStream(
                                             "上游流式响应空闲超时",
                                             "timeout_error",
                                         )
+                                    } catch (e: GatewayException) {
+                                        if (e.code != "upstream_event_too_large") throw e
+                                        streamFailure = e
+                                        converter?.fail(e.message)?.forEach { writeSseLine(it) }
+                                        break
                                     } ?: break
                                     recordReportedModel(line, state, upstreamProtocol)
                                     converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
@@ -1119,8 +1127,12 @@ private suspend fun proxyStream(
                                 }
                             }
                             converter?.finish()?.forEach { writeSseLine(it) }
-                            if (!sawDone) state.errorCode = "stream_interrupted"
-                            completion.complete(Unit)
+                            if (streamFailure != null) {
+                                completion.completeExceptionally(streamFailure)
+                            } else {
+                                if (!sawDone) state.errorCode = "stream_interrupted"
+                                completion.complete(Unit)
+                            }
                         } catch (e: Throwable) {
                             completion.completeExceptionally(e)
                             throw e
@@ -1152,6 +1164,18 @@ private suspend fun proxyStream(
     } catch (e: Throwable) {
         throw transportFailure(state.committed)
     }
+}
+
+internal suspend fun readProtocolLine(upstream: ByteReadChannel, maxLineBytes: Int): String? = try {
+    upstream.readUTF8Line(max = maxLineBytes)
+} catch (_: TooLongLineException) {
+    throw GatewayException(
+        HttpStatusCode.BadGateway,
+        "upstream_event_too_large",
+        "上游流单个事件超过大小上限",
+        "upstream_error",
+        retryable = false,
+    )
 }
 
 private suspend fun proxyJson(

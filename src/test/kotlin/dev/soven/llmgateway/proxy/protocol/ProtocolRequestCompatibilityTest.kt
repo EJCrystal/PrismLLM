@@ -1,5 +1,7 @@
 package dev.soven.llmgateway.proxy.protocol
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -101,6 +103,48 @@ class ProtocolRequestCompatibilityTest {
                 assertEquals(preference != null, converted.containsKey("parallel_tool_calls"))
             }
         }
+    }
+
+    @Test
+    fun parallelResponsesCallsShareOneAssistantMessageAndPreserveText() {
+        val request = Json.parseToJsonElement("""{"input":[
+            {"role":"assistant","content":[{"type":"output_text","text":"checking"}]},
+            {"type":"function_call","call_id":"a","id":"internal-a","name":"first","arguments":"{\"city\":\"SZ\"}"},
+            {"type":"function_call","id":"b","name":"second","arguments":""},
+            {"type":"function_call_output","call_id":"a","output":"sunny"},
+            {"type":"function_call_output","call_id":"b","output":"warm"}
+        ]}""").jsonObject
+        listOf(true, false).forEach { withText ->
+            val input = if (withText) request else JsonObject(request + ("input" to JsonArray(request.array("input").drop(1))))
+            val converted = ResponsesToChatCompletion.convertRequest(input, "upstream")
+            val messages = converted.array("messages").map { it.jsonObject }
+            assertEquals(listOf("assistant", "tool", "tool"), messages.map { it.string("role") })
+            assertEquals(if (withText) "checking" else null, messages[0].string("content"))
+            val calls = messages[0].array("tool_calls").map { it.jsonObject }
+            assertEquals(listOf("a", "b"), calls.map { it.string("id") })
+            assertEquals(listOf("first", "second"), calls.map { it["function"]!!.jsonObject.string("name") })
+            assertEquals(listOf("{\"city\":\"SZ\"}", "{}"), calls.map { it["function"]!!.jsonObject.string("arguments") })
+            assertEquals(listOf("a", "b"), messages.drop(1).map { it.string("tool_call_id") })
+            val back = ChatCompletionToResponses.convertRequest(converted, "public")
+            assertEquals(input.array("input").map { it.jsonObject.string("type") ?: "message" }, back.array("input").map { it.jsonObject.string("type") })
+        }
+    }
+
+    @Test
+    fun toolOutputsAndOtherRolesStartNewAssistantToolGroups() {
+        val request = Json.parseToJsonElement("""{"input":[
+            {"role":"user","content":"start"},
+            {"type":"function_call","call_id":"a","name":"first"},
+            {"type":"function_call_output","call_id":"a","output":"A"},
+            {"type":"function_call","call_id":"b","name":"second"},
+            {"type":"function_call_output","call_id":"b","output":"B"},
+            {"role":"user","content":"next"},
+            {"type":"function_call","call_id":"c","name":"third"},
+            {"type":"function_call_output","call_id":"c","output":"C"}
+        ]}""").jsonObject
+        val messages = ResponsesToChatCompletion.convertRequest(request, "upstream").array("messages").map { it.jsonObject }
+        assertEquals(listOf("user", "assistant", "tool", "assistant", "tool", "user", "assistant", "tool"), messages.map { it.string("role") })
+        assertEquals(listOf("a", "b", "c"), messages.filter { it.string("role") == "assistant" }.map { it.array("tool_calls").single().jsonObject.string("id") })
     }
 
     private fun requests(effort: String?, limit: Long?): List<Triple<ProtocolConverter, JsonObject, String>> = listOf(

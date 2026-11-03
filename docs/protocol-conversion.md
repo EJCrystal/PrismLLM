@@ -22,7 +22,7 @@
 - 每次调用 `streamConverter` 都创建独立会话，使用 `feed(line)` 输入 SSE 行，最后调用 `finish()` 冲刷尚无空行分隔的末尾事件。结束后再次输入或结束均不重复输出终止事件。
 - 流式解析器与编码器按协议分别实现，共享协议中立的 `StreamEvent`、`FinishReason`、`TokenUsage`，不使用 Chat Completions JSON 或 Chat 事件作为中间协议。Messages ↔ Responses 的普通请求和响应也直接映射。
 - 转换后的 Chat 工具索引按首次出现顺序连续编号；Responses 输出完整的项与内容生命周期，增量和完成事件复用稳定的项 ID，并提供递增事件序号。流式失败通过 `response.failed.response.error` 返回。
-- 跨协议 SSE 单个事件最多累计 1 MiB UTF-8 数据（含多行数据间的换行）；上游行读取也有长度限制，原生透传不受本次限制变更影响。
+- 跨协议 SSE 单个事件最多累计 1 MiB UTF-8 数据（含多行数据间的换行）；上游行读取也有长度限制。超长行返回不可重试的 upstream_event_too_large；响应已提交时先通过流转换器的 fail(message) 输出调用方协议的失败帧，再关闭流，不伪造成功完成。fail、finish 与后续 feed 在会话结束后均不重复输出终止事件。原生透传不受本次限制变更影响。
 - 认证、上游 URL、请求覆盖、限流、冷却、重试、响应提交时机、日志和计费仍属于现有代理层。HTTP 状态码与流内错误状态码继续分别记录。
 
 ## 支持边界
@@ -32,7 +32,7 @@
 | 能力 | 行为 |
 | --- | --- |
 | 文本、系统提示、输出 token 上限、采样参数 | 按目标协议字段映射；转换到 Messages 时缺失 token 上限默认 4096，启用思考时必要时提高到预算加 1 |
-| 函数工具、选择工具、工具调用与结果 | 映射声明、调用 ID、参数及结果；直接转换保留文本和工具项目的原始顺序 |
+| 函数工具、选择工具、工具调用与结果 | 映射声明、调用 ID、参数及结果；直接转换保留文本和工具项目的原始顺序；Responses → Chat 将连续工具调用合并到同一条 assistant 消息，并保留其前置 assistant 文本，不跨工具结果或其它角色合并 |
 | 并行工具开关 | Messages 的 `disable_parallel_tool_use` 与 Responses/Chat 的 `parallel_tool_calls` 对应 |
 | 用量 | 统一计数后输出目标字段；Messages 缓存读写加入输入总量，Responses/Chat 输入量不重复增加缓存 |
 | 思考参数 | 沿用已有 budget 与 effort 的分档近似映射，不声称无损；转换到 Messages 时保留显式 token 上限，将预算限制在上限减 1，且不低于 1024；启用思考但显式上限不大于 1024 时本地报错，不隐式提高调用方上限或关闭思考 |

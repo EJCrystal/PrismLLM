@@ -76,7 +76,8 @@ internal class EventStreamConverter(
         return encoder.emit(event.copy(finishReason = event.finishReason ?: FinishReason.STOP, done = false), decoder.usage) + encoder.terminalLines()
     }
 
-    private fun fail(message: String): List<String> {
+    override fun fail(message: String): List<String> {
+        if (finished) return emptyList()
         finished = true
         pendingFinish = null
         dataLines.clear()

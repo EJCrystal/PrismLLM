@@ -42,19 +42,25 @@ internal fun responsesToChatRequest(request: JsonObject): JsonObject = buildJson
             val item = element as? JsonObject ?: unsupported("input[$index]", "输入项必须是对象")
             when (item.string("type")) {
                 "message", null -> messages += responsesMessageToChat(item, "input[$index]")
-                "function_call" -> messages += buildJsonObject {
-                    put("role", "assistant")
-                    put("content", JsonNull)
-                    put("tool_calls", buildJsonArray {
-                        add(buildJsonObject {
-                            put("id", item.string("call_id") ?: item.string("id") ?: unsupported("input[$index].call_id", "function_call 缺少 call_id"))
-                            put("type", "function")
-                            putJsonObject("function") {
-                                put("name", item.string("name") ?: unsupported("input[$index].name", "function_call 缺少 name"))
-                                put("arguments", item.string("arguments").orEmpty().ifEmpty { "{}" })
-                            }
-                        })
-                    })
+                "function_call" -> {
+                    val call = buildJsonObject {
+                        put("id", item.string("call_id") ?: item.string("id") ?: unsupported("input[$index].call_id", "function_call 缺少 call_id"))
+                        put("type", "function")
+                        putJsonObject("function") {
+                            put("name", item.string("name") ?: unsupported("input[$index].name", "function_call 缺少 name"))
+                            put("arguments", item.string("arguments").orEmpty().ifEmpty { "{}" })
+                        }
+                    }
+                    val previous = messages.lastOrNull()
+                    if (previous?.string("role") == "assistant") {
+                        messages[messages.lastIndex] = JsonObject(previous + ("tool_calls" to JsonArray(previous.array("tool_calls") + call)))
+                    } else {
+                        messages += buildJsonObject {
+                            put("role", "assistant")
+                            put("content", JsonNull)
+                            put("tool_calls", JsonArray(listOf(call)))
+                        }
+                    }
                 }
                 "function_call_output" -> messages += buildJsonObject {
                     put("role", "tool")
