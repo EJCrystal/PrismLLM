@@ -12,14 +12,28 @@ import kotlinx.serialization.json.putJsonObject
 internal class ChatStreamEncoder(private val model: String) : StreamEncoder {
     private var started = false
     private val toolIndexes = linkedMapOf<Int, Int>()
+    private val toolsWithArguments = mutableSetOf<Int>()
 
     override fun emit(chunk: StreamEvent, usage: TokenUsage?): List<String> {
+        val toolCalls = chunk.toolCalls.toMutableList()
+        toolCalls.forEach { tool ->
+            toolIndexes.getOrPut(tool.index) { toolIndexes.size }
+            if (!tool.arguments.isNullOrEmpty()) toolsWithArguments += tool.index
+        }
+        if (chunk.finishReason != null) {
+            toolIndexes.keys.filterNot { it in toolsWithArguments }.forEach { index ->
+                val position = toolCalls.indexOfFirst { it.index == index }
+                if (position >= 0) toolCalls[position] = toolCalls[position].copy(arguments = "{}")
+                else toolCalls += ToolCallDelta(index = index, arguments = "{}")
+                toolsWithArguments += index
+            }
+        }
         val delta = buildJsonObject {
             if (!started) put("role", chunk.role ?: "assistant")
             chunk.content?.let { put("content", it) }
-            if (chunk.toolCalls.isNotEmpty()) {
+            if (toolCalls.isNotEmpty()) {
                 put("tool_calls", buildJsonArray {
-                    chunk.toolCalls.forEach { tool ->
+                    toolCalls.forEach { tool ->
                         add(buildJsonObject {
                             put("index", toolIndexes.getOrPut(tool.index) { toolIndexes.size })
                             tool.id?.let { put("id", it) }
@@ -201,6 +215,14 @@ internal class ResponsesStreamEncoder(private val model: String) : StreamEncoder
             }
         }
         if (chunk.finishReason != null) {
+            responseTools.values.filter { it.arguments.isEmpty() }.forEach { tool ->
+                tool.arguments.append("{}")
+                lines += event("response.function_call_arguments.delta") {
+                    put("item_id", tool.id)
+                    put("output_index", tool.outputIndex)
+                    put("delta", "{}")
+                }
+            }
             val incomplete = chunk.finishReason == FinishReason.MAX_TOKENS || chunk.finishReason == FinishReason.CONTENT_FILTER
             val status = if (incomplete) "incomplete" else "completed"
             val output = output(status)

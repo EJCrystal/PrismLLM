@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.proxy.protocol
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 
@@ -13,7 +14,7 @@ internal class ChatStreamDecoder : StreamDecoder {
 
     private fun parse(json: JsonObject): StreamEvent? {
         val id = json.string("id") ?: fallbackId
-        json["error"]?.takeIf { it !is JsonNull }?.let { return StreamEvent(id, error = it.toString()) }
+        json["error"]?.takeIf { it !is JsonNull }?.let { return StreamEvent(id, error = streamErrorText(it)) }
         val usageJson = json["usage"] as? JsonObject
         if (usageJson != null) usage = TokenUsage.fromChat(usageJson)
         val choice = json.array("choices").firstOrNull() as? JsonObject
@@ -83,7 +84,7 @@ internal class MessagesStreamDecoder : StreamDecoder {
                 listOf(StreamEvent(id, finishReason = FinishReason.fromMessages(delta?.string("stop_reason"))))
             }
             "message_stop" -> listOf(StreamEvent(id, done = true))
-            "error" -> listOf(StreamEvent(id, error = json["error"]?.toString() ?: "upstream stream error"))
+            "error" -> listOf(StreamEvent(id, error = streamErrorText(json["error"])))
             else -> emptyList()
         }
     }
@@ -139,16 +140,19 @@ internal class ResponsesStreamDecoder : StreamDecoder {
                 ))
             }
             "response.failed" -> {
-                val message = (response?.get("error") as? JsonObject)?.string("message")
-                    ?: json["error"]?.toString()
-                    ?: "upstream stream error"
+                val message = (response?.get("error") as? JsonObject)?.string("message")?.take(MAX_STREAM_ERROR_CHARS)
+                    ?: streamErrorText(json["error"])
                 listOf(StreamEvent(id, error = message))
             }
-            "error" -> listOf(StreamEvent(id, error = json["error"]?.toString() ?: "upstream stream error"))
+            "error" -> listOf(StreamEvent(id, error = streamErrorText(json["error"])))
             else -> emptyList()
         }
     }
 }
+
+private const val MAX_STREAM_ERROR_CHARS = 2048
+
+private fun streamErrorText(error: JsonElement?): String = error?.toString()?.take(MAX_STREAM_ERROR_CHARS) ?: "upstream stream error"
 
 private fun mergeUsage(base: JsonObject?, next: JsonObject?): JsonObject? = when {
     base == null -> next

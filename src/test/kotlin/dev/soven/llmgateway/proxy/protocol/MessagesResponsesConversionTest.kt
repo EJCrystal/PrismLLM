@@ -15,6 +15,23 @@ import kotlin.test.assertTrue
 
 class MessagesResponsesConversionTest {
     @Test
+    fun `empty Responses messages do not create invalid Messages text blocks`() {
+        val converted = ResponsesToMessages.convertRequest(json("""{
+            "input":[
+                {"type":"message","role":"user","content":""},
+                {"type":"message","role":"assistant","content":[]},
+                {"type":"message","role":"user","content":[{"type":"output_text","text":""}]},
+                {"type":"message","role":"user","content":"hello"}
+            ]
+        }"""), "upstream")
+        val messages = converted["messages"]!!.jsonArray
+        assertEquals(1, messages.size)
+        assertEquals("hello", messages.single().jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+        val emptyInput = ResponsesToMessages.convertRequest(json("""{"input":""}"""), "upstream")
+        assertTrue(emptyInput["messages"]!!.jsonArray.isEmpty())
+    }
+
+    @Test
     fun `messages request preserves interleaved text and tool order without a chat intermediary`() {
         val request = json("""{
             "model":"public","max_tokens":32,"system":[{"type":"text","text":"system"}],

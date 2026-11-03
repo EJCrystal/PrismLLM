@@ -122,7 +122,9 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
         toolResults.clear()
     }
     when (val input = request["input"]) {
-        is JsonPrimitive -> messages += messageWithBlocks("user", listOf(messageTextBlock(input.content)))
+        is JsonPrimitive -> if (input.content.isNotEmpty()) {
+            messages += messageWithBlocks("user", listOf(messageTextBlock(input.content)))
+        }
         is JsonArray -> input.forEachIndexed { index, element ->
             val path = "input[$index]"
             val item = element as? JsonObject ?: unsupported(path, "输入项必须是对象")
@@ -133,7 +135,9 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
                     val text = item.textContentStrict("content", "$path.content")
                     when (role) {
                         "system", "developer" -> system += text
-                        "user", "assistant" -> messages += messageWithBlocks(role, listOf(messageTextBlock(text)))
+                        "user", "assistant" -> if (text.isNotEmpty()) {
+                            messages += messageWithBlocks(role, listOf(messageTextBlock(text)))
+                        }
                         else -> unsupported("$path.role", "不支持的消息角色")
                     }
                 }

@@ -85,6 +85,54 @@ class ProtocolStreamCompatibilityTest {
     }
 
     @Test
+    fun `streamed no argument tool calls end with a valid empty object`() {
+        val directions = listOf(
+            GatewayProtocol.CHAT_COMPLETIONS to GatewayProtocol.MESSAGES,
+            GatewayProtocol.CHAT_COMPLETIONS to GatewayProtocol.RESPONSES,
+            GatewayProtocol.RESPONSES to GatewayProtocol.MESSAGES,
+            GatewayProtocol.RESPONSES to GatewayProtocol.CHAT_COMPLETIONS,
+        )
+        for ((client, source) in directions) {
+            for (emptyDelta in listOf(false, true)) {
+                val converter = ProtocolConverterRegistry.get(client, source).streamConverter("public")
+                val output = events(feed(converter, noArgumentToolInput(source, emptyDelta)))
+                if (client == GatewayProtocol.CHAT_COMPLETIONS) {
+                    val calls = output.flatMap { event ->
+                        event.array("choices").flatMap { it.jsonObject["delta"]!!.jsonObject.array("tool_calls") }.map { it.jsonObject }
+                    }
+                    assertEquals("{}", calls.mapNotNull { it["function"]!!.jsonObject.string("arguments") }.joinToString(""))
+                    assertTrue(calls.all { it.long("index") == 0L })
+                } else {
+                    val delta = output.single { it.string("type") == "response.function_call_arguments.delta" }
+                    assertEquals("{}", delta.string("delta"))
+                    val done = output.single { it.string("type") == "response.function_call_arguments.done" }
+                    assertEquals("{}", done.string("arguments"))
+                    val tool = output.single { it.string("type") == "response.output_item.done" }["item"]!!.jsonObject
+                    assertEquals("{}", tool.string("arguments"))
+                    assertEquals(tool, output.last()["response"]!!.jsonObject.array("output").single().jsonObject)
+                    val addedTool = output.single { it.string("type") == "response.output_item.added" }["item"]!!.jsonObject
+                    assertEquals("", addedTool.string("arguments"))
+                }
+                assertTrue(converter.finish().isEmpty())
+            }
+        }
+    }
+
+    @Test
+    fun `stream decoder error messages are bounded`() {
+        val large = "x".repeat(MAX_PROTOCOL_EVENT_BYTES - 100)
+        val cases = listOf(
+            ChatStreamDecoder() to """{"error":{"message":"$large"}}""",
+            MessagesStreamDecoder() to """{"type":"error","error":{"message":"$large"}}""",
+            ResponsesStreamDecoder() to """{"type":"error","error":{"message":"$large"}}""",
+            ResponsesStreamDecoder() to """{"type":"response.failed","response":{"error":{"message":"$large"}}}""",
+        )
+        for ((decoder, payload) in cases) {
+            assertEquals(2048, decoder.decode(json(payload)).single().error!!.length)
+        }
+    }
+
+    @Test
     fun `responses lifecycle reconstructs text and parallel tools by stable item identity`() {
         listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES).forEach { source ->
             listOf(FinishReason.STOP, FinishReason.MAX_TOKENS, FinishReason.CONTENT_FILTER).forEach { reason ->
@@ -181,6 +229,60 @@ class ProtocolStreamCompatibilityTest {
             assertTrue(converter.finish().isEmpty())
             assertTrue(converter.fail("again").isEmpty())
             assertTrue(converter.feed("data: [DONE]").isEmpty())
+        }
+    }
+
+    @Test
+    fun emptyArgumentDefaultsArePerToolAndOnlyEmittedAtCompletion() {
+        for (encoder in listOf(ChatStreamEncoder("public"), ResponsesStreamEncoder("public"))) {
+            val beforeFinish = events(encoder.emit(StreamEvent("reply", toolCalls = listOf(
+                ToolCallDelta(index = 3, id = "populated", name = "lookup", arguments = "{"),
+                ToolCallDelta(index = 8, id = "empty", name = "lookup", arguments = ""),
+            )), null))
+            val afterFinish = events(encoder.emit(StreamEvent("reply", toolCalls = listOf(
+                ToolCallDelta(index = 3, arguments = "\"city\":\"SZ\"}"),
+                ToolCallDelta(index = 11, id = "late", name = "lookup", arguments = ""),
+            ), finishReason = FinishReason.TOOL_CALLS), null))
+            val output = beforeFinish + afterFinish
+            val expected = listOf("{\"city\":\"SZ\"}", "{}", "{}")
+            if (encoder is ChatStreamEncoder) {
+                val calls = output.flatMap { event ->
+                    event.array("choices").flatMap { it.jsonObject["delta"]!!.jsonObject.array("tool_calls") }.map { it.jsonObject }
+                }
+                val arguments = calls.groupBy { it.long("index") }.values.map { deltas ->
+                    deltas.mapNotNull { it["function"]!!.jsonObject.string("arguments") }.joinToString("")
+                }
+                assertEquals(expected, arguments)
+                assertEquals(listOf("populated", "empty", "late"), calls.mapNotNull { it.string("id") })
+            } else {
+                assertFalse(beforeFinish.any { it.string("type") == "response.function_call_arguments.delta" && it.string("delta") == "{}" })
+                val tools = afterFinish.last()["response"]!!.jsonObject.array("output").map { it.jsonObject }
+                assertEquals(expected, tools.map { it.string("arguments") })
+                tools.forEach { tool ->
+                    val deltas = output.filter { it.string("type") == "response.function_call_arguments.delta" && it.string("item_id") == tool.string("id") }
+                    assertEquals(tool.string("arguments"), deltas.map { it.string("delta") }.joinToString(""))
+                }
+            }
+        }
+    }
+
+    private fun noArgumentToolInput(source: GatewayProtocol, emptyDelta: Boolean): List<String> = when (source) {
+        GatewayProtocol.MESSAGES -> buildList {
+            add("""{"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"call_empty","name":"lookup"}}""")
+            if (emptyDelta) add("""{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":""}}""")
+            add("""{"type":"message_delta","delta":{"stop_reason":"tool_use"}}""")
+            add("""{"type":"message_stop"}""")
+        }
+        GatewayProtocol.RESPONSES -> buildList {
+            add("""{"type":"response.output_item.added","output_index":3,"item":{"type":"function_call","call_id":"call_empty","name":"lookup"}}""")
+            if (emptyDelta) add("""{"type":"response.function_call_arguments.delta","output_index":3,"delta":""}""")
+            add("""{"type":"response.completed","response":{"status":"completed","output":[]}}""")
+        }
+        else -> buildList {
+            add("""{"id":"reply","choices":[{"delta":{"tool_calls":[{"index":3,"id":"call_empty","function":{"name":"lookup"}}]},"finish_reason":null}]}""")
+            if (emptyDelta) add("""{"id":"reply","choices":[{"delta":{"tool_calls":[{"index":3,"function":{"arguments":""}}]},"finish_reason":null}]}""")
+            add("""{"id":"reply","choices":[{"delta":{},"finish_reason":"tool_calls"}]}""")
+            add("[DONE]")
         }
     }
 
