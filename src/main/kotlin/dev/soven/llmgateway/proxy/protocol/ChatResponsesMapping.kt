@@ -21,6 +21,7 @@ internal fun responsesToChatRequest(request: JsonObject): JsonObject = buildJson
     (request.string("user") ?: (request["metadata"] as? JsonObject)?.string("user_id"))
         ?.let { put("user", it) }
     (request["reasoning"] as? JsonObject)?.string("effort")?.let { put("reasoning_effort", it) }
+    request.boolean("parallel_tool_calls")?.let { put("parallel_tool_calls", it) }
     (request["text"] as? JsonObject)?.get("format")?.let {
         put("response_format", responsesTextFormatToChat(it))
     }

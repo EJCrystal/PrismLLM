@@ -96,11 +96,18 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
     validateResponsesRequest(request)
     put("model", upstreamModel)
     listOf("stream", "temperature", "top_p").forEach { field -> request[field]?.let { put(field, it) } }
-    put("max_tokens", request.long("max_output_tokens") ?: 4096L)
+    val requestedMaxTokens = request.long("max_output_tokens")
+    val reasoningEffort = (request["reasoning"] as? JsonObject)?.string("effort")
+    if (reasoningEffort != null) {
+        val (thinking, maxTokens) = thinkingAndMaxTokens(reasoningEffort, requestedMaxTokens, "max_output_tokens")
+        put("max_tokens", maxTokens)
+        put("thinking", thinking)
+    } else {
+        put("max_tokens", requestedMaxTokens ?: 4096L)
+    }
     (request.string("user") ?: (request["metadata"] as? JsonObject)?.string("user_id"))?.let {
         putJsonObject("metadata") { put("user_id", it) }
     }
-    (request["reasoning"] as? JsonObject)?.string("effort")?.let { put("thinking", thinkingFromEffort(it)) }
     if ((request["text"] as? JsonObject)?.get("format") != null) {
         unsupported("text.format", "Anthropic Messages 不支持 OpenAI 结构化输出参数")
     }

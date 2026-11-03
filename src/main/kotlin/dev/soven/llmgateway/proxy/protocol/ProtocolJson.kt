@@ -81,6 +81,22 @@ internal fun thinkingFromEffort(effort: String): JsonObject = buildJsonObject {
     }
 }
 
+internal fun thinkingAndMaxTokens(effort: String, requestedMaxTokens: Long?, maxTokensField: String): Pair<JsonObject, Long> {
+    val thinking = thinkingFromEffort(effort)
+    val requestedBudget = thinking.long("budget_tokens")
+    val maxTokens = requestedMaxTokens ?: 4096L
+    if (requestedBudget == null) return thinking to maxTokens
+    if (requestedMaxTokens == null) return thinking to maxOf(maxTokens, requestedBudget + 1)
+    if (maxTokens <= 1024) {
+        unsupported(maxTokensField, "启用思考时 token 上限必须大于 1024")
+    }
+    val adjustedThinking = buildJsonObject {
+        thinking.forEach { (key, value) -> if (key != "budget_tokens") put(key, value) }
+        put("budget_tokens", minOf(requestedBudget, maxTokens - 1))
+    }
+    return adjustedThinking to maxTokens
+}
+
 internal fun JsonObject.thinkingEffort(): String? {
     val thinking = this["thinking"] as? JsonObject ?: return null
     if (thinking.string("type") == "disabled") return "none"

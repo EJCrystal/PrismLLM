@@ -93,10 +93,18 @@ internal fun chatToMessagesRequest(chat: JsonObject, upstreamModel: String): Jso
     chat.boolean("stream")?.let { put("stream", it) }
     chat.number("temperature")?.let { put("temperature", it) }
     chat.number("top_p")?.let { put("top_p", it) }
-    put("max_tokens", chat.long("max_tokens") ?: chat.long("max_completion_tokens") ?: 4096L)
+    val requestedMaxTokens = chat.long("max_tokens") ?: chat.long("max_completion_tokens")
+    val reasoningEffort = chat.string("reasoning_effort")
+    if (reasoningEffort != null) {
+        val maxTokensField = if (chat.long("max_tokens") != null) "max_tokens" else "max_completion_tokens"
+        val (thinking, maxTokens) = thinkingAndMaxTokens(reasoningEffort, requestedMaxTokens, maxTokensField)
+        put("max_tokens", maxTokens)
+        put("thinking", thinking)
+    } else {
+        put("max_tokens", requestedMaxTokens ?: 4096L)
+    }
     chat.stringOrStringArray("stop")?.let { values -> put("stop_sequences", JsonArray(values.map(::JsonPrimitive))) }
     chat.string("user")?.let { putJsonObject("metadata") { put("user_id", it) } }
-    chat.string("reasoning_effort")?.let { effort -> put("thinking", thinkingFromEffort(effort)) }
     if (chat["response_format"] != null) {
         unsupported("response_format", "Anthropic Messages 不支持 OpenAI 结构化输出参数")
     }

@@ -47,7 +47,7 @@ class MessagesResponsesConversionTest {
                 {"type":"function_call_output","call_id":"first","output":"A"},
                 {"type":"function_call_output","call_id":"second","output":"B"},
                 {"role":"user","content":[{"type":"input_text","text":"next"}]}
-            ],"max_output_tokens":64,"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+            ],"max_output_tokens":16384,"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
             "parallel_tool_calls":false,"reasoning":{"effort":"high"},"user":"user_1","store":false,"include":[],"truncation":"disabled"
         }""")
         val converted = ResponsesToMessages.convertRequest(request, "upstream")
@@ -56,7 +56,7 @@ class MessagesResponsesConversionTest {
         assertEquals(2, messages[1].jsonObject["content"]!!.jsonArray.size)
         assertEquals("first", messages[0].jsonObject["content"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content)
         assertEquals("user_1", converted["metadata"]!!.jsonObject["user_id"]!!.jsonPrimitive.content)
-        assertEquals("64", converted["max_tokens"]!!.jsonPrimitive.content)
+        assertEquals("16384", converted["max_tokens"]!!.jsonPrimitive.content)
         assertEquals("8192", converted["thinking"]!!.jsonObject["budget_tokens"]!!.jsonPrimitive.content)
         assertEquals("true", converted["tool_choice"]!!.jsonObject["disable_parallel_tool_use"]!!.jsonPrimitive.content)
     }
