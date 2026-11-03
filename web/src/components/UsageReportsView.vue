@@ -30,7 +30,7 @@ import {
 } from '../utils/usageReport'
 import { createLatestRequestGuard } from '../utils/latestRequest'
 import { createRetentionReportState } from '../utils/retentionReportState'
-import { usageChartIndex, usageChartPoint, usageChartScale } from '../utils/usageChart'
+import { usageChartBucketRange, usageChartIndex, usageChartPoint, usageChartScale } from '../utils/usageChart'
 
 type DimensionId = 'clientKey' | 'channel' | 'model' | 'channelKey' | 'protocol' | 'error'
 type DimensionKey = 'byClientKey' | 'byChannel' | 'byModel' | 'byChannelKey' | 'byProtocol' | 'byErrorCode'
@@ -159,14 +159,10 @@ function chartFocusOut(event: FocusEvent) {
 function selectChartBucket(): void {
   const row = chartRow.value
   if (!row || !report.value) return
-  const width = ({ hour: 3_600_000, day: 86_400_000, week: 7 * 86_400_000 } as Record<string, number>)[report.value.granularity] || 86_400_000
-  // datetime-local has minute precision, so round the start up and the end down
-  // to avoid selecting requests outside the bucket/report interval.
-  const from = Math.ceil(Math.max(report.value.from, row.bucketStart) / 60_000) * 60_000
-  const to = Math.floor(Math.min(report.value.to, row.bucketStart + width) / 60_000) * 60_000
-  if (to <= from) return
+  const range = usageChartBucketRange(report.value, row.bucketStart)
+  if (!range) return
   preset.value = ''
-  rangeDraft.value = { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(to) }
+  rangeDraft.value = { from: toDatetimeLocalValue(range.from), to: toDatetimeLocalValue(range.to) }
   rangeError.value = ''
   load()
 }

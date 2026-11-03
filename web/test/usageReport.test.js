@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { usageChartBucketRange } from '../src/utils/usageChart'
 import {
   usageCostAmount,
   usageCostEntries,
@@ -98,16 +99,40 @@ describe('usageReport: 用量报表展示', () => {
     assert.ok(Number.isNaN(fromDatetimeLocalValue('')))
   })
 
-  it('趋势钻取按 datetime-local 分钟精度向内对齐区间边界', () => {
+  it('趋势钻取将桶范围与报表范围求交后按分钟向内对齐', () => {
     const from = new Date(2026, 9, 29, 9, 5, 31).getTime()
     const to = new Date(2026, 9, 29, 10, 30, 29).getTime()
-    const drilledFrom = Math.ceil(from / 60_000) * 60_000
-    const drilledTo = Math.floor(to / 60_000) * 60_000
-    assert.equal(toDatetimeLocalValue(drilledFrom), '2026-10-29T09:06')
-    assert.equal(toDatetimeLocalValue(drilledTo), '2026-10-29T10:30')
-    assert.ok(drilledFrom >= from)
-    assert.ok(drilledTo <= to)
-    assert.ok(drilledTo > drilledFrom)
+    const report = { from, to, granularity: 'hour' }
+
+    const firstBucket = usageChartBucketRange(report, new Date(2026, 9, 29, 9, 0).getTime())
+    assert.deepEqual(firstBucket, {
+      from: new Date(2026, 9, 29, 9, 6).getTime(),
+      to: new Date(2026, 9, 29, 10, 0).getTime(),
+    })
+    assert.equal(toDatetimeLocalValue(firstBucket.from), '2026-10-29T09:06')
+
+    const lastBucket = usageChartBucketRange(report, new Date(2026, 9, 29, 10, 0).getTime())
+    assert.deepEqual(lastBucket, {
+      from: new Date(2026, 9, 29, 10, 0).getTime(),
+      to: new Date(2026, 9, 29, 10, 30).getTime(),
+    })
+    assert.equal(toDatetimeLocalValue(lastBucket.to), '2026-10-29T10:30')
+  })
+
+  it('趋势钻取使用正确的桶宽，并拒绝分钟对齐后的空区间', () => {
+    const start = new Date(2026, 9, 29, 9, 0).getTime()
+    assert.deepEqual(usageChartBucketRange({ from: start, to: start + 7_200_000, granularity: 'hour' }, start), {
+      from: start, to: start + 3_600_000,
+    })
+    assert.deepEqual(usageChartBucketRange({ from: start, to: start + 8 * 86_400_000, granularity: 'week' }, start), {
+      from: start, to: start + 7 * 86_400_000,
+    })
+    assert.deepEqual(usageChartBucketRange({ from: start, to: start + 2 * 86_400_000, granularity: 'day' }, start), {
+      from: start, to: start + 86_400_000,
+    })
+    assert.equal(usageChartBucketRange({ from: start + 1, to: start + 59_999, granularity: 'hour' }, start), null)
+    assert.equal(usageChartBucketRange({ from: start + 1, to: start + 60_001, granularity: 'hour' }, start), null)
+    assert.equal(usageChartBucketRange({ from: start, to: start + 3_600_000, granularity: 'hour' }, start + 3_600_000), null)
   })
 
   it('自定义范围拒绝倒序、缺值和超过 30 天', () => {

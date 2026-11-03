@@ -1,3 +1,21 @@
+const USAGE_BUCKET_WIDTH_MS: Record<string, number> = {
+  hour: 3_600_000,
+  day: 86_400_000,
+  week: 7 * 86_400_000,
+}
+
+export function usageChartBucketRange(
+  report: { from: number; to: number; granularity: string },
+  bucketStart: number,
+): { from: number; to: number } | null {
+  const bucketWidth = USAGE_BUCKET_WIDTH_MS[report.granularity] || 86_400_000
+  // datetime-local has minute precision, so round inward after intersecting
+  // the bucket with the report range.
+  const from = Math.ceil(Math.max(report.from, bucketStart) / 60_000) * 60_000
+  const to = Math.floor(Math.min(report.to, bucketStart + bucketWidth) / 60_000) * 60_000
+  return to > from ? { from, to } : null
+}
+
 export function usageChartScale(maximum: number): { max: number; ticks: number[] } {
   if (!Number.isFinite(maximum) || maximum <= 0) return { max: 1, ticks: [1, .75, .5, .25, 0] }
   const raw = maximum / 4
