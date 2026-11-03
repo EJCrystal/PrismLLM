@@ -366,6 +366,42 @@ class ProxyAttemptLoggingIntegrationTest {
         }
     }
 
+    @Test
+    fun converterFailuresAreNotReportedAsSuccessfulUpstreamAttempts() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            for (inbound in listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES)) {
+                for (scenario in listOf("malformed", "malformed-after-content", "malformed-at-eof")) {
+                    val modelId = scenario + "-converted-" + inbound.value
+                    val upstream = if (inbound == GatewayProtocol.CHAT_COMPLETIONS) GatewayProtocol.RESPONSES else GatewayProtocol.CHAT_COMPLETIONS
+                    createChannel(modelId, fake.baseUrl + "/" + scenario + "/v1", protocol = upstream)
+                    createChannel(modelId, fake.baseUrl + "/ok/v1", protocol = upstream, priority = 2)
+                    val requestId = UUID.randomUUID().toString()
+                    val count = fake.requests.size
+                    val response = client.sendProtocolStreamRequest(modelId, inbound, requestId)
+                    assertEquals(HttpStatusCode.OK, response.status)
+                    val body = response.bodyAsText()
+                    assertFalse(body.contains("response.completed"), body)
+                    assertFalse(body.contains("message_stop"), body)
+                    val terminal = when (inbound) {
+                        GatewayProtocol.RESPONSES -> "event: response.failed"
+                        GatewayProtocol.MESSAGES -> "event: error"
+                        else -> "data: [DONE]"
+                    }
+                    assertEquals(1, body.lineSequence().count { it == terminal }, body)
+                    assertEquals(count + 1, fake.requests.size)
+                    val log = awaitRequestLog(requestId)
+                    assertEquals("protocol_conversion_failed", log.errorCode)
+                    val attempt = log.attempts.single()
+                    assertEquals(200, attempt.statusCode)
+                    assertEquals("protocol_conversion_failed", attempt.errorCode)
+                    assertTrue(attempt.committed)
+                    assertFalse(attempt.retryable)
+                }
+            }
+        }
+    }
+
     private suspend fun HttpClient.sendProtocolStreamRequest(modelId: String, protocol: GatewayProtocol, requestId: String) =
         post(when (protocol) {
             GatewayProtocol.RESPONSES -> "/v1/responses"

@@ -13,6 +13,7 @@ interface ProtocolConverter {
 }
 
 interface ProtocolStreamConverter {
+    val failed: Boolean
     fun feed(line: String): List<String>
     fun finish(): List<String>
     fun fail(message: String): List<String>

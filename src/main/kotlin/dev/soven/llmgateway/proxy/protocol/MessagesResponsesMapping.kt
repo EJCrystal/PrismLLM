@@ -72,6 +72,7 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
         val tools = element as? JsonArray ?: unsupported("tools", "tools 必须是数组")
         put("tools", JsonArray(tools.mapIndexed { index, value ->
             val tool = value as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
+            validateMessagesTool(tool, "tools[$index]")
             buildJsonObject {
                 put("type", "function")
                 put("name", tool.string("name") ?: unsupported("tools[$index].name", "工具缺少 name"))

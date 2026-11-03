@@ -24,6 +24,7 @@
 - 转换后的 Chat 工具索引按首次出现顺序连续编号；Responses 输出完整的项与内容生命周期，增量和完成事件复用稳定的项 ID，并提供递增事件序号。流式失败通过 `response.failed.response.error` 返回。
 - 跨协议 SSE 单个事件最多累计 1 MiB UTF-8 数据（含多行数据间的换行）；上游行读取也有长度限制。超长行返回不可重试的 upstream_event_too_large；响应已提交时先通过流转换器的 fail(message) 输出调用方协议的失败帧，再关闭流，不伪造成功完成。fail、finish 与后续 feed 在会话结束后均不重复输出终止事件。原生透传不受本次限制变更影响。
 - 认证、上游 URL、请求覆盖、限流、冷却、重试、响应提交时机、日志和计费仍属于现有代理层。HTTP 状态码与流内错误状态码继续分别记录。
+- 流转换器通过只读的 failed 状态区分正常结束与失败。代理在前缀、增量输入及 EOF 冲刷后检查失败状态，停止继续读取，并将该尝试记录为 protocol_conversion_failed，不被后来的正常终止行或 stream_interrupted 覆盖。
 
 ## 支持边界
 
@@ -40,7 +41,7 @@
 | 流式输出 | 文本、工具参数增量、结束原因、末尾用量与错误；没有结束原因的 EOF 不伪造成功结束，代理层仍检测缺失终止事件的流中断 |
 | 安全停止原因 | Chat `content_filter`、Responses `incomplete/content_filter` 与 Messages `refusal` 相互映射，普通响应与流式返回均不降级为自然结束 |
 | Gemini | 仅原生透传，不参与跨协议转换 |
-| 图片、文件、音频、内置工具 | 仍不支持跨协议转换 |
+| 图片、文件、音频、内置工具 | 仍不支持跨协议转换；Messages 工具仅接受缺省 type 或 custom，其它类型在调用上游前明确拒绝 |
 | Responses 状态续接与存储 | 拒绝 `previous_response_id`、`store=true`、非空 `include`、自动 `truncation`；允许原有无副作用默认值 |
 | 结构化输出 | Chat ↔ Responses 保留已有映射；转换到 Messages 仍拒绝 |
 | Messages 专有扩展 | `context_management`、`output_config` 等仍明确报错，不通过删除字段绕过 |

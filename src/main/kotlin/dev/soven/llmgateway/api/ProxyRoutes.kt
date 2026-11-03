@@ -1088,6 +1088,10 @@ private suspend fun proxyStream(
                             var streamFailure: GatewayException? = null
                             for (line in prefixLines) {
                                 converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
+                                if (converter?.failed == true) {
+                                    state.errorCode = "protocol_conversion_failed"
+                                    break
+                                }
                                 markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
                                 recordUsage(line, state, upstreamProtocol)
                                 if (isStreamDone(line, upstreamProtocol)) {
@@ -1097,7 +1101,7 @@ private suspend fun proxyStream(
                                     if (upstreamProtocol != GatewayProtocol.GEMINI) break
                                 }
                             }
-                            if (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI) {
+                            if (converter?.failed != true && (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI)) {
                                 while (true) {
                                     val line = try {
                                         withTimeout(app.config.idleTimeoutMs) { readProtocolLine(upstream, maxLineBytes) }
@@ -1116,6 +1120,10 @@ private suspend fun proxyStream(
                                     } ?: break
                                     recordReportedModel(line, state, upstreamProtocol)
                                     converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
+                                    if (converter?.failed == true) {
+                                        state.errorCode = "protocol_conversion_failed"
+                                        break
+                                    }
                                     markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
                                     recordUsage(line, state, upstreamProtocol)
                                     if (isStreamDone(line, upstreamProtocol)) {
@@ -1127,10 +1135,11 @@ private suspend fun proxyStream(
                                 }
                             }
                             converter?.finish()?.forEach { writeSseLine(it) }
+                            if (converter?.failed == true) state.errorCode = "protocol_conversion_failed"
                             if (streamFailure != null) {
                                 completion.completeExceptionally(streamFailure)
                             } else {
-                                if (!sawDone) state.errorCode = "stream_interrupted"
+                                if (!sawDone && state.errorCode == null) state.errorCode = "stream_interrupted"
                                 completion.complete(Unit)
                             }
                         } catch (e: Throwable) {

@@ -228,6 +228,17 @@ class FakeUpstream {
                         writeEvent("{not-json}")
                         writeDone()
                     }
+                    "malformed-after-content" -> {
+                        writeEvent(CHUNK_HEL)
+                        writeEvent("{not-json}")
+                        writeEvent(FINAL_WITH_USAGE)
+                        writeDone()
+                    }
+                    "malformed-at-eof" -> {
+                        writeEvent(CHUNK_HEL)
+                        writeFully("data: {not-json}".toByteArray(Charsets.UTF_8))
+                        flush()
+                    }
                     "no-usage" -> {
                         writeEvent(CHUNK_HEL)
                         writeEvent(CHUNK_LO)
@@ -309,6 +320,12 @@ class FakeUpstream {
                     completed = true
                     return@respondBytesWriter
                 }
+                if (scenario == "malformed") {
+                    writeSseEvent("response.output_text.delta", "{not-json}")
+                    writeSseEvent("response.completed", RESPONSES_FINAL_EVENT)
+                    completed = true
+                    return@respondBytesWriter
+                }
                 if (scenario == "responses-created-stall") {
                     delay(2_000)
                     completed = true
@@ -340,6 +357,14 @@ class FakeUpstream {
                 )
                 delay(10)
                 when (scenario) {
+                    "malformed-at-eof" -> {
+                        writeFully("data: {not-json}".toByteArray(Charsets.UTF_8))
+                        flush()
+                    }
+                    "malformed-after-content" -> {
+                        writeSseEvent("response.output_text.delta", "{not-json}")
+                        writeSseEvent("response.completed", RESPONSES_FINAL_EVENT)
+                    }
                     "oversized-line-after-content" -> writeSseEvent("response.completed", oversizedPayload())
                     "responses-failed" -> writeSseEvent(
                         "response.failed",

@@ -170,8 +170,10 @@ class ProtocolStreamCompatibilityTest {
         listOf(GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES).forEach { client ->
             val converter = ProtocolConverterRegistry.get(client, GatewayProtocol.CHAT_COMPLETIONS).streamConverter("public")
             feed(converter, listOf("""{"id":"reply","choices":[{"delta":{"content":"partial"},"finish_reason":"stop"}]}"""))
+            assertFalse(converter.failed)
             converter.feed("data: incomplete-payload")
             val failure = converter.fail("上游流单个事件超过大小上限").joinToString("\n")
+            assertTrue(converter.failed)
             assertTrue(failure.contains(if (client == GatewayProtocol.RESPONSES) "response.failed" else "event: error"), failure)
             assertFalse(failure.contains("response.completed"))
             assertFalse(failure.contains("message_stop"))

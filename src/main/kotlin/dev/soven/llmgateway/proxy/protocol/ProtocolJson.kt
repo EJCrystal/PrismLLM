@@ -39,6 +39,12 @@ internal fun validateMessagesRequest(request: JsonObject) {
     rejectExtraMetadata(request["metadata"], "metadata")
 }
 
+internal fun validateMessagesTool(tool: JsonObject, path: String) {
+    if (tool.containsKey("type") && tool.string("type") != "custom") {
+        unsupported("$path.type", "跨协议转换仅支持自定义工具，不支持内置工具或无效工具类型")
+    }
+}
+
 internal fun validateResponsesRequest(request: JsonObject) {
     request.string("previous_response_id")?.let {
         unsupported("previous_response_id", "协议转换不支持 Responses 有状态续接")

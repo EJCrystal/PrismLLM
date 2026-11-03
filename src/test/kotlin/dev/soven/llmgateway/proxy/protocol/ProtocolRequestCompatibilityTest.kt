@@ -2,7 +2,9 @@ package dev.soven.llmgateway.proxy.protocol
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -145,6 +147,43 @@ class ProtocolRequestCompatibilityTest {
         val messages = ResponsesToChatCompletion.convertRequest(request, "upstream").array("messages").map { it.jsonObject }
         assertEquals(listOf("user", "assistant", "tool", "assistant", "tool", "user", "assistant", "tool"), messages.map { it.string("role") })
         assertEquals(listOf("a", "b", "c"), messages.filter { it.string("role") == "assistant" }.map { it.array("tool_calls").single().jsonObject.string("id") })
+    }
+
+    @Test
+    fun messagesBuiltinAndInvalidToolTypesAreRejectedInBothDirections() {
+        val invalidTypes = listOf("web_search_20250305", "computer_20250124", "code_execution_20250522").map { JsonPrimitive(it) } +
+            listOf(JsonNull, buildJsonObject { }, JsonPrimitive(42))
+        listOf(MessagesToChatCompletion, MessagesToResponses).forEach { converter ->
+            invalidTypes.forEach { type ->
+                val request = buildJsonObject {
+                    put("messages", buildJsonArray { })
+                    put("tools", buildJsonArray {
+                        add(buildJsonObject { put("name", "custom") })
+                        add(buildJsonObject { put("type", type); put("name", "builtin") })
+                    })
+                }
+                val error = assertFailsWith<ProtocolConversionException> { converter.convertRequest(request, "upstream") }
+                assertEquals("tools[1].type", error.field)
+            }
+            listOf(null, "custom").forEach { type ->
+                val request = buildJsonObject {
+                    put("messages", buildJsonArray { })
+                    put("tools", buildJsonArray {
+                        add(buildJsonObject {
+                            type?.let { put("type", it) }
+                            put("name", "lookup")
+                            put("description", "weather")
+                            put("input_schema", buildJsonObject { put("type", "object") })
+                        })
+                    })
+                }
+                val tool = converter.convertRequest(request, "upstream").array("tools").single().jsonObject
+                val function = (tool["function"] as? JsonObject) ?: tool
+                assertEquals("lookup", function.string("name"))
+                assertEquals("weather", function.string("description"))
+                assertEquals("object", function["parameters"]!!.jsonObject.string("type"))
+            }
+        }
     }
 
     private fun requests(effort: String?, limit: Long?): List<Triple<ProtocolConverter, JsonObject, String>> = listOf(

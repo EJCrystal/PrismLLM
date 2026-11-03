@@ -70,6 +70,7 @@ internal fun messagesToChatRequest(request: JsonObject): JsonObject = buildJsonO
         val tools = toolsElement as? JsonArray ?: unsupported("tools", "tools 必须是数组")
         put("tools", JsonArray(tools.mapIndexed { index, element ->
             val tool = element as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
+            validateMessagesTool(tool, "tools[$index]")
             val name = tool.string("name") ?: unsupported("tools[$index].name", "工具缺少 name")
             buildJsonObject {
                 put("type", "function")

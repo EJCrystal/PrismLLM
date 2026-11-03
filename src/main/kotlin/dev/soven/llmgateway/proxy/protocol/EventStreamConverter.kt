@@ -9,6 +9,8 @@ internal class EventStreamConverter(
     private val decoder: StreamDecoder,
     private val encoder: StreamEncoder,
 ) : ProtocolStreamConverter {
+    override var failed: Boolean = false
+        private set
     private val dataLines = mutableListOf<String>()
     private var pendingBytes = 0
     private var finished = false
@@ -79,6 +81,7 @@ internal class EventStreamConverter(
     override fun fail(message: String): List<String> {
         if (finished) return emptyList()
         finished = true
+        failed = true
         pendingFinish = null
         dataLines.clear()
         pendingBytes = 0
