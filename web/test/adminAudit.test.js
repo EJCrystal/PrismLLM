@@ -14,6 +14,7 @@ describe('adminAudit: 管理操作审计展示', () => {
     assert.equal(auditActionLabel('client_key.revoke'), '撤销调用方密钥')
     assert.equal(auditActionLabel('model_price.batch'), '批量套用模型单价')
     assert.equal(auditActionLabel('model_default_price.create'), '创建模型默认价')
+    assert.equal(auditActionLabel('request_log.retention.update'), '更新请求日志保留策略')
     assert.equal(auditActionLabel('future.action'), 'future.action')
   })
 
