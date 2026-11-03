@@ -5,11 +5,16 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runTest
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class LogRetentionServiceTest {
@@ -110,6 +115,54 @@ class LogRetentionServiceTest {
         assertTrue(service.scheduledCleanupRunning)
 
         job.cancelAndJoin()
+
+        assertTrue(job.isCancelled)
+        assertFalse(service.scheduledCleanupRunning)
+    }
+
+    @Test
+    fun `cancelling before first dispatch clears running state and allows restart`() = runTest {
+        val calls = AtomicInteger()
+        val cleanupStarted = CompletableDeferred<Unit>()
+        val service = LogRetentionService(
+            deleteBatch = { _, _ ->
+                calls.incrementAndGet()
+                cleanupStarted.complete(Unit)
+                CleanupResult(0, 1)
+            },
+            policy = RetentionPolicy(cleanupIntervalMs = 60_000),
+            now = { 1L },
+        )
+
+        val job = assertNotNull(service.start(this))
+        assertTrue(service.scheduledCleanupRunning)
+        assertNull(service.start(this), "Only one scheduled job may run")
+        assertEquals(0, calls.get(), "The scheduler has not dispatched the coroutine body")
+
+        job.cancelAndJoin()
+
+        assertEquals(0, calls.get())
+        assertFalse(service.scheduledCleanupRunning)
+
+        val restarted = assertNotNull(service.start(this))
+        cleanupStarted.await()
+        assertEquals(1, calls.get())
+        assertTrue(service.scheduledCleanupRunning)
+        restarted.cancelAndJoin()
+        assertFalse(service.scheduledCleanupRunning)
+    }
+
+    @Test
+    fun `starting in an already cancelled scope does not leave running state set`() = runTest {
+        val parent = Job().apply { cancel() }
+        val scope = CoroutineScope(StandardTestDispatcher(testScheduler) + parent)
+        val service = LogRetentionService(
+            deleteBatch = { _, _ -> error("Cancelled jobs must not run cleanup") },
+            policy = RetentionPolicy(),
+        )
+
+        val job = assertNotNull(service.start(scope))
+        job.join()
 
         assertTrue(job.isCancelled)
         assertFalse(service.scheduledCleanupRunning)

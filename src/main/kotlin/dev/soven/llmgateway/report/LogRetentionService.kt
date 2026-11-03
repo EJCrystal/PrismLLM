@@ -61,18 +61,19 @@ class LogRetentionService(
         if (!cleanupEnabled.get() || !running.compareAndSet(false, true)) return null
         logger.info("request log scheduled cleanup started")
         return scope.launch {
-            try {
-                while (isActive) {
-                    try {
-                        cleanExpired()
-                    } catch (cause: CancellationException) {
-                        throw cause
-                    } catch (_: Throwable) {
-                        // Retry on the next interval; failures are logged by cleanExpired.
-                    }
-                    delay(policy.cleanupIntervalMs)
+            while (isActive) {
+                try {
+                    cleanExpired()
+                } catch (cause: CancellationException) {
+                    throw cause
+                } catch (_: Throwable) {
+                    // Retry on the next interval; failures are logged by cleanExpired.
                 }
-            } finally {
+                delay(policy.cleanupIntervalMs)
+            }
+        }.also { job ->
+            // Completion handlers also run when cancellation prevents the body from starting.
+            job.invokeOnCompletion {
                 running.set(false)
                 logger.info("request log scheduled cleanup stopped")
             }
