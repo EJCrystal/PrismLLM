@@ -18,8 +18,8 @@ internal fun responsesToChatRequest(request: JsonObject): JsonObject = buildJson
     request.number("temperature")?.let { put("temperature", it) }
     request.number("top_p")?.let { put("top_p", it) }
     request.number("max_output_tokens")?.let { put("max_tokens", it) }
-    request.string("user")?.let { put("user", it) }
-        ?: (request["metadata"] as? JsonObject)?.string("user_id")?.let { put("user", it) }
+    (request.string("user") ?: (request["metadata"] as? JsonObject)?.string("user_id"))
+        ?.let { put("user", it) }
     (request["reasoning"] as? JsonObject)?.string("effort")?.let { put("reasoning_effort", it) }
     (request["text"] as? JsonObject)?.get("format")?.let {
         put("response_format", responsesTextFormatToChat(it))

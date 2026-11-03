@@ -146,12 +146,77 @@ class MessagesResponsesConversionTest {
     }
 
     @Test
-    fun `content delivered with a finish reason is emitted before the terminal event`() {
-        val converter = ResponsesToChatCompletion.streamConverter("public")
-        val output = (converter.feed("""data: {"id":"reply","choices":[{"delta":{"content":"last"},"finish_reason":"length"}]}""") +
-            converter.feed("") + converter.feed("data: [DONE]")).joinToString("\n")
-        assertTrue(output.contains("last"), output)
-        assertTrue(output.indexOf("last") < output.indexOf("response.incomplete"), output)
+    fun `chat finish chunk text is emitted exactly once before terminal with done marker or EOF`() {
+        listOf(GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES).forEach { client ->
+            listOf(true, false).forEach { useDoneMarker ->
+                listOf("stop", "length", "content_filter").forEach { finishReason ->
+                    val converter = ProtocolConverterRegistry.get(client, GatewayProtocol.CHAT_COMPLETIONS).streamConverter("public")
+                    val prefix = converter.feed("""data: {"id":"reply","choices":[{"delta":{"content":"before "},"finish_reason":null}]}""") + converter.feed("")
+                    val finishChunk = converter.feed("""data: {"id":"reply","choices":[{"delta":{"content":"last"},"finish_reason":"$finishReason"}]}""") + converter.feed("")
+                    assertTrue(finishChunk.joinToString().contains("last"))
+                    assertFalse(finishChunk.joinToString().contains("response.completed"))
+                    assertFalse(finishChunk.joinToString().contains("message_stop"))
+                    val events = finishChatStream(converter, prefix + finishChunk, useDoneMarker)
+                    val text = events.joinToString("") { event ->
+                        if (client == GatewayProtocol.MESSAGES) (event["delta"] as? JsonObject)?.string("text").orEmpty()
+                        else if (event.string("type") == "response.output_text.delta") event.string("delta").orEmpty() else ""
+                    }
+                    assertEquals("before last", text, "$client, done=$useDoneMarker, reason=$finishReason")
+                    if (client == GatewayProtocol.RESPONSES) {
+                        val terminal = events.last()["response"]!!.jsonObject
+                        assertEquals("before last", terminal["output"]!!.jsonArray.single().jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+                        assertEquals(if (finishReason == "stop") "completed" else "incomplete", terminal.string("status"))
+                    } else {
+                        assertEquals(if (finishReason == "length") "max_tokens" else "end_turn", events.first { it.string("type") == "message_delta" }["delta"]!!.jsonObject.string("stop_reason"))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `chat finish chunk tool arguments are emitted exactly once with done marker or EOF`() {
+        listOf(GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES).forEach { client ->
+            listOf(true, false).forEach { useDoneMarker ->
+                listOf(true, false).forEach { fragmented ->
+                    val converter = ProtocolConverterRegistry.get(client, GatewayProtocol.CHAT_COMPLETIONS).streamConverter("public")
+                    val prefix = if (fragmented) {
+                        converter.feed("""data: {"id":"reply","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"lookup","arguments":"{\"city\":"}}]},"finish_reason":null}]}""") + converter.feed("")
+                    } else emptyList()
+                    val tool = if (fragmented) """{"index":0,"function":{"arguments":"\"SZ\"}"}}"""
+                        else """{"index":0,"id":"call_1","function":{"name":"lookup","arguments":"{}"}}"""
+                    val finishChunk = converter.feed("""data: {"id":"reply","choices":[{"delta":{"tool_calls":[$tool]},"finish_reason":"tool_calls"}]}""") + converter.feed("")
+                    val events = finishChatStream(converter, prefix + finishChunk, useDoneMarker)
+                    val arguments = events.joinToString("") { event ->
+                        if (client == GatewayProtocol.MESSAGES) (event["delta"] as? JsonObject)?.string("partial_json").orEmpty()
+                        else if (event.string("type") == "response.function_call_arguments.delta") event.string("delta").orEmpty() else ""
+                    }
+                    val expected = if (fragmented) "{\"city\":\"SZ\"}" else "{}"
+                    assertEquals(expected, arguments, "$client, done=$useDoneMarker, fragmented=$fragmented")
+                    if (client == GatewayProtocol.RESPONSES) {
+                        val toolOutput = events.last()["response"]!!.jsonObject["output"]!!.jsonArray.single().jsonObject
+                        assertEquals(expected, toolOutput.string("arguments"))
+                        assertEquals("call_1", toolOutput.string("call_id"))
+                        assertEquals("lookup", toolOutput.string("name"))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun finishChatStream(converter: ProtocolStreamConverter, prefix: List<String>, useDoneMarker: Boolean): List<JsonObject> {
+        val usage = converter.feed("""data: {"id":"reply","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}""") + converter.feed("")
+        val terminal = if (useDoneMarker) converter.feed("data: [DONE]") + converter.finish() else converter.finish()
+        val events = (prefix + usage + terminal).filter { it.startsWith("data: {") }.map { json(it.removePrefix("data: ")) }
+        assertEquals(1, events.count { it.string("type") in setOf("message_stop", "response.completed", "response.incomplete") })
+        val finalUsage = events.mapNotNull { event ->
+            (event["usage"] as? JsonObject) ?: (event["response"] as? JsonObject)?.get("usage") as? JsonObject
+        }.last()
+        assertEquals("7", finalUsage["input_tokens"]!!.jsonPrimitive.content)
+        assertEquals("3", finalUsage["output_tokens"]!!.jsonPrimitive.content)
+        assertTrue(converter.finish().isEmpty())
+        assertTrue(converter.feed("data: [DONE]").isEmpty())
+        return events
     }
 
     private fun toolStream(protocol: GatewayProtocol): List<String> = when (protocol) {

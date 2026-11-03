@@ -47,7 +47,7 @@ internal class EventStreamConverter(
                 event.error != null -> fail(event.error)
                 event.done -> complete(pendingFinish ?: event)
                 event.finishReason != null -> {
-                    pendingFinish = event
+                    pendingFinish = event.copy(content = null, toolCalls = emptyList())
                     if (event.content != null || event.toolCalls.isNotEmpty()) encoder.emit(event.copy(finishReason = null), decoder.usage)
                     else emptyList()
                 }

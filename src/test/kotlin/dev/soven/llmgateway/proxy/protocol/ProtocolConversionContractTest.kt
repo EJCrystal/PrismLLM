@@ -54,6 +54,32 @@ class ProtocolConversionContractTest {
     }
 
     @Test
+    fun `responses requests prefer explicit user over metadata in both outbound protocols`() {
+        val request = json("""{"model":"public","input":"hello","user":"explicit","metadata":{"user_id":"fallback"}}""")
+        listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES).forEach { outbound ->
+            val converted = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, outbound, request, "upstream")
+            val user = if (outbound == GatewayProtocol.MESSAGES) converted["metadata"]!!.jsonObject["user_id"] else converted["user"]
+            assertEquals("explicit", user!!.jsonPrimitive.content, outbound.value)
+        }
+    }
+
+    @Test
+    fun `responses requests fall back to metadata user only when explicit user is absent`() {
+        val cases = listOf(
+            json("""{"input":"hello","user":"explicit"}""") to "explicit",
+            json("""{"input":"hello","metadata":{"user_id":"fallback"}}""") to "fallback",
+            json("""{"input":"hello"}""") to null,
+        )
+        listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES).forEach { outbound ->
+            cases.forEach { (request, expected) ->
+                val converted = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, outbound, request, "upstream")
+                val user = if (outbound == GatewayProtocol.MESSAGES) (converted["metadata"] as? JsonObject)?.get("user_id") else converted["user"]
+                assertEquals(expected, user?.jsonPrimitive?.content, outbound.value)
+            }
+        }
+    }
+
+    @Test
     fun `six directions return the client protocol and usage`() = eachDirection { inbound, outbound ->
         val converted = ProtocolConversion.convertResponse(inbound, outbound, responses.getValue(outbound), "public")
         assertEquals("public", converted["model"]!!.jsonPrimitive.content)
