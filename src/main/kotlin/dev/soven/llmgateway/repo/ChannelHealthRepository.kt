@@ -43,8 +43,21 @@ class ChannelHealthRepository(private val database: Database, private val slowFi
     private fun JdbcTransaction.buildReport(window: String, channels: Map<String, Boolean>, retentionDays: Int, now: Long, channelId: String? = null): ChannelHealthReport {
         val from = now - healthWindows.getValue(window)
         val observations = groups(from, now, channelId, "channel_id")
-        val pendingChannels = exec("select distinct channel_id from request_logs where not health_indexed and created_at >= ? and created_at < ? and channel_id is not null" + if (channelId != null) " and channel_id = ?" else "", args(from, now, channelId)) { rs ->
-            buildSet { while (rs.next()) add(rs.getString("channel_id")) }
+        val pendingChannels = exec(
+            "select channel_id, attempts_json from request_logs where not health_indexed and created_at >= ? and created_at < ?",
+            args(from, now),
+        ) { rs ->
+            buildSet {
+                while (rs.next()) {
+                    val finalChannelId = rs.getString("channel_id")
+                    if (channelId == null || finalChannelId == channelId) finalChannelId?.let(::add)
+                    UpstreamAttemptCodec.decode(rs.getString("attempts_json"))
+                        .asSequence()
+                        .mapNotNull { it.channelId }
+                        .filter { channelId == null || it == channelId }
+                        .forEach(::add)
+                }
+            }
         }.orEmpty()
         val pending = pendingChannels.isNotEmpty()
         val requests = requests(from, now, channelId)

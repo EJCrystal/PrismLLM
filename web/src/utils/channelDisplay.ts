@@ -62,6 +62,23 @@ export function channelMatchesFilters(
   return !model || channelDisplayModels(channel).some((item) => item.displayName === model)
 }
 
+/** Index newest protocol-probe audit entries by decoded channel ID. */
+export function recentProbeByChannel<T extends { path: string }>(entries: readonly T[]): Map<string, T> {
+  const result = new Map<string, T>()
+  for (const entry of entries) {
+    const raw = entry.path.match(/\/channels\/([^/]+)\/probe-protocols/)?.[1]
+    if (!raw) continue
+    let channelId: string
+    try {
+      channelId = decodeURIComponent(raw)
+    } catch {
+      continue
+    }
+    if (!result.has(channelId)) result.set(channelId, entry)
+  }
+  return result
+}
+
 export interface ChannelDisplayModel {
   upstreamModel: string
   upstreamModels: string[]

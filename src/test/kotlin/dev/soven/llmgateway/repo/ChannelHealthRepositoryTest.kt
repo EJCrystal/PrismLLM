@@ -16,6 +16,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.TestInstance
 import org.testcontainers.containers.PostgreSQLContainer
 import java.sql.DriverManager
+import java.sql.SQLException
 import java.util.Base64
 import java.util.UUID
 import kotlin.test.Test
@@ -245,6 +246,53 @@ class ChannelHealthRepositoryTest {
         assertFalse(report.channels.first { it.channelId == "a" }.reason.contains("补齐"))
         val detailA = health.detail("24h", a, 30, emptyList(), now)
         assertFalse(detailA.report.channels.single().reason.contains("补齐"))
+    }
+
+    @Test
+    fun pendingLegacyIndexingIncludesChannelsSeenOnlyInAttempts() = runBlocking {
+        logs.insert(log(listOf(attempt("a").copy(index = 1), attempt("b").copy(index = 2))))
+        sql("delete from request_attempts")
+        sql("update request_logs set health_indexed = false")
+
+        val detailA = health.detail("24h", a, 30, emptyList(), now)
+        val detailB = health.detail("24h", b, 30, emptyList(), now)
+        val detailC = health.detail("24h", channel("c"), 30, emptyList(), now)
+
+        assertTrue(detailA.report.indexing)
+        assertTrue(detailA.report.channels.single().reason.contains("补齐"))
+        assertTrue(detailB.report.indexing)
+        assertTrue(detailB.report.channels.single().reason.contains("补齐"))
+        assertFalse(detailC.report.indexing)
+    }
+
+    @Test
+    fun transactionalAlterAndIndexKeepTheAccessExclusiveLockUntilCommit() {
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val table = "v45_lock_probe_$suffix"
+        val index = "idx_v45_lock_probe_${suffix}_pending"
+        sql("create table $table (id bigint primary key)")
+        try {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { migration ->
+                migration.autoCommit = false
+                migration.createStatement().use { statement ->
+                    statement.execute("alter table $table add column health_indexed boolean not null default false")
+                    statement.execute("create index $index on $table (id) where not health_indexed")
+                }
+                try {
+                    DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { reader ->
+                        reader.createStatement().use { statement ->
+                            statement.execute("set lock_timeout = '100ms'")
+                            val error = assertFailsWith<SQLException> { statement.executeQuery("select * from $table") }
+                            assertEquals("55P03", error.sqlState)
+                        }
+                    }
+                } finally {
+                    migration.rollback()
+                }
+            }
+        } finally {
+            sql("drop table if exists $table")
+        }
     }
 
     @Test

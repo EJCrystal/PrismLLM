@@ -8,9 +8,20 @@ import {
   visibleModels,
   hiddenModelsTitle,
   channelLandingUrl,
+  recentProbeByChannel,
 } from '../src/utils/channelDisplay'
 
 describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
+  it('按解码后的渠道 ID 索引最新协议探测记录，并跳过无效编码', () => {
+    const newest = { id: 1, path: '/admin/api/channels/channel%2Fone/probe-protocols' }
+    const olderDuplicate = { id: 2, path: '/admin/api/channels/channel%2Fone/probe-protocols' }
+    const malformed = { id: 3, path: '/admin/api/channels/bad%ZZ/probe-protocols' }
+    const indexed = recentProbeByChannel([newest, olderDuplicate, malformed])
+
+    assert.equal(indexed.get('channel/one'), newest)
+    assert.equal(indexed.has('bad%ZZ'), false)
+  })
+
   it('渠道地址链接只清理末尾 v1，保留查询参数和锚点并过滤内部地址', () => {
     assert.equal(channelLandingUrl('https://user:secret@example.test/v1/?tenant=a#models'), 'https://example.test/?tenant=a#models')
     assert.equal(channelLandingUrl('https://example.test/gateway/v1'), 'https://example.test/gateway')

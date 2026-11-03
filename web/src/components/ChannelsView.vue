@@ -30,6 +30,7 @@ import { refreshUntilCurrent } from '../utils/latestRequest'
 import {
   channelDisplayModels,
   channelLandingUrl,
+  recentProbeByChannel as indexRecentProbeByChannel,
   channelMatchesFilters,
   channelModelFilterOptions,
 } from '../utils/channelDisplay'
@@ -170,12 +171,7 @@ const isFormDirty = computed(() => {
   return formSnapshot.value !== channelFormSnapshot()
 })
 const recentProbeByChannel = computed(() => {
-  const result = new Map<string, AdminAuditLog>()
-  for (const entry of recentProbes.value) {
-    const match = entry.path.match(/\/channels\/([^/]+)\/probe-protocols/)
-    if (match?.[1] && !result.has(match[1])) result.set(decodeURIComponent(match[1]), entry)
-  }
-  return result
+  return indexRecentProbeByChannel(recentProbes.value)
 })
 
 function channelFormSnapshot(useEditor = true): string {
