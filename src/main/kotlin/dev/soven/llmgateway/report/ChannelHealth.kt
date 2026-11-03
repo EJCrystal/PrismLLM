@@ -19,6 +19,13 @@ fun attemptOutcome(attempt: UpstreamAttemptRecord): AttemptOutcome {
 
 val healthWindows = linkedMapOf("24h" to 86_400_000L, "7d" to 7 * 86_400_000L, "15d" to 15 * 86_400_000L, "30d" to 30 * 86_400_000L)
 
+object ChannelHealthThresholds {
+    const val MINIMUM_SAMPLES = 20
+    const val STALE_AFTER_MS = 3_600_000L
+    const val WARNING_ERROR_RATE = 0.05
+    const val CRITICAL_ERROR_RATE = 0.20
+}
+
 @Serializable
 data class HealthMetrics(
     val attempts: Long = 0,
@@ -76,8 +83,10 @@ data class HealthAvailability(
 data class ChannelHealthReport(
     val window: String, val from: Long, val to: Long,
     val retentionDays: Int, val indexing: Boolean,
-    val minimumSamples: Int = 20, val staleAfterMs: Long = 3_600_000,
-    val warningErrorRate: Double = 0.05, val criticalErrorRate: Double = 0.20,
+    val minimumSamples: Int = ChannelHealthThresholds.MINIMUM_SAMPLES,
+    val staleAfterMs: Long = ChannelHealthThresholds.STALE_AFTER_MS,
+    val warningErrorRate: Double = ChannelHealthThresholds.WARNING_ERROR_RATE,
+    val criticalErrorRate: Double = ChannelHealthThresholds.CRITICAL_ERROR_RATE,
     val slowFirstTokenMs: Long,
     val channels: List<ChannelHealthSummary>,
 )
@@ -93,10 +102,14 @@ data class ChannelHealthDetail(
 fun healthState(metrics: HealthMetrics, enabled: Boolean, now: Long, slowFirstTokenMs: Long): Pair<String, String> = when {
     !enabled -> "DISABLED" to "渠道已停用"
     metrics.attempts == 0L -> "UNKNOWN" to "暂无有效样本"
-    metrics.lastObservedAt == null || now - metrics.lastObservedAt > 3_600_000L -> "UNKNOWN" to "最近一小时无有效样本"
-    metrics.attempts < 20 -> "UNKNOWN" to "样本不足（至少 20 次）"
-    metrics.failures.toDouble() / metrics.attempts >= 0.20 -> "CRITICAL" to "上游失败率达到 20%"
-    metrics.failures.toDouble() / metrics.attempts >= 0.05 -> "WARNING" to "上游失败率达到 5%"
-    metrics.firstTokenSamples >= 20 && (metrics.p95FirstTokenMs ?: 0.0) > slowFirstTokenMs -> "WARNING" to "P95 首 token 超过软阈值"
+    metrics.lastObservedAt == null || now - metrics.lastObservedAt > ChannelHealthThresholds.STALE_AFTER_MS -> "UNKNOWN" to "最近一小时无有效样本"
+    metrics.attempts < ChannelHealthThresholds.MINIMUM_SAMPLES -> "UNKNOWN" to "样本不足（至少 ${ChannelHealthThresholds.MINIMUM_SAMPLES} 次）"
+    metrics.failures.toDouble() / metrics.attempts >= ChannelHealthThresholds.CRITICAL_ERROR_RATE ->
+        "CRITICAL" to "上游失败率达到 ${ChannelHealthThresholds.CRITICAL_ERROR_RATE.asPercent()}%"
+    metrics.failures.toDouble() / metrics.attempts >= ChannelHealthThresholds.WARNING_ERROR_RATE ->
+        "WARNING" to "上游失败率达到 ${ChannelHealthThresholds.WARNING_ERROR_RATE.asPercent()}%"
+    metrics.firstTokenSamples >= ChannelHealthThresholds.MINIMUM_SAMPLES && (metrics.p95FirstTokenMs ?: 0.0) > slowFirstTokenMs -> "WARNING" to "P95 首 token 超过软阈值"
     else -> "HEALTHY" to "成功率正常"
 }
+
+private fun Double.asPercent(): Int = (this * 100).toInt()

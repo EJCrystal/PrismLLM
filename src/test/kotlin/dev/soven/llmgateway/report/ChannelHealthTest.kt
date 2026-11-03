@@ -13,8 +13,30 @@ class ChannelHealthTest {
     @Test
     fun `unknown covers empty sparse and stale observations`() {
         assertEquals("UNKNOWN", state(HealthMetrics()))
-        assertEquals("UNKNOWN", state(HealthMetrics(attempts = 19, successes = 19, lastObservedAt = now)))
-        assertEquals("UNKNOWN", state(HealthMetrics(attempts = 100, successes = 100, lastObservedAt = now - 3_600_001)))
+        assertEquals("UNKNOWN", state(HealthMetrics(
+            attempts = ChannelHealthThresholds.MINIMUM_SAMPLES - 1L,
+            successes = ChannelHealthThresholds.MINIMUM_SAMPLES - 1L,
+            lastObservedAt = now,
+        )))
+        assertEquals("UNKNOWN", state(HealthMetrics(
+            attempts = ChannelHealthThresholds.MINIMUM_SAMPLES.toLong(),
+            successes = ChannelHealthThresholds.MINIMUM_SAMPLES.toLong(),
+            lastObservedAt = now - ChannelHealthThresholds.STALE_AFTER_MS - 1,
+        )))
+    }
+
+    @Test
+    fun `report defaults and state evaluation share the published thresholds`() {
+        val report = ChannelHealthReport("24h", 0, now, 30, false, slowFirstTokenMs = 2_000, channels = emptyList())
+        assertEquals(ChannelHealthThresholds.MINIMUM_SAMPLES, report.minimumSamples)
+        assertEquals(ChannelHealthThresholds.STALE_AFTER_MS, report.staleAfterMs)
+        assertEquals(ChannelHealthThresholds.WARNING_ERROR_RATE, report.warningErrorRate)
+        assertEquals(ChannelHealthThresholds.CRITICAL_ERROR_RATE, report.criticalErrorRate)
+
+        val enough = ChannelHealthThresholds.MINIMUM_SAMPLES.toLong()
+        assertEquals("HEALTHY", state(HealthMetrics(attempts = enough, lastObservedAt = now)))
+        assertEquals("WARNING", state(HealthMetrics(attempts = 100, failures = (ChannelHealthThresholds.WARNING_ERROR_RATE * 100).toLong(), lastObservedAt = now)))
+        assertEquals("CRITICAL", state(HealthMetrics(attempts = 100, failures = (ChannelHealthThresholds.CRITICAL_ERROR_RATE * 100).toLong(), lastObservedAt = now)))
     }
 
     @Test
