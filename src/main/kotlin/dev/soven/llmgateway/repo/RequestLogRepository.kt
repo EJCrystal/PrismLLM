@@ -139,11 +139,15 @@ class RequestLogRepository(private val database: Database) {
                 .orderBy(RequestLogs.createdAt to SortOrder.DESC, RequestLogs.id to SortOrder.DESC)
                 .limit(limit).map { it[RequestLogs.id] }
         }
-        var processed = 0
+        return indexSelectedHealthBatch(ids)
+    }
+
+    /** Process IDs selected by one batch, even if another gateway indexes them first. */
+    internal suspend fun indexSelectedHealthBatch(ids: List<Long>): Int {
         var firstFailure: Exception? = null
         for (id in ids) {
             try {
-                if (indexHealthRecord(id)) processed++
+                indexHealthRecord(id)
             } catch (cause: CancellationException) {
                 throw cause
             } catch (cause: Exception) {
@@ -153,7 +157,10 @@ class RequestLogRepository(private val database: Database) {
             }
         }
         firstFailure?.let { throw it }
-        return processed
+        // A row may already have been indexed by another instance after this
+        // batch selected it. The batch is still non-empty and the caller must
+        // continue scanning rather than treating it as the end of the backlog.
+        return ids.size
     }
 
     private suspend fun indexHealthRecord(id: Long): Boolean = suspendTransaction(database) {

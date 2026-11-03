@@ -162,6 +162,28 @@ class ChannelHealthRepositoryTest {
     }
 
     @Test
+    fun selectedBatchRemainsNonEmptyWhenAnotherInstanceIndexesItsRowsFirst() = runBlocking {
+        val record = log(listOf(attempt("a")))
+        logs.insert(record)
+        sql("update request_logs set health_indexed = false")
+        val id = DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("select id from request_logs where request_id = ?").use { statement ->
+                statement.setString(1, record.requestId)
+                statement.executeQuery().use { result ->
+                    assertTrue(result.next())
+                    result.getLong(1)
+                }
+            }
+        }
+
+        // Model two workers selecting the same pending ID: the first finishes
+        // before the second begins processing its already selected batch.
+        assertEquals(1, logs.indexHealthBatch(now - 86_400_000, 10))
+        assertEquals(1, logs.indexSelectedHealthBatch(listOf(id)))
+        assertEquals(1, health.report("24h", mapOf("a" to true), 30, now).channels.single().metrics.attempts)
+    }
+
+    @Test
     fun historicalIndexingPrioritizesTheMostRecentPendingRequests() = runBlocking {
         logs.insert(log(listOf(attempt("a")), createdAt = now - 100))
         logs.insert(log(listOf(attempt("a")), createdAt = now - 10))

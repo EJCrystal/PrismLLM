@@ -35,7 +35,7 @@ import {
   channelModelFilterOptions,
 } from '../utils/channelDisplay'
 import type { ChannelFormDraft, OriginalModelMapping } from '../utils/channelForm'
-import { buildChannelPayload, buildPriorityUpdatePayload, isKeyRoutable, mergeProbedProtocols, parseManualModelIds, removeProbeAddedProtocols } from '../utils/channelForm'
+import { buildChannelPayload, buildPriorityUpdatePayload, canonicalModelSnapshot, isKeyRoutable, mergeProbedProtocols, parseManualModelIds, removeProbeAddedProtocols } from '../utils/channelForm'
 import {
   channelKeyRateLimitSummary,
   normalizeChannelKeyRateLimit,
@@ -192,7 +192,7 @@ function channelFormSnapshot(useEditor = true): string {
       id: key.id, name: key.name, credential: key.credential, state: key.state, priority: key.priority,
       stateVersion: key.stateVersion, models: key.models, rateLimit: key.rateLimit,
     })),
-    canonicalModels: canonicalModels,
+    canonicalModels: canonicalModelSnapshot(canonicalModels),
   })
 }
 
