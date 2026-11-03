@@ -402,6 +402,69 @@ class ProxyAttemptLoggingIntegrationTest {
         }
     }
 
+    @Test
+    fun convertedMessagesStreamErrorsRetainUpstreamDiagnostics() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            for (inbound in listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES)) {
+                for (scenario in listOf("sse-rate-limit", "sse-rate-limit-after-content")) {
+                    val modelId = "converted-messages-error-${inbound.value}-$scenario"
+                    createChannel(modelId, "${fake.baseUrl}/$scenario/v1", protocol = GatewayProtocol.MESSAGES)
+                    if (scenario == "sse-rate-limit-after-content") {
+                        createChannel(modelId, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.MESSAGES, priority = 2)
+                    }
+                    val requestId = UUID.randomUUID().toString()
+                    val requestCount = fake.requests.size
+                    val response = client.sendProtocolStreamRequest(modelId, inbound, requestId)
+                    assertEquals(HttpStatusCode.OK, response.status)
+                    val body = response.bodyAsText()
+                    assertTrue(body.contains("rate limited"), body)
+                    assertFalse(body.contains("response.completed"), body)
+                    assertEquals(requestCount + 1, fake.requests.size)
+                    val log = awaitRequestLog(requestId)
+                    assertEquals("messages_failed", log.errorCode)
+                    assertTrue(log.upstreamErrorBody?.contains("rate limited") == true)
+                    val attempt = log.attempts.single()
+                    assertEquals(200, attempt.statusCode)
+                    assertEquals(429, attempt.upstreamErrorStatusCode)
+                    assertEquals("messages_failed", attempt.errorCode)
+                    assertEquals("rate_limit_error", attempt.upstreamErrorCode)
+                    assertEquals("上游限流", attempt.errorMessage)
+                    assertTrue(attempt.committed)
+                    assertFalse(attempt.retryable)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun convertedResponsesStreamErrorsRetainUpstreamDiagnostics() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            for (inbound in listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES)) {
+                val modelId = "converted-responses-error-${inbound.value}"
+                createChannel(modelId, "${fake.baseUrl}/responses-failed/v1", protocol = GatewayProtocol.RESPONSES)
+                createChannel(modelId, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.RESPONSES, priority = 2)
+                val requestId = UUID.randomUUID().toString()
+                val requestCount = fake.requests.size
+                val response = client.sendProtocolStreamRequest(modelId, inbound, requestId)
+                assertEquals(HttpStatusCode.OK, response.status)
+                val body = response.bodyAsText()
+                assertTrue(body.contains("upstream failed"), body)
+                assertFalse(body.contains("message_stop"), body)
+                assertEquals(requestCount + 1, fake.requests.size)
+                val log = awaitRequestLog(requestId)
+                assertEquals("responses_failed", log.errorCode)
+                assertTrue(log.upstreamErrorBody?.contains("upstream failed") == true)
+                val attempt = log.attempts.single()
+                assertEquals(200, attempt.statusCode)
+                assertEquals("responses_failed", attempt.errorCode)
+                assertTrue(attempt.committed)
+                assertFalse(attempt.retryable)
+            }
+        }
+    }
+
     private suspend fun HttpClient.sendProtocolStreamRequest(modelId: String, protocol: GatewayProtocol, requestId: String) =
         post(when (protocol) {
             GatewayProtocol.RESPONSES -> "/v1/responses"

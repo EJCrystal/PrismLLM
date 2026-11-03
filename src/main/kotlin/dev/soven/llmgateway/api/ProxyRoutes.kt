@@ -1086,10 +1086,13 @@ private suspend fun proxyStream(
                         try {
                             var sawDone = false
                             var streamFailure: GatewayException? = null
+                            var lastDataLine: String? = null
                             for (line in prefixLines) {
+                                if (converter != null && line.trim().startsWith("data:")) lastDataLine = line
                                 converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
                                 if (converter?.failed == true) {
-                                    state.errorCode = "protocol_conversion_failed"
+                                    lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
+                                    if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
                                     break
                                 }
                                 markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
@@ -1119,9 +1122,11 @@ private suspend fun proxyStream(
                                         break
                                     } ?: break
                                     recordReportedModel(line, state, upstreamProtocol)
+                                    if (converter != null && line.trim().startsWith("data:")) lastDataLine = line
                                     converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
                                     if (converter?.failed == true) {
-                                        state.errorCode = "protocol_conversion_failed"
+                                        lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
+                                        if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
                                         break
                                     }
                                     markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
@@ -1135,7 +1140,10 @@ private suspend fun proxyStream(
                                 }
                             }
                             converter?.finish()?.forEach { writeSseLine(it) }
-                            if (converter?.failed == true) state.errorCode = "protocol_conversion_failed"
+                            if (converter?.failed == true && state.errorCode == null) {
+                                lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
+                                if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
+                            }
                             if (streamFailure != null) {
                                 completion.completeExceptionally(streamFailure)
                             } else {
