@@ -392,6 +392,7 @@ class ProxyAttemptLoggingIntegrationTest {
                     assertEquals(count + 1, fake.requests.size)
                     val log = awaitRequestLog(requestId)
                     assertEquals("protocol_conversion_failed", log.errorCode)
+                    assertEquals("上游流无法转换为调用方协议", log.errorMessage)
                     val attempt = log.attempts.single()
                     assertEquals(200, attempt.statusCode)
                     assertEquals("protocol_conversion_failed", attempt.errorCode)

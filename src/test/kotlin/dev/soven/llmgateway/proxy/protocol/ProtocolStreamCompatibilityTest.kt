@@ -130,6 +130,12 @@ class ProtocolStreamCompatibilityTest {
         for ((decoder, payload) in cases) {
             assertEquals(2048, decoder.decode(json(payload)).single().error!!.length)
         }
+        val topLevelError = ResponsesStreamDecoder().decode(json("""{"type":"error","code":"rate_limit_exceeded","message":"slow down"}""")).single()
+        assertEquals("slow down", topLevelError.error)
+        val nestedError = ResponsesStreamDecoder().decode(json("""{"type":"error","error":{"code":"server_error","message":"try again"}}""")).single()
+        assertEquals("try again", nestedError.error)
+        val nullError = ResponsesStreamDecoder().decode(json("""{"type":"error","error":null,"message":"top-level fallback"}""")).single()
+        assertEquals("top-level fallback", nullError.error)
     }
 
     @Test

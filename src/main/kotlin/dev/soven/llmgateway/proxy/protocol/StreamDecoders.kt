@@ -144,7 +144,7 @@ internal class ResponsesStreamDecoder : StreamDecoder {
                     ?: streamErrorText(json["error"])
                 listOf(StreamEvent(id, error = message))
             }
-            "error" -> listOf(StreamEvent(id, error = streamErrorText(json["error"])))
+            "error" -> listOf(StreamEvent(id, error = streamErrorText(json["error"]?.takeIf { it !is JsonNull } ?: json)))
             else -> emptyList()
         }
     }
@@ -152,7 +152,10 @@ internal class ResponsesStreamDecoder : StreamDecoder {
 
 private const val MAX_STREAM_ERROR_CHARS = 2048
 
-private fun streamErrorText(error: JsonElement?): String = error?.toString()?.take(MAX_STREAM_ERROR_CHARS) ?: "upstream stream error"
+private fun streamErrorText(error: JsonElement?): String {
+    val text = (error as? JsonObject)?.string("message") ?: error?.toString()
+    return text?.take(MAX_STREAM_ERROR_CHARS) ?: "upstream stream error"
+}
 
 private fun mergeUsage(base: JsonObject?, next: JsonObject?): JsonObject? = when {
     base == null -> next
