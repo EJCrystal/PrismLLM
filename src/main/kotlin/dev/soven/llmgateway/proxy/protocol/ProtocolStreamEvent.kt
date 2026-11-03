@@ -43,6 +43,14 @@ internal data class TokenUsage(
         reasoningTokens?.let { putJsonObject("output_tokens_details") { put("reasoning_tokens", it) } }
     }
 
+    fun toGemini(): JsonObject = buildJsonObject {
+        put("promptTokenCount", inputTokens)
+        put("candidatesTokenCount", outputTokens)
+        put("totalTokenCount", totalTokens)
+        cachedTokens?.takeIf { it > 0 }?.let { put("cachedContentTokenCount", it) }
+        reasoningTokens?.takeIf { it > 0 }?.let { put("thoughtsTokenCount", it) }
+    }
+
     companion object {
         fun fromChat(usage: JsonObject?): TokenUsage? {
             if (usage == null) return null
@@ -81,6 +89,18 @@ internal data class TokenUsage(
                 cacheWriteTokens = details?.long("cache_write_tokens")?.takeIf { it > 0 },
                 reasoningTokens = (usage["output_tokens_details"] as? JsonObject)?.long("reasoning_tokens"),
                 totalTokens = usage.long("total_tokens") ?: input + output,
+            )
+        }
+
+        fun fromGemini(usage: JsonObject?): TokenUsage? {
+            if (usage == null) return null
+            val input = usage.long("promptTokenCount") ?: 0L
+            val output = usage.long("candidatesTokenCount") ?: 0L
+            return TokenUsage(
+                input, output,
+                cachedTokens = usage.long("cachedContentTokenCount")?.takeIf { it > 0 },
+                reasoningTokens = usage.long("thoughtsTokenCount"),
+                totalTokens = usage.long("totalTokenCount") ?: input + output,
             )
         }
     }

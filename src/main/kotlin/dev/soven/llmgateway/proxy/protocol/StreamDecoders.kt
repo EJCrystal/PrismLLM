@@ -174,6 +174,46 @@ internal class ResponsesStreamDecoder : StreamDecoder {
     }
 }
 
+internal class GeminiStreamDecoder : StreamDecoder {
+    private var nativeUsage: JsonObject? = null
+    private var responseId: String? = null
+    private var toolIndex = 0
+    override val usage: TokenUsage? get() = TokenUsage.fromGemini(nativeUsage)
+
+    override fun decode(json: JsonObject): List<StreamEvent> {
+        nativeUsage = mergeUsage(nativeUsage, json["usageMetadata"] as? JsonObject)
+        responseId = json.string("responseId") ?: responseId
+        val id = responseId ?: "gemini_${System.currentTimeMillis()}"
+        if (json["error"] is JsonObject) return listOf(StreamEvent(id, error = streamErrorText(json["error"])))
+        val candidates = json.array("candidates")
+        val candidate = candidates.firstOrNull() as? JsonObject
+        val blockReason = (json["promptFeedback"] as? JsonObject)?.string("blockReason")
+        if (blockReason != null) return listOf(StreamEvent(id, finishReason = FinishReason.CONTENT_FILTER, done = true))
+        val events = mutableListOf<StreamEvent>()
+        val parts = ((candidate?.get("content") as? JsonObject)?.get("parts") as? JsonArray).orEmpty()
+        parts.forEach { part ->
+            val obj = part as? JsonObject ?: return@forEach
+            val call = obj["functionCall"] as? JsonObject
+            when {
+                call != null -> {
+                    events += StreamEvent(id, toolCalls = listOf(ToolCallDelta(
+                        index = toolIndex++,
+                        id = call.string("id"),
+                        name = call.string("name"),
+                        arguments = (call["args"] ?: JsonObject(emptyMap())).toString(),
+                    )))
+                }
+                obj.boolean("thought") == true -> obj.string("text")?.let { events += StreamEvent(id, content = it) }
+                else -> obj.string("text")?.let { events += StreamEvent(id, content = it) }
+            }
+        }
+        candidate?.string("finishReason")?.let { reason ->
+            events += StreamEvent(id, finishReason = geminiStreamFinish(reason), done = true)
+        }
+        return events
+    }
+}
+
 private const val MAX_STREAM_ERROR_CHARS = 2048
 
 private fun streamErrorText(error: JsonElement?): String {
@@ -185,4 +225,10 @@ private fun mergeUsage(base: JsonObject?, next: JsonObject?): JsonObject? = when
     base == null -> next
     next == null -> base
     else -> JsonObject(base + next)
+}
+
+private fun geminiStreamFinish(reason: String): FinishReason = when (reason) {
+    "MAX_TOKENS" -> FinishReason.MAX_TOKENS
+    "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL" -> FinishReason.CONTENT_FILTER
+    else -> FinishReason.STOP
 }

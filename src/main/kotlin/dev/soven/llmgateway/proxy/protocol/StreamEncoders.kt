@@ -395,6 +395,69 @@ internal class ResponsesStreamEncoder(private val model: String) : StreamEncoder
     )
 }
 
+internal class GeminiStreamEncoder(private val model: String) : StreamEncoder {
+    private var responseId: String? = null
+    private var toolIndex = 0
+    private val pendingTools = mutableListOf<MutableGeminiTool>()
+
+    override fun emit(chunk: StreamEvent, usage: TokenUsage?): List<String> {
+        val lines = mutableListOf<String>()
+        val id = responseId ?: chunk.id.also { responseId = it }
+        val parts = mutableListOf<JsonObject>()
+        chunk.content?.takeIf { it.isNotEmpty() }?.let { text -> parts += buildJsonObject { put("text", text) } }
+        chunk.refusal?.takeIf { it.isNotEmpty() }?.let { text -> parts += buildJsonObject { put("text", text) } }
+        chunk.toolCalls.forEach { tool ->
+            val existing = pendingTools.firstOrNull { it.index == tool.index }
+            val state = existing ?: MutableGeminiTool(tool.index, tool.name.orEmpty(), StringBuilder()).also { pendingTools += it }
+            tool.arguments?.takeIf { it.isNotEmpty() }?.let { state.arguments.append(it) }
+        }
+        if (chunk.finishReason != null) {
+            pendingTools.forEach { tool ->
+                parts += buildJsonObject {
+                    putJsonObject("functionCall") {
+                        put("name", tool.name)
+                        put("args", parseJsonObjectOrEmpty(tool.arguments.toString().ifEmpty { "{}" }))
+                    }
+                }
+            }
+        }
+        val body = buildJsonObject {
+            put("responseId", id)
+            put("modelVersion", model)
+            if (parts.isNotEmpty() || chunk.finishReason != null) {
+                put("candidates", buildJsonArray {
+                    add(buildJsonObject {
+                        put("content", buildJsonObject { put("role", "model"); put("parts", JsonArray(parts)) })
+                        chunk.finishReason?.let { put("finishReason", it.toGeminiFinish()) }
+                        put("index", 0)
+                    })
+                })
+            }
+            if (chunk.finishReason != null) usage?.let { put("usageMetadata", it.toGemini()) }
+        }
+        lines += "data: $body"
+        lines += ""
+        return lines
+    }
+
+    override fun error(message: String, id: String): List<String> = listOf(
+        "data: "+buildJsonObject { putJsonObject("error") { put("code", 500); put("message", message); put("status", "INTERNAL") } },
+        "",
+    )
+
+    private data class MutableGeminiTool(
+        val index: Int,
+        val name: String,
+        val arguments: StringBuilder,
+    )
+}
+
+private fun FinishReason.toGeminiFinish(): String = when (this) {
+    FinishReason.MAX_TOKENS -> "MAX_TOKENS"
+    FinishReason.CONTENT_FILTER -> "SAFETY"
+    else -> "STOP"
+}
+
 private fun errorObject(message: String): JsonObject = buildJsonObject {
     put("message", message)
     put("type", "api_error")
