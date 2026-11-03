@@ -287,9 +287,9 @@ private fun responseTextBlock(text: String, role: String): JsonObject = buildJso
     put("text", text)
 }
 
-private fun messageTextBlock(text: String): JsonObject = buildJsonObject { put("type", "text"); put("text", text) }
+internal fun messageTextBlock(text: String): JsonObject = buildJsonObject { put("type", "text"); put("text", text) }
 
-private fun messageWithBlocks(role: String, blocks: List<JsonObject>): JsonObject = buildJsonObject {
+internal fun messageWithBlocks(role: String, blocks: List<JsonObject>): JsonObject = buildJsonObject {
     put("role", role)
     put("content", JsonArray(blocks))
 }

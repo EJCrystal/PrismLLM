@@ -27,6 +27,12 @@ object ProtocolConverterRegistry {
         ChatCompletionToResponses,
         MessagesToResponses,
         ResponsesToMessages,
+        ChatCompletionToGemini,
+        GeminiToChatCompletion,
+        MessagesToGemini,
+        GeminiToMessages,
+        ResponsesToGemini,
+        GeminiToResponses,
     ).associateBy { it.inbound to it.outbound }
 
     fun get(inbound: GatewayProtocol, outbound: GatewayProtocol): ProtocolConverter =
