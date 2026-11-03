@@ -51,6 +51,7 @@ class ChannelHealthRepository(private val database: Database, private val slowFi
         val legacy = exec("""
             select channel_id, count(*) as n from request_logs
             where created_at >= ? and created_at < ? and health_indexed and channel_id is not null
+              and (upstream_attempts is null or upstream_attempts > 0)
               and not exists(select 1 from request_attempts a where a.log_id = request_logs.id)
               ${if (channelId != null) "and channel_id = ?" else ""}
             group by channel_id

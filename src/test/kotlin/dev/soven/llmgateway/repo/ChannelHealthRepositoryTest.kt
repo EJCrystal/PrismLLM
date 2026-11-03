@@ -145,7 +145,7 @@ class ChannelHealthRepositoryTest {
     @Test
     fun historicalIndexingIsBoundedIdempotentAndDeletedWithLogs() = runBlocking {
         logs.insert(log(listOf(attempt("a"))))
-        logs.insert(log(emptyList()))
+        logs.insert(log(emptyList()).copy(upstreamAttempts = null))
         sql("delete from request_attempts")
         sql("update request_logs set health_indexed = false")
         assertTrue(health.report("24h", mapOf("a" to true), 30, now).indexing)
@@ -192,6 +192,15 @@ class ChannelHealthRepositoryTest {
         assertEquals(2, logs.indexHealthBatch(now - 86_400_000, 10))
         assertEquals(0, logs.indexHealthBatch(now - 86_400_000, 10))
         assertEquals(2, health.report("24h", mapOf("a" to true), 30, now).channels.single().metrics.attempts)
+    }
+
+    @Test
+    fun legacyRequestCountExcludesRequestsWithoutAnUpstreamAttempt() = runBlocking {
+        logs.insert(log(emptyList()).copy(upstreamAttempts = null))
+        logs.insert(log(emptyList(), failed = true).copy(upstreamAttempts = 0))
+
+        val requests = health.report("24h", mapOf("a" to true), 30, now).channels.single().requests
+        assertEquals(1, requests.legacyRequests, "Pre-migration logs have unknown attempt counts and remain eligible")
     }
 
     @Test
