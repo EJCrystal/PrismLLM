@@ -226,13 +226,8 @@ private suspend fun handleProxy(
             throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
         }
         val nativeCandidates = allCandidates.filter { protocol in it.channel.protocols }
-        val conversionCandidates = if (protocol == GatewayProtocol.GEMINI) {
-            emptyList()
-        } else {
-            allCandidates.filter { candidate ->
-                protocol !in candidate.channel.protocols &&
-                    candidate.channel.protocols.any { it != GatewayProtocol.GEMINI }
-            }
+        val conversionCandidates = allCandidates.filter { candidate ->
+            protocol !in candidate.channel.protocols
         }
         val candidates = nativeCandidates + conversionCandidates
         if (candidates.isEmpty()) throw protocolNotSupported(alias, protocol)
@@ -309,7 +304,7 @@ private suspend fun handleProxy(
             val attemptProtocol = if (protocol in candidate.channel.protocols) {
                 protocol
             } else {
-                candidate.channel.protocols.firstOrNull { it != GatewayProtocol.GEMINI }
+                candidate.channel.protocols.firstOrNull()
             }
             attemptProtocol?.takeIf { it != protocol }?.let { target ->
                 app.metrics.protocolConversion(protocol.value, target.value)
