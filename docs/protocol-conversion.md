@@ -36,6 +36,7 @@
 | 思考参数 | 沿用已有 budget 与 effort 的分档近似映射，不声称无损 |
 | 推理响应 | Messages thinking 可转为 Responses reasoning；直转中无法表示的 redacted_thinking 或缺少 Anthropic 签名的 Responses reasoning 明确报错，不伪造 thinking 块 |
 | 流式输出 | 文本、工具参数增量、结束原因、末尾用量与错误；没有结束原因的 EOF 不伪造成功结束，代理层仍检测缺失终止事件的流中断 |
+| 安全停止原因 | Chat `content_filter`、Responses `incomplete/content_filter` 与 Messages `refusal` 相互映射，普通响应与流式返回均不降级为自然结束 |
 | Gemini | 仅原生透传，不参与跨协议转换 |
 | 图片、文件、音频、内置工具 | 仍不支持跨协议转换 |
 | Responses 状态续接与存储 | 拒绝 `previous_response_id`、`store=true`、非空 `include`、自动 `truncation`；允许原有无副作用默认值 |

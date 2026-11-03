@@ -513,4 +513,15 @@ class ProtocolConversionTest {
         assertEquals("incomplete", back["status"]!!.jsonPrimitive.content)
         assertEquals("content_filter", back["incomplete_details"]!!.jsonObject["reason"]!!.jsonPrimitive.content)
     }
+
+    @Test
+    fun `content filter maps to messages refusal and back`() {
+        val chat = json(
+            """{"id":"chat_1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"filtered"},"finish_reason":"content_filter"}]}""",
+        )
+        val messages = ProtocolConversion.convertResponse(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, chat, "m")
+        assertEquals("refusal", messages["stop_reason"]!!.jsonPrimitive.content)
+        val back = ProtocolConversion.convertResponse(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, messages, "m")
+        assertEquals("content_filter", back["choices"]!!.jsonArray[0].jsonObject["finish_reason"]!!.jsonPrimitive.content)
+    }
 }

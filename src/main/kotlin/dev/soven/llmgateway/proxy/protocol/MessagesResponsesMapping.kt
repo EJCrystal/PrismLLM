@@ -187,9 +187,12 @@ internal fun messagesToResponsesResponse(response: JsonObject, model: String): J
     put("id", id)
     put("object", "response")
     put("created_at", System.currentTimeMillis() / 1000)
-    val incomplete = response.string("stop_reason") == "max_tokens"
+    val stopReason = response.string("stop_reason")
+    val incomplete = stopReason == "max_tokens" || stopReason == "refusal"
     put("status", if (incomplete) "incomplete" else "completed")
-    if (incomplete) putJsonObject("incomplete_details") { put("reason", "max_output_tokens") }
+    if (incomplete) putJsonObject("incomplete_details") {
+        put("reason", if (stopReason == "refusal") "content_filter" else "max_output_tokens")
+    }
     put("model", model)
     put("output", JsonArray(response.array("content").mapIndexedNotNull { index, value ->
         val block = value as? JsonObject ?: unsupported("content[$index]", "内容块必须是对象")
@@ -258,7 +261,7 @@ internal fun responsesToMessagesResponse(response: JsonObject, model: String): J
     put("content", JsonArray(content))
     val incompleteReason = (response["incomplete_details"] as? JsonObject)?.string("reason")
     put("stop_reason", when {
-        response.string("status") == "incomplete" -> if (incompleteReason == "content_filter") "end_turn" else "max_tokens"
+        response.string("status") == "incomplete" -> if (incompleteReason == "content_filter") "refusal" else "max_tokens"
         content.any { it.string("type") == "tool_use" } -> "tool_use"
         else -> "end_turn"
     })

@@ -335,11 +335,13 @@ internal fun chatUsageToMessages(usage: JsonObject?): JsonObject? = TokenUsage.f
 internal fun anthropicStopToChat(stop: String?): String = when (stop) {
     "max_tokens" -> "length"
     "tool_use" -> "tool_calls"
+    "refusal" -> "content_filter"
     else -> "stop"
 }
 
 internal fun chatFinishToAnthropic(finish: String?): String = when (finish) {
     "length" -> "max_tokens"
     "tool_calls" -> "tool_use"
+    "content_filter" -> "refusal"
     else -> "end_turn"
 }

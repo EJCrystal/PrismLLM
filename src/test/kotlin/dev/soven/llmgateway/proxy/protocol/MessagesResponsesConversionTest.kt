@@ -82,7 +82,7 @@ class MessagesResponsesConversionTest {
         assertEquals("4", back["usage"]!!.jsonObject["cache_read_input_tokens"]!!.jsonPrimitive.content)
         assertEquals("2", back["usage"]!!.jsonObject["cache_creation_input_tokens"]!!.jsonPrimitive.content)
         val filtered = json("""{"status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}]}""")
-        assertEquals("end_turn", MessagesToResponses.convertResponse(filtered, "public")["stop_reason"]!!.jsonPrimitive.content)
+        assertEquals("refusal", MessagesToResponses.convertResponse(filtered, "public")["stop_reason"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -167,7 +167,11 @@ class MessagesResponsesConversionTest {
                         assertEquals("before last", terminal["output"]!!.jsonArray.single().jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
                         assertEquals(if (finishReason == "stop") "completed" else "incomplete", terminal.string("status"))
                     } else {
-                        assertEquals(if (finishReason == "length") "max_tokens" else "end_turn", events.first { it.string("type") == "message_delta" }["delta"]!!.jsonObject.string("stop_reason"))
+                        assertEquals(when (finishReason) {
+                            "length" -> "max_tokens"
+                            "content_filter" -> "refusal"
+                            else -> "end_turn"
+                        }, events.first { it.string("type") == "message_delta" }["delta"]!!.jsonObject.string("stop_reason"))
                     }
                 }
             }

@@ -90,7 +90,7 @@ internal enum class FinishReason(val chatValue: String, val messagesValue: Strin
     STOP("stop", "end_turn"),
     MAX_TOKENS("length", "max_tokens"),
     TOOL_CALLS("tool_calls", "tool_use"),
-    CONTENT_FILTER("content_filter", "end_turn"),
+    CONTENT_FILTER("content_filter", "refusal"),
     ;
 
     companion object {

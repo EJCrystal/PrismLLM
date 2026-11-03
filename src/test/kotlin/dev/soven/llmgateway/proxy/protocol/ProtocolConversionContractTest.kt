@@ -92,6 +92,59 @@ class ProtocolConversionContractTest {
     }
 
     @Test
+    fun `all six ordinary responses preserve safety stop reasons`() {
+        val filteredResponses = mapOf(
+            GatewayProtocol.CHAT_COMPLETIONS to json("""{"id":"reply","choices":[{"message":{"role":"assistant","content":"filtered"},"finish_reason":"content_filter"}]}"""),
+            GatewayProtocol.RESPONSES to json("""{"id":"reply","status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"filtered"}]}]}"""),
+            GatewayProtocol.MESSAGES to json("""{"id":"reply","stop_reason":"refusal","content":[{"type":"text","text":"filtered"}]}"""),
+        )
+        eachDirection { inbound, outbound ->
+            val converted = ProtocolConversion.convertResponse(inbound, outbound, filteredResponses.getValue(outbound), "public")
+            when (inbound) {
+                GatewayProtocol.MESSAGES -> assertEquals("refusal", converted.string("stop_reason"))
+                GatewayProtocol.CHAT_COMPLETIONS -> assertEquals("content_filter", converted.array("choices").single().jsonObject.string("finish_reason"))
+                GatewayProtocol.RESPONSES -> {
+                    assertEquals("incomplete", converted.string("status"))
+                    assertEquals("content_filter", converted["incomplete_details"]!!.jsonObject.string("reason"))
+                }
+                else -> error("No Gemini conversion")
+            }
+        }
+    }
+
+    @Test
+    fun `all six streams preserve safety stop reasons`() {
+        val filteredStreams = mapOf(
+            GatewayProtocol.CHAT_COMPLETIONS to listOf(
+                """{"id":"reply","choices":[{"delta":{"content":"filtered"},"finish_reason":"content_filter"}]}""",
+                "[DONE]",
+            ),
+            GatewayProtocol.RESPONSES to listOf(
+                """{"type":"response.output_text.delta","delta":"filtered"}""",
+                """{"type":"response.incomplete","response":{"id":"reply","incomplete_details":{"reason":"content_filter"}}}""",
+            ),
+            GatewayProtocol.MESSAGES to listOf(
+                """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"filtered"}}""",
+                """{"type":"message_delta","delta":{"stop_reason":"refusal"}}""",
+                """{"type":"message_stop"}""",
+            ),
+        )
+        eachDirection { inbound, outbound ->
+            val converter = ProtocolConverterRegistry.get(inbound, outbound).streamConverter("public")
+            val output = (filteredStreams.getValue(outbound).flatMap { converter.feed("data: $it") + converter.feed("") } + converter.finish()).joinToString("\n")
+            val expected = when (inbound) {
+                GatewayProtocol.MESSAGES -> "\"stop_reason\":\"refusal\""
+                GatewayProtocol.CHAT_COMPLETIONS -> "\"finish_reason\":\"content_filter\""
+                GatewayProtocol.RESPONSES -> "\"reason\":\"content_filter\""
+                else -> error("No Gemini conversion")
+            }
+            assertTrue(output.contains(expected), output)
+            assertFalse(output.contains("\"stop_reason\":\"end_turn\""), output)
+            assertFalse(output.contains("response.completed"), output)
+        }
+    }
+
+    @Test
     fun `six streams flush a final frame without a trailing separator exactly once`() = eachDirection { inbound, outbound ->
         val converter = ProtocolConversion.streamConverter(inbound, outbound, "public")!!
         val output = buildList {
