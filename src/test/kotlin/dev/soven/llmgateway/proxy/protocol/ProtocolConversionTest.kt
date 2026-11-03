@@ -97,7 +97,7 @@ class ProtocolConversionTest {
     }
 
     @Test
-    fun `messages and responses convert through canonical chat`() {
+    fun `messages and responses convert directly`() {
         val messages = json("""{"model":"claude","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}""")
         val responses = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES, messages, "gpt")
         assertEquals("gpt", responses["model"]!!.jsonPrimitive.content)

@@ -23,6 +23,8 @@
 
 明确不做：多租户 RBAC、语义缓存、MCP、多副本。协议转换第一版不支持 Gemini、图片、文件、音频、Provider 内置工具和 Responses 有状态续接。
 
+跨协议转换通过统一接口和六个显式方向实现，Messages ↔ Responses 不再通过 Chat Completions 中转；接口职责、字段支持及限制见 [协议转换说明](docs/protocol-conversion.md)。
+
 ## 架构
 
 ```

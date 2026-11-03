@@ -1,0 +1,183 @@
+package dev.soven.llmgateway.proxy.protocol
+
+import dev.soven.llmgateway.domain.GatewayProtocol
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+class MessagesResponsesConversionTest {
+    @Test
+    fun `messages request preserves interleaved text and tool order without a chat intermediary`() {
+        val request = json("""{
+            "model":"public","max_tokens":32,"system":[{"type":"text","text":"system"}],
+            "messages":[
+                {"role":"assistant","content":[{"type":"text","text":"before"},{"type":"tool_use","id":"call_1","name":"lookup","input":{"city":"SZ"}},{"type":"text","text":"after"}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"sunny"},{"type":"text","text":"warm"}]},{"type":"text","text":"thanks"}]}
+            ],
+            "tools":[{"name":"lookup","description":"weather","input_schema":{"type":"object"}}],
+            "tool_choice":{"type":"tool","name":"lookup","disable_parallel_tool_use":true},
+            "thinking":{"type":"enabled","budget_tokens":4096},"metadata":{"user_id":"user_1"}
+        }""")
+        val converted = MessagesToResponses.convertRequest(request, "upstream")
+        val input = converted["input"]!!.jsonArray
+        assertEquals(listOf("message", "function_call", "message", "function_call_output", "message"), input.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        assertEquals("{\"city\":\"SZ\"}", input[1].jsonObject["arguments"]!!.jsonPrimitive.content)
+        assertEquals("sunny\nwarm", input[3].jsonObject["output"]!!.jsonPrimitive.content)
+        assertEquals("system", converted["instructions"]!!.jsonPrimitive.content)
+        assertEquals("user_1", converted["user"]!!.jsonPrimitive.content)
+        assertEquals("medium", converted["reasoning"]!!.jsonObject["effort"]!!.jsonPrimitive.content)
+        assertEquals("false", converted["parallel_tool_calls"]!!.jsonPrimitive.content)
+        assertEquals("lookup", converted["tool_choice"]!!.jsonObject["name"]!!.jsonPrimitive.content)
+        assertEquals("lookup", converted["tools"]!!.jsonArray[0].jsonObject["name"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `responses request converts grouped tool results and parallel tool preference directly`() {
+        val request = json("""{
+            "model":"public","instructions":"system","input":[
+                {"type":"function_call","call_id":"first","name":"lookup","arguments":"{}"},
+                {"type":"function_call_output","call_id":"first","output":"A"},
+                {"type":"function_call_output","call_id":"second","output":"B"},
+                {"role":"user","content":[{"type":"input_text","text":"next"}]}
+            ],"max_output_tokens":64,"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+            "parallel_tool_calls":false,"reasoning":{"effort":"high"},"user":"user_1","store":false,"include":[],"truncation":"disabled"
+        }""")
+        val converted = ResponsesToMessages.convertRequest(request, "upstream")
+        val messages = converted["messages"]!!.jsonArray
+        assertEquals(3, messages.size)
+        assertEquals(2, messages[1].jsonObject["content"]!!.jsonArray.size)
+        assertEquals("first", messages[0].jsonObject["content"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content)
+        assertEquals("user_1", converted["metadata"]!!.jsonObject["user_id"]!!.jsonPrimitive.content)
+        assertEquals("64", converted["max_tokens"]!!.jsonPrimitive.content)
+        assertEquals("8192", converted["thinking"]!!.jsonObject["budget_tokens"]!!.jsonPrimitive.content)
+        assertEquals("true", converted["tool_choice"]!!.jsonObject["disable_parallel_tool_use"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `direct responses preserve output order tool identifiers and cache usage`() {
+        val messages = json("""{
+            "id":"msg_1","stop_reason":"max_tokens","content":[
+                {"type":"text","text":"before"},{"type":"tool_use","id":"call_1","name":"lookup","input":{"city":"SZ"}},
+                {"type":"text","text":"after"}
+            ],"usage":{"input_tokens":3,"cache_read_input_tokens":4,"cache_creation_input_tokens":2,"output_tokens":5}
+        }""")
+        val responses = ResponsesToMessages.convertResponse(messages, "public")
+        val output = responses["output"]!!.jsonArray
+        assertEquals(listOf("message", "function_call", "message"), output.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        assertEquals("call_1", output[1].jsonObject["call_id"]!!.jsonPrimitive.content)
+        assertEquals("incomplete", responses["status"]!!.jsonPrimitive.content)
+        assertEquals("9", responses["usage"]!!.jsonObject["input_tokens"]!!.jsonPrimitive.content)
+        val back = MessagesToResponses.convertResponse(responses, "public")
+        assertEquals("max_tokens", back["stop_reason"]!!.jsonPrimitive.content)
+        assertEquals("call_1", back["content"]!!.jsonArray[1].jsonObject["id"]!!.jsonPrimitive.content)
+        assertEquals("3", back["usage"]!!.jsonObject["input_tokens"]!!.jsonPrimitive.content)
+        assertEquals("4", back["usage"]!!.jsonObject["cache_read_input_tokens"]!!.jsonPrimitive.content)
+        assertEquals("2", back["usage"]!!.jsonObject["cache_creation_input_tokens"]!!.jsonPrimitive.content)
+        val filtered = json("""{"status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}]}""")
+        assertEquals("end_turn", MessagesToResponses.convertResponse(filtered, "public")["stop_reason"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `direct conversion rejects unsupported semantics instead of dropping them`() {
+        val cases = listOf(
+            Triple(MessagesToResponses, """{"messages":[],"context_management":{}}""", "request.context_management"),
+            Triple(MessagesToResponses, """{"messages":[],"output_config":{}}""", "request.output_config"),
+            Triple(MessagesToResponses, """{"messages":[],"stop_sequences":["END"]}""", "stop_sequences"),
+            Triple(MessagesToResponses, """{"messages":[],"metadata":{"trace":"value"}}""", "metadata.trace"),
+            Triple(ResponsesToMessages, """{"input":"hi","previous_response_id":"resp_1"}""", "previous_response_id"),
+            Triple(ResponsesToMessages, """{"input":"hi","store":true}""", "store"),
+            Triple(ResponsesToMessages, """{"input":"hi","include":["reasoning.encrypted_content"]}""", "include"),
+            Triple(ResponsesToMessages, """{"input":"hi","truncation":"auto"}""", "truncation"),
+            Triple(ResponsesToMessages, """{"input":"hi","text":{"format":{"type":"json_schema"}}}""", "text.format"),
+        )
+        cases.forEach { (converter, request, field) ->
+            val error = assertFailsWith<ProtocolConversionException> { converter.convertRequest(json(request), "upstream") }
+            assertEquals(field, error.field)
+        }
+    }
+
+    @Test
+    fun `direct responses reject reasoning blocks that cannot be represented faithfully`() {
+        val unsupportedReasoning = json("""{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"plan"}]}]}""")
+        assertEquals("output[0].type", assertFailsWith<ProtocolConversionException> {
+            MessagesToResponses.convertResponse(unsupportedReasoning, "public")
+        }.field)
+        val redacted = json("""{"content":[{"type":"redacted_thinking","data":"opaque"}]}""")
+        assertEquals("content[0].type", assertFailsWith<ProtocolConversionException> {
+            ResponsesToMessages.convertResponse(redacted, "public")
+        }.field)
+    }
+
+    @Test
+    fun `all six streams preserve fragmented tool arguments identifiers and cache usage`() {
+        val protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES)
+        protocols.forEach { source -> protocols.filter { it != source }.forEach { client ->
+            val converter = ProtocolConverterRegistry.get(client, source).streamConverter("public")
+            val frames = toolStream(source).flatMap { converter.feed("data: $it") + converter.feed("") } + converter.finish()
+            val events = frames.filter { it.startsWith("data: {") }.map { json(it.removePrefix("data: ")) }
+            val arguments = events.joinToString("") { event ->
+                when (client) {
+                    GatewayProtocol.CHAT_COMPLETIONS -> (event["choices"] as? JsonArray)?.firstOrNull()?.jsonObject?.get("delta")?.jsonObject?.get("tool_calls")?.jsonArray?.joinToString("") {
+                        it.jsonObject["function"]!!.jsonObject["arguments"]?.jsonPrimitive?.content.orEmpty()
+                    }.orEmpty()
+                    GatewayProtocol.MESSAGES -> (event["delta"] as? JsonObject)?.string("partial_json").orEmpty()
+                    GatewayProtocol.RESPONSES -> if (event.string("type") == "response.function_call_arguments.delta") event.string("delta").orEmpty() else ""
+                    else -> error("No Gemini conversion")
+                }
+            }
+            assertEquals("{\"city\":\"SZ\"}", arguments, "$source → $client: $frames")
+            assertTrue(frames.joinToString().contains("call_1"))
+            assertTrue(frames.joinToString().contains("lookup"))
+            val usage = events.mapNotNull { event ->
+                (event["usage"] as? JsonObject) ?: (event["response"] as? JsonObject)?.get("usage") as? JsonObject
+            }.last()
+            val inputField = if (client == GatewayProtocol.CHAT_COMPLETIONS) "prompt_tokens" else "input_tokens"
+            assertEquals(if (client == GatewayProtocol.MESSAGES) "3" else "9", usage[inputField]!!.jsonPrimitive.content)
+            assertFalse(frames.joinToString().contains("response.failed"))
+        } }
+    }
+
+    @Test
+    fun `content delivered with a finish reason is emitted before the terminal event`() {
+        val converter = ResponsesToChatCompletion.streamConverter("public")
+        val output = (converter.feed("""data: {"id":"reply","choices":[{"delta":{"content":"last"},"finish_reason":"length"}]}""") +
+            converter.feed("") + converter.feed("data: [DONE]")).joinToString("\n")
+        assertTrue(output.contains("last"), output)
+        assertTrue(output.indexOf("last") < output.indexOf("response.incomplete"), output)
+    }
+
+    private fun toolStream(protocol: GatewayProtocol): List<String> = when (protocol) {
+        GatewayProtocol.CHAT_COMPLETIONS -> listOf(
+            """{"id":"reply","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"lookup","arguments":"{\"city\":"}}]},"finish_reason":null}]}""",
+            """{"id":"reply","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"SZ\"}"}}]},"finish_reason":null}]}""",
+            """{"id":"reply","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":9,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":4,"cache_write_tokens":2}}}""",
+            "[DONE]",
+        )
+        GatewayProtocol.MESSAGES -> listOf(
+            """{"type":"message_start","message":{"id":"reply","usage":{"input_tokens":3,"cache_read_input_tokens":4,"cache_creation_input_tokens":2}}}""",
+            """{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_1","name":"lookup","input":{}}}""",
+            """{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}""",
+            """{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"SZ\"}"}}""",
+            """{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}""",
+            """{"type":"message_stop"}""",
+        )
+        GatewayProtocol.RESPONSES -> listOf(
+            """{"type":"response.created","response":{"id":"reply"}}""",
+            """{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"lookup","arguments":""}}""",
+            """{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"city\":"}""",
+            """{"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"SZ\"}"}""",
+            """{"type":"response.completed","response":{"id":"reply","usage":{"input_tokens":9,"output_tokens":5,"input_tokens_details":{"cached_tokens":4,"cache_write_tokens":2}}}}""",
+        )
+        else -> error("No Gemini conversion")
+    }
+
+    private fun json(value: String): JsonObject = Json.parseToJsonElement(value).jsonObject
+}
