@@ -171,6 +171,7 @@ internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): Js
 
 internal fun responsesToChatResponse(response: JsonObject, model: String): JsonObject {
     val content = mutableListOf<String>()
+    val refusals = mutableListOf<String>()
     val reasoning = mutableListOf<String>()
     val toolCalls = mutableListOf<JsonObject>()
     response.array("output").forEachIndexed { index, element ->
@@ -180,6 +181,7 @@ internal fun responsesToChatResponse(response: JsonObject, model: String): JsonO
                 val obj = part as? JsonObject ?: return@forEachIndexed
                 when (obj.string("type")) {
                     "output_text", "text" -> content += obj.string("text").orEmpty()
+                    "refusal" -> obj.string("refusal")?.let { refusals += it }
                     else -> unsupported("output[$index].content[$partIndex].type", "第一版不支持该 Responses 输出内容")
                 }
             }
@@ -217,6 +219,7 @@ internal fun responsesToChatResponse(response: JsonObject, model: String): JsonO
                     put("role", "assistant")
                     if (reasoning.isNotEmpty()) put("reasoning_content", reasoning.joinToString("\n"))
                     put("content", content.joinToString("\n").ifEmpty { null })
+                    if (refusals.isNotEmpty()) put("refusal", refusals.joinToString("\n"))
                     if (toolCalls.isNotEmpty()) put("tool_calls", JsonArray(toolCalls))
                 }
                 val incompleteReason = (response["incomplete_details"] as? JsonObject)?.string("reason")

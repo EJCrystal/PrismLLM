@@ -132,9 +132,8 @@ internal class ResponsesStreamDecoder : StreamDecoder {
                 listOf(StreamEvent(
                     id,
                     finishReason = when (reason) {
-                        "max_output_tokens" -> FinishReason.MAX_TOKENS
                         "content_filter" -> FinishReason.CONTENT_FILTER
-                        else -> if (responseToolSeen) FinishReason.TOOL_CALLS else FinishReason.STOP
+                        else -> FinishReason.MAX_TOKENS
                     },
                     done = true,
                 ))

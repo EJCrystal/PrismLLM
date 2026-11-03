@@ -16,6 +16,40 @@ class ProtocolConversionTest {
     private fun json(text: String): JsonObject = Json.parseToJsonElement(text).jsonObject
 
     @Test
+    fun `responses refusal blocks are preserved as chat message refusal`() {
+        val response = json("""{
+            "id":"resp_refusal",
+            "output":[{"type":"message","content":[
+                {"type":"output_text","text":"context"},
+                {"type":"refusal","refusal":"cannot help"},
+                {"type":"refusal","refusal":"with that"}
+            ]}]
+        }""")
+        val chat = ChatCompletionToResponses.convertResponse(response, "public")
+        val message = chat.array("choices").single().jsonObject["message"]!!.jsonObject
+        assertEquals("context", message.string("content"))
+        assertEquals("cannot help\nwith that", message.string("refusal"))
+    }
+
+    @Test
+    fun `unknown responses incomplete reasons never become successful stop`() {
+        for (reason in listOf(null, "unknown_reason", "max_output_tokens")) {
+            for (withTool in listOf(false, true)) {
+                val decoder = ResponsesStreamDecoder()
+                if (withTool) {
+                    decoder.decode(json("""{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"lookup"}}"""))
+                }
+                val details = reason?.let { ",\"incomplete_details\":{\"reason\":\"$it\"}" }.orEmpty()
+                val event = decoder.decode(json("""{"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete"$details}}""")).single()
+                assertEquals(FinishReason.MAX_TOKENS, event.finishReason)
+                assertTrue(event.done)
+            }
+        }
+        val filtered = ResponsesStreamDecoder().decode(json("""{"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}""")).single()
+        assertEquals(FinishReason.CONTENT_FILTER, filtered.finishReason)
+    }
+
+    @Test
     fun `chat request converts to messages with tools and system`() {
         val request = json(
             """{
