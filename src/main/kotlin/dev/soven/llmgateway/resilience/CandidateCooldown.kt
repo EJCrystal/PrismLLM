@@ -481,7 +481,6 @@ class CandidateCooldown(
         state.cooldownUntil = 0
         state.probeInFlight = false
         state.reason = null
-        state.deleteUnconfirmed = false
         // 只有真正离开冷却态才推进代际：健康态的成功结果不应作废并发请求的许可，
         // 否则并发中的另一请求随后失败会被代际守卫忽略，漏记冷却。
         if (wasCooling) {

@@ -498,4 +498,33 @@ class CandidateCooldownTest {
         assertTrue(clearedAfterConfirm.isEmpty())
         assertTrue(changes.isEmpty())
     }
+
+    @Test
+    fun `successful request does not clear deleteUnconfirmed flag before confirmDeletions`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+
+        val failPermit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(failPermit, FailureKind.RATE_LIMITED)
+        changes.clear()
+
+        // 第一次清除：标记 deleteUnconfirmed，未确认
+        val cleared = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertEquals(listOf("kc:ch1:k1:m1"), cleared)
+        changes.clear()
+
+        // 此时新请求进入并在新代际下成功，触发 recordSuccess -> reset
+        val successPermit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordSuccess(successPermit)
+
+        // 常规 reset 不应清除 deleteUnconfirmed，重试清除依然能够捕获该键
+        val retry = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertEquals(listOf("kc:ch1:k1:m1"), retry)
+        assertEquals(1, changes.size)
+        changes.clear()
+
+        // 持久化确认后才清除标记
+        cooldown.confirmDeletions(retry)
+        assertTrue(cooldown.clearCandidate("ch1", "k1", "m1").isEmpty())
+    }
 }
