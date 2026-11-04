@@ -374,7 +374,7 @@ internal fun geminiToMessagesResponse(response: JsonObject, model: String): Json
                     put("name", call.string("name").orEmpty())
                     put("input", call["args"] ?: buildJsonObject { })
                 })
-                obj.boolean("thought") == true -> add(buildJsonObject { put("type", "thinking"); put("thinking", obj.string("text").orEmpty()); put("signature", "") })
+                obj.boolean("thought") == true -> Unit
                 obj.string("text") != null -> add(messageTextBlock(obj.string("text").orEmpty()))
             }
         }
