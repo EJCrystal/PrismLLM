@@ -1342,21 +1342,26 @@ private const val MAX_KEY_MATCH_BODY_CHARS = 8_192
 private data class ParsedUpstreamError(
     val code: String? = null,
     val type: String? = null,
+    val status: String? = null,
     val message: String? = null,
+    val isStructured: Boolean = false,
 )
 
 private fun parseUpstreamError(body: String): ParsedUpstreamError = runCatching {
     val root = Json.parseToJsonElement(body).jsonObject
     val error = root["error"] as? JsonObject
+    val isStructured = error != null || root.containsKey("error") || root.containsKey("message") || root.containsKey("detail")
     val code = (error?.get("code") as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
         ?: (root["code"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
     val type = (error?.get("type") as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
         ?: (root["type"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+    val status = (error?.get("status") as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+        ?: (root["status"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
     val message = (error?.get("message") as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
         ?: (root["message"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
         ?: (root["detail"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
-    ParsedUpstreamError(code = code, type = type, message = message)
-}.getOrDefault(ParsedUpstreamError())
+    ParsedUpstreamError(code = code, type = type, status = status, message = message, isStructured = isStructured)
+}.getOrDefault(ParsedUpstreamError(isStructured = false))
 
 // 常见中转商在内部渠道故障时返回的伪 400 特征错误码
 private val UPSTREAM_ERROR_CODES = setOf(
@@ -1372,10 +1377,16 @@ private val UPSTREAM_ERROR_CODES = setOf(
     "upstream_timeout",
 )
 
-// 已知的标准客户端错误类型，避免兜底文本匹配误伤常规参数错误
+// 已知的标准客户端错误类型与状态，避免兜底文本匹配误伤常规参数错误
 private val KNOWN_CLIENT_ERROR_TYPES = setOf(
     "invalid_request_error",
     "client_error",
+)
+
+private val KNOWN_CLIENT_ERROR_STATUSES = setOf(
+    "invalid_argument",
+    "failed_precondition",
+    "out_of_range",
 )
 
 private fun isUpstreamPseudo400(statusCode: Int, parsed: ParsedUpstreamError, body: String): Boolean {
@@ -1386,12 +1397,19 @@ private fun isUpstreamPseudo400(statusCode: Int, parsed: ParsedUpstreamError, bo
     if (codeMatch || typeMatch) {
         return true
     }
-    // 2. 如果存在明确的标准客户端错误类型（如 invalid_request_error），排除兜底匹配
+    // 2. 如果存在明确的标准客户端错误类型（如 invalid_request_error）或 Gemini 客户端状态（如 INVALID_ARGUMENT），排除匹配
     if (parsed.type?.lowercase() in KNOWN_CLIENT_ERROR_TYPES) {
         return false
     }
-    // 3. 仅在未提供明确客户端错误类型时，对限定的错误消息字段（无结构化时退化到 body）做特征识别
-    val targetMessage = (parsed.message ?: body).lowercase()
+    if (parsed.status?.lowercase() in KNOWN_CLIENT_ERROR_STATUSES) {
+        return false
+    }
+    // 3. 目标文本提取：结构化响应仅匹配显式错误消息字段；只有非结构化纯文本响应才对整个 body 进行兜底匹配
+    val targetMessage = if (parsed.isStructured) {
+        parsed.message?.lowercase() ?: return false
+    } else {
+        body.lowercase()
+    }
     return targetMessage.contains("模型请求失败") ||
         targetMessage.contains("请稍后重试或更换模型") ||
         targetMessage.contains("无可用渠道") ||
@@ -1414,7 +1432,7 @@ private fun upstreamException(
             (protocol == GatewayProtocol.GEMINI && isGeminiErrorBody(it))
     }
     val parsedError = parseUpstreamError(body)
-    val upstreamCode = parsedError.code ?: parsedError.type
+    val upstreamCode = parsedError.code ?: parsedError.type ?: parsedError.status
     val isPseudo400 = isUpstreamPseudo400(status.value, parsedError, body)
     val mapped = when {
         nativeResponseBody != null && !isPseudo400 -> status

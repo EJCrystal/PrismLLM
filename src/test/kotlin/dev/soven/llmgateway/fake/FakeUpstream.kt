@@ -212,6 +212,30 @@ class FakeUpstream {
                 )
                 return
             }
+            "gemini-400-invalid-argument" -> {
+                call.respondText(
+                    """{"error":{"code":400,"message":"Invalid argument: upstream error","status":"INVALID_ARGUMENT"}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
+            "structured-400-no-message-debug-keyword" -> {
+                call.respondText(
+                    """{"error":{"code":"invalid_parameter"},"debug":"upstream error"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
+            "unstructured-400-pseudo" -> {
+                call.respondText(
+                    "模型请求失败，请稍后重试或更换模型。",
+                    ContentType.Text.Plain,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
             "model-route" -> {
                 if (model != null && model in failingModels) {
                     call.respondText(ERROR_429, ContentType.Application.Json, HttpStatusCode.TooManyRequests)
@@ -365,6 +389,30 @@ class FakeUpstream {
                 call.respondText(
                     """{"error":{"type":"invalid_request_error","message":"Invalid value: upstream error"}}""",
                     ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
+            "gemini-400-invalid-argument" -> {
+                call.respondText(
+                    """{"error":{"code":400,"message":"Invalid argument: upstream error","status":"INVALID_ARGUMENT"}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
+            "structured-400-no-message-debug-keyword" -> {
+                call.respondText(
+                    """{"error":{"code":"invalid_parameter"},"debug":"upstream error"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
+            "unstructured-400-pseudo" -> {
+                call.respondText(
+                    "模型请求失败，请稍后重试或更换模型。",
+                    ContentType.Text.Plain,
                     HttpStatusCode.BadRequest,
                 )
                 return
