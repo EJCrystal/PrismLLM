@@ -210,4 +210,34 @@ class UpstreamRequestPolicyTest {
         val error = assertFailsWith<GatewayException> { policy.body(json("{}"), "m", limitBytes = 25) }
         assertEquals(HttpStatusCode.PayloadTooLarge, error.status)
     }
+
+    @Test
+    fun `chat completion body removes max_tokens when max_completion_tokens override is configured`() {
+        val convertedFromResponses = json("""{"model":"gpt","messages":[{"role":"user","content":"hi"}],"max_tokens":100}""")
+        val convertedFromMessages = json("""{"model":"gpt","messages":[{"role":"user","content":"hi"}],"max_tokens":100}""")
+        val convertedFromGemini = json("""{"model":"gpt","messages":[{"role":"user","content":"hi"}],"max_tokens":100}""")
+
+        val compatiblePolicy = UpstreamRequestPolicy(
+            UpstreamRequestOverrides(), UpstreamRequestOverrides(), GatewayProtocol.CHAT_COMPLETIONS, "bearer",
+        )
+        for (request in listOf(convertedFromResponses, convertedFromMessages, convertedFromGemini)) {
+            val body = compatiblePolicy.body(request, "gpt-4o")
+            assertEquals("100", body["max_tokens"]?.jsonPrimitive?.content)
+            assertFalse(body.containsKey("max_completion_tokens"))
+        }
+
+        val reasoningPolicy = UpstreamRequestPolicy(
+            UpstreamRequestOverrides(),
+            UpstreamRequestOverrides(protocols = mapOf(
+                "chat_completions" to UpstreamProtocolOverrides(body = json("""{"max_completion_tokens":200}""")),
+            )),
+            GatewayProtocol.CHAT_COMPLETIONS,
+            "bearer",
+        )
+        for (request in listOf(convertedFromResponses, convertedFromMessages, convertedFromGemini)) {
+            val body = reasoningPolicy.body(request, "o3-mini")
+            assertEquals("200", body["max_completion_tokens"]?.jsonPrimitive?.content)
+            assertFalse(body.containsKey("max_tokens"), "max_tokens should be stripped when max_completion_tokens is configured")
+        }
+    }
 }

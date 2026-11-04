@@ -4,7 +4,7 @@
 
 ## 决策
 
-- 支持 Chat Completions、Responses、Anthropic Messages 六个方向互转。
+- 支持 Chat Completions、Responses、Anthropic Messages 六个方向互转；后续扩展为包含 Gemini 的十二个方向。
 - 渠道协议是有序列表；同协议候选始终优先，原生候选不可用或失败后才按渠道顺序选择转换目标。
 - 第一版覆盖文本、系统提示、工具调用/结果、流式 SSE、usage 和常用 reasoning effort。
 - 图片、文件、音频、Provider 内置工具、Responses `previous_response_id` 等无法无损表达的能力在请求上游前返回 `protocol_conversion_unsupported`。

@@ -116,9 +116,14 @@ class UpstreamRequestPolicy(
     }
 
     fun body(original: JsonObject, upstreamModel: String, limitBytes: Long = Long.MAX_VALUE): JsonObject {
-        val routed = if (protocol == GatewayProtocol.GEMINI) original
+        val routed = if (protocol == GatewayProtocol.GEMINI) JsonObject(original - "model" - "stream")
             else JsonObject(original + ("model" to JsonPrimitive(upstreamModel)))
-        val result = layers.fold(routed) { current, layer -> mergePatch(current, layer.body) }
+        val merged = layers.fold(routed) { current, layer -> mergePatch(current, layer.body) }
+        val result = if (protocol == GatewayProtocol.CHAT_COMPLETIONS && "max_completion_tokens" in merged) {
+            JsonObject(merged - "max_tokens")
+        } else {
+            merged
+        }
         if (result.toString().toByteArray(Charsets.UTF_8).size.toLong() > limitBytes) {
             throw GatewayException(
                 HttpStatusCode.PayloadTooLarge, "request_too_large",

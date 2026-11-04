@@ -21,6 +21,8 @@ import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -214,6 +216,12 @@ class FakeUpstream {
             }
             call.respondBytesWriter(ContentType.Text.EventStream) {
                 when (scenario) {
+                    "oversized-line-before-content", "oversized-line-after-content" -> {
+                        if (scenario == "oversized-line-after-content") writeEvent(CHUNK_HEL)
+                        writeEvent(oversizedPayload())
+                        writeEvent(FINAL_WITH_USAGE)
+                        writeDone()
+                    }
                     "disconnect" -> {
                         writeEvent("""{"id":"fake","choices":[{"delta":{"content":"partial"}}]}""")
                         delay(50)
@@ -222,6 +230,17 @@ class FakeUpstream {
                     "malformed" -> {
                         writeEvent("{not-json}")
                         writeDone()
+                    }
+                    "malformed-after-content" -> {
+                        writeEvent(CHUNK_HEL)
+                        writeEvent("{not-json}")
+                        writeEvent(FINAL_WITH_USAGE)
+                        writeDone()
+                    }
+                    "malformed-at-eof" -> {
+                        writeEvent(CHUNK_HEL)
+                        writeFully("data: {not-json}".toByteArray(Charsets.UTF_8))
+                        flush()
                     }
                     "no-usage" -> {
                         writeEvent(CHUNK_HEL)
@@ -299,6 +318,17 @@ class FakeUpstream {
                     "response.created",
                     """{"type":"response.created","response":{"id":"resp_fake","status":"in_progress"}}""",
                 )
+                if (scenario == "oversized-line-before-content") {
+                    writeSseEvent("response.completed", oversizedPayload())
+                    completed = true
+                    return@respondBytesWriter
+                }
+                if (scenario == "malformed") {
+                    writeSseEvent("response.output_text.delta", "{not-json}")
+                    writeSseEvent("response.completed", RESPONSES_FINAL_EVENT)
+                    completed = true
+                    return@respondBytesWriter
+                }
                 if (scenario == "responses-created-stall") {
                     delay(2_000)
                     completed = true
@@ -330,6 +360,15 @@ class FakeUpstream {
                 )
                 delay(10)
                 when (scenario) {
+                    "malformed-at-eof" -> {
+                        writeFully("data: {not-json}".toByteArray(Charsets.UTF_8))
+                        flush()
+                    }
+                    "malformed-after-content" -> {
+                        writeSseEvent("response.output_text.delta", "{not-json}")
+                        writeSseEvent("response.completed", RESPONSES_FINAL_EVENT)
+                    }
+                    "oversized-line-after-content" -> writeSseEvent("response.completed", oversizedPayload())
                     "responses-failed" -> writeSseEvent(
                         "response.failed",
                         """{"type":"response.failed","response":{"id":"resp_fake","status":"failed","error":{"code":"server_error","message":"upstream failed"}}}""",
@@ -350,6 +389,10 @@ class FakeUpstream {
             if (!completed) cancellations.incrementAndGet()
         }
     }
+
+    private fun oversizedPayload(): String = buildJsonObject {
+        put("payload", "private-upstream-payload-" + "x".repeat(1024 * 1024 + 32))
+    }.toString()
 
     private suspend fun handleMessages(call: ApplicationCall, scenario: String) {
         val body = call.receiveText()

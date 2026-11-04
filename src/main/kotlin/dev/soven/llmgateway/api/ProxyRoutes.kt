@@ -23,8 +23,10 @@ import dev.soven.llmgateway.proxy.applyUpstreamAuthentication
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.UsageParser
 import dev.soven.llmgateway.proxy.extractReportedModel
+import dev.soven.llmgateway.proxy.protocol.MAX_PROTOCOL_EVENT_BYTES
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversion
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversionException
+import dev.soven.llmgateway.proxy.protocol.asChatUpstream
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.KeyAutoDisablePendingException
 import dev.soven.llmgateway.resilience.CandidateCooldown
@@ -55,7 +57,9 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.util.cio.ChannelWriteException
+import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.charsets.TooLongLineException
 import io.ktor.utils.io.core.readBytes
 import io.ktor.utils.io.readRemaining
 import io.ktor.utils.io.readUTF8Line
@@ -223,13 +227,9 @@ private suspend fun handleProxy(
             throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
         }
         val nativeCandidates = allCandidates.filter { protocol in it.channel.protocols }
-        val conversionCandidates = if (protocol == GatewayProtocol.GEMINI) {
-            emptyList()
-        } else {
-            allCandidates.filter { candidate ->
-                protocol !in candidate.channel.protocols &&
-                    candidate.channel.protocols.any { it != GatewayProtocol.GEMINI }
-            }
+        val conversionCandidates = allCandidates.filter { candidate ->
+            protocol !in candidate.channel.protocols &&
+                candidate.channel.protocols.any { ProtocolConversion.supports(protocol, it) }
         }
         val candidates = nativeCandidates + conversionCandidates
         if (candidates.isEmpty()) throw protocolNotSupported(alias, protocol)
@@ -306,7 +306,7 @@ private suspend fun handleProxy(
             val attemptProtocol = if (protocol in candidate.channel.protocols) {
                 protocol
             } else {
-                candidate.channel.protocols.firstOrNull { it != GatewayProtocol.GEMINI }
+                candidate.channel.protocols.firstOrNull { ProtocolConversion.supports(protocol, it) }
             }
             attemptProtocol?.takeIf { it != protocol }?.let { target ->
                 app.metrics.protocolConversion(protocol.value, target.value)
@@ -668,6 +668,7 @@ private suspend fun handleProxy(
                 "responses_incomplete" -> "上游响应未完成"
                 "messages_failed" -> "上游响应失败"
                 "gemini_failed" -> "上游响应失败"
+                "protocol_conversion_failed" -> "上游流无法转换为调用方协议"
                 else -> "上游流未正常结束（缺少结束帧）"
             }
         }
@@ -998,7 +999,13 @@ private suspend fun proxyStream(
     } else {
         ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel)
     }
-    val body = policy.body(convertedRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+    val streamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = true)
+    val usageRequest = if (upstreamProtocol == GatewayProtocol.CHAT_COMPLETIONS && protocol != upstreamProtocol) {
+        streamRequest.asChatUpstream(candidate.upstreamModel)
+    } else {
+        streamRequest
+    }
+    val body = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
     val converter = ProtocolConversion.streamConverter(protocol, upstreamProtocol, alias)
 
     try {
@@ -1029,12 +1036,13 @@ private suspend fun proxyStream(
                     )
                 }
                 val upstream = response.bodyAsChannel()
+                val maxLineBytes = if (converter != null) MAX_PROTOCOL_EVENT_BYTES + 6 else Int.MAX_VALUE
                 val prefixLines = mutableListOf<String>()
                 val firstDataLine = try {
                     withTimeout(app.config.firstTokenTimeoutMs) {
                         var found: String? = null
                         while (found == null) {
-                            val next = upstream.readUTF8Line() ?: break
+                            val next = readProtocolLine(upstream, maxLineBytes) ?: break
                             prefixLines.add(next)
                             recordReportedModel(next, state, upstreamProtocol)
                             if (
@@ -1081,8 +1089,16 @@ private suspend fun proxyStream(
                     call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
                         try {
                             var sawDone = false
+                            var streamFailure: GatewayException? = null
+                            var lastDataLine: String? = null
                             for (line in prefixLines) {
+                                if (converter != null && line.trim().startsWith("data:")) lastDataLine = line
                                 converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
+                                if (converter?.failed == true) {
+                                    lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
+                                    if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
+                                    break
+                                }
                                 markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
                                 recordUsage(line, state, upstreamProtocol)
                                 if (isStreamDone(line, upstreamProtocol)) {
@@ -1092,10 +1108,10 @@ private suspend fun proxyStream(
                                     if (upstreamProtocol != GatewayProtocol.GEMINI) break
                                 }
                             }
-                            if (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI) {
+                            if (converter?.failed != true && (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI)) {
                                 while (true) {
                                     val line = try {
-                                        withTimeout(app.config.idleTimeoutMs) { upstream.readUTF8Line() }
+                                        withTimeout(app.config.idleTimeoutMs) { readProtocolLine(upstream, maxLineBytes) }
                                     } catch (e: TimeoutCancellationException) {
                                         throw GatewayException(
                                             HttpStatusCode.GatewayTimeout,
@@ -1103,9 +1119,20 @@ private suspend fun proxyStream(
                                             "上游流式响应空闲超时",
                                             "timeout_error",
                                         )
+                                    } catch (e: GatewayException) {
+                                        if (e.code != "upstream_event_too_large") throw e
+                                        streamFailure = e
+                                        converter?.fail(e.message)?.forEach { writeSseLine(it) }
+                                        break
                                     } ?: break
                                     recordReportedModel(line, state, upstreamProtocol)
+                                    if (converter != null && line.trim().startsWith("data:")) lastDataLine = line
                                     converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
+                                    if (converter?.failed == true) {
+                                        lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
+                                        if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
+                                        break
+                                    }
                                     markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
                                     recordUsage(line, state, upstreamProtocol)
                                     if (isStreamDone(line, upstreamProtocol)) {
@@ -1117,8 +1144,16 @@ private suspend fun proxyStream(
                                 }
                             }
                             converter?.finish()?.forEach { writeSseLine(it) }
-                            if (!sawDone) state.errorCode = "stream_interrupted"
-                            completion.complete(Unit)
+                            if (converter?.failed == true && state.errorCode == null) {
+                                lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
+                                if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
+                            }
+                            if (streamFailure != null) {
+                                completion.completeExceptionally(streamFailure)
+                            } else {
+                                if (!sawDone && state.errorCode == null) state.errorCode = "stream_interrupted"
+                                completion.complete(Unit)
+                            }
                         } catch (e: Throwable) {
                             completion.completeExceptionally(e)
                             throw e
@@ -1152,6 +1187,18 @@ private suspend fun proxyStream(
     }
 }
 
+internal suspend fun readProtocolLine(upstream: ByteReadChannel, maxLineBytes: Int): String? = try {
+    upstream.readUTF8Line(max = maxLineBytes)
+} catch (_: TooLongLineException) {
+    throw GatewayException(
+        HttpStatusCode.BadGateway,
+        "upstream_event_too_large",
+        "上游流单个事件超过大小上限",
+        "upstream_error",
+        retryable = false,
+    )
+}
+
 private suspend fun proxyJson(
     app: GatewayApplication,
     call: ApplicationCall,
@@ -1178,7 +1225,8 @@ private suspend fun proxyJson(
     } else {
         ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel)
     }
-    val body = policy.body(convertedRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+    val nonStreamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = false)
+    val body = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
     try {
         withTimeout(timeoutMs) {
             state.upstreamCallStarted = true
@@ -1275,6 +1323,11 @@ private fun transportFailure(committed: Boolean): GatewayException =
         "api_error",
         retryable = !committed,
     )
+
+/** Gemini carries streaming in the URL action; other protocols need an explicit JSON flag. */
+private fun withUpstreamStreamFlag(request: JsonObject, protocol: GatewayProtocol, stream: Boolean): JsonObject =
+    if (protocol == GatewayProtocol.GEMINI) request
+    else JsonObject(request + ("stream" to JsonPrimitive(stream)))
 
 private fun clientDisconnected(): GatewayException =
     GatewayException(

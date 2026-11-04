@@ -88,7 +88,7 @@ java -jar target/prism-llm-0.1.0-SNAPSHOT.jar
 为了保持主文档清晰简洁，详细设计与操作指南已整理至专项文档：
 
 - 📖 **[API 接口手册](docs/api.md)**：包含四类协议调用示例、模型列表、管理接口、密钥生命周期与审计日志。
-- 🔄 **[跨协议转换说明](docs/adr/0013-protocol-conversion.md)**：六组双向协议互转（共十二个有向方向）的映射规则、字段兼容性与边界（ADR 0013）。
+- 🔄 **[跨协议转换说明](docs/protocol-conversion.md)**：六组双向协议互转（共十二个有向方向）的映射规则、字段兼容性与边界（详见 [ADR 0013](docs/adr/0013-protocol-conversion.md)）。
 - ⚙️ **[配置与部署指南](docs/configuration.md)**：完整环境变量表、容器正向代理（Proxy）网络设置与升级注意事项。
 - 🛡️ **[路由与容灾机制](docs/routing-and-resilience.md)**：Canonical ID 聚合、上游分组限流、密钥自动停用四态模型与候选冷却。
 - 🎭 **[上游请求覆盖与伪装](docs/upstream-request-overrides.md)**：请求头预设、UA 注入与 JSON Merge Patch 规则。

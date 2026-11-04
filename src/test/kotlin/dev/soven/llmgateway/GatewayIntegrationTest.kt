@@ -4471,7 +4471,7 @@ class GatewayIntegrationTest {
 
     @Test
     @Tag("gemini")
-    fun `Gemini channels are not protocol conversion targets`() = runBlocking {
+    fun `Gemini channels accept converted chat requests`() = runBlocking {
         createChannelWithBaseUrl(
             "gemini-only",
             "${fake.baseUrl}/ok/v1beta",
@@ -4489,9 +4489,70 @@ class GatewayIntegrationTest {
                 setBody("""{"model":"gemini-2.5-pro","stream":false,"messages":[]}""")
             }
 
-            assertEquals(HttpStatusCode.BadRequest, response.status)
-            assertTrue(response.bodyAsText().contains("protocol_not_supported"))
-            assertTrue(fake.requests.isEmpty())
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("Hello!", body["choices"]!!.jsonArray.single().jsonObject["message"]!!.jsonObject["content"]!!.jsonPrimitive.content)
+            val upstream = fake.requests.single()
+            assertEquals("/ok/v1beta/models/gemini-2.5-pro:generateContent", upstream.uri?.substringBefore('?'))
+            val upstreamBody = Json.parseToJsonElement(upstream.body).jsonObject
+            assertTrue(upstreamBody.containsKey("contents"))
+            assertFalse(upstreamBody.containsKey("model"))
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.protocol)
+            assertEquals(GatewayProtocol.GEMINI, log.upstreamProtocol)
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun `Gemini requests convert to chat channels`() = runBlocking {
+        createChannel("gemini-to-chat", "ok")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1beta/models/gpt-4o-mini:generateContent") {
+                header("x-goog-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("STOP", body["candidates"]!!.jsonArray.single().jsonObject["finishReason"]!!.jsonPrimitive.content)
+            assertEquals("Hello!", body["candidates"]!!.jsonArray.single().jsonObject["content"]!!.jsonObject["parts"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+            val upstream = fake.requests.single()
+            assertEquals("/ok/v1/chat/completions", upstream.path)
+            val upstreamBody = Json.parseToJsonElement(upstream.body).jsonObject
+            assertEquals("gpt-4o-mini", upstreamBody["model"]!!.jsonPrimitive.content)
+            assertTrue(upstreamBody["messages"]!!.jsonArray.isNotEmpty())
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.GEMINI, log.protocol)
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.upstreamProtocol)
+        }
+    }
+
+    @Test
+    @Tag("gemini")
+    fun `Gemini streaming request asks chat upstream to include usage`() = runBlocking {
+        val channel = createChannel("gemini-to-chat-stream-usage", "ok")
+        exposeAsModel("fast-gemini", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1beta/models/fast-gemini:streamGenerateContent") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val sent = fake.requests.single()
+            val body = Json.parseToJsonElement(sent.body).jsonObject
+            assertEquals(true, body["stream"]!!.jsonPrimitive.boolean)
+            assertEquals(true, body["stream_options"]!!.jsonObject["include_usage"]!!.jsonPrimitive.boolean)
+            assertTrue(response.bodyAsText().contains("totalTokenCount"))
         }
     }
 
@@ -6617,6 +6678,84 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `six explicit converters route non streaming requests and record actual protocols`() = runBlocking {
+        assertSixConverterRoutes(stream = false)
+    }
+
+    @Test
+    fun `six explicit converters route streaming requests and record actual protocols`() = runBlocking {
+        assertSixConverterRoutes(stream = true)
+    }
+
+    private suspend fun assertSixConverterRoutes(stream: Boolean) {
+        val protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES)
+        protocols.forEach { protocol ->
+            val upstreamModel = "upstream-"+protocol.value
+            val channel = createChannelWithBaseUrl(
+                name = "converter-"+protocol.value,
+                baseUrl = fake.baseUrl + "/ok/v1",
+                protocols = listOf(protocol),
+                modelMappings = listOf(ChannelModelRecord(upstreamModel)),
+            )
+            exposeAsModel("converter-"+protocol.value, channel to upstreamModel)
+        }
+        val key = createClientKey()
+        var count = 0
+        testApplication {
+            application { app.install(this) }
+            protocols.forEach { inbound -> protocols.filter { it != inbound }.forEach { outbound ->
+                val model = "converter-"+outbound.value
+                val body = when (inbound) {
+                    GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES ->
+                        """{"model":"$model","stream":$stream,"max_tokens":32,"messages":[{"role":"user","content":"hi"}]}"""
+                    GatewayProtocol.RESPONSES -> """{"model":"$model","stream":$stream,"max_output_tokens":32,"input":"hi"}"""
+                    else -> error("No Gemini conversion")
+                }
+                val response = client.post("/v1"+inbound.endpointPath) {
+                    header(HttpHeaders.Authorization, "Bearer $key")
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
+                }
+                val responseBody = response.bodyAsText()
+                assertEquals(HttpStatusCode.OK, response.status, "$inbound → $outbound: $responseBody")
+                if (stream || outbound != GatewayProtocol.RESPONSES) assertTrue(responseBody.contains("Hel"), responseBody)
+                if (!stream) {
+                    val returned = Json.parseToJsonElement(responseBody).jsonObject
+                    assertEquals(model, returned["model"]!!.jsonPrimitive.content)
+                    val contentField = when (inbound) {
+                        GatewayProtocol.CHAT_COMPLETIONS -> "choices"
+                        GatewayProtocol.MESSAGES -> "content"
+                        GatewayProtocol.RESPONSES -> "output"
+                        else -> error("No Gemini conversion")
+                    }
+                    assertTrue(returned[contentField] is kotlinx.serialization.json.JsonArray, responseBody)
+                }
+                if (stream) {
+                    val terminal = when (inbound) {
+                        GatewayProtocol.CHAT_COMPLETIONS -> "[DONE]"
+                        GatewayProtocol.MESSAGES -> "message_stop"
+                        GatewayProtocol.RESPONSES -> "response.completed"
+                        else -> error("No Gemini conversion")
+                    }
+                    assertTrue(responseBody.contains(terminal), responseBody)
+                }
+                assertEquals("/ok/v1"+outbound.endpointPath, fake.requests.last().path)
+                val upstreamBody = Json.parseToJsonElement(fake.requests.last().body).jsonObject
+                assertEquals("upstream-"+outbound.value, upstreamBody["model"]!!.jsonPrimitive.content)
+                awaitRequestLogCount(++count)
+                val log = app.requestLogRepository.list(10).first { it.alias == model && it.protocol == inbound }
+                assertEquals(stream, log.stream)
+                assertEquals(outbound, log.upstreamProtocol)
+                assertEquals(1, log.upstreamAttempts)
+                assertEquals(1, log.attempts.size)
+                assertEquals(200, log.attempts.single().statusCode)
+                assertEquals(outbound, log.attempts.single().upstreamProtocol)
+                assertNull(log.errorCode)
+            } }
+        }
+    }
+
+    @Test
     fun `records request cost with cache write rate for anthropic messages`() = runBlocking {
         val channel = createChannelWithBaseUrl(
             name = "anthropic-cache-write",
@@ -7922,8 +8061,9 @@ class GatewayIntegrationTest {
                 contentType(ContentType.Application.Json)
                 setBody("""{"contents":[]}""")
             }
-            assertEquals(HttpStatusCode.BadRequest, incompatible.status)
-            assertTrue(incompatible.bodyAsText().contains("INVALID_ARGUMENT"))
+            assertEquals(HttpStatusCode.OK, incompatible.status)
+            val converted = Json.parseToJsonElement(incompatible.bodyAsText()).jsonObject
+            assertTrue(converted.containsKey("candidates"), incompatible.bodyAsText())
             val rateLimited = client.post("/v1beta/models/gemini-2.5-pro:generateContent") {
                 header("x-goog-api-key", key)
                 contentType(ContentType.Application.Json)
@@ -7931,7 +8071,7 @@ class GatewayIntegrationTest {
             }
             assertEquals(HttpStatusCode.TooManyRequests, rateLimited.status)
             assertEquals("""{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"rate limited"}}""", rateLimited.bodyAsText())
-            assertEquals(1, fake.requests.size)
+            assertEquals(2, fake.requests.size)
         }
     }
 
