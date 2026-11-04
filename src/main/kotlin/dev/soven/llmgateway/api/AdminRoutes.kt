@@ -655,7 +655,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 }
                 else -> throw badRequest("invalid_cooldown_scope", "scope 仅支持 channel、key、candidate")
             }
-            if (!app.cooldownStateWriter.awaitRemovals(cleared.toSet(), 5_000)) {
+            if (!app.cooldownStateWriter.deleteNow(cleared.toSet(), 5_000)) {
                 throw GatewayException(
                     HttpStatusCode.ServiceUnavailable,
                     "cooldown_persist_failed",

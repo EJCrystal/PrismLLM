@@ -1,19 +1,30 @@
 package dev.soven.llmgateway.resilience
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
+import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.system.measureTimeMillis
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class CooldownStateWriterTest {
-    private class FakeStore(private val deleteThrows: Boolean = false) : CooldownStateStore {
-        val deletes = mutableListOf<String>()
-        val upserts = mutableListOf<String>()
+    private class FakeStore(
+        private val deleteThrows: Boolean = false,
+        private val upsertStarted: CompletableDeferred<Unit>? = null,
+        private val upsertGate: CompletableDeferred<Unit>? = null,
+    ) : CooldownStateStore {
+        val deletes = CopyOnWriteArrayList<String>()
+        val upserts = CopyOnWriteArrayList<String>()
 
         override suspend fun upsert(snapshot: CooldownStateSnapshot) {
+            upsertStarted?.complete(Unit)
+            upsertGate?.await()
             upserts += snapshot.stateKey
         }
 
@@ -23,52 +34,57 @@ class CooldownStateWriterTest {
         }
     }
 
-    private fun withWriter(
-        store: CooldownStateStore,
-        block: suspend (CooldownStateWriter) -> Unit,
-    ) {
+    @Test
+    fun `deleteNow deletes target keys and reports success`() = runTest {
+        val store = FakeStore()
+        val writer = CooldownStateWriter(store, backgroundScope)
+
+        assertTrue(writer.deleteNow(setOf("ch:1", "key:1"), 1_000))
+
+        assertEquals(setOf("ch:1", "key:1"), store.deletes.toSet())
+    }
+
+    @Test
+    fun `deleteNow reports failure when a target delete fails`() = runTest {
+        val store = FakeStore(deleteThrows = true)
+        val writer = CooldownStateWriter(store, backgroundScope)
+
+        assertFalse(writer.deleteNow(setOf("ch:1"), 1_000))
+    }
+
+    @Test
+    fun `deleteNow keeps a newer pending update instead of deleting it`() = runTest {
+        val store = FakeStore()
+        val writer = CooldownStateWriter(store, backgroundScope)
+        writer.submit(CooldownChange.Removed("ch:1"))
+        writer.submit(CooldownChange.Updated("ch:1", 1, 100L, "transient"))
+
+        assertTrue(writer.deleteNow(setOf("ch:1"), 1_000))
+        assertFalse(store.deletes.contains("ch:1"))
+
+        writer.closeAndDrain(1_000)
+        assertEquals(listOf("ch:1"), store.upserts)
+    }
+
+    @Test
+    fun `deleteNow does not wait for unrelated slow writes`() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        val store = FakeStore(upsertStarted = started, upsertGate = gate)
         val scope = CoroutineScope(SupervisorJob())
         val writer = CooldownStateWriter(store, scope)
-        runBlocking { block(writer) }
-        scope.cancel()
-    }
+        try {
+            writer.submit(CooldownChange.Updated("other", 1, 100L, "transient"))
+            started.await()
 
-    @Test
-    fun `awaitRemovals reports success after matching deletes complete`() {
-        val store = FakeStore()
-        withWriter(store) { writer ->
-            writer.submit(CooldownChange.Updated("ch:1", 1, 100L, "transient"))
-            writer.submit(CooldownChange.Removed("ch:1"))
-            writer.submit(CooldownChange.Removed("key:1"))
+            val elapsed = measureTimeMillis { assertTrue(writer.deleteNow(setOf("ch:1"), 2_000)) }
 
-            val result = writer.awaitRemovals(setOf("ch:1", "key:1"), 1_000)
-
-            assertTrue(result)
-            assertTrue(store.deletes.containsAll(setOf("ch:1", "key:1")))
-        }
-    }
-
-    @Test
-    fun `awaitRemovals reports failure when a matching delete fails`() {
-        val store = FakeStore(deleteThrows = true)
-        withWriter(store) { writer ->
-            writer.submit(CooldownChange.Removed("ch:1"))
-
-            val result = writer.awaitRemovals(setOf("ch:1"), 1_000)
-
-            assertFalse(result)
-        }
-    }
-
-    @Test
-    fun `awaitRemovals ignores failures from unrelated keys`() {
-        val store = FakeStore(deleteThrows = true)
-        withWriter(store) { writer ->
-            writer.submit(CooldownChange.Removed("other"))
-
-            val result = writer.awaitRemovals(emptySet(), 1_000)
-
-            assertTrue(result)
+            assertTrue(elapsed < 1_000, "deleteNow waited on an unrelated key for ${elapsed}ms")
+            assertEquals(listOf("ch:1"), store.deletes)
+        } finally {
+            gate.complete(Unit)
+            writer.closeAndDrain(2_000)
+            scope.cancel()
         }
     }
 }
