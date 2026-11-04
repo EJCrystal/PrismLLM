@@ -12,6 +12,8 @@ export interface HealthMetrics {
 export interface ChannelHealthSummary {
   channelId: string; metrics: HealthMetrics; state: HealthState; reason: string
   requests: { requests: number; successes: number; successRate: number | null; failoverRequests: number; failoverRate: number | null; legacyRequests: number }
+  cooldownUntil?: number | null; cooldownReason?: string | null
+  coolingCandidates?: number; totalCandidates?: number
 }
 export interface ChannelHealthReport {
   window: HealthWindow; from: number; to: number; retentionDays: number; indexing: boolean

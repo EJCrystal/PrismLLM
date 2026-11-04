@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { api } from '../api'
 import type { Channel, ChannelHealthDetail, HealthWindow, HealthBreakdown } from '../types/api'
 import { HEALTH_WINDOWS, HEALTH_LABELS, healthSymbol, healthPercent, healthBucketState } from '../utils/channelHealth'
+import { cooldownReasonLabel } from '../utils/cooldown'
 import { formatDuration, formatTime } from '../utils/format'
 import Modal from './Modal.vue'
 import ErrorState from './ErrorState.vue'
@@ -36,8 +37,40 @@ const summary = computed(() => detail.value?.report.channels[0])
 const metrics = computed(() => summary.value?.metrics)
 const rows = computed<HealthBreakdown[]>(() => detail.value?.[dimension.value] || [])
 const activeBucket = computed(() => selectedBucket.value == null ? null : detail.value?.trend[selectedBucket.value])
-const unavailable = computed(() => detail.value?.availability.filter(row => row.state !== 'ACTIVE') || [])
+type AvailabilityRow = ChannelHealthDetail['availability'][number]
+const unavailable = computed<AvailabilityRow[]>(() => detail.value?.availability.filter(row => row.state !== 'ACTIVE') || [])
+const unavailableGroups = computed(() => {
+  const groups = new Map<string, { keyId: string; keyName: string; rows: AvailabilityRow[] }>()
+  for (const row of unavailable.value) {
+    const group = groups.get(row.keyId) ?? { keyId: row.keyId, keyName: row.keyName, rows: [] }
+    group.rows.push(row)
+    groups.set(row.keyId, group)
+  }
+  return [...groups.values()]
+})
+const hasCooldown = computed(() => unavailable.value.some(row => row.state === 'COOLDOWN'))
+const clearing = ref<string | null>(null)
 const availabilityLabel: Record<string, string> = { CHANNEL_DISABLED: '渠道停用', MANUAL_DISABLED: '人工停用', AUTO_TEMPORARY: '自动临时停用', AUTO_PERMANENT: '自动永久停用', COOLDOWN: '冷却中' }
+function groupHasCooldown(rows: AvailabilityRow[]): boolean {
+  return rows.some(row => row.state === 'COOLDOWN')
+}
+function cooldownText(row: AvailabilityRow): string {
+  const reason = row.state === 'COOLDOWN' ? cooldownReasonLabel(row.reason) : row.reason
+  return [reason, row.until ? `截至 ${formatTime(row.until)}` : ''].filter(Boolean).join(' · ')
+}
+async function clearCooldown(scope: 'channel' | 'key' | 'candidate', keyId?: string, upstreamModel?: string) {
+  if (clearing.value) return
+  clearing.value = [scope, keyId, upstreamModel].filter(Boolean).join(':')
+  error.value = ''
+  try {
+    await api.clearChannelCooldown(props.channel.id, { scope, keyId, upstreamModel })
+    await load()
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '解除冷却失败，请重试'
+  } finally {
+    clearing.value = null
+  }
+}
 function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: number; successRate: number | null } }) {
   return `${formatTime(bucket.from)} 至 ${formatTime(bucket.to)}，${bucket.metrics.attempts} 次尝试，成功率 ${healthPercent(bucket.metrics.successRate)}`
 }
@@ -103,9 +136,27 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
           </div>
         </section>
         <section class="health-section">
-          <h3>当前路由状态 <small class="muted">与历史成功率分别展示</small></h3>
+          <div class="health-section-head">
+            <h3>当前路由状态 <small class="muted">与历史成功率分别展示</small></h3>
+            <button v-if="hasCooldown" type="button" class="button ghost mini" :disabled="clearing === 'channel'" @click="clearCooldown('channel')">解除全部冷却</button>
+          </div>
           <p v-if="!unavailable.length" class="muted small">{{ detail.availability.length ? '所有已授权候选当前均可参与路由。' : '尚未配置带有授权模型的渠道密钥。' }}</p>
-          <ul v-else class="health-availability-list"><li v-for="row in unavailable" :key="row.keyId + row.model"><span class="badge warning">{{ availabilityLabel[row.state] || row.state }}</span><span>{{ row.keyName }} / {{ row.model }}</span><small class="muted">{{ row.reason || '' }}{{ row.until ? ' · 截至 ' + formatTime(row.until) : '' }}</small></li></ul>
+          <div v-else class="health-availability-groups">
+            <div v-for="group in unavailableGroups" :key="group.keyId" class="health-availability-group">
+              <div class="health-availability-key">
+                <span>{{ group.keyName }}</span>
+                <button v-if="groupHasCooldown(group.rows)" type="button" class="button ghost mini" :disabled="clearing === `key:${group.keyId}`" @click="clearCooldown('key', group.keyId)">解除该密钥冷却</button>
+              </div>
+              <ul class="health-availability-list">
+                <li v-for="row in group.rows" :key="row.keyId + row.model">
+                  <span class="badge warning">{{ availabilityLabel[row.state] || row.state }}</span>
+                  <span>{{ row.model }}</span>
+                  <small class="muted">{{ cooldownText(row) }}</small>
+                  <button v-if="row.state === 'COOLDOWN'" type="button" class="button ghost mini" :disabled="clearing === `candidate:${row.keyId}:${row.model}`" @click="clearCooldown('candidate', row.keyId, row.model)">解除</button>
+                </li>
+              </ul>
+            </div>
+          </div>
         </section>
         <section class="health-section">
           <h3>主要上游错误</h3>
@@ -158,6 +209,10 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
 .health-history-axis { display: flex; justify-content: space-between; gap: 12px; }
 .health-breakdown { min-width: 620px; }
 .health-breakdown td:first-child { max-width: 260px; overflow-wrap: anywhere; }
+.health-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.health-availability-groups { display: grid; gap: 14px; }
+.health-availability-key { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 650; }
+.health-availability-group .health-availability-list { margin-top: 6px; }
 .health-errors, .health-availability-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .health-errors li, .health-availability-list li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
 .health-errors code, .health-availability-list li > span:nth-child(2) { overflow-wrap: anywhere; min-width: 0; }
