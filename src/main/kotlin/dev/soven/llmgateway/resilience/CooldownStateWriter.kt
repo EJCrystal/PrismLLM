@@ -26,7 +26,7 @@ class CooldownStateWriter(
             try {
                 when (change) {
                     is CooldownChange.Updated -> repository.upsert(
-                        CooldownStateSnapshot(change.stateKey, change.consecutiveFailures, change.cooldownUntil),
+                        CooldownStateSnapshot(change.stateKey, change.consecutiveFailures, change.cooldownUntil, change.reason),
                     )
                     is CooldownChange.Removed -> repository.delete(change.stateKey)
                 }

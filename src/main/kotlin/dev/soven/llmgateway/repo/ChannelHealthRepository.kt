@@ -11,12 +11,28 @@ import java.sql.ResultSet
 
 /** Read-only health observations. Time windows use completion time and [from, to). */
 class ChannelHealthRepository(private val database: Database, private val slowFirstTokenMs: Long) {
-    suspend fun report(window: String, channels: Map<String, Boolean>, retentionDays: Int, now: Long = System.currentTimeMillis()): ChannelHealthReport =
-        suspendTransaction(database) { buildReport(window, channels, retentionDays, now) }
+    suspend fun report(
+        window: String,
+        channels: Map<String, Boolean>,
+        retentionDays: Int,
+        now: Long = System.currentTimeMillis(),
+        cooldowns: Map<String, ChannelCooldownSummary> = emptyMap(),
+    ): ChannelHealthReport =
+        suspendTransaction(database) { buildReport(window, channels, retentionDays, now, cooldowns = cooldowns) }
 
-    suspend fun detail(window: String, channel: ChannelRecord, retentionDays: Int, availability: List<HealthAvailability>, now: Long = System.currentTimeMillis()): ChannelHealthDetail =
+    suspend fun detail(
+        window: String,
+        channel: ChannelRecord,
+        retentionDays: Int,
+        availability: List<HealthAvailability>,
+        now: Long = System.currentTimeMillis(),
+        cooldown: ChannelCooldownSummary? = null,
+    ): ChannelHealthDetail =
         suspendTransaction(database) {
-            val report = buildReport(window, mapOf(channel.id to channel.enabled), retentionDays, now, channel.id)
+            val report = buildReport(
+                window, mapOf(channel.id to channel.enabled), retentionDays, now, channel.id,
+                cooldowns = cooldown?.let { mapOf(channel.id to it) } ?: emptyMap(),
+            )
             val width = if (window == "24h") 3_600_000L else 86_400_000L
             val metrics = groups(report.from, now, channel.id, "((created_at - ${report.from}) / $width)::text")
             val trend = generateSequence(report.from) { it + width }.takeWhile { it < now }.map { from ->
@@ -40,7 +56,14 @@ class ChannelHealthRepository(private val database: Database, private val slowFi
             )
         }
 
-    private fun JdbcTransaction.buildReport(window: String, channels: Map<String, Boolean>, retentionDays: Int, now: Long, channelId: String? = null): ChannelHealthReport {
+    private fun JdbcTransaction.buildReport(
+        window: String,
+        channels: Map<String, Boolean>,
+        retentionDays: Int,
+        now: Long,
+        channelId: String? = null,
+        cooldowns: Map<String, ChannelCooldownSummary> = emptyMap(),
+    ): ChannelHealthReport {
         val from = now - healthWindows.getValue(window)
         val observations = groups(from, now, channelId, "channel_id")
         val pendingChannels = exec(
@@ -76,8 +99,16 @@ class ChannelHealthRepository(private val database: Database, private val slowFi
             channels = channels.map { (id, enabled) ->
                 val metrics = observations[id] ?: HealthMetrics()
                 val (state, reason) = healthState(metrics, enabled, now, slowFirstTokenMs)
-                ChannelHealthSummary(id, metrics, (requests[id] ?: HealthRequests()).copy(legacyRequests = legacy[id] ?: 0),
-                    if (pendingChannels.contains(id) && enabled) "UNKNOWN" else state, if (pendingChannels.contains(id) && enabled) "历史数据补齐中" else reason)
+                val cooldown = cooldowns[id]
+                ChannelHealthSummary(
+                    id, metrics, (requests[id] ?: HealthRequests()).copy(legacyRequests = legacy[id] ?: 0),
+                    if (pendingChannels.contains(id) && enabled) "UNKNOWN" else state,
+                    if (pendingChannels.contains(id) && enabled) "历史数据补齐中" else reason,
+                    cooldownUntil = cooldown?.until,
+                    cooldownReason = cooldown?.reason,
+                    coolingCandidates = cooldown?.coolingCandidates ?: 0,
+                    totalCandidates = cooldown?.totalCandidates ?: 0,
+                )
             },
         )
     }

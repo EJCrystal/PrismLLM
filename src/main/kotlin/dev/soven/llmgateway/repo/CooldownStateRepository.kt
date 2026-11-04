@@ -23,6 +23,7 @@ class CooldownStateRepository(private val database: Database) {
                 it[stateKey] = snapshot.stateKey
                 it[consecutiveFailures] = snapshot.consecutiveFailures
                 it[cooldownUntil] = snapshot.cooldownUntil
+                it[reason] = snapshot.reason
                 it[updatedAt] = System.currentTimeMillis()
             }
         }
@@ -46,5 +47,6 @@ class CooldownStateRepository(private val database: Database) {
         stateKey = row[CooldownStates.stateKey],
         consecutiveFailures = row[CooldownStates.consecutiveFailures],
         cooldownUntil = row[CooldownStates.cooldownUntil],
+        reason = row[CooldownStates.reason],
     )
 }

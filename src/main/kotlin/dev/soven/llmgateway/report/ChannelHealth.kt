@@ -55,6 +55,14 @@ data class HealthRequests(
     val legacyRequests: Long = 0,
 )
 
+/** 渠道当前冷却概览：最早恢复时间、主因和候选计数；仅供管理面展示。 */
+data class ChannelCooldownSummary(
+    val until: Long? = null,
+    val reason: String? = null,
+    val coolingCandidates: Int = 0,
+    val totalCandidates: Int = 0,
+)
+
 @Serializable
 data class ChannelHealthSummary(
     val channelId: String,
@@ -62,6 +70,10 @@ data class ChannelHealthSummary(
     val requests: HealthRequests = HealthRequests(),
     val state: String = "UNKNOWN",
     val reason: String = "暂无请求",
+    val cooldownUntil: Long? = null,
+    val cooldownReason: String? = null,
+    val coolingCandidates: Int = 0,
+    val totalCandidates: Int = 0,
 )
 
 @Serializable

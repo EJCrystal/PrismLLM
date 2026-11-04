@@ -137,7 +137,11 @@ data class CooldownStateSnapshot(
     val stateKey: String,
     val consecutiveFailures: Int,
     val cooldownUntil: Long,
+    val reason: String? = null,
 )
+
+/** 当前生效的冷却信息：截止时间与触发原因。 */
+data class CooldownInfo(val until: Long, val reason: String?)
 
 /**
  * 一次上游尝试的冷却凭证。refs 携带走过的键与代际，迟到的结果因代际不匹配被忽略。
@@ -158,7 +162,12 @@ data class CooldownTrigger(val reason: String)
 sealed interface CooldownChange {
     val stateKey: String
 
-    data class Updated(override val stateKey: String, val consecutiveFailures: Int, val cooldownUntil: Long) : CooldownChange
+    data class Updated(
+        override val stateKey: String,
+        val consecutiveFailures: Int,
+        val cooldownUntil: Long,
+        val reason: String? = null,
+    ) : CooldownChange
 
     data class Removed(override val stateKey: String) : CooldownChange
 }
@@ -293,8 +302,9 @@ class CandidateCooldown(
                 }
                 state.cooldownUntil = nowMs() + duration
                 state.probeInFlight = false
+                state.reason = trigger?.reason
                 state.generation += 1
-                onChange(CooldownChange.Updated(ref.keyId, state.consecutiveFailures, state.cooldownUntil))
+                onChange(CooldownChange.Updated(ref.keyId, state.consecutiveFailures, state.cooldownUntil, state.reason))
             } else if (kind == FailureKind.TRANSPORT) {
                 // 传输层失败对其他键的探测 inconclusive：归还探测资格，等待下一次探测。
                 releaseProbe(state)
@@ -347,8 +357,9 @@ class CandidateCooldown(
             state.consecutiveFailures += 1
             state.cooldownUntil = nowMs() + policy.transientDurationMs(state.consecutiveFailures)
             state.probeInFlight = false
+            state.reason = REASON_TTFT_SLOW
             state.generation += 1
-            onChange(CooldownChange.Updated(stateKey, state.consecutiveFailures, state.cooldownUntil))
+            onChange(CooldownChange.Updated(stateKey, state.consecutiveFailures, state.cooldownUntil, state.reason))
         }
         return true
     }
@@ -361,6 +372,7 @@ class CandidateCooldown(
                 keyId = snapshot.stateKey,
                 consecutiveFailures = snapshot.consecutiveFailures,
                 cooldownUntil = snapshot.cooldownUntil,
+                reason = snapshot.reason,
             )
         }
     }
@@ -372,11 +384,29 @@ class CandidateCooldown(
         val candidatePrefix = "kc:$channelId:$keyId:"
         for ((id, state) in states) {
             if (id != keyStateId && !id.startsWith(candidatePrefix)) continue
-            state.consecutiveFailures = 0
-            state.cooldownUntil = 0
-            state.probeInFlight = false
-            state.generation += 1
-            onChange(CooldownChange.Removed(id))
+            resetState(id, state)
+        }
+        ttftStreaks.keys.removeIf { it.startsWith(candidatePrefix) }
+    }
+
+    /** 手动解除单个候选（密钥 + 上游模型）的冷却。 */
+    @Synchronized
+    fun clearCandidate(channelId: String, keyId: String, upstreamModel: String) {
+        val stateKey = CooldownKey.KeyCandidate(channelId, keyId, upstreamModel).id
+        val state = states[stateKey] ?: return
+        resetState(stateKey, state)
+        ttftStreaks.remove(stateKey)
+    }
+
+    /** 手动解除渠道下的全部冷却，包括渠道键、密钥键和候选键。 */
+    @Synchronized
+    fun clearChannel(channelId: String) {
+        val channelStateId = CooldownKey.Channel(channelId).id
+        val keyPrefix = "key:$channelId:"
+        val candidatePrefix = "kc:$channelId:"
+        for ((id, state) in states) {
+            if (id != channelStateId && !id.startsWith(keyPrefix) && !id.startsWith(candidatePrefix)) continue
+            resetState(id, state)
         }
         ttftStreaks.keys.removeIf { it.startsWith(candidatePrefix) }
     }
@@ -395,19 +425,32 @@ class CandidateCooldown(
     }
 
     @Synchronized
-    fun cooldownUntil(channelId: String, keyId: String, upstreamModel: String): Long? {
-        var until: Long? = null
+    fun cooldownUntil(channelId: String, keyId: String, upstreamModel: String): Long? =
+        cooldownState(channelId, keyId, upstreamModel)?.until
+
+    /**
+     * 返回当前生效的冷却信息。三个键可能同时冷却，取最晚到期的一个；
+     * 同等到期时间优先返回带原因的条目。
+     */
+    @Synchronized
+    fun cooldownState(channelId: String, keyId: String, upstreamModel: String): CooldownInfo? {
+        val now = nowMs()
+        var best: CooldownInfo? = null
         for (key in listOf(
             CooldownKey.Channel(channelId),
             CooldownKey.Key(channelId, keyId),
             CooldownKey.KeyCandidate(channelId, keyId, upstreamModel),
         )) {
             val state = states[key.id] ?: continue
-            if (state.cooldownUntil > nowMs() && (until == null || state.cooldownUntil > until)) {
-                until = state.cooldownUntil
+            if (state.cooldownUntil <= now) continue
+            val current = best
+            if (current == null || state.cooldownUntil > current.until ||
+                (state.cooldownUntil == current.until && current.reason == null && state.reason != null)
+            ) {
+                best = CooldownInfo(state.cooldownUntil, state.reason)
             }
         }
-        return until
+        return best
     }
 
     private fun permitIsCurrent(permit: CooldownPermit): Boolean =
@@ -430,12 +473,23 @@ class CandidateCooldown(
         state.consecutiveFailures = 0
         state.cooldownUntil = 0
         state.probeInFlight = false
+        state.reason = null
         // 只有真正离开冷却态才推进代际：健康态的成功结果不应作废并发请求的许可，
         // 否则并发中的另一请求随后失败会被代际守卫忽略，漏记冷却。
         if (wasCooling) {
             state.generation += 1
             onChange(CooldownChange.Removed(keyId))
         }
+    }
+
+    /** 手动清除时无条件作废旧许可并写透删除，不区分此前是否处于冷却。 */
+    private fun resetState(id: String, state: KeyState) {
+        state.consecutiveFailures = 0
+        state.cooldownUntil = 0
+        state.probeInFlight = false
+        state.reason = null
+        state.generation += 1
+        onChange(CooldownChange.Removed(id))
     }
 
     private fun releaseProbe(state: KeyState) {
@@ -449,6 +503,7 @@ class CandidateCooldown(
         var cooldownUntil: Long = 0,
         var probeInFlight: Boolean = false,
         var generation: Long = 0,
+        var reason: String? = null,
     )
 
     companion object {

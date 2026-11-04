@@ -59,6 +59,11 @@ data class ChannelKeyUpdate(
 
 class ChannelKeyStateChangedException : RuntimeException("密钥状态已变化，请重新打开渠道编辑页面后再保存")
 
+/** 健康度列表只需要渠道身份、启用状态和密钥支持的模型，不解析完整渠道记录。 */
+internal data class HealthChannelKey(val id: String, val models: List<String>)
+
+internal data class HealthChannelOverview(val id: String, val enabled: Boolean, val keys: List<HealthChannelKey>)
+
 /**
  * 渠道持久化。渠道密钥只以密文写入，读取时不自动解密。
  *
@@ -70,6 +75,19 @@ class ChannelRepository(private val database: Database, private val credentialCi
     suspend fun listHealthChannels(): Map<String, Boolean> = suspendTransaction(database) {
         Channels.select(Channels.id, Channels.enabled).toList()
             .associate { row -> row[Channels.id] to row[Channels.enabled] }
+    }
+
+    /** 与 [listHealthChannels] 一样跳过完整渠道解析，额外带上密钥支持的模型供冷却概览使用。 */
+    internal suspend fun listHealthChannelOverviews(): List<HealthChannelOverview> = suspendTransaction(database) {
+        val rows = Channels.select(Channels.id, Channels.enabled).toList()
+        val keysByChannel = loadChannelKeysInTransaction(rows.map { it[Channels.id] })
+        rows.map { row ->
+            HealthChannelOverview(
+                id = row[Channels.id],
+                enabled = row[Channels.enabled],
+                keys = keysByChannel[row[Channels.id]].orEmpty().map { HealthChannelKey(it.id, it.models) },
+            )
+        }
     }
 
     suspend fun list(): List<ChannelRecord> = suspendTransaction(database) {

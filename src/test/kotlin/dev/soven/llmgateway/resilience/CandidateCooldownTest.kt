@@ -328,5 +328,98 @@ class CandidateCooldownTest {
         assertFalse(cooldown.recordFirstToken(ttftPermit, 1000))
         assertTrue(changes.any { it == CooldownChange.Removed("key:ch1:k1") })
         assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k1:m2") })
+        assertNull(cooldown.cooldownState("ch1", "k1", "m1"))
+    }
+
+    @Test
+    fun `cooldown state exposes the trigger reason`() {
+        var now = 0L
+        val cooldown = CandidateCooldown(policy = policy(), nowMs = { now })
+
+        val transient = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(transient, FailureKind.TRANSPORT)
+        assertEquals(CandidateCooldown.REASON_TRANSIENT, cooldown.cooldownState("ch1", "k1", "m1")?.reason)
+        assertEquals(1_000L, cooldown.cooldownState("ch1", "k1", "m1")?.until)
+
+        now = 1_000L
+        val rateLimited = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(rateLimited, FailureKind.RATE_LIMITED, retryAfterMs = 5_000)
+        assertEquals(CandidateCooldown.REASON_RATE_LIMITED, cooldown.cooldownState("ch1", "k1", "m1")?.reason)
+        assertEquals(6_000L, cooldown.cooldownState("ch1", "k1", "m1")?.until)
+
+        val auth = assertNotNull(cooldown.acquire("ch2", "k1", "m1"))
+        cooldown.recordFailure(auth, FailureKind.AUTH_REJECTED)
+        assertEquals(CandidateCooldown.REASON_AUTH, cooldown.cooldownState("ch2", "k1", "m1")?.reason)
+
+        val ttftCooldown = CandidateCooldown(
+            policy = policy(ttftSlowThresholdMs = 100, ttftSlowStreak = 1),
+            nowMs = { now },
+        )
+        val ttft = assertNotNull(ttftCooldown.acquire("ch3", "k1", "m1"))
+        assertTrue(ttftCooldown.recordFirstToken(ttft, firstTokenMs = 200))
+        assertEquals(CandidateCooldown.REASON_TTFT_SLOW, ttftCooldown.cooldownState("ch3", "k1", "m1")?.reason)
+    }
+
+    @Test
+    fun `successful probe clears cooldown reason`() {
+        var now = 0L
+        val cooldown = CandidateCooldown(policy = policy(), nowMs = { now })
+        val permit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(permit, FailureKind.TRANSPORT)
+
+        now = 1_000L
+        val probe = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordSuccess(probe)
+        assertNull(cooldown.cooldownState("ch1", "k1", "m1"))
+    }
+
+    @Test
+    fun `restore preserves cooldown reason`() {
+        val cooldown = CandidateCooldown(policy = policy(), nowMs = { 0L })
+        cooldown.restore(listOf(CooldownStateSnapshot("ch:ch1", 1, 60_000L, "server_error")))
+
+        assertEquals("server_error", cooldown.cooldownState("ch1", "k1", "m1")?.reason)
+    }
+
+    @Test
+    fun `clear candidate removes only the candidate cooldown`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+        val first = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(first, FailureKind.RATE_LIMITED)
+        val second = assertNotNull(cooldown.acquire("ch1", "k1", "m2"))
+        cooldown.recordFailure(second, FailureKind.RATE_LIMITED)
+
+        cooldown.clearCandidate("ch1", "k1", "m1")
+
+        assertFalse(cooldown.isBlocked("ch1", "k1", "m1"))
+        assertTrue(cooldown.isBlocked("ch1", "k1", "m2"))
+        assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k1:m1") })
+        assertFalse(changes.any { it == CooldownChange.Removed("kc:ch1:k1:m2") })
+    }
+
+    @Test
+    fun `clear channel removes every cooldown under that channel`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+
+        val auth = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(auth, FailureKind.AUTH_REJECTED)
+        val rate = assertNotNull(cooldown.acquire("ch1", "k2", "m1"))
+        cooldown.recordFailure(rate, FailureKind.RATE_LIMITED)
+        val transport = assertNotNull(cooldown.acquire("ch1", "k3", "m1"))
+        cooldown.recordFailure(transport, FailureKind.TRANSPORT)
+        val other = assertNotNull(cooldown.acquire("ch2", "k1", "m1"))
+        cooldown.recordFailure(other, FailureKind.RATE_LIMITED)
+
+        cooldown.clearChannel("ch1")
+
+        assertFalse(cooldown.isBlocked("ch1", "k1", "m1"))
+        assertFalse(cooldown.isBlocked("ch1", "k2", "m1"))
+        assertFalse(cooldown.isBlocked("ch1", "k3", "m1"))
+        assertTrue(cooldown.isBlocked("ch2", "k1", "m1"))
+        assertTrue(changes.any { it == CooldownChange.Removed("ch:ch1") })
+        assertTrue(changes.any { it == CooldownChange.Removed("key:ch1:k1") })
+        assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k2:m1") })
     }
 }
