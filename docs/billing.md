@@ -10,15 +10,20 @@ PrismLLM 在请求日志异步写入时，基于真实的 Token 用量与配置�
 
 $$
 \begin{aligned}
-\text{费用} = &\ \frac{(\text{输入 Token} - \text{缓存 Token}) \times \text{输入单价}}{1,000,000} \\
-&+ \frac{\text{缓存 Token} \times \text{缓存单价}}{1,000,000} \\
+\text{费用} = &\ \frac{\text{未缓存输入 Token} \times \text{输入单价}}{1,000,000} \\
+&+ \frac{\text{缓存读取 Token} \times \text{缓存读取单价}}{1,000,000} \\
+&+ \frac{\text{缓存写入 Token} \times \text{缓存写入单价}}{1,000,000} \\
 &+ \frac{\text{输出 Token} \times \text{输出单价}}{1,000,000}
 \end{aligned}
 $$
 
-- **单价基数**：单价按**每百万 Token（Per 1M Tokens）**进行配置；
-- **精度**：费用计算保留 8 位小数，避免微小调用的舍入误差；
-- **缓存命中**：未命中缓存的输入 Token 按标准输入单价计费；缓存命中部分按缓存单价计费（留空时回退为输入单价）；
+其中：$\text{未缓存输入 Token} = \text{总输入 Token} - \text{缓存读取 Token} - \text{缓存写入 Token}$。
+
+- **单价基数**：所有单价均按**每百万 Token（Per 1M Tokens）**进行配置；
+- **精度**：费用计算保留 8 位小数（四舍五入），避免微小调用的舍入误差；
+- **单价回退规则**：
+  - 缓存读取单价（`cachedInputPricePerMillion`）留空时，自动回退沿用基础输入单价；
+  - 缓存写入单价（`cachedInputWritePricePerMillion`）留空时，同样自动回退沿用基础输入单价；
 - **推理 Token**：对于带思考过程的模型（如 DeepSeek-R1、o3-mini），推理 Token 已包含在输出 Token 计数中，不重复加倍计费；
 - **缺失处理**：上游响应缺少用量数据（Usage）或模型未定价时，日志显示为“未配置”或“—”，**绝不默认记为 0 费用**。
 

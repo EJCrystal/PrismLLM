@@ -125,7 +125,9 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 }
 ```
 
-- `state`：密钥状态枚举（`ACTIVE` 正常，`MANUAL_DISABLED` 人工停用）。
+- `state`：密钥状态。
+  - **客户端可提交状态**：`ACTIVE`（正常启用）、`MANUAL_DISABLED`（人工停用）。
+  - **接口可返回的状态**：包含上述人工状态，以及由网关容灾规则自动触发的 `AUTO_TEMPORARY`（自动临时停用，到期后通过单探测抢占租约自愈）与 `AUTO_PERMANENT`（自动永久停用，需管理员人工重新启用）。客户端提交 `AUTO_*` 自动状态会被拒绝。
 - 凭据加密：网关入库前使用 `GATEWAY_MASTER_KEY` 进行 AES-256-GCM 加密，前端界面和读取接口永不回显明文。
 
 ### 3. 模型发现与协议探测
@@ -156,7 +158,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 ### 1. 密钥创建与配额
 
 `POST /admin/api/client-keys` 支持配置精细化限制：
-- `requestsPerMinute`：每分钟平滑请求数上限。
+- `requestsPerMinute`：按 UTC 固定分钟窗口限制单密钥每分钟请求数。
 - `maxConcurrentRequests`：单密钥同时处理并发上限。
 - `dailyTokenLimit`：按 UTC 自然日限制总 Token 数。
 - `dailyUsdLimit` / `dailyCnyLimit` / `dailyEurLimit`：按币种独立的每日费用上限。
@@ -179,4 +181,4 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 ```bash
 GET /admin/api/audit-logs?limit=50&beforeId=<cursor>
 ```
-记录所有管理员操作及系统自动禁用决策，包含时间戳、操作人、接口动作、目标 ID、状态与来源 IP。
+记录所有管理写操作（POST / PUT / PATCH / DELETE）及系统自动停用事件，包含时间戳、操作人、接口动作、目标 ID、状态与来源 IP（GET 只读操作不入审计库）。

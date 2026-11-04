@@ -9,7 +9,7 @@
 
 ## 核心特性
 
-- 🔀 **全协议互通**：支持 OpenAI Chat Completions、Responses、Anthropic Messages 与 Google Gemini 四大协议，12 个转换方向原生双向互转，流式 SSE 与用量帧零缓冲透传。
+- 🔀 **全协议互通**：支持 OpenAI Chat Completions、Responses、Anthropic Messages 与 Google Gemini 四大协议，六组双向互转（共 12 个转换方向），流式 SSE 与用量帧零缓冲透传。
 - 🛡️ **智能密钥池容灾**：多密钥优先级分档与同档轮询；支持状态码、错误正则、连续/窗口计数的高灵敏度自动停用规则（临时停用单探测自愈与永久停用人工恢复）。
 - ⚡ **上游主动分组限流**：密钥级独立 RPM 令牌桶与最大并发限制，超限平滑回退至备用候选，避免上游熔断。
 - 🎭 **动态请求伪装与覆盖**：自动模拟 Claude Code、Codex、Google GenAI 客户端请求头及 UA，支持 RFC 7396 请求体补丁，消除第三方客户端调用阻碍。
@@ -52,12 +52,15 @@ docker compose up -d --build
 
 ### 方式二：本地运行
 
+本地运行需先确保可访问 PostgreSQL 数据库（可使用 `docker compose up -d postgres` 单独拉起随附数据库，映射至 `127.0.0.1:5432`）。
+默认打包测试阶段会通过 Testcontainers 启动临时容器，构建前需确保本地 Docker 守护进程处于运行状态（如需跳过测试可传入 `-DskipTests`）。
+
 ```bash
-# 1. 构建前端
+# 1. 构建前端静态资源
 npm --prefix web install
 npm --prefix web run build
 
-# 2. 构建并运行后端
+# 2. 构建并运行后端（首次启动会自动通过 Flyway 执行数据库表结构迁移）
 mvn package
 java -jar target/prism-llm-0.1.0-SNAPSHOT.jar
 ```
@@ -85,7 +88,7 @@ java -jar target/prism-llm-0.1.0-SNAPSHOT.jar
 为了保持主文档清晰简洁，详细设计与操作指南已整理至专项文档：
 
 - 📖 **[API 接口手册](docs/api.md)**：包含四类协议调用示例、模型列表、管理接口、密钥生命周期与审计日志。
-- 🔄 **[跨协议转换说明](docs/adr/0013-protocol-conversion.md)**：六方向协议互转的映射规则、字段兼容性与边界（ADR 0013）。
+- 🔄 **[跨协议转换说明](docs/adr/0013-protocol-conversion.md)**：六组双向协议互转（共十二个有向方向）的映射规则、字段兼容性与边界（ADR 0013）。
 - ⚙️ **[配置与部署指南](docs/configuration.md)**：完整环境变量表、容器正向代理（Proxy）网络设置与升级注意事项。
 - 🛡️ **[路由与容灾机制](docs/routing-and-resilience.md)**：Canonical ID 聚合、上游分组限流、密钥自动停用四态模型与候选冷却。
 - 🎭 **[上游请求覆盖与伪装](docs/upstream-request-overrides.md)**：请求头预设、UA 注入与 JSON Merge Patch 规则。
@@ -99,7 +102,7 @@ java -jar target/prism-llm-0.1.0-SNAPSHOT.jar
 
 - **凭据单向加密**：调用方密钥仅存储 SHA-256 哈希；上游渠道凭据使用 AES-256-GCM 强加密存储，API 与管理界面均不回显明文。
 - **管理防护**：管理接口要求 `SameSite=Strict` Cookie 与 `X-CSRF-Token` 校验；数据面 Bearer 密钥严格禁止访问管理端点。
-- **隐私保护**：默认不落库提示词（Prompt）与流式响应正文；仅针对失败请求记录脱敏后的错误摘要。
+- **隐私保护**：请求日志默认不落库提示词（Prompt）、成功响应正文或完整流式响应；失败请求额外保存经凭据脱敏并截断至 8 KiB 的上游错误正文或终止性错误事件载荷（上游错误正文可能包含上游回显的输入片段）。
 
 ---
 
