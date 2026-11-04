@@ -59,6 +59,7 @@ import io.ktor.server.plugins.calllogging.processingTimeMillis
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.metrics.micrometer.MicrometerMetrics
+import io.ktor.server.plugins.origin
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.path
 import io.ktor.server.request.httpMethod
@@ -84,6 +85,90 @@ import org.slf4j.event.Level
 import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+
+private const val REQUEST_ID_HEADER = "X-Request-Id"
+private const val CLOUDFLARE_CONNECTING_IP_HEADER = "CF-Connecting-IP"
+private const val FORWARDED_FOR_HEADER = "X-Forwarded-For"
+private const val REAL_IP_HEADER = "X-Real-IP"
+private const val FORWARDED_HEADER = "Forwarded"
+private const val MAX_USER_AGENT_LOG_LENGTH = 512
+
+internal data class RequestAccessLogMetadata(
+    val requestId: String,
+    val clientIp: String,
+    val clientIpSource: String,
+    val peerIp: String,
+    val userAgent: String,
+)
+
+internal fun requestAccessLogMetadata(
+    requestId: String?,
+    cloudflareConnectingIp: String?,
+    forwardedFor: String?,
+    realIp: String?,
+    forwarded: String?,
+    peerIp: String?,
+    userAgent: String?,
+): RequestAccessLogMetadata {
+    val peer = sanitizeLogValue(peerIp)
+    val candidates = listOf(
+        "cf-connecting-ip" to firstHeaderValue(cloudflareConnectingIp),
+        "x-forwarded-for" to firstHeaderValue(forwardedFor),
+        "x-real-ip" to firstHeaderValue(realIp),
+        "forwarded" to forwardedIp(forwarded),
+        "peer" to peer.takeUnless { it == "-" },
+    )
+    val (source, address) = candidates.firstOrNull { !it.second.isNullOrBlank() }
+        ?: ("unknown" to "-")
+    return RequestAccessLogMetadata(
+        requestId = sanitizeLogValue(requestId),
+        clientIp = address ?: "-",
+        clientIpSource = source,
+        peerIp = peer,
+        userAgent = sanitizeLogValue(userAgent, MAX_USER_AGENT_LOG_LENGTH),
+    )
+}
+
+private fun requestAccessLogMetadata(call: io.ktor.server.application.ApplicationCall): RequestAccessLogMetadata =
+    requestAccessLogMetadata(
+        requestId = call.response.headers[REQUEST_ID_HEADER] ?: call.request.headers[REQUEST_ID_HEADER],
+        cloudflareConnectingIp = call.request.headers[CLOUDFLARE_CONNECTING_IP_HEADER],
+        forwardedFor = call.request.headers[FORWARDED_FOR_HEADER],
+        realIp = call.request.headers[REAL_IP_HEADER],
+        forwarded = call.request.headers[FORWARDED_HEADER],
+        peerIp = call.request.origin.remoteAddress,
+        userAgent = call.request.headers[HttpHeaders.UserAgent],
+    )
+
+private fun firstHeaderValue(value: String?): String? =
+    value
+        ?.split(',')
+        ?.asSequence()
+        ?.map { it.trim() }
+        ?.firstOrNull { it.isNotBlank() }
+        ?.let { sanitizeLogValue(it) }
+        ?.takeUnless { it == "-" }
+
+private fun forwardedIp(value: String?): String? =
+    value
+        ?.split(',')
+        ?.asSequence()
+        ?.flatMap { it.split(';').asSequence() }
+        ?.map { it.trim() }
+        ?.firstOrNull { it.startsWith("for=", ignoreCase = true) }
+        ?.substringAfter('=', "")
+        ?.trim()
+        ?.trim('"', '[', ']')
+        ?.let { sanitizeLogValue(it) }
+        ?.takeUnless { it == "-" }
+
+private fun sanitizeLogValue(value: String?, maxLength: Int = 128): String =
+    value
+        ?.replace(Regex("[\\r\\n\\t]+"), " ")
+        ?.trim()
+        ?.take(maxLength)
+        ?.takeUnless { it.isNullOrBlank() }
+        ?: "-"
 
 /**
  * 网关运行时装配。负责数据库迁移、管理员初始化、插件安装和资源生命周期。
@@ -228,7 +313,17 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             exception<GatewayException> { call, cause ->
                 call.markAdminAuditError(cause.code)
                 if (call.response.isCommitted) {
-                    logger.warn("gateway error after response committed, code={}", cause.code)
+                    val accessLog = requestAccessLogMetadata(call)
+                    logger.warn(
+                        "gateway error after response committed, code={}, requestId={}, clientIp={}, " +
+                            "clientIpSource={}, peerIp={}, userAgent={}",
+                        cause.code,
+                        accessLog.requestId,
+                        accessLog.clientIp,
+                        accessLog.clientIpSource,
+                        accessLog.peerIp,
+                        accessLog.userAgent,
+                    )
                     return@exception
                 }
                 cause.retryAfterMs?.let { retryAfterMs ->
@@ -308,8 +403,12 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             disableDefaultColors()
             // Gemini accepts query credentials; keep the access-log contract independent of Ktor defaults.
             format { call ->
+                val accessLog = requestAccessLogMetadata(call)
                 "${call.response.status() ?: "Unhandled"}: ${call.request.httpMethod.value} - " +
-                    "${call.request.path()} in ${call.processingTimeMillis()}ms"
+                    "${call.request.path()} in ${call.processingTimeMillis()}ms " +
+                    "requestId=${accessLog.requestId} clientIp=${accessLog.clientIp} " +
+                    "clientIpSource=${accessLog.clientIpSource} peerIp=${accessLog.peerIp} " +
+                    "userAgent=${accessLog.userAgent}"
             }
         }
         app.install(MicrometerMetrics) {
