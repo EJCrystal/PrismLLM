@@ -9,6 +9,9 @@ class ProtocolConversionException(
 ) : IllegalArgumentException(message)
 
 object ProtocolConversion {
+    fun supports(inbound: GatewayProtocol, outbound: GatewayProtocol): Boolean =
+        ProtocolConverterRegistry.supports(inbound, outbound)
+
     fun convertRequest(
         inbound: GatewayProtocol,
         outbound: GatewayProtocol,

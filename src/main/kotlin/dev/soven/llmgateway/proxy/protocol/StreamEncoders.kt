@@ -93,7 +93,10 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
                     put("content", JsonArray(emptyList()))
                     put("stop_reason", JsonNull)
                     put("stop_sequence", JsonNull)
-                    putJsonObject("usage") { put("input_tokens", 0) }
+                    putJsonObject("usage") {
+                        put("input_tokens", 0)
+                        put("output_tokens", 0)
+                    }
                 }
             }
             lines += "event: message_start"
@@ -135,7 +138,7 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
             }
             openToolBlocks.clear()
             lines += "event: message_delta"
-            lines += "data: ${buildJsonObject { put("type", "message_delta"); putJsonObject("delta") { put("stop_reason", chunk.finishReason.messagesValue); put("stop_sequence", JsonNull) }; usage?.let { put("usage", it.toMessages()) } }}"
+            lines += "data: ${buildJsonObject { put("type", "message_delta"); putJsonObject("delta") { put("stop_reason", chunk.finishReason.messagesValue); put("stop_sequence", JsonNull) }; put("usage", usage?.toMessages() ?: buildJsonObject { put("output_tokens", 0) }) }}"
             lines += ""
             lines += "event: message_stop"
             lines += "data: ${buildJsonObject { put("type", "message_stop") }}"

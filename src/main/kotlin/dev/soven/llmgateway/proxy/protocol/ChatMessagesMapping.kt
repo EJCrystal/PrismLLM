@@ -107,7 +107,7 @@ internal fun chatToMessagesRequest(chat: JsonObject, upstreamModel: String): Jso
     }
     chat.stringOrStringArray("stop")?.let { values -> put("stop_sequences", JsonArray(values.map(::JsonPrimitive))) }
     chat.string("user")?.let { putJsonObject("metadata") { put("user_id", it) } }
-    if (chat["response_format"] != null) {
+    if (chat["response_format"].let { it != null && it !is JsonNull }) {
         unsupported("response_format", "Anthropic Messages 不支持 OpenAI 结构化输出参数")
     }
 

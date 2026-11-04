@@ -14,7 +14,7 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
     put("model", upstreamModel)
     listOf("stream", "temperature", "top_p").forEach { field -> request[field]?.let { put(field, it) } }
     request.number("max_tokens")?.let { put("max_output_tokens", it) }
-    if (request["stop_sequences"] != null) unsupported("stop_sequences", "Responses 不支持 stop_sequences")
+    if (request["stop_sequences"].let { it != null && it !is JsonNull }) unsupported("stop_sequences", "Responses 不支持 stop_sequences")
     (request["metadata"] as? JsonObject)?.string("user_id")?.let { put("user", it) }
     request.thinkingEffort()?.let { effort -> putJsonObject("reasoning") { put("effort", effort) } }
     request.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { put("instructions", it) }
@@ -110,7 +110,7 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
     (request.string("user") ?: (request["metadata"] as? JsonObject)?.string("user_id"))?.let {
         putJsonObject("metadata") { put("user_id", it) }
     }
-    if ((request["text"] as? JsonObject)?.get("format") != null) {
+    if ((request["text"] as? JsonObject)?.get("format").let { it != null && it !is JsonNull }) {
         unsupported("text.format", "Anthropic Messages 不支持 OpenAI 结构化输出参数")
     }
     val system = mutableListOf<String>()

@@ -228,7 +228,8 @@ private suspend fun handleProxy(
         }
         val nativeCandidates = allCandidates.filter { protocol in it.channel.protocols }
         val conversionCandidates = allCandidates.filter { candidate ->
-            protocol !in candidate.channel.protocols
+            protocol !in candidate.channel.protocols &&
+                candidate.channel.protocols.any { ProtocolConversion.supports(protocol, it) }
         }
         val candidates = nativeCandidates + conversionCandidates
         if (candidates.isEmpty()) throw protocolNotSupported(alias, protocol)
@@ -305,7 +306,7 @@ private suspend fun handleProxy(
             val attemptProtocol = if (protocol in candidate.channel.protocols) {
                 protocol
             } else {
-                candidate.channel.protocols.firstOrNull()
+                candidate.channel.protocols.firstOrNull { ProtocolConversion.supports(protocol, it) }
             }
             attemptProtocol?.takeIf { it != protocol }?.let { target ->
                 app.metrics.protocolConversion(protocol.value, target.value)

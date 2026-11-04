@@ -16,7 +16,7 @@ private val geminiRequestFields = setOf("contents", "systemInstruction", "genera
 
 internal fun validateGeminiRequest(request: JsonObject) {
     rejectUnknownFields(request, geminiRequestFields, "request")
-    if (request.containsKey("cachedContent")) unsupported("cachedContent", "协议转换不支持 Gemini cachedContent")
+    if (request["cachedContent"].let { it != null && it !is JsonNull }) unsupported("cachedContent", "协议转换不支持 Gemini cachedContent")
     if ((request["safetySettings"] as? JsonArray)?.isNotEmpty() == true) unsupported("safetySettings", "协议转换不支持 Gemini safetySettings")
     val config = request["generationConfig"] as? JsonObject
     (config?.get("responseModalities") as? JsonArray)?.takeIf { it.isNotEmpty() }?.let {
@@ -34,7 +34,7 @@ internal fun geminiToChatRequest(request: JsonObject, upstreamModel: String): Js
     config?.number("maxOutputTokens")?.let { put("max_tokens", it) }
     config?.number("temperature")?.let { put("temperature", it) }
     config?.number("topP")?.let { put("top_p", it) }
-    if (config?.containsKey("topK") == true) unsupported("generationConfig.topK", "Chat Completions 不支持 top_k")
+    if (config?.get("topK").let { it != null && it !is JsonNull }) unsupported("generationConfig.topK", "Chat Completions 不支持 top_k")
     (config?.get("stopSequences") as? JsonArray)?.let { stop ->
         put("stop", if (stop.size == 1) stop.single() else stop)
     }
@@ -167,7 +167,8 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
 }
 
 internal fun geminiToChatResponse(response: JsonObject, model: String): JsonObject = buildJsonObject {
-    put("id", response.string("responseId") ?: "chatcmpl-${System.currentTimeMillis()}")
+    val responseId = response.string("responseId") ?: "chatcmpl-${System.currentTimeMillis()}"
+    put("id", responseId)
     put("object", "chat.completion")
     put("created", System.currentTimeMillis() / 1000)
     put("model", model)
@@ -184,8 +185,9 @@ internal fun geminiToChatResponse(response: JsonObject, model: String): JsonObje
     val toolCalls = parts.mapIndexedNotNull { index, part ->
         val obj = part as? JsonObject ?: return@mapIndexedNotNull null
         val call = obj["functionCall"] as? JsonObject ?: return@mapIndexedNotNull null
+        val callId = call.string("id") ?: "call_${responseId}_$index"
         buildJsonObject {
-            put("id", call.string("id") ?: "call_$index")
+            put("id", callId)
             put("type", "function")
             putJsonObject("function") {
                 put("name", call.string("name").orEmpty())
@@ -353,7 +355,8 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
 }
 
 internal fun geminiToMessagesResponse(response: JsonObject, model: String): JsonObject = buildJsonObject {
-    put("id", response.string("responseId") ?: "msg_${System.currentTimeMillis()}")
+    val responseId = response.string("responseId") ?: "msg_${System.currentTimeMillis()}"
+    put("id", responseId)
     put("type", "message")
     put("role", "assistant")
     put("model", model)
@@ -364,10 +367,12 @@ internal fun geminiToMessagesResponse(response: JsonObject, model: String): Json
             val obj = part as? JsonObject ?: return@forEachIndexed
             when {
                 obj["functionCall"] is JsonObject -> add(buildJsonObject {
+                    val call = obj["functionCall"] as JsonObject
+                    val callId = call.string("id") ?: "toolu_${responseId}_$index"
                     put("type", "tool_use")
-                    put("id", "toolu_$index")
-                    put("name", (obj["functionCall"] as JsonObject).string("name").orEmpty())
-                    put("input", (obj["functionCall"] as JsonObject)["args"] ?: buildJsonObject { })
+                    put("id", callId)
+                    put("name", call.string("name").orEmpty())
+                    put("input", call["args"] ?: buildJsonObject { })
                 })
                 obj.boolean("thought") == true -> add(buildJsonObject { put("type", "thinking"); put("thinking", obj.string("text").orEmpty()); put("signature", "") })
                 obj.string("text") != null -> add(messageTextBlock(obj.string("text").orEmpty()))
@@ -545,11 +550,13 @@ internal fun geminiToResponsesResponse(response: JsonObject, model: String): Jso
         val obj = part as? JsonObject ?: return@forEachIndexed
         when {
             obj["functionCall"] is JsonObject -> output += buildJsonObject {
+                val call = obj["functionCall"] as JsonObject
+                val callId = call.string("id") ?: "call_${id}_$index"
                 put("type", "function_call")
                 put("id", "fc_${id}_$index")
-                put("call_id", "call_$index")
-                put("name", (obj["functionCall"] as JsonObject).string("name").orEmpty())
-                put("arguments", ((obj["functionCall"] as JsonObject)["args"] ?: buildJsonObject { }).toString())
+                put("call_id", callId)
+                put("name", call.string("name").orEmpty())
+                put("arguments", (call["args"] ?: buildJsonObject { }).toString())
                 put("status", "completed")
             }
             obj.boolean("thought") == true -> output += buildJsonObject {
@@ -638,7 +645,7 @@ private fun mergeGeminiToolContents(contents: List<JsonObject>): JsonArray {
 }
 
 private fun rejectUnsupportedGeminiConfig(config: JsonObject?, fields: Set<String>, target: String) {
-    fields.firstOrNull { config?.containsKey(it) == true }?.let {
+    fields.firstOrNull { config?.get(it).let { v -> v != null && v !is JsonNull } }?.let {
         unsupported("generationConfig.$it", "当前 $target 转换不支持 Gemini $it")
     }
 }

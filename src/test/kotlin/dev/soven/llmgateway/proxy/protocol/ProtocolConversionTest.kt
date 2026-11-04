@@ -888,7 +888,7 @@ class ProtocolConversionTest {
         val converter = ProtocolConversion.streamConverter(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, "public")!!
         val body = (converter.feed("""data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"f","args":{}}}]}}]}""") +
             converter.feed("")).joinToString("\n")
-        assertTrue(body.contains("\"id\":\"call_0\""), body)
+        assertTrue(Regex("\"id\":\"call_gemini_\\d+_0\"").containsMatchIn(body), body)
     }
 
     @Test
@@ -1047,5 +1047,91 @@ class ProtocolConversionTest {
         val responsesChoice = responses["tool_choice"]?.jsonObject
         assertEquals("function", responsesChoice?.string("type"))
         assertEquals("weather", responsesChoice?.string("name"))
+    }
+
+    @Test
+    fun `explicit null optional fields do not fail conversion`() {
+        val chatStopNull = json("""{"messages":[{"role":"user","content":"hi"}],"stop":null}""")
+        val resp = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, chatStopNull, "upstream")
+        assertFalse(resp.containsKey("stop"))
+
+        val chatFormatNull = json("""{"messages":[{"role":"user","content":"hi"}],"response_format":null}""")
+        val msg = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, chatFormatNull, "upstream")
+        assertFalse(msg.containsKey("response_format"))
+
+        val msgStopNull = json("""{"messages":[{"role":"user","content":"hi"}],"stop_sequences":null}""")
+        val resp2 = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES, msgStopNull, "upstream")
+        assertFalse(resp2.containsKey("stop_sequences"))
+
+        val respFormatNull = json("""{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"text":{"format":null}}""")
+        val msg2 = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES, respFormatNull, "upstream")
+        assertFalse(msg2.containsKey("format"))
+
+        val geminiTopKNull = json("""{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"topK":null}}""")
+        val chat2 = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.CHAT_COMPLETIONS, geminiTopKNull, "upstream")
+        assertFalse(chat2.containsKey("top_k"))
+
+        val geminiCachedNull = json("""{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"cachedContent":null}""")
+        val chat3 = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.CHAT_COMPLETIONS, geminiCachedNull, "upstream")
+        assertFalse(chat3.containsKey("cachedContent"))
+    }
+
+    @Test
+    fun `Gemini response tool calls incorporate responseId and preserve upstream id`() {
+        val geminiWithoutId = json("""{
+            "responseId":"resp_123",
+            "candidates":[{"content":{"role":"model","parts":[
+                {"functionCall":{"name":"lookup","args":{"q":"test"}}}
+            ]}}]
+        }""")
+        val chatWithoutId = ProtocolConversion.convertResponse(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, geminiWithoutId, "public")
+        val chatCalls = chatWithoutId.array("choices").single().jsonObject["message"]!!.jsonObject["tool_calls"]!!.jsonArray
+        assertEquals("call_resp_123_0", chatCalls.single().jsonObject.string("id"))
+
+        val messagesWithoutId = ProtocolConversion.convertResponse(GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI, geminiWithoutId, "public")
+        val messageBlocks = messagesWithoutId.array("content")
+        assertEquals("toolu_resp_123_0", messageBlocks.single().jsonObject.string("id"))
+
+        val responsesWithoutId = ProtocolConversion.convertResponse(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, geminiWithoutId, "public")
+        val responsesOutput = responsesWithoutId.array("output")
+        assertEquals("call_resp_123_0", responsesOutput.single().jsonObject.string("call_id"))
+
+        val geminiWithId = json("""{
+            "responseId":"resp_123",
+            "candidates":[{"content":{"role":"model","parts":[
+                {"functionCall":{"id":"custom_call_99","name":"lookup","args":{"q":"test"}}}
+            ]}}]
+        }""")
+        val chatWithId = ProtocolConversion.convertResponse(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, geminiWithId, "public")
+        assertEquals("custom_call_99", chatWithId.array("choices").single().jsonObject["message"]!!.jsonObject["tool_calls"]!!.jsonArray.single().jsonObject.string("id"))
+
+        val messagesWithId = ProtocolConversion.convertResponse(GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI, geminiWithId, "public")
+        assertEquals("custom_call_99", messagesWithId.array("content").single().jsonObject.string("id"))
+
+        val responsesWithId = ProtocolConversion.convertResponse(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, geminiWithId, "public")
+        assertEquals("custom_call_99", responsesWithId.array("output").single().jsonObject.string("call_id"))
+    }
+
+    @Test
+    fun `messages stream encoder supplies default usage on delta and start when upstream usage is absent`() {
+        val encoder = MessagesStreamEncoder("claude-test")
+        val chunk1 = StreamEvent(id = "msg_1", content = "hello")
+        val startLines = encoder.emit(chunk1, null)
+        val startData = json(startLines.first { it.startsWith("data: ") }.removePrefix("data: "))
+        assertEquals(0L, startData["message"]!!.jsonObject["usage"]!!.jsonObject["output_tokens"]!!.jsonPrimitive.content.toLong())
+
+        val chunk2 = StreamEvent(id = "msg_1", finishReason = FinishReason.STOP)
+        val deltaLines = encoder.emit(chunk2, null)
+        val deltaData = json(deltaLines.first { it.startsWith("data: ") && it.contains("message_delta") }.removePrefix("data: "))
+        assertEquals(0L, deltaData["usage"]!!.jsonObject["output_tokens"]!!.jsonPrimitive.content.toLong())
+    }
+
+    @Test
+    fun `protocol conversion supports verifies registered pairs and identity`() {
+        GatewayProtocol.entries.forEach { p1 ->
+            GatewayProtocol.entries.forEach { p2 ->
+                assertTrue(ProtocolConversion.supports(p1, p2))
+            }
+        }
     }
 }

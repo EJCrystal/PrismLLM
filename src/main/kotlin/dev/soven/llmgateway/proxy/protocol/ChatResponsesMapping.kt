@@ -103,7 +103,7 @@ internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): Js
     chat.number("temperature")?.let { put("temperature", it) }
     chat.number("top_p")?.let { put("top_p", it) }
     (chat.long("max_tokens") ?: chat.long("max_completion_tokens"))?.let { put("max_output_tokens", it) }
-    if (chat["stop"] != null) unsupported("stop", "Responses 不支持 stop/stop_sequences")
+    if (chat["stop"].let { it != null && it !is JsonNull }) unsupported("stop", "Responses 不支持 stop/stop_sequences")
     chat.string("user")?.let { put("user", it) }
     chat.string("reasoning_effort")?.let { effort -> putJsonObject("reasoning") { put("effort", effort) } }
     chat["response_format"]?.let { format ->

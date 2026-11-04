@@ -35,6 +35,9 @@ object ProtocolConverterRegistry {
         GeminiToResponses,
     ).associateBy { it.inbound to it.outbound }
 
+    fun supports(inbound: GatewayProtocol, outbound: GatewayProtocol): Boolean =
+        inbound == outbound || converters.containsKey(inbound to outbound)
+
     fun get(inbound: GatewayProtocol, outbound: GatewayProtocol): ProtocolConverter =
         converters[inbound to outbound]
             ?: throw ProtocolConversionException("protocol", "不支持 "+inbound.value+" → "+outbound.value+" 协议转换")
