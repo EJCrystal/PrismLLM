@@ -3,6 +3,7 @@ plugins/*.jar
 .env
 *.log
 .idea/
+.openidea/
 *.iml
 .vscode/
 web/node_modules/
