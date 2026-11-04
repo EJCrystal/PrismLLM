@@ -22,7 +22,7 @@ class DatabaseFactory(config: GatewayConfig) : AutoCloseable {
             minimumIdle = 2
             connectionTimeout = 5_000
             validationTimeout = 3_000
-            poolName = "llm-gateway"
+            poolName = "PrismLLM"
         },
     )
 

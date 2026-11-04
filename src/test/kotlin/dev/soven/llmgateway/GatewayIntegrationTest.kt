@@ -3476,7 +3476,7 @@ class GatewayIntegrationTest {
             // 已映射的上游模型只以 canonical ID 对外暴露。
             assertEquals(setOf("fast-chat", "deepseek-chat", "m1", "m2"), ids.toSet())
             assertEquals(ids.sorted(), ids)
-            assertTrue(data.all { it.jsonObject["owned_by"]!!.jsonPrimitive.content == "llm-gateway" })
+            assertTrue(data.all { it.jsonObject["owned_by"]!!.jsonPrimitive.content == "PrismLLM" })
         }
     }
 

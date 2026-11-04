@@ -38,7 +38,7 @@ def github_json(url: str, token: str) -> dict[str, Any]:
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "llm-gateway-pr-agent-thread-reply",
+            "User-Agent": "PrismLLM-pr-agent-thread-reply",
         },
     )
     with urllib.request.urlopen(request, timeout=20) as response:

@@ -1,6 +1,6 @@
 # PR-Agent 代码审查
 
-仓库使用 PR-Agent（https://github.com/The-PR-Agent/pr-agent）做自动代码审查，模型通过自建 llm-gateway 调用。
+仓库使用 PR-Agent（https://github.com/The-PR-Agent/pr-agent）做自动代码审查，模型通过自建 PrismLLM 调用。
 
 - 工作流：`.github/workflows/pr-agent.yml`
 - 审查规则：`.pr_agent.toml`
@@ -20,7 +20,7 @@ LLM_GATEWAY_KEY = <网关管理界面创建的调用方密钥>
 用命令行设置，值不经过聊天记录：
 
 ```bash
-cd /path/to/llm-gateway
+cd /path/to/PrismLLM
 gh secret set LLM_GATEWAY_KEY
 ```
 
@@ -72,7 +72,7 @@ Name:  PR_AGENT_RUNNER_LABELS
 Value: ["self-hosted", "Linux", "X64"]
 ```
 
-变量值是 JSON 数组，可以填任意标签组合，例如 `["self-hosted", "llm-gateway"]`。删掉变量就回到 `ubuntu-latest`。
+变量值是 JSON 数组，可以填任意标签组合，例如 `["self-hosted", "PrismLLM"]`。删掉变量就回到 `ubuntu-latest`。
 
 ### 注册 self-hosted runner
 

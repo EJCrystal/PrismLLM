@@ -8,7 +8,7 @@
 docker compose -f monitoring/docker-compose.yml up -d
 ```
 
-The example joins the gateway compose network `llm-gateway_default`; adjust the external network name if your Compose project uses a different name. Prometheus is available at `http://localhost:9090` and Blackbox at `http://localhost:9115`.
+The example joins the gateway compose network `prism-llm_default`; adjust the external network name if your Compose project uses a different name. Prometheus is available at `http://localhost:9090` and Blackbox at `http://localhost:9115`.
 
 Unknown model IDs rejected during routing are recorded under the fixed `alias="unresolved"` label, preventing request-controlled label-cardinality growth.
 

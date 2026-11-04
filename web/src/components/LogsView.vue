@@ -52,10 +52,11 @@ const autoRefreshOptions = [
   { label: '每 10 秒', value: 10_000 },
   { label: '每 30 秒', value: 30_000 },
 ] as const
-const autoRefreshStorageKey = 'llm-gateway.logs.autoRefreshIntervalMs'
+const autoRefreshStorageKey = 'prism-llm.logs.autoRefreshIntervalMs'
 function readAutoRefreshInterval(): number {
   try {
-    const interval = Number(localStorage.getItem(autoRefreshStorageKey))
+    const raw = localStorage.getItem(autoRefreshStorageKey) ?? localStorage.getItem('llm-gateway.logs.autoRefreshIntervalMs')
+    const interval = Number(raw)
     return autoRefreshOptions.some(option => option.value === interval) ? interval : 0
   } catch {
     return 0
@@ -85,14 +86,18 @@ const logColumns: Array<{ id: LogColumnId; label: string }> = [
 const defaultLogColumns: Record<LogColumnId, boolean> = { time: true, request: true, model: true, channel: true, status: true, latency: true, usage: true, cost: true }
 function readLogColumns(): Record<LogColumnId, boolean> {
   try {
-    const parsed = JSON.parse(localStorage.getItem('llm-gateway.logs.columns') || '{}')
+    const raw = localStorage.getItem('prism-llm.logs.columns') ?? localStorage.getItem('llm-gateway.logs.columns')
+    const parsed = JSON.parse(raw || '{}')
     return { ...defaultLogColumns, ...Object.fromEntries(logColumns.map(({ id }) => [id, parsed[id] !== false])) } as Record<LogColumnId, boolean>
   } catch {
     return { ...defaultLogColumns }
   }
 }
 function readLogDensity(): 'comfortable' | 'compact' {
-  try { return localStorage.getItem('llm-gateway.logs.density') === 'compact' ? 'compact' : 'comfortable' } catch { return 'comfortable' }
+  try {
+    const raw = localStorage.getItem('prism-llm.logs.density') ?? localStorage.getItem('llm-gateway.logs.density')
+    return raw === 'compact' ? 'compact' : 'comfortable'
+  } catch { return 'comfortable' }
 }
 const visibleLogColumns = ref<Record<LogColumnId, boolean>>(readLogColumns())
 const logDensity = ref<'comfortable' | 'compact'>(readLogDensity())
@@ -100,11 +105,11 @@ function logColumnVisible(id: LogColumnId): boolean { return visibleLogColumns.v
 function toggleLogColumn(id: LogColumnId): void {
   if (visibleLogColumns.value[id] && Object.values(visibleLogColumns.value).filter(Boolean).length <= 1) return
   visibleLogColumns.value[id] = !visibleLogColumns.value[id]
-  try { localStorage.setItem('llm-gateway.logs.columns', JSON.stringify(visibleLogColumns.value)) } catch { /* ignore storage failures */ }
+  try { localStorage.setItem('prism-llm.logs.columns', JSON.stringify(visibleLogColumns.value)) } catch { /* ignore storage failures */ }
 }
 function setLogDensity(value: 'comfortable' | 'compact'): void {
   logDensity.value = value
-  try { localStorage.setItem('llm-gateway.logs.density', value) } catch { /* ignore storage failures */ }
+  try { localStorage.setItem('prism-llm.logs.density', value) } catch { /* ignore storage failures */ }
 }
 const selected = ref<RequestLog | null>(null)
 const detailDialog = ref<HTMLDivElement | null>(null)

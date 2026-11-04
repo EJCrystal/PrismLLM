@@ -236,7 +236,7 @@ class UpstreamHeaderCatalogService(
     private suspend fun fetchText(url: String): String {
         require(url.startsWith("https://")) { "请求头目录 URL 必须使用 HTTPS" }
         return httpClient.prepareGet(url) {
-            header(HttpHeaders.UserAgent, "llm-gateway-header-catalog/1.0")
+            header(HttpHeaders.UserAgent, "PrismLLM-header-catalog/1.0")
             header(HttpHeaders.Accept, "application/json")
             timeout { requestTimeoutMillis = 15_000 }
         }.execute { response ->
@@ -352,7 +352,7 @@ class UpstreamHeaderCatalogService(
 
         suspend fun fetchNpmVersion(client: HttpClient, url: String): String =
             client.prepareGet(url) {
-                header(HttpHeaders.UserAgent, "llm-gateway-header-catalog/1.0")
+                header(HttpHeaders.UserAgent, "PrismLLM-header-catalog/1.0")
                 timeout { requestTimeoutMillis = 15_000 }
             }.execute { response ->
                 if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
@@ -361,7 +361,7 @@ class UpstreamHeaderCatalogService(
 
         suspend fun fetchCodexVersion(client: HttpClient): String =
             client.prepareGet("https://api.github.com/repos/openai/codex/releases/latest") {
-                header(HttpHeaders.UserAgent, "llm-gateway-header-catalog/1.0")
+                header(HttpHeaders.UserAgent, "PrismLLM-header-catalog/1.0")
                 header(HttpHeaders.Accept, "application/vnd.github+json")
                 timeout { requestTimeoutMillis = 15_000 }
             }.execute { response ->
