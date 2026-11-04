@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
@@ -131,7 +132,9 @@ class ProtocolConversionTest {
         assertEquals(100L, converted["max_tokens"]!!.jsonPrimitive.content.toLong())
         val messages = converted["messages"]!!.jsonArray
         assertEquals(3, messages.size)
-        assertEquals("tool_use", messages[1].jsonObject["content"]!!.jsonArray[1].jsonObject["type"]!!.jsonPrimitive.content)
+        val assistantBlocks = messages[1].jsonObject["content"]!!.jsonArray
+        assertEquals(1, assistantBlocks.size)
+        assertEquals("tool_use", assistantBlocks[0].jsonObject["type"]!!.jsonPrimitive.content)
         assertEquals("tool_result", messages[2].jsonObject["content"]!!.jsonArray[0].jsonObject["type"]!!.jsonPrimitive.content)
         assertEquals("weather", converted["tools"]!!.jsonArray[0].jsonObject["name"]!!.jsonPrimitive.content)
     }
@@ -613,5 +616,78 @@ class ProtocolConversionTest {
         assertEquals("refusal", messages["stop_reason"]!!.jsonPrimitive.content)
         val back = ProtocolConversion.convertResponse(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, messages, "m")
         assertEquals("content_filter", back["choices"]!!.jsonArray[0].jsonObject["finish_reason"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `gemini chat conversion keeps tool results bound to function names`() {
+        val chat = json("""{
+            "model":"public",
+            "messages":[
+                {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"SZ\"}"}}]},
+                {"role":"tool","tool_call_id":"call_1","content":"sunny"}
+            ]
+        }""")
+        val gemini = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, chat, "upstream")
+        val parts = gemini["contents"]!!.jsonArray.flatMap { it.jsonObject["parts"]!!.jsonArray }
+        assertEquals("weather", parts.last().jsonObject["functionResponse"]!!.jsonObject["name"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `gemini messages conversion keeps thinking budget below max tokens`() {
+        val gemini = json("""{
+            "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+            "generationConfig":{"maxOutputTokens":2048,"thinkingConfig":{"includeThoughts":true}}
+        }""")
+        val messages = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.MESSAGES, gemini, "upstream")
+        val budget = messages["thinking"]!!.jsonObject["budget_tokens"]!!.jsonPrimitive.content.toLong()
+        assertTrue(budget < messages["max_tokens"]!!.jsonPrimitive.content.toLong())
+    }
+
+    @Test
+    fun `gemini thinking budget zero disables thinking`() {
+        val gemini = json("""{"contents":[],"generationConfig":{"thinkingConfig":{"thinkingBudget":0}}}""")
+        val chat = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.CHAT_COMPLETIONS, gemini, "upstream")
+        assertEquals("none", chat["reasoning_effort"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `gemini stream emits tool calls finish reason and stable id`() {
+        val converter = ProtocolConversion.streamConverter(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, "public")!!
+        val first = converter.feed("""data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"weather","args":{"city":"SZ"}}}]}}]}""")
+        val second = converter.feed("")
+        val last = converter.feed("""data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}]}""") + converter.feed("")
+        val body = (first + second + last).joinToString("\n")
+        assertTrue(body.contains("\"finish_reason\":\"tool_calls\""), body)
+        val ids = Regex("\"id\":\"([^\"]+)\"").findAll(body).map { it.groupValues[1] }.toSet()
+        assertEquals(1, ids.size, body)
+    }
+
+    @Test
+    fun `responses refusal reaches messages as text block`() {
+        val responses = json("""{
+            "id":"resp_1","status":"completed",
+            "output":[{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"cannot help"}]}]
+        }""")
+        val messages = ProtocolConversion.convertResponse(GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES, responses, "public")
+        assertEquals("cannot help", messages["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `chat refusal reaches messages as text block`() {
+        val chat = json("""{
+            "id":"chat_1","choices":[{"message":{"role":"assistant","content":null,"refusal":"cannot help"},"finish_reason":"stop"}]
+        }""")
+        val messages = ProtocolConversion.convertResponse(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, chat, "public")
+        assertEquals("cannot help", messages["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `null chat content does not become literal null text`() {
+        val chat = json("""{
+            "model":"public",
+            "messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}]
+        }""")
+        val messages = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, chat, "upstream")
+        assertFalse(messages.toString().contains("\"text\":\"null\""), messages.toString())
     }
 }
