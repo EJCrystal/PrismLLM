@@ -30,19 +30,21 @@ class CooldownStateWriter(
     private val signal = Channel<Unit>(capacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     /** 正在写数据库的状态键，供手动删除只等待本次涉及的目标键。 */
     private val writing = ConcurrentHashMap.newKeySet<String>()
+    /** 保护「认领待写事件」与「手动删除检查」两步的原子性；数据库调用不在锁内。 */
+    private val lock = Any()
     private val consumer: Job = scope.launch {
         for (ignored in signal) drain()
         // close 后把信号关闭前积压的事件处理完。
         drain()
     }
 
+    private enum class DeleteDecision { WAIT, SKIP, DELETE }
+
     private suspend fun drain() {
         while (true) {
-            val entry = pending.entries.firstOrNull() ?: return
-            if (!pending.remove(entry.key, entry.value)) continue
-            writing.add(entry.key)
+            val (key, change) = claimNext() ?: return
             try {
-                when (val change = entry.value) {
+                when (change) {
                     is CooldownChange.Updated -> store.upsert(
                         CooldownStateSnapshot(change.stateKey, change.consecutiveFailures, change.cooldownUntil, change.reason),
                     )
@@ -51,11 +53,23 @@ class CooldownStateWriter(
             } catch (cause: CancellationException) {
                 throw cause
             } catch (cause: Throwable) {
-                logger.error("cooldown state write failed, key={}", entry.key, cause)
+                logger.error("cooldown state write failed, key={}", key, cause)
             } finally {
-                writing.remove(entry.key)
+                synchronized(lock) { writing.remove(key) }
             }
         }
+    }
+
+    /** 在锁内把事件从待写队列取出并登记为写入中，避免与手动删除检查交错。 */
+    private fun claimNext(): Pair<String, CooldownChange>? = synchronized(lock) {
+        var claimed: Pair<String, CooldownChange>? = null
+        while (claimed == null) {
+            val entry = pending.entries.firstOrNull() ?: break
+            if (!pending.remove(entry.key, entry.value)) continue
+            writing.add(entry.key)
+            claimed = entry.key to entry.value
+        }
+        claimed
     }
 
     fun submit(change: CooldownChange) {
@@ -76,13 +90,8 @@ class CooldownStateWriter(
         withTimeoutOrNull(timeoutMs) {
             var allSucceeded = true
             for (key in stateKeys) {
-                while (writing.contains(key)) delay(5)
-                val change = pending[key]
-                if (change != null && change !is CooldownChange.Removed) {
-                    // 清除后同一键又进入冷却：新的 Updated 才是应持久化的最终状态。
-                    continue
-                }
-                if (change != null) pending.remove(key, change)
+                val decision = awaitDeleteDecision(key)
+                if (decision == DeleteDecision.SKIP) continue
                 try {
                     store.delete(key)
                 } catch (cause: CancellationException) {
@@ -94,6 +103,24 @@ class CooldownStateWriter(
             }
             allSucceeded
         } ?: false
+
+    private suspend fun awaitDeleteDecision(key: String): DeleteDecision {
+        while (true) {
+            val decision = synchronized(lock) {
+                val change = pending[key]
+                when {
+                    writing.contains(key) -> DeleteDecision.WAIT
+                    change != null && change !is CooldownChange.Removed -> DeleteDecision.SKIP
+                    else -> {
+                        if (change != null) pending.remove(key, change)
+                        DeleteDecision.DELETE
+                    }
+                }
+            }
+            if (decision != DeleteDecision.WAIT) return decision
+            delay(5)
+        }
+    }
 
     suspend fun closeAndDrain(timeoutMs: Long) {
         signal.close()
