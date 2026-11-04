@@ -342,6 +342,47 @@ class ProxyAttemptLoggingIntegrationTest {
     }
 
     @Test
+    fun `skipped events keep route order between upstream attempts`() = runBlocking {
+        val modelId = "cooldown-order"
+        val credential = app.credentialCipher.encrypt("upstream-secret")
+        app.channelRepository.create(
+            name = "1-$modelId",
+            baseUrl = "${fake.baseUrl}/500/v1",
+            keys = listOf(
+                NewChannelKey("key-a", credential, priority = 1, models = listOf(modelId)),
+                NewChannelKey("key-b", credential, priority = 2, models = listOf(modelId)),
+            ),
+            authType = "bearer",
+            protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
+            enabled = true,
+            modelMappings = listOf(ChannelModelRecord(modelId)),
+            priority = 1,
+        )
+        createChannel(modelId, "${fake.baseUrl}/ok/v1", priority = 2)
+        testApplication {
+            application { app.install(this) }
+            val requestId = UUID.randomUUID().toString()
+            val response = client.sendRequest(modelId, false, requestId)
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val log = awaitRequestLog(requestId)
+            assertEquals(2, log.upstreamAttempts)
+            assertEquals(3, log.attempts.size)
+            val failed = log.attempts[0]
+            assertFalse(failed.skipped)
+            assertEquals(500, failed.statusCode)
+            assertEquals("key-a", failed.channelKeyName)
+            val skipped = log.attempts[1]
+            assertTrue(skipped.skipped)
+            assertEquals("key-b", skipped.channelKeyName)
+            assertNull(skipped.statusCode)
+            val succeeded = log.attempts[2]
+            assertFalse(succeeded.skipped)
+            assertEquals(200, succeeded.statusCode)
+            assertEquals("2-$modelId", succeeded.channelName)
+        }
+    }
+
+    @Test
     fun `fail-open cooling candidate is attempted instead of logged as skipped`() = runBlocking {
         val modelId = "cooldown-fail-open"
         createChannel(modelId, "${fake.baseUrl}/ok/v1")

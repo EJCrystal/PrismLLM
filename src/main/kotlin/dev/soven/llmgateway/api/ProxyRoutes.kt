@@ -197,10 +197,9 @@ private suspend fun handleProxy(
     var upstreamErrorCode: String? = null
     var upstreamErrorBody: String? = null
     var upstreamAttempts = 0
-    val attemptRecords = mutableListOf<UpstreamAttemptRecord>()
-    val attemptedCandidates = mutableSetOf<RouteCandidate>()
-    // 冷却跳过的候选；真正发起了上游调用的候选会从 skipped 中剔除。
-    val skippedCandidates = linkedSetOf<RouteCandidate>()
+    val attemptEvents = mutableListOf<UpstreamAttemptRecord>()
+    val skippedEvents = mutableMapOf<RouteCandidate, UpstreamAttemptRecord>()
+    var recordedAttempts = 0
     var phase = FailureStage.REQUEST
 
     try {
@@ -240,6 +239,30 @@ private suspend fun handleProxy(
         val headerProfiles = app.upstreamHeaderCatalogService.profiles()
 
         phase = FailureStage.UPSTREAM
+
+        /** 记录候选在路由阶段因冷却被跳过的事件，保持与实际上游尝试的相对顺序。 */
+        fun markSkipped(candidate: RouteCandidate) {
+            if (skippedEvents.containsKey(candidate)) return
+            val event = UpstreamAttemptRecord(
+                index = 0,
+                channelId = candidate.channel.id,
+                channelName = candidate.channel.name,
+                channelKeyId = candidate.key.id,
+                channelKeyName = candidate.key.name,
+                upstreamModel = candidate.upstreamModel,
+                upstreamProtocol = if (protocol in candidate.channel.protocols) {
+                    protocol
+                } else {
+                    candidate.channel.protocols.firstOrNull { ProtocolConversion.supports(protocol, it) }
+                },
+                elapsedMs = 0,
+                skipped = true,
+                skipReason = "cooldown",
+            )
+            attemptEvents += event
+            skippedEvents[candidate] = event
+        }
+
         // 先按冷却分拣：可尝试的候选进同档轮询，冷却中的保序作为 fail-open 兜底，
         // 轮询份额只在可尝试候选间分摊，不被冷却候选扭曲。
         val eligibleNative = mutableListOf<RouteCandidate>()
@@ -249,7 +272,7 @@ private suspend fun handleProxy(
             if (app.candidateCooldown.isBlocked(candidate.channel.id, candidate.key.id, candidate.upstreamModel)) {
                 app.metrics.upstreamCooldownSkipped(candidate.channel.name)
                 blocked.add(candidate)
-                skippedCandidates += candidate
+                markSkipped(candidate)
             } else if (protocol in candidate.channel.protocols) {
                 eligibleNative.add(candidate)
             } else {
@@ -329,11 +352,12 @@ private suspend fun handleProxy(
                     upstreamAttempts -= 1
                     return
                 }
-                attemptedCandidates += candidate
+                skippedEvents.remove(candidate)?.let { attemptEvents.remove(it) }
                 upstreamProtocol = attemptProtocol
                 val upstreamError = state.streamError ?: error
-                attemptRecords += UpstreamAttemptRecord(
-                    index = attemptRecords.size + 1,
+                recordedAttempts += 1
+                attemptEvents += UpstreamAttemptRecord(
+                    index = recordedAttempts,
                     channelId = candidate.channel.id,
                     channelName = candidate.channel.name,
                     channelKeyId = candidate.key.id,
@@ -539,7 +563,7 @@ private suspend fun handleProxy(
             if (permit == null) {
                 app.metrics.upstreamCooldownSkipped(candidate.channel.name)
                 blocked.add(candidate)
-                skippedCandidates += candidate
+                markSkipped(candidate)
                 index++
                 continue
             }
@@ -700,27 +724,7 @@ private suspend fun handleProxy(
             reasoningEffort = reasoningEffort,
         )
         val totalMs = (System.nanoTime() - startedAt) / 1_000_000
-        val skippedRecords = skippedCandidates
-            .filter { it !in attemptedCandidates }
-            .map { candidate ->
-                UpstreamAttemptRecord(
-                    index = 0,
-                    channelId = candidate.channel.id,
-                    channelName = candidate.channel.name,
-                    channelKeyId = candidate.key.id,
-                    channelKeyName = candidate.key.name,
-                    upstreamModel = candidate.upstreamModel,
-                    upstreamProtocol = if (protocol in candidate.channel.protocols) {
-                        protocol
-                    } else {
-                        candidate.channel.protocols.firstOrNull { ProtocolConversion.supports(protocol, it) }
-                    },
-                    elapsedMs = 0,
-                    skipped = true,
-                    skipReason = "cooldown",
-                )
-            }
-        val finalAttempts = skippedRecords + attemptRecords
+        val finalAttempts = attemptEvents.toList()
         app.metrics.request(
             if (channelId == null) "unresolved" else alias,
             channelId,
