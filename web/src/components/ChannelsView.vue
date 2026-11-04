@@ -134,6 +134,7 @@ let healthRevision = 0
 const healthByChannel = computed(() => new Map(healthReport.value?.window === healthWindow.value ? healthReport.value.channels.map(row => [row.channelId, row]) : []))
 const cooldownNow = ref(Date.now())
 let cooldownTimer: ReturnType<typeof setInterval> | null = null
+let cooldownRefreshAt = 0
 function syncCooldownTimer() {
   const cooling = healthReport.value?.channels.some(row => (row.coolingCandidates ?? 0) > 0) ?? false
   if (cooling && cooldownTimer == null) {
@@ -144,8 +145,11 @@ function syncCooldownTimer() {
         .map(row => row.cooldownUntil)
         .filter((value): value is number => typeof value === 'number')
         .reduce<number | null>((min, value) => (min == null || value < min ? value : min), null)
-      // 最近一次冷却到期后重新拉取报告，避免列表长期停留在旧状态。
-      if (nextExpiry != null && now >= nextExpiry && !healthLoading.value) loadHealth()
+      // 最近一次冷却到期后重新拉取报告，避免列表长期停留在旧状态；限制刷新频率避免时钟偏快时每秒重复请求。
+      if (nextExpiry != null && now >= nextExpiry && !healthLoading.value && now - cooldownRefreshAt >= 10_000) {
+        cooldownRefreshAt = now
+        loadHealth()
+      }
     }, 1000)
   } else if (!cooling && cooldownTimer != null) {
     clearInterval(cooldownTimer)
