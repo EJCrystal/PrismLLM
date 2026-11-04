@@ -215,7 +215,6 @@ internal class GeminiStreamDecoder : StreamDecoder {
             events += StreamEvent(
                 id,
                 finishReason = if (reason == "STOP" && toolSeen) FinishReason.TOOL_CALLS else geminiStreamFinish(reason),
-                done = true,
             )
         }
         return events

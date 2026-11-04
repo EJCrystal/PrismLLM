@@ -367,7 +367,8 @@ internal fun geminiToMessagesResponse(response: JsonObject, model: String): Json
             }
         }
     })
-    put("stop_reason", geminiFinishToMessages(candidate?.string("finishReason")))
+    val hasToolUse = parts.any { (it as? JsonObject)?.get("functionCall") is JsonObject }
+    put("stop_reason", geminiFinishToMessages(candidate?.string("finishReason"), hasToolUse))
     put("stop_sequence", JsonNull)
     geminiUsageToMessages(response["usageMetadata"] as? JsonObject)?.let { put("usage", it) }
 }
@@ -409,11 +410,16 @@ internal fun geminiToResponsesRequest(request: JsonObject, upstreamModel: String
     geminiThinkingToEffort(config)?.let { effort -> putJsonObject("reasoning") { put("effort", effort) } }
     config?.string("responseMimeType")?.let { mime ->
         if (mime != "application/json") unsupported("generationConfig.responseMimeType", "不支持响应类型 $mime")
+        val schema = config["responseJsonSchema"]
         putJsonObject("text") {
             putJsonObject("format") {
-                put("type", "json_schema")
-                put("name", "response")
-                put("schema", config["responseJsonSchema"] ?: buildJsonObject { })
+                if (schema != null) {
+                    put("type", "json_schema")
+                    put("name", "response")
+                    put("schema", schema)
+                } else {
+                    put("type", "json_object")
+                }
             }
         }
     }
@@ -685,12 +691,13 @@ private fun geminiContentsToResponses(contents: JsonElement?): JsonArray = build
             put("role", "user")
             put("content", buildJsonArray { add(buildJsonObject { put("type", "input_text"); put("text", contents.content) }) })
         })
-        is JsonArray -> contents.forEachIndexed { index, element ->
+        is JsonArray -> {
+        val pendingIds = mutableMapOf<String, ArrayDeque<String>>()
+        contents.forEachIndexed { index, element ->
             val content = element as? JsonObject ?: unsupported("contents[$index]", "内容必须是对象")
             val role = if (content.string("role") == "model") "assistant" else "user"
             val text = mutableListOf<String>()
             val toolCalls = mutableListOf<JsonObject>()
-            val pendingIds = mutableMapOf<String, ArrayDeque<String>>()
             content.array("parts").forEachIndexed { partIndex, part ->
                 val obj = part as? JsonObject ?: unsupported("contents[$index].parts[$partIndex]", "part 必须是对象")
                 val call = obj["functionCall"] as? JsonObject
@@ -726,6 +733,7 @@ private fun geminiContentsToResponses(contents: JsonElement?): JsonArray = build
                 put("content", buildJsonArray { add(buildJsonObject { put("type", if (role == "assistant") "output_text" else "input_text"); put("text", text.joinToString("")) }) })
             })
             addAll(toolCalls)
+        }
         }
         else -> Unit
     }
@@ -871,9 +879,10 @@ private fun chatFinishToGemini(finishReason: String?, hasRefusal: Boolean): Stri
     else -> "STOP"
 }
 
-private fun geminiFinishToMessages(finishReason: String?): String = when (finishReason) {
+private fun geminiFinishToMessages(finishReason: String?, hasTools: Boolean): String = when (finishReason) {
     "MAX_TOKENS" -> "max_tokens"
     "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL" -> "refusal"
+    null, "STOP" -> if (hasTools) "tool_use" else "end_turn"
     else -> "end_turn"
 }
 
