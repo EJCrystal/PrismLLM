@@ -153,10 +153,8 @@ private fun firstHeaderValue(value: String?): String? =
     value
         ?.split(',')
         ?.asSequence()
-        ?.map { it.trim() }
-        ?.firstOrNull { it.isNotBlank() }
-        ?.let { sanitizeLogValue(it) }
-        ?.takeUnless { it == "-" }
+        ?.mapNotNull(::parseHeaderIp)
+        ?.firstOrNull()
 
 private fun forwardedIp(value: String?): String? =
     value
@@ -166,10 +164,32 @@ private fun forwardedIp(value: String?): String? =
         ?.map { it.trim() }
         ?.firstOrNull { it.startsWith("for=", ignoreCase = true) }
         ?.substringAfter('=', "")
-        ?.trim()
-        ?.trim('"', '[', ']')
-        ?.let { sanitizeLogValue(it) }
-        ?.takeUnless { it == "-" }
+        ?.let(::parseHeaderIp)
+
+private fun parseHeaderIp(value: String): String? {
+    val candidate = value.trim().trim('"')
+    val address = when {
+        candidate.startsWith('[') -> {
+            val end = candidate.indexOf(']')
+            if (end <= 1) return null
+            val portSuffix = candidate.substring(end + 1)
+            if (portSuffix.isNotEmpty() && (!portSuffix.startsWith(':') || !isValidPort(portSuffix.substring(1)))) {
+                return null
+            }
+            candidate.substring(1, end)
+        }
+        candidate.count { it == ':' } == 1 && candidate.contains('.') -> {
+            val host = candidate.substringBeforeLast(':')
+            if (!isValidPort(candidate.substringAfterLast(':'))) return null
+            host
+        }
+        else -> candidate
+    }
+    return address.takeIf(TrustedProxyNetwork::isIpAddress)
+}
+
+private fun isValidPort(value: String): Boolean =
+    value.isNotEmpty() && value.all { it in '0'..'9' } && value.toIntOrNull() in 0..65535
 
 private fun sanitizeLogValue(value: String?, maxLength: Int = 128): String {
     val normalized = value

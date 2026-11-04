@@ -22,6 +22,8 @@ class TrustedProxyNetwork private constructor(
     }
 
     companion object {
+        fun isIpAddress(value: String?): Boolean = value != null && parseAddress(value) != null
+
         fun parse(value: String): TrustedProxyNetwork {
             val parts = value.trim().split('/', limit = 2)
             require(parts.size in 1..2 && parts[0].isNotBlank()) { "无效的可信代理网段: $value" }

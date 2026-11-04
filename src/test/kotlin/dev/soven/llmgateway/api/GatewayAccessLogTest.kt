@@ -103,4 +103,38 @@ class GatewayAccessLogTest {
 
         assertEquals("agent%20clientIp%3D203.0.113.9%20clientIpSource%3Dpeer", metadata.userAgent)
     }
+
+    @Test
+    fun skipsInvalidForwardedValuesAndUsesNextValidHeader() {
+        val metadata = requestAccessLogMetadata(
+            requestId = null,
+            cloudflareConnectingIp = "unknown",
+            forwardedFor = "not-an-ip, 198.51.100.8",
+            realIp = "198.51.100.9",
+            forwarded = "for=198.51.100.10",
+            peerIp = "172.19.0.2",
+            userAgent = null,
+            trustedProxyNetworks = listOf(TrustedProxyNetwork.parse("172.19.0.0/16")),
+        )
+
+        assertEquals("198.51.100.8", metadata.clientIp)
+        assertEquals("x-forwarded-for", metadata.clientIpSource)
+    }
+
+    @Test
+    fun parsesForwardedIpv6AddressWithPort() {
+        val metadata = requestAccessLogMetadata(
+            requestId = null,
+            cloudflareConnectingIp = null,
+            forwardedFor = null,
+            realIp = null,
+            forwarded = "for=\"[2001:db8::1]:4711\"",
+            peerIp = "172.19.0.2",
+            userAgent = null,
+            trustedProxyNetworks = listOf(TrustedProxyNetwork.parse("172.19.0.0/16")),
+        )
+
+        assertEquals("2001:db8::1", metadata.clientIp)
+        assertEquals("forwarded", metadata.clientIpSource)
+    }
 }
