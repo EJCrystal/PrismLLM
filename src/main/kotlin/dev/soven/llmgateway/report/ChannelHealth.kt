@@ -89,6 +89,8 @@ data class HealthError(val code: String, val count: Long, val lastAt: Long)
 data class HealthAvailability(
     val keyId: String, val keyName: String, val model: String, val state: String,
     val reason: String? = null, val until: Long? = null,
+    /** 生效的冷却范围：channel / key / candidate；非冷却状态为 null。 */
+    val cooldownScope: String? = null,
 )
 
 @Serializable

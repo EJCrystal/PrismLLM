@@ -137,7 +137,16 @@ let cooldownTimer: ReturnType<typeof setInterval> | null = null
 function syncCooldownTimer() {
   const cooling = healthReport.value?.channels.some(row => (row.coolingCandidates ?? 0) > 0) ?? false
   if (cooling && cooldownTimer == null) {
-    cooldownTimer = setInterval(() => { cooldownNow.value = Date.now() }, 1000)
+    cooldownTimer = setInterval(() => {
+      const now = Date.now()
+      cooldownNow.value = now
+      const nextExpiry = (healthReport.value?.channels ?? [])
+        .map(row => row.cooldownUntil)
+        .filter((value): value is number => typeof value === 'number')
+        .reduce<number | null>((min, value) => (min == null || value < min ? value : min), null)
+      // 最近一次冷却到期后重新拉取报告，避免列表长期停留在旧状态。
+      if (nextExpiry != null && now >= nextExpiry && !healthLoading.value) loadHealth()
+    }, 1000)
   } else if (!cooling && cooldownTimer != null) {
     clearInterval(cooldownTimer)
     cooldownTimer = null

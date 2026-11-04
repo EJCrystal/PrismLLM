@@ -3145,6 +3145,8 @@ class GatewayIntegrationTest {
             assertFalse(app.candidateCooldown.isBlocked(channel.id, key.id, "m1"))
             assertFalse(app.candidateCooldown.isBlocked(channel.id, key.id, "m2"))
             assertTrue(app.candidateCooldown.isBlocked(other.id, otherKey.id, "m1"))
+            val persisted = app.cooldownStateRepository.loadAll().map { it.stateKey }
+            assertFalse(persisted.any { it == "ch:${channel.id}" || it.startsWith("key:${channel.id}:") || it.startsWith("kc:${channel.id}:") })
 
             val audit = app.adminAuditRepository.list(100).first {
                 it.action == "channel.cooldown.clear" && it.result == "success" &&
@@ -3187,6 +3189,7 @@ class GatewayIntegrationTest {
                 .first { it["model"]!!.jsonPrimitive.content == "m1" }
             assertEquals("COOLDOWN", availability["state"]!!.jsonPrimitive.content)
             assertEquals("rate_limited", availability["reason"]!!.jsonPrimitive.content)
+            assertEquals("candidate", availability["cooldownScope"]!!.jsonPrimitive.content)
             assertEquals(state.until.toString(), availability["until"]!!.jsonPrimitive.content)
         }
     }
@@ -5716,7 +5719,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("46", result.getString(1))
+                        assertEquals("47", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())

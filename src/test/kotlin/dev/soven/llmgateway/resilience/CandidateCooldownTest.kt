@@ -339,17 +339,20 @@ class CandidateCooldownTest {
         val transient = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
         cooldown.recordFailure(transient, FailureKind.TRANSPORT)
         assertEquals(CandidateCooldown.REASON_TRANSIENT, cooldown.cooldownState("ch1", "k1", "m1")?.reason)
+        assertEquals("channel", cooldown.cooldownState("ch1", "k1", "m1")?.scope)
         assertEquals(1_000L, cooldown.cooldownState("ch1", "k1", "m1")?.until)
 
         now = 1_000L
         val rateLimited = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
         cooldown.recordFailure(rateLimited, FailureKind.RATE_LIMITED, retryAfterMs = 5_000)
         assertEquals(CandidateCooldown.REASON_RATE_LIMITED, cooldown.cooldownState("ch1", "k1", "m1")?.reason)
+        assertEquals("candidate", cooldown.cooldownState("ch1", "k1", "m1")?.scope)
         assertEquals(6_000L, cooldown.cooldownState("ch1", "k1", "m1")?.until)
 
         val auth = assertNotNull(cooldown.acquire("ch2", "k1", "m1"))
         cooldown.recordFailure(auth, FailureKind.AUTH_REJECTED)
         assertEquals(CandidateCooldown.REASON_AUTH, cooldown.cooldownState("ch2", "k1", "m1")?.reason)
+        assertEquals("key", cooldown.cooldownState("ch2", "k1", "m1")?.scope)
 
         val ttftCooldown = CandidateCooldown(
             policy = policy(ttftSlowThresholdMs = 100, ttftSlowStreak = 1),
@@ -358,6 +361,7 @@ class CandidateCooldownTest {
         val ttft = assertNotNull(ttftCooldown.acquire("ch3", "k1", "m1"))
         assertTrue(ttftCooldown.recordFirstToken(ttft, firstTokenMs = 200))
         assertEquals(CandidateCooldown.REASON_TTFT_SLOW, ttftCooldown.cooldownState("ch3", "k1", "m1")?.reason)
+        assertEquals("candidate", ttftCooldown.cooldownState("ch3", "k1", "m1")?.scope)
     }
 
     @Test

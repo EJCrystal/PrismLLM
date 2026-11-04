@@ -140,8 +140,8 @@ data class CooldownStateSnapshot(
     val reason: String? = null,
 )
 
-/** 当前生效的冷却信息：截止时间与触发原因。 */
-data class CooldownInfo(val until: Long, val reason: String?)
+/** 当前生效的冷却信息：截止时间、触发原因和生效范围（channel / key / candidate）。 */
+data class CooldownInfo(val until: Long, val reason: String?, val scope: String)
 
 /**
  * 一次上游尝试的冷却凭证。refs 携带走过的键与代际，迟到的结果因代际不匹配被忽略。
@@ -379,36 +379,43 @@ class CandidateCooldown(
 
     /** 更换凭据或切换启用状态后清除密钥级冷却，并作废旧请求的许可。 */
     @Synchronized
-    fun clearKey(channelId: String, keyId: String) {
+    fun clearKey(channelId: String, keyId: String): List<String> {
         val keyStateId = CooldownKey.Key(channelId, keyId).id
         val candidatePrefix = "kc:$channelId:$keyId:"
+        val cleared = mutableListOf<String>()
         for ((id, state) in states) {
             if (id != keyStateId && !id.startsWith(candidatePrefix)) continue
             resetState(id, state)
+            cleared += id
         }
         ttftStreaks.keys.removeIf { it.startsWith(candidatePrefix) }
+        return cleared
     }
 
     /** 手动解除单个候选（密钥 + 上游模型）的冷却。 */
     @Synchronized
-    fun clearCandidate(channelId: String, keyId: String, upstreamModel: String) {
+    fun clearCandidate(channelId: String, keyId: String, upstreamModel: String): List<String> {
         val stateKey = CooldownKey.KeyCandidate(channelId, keyId, upstreamModel).id
-        val state = states[stateKey] ?: return
+        val state = states[stateKey] ?: return emptyList()
         resetState(stateKey, state)
         ttftStreaks.remove(stateKey)
+        return listOf(stateKey)
     }
 
     /** 手动解除渠道下的全部冷却，包括渠道键、密钥键和候选键。 */
     @Synchronized
-    fun clearChannel(channelId: String) {
+    fun clearChannel(channelId: String): List<String> {
         val channelStateId = CooldownKey.Channel(channelId).id
         val keyPrefix = "key:$channelId:"
         val candidatePrefix = "kc:$channelId:"
+        val cleared = mutableListOf<String>()
         for ((id, state) in states) {
             if (id != channelStateId && !id.startsWith(keyPrefix) && !id.startsWith(candidatePrefix)) continue
             resetState(id, state)
+            cleared += id
         }
         ttftStreaks.keys.removeIf { it.startsWith(candidatePrefix) }
+        return cleared
     }
 
     /**
@@ -436,10 +443,10 @@ class CandidateCooldown(
     fun cooldownState(channelId: String, keyId: String, upstreamModel: String): CooldownInfo? {
         val now = nowMs()
         var best: CooldownInfo? = null
-        for (key in listOf(
-            CooldownKey.Channel(channelId),
-            CooldownKey.Key(channelId, keyId),
-            CooldownKey.KeyCandidate(channelId, keyId, upstreamModel),
+        for ((key, scope) in listOf(
+            CooldownKey.Channel(channelId) to "channel",
+            CooldownKey.Key(channelId, keyId) to "key",
+            CooldownKey.KeyCandidate(channelId, keyId, upstreamModel) to "candidate",
         )) {
             val state = states[key.id] ?: continue
             if (state.cooldownUntil <= now) continue
@@ -447,7 +454,7 @@ class CandidateCooldown(
             if (current == null || state.cooldownUntil > current.until ||
                 (state.cooldownUntil == current.until && current.reason == null && state.reason != null)
             ) {
-                best = CooldownInfo(state.cooldownUntil, state.reason)
+                best = CooldownInfo(state.cooldownUntil, state.reason, scope)
             }
         }
         return best

@@ -26,7 +26,7 @@ export interface ChannelHealthDetail {
   trend: { from: number; to: number; metrics: HealthMetrics }[]
   byModel: HealthBreakdown[]; byProtocol: HealthBreakdown[]; byKey: HealthBreakdown[]
   errors: { code: string; count: number; lastAt: number }[]
-  availability: { keyId: string; keyName: string; model: string; state: string; reason: string | null; until: number | null }[]
+  availability: { keyId: string; keyName: string; model: string; state: string; reason: string | null; until: number | null; cooldownScope?: string | null }[]
 }
 
 export type ChannelKeyState = 'ACTIVE' | 'MANUAL_DISABLED' | 'AUTO_TEMPORARY' | 'AUTO_PERMANENT'

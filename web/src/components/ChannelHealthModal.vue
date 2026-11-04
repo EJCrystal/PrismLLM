@@ -48,11 +48,11 @@ const unavailableGroups = computed(() => {
   }
   return [...groups.values()]
 })
-const hasCooldown = computed(() => unavailable.value.some(row => row.state === 'COOLDOWN'))
+const hasCooldown = computed(() => (summary.value?.coolingCandidates ?? 0) > 0 || unavailable.value.some(row => row.state === 'COOLDOWN'))
 const clearing = ref<string | null>(null)
 const availabilityLabel: Record<string, string> = { CHANNEL_DISABLED: '渠道停用', MANUAL_DISABLED: '人工停用', AUTO_TEMPORARY: '自动临时停用', AUTO_PERMANENT: '自动永久停用', COOLDOWN: '冷却中' }
 function groupHasCooldown(rows: AvailabilityRow[]): boolean {
-  return rows.some(row => row.state === 'COOLDOWN')
+  return rows.some(row => row.state === 'COOLDOWN' && row.cooldownScope === 'key')
 }
 function cooldownText(row: AvailabilityRow): string {
   const reason = row.state === 'COOLDOWN' ? cooldownReasonLabel(row.reason) : row.reason
@@ -152,7 +152,7 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
                   <span class="badge warning">{{ availabilityLabel[row.state] || row.state }}</span>
                   <span>{{ row.model }}</span>
                   <small class="muted">{{ cooldownText(row) }}</small>
-                  <button v-if="row.state === 'COOLDOWN'" type="button" class="button ghost mini" :disabled="clearing === `candidate:${row.keyId}:${row.model}`" @click="clearCooldown('candidate', row.keyId, row.model)">解除</button>
+                  <button v-if="row.state === 'COOLDOWN' && row.cooldownScope === 'candidate'" type="button" class="button ghost mini" :disabled="clearing === `candidate:${row.keyId}:${row.model}`" @click="clearCooldown('candidate', row.keyId, row.model)">解除</button>
                 </li>
               </ul>
             </div>
