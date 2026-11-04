@@ -131,7 +131,9 @@ internal fun chatToMessagesRequest(chat: JsonObject, upstreamModel: String): Jso
             }
             "user", "assistant" -> {
                 flushToolResults()
-                messages += chatMessageToAnthropic(message, "messages[$index]")
+                chatMessageToAnthropic(message, "messages[$index]")
+                    .takeIf { it.array("content").isNotEmpty() }
+                    ?.let { messages += it }
             }
             "tool" -> pendingToolResults += buildJsonObject {
                 put("type", "tool_result")
@@ -261,9 +263,11 @@ internal fun chatMessageToAnthropic(message: JsonObject, path: String): JsonObje
         is JsonArray -> content.forEachIndexed { index, part ->
             val obj = part as? JsonObject ?: unsupported("$path.content[$index]", "内容块必须是对象")
             when (obj.string("type")) {
-                "text" -> blocks += buildJsonObject {
-                    put("type", "text")
-                    put("text", obj.string("text").orEmpty())
+                "text" -> obj.string("text")?.takeIf { it.isNotEmpty() }?.let { text ->
+                    blocks += buildJsonObject {
+                        put("type", "text")
+                        put("text", text)
+                    }
                 }
                 "image_url", "input_image", "input_file", "input_audio" -> unsupported("$path.content[$index].type", "第一版不支持多模态内容")
                 else -> unsupported("$path.content[$index].type", "第一版不支持该 Chat 内容")

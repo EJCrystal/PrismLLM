@@ -1268,4 +1268,56 @@ class ProtocolConversionTest {
         val deltaLine2 = lines2.first { it.startsWith("data: ") && it.contains("content_block_delta") }
         assertTrue(deltaLine2.contains("sorry, refused by safety"), deltaLine2)
     }
+
+    @Test
+    fun `chat to messages request skips empty text blocks and messages but keeps tool use`() {
+        val chat = json("""{
+            "messages":[
+                {"role":"user","content":""},
+                {"role":"assistant","content":[{"type":"text","text":""}]},
+                {"role":"user","content":"real question"},
+                {"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}
+            ]
+        }""")
+        val messages = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, chat, "upstream")
+        val msgArray = messages.array("messages")
+        assertEquals(2, msgArray.size)
+        assertEquals("user", msgArray[0].jsonObject.string("role"))
+        assertEquals("real question", msgArray[0].jsonObject.array("content").single().jsonObject.string("text"))
+        assertEquals("assistant", msgArray[1].jsonObject.string("role"))
+        assertEquals("tool_use", msgArray[1].jsonObject.array("content").single().jsonObject.string("type"))
+    }
+
+    @Test
+    fun `tool call history converted to Gemini includes thoughtSignature on first functionCall part`() {
+        val chat = json("""{
+            "messages":[
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}
+            ]
+        }""")
+        val geminiFromChat = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, chat, "upstream")
+        val modelPartChat = geminiFromChat.array("contents")[1].jsonObject.array("parts").single().jsonObject
+        assertEquals("skip_thought_signature_validator", modelPartChat.string("thoughtSignature"))
+
+        val msg = json("""{
+            "messages":[
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{}}]}
+            ]
+        }""")
+        val geminiFromMsg = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI, msg, "upstream")
+        val modelPartMsg = geminiFromMsg.array("contents")[1].jsonObject.array("parts").single().jsonObject
+        assertEquals("skip_thought_signature_validator", modelPartMsg.string("thoughtSignature"))
+
+        val resp = json("""{
+            "input":[
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+                {"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}
+            ]
+        }""")
+        val geminiFromResp = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, resp, "upstream")
+        val modelPartResp = geminiFromResp.array("contents")[1].jsonObject.array("parts").single().jsonObject
+        assertEquals("skip_thought_signature_validator", modelPartResp.string("thoughtSignature"))
+    }
 }

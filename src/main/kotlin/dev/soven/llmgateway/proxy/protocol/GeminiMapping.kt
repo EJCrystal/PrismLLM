@@ -122,7 +122,7 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
     if (system.isNotEmpty()) put("systemInstruction", buildJsonObject {
         put("parts", buildJsonArray { add(buildJsonObject { put("text", system.joinToString("\n")) }) })
     })
-    put("contents", mergeGeminiToolContents(contents))
+    put("contents", withGeminiThoughtSignatures(mergeGeminiToolContents(contents)))
     val generation = buildJsonObject {
         (chat.long("max_tokens") ?: chat.long("max_completion_tokens"))?.let { put("maxOutputTokens", it) }
         chat.number("temperature")?.let { put("temperature", it) }
@@ -330,7 +330,7 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
             put("parts", JsonArray(parts))
         }
     }
-    put("contents", mergeGeminiToolContents(contents))
+    put("contents", withGeminiThoughtSignatures(mergeGeminiToolContents(contents)))
     val generation = buildJsonObject {
         messages.long("max_tokens")?.let { put("maxOutputTokens", it) }
         messages.number("temperature")?.let { put("temperature", it) }
@@ -506,7 +506,7 @@ internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: Stri
         JsonNull, null -> Unit
         else -> unsupported("input", "input 必须是字符串或数组")
     }
-    put("contents", mergeGeminiToolContents(contents))
+    put("contents", withGeminiThoughtSignatures(mergeGeminiToolContents(contents)))
     if (system.isNotEmpty()) put("systemInstruction", buildJsonObject { put("parts", buildJsonArray { add(buildJsonObject { put("text", system.joinToString("\n")) }) }) })
     val generation = buildJsonObject {
         responses.long("max_output_tokens")?.let { put("maxOutputTokens", it) }
@@ -633,6 +633,22 @@ internal fun responsesToGeminiResponse(responses: JsonObject, model: String): Js
     })
     responsesUsageToGemini(responses["usage"] as? JsonObject)?.let { put("usageMetadata", it) }
 }
+
+private const val GEMINI_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
+
+private fun withGeminiThoughtSignatures(contents: JsonArray): JsonArray = JsonArray(contents.map { element ->
+    val content = element as? JsonObject ?: return@map element
+    if (content.string("role") != "model") return@map content
+    val parts = content.array("parts")
+    val first = parts.indexOfFirst { (it as? JsonObject)?.get("functionCall") is JsonObject }
+    if (first < 0) return@map content
+    val part = parts[first] as JsonObject
+    if (part.containsKey("thoughtSignature")) return@map content
+    val patched = parts.toMutableList().also {
+        it[first] = JsonObject(part + ("thoughtSignature" to JsonPrimitive(GEMINI_SKIP_THOUGHT_SIGNATURE)))
+    }
+    JsonObject(content + ("parts" to JsonArray(patched)))
+})
 
 private fun mergeGeminiToolContents(contents: List<JsonObject>): JsonArray {
     val merged = mutableListOf<JsonObject>()
