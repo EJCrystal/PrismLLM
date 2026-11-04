@@ -1,5 +1,6 @@
 package dev.soven.llmgateway.api
 
+import dev.soven.llmgateway.config.TrustedProxyNetwork
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -15,6 +16,7 @@ class GatewayAccessLogTest {
             forwarded = null,
             peerIp = "172.19.0.2",
             userAgent = "test-client/1.0",
+            trustedProxyNetworks = listOf(TrustedProxyNetwork.parse("172.19.0.0/16")),
         )
 
         assertEquals("request-123", metadata.requestId)
@@ -34,6 +36,7 @@ class GatewayAccessLogTest {
             forwarded = "for=198.51.100.10",
             peerIp = "172.19.0.2",
             userAgent = null,
+            trustedProxyNetworks = listOf(TrustedProxyNetwork.parse("172.19.0.0/16")),
         )
         assertEquals("198.51.100.8", forwarded.clientIp)
         assertEquals("x-forwarded-for", forwarded.clientIpSource)
@@ -65,6 +68,39 @@ class GatewayAccessLogTest {
 
         assertEquals("request-123", metadata.requestId)
         assertEquals("172.19.0.2", metadata.clientIp)
-        assertEquals("agent " + "x".repeat(506), metadata.userAgent)
+        assertEquals("agent%20" + "x".repeat(504), metadata.userAgent)
+        assertEquals(512, metadata.userAgent.length)
+    }
+
+    @Test
+    fun ignoresForwardedHeadersFromUntrustedPeer() {
+        val metadata = requestAccessLogMetadata(
+            requestId = null,
+            cloudflareConnectingIp = "203.0.113.99",
+            forwardedFor = "203.0.113.98",
+            realIp = "203.0.113.97",
+            forwarded = "for=203.0.113.96",
+            peerIp = "198.51.100.10",
+            userAgent = null,
+            trustedProxyNetworks = listOf(TrustedProxyNetwork.parse("172.19.0.0/16")),
+        )
+
+        assertEquals("198.51.100.10", metadata.clientIp)
+        assertEquals("peer", metadata.clientIpSource)
+    }
+
+    @Test
+    fun escapesLogFieldDelimitersInUserAgent() {
+        val metadata = requestAccessLogMetadata(
+            requestId = null,
+            cloudflareConnectingIp = null,
+            forwardedFor = null,
+            realIp = null,
+            forwarded = null,
+            peerIp = "198.51.100.10",
+            userAgent = "agent clientIp=203.0.113.9 clientIpSource=peer",
+        )
+
+        assertEquals("agent%20clientIp%3D203.0.113.9%20clientIpSource%3Dpeer", metadata.userAgent)
     }
 }

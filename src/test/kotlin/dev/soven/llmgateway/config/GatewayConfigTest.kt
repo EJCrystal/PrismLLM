@@ -3,6 +3,8 @@ package dev.soven.llmgateway.config
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class GatewayConfigTest {
     private val requiredEnv = mapOf(
@@ -27,5 +29,17 @@ class GatewayConfigTest {
         val config = GatewayConfig.fromEnv(requiredEnv + ("CONNECT_TIMEOUT_MS" to " "))
 
         assertEquals(30_000L, config.connectTimeoutMs)
+    }
+
+    @Test
+    fun trustedProxyNetworksCanBeConfiguredAsIpv4AndIpv6Cidrs() {
+        val config = GatewayConfig.fromEnv(
+            requiredEnv + ("TRUSTED_PROXY_CIDRS" to "172.19.0.0/16, 2001:db8:1234::/48"),
+        )
+
+        assertTrue(config.trustedProxyNetworks.any { it.contains("172.19.4.8") })
+        assertFalse(config.trustedProxyNetworks.any { it.contains("172.20.4.8") })
+        assertTrue(config.trustedProxyNetworks.any { it.contains("2001:db8:1234::5") })
+        assertFalse(config.trustedProxyNetworks.any { it.contains("2001:db8:5678::5") })
     }
 }

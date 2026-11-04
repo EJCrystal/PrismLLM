@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.config.GatewayConfig
+import dev.soven.llmgateway.config.TrustedProxyNetwork
 import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.proxy.GatewayMetrics
 import dev.soven.llmgateway.proxy.isGeminiRequestPath
@@ -59,7 +60,6 @@ import io.ktor.server.plugins.calllogging.processingTimeMillis
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.metrics.micrometer.MicrometerMetrics
-import io.ktor.server.plugins.origin
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.path
 import io.ktor.server.request.httpMethod
@@ -109,15 +109,20 @@ internal fun requestAccessLogMetadata(
     forwarded: String?,
     peerIp: String?,
     userAgent: String?,
+    trustedProxyNetworks: List<TrustedProxyNetwork> = emptyList(),
 ): RequestAccessLogMetadata {
     val peer = sanitizeLogValue(peerIp)
-    val candidates = listOf(
-        "cf-connecting-ip" to firstHeaderValue(cloudflareConnectingIp),
-        "x-forwarded-for" to firstHeaderValue(forwardedFor),
-        "x-real-ip" to firstHeaderValue(realIp),
-        "forwarded" to forwardedIp(forwarded),
-        "peer" to peer.takeUnless { it == "-" },
-    )
+    val candidates = if (trustedProxyNetworks.any { it.contains(peerIp) }) {
+        listOf(
+            "cf-connecting-ip" to firstHeaderValue(cloudflareConnectingIp),
+            "x-forwarded-for" to firstHeaderValue(forwardedFor),
+            "x-real-ip" to firstHeaderValue(realIp),
+            "forwarded" to forwardedIp(forwarded),
+            "peer" to peer.takeUnless { it == "-" },
+        )
+    } else {
+        listOf("peer" to peer.takeUnless { it == "-" })
+    }
     val (source, address) = candidates.firstOrNull { !it.second.isNullOrBlank() }
         ?: ("unknown" to "-")
     return RequestAccessLogMetadata(
@@ -129,15 +134,19 @@ internal fun requestAccessLogMetadata(
     )
 }
 
-private fun requestAccessLogMetadata(call: io.ktor.server.application.ApplicationCall): RequestAccessLogMetadata =
+private fun requestAccessLogMetadata(
+    call: io.ktor.server.application.ApplicationCall,
+    trustedProxyNetworks: List<TrustedProxyNetwork>,
+): RequestAccessLogMetadata =
     requestAccessLogMetadata(
         requestId = call.response.headers[REQUEST_ID_HEADER] ?: call.request.headers[REQUEST_ID_HEADER],
         cloudflareConnectingIp = call.request.headers[CLOUDFLARE_CONNECTING_IP_HEADER],
         forwardedFor = call.request.headers[FORWARDED_FOR_HEADER],
         realIp = call.request.headers[REAL_IP_HEADER],
         forwarded = call.request.headers[FORWARDED_HEADER],
-        peerIp = call.request.origin.remoteAddress,
+        peerIp = call.request.local.remoteAddress,
         userAgent = call.request.headers[HttpHeaders.UserAgent],
+        trustedProxyNetworks = trustedProxyNetworks,
     )
 
 private fun firstHeaderValue(value: String?): String? =
@@ -162,13 +171,30 @@ private fun forwardedIp(value: String?): String? =
         ?.let { sanitizeLogValue(it) }
         ?.takeUnless { it == "-" }
 
-private fun sanitizeLogValue(value: String?, maxLength: Int = 128): String =
-    value
+private fun sanitizeLogValue(value: String?, maxLength: Int = 128): String {
+    val normalized = value
         ?.replace(Regex("[\\r\\n\\t]+"), " ")
         ?.trim()
         ?.take(maxLength)
         ?.takeUnless { it.isNullOrBlank() }
-        ?: "-"
+        ?: return "-"
+    return escapeLogValue(normalized, maxLength)
+}
+
+private fun escapeLogValue(value: String, maxLength: Int): String {
+    val escaped = StringBuilder(value.length)
+    value.forEach { character ->
+        val replacement = when (character) {
+            '%' -> "%25"
+            ' ' -> "%20"
+            '=' -> "%3D"
+            else -> character.toString()
+        }
+        if (escaped.length + replacement.length > maxLength) return@forEach
+        escaped.append(replacement)
+    }
+    return escaped.toString().ifEmpty { "-" }
+}
 
 /**
  * 网关运行时装配。负责数据库迁移、管理员初始化、插件安装和资源生命周期。
@@ -313,7 +339,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             exception<GatewayException> { call, cause ->
                 call.markAdminAuditError(cause.code)
                 if (call.response.isCommitted) {
-                    val accessLog = requestAccessLogMetadata(call)
+                    val accessLog = requestAccessLogMetadata(call, config.trustedProxyNetworks)
                     logger.warn(
                         "gateway error after response committed, code={}, requestId={}, clientIp={}, " +
                             "clientIpSource={}, peerIp={}, userAgent={}",
@@ -403,7 +429,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             disableDefaultColors()
             // Gemini accepts query credentials; keep the access-log contract independent of Ktor defaults.
             format { call ->
-                val accessLog = requestAccessLogMetadata(call)
+                val accessLog = requestAccessLogMetadata(call, config.trustedProxyNetworks)
                 "${call.response.status() ?: "Unhandled"}: ${call.request.httpMethod.value} - " +
                     "${call.request.path()} in ${call.processingTimeMillis()}ms " +
                     "requestId=${accessLog.requestId} clientIp=${accessLog.clientIp} " +
