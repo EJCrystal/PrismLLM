@@ -141,13 +141,16 @@ private fun requestAccessLogMetadata(
     requestAccessLogMetadata(
         requestId = call.response.headers[REQUEST_ID_HEADER] ?: call.request.headers[REQUEST_ID_HEADER],
         cloudflareConnectingIp = call.request.headers[CLOUDFLARE_CONNECTING_IP_HEADER],
-        forwardedFor = call.request.headers[FORWARDED_FOR_HEADER],
+        forwardedFor = joinedHeaderValues(call.request.headers, FORWARDED_FOR_HEADER),
         realIp = call.request.headers[REAL_IP_HEADER],
-        forwarded = call.request.headers[FORWARDED_HEADER],
+        forwarded = joinedHeaderValues(call.request.headers, FORWARDED_HEADER),
         peerIp = call.request.local.remoteAddress,
         userAgent = call.request.headers[HttpHeaders.UserAgent],
         trustedProxyNetworks = trustedProxyNetworks,
     )
+
+internal fun joinedHeaderValues(headers: io.ktor.http.Headers, name: String): String? =
+    headers.getAll(name)?.joinToString(",")
 
 private fun firstHeaderValue(value: String?): String? =
     value

@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.config.TrustedProxyNetwork
+import io.ktor.http.Headers
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -73,6 +74,46 @@ class GatewayAccessLogTest {
             forwardedFor = null,
             realIp = null,
             forwarded = "for=203.0.113.9, for=198.51.100.8, for=172.19.0.3, for=172.19.0.2",
+            peerIp = "172.19.0.2",
+            userAgent = null,
+            trustedProxyNetworks = trustedProxyNetworks,
+        )
+
+        assertEquals("198.51.100.8", xForwardedFor.clientIp)
+        assertEquals("x-forwarded-for", xForwardedFor.clientIpSource)
+        assertEquals("198.51.100.8", forwarded.clientIp)
+        assertEquals("forwarded", forwarded.clientIpSource)
+    }
+
+    @Test
+    fun mergesRepeatedForwardedHeaderFieldsInReceivedOrder() {
+        val headers = Headers.build {
+            append("X-Forwarded-For", "203.0.113.9")
+            append("X-Forwarded-For", "198.51.100.8")
+            append("X-Forwarded-For", "172.19.0.3")
+            append("X-Forwarded-For", "172.19.0.2")
+            append("Forwarded", "for=203.0.113.9")
+            append("Forwarded", "for=198.51.100.8")
+            append("Forwarded", "for=172.19.0.3")
+            append("Forwarded", "for=172.19.0.2")
+        }
+        val trustedProxyNetworks = listOf(TrustedProxyNetwork.parse("172.19.0.0/16"))
+        val xForwardedFor = requestAccessLogMetadata(
+            requestId = null,
+            cloudflareConnectingIp = null,
+            forwardedFor = joinedHeaderValues(headers, "X-Forwarded-For"),
+            realIp = null,
+            forwarded = null,
+            peerIp = "172.19.0.2",
+            userAgent = null,
+            trustedProxyNetworks = trustedProxyNetworks,
+        )
+        val forwarded = requestAccessLogMetadata(
+            requestId = null,
+            cloudflareConnectingIp = null,
+            forwardedFor = null,
+            realIp = null,
+            forwarded = joinedHeaderValues(headers, "Forwarded"),
             peerIp = "172.19.0.2",
             userAgent = null,
             trustedProxyNetworks = trustedProxyNetworks,
