@@ -1,8 +1,8 @@
 groups:
-  - name: llm-gateway
+  - name: PrismLLM
     rules:
-      - alert: LlmGatewayDown
-        expr: up{job="llm-gateway"} == 0
+      - alert: PrismLlmDown
+        expr: up{job="PrismLLM"} == 0
         for: 2m
         labels:
           severity: critical
@@ -12,9 +12,9 @@ groups:
 
       - alert: LlmGatewayNotReady
         expr: |
-          (probe_success{job="llm-gateway-ready"} == 0)
+          (probe_success{job="PrismLLM-ready"} == 0)
           or
-          (up{job="llm-gateway-ready"} == 0)
+          (up{job="PrismLLM-ready"} == 0)
         for: 2m
         labels:
           severity: critical

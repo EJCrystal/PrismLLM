@@ -1,4 +1,4 @@
-# llm-gateway
+# PrismLLM
 
 面向内部团队的 LLM 网关，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 Gemini 的原生透传，以及前三种协议间的跨协议转换。网关按渠道授权与对外模型 ID 路由，同协议优先，必要时按渠道协议顺序转换，并支持全局/渠道级 UA、请求头和请求体覆盖。
 
@@ -64,7 +64,7 @@ docker compose up -d --build
 npm --prefix web install
 npm --prefix web run build
 mvn package
-java -jar target/llm-gateway-0.1.0-SNAPSHOT.jar
+java -jar target/prism-llm-0.1.0-SNAPSHOT.jar
 ```
 
 本地开发前端：
@@ -91,7 +91,7 @@ Vite 会把 `/admin/api` 代理到 `http://localhost:8080`，开发地址是 `ht
 mvn -DskipTests install
 mvn -f extensions/quota-providers/pom.xml package
 mkdir -p plugins
-cp extensions/quota-providers/target/llm-gateway-quota-providers-0.1.0-SNAPSHOT.jar plugins/
+cp extensions/quota-providers/target/prism-llm-quota-providers-0.1.0-SNAPSHOT.jar plugins/
 # 重新构建网关镜像并启动，以加载当前代码与插件
 docker compose up -d --build gateway
 ~~~

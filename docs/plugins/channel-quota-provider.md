@@ -12,7 +12,7 @@
 mvn -DskipTests install
 mvn -f extensions/quota-providers/pom.xml package
 mkdir -p plugins
-cp extensions/quota-providers/target/llm-gateway-quota-providers-0.1.0-SNAPSHOT.jar plugins/
+cp extensions/quota-providers/target/prism-llm-quota-providers-0.1.0-SNAPSHOT.jar plugins/
 ~~~
 
 官方包同时提供两个可选的 Provider：
@@ -144,7 +144,7 @@ providerId 为空表示关闭；允许保存尚未安装插件的 ID，安装并
 ~~~xml
 <dependency>
   <groupId>dev.soven</groupId>
-  <artifactId>llm-gateway</artifactId>
+  <artifactId>prism-llm</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <classifier>quota-spi</classifier>
   <scope>provided</scope>

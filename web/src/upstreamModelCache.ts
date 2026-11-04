@@ -1,7 +1,7 @@
 import type { ChannelModel } from './types/api'
 
 // 页面会话内复用上游模型列表；只有显式刷新时才覆盖缓存。
-const STORAGE_KEY = 'llm-gateway.upstream-model-cache-v2'
+const STORAGE_KEY = 'prism-llm.upstream-model-cache-v2'
 const cache = new Map<string, ChannelModel[]>(readStoredCache())
 
 function readStoredCache(): Array<[string, ChannelModel[]]> {

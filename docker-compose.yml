@@ -33,3 +33,7 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  default:
+    name: prism-llm_default
