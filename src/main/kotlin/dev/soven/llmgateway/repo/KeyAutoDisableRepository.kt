@@ -436,8 +436,9 @@ class KeyAutoDisableRepository(
         val row = KeyAutoDisableSettings.selectAll()
             .where { KeyAutoDisableSettings.id eq SINGLETON_ID }.singleOrNull()
             ?: return KeyAutoDisableSettingsRecord()
-        if (decodeStoredRules(row[KeyAutoDisableSettings.rules]) != KeyDisablePolicy.LEGACY_DEFAULT_RULES) {
-            return settingsRecord(row)
+        val storedRules = decodeStoredRules(row[KeyAutoDisableSettings.rules])
+        if (storedRules != KeyDisablePolicy.LEGACY_DEFAULT_RULES) {
+            return settingsRecord(row, storedRules)
         }
         val lockedRow = KeyAutoDisableSettings.selectAll()
             .where { KeyAutoDisableSettings.id eq SINGLETON_ID }.forUpdate().singleOrNull()
@@ -445,9 +446,12 @@ class KeyAutoDisableRepository(
         return migrateLegacyDefaultRules(lockedRow)
     }
 
-    private fun migrateLegacyDefaultRules(row: ResultRow): KeyAutoDisableSettingsRecord {
-        if (decodeStoredRules(row[KeyAutoDisableSettings.rules]) != KeyDisablePolicy.LEGACY_DEFAULT_RULES) {
-            return settingsRecord(row)
+    private fun migrateLegacyDefaultRules(
+        row: ResultRow,
+        storedRules: List<KeyDisableRule>? = decodeStoredRules(row[KeyAutoDisableSettings.rules]),
+    ): KeyAutoDisableSettingsRecord {
+        if (storedRules != KeyDisablePolicy.LEGACY_DEFAULT_RULES) {
+            return settingsRecord(row, storedRules)
         }
         val revision = row[KeyAutoDisableSettings.revision] + 1
         val updatedAt = nowMs()
@@ -466,10 +470,15 @@ class KeyAutoDisableRepository(
         )
     }
 
-    private fun settingsRecord(row: ResultRow) = KeyAutoDisableSettingsRecord(
+    private fun settingsRecord(
+        row: ResultRow,
+        storedRules: List<KeyDisableRule>? = decodeStoredRules(row[KeyAutoDisableSettings.rules]),
+    ) = KeyAutoDisableSettingsRecord(
         policy = KeyDisablePolicy(
             enabled = row[KeyAutoDisableSettings.enabled],
-            rules = decodeRules(row[KeyAutoDisableSettings.rules]),
+            rules = storedRules?.takeIf { it.isNotEmpty() }
+                ?.let { if (it == KeyDisablePolicy.LEGACY_DEFAULT_RULES) KeyDisablePolicy.DEFAULT_RULES else it }
+                ?: KeyDisablePolicy.DEFAULT_RULES,
         ),
         revision = row[KeyAutoDisableSettings.revision],
         updatedAt = row[KeyAutoDisableSettings.updatedAt],
@@ -479,12 +488,6 @@ class KeyAutoDisableRepository(
         put("enabled", settings.policy.enabled)
         put("rules", keyDisableJson.encodeToJsonElement(ListSerializer(KeyDisableRule.serializer()), settings.policy.rules))
         put("updatedAt", settings.updatedAt)
-    }
-
-    private fun decodeRules(value: String?): List<KeyDisableRule> {
-        val decoded = decodeStoredRules(value)?.takeIf { it.isNotEmpty() }
-            ?: return KeyDisablePolicy.DEFAULT_RULES
-        return if (decoded == KeyDisablePolicy.LEGACY_DEFAULT_RULES) KeyDisablePolicy.DEFAULT_RULES else decoded
     }
 
     private fun decodeStoredRules(value: String?): List<KeyDisableRule>? = value
