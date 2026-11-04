@@ -258,13 +258,8 @@ internal fun geminiToMessagesRequest(request: JsonObject, upstreamModel: String)
         put("thinking", thinking)
     }
     config?.string("responseMimeType")?.let { mime ->
-        if (mime != "application/json") unsupported("generationConfig.responseMimeType", "不支持响应类型 $mime")
-        putJsonObject("output_config") {
-            putJsonObject("format") {
-                put("type", "json_schema")
-                putJsonObject("schema") { put("name", "response"); put("schema", config["responseJsonSchema"] ?: buildJsonObject { }) }
-            }
-        }
+        if (mime == "application/json") unsupported("generationConfig.responseMimeType", "Anthropic Messages 不支持 OpenAI 结构化输出参数")
+        unsupported("generationConfig.responseMimeType", "不支持响应类型 $mime")
     }
 }
 
@@ -603,7 +598,7 @@ private fun geminiContentsToChat(contents: JsonElement?): JsonArray = buildJsonA
         JsonNull -> Unit
         is JsonPrimitive -> add(buildJsonObject { put("role", "user"); put("content", contents.content) })
         is JsonArray -> {
-            val callNames = mutableMapOf<String, String>()
+            val pendingIds = mutableMapOf<String, ArrayDeque<String>>()
             contents.forEachIndexed { index, element ->
                 val content = element as? JsonObject ?: unsupported("contents[$index]", "内容必须是对象")
                 val role = if (content.string("role") == "model") "assistant" else "user"
@@ -617,7 +612,7 @@ private fun geminiContentsToChat(contents: JsonElement?): JsonArray = buildJsonA
                         call != null -> {
                             val name = call.string("name") ?: unsupported("contents[$index].parts[$partIndex].functionCall.name", "functionCall 缺少 name")
                             val callId = "call_${index}_$partIndex"
-                            callNames[name] = callId
+                            pendingIds.getOrPut(name) { ArrayDeque() }.addLast(callId)
                             toolCalls += buildJsonObject {
                                 put("id", callId)
                                 put("type", "function")
@@ -628,7 +623,7 @@ private fun geminiContentsToChat(contents: JsonElement?): JsonArray = buildJsonA
                             val name = response.string("name") ?: unsupported("contents[$index].parts[$partIndex].functionResponse.name", "functionResponse 缺少 name")
                             add(buildJsonObject {
                                 put("role", "tool")
-                                put("tool_call_id", callNames[name] ?: unsupported("contents[$index].parts[$partIndex].functionResponse.name", "找不到对应的函数调用"))
+                                put("tool_call_id", pendingIds[name]?.removeFirstOrNull() ?: unsupported("contents[$index].parts[$partIndex].functionResponse.name", "找不到对应的函数调用"))
                                 put("content", ((response["response"] as? JsonObject)?.string("content") ?: response["response"]?.toString()).orEmpty())
                             })
                         }
@@ -695,22 +690,31 @@ private fun geminiContentsToResponses(contents: JsonElement?): JsonArray = build
             val role = if (content.string("role") == "model") "assistant" else "user"
             val text = mutableListOf<String>()
             val toolCalls = mutableListOf<JsonObject>()
+            val pendingIds = mutableMapOf<String, ArrayDeque<String>>()
             content.array("parts").forEachIndexed { partIndex, part ->
                 val obj = part as? JsonObject ?: unsupported("contents[$index].parts[$partIndex]", "part 必须是对象")
                 val call = obj["functionCall"] as? JsonObject
                 val response = obj["functionResponse"] as? JsonObject
                 when {
-                    call != null -> toolCalls += buildJsonObject {
-                        put("type", "function_call")
-                        put("call_id", "call_${index}_$partIndex")
-                        put("name", call.string("name").orEmpty())
-                        put("arguments", (call["args"] ?: buildJsonObject { }).toString())
+                    call != null -> {
+                        val name = call.string("name") ?: unsupported("contents[$index].parts[$partIndex].functionCall.name", "functionCall 缺少 name")
+                        val callId = "call_${index}_$partIndex"
+                        pendingIds.getOrPut(name) { ArrayDeque() }.addLast(callId)
+                        toolCalls += buildJsonObject {
+                            put("type", "function_call")
+                            put("call_id", callId)
+                            put("name", name)
+                            put("arguments", (call["args"] ?: buildJsonObject { }).toString())
+                        }
                     }
-                    response != null -> add(buildJsonObject {
-                        put("type", "function_call_output")
-                        put("call_id", "call_${index}_$partIndex")
-                        put("output", ((response["response"] as? JsonObject)?.string("content") ?: response["response"]?.toString()).orEmpty())
-                    })
+                    response != null -> {
+                        val name = response.string("name") ?: unsupported("contents[$index].parts[$partIndex].functionResponse.name", "functionResponse 缺少 name")
+                        add(buildJsonObject {
+                            put("type", "function_call_output")
+                            put("call_id", pendingIds[name]?.removeFirstOrNull() ?: unsupported("contents[$index].parts[$partIndex].functionResponse.name", "找不到对应的函数调用"))
+                            put("output", ((response["response"] as? JsonObject)?.string("content") ?: response["response"]?.toString()).orEmpty())
+                        })
+                    }
                     obj["inlineData"] != null || obj["fileData"] != null -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini 多模态内容")
                     obj.string("text") != null -> text += obj.string("text").orEmpty()
                     else -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini part")

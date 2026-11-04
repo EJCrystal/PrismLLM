@@ -45,10 +45,11 @@ internal data class TokenUsage(
 
     fun toGemini(): JsonObject = buildJsonObject {
         put("promptTokenCount", inputTokens)
-        put("candidatesTokenCount", outputTokens)
+        val thoughts = reasoningTokens?.takeIf { it > 0 } ?: 0L
+        put("candidatesTokenCount", maxOf(0L, outputTokens - thoughts))
         put("totalTokenCount", totalTokens)
         cachedTokens?.takeIf { it > 0 }?.let { put("cachedContentTokenCount", it) }
-        reasoningTokens?.takeIf { it > 0 }?.let { put("thoughtsTokenCount", it) }
+        if (thoughts > 0) put("thoughtsTokenCount", thoughts)
     }
 
     companion object {
@@ -95,11 +96,12 @@ internal data class TokenUsage(
         fun fromGemini(usage: JsonObject?): TokenUsage? {
             if (usage == null) return null
             val input = usage.long("promptTokenCount") ?: 0L
-            val output = usage.long("candidatesTokenCount") ?: 0L
+            val thoughts = usage.long("thoughtsTokenCount")
+            val output = (usage.long("candidatesTokenCount") ?: 0L) + (thoughts ?: 0L)
             return TokenUsage(
                 input, output,
                 cachedTokens = usage.long("cachedContentTokenCount")?.takeIf { it > 0 },
-                reasoningTokens = usage.long("thoughtsTokenCount"),
+                reasoningTokens = thoughts,
                 totalTokens = usage.long("totalTokenCount") ?: input + output,
             )
         }

@@ -421,6 +421,7 @@ internal class GeminiStreamEncoder(private val model: String) : StreamEncoder {
                 }
             }
         }
+        if (parts.isEmpty() && chunk.finishReason == null) return emptyList()
         val body = buildJsonObject {
             put("responseId", id)
             put("modelVersion", model)
