@@ -64,6 +64,7 @@ class ChannelHealthTest {
         }
         for (status in listOf(400, 422)) {
             assertEquals(AttemptOutcome.EXCLUDED, attemptOutcome(attempt.copy(upstreamErrorStatusCode = status)))
+            assertEquals(AttemptOutcome.FAILURE, attemptOutcome(attempt.copy(upstreamErrorStatusCode = status, retryable = true)))
         }
         assertEquals(AttemptOutcome.FAILURE, attemptOutcome(attempt.copy(upstreamErrorStatusCode = 429)))
         assertEquals(AttemptOutcome.FAILURE, attemptOutcome(attempt.copy(upstreamErrorCode = "overloaded")))

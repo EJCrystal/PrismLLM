@@ -12,7 +12,7 @@ fun attemptOutcome(attempt: UpstreamAttemptRecord): AttemptOutcome {
         return AttemptOutcome.EXCLUDED
     }
     val status = attempt.upstreamErrorStatusCode ?: attempt.statusCode
-    if (status == 400 || status == 422) return AttemptOutcome.EXCLUDED
+    if ((status == 400 || status == 422) && !attempt.retryable) return AttemptOutcome.EXCLUDED
     return if (status in 200..299 && attempt.errorCode == null && attempt.upstreamErrorCode == null) {
         AttemptOutcome.SUCCESS
     } else AttemptOutcome.FAILURE

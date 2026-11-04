@@ -844,7 +844,7 @@ private fun classifyFailure(e: GatewayException): FailureKind? = when (e.code) {
         401, 403 -> FailureKind.AUTH_REJECTED
         404 -> FailureKind.MODEL_NOT_FOUND
         null -> null
-        else -> if (e.upstreamStatus >= 500) FailureKind.SERVER_ERROR else null
+        else -> if (e.upstreamStatus >= 500 || e.retryable) FailureKind.SERVER_ERROR else null
     }
     else -> null
 }
@@ -1370,6 +1370,87 @@ private fun clientDisconnected(): GatewayException =
 
 private const val MAX_KEY_MATCH_BODY_CHARS = 8_192
 
+private data class ParsedUpstreamError(
+    val code: String? = null,
+    val type: String? = null,
+    val status: String? = null,
+    val message: String? = null,
+    val isStructured: Boolean = false,
+)
+
+private fun parseUpstreamError(body: String): ParsedUpstreamError = runCatching {
+    val root = Json.parseToJsonElement(body).jsonObject
+    val error = root["error"] as? JsonObject
+    val isStructured = error != null || root.containsKey("error") || root.containsKey("message") || root.containsKey("detail")
+    val code = (error?.get("code") as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+        ?: (root["code"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+    val type = (error?.get("type") as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+        ?: (root["type"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+    val status = (error?.get("status") as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+        ?: (root["status"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+    val message = (error?.get("message") as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+        ?: (root["message"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+        ?: (root["detail"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+    ParsedUpstreamError(code = code, type = type, status = status, message = message, isStructured = isStructured)
+}.getOrDefault(ParsedUpstreamError(isStructured = false))
+
+// 常见中转商在内部渠道故障时返回的伪 400 特征错误码
+private val UPSTREAM_ERROR_CODES = setOf(
+    "upstream_error",
+    "one_api_error",
+    "new_api_error",
+    "channel_error",
+    "no_available_channel",
+    "upstream_unavailable",
+    "all_channels_failed",
+    "all_upstreams_failed",
+    "provider_error",
+    "upstream_timeout",
+)
+
+// 已知的标准客户端错误类型与状态，避免兜底文本匹配误伤常规参数错误
+private val KNOWN_CLIENT_ERROR_TYPES = setOf(
+    "invalid_request_error",
+    "client_error",
+)
+
+private val KNOWN_CLIENT_ERROR_STATUSES = setOf(
+    "invalid_argument",
+    "failed_precondition",
+    "out_of_range",
+)
+
+private fun isUpstreamPseudo400(statusCode: Int, parsed: ParsedUpstreamError, body: String): Boolean {
+    if (statusCode != 400) return false
+    // 1. 如果显式包含上游故障特征码或类型，直接判定为伪 400
+    val codeMatch = parsed.code?.lowercase()?.let { it in UPSTREAM_ERROR_CODES } == true
+    val typeMatch = parsed.type?.lowercase()?.let { it in UPSTREAM_ERROR_CODES } == true
+    if (codeMatch || typeMatch) {
+        return true
+    }
+    // 2. 如果存在明确的标准客户端错误类型（如 invalid_request_error）或 Gemini 客户端状态（如 INVALID_ARGUMENT），排除匹配
+    if (parsed.type?.lowercase() in KNOWN_CLIENT_ERROR_TYPES) {
+        return false
+    }
+    if (parsed.status?.lowercase() in KNOWN_CLIENT_ERROR_STATUSES) {
+        return false
+    }
+    // 3. 目标文本提取：结构化响应仅匹配显式错误消息字段；只有非结构化纯文本响应才对整个 body 进行兜底匹配
+    val targetMessage = if (parsed.isStructured) {
+        parsed.message?.lowercase() ?: return false
+    } else {
+        body.lowercase()
+    }
+    return targetMessage.contains("模型请求失败") ||
+        targetMessage.contains("请稍后重试或更换模型") ||
+        targetMessage.contains("无可用渠道") ||
+        targetMessage.contains("all upstream channels failed") ||
+        targetMessage.contains("all channels failed") ||
+        targetMessage.contains("upstream error") ||
+        targetMessage.contains("no channel available") ||
+        targetMessage.contains("no available upstream")
+}
+
 private fun upstreamException(
     status: HttpStatusCode,
     body: String,
@@ -1381,24 +1462,24 @@ private fun upstreamException(
         (allowNativeMessagesError && protocol == GatewayProtocol.MESSAGES && isAnthropicErrorBody(it)) ||
             (protocol == GatewayProtocol.GEMINI && isGeminiErrorBody(it))
     }
-    val upstreamCode = runCatching {
-        val error = Json.parseToJsonElement(body).jsonObject["error"] as? JsonObject
-        (error?.get("code") as? JsonPrimitive)?.contentOrNull
-            ?: (error?.get("type") as? JsonPrimitive)?.contentOrNull
-    }.getOrNull()
+    val parsedError = parseUpstreamError(body)
+    val upstreamCode = parsedError.code ?: parsedError.type ?: parsedError.status
+    val isPseudo400 = isUpstreamPseudo400(status.value, parsedError, body)
     val mapped = when {
-        nativeResponseBody != null -> status
+        nativeResponseBody != null && !isPseudo400 -> status
         status.value == 429 -> HttpStatusCode.TooManyRequests
+        isPseudo400 -> HttpStatusCode.BadGateway
         status.value in setOf(400, 404, 422) -> status
         else -> HttpStatusCode.BadGateway
     }
     val message = when {
+        isPseudo400 -> "上游服务不可用"
         status.value == 401 || status.value == 403 -> "上游凭据无效或无权访问"
         status.value == 429 -> "上游限流"
         status.value >= 500 -> "上游服务不可用"
         else -> "上游返回错误 ${status.value}"
     }
-    val retryable = status.value == 429 || status.value >= 500 || status.value == 401 || status.value == 403 || status.value == 404
+    val retryable = isPseudo400 || status.value == 429 || status.value >= 500 || status.value == 401 || status.value == 403 || status.value == 404
     return GatewayException(
         status = mapped,
         code = "upstream_error",
@@ -1408,7 +1489,7 @@ private fun upstreamException(
         retryable = retryable,
         retryAfterMs = retryAfterMs.takeIf { retryable },
         upstreamStatus = status.value,
-        nativeResponseBody = nativeResponseBody,
+        nativeResponseBody = nativeResponseBody.takeUnless { isPseudo400 },
         upstreamErrorBody = body.take(MAX_KEY_MATCH_BODY_CHARS),
     )
 }
