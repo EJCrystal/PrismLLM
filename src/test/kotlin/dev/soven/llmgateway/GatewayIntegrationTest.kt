@@ -2299,19 +2299,35 @@ class GatewayIntegrationTest {
         testApplication {
             application { app.install(this) }
             val (cookie, csrf) = client.loginAdmin()
+            val replacedWithoutState = client.put("/admin/api/channels/${channel.id}") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"${channel.name}","baseUrl":"${channel.baseUrl}","enabled":true,"keys":[{"id":"${autoDisabled.id}","name":"${autoDisabled.name}","credential":"repaired-key","stateVersion":${autoDisabled.stateVersion},"priority":${autoDisabled.priority},"models":["m1","m2"]}]}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, replacedWithoutState.status, replacedWithoutState.bodyAsText())
+
+            val stillDisabled = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+            assertEquals(ChannelKeyState.AUTO_PERMANENT, stillDisabled.state)
+            assertTrue(stillDisabled.stateVersion > autoDisabled.stateVersion)
+            assertNotNull(stillDisabled.autoDisabledAt)
+            assertNotNull(stillDisabled.autoDisableReason)
+
             val response = client.put("/admin/api/channels/${channel.id}") {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"name":"${channel.name}","baseUrl":"${channel.baseUrl}","enabled":true,"keys":[{"id":"${autoDisabled.id}","name":"${autoDisabled.name}","credential":"repaired-key","state":"ACTIVE","stateVersion":${autoDisabled.stateVersion},"priority":${autoDisabled.priority},"models":["m1","m2"]}]}""",
+                    """{"name":"${channel.name}","baseUrl":"${channel.baseUrl}","enabled":true,"keys":[{"id":"${stillDisabled.id}","name":"${stillDisabled.name}","state":"ACTIVE","stateVersion":${stillDisabled.stateVersion},"priority":${stillDisabled.priority},"models":["m1","m2"]}]}""",
                 )
             }
             assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
 
             val recovered = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
             assertEquals(ChannelKeyState.ACTIVE, recovered.state)
-            assertTrue(recovered.stateVersion > autoDisabled.stateVersion)
+            assertTrue(recovered.stateVersion > stillDisabled.stateVersion)
             assertNull(recovered.autoDisabledAt)
             assertNull(recovered.autoDisableReason)
             assertNull(recovered.autoDisableUntil)
@@ -2673,7 +2689,7 @@ class GatewayIntegrationTest {
         assertTrue(app.keyAutoDisableRepository.isAvailable(tempKey, now = 1000))
         assertFalse(app.keyAutoDisableRepository.isAvailable(tempKey, now = 999))
 
-        val reenabledTemp = assertNotNull(app.channelRepository.update(
+        val updatedCredentialTemp = assertNotNull(app.channelRepository.update(
             id = channel.id,
             name = channel.name,
             baseUrl = channel.baseUrl,
@@ -2683,9 +2699,29 @@ class GatewayIntegrationTest {
                 ChannelKeyUpdate(
                     id = tempKey.id,
                     name = tempKey.name,
-                    state = ChannelKeyState.ACTIVE,
+                    credential = app.credentialCipher.encrypt("secret-2"),
                     models = tempKey.models,
                     stateVersion = tempKey.stateVersion,
+                ),
+            ),
+        )).keys.single()
+        assertEquals(ChannelKeyState.AUTO_TEMPORARY, updatedCredentialTemp.state)
+        assertTrue(updatedCredentialTemp.stateVersion > tempKey.stateVersion)
+        assertEquals(1000L, updatedCredentialTemp.autoDisableUntil)
+
+        val reenabledTemp = assertNotNull(app.channelRepository.update(
+            id = channel.id,
+            name = channel.name,
+            baseUrl = channel.baseUrl,
+            authType = channel.authType,
+            enabled = true,
+            keys = listOf(
+                ChannelKeyUpdate(
+                    id = updatedCredentialTemp.id,
+                    name = updatedCredentialTemp.name,
+                    state = ChannelKeyState.ACTIVE,
+                    models = updatedCredentialTemp.models,
+                    stateVersion = updatedCredentialTemp.stateVersion,
                 ),
             ),
         )).keys.single()

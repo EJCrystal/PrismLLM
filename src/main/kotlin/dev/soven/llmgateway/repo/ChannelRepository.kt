@@ -306,7 +306,8 @@ class ChannelRepository(private val database: Database, private val credentialCi
                         ChannelKeyState.AUTO_PERMANENT
                     else -> key.state ?: previousState
                 }
-                val resetHealth = key.credential != null || targetState.value != previous[ChannelKeys.state]
+                val stateChanged = targetState != previousState
+                val resetHealth = key.credential != null || stateChanged
                 ChannelKeys.update({ ChannelKeys.id eq keyId }) {
                     it[name] = key.name
                     key.credential?.let { credential ->
@@ -319,11 +320,14 @@ class ChannelRepository(private val database: Database, private val credentialCi
                     it[updatedAt] = now
                     if (resetHealth) {
                         it[stateVersion] = previous[ChannelKeys.stateVersion] + 1
-                        // 人工启停与换凭据都会清空自动停用元数据；临时停用到期时间同样作废。
-                        it[autoDisabledAt] = null
-                        it[autoDisableReason] = null
-                        it[autoDisableUntil] = null
-                        it[probeUntil] = null
+                        if (stateChanged) {
+                            // 仅在状态实际变化时清空自动停用元数据；
+                            // 仅换凭据且未改状态时保留停用元数据与临时停用到期时间。
+                            it[autoDisabledAt] = null
+                            it[autoDisableReason] = null
+                            it[autoDisableUntil] = null
+                            it[probeUntil] = null
+                        }
                     }
                 }
                 if (resetHealth) ChannelKeyHealth.deleteWhere { ChannelKeyHealth.keyId eq keyId }
