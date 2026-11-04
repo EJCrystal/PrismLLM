@@ -41,13 +41,13 @@ abstract class HttpQuotaProvider : ChannelQuotaProvider {
     protected abstract fun queryRemote(request: ChannelQuotaQuery, config: JsonObject, client: HttpClient): ChannelQuotaResult
 
     protected fun get(client: HttpClient, url: String, credential: String? = null, headers: Map<String, String> = emptyMap()): JsonObject {
-        val builder = HttpRequest.newBuilder(URI(url)).timeout(Duration.ofSeconds(4))
+        val builder = HttpRequest.newBuilder(URI(url)).timeout(Duration.ofSeconds(15))
             .header("Accept", "application/json").GET()
         if (credential != null) builder.header("Authorization", "Bearer " + credential)
         headers.forEach { (name, value) -> builder.header(name, value) }
         val future = client.sendAsync(builder.build(), HttpResponse.BodyHandler { BoundedBody() })
         val response = try {
-            future.get(4, TimeUnit.SECONDS)
+            future.get(15, TimeUnit.SECONDS)
         } finally {
             if (!future.isDone) future.cancel(true)
         }
@@ -77,7 +77,7 @@ abstract class HttpQuotaProvider : ChannelQuotaProvider {
     }
 
     private fun newClient(proxy: ProxySelector? = null): HttpClient = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(3))
+        .connectTimeout(Duration.ofSeconds(10))
         .followRedirects(HttpClient.Redirect.NEVER)
         .apply { if (proxy != null) this.proxy(proxy) }
         .build()

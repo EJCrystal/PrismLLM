@@ -29,7 +29,7 @@ class ChannelQuotaService(
     private val registry: ChannelQuotaProviderRegistry,
     private val cipher: CredentialCipher,
     private val now: () -> Long = System::currentTimeMillis,
-    private val timeoutMs: Long = 12_000,
+    private val timeoutMs: Long = 45_000,
 ) : AutoCloseable {
     private data class Cached(val channel: ChannelRecord, val result: ChannelQuotaSnapshot, val at: Long)
     private data class CacheKey(val channelId: String, val keyId: String?)
@@ -51,32 +51,41 @@ class ChannelQuotaService(
             updatedAt = 0,
         )
         val cacheKey = CacheKey(channel.id, keyId)
-        return locks[(cacheKey.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
-            cache.getIfPresent(cacheKey)?.let { cached ->
-                if (cached.channel == target && now() - cached.at in 0 until 60_000) {
-                    return@withLock cached.result.copy(cached = true)
+        val attribution = AtomicReference(QueryAttribution())
+        val cacheable = AtomicBoolean(true)
+        val result = withTimeoutOrNull(timeoutMs) {
+            locks[(cacheKey.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
+                cache.getIfPresent(cacheKey)?.let { cached ->
+                    if (cached.channel == target && now() - cached.at in 0 until 60_000) {
+                        return@withLock cached.result.copy(cached = true)
+                    }
                 }
-            }
-            val attribution = AtomicReference(QueryAttribution())
-            val cacheable = AtomicBoolean(true)
-            val queried = when {
-                target.quota.providerId.isEmpty() -> snapshot(target, "DISABLED", if (keyId == null) "此渠道未启用额度查询" else "此密钥未启用额度查询，请先单独配置其所属账户")
-                else -> {
-                    val provider = registry.find(target.quota.providerId)
-                    if (provider == null) snapshot(target, "UNSUPPORTED", "额度插件未安装或加载失败，请检查插件目录并重启网关")
-                    else withTimeoutOrNull(timeoutMs) { execute(target, provider, attribution, keyId != null, cacheable) }
-                        ?: run {
-                            cacheable.set(false)
-                            snapshot(target, "ERROR", "额度查询超时，请稍后重试")
-                        }
+                val queried = when {
+                    target.quota.providerId.isEmpty() -> snapshot(target, "DISABLED", if (keyId == null) "此渠道未启用额度查询" else "此密钥未启用额度查询，请先单独配置其所属账户")
+                    else -> {
+                        val provider = registry.find(target.quota.providerId)
+                        if (provider == null) snapshot(target, "UNSUPPORTED", "额度插件未安装或加载失败，请检查插件目录并重启网关")
+                        else execute(target, provider, attribution, keyId != null, cacheable)
+                    }
                 }
+                val source = attribution.get()
+                val result = queried.copy(queryKey = source.keys.lastOrNull(), attemptedKeys = source.keys, credentialSource = source.source,
+                    scope = if (keyId == null) "CHANNEL" else "KEY", targetKeyId = keyId)
+                if (cacheable.get()) cache.put(cacheKey, Cached(target, result, now()))
+                result
             }
+        } ?: run {
+            cacheable.set(false)
             val source = attribution.get()
-            val result = queried.copy(queryKey = source.keys.lastOrNull(), attemptedKeys = source.keys, credentialSource = source.source,
-                scope = if (keyId == null) "CHANNEL" else "KEY", targetKeyId = keyId)
-            if (cacheable.get()) cache.put(cacheKey, Cached(target, result, now()))
-            result
+            snapshot(target, "ERROR", "额度查询超时，请稍后重试").copy(
+                queryKey = source.keys.lastOrNull(),
+                attemptedKeys = source.keys,
+                credentialSource = source.source,
+                scope = if (keyId == null) "CHANNEL" else "KEY",
+                targetKeyId = keyId,
+            )
         }
+        return result
     }
 
     private suspend fun execute(
