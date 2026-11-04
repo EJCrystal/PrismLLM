@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.config.GatewayConfig
+import dev.soven.llmgateway.config.TrustedProxyNetwork
 import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.proxy.GatewayMetrics
 import dev.soven.llmgateway.proxy.isGeminiRequestPath
@@ -84,6 +85,155 @@ import org.slf4j.event.Level
 import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+
+private const val REQUEST_ID_HEADER = "X-Request-Id"
+private const val CLOUDFLARE_CONNECTING_IP_HEADER = "CF-Connecting-IP"
+private const val FORWARDED_FOR_HEADER = "X-Forwarded-For"
+private const val REAL_IP_HEADER = "X-Real-IP"
+private const val FORWARDED_HEADER = "Forwarded"
+private const val MAX_USER_AGENT_LOG_LENGTH = 512
+
+internal data class RequestAccessLogMetadata(
+    val requestId: String,
+    val clientIp: String,
+    val clientIpSource: String,
+    val peerIp: String,
+    val userAgent: String,
+)
+
+internal fun requestAccessLogMetadata(
+    requestId: String?,
+    cloudflareConnectingIp: String?,
+    forwardedFor: String?,
+    realIp: String?,
+    forwarded: String?,
+    peerIp: String?,
+    userAgent: String?,
+    trustedProxyNetworks: List<TrustedProxyNetwork> = emptyList(),
+): RequestAccessLogMetadata {
+    val peer = sanitizeLogValue(peerIp)
+    val candidates = if (trustedProxyNetworks.any { it.contains(peerIp) }) {
+        listOf(
+            "cf-connecting-ip" to firstHeaderValue(cloudflareConnectingIp),
+            "x-forwarded-for" to forwardedForClientIp(forwardedFor, trustedProxyNetworks),
+            "x-real-ip" to firstHeaderValue(realIp),
+            "forwarded" to forwardedIp(forwarded, trustedProxyNetworks),
+            "peer" to peer.takeUnless { it == "-" },
+        )
+    } else {
+        listOf("peer" to peer.takeUnless { it == "-" })
+    }
+    val (source, address) = candidates.firstOrNull { !it.second.isNullOrBlank() }
+        ?: ("unknown" to "-")
+    return RequestAccessLogMetadata(
+        requestId = sanitizeLogValue(requestId),
+        clientIp = address ?: "-",
+        clientIpSource = source,
+        peerIp = peer,
+        userAgent = sanitizeLogValue(userAgent, MAX_USER_AGENT_LOG_LENGTH),
+    )
+}
+
+private fun requestAccessLogMetadata(
+    call: io.ktor.server.application.ApplicationCall,
+    trustedProxyNetworks: List<TrustedProxyNetwork>,
+): RequestAccessLogMetadata =
+    requestAccessLogMetadata(
+        requestId = call.response.headers[REQUEST_ID_HEADER] ?: call.request.headers[REQUEST_ID_HEADER],
+        cloudflareConnectingIp = call.request.headers[CLOUDFLARE_CONNECTING_IP_HEADER],
+        forwardedFor = joinedHeaderValues(call.request.headers, FORWARDED_FOR_HEADER),
+        realIp = call.request.headers[REAL_IP_HEADER],
+        forwarded = joinedHeaderValues(call.request.headers, FORWARDED_HEADER),
+        peerIp = call.request.local.remoteAddress,
+        userAgent = call.request.headers[HttpHeaders.UserAgent],
+        trustedProxyNetworks = trustedProxyNetworks,
+    )
+
+internal fun joinedHeaderValues(headers: io.ktor.http.Headers, name: String): String? =
+    headers.getAll(name)?.joinToString(",")
+
+private fun firstHeaderValue(value: String?): String? =
+    value
+        ?.split(',')
+        ?.asSequence()
+        ?.mapNotNull(::parseHeaderIp)
+        ?.firstOrNull()
+
+private fun forwardedForClientIp(
+    value: String?,
+    trustedProxyNetworks: List<TrustedProxyNetwork>,
+): String? =
+    value
+        ?.split(',')
+        ?.asReversed()
+        ?.asSequence()
+        ?.mapNotNull(::parseHeaderIp)
+        ?.firstOrNull { address -> trustedProxyNetworks.none { it.contains(address) } }
+
+private fun forwardedIp(value: String?, trustedProxyNetworks: List<TrustedProxyNetwork>): String? =
+    value
+        ?.split(',')
+        ?.asReversed()
+        ?.asSequence()
+        ?.mapNotNull { element ->
+            element.split(';')
+                .asSequence()
+                .map(String::trim)
+                .filter { it.startsWith("for=", ignoreCase = true) }
+                .mapNotNull { it.substringAfter('=', "").let(::parseHeaderIp) }
+                .firstOrNull()
+        }
+        ?.firstOrNull { address -> trustedProxyNetworks.none { it.contains(address) } }
+
+private fun parseHeaderIp(value: String): String? {
+    val candidate = value.trim().trim('"')
+    val address = when {
+        candidate.startsWith('[') -> {
+            val end = candidate.indexOf(']')
+            if (end <= 1) return null
+            val portSuffix = candidate.substring(end + 1)
+            if (portSuffix.isNotEmpty() && (!portSuffix.startsWith(':') || !isValidPort(portSuffix.substring(1)))) {
+                return null
+            }
+            candidate.substring(1, end)
+        }
+        candidate.count { it == ':' } == 1 && candidate.contains('.') -> {
+            val host = candidate.substringBeforeLast(':')
+            if (!isValidPort(candidate.substringAfterLast(':'))) return null
+            host
+        }
+        else -> candidate
+    }
+    val normalizedAddress = address.trim()
+    return normalizedAddress.takeIf(TrustedProxyNetwork::isIpAddress)
+}
+
+private fun isValidPort(value: String): Boolean =
+    value.isNotEmpty() && value.all { it in '0'..'9' } && value.toIntOrNull() in 0..65535
+
+private fun sanitizeLogValue(value: String?, maxLength: Int = 128): String {
+    val normalized = value
+        ?.replace(Regex("[\\r\\n\\t]+"), " ")
+        ?.trim()
+        ?.takeUnless { it.isNullOrBlank() }
+        ?: return "-"
+    return escapeLogValue(normalized, maxLength)
+}
+
+private fun escapeLogValue(value: String, maxLength: Int): String {
+    val escaped = StringBuilder(minOf(value.length, maxLength))
+    for (character in value) {
+        val replacement = when (character) {
+            '%' -> "%25"
+            ' ' -> "%20"
+            '=' -> "%3D"
+            else -> character.toString()
+        }
+        if (escaped.length + replacement.length > maxLength) break
+        escaped.append(replacement)
+    }
+    return escaped.toString().ifEmpty { "-" }
+}
 
 /**
  * 网关运行时装配。负责数据库迁移、管理员初始化、插件安装和资源生命周期。
@@ -228,7 +378,17 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             exception<GatewayException> { call, cause ->
                 call.markAdminAuditError(cause.code)
                 if (call.response.isCommitted) {
-                    logger.warn("gateway error after response committed, code={}", cause.code)
+                    val accessLog = requestAccessLogMetadata(call, config.trustedProxyNetworks)
+                    logger.warn(
+                        "gateway error after response committed, code={}, requestId={}, clientIp={}, " +
+                            "clientIpSource={}, peerIp={}, userAgent={}",
+                        cause.code,
+                        accessLog.requestId,
+                        accessLog.clientIp,
+                        accessLog.clientIpSource,
+                        accessLog.peerIp,
+                        accessLog.userAgent,
+                    )
                     return@exception
                 }
                 cause.retryAfterMs?.let { retryAfterMs ->
@@ -308,8 +468,12 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             disableDefaultColors()
             // Gemini accepts query credentials; keep the access-log contract independent of Ktor defaults.
             format { call ->
+                val accessLog = requestAccessLogMetadata(call, config.trustedProxyNetworks)
                 "${call.response.status() ?: "Unhandled"}: ${call.request.httpMethod.value} - " +
-                    "${call.request.path()} in ${call.processingTimeMillis()}ms"
+                    "${call.request.path()} in ${call.processingTimeMillis()}ms " +
+                    "requestId=${accessLog.requestId} clientIp=${accessLog.clientIp} " +
+                    "clientIpSource=${accessLog.clientIpSource} peerIp=${accessLog.peerIp} " +
+                    "userAgent=${accessLog.userAgent}"
             }
         }
         app.install(MicrometerMetrics) {
