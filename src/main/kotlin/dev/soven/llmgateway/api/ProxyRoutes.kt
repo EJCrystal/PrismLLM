@@ -110,7 +110,7 @@ fun Route.proxyRoutes(app: GatewayApplication) {
                                     put("id", model)
                                     put("object", "model")
                                     put("created", 0)
-                                    put("owned_by", "llm-gateway")
+                                    put("owned_by", "PrismLLM")
                                 },
                             )
                         }

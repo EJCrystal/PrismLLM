@@ -305,7 +305,7 @@ class ModelPriceReferenceService(
             }
             try {
                 val response = httpClient.get(catalogUrl) {
-                    header(HttpHeaders.UserAgent, "llm-gateway/0.1")
+                    header(HttpHeaders.UserAgent, "PrismLLM/0.1")
                     header(HttpHeaders.AcceptEncoding, "gzip")
                     timeout {
                         requestTimeoutMillis = CATALOG_REQUEST_TIMEOUT_MS

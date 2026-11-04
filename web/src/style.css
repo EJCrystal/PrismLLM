@@ -6953,6 +6953,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 .logs-overview { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; }
 .logs-page-actions { margin-left: auto; }
+.logs-refresh-menu { display: inline-flex; }
+.logs-page-actions .logs-refresh { min-height: 38px; }
+.logs-refresh-label { display: inline-flex; align-items: baseline; gap: 7px; font: inherit; line-height: 1.25; }
+.logs-refresh-interval { color: var(--brand); font-variant-numeric: tabular-nums; }
+.logs-refresh > .logs-refresh-icon { animation: none; }
+.logs-refresh > .logs-refresh-icon.is-spinning { animation: spin .8s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .logs-refresh > .logs-refresh-icon.is-spinning { animation: none; } }
+.logs-refresh[aria-busy='true'] > svg:last-child { animation: none; }
+.logs-refresh-menu-heading { margin: 5px 4px 0; padding: 10px 8px 5px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.logs-refresh-menu-panel .floating-menu-item.is-selected { color: var(--brand); }
+.logs-refresh-menu-panel .logs-refresh-option { justify-content: space-between; }
 .logs-page-actions > .button, .logs-page-actions summary.button { min-height: 38px; }
 .logs-toolbar { flex-wrap: wrap; align-items: flex-start; }
 .logs-search-group { display: grid; gap: 6px; flex: 0 1 400px; min-width: 0; max-width: 420px; width: 100%; }
@@ -6963,6 +6974,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .logs-summary { flex-basis: 100%; gap: 8px 18px; }
   .logs-summary dd { font-size: 18px; }
   .logs-page-actions { width: auto; justify-content: flex-end; }
+  .logs-page-actions .logs-refresh { min-height: 40px; }
   .logs-page-actions > .button, .logs-page-actions summary.button { min-height: 40px; }
   .logs-search-group { flex: none; max-width: none; }
   .logs-filter-controls { width: 100%; }

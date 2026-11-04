@@ -13,6 +13,19 @@ export const DEFAULT_KEY_AUTO_DISABLE_SETTINGS: Readonly<KeyAutoDisableSettingsR
   enabled: true,
   rules: [
     {
+      id: 'insufficient_balance',
+      name: '账户余额不足',
+      statusCodes: [401, 402, 403],
+      statusCodeAtLeast: null,
+      bodyPatterns: ['INSUFFICIENT_BALANCE'],
+      threshold: 1,
+      windowMinutes: 5,
+      streak: true,
+      action: 'PERMANENT' as const,
+      disableMinutes: null,
+      includeTransportFailures: false,
+    },
+    {
       id: 'credential_invalid',
       name: '凭据失效',
       statusCodes: [401, 403],

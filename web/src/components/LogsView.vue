@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import type { RequestLog, RequestLogAttempt } from '../types/api'
@@ -11,6 +12,8 @@ import { vScrollHint } from '../directives/scrollHint'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
 import FilterSelect from './FilterSelect.vue'
+import { useAnchoredPanel } from '../composables/useAnchoredPanel'
+import { useAutoRefresh } from '../composables/useAutoRefresh'
 import { createCursorPager } from '../utils/cursorPager'
 import { requestModeClass, requestModeLabel } from '../utils/requestMode'
 import {
@@ -43,6 +46,25 @@ const query = ref('')
 const channelFilter = ref('')
 const modelFilter = ref('')
 const statusFilter = ref('')
+const autoRefreshOptions = [
+  { label: '关闭', value: 0 },
+  { label: '每 5 秒', value: 5_000 },
+  { label: '每 10 秒', value: 10_000 },
+  { label: '每 30 秒', value: 30_000 },
+] as const
+const autoRefreshStorageKey = 'prism-llm.logs.autoRefreshIntervalMs'
+function readAutoRefreshInterval(): number {
+  try {
+    const raw = localStorage.getItem(autoRefreshStorageKey) ?? localStorage.getItem('llm-gateway.logs.autoRefreshIntervalMs')
+    const interval = Number(raw)
+    return autoRefreshOptions.some(option => option.value === interval) ? interval : 0
+  } catch {
+    return 0
+  }
+}
+const autoRefreshInterval = ref(readAutoRefreshInterval())
+const autoRefreshing = ref(false)
+const { anchor: refreshMenuAnchor, panelStyle: refreshMenuStyle, place: placeRefreshMenu } = useAnchoredPanel(220, 300)
 const filterOptions = computed(() => requestLogFilterOptions(logs.value))
 const hasFilters = computed(() => Boolean(channelFilter.value || modelFilter.value || statusFilter.value))
 function clearFilters() {
@@ -64,14 +86,18 @@ const logColumns: Array<{ id: LogColumnId; label: string }> = [
 const defaultLogColumns: Record<LogColumnId, boolean> = { time: true, request: true, model: true, channel: true, status: true, latency: true, usage: true, cost: true }
 function readLogColumns(): Record<LogColumnId, boolean> {
   try {
-    const parsed = JSON.parse(localStorage.getItem('llm-gateway.logs.columns') || '{}')
+    const raw = localStorage.getItem('prism-llm.logs.columns') ?? localStorage.getItem('llm-gateway.logs.columns')
+    const parsed = JSON.parse(raw || '{}')
     return { ...defaultLogColumns, ...Object.fromEntries(logColumns.map(({ id }) => [id, parsed[id] !== false])) } as Record<LogColumnId, boolean>
   } catch {
     return { ...defaultLogColumns }
   }
 }
 function readLogDensity(): 'comfortable' | 'compact' {
-  try { return localStorage.getItem('llm-gateway.logs.density') === 'compact' ? 'compact' : 'comfortable' } catch { return 'comfortable' }
+  try {
+    const raw = localStorage.getItem('prism-llm.logs.density') ?? localStorage.getItem('llm-gateway.logs.density')
+    return raw === 'compact' ? 'compact' : 'comfortable'
+  } catch { return 'comfortable' }
 }
 const visibleLogColumns = ref<Record<LogColumnId, boolean>>(readLogColumns())
 const logDensity = ref<'comfortable' | 'compact'>(readLogDensity())
@@ -79,11 +105,11 @@ function logColumnVisible(id: LogColumnId): boolean { return visibleLogColumns.v
 function toggleLogColumn(id: LogColumnId): void {
   if (visibleLogColumns.value[id] && Object.values(visibleLogColumns.value).filter(Boolean).length <= 1) return
   visibleLogColumns.value[id] = !visibleLogColumns.value[id]
-  try { localStorage.setItem('llm-gateway.logs.columns', JSON.stringify(visibleLogColumns.value)) } catch { /* ignore storage failures */ }
+  try { localStorage.setItem('prism-llm.logs.columns', JSON.stringify(visibleLogColumns.value)) } catch { /* ignore storage failures */ }
 }
 function setLogDensity(value: 'comfortable' | 'compact'): void {
   logDensity.value = value
-  try { localStorage.setItem('llm-gateway.logs.density', value) } catch { /* ignore storage failures */ }
+  try { localStorage.setItem('prism-llm.logs.density', value) } catch { /* ignore storage failures */ }
 }
 const selected = ref<RequestLog | null>(null)
 const detailDialog = ref<HTMLDivElement | null>(null)
@@ -140,11 +166,30 @@ const averageLatency = computed(() => {
 })
 
 async function refresh() {
+  if (loading.value || loadingMore.value) return
   const loaded = await load()
   await nextTick()
   tableScroll.value?.scrollTo({ top: 0 })
   if (loaded) notify('请求日志已刷新')
 }
+
+async function autoRefresh(): Promise<void> {
+  autoRefreshing.value = true
+  try {
+    await load()
+  } finally {
+    autoRefreshing.value = false
+  }
+}
+
+function setAutoRefreshInterval(interval: number): void {
+  autoRefreshInterval.value = interval
+  try {
+    localStorage.setItem(autoRefreshStorageKey, String(interval))
+  } catch { /* ignore storage failures */ }
+}
+
+useAutoRefresh(autoRefreshInterval, () => { void autoRefresh() }, () => loading.value || loadingMore.value)
 
 watch(pageSize, async () => {
   await nextTick()
@@ -268,9 +313,30 @@ onMounted(load)
         <div><dt>平均总耗时</dt><dd title="当前已加载记录的简单平均">{{ averageLatency }}</dd></div>
       </dl>
       <div class="logs-toolbar-meta logs-page-actions">
-        <button type="button" class="button ghost refresh-button logs-refresh" :disabled="loading || loadingMore" :aria-busy="loading" @click="refresh">
-          <Icon name="refresh" :size="16" /><span>{{ loading ? '刷新中…' : '刷新' }}</span>
-        </button>
+        <Menu as="div" class="logs-refresh-menu">
+          <MenuButton as="template">
+            <button ref="refreshMenuAnchor" type="button" class="button ghost refresh-button logs-refresh" :aria-busy="loading" aria-label="请求日志刷新选项" @click="placeRefreshMenu" @keydown.down="placeRefreshMenu" @keydown.up="placeRefreshMenu" @keydown.enter="placeRefreshMenu" @keydown.space="placeRefreshMenu">
+              <Icon name="refresh" :size="16" class="logs-refresh-icon" :class="{ 'is-spinning': autoRefreshInterval > 0 || loading }" />
+              <span class="logs-refresh-label"><span>{{ loading ? '刷新中…' : '刷新' }}</span><span v-if="autoRefreshInterval" class="logs-refresh-interval">{{ autoRefreshInterval / 1000 }}s</span></span>
+              <Icon name="chevron" :size="14" />
+            </button>
+          </MenuButton>
+          <Teleport to="body">
+            <MenuItems class="floating-menu logs-refresh-menu-panel" :style="refreshMenuStyle" aria-label="请求日志刷新选项">
+              <MenuItem v-slot="{ active }" :disabled="loading || loadingMore" as="template">
+                <button type="button" class="floating-menu-item" :class="{ active }" :disabled="loading || loadingMore" @click="refresh">
+                  <Icon name="refresh" :size="16" /><span>立即刷新</span>
+                </button>
+              </MenuItem>
+              <div class="logs-refresh-menu-heading" aria-hidden="true">自动刷新</div>
+              <MenuItem v-for="option in autoRefreshOptions" :key="option.value" v-slot="{ active }" as="template">
+                <button type="button" :aria-label="'自动刷新：' + option.label + (autoRefreshInterval === option.value ? '（已选中）' : '')" class="floating-menu-item logs-refresh-option" :class="{ active, 'is-selected': autoRefreshInterval === option.value }" @click="setAutoRefreshInterval(option.value)">
+                  <span>{{ option.label }}</span><Icon v-if="autoRefreshInterval === option.value" name="check" :size="16" />
+                </button>
+              </MenuItem>
+            </MenuItems>
+          </Teleport>
+        </Menu>
         <details class="table-view-menu">
           <summary class="button ghost"><Icon name="settings" :size="16" /> 表格视图</summary>
           <div class="table-view-popover">
@@ -313,7 +379,7 @@ onMounted(load)
       </div>
 
       <TablePlaceholder
-        v-if="loading || logs.length === 0"
+        v-if="(loading && !autoRefreshing) || logs.length === 0"
         :loading="loading"
         loading-text="正在读取请求日志…"
         :empty="logs.length === 0"

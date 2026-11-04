@@ -98,14 +98,14 @@ data class ChannelKeyRateLimitRequest(
  * 渠道密钥写请求。id 为空表示新建；credential 为空表示保持原凭据。
  *
  * state 只接受 ACTIVE 与 MANUAL_DISABLED：自动停用状态只能由系统写入，
- * 否则客户端可以伪造 AUTO_TEMPORARY 绕过永久停用的换凭据要求。
+ * 客户端通过显式提交 ACTIVE 执行人工恢复；省略时保持已有状态。
  */
 @Serializable
 data class ChannelKeyRequest(
     val id: String? = null,
     val name: String,
     val credential: String? = null,
-    val state: ChannelKeyState = ChannelKeyState.ACTIVE,
+    val state: ChannelKeyState? = null,
     val priority: Int? = null,
     val models: List<String> = emptyList(),
     val rateLimit: ChannelKeyRateLimitRequest? = null,
@@ -249,7 +249,9 @@ fun KeyAutoDisableSettingsRecord.toResponse() = KeyAutoDisableSettingsResponse(
     rules = policy.rules,
     revision = revision,
     updatedAt = updatedAt,
-    authFailureThreshold = policy.rules.firstOrNull { 401 in it.statusCodes && it.streak }?.threshold ?: 3,
+    authFailureThreshold = policy.rules.firstOrNull {
+        it.id != "insufficient_balance" && 401 in it.statusCodes && it.streak
+    }?.threshold ?: 3,
     failureThreshold = policy.rules.firstOrNull { it.includeTransportFailures }?.threshold
         ?: policy.rules.firstOrNull { !it.streak }?.threshold ?: 5,
     failureWindowMinutes = policy.rules.firstOrNull { it.includeTransportFailures }?.windowMinutes

@@ -37,6 +37,7 @@ data class GatewayConfig(
     val upstreamHeaderRefreshEnabled: Boolean = true,
     /** 可信额度插件 JAR 所在目录；不存在时视为空目录。 */
     val quotaPluginDir: Path = Path.of("plugins"),
+    val trustedProxyNetworks: List<TrustedProxyNetwork> = emptyList(),
 ) {
     companion object {
         fun fromEnv(env: Map<String, String> = System.getenv()): GatewayConfig {
@@ -125,6 +126,8 @@ data class GatewayConfig(
                     .toBooleanStrictOrNull()
                     ?: error("UPSTREAM_HEADER_REFRESH_ENABLED 必须是 true 或 false"),
                 quotaPluginDir = Path.of(value("QUOTA_PLUGIN_DIR", "plugins")),
+                trustedProxyNetworks = runCatching { TrustedProxyNetwork.parseList(value("TRUSTED_PROXY_CIDRS", "")) }
+                    .getOrElse { cause -> error("TRUSTED_PROXY_CIDRS 配置无效: ${cause.message}") },
             )
         }
     }

@@ -29,7 +29,7 @@ sealed interface KeyAttemptSignal {
     data class TransportFailure(val message: String = "") : KeyAttemptSignal
 }
 
-/** 自动禁用动作。临时禁用带到期时间，永久禁用只能换凭据后人工启用。 */
+/** 自动禁用动作。临时禁用带到期时间，永久禁用不会自动恢复，只能人工启用。 */
 @Serializable
 enum class KeyDisableAction { TEMPORARY, PERMANENT }
 
@@ -38,7 +38,7 @@ enum class KeyDisableKind { NONE, MANUAL, TEMPORARY, PERMANENT }
 
 /**
  * 密钥的持久化状态。只有 [AUTO_TEMPORARY] 会到期自动恢复，
- * [AUTO_PERMANENT] 必须换凭据后人工启用。
+ * [AUTO_PERMANENT] 不会自动恢复，需人工启用。
  *
  * @author 文杰
  * @since 2026-10-29
@@ -295,8 +295,7 @@ data class KeyDisablePolicy(
     companion object {
         const val MAX_RULES = 50
 
-        /** 默认规则：先确认凭据失效，再兜底短期鉴权拒绝，最后是上游不稳定。 */
-        val DEFAULT_RULES: List<KeyDisableRule> = listOf(
+        internal val LEGACY_DEFAULT_RULES: List<KeyDisableRule> = listOf(
             KeyDisableRule(
                 id = "credential_invalid",
                 name = "凭据失效",
@@ -343,6 +342,18 @@ data class KeyDisablePolicy(
                 disableMinutes = 10,
             ),
         )
+
+        /** 默认规则：先处理余额不足，再确认凭据失效，最后兜底鉴权拒绝与上游不稳定。 */
+        val DEFAULT_RULES: List<KeyDisableRule> = listOf(
+            KeyDisableRule(
+                id = "insufficient_balance",
+                name = "账户余额不足",
+                statusCodes = listOf(401, 402, 403),
+                bodyPatterns = listOf("INSUFFICIENT_BALANCE"),
+                threshold = 1,
+                action = KeyDisableAction.PERMANENT,
+            ),
+        ) + LEGACY_DEFAULT_RULES
     }
 }
 

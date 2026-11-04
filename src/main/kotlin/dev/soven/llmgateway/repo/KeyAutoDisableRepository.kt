@@ -77,7 +77,7 @@ class KeyAutoDisableRepository(
         ensureSettingsRow()
         val row = KeyAutoDisableSettings.selectAll()
             .where { KeyAutoDisableSettings.id eq SINGLETON_ID }.forUpdate().single()
-        val before = settingsRecord(row)
+        val before = migrateLegacyDefaultRules(row)
         if (before.policy == policy) return@suspendTransaction KeyAutoDisableSettingsChange(before, before)
         val after = KeyAutoDisableSettingsRecord(policy, before.revision + 1, nowMs())
         KeyAutoDisableSettings.update({ KeyAutoDisableSettings.id eq SINGLETON_ID }) {
@@ -432,14 +432,53 @@ class KeyAutoDisableRepository(
         }
     }
 
-    private fun settingsInTransaction(): KeyAutoDisableSettingsRecord = KeyAutoDisableSettings.selectAll()
-        .where { KeyAutoDisableSettings.id eq SINGLETON_ID }.singleOrNull()?.let(::settingsRecord)
-        ?: KeyAutoDisableSettingsRecord()
+    private fun settingsInTransaction(): KeyAutoDisableSettingsRecord {
+        val row = KeyAutoDisableSettings.selectAll()
+            .where { KeyAutoDisableSettings.id eq SINGLETON_ID }.singleOrNull()
+            ?: return KeyAutoDisableSettingsRecord()
+        val storedRules = decodeStoredRules(row[KeyAutoDisableSettings.rules])
+        if (storedRules != KeyDisablePolicy.LEGACY_DEFAULT_RULES) {
+            return settingsRecord(row, storedRules)
+        }
+        val lockedRow = KeyAutoDisableSettings.selectAll()
+            .where { KeyAutoDisableSettings.id eq SINGLETON_ID }.forUpdate().singleOrNull()
+            ?: return KeyAutoDisableSettingsRecord()
+        return migrateLegacyDefaultRules(lockedRow)
+    }
 
-    private fun settingsRecord(row: ResultRow) = KeyAutoDisableSettingsRecord(
+    private fun migrateLegacyDefaultRules(
+        row: ResultRow,
+        storedRules: List<KeyDisableRule>? = decodeStoredRules(row[KeyAutoDisableSettings.rules]),
+    ): KeyAutoDisableSettingsRecord {
+        if (storedRules != KeyDisablePolicy.LEGACY_DEFAULT_RULES) {
+            return settingsRecord(row, storedRules)
+        }
+        val revision = row[KeyAutoDisableSettings.revision] + 1
+        val updatedAt = nowMs()
+        KeyAutoDisableSettings.update({ KeyAutoDisableSettings.id eq SINGLETON_ID }) {
+            it[rules] = keyDisableJson.encodeToString(KeyDisablePolicy.DEFAULT_RULES)
+            it[KeyAutoDisableSettings.revision] = revision
+            it[KeyAutoDisableSettings.updatedAt] = updatedAt
+        }
+        return KeyAutoDisableSettingsRecord(
+            policy = KeyDisablePolicy(
+                enabled = row[KeyAutoDisableSettings.enabled],
+                rules = KeyDisablePolicy.DEFAULT_RULES,
+            ),
+            revision = revision,
+            updatedAt = updatedAt,
+        )
+    }
+
+    private fun settingsRecord(
+        row: ResultRow,
+        storedRules: List<KeyDisableRule>? = decodeStoredRules(row[KeyAutoDisableSettings.rules]),
+    ) = KeyAutoDisableSettingsRecord(
         policy = KeyDisablePolicy(
             enabled = row[KeyAutoDisableSettings.enabled],
-            rules = decodeRules(row[KeyAutoDisableSettings.rules]),
+            rules = storedRules?.takeIf { it.isNotEmpty() }
+                ?.let { if (it == KeyDisablePolicy.LEGACY_DEFAULT_RULES) KeyDisablePolicy.DEFAULT_RULES else it }
+                ?: KeyDisablePolicy.DEFAULT_RULES,
         ),
         revision = row[KeyAutoDisableSettings.revision],
         updatedAt = row[KeyAutoDisableSettings.updatedAt],
@@ -451,10 +490,8 @@ class KeyAutoDisableRepository(
         put("updatedAt", settings.updatedAt)
     }
 
-    private fun decodeRules(value: String?): List<KeyDisableRule> = value
+    private fun decodeStoredRules(value: String?): List<KeyDisableRule>? = value
         ?.let { runCatching { keyDisableJson.decodeFromString<List<KeyDisableRule>>(it) }.getOrNull() }
-        ?.takeIf { it.isNotEmpty() }
-        ?: KeyDisablePolicy.DEFAULT_RULES
 
     private fun decodeHealth(value: String?): KeyHealthState = value
         ?.let { runCatching { keyDisableJson.decodeFromString<KeyHealthState>(it) }.getOrNull() }
@@ -478,7 +515,8 @@ private fun KeyAttemptOutcome.toSignal(httpStatus: Int?, errorCode: String?): Ke
 }
 
 private fun KeyDisablePolicy.legacyAuthThreshold(): Int =
-    rules.firstOrNull { rule -> 401 in rule.statusCodes && rule.streak }?.threshold ?: 3
+    rules.firstOrNull { rule -> rule.id != "insufficient_balance" && 401 in rule.statusCodes && rule.streak }
+        ?.threshold ?: 3
 
 private fun KeyDisablePolicy.legacyFailureThreshold(): Int =
     rules.firstOrNull { rule -> !rule.streak }?.threshold ?: 5

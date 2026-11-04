@@ -1211,7 +1211,7 @@ private fun normalizeNewKeys(
         NewChannelKey(
             name = key.name,
             credential = key.credential ?: throw badRequest("invalid_channel", "新建渠道的每个密钥都必须提供上游凭据"),
-            state = key.state,
+            state = key.state ?: ChannelKeyState.ACTIVE,
             priority = key.priority,
             models = key.models,
             rateLimit = key.rateLimit ?: ChannelKeyRateLimitPolicy(),
@@ -1277,7 +1277,7 @@ private data class NormalizedKey(
     val id: String?,
     val name: String,
     val credential: dev.soven.llmgateway.security.EncryptedCredential?,
-    val state: ChannelKeyState,
+    val state: ChannelKeyState?,
     val priority: Int,
     val models: List<String>,
     val rateLimit: ChannelKeyRateLimitPolicy?,
@@ -1305,7 +1305,7 @@ private fun normalizeKeys(
         if (key.stateVersion != null && key.stateVersion < 0) {
             throw badRequest("invalid_channel", "密钥状态版本不能为负数")
         }
-        if (!key.state.manuallyAssignable) {
+        if (key.state != null && !key.state.manuallyAssignable) {
             throw badRequest(
                 "invalid_channel",
                 "密钥「$name」的状态只能提交 ACTIVE 或 MANUAL_DISABLED；自动停用状态由系统维护",

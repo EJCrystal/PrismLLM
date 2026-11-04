@@ -30,8 +30,11 @@ describe('密钥自动禁用规则', () => {
   it('规范化默认规则列表', () => {
     const normalized = normalizeKeyAutoDisableSettings(DEFAULT_KEY_AUTO_DISABLE_SETTINGS)
     assert.equal(normalized.enabled, true)
-    assert.equal(normalized.rules.length, 4)
-    assert.equal(normalized.rules[0].id, 'credential_invalid')
+    assert.equal(normalized.rules.length, 5)
+    assert.equal(normalized.rules[0].id, 'insufficient_balance')
+    assert.equal(normalized.rules[0].action, 'PERMANENT')
+    assert.deepEqual(normalized.rules[0].bodyPatterns, ['INSUFFICIENT_BALANCE'])
+    assert.equal(normalized.rules[1].id, 'credential_invalid')
     assert.equal(normalized.rules[3].action, 'TEMPORARY')
   })
 
@@ -111,7 +114,7 @@ describe('密钥自动禁用规则', () => {
   it('生成人类可读的规则摘要', () => {
     assert.equal(
       keyAutoDisableRuleLabel(DEFAULT_KEY_AUTO_DISABLE_SETTINGS),
-      '凭据失效、上游账号被停、鉴权被拒、上游不稳定',
+      '账户余额不足、凭据失效、上游账号被停、鉴权被拒、上游不稳定',
     )
     assert.equal(
       keyAutoDisableRuleLabel({ enabled: false, rules: [customRule({ name: '仅冷却' })] }),

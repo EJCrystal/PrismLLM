@@ -52,6 +52,7 @@ class FakeUpstream {
     val cancellations = AtomicInteger()
     val failingModels = ConcurrentHashMap.newKeySet<String>()
     val keyStatuses = ConcurrentHashMap<String, Int>()
+    val keyErrorBodies = ConcurrentHashMap<String, String>()
     private val chatHold = AtomicReference<CompletableDeferred<Unit>?>(null)
 
     fun holdChatRequests(): CompletableDeferred<Unit> =
@@ -132,8 +133,10 @@ class FakeUpstream {
             chatHold.get()?.await()
             return false
         }
+        val errorBody = credential?.let(keyErrorBodies::get)
+            ?: """{"error":{"message":"fake key failure","code":"fake_key_failure"}}"""
         call.respondText(
-            """{"error":{"message":"fake key failure","code":"fake_key_failure"}}""",
+            errorBody,
             ContentType.Application.Json, HttpStatusCode.fromValue(status),
         )
         return true

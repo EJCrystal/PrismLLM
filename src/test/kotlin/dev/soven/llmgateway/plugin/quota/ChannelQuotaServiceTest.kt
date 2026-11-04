@@ -95,6 +95,32 @@ class ChannelQuotaServiceTest {
     }
 
     @Test
+    fun fallbackKeySucceedsWithinTotalTimeoutBudget() = runBlocking {
+        val seen = mutableListOf<String>()
+        val keys = listOf(
+            key("primary", 10).copy(name = "主密钥"),
+            key("secondary", 20).copy(name = "备用密钥"),
+        )
+        withService(provider { request ->
+            seen += request.credential
+            if (request.credential == "primary") {
+                Thread.sleep(100)
+                ChannelQuotaResult(ChannelQuotaStatus.AUTHENTICATION_FAILED)
+            } else {
+                Thread.sleep(50)
+                available("88.88")
+            }
+        }, timeoutMs = 400) { service ->
+            val result = service.query(channel(keys = keys))
+            assertEquals(ChannelQuotaStatus.AVAILABLE.name, result.status)
+            assertEquals("88.88", result.remaining)
+            assertEquals("备用密钥", result.queryKey?.name)
+            assertEquals(listOf("主密钥", "备用密钥"), result.attemptedKeys.map { it.name })
+            assertEquals(listOf("primary", "secondary"), seen)
+        }
+    }
+
+    @Test
     fun doesNotRetryRateLimitsAndDoesNotChangeKeyState() = runBlocking {
         val calls = AtomicInteger()
         val original = channel(keys = listOf(key("a"), key("b")))
@@ -166,6 +192,32 @@ class ChannelQuotaServiceTest {
             val retried = service.query(channel())
             assertFalse(retried.cached)
             assertEquals(2, calls.get())
+        }
+    }
+
+    @Test
+    fun lockWaitTimeIsBoundedByTotalTimeout() = runBlocking {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val channel = channel()
+        withService(provider {
+            started.countDown()
+            check(release.await(5, TimeUnit.SECONDS))
+            available("100")
+        }, timeoutMs = 1_000) { service ->
+            val begin = System.nanoTime()
+            val first = async(Dispatchers.Default) { service.query(channel) }
+            try {
+                assertTrue(withContext(Dispatchers.IO) { started.await(3, TimeUnit.SECONDS) })
+                val second = service.query(channel)
+                val elapsedMs = (System.nanoTime() - begin) / 1_000_000
+                assertEquals("ERROR", second.status)
+                assertTrue(second.message!!.contains("超时"))
+                assertTrue(elapsedMs < 1_600, "lock-wait scenario took ${elapsedMs}ms")
+            } finally {
+                release.countDown()
+                first.await()
+            }
         }
     }
 
@@ -428,7 +480,7 @@ class ChannelQuotaServiceTest {
     }
 
     private suspend fun withService(provider: ChannelQuotaProvider, now: () -> Long = System::currentTimeMillis,
-        timeoutMs: Long = 12_000, action: suspend (ChannelQuotaService) -> Unit) {
+        timeoutMs: Long = 45_000, action: suspend (ChannelQuotaService) -> Unit) {
         ChannelQuotaProviderRegistry(builtIns = listOf(provider)).use { registry ->
             ChannelQuotaService(registry, cipher, now, timeoutMs).use { action(it) }
         }

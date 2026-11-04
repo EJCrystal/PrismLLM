@@ -5,10 +5,18 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>dev.soven</groupId>
-    <artifactId>llm-gateway</artifactId>
+    <artifactId>prism-llm</artifactId>
     <version>0.1.0-SNAPSHOT</version>
-    <name>llm-gateway</name>
+    <name>PrismLLM</name>
     <description>OpenAI-compatible LLM gateway with canonical model routing, streaming pass-through and admin API.</description>
+
+    <licenses>
+        <license>
+            <name>Apache-2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
