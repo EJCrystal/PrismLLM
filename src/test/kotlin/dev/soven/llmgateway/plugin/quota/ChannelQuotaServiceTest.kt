@@ -104,11 +104,13 @@ class ChannelQuotaServiceTest {
         withService(provider { request ->
             seen += request.credential
             if (request.credential == "primary") {
+                Thread.sleep(100)
                 ChannelQuotaResult(ChannelQuotaStatus.AUTHENTICATION_FAILED)
             } else {
+                Thread.sleep(50)
                 available("88.88")
             }
-        }, timeoutMs = 45_000) { service ->
+        }, timeoutMs = 400) { service ->
             val result = service.query(channel(keys = keys))
             assertEquals(ChannelQuotaStatus.AVAILABLE.name, result.status)
             assertEquals("88.88", result.remaining)
@@ -202,13 +204,16 @@ class ChannelQuotaServiceTest {
             started.countDown()
             check(release.await(5, TimeUnit.SECONDS))
             available("100")
-        }, timeoutMs = 150) { service ->
+        }, timeoutMs = 1_000) { service ->
+            val begin = System.nanoTime()
             val first = async(Dispatchers.Default) { service.query(channel) }
             try {
                 assertTrue(withContext(Dispatchers.IO) { started.await(3, TimeUnit.SECONDS) })
                 val second = service.query(channel)
+                val elapsedMs = (System.nanoTime() - begin) / 1_000_000
                 assertEquals("ERROR", second.status)
                 assertTrue(second.message!!.contains("超时"))
+                assertTrue(elapsedMs < 1_600, "lock-wait scenario took ${elapsedMs}ms")
             } finally {
                 release.countDown()
                 first.await()
