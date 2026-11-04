@@ -162,9 +162,9 @@ private fun forwardedIp(value: String?): String? =
         ?.asSequence()
         ?.flatMap { it.split(';').asSequence() }
         ?.map { it.trim() }
-        ?.firstOrNull { it.startsWith("for=", ignoreCase = true) }
-        ?.substringAfter('=', "")
-        ?.let(::parseHeaderIp)
+        ?.filter { it.startsWith("for=", ignoreCase = true) }
+        ?.mapNotNull { it.substringAfter('=', "").let(::parseHeaderIp) }
+        ?.firstOrNull()
 
 private fun parseHeaderIp(value: String): String? {
     val candidate = value.trim().trim('"')

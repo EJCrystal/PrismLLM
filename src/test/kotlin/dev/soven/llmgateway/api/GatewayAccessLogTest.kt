@@ -137,4 +137,21 @@ class GatewayAccessLogTest {
         assertEquals("2001:db8::1", metadata.clientIp)
         assertEquals("forwarded", metadata.clientIpSource)
     }
+
+    @Test
+    fun skipsInvalidForwardedEntryAndUsesLaterValidEntry() {
+        val metadata = requestAccessLogMetadata(
+            requestId = null,
+            cloudflareConnectingIp = null,
+            forwardedFor = null,
+            realIp = null,
+            forwarded = "for=unknown, for=198.51.100.8",
+            peerIp = "172.19.0.2",
+            userAgent = null,
+            trustedProxyNetworks = listOf(TrustedProxyNetwork.parse("172.19.0.0/16")),
+        )
+
+        assertEquals("198.51.100.8", metadata.clientIp)
+        assertEquals("forwarded", metadata.clientIpSource)
+    }
 }
