@@ -1,4 +1,5 @@
-export const THEME_STORAGE_KEY = 'llm_gw_theme'
+export const THEME_STORAGE_KEY = 'prism_llm_theme'
+export const LEGACY_THEME_STORAGE_KEY = 'llm_gw_theme'
 
 /**
  * 内置与支持的主题预设列表。
@@ -54,7 +55,7 @@ export function normalizeTheme(themeId: string | null | undefined): string {
 export function getSavedTheme(storage: Storage | null = null): string {
   try {
     const s = storage || (typeof localStorage !== 'undefined' ? localStorage : null)
-    const saved = s?.getItem(THEME_STORAGE_KEY)
+    const saved = s?.getItem(THEME_STORAGE_KEY) ?? s?.getItem(LEGACY_THEME_STORAGE_KEY)
     return normalizeTheme(saved)
   } catch {
     return DEFAULT_THEME
