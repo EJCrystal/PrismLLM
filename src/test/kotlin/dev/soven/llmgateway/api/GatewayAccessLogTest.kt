@@ -154,6 +154,22 @@ class GatewayAccessLogTest {
     }
 
     @Test
+    fun trimsWhitespaceFromBracketedForwardedAddress() {
+        val metadata = requestAccessLogMetadata(
+            requestId = null,
+            cloudflareConnectingIp = null,
+            forwardedFor = "[ 198.51.100.8 ]",
+            realIp = null,
+            forwarded = null,
+            peerIp = "172.19.0.2",
+            userAgent = null,
+            trustedProxyNetworks = listOf(TrustedProxyNetwork.parse("172.19.0.0/16")),
+        )
+
+        assertEquals("198.51.100.8", metadata.clientIp)
+    }
+
+    @Test
     fun skipsInvalidForwardedEntryAndUsesLaterValidEntry() {
         val metadata = requestAccessLogMetadata(
             requestId = null,

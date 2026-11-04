@@ -185,7 +185,8 @@ private fun parseHeaderIp(value: String): String? {
         }
         else -> candidate
     }
-    return address.takeIf(TrustedProxyNetwork::isIpAddress)
+    val normalizedAddress = address.trim()
+    return normalizedAddress.takeIf(TrustedProxyNetwork::isIpAddress)
 }
 
 private fun isValidPort(value: String): Boolean =
