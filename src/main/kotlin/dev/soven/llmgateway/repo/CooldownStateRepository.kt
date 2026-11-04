@@ -2,6 +2,7 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.CooldownStates
 import dev.soven.llmgateway.resilience.CooldownStateSnapshot
+import dev.soven.llmgateway.resilience.CooldownStateStore
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database
@@ -16,8 +17,8 @@ import org.jetbrains.exposed.v1.jdbc.upsert
  * @author 文杰
  * @since 2026-10-25
  */
-class CooldownStateRepository(private val database: Database) {
-    suspend fun upsert(snapshot: CooldownStateSnapshot) {
+class CooldownStateRepository(private val database: Database) : CooldownStateStore {
+    override suspend fun upsert(snapshot: CooldownStateSnapshot) {
         suspendTransaction(database) {
             CooldownStates.upsert(CooldownStates.stateKey) {
                 it[stateKey] = snapshot.stateKey
@@ -29,7 +30,7 @@ class CooldownStateRepository(private val database: Database) {
         }
     }
 
-    suspend fun delete(stateKey: String) {
+    override suspend fun delete(stateKey: String) {
         suspendTransaction(database) {
             CooldownStates.deleteWhere { CooldownStates.stateKey eq stateKey }
         }
