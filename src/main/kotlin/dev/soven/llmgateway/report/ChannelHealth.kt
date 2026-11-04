@@ -7,6 +7,7 @@ enum class AttemptOutcome { SUCCESS, FAILURE, EXCLUDED }
 
 /** Cancelled clients and invalid request parameters are not provider outages. */
 fun attemptOutcome(attempt: UpstreamAttemptRecord): AttemptOutcome {
+    if (attempt.skipped) return AttemptOutcome.EXCLUDED
     if (attempt.errorCode in setOf("client_cancelled", "client_disconnect", "protocol_conversion_failed", "protocol_conversion_unsupported")) {
         return AttemptOutcome.EXCLUDED
     }

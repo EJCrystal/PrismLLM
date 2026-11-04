@@ -130,12 +130,14 @@ function attemptProtocolLabel(attempt: RequestLogAttempt, log: RequestLog): stri
 }
 
 function attemptStatusClass(attempt: RequestLogAttempt): string {
+  if (attempt.skipped) return 'neutral'
   if (attemptHasError(attempt)) return 'danger'
   if (attempt.statusCode == null) return 'neutral'
   return statusClass(attempt.statusCode)
 }
 
 function attemptStatusAriaLabel(attempt: RequestLogAttempt, hasFollowingAttempt: boolean): string {
+  if (attempt.skipped) return `路由跳过，${attemptFailureReason(attempt)}，未发起上游请求`
   const status = attempt.statusCode == null ? '无上游 HTTP 状态码' : `上游 HTTP 状态码 ${attempt.statusCode}`
   const errorStatus = attempt.upstreamErrorStatusCode == null ? '' : `，错误状态码 ${attempt.upstreamErrorStatusCode}`
   return `${status}${errorStatus}，${attemptResultLabel(attempt, hasFollowingAttempt)}`
@@ -153,6 +155,7 @@ function reportedModelTitle(log: RequestLog): string {
 // totalMs 是整个请求耗时，upstreamAttempts 也可能是多次调用。
 const selectedAttempts = computed<RequestLogAttempt[]>(() => selected.value?.attempts || [])
 const hasAttemptDetail = computed(() => selectedAttempts.value.length > 0)
+const skippedAttemptCount = computed(() => selectedAttempts.value.filter((attempt) => attempt.skipped).length)
 
 const filtered = computed(() => {
   return filterRequestLogs(logs.value, query.value, { channelId: channelFilter.value, model: modelFilter.value, status: statusFilter.value })
@@ -673,15 +676,17 @@ onMounted(load)
 
             <div class="detail-block">
               <span v-if="hasAttemptDetail">
-                尝试记录（{{ selectedAttempts.length }} 条 · 上游调用 {{ selected.upstreamAttempts ?? selectedAttempts.length }} 次）
+                尝试记录（{{ selectedAttempts.length }} 条<span v-if="skippedAttemptCount"> · 跳过 {{ skippedAttemptCount }}</span> · 上游调用 {{ selected.upstreamAttempts ?? selectedAttempts.filter((attempt) => !attempt.skipped).length }} 次）
               </span>
               <span v-else>尝试记录</span>
               <p v-if="!hasAttemptDetail" class="muted small">无尝试明细</p>
               <div v-else class="attempt-list">
-                <div v-for="(attempt, attemptIndex) in selectedAttempts" :key="attempt.index" class="attempt-row">
+                <div v-for="(attempt, attemptIndex) in selectedAttempts" :key="attempt.index + '-' + attemptIndex" class="attempt-row">
                   <div class="attempt-head">
-                    <span class="attempt-index">#{{ attempt.index }}</span>
+                    <span class="attempt-index">{{ attempt.skipped ? '跳过' : '#' + attempt.index }}</span>
+                    <span v-if="attempt.skipped" class="badge attempt-status neutral" aria-label="路由跳过，未发起上游请求">跳过</span>
                     <span
+                      v-else
                       class="badge attempt-status"
                       :class="attemptStatusClass(attempt)"
                       :aria-label="attemptStatusAriaLabel(attempt, attemptIndex < selectedAttempts.length - 1)"
@@ -693,8 +698,8 @@ onMounted(load)
                       class="badge danger"
                     >错误状态 {{ attempt.upstreamErrorStatusCode }}</span>
                     <span class="attempt-result" role="status">{{ attemptResultLabel(attempt, attemptIndex < selectedAttempts.length - 1) }}</span>
-                    <span class="sr-only">第 {{ attempt.index }} 次尝试</span>
-                    <span class="attempt-duration">{{ formatDuration(attempt.elapsedMs) }}</span>
+                    <span class="sr-only">{{ attempt.skipped ? '路由跳过，未发起上游请求' : '第 ' + attempt.index + ' 次尝试' }}</span>
+                    <span v-if="!attempt.skipped" class="attempt-duration">{{ formatDuration(attempt.elapsedMs) }}</span>
                   </div>
                   <div class="attempt-route">
                     <div class="attempt-field">

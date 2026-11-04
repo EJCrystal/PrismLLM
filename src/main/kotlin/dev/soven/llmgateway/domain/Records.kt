@@ -298,19 +298,20 @@ data class RequestLogRecord(
     val upstreamErrorBody: String? = null,
     val createdAt: Long,
     val upstreamAttempts: Int? = null,
-    /** 每次实际上游尝试的明细，按发生顺序排列。 */
+    /** 每次上游尝试或路由跳过的明细，按发生顺序排列。 */
     val attempts: List<UpstreamAttemptRecord> = emptyList(),
     val pricingModelId: String? = null,
     val id: Long = 0,
 )
 
 /**
- * 单次上游尝试的日志明细。只记录路由与结果元数据，不保存 prompt 或响应正文。
+ * 单次上游尝试或路由跳过的日志明细。只记录路由与结果元数据，不保存 prompt 或响应正文。
  *
  * @author 文杰
  * @since 2026-10-30
  */
 data class UpstreamAttemptRecord(
+    /** 实际上游尝试序号；路由跳过记录为 0。 */
     val index: Int,
     val channelId: String? = null,
     val channelName: String? = null,
@@ -333,4 +334,8 @@ data class UpstreamAttemptRecord(
     /** 本次尝试已向客户端提交响应。 */
     val committed: Boolean = false,
     val retryable: Boolean = false,
+    /** 该条记录是路由阶段被跳过的候选，没有发起上游请求。 */
+    val skipped: Boolean = false,
+    /** 跳过原因；当前为 cooldown。skipped=false 时为 null。 */
+    val skipReason: String? = null,
 )
