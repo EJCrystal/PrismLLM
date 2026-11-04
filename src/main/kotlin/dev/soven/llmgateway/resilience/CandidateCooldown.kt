@@ -385,8 +385,7 @@ class CandidateCooldown(
         val cleared = mutableListOf<String>()
         for ((id, state) in states) {
             if (id != keyStateId && !id.startsWith(candidatePrefix)) continue
-            resetState(id, state)
-            cleared += id
+            if (resetState(id, state)) cleared += id
         }
         ttftStreaks.keys.removeIf { it.startsWith(candidatePrefix) }
         return cleared
@@ -397,9 +396,9 @@ class CandidateCooldown(
     fun clearCandidate(channelId: String, keyId: String, upstreamModel: String): List<String> {
         val stateKey = CooldownKey.KeyCandidate(channelId, keyId, upstreamModel).id
         val state = states[stateKey] ?: return emptyList()
-        resetState(stateKey, state)
+        val hadState = resetState(stateKey, state)
         ttftStreaks.remove(stateKey)
-        return listOf(stateKey)
+        return if (hadState) listOf(stateKey) else emptyList()
     }
 
     /** 手动解除渠道下的全部冷却，包括渠道键、密钥键和候选键。 */
@@ -411,8 +410,7 @@ class CandidateCooldown(
         val cleared = mutableListOf<String>()
         for ((id, state) in states) {
             if (id != channelStateId && !id.startsWith(keyPrefix) && !id.startsWith(candidatePrefix)) continue
-            resetState(id, state)
-            cleared += id
+            if (resetState(id, state)) cleared += id
         }
         ttftStreaks.keys.removeIf { it.startsWith(candidatePrefix) }
         return cleared
@@ -489,14 +487,16 @@ class CandidateCooldown(
         }
     }
 
-    /** 手动清除时无条件作废旧许可并写透删除，不区分此前是否处于冷却。 */
-    private fun resetState(id: String, state: KeyState) {
+    /** 手动清除时无条件作废旧许可；仅在此前存在冷却或失败记录时写透删除并返回 true。 */
+    private fun resetState(id: String, state: KeyState): Boolean {
+        val hadState = state.cooldownUntil > 0 || state.consecutiveFailures > 0
         state.consecutiveFailures = 0
         state.cooldownUntil = 0
         state.probeInFlight = false
         state.reason = null
         state.generation += 1
-        onChange(CooldownChange.Removed(id))
+        if (hadState) onChange(CooldownChange.Removed(id))
+        return hadState
     }
 
     private fun releaseProbe(state: KeyState) {

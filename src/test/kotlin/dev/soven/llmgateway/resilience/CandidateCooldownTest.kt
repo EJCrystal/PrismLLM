@@ -426,4 +426,42 @@ class CandidateCooldownTest {
         assertTrue(changes.any { it == CooldownChange.Removed("key:ch1:k1") })
         assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k2:m1") })
     }
+
+    @Test
+    fun `clear methods only emit removed events and return keys for non-healthy states`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+
+        // 仅 acquire 建立健康状态（consecutiveFailures=0, cooldownUntil=0）
+        val permit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        assertTrue(changes.isEmpty())
+
+        // 清除健康候选，不应提交 Removed，也不返回该状态键
+        val clearedCandidate = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertTrue(clearedCandidate.isEmpty())
+        assertTrue(changes.isEmpty())
+        // 但代际已递增，旧许可应当作废
+        assertNull(cooldown.recordFailure(permit, FailureKind.RATE_LIMITED))
+
+        // 清除健康密钥
+        val permit2 = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        val clearedKey = cooldown.clearKey("ch1", "k1")
+        assertTrue(clearedKey.isEmpty())
+        assertTrue(changes.isEmpty())
+        assertNull(cooldown.recordFailure(permit2, FailureKind.RATE_LIMITED))
+
+        // 清除健康渠道
+        val permit3 = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        val clearedChannel = cooldown.clearChannel("ch1")
+        assertTrue(clearedChannel.isEmpty())
+        assertTrue(changes.isEmpty())
+        assertNull(cooldown.recordFailure(permit3, FailureKind.RATE_LIMITED))
+
+        // 若确实处于失败或冷却，则应返回并提交 Removed
+        val permit4 = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(permit4, FailureKind.RATE_LIMITED)
+        val clearedAfterFailure = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertEquals(listOf("kc:ch1:k1:m1"), clearedAfterFailure)
+        assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k1:m1") })
+    }
 }
