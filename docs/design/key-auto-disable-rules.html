@@ -219,12 +219,12 @@
     <h2>四、默认规则（建议直接内置）</h2>
     <div class="rules">
       <div class="rule">
-        <div class="rule-head"><span class="rule-name">凭据失效</span><span class="rule-action">永久 · 人工处理</span></div>
-        <p class="cond">状态码 <b>401 / 403</b>，错误文本命中 <code>invalid_api_key</code>、<code>incorrect api key</code>、<code>authentication_error</code>、<code>invalid_grant</code>，连续 <b>2</b> 次。</p>
-      </div>
-      <div class="rule">
         <div class="rule-head"><span class="rule-name">账户余额不足</span><span class="rule-action">永久 · 人工处理</span></div>
         <p class="cond">状态码 <b>401 / 402 / 403</b>，错误文本命中 <code>INSUFFICIENT_BALANCE</code>，<b>1</b> 次。</p>
+      </div>
+      <div class="rule">
+        <div class="rule-head"><span class="rule-name">凭据失效</span><span class="rule-action">永久 · 人工处理</span></div>
+        <p class="cond">状态码 <b>401 / 403</b>，错误文本命中 <code>invalid_api_key</code>、<code>incorrect api key</code>、<code>authentication_error</code>、<code>invalid_grant</code>，连续 <b>2</b> 次。</p>
       </div>
       <div class="rule">
         <div class="rule-head"><span class="rule-name">上游账号被停</span><span class="rule-action">永久 · 人工处理</span></div>
@@ -377,14 +377,14 @@ ACTIVE           正常</pre>
   const explain = document.getElementById('sim-explain')
 
   const rules = [
-    { id: 'credential_invalid', name: '凭据失效', action: 'PERMANENT', actionLabel: '永久禁用',
-      threshold: 2, windowMinutes: 5, streak: true, codes: [401, 403],
-      patterns: [/invalid[_-]?api[_-]?key/i, /incorrect api key/i, /authentication_error/i, /invalid_grant/i],
-      reason: '凭据已被上游判定失效，不会自动解封' },
     { id: 'insufficient_balance', name: '账户余额不足', action: 'PERMANENT', actionLabel: '永久禁用',
       threshold: 1, windowMinutes: 5, streak: true, codes: [401, 402, 403],
       patterns: [/INSUFFICIENT_BALANCE/i],
       reason: '上游账户余额不足，充值或修复账户后人工启用' },
+    { id: 'credential_invalid', name: '凭据失效', action: 'PERMANENT', actionLabel: '永久禁用',
+      threshold: 2, windowMinutes: 5, streak: true, codes: [401, 403],
+      patterns: [/invalid[_-]?api[_-]?key/i, /incorrect api key/i, /authentication_error/i, /invalid_grant/i],
+      reason: '凭据已被上游判定失效，不会自动解封' },
     { id: 'account_blocked', name: '上游账号被停', action: 'PERMANENT', actionLabel: '永久禁用',
       threshold: 1, windowMinutes: 5, streak: true, codes: [401, 403],
       patterns: [/account[^\n]{0,40}(disabled|suspended|deactivated)/i, /\bbilling\b/i, /\bpayment\b/i],

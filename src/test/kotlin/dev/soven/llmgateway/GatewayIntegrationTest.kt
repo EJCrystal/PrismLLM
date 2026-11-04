@@ -137,6 +137,7 @@ class GatewayIntegrationTest {
         fake.cancellations.set(0)
         fake.failingModels.clear()
         fake.keyStatuses.clear()
+        fake.keyErrorBodies.clear()
         fake.clearChatHold()
         app = GatewayApplication(config())
         app.databaseFactory.migrate()
@@ -1552,6 +1553,31 @@ class GatewayIntegrationTest {
             )
             assertNull(audit.details?.get("disableUntil"))
             assertFalse(audit.details.toString().contains("key-primary"))
+        }
+    }
+
+    @Test
+    fun keyAutoDisablePermanentlyDisablesInsufficientBalanceOn402() = runBlocking {
+        val channel = createAutoDisablePool(withBackup = false)
+        val key = createClientKey()
+        val requestId = "insufficient-balance-402"
+        fake.keyStatuses["Bearer key-primary"] = 402
+        fake.keyErrorBodies["Bearer key-primary"] =
+            """{"error":{"type":"authentication_error","code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}}"""
+        testApplication {
+            application { app.install(this) }
+            assertEquals(HttpStatusCode.BadGateway, client.sendAutoDisableRequest(key, requestId = requestId).status)
+
+            val disabled = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+            assertEquals(ChannelKeyState.AUTO_PERMANENT, disabled.state)
+            assertNull(disabled.autoDisableUntil)
+            assertEquals(1, fake.requests.size)
+
+            val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_disable" }
+            assertEquals(requestId, audit.requestId)
+            assertEquals("402", audit.details?.get("httpStatus")?.jsonPrimitive?.content)
+            assertEquals("insufficient_balance", audit.details?.get("ruleId")?.jsonPrimitive?.content)
+            assertEquals("PERMANENT", audit.details?.get("action")?.jsonPrimitive?.content)
         }
     }
 

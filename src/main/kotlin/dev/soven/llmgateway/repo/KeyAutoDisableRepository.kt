@@ -478,7 +478,8 @@ private fun KeyAttemptOutcome.toSignal(httpStatus: Int?, errorCode: String?): Ke
 }
 
 private fun KeyDisablePolicy.legacyAuthThreshold(): Int =
-    rules.firstOrNull { rule -> 401 in rule.statusCodes && rule.streak }?.threshold ?: 3
+    rules.firstOrNull { rule -> rule.id != "insufficient_balance" && 401 in rule.statusCodes && rule.streak }
+        ?.threshold ?: 3
 
 private fun KeyDisablePolicy.legacyFailureThreshold(): Int =
     rules.firstOrNull { rule -> !rule.streak }?.threshold ?: 5

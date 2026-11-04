@@ -305,7 +305,7 @@ class KeyDisableRulesTest {
         val insufficientBalance = assertNotNull(
             policy.record(
                 KeyHealthState(),
-                response(403, """{"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}"""),
+                response(403, """{"error":{"type":"authentication_error","code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}}"""),
                 now,
             ).decision,
         )

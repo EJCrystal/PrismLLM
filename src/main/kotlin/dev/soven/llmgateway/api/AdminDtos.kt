@@ -249,7 +249,9 @@ fun KeyAutoDisableSettingsRecord.toResponse() = KeyAutoDisableSettingsResponse(
     rules = policy.rules,
     revision = revision,
     updatedAt = updatedAt,
-    authFailureThreshold = policy.rules.firstOrNull { 401 in it.statusCodes && it.streak }?.threshold ?: 3,
+    authFailureThreshold = policy.rules.firstOrNull {
+        it.id != "insufficient_balance" && 401 in it.statusCodes && it.streak
+    }?.threshold ?: 3,
     failureThreshold = policy.rules.firstOrNull { it.includeTransportFailures }?.threshold
         ?: policy.rules.firstOrNull { !it.streak }?.threshold ?: 5,
     failureWindowMinutes = policy.rules.firstOrNull { it.includeTransportFailures }?.windowMinutes
