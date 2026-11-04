@@ -263,19 +263,30 @@ describe('channelForm: 渠道保存请求体', () => {
     })
   })
 
-  it('提交 AUTO_* 状态被拒', () => {
+  it('新建密钥提交 AUTO_* 状态被拒，已有未修改自动停用密钥省略 state', () => {
     assert.throws(
       () => buildChannelPayload(baseForm, ['m1'], {}, {}, [
-        { id: 'key-1', name: 'primary', state: 'AUTO_TEMPORARY', models: ['m1'] },
+        { name: 'new-key', state: 'AUTO_TEMPORARY', models: ['m1'] },
       ]),
       /ACTIVE 或 MANUAL_DISABLED/,
     )
     assert.throws(
       () => buildChannelPayload(baseForm, ['m1'], {}, {}, [
-        { id: 'key-1', name: 'primary', state: 'AUTO_PERMANENT', models: ['m1'] },
+        { name: 'new-key', state: 'AUTO_PERMANENT', models: ['m1'] },
       ]),
       /ACTIVE 或 MANUAL_DISABLED/,
     )
+
+    const payload = buildChannelPayload(baseForm, ['m1'], {}, {}, [
+      { id: 'key-1', name: 'recovered', state: 'ACTIVE', models: ['m1'] },
+      { id: 'key-2', name: 'still-temp', state: 'AUTO_TEMPORARY', models: ['m1'] },
+      { id: 'key-3', name: 'still-perm', state: 'AUTO_PERMANENT', models: ['m1'] },
+    ])
+    assert.equal(payload.keys[0].state, 'ACTIVE')
+    assert.equal(payload.keys[1].state, undefined)
+    assert.equal('state' in payload.keys[1], false)
+    assert.equal(payload.keys[2].state, undefined)
+    assert.equal('state' in payload.keys[2], false)
   })
 
   it('isKeyRoutable 判断密钥可路由性与临时到期边界', () => {

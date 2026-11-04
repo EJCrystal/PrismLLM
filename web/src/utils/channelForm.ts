@@ -89,16 +89,21 @@ export function buildChannelPayload(
   }
   if (keys.length) {
     payload.keys = keys.map((key) => {
-      const state: ChannelKeyState = key.state || (key.enabled === false ? 'MANUAL_DISABLED' : 'ACTIVE')
-      if (state !== 'ACTIVE' && state !== 'MANUAL_DISABLED') {
+      const rawState = key.state ?? (key.enabled === false ? 'MANUAL_DISABLED' : key.id ? undefined : 'ACTIVE')
+      const isAutoDisabled = rawState === 'AUTO_TEMPORARY' || rawState === 'AUTO_PERMANENT'
+      if (!key.id && isAutoDisabled) {
         throw new Error(`密钥「${key.name || ''}」的状态只能提交 ACTIVE 或 MANUAL_DISABLED；自动停用状态由系统维护`)
       }
+      if (rawState !== undefined && rawState !== 'ACTIVE' && rawState !== 'MANUAL_DISABLED' && !isAutoDisabled) {
+        throw new Error(`密钥「${key.name || ''}」的状态只能提交 ACTIVE 或 MANUAL_DISABLED；自动停用状态由系统维护`)
+      }
+      const assignableState = (rawState === 'ACTIVE' || rawState === 'MANUAL_DISABLED') ? rawState : undefined
       return {
         id: key.id || null,
         ...(key.id && key.stateVersion != null ? { stateVersion: key.stateVersion } : {}),
         name: String(key.name ?? '').trim(),
         credential: String(key.credential ?? '').trim() || null,
-        state: state as 'ACTIVE' | 'MANUAL_DISABLED',
+        ...(assignableState ? { state: assignableState } : {}),
         priority: key.priority === '' || key.priority === null || key.priority === undefined
           ? 1
           : Number(key.priority) || 1,

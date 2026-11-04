@@ -970,10 +970,6 @@ async function save(): Promise<void> {
       notify(`新建密钥「${name}」必须提供上游凭据`, 'error')
       return
     }
-    if (key.originalState === 'AUTO_PERMANENT' && key.state === 'ACTIVE' && !key.credential.trim()) {
-      notify(`密钥「${name}」因凭据失效被永久停用，重新启用前必须更换上游凭据`, 'error')
-      return
-    }
     if (!key.models.length) {
       notify(`密钥「${name}」至少需要授权一个模型`, 'error')
       return
@@ -1459,7 +1455,7 @@ onMounted(load)
               </div>
               <div v-if="key.originalState === 'AUTO_PERMANENT'" class="callout" :class="key.state === 'ACTIVE' ? 'info' : 'danger'">
                 <strong>{{ key.state === 'ACTIVE' ? '保存后重新启用' : '已自动永久停用' }}<template v-if="key.autoDisableReason">：{{ key.autoDisableReason }}</template></strong>
-                <p>{{ key.state === 'ACTIVE' ? '保存前必须在下方输入新的上游凭据；保存后将恢复为正常状态并重置失败计数。' : '上游鉴权持续失败或凭据失效。重新启用前必须更换上游凭据。' }}</p>
+                <p>{{ key.state === 'ACTIVE' ? '保存后将人工恢复为正常状态，可保留当前凭据或在下方替换凭据；失败计数会重置，但上游问题未解决时可能再次触发禁用。' : '上游鉴权、账号或余额问题触发了永久禁用，不会自动恢复。修复上游问题后可点击「启用」并保存，当前凭据无需更换。' }}</p>
               </div>
               <div v-else-if="key.originalState === 'AUTO_TEMPORARY'" class="callout" :class="key.state === 'ACTIVE' ? 'info' : 'warning'">
                 <strong>{{ key.state === 'ACTIVE' ? '保存后提前启用' : '已自动临时停用' }}<template v-if="key.autoDisableReason">：{{ key.autoDisableReason }}</template></strong>

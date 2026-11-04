@@ -26,7 +26,6 @@ import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.ChannelKeyStateChangedException
-import dev.soven.llmgateway.repo.ChannelKeyReenableRequiresCredentialException
 import dev.soven.llmgateway.report.LogRetentionService
 import dev.soven.llmgateway.quota.ClientKeyQuotaService
 import dev.soven.llmgateway.quota.ChannelKeyRateLimiter
@@ -330,15 +329,6 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             json(gatewayJson)
         }
         app.install(StatusPages) {
-            exception<ChannelKeyReenableRequiresCredentialException> { call, cause ->
-                call.markAdminAuditError("channel_key_reenable_requires_credential")
-                call.respondGatewayError(
-                    HttpStatusCode.BadRequest,
-                    "channel_key_reenable_requires_credential",
-                    cause.message ?: "自动禁用的密钥必须更换凭据后才能重新启用",
-                    "invalid_request_error",
-                )
-            }
             exception<ChannelKeyStateChangedException> { call, cause ->
                 call.markAdminAuditError("channel_key_state_changed")
                 call.respondGatewayError(

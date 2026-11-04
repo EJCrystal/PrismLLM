@@ -85,7 +85,7 @@ onMounted(load)
         <span class="switch"></span>
         <span>
           <strong>启用密钥自动禁用</strong>
-          <small>规则按顺序匹配，首条命中生效；临时停用到期自动恢复，永久停用需更换凭据后人工启用。</small>
+          <small>规则按顺序匹配，首条命中生效；临时停用到期自动恢复，永久停用不会自动恢复，可保留当前凭据人工启用。</small>
         </span>
       </label>
 
