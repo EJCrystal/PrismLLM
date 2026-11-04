@@ -67,7 +67,7 @@ internal fun messagesToChatRequest(request: JsonObject): JsonObject = buildJsonO
         }
     }
     put("messages", JsonArray(messages))
-    request["tools"]?.let { toolsElement ->
+    request["tools"]?.takeIf { it !is JsonNull }?.let { toolsElement ->
         val tools = toolsElement as? JsonArray ?: unsupported("tools", "tools 必须是数组")
         put("tools", JsonArray(tools.mapIndexed { index, element ->
             val tool = element as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
@@ -83,7 +83,7 @@ internal fun messagesToChatRequest(request: JsonObject): JsonObject = buildJsonO
             }
         }))
     }
-    request["tool_choice"]?.let { choice -> put("tool_choice", anthropicToolChoiceToChat(choice as? JsonObject)) }
+    request["tool_choice"]?.takeIf { it !is JsonNull }?.let { choice -> put("tool_choice", anthropicToolChoiceToChat(choice as? JsonObject)) }
     if ((request["tool_choice"] as? JsonObject)?.boolean("disable_parallel_tool_use") == true) {
         put("parallel_tool_calls", false)
     }
@@ -146,7 +146,7 @@ internal fun chatToMessagesRequest(chat: JsonObject, upstreamModel: String): Jso
     flushToolResults()
     if (system.isNotEmpty()) put("system", system.joinToString("\n"))
     put("messages", JsonArray(messages))
-    chat["tools"]?.let { toolsElement ->
+    chat["tools"]?.takeIf { it !is JsonNull }?.let { toolsElement ->
         val tools = toolsElement as? JsonArray ?: unsupported("tools", "tools 必须是数组")
         put("tools", JsonArray(tools.mapIndexed { index, element ->
             val tool = element as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
@@ -160,7 +160,7 @@ internal fun chatToMessagesRequest(chat: JsonObject, upstreamModel: String): Jso
     }
     val disableParallelToolUse = chat.boolean("parallel_tool_calls") == false
     val hasTools = (chat["tools"] as? JsonArray)?.isNotEmpty() == true
-    val toolChoice = chat["tool_choice"]
+    val toolChoice = chat["tool_choice"]?.takeIf { it !is JsonNull }
     if (toolChoice != null) {
         put("tool_choice", chatToolChoiceToAnthropic(toolChoice, disableParallelToolUse))
     } else if (disableParallelToolUse && hasTools) {

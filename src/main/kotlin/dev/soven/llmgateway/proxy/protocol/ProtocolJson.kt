@@ -167,6 +167,7 @@ internal fun JsonObject.textContentStrict(key: String, path: String): String = w
         val obj = element as? JsonObject ?: unsupported("$path[$index]", "内容块必须是对象")
         when (obj.string("type")) {
             "text", "input_text", "output_text" -> obj.string("text").orEmpty()
+            "refusal" -> obj.string("refusal").orEmpty()
             else -> unsupported("$path[$index].type", "第一版不支持该内容类型")
         }
     }.joinToString("\n")

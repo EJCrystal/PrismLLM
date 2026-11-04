@@ -69,7 +69,7 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
         flushText()
     }
     put("input", JsonArray(input))
-    request["tools"]?.let { element ->
+    request["tools"]?.takeIf { it !is JsonNull }?.let { element ->
         val tools = element as? JsonArray ?: unsupported("tools", "tools 必须是数组")
         put("tools", JsonArray(tools.mapIndexed { index, value ->
             val tool = value as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
@@ -82,7 +82,7 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
             }
         }))
     }
-    request["tool_choice"]?.let { element ->
+    request["tool_choice"]?.takeIf { it !is JsonNull }?.let { element ->
         val choice = element as? JsonObject
         put("tool_choice", when (choice?.string("type")) {
             "any" -> JsonPrimitive("required")
@@ -167,7 +167,7 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
     flushToolResults()
     if (system.isNotEmpty()) put("system", system.joinToString("\n"))
     put("messages", JsonArray(messages))
-    request["tools"]?.let { element ->
+    request["tools"]?.takeIf { it !is JsonNull }?.let { element ->
         val tools = element as? JsonArray ?: unsupported("tools", "tools 必须是数组")
         put("tools", JsonArray(tools.mapIndexed { index, value ->
             val tool = value as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
@@ -179,7 +179,7 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
             }
         }))
     }
-    val choice = request["tool_choice"]
+    val choice = request["tool_choice"]?.takeIf { it !is JsonNull }
     val disableParallel = request.boolean("parallel_tool_calls") == false
     if (choice != null || disableParallel && (request["tools"] as? JsonArray)?.isNotEmpty() == true) {
         putJsonObject("tool_choice") {

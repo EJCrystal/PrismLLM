@@ -1081,6 +1081,26 @@ class ProtocolConversionTest {
         assertFalse(resp3.containsKey("parallel_tool_calls"))
         assertFalse(resp3.containsKey("tools"))
         assertFalse(resp3.containsKey("tool_choice"))
+
+        val chatMessagesNulls = json("""{"messages":[{"role":"user","content":"hi"}],"tools":null,"tool_choice":null}""")
+        val msg3 = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, chatMessagesNulls, "upstream")
+        assertFalse(msg3.containsKey("tools"))
+        assertFalse(msg3.containsKey("tool_choice"))
+
+        val messagesChatNulls = json("""{"messages":[{"role":"user","content":"hi"}],"tools":null,"tool_choice":null}""")
+        val chat4 = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, messagesChatNulls, "upstream")
+        assertFalse(chat4.containsKey("tools"))
+        assertFalse(chat4.containsKey("tool_choice"))
+
+        val responsesMessagesNulls = json("""{"input":[{"type":"message","role":"user","content":"hi"}],"tools":null,"tool_choice":null}""")
+        val msg4 = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES, responsesMessagesNulls, "upstream")
+        assertFalse(msg4.containsKey("tools"))
+        assertFalse(msg4.containsKey("tool_choice"))
+
+        val responsesChatNulls = json("""{"input":[{"type":"message","role":"user","content":"hi"}],"tools":null,"tool_choice":null}""")
+        val chat5 = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, responsesChatNulls, "upstream")
+        assertFalse(chat5.containsKey("tools"))
+        assertFalse(chat5.containsKey("tool_choice"))
     }
 
     @Test
@@ -1351,5 +1371,32 @@ class ProtocolConversionTest {
         val respContents = geminiFromResp.array("contents")
         assertEquals(1, respContents.size)
         assertEquals("hello", respContents[0].jsonObject.array("parts").single().jsonObject.string("text"))
+    }
+
+    @Test
+    fun `responses refusal output replay is accepted by all target request conversions`() {
+        val request = json("""{
+            "input":[
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},
+                {"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"cannot help"}]}
+            ]
+        }""")
+        val chat = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, request, "upstream")
+        val chatMessages = chat.array("messages")
+        assertEquals(2, chatMessages.size)
+        assertEquals("assistant", chatMessages[1].jsonObject.string("role"))
+        assertEquals("cannot help", chatMessages[1].jsonObject.string("refusal"))
+
+        val messages = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES, request, "upstream")
+        val msgList = messages.array("messages")
+        assertEquals(2, msgList.size)
+        assertEquals("assistant", msgList[1].jsonObject.string("role"))
+        assertEquals("cannot help", msgList[1].jsonObject.array("content").single().jsonObject.string("text"))
+
+        val gemini = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, request, "upstream")
+        val contents = gemini.array("contents")
+        assertEquals(2, contents.size)
+        assertEquals("model", contents[1].jsonObject.string("role"))
+        assertEquals("cannot help", contents[1].jsonObject.array("parts").single().jsonObject.string("text"))
     }
 }

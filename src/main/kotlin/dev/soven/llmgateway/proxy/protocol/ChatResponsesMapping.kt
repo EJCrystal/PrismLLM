@@ -76,7 +76,7 @@ internal fun responsesToChatRequest(request: JsonObject): JsonObject = buildJson
         else -> unsupported("input", "input 必须是字符串或数组")
     }
     put("messages", JsonArray(messages))
-    request["tools"]?.let { toolsElement ->
+    request["tools"]?.takeIf { it !is JsonNull }?.let { toolsElement ->
         val tools = toolsElement as? JsonArray ?: unsupported("tools", "tools 必须是数组")
         put("tools", JsonArray(tools.mapIndexed { index, element ->
             val tool = element as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
@@ -94,7 +94,7 @@ internal fun responsesToChatRequest(request: JsonObject): JsonObject = buildJson
             }
         }))
     }
-    request["tool_choice"]?.let { choice -> put("tool_choice", responsesToolChoiceToChat(choice)) }
+    request["tool_choice"]?.takeIf { it !is JsonNull }?.let { choice -> put("tool_choice", responsesToolChoiceToChat(choice)) }
 }
 
 internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {
@@ -307,6 +307,7 @@ internal fun chatToResponsesResponse(chat: JsonObject, model: String): JsonObjec
 
 internal fun responsesMessageToChat(item: JsonObject, path: String): JsonObject {
     val text = mutableListOf<String>()
+    val refusals = mutableListOf<String>()
     when (val content = item["content"]) {
         JsonNull -> Unit
         is JsonPrimitive -> text += content.content
@@ -314,6 +315,7 @@ internal fun responsesMessageToChat(item: JsonObject, path: String): JsonObject 
             val obj = part as? JsonObject ?: unsupported("$path.content[$index]", "内容块必须是对象")
             when (obj.string("type")) {
                 "input_text", "output_text", "text" -> text += obj.string("text").orEmpty()
+                "refusal" -> obj.string("refusal")?.takeIf { it.isNotEmpty() }?.let { refusals += it }
                 "input_image", "input_file", "input_audio" -> unsupported("$path.content[$index].type", "第一版不支持多模态内容")
                 else -> unsupported("$path.content[$index].type", "第一版不支持该 Responses 内容")
             }
@@ -323,7 +325,10 @@ internal fun responsesMessageToChat(item: JsonObject, path: String): JsonObject 
     }
     return buildJsonObject {
         put("role", item.string("role") ?: "user")
-        put("content", text.joinToString("\n"))
+        if (text.isNotEmpty()) put("content", text.joinToString("\n"))
+        else if (refusals.isNotEmpty()) put("content", JsonNull)
+        else put("content", "")
+        if (refusals.isNotEmpty()) put("refusal", refusals.joinToString("\n"))
     }
 }
 
