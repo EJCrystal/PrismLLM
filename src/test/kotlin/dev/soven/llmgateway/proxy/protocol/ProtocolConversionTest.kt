@@ -690,4 +690,36 @@ class ProtocolConversionTest {
         val messages = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, chat, "upstream")
         assertFalse(messages.toString().contains("\"text\":\"null\""), messages.toString())
     }
+
+    @Test
+    fun `gemini function responses pair with parallel calls by fifo`() {
+        val gemini = json("""{
+            "contents":[
+                {"role":"model","parts":[{"functionCall":{"name":"f","args":{}}},{"functionCall":{"name":"f","args":{}}}]},
+                {"role":"user","parts":[{"functionResponse":{"name":"f","response":{"content":"a"}}},{"functionResponse":{"name":"f","response":{"content":"b"}}}]}
+            ]
+        }""")
+        val chat = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.CHAT_COMPLETIONS, gemini, "upstream")
+        val messages = chat["messages"]!!.jsonArray
+        val ids = messages.filter { it.jsonObject["role"]!!.jsonPrimitive.content == "assistant" }
+            .flatMap { it.jsonObject["tool_calls"]!!.jsonArray }.map { it.jsonObject["id"]!!.jsonPrimitive.content }
+        val toolIds = messages.filter { it.jsonObject["role"]!!.jsonPrimitive.content == "tool" }
+            .map { it.jsonObject["tool_call_id"]!!.jsonPrimitive.content }
+        assertEquals(ids, toolIds)
+    }
+
+    @Test
+    fun `gemini thoughts count into chat output tokens`() {
+        val gemini = json("""{"responseId":"r","candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3,"thoughtsTokenCount":2,"totalTokenCount":10}}""")
+        val chat = ProtocolConversion.convertResponse(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, gemini, "public")
+        assertEquals("5", chat["usage"]!!.jsonObject["prompt_tokens"]!!.jsonPrimitive.content)
+        assertEquals("5", chat["usage"]!!.jsonObject["completion_tokens"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `gemini stream encoder skips frames without candidates`() {
+        val converter = ProtocolConversion.streamConverter(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, "public")!!
+        val frames = converter.feed("""data: {"id":"c1","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}""") + converter.feed("")
+        assertTrue(frames.isEmpty(), frames.joinToString("\n"))
+    }
 }
