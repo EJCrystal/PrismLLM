@@ -105,6 +105,21 @@ class GatewayAccessLogTest {
     }
 
     @Test
+    fun truncatesEscapedUserAgentAtTheFirstValueThatDoesNotFit() {
+        val metadata = requestAccessLogMetadata(
+            requestId = null,
+            cloudflareConnectingIp = null,
+            forwardedFor = null,
+            realIp = null,
+            forwarded = null,
+            peerIp = "198.51.100.10",
+            userAgent = "a".repeat(510) + " =tail",
+        )
+
+        assertEquals("a".repeat(510), metadata.userAgent)
+    }
+
+    @Test
     fun skipsInvalidForwardedValuesAndUsesNextValidHeader() {
         val metadata = requestAccessLogMetadata(
             requestId = null,

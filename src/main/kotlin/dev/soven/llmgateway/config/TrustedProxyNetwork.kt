@@ -29,12 +29,18 @@ class TrustedProxyNetwork private constructor(
             require(parts.size in 1..2 && parts[0].isNotBlank()) { "无效的可信代理网段: $value" }
             val address = parseAddress(parts[0])
                 ?: error("无效的可信代理 IP 地址: $value")
-            val prefixLength = parts.getOrNull(1)?.toIntOrNull() ?: if (parts.size == 1) {
-                address.size * 8
+            val mappedIpv4 = parts[0].contains(':') && address.size == 4
+            val maxPrefixLength = if (mappedIpv4) 128 else address.size * 8
+            val rawPrefixLength = parts.getOrNull(1)?.toIntOrNull() ?: if (parts.size == 1) {
+                maxPrefixLength
             } else {
                 error("无效的可信代理网段前缀: $value")
             }
-            require(prefixLength in 0..address.size * 8) { "可信代理网段前缀超出范围: $value" }
+            require(rawPrefixLength in 0..maxPrefixLength) { "可信代理网段前缀超出范围: $value" }
+            if (mappedIpv4) {
+                require(rawPrefixLength >= 96) { "可信代理网段前缀超出范围: $value" }
+            }
+            val prefixLength = if (mappedIpv4) rawPrefixLength - 96 else rawPrefixLength
             return TrustedProxyNetwork(address, prefixLength)
         }
 

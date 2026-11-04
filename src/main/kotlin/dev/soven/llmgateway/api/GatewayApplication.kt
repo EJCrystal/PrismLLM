@@ -195,22 +195,21 @@ private fun sanitizeLogValue(value: String?, maxLength: Int = 128): String {
     val normalized = value
         ?.replace(Regex("[\\r\\n\\t]+"), " ")
         ?.trim()
-        ?.take(maxLength)
         ?.takeUnless { it.isNullOrBlank() }
         ?: return "-"
     return escapeLogValue(normalized, maxLength)
 }
 
 private fun escapeLogValue(value: String, maxLength: Int): String {
-    val escaped = StringBuilder(value.length)
-    value.forEach { character ->
+    val escaped = StringBuilder(minOf(value.length, maxLength))
+    for (character in value) {
         val replacement = when (character) {
             '%' -> "%25"
             ' ' -> "%20"
             '=' -> "%3D"
             else -> character.toString()
         }
-        if (escaped.length + replacement.length > maxLength) return@forEach
+        if (escaped.length + replacement.length > maxLength) break
         escaped.append(replacement)
     }
     return escaped.toString().ifEmpty { "-" }
