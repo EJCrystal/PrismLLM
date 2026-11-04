@@ -662,6 +662,98 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `upstream pseudo 400 triggers failover to next candidate and cools down failed channel`() = runBlocking {
+        val primary = createChannel("pseudo-400-primary", "pseudo-400")
+        val secondary = createChannel("pseudo-400-secondary", "ok")
+        exposeAsModel("pseudo-chat", primary to "m1", secondary to "m2")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"pseudo-chat","stream":true,"input":"hi"}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(2, fake.requests.size)
+            val log = awaitRequestLog()
+            assertEquals(secondary.id, log.channelId)
+            assertEquals(200, log.statusCode)
+            assertEquals(2, log.upstreamAttempts)
+            assertEquals(listOf(1, 2), log.attempts.map { it.index })
+
+            val failedAttempt = log.attempts.first()
+            assertEquals(primary.id, failedAttempt.channelId)
+            assertEquals("pseudo-400-primary", failedAttempt.channelName)
+            assertEquals(400, failedAttempt.statusCode)
+            assertEquals("upstream_error", failedAttempt.errorCode)
+            assertTrue(failedAttempt.errorMessage!!.contains("上游服务不可用"), failedAttempt.errorMessage)
+            assertTrue(failedAttempt.retryable)
+
+            val succeededAttempt = log.attempts.last()
+            assertEquals(secondary.id, succeededAttempt.channelId)
+            assertEquals(200, succeededAttempt.statusCode)
+            assertNull(succeededAttempt.errorCode)
+            assertTrue(succeededAttempt.committed)
+        }
+    }
+
+    @Test
+    fun `standard 400 does not retry and returns bad request immediately`() = runBlocking {
+        val primary = createChannel("standard-400-primary", "standard-400")
+        val secondary = createChannel("standard-400-secondary", "ok")
+        exposeAsModel("standard-400-chat", primary to "m1", secondary to "m2")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"standard-400-chat","stream":false,"messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertEquals(1, fake.requests.size)
+            val log = awaitRequestLog()
+            assertEquals(primary.id, log.channelId)
+            assertEquals(400, log.statusCode)
+            assertEquals(1, log.upstreamAttempts)
+
+            val failedAttempt = log.attempts.single()
+            assertEquals(primary.id, failedAttempt.channelId)
+            assertEquals(400, failedAttempt.statusCode)
+            assertFalse(failedAttempt.retryable)
+        }
+    }
+
+    @Test
+    fun `all pseudo 400 candidates exhausted returns bad gateway 502`() = runBlocking {
+        val primary = createChannel("all-pseudo-400", "pseudo-400")
+        exposeAsModel("exhausted-pseudo-chat", primary to "m1")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"exhausted-pseudo-chat","stream":false,"messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.BadGateway, response.status)
+            assertEquals(1, fake.requests.size)
+            val log = awaitRequestLog()
+            assertEquals(502, log.statusCode)
+            val failedAttempt = log.attempts.single()
+            assertEquals(400, failedAttempt.statusCode)
+            assertTrue(failedAttempt.retryable)
+        }
+    }
+
+    @Test
     fun `channel key RPM is shared across models and returns retry after`() = runBlocking {
         val policy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1)
         val channel = app.channelRepository.create(

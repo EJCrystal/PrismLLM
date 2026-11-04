@@ -813,7 +813,7 @@ private fun classifyFailure(e: GatewayException): FailureKind? = when (e.code) {
         401, 403 -> FailureKind.AUTH_REJECTED
         404 -> FailureKind.MODEL_NOT_FOUND
         null -> null
-        else -> if (e.upstreamStatus >= 500) FailureKind.SERVER_ERROR else null
+        else -> if (e.upstreamStatus >= 500 || e.retryable) FailureKind.SERVER_ERROR else null
     }
     else -> null
 }
@@ -1339,6 +1339,36 @@ private fun clientDisconnected(): GatewayException =
 
 private const val MAX_KEY_MATCH_BODY_CHARS = 8_192
 
+// 常见中转商在内部渠道故障时返回的伪 400 特征错误码
+private val UPSTREAM_ERROR_CODES = setOf(
+    "upstream_error",
+    "one_api_error",
+    "new_api_error",
+    "channel_error",
+    "no_available_channel",
+    "upstream_unavailable",
+    "all_channels_failed",
+    "all_upstreams_failed",
+    "provider_error",
+    "upstream_timeout",
+)
+
+private fun isUpstreamPseudo400(statusCode: Int, upstreamCode: String?, body: String): Boolean {
+    if (statusCode != 400) return false
+    if (upstreamCode != null && upstreamCode.lowercase() in UPSTREAM_ERROR_CODES) {
+        return true
+    }
+    val lowerBody = body.lowercase()
+    return lowerBody.contains("模型请求失败") ||
+        lowerBody.contains("请稍后重试或更换模型") ||
+        lowerBody.contains("无可用渠道") ||
+        lowerBody.contains("all upstream channels failed") ||
+        lowerBody.contains("all channels failed") ||
+        lowerBody.contains("upstream error") ||
+        lowerBody.contains("no channel available") ||
+        lowerBody.contains("no available upstream")
+}
+
 private fun upstreamException(
     status: HttpStatusCode,
     body: String,
@@ -1351,23 +1381,29 @@ private fun upstreamException(
             (protocol == GatewayProtocol.GEMINI && isGeminiErrorBody(it))
     }
     val upstreamCode = runCatching {
-        val error = Json.parseToJsonElement(body).jsonObject["error"] as? JsonObject
+        val root = Json.parseToJsonElement(body).jsonObject
+        val error = root["error"] as? JsonObject
         (error?.get("code") as? JsonPrimitive)?.contentOrNull
             ?: (error?.get("type") as? JsonPrimitive)?.contentOrNull
+            ?: (root["code"] as? JsonPrimitive)?.contentOrNull
+            ?: (root["type"] as? JsonPrimitive)?.contentOrNull
     }.getOrNull()
+    val isPseudo400 = isUpstreamPseudo400(status.value, upstreamCode, body)
     val mapped = when {
-        nativeResponseBody != null -> status
+        nativeResponseBody != null && !isPseudo400 -> status
         status.value == 429 -> HttpStatusCode.TooManyRequests
+        isPseudo400 -> HttpStatusCode.BadGateway
         status.value in setOf(400, 404, 422) -> status
         else -> HttpStatusCode.BadGateway
     }
     val message = when {
+        isPseudo400 -> "上游服务不可用"
         status.value == 401 || status.value == 403 -> "上游凭据无效或无权访问"
         status.value == 429 -> "上游限流"
         status.value >= 500 -> "上游服务不可用"
         else -> "上游返回错误 ${status.value}"
     }
-    val retryable = status.value == 429 || status.value >= 500 || status.value == 401 || status.value == 403 || status.value == 404
+    val retryable = isPseudo400 || status.value == 429 || status.value >= 500 || status.value == 401 || status.value == 403 || status.value == 404
     return GatewayException(
         status = mapped,
         code = "upstream_error",
@@ -1377,7 +1413,7 @@ private fun upstreamException(
         retryable = retryable,
         retryAfterMs = retryAfterMs.takeIf { retryable },
         upstreamStatus = status.value,
-        nativeResponseBody = nativeResponseBody,
+        nativeResponseBody = nativeResponseBody.takeUnless { isPseudo400 },
         upstreamErrorBody = body.take(MAX_KEY_MATCH_BODY_CHARS),
     )
 }

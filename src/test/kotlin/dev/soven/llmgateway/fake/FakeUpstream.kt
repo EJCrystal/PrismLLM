@@ -180,6 +180,22 @@ class FakeUpstream {
                 call.respondText(ERROR_500, ContentType.Application.Json, HttpStatusCode.InternalServerError)
                 return
             }
+            "pseudo-400" -> {
+                call.respondText(
+                    """{"error":{"message":"模型请求失败，请稍后重试或更换模型。","type":"upstream_error","param":"","code":null}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
+            "standard-400" -> {
+                call.respondText(
+                    """{"error":{"message":"Invalid parameter: max_tokens must be positive","type":"invalid_request_error","param":"max_tokens","code":null}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
             "model-route" -> {
                 if (model != null && model in failingModels) {
                     call.respondText(ERROR_429, ContentType.Application.Json, HttpStatusCode.TooManyRequests)
@@ -303,6 +319,22 @@ class FakeUpstream {
             }
             "500" -> {
                 call.respondText(ERROR_500, ContentType.Application.Json, HttpStatusCode.InternalServerError)
+                return
+            }
+            "pseudo-400" -> {
+                call.respondText(
+                    """{"error":{"message":"模型请求失败，请稍后重试或更换模型。","type":"upstream_error","param":"","code":null}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
+            "standard-400" -> {
+                call.respondText(
+                    """{"error":{"message":"Invalid parameter: max_tokens must be positive","type":"invalid_request_error","param":"max_tokens","code":null}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
                 return
             }
         }
