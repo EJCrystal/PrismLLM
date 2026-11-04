@@ -1,11 +1,11 @@
 # llm-gateway
 
-面向内部团队的 LLM 网关，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 Gemini 的原生透传，以及前三种协议间的跨协议转换。网关按渠道授权与对外模型 ID 路由，同协议优先，必要时按渠道协议顺序转换，并支持全局/渠道级 UA、请求头和请求体覆盖。
+面向内部团队的 LLM 网关，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 Gemini 的原生透传，以及四种协议间的十二个方向跨协议转换。网关按渠道授权与对外模型 ID 路由，同协议优先，必要时按渠道协议顺序转换，并支持全局/渠道级 UA、请求头和请求体覆盖。
 
 ## 能力边界
 
-- 协议入口 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 与 Gemini `/v1beta/models/{model}:generateContent` / `:streamGenerateContent`，支持流式和非流式请求；前三种协议可互相转换。
-- 渠道按有序的 `chat_completions`、`responses`、`messages`、`gemini` 声明支持协议；同协议候选优先，原生候选不可用后按该顺序选择前三种协议中的转换目标。
+- 协议入口 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 与 Gemini `/v1beta/models/{model}:generateContent` / `:streamGenerateContent`，支持流式和非流式请求；四种协议可互相转换。
+- 渠道按有序的 `chat_completions`、`responses`、`messages`、`gemini` 声明支持协议；同协议候选优先，原生候选不可用后按该顺序选择四种协议中的转换目标。
 - 全局和渠道均可覆盖上游 UA、请求头及 JSON 请求体，按实际出站协议应用 Claude、Codex、Google SDK 或 Antigravity 预设。
 - 渠道显式授权上游模型；可配置「对外模型 ID」，留空时沿用上游模型名。渠道启用即参与直连暴露。
 - 渠道支持密钥池：每个密钥独立保存凭据、启用状态、优先级和可用模型；同一渠道内按密钥优先级分档，同档密钥轮询。
@@ -21,9 +21,9 @@
 - PostgreSQL + Flyway；单实例部署。
 - 可选的渠道共享额度查询：独立的 Sub2API / New API 插件包，支持通过 JVM ServiceLoader 加载自定义可信 JAR。
 
-明确不做：多租户 RBAC、语义缓存、MCP、多副本。协议转换第一版不支持 Gemini、图片、文件、音频、Provider 内置工具和 Responses 有状态续接。
+明确不做：多租户 RBAC、语义缓存、MCP、多副本。跨协议转换不支持图片、文件、音频、Provider 内置工具和 Responses 有状态续接。
 
-跨协议转换通过统一接口和六个显式方向实现，Messages ↔ Responses 不再通过 Chat Completions 中转；接口职责、字段支持及限制见 [协议转换说明](docs/protocol-conversion.md)。
+跨协议转换通过统一接口和十二个显式方向实现（含 Gemini），Messages ↔ Responses 不再通过 Chat Completions 中转；接口职责、字段支持及限制见 [协议转换说明](docs/protocol-conversion.md)。
 
 ## 架构
 

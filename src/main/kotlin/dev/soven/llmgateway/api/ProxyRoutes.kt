@@ -997,7 +997,8 @@ private suspend fun proxyStream(
     } else {
         ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel)
     }
-    val body = policy.body(convertedRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+    val streamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = true)
+    val body = policy.body(streamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
     val converter = ProtocolConversion.streamConverter(protocol, upstreamProtocol, alias)
 
     try {
@@ -1217,7 +1218,8 @@ private suspend fun proxyJson(
     } else {
         ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel)
     }
-    val body = policy.body(convertedRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+    val nonStreamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = false)
+    val body = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
     try {
         withTimeout(timeoutMs) {
             state.upstreamCallStarted = true
@@ -1314,6 +1316,11 @@ private fun transportFailure(committed: Boolean): GatewayException =
         "api_error",
         retryable = !committed,
     )
+
+/** Gemini carries streaming in the URL action; other protocols need an explicit JSON flag. */
+private fun withUpstreamStreamFlag(request: JsonObject, protocol: GatewayProtocol, stream: Boolean): JsonObject =
+    if (protocol == GatewayProtocol.GEMINI) request
+    else JsonObject(request + ("stream" to JsonPrimitive(stream)))
 
 private fun clientDisconnected(): GatewayException =
     GatewayException(

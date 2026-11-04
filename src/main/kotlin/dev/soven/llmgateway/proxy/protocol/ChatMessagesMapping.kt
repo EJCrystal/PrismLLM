@@ -38,6 +38,7 @@ internal fun messagesToChatRequest(request: JsonObject): JsonObject = buildJsonO
         val toolCalls = mutableListOf<JsonObject>()
         val toolResults = mutableListOf<JsonObject>()
         when (val content = message["content"]) {
+            JsonNull -> Unit
             is JsonPrimitive -> text += content.content
             is JsonArray -> content.forEachIndexed { partIndex, partElement ->
                 val part = partElement as? JsonObject
@@ -220,6 +221,12 @@ internal fun chatToMessagesResponse(chat: JsonObject, model: String): JsonObject
             put("text", text)
         }
     }
+    message?.string("refusal")?.takeIf { it.isNotEmpty() }?.let { refusal ->
+        content += buildJsonObject {
+            put("type", "text")
+            put("text", refusal)
+        }
+    }
     (message?.get("tool_calls") as? JsonArray)?.forEachIndexed { index, element ->
         val call = element as? JsonObject ?: return@forEachIndexed
         val function = call["function"] as? JsonObject ?: return@forEachIndexed
@@ -246,6 +253,7 @@ internal fun chatMessageToAnthropic(message: JsonObject, path: String): JsonObje
     val role = message.string("role") ?: "user"
     val blocks = mutableListOf<JsonObject>()
     when (val content = message["content"]) {
+        JsonNull -> Unit
         is JsonPrimitive -> if (content.content.isNotEmpty()) blocks += buildJsonObject {
             put("type", "text")
             put("text", content.content)

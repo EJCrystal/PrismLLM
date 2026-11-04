@@ -36,6 +36,7 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
             text.clear()
         }
         when (val content = message["content"]) {
+            JsonNull -> Unit
             is JsonPrimitive -> text += responseTextBlock(content.content, role)
             is JsonArray -> content.forEachIndexed { partIndex, partElement ->
                 val partPath = "$path.content[$partIndex]"
@@ -122,6 +123,7 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
         toolResults.clear()
     }
     when (val input = request["input"]) {
+        JsonNull -> Unit
         is JsonPrimitive -> if (input.content.isNotEmpty()) {
             messages += messageWithBlocks("user", listOf(messageTextBlock(input.content)))
         }
@@ -257,6 +259,7 @@ internal fun responsesToMessagesResponse(response: JsonObject, model: String): J
                 val block = part as? JsonObject ?: unsupported("output[$index].content[$partIndex]", "内容块必须是对象")
                 when (block.string("type")) {
                     "text", "output_text" -> content += messageTextBlock(block.string("text").orEmpty())
+                    "refusal" -> block.string("refusal")?.takeIf { it.isNotEmpty() }?.let { content += messageTextBlock(it) }
                     else -> unsupported("output[$index].content[$partIndex].type", "第一版不支持该 Responses 输出内容")
                 }
             }

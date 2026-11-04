@@ -101,6 +101,7 @@ internal class MessagesStreamDecoder : StreamDecoder {
 internal class ResponsesStreamDecoder : StreamDecoder {
     private var nativeUsage: JsonObject? = null
     private var responseId: String? = null
+    private val fallbackId = "resp_" + System.currentTimeMillis()
     private var responseToolSeen = false
     private var responseRefused = false
     override val usage: TokenUsage? get() = TokenUsage.fromResponses(nativeUsage)
@@ -109,7 +110,7 @@ internal class ResponsesStreamDecoder : StreamDecoder {
         val type = json.string("type") ?: return emptyList()
         val response = json["response"] as? JsonObject
         responseId = response?.string("id") ?: responseId
-        val id = responseId ?: "resp_${System.currentTimeMillis()}"
+        val id = responseId ?: fallbackId
         return when (type) {
             "response.created" -> listOf(StreamEvent(id, role = "assistant"))
             "response.output_text.delta" -> listOf(StreamEvent(id, content = json.string("delta")))
@@ -178,12 +179,14 @@ internal class GeminiStreamDecoder : StreamDecoder {
     private var nativeUsage: JsonObject? = null
     private var responseId: String? = null
     private var toolIndex = 0
+    private var toolSeen = false
+    private val fallbackId = "gemini_" + System.currentTimeMillis()
     override val usage: TokenUsage? get() = TokenUsage.fromGemini(nativeUsage)
 
     override fun decode(json: JsonObject): List<StreamEvent> {
         nativeUsage = mergeUsage(nativeUsage, json["usageMetadata"] as? JsonObject)
         responseId = json.string("responseId") ?: responseId
-        val id = responseId ?: "gemini_${System.currentTimeMillis()}"
+        val id = responseId ?: fallbackId
         if (json["error"] is JsonObject) return listOf(StreamEvent(id, error = streamErrorText(json["error"])))
         val candidates = json.array("candidates")
         val candidate = candidates.firstOrNull() as? JsonObject
@@ -196,6 +199,7 @@ internal class GeminiStreamDecoder : StreamDecoder {
             val call = obj["functionCall"] as? JsonObject
             when {
                 call != null -> {
+                    toolSeen = true
                     events += StreamEvent(id, toolCalls = listOf(ToolCallDelta(
                         index = toolIndex++,
                         id = call.string("id"),
@@ -203,12 +207,16 @@ internal class GeminiStreamDecoder : StreamDecoder {
                         arguments = (call["args"] ?: JsonObject(emptyMap())).toString(),
                     )))
                 }
-                obj.boolean("thought") == true -> obj.string("text")?.let { events += StreamEvent(id, content = it) }
+                obj.boolean("thought") == true -> Unit
                 else -> obj.string("text")?.let { events += StreamEvent(id, content = it) }
             }
         }
         candidate?.string("finishReason")?.let { reason ->
-            events += StreamEvent(id, finishReason = geminiStreamFinish(reason), done = true)
+            events += StreamEvent(
+                id,
+                finishReason = if (reason == "STOP" && toolSeen) FinishReason.TOOL_CALLS else geminiStreamFinish(reason),
+                done = true,
+            )
         }
         return events
     }

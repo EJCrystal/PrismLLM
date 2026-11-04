@@ -161,6 +161,7 @@ internal fun JsonObject.stringOrStringArray(key: String): List<String>? = when (
 }
 
 internal fun JsonObject.textContentStrict(key: String, path: String): String = when (val value = this[key]) {
+    JsonNull -> ""
     is JsonPrimitive -> value.contentOrNull.orEmpty()
     is JsonArray -> value.mapIndexed { index, element ->
         val obj = element as? JsonObject ?: unsupported("$path[$index]", "内容块必须是对象")
@@ -169,7 +170,7 @@ internal fun JsonObject.textContentStrict(key: String, path: String): String = w
             else -> unsupported("$path[$index].type", "第一版不支持该内容类型")
         }
     }.joinToString("\n")
-    JsonNull, null -> ""
+    null -> ""
     else -> unsupported(path, "无法识别的内容")
 }
 

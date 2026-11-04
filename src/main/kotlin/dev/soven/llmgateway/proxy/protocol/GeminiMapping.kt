@@ -69,6 +69,7 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
     rejectUnknownFields(chat, chatRequestFields, "request")
     val system = mutableListOf<String>()
     val contents = mutableListOf<JsonObject>()
+    val callNames = mutableMapOf<String, String>()
     chat.array("messages").forEachIndexed { index, element ->
         val message = element as? JsonObject ?: unsupported("messages[$index]", "消息必须是对象")
         when (message.string("role")) {
@@ -83,9 +84,12 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
                 (message["tool_calls"] as? JsonArray)?.forEachIndexed { callIndex, callElement ->
                     val call = callElement as? JsonObject ?: unsupported("messages[$index].tool_calls[$callIndex]", "工具调用必须是对象")
                     val function = call["function"] as? JsonObject ?: unsupported("messages[$index].tool_calls[$callIndex].function", "缺少 function")
+                    val callId = call.string("id") ?: unsupported("messages[$index].tool_calls[$callIndex].id", "工具调用缺少 id")
+                    val callName = function.string("name") ?: unsupported("messages[$index].tool_calls[$callIndex].function.name", "工具调用缺少 name")
+                    callNames[callId] = callName
                     parts += buildJsonObject {
                         putJsonObject("functionCall") {
-                            put("name", function.string("name") ?: unsupported("messages[$index].tool_calls[$callIndex].function.name", "工具调用缺少 name"))
+                            put("name", callName)
                             put("args", parseJsonObjectOrEmpty(function.string("arguments")))
                         }
                     }
@@ -94,9 +98,11 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
             }
             "tool" -> contents += buildJsonObject {
                 put("role", "user")
+                val callId = message.string("tool_call_id") ?: unsupported("messages[$index].tool_call_id", "tool 消息缺少 tool_call_id")
+                val callName = callNames[callId] ?: unsupported("messages[$index].tool_call_id", "找不到对应的工具调用")
                 put("parts", JsonArray(listOf(buildJsonObject {
                     putJsonObject("functionResponse") {
-                        put("name", message.string("name") ?: "tool")
+                        put("name", callName)
                         putJsonObject("response") { put("content", message.textContentStrict("content", "messages[$index].content")) }
                     }
                 })))
@@ -234,7 +240,7 @@ internal fun geminiToMessagesRequest(request: JsonObject, upstreamModel: String)
     validateGeminiRequest(request)
     put("model", upstreamModel)
     val config = request["generationConfig"] as? JsonObject
-    put("max_tokens", config?.long("maxOutputTokens") ?: 4096)
+    val requestedMaxTokens = config?.long("maxOutputTokens")
     config?.number("temperature")?.let { put("temperature", it) }
     config?.number("topP")?.let { put("top_p", it) }
     config?.number("topK")?.let { put("top_k", it) }
@@ -243,8 +249,13 @@ internal fun geminiToMessagesRequest(request: JsonObject, upstreamModel: String)
     put("messages", geminiContentsToMessages(request["contents"]))
     geminiToolsToMessages(request["tools"])?.let { put("tools", it) }
     geminiToolChoiceToMessages(request["toolConfig"])?.let { put("tool_choice", it) }
-    geminiThinkingToEffort(config)?.let { effort ->
-        put("thinking", buildJsonObject { put("type", if (effort == "none") "disabled" else "enabled"); if (effort != "none") put("budget_tokens", thinkingBudget(effort)) })
+    val thinkingEffort = geminiThinkingToEffort(config)
+    if (thinkingEffort == null) {
+        put("max_tokens", requestedMaxTokens ?: 4096)
+    } else {
+        val (thinking, maxTokens) = thinkingAndMaxTokens(thinkingEffort, requestedMaxTokens, "generationConfig.maxOutputTokens")
+        put("max_tokens", maxTokens)
+        put("thinking", thinking)
     }
     config?.string("responseMimeType")?.let { mime ->
         if (mime != "application/json") unsupported("generationConfig.responseMimeType", "不支持响应类型 $mime")
@@ -260,29 +271,40 @@ internal fun geminiToMessagesRequest(request: JsonObject, upstreamModel: String)
 internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {
     validateMessagesRequest(messages)
     val contents = mutableListOf<JsonObject>()
-    messages.string("system")?.takeIf { it.isNotBlank() }?.let { system ->
+    val callNames = mutableMapOf<String, String>()
+    messages.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { system ->
         put("systemInstruction", buildJsonObject { put("parts", buildJsonArray { add(buildJsonObject { put("text", system) }) }) })
     }
     messages.array("messages").forEachIndexed { index, element ->
         val message = element as? JsonObject ?: unsupported("messages[$index]", "消息必须是对象")
         val parts = mutableListOf<JsonObject>()
         when (val content = message["content"]) {
+            JsonNull -> Unit
             is JsonPrimitive -> content.contentOrNull?.takeIf { it.isNotEmpty() }?.let { text -> parts += buildJsonObject { put("text", text) } }
             is JsonArray -> content.forEachIndexed { blockIndex, blockElement ->
                 val block = blockElement as? JsonObject ?: unsupported("messages[$index].content[$blockIndex]", "内容块必须是对象")
                 when (block.string("type")) {
                     "text" -> parts += buildJsonObject { put("text", block.string("text").orEmpty()) }
                     "thinking" -> parts += buildJsonObject { put("text", block.string("thinking").orEmpty()); put("thought", true) }
-                    "tool_use" -> parts += buildJsonObject {
-                        putJsonObject("functionCall") {
-                            put("name", block.string("name").orEmpty())
-                            put("args", block["input"] ?: buildJsonObject { })
+                    "tool_use" -> {
+                        val callId = block.string("id") ?: unsupported("messages[$index].content[$blockIndex].id", "tool_use 缺少 id")
+                        val callName = block.string("name") ?: unsupported("messages[$index].content[$blockIndex].name", "tool_use 缺少 name")
+                        callNames[callId] = callName
+                        parts += buildJsonObject {
+                            putJsonObject("functionCall") {
+                                put("name", callName)
+                                put("args", block["input"] ?: buildJsonObject { })
+                            }
                         }
                     }
-                    "tool_result" -> parts += buildJsonObject {
-                        putJsonObject("functionResponse") {
-                            put("name", block.string("tool_use_id") ?: "tool")
-                            putJsonObject("response") { put("content", block.textContentStrict("content", "messages[$index].content[$blockIndex].content")) }
+                    "tool_result" -> {
+                        val callId = block.string("tool_use_id") ?: unsupported("messages[$index].content[$blockIndex].tool_use_id", "tool_result 缺少 tool_use_id")
+                        val callName = callNames[callId] ?: unsupported("messages[$index].content[$blockIndex].tool_use_id", "找不到对应的工具调用")
+                        parts += buildJsonObject {
+                            putJsonObject("functionResponse") {
+                                put("name", callName)
+                                putJsonObject("response") { put("content", block.textContentStrict("content", "messages[$index].content[$blockIndex].content")) }
+                            }
                         }
                     }
                     "redacted_thinking" -> unsupported("messages[$index].content[$blockIndex].type", "Gemini 不支持 redacted_thinking")
@@ -315,6 +337,7 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
                 put("functionDeclarations", buildJsonArray {
                     tools.forEachIndexed { index, element ->
                         val tool = element as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
+                        validateMessagesTool(tool, "tools[$index]")
                         add(buildJsonObject {
                             put("name", tool.string("name") ?: unsupported("tools[$index].name", "工具缺少 name"))
                             tool.string("description")?.let { put("description", it) }
@@ -406,7 +429,9 @@ internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: Stri
     val system = mutableListOf<String>()
     responses.string("instructions")?.takeIf { it.isNotBlank() }?.let { system += it }
     val contents = mutableListOf<JsonObject>()
+    val callNames = mutableMapOf<String, String>()
     when (val input = responses["input"]) {
+        JsonNull -> Unit
         is JsonPrimitive -> contents += buildJsonObject { put("role", "user"); put("parts", buildJsonArray { add(buildJsonObject { put("text", input.content) }) }) }
         is JsonArray -> input.forEachIndexed { index, element ->
             val item = element as? JsonObject ?: unsupported("input[$index]", "输入项必须是对象")
@@ -421,23 +446,32 @@ internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: Stri
                         }
                     }
                 }
-                "function_call" -> contents += buildJsonObject {
-                    put("role", "model")
-                    put("parts", buildJsonArray { add(buildJsonObject {
-                        putJsonObject("functionCall") {
-                            put("name", item.string("name").orEmpty())
-                            put("args", parseJsonObjectOrEmpty(item.string("arguments")))
-                        }
-                    }) })
+                "function_call" -> {
+                    val callId = item.string("call_id") ?: unsupported("input[$index].call_id", "function_call 缺少 call_id")
+                    val callName = item.string("name") ?: unsupported("input[$index].name", "function_call 缺少 name")
+                    callNames[callId] = callName
+                    contents += buildJsonObject {
+                        put("role", "model")
+                        put("parts", buildJsonArray { add(buildJsonObject {
+                            putJsonObject("functionCall") {
+                                put("name", callName)
+                                put("args", parseJsonObjectOrEmpty(item.string("arguments")))
+                            }
+                        }) })
+                    }
                 }
-                "function_call_output" -> contents += buildJsonObject {
-                    put("role", "user")
-                    put("parts", buildJsonArray { add(buildJsonObject {
-                        putJsonObject("functionResponse") {
-                            put("name", item.string("call_id") ?: "tool")
-                            putJsonObject("response") { put("content", item.textContentStrict("output", "input[$index].output")) }
-                        }
-                    }) })
+                "function_call_output" -> {
+                    val callId = item.string("call_id") ?: unsupported("input[$index].call_id", "function_call_output 缺少 call_id")
+                    val callName = callNames[callId] ?: unsupported("input[$index].call_id", "找不到对应的工具调用")
+                    contents += buildJsonObject {
+                        put("role", "user")
+                        put("parts", buildJsonArray { add(buildJsonObject {
+                            putJsonObject("functionResponse") {
+                                put("name", callName)
+                                putJsonObject("response") { put("content", item.textContentStrict("output", "input[$index].output")) }
+                            }
+                        }) })
+                    }
                 }
                 else -> unsupported("input[$index].type", "第一版不支持 Responses 输入项")
             }
@@ -558,6 +592,7 @@ internal fun responsesToGeminiResponse(responses: JsonObject, model: String): Js
 }
 
 private fun geminiSystemText(element: JsonElement?): String? = when (element) {
+    JsonNull -> null
     is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() }
     is JsonObject -> element.array("parts").mapNotNull { (it as? JsonObject)?.string("text") }.joinToString("\n").takeIf { it.isNotBlank() }
     else -> null
@@ -565,11 +600,49 @@ private fun geminiSystemText(element: JsonElement?): String? = when (element) {
 
 private fun geminiContentsToChat(contents: JsonElement?): JsonArray = buildJsonArray {
     when (contents) {
+        JsonNull -> Unit
         is JsonPrimitive -> add(buildJsonObject { put("role", "user"); put("content", contents.content) })
-        is JsonArray -> contents.forEachIndexed { index, element ->
-            val content = element as? JsonObject ?: unsupported("contents[$index]", "内容必须是对象")
-            val text = content.array("parts").mapNotNull { (it as? JsonObject)?.string("text") }.joinToString("")
-            add(buildJsonObject { put("role", if (content.string("role") == "model") "assistant" else "user"); put("content", text) })
+        is JsonArray -> {
+            val callNames = mutableMapOf<String, String>()
+            contents.forEachIndexed { index, element ->
+                val content = element as? JsonObject ?: unsupported("contents[$index]", "内容必须是对象")
+                val role = if (content.string("role") == "model") "assistant" else "user"
+                val text = mutableListOf<String>()
+                val toolCalls = mutableListOf<JsonObject>()
+                content.array("parts").forEachIndexed { partIndex, part ->
+                    val obj = part as? JsonObject ?: unsupported("contents[$index].parts[$partIndex]", "part 必须是对象")
+                    val call = obj["functionCall"] as? JsonObject
+                    val response = obj["functionResponse"] as? JsonObject
+                    when {
+                        call != null -> {
+                            val name = call.string("name") ?: unsupported("contents[$index].parts[$partIndex].functionCall.name", "functionCall 缺少 name")
+                            val callId = "call_${index}_$partIndex"
+                            callNames[name] = callId
+                            toolCalls += buildJsonObject {
+                                put("id", callId)
+                                put("type", "function")
+                                putJsonObject("function") { put("name", name); put("arguments", (call["args"] ?: buildJsonObject { }).toString()) }
+                            }
+                        }
+                        response != null -> {
+                            val name = response.string("name") ?: unsupported("contents[$index].parts[$partIndex].functionResponse.name", "functionResponse 缺少 name")
+                            add(buildJsonObject {
+                                put("role", "tool")
+                                put("tool_call_id", callNames[name] ?: unsupported("contents[$index].parts[$partIndex].functionResponse.name", "找不到对应的函数调用"))
+                                put("content", ((response["response"] as? JsonObject)?.string("content") ?: response["response"]?.toString()).orEmpty())
+                            })
+                        }
+                        obj.string("text") != null -> text += obj.string("text").orEmpty()
+                        obj["inlineData"] != null || obj["fileData"] != null -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini 多模态内容")
+                        else -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini part")
+                    }
+                }
+                if (text.isNotEmpty() || toolCalls.isNotEmpty()) add(buildJsonObject {
+                    put("role", role)
+                    if (text.isNotEmpty()) put("content", text.joinToString("")) else put("content", JsonNull)
+                    if (toolCalls.isNotEmpty()) put("tool_calls", JsonArray(toolCalls))
+                })
+            }
         }
         else -> Unit
     }
@@ -577,11 +650,12 @@ private fun geminiContentsToChat(contents: JsonElement?): JsonArray = buildJsonA
 
 private fun geminiContentsToMessages(contents: JsonElement?): JsonArray = buildJsonArray {
     when (contents) {
+        JsonNull -> Unit
         is JsonPrimitive -> add(messageWithBlocks("user", listOf(messageTextBlock(contents.content))))
         is JsonArray -> contents.forEachIndexed { index, element ->
             val content = element as? JsonObject ?: unsupported("contents[$index]", "内容必须是对象")
             val blocks = content.array("parts").mapIndexedNotNull { partIndex, part ->
-                val obj = part as? JsonObject ?: return@mapIndexedNotNull null
+                val obj = part as? JsonObject ?: unsupported("contents[$index].parts[$partIndex]", "part 必须是对象")
                 when {
                     obj["functionCall"] is JsonObject -> buildJsonObject {
                         put("type", "tool_use")
@@ -589,6 +663,15 @@ private fun geminiContentsToMessages(contents: JsonElement?): JsonArray = buildJ
                         put("name", (obj["functionCall"] as JsonObject).string("name").orEmpty())
                         put("input", (obj["functionCall"] as JsonObject)["args"] ?: buildJsonObject { })
                     }
+                    obj["functionResponse"] is JsonObject -> {
+                        val response = obj["functionResponse"] as JsonObject
+                        buildJsonObject {
+                            put("type", "tool_result")
+                            put("tool_use_id", response.string("name") ?: unsupported("contents[$index].parts[$partIndex].functionResponse.name", "functionResponse 缺少 name"))
+                            put("content", ((response["response"] as? JsonObject)?.string("content") ?: response["response"]?.toString()).orEmpty())
+                        }
+                    }
+                    obj["inlineData"] != null || obj["fileData"] != null -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini 多模态内容")
                     obj.boolean("thought") == true -> buildJsonObject { put("type", "thinking"); put("thinking", obj.string("text").orEmpty()); put("signature", "") }
                     else -> obj.string("text")?.let { messageTextBlock(it) }
                 }
@@ -601,6 +684,7 @@ private fun geminiContentsToMessages(contents: JsonElement?): JsonArray = buildJ
 
 private fun geminiContentsToResponses(contents: JsonElement?): JsonArray = buildJsonArray {
     when (contents) {
+        JsonNull -> Unit
         is JsonPrimitive -> add(buildJsonObject {
             put("type", "message")
             put("role", "user")
@@ -609,12 +693,35 @@ private fun geminiContentsToResponses(contents: JsonElement?): JsonArray = build
         is JsonArray -> contents.forEachIndexed { index, element ->
             val content = element as? JsonObject ?: unsupported("contents[$index]", "内容必须是对象")
             val role = if (content.string("role") == "model") "assistant" else "user"
-            val text = content.array("parts").mapNotNull { (it as? JsonObject)?.string("text") }.joinToString("")
-            add(buildJsonObject {
+            val text = mutableListOf<String>()
+            val toolCalls = mutableListOf<JsonObject>()
+            content.array("parts").forEachIndexed { partIndex, part ->
+                val obj = part as? JsonObject ?: unsupported("contents[$index].parts[$partIndex]", "part 必须是对象")
+                val call = obj["functionCall"] as? JsonObject
+                val response = obj["functionResponse"] as? JsonObject
+                when {
+                    call != null -> toolCalls += buildJsonObject {
+                        put("type", "function_call")
+                        put("call_id", "call_${index}_$partIndex")
+                        put("name", call.string("name").orEmpty())
+                        put("arguments", (call["args"] ?: buildJsonObject { }).toString())
+                    }
+                    response != null -> add(buildJsonObject {
+                        put("type", "function_call_output")
+                        put("call_id", "call_${index}_$partIndex")
+                        put("output", ((response["response"] as? JsonObject)?.string("content") ?: response["response"]?.toString()).orEmpty())
+                    })
+                    obj["inlineData"] != null || obj["fileData"] != null -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini 多模态内容")
+                    obj.string("text") != null -> text += obj.string("text").orEmpty()
+                    else -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini part")
+                }
+            }
+            if (text.isNotEmpty()) add(buildJsonObject {
                 put("type", "message")
                 put("role", role)
-                put("content", buildJsonArray { add(buildJsonObject { put("type", if (role == "assistant") "output_text" else "input_text"); put("text", text) }) })
+                put("content", buildJsonArray { add(buildJsonObject { put("type", if (role == "assistant") "output_text" else "input_text"); put("text", text.joinToString("")) }) })
             })
+            addAll(toolCalls)
         }
         else -> Unit
     }
@@ -728,7 +835,14 @@ private fun geminiThinkingToEffort(config: JsonObject?): String? {
     val thinking = config?.get("thinkingConfig") as? JsonObject ?: return null
     if (thinking.boolean("includeThoughts") == false) return "none"
     val budget = thinking.long("thinkingBudget") ?: return if (thinking.boolean("includeThoughts") == true) "medium" else null
-    return when { budget <= 1024 -> "low"; budget <= 4096 -> "medium"; budget <= 8192 -> "high"; else -> "max" }
+    return when {
+        budget == 0L -> "none"
+        budget < 0L -> "medium"
+        budget <= 1024 -> "low"
+        budget <= 4096 -> "medium"
+        budget <= 8192 -> "high"
+        else -> "max"
+    }
 }
 
 private fun thinkingBudget(effort: String): Long = when (effort) {

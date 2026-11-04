@@ -34,6 +34,7 @@ internal fun responsesToChatRequest(request: JsonObject): JsonObject = buildJson
         }
     }
     when (val input = request["input"]) {
+        JsonNull -> Unit
         is JsonPrimitive -> messages += buildJsonObject {
             put("role", "user")
             put("content", input.content)
@@ -306,6 +307,7 @@ internal fun chatToResponsesResponse(chat: JsonObject, model: String): JsonObjec
 internal fun responsesMessageToChat(item: JsonObject, path: String): JsonObject {
     val text = mutableListOf<String>()
     when (val content = item["content"]) {
+        JsonNull -> Unit
         is JsonPrimitive -> text += content.content
         is JsonArray -> content.forEachIndexed { index, part ->
             val obj = part as? JsonObject ?: unsupported("$path.content[$index]", "内容块必须是对象")
