@@ -303,6 +303,7 @@ class CandidateCooldown(
                 state.cooldownUntil = nowMs() + duration
                 state.probeInFlight = false
                 state.reason = trigger?.reason
+                state.deleteUnconfirmed = false
                 state.generation += 1
                 onChange(CooldownChange.Updated(ref.keyId, state.consecutiveFailures, state.cooldownUntil, state.reason))
             } else if (kind == FailureKind.TRANSPORT) {
@@ -358,6 +359,7 @@ class CandidateCooldown(
             state.cooldownUntil = nowMs() + policy.transientDurationMs(state.consecutiveFailures)
             state.probeInFlight = false
             state.reason = REASON_TTFT_SLOW
+            state.deleteUnconfirmed = false
             state.generation += 1
             onChange(CooldownChange.Updated(stateKey, state.consecutiveFailures, state.cooldownUntil, state.reason))
         }
@@ -479,6 +481,7 @@ class CandidateCooldown(
         state.cooldownUntil = 0
         state.probeInFlight = false
         state.reason = null
+        state.deleteUnconfirmed = false
         // 只有真正离开冷却态才推进代际：健康态的成功结果不应作废并发请求的许可，
         // 否则并发中的另一请求随后失败会被代际守卫忽略，漏记冷却。
         if (wasCooling) {
@@ -487,16 +490,27 @@ class CandidateCooldown(
         }
     }
 
-    /** 手动清除时无条件作废旧许可；仅在此前存在冷却或失败记录时写透删除并返回 true。 */
+    /** 手动清除时无条件作废旧许可；仅在此前存在冷却或待确认删除记录时写透删除并返回 true。 */
     private fun resetState(id: String, state: KeyState): Boolean {
-        val hadState = state.cooldownUntil > 0 || state.consecutiveFailures > 0
+        val hadState = state.cooldownUntil > 0 || state.consecutiveFailures > 0 || state.deleteUnconfirmed
         state.consecutiveFailures = 0
         state.cooldownUntil = 0
         state.probeInFlight = false
         state.reason = null
         state.generation += 1
-        if (hadState) onChange(CooldownChange.Removed(id))
+        if (hadState) {
+            state.deleteUnconfirmed = true
+            onChange(CooldownChange.Removed(id))
+        }
         return hadState
+    }
+
+    /** 确认持久化删除成功，清除待确认删除标记。 */
+    @Synchronized
+    fun confirmDeletions(stateKeys: Collection<String>) {
+        for (key in stateKeys) {
+            states[key]?.deleteUnconfirmed = false
+        }
     }
 
     private fun releaseProbe(state: KeyState) {
@@ -511,6 +525,7 @@ class CandidateCooldown(
         var probeInFlight: Boolean = false,
         var generation: Long = 0,
         var reason: String? = null,
+        var deleteUnconfirmed: Boolean = false,
     )
 
     companion object {

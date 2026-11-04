@@ -5,6 +5,7 @@ import dev.soven.llmgateway.resilience.CooldownStateSnapshot
 import dev.soven.llmgateway.resilience.CooldownStateStore
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -33,6 +34,13 @@ class CooldownStateRepository(private val database: Database) : CooldownStateSto
     override suspend fun delete(stateKey: String) {
         suspendTransaction(database) {
             CooldownStates.deleteWhere { CooldownStates.stateKey eq stateKey }
+        }
+    }
+
+    override suspend fun deleteBatch(stateKeys: Collection<String>) {
+        if (stateKeys.isEmpty()) return
+        suspendTransaction(database) {
+            CooldownStates.deleteWhere { CooldownStates.stateKey inList stateKeys }
         }
     }
 

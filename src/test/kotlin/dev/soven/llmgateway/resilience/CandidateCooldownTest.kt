@@ -464,4 +464,38 @@ class CandidateCooldownTest {
         assertEquals(listOf("kc:ch1:k1:m1"), clearedAfterFailure)
         assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k1:m1") })
     }
+
+    @Test
+    fun `unconfirmed deletions are returned on retry until confirmDeletions is called`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+
+        val permit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(permit, FailureKind.RATE_LIMITED)
+        changes.clear()
+
+        // 第一次清除：返回候选键，但模拟持久化失败未调用 confirmDeletions
+        val firstClear = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertEquals(listOf("kc:ch1:k1:m1"), firstClear)
+        assertEquals(1, changes.size)
+        changes.clear()
+
+        // 内存中虽已清零，但重试清除候选仍能返回该键以供持久化重试
+        val retryCandidate = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertEquals(listOf("kc:ch1:k1:m1"), retryCandidate)
+        assertEquals(1, changes.size)
+        changes.clear()
+
+        // 重试清除同渠道也能并入该未确认键
+        val retryChannel = cooldown.clearChannel("ch1")
+        assertEquals(listOf("kc:ch1:k1:m1"), retryChannel)
+        assertEquals(1, changes.size)
+        changes.clear()
+
+        // 持久化成功并确认后，再次清除则因状态已健康且已确认，返回空
+        cooldown.confirmDeletions(retryChannel)
+        val clearedAfterConfirm = cooldown.clearChannel("ch1")
+        assertTrue(clearedAfterConfirm.isEmpty())
+        assertTrue(changes.isEmpty())
+    }
 }

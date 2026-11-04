@@ -104,24 +104,32 @@ class CooldownStateWriter(
      */
     suspend fun deleteNow(stateKeys: Set<String>, baselineSeq: Long, timeoutMs: Long): Boolean =
         withTimeoutOrNull(timeoutMs) {
-            var allSucceeded = true
-            for (key in stateKeys) {
-                val decision = awaitDeleteDecision(key, baselineSeq)
-                if (decision == DeleteDecision.SKIP) continue
-                try {
-                    store.delete(key)
-                } catch (cause: CancellationException) {
-                    throw cause
-                } catch (cause: Throwable) {
-                    allSucceeded = false
-                    logger.error("cooldown state delete failed, key={}", key, cause)
-                } finally {
-                    synchronized(lock) { deleting.remove(key) }
-                    // 删除期间到达的新事件现在可以继续写透。
-                    signal.trySend(Unit)
+            val toDelete = mutableListOf<String>()
+            try {
+                for (key in stateKeys) {
+                    val decision = awaitDeleteDecision(key, baselineSeq)
+                    if (decision == DeleteDecision.DELETE) {
+                        toDelete.add(key)
+                    }
                 }
+                if (toDelete.isNotEmpty()) {
+                    try {
+                        store.deleteBatch(toDelete)
+                    } catch (cause: CancellationException) {
+                        throw cause
+                    } catch (cause: Throwable) {
+                        logger.error("cooldown state delete failed, keys={}", toDelete, cause)
+                        return@withTimeoutOrNull false
+                    }
+                }
+                true
+            } finally {
+                synchronized(lock) {
+                    for (key in toDelete) deleting.remove(key)
+                }
+                // 删除期间到达的新事件现在可以继续写透。
+                signal.trySend(Unit)
             }
-            allSucceeded
         } ?: false
 
     private suspend fun awaitDeleteDecision(key: String, baselineSeq: Long): DeleteDecision {

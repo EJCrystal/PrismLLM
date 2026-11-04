@@ -126,4 +126,20 @@ class CooldownStateWriterTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun `deleteNow delegates to deleteBatch when multiple keys are deleted`() = runTest {
+        val batchCalls = CopyOnWriteArrayList<List<String>>()
+        val store = object : CooldownStateStore {
+            override suspend fun upsert(snapshot: CooldownStateSnapshot) {}
+            override suspend fun delete(stateKey: String) {}
+            override suspend fun deleteBatch(stateKeys: Collection<String>) {
+                batchCalls += stateKeys.toList()
+            }
+        }
+        val writer = CooldownStateWriter(store, backgroundScope)
+        assertTrue(writer.deleteNow(setOf("k1", "k2", "k3"), writer.currentSeq(), 1_000))
+        assertEquals(1, batchCalls.size)
+        assertEquals(setOf("k1", "k2", "k3"), batchCalls[0].toSet())
+    }
 }

@@ -664,6 +664,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     "api_error",
                 )
             }
+            app.candidateCooldown.confirmDeletions(cleared)
             call.markAdminAuditDetails(buildJsonObject {
                 put("channelId", channel.id)
                 put("scope", request.scope)
