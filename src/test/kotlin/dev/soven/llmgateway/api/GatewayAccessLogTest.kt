@@ -55,6 +55,36 @@ class GatewayAccessLogTest {
     }
 
     @Test
+    fun selectsFirstUntrustedAddressFromRightOfForwardedChains() {
+        val trustedProxyNetworks = listOf(TrustedProxyNetwork.parse("172.19.0.0/16"))
+        val xForwardedFor = requestAccessLogMetadata(
+            requestId = null,
+            cloudflareConnectingIp = null,
+            forwardedFor = "203.0.113.9, 198.51.100.8, 172.19.0.3, 172.19.0.2",
+            realIp = null,
+            forwarded = null,
+            peerIp = "172.19.0.2",
+            userAgent = null,
+            trustedProxyNetworks = trustedProxyNetworks,
+        )
+        val forwarded = requestAccessLogMetadata(
+            requestId = null,
+            cloudflareConnectingIp = null,
+            forwardedFor = null,
+            realIp = null,
+            forwarded = "for=203.0.113.9, for=198.51.100.8, for=172.19.0.3, for=172.19.0.2",
+            peerIp = "172.19.0.2",
+            userAgent = null,
+            trustedProxyNetworks = trustedProxyNetworks,
+        )
+
+        assertEquals("198.51.100.8", xForwardedFor.clientIp)
+        assertEquals("x-forwarded-for", xForwardedFor.clientIpSource)
+        assertEquals("198.51.100.8", forwarded.clientIp)
+        assertEquals("forwarded", forwarded.clientIpSource)
+    }
+
+    @Test
     fun sanitizesAndLimitsLogMetadata() {
         val metadata = requestAccessLogMetadata(
             requestId = "  request-123\n",

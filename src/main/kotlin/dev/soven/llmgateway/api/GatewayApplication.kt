@@ -115,9 +115,9 @@ internal fun requestAccessLogMetadata(
     val candidates = if (trustedProxyNetworks.any { it.contains(peerIp) }) {
         listOf(
             "cf-connecting-ip" to firstHeaderValue(cloudflareConnectingIp),
-            "x-forwarded-for" to firstHeaderValue(forwardedFor),
+            "x-forwarded-for" to forwardedForClientIp(forwardedFor, trustedProxyNetworks),
             "x-real-ip" to firstHeaderValue(realIp),
-            "forwarded" to forwardedIp(forwarded),
+            "forwarded" to forwardedIp(forwarded, trustedProxyNetworks),
             "peer" to peer.takeUnless { it == "-" },
         )
     } else {
@@ -156,15 +156,31 @@ private fun firstHeaderValue(value: String?): String? =
         ?.mapNotNull(::parseHeaderIp)
         ?.firstOrNull()
 
-private fun forwardedIp(value: String?): String? =
+private fun forwardedForClientIp(
+    value: String?,
+    trustedProxyNetworks: List<TrustedProxyNetwork>,
+): String? =
     value
         ?.split(',')
+        ?.asReversed()
         ?.asSequence()
-        ?.flatMap { it.split(';').asSequence() }
-        ?.map { it.trim() }
-        ?.filter { it.startsWith("for=", ignoreCase = true) }
-        ?.mapNotNull { it.substringAfter('=', "").let(::parseHeaderIp) }
-        ?.firstOrNull()
+        ?.mapNotNull(::parseHeaderIp)
+        ?.firstOrNull { address -> trustedProxyNetworks.none { it.contains(address) } }
+
+private fun forwardedIp(value: String?, trustedProxyNetworks: List<TrustedProxyNetwork>): String? =
+    value
+        ?.split(',')
+        ?.asReversed()
+        ?.asSequence()
+        ?.mapNotNull { element ->
+            element.split(';')
+                .asSequence()
+                .map(String::trim)
+                .filter { it.startsWith("for=", ignoreCase = true) }
+                .mapNotNull { it.substringAfter('=', "").let(::parseHeaderIp) }
+                .firstOrNull()
+        }
+        ?.firstOrNull { address -> trustedProxyNetworks.none { it.contains(address) } }
 
 private fun parseHeaderIp(value: String): String? {
     val candidate = value.trim().trim('"')

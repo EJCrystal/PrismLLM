@@ -131,7 +131,7 @@ JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=proxy.example -Dhttp.proxyPort=8080 -Dhttps.p
 | `ADMIN_USERNAME` | `admin` | 首次启动创建的管理员用户名 |
 | `ADMIN_PASSWORD` | 无 | 首次启动创建的管理员密码，必填；后续密码修改以数据库为准 |
 | `CORS_ORIGINS` | 空 | 允许的浏览器来源，逗号分隔 |
-| `TRUSTED_PROXY_CIDRS` | 空 | 可信反向代理 IP/CIDR，逗号分隔；仅来自这些网段的连接会采用 `CF-Connecting-IP`、`X-Forwarded-For` 等转发头。请确保代理覆盖或清理客户端传入的转发头 |
+| `TRUSTED_PROXY_CIDRS` | 空 | 可信反向代理 IP/CIDR，逗号分隔；仅来自这些网段的连接会采用转发头。`X-Forwarded-For` 和 `Forwarded` 从右向左跳过可信代理地址；代理须覆盖 `CF-Connecting-IP`、`X-Real-IP`，不可透传客户端值 |
 | `REQUEST_BODY_LIMIT_BYTES` | `10485760` | 请求体上限 |
 | `CONNECT_TIMEOUT_MS` | `30000` | 上游连接超时（30 秒） |
 | `FIRST_TOKEN_TIMEOUT_MS` | `120000` | 流式上游首 token 超时 |
