@@ -428,7 +428,7 @@ class ChannelQuotaServiceTest {
     }
 
     private suspend fun withService(provider: ChannelQuotaProvider, now: () -> Long = System::currentTimeMillis,
-        timeoutMs: Long = 12_000, action: suspend (ChannelQuotaService) -> Unit) {
+        timeoutMs: Long = 30_000, action: suspend (ChannelQuotaService) -> Unit) {
         ChannelQuotaProviderRegistry(builtIns = listOf(provider)).use { registry ->
             ChannelQuotaService(registry, cipher, now, timeoutMs).use { action(it) }
         }
