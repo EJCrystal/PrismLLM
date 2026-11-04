@@ -7,10 +7,10 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: LLM Gateway target is down
+          summary: PrismLLM target is down
           description: Prometheus has failed to scrape {{ $labels.instance }} for 2 minutes.
 
-      - alert: LlmGatewayNotReady
+      - alert: PrismLlmNotReady
         expr: |
           (probe_success{job="PrismLLM-ready"} == 0)
           or
@@ -19,10 +19,10 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: LLM Gateway readiness probe failed
+          summary: PrismLLM readiness probe failed
           description: The gateway readiness endpoint has failed for 2 minutes; inspect /health/ready and database connectivity.
 
-      - alert: LlmGatewayHighErrorRate
+      - alert: PrismLlmHighErrorRate
         expr: |
           (
             sum(rate(gateway_requests_total{outcome="error"}[5m]))
@@ -33,10 +33,10 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: LLM Gateway error rate exceeds 5%
+          summary: PrismLLM error rate exceeds 5%
           description: Error requests are {{ $value | humanizePercentage }} of traffic over the last 5 minutes.
 
-      - alert: LlmGatewayHighLatency
+      - alert: PrismLlmHighLatency
         expr: |
           histogram_quantile(
             0.95,
@@ -46,28 +46,28 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: LLM Gateway p95 latency exceeds 10 seconds
+          summary: PrismLLM p95 latency exceeds 10 seconds
           description: The complete-request p95 latency is {{ $value | humanizeDuration }}.
 
-      - alert: LlmGatewayQuotaRejections
+      - alert: PrismLlmQuotaRejections
         expr: sum(rate(gateway_quota_rejections_total[10m])) > 0.1
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: LLM Gateway is frequently rejecting quota-exceeded requests
+          summary: PrismLLM is frequently rejecting quota-exceeded requests
           description: Quota rejections are {{ $value | humanize }} per second; review affected key limits and consume patterns.
 
-      - alert: LlmGatewayAuditWriteFailures
+      - alert: PrismLlmAuditWriteFailures
         expr: increase(gateway_admin_audit_write_failures_total[5m]) > 0
         for: 1m
         labels:
           severity: warning
         annotations:
-          summary: LLM Gateway failed to persist a management audit record
+          summary: PrismLLM failed to persist a management audit record
           description: At least one management write completed without its audit record; inspect gateway logs and database health immediately.
 
-      - alert: LlmGatewayUpstreamUnhealthy
+      - alert: PrismLlmUpstreamUnhealthy
         expr: |
           (
             sum by (channel) (rate(gateway_upstream_attempts_total{outcome="error"}[5m]))
@@ -83,7 +83,7 @@ groups:
           summary: Upstream channel {{ $labels.channel }} has a high failure rate
           description: Channel {{ $labels.channel }} has failed more than 20% of attempts for 10 minutes.
 
-      - alert: LlmGatewayUpstreamCooldown
+      - alert: PrismLlmUpstreamCooldown
         expr: increase(gateway_upstream_cooldown_started_total[10m]) > 0
         for: 1m
         labels:

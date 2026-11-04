@@ -128,7 +128,7 @@ onBeforeUnmount(() => {
           </svg>
         </div>
         <div>
-          <strong>LLM Gateway</strong>
+          <strong>PrismLLM</strong>
           <span>Control plane</span>
         </div>
       </div>
