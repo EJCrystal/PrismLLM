@@ -655,7 +655,8 @@ class ProtocolConversionTest {
         val converter = ProtocolConversion.streamConverter(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, "public")!!
         val first = converter.feed("""data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"weather","args":{"city":"SZ"}}}]}}]}""")
         val second = converter.feed("")
-        val last = converter.feed("""data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}]}""") + converter.feed("")
+        val last = converter.feed("""data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}]}""") +
+            converter.feed("") + converter.finish()
         val body = (first + second + last).joinToString("\n")
         assertTrue(body.contains("\"finish_reason\":\"tool_calls\""), body)
         val ids = Regex("\"id\":\"([^\"]+)\"").findAll(body).map { it.groupValues[1] }.toSet()
@@ -687,8 +688,10 @@ class ProtocolConversionTest {
             "model":"public",
             "messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}]
         }""")
-        val messages = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, chat, "upstream")
+        val messages = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, chat, "upstream")
         assertFalse(messages.toString().contains("\"text\":\"null\""), messages.toString())
+        val blocks = messages["messages"]!!.jsonArray.single().jsonObject["content"]!!.jsonArray
+        assertEquals(listOf("tool_use"), blocks.map { it.jsonObject["type"]!!.jsonPrimitive.content })
     }
 
     @Test
@@ -721,5 +724,32 @@ class ProtocolConversionTest {
         val converter = ProtocolConversion.streamConverter(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, "public")!!
         val frames = converter.feed("""data: {"id":"c1","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}""") + converter.feed("")
         assertTrue(frames.isEmpty(), frames.joinToString("\n"))
+    }
+
+    @Test
+    fun `gemini function responses pair with responses direction`() {
+        val gemini = json("""{
+            "contents":[
+                {"role":"model","parts":[{"functionCall":{"name":"f","args":{}}}]},
+                {"role":"user","parts":[{"functionResponse":{"name":"f","response":{"content":"a"}}}]}
+            ]
+        }""")
+        val responses = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.RESPONSES, gemini, "upstream")
+        val input = responses["input"]!!.jsonArray.map { it.jsonObject }
+        val callId = input.single { it["type"]!!.jsonPrimitive.content == "function_call" }["call_id"]!!.jsonPrimitive.content
+        val outputId = input.single { it["type"]!!.jsonPrimitive.content == "function_call_output" }["call_id"]!!.jsonPrimitive.content
+        assertEquals(callId, outputId)
+    }
+
+    @Test
+    fun `gemini stream keeps usage sent after finish reason`() {
+        val converter = ProtocolConversion.streamConverter(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, "public")!!
+        val body = converter.feed("""data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}]}""") +
+            converter.feed("") +
+            converter.feed("""data: {"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3,"thoughtsTokenCount":2}}""") +
+            converter.feed("") + converter.finish()
+        val text = body.joinToString("\n")
+        assertTrue(text.contains("\"completion_tokens\":5"), text)
+        assertEquals(1, Regex("\"finish_reason\":\"stop\"").findAll(text).count(), text)
     }
 }
