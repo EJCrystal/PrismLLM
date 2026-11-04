@@ -636,6 +636,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val channel = app.channelRepository.find(call.requiredParam("id", "缺少渠道 id"))
                 ?: throw notFound("channel_not_found", "渠道不存在")
             val request = call.receive<ClearCooldownRequest>()
+            val baselineSeq = app.cooldownStateWriter.currentSeq()
             val cleared = when (request.scope) {
                 "channel" -> app.candidateCooldown.clearChannel(channel.id)
                 "key" -> {
@@ -655,7 +656,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 }
                 else -> throw badRequest("invalid_cooldown_scope", "scope 仅支持 channel、key、candidate")
             }
-            if (!app.cooldownStateWriter.deleteNow(cleared.toSet(), 5_000)) {
+            if (!app.cooldownStateWriter.deleteNow(cleared.toSet(), baselineSeq, 5_000)) {
                 throw GatewayException(
                     HttpStatusCode.ServiceUnavailable,
                     "cooldown_persist_failed",
