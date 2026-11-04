@@ -81,9 +81,11 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
         val message = element as? JsonObject ?: unsupported("messages[$index]", "消息必须是对象")
         when (message.string("role")) {
             "system", "developer" -> system += message.textContentStrict("content", "messages[$index].content")
-            "user" -> contents += buildJsonObject {
-                put("role", "user")
-                put("parts", JsonArray(listOf(buildJsonObject { put("text", message.textContentStrict("content", "messages[$index].content")) })))
+            "user" -> message.textContentStrict("content", "messages[$index].content").takeIf { it.isNotEmpty() }?.let { text ->
+                contents += buildJsonObject {
+                    put("role", "user")
+                    put("parts", JsonArray(listOf(buildJsonObject { put("text", text) })))
+                }
             }
             "assistant" -> {
                 val parts = mutableListOf<JsonObject>()
@@ -295,7 +297,9 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
             is JsonArray -> content.forEachIndexed { blockIndex, blockElement ->
                 val block = blockElement as? JsonObject ?: unsupported("messages[$index].content[$blockIndex]", "内容块必须是对象")
                 when (block.string("type")) {
-                    "text" -> parts += buildJsonObject { put("text", block.string("text").orEmpty()) }
+                    "text" -> block.string("text")?.takeIf { it.isNotEmpty() }?.let { text ->
+                        parts += buildJsonObject { put("text", text) }
+                    }
                     "thinking" -> parts += buildJsonObject { put("text", block.string("thinking").orEmpty()); put("thought", true) }
                     "tool_use" -> {
                         val callId = block.string("id") ?: unsupported("messages[$index].content[$blockIndex].id", "tool_use 缺少 id")
@@ -458,7 +462,9 @@ internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: Stri
     val callNames = mutableMapOf<String, String>()
     when (val input = responses["input"]) {
         JsonNull -> Unit
-        is JsonPrimitive -> contents += buildJsonObject { put("role", "user"); put("parts", buildJsonArray { add(buildJsonObject { put("text", input.content) }) }) }
+        is JsonPrimitive -> input.content.takeIf { it.isNotEmpty() }?.let { text ->
+            contents += buildJsonObject { put("role", "user"); put("parts", buildJsonArray { add(buildJsonObject { put("text", text) }) }) }
+        }
         is JsonArray -> input.forEachIndexed { index, element ->
             val item = element as? JsonObject ?: unsupported("input[$index]", "输入项必须是对象")
             when (item.string("type")) {

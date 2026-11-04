@@ -1074,6 +1074,13 @@ class ProtocolConversionTest {
         val geminiCachedNull = json("""{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"cachedContent":null}""")
         val chat3 = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.CHAT_COMPLETIONS, geminiCachedNull, "upstream")
         assertFalse(chat3.containsKey("cachedContent"))
+
+        val chatResponsesNulls = json("""{"messages":[{"role":"user","content":"hi"}],"response_format":null,"parallel_tool_calls":null,"tools":null,"tool_choice":null}""")
+        val resp3 = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, chatResponsesNulls, "upstream")
+        assertFalse(resp3.containsKey("text"))
+        assertFalse(resp3.containsKey("parallel_tool_calls"))
+        assertFalse(resp3.containsKey("tools"))
+        assertFalse(resp3.containsKey("tool_choice"))
     }
 
     @Test
@@ -1319,5 +1326,30 @@ class ProtocolConversionTest {
         val geminiFromResp = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, resp, "upstream")
         val modelPartResp = geminiFromResp.array("contents")[1].jsonObject.array("parts").single().jsonObject
         assertEquals("skip_thought_signature_validator", modelPartResp.string("thoughtSignature"))
+    }
+
+    @Test
+    fun `user messages with empty text do not generate empty parts or contents in Gemini`() {
+        val chat = json("""{"messages":[{"role":"user","content":""},{"role":"user","content":"hello"}]}""")
+        val geminiFromChat = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, chat, "upstream")
+        val chatContents = geminiFromChat.array("contents")
+        assertEquals(1, chatContents.size)
+        assertEquals("hello", chatContents[0].jsonObject.array("parts").single().jsonObject.string("text"))
+
+        val msg = json("""{"messages":[{"role":"user","content":[{"type":"text","text":""}]},{"role":"user","content":"hello"}]}""")
+        val geminiFromMsg = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI, msg, "upstream")
+        val msgContents = geminiFromMsg.array("contents")
+        assertEquals(1, msgContents.size)
+        assertEquals("hello", msgContents[0].jsonObject.array("parts").single().jsonObject.string("text"))
+
+        val respEmpty = json("""{"input":""}""")
+        val geminiFromEmptyResp = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, respEmpty, "upstream")
+        assertTrue(geminiFromEmptyResp.array("contents").isEmpty())
+
+        val respItems = json("""{"input":[{"type":"message","role":"user","content":""},{"type":"message","role":"user","content":"hello"}]}""")
+        val geminiFromResp = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, respItems, "upstream")
+        val respContents = geminiFromResp.array("contents")
+        assertEquals(1, respContents.size)
+        assertEquals("hello", respContents[0].jsonObject.array("parts").single().jsonObject.string("text"))
     }
 }

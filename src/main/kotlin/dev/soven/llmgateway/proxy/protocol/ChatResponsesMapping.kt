@@ -107,10 +107,10 @@ internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): Js
     if (chat["stop"].let { it != null && it !is JsonNull }) unsupported("stop", "Responses 不支持 stop/stop_sequences")
     chat.string("user")?.let { put("user", it) }
     chat.string("reasoning_effort")?.let { effort -> putJsonObject("reasoning") { put("effort", effort) } }
-    chat["response_format"]?.let { format ->
+    chat["response_format"]?.takeIf { it !is JsonNull }?.let { format ->
         putJsonObject("text") { put("format", chatResponseFormatToResponses(format)) }
     }
-    chat["parallel_tool_calls"]?.let { put("parallel_tool_calls", it) }
+    chat["parallel_tool_calls"]?.takeIf { it !is JsonNull }?.let { put("parallel_tool_calls", it) }
 
     val system = mutableListOf<String>()
     val input = mutableListOf<JsonObject>()
@@ -154,7 +154,7 @@ internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): Js
     }
     if (system.isNotEmpty()) put("instructions", system.joinToString("\n"))
     put("input", JsonArray(input))
-    chat["tools"]?.let { toolsElement ->
+    chat["tools"]?.takeIf { it !is JsonNull }?.let { toolsElement ->
         val tools = toolsElement as? JsonArray ?: unsupported("tools", "tools 必须是数组")
         put("tools", JsonArray(tools.mapIndexed { index, element ->
             val tool = element as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
@@ -168,7 +168,7 @@ internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): Js
             }
         }))
     }
-    chat["tool_choice"]?.let { choice -> put("tool_choice", chatToolChoiceToResponses(choice)) }
+    chat["tool_choice"]?.takeIf { it !is JsonNull }?.let { choice -> put("tool_choice", chatToolChoiceToResponses(choice)) }
 }
 
 internal fun responsesToChatResponse(response: JsonObject, model: String): JsonObject {

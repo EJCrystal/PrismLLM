@@ -58,4 +58,4 @@
 
 ## 验证
 
-`ProtocolConversionTest` 保留既有回归；`ProtocolConversionContractTest` 覆盖十二方向接口、透传、末帧、错误、异常 EOF 和会话隔离；`MessagesResponsesConversionTest` 覆盖直转顺序、工具参数、缓存用量与不支持字段。数据面集成测试覆盖十二方向的普通和流式请求、实际出站端点及尝试日志。
+`ProtocolConversionTest` 保留既有回归；`ProtocolConversionContractTest` 覆盖十二方向接口、透传、末帧、错误、异常 EOF 和会话隔离；`MessagesResponsesConversionTest` 覆盖直转顺序、工具参数、缓存用量与不支持字段。数据面集成测试覆盖六方向的普通和流式请求、实际出站端点及尝试日志。
