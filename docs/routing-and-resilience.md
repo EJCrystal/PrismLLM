@@ -72,6 +72,7 @@ PrismLLM 设计为高可用单实例网关，专注于在无需复杂微服务�
 | **慢流（TTFT 惩罚）** | 作用于密钥+模型级别 | 连续 `3` 次首 Token 超过 `10s` 时触发 | 避免慢节点拖垮整体体验 |
 
 - **Fail-Open 兜底**：若同一模型下的全部可用候选均处于冷却中，网关仍按档位顺序尝试一次请求（Fail-Open），避免全量宕机。
+- **请求日志可追溯**：`request_logs.attempts_json` 会为因冷却跳过的候选追加 `skipped=true`、`skipReason=cooldown` 的记录；这些记录不计入 `upstream_attempts` 和渠道健康度。
 
 ---
 

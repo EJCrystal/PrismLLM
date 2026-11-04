@@ -69,5 +69,6 @@ class ChannelHealthTest {
         assertEquals(AttemptOutcome.FAILURE, attemptOutcome(attempt.copy(upstreamErrorCode = "overloaded")))
         assertEquals(AttemptOutcome.FAILURE, attemptOutcome(attempt.copy(statusCode = null, errorCode = "upstream_timeout")))
         assertEquals(AttemptOutcome.FAILURE, attemptOutcome(attempt.copy(statusCode = 401)))
+        assertEquals(AttemptOutcome.EXCLUDED, attemptOutcome(attempt.copy(skipped = true, skipReason = "cooldown")))
     }
 }

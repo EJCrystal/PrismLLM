@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
-/** 把每次上游尝试的明细序列化进 request_logs.attempts_json。 */
+/** 把每次上游尝试或路由跳过的明细序列化进 request_logs.attempts_json。 */
 internal object UpstreamAttemptCodec {
     @Serializable
     private data class StoredAttempt(
@@ -27,6 +27,8 @@ internal object UpstreamAttemptCodec {
         val firstTokenMs: Long? = null,
         val committed: Boolean = false,
         val retryable: Boolean = false,
+        val skipped: Boolean = false,
+        val skipReason: String? = null,
     )
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -53,6 +55,8 @@ internal object UpstreamAttemptCodec {
                 firstTokenMs = attempt.firstTokenMs,
                 committed = attempt.committed,
                 retryable = attempt.retryable,
+                skipped = attempt.skipped,
+                skipReason = attempt.skipReason,
             )
         },
     )
@@ -81,6 +85,8 @@ internal object UpstreamAttemptCodec {
                     firstTokenMs = attempt.firstTokenMs,
                     committed = attempt.committed,
                     retryable = attempt.retryable,
+                    skipped = attempt.skipped,
+                    skipReason = attempt.skipReason,
                 )
             }
     }
