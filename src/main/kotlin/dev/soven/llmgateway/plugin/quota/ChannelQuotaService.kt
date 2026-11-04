@@ -29,7 +29,7 @@ class ChannelQuotaService(
     private val registry: ChannelQuotaProviderRegistry,
     private val cipher: CredentialCipher,
     private val now: () -> Long = System::currentTimeMillis,
-    private val timeoutMs: Long = 30_000,
+    private val timeoutMs: Long = 45_000,
 ) : AutoCloseable {
     private data class Cached(val channel: ChannelRecord, val result: ChannelQuotaSnapshot, val at: Long)
     private data class CacheKey(val channelId: String, val keyId: String?)

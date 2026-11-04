@@ -95,6 +95,30 @@ class ChannelQuotaServiceTest {
     }
 
     @Test
+    fun fallbackKeySucceedsWithinTotalTimeoutBudget() = runBlocking {
+        val seen = mutableListOf<String>()
+        val keys = listOf(
+            key("primary", 10).copy(name = "主密钥"),
+            key("secondary", 20).copy(name = "备用密钥"),
+        )
+        withService(provider { request ->
+            seen += request.credential
+            if (request.credential == "primary") {
+                ChannelQuotaResult(ChannelQuotaStatus.AUTHENTICATION_FAILED)
+            } else {
+                available("88.88")
+            }
+        }, timeoutMs = 45_000) { service ->
+            val result = service.query(channel(keys = keys))
+            assertEquals(ChannelQuotaStatus.AVAILABLE.name, result.status)
+            assertEquals("88.88", result.remaining)
+            assertEquals("备用密钥", result.queryKey?.name)
+            assertEquals(listOf("主密钥", "备用密钥"), result.attemptedKeys.map { it.name })
+            assertEquals(listOf("primary", "secondary"), seen)
+        }
+    }
+
+    @Test
     fun doesNotRetryRateLimitsAndDoesNotChangeKeyState() = runBlocking {
         val calls = AtomicInteger()
         val original = channel(keys = listOf(key("a"), key("b")))
@@ -428,7 +452,7 @@ class ChannelQuotaServiceTest {
     }
 
     private suspend fun withService(provider: ChannelQuotaProvider, now: () -> Long = System::currentTimeMillis,
-        timeoutMs: Long = 30_000, action: suspend (ChannelQuotaService) -> Unit) {
+        timeoutMs: Long = 45_000, action: suspend (ChannelQuotaService) -> Unit) {
         ChannelQuotaProviderRegistry(builtIns = listOf(provider)).use { registry ->
             ChannelQuotaService(registry, cipher, now, timeoutMs).use { action(it) }
         }
