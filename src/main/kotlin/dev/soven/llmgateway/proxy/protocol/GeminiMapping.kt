@@ -349,6 +349,7 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
             })
         })
     }
+    messagesToolChoiceToGemini(messages["tool_choice"] as? JsonObject)?.let { put("toolConfig", it) }
 }
 
 internal fun geminiToMessagesResponse(response: JsonObject, model: String): JsonObject = buildJsonObject {
@@ -871,37 +872,90 @@ private fun geminiToolChoiceToChat(toolConfig: JsonElement?): JsonElement? {
 
 private fun chatToolChoiceToGemini(choice: JsonElement?, disableParallel: Boolean): JsonObject? {
     if (choice == null && !disableParallel) return null
+    val forced = ((choice as? JsonObject)?.get("function") as? JsonObject)?.string("name")
+        ?: (choice as? JsonObject)?.string("name")
     val mode = when {
         choice is JsonPrimitive && choice.contentOrNull == "required" -> "ANY"
         choice is JsonPrimitive && choice.contentOrNull == "none" -> "NONE"
         choice is JsonObject && choice.string("type") == "function" -> "ANY"
         else -> "AUTO"
     }
-    return buildJsonObject { putJsonObject("functionCallingConfig") { put("mode", mode) } }
+    return buildJsonObject {
+        putJsonObject("functionCallingConfig") {
+            put("mode", mode)
+            forced?.let { put("allowedFunctionNames", buildJsonArray { add(JsonPrimitive(it)) }) }
+        }
+    }
 }
 
 private fun geminiToolChoiceToMessages(toolConfig: JsonElement?): JsonObject? {
-    val mode = ((toolConfig as? JsonObject)?.get("functionCallingConfig") as? JsonObject)?.string("mode") ?: return null
-    return buildJsonObject { put("type", when (mode) { "AUTO" -> "auto"; "NONE" -> "none"; else -> "any" }) }
+    val config = (toolConfig as? JsonObject)?.get("functionCallingConfig") as? JsonObject ?: return null
+    val mode = config.string("mode") ?: return null
+    val allowed = (config["allowedFunctionNames"] as? JsonArray)?.firstOrNull()?.let { (it as? JsonPrimitive)?.contentOrNull }
+    return buildJsonObject {
+        when {
+            mode == "AUTO" -> put("type", "auto")
+            mode == "NONE" -> put("type", "none")
+            mode == "ANY" && allowed != null -> {
+                put("type", "tool")
+                put("name", allowed)
+            }
+            mode == "ANY" -> put("type", "any")
+            else -> put("type", "auto")
+        }
+    }
 }
 
-private fun geminiToolChoiceToResponses(toolConfig: JsonElement?): JsonElement? =
-    when (((toolConfig as? JsonObject)?.get("functionCallingConfig") as? JsonObject)?.string("mode")) {
+private fun messagesToolChoiceToGemini(choice: JsonObject?): JsonObject? {
+    if (choice == null) return null
+    val type = choice.string("type")
+    val mode = when (type) {
+        "any" -> "ANY"
+        "none" -> "NONE"
+        "tool" -> "ANY"
+        else -> "AUTO"
+    }
+    val forced = if (type == "tool") {
+        choice.string("name") ?: unsupported("tool_choice.name", "tool_choice 缺少 name")
+    } else null
+    return buildJsonObject {
+        putJsonObject("functionCallingConfig") {
+            put("mode", mode)
+            forced?.let { put("allowedFunctionNames", buildJsonArray { add(JsonPrimitive(it)) }) }
+        }
+    }
+}
+
+private fun geminiToolChoiceToResponses(toolConfig: JsonElement?): JsonElement? {
+    val config = (toolConfig as? JsonObject)?.get("functionCallingConfig") as? JsonObject ?: return null
+    val allowed = (config["allowedFunctionNames"] as? JsonArray)?.firstOrNull()?.let { (it as? JsonPrimitive)?.contentOrNull }
+    return when (config.string("mode")) {
         "AUTO" -> JsonPrimitive("auto")
         "NONE" -> JsonPrimitive("none")
-        "ANY" -> JsonPrimitive("required")
+        "ANY" -> if (allowed != null) buildJsonObject { put("type", "function"); put("name", allowed) } else JsonPrimitive("required")
         else -> null
     }
+}
 
 private fun responsesToolChoiceToGemini(choice: JsonElement?): JsonObject? {
     if (choice == null) return null
+    val forced = (choice as? JsonObject)?.string("name")
+        ?: ((choice as? JsonObject)?.get("function") as? JsonObject)?.string("name")
     val mode = when {
         choice is JsonPrimitive && choice.contentOrNull == "required" -> "ANY"
         choice is JsonPrimitive && choice.contentOrNull == "none" -> "NONE"
+        choice is JsonObject && choice.string("type") == "auto" -> "AUTO"
+        choice is JsonObject && choice.string("type") == "none" -> "NONE"
+        choice is JsonObject && choice.string("type") == "required" -> "ANY"
         choice is JsonObject -> "ANY"
         else -> "AUTO"
     }
-    return buildJsonObject { putJsonObject("functionCallingConfig") { put("mode", mode) } }
+    return buildJsonObject {
+        putJsonObject("functionCallingConfig") {
+            put("mode", mode)
+            forced?.let { put("allowedFunctionNames", buildJsonArray { add(JsonPrimitive(it)) }) }
+        }
+    }
 }
 
 private fun geminiThinkingToEffort(config: JsonObject?): String? {

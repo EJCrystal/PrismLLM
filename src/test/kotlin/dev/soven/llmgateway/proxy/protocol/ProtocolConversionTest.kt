@@ -974,4 +974,78 @@ class ProtocolConversionTest {
             )
         }
     }
+
+    @Test
+    fun `messages tool_choice converts to Gemini toolConfig`() {
+        val cases = listOf(
+            """{"type":"none"}""" to ("NONE" to null),
+            """{"type":"any"}""" to ("ANY" to null),
+            """{"type":"auto"}""" to ("AUTO" to null),
+            """{"type":"tool","name":"lookup"}""" to ("ANY" to "lookup"),
+        )
+        for ((choice, expected) in cases) {
+            val (expectedMode, expectedAllowed) = expected
+            val request = json("""{"messages":[{"role":"user","content":"hi"}],"tool_choice":$choice}""")
+            val gemini = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI, request, "upstream")
+            val config = gemini["toolConfig"]?.jsonObject?.get("functionCallingConfig")?.jsonObject
+            assertEquals(expectedMode, config?.string("mode"), "mode for $choice")
+            val allowed = config?.get("allowedFunctionNames")?.jsonArray?.map { it.jsonPrimitive.content }
+            if (expectedAllowed != null) {
+                assertEquals(listOf(expectedAllowed), allowed, "allowed for $choice")
+            } else {
+                assertEquals(null, allowed, "allowed for $choice")
+            }
+        }
+
+        val missingName = json("""{"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"tool"}}""")
+        val error = assertFailsWith<ProtocolConversionException> {
+            ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI, missingName, "upstream")
+        }
+        assertEquals("tool_choice.name", error.field)
+    }
+
+    @Test
+    fun `forced function tool_choice preserves allowed function names for Gemini`() {
+        val chatForced = json("""{
+            "messages":[{"role":"user","content":"hi"}],
+            "tools":[{"type":"function","function":{"name":"weather"}}],
+            "tool_choice":{"type":"function","function":{"name":"weather"}}
+        }""")
+        val geminiFromChat = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, chatForced, "upstream")
+        val chatConfig = geminiFromChat["toolConfig"]?.jsonObject?.get("functionCallingConfig")?.jsonObject
+        assertEquals("ANY", chatConfig?.string("mode"))
+        assertEquals("weather", chatConfig?.get("allowedFunctionNames")?.jsonArray?.single()?.jsonPrimitive?.content)
+
+        val responsesForced = json("""{
+            "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],
+            "tools":[{"type":"function","name":"weather"}],
+            "tool_choice":{"type":"function","name":"weather"}
+        }""")
+        val geminiFromResponses = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, responsesForced, "upstream")
+        val responsesConfig = geminiFromResponses["toolConfig"]?.jsonObject?.get("functionCallingConfig")?.jsonObject
+        assertEquals("ANY", responsesConfig?.string("mode"))
+        assertEquals("weather", responsesConfig?.get("allowedFunctionNames")?.jsonArray?.single()?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `Gemini toolConfig with allowedFunctionNames converts symmetrically to all targets`() {
+        val forcedGemini = json("""{
+            "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+            "toolConfig":{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":["weather"]}}
+        }""")
+        val chat = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.CHAT_COMPLETIONS, forcedGemini, "upstream")
+        val chatChoice = chat["tool_choice"]?.jsonObject
+        assertEquals("function", chatChoice?.string("type"))
+        assertEquals("weather", chatChoice?.get("function")?.jsonObject?.string("name"))
+
+        val messages = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.MESSAGES, forcedGemini, "upstream")
+        val messagesChoice = messages["tool_choice"]?.jsonObject
+        assertEquals("tool", messagesChoice?.string("type"))
+        assertEquals("weather", messagesChoice?.string("name"))
+
+        val responses = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.RESPONSES, forcedGemini, "upstream")
+        val responsesChoice = responses["tool_choice"]?.jsonObject
+        assertEquals("function", responsesChoice?.string("type"))
+        assertEquals("weather", responsesChoice?.string("name"))
+    }
 }
