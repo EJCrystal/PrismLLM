@@ -772,10 +772,10 @@ private fun geminiContentsToMessages(contents: JsonElement?): JsonArray = buildJ
                     }
                     obj["inlineData"] != null || obj["fileData"] != null -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini 多模态内容")
                     obj.boolean("thought") == true -> unsupported("contents[$index].parts[$partIndex]", "Gemini thinking 历史缺少 Anthropic 签名，无法转换为 Messages")
-                    else -> obj.string("text")?.let { messageTextBlock(it) }
+                    else -> obj.string("text")?.takeIf { it.isNotEmpty() }?.let { messageTextBlock(it) }
                 }
             }
-            add(messageWithBlocks(if (content.string("role") == "model") "assistant" else "user", blocks))
+            if (blocks.isNotEmpty()) add(messageWithBlocks(if (content.string("role") == "model") "assistant" else "user", blocks))
         }
         }
         else -> Unit

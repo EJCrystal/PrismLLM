@@ -1399,4 +1399,23 @@ class ProtocolConversionTest {
         assertEquals("model", contents[1].jsonObject.string("role"))
         assertEquals("cannot help", contents[1].jsonObject.array("parts").single().jsonObject.string("text"))
     }
+
+    @Test
+    fun `gemini to messages request skips empty text parts and empty messages`() {
+        val gemini = json("""{
+            "contents":[
+                {"role":"user","parts":[{"text":""}]},
+                {"role":"model","parts":[{"text":"","thoughtSignature":"sig_123"}]},
+                {"role":"user","parts":[{"text":"hello"}]},
+                {"role":"model","parts":[{"functionCall":{"name":"lookup","args":{}}}]}
+            ]
+        }""")
+        val messages = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.MESSAGES, gemini, "claude-model")
+        val msgArray = messages.array("messages")
+        assertEquals(2, msgArray.size)
+        assertEquals("user", msgArray[0].jsonObject.string("role"))
+        assertEquals("hello", msgArray[0].jsonObject.array("content").single().jsonObject.string("text"))
+        assertEquals("assistant", msgArray[1].jsonObject.string("role"))
+        assertEquals("tool_use", msgArray[1].jsonObject.array("content").single().jsonObject.string("type"))
+    }
 }
