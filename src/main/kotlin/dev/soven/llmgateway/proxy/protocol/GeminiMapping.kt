@@ -114,7 +114,7 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
     if (system.isNotEmpty()) put("systemInstruction", buildJsonObject {
         put("parts", buildJsonArray { add(buildJsonObject { put("text", system.joinToString("\n")) }) })
     })
-    put("contents", JsonArray(contents))
+    put("contents", mergeGeminiToolContents(contents))
     val generation = buildJsonObject {
         (chat.long("max_tokens") ?: chat.long("max_completion_tokens"))?.let { put("maxOutputTokens", it) }
         chat.number("temperature")?.let { put("temperature", it) }
@@ -315,7 +315,7 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
             put("parts", JsonArray(parts))
         }
     }
-    put("contents", JsonArray(contents))
+    put("contents", mergeGeminiToolContents(contents))
     val generation = buildJsonObject {
         messages.long("max_tokens")?.let { put("maxOutputTokens", it) }
         messages.number("temperature")?.let { put("temperature", it) }
@@ -481,7 +481,7 @@ internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: Stri
         JsonNull, null -> Unit
         else -> unsupported("input", "input 必须是字符串或数组")
     }
-    put("contents", JsonArray(contents))
+    put("contents", mergeGeminiToolContents(contents))
     if (system.isNotEmpty()) put("systemInstruction", buildJsonObject { put("parts", buildJsonArray { add(buildJsonObject { put("text", system.joinToString("\n")) }) }) })
     val generation = buildJsonObject {
         responses.long("max_output_tokens")?.let { put("maxOutputTokens", it) }
@@ -607,6 +607,25 @@ internal fun responsesToGeminiResponse(responses: JsonObject, model: String): Js
     responsesUsageToGemini(responses["usage"] as? JsonObject)?.let { put("usageMetadata", it) }
 }
 
+private fun mergeGeminiToolContents(contents: List<JsonObject>): JsonArray {
+    val merged = mutableListOf<JsonObject>()
+    contents.forEach { content ->
+        val previous = merged.lastOrNull()
+        val role = content.string("role")
+        val field = if (role == "model") "functionCall" else "functionResponse"
+        val parts = content.array("parts")
+        val previousParts = previous?.array("parts").orEmpty()
+        if (previous != null && previous.string("role") == role && parts.isNotEmpty() && previousParts.isNotEmpty() &&
+            (previousParts + parts).all { (it as? JsonObject)?.get(field) is JsonObject }
+        ) {
+            merged[merged.lastIndex] = JsonObject(previous + ("parts" to JsonArray(previousParts + parts)))
+        } else {
+            merged += content
+        }
+    }
+    return JsonArray(merged)
+}
+
 private fun geminiSystemText(element: JsonElement?): String? = when (element) {
     JsonNull -> null
     is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() }
@@ -696,7 +715,7 @@ private fun geminiContentsToMessages(contents: JsonElement?): JsonArray = buildJ
                         }
                     }
                     obj["inlineData"] != null || obj["fileData"] != null -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini 多模态内容")
-                    obj.boolean("thought") == true -> buildJsonObject { put("type", "thinking"); put("thinking", obj.string("text").orEmpty()); put("signature", "") }
+                    obj.boolean("thought") == true -> unsupported("contents[$index].parts[$partIndex]", "Gemini thinking 历史缺少 Anthropic 签名，无法转换为 Messages")
                     else -> obj.string("text")?.let { messageTextBlock(it) }
                 }
             }

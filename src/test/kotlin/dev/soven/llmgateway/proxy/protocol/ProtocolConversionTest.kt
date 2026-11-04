@@ -47,13 +47,13 @@ class ProtocolConversionTest {
     }
 
     @Test
-    fun `streaming responses refusal reaches chat as refusal and content filter`() {
+    fun `streaming responses refusal reaches chat without changing completed status`() {
         val converter = EventStreamConverter(ResponsesStreamDecoder(), ChatStreamEncoder("public"))
         val frames = converter.feed("data: {\"type\":\"response.refusal.delta\",\"response\":{\"id\":\"resp_refusal\"},\"delta\":\"cannot help\"}") +
             converter.feed("") + converter.feed("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_refusal\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"cannot help\"}]}]}}") + converter.feed("")
         val body = frames.joinToString("\n")
         assertTrue(body.contains("\"refusal\":\"cannot help\""), body)
-        assertTrue(body.contains("\"finish_reason\":\"content_filter\""), body)
+        assertTrue(body.contains("\"finish_reason\":\"stop\""), body)
     }
 
     @Test
@@ -65,8 +65,8 @@ class ProtocolConversionTest {
         val body = frames.joinToString("\n")
         assertTrue(body.contains("event: response.refusal.delta"), body)
         assertTrue(body.contains("\"delta\":\"cannot help\""), body)
-        assertTrue(body.contains("response.incomplete"), body)
-        assertTrue(body.contains("\"reason\":\"content_filter\""), body)
+        assertTrue(body.contains("response.completed"), body)
+        assertFalse(body.contains("response.incomplete"), body)
     }
 
     @Test
@@ -76,16 +76,36 @@ class ProtocolConversionTest {
             converter.feed("") + converter.feed("data: [DONE]") + converter.feed("")
         assertEquals(1, frames.count { it.contains("event: response.refusal.delta") })
         assertEquals(1, frames.count { it.contains("\"delta\":\"cannot help\"") })
-        assertTrue(frames.any { it.contains("response.incomplete") })
+        assertTrue(frames.any { it.contains("response.completed") })
     }
 
     @Test
-    fun `responses completed refusal output is emitted before chat terminal chunk`() {
+    fun `responses completed refusal output is emitted before a normal chat terminal chunk`() {
         val converter = EventStreamConverter(ResponsesStreamDecoder(), ChatStreamEncoder("public"))
         val frames = converter.feed("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_refusal\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"cannot help\"}]}]}}") + converter.feed("")
         val body = frames.joinToString("\n")
         assertTrue(body.contains("\"refusal\":\"cannot help\""), body)
-        assertTrue(body.contains("\"finish_reason\":\"content_filter\""), body)
+        assertTrue(body.contains("\"finish_reason\":\"stop\""), body)
+    }
+
+    @Test
+    fun `Gemini stream preserves refusal text and safety from chat and responses`() {
+        val upstreamEvents = mapOf(
+            GatewayProtocol.CHAT_COMPLETIONS to listOf(
+                """{"id":"r","choices":[{"delta":{"refusal":"cannot help"},"finish_reason":"stop"}]}""",
+                "[DONE]",
+            ),
+            GatewayProtocol.RESPONSES to listOf(
+                """{"type":"response.completed","response":{"id":"r","status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"cannot help"}]}]}}""",
+            ),
+        )
+        upstreamEvents.forEach { (protocol, events) ->
+            val converter = ProtocolConversion.streamConverter(GatewayProtocol.GEMINI, protocol, "public")!!
+            val frames = events.flatMap { converter.feed("data: $it") + converter.feed("") } + converter.finish()
+            val body = frames.joinToString("\n")
+            assertTrue(body.contains("\"text\":\"cannot help\""), "$protocol: $body")
+            assertTrue(body.contains("\"finishReason\":\"SAFETY\""), "$protocol: $body")
+        }
     }
 
     @Test
@@ -773,6 +793,62 @@ class ProtocolConversionTest {
         val toolResultIds = blocks.filter { it["type"]!!.jsonPrimitive.content == "tool_result" }.map { it["tool_use_id"]!!.jsonPrimitive.content }
         assertEquals(2, toolUseIds.distinct().size)
         assertEquals(toolUseIds, toolResultIds)
+    }
+
+    @Test
+    fun `parallel chat tool rounds are grouped into Gemini contents`() {
+        val chat = json("""{
+            "messages":[
+                {"role":"assistant","tool_calls":[
+                    {"id":"a","type":"function","function":{"name":"one","arguments":"{}"}},
+                    {"id":"b","type":"function","function":{"name":"two","arguments":"{}"}}
+                ]},
+                {"role":"tool","tool_call_id":"a","content":"A"},
+                {"role":"tool","tool_call_id":"b","content":"B"}
+            ]
+        }""")
+        val contents = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, chat, "upstream")["contents"]!!.jsonArray
+        assertEquals(2, contents.size)
+        assertEquals(listOf("model", "user"), contents.map { it.jsonObject["role"]!!.jsonPrimitive.content })
+        assertEquals(2, contents[0].jsonObject["parts"]!!.jsonArray.size)
+        assertEquals(2, contents[1].jsonObject["parts"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `parallel responses tool rounds are grouped into Gemini contents`() {
+        val responses = json("""{
+            "input":[
+                {"type":"function_call","call_id":"a","name":"one","arguments":"{}"},
+                {"type":"function_call","call_id":"b","name":"two","arguments":"{}"},
+                {"type":"function_call_output","call_id":"a","output":"A"},
+                {"type":"function_call_output","call_id":"b","output":"B"}
+            ]
+        }""")
+        val contents = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, responses, "upstream")["contents"]!!.jsonArray
+        assertEquals(2, contents.size)
+        assertEquals(listOf("model", "user"), contents.map { it.jsonObject["role"]!!.jsonPrimitive.content })
+        assertEquals(2, contents[0].jsonObject["parts"]!!.jsonArray.size)
+        assertEquals(2, contents[1].jsonObject["parts"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `Gemini thinking history is rejected for Messages without a signature`() {
+        val gemini = json("""{"contents":[{"role":"model","parts":[{"text":"thought","thought":true}]}]}""")
+        assertFailsWith<ProtocolConversionException> {
+            ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.MESSAGES, gemini, "upstream")
+        }
+    }
+
+    @Test
+    fun `Gemini tool grouping preserves adjacent text boundaries`() {
+        val responses = json("""{"input":[
+            {"type":"function_call","call_id":"a","name":"one","arguments":"{}"},
+            {"type":"function_call_output","call_id":"a","output":"A"},
+            {"type":"message","role":"user","content":"keep separate"}
+        ]}""")
+        val contents = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, responses, "upstream")["contents"]!!.jsonArray
+        assertEquals(3, contents.size)
+        assertEquals("keep separate", contents.last().jsonObject["parts"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
     }
 
     @Test

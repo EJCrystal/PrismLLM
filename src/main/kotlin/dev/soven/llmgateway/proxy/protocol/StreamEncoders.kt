@@ -397,7 +397,7 @@ internal class ResponsesStreamEncoder(private val model: String) : StreamEncoder
 
 internal class GeminiStreamEncoder(private val model: String) : StreamEncoder {
     private var responseId: String? = null
-    private var toolIndex = 0
+    private var hasRefusal = false
     private val pendingTools = mutableListOf<MutableGeminiTool>()
 
     override fun emit(chunk: StreamEvent, usage: TokenUsage?): List<String> {
@@ -405,7 +405,10 @@ internal class GeminiStreamEncoder(private val model: String) : StreamEncoder {
         val id = responseId ?: chunk.id.also { responseId = it }
         val parts = mutableListOf<JsonObject>()
         chunk.content?.takeIf { it.isNotEmpty() }?.let { text -> parts += buildJsonObject { put("text", text) } }
-        chunk.refusal?.takeIf { it.isNotEmpty() }?.let { text -> parts += buildJsonObject { put("text", text) } }
+        chunk.refusal?.takeIf { it.isNotEmpty() }?.let { text ->
+            hasRefusal = true
+            parts += buildJsonObject { put("text", text) }
+        }
         chunk.toolCalls.forEach { tool ->
             val existing = pendingTools.firstOrNull { it.index == tool.index }
             val state = existing ?: MutableGeminiTool(tool.index, tool.name.orEmpty(), StringBuilder()).also { pendingTools += it }
@@ -429,7 +432,7 @@ internal class GeminiStreamEncoder(private val model: String) : StreamEncoder {
                 put("candidates", buildJsonArray {
                     add(buildJsonObject {
                         put("content", buildJsonObject { put("role", "model"); put("parts", JsonArray(parts)) })
-                        chunk.finishReason?.let { put("finishReason", it.toGeminiFinish()) }
+                        chunk.finishReason?.let { put("finishReason", if (hasRefusal) "SAFETY" else it.toGeminiFinish()) }
                         put("index", 0)
                     })
                 })

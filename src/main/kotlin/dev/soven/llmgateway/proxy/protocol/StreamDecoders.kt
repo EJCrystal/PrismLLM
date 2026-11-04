@@ -9,7 +9,6 @@ internal class ChatStreamDecoder : StreamDecoder {
     override var usage: TokenUsage? = null
         private set
     private val fallbackId = "chatcmpl-"+System.currentTimeMillis()
-    private var responseRefused = false
 
     override fun decode(event: JsonObject): List<StreamEvent> = listOfNotNull(parse(event))
 
@@ -22,7 +21,6 @@ internal class ChatStreamDecoder : StreamDecoder {
         if (choice == null) return if (usageJson != null) StreamEvent(id) else null
         val delta = choice["delta"] as? JsonObject ?: choice["message"] as? JsonObject
         val refusal = delta?.string("refusal")
-        if (!refusal.isNullOrEmpty()) responseRefused = true
         val tools = mutableListOf<ToolCallDelta>()
         (delta?.get("tool_calls") as? JsonArray)?.forEachIndexed { position, element ->
             val call = element as? JsonObject ?: return@forEachIndexed
@@ -40,11 +38,7 @@ internal class ChatStreamDecoder : StreamDecoder {
             content = delta?.string("content"),
             refusal = refusal,
             toolCalls = tools,
-            finishReason = if (responseRefused && choice.string("finish_reason") == "stop") {
-                FinishReason.CONTENT_FILTER
-            } else {
-                FinishReason.fromChat(choice.string("finish_reason"))
-            },
+            finishReason = FinishReason.fromChat(choice.string("finish_reason")),
         )
     }
 }
@@ -143,9 +137,7 @@ internal class ResponsesStreamDecoder : StreamDecoder {
                         (part as? JsonObject)?.takeIf { it.string("type") == "refusal" }?.string("refusal")
                     }
                 }
-                val hasRefusal = responseRefused || refusalTexts.isNotEmpty()
                 val finishReason = when {
-                    hasRefusal -> FinishReason.CONTENT_FILTER
                     hasTool -> FinishReason.TOOL_CALLS
                     else -> FinishReason.STOP
                 }
