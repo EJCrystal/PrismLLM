@@ -46,6 +46,7 @@ export interface ReportedModelAttemptInput {
   channelKeyId?: string | null
   upstreamModel?: string | null
   upstreamReportedModel?: string | null
+  skipped?: boolean
 }
 
 export interface ReportedModelLogInput {
@@ -67,6 +68,7 @@ export function reportedModelStatus(log: ReportedModelLogInput | null | undefine
   if (!channelId || !upstreamModel) return null
 
   const attempt = [...(log?.attempts ?? [])].reverse().find((candidate) =>
+    !candidate.skipped &&
     candidate.channelId === channelId &&
     (log?.channelKeyId == null || candidate.channelKeyId === log.channelKeyId) &&
     String(candidate.upstreamModel ?? '').trim() === upstreamModel,
@@ -91,14 +93,28 @@ export interface AttemptDisplayInput {
   errorMessage?: string | null
   committed?: boolean
   retryable?: boolean
+  skipped?: boolean
+  skipReason?: string | null
+}
+
+const SKIP_REASON_LABELS: Record<string, string> = {
+  cooldown: '冷却中',
+}
+
+export function skipReasonLabel(value: string | null | undefined): string {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return ''
+  return SKIP_REASON_LABELS[normalized] || normalized
 }
 
 export function attemptHasError(attempt: AttemptDisplayInput | null | undefined): boolean {
+  if (attempt?.skipped) return false
   return Boolean(attempt?.errorCode || (attempt?.statusCode ?? 0) >= 400 || (attempt?.upstreamErrorStatusCode ?? 0) >= 400)
 }
 
 export function attemptResultLabel(attempt: AttemptDisplayInput | null | undefined, hasFollowingAttempt = false): string {
   if (!attempt) return '—'
+  if (attempt.skipped) return attempt.skipReason === 'cooldown' ? '跳过（冷却）' : '路由跳过'
   if (attempt.errorCode === 'client_disconnect') return '客户端断开'
   if (attempt.errorCode === 'client_cancelled') return '客户端取消'
   // 缺少状态码只说明没收到响应：连接失败与超时前都已发出请求，不能一律判为未到达上游。
@@ -111,5 +127,6 @@ export function attemptResultLabel(attempt: AttemptDisplayInput | null | undefin
 
 export function attemptFailureReason(attempt: AttemptDisplayInput | null | undefined): string {
   if (!attempt) return '—'
+  if (attempt.skipped) return skipReasonLabel(attempt.skipReason) || '路由跳过'
   return attempt.errorMessage || attempt.upstreamErrorCode || attempt.errorCode || '—'
 }

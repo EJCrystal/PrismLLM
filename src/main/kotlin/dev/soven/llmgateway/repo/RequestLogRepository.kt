@@ -186,7 +186,8 @@ class RequestLogRepository(private val database: Database) {
         logId: Long, attempts: List<UpstreamAttemptRecord>, stream: Boolean?,
         outputTokens: Long?, usageKnown: Boolean, createdAt: Long,
     ) {
-        attempts.forEachIndexed { ordinal, attempt ->
+        val indexed = attempts.filterNot { it.skipped }
+        indexed.forEachIndexed { ordinal, attempt ->
             val channel = attempt.channelId ?: return@forEachIndexed
             RequestAttempts.insertIgnore {
                 it[this.logId] = logId
@@ -201,7 +202,7 @@ class RequestLogRepository(private val database: Database) {
                 it[statusCode] = attempt.upstreamErrorStatusCode ?: attempt.statusCode
                 it[firstTokenMs] = attempt.firstTokenMs
                 it[elapsedMs] = attempt.elapsedMs
-                it[this.outputTokens] = outputTokens?.takeIf { ordinal == attempts.lastIndex && usageKnown }
+                it[this.outputTokens] = outputTokens?.takeIf { ordinal == indexed.lastIndex && usageKnown }
                 it[this.createdAt] = createdAt
             }
         }

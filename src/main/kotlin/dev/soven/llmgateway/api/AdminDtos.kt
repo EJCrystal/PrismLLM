@@ -910,7 +910,7 @@ data class RequestLogResponse(
     val attempts: List<UpstreamAttemptResponse> = emptyList(),
 )
 
-/** 单次上游尝试的日志明细。 */
+/** 单次上游尝试或路由跳过的日志明细。 */
 @Serializable
 data class UpstreamAttemptResponse(
     val index: Int,
@@ -930,6 +930,8 @@ data class UpstreamAttemptResponse(
     val firstTokenMs: Long? = null,
     val committed: Boolean = false,
     val retryable: Boolean = false,
+    val skipped: Boolean = false,
+    val skipReason: String? = null,
 )
 
 fun RequestLogRecord.toResponse() = RequestLogResponse(
@@ -993,6 +995,8 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
             firstTokenMs = attempt.firstTokenMs,
             committed = attempt.committed,
             retryable = attempt.retryable,
+            skipped = attempt.skipped,
+            skipReason = attempt.skipReason,
         )
     },
 )

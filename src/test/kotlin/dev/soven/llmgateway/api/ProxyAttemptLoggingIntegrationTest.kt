@@ -304,6 +304,106 @@ class ProxyAttemptLoggingIntegrationTest {
     }
 
     @Test
+    fun `cooldown skipped candidates are logged without health attempts`() = runBlocking {
+        val modelId = "cooldown-skip-log"
+        createChannel(modelId, "${fake.baseUrl}/ok/v1", priority = 1)
+        createChannel(modelId, "${fake.baseUrl}/ok/v1", priority = 2)
+        val cooling = app.channelRepository.list().single { it.name == "1-$modelId" }
+        val key = cooling.keys.single()
+        val permit = checkNotNull(app.candidateCooldown.acquire(cooling.id, key.id, modelId))
+        app.candidateCooldown.recordFailure(permit, FailureKind.SERVER_ERROR)
+        testApplication {
+            application { app.install(this) }
+            val requestId = UUID.randomUUID().toString()
+            val response = client.sendRequest(modelId, false, requestId)
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val log = awaitRequestLog(requestId)
+            assertEquals(1, log.upstreamAttempts)
+            assertEquals(2, log.attempts.size)
+            val skipped = log.attempts.first()
+            assertTrue(skipped.skipped)
+            assertEquals("cooldown", skipped.skipReason)
+            assertEquals(cooling.id, skipped.channelId)
+            assertNull(skipped.statusCode)
+            val attempted = log.attempts.last()
+            assertFalse(attempted.skipped)
+            assertEquals(200, attempted.statusCode)
+            assertTrue(log.toResponse().attempts.first().skipped)
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.prepareStatement("select count(*) from request_attempts where log_id = ?").use { statement ->
+                    statement.setLong(1, log.id)
+                    statement.executeQuery().use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `skipped events keep route order between upstream attempts`() = runBlocking {
+        val modelId = "cooldown-order"
+        val credential = app.credentialCipher.encrypt("upstream-secret")
+        app.channelRepository.create(
+            name = "1-$modelId",
+            baseUrl = "${fake.baseUrl}/500/v1",
+            keys = listOf(
+                NewChannelKey("key-a", credential, priority = 1, models = listOf(modelId)),
+                NewChannelKey("key-b", credential, priority = 2, models = listOf(modelId)),
+            ),
+            authType = "bearer",
+            protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
+            enabled = true,
+            modelMappings = listOf(ChannelModelRecord(modelId)),
+            priority = 1,
+        )
+        createChannel(modelId, "${fake.baseUrl}/ok/v1", priority = 2)
+        testApplication {
+            application { app.install(this) }
+            val requestId = UUID.randomUUID().toString()
+            val response = client.sendRequest(modelId, false, requestId)
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val log = awaitRequestLog(requestId)
+            assertEquals(2, log.upstreamAttempts)
+            assertEquals(3, log.attempts.size)
+            val failed = log.attempts[0]
+            assertFalse(failed.skipped)
+            assertEquals(500, failed.statusCode)
+            assertEquals("key-a", failed.channelKeyName)
+            val skipped = log.attempts[1]
+            assertTrue(skipped.skipped)
+            assertEquals("key-b", skipped.channelKeyName)
+            assertNull(skipped.statusCode)
+            val succeeded = log.attempts[2]
+            assertFalse(succeeded.skipped)
+            assertEquals(200, succeeded.statusCode)
+            assertEquals("2-$modelId", succeeded.channelName)
+        }
+    }
+
+    @Test
+    fun `fail-open cooling candidate is attempted instead of logged as skipped`() = runBlocking {
+        val modelId = "cooldown-fail-open"
+        createChannel(modelId, "${fake.baseUrl}/ok/v1")
+        val cooling = app.channelRepository.list().single { it.name == "1-$modelId" }
+        val key = cooling.keys.single()
+        val permit = checkNotNull(app.candidateCooldown.acquire(cooling.id, key.id, modelId))
+        app.candidateCooldown.recordFailure(permit, FailureKind.SERVER_ERROR)
+        testApplication {
+            application { app.install(this) }
+            val requestId = UUID.randomUUID().toString()
+            val response = client.sendRequest(modelId, false, requestId)
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val log = awaitRequestLog(requestId)
+            assertEquals(1, log.upstreamAttempts)
+            val attempt = log.attempts.single()
+            assertFalse(attempt.skipped)
+            assertEquals(cooling.id, attempt.channelId)
+        }
+    }
+
+    @Test
     fun oversizedProtocolLinesBeforeContentAreNotRetried() = runBlocking {
         testApplication {
             application { app.install(this) }

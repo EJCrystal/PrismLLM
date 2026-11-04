@@ -76,6 +76,7 @@ class ChannelHealthRepository(private val database: Database, private val slowFi
                     if (channelId == null || finalChannelId == channelId) finalChannelId?.let(::add)
                     UpstreamAttemptCodec.decode(rs.getString("attempts_json"))
                         .asSequence()
+                        .filterNot { it.skipped }
                         .mapNotNull { it.channelId }
                         .filter { channelId == null || it == channelId }
                         .forEach(::add)

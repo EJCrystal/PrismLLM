@@ -516,6 +516,8 @@ export interface RequestLogAttempt {
   firstTokenMs: number | null
   committed: boolean
   retryable: boolean
+  skipped?: boolean
+  skipReason?: string | null
 }
 
 export interface ChannelModel {

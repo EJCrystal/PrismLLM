@@ -67,6 +67,17 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     }), { state: 'unknown', reportedModel: null })
     assert.deepEqual(reportedModelStatus({ ...log, channelId: 'missing-channel' }), { state: 'unknown', reportedModel: null })
     assert.equal(reportedModelStatus({ ...log, upstreamModel: null }), null)
+    assert.deepEqual(reportedModelStatus({
+      ...log,
+      attempts: [...log.attempts, { channelId: 'final-channel', channelKeyId: 'final-key', upstreamModel: 'model-a', skipped: true }],
+    }), { state: 'match', reportedModel: 'model-a' })
+  })
+
+  it('路由跳过的候选不按失败展示', () => {
+    const skipped = { skipped: true, skipReason: 'cooldown' }
+    assert.equal(attemptHasError(skipped), false)
+    assert.equal(attemptResultLabel(skipped), '跳过（冷却）')
+    assert.equal(attemptFailureReason(skipped), '冷却中')
   })
 
   it('尝试记录区分成功、失败后切换和终止', () => {
