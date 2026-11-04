@@ -44,12 +44,12 @@ data class NewChannelKey(
     val rateLimit: ChannelKeyRateLimitPolicy = ChannelKeyRateLimitPolicy(),
 )
 
-/** 更新渠道密钥的输入。credential 为空表示保持原凭据。 */
+/** 更新渠道密钥的输入。credential 与 state 为空时分别保持原凭据和原状态。 */
 data class ChannelKeyUpdate(
     val id: String? = null,
     val name: String,
     val credential: EncryptedCredential? = null,
-    val state: ChannelKeyState = ChannelKeyState.ACTIVE,
+    val state: ChannelKeyState? = null,
     val priority: Int = 1,
     val models: List<String> = emptyList(),
     /** `null` 表示保留该密钥已有的限流规则。 */
@@ -301,12 +301,10 @@ class ChannelRepository(private val database: Database, private val credentialCi
                 val previousState = ChannelKeyState.fromValue(previous[ChannelKeys.state])
                     ?: throw IllegalStateException("未知的渠道密钥状态: ${previous[ChannelKeys.state]}")
                 // 自动停用状态只能由系统写入；保留 AUTO_PERMANENT 来源，人工恢复直接提交 ACTIVE。
-                val targetState = if (previousState == ChannelKeyState.AUTO_PERMANENT &&
-                    key.state == ChannelKeyState.MANUAL_DISABLED
-                ) {
-                    ChannelKeyState.AUTO_PERMANENT
-                } else {
-                    key.state
+                val targetState = when {
+                    previousState == ChannelKeyState.AUTO_PERMANENT && key.state == ChannelKeyState.MANUAL_DISABLED ->
+                        ChannelKeyState.AUTO_PERMANENT
+                    else -> key.state ?: previousState
                 }
                 val resetHealth = key.credential != null || targetState.value != previous[ChannelKeys.state]
                 ChannelKeys.update({ ChannelKeys.id eq keyId }) {
@@ -339,7 +337,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
                     it[credentialCiphertext] = credential.ciphertext
                     it[credentialNonce] = credential.nonce
                     it[credentialKeyVersion] = credential.keyVersion
-                    it[state] = key.state.value
+                    it[state] = (key.state ?: ChannelKeyState.ACTIVE).value
                     it[priority] = key.priority
                     it[createdAt] = now
                     it[updatedAt] = now

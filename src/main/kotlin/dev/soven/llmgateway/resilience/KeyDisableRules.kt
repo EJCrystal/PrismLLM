@@ -295,16 +295,7 @@ data class KeyDisablePolicy(
     companion object {
         const val MAX_RULES = 50
 
-        /** 默认规则：先处理余额不足，再确认凭据失效，最后兜底鉴权拒绝与上游不稳定。 */
-        val DEFAULT_RULES: List<KeyDisableRule> = listOf(
-            KeyDisableRule(
-                id = "insufficient_balance",
-                name = "账户余额不足",
-                statusCodes = listOf(401, 402, 403),
-                bodyPatterns = listOf("INSUFFICIENT_BALANCE"),
-                threshold = 1,
-                action = KeyDisableAction.PERMANENT,
-            ),
+        internal val LEGACY_DEFAULT_RULES: List<KeyDisableRule> = listOf(
             KeyDisableRule(
                 id = "credential_invalid",
                 name = "凭据失效",
@@ -351,6 +342,18 @@ data class KeyDisablePolicy(
                 disableMinutes = 10,
             ),
         )
+
+        /** 默认规则：先处理余额不足，再确认凭据失效，最后兜底鉴权拒绝与上游不稳定。 */
+        val DEFAULT_RULES: List<KeyDisableRule> = listOf(
+            KeyDisableRule(
+                id = "insufficient_balance",
+                name = "账户余额不足",
+                statusCodes = listOf(401, 402, 403),
+                bodyPatterns = listOf("INSUFFICIENT_BALANCE"),
+                threshold = 1,
+                action = KeyDisableAction.PERMANENT,
+            ),
+        ) + LEGACY_DEFAULT_RULES
     }
 }
 

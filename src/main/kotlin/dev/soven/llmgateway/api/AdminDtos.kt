@@ -98,14 +98,14 @@ data class ChannelKeyRateLimitRequest(
  * 渠道密钥写请求。id 为空表示新建；credential 为空表示保持原凭据。
  *
  * state 只接受 ACTIVE 与 MANUAL_DISABLED：自动停用状态只能由系统写入，
- * 客户端通过提交 ACTIVE 执行人工恢复。
+ * 客户端通过显式提交 ACTIVE 执行人工恢复；省略时保持已有状态。
  */
 @Serializable
 data class ChannelKeyRequest(
     val id: String? = null,
     val name: String,
     val credential: String? = null,
-    val state: ChannelKeyState = ChannelKeyState.ACTIVE,
+    val state: ChannelKeyState? = null,
     val priority: Int? = null,
     val models: List<String> = emptyList(),
     val rateLimit: ChannelKeyRateLimitRequest? = null,
