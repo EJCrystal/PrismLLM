@@ -16,10 +16,10 @@ openssl rand -base64 32
 
 | 变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |
-| `PORT` | `8080` | HTTP 服务监听端口 |
-| `DATABASE_URL` | `jdbc:postgresql://localhost:5432/llm_gateway` | PostgreSQL JDBC 连接 URL |
-| `DATABASE_USER` | `llm_gateway` | 数据库用户名 |
-| `DATABASE_PASSWORD` | `llm_gateway` | 数据库密码 |
+| `PORT` | `8080` | HTTP 服务监听端口。注意：默认 `docker-compose.yml` 端口映射固定为 `8080:8080`，若修改此变量需同步调整 Compose 的 `ports` 映射 |
+| `DATABASE_URL` | `jdbc:postgresql://localhost:5432/llm_gateway` | PostgreSQL JDBC 连接 URL。注意：默认 Compose 模式下已固定连接容器内 `postgres`，修改需同步调整 `docker-compose.yml` |
+| `DATABASE_USER` | `llm_gateway` | 数据库用户名（Compose 模式下需与 `postgres` 容器配置同步修改） |
+| `DATABASE_PASSWORD` | `llm_gateway` | 数据库密码（Compose 模式下需与 `postgres` 容器配置同步修改） |
 | `GATEWAY_MASTER_KEY` | *(无)* | Base64 编码的 32 字节 AES 密钥（必填，用于加密存储渠道上游凭据） |
 | `ADMIN_USERNAME` | `admin` | 首次启动创建的管理员用户名 |
 | `ADMIN_PASSWORD` | *(无)* | 首次启动创建的管理员密码（必填；后续修改以数据库为准） |
@@ -90,7 +90,7 @@ JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=proxy.example -Dhttp.proxyPort=8080 -Dhttps.p
 | 变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `REQUEST_LOG_RETENTION_DAYS` | `30` | 请求日志保留天数（范围：1 ~ 3650 天） |
-| `REQUEST_LOG_CLEANUP_ENABLED` | `true` | 是否启用后台定时自动清理 |
+| `REQUEST_LOG_CLEANUP_ENABLED` | `true` | 是否启用后台定时自动清理（仅作为初始默认值；首次通过管理 API 修改后，以数据库持久化设置为准） |
 | `REQUEST_LOG_CLEANUP_INTERVAL_MS`| `3600000` | 自动清理触发间隔（默认 1 小时） |
 | `REQUEST_LOG_CLEANUP_BATCH_SIZE` | `5000` | 单批次清理删除的最大记录数 |
 
@@ -104,5 +104,5 @@ JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=proxy.example -Dhttp.proxyPort=8080 -Dhttps.p
 PrismLLM 在启动时自动通过 Flyway 执行表结构迁移。
 
 - 从 V44 或更早版本升级时，V45 会为 `request_logs` 添加列并创建索引。
-- PostgreSQL 会在 Flyway 事务提交前持有排他表锁，期间该表的读写可能等待；建议在业务维护窗口升级并在迁移完成后启动网关服务。
+- Flyway 迁移在网关启动时自动执行。PostgreSQL 在迁移期间会持有排他表锁，建议在业务维护窗口停止旧实例，启动新版本网关并等待启动时执行的迁移自动完成，确认 `/health/ready` 健康检查就绪后再恢复流量。
 - 详细迁移背景请参考 [V45 渠道健康度迁移注意事项](migrations/V45-channel-health.md)。
