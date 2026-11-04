@@ -151,6 +151,23 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
     -d '{"model": "gpt-4o-mini", "protocol": "chat_completions", "prompt": "请只回复 OK"}'
   ```
 
+### 4. 冷却可见性与手动解除
+
+- `GET /admin/api/channel-health?window=24h` 的每个渠道摘要包含 `cooldownUntil`、`cooldownReason`、`coolingCandidates` 和 `totalCandidates`，用于渠道列表展示冷却剩余时间与主因。
+- `GET /admin/api/channels/<id>/health` 的 `availability` 列表给出每个密钥/模型组合的状态、冷却原因和截止时间。
+- 手动解除冷却：
+
+  ```bash
+  curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels/<channel-id>/cooldown/clear \
+    -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
+    -d '{"scope": "channel"}'
+  ```
+
+  - `scope=channel`：清除该渠道下渠道键、密钥键和候选键的全部冷却。
+  - `scope=key`：需同时提供 `keyId`，清除该密钥及其候选冷却。
+  - `scope=candidate`：需同时提供 `keyId` 与 `upstreamModel`，只清除该候选。
+  - 操作写入管理操作审计，动作为 `channel.cooldown.clear`。
+
 ---
 
 ## 三、调用方密钥生命周期与审计

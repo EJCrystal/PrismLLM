@@ -27,7 +27,9 @@ import dev.soven.llmgateway.resilience.toKeyDisablePolicy
 import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.parseDailyCostLimit
+import dev.soven.llmgateway.report.ChannelCooldownSummary
 import dev.soven.llmgateway.report.UsageReportQuery
+import dev.soven.llmgateway.resilience.CandidateCooldown
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.ClientKeyHasher
 import dev.soven.llmgateway.security.PasswordHasher
@@ -629,6 +631,39 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(updated.toResponse())
         }
 
+        post("/channels/{id}/cooldown/clear") {
+            call.requireAdmin(app)
+            val channel = app.channelRepository.find(call.requiredParam("id", "缺少渠道 id"))
+                ?: throw notFound("channel_not_found", "渠道不存在")
+            val request = call.receive<ClearCooldownRequest>()
+            when (request.scope) {
+                "channel" -> app.candidateCooldown.clearChannel(channel.id)
+                "key" -> {
+                    val keyId = request.keyId?.trim().orEmpty()
+                    if (keyId.isEmpty()) throw badRequest("missing_key_id", "解除密钥冷却需要 keyId")
+                    if (channel.keys.none { it.id == keyId }) throw notFound("channel_key_not_found", "渠道密钥不存在")
+                    app.candidateCooldown.clearKey(channel.id, keyId)
+                }
+                "candidate" -> {
+                    val keyId = request.keyId?.trim().orEmpty()
+                    val upstreamModel = request.upstreamModel?.trim().orEmpty()
+                    if (keyId.isEmpty() || upstreamModel.isEmpty()) {
+                        throw badRequest("missing_cooldown_target", "解除候选冷却需要 keyId 和 upstreamModel")
+                    }
+                    if (channel.keys.none { it.id == keyId }) throw notFound("channel_key_not_found", "渠道密钥不存在")
+                    app.candidateCooldown.clearCandidate(channel.id, keyId, upstreamModel)
+                }
+                else -> throw badRequest("invalid_cooldown_scope", "scope 仅支持 channel、key、candidate")
+            }
+            call.markAdminAuditDetails(buildJsonObject {
+                put("channelId", channel.id)
+                put("scope", request.scope)
+                request.keyId?.trim()?.takeIf { it.isNotEmpty() }?.let { put("keyId", it) }
+                request.upstreamModel?.trim()?.takeIf { it.isNotEmpty() }?.let { put("upstreamModel", it) }
+            })
+            call.respond(HttpStatusCode.NoContent)
+        }
+
         delete("/channels/{id}") {
             call.requireAdmin(app)
             val id = call.requiredParam("id", "缺少渠道 id")
@@ -903,7 +938,21 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.response.headers.append("Cache-Control", "no-store")
             val window = call.request.queryParameters["window"] ?: "24h"
             if (window !in dev.soven.llmgateway.report.healthWindows) throw badRequest("invalid_health_window", "时间范围仅支持 24h、7d、15d、30d")
-            call.respond(app.channelHealthRepository.report(window, app.channelRepository.listHealthChannels(), app.config.retention.retentionDays))
+            val channels = app.channelRepository.listHealthChannelOverviews()
+            val cooldowns = channels.associate { channel ->
+                channel.id to app.candidateCooldown.channelCooldownSummary(
+                    channel.id,
+                    channel.keys.map { it.id to it.models },
+                )
+            }
+            call.respond(
+                app.channelHealthRepository.report(
+                    window,
+                    channels.associate { it.id to it.enabled },
+                    app.config.retention.retentionDays,
+                    cooldowns = cooldowns,
+                ),
+            )
         }
 
         get("/channels/{id}/health") {
@@ -915,24 +964,36 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 ?: throw notFound("channel_not_found", "渠道不存在")
             val availability = channel.keys.flatMap { key ->
                 key.models.distinct().map { model ->
-                    val until = app.candidateCooldown.cooldownUntil(channel.id, key.id, model)
+                    val cooldown = app.candidateCooldown.cooldownState(channel.id, key.id, model)
                     val state = when {
                         !channel.enabled -> "CHANNEL_DISABLED"
                         !key.isRoutable() -> key.state.name
-                        until != null -> "COOLDOWN"
+                        cooldown != null -> "COOLDOWN"
                         else -> "ACTIVE"
                     }
                     dev.soven.llmgateway.report.HealthAvailability(
-                        key.id, key.name, model, state, key.autoDisableReason,
+                        key.id, key.name, model, state,
                         when (state) {
-                            "COOLDOWN" -> until
+                            "COOLDOWN" -> cooldown?.reason
+                            else -> key.autoDisableReason
+                        },
+                        when (state) {
+                            "COOLDOWN" -> cooldown?.until
                             "AUTO_TEMPORARY", "AUTO_PERMANENT" -> key.autoDisableUntil
                             else -> null
                         },
                     )
                 }
             }
-            call.respond(app.channelHealthRepository.detail(window, channel, app.config.retention.retentionDays, availability))
+            call.respond(
+                app.channelHealthRepository.detail(
+                    window, channel, app.config.retention.retentionDays, availability,
+                    cooldown = app.candidateCooldown.channelCooldownSummary(
+                        channel.id,
+                        channel.keys.map { it.id to it.models },
+                    ),
+                ),
+            )
         }
 
         get("/request-logs") {
@@ -1006,6 +1067,30 @@ private suspend fun ApplicationCall.respondAdminFile(root: Path, relative: Strin
     val file = if (resolved.toFile().isFile) resolved else root.resolve("index.html")
     if (!file.toFile().isFile) throw notFound("ui_not_built", "管理界面尚未构建")
     respondFile(file.toFile())
+}
+
+/** 汇总渠道当前冷却：候选总数、冷却数、最早恢复时间和对应原因。 */
+private fun CandidateCooldown.channelCooldownSummary(
+    channelId: String,
+    keys: List<Pair<String, List<String>>>,
+): ChannelCooldownSummary {
+    var total = 0
+    var cooling = 0
+    var earliest: Long? = null
+    var reason: String? = null
+    for ((keyId, models) in keys) {
+        for (model in models.distinct()) {
+            total += 1
+            val state = cooldownState(channelId, keyId, model) ?: continue
+            cooling += 1
+            val current = earliest
+            if (current == null || state.until < current) {
+                earliest = state.until
+                reason = state.reason
+            }
+        }
+    }
+    return ChannelCooldownSummary(earliest, reason, cooling, total)
 }
 
 private fun ApplicationCall.requireAdmin(app: GatewayApplication): AdminSessions.Session {

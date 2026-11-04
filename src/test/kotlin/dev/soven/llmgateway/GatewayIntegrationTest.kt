@@ -3071,6 +3071,127 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `cooldown reason survives persistence round trip`() = runBlocking {
+        val repository = dev.soven.llmgateway.repo.CooldownStateRepository(app.databaseFactory.database)
+        repository.upsert(
+            dev.soven.llmgateway.resilience.CooldownStateSnapshot(
+                stateKey = "ch:persisted",
+                consecutiveFailures = 2,
+                cooldownUntil = 123_456L,
+                reason = "rate_limited",
+            ),
+        )
+        try {
+            val snapshot = repository.loadAll().single { it.stateKey == "ch:persisted" }
+            assertEquals(2, snapshot.consecutiveFailures)
+            assertEquals(123_456L, snapshot.cooldownUntil)
+            assertEquals("rate_limited", snapshot.reason)
+        } finally {
+            repository.delete("ch:persisted")
+        }
+    }
+
+    @Test
+    fun `clear cooldown api clears scopes and audits the action`() = runBlocking {
+        val channel = createChannel("cooldown-clear", "ok")
+        val key = channel.keys.single()
+        val other = createChannel("cooldown-other", "ok")
+        val otherKey = other.keys.single()
+
+        fun cool(channelId: String, keyId: String, model: String, kind: FailureKind) {
+            val permit = assertNotNull(app.candidateCooldown.forceAcquire(channelId, keyId, model))
+            app.candidateCooldown.recordFailure(permit, kind)
+        }
+
+        cool(channel.id, key.id, "m1", FailureKind.RATE_LIMITED)
+        cool(other.id, otherKey.id, "m1", FailureKind.RATE_LIMITED)
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            suspend fun clear(body: String) = client.post("/admin/api/channels/${channel.id}/cooldown/clear") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+
+            assertEquals(HttpStatusCode.BadRequest, clear("""{"scope":"key"}""").status)
+            assertEquals(HttpStatusCode.NotFound, clear("""{"scope":"key","keyId":"missing"}""").status)
+            assertEquals(HttpStatusCode.BadRequest, clear("""{"scope":"candidate","keyId":"${key.id}"}""").status)
+            assertEquals(HttpStatusCode.BadRequest, clear("""{"scope":"unknown"}""").status)
+
+            assertEquals(
+                HttpStatusCode.NoContent,
+                clear("""{"scope":"candidate","keyId":"${key.id}","upstreamModel":"m1"}""").status,
+            )
+            assertFalse(app.candidateCooldown.isBlocked(channel.id, key.id, "m1"))
+            assertTrue(app.candidateCooldown.isBlocked(other.id, otherKey.id, "m1"))
+
+            // 密钥级冷却：清掉 key 本身及其候选
+            cool(channel.id, key.id, "m1", FailureKind.AUTH_REJECTED)
+            assertTrue(app.candidateCooldown.isBlocked(channel.id, key.id, "m1"))
+            assertEquals(
+                HttpStatusCode.NoContent,
+                clear("""{"scope":"key","keyId":"${key.id}"}""").status,
+            )
+            assertFalse(app.candidateCooldown.isBlocked(channel.id, key.id, "m1"))
+
+            // 渠道级冷却：先留一个候选冷却，再触发渠道键，最后一次性清掉
+            cool(channel.id, key.id, "m2", FailureKind.RATE_LIMITED)
+            cool(channel.id, key.id, "m1", FailureKind.TRANSPORT)
+            assertTrue(app.candidateCooldown.isBlocked(channel.id, key.id, "m2"))
+            assertEquals(HttpStatusCode.NoContent, clear("""{"scope":"channel"}""").status)
+            assertFalse(app.candidateCooldown.isBlocked(channel.id, key.id, "m1"))
+            assertFalse(app.candidateCooldown.isBlocked(channel.id, key.id, "m2"))
+            assertTrue(app.candidateCooldown.isBlocked(other.id, otherKey.id, "m1"))
+
+            val audit = app.adminAuditRepository.list(100).first {
+                it.action == "channel.cooldown.clear" && it.result == "success" &&
+                    it.details?.get("scope")?.jsonPrimitive?.content == "channel"
+            }
+            assertEquals(channel.id, audit.details?.get("channelId")?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun `channel health exposes cooldown reason and candidate counts`() = runBlocking {
+        val channel = createChannel("cooldown-health", "ok")
+        val key = channel.keys.single()
+        val permit = assertNotNull(app.candidateCooldown.acquire(channel.id, key.id, "m1"))
+        app.candidateCooldown.recordFailure(permit, FailureKind.RATE_LIMITED, retryAfterMs = 60_000)
+        val state = assertNotNull(app.candidateCooldown.cooldownState(channel.id, key.id, "m1"))
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, _) = client.loginAdmin()
+
+            val reportResponse = client.get("/admin/api/channel-health?window=24h") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, reportResponse.status)
+            val row = Json.parseToJsonElement(reportResponse.bodyAsText()).jsonObject["channels"]!!.jsonArray
+                .map { it.jsonObject }
+                .first { it["channelId"]!!.jsonPrimitive.content == channel.id }
+            assertEquals("rate_limited", row["cooldownReason"]!!.jsonPrimitive.content)
+            assertEquals("1", row["coolingCandidates"]!!.jsonPrimitive.content)
+            assertEquals("4", row["totalCandidates"]!!.jsonPrimitive.content)
+            assertEquals(state.until.toString(), row["cooldownUntil"]!!.jsonPrimitive.content)
+
+            val detailResponse = client.get("/admin/api/channels/${channel.id}/health?window=24h") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, detailResponse.status)
+            val availability = Json.parseToJsonElement(detailResponse.bodyAsText()).jsonObject["availability"]!!.jsonArray
+                .map { it.jsonObject }
+                .first { it["model"]!!.jsonPrimitive.content == "m1" }
+            assertEquals("COOLDOWN", availability["state"]!!.jsonPrimitive.content)
+            assertEquals("rate_limited", availability["reason"]!!.jsonPrimitive.content)
+            assertEquals(state.until.toString(), availability["until"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
     fun `falls back when upstream connection fails before first token`() = runBlocking {
         val primary = createChannelWithBaseUrl("unreachable", "http://127.0.0.1:1/v1")
         val secondary = createChannel("secondary", "ok")
@@ -8263,7 +8384,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table cooldown_state, admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
                 )
             }
         }
