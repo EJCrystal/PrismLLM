@@ -196,6 +196,22 @@ class FakeUpstream {
                 )
                 return
             }
+            "pseudo-400-blank-code" -> {
+                call.respondText(
+                    """{"error":{"code":"","type":"upstream_error","message":"provider failure"}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
+            "standard-400-with-upstream-error-message" -> {
+                call.respondText(
+                    """{"error":{"type":"invalid_request_error","message":"Invalid value: upstream error"}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
             "model-route" -> {
                 if (model != null && model in failingModels) {
                     call.respondText(ERROR_429, ContentType.Application.Json, HttpStatusCode.TooManyRequests)
@@ -332,6 +348,22 @@ class FakeUpstream {
             "standard-400" -> {
                 call.respondText(
                     """{"error":{"message":"Invalid parameter: max_tokens must be positive","type":"invalid_request_error","param":"max_tokens","code":null}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
+            "pseudo-400-blank-code" -> {
+                call.respondText(
+                    """{"error":{"code":"","type":"upstream_error","message":"provider failure"}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return
+            }
+            "standard-400-with-upstream-error-message" -> {
+                call.respondText(
+                    """{"error":{"type":"invalid_request_error","message":"Invalid value: upstream error"}}""",
                     ContentType.Application.Json,
                     HttpStatusCode.BadRequest,
                 )

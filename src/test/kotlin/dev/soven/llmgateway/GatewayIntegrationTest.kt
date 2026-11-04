@@ -754,6 +754,65 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `upstream pseudo 400 with blank code falls back to error type and triggers failover`() = runBlocking {
+        val primary = createChannel("pseudo-blank-code-primary", "pseudo-400-blank-code")
+        val secondary = createChannel("pseudo-blank-code-secondary", "ok")
+        exposeAsModel("pseudo-blank-code-chat", primary to "m1", secondary to "m2")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"pseudo-blank-code-chat","stream":false,"messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(2, fake.requests.size)
+            val log = awaitRequestLog()
+            assertEquals(secondary.id, log.channelId)
+            assertEquals(200, log.statusCode)
+            assertEquals(2, log.upstreamAttempts)
+
+            val failedAttempt = log.attempts.first()
+            assertEquals(primary.id, failedAttempt.channelId)
+            assertEquals(400, failedAttempt.statusCode)
+            assertEquals("upstream_error", failedAttempt.upstreamErrorCode)
+            assertTrue(failedAttempt.retryable)
+        }
+    }
+
+    @Test
+    fun `standard 400 with upstream error keyword in message does not trigger failover`() = runBlocking {
+        val primary = createChannel("standard-msg-primary", "standard-400-with-upstream-error-message")
+        val secondary = createChannel("standard-msg-secondary", "ok")
+        exposeAsModel("standard-msg-chat", primary to "m1", secondary to "m2")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"standard-msg-chat","stream":false,"messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertEquals(1, fake.requests.size)
+            val log = awaitRequestLog()
+            assertEquals(primary.id, log.channelId)
+            assertEquals(400, log.statusCode)
+            assertEquals(1, log.upstreamAttempts)
+
+            val failedAttempt = log.attempts.single()
+            assertEquals(primary.id, failedAttempt.channelId)
+            assertEquals(400, failedAttempt.statusCode)
+            assertFalse(failedAttempt.retryable)
+        }
+    }
+
+    @Test
     fun `channel key RPM is shared across models and returns retry after`() = runBlocking {
         val policy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1)
         val channel = app.channelRepository.create(

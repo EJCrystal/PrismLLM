@@ -1339,6 +1339,25 @@ private fun clientDisconnected(): GatewayException =
 
 private const val MAX_KEY_MATCH_BODY_CHARS = 8_192
 
+private data class ParsedUpstreamError(
+    val code: String? = null,
+    val type: String? = null,
+    val message: String? = null,
+)
+
+private fun parseUpstreamError(body: String): ParsedUpstreamError = runCatching {
+    val root = Json.parseToJsonElement(body).jsonObject
+    val error = root["error"] as? JsonObject
+    val code = (error?.get("code") as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+        ?: (root["code"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+    val type = (error?.get("type") as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+        ?: (root["type"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+    val message = (error?.get("message") as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+        ?: (root["message"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+        ?: (root["detail"] as? JsonPrimitive)?.contentOrNull?.takeUnless { it.isBlank() }
+    ParsedUpstreamError(code = code, type = type, message = message)
+}.getOrDefault(ParsedUpstreamError())
+
 // 常见中转商在内部渠道故障时返回的伪 400 特征错误码
 private val UPSTREAM_ERROR_CODES = setOf(
     "upstream_error",
@@ -1353,20 +1372,34 @@ private val UPSTREAM_ERROR_CODES = setOf(
     "upstream_timeout",
 )
 
-private fun isUpstreamPseudo400(statusCode: Int, upstreamCode: String?, body: String): Boolean {
+// 已知的标准客户端错误类型，避免兜底文本匹配误伤常规参数错误
+private val KNOWN_CLIENT_ERROR_TYPES = setOf(
+    "invalid_request_error",
+    "client_error",
+)
+
+private fun isUpstreamPseudo400(statusCode: Int, parsed: ParsedUpstreamError, body: String): Boolean {
     if (statusCode != 400) return false
-    if (upstreamCode != null && upstreamCode.lowercase() in UPSTREAM_ERROR_CODES) {
+    // 1. 如果显式包含上游故障特征码或类型，直接判定为伪 400
+    val codeMatch = parsed.code?.lowercase()?.let { it in UPSTREAM_ERROR_CODES } == true
+    val typeMatch = parsed.type?.lowercase()?.let { it in UPSTREAM_ERROR_CODES } == true
+    if (codeMatch || typeMatch) {
         return true
     }
-    val lowerBody = body.lowercase()
-    return lowerBody.contains("模型请求失败") ||
-        lowerBody.contains("请稍后重试或更换模型") ||
-        lowerBody.contains("无可用渠道") ||
-        lowerBody.contains("all upstream channels failed") ||
-        lowerBody.contains("all channels failed") ||
-        lowerBody.contains("upstream error") ||
-        lowerBody.contains("no channel available") ||
-        lowerBody.contains("no available upstream")
+    // 2. 如果存在明确的标准客户端错误类型（如 invalid_request_error），排除兜底匹配
+    if (parsed.type?.lowercase() in KNOWN_CLIENT_ERROR_TYPES) {
+        return false
+    }
+    // 3. 仅在未提供明确客户端错误类型时，对限定的错误消息字段（无结构化时退化到 body）做特征识别
+    val targetMessage = (parsed.message ?: body).lowercase()
+    return targetMessage.contains("模型请求失败") ||
+        targetMessage.contains("请稍后重试或更换模型") ||
+        targetMessage.contains("无可用渠道") ||
+        targetMessage.contains("all upstream channels failed") ||
+        targetMessage.contains("all channels failed") ||
+        targetMessage.contains("upstream error") ||
+        targetMessage.contains("no channel available") ||
+        targetMessage.contains("no available upstream")
 }
 
 private fun upstreamException(
@@ -1380,15 +1413,9 @@ private fun upstreamException(
         (allowNativeMessagesError && protocol == GatewayProtocol.MESSAGES && isAnthropicErrorBody(it)) ||
             (protocol == GatewayProtocol.GEMINI && isGeminiErrorBody(it))
     }
-    val upstreamCode = runCatching {
-        val root = Json.parseToJsonElement(body).jsonObject
-        val error = root["error"] as? JsonObject
-        (error?.get("code") as? JsonPrimitive)?.contentOrNull
-            ?: (error?.get("type") as? JsonPrimitive)?.contentOrNull
-            ?: (root["code"] as? JsonPrimitive)?.contentOrNull
-            ?: (root["type"] as? JsonPrimitive)?.contentOrNull
-    }.getOrNull()
-    val isPseudo400 = isUpstreamPseudo400(status.value, upstreamCode, body)
+    val parsedError = parseUpstreamError(body)
+    val upstreamCode = parsedError.code ?: parsedError.type
+    val isPseudo400 = isUpstreamPseudo400(status.value, parsedError, body)
     val mapped = when {
         nativeResponseBody != null && !isPseudo400 -> status
         status.value == 429 -> HttpStatusCode.TooManyRequests
