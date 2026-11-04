@@ -1150,4 +1150,104 @@ class ProtocolConversionTest {
         assertEquals("text", content.single().jsonObject.string("type"))
         assertEquals("visible answer", content.single().jsonObject.string("text"))
     }
+
+    @Test
+    fun `chat response with null finish_reason omits finishReason in Gemini`() {
+        val chatNullFinish = json("""{
+            "id":"chatcmpl_1",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":null}]
+        }""")
+        val gemini = ProtocolConversion.convertResponse(GatewayProtocol.GEMINI, GatewayProtocol.CHAT_COMPLETIONS, chatNullFinish, "public")
+        val candidate = gemini.array("candidates").single().jsonObject
+        assertFalse(candidate.containsKey("finishReason"), "candidate should not have finishReason when chat finish_reason is null")
+
+        val chatStopFinish = json("""{
+            "id":"chatcmpl_2",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]
+        }""")
+        val geminiStop = ProtocolConversion.convertResponse(GatewayProtocol.GEMINI, GatewayProtocol.CHAT_COMPLETIONS, chatStopFinish, "public")
+        assertEquals("STOP", geminiStop.array("candidates").single().jsonObject.string("finishReason"))
+    }
+
+    @Test
+    fun `gemini stream encoder emits usage even on empty content chunks`() {
+        val encoder = GeminiStreamEncoder("gemini-test")
+        val usage = TokenUsage(inputTokens = 10, outputTokens = 20, totalTokens = 30)
+        val event = StreamEvent(id = "chunk_usage")
+        val lines = encoder.emit(event, usage)
+        assertTrue(lines.isNotEmpty())
+        val data = json(lines.first { it.startsWith("data: ") }.removePrefix("data: "))
+        assertEquals(10L, data["usageMetadata"]!!.jsonObject["promptTokenCount"]!!.jsonPrimitive.content.toLong())
+        assertEquals(20L, data["usageMetadata"]!!.jsonObject["candidatesTokenCount"]!!.jsonPrimitive.content.toLong())
+    }
+
+    @Test
+    fun `responses reasoning output replay is accepted by chat request conversion`() {
+        val request = json("""{
+            "input":[
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},
+                {"type":"reasoning","summary":[{"type":"summary_text","text":"thought text"}]},
+                {"type":"message","role":"assistant","content":[{"type":"output_text","text":"world"}]}
+            ]
+        }""")
+        val chat = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, request, "upstream")
+        val messages = chat.array("messages")
+        assertEquals(2, messages.size)
+        assertEquals("user", messages[0].jsonObject.string("role"))
+        assertEquals("assistant", messages[1].jsonObject.string("role"))
+    }
+
+    @Test
+    fun `Gemini generationConfig rejects unknown fields and responseSchema`() {
+        val schemaRequest = json("""{
+            "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+            "generationConfig":{"responseSchema":{"type":"object"}}
+        }""")
+        val error1 = assertFailsWith<ProtocolConversionException> {
+            ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.CHAT_COMPLETIONS, schemaRequest, "upstream")
+        }
+        assertEquals("generationConfig.responseSchema", error1.field)
+
+        val unknownRequest = json("""{
+            "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+            "generationConfig":{"speechConfig":{}}
+        }""")
+        val error2 = assertFailsWith<ProtocolConversionException> {
+            ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.CHAT_COMPLETIONS, unknownRequest, "upstream")
+        }
+        assertEquals("generationConfig.speechConfig", error2.field)
+    }
+
+    @Test
+    fun `Gemini built-in tools are rejected for all target protocols`() {
+        val tools = listOf("googleSearch", "codeExecution", "urlContext")
+        val targets = listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES)
+        for (tool in tools) {
+            val request = json("""{
+                "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+                "tools":[{"$tool":{}}]
+            }""")
+            for (target in targets) {
+                val error = assertFailsWith<ProtocolConversionException>("$target $tool") {
+                    ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, target, request, "upstream")
+                }
+                assertEquals("tools[0].$tool", error.field)
+            }
+        }
+    }
+
+    @Test
+    fun `messages stream encoder preserves refusal when content is empty or both are present`() {
+        val encoder1 = MessagesStreamEncoder("claude-test")
+        val chunkEmptyContent = StreamEvent(id = "msg_1", content = "", refusal = "refused by safety")
+        val lines1 = encoder1.emit(chunkEmptyContent, null)
+        val deltaLine1 = lines1.first { it.startsWith("data: ") && it.contains("content_block_delta") }
+        assertTrue(deltaLine1.contains("refused by safety"), deltaLine1)
+
+        val encoder2 = MessagesStreamEncoder("claude-test")
+        val chunkBoth = StreamEvent(id = "msg_2", content = "sorry, ", refusal = "refused by safety")
+        val lines2 = encoder2.emit(chunkBoth, null)
+        val deltaLine2 = lines2.first { it.startsWith("data: ") && it.contains("content_block_delta") }
+        assertTrue(deltaLine2.contains("sorry, refused by safety"), deltaLine2)
+    }
 }

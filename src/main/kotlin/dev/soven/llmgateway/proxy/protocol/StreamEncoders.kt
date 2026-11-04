@@ -103,7 +103,8 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
             lines += "data: $start"
             lines += ""
         }
-        (chunk.content ?: chunk.refusal)?.takeIf { it.isNotEmpty() }?.let { text ->
+        listOfNotNull(chunk.content, chunk.refusal).filter { it.isNotEmpty() }
+            .joinToString("").takeIf { it.isNotEmpty() }?.let { text ->
             val index = openTextBlock ?: nextBlockIndex++.also { block ->
                 openTextBlock = block
                 lines += "event: content_block_start"
@@ -427,7 +428,7 @@ internal class GeminiStreamEncoder(private val model: String) : StreamEncoder {
                 }
             }
         }
-        if (parts.isEmpty() && chunk.finishReason == null) return emptyList()
+        if (parts.isEmpty() && chunk.finishReason == null && usage == null) return emptyList()
         val body = buildJsonObject {
             put("responseId", id)
             put("modelVersion", model)
@@ -440,7 +441,7 @@ internal class GeminiStreamEncoder(private val model: String) : StreamEncoder {
                     })
                 })
             }
-            if (chunk.finishReason != null) usage?.let { put("usageMetadata", it.toGemini()) }
+            usage?.let { put("usageMetadata", it.toGemini()) }
         }
         lines += "data: $body"
         lines += ""

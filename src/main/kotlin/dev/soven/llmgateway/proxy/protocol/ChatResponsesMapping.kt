@@ -68,6 +68,7 @@ internal fun responsesToChatRequest(request: JsonObject): JsonObject = buildJson
                     put("tool_call_id", item.string("call_id") ?: unsupported("input[$index].call_id", "function_call_output 缺少 call_id"))
                     put("content", item.textContentStrict("output", "input[$index].output"))
                 }
+                "reasoning" -> Unit
                 else -> unsupported("input[$index].type", "第一版不支持 Responses 输入项 ${item.string("type")}")
             }
         }

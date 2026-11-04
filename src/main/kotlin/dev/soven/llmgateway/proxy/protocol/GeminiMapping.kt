@@ -13,12 +13,18 @@ import kotlinx.serialization.json.putJsonObject
 
 private val geminiSafetyReasons = setOf("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL")
 private val geminiRequestFields = setOf("contents", "systemInstruction", "generationConfig", "tools", "toolConfig", "safetySettings", "cachedContent")
+private val geminiGenerationConfigFields = setOf(
+    "maxOutputTokens", "temperature", "topP", "topK", "stopSequences", "seed",
+    "frequencyPenalty", "presencePenalty", "responseLogprobs", "logprobs",
+    "responseMimeType", "responseJsonSchema", "thinkingConfig", "candidateCount", "responseModalities",
+)
 
 internal fun validateGeminiRequest(request: JsonObject) {
     rejectUnknownFields(request, geminiRequestFields, "request")
     if (request["cachedContent"].let { it != null && it !is JsonNull }) unsupported("cachedContent", "协议转换不支持 Gemini cachedContent")
     if ((request["safetySettings"] as? JsonArray)?.isNotEmpty() == true) unsupported("safetySettings", "协议转换不支持 Gemini safetySettings")
     val config = request["generationConfig"] as? JsonObject
+    config?.let { rejectUnknownFields(it, geminiGenerationConfigFields, "generationConfig") }
     (config?.get("responseModalities") as? JsonArray)?.takeIf { it.isNotEmpty() }?.let {
         unsupported("generationConfig.responseModalities", "跨协议转换不支持 Gemini 非文本输出模态")
     }
@@ -234,7 +240,9 @@ internal fun chatToGeminiResponse(chat: JsonObject, model: String): JsonObject =
     put("candidates", buildJsonArray {
         add(buildJsonObject {
             put("content", buildJsonObject { put("role", "model"); put("parts", JsonArray(parts)) })
-            put("finishReason", chatFinishToGemini(choice?.string("finish_reason"), message?.string("refusal") != null))
+            chatFinishToGemini(choice?.string("finish_reason"), message?.string("refusal") != null)?.let {
+                put("finishReason", it)
+            }
             put("index", 0)
         })
     })
@@ -401,7 +409,7 @@ internal fun messagesToGeminiResponse(messages: JsonObject, model: String): Json
     put("candidates", buildJsonArray {
         add(buildJsonObject {
             put("content", buildJsonObject { put("role", "model"); put("parts", JsonArray(parts)) })
-            put("finishReason", messagesStopToGemini(messages.string("stop_reason")))
+            messagesStopToGemini(messages.string("stop_reason"))?.let { put("finishReason", it) }
             put("index", 0)
         })
     })
@@ -808,10 +816,17 @@ private fun geminiContentsToResponses(contents: JsonElement?): JsonArray = build
     }
 }
 
+private fun validateGeminiTool(tool: JsonObject, path: String) {
+    tool.keys.firstOrNull { it != "functionDeclarations" }?.let {
+        unsupported("$path.$it", "跨协议转换仅支持 Gemini functionDeclarations，不支持内置工具 $it")
+    }
+}
+
 private fun geminiToolsToChat(tools: JsonElement?): JsonArray? = when (tools) {
     is JsonArray -> buildJsonArray {
         tools.forEachIndexed { index, element ->
             val tool = element as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
+            validateGeminiTool(tool, "tools[$index]")
             tool.array("functionDeclarations").forEachIndexed { declarationIndex, declarationElement ->
                 val declaration = declarationElement as? JsonObject ?: unsupported("tools[$index].functionDeclarations[$declarationIndex]", "函数声明必须是对象")
                 add(buildJsonObject {
@@ -833,6 +848,7 @@ private fun geminiToolsToMessages(tools: JsonElement?): JsonArray? = when (tools
     is JsonArray -> buildJsonArray {
         tools.forEachIndexed { index, element ->
             val tool = element as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
+            validateGeminiTool(tool, "tools[$index]")
             tool.array("functionDeclarations").forEachIndexed { declarationIndex, declarationElement ->
                 val declaration = declarationElement as? JsonObject ?: unsupported("tools[$index].functionDeclarations[$declarationIndex]", "函数声明必须是对象")
                 add(buildJsonObject {
@@ -851,6 +867,7 @@ private fun geminiToolsToResponses(tools: JsonElement?): JsonArray? = when (tool
     is JsonArray -> buildJsonArray {
         tools.forEachIndexed { index, element ->
             val tool = element as? JsonObject ?: unsupported("tools[$index]", "工具必须是对象")
+            validateGeminiTool(tool, "tools[$index]")
             tool.array("functionDeclarations").forEachIndexed { declarationIndex, declarationElement ->
                 val declaration = declarationElement as? JsonObject ?: unsupported("tools[$index].functionDeclarations[$declarationIndex]", "函数声明必须是对象")
                 add(buildJsonObject {
@@ -994,9 +1011,11 @@ private fun geminiFinishToChat(finishReason: String?, hasTools: Boolean): String
     else -> "stop"
 }
 
-private fun chatFinishToGemini(finishReason: String?, hasRefusal: Boolean): String = when {
+private fun chatFinishToGemini(finishReason: String?, hasRefusal: Boolean): String? = when {
     hasRefusal || finishReason == "content_filter" -> "SAFETY"
     finishReason == "length" -> "MAX_TOKENS"
+    finishReason == "stop" || finishReason == "tool_calls" || finishReason == "function_call" -> "STOP"
+    finishReason == null -> null
     else -> "STOP"
 }
 
@@ -1007,9 +1026,11 @@ private fun geminiFinishToMessages(finishReason: String?, hasTools: Boolean): St
     else -> "end_turn"
 }
 
-private fun messagesStopToGemini(stopReason: String?): String = when (stopReason) {
+private fun messagesStopToGemini(stopReason: String?): String? = when (stopReason) {
     "max_tokens" -> "MAX_TOKENS"
     "refusal" -> "SAFETY"
+    "end_turn", "tool_use", "stop_sequence" -> "STOP"
+    null -> null
     else -> "STOP"
 }
 
