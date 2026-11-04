@@ -142,4 +142,21 @@ class CooldownStateWriterTest {
         assertEquals(1, batchCalls.size)
         assertEquals(setOf("k1", "k2", "k3"), batchCalls[0].toSet())
     }
+
+    @Test
+    fun `deleteNow does not remove newer pending updated entry that arrived after decision`() = runTest {
+        val store = FakeStore()
+        val writer = CooldownStateWriter(store, backgroundScope)
+        val baseline = writer.currentSeq()
+        writer.submit(CooldownChange.Removed("ch:1"))
+
+        val deleteJob = async { writer.deleteNow(setOf("ch:1"), baseline, 1_000) }
+        delay(10)
+        writer.submit(CooldownChange.Updated("ch:1", 1, 200L, "rate_limited"))
+
+        assertTrue(deleteJob.await())
+        writer.closeAndDrain(1_000)
+
+        assertTrue(store.upserts.contains("ch:1"))
+    }
 }

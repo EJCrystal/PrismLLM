@@ -142,7 +142,8 @@ class CooldownStateWriter(
                     latest != null && latest.seq > baselineSeq && latest.change !is CooldownChange.Removed ->
                         DeleteDecision.SKIP
                     else -> {
-                        pending.remove(key)
+                        // 只移除本次判定所依据的事件，避免误删 submit 在锁外刚写入的新 Updated。
+                        if (latest != null) pending.remove(key, latest)
                         deleting.add(key)
                         DeleteDecision.DELETE
                     }
