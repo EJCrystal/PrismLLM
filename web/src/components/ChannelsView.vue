@@ -21,6 +21,7 @@ import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import ChannelHealthModal from './ChannelHealthModal.vue'
 import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthSymbol } from '../utils/channelHealth'
+import { cooldownSummaryText } from '../utils/cooldown'
 import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
@@ -131,6 +132,39 @@ const healthLoading = ref(false)
 const healthError = ref('')
 let healthRevision = 0
 const healthByChannel = computed(() => new Map(healthReport.value?.window === healthWindow.value ? healthReport.value.channels.map(row => [row.channelId, row]) : []))
+const cooldownNow = ref(Date.now())
+let cooldownTimer: ReturnType<typeof setInterval> | null = null
+let cooldownRefreshAt = 0
+function syncCooldownTimer() {
+  const cooling = healthReport.value?.channels.some(row => (row.coolingCandidates ?? 0) > 0) ?? false
+  if (cooling && cooldownTimer == null) {
+    cooldownTimer = setInterval(() => {
+      const now = Date.now()
+      cooldownNow.value = now
+      const nextExpiry = (healthReport.value?.channels ?? [])
+        .map(row => row.cooldownUntil)
+        .filter((value): value is number => typeof value === 'number')
+        .reduce<number | null>((min, value) => (min == null || value < min ? value : min), null)
+      // 最近一次冷却到期后重新拉取报告，避免列表长期停留在旧状态；限制刷新频率避免时钟偏快时每秒重复请求。
+      if (nextExpiry != null && now >= nextExpiry && !healthLoading.value && now - cooldownRefreshAt >= 10_000) {
+        cooldownRefreshAt = now
+        loadHealth()
+      }
+    }, 1000)
+  } else if (!cooling && cooldownTimer != null) {
+    clearInterval(cooldownTimer)
+    cooldownTimer = null
+  }
+}
+function channelCooldownText(channel: Channel): string {
+  return cooldownSummaryText(healthByChannel.value.get(channel.id), cooldownNow.value)
+}
+function channelCooldownTitle(channel: Channel): string {
+  const row = healthByChannel.value.get(channel.id)
+  if (!row || (row.coolingCandidates ?? 0) <= 0) return ''
+  const until = row.cooldownUntil ? `，最近恢复 ${formatTime(row.cooldownUntil)}` : ''
+  return `${channel.name}：${row.coolingCandidates}/${row.totalCandidates ?? 0} 个候选冷却${until}；点击查看详情`
+}
 function channelHealthState(channel: Channel): HealthState {
   return !channel.enabled ? 'DISABLED' : healthByChannel.value.get(channel.id)?.state || 'UNKNOWN'
 }
@@ -144,13 +178,18 @@ async function loadHealth() {
   healthError.value = ''
   try {
     const result = await api.getChannelHealth(healthWindow.value)
-    if (request === healthRevision) healthReport.value = result
+    if (request === healthRevision) { healthReport.value = result; syncCooldownTimer() }
   } catch (cause) {
-    if (request === healthRevision) { healthReport.value = null; healthError.value = errorMessage(cause) }
+    if (request === healthRevision) { healthReport.value = null; syncCooldownTimer(); healthError.value = errorMessage(cause) }
   } finally { if (request === healthRevision) healthLoading.value = false }
 }
 watch(healthWindow, loadHealth)
-onBeforeUnmount(() => { listDisposed = true; healthRevision++; listRevision++ })
+onBeforeUnmount(() => {
+  listDisposed = true
+  healthRevision++
+  listRevision++
+  if (cooldownTimer != null) clearInterval(cooldownTimer)
+})
 const recentProbes = ref<AdminAuditLog[]>([])
 const prices = ref<ModelPrice[]>([])
 const defaultPrices = ref<ModelDefaultPrice[]>([])
@@ -1255,6 +1294,9 @@ onMounted(load)
                   <span><strong>{{ healthLoading ? '汇总中…' : healthError ? '读取失败' : healthPercent(healthByChannel.get(channel.id)?.metrics.successRate) }}</strong><small>{{ healthByChannel.get(channel.id)?.metrics.attempts ?? 0 }} 次 · {{ HEALTH_LABELS[channelHealthState(channel)] }}</small></span>
                 </button>
                 <div v-if="healthByChannel.get(channel.id)?.metrics.p95FirstTokenMs != null" class="muted small health-list-latency">P95 首 token {{ formatDuration(healthByChannel.get(channel.id)?.metrics.p95FirstTokenMs) }}</div>
+                <button v-if="channelCooldownText(channel)" type="button" class="channel-cooldown muted small" :title="channelCooldownTitle(channel)" @click="healthTarget = channel">
+                  {{ channelCooldownText(channel) }}
+                </button>
                 <div v-if="recentProbe(channel)" class="channel-health-probe muted small" :title="`最近探测：${formatTime(recentProbe(channel)!.createdAt)}`">
                   探测 {{ formatTime(recentProbe(channel)!.createdAt) }}
                 </div>
@@ -1275,7 +1317,7 @@ onMounted(load)
       </div>
     </div>
 
-    <ChannelHealthModal v-if="healthTarget" :key="healthTarget.id" :channel="healthTarget" :initial-window="healthWindow" @close="healthTarget = null" />
+    <ChannelHealthModal v-if="healthTarget" :key="healthTarget.id" :channel="healthTarget" :initial-window="healthWindow" @close="healthTarget = null; loadHealth()" />
     <ChannelQuotaModal v-if="quotaTarget" :key="quotaTarget.id" :channel="quotaTarget" @close="quotaTarget = null" @saved="onQuotaSaved" />
 
     <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide @close="closeChannelForm">
@@ -1746,6 +1788,8 @@ onMounted(load)
 .channel-health-summary .badge { padding: 3px 6px; font-size: 10px; }
 .channel-health-failure { max-width: 190px; margin-top: 4px; overflow: hidden; color: var(--danger); text-overflow: ellipsis; white-space: nowrap; }
 .channel-health-probe { margin-top: 3px; }
+.channel-cooldown { display: inline-flex; align-items: center; gap: 4px; margin-top: 3px; padding: 0; border: 0; background: transparent; color: var(--warning); font: inherit; text-align: left; cursor: pointer; }
+.channel-cooldown:hover { text-decoration: underline; }
 .channel-form-section { display: grid; gap: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--panel) 94%, var(--bg)); }
 .channel-form-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 .channel-form-section-head h3 { margin: 0; font-size: 14px; }

@@ -127,6 +127,7 @@ object CooldownStates : Table("cooldown_state") {
     val stateKey = varchar("state_key", 300)
     val consecutiveFailures = integer("consecutive_failures")
     val cooldownUntil = long("cooldown_until")
+    val reason = varchar("reason", 40).nullable()
     val updatedAt = long("updated_at")
 
     override val primaryKey = PrimaryKey(stateKey)

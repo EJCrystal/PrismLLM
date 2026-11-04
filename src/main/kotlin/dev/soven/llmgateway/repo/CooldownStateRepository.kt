@@ -2,8 +2,10 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.CooldownStates
 import dev.soven.llmgateway.resilience.CooldownStateSnapshot
+import dev.soven.llmgateway.resilience.CooldownStateStore
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -16,21 +18,29 @@ import org.jetbrains.exposed.v1.jdbc.upsert
  * @author 文杰
  * @since 2026-10-25
  */
-class CooldownStateRepository(private val database: Database) {
-    suspend fun upsert(snapshot: CooldownStateSnapshot) {
+class CooldownStateRepository(private val database: Database) : CooldownStateStore {
+    override suspend fun upsert(snapshot: CooldownStateSnapshot) {
         suspendTransaction(database) {
             CooldownStates.upsert(CooldownStates.stateKey) {
                 it[stateKey] = snapshot.stateKey
                 it[consecutiveFailures] = snapshot.consecutiveFailures
                 it[cooldownUntil] = snapshot.cooldownUntil
+                it[reason] = snapshot.reason
                 it[updatedAt] = System.currentTimeMillis()
             }
         }
     }
 
-    suspend fun delete(stateKey: String) {
+    override suspend fun delete(stateKey: String) {
         suspendTransaction(database) {
             CooldownStates.deleteWhere { CooldownStates.stateKey eq stateKey }
+        }
+    }
+
+    override suspend fun deleteBatch(stateKeys: Collection<String>) {
+        if (stateKeys.isEmpty()) return
+        suspendTransaction(database) {
+            CooldownStates.deleteWhere { CooldownStates.stateKey inList stateKeys }
         }
     }
 
@@ -46,5 +56,6 @@ class CooldownStateRepository(private val database: Database) {
         stateKey = row[CooldownStates.stateKey],
         consecutiveFailures = row[CooldownStates.consecutiveFailures],
         cooldownUntil = row[CooldownStates.cooldownUntil],
+        reason = row[CooldownStates.reason],
     )
 }

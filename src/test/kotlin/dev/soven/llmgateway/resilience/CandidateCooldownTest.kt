@@ -328,5 +328,203 @@ class CandidateCooldownTest {
         assertFalse(cooldown.recordFirstToken(ttftPermit, 1000))
         assertTrue(changes.any { it == CooldownChange.Removed("key:ch1:k1") })
         assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k1:m2") })
+        assertNull(cooldown.cooldownState("ch1", "k1", "m1"))
+    }
+
+    @Test
+    fun `cooldown state exposes the trigger reason`() {
+        var now = 0L
+        val cooldown = CandidateCooldown(policy = policy(), nowMs = { now })
+
+        val transient = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(transient, FailureKind.TRANSPORT)
+        assertEquals(CandidateCooldown.REASON_TRANSIENT, cooldown.cooldownState("ch1", "k1", "m1")?.reason)
+        assertEquals("channel", cooldown.cooldownState("ch1", "k1", "m1")?.scope)
+        assertEquals(1_000L, cooldown.cooldownState("ch1", "k1", "m1")?.until)
+
+        now = 1_000L
+        val rateLimited = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(rateLimited, FailureKind.RATE_LIMITED, retryAfterMs = 5_000)
+        assertEquals(CandidateCooldown.REASON_RATE_LIMITED, cooldown.cooldownState("ch1", "k1", "m1")?.reason)
+        assertEquals("candidate", cooldown.cooldownState("ch1", "k1", "m1")?.scope)
+        assertEquals(6_000L, cooldown.cooldownState("ch1", "k1", "m1")?.until)
+
+        val auth = assertNotNull(cooldown.acquire("ch2", "k1", "m1"))
+        cooldown.recordFailure(auth, FailureKind.AUTH_REJECTED)
+        assertEquals(CandidateCooldown.REASON_AUTH, cooldown.cooldownState("ch2", "k1", "m1")?.reason)
+        assertEquals("key", cooldown.cooldownState("ch2", "k1", "m1")?.scope)
+
+        val ttftCooldown = CandidateCooldown(
+            policy = policy(ttftSlowThresholdMs = 100, ttftSlowStreak = 1),
+            nowMs = { now },
+        )
+        val ttft = assertNotNull(ttftCooldown.acquire("ch3", "k1", "m1"))
+        assertTrue(ttftCooldown.recordFirstToken(ttft, firstTokenMs = 200))
+        assertEquals(CandidateCooldown.REASON_TTFT_SLOW, ttftCooldown.cooldownState("ch3", "k1", "m1")?.reason)
+        assertEquals("candidate", ttftCooldown.cooldownState("ch3", "k1", "m1")?.scope)
+    }
+
+    @Test
+    fun `successful probe clears cooldown reason`() {
+        var now = 0L
+        val cooldown = CandidateCooldown(policy = policy(), nowMs = { now })
+        val permit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(permit, FailureKind.TRANSPORT)
+
+        now = 1_000L
+        val probe = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordSuccess(probe)
+        assertNull(cooldown.cooldownState("ch1", "k1", "m1"))
+    }
+
+    @Test
+    fun `restore preserves cooldown reason`() {
+        val cooldown = CandidateCooldown(policy = policy(), nowMs = { 0L })
+        cooldown.restore(listOf(CooldownStateSnapshot("ch:ch1", 1, 60_000L, "server_error")))
+
+        assertEquals("server_error", cooldown.cooldownState("ch1", "k1", "m1")?.reason)
+    }
+
+    @Test
+    fun `clear candidate removes only the candidate cooldown`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+        val first = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(first, FailureKind.RATE_LIMITED)
+        val second = assertNotNull(cooldown.acquire("ch1", "k1", "m2"))
+        cooldown.recordFailure(second, FailureKind.RATE_LIMITED)
+
+        cooldown.clearCandidate("ch1", "k1", "m1")
+
+        assertFalse(cooldown.isBlocked("ch1", "k1", "m1"))
+        assertTrue(cooldown.isBlocked("ch1", "k1", "m2"))
+        assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k1:m1") })
+        assertFalse(changes.any { it == CooldownChange.Removed("kc:ch1:k1:m2") })
+    }
+
+    @Test
+    fun `clear channel removes every cooldown under that channel`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+
+        val auth = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(auth, FailureKind.AUTH_REJECTED)
+        val rate = assertNotNull(cooldown.acquire("ch1", "k2", "m1"))
+        cooldown.recordFailure(rate, FailureKind.RATE_LIMITED)
+        val transport = assertNotNull(cooldown.acquire("ch1", "k3", "m1"))
+        cooldown.recordFailure(transport, FailureKind.TRANSPORT)
+        val other = assertNotNull(cooldown.acquire("ch2", "k1", "m1"))
+        cooldown.recordFailure(other, FailureKind.RATE_LIMITED)
+
+        cooldown.clearChannel("ch1")
+
+        assertFalse(cooldown.isBlocked("ch1", "k1", "m1"))
+        assertFalse(cooldown.isBlocked("ch1", "k2", "m1"))
+        assertFalse(cooldown.isBlocked("ch1", "k3", "m1"))
+        assertTrue(cooldown.isBlocked("ch2", "k1", "m1"))
+        assertTrue(changes.any { it == CooldownChange.Removed("ch:ch1") })
+        assertTrue(changes.any { it == CooldownChange.Removed("key:ch1:k1") })
+        assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k2:m1") })
+    }
+
+    @Test
+    fun `clear methods only emit removed events and return keys for non-healthy states`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+
+        // 仅 acquire 建立健康状态（consecutiveFailures=0, cooldownUntil=0）
+        val permit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        assertTrue(changes.isEmpty())
+
+        // 清除健康候选，不应提交 Removed，也不返回该状态键
+        val clearedCandidate = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertTrue(clearedCandidate.isEmpty())
+        assertTrue(changes.isEmpty())
+        // 但代际已递增，旧许可应当作废
+        assertNull(cooldown.recordFailure(permit, FailureKind.RATE_LIMITED))
+
+        // 清除健康密钥
+        val permit2 = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        val clearedKey = cooldown.clearKey("ch1", "k1")
+        assertTrue(clearedKey.isEmpty())
+        assertTrue(changes.isEmpty())
+        assertNull(cooldown.recordFailure(permit2, FailureKind.RATE_LIMITED))
+
+        // 清除健康渠道
+        val permit3 = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        val clearedChannel = cooldown.clearChannel("ch1")
+        assertTrue(clearedChannel.isEmpty())
+        assertTrue(changes.isEmpty())
+        assertNull(cooldown.recordFailure(permit3, FailureKind.RATE_LIMITED))
+
+        // 若确实处于失败或冷却，则应返回并提交 Removed
+        val permit4 = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(permit4, FailureKind.RATE_LIMITED)
+        val clearedAfterFailure = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertEquals(listOf("kc:ch1:k1:m1"), clearedAfterFailure)
+        assertTrue(changes.any { it == CooldownChange.Removed("kc:ch1:k1:m1") })
+    }
+
+    @Test
+    fun `unconfirmed deletions are returned on retry until confirmDeletions is called`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+
+        val permit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(permit, FailureKind.RATE_LIMITED)
+        changes.clear()
+
+        // 第一次清除：返回候选键，但模拟持久化失败未调用 confirmDeletions
+        val firstClear = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertEquals(listOf("kc:ch1:k1:m1"), firstClear)
+        assertEquals(1, changes.size)
+        changes.clear()
+
+        // 内存中虽已清零，但重试清除候选仍能返回该键以供持久化重试
+        val retryCandidate = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertEquals(listOf("kc:ch1:k1:m1"), retryCandidate)
+        assertEquals(1, changes.size)
+        changes.clear()
+
+        // 重试清除同渠道也能并入该未确认键
+        val retryChannel = cooldown.clearChannel("ch1")
+        assertEquals(listOf("kc:ch1:k1:m1"), retryChannel)
+        assertEquals(1, changes.size)
+        changes.clear()
+
+        // 持久化成功并确认后，再次清除则因状态已健康且已确认，返回空
+        cooldown.confirmDeletions(retryChannel)
+        val clearedAfterConfirm = cooldown.clearChannel("ch1")
+        assertTrue(clearedAfterConfirm.isEmpty())
+        assertTrue(changes.isEmpty())
+    }
+
+    @Test
+    fun `successful request does not clear deleteUnconfirmed flag before confirmDeletions`() {
+        val changes = mutableListOf<CooldownChange>()
+        val cooldown = CandidateCooldown(policy(), nowMs = { 0L }, onChange = changes::add)
+
+        val failPermit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordFailure(failPermit, FailureKind.RATE_LIMITED)
+        changes.clear()
+
+        // 第一次清除：标记 deleteUnconfirmed，未确认
+        val cleared = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertEquals(listOf("kc:ch1:k1:m1"), cleared)
+        changes.clear()
+
+        // 此时新请求进入并在新代际下成功，触发 recordSuccess -> reset
+        val successPermit = assertNotNull(cooldown.acquire("ch1", "k1", "m1"))
+        cooldown.recordSuccess(successPermit)
+
+        // 常规 reset 不应清除 deleteUnconfirmed，重试清除依然能够捕获该键
+        val retry = cooldown.clearCandidate("ch1", "k1", "m1")
+        assertEquals(listOf("kc:ch1:k1:m1"), retry)
+        assertEquals(1, changes.size)
+        changes.clear()
+
+        // 持久化确认后才清除标记
+        cooldown.confirmDeletions(retry)
+        assertTrue(cooldown.clearCandidate("ch1", "k1", "m1").isEmpty())
     }
 }

@@ -258,6 +258,14 @@ fun KeyAutoDisableSettingsRecord.toResponse() = KeyAutoDisableSettingsResponse(
         ?: policy.rules.firstOrNull { !it.streak }?.windowMinutes ?: 5,
 )
 
+/** 手动解除冷却的范围：channel 清整个渠道，key 清密钥及其候选，candidate 只清单个候选。 */
+@Serializable
+data class ClearCooldownRequest(
+    val scope: String,
+    val keyId: String? = null,
+    val upstreamModel: String? = null,
+)
+
 @Serializable
 data class ChannelModelMappingResponse(
     val upstreamModel: String,

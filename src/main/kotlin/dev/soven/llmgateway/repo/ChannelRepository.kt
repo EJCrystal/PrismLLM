@@ -59,6 +59,11 @@ data class ChannelKeyUpdate(
 
 class ChannelKeyStateChangedException : RuntimeException("密钥状态已变化，请重新打开渠道编辑页面后再保存")
 
+/** 健康度列表只需要渠道身份、启用状态和密钥支持的模型，不解析完整渠道记录。 */
+internal data class HealthChannelKey(val id: String, val models: List<String>)
+
+internal data class HealthChannelOverview(val id: String, val enabled: Boolean, val keys: List<HealthChannelKey>)
+
 /**
  * 渠道持久化。渠道密钥只以密文写入，读取时不自动解密。
  *
@@ -70,6 +75,37 @@ class ChannelRepository(private val database: Database, private val credentialCi
     suspend fun listHealthChannels(): Map<String, Boolean> = suspendTransaction(database) {
         Channels.select(Channels.id, Channels.enabled).toList()
             .associate { row -> row[Channels.id] to row[Channels.enabled] }
+    }
+
+    /** 与 [listHealthChannels] 一样跳过完整渠道解析，额外带上密钥支持的模型供冷却概览使用。 */
+    internal suspend fun listHealthChannelOverviews(): List<HealthChannelOverview> = suspendTransaction(database) {
+        val rows = Channels.select(Channels.id, Channels.enabled).toList()
+        val channelIds = rows.map { it[Channels.id] }
+        if (channelIds.isEmpty()) return@suspendTransaction emptyList()
+        // 只读健康概览需要的字段，不解析密钥额度/限流等无关 JSON。
+        val keyRows = ChannelKeys
+            .select(ChannelKeys.id, ChannelKeys.channelId)
+            .where { ChannelKeys.channelId inList channelIds }
+            .toList()
+        val modelsByKey = if (keyRows.isEmpty()) {
+            emptyMap()
+        } else {
+            ChannelKeyModels
+                .select(ChannelKeyModels.keyId, ChannelKeyModels.upstreamModel)
+                .where { ChannelKeyModels.keyId inList keyRows.map { it[ChannelKeys.id] } }
+                .groupBy { it[ChannelKeyModels.keyId] }
+                .mapValues { (_, models) -> models.map { it[ChannelKeyModels.upstreamModel] }.sorted() }
+        }
+        val keysByChannel = keyRows.groupBy { it[ChannelKeys.channelId] }.mapValues { (_, keys) ->
+            keys.map { HealthChannelKey(it[ChannelKeys.id], modelsByKey[it[ChannelKeys.id]].orEmpty()) }
+        }
+        rows.map { row ->
+            HealthChannelOverview(
+                id = row[Channels.id],
+                enabled = row[Channels.enabled],
+                keys = keysByChannel[row[Channels.id]].orEmpty(),
+            )
+        }
     }
 
     suspend fun list(): List<ChannelRecord> = suspendTransaction(database) {
