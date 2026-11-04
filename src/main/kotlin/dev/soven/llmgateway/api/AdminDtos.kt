@@ -98,7 +98,7 @@ data class ChannelKeyRateLimitRequest(
  * 渠道密钥写请求。id 为空表示新建；credential 为空表示保持原凭据。
  *
  * state 只接受 ACTIVE 与 MANUAL_DISABLED：自动停用状态只能由系统写入，
- * 否则客户端可以伪造 AUTO_TEMPORARY 绕过永久停用的换凭据要求。
+ * 客户端通过提交 ACTIVE 执行人工恢复。
  */
 @Serializable
 data class ChannelKeyRequest(

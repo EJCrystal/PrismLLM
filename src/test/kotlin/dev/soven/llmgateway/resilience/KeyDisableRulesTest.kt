@@ -302,6 +302,17 @@ class KeyDisableRulesTest {
             else assertEquals(KeyDisableAction.PERMANENT, assertNotNull(update.decision).action)
         }
 
+        val insufficientBalance = assertNotNull(
+            policy.record(
+                KeyHealthState(),
+                response(403, """{"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}"""),
+                now,
+            ).decision,
+        )
+        assertEquals("insufficient_balance", insufficientBalance.ruleId)
+        assertEquals(KeyDisableAction.PERMANENT, insufficientBalance.action)
+        assertEquals(1, insufficientBalance.count)
+
         val temporary = assertNotNull(
             policy.record(KeyHealthState(), response(401, "model not enabled for this key"), now).state,
         )

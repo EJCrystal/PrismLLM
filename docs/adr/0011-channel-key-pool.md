@@ -45,7 +45,7 @@
 
 规则列表保存在 `key_auto_disable_settings.rules`，按规则分桶的失败计数保存在 `channel_key_health.rule_counters`；管理台提供 `GET/PUT /admin/api/key-auto-disable-settings`。计数按密钥行锁串行处理，跨模型、协议和进程共享；规则变更通过 revision 使旧计数失效。停用与 `channel_key.auto_disable` 系统审计在同一事务提交。审计详情记录命中规则、渠道/密钥名称、计数、动作、状态、到期时间及上游状态，不落凭据或请求正文。
 
-`channel_keys.state_version` 保护旧请求和旧编辑表单：更换凭据或启用状态变更后，旧请求不会影响新状态，携带旧 `stateVersion` 的编辑请求得到 409。手动启用自动禁用的密钥必须更换凭据，恢复时清零失败计数并清除密钥级冷却；已停用的密钥不会因关闭规则自动恢复。
+`channel_keys.state_version` 保护旧请求和旧编辑表单：更换凭据或启用状态变更后，旧请求不会影响新状态，携带旧 `stateVersion` 的编辑请求得到 409。永久自动禁用的密钥可由管理员人工启用，凭据可保留或替换；恢复时清零失败计数并清除密钥级冷却。已停用的密钥不会因关闭规则自动恢复。
 
 ### 状态机与四态扩展（V32 迁移）
 
@@ -53,7 +53,7 @@
 - `ACTIVE`：正常可用。
 - `MANUAL_DISABLED`：管理员人工停用，永不被系统自动恢复改写；人工启用无需换凭据。
 - `AUTO_TEMPORARY`：规则触发的临时停用，带有到期时间 `auto_disable_until`；读路径与路由层到期即自动视作可用，不依赖后台任务。
-- `AUTO_PERMANENT`：凭据失效等严重错误触发的永久停用，无到期时间；必须更换上游凭据后方可重新启用。
+- `AUTO_PERMANENT`：严重错误触发的永久停用，无到期时间；不会自动恢复，管理员人工启用后可保留或替换上游凭据。
 V32 迁移自动按 `enabled` 和历史 `auto_disabled_at` 回填旧数据并删除 `enabled` 列。API 层面请求与响应均切换为 `state`，客户端只能显式提交 `ACTIVE` 或 `MANUAL_DISABLED`。
 
 ## 上游分组主动限流（2026-10-28）

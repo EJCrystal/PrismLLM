@@ -2156,14 +2156,13 @@ class GatewayIntegrationTest {
             val (cookie, csrf) = client.loginAdmin()
             suspend fun update(
                 source: ChannelRecord,
-                replaceCredential: Boolean = false,
                 keyState: String = "ACTIVE",
             ) = client.put("/admin/api/channels/${channel.id}") {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
                 setBody("""{"name":"${channel.name}","baseUrl":"${channel.baseUrl}","enabled":true,"keys":[${
-                    source.keys.joinToString { """{"id":"${it.id}","name":"${it.name}","state":"${keyState}","stateVersion":${it.stateVersion},"priority":${it.priority},"models":["m1","m2"]${if (replaceCredential && it.id == primary.id) ",\"credential\":\"repaired-key\"" else ""}}""" }
+                    source.keys.joinToString { """{"id":"${it.id}","name":"${it.name}","state":"${keyState}","stateVersion":${it.stateVersion},"priority":${it.priority},"models":["m1","m2"]}""" }
                 }]}""")
             }
             val stale = update(channel)
@@ -2172,31 +2171,21 @@ class GatewayIntegrationTest {
             val disabled = assertNotNull(app.channelRepository.find(channel.id))
             assertEquals(ChannelKeyState.AUTO_PERMANENT, disabled.keys.first { it.id == primary.id }.state)
             assertNotNull(disabled.keys.first { it.id == primary.id }.autoDisabledAt)
-            assertEquals(HttpStatusCode.BadRequest, update(disabled).status)
-            assertFailsWith<dev.soven.llmgateway.repo.ChannelKeyReenableRequiresCredentialException> {
-                app.channelRepository.update(
-                    id = channel.id, name = channel.name, baseUrl = channel.baseUrl,
-                    authType = channel.authType, enabled = true,
-                    keys = disabled.keys.map { current -> ChannelKeyUpdate(
-                        id = current.id, name = current.name, state = ChannelKeyState.ACTIVE, priority = current.priority,
-                        models = current.models, // 旧客户端可省略版本，但不能用原凭据覆盖自动禁用。
-                        credential = if (current.id == primary.id) app.credentialCipher.encrypt("key-primary") else null,
-                    ) },
-                )
-            }
-            assertEquals(HttpStatusCode.OK, update(assertNotNull(app.channelRepository.find(channel.id)), replaceCredential = true).status)
+            assertEquals(HttpStatusCode.OK, update(disabled).status)
             val enabled = assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.id == primary.id }
             assertEquals(ChannelKeyState.ACTIVE, enabled.state)
             assertNull(enabled.autoDisabledAt)
+            assertNull(enabled.autoDisableReason)
+            assertNull(enabled.autoDisableUntil)
             assertFalse(app.candidateCooldown.isBlocked(channel.id, primary.id, "m1"))
             val key = createClientKey()
             assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key).status)
-            assertEquals("Bearer repaired-key", fake.requests.last().authorization)
+            assertEquals("Bearer key-primary", fake.requests.last().authorization)
         }
     }
 
     @Test
-    fun `permanent disable cannot be downgraded to manual to bypass credential rotation`() = runBlocking {
+    fun `permanent disable can be manually reenabled without credential rotation`() = runBlocking {
         app.keyAutoDisableRepository.saveSettings(KeyAutoDisablePolicy(authFailureThreshold = 1))
         val channel = createAutoDisablePool(withBackup = false)
         val primary = channel.keys.single()
@@ -2204,26 +2193,18 @@ class GatewayIntegrationTest {
         val disabled = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
         assertEquals(ChannelKeyState.AUTO_PERMANENT, disabled.state)
 
-        // 先改成人工停用再启用，不能绕过永久停用的换凭据要求。
-        val downgraded = assertNotNull(app.channelRepository.update(
+        val enabled = assertNotNull(app.channelRepository.update(
             id = channel.id, name = channel.name, baseUrl = channel.baseUrl, authType = channel.authType, enabled = true,
             keys = listOf(ChannelKeyUpdate(
-                id = disabled.id, name = disabled.name, state = ChannelKeyState.MANUAL_DISABLED,
+                id = disabled.id, name = disabled.name, state = ChannelKeyState.ACTIVE,
                 priority = disabled.priority, models = disabled.models, stateVersion = disabled.stateVersion,
             )),
         )).keys.single()
-        assertEquals(ChannelKeyState.AUTO_PERMANENT, downgraded.state)
-
-        assertFailsWith<dev.soven.llmgateway.repo.ChannelKeyReenableRequiresCredentialException> {
-            app.channelRepository.update(
-                id = channel.id, name = channel.name, baseUrl = channel.baseUrl, authType = channel.authType, enabled = true,
-                keys = listOf(ChannelKeyUpdate(
-                    id = downgraded.id, name = downgraded.name, state = ChannelKeyState.ACTIVE,
-                    priority = downgraded.priority, models = downgraded.models, stateVersion = downgraded.stateVersion,
-                )),
-            )
-        }
-        Unit
+        assertEquals(ChannelKeyState.ACTIVE, enabled.state)
+        assertTrue(enabled.stateVersion > disabled.stateVersion)
+        assertNull(enabled.autoDisabledAt)
+        assertNull(enabled.autoDisableReason)
+        assertNull(enabled.autoDisableUntil)
     }
 
     @Test

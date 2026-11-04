@@ -29,7 +29,7 @@ sealed interface KeyAttemptSignal {
     data class TransportFailure(val message: String = "") : KeyAttemptSignal
 }
 
-/** 自动禁用动作。临时禁用带到期时间，永久禁用只能换凭据后人工启用。 */
+/** 自动禁用动作。临时禁用带到期时间，永久禁用不会自动恢复，只能人工启用。 */
 @Serializable
 enum class KeyDisableAction { TEMPORARY, PERMANENT }
 
@@ -38,7 +38,7 @@ enum class KeyDisableKind { NONE, MANUAL, TEMPORARY, PERMANENT }
 
 /**
  * 密钥的持久化状态。只有 [AUTO_TEMPORARY] 会到期自动恢复，
- * [AUTO_PERMANENT] 必须换凭据后人工启用。
+ * [AUTO_PERMANENT] 不会自动恢复，需人工启用。
  *
  * @author 文杰
  * @since 2026-10-29
@@ -308,6 +308,14 @@ data class KeyDisablePolicy(
                     "invalid_grant",
                 ),
                 threshold = 2,
+                action = KeyDisableAction.PERMANENT,
+            ),
+            KeyDisableRule(
+                id = "insufficient_balance",
+                name = "账户余额不足",
+                statusCodes = listOf(401, 402, 403),
+                bodyPatterns = listOf("INSUFFICIENT_BALANCE"),
+                threshold = 1,
                 action = KeyDisableAction.PERMANENT,
             ),
             KeyDisableRule(

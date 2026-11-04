@@ -32,7 +32,6 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
-import java.security.MessageDigest
 import java.util.UUID
 
 /** 新建渠道密钥的输入。凭据已加密。 */
@@ -59,9 +58,6 @@ data class ChannelKeyUpdate(
 )
 
 class ChannelKeyStateChangedException : RuntimeException("密钥状态已变化，请重新打开渠道编辑页面后再保存")
-class ChannelKeyReenableRequiresCredentialException(name: String) : RuntimeException(
-    "密钥「$name」因凭据失效被永久停用，重新启用前必须更换上游凭据",
-)
 
 /**
  * 渠道持久化。渠道密钥只以密文写入，读取时不自动解密。
@@ -302,31 +298,15 @@ class ChannelRepository(private val database: Database, private val credentialCi
                 if (key.stateVersion != null && key.stateVersion != previous[ChannelKeys.stateVersion]) {
                     throw ChannelKeyStateChangedException()
                 }
-                // 只有凭据失效导致的永久停用必须换凭据；临时停用与人工停用可直接启用。
                 val previousState = ChannelKeyState.fromValue(previous[ChannelKeys.state])
                     ?: throw IllegalStateException("未知的渠道密钥状态: ${previous[ChannelKeys.state]}")
-                // 永久停用不能被“先改成人工停用、再启用”的两步操作绕过；
-                // 对永久停用密钥提交 MANUAL_DISABLED 视为保持原状态。
+                // 自动停用状态只能由系统写入；保留 AUTO_PERMANENT 来源，人工恢复直接提交 ACTIVE。
                 val targetState = if (previousState == ChannelKeyState.AUTO_PERMANENT &&
                     key.state == ChannelKeyState.MANUAL_DISABLED
                 ) {
                     ChannelKeyState.AUTO_PERMANENT
                 } else {
                     key.state
-                }
-                if (previousState == ChannelKeyState.AUTO_PERMANENT && targetState == ChannelKeyState.ACTIVE) {
-                    val credential = key.credential
-                        ?: throw ChannelKeyReenableRequiresCredentialException(previous[ChannelKeys.name])
-                    val oldValue = credentialCipher.decrypt(
-                        previous[ChannelKeys.credentialCiphertext], previous[ChannelKeys.credentialNonce],
-                    ).toByteArray(Charsets.UTF_8)
-                    val newValue = credentialCipher.decrypt(
-                        credential.ciphertext, credential.nonce,
-                    ).toByteArray(Charsets.UTF_8)
-                    val unchanged = MessageDigest.isEqual(oldValue, newValue)
-                    oldValue.fill(0)
-                    newValue.fill(0)
-                    if (unchanged) throw ChannelKeyReenableRequiresCredentialException(previous[ChannelKeys.name])
                 }
                 val resetHealth = key.credential != null || targetState.value != previous[ChannelKeys.state]
                 ChannelKeys.update({ ChannelKeys.id eq keyId }) {
