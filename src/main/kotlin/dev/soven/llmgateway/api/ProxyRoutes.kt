@@ -999,7 +999,7 @@ private suspend fun proxyStream(
         ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel)
     }
     val streamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = true)
-    val usageRequest = if (upstreamProtocol == GatewayProtocol.CHAT_COMPLETIONS) {
+    val usageRequest = if (upstreamProtocol == GatewayProtocol.CHAT_COMPLETIONS && protocol != upstreamProtocol) {
         streamRequest.asChatUpstream(candidate.upstreamModel)
     } else {
         streamRequest

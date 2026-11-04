@@ -52,7 +52,7 @@ internal fun geminiToChatRequest(request: JsonObject, upstreamModel: String): Js
     } ?: put("messages", messages)
     geminiToolsToChat(request["tools"])?.let { put("tools", it) }
     geminiToolChoiceToChat(request["toolConfig"])?.let { put("tool_choice", it) }
-    config?.string("responseMimeType")?.let { mime ->
+    config?.string("responseMimeType")?.takeIf { it != "text/plain" }?.let { mime ->
         val schema = config["responseJsonSchema"]
         put("response_format", when {
             mime == "application/json" && schema != null -> buildJsonObject {
@@ -81,7 +81,9 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
             }
             "assistant" -> {
                 val parts = mutableListOf<JsonObject>()
-                message.string("content")?.takeIf { it.isNotEmpty() }?.let { text -> parts += buildJsonObject { put("text", text) } }
+                message.textContentStrict("content", "messages[$index].content").takeIf { it.isNotEmpty() }?.let { text ->
+                    parts += buildJsonObject { put("text", text) }
+                }
                 (message["tool_calls"] as? JsonArray)?.forEachIndexed { callIndex, callElement ->
                     val call = callElement as? JsonObject ?: unsupported("messages[$index].tool_calls[$callIndex]", "工具调用必须是对象")
                     val function = call["function"] as? JsonObject ?: unsupported("messages[$index].tool_calls[$callIndex].function", "缺少 function")
@@ -241,6 +243,9 @@ internal fun geminiToMessagesRequest(request: JsonObject, upstreamModel: String)
     validateGeminiRequest(request)
     put("model", upstreamModel)
     val config = request["generationConfig"] as? JsonObject
+    rejectUnsupportedGeminiConfig(
+        config, setOf("seed", "frequencyPenalty", "presencePenalty", "responseLogprobs", "logprobs"), "Messages",
+    )
     val requestedMaxTokens = config?.long("maxOutputTokens")
     config?.number("temperature")?.let { put("temperature", it) }
     config?.number("topP")?.let { put("top_p", it) }
@@ -258,7 +263,7 @@ internal fun geminiToMessagesRequest(request: JsonObject, upstreamModel: String)
         put("max_tokens", maxTokens)
         put("thinking", thinking)
     }
-    config?.string("responseMimeType")?.let { mime ->
+    config?.string("responseMimeType")?.takeIf { it != "text/plain" }?.let { mime ->
         if (mime == "application/json") unsupported("generationConfig.responseMimeType", "Anthropic Messages 不支持 OpenAI 结构化输出参数")
         unsupported("generationConfig.responseMimeType", "不支持响应类型 $mime")
     }
@@ -402,6 +407,11 @@ internal fun geminiToResponsesRequest(request: JsonObject, upstreamModel: String
     put("model", upstreamModel)
     geminiSystemText(request["systemInstruction"])?.let { put("instructions", it) }
     val config = request["generationConfig"] as? JsonObject
+    rejectUnsupportedGeminiConfig(
+        config,
+        setOf("stopSequences", "topK", "seed", "frequencyPenalty", "presencePenalty", "responseLogprobs", "logprobs"),
+        "Responses",
+    )
     config?.long("maxOutputTokens")?.let { put("max_output_tokens", it) }
     config?.number("temperature")?.let { put("temperature", it) }
     config?.number("topP")?.let { put("top_p", it) }
@@ -409,7 +419,7 @@ internal fun geminiToResponsesRequest(request: JsonObject, upstreamModel: String
     geminiToolsToResponses(request["tools"])?.let { put("tools", it) }
     geminiToolChoiceToResponses(request["toolConfig"])?.let { put("tool_choice", it) }
     geminiThinkingToEffort(config)?.let { effort -> putJsonObject("reasoning") { put("effort", effort) } }
-    config?.string("responseMimeType")?.let { mime ->
+    config?.string("responseMimeType")?.takeIf { it != "text/plain" }?.let { mime ->
         if (mime != "application/json") unsupported("generationConfig.responseMimeType", "不支持响应类型 $mime")
         val schema = config["responseJsonSchema"]
         putJsonObject("text") {
@@ -626,6 +636,12 @@ private fun mergeGeminiToolContents(contents: List<JsonObject>): JsonArray {
     return JsonArray(merged)
 }
 
+private fun rejectUnsupportedGeminiConfig(config: JsonObject?, fields: Set<String>, target: String) {
+    fields.firstOrNull { config?.containsKey(it) == true }?.let {
+        unsupported("generationConfig.$it", "当前 $target 转换不支持 Gemini $it")
+    }
+}
+
 private fun geminiSystemText(element: JsonElement?): String? = when (element) {
     JsonNull -> null
     is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() }
@@ -667,6 +683,7 @@ private fun geminiContentsToChat(contents: JsonElement?): JsonArray = buildJsonA
                                 put("content", ((response["response"] as? JsonObject)?.string("content") ?: response["response"]?.toString()).orEmpty())
                             })
                         }
+                        obj.boolean("thought") == true -> unsupported("contents[$index].parts[$partIndex]", "Chat 不支持 Gemini thinking 历史")
                         obj.string("text") != null -> text += obj.string("text").orEmpty()
                         obj["inlineData"] != null || obj["fileData"] != null -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini 多模态内容")
                         else -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini part")
@@ -766,6 +783,7 @@ private fun geminiContentsToResponses(contents: JsonElement?): JsonArray = build
                         })
                     }
                     obj["inlineData"] != null || obj["fileData"] != null -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini 多模态内容")
+                    obj.boolean("thought") == true -> unsupported("contents[$index].parts[$partIndex]", "Responses 不支持 Gemini thinking 历史")
                     obj.string("text") != null -> text += obj.string("text").orEmpty()
                     else -> unsupported("contents[$index].parts[$partIndex]", "第一版不支持 Gemini part")
                 }
@@ -888,7 +906,6 @@ private fun responsesToolChoiceToGemini(choice: JsonElement?): JsonObject? {
 
 private fun geminiThinkingToEffort(config: JsonObject?): String? {
     val thinking = config?.get("thinkingConfig") as? JsonObject ?: return null
-    if (thinking.boolean("includeThoughts") == false) return "none"
     val budget = thinking.long("thinkingBudget") ?: return if (thinking.boolean("includeThoughts") == true) "medium" else null
     return when {
         budget == 0L -> "none"

@@ -890,4 +890,88 @@ class ProtocolConversionTest {
             converter.feed("")).joinToString("\n")
         assertTrue(body.contains("\"id\":\"call_0\""), body)
     }
+
+    @Test
+    fun `chat assistant text blocks survive Gemini conversion`() {
+        val chat = json("""{"messages":[{"role":"assistant","content":[
+            {"type":"text","text":"first"},{"type":"text","text":"second"}
+        ]}]}""")
+        val gemini = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, chat, "upstream")
+        assertEquals("first\nsecond", gemini["contents"]!!.jsonArray.single().jsonObject["parts"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `chat assistant unsupported content is rejected for Gemini`() {
+        val chat = json("""{"messages":[{"role":"assistant","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]}""")
+        val error = assertFailsWith<ProtocolConversionException> {
+            ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, chat, "upstream")
+        }
+        assertEquals("messages[0].content[0].type", error.field)
+    }
+
+    @Test
+    fun `Gemini plain text mime equals the default for every target`() {
+        val request = json("""{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}""")
+        val explicit = json("""{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"responseMimeType":"text/plain"}}""")
+        listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES).forEach { target ->
+            assertEquals(
+                ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, target, request, "upstream"),
+                ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, target, explicit, "upstream"),
+                target.toString(),
+            )
+        }
+    }
+
+    @Test
+    fun `unsupported Gemini generation controls fail with a field path`() {
+        val controls = mapOf(
+            "stopSequences" to "[\"END\"]", "topK" to "40", "seed" to "7",
+            "frequencyPenalty" to "0.5", "presencePenalty" to "0.5",
+            "responseLogprobs" to "false", "logprobs" to "3",
+        )
+        listOf(GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES).forEach { target ->
+            controls.forEach { (field, value) ->
+                if (target == GatewayProtocol.MESSAGES && field in setOf("stopSequences", "topK")) return@forEach
+                val request = json("""{"contents":[],"generationConfig":{"$field":$value}}""")
+                val error = assertFailsWith<ProtocolConversionException>("$target $field") {
+                    ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, target, request, "upstream")
+                }
+                assertEquals("generationConfig.$field", error.field)
+            }
+        }
+    }
+
+    @Test
+    fun `Gemini thought history is never merged into ordinary target text`() {
+        val request = json("""{"contents":[{"role":"model","parts":[
+            {"text":"private thinking","thought":true},{"text":"visible answer"}
+        ]}]}""")
+        listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES).forEach { target ->
+            val error = assertFailsWith<ProtocolConversionException> {
+                ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, target, request, "upstream")
+            }
+            assertEquals("contents[0].parts[0]", error.field)
+        }
+    }
+
+    @Test
+    fun `Gemini thinking budget is independent of summary visibility`() {
+        listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES).forEach { target ->
+            listOf(0, 1024, 8192, -1).forEach { budget ->
+                val visible = json("""{"contents":[],"generationConfig":{"thinkingConfig":{"thinkingBudget":$budget,"includeThoughts":true}}}""")
+                val hidden = json("""{"contents":[],"generationConfig":{"thinkingConfig":{"thinkingBudget":$budget,"includeThoughts":false}}}""")
+                assertEquals(
+                    ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, target, visible, "upstream"),
+                    ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, target, hidden, "upstream"),
+                    "$target budget=$budget",
+                )
+            }
+            val default = json("""{"contents":[]}""")
+            val hiddenOnly = json("""{"contents":[],"generationConfig":{"thinkingConfig":{"includeThoughts":false}}}""")
+            assertEquals(
+                ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, target, default, "upstream"),
+                ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, target, hiddenOnly, "upstream"),
+            )
+        }
+    }
 }
