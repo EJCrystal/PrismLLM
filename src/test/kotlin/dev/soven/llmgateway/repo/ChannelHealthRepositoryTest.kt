@@ -79,6 +79,12 @@ class ChannelHealthRepositoryTest {
         )
         // Full channel loading rejects this JSON; the overview only needs identity and enabled state.
         sql("update channels set request_overrides = 'invalid-json'")
+        // 健康概览不需要额度设置，坏 JSON 不应让整个概览失败。
+        sql(
+            "insert into channel_key_quota_settings (key_id, settings, updated_at) " +
+                "values ('${active.keys.single().id}', 'invalid-json', 0) " +
+                "on conflict (key_id) do update set settings = 'invalid-json'",
+        )
         val identities = channels.listHealthChannels()
         assertEquals(mapOf(active.id to true, disabled.id to false), identities)
         val overviews = channels.listHealthChannelOverviews()

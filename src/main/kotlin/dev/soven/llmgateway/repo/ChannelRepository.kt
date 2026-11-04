@@ -80,12 +80,30 @@ class ChannelRepository(private val database: Database, private val credentialCi
     /** 与 [listHealthChannels] 一样跳过完整渠道解析，额外带上密钥支持的模型供冷却概览使用。 */
     internal suspend fun listHealthChannelOverviews(): List<HealthChannelOverview> = suspendTransaction(database) {
         val rows = Channels.select(Channels.id, Channels.enabled).toList()
-        val keysByChannel = loadChannelKeysInTransaction(rows.map { it[Channels.id] })
+        val channelIds = rows.map { it[Channels.id] }
+        if (channelIds.isEmpty()) return@suspendTransaction emptyList()
+        // 只读健康概览需要的字段，不解析密钥额度/限流等无关 JSON。
+        val keyRows = ChannelKeys
+            .select(ChannelKeys.id, ChannelKeys.channelId)
+            .where { ChannelKeys.channelId inList channelIds }
+            .toList()
+        val modelsByKey = if (keyRows.isEmpty()) {
+            emptyMap()
+        } else {
+            ChannelKeyModels
+                .select(ChannelKeyModels.keyId, ChannelKeyModels.upstreamModel)
+                .where { ChannelKeyModels.keyId inList keyRows.map { it[ChannelKeys.id] } }
+                .groupBy { it[ChannelKeyModels.keyId] }
+                .mapValues { (_, models) -> models.map { it[ChannelKeyModels.upstreamModel] }.sorted() }
+        }
+        val keysByChannel = keyRows.groupBy { it[ChannelKeys.channelId] }.mapValues { (_, keys) ->
+            keys.map { HealthChannelKey(it[ChannelKeys.id], modelsByKey[it[ChannelKeys.id]].orEmpty()) }
+        }
         rows.map { row ->
             HealthChannelOverview(
                 id = row[Channels.id],
                 enabled = row[Channels.enabled],
-                keys = keysByChannel[row[Channels.id]].orEmpty().map { HealthChannelKey(it.id, it.models) },
+                keys = keysByChannel[row[Channels.id]].orEmpty(),
             )
         }
     }
