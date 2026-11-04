@@ -428,7 +428,7 @@ internal class GeminiStreamEncoder(private val model: String) : StreamEncoder {
                 }
             }
         }
-        if (parts.isEmpty() && chunk.finishReason == null && usage == null) return emptyList()
+        if (parts.isEmpty() && chunk.finishReason == null) return emptyList()
         val body = buildJsonObject {
             put("responseId", id)
             put("modelVersion", model)
@@ -441,7 +441,7 @@ internal class GeminiStreamEncoder(private val model: String) : StreamEncoder {
                     })
                 })
             }
-            usage?.let { put("usageMetadata", it.toGemini()) }
+            if (chunk.finishReason != null) usage?.let { put("usageMetadata", it.toGemini()) }
         }
         lines += "data: $body"
         lines += ""

@@ -1170,19 +1170,25 @@ class ProtocolConversionTest {
     }
 
     @Test
-    fun `gemini stream encoder emits usage even on empty content chunks`() {
+    fun `gemini stream encoder emits usage on finish chunks and skips empty intermediate chunks`() {
         val encoder = GeminiStreamEncoder("gemini-test")
         val usage = TokenUsage(inputTokens = 10, outputTokens = 20, totalTokens = 30)
-        val event = StreamEvent(id = "chunk_usage")
-        val lines = encoder.emit(event, usage)
+
+        val intermediate = StreamEvent(id = "chunk_usage")
+        val emptyLines = encoder.emit(intermediate, usage)
+        assertTrue(emptyLines.isEmpty(), "intermediate empty chunk without finishReason should be skipped")
+
+        val finishEvent = StreamEvent(id = "chunk_usage", finishReason = FinishReason.STOP)
+        val lines = encoder.emit(finishEvent, usage)
         assertTrue(lines.isNotEmpty())
         val data = json(lines.first { it.startsWith("data: ") }.removePrefix("data: "))
+        assertTrue(data.containsKey("candidates"), "finish chunk must contain candidates")
         assertEquals(10L, data["usageMetadata"]!!.jsonObject["promptTokenCount"]!!.jsonPrimitive.content.toLong())
         assertEquals(20L, data["usageMetadata"]!!.jsonObject["candidatesTokenCount"]!!.jsonPrimitive.content.toLong())
     }
 
     @Test
-    fun `responses reasoning output replay is accepted by chat request conversion`() {
+    fun `responses reasoning output replay is accepted by all target request conversions`() {
         val request = json("""{
             "input":[
                 {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},
@@ -1191,10 +1197,22 @@ class ProtocolConversionTest {
             ]
         }""")
         val chat = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, request, "upstream")
-        val messages = chat.array("messages")
-        assertEquals(2, messages.size)
-        assertEquals("user", messages[0].jsonObject.string("role"))
-        assertEquals("assistant", messages[1].jsonObject.string("role"))
+        val chatMessages = chat.array("messages")
+        assertEquals(2, chatMessages.size)
+        assertEquals("user", chatMessages[0].jsonObject.string("role"))
+        assertEquals("assistant", chatMessages[1].jsonObject.string("role"))
+
+        val messages = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES, request, "upstream")
+        val msgList = messages.array("messages")
+        assertEquals(2, msgList.size)
+        assertEquals("user", msgList[0].jsonObject.string("role"))
+        assertEquals("assistant", msgList[1].jsonObject.string("role"))
+
+        val gemini = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, request, "upstream")
+        val contents = gemini.array("contents")
+        assertEquals(2, contents.size)
+        assertEquals("user", contents[0].jsonObject.string("role"))
+        assertEquals("model", contents[1].jsonObject.string("role"))
     }
 
     @Test

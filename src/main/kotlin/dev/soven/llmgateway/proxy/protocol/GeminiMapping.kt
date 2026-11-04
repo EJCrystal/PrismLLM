@@ -499,6 +499,7 @@ internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: Stri
                         }) })
                     }
                 }
+                "reasoning" -> Unit
                 else -> unsupported("input[$index].type", "第一版不支持 Responses 输入项")
             }
         }

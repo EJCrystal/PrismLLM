@@ -157,6 +157,7 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
                     put("tool_use_id", item.string("call_id") ?: unsupported("$path.call_id", "function_call_output 缺少 call_id"))
                     put("content", item.textContentStrict("output", "$path.output"))
                 }
+                "reasoning" -> Unit
                 else -> unsupported("$path.type", "第一版不支持 Responses 输入项 "+item.string("type"))
             }
         }
