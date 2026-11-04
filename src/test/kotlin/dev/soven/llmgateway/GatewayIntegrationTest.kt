@@ -4388,6 +4388,30 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    @Tag("gemini")
+    fun `Gemini streaming request asks chat upstream to include usage`() = runBlocking {
+        val channel = createChannel("gemini-to-chat-stream-usage", "ok")
+        exposeAsModel("fast-gemini", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1beta/models/fast-gemini:streamGenerateContent") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"contents":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val sent = fake.requests.single()
+            val body = Json.parseToJsonElement(sent.body).jsonObject
+            assertEquals(true, body["stream"]!!.jsonPrimitive.boolean)
+            assertEquals(true, body["stream_options"]!!.jsonObject["include_usage"]!!.jsonPrimitive.boolean)
+            assertTrue(response.bodyAsText().contains("totalTokenCount"))
+        }
+    }
+
+    @Test
     fun `admin channel response exposes protocols`() = runBlocking {
         createChannelWithProtocols(
             "both",

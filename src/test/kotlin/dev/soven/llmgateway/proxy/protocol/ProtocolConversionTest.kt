@@ -659,7 +659,7 @@ class ProtocolConversionTest {
             converter.feed("") + converter.finish()
         val body = (first + second + last).joinToString("\n")
         assertTrue(body.contains("\"finish_reason\":\"tool_calls\""), body)
-        val ids = Regex("\"id\":\"([^\"]+)\"").findAll(body).map { it.groupValues[1] }.toSet()
+        val ids = body.split("{\"id\":\"").drop(1).map { it.substringBefore("\"") }.toSet()
         assertEquals(1, ids.size, body)
     }
 
@@ -751,5 +751,67 @@ class ProtocolConversionTest {
         val text = body.joinToString("\n")
         assertTrue(text.contains("\"completion_tokens\":5"), text)
         assertEquals(1, Regex("\"finish_reason\":\"stop\"").findAll(text).count(), text)
+    }
+
+    @Test
+    fun `gemini function responses pair with messages direction`() {
+        val gemini = json("""{
+            "contents":[
+                {"role":"model","parts":[
+                    {"functionCall":{"name":"lookup","args":{"n":1}}},
+                    {"functionCall":{"name":"lookup","args":{"n":2}}}
+                ]},
+                {"role":"user","parts":[
+                    {"functionResponse":{"name":"lookup","response":{"content":"first"}}},
+                    {"functionResponse":{"name":"lookup","response":{"content":"second"}}}
+                ]}
+            ]
+        }""")
+        val messages = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.MESSAGES, gemini, "upstream")
+        val blocks = messages["messages"]!!.jsonArray.flatMap { it.jsonObject["content"]!!.jsonArray }.map { it.jsonObject }
+        val toolUseIds = blocks.filter { it["type"]!!.jsonPrimitive.content == "tool_use" }.map { it["id"]!!.jsonPrimitive.content }
+        val toolResultIds = blocks.filter { it["type"]!!.jsonPrimitive.content == "tool_result" }.map { it["tool_use_id"]!!.jsonPrimitive.content }
+        assertEquals(2, toolUseIds.distinct().size)
+        assertEquals(toolUseIds, toolResultIds)
+    }
+
+    @Test
+    fun `gemini top k is rejected for chat but kept for messages`() {
+        val gemini = json("""{"contents":[],"generationConfig":{"topK":40}}""")
+        assertFailsWith<ProtocolConversionException> {
+            ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.CHAT_COMPLETIONS, gemini, "upstream")
+        }
+        val messages = ProtocolConversion.convertRequest(GatewayProtocol.GEMINI, GatewayProtocol.MESSAGES, gemini, "upstream")
+        assertEquals("40", messages["top_k"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `gemini safety reasons all become content filter incomplete`() {
+        listOf("RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "SAFETY").forEach { reason ->
+            val gemini = json("""{"responseId":"r","candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"$reason"}]}""")
+            val responses = ProtocolConversion.convertResponse(GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI, gemini, "public")
+            assertEquals("incomplete", responses["status"]!!.jsonPrimitive.content, reason)
+            assertEquals("content_filter", responses["incomplete_details"]!!.jsonObject["reason"]!!.jsonPrimitive.content, reason)
+        }
+    }
+
+    @Test
+    fun `responses refusal becomes gemini safety response`() {
+        val responses = json("""{
+            "id":"resp_1","status":"completed",
+            "output":[{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"cannot help"}]}]
+        }""")
+        val gemini = ProtocolConversion.convertResponse(GatewayProtocol.GEMINI, GatewayProtocol.RESPONSES, responses, "public")
+        val candidate = gemini["candidates"]!!.jsonArray.single().jsonObject
+        assertEquals("SAFETY", candidate["finishReason"]!!.jsonPrimitive.content)
+        assertEquals("cannot help", candidate["content"]!!.jsonObject["parts"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `gemini stream tool call without id gets stable fallback id`() {
+        val converter = ProtocolConversion.streamConverter(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.GEMINI, "public")!!
+        val body = (converter.feed("""data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"f","args":{}}}]}}]}""") +
+            converter.feed("")).joinToString("\n")
+        assertTrue(body.contains("\"id\":\"call_0\""), body)
     }
 }

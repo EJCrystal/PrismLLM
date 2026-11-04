@@ -11,6 +11,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
+private val geminiSafetyReasons = setOf("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL")
 private val geminiRequestFields = setOf("contents", "systemInstruction", "generationConfig", "tools", "toolConfig", "safetySettings", "cachedContent")
 
 internal fun validateGeminiRequest(request: JsonObject) {
@@ -33,7 +34,7 @@ internal fun geminiToChatRequest(request: JsonObject, upstreamModel: String): Js
     config?.number("maxOutputTokens")?.let { put("max_tokens", it) }
     config?.number("temperature")?.let { put("temperature", it) }
     config?.number("topP")?.let { put("top_p", it) }
-    config?.number("topK")?.let { put("top_k", it) }
+    if (config?.containsKey("topK") == true) unsupported("generationConfig.topK", "Chat Completions 不支持 top_k")
     (config?.get("stopSequences") as? JsonArray)?.let { stop ->
         put("stop", if (stop.size == 1) stop.single() else stop)
     }
@@ -555,9 +556,10 @@ internal fun geminiToResponsesResponse(response: JsonObject, model: String): Jso
         }
     }
     val finish = candidate?.string("finishReason")
-    put("status", if (finish == "MAX_TOKENS" || finish == "SAFETY") "incomplete" else "completed")
-    if (finish == "MAX_TOKENS" || finish == "SAFETY") putJsonObject("incomplete_details") {
-        put("reason", if (finish == "SAFETY") "content_filter" else "max_output_tokens")
+    val incomplete = finish == "MAX_TOKENS" || finish in geminiSafetyReasons
+    put("status", if (incomplete) "incomplete" else "completed")
+    if (incomplete) putJsonObject("incomplete_details") {
+        put("reason", if (finish == "MAX_TOKENS") "max_output_tokens" else "content_filter")
     }
     put("model", model)
     put("output", JsonArray(output))
@@ -565,11 +567,20 @@ internal fun geminiToResponsesResponse(response: JsonObject, model: String): Jso
 }
 
 internal fun responsesToGeminiResponse(responses: JsonObject, model: String): JsonObject = buildJsonObject {
+    var hasRefusal = false
     val parts = responses.array("output").mapIndexedNotNull { index, element ->
         val item = element as? JsonObject ?: unsupported("output[$index]", "输出项必须是对象")
         when (item.string("type")) {
             "message" -> {
-                val text = item.array("content").joinToString("") { part -> (part as? JsonObject)?.string("text").orEmpty() }
+                val text = item.array("content").joinToString("") { part ->
+                    val obj = part as? JsonObject ?: return@joinToString ""
+                    if (obj.string("type") == "refusal") {
+                        hasRefusal = true
+                        obj.string("refusal").orEmpty()
+                    } else {
+                        obj.string("text").orEmpty()
+                    }
+                }
                 buildJsonObject { put("text", text) }
             }
             "reasoning" -> buildJsonObject {
@@ -585,7 +596,11 @@ internal fun responsesToGeminiResponse(responses: JsonObject, model: String): Js
     put("candidates", buildJsonArray {
         add(buildJsonObject {
             put("content", buildJsonObject { put("role", "model"); put("parts", JsonArray(parts)) })
-            put("finishReason", responsesStatusToGemini(responses.string("status"), (responses["incomplete_details"] as? JsonObject)?.string("reason")))
+            put(
+                "finishReason",
+                if (hasRefusal) "SAFETY"
+                else responsesStatusToGemini(responses.string("status"), (responses["incomplete_details"] as? JsonObject)?.string("reason")),
+            )
             put("index", 0)
         })
     })
@@ -653,22 +668,30 @@ private fun geminiContentsToMessages(contents: JsonElement?): JsonArray = buildJ
     when (contents) {
         JsonNull -> Unit
         is JsonPrimitive -> add(messageWithBlocks("user", listOf(messageTextBlock(contents.content))))
-        is JsonArray -> contents.forEachIndexed { index, element ->
+        is JsonArray -> {
+        val pendingIds = mutableMapOf<String, ArrayDeque<String>>()
+        contents.forEachIndexed { index, element ->
             val content = element as? JsonObject ?: unsupported("contents[$index]", "内容必须是对象")
             val blocks = content.array("parts").mapIndexedNotNull { partIndex, part ->
                 val obj = part as? JsonObject ?: unsupported("contents[$index].parts[$partIndex]", "part 必须是对象")
                 when {
-                    obj["functionCall"] is JsonObject -> buildJsonObject {
-                        put("type", "tool_use")
-                        put("id", "toolu_${index}_$partIndex")
-                        put("name", (obj["functionCall"] as JsonObject).string("name").orEmpty())
-                        put("input", (obj["functionCall"] as JsonObject)["args"] ?: buildJsonObject { })
+                    obj["functionCall"] is JsonObject -> {
+                        val name = (obj["functionCall"] as JsonObject).string("name").orEmpty()
+                        val callId = "toolu_${index}_$partIndex"
+                        pendingIds.getOrPut(name) { ArrayDeque() }.addLast(callId)
+                        buildJsonObject {
+                            put("type", "tool_use")
+                            put("id", callId)
+                            put("name", name)
+                            put("input", (obj["functionCall"] as JsonObject)["args"] ?: buildJsonObject { })
+                        }
                     }
                     obj["functionResponse"] is JsonObject -> {
                         val response = obj["functionResponse"] as JsonObject
+                        val name = response.string("name") ?: unsupported("contents[$index].parts[$partIndex].functionResponse.name", "functionResponse 缺少 name")
                         buildJsonObject {
                             put("type", "tool_result")
-                            put("tool_use_id", response.string("name") ?: unsupported("contents[$index].parts[$partIndex].functionResponse.name", "functionResponse 缺少 name"))
+                            put("tool_use_id", pendingIds[name]?.removeFirstOrNull() ?: unsupported("contents[$index].parts[$partIndex].functionResponse.name", "找不到对应的工具调用"))
                             put("content", ((response["response"] as? JsonObject)?.string("content") ?: response["response"]?.toString()).orEmpty())
                         }
                     }
@@ -678,6 +701,7 @@ private fun geminiContentsToMessages(contents: JsonElement?): JsonArray = buildJ
                 }
             }
             add(messageWithBlocks(if (content.string("role") == "model") "assistant" else "user", blocks))
+        }
         }
         else -> Unit
     }
@@ -868,7 +892,7 @@ private fun thinkingBudget(effort: String): Long = when (effort) {
 
 private fun geminiFinishToChat(finishReason: String?, hasTools: Boolean): String = when (finishReason) {
     "MAX_TOKENS" -> "length"
-    "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL" -> "content_filter"
+    in geminiSafetyReasons -> "content_filter"
     null, "STOP" -> if (hasTools) "tool_calls" else "stop"
     else -> "stop"
 }
@@ -881,7 +905,7 @@ private fun chatFinishToGemini(finishReason: String?, hasRefusal: Boolean): Stri
 
 private fun geminiFinishToMessages(finishReason: String?, hasTools: Boolean): String = when (finishReason) {
     "MAX_TOKENS" -> "max_tokens"
-    "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL" -> "refusal"
+    in geminiSafetyReasons -> "refusal"
     null, "STOP" -> if (hasTools) "tool_use" else "end_turn"
     else -> "end_turn"
 }

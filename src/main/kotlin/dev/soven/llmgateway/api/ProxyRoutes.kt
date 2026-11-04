@@ -26,6 +26,7 @@ import dev.soven.llmgateway.proxy.extractReportedModel
 import dev.soven.llmgateway.proxy.protocol.MAX_PROTOCOL_EVENT_BYTES
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversion
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversionException
+import dev.soven.llmgateway.proxy.protocol.asChatUpstream
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.KeyAutoDisablePendingException
 import dev.soven.llmgateway.resilience.CandidateCooldown
@@ -998,7 +999,12 @@ private suspend fun proxyStream(
         ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel)
     }
     val streamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = true)
-    val body = policy.body(streamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+    val usageRequest = if (upstreamProtocol == GatewayProtocol.CHAT_COMPLETIONS) {
+        streamRequest.asChatUpstream(candidate.upstreamModel)
+    } else {
+        streamRequest
+    }
+    val body = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
     val converter = ProtocolConversion.streamConverter(protocol, upstreamProtocol, alias)
 
     try {

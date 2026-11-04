@@ -200,9 +200,10 @@ internal class GeminiStreamDecoder : StreamDecoder {
             when {
                 call != null -> {
                     toolSeen = true
+                    val index = toolIndex++
                     events += StreamEvent(id, toolCalls = listOf(ToolCallDelta(
-                        index = toolIndex++,
-                        id = call.string("id"),
+                        index = index,
+                        id = call.string("id") ?: "call_$index",
                         name = call.string("name"),
                         arguments = (call["args"] ?: JsonObject(emptyMap())).toString(),
                     )))
