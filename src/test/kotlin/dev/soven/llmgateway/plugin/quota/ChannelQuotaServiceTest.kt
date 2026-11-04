@@ -194,6 +194,29 @@ class ChannelQuotaServiceTest {
     }
 
     @Test
+    fun lockWaitTimeIsBoundedByTotalTimeout() = runBlocking {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val channel = channel()
+        withService(provider {
+            started.countDown()
+            check(release.await(5, TimeUnit.SECONDS))
+            available("100")
+        }, timeoutMs = 150) { service ->
+            val first = async(Dispatchers.Default) { service.query(channel) }
+            try {
+                assertTrue(withContext(Dispatchers.IO) { started.await(3, TimeUnit.SECONDS) })
+                val second = service.query(channel)
+                assertEquals("ERROR", second.status)
+                assertTrue(second.message!!.contains("超时"))
+            } finally {
+                release.countDown()
+                first.await()
+            }
+        }
+    }
+
+    @Test
     fun boundsConcurrentPluginExecutionsWithoutQueueingMoreWork() = runBlocking {
         val started = CountDownLatch(4)
         val release = CountDownLatch(1)
