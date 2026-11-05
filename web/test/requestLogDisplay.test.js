@@ -4,6 +4,8 @@ import {
   attemptFailureReason,
   attemptHasError,
   attemptResultLabel,
+  protocolConversion,
+  protocolEndpoint,
   protocolLabel,
   reportedModelStatus,
   reasoningEffortClass,
@@ -38,6 +40,40 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     assert.equal(protocolLabel('gemini'), 'Gemini')
     assert.equal(protocolLabel(null), '—')
     assert.equal(protocolLabel('custom_protocol'), 'custom_protocol')
+  })
+
+  it('协议端点映射与网关实际的 /v1 端点、Gemini 动态 URL 一致', () => {
+    assert.deepEqual(protocolEndpoint('chat_completions'), {
+      value: 'chat_completions', label: 'OpenAI Chat Completions', shortName: 'Chat',
+      apiFormat: 'openai/chat_completions', endpointPath: '/v1/chat/completions', known: true,
+    })
+    assert.equal(protocolEndpoint('responses').apiFormat, 'openai/responses')
+    assert.equal(protocolEndpoint('responses').endpointPath, '/v1/responses')
+    assert.equal(protocolEndpoint('messages').apiFormat, 'anthropic/messages')
+    assert.equal(protocolEndpoint('messages').endpointPath, '/v1/messages')
+    assert.equal(protocolEndpoint('gemini').apiFormat, 'gemini/contents')
+    assert.equal(protocolEndpoint('gemini').endpointPath, '/v1beta/models/{model}:generateContent')
+    assert.equal(protocolEndpoint('custom_protocol').known, false)
+    assert.equal(protocolEndpoint('custom_protocol').apiFormat, 'custom_protocol')
+    assert.equal(protocolEndpoint(null).known, false)
+  })
+
+  it('同协议透传不标记转换，异协议才显示由入站协议转换及出站端点', () => {
+    const passthrough = protocolConversion('responses', 'responses')
+    assert.equal(passthrough.converted, false)
+    assert.equal(passthrough.outbound.apiFormat, 'openai/responses')
+    assert.match(passthrough.title, /透传未转换（openai\/responses）/)
+
+    const converted = protocolConversion('responses', 'gemini')
+    assert.equal(converted.converted, true)
+    assert.equal(converted.inbound.apiFormat, 'openai/responses')
+    assert.equal(converted.outbound.apiFormat, 'gemini/contents')
+    assert.match(converted.title, /出站协议：已由入站协议转换（gemini\/contents）/)
+
+    const unknown = protocolConversion('messages', null)
+    assert.equal(unknown.converted, false)
+    assert.equal(unknown.outbound, null)
+    assert.match(unknown.title, /出站协议：未知（未发起上游请求）/)
   })
 
   it('比较最终路由上游自报模型，兼容缺少自报值的历史尝试', () => {

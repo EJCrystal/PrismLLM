@@ -8,6 +8,8 @@ import CopyButton from './CopyButton.vue'
 import CursorLoadMore from './CursorLoadMore.vue'
 import Icon from './Icon.vue'
 import InfoPopover from './InfoPopover.vue'
+import ProtocolEndpoints from './ProtocolEndpoints.vue'
+import ProtocolIcon from './ProtocolIcon.vue'
 import { vScrollHint } from '../directives/scrollHint'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
@@ -20,6 +22,8 @@ import {
   attemptFailureReason,
   attemptHasError,
   attemptResultLabel,
+  protocolConversion,
+  protocolEndpoint,
   protocolLabel,
   reasoningEffortClass,
   reasoningEffortLabel,
@@ -128,6 +132,12 @@ function attemptProtocolLabel(attempt: RequestLogAttempt, log: RequestLog): stri
   // 出站协议缺失时保持未知，不要把入站协议当成出站协议展示。
   return protocolLabel(attempt.upstreamProtocol || log.upstreamProtocol)
 }
+
+const selectedConversion = computed(() => protocolConversion(selected.value?.protocol, selected.value?.upstreamProtocol))
+const selectedInboundEndpoint = computed(() => protocolEndpoint(selected.value?.protocol))
+const selectedOutboundEndpoint = computed(() =>
+  selected.value?.upstreamProtocol ? protocolEndpoint(selected.value.upstreamProtocol) : null,
+)
 
 function attemptStatusClass(attempt: RequestLogAttempt): string {
   if (attempt.skipped) return 'neutral'
@@ -425,8 +435,7 @@ onMounted(load)
                 <div class="stacked-cell">
                   <span class="badge info">{{ log.alias }}</span>
                   <div class="request-meta">
-                    <span class="muted small">入站 {{ protocolLabel(log.protocol) }}</span>
-                    <span class="muted small">出站 {{ protocolLabel(log.upstreamProtocol) }}</span>
+                    <ProtocolEndpoints :inbound="log.protocol" :outbound="log.upstreamProtocol" />
                     <span class="mode-badge" :class="`mode-${requestModeClass(log.stream)}`">{{ requestModeLabel(log.stream) }}</span>
                     <span class="reasoning-badge" :class="reasoningEffortClass(log.reasoningEffort)">
                       推理 {{ reasoningEffortLabel(log.reasoningEffort) }}
@@ -550,13 +559,32 @@ onMounted(load)
                 <span>状态</span>
                 <strong><span class="badge" :class="statusClass(selected.statusCode)">{{ selected.statusCode }}</span></strong>
               </div>
-              <div class="detail-item">
-                <span>入站协议</span>
-                <strong>{{ protocolLabel(selected.protocol) }}</strong>
-              </div>
-              <div class="detail-item">
-                <span>出站协议</span>
-                <strong>{{ protocolLabel(selected.upstreamProtocol) }}</strong>
+              <div class="detail-item detail-protocol-item">
+                <span>协议</span>
+                <template v-if="selectedConversion.converted">
+                  <div class="detail-protocol-flow" :title="selectedConversion.title">
+                    <span class="detail-protocol-node">
+                      <ProtocolIcon v-if="selectedInboundEndpoint.known" :protocol="selectedInboundEndpoint.value" :size="14" />
+                      <strong>{{ selectedInboundEndpoint.shortName }}</strong>
+                    </span>
+                    <span class="detail-protocol-arrow" aria-hidden="true">→</span>
+                    <span class="detail-protocol-node">
+                      <ProtocolIcon v-if="selectedOutboundEndpoint?.known" :protocol="selectedOutboundEndpoint.value" :size="14" />
+                      <strong>{{ selectedOutboundEndpoint?.shortName }}</strong>
+                    </span>
+                    <span class="badge warning small">已转换</span>
+                  </div>
+                  <span class="mono muted small detail-endpoint">
+                    {{ selectedInboundEndpoint.endpointPath }} → {{ selectedOutboundEndpoint?.endpointPath }}
+                  </span>
+                </template>
+                <template v-else>
+                  <div class="detail-protocol-header" :title="selectedInboundEndpoint.endpointPath || selectedInboundEndpoint.label">
+                    <ProtocolIcon v-if="selectedInboundEndpoint.known" :protocol="selectedInboundEndpoint.value" :size="16" />
+                    <strong>{{ selectedInboundEndpoint.label }}</strong>
+                    <span v-if="!selectedConversion.outbound" class="badge neutral small">未发起上游请求</span>
+                  </div>
+                </template>
               </div>
               <div class="detail-item">
                 <span>模式</span>
