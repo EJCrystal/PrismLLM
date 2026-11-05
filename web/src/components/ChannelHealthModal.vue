@@ -10,13 +10,14 @@ import ErrorState from './ErrorState.vue'
 import { vScrollHint } from '../directives/scrollHint'
 
 const props = defineProps<{ channel: Channel; initialWindow: HealthWindow }>()
-defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: [changed?: boolean]; changed: [] }>()
 const window = ref<HealthWindow>(props.initialWindow)
 const detail = ref<ChannelHealthDetail | null>(null)
 const loading = ref(false)
 const error = ref('')
 const dimension = ref<'byModel' | 'byProtocol' | 'byKey'>('byModel')
 const selectedBucket = ref<number | null>(null)
+const hasCooldownCleared = ref(false)
 let revision = 0
 async function load() {
   const request = ++revision
@@ -64,6 +65,8 @@ async function clearCooldown(scope: 'channel' | 'key' | 'candidate', keyId?: str
   error.value = ''
   try {
     await api.clearChannelCooldown(props.channel.id, { scope, keyId, upstreamModel })
+    hasCooldownCleared.value = true
+    emit('changed')
     await load()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '解除冷却失败，请重试'
@@ -77,7 +80,7 @@ function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: nu
 </script>
 
 <template>
-  <Modal :title="`${channel.name} · 渠道健康度`" wide @close="$emit('close')">
+  <Modal :title="`${channel.name} · 渠道健康度`" wide @close="$emit('close', hasCooldownCleared)">
     <div class="health-detail">
       <div class="health-detail-toolbar">
         <div class="health-window-tabs" role="group" aria-label="健康度时间范围">

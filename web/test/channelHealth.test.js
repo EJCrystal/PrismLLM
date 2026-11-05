@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthBucketState, healthSymbol } from '../src/utils/channelHealth'
+import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthBucketState, healthSymbol, channelHealthSuccessRateText } from '../src/utils/channelHealth'
 
 describe('channel health display', () => {
   it('shows unknown rather than zero for missing samples', () => {
@@ -32,5 +32,18 @@ describe('channel health display', () => {
       assert.ok(healthSymbol(state))
       assert.ok(HEALTH_LABELS[state])
     }
+  })
+
+  it('keeps existing percentage during revalidation to avoid flickering', () => {
+    const existing = { metrics: { successRate: 0.985 } }
+    // 已有数据时，即便 loading 中也保持旧值显示，避免跳变
+    assert.equal(channelHealthSuccessRateText(existing, true, ''), '98.5%')
+    assert.equal(channelHealthSuccessRateText(existing, false, ''), '98.5%')
+    assert.equal(channelHealthSuccessRateText(existing, false, '网络异常'), '98.5%')
+
+    // 无数据时才根据 loading 和 error 状态提示
+    assert.equal(channelHealthSuccessRateText(null, true, ''), '汇总中…')
+    assert.equal(channelHealthSuccessRateText(null, false, '网络异常'), '读取失败')
+    assert.equal(channelHealthSuccessRateText(null, false, ''), '—')
   })
 })

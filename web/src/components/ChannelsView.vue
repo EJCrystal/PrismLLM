@@ -20,7 +20,7 @@ import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import ChannelHealthModal from './ChannelHealthModal.vue'
-import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthSymbol } from '../utils/channelHealth'
+import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthSymbol, channelHealthSuccessRateText } from '../utils/channelHealth'
 import { cooldownSummaryText } from '../utils/cooldown'
 import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
@@ -171,6 +171,13 @@ function channelHealthState(channel: Channel): HealthState {
 function channelHealthTitle(channel: Channel): string {
   const row = healthByChannel.value.get(channel.id)
   return `${channel.name}：${row?.reason || (healthLoading.value ? '正在汇总' : '健康度未读取')}；点击查看成功率、延迟、密钥和模型明细`
+}
+function channelSuccessRateText(channel: Channel): string {
+  return channelHealthSuccessRateText(healthByChannel.value.get(channel.id), healthLoading.value, healthError.value)
+}
+function onCloseHealthModal(changed = false) {
+  healthTarget.value = null
+  if (changed) void loadHealth()
 }
 async function loadHealth() {
   const request = ++healthRevision
@@ -1291,7 +1298,7 @@ onMounted(load)
                 </button>
                 <button type="button" class="channel-observation" :title="channelHealthTitle(channel)" :aria-label="channelHealthTitle(channel)" @click="healthTarget = channel">
                   <span class="health-status-icon" :data-state="channelHealthState(channel)" aria-hidden="true">{{ healthSymbol(channelHealthState(channel)) }}</span>
-                  <span><strong>{{ healthLoading ? '汇总中…' : healthError ? '读取失败' : healthPercent(healthByChannel.get(channel.id)?.metrics.successRate) }}</strong><small>{{ healthByChannel.get(channel.id)?.metrics.attempts ?? 0 }} 次 · {{ HEALTH_LABELS[channelHealthState(channel)] }}</small></span>
+                  <span><strong>{{ channelSuccessRateText(channel) }}</strong><small>{{ healthByChannel.get(channel.id)?.metrics.attempts ?? 0 }} 次 · {{ HEALTH_LABELS[channelHealthState(channel)] }}</small></span>
                 </button>
                 <div v-if="healthByChannel.get(channel.id)?.metrics.p95FirstTokenMs != null" class="muted small health-list-latency">P95 首 token {{ formatDuration(healthByChannel.get(channel.id)?.metrics.p95FirstTokenMs) }}</div>
                 <button v-if="channelCooldownText(channel)" type="button" class="channel-cooldown muted small" :title="channelCooldownTitle(channel)" @click="healthTarget = channel">
@@ -1317,7 +1324,7 @@ onMounted(load)
       </div>
     </div>
 
-    <ChannelHealthModal v-if="healthTarget" :key="healthTarget.id" :channel="healthTarget" :initial-window="healthWindow" @close="healthTarget = null; loadHealth()" />
+    <ChannelHealthModal v-if="healthTarget" :key="healthTarget.id" :channel="healthTarget" :initial-window="healthWindow" @close="onCloseHealthModal" />
     <ChannelQuotaModal v-if="quotaTarget" :key="quotaTarget.id" :channel="quotaTarget" @close="quotaTarget = null" @saved="onQuotaSaved" />
 
     <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide @close="closeChannelForm">
