@@ -17,7 +17,7 @@ export function channelHealthSuccessRateText(
   loading: boolean,
   error: string,
 ): string {
-  if (row) return healthPercent(row.metrics.successRate)
+  if (row?.metrics.successRate != null) return healthPercent(row.metrics.successRate)
   if (loading) return '汇总中…'
   if (error) return '读取失败'
   return healthPercent(null)

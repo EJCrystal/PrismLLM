@@ -53,6 +53,7 @@ watch([window, () => props.channel.id], () => void load(), { immediate: true })
 onBeforeUnmount(() => {
   revision++
   loadController?.abort()
+  clearingController?.abort()
 })
 const summary = computed(() => detail.value?.report.channels[0])
 const metrics = computed(() => summary.value?.metrics)
@@ -71,6 +72,7 @@ const unavailableGroups = computed(() => {
 })
 const hasCooldown = computed(() => (summary.value?.coolingCandidates ?? 0) > 0 || unavailable.value.some(row => row.state === 'COOLDOWN'))
 const clearing = ref<string | null>(null)
+let clearingController: AbortController | null = null
 const availabilityLabel: Record<string, string> = { CHANNEL_DISABLED: '渠道停用', MANUAL_DISABLED: '人工停用', AUTO_TEMPORARY: '自动临时停用', AUTO_PERMANENT: '自动永久停用', COOLDOWN: '冷却中' }
 function groupHasCooldown(rows: AvailabilityRow[]): boolean {
   return rows.some(row => row.state === 'COOLDOWN' && row.cooldownScope === 'key')
@@ -79,18 +81,28 @@ function cooldownText(row: AvailabilityRow): string {
   const reason = row.state === 'COOLDOWN' ? cooldownReasonLabel(row.reason) : row.reason
   return [reason, row.until ? `截至 ${formatTime(row.until)}` : ''].filter(Boolean).join(' · ')
 }
-async function clearCooldown(scope: 'channel' | 'key' | 'candidate', keyId?: string, upstreamModel?: string) {
+async function clearCooldown(scope: 'channel' | 'key' | 'candidate', keyId?: string, upstreamModel?: string, timeoutMs = 15_000) {
   if (clearing.value) return
   clearing.value = [scope, keyId, upstreamModel].filter(Boolean).join(':')
   error.value = ''
+  clearingController?.abort()
+  const controller = new AbortController()
+  clearingController = controller
+  const timer = setTimeout(() => { controller.abort() }, timeoutMs)
   try {
-    await api.clearChannelCooldown(props.channel.id, { scope, keyId, upstreamModel })
+    await api.clearChannelCooldown(props.channel.id, { scope, keyId, upstreamModel }, { signal: controller.signal })
     hasCooldownCleared.value = true
     emit('changed')
     await load()
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '解除冷却失败，请重试'
+    if (controller.signal.aborted) {
+      error.value = '解除冷却请求超时，请刷新以确认冷却状态'
+    } else {
+      error.value = cause instanceof Error ? cause.message : '解除冷却失败，请重试'
+    }
   } finally {
+    clearTimeout(timer)
+    if (clearingController === controller) clearingController = null
     clearing.value = null
   }
 }

@@ -45,5 +45,11 @@ describe('channel health display', () => {
     assert.equal(channelHealthSuccessRateText(null, true, ''), '汇总中…')
     assert.equal(channelHealthSuccessRateText(null, false, '网络异常'), '读取失败')
     assert.equal(channelHealthSuccessRateText(null, false, ''), '—')
+
+    // 缓存中 successRate 为 null 时继续进入 loading/error 状态判定
+    const nullRateRow = { metrics: { successRate: null } }
+    assert.equal(channelHealthSuccessRateText(nullRateRow, true, ''), '汇总中…')
+    assert.equal(channelHealthSuccessRateText(nullRateRow, false, '网络异常'), '读取失败')
+    assert.equal(channelHealthSuccessRateText(nullRateRow, false, ''), '—')
   })
 })
