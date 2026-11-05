@@ -341,6 +341,8 @@ object RequestLogs : Table("request_logs") {
     val traceId = varchar("trace_id", 32).nullable()
     val clientKeyId = varchar("client_key_id", 36).nullable()
     val clientKeyName = varchar("client_key_name", 100).nullable()
+    val clientIp = varchar("client_ip", 64).nullable()
+    val clientUserAgent = varchar("client_user_agent", 300).nullable()
     val alias = varchar("alias", 100)
     val channelId = varchar("channel_id", 36).nullable()
     val channelName = varchar("channel_name", 100).nullable()

@@ -72,18 +72,20 @@ function clearFilters() {
   modelFilter.value = ''
   statusFilter.value = ''
 }
-type LogColumnId = 'time' | 'request' | 'model' | 'channel' | 'status' | 'latency' | 'usage' | 'cost'
+type LogColumnId = 'time' | 'request' | 'model' | 'channel' | 'clientIp' | 'clientUa' | 'status' | 'latency' | 'usage' | 'cost'
 const logColumns: Array<{ id: LogColumnId; label: string }> = [
   { id: 'time', label: '时间' },
   { id: 'request', label: '请求 ID' },
   { id: 'model', label: '请求模型' },
   { id: 'channel', label: '渠道与上游模型' },
+  { id: 'clientIp', label: '来源 IP' },
+  { id: 'clientUa', label: 'User-Agent' },
   { id: 'status', label: '状态与错误' },
   { id: 'latency', label: '耗时' },
   { id: 'usage', label: 'Token 用量' },
   { id: 'cost', label: '费用' },
 ]
-const defaultLogColumns: Record<LogColumnId, boolean> = { time: true, request: true, model: true, channel: true, status: true, latency: true, usage: true, cost: true }
+const defaultLogColumns: Record<LogColumnId, boolean> = { time: true, request: true, model: true, channel: true, clientIp: false, clientUa: false, status: true, latency: true, usage: true, cost: true }
 function readLogColumns(): Record<LogColumnId, boolean> {
   try {
     const raw = localStorage.getItem('prism-llm.logs.columns') ?? localStorage.getItem('llm-gateway.logs.columns')
@@ -405,6 +407,8 @@ onMounted(load)
               <th v-if="logColumnVisible('request')" class="log-col-request">请求 ID</th>
               <th v-if="logColumnVisible('model')" class="log-col-model">请求模型 / 协议 / 模式</th>
               <th v-if="logColumnVisible('channel')" class="log-col-channel">渠道 / 上游模型</th>
+              <th v-if="logColumnVisible('clientIp')" class="log-col-client-ip">来源 IP</th>
+              <th v-if="logColumnVisible('clientUa')" class="log-col-client-ua">User-Agent</th>
               <th v-if="logColumnVisible('status')" class="log-col-status">状态 / 错误</th>
               <th v-if="logColumnVisible('latency')" class="log-col-latency">首 token / 总耗时</th>
               <th v-if="logColumnVisible('usage')" class="log-col-usage">Token 用量</th>
@@ -450,6 +454,13 @@ onMounted(load)
                   </InfoPopover>
                 </div>
                 <span v-if="log.upstreamAttempts != null && log.upstreamAttempts > 1" class="badge warning">尝试 {{ log.upstreamAttempts }} 次</span>
+              </td>
+              <td v-if="logColumnVisible('clientIp')" class="log-col-client-ip">
+                <div class="mono small client-ip-line" :title="log.clientIp || '未记录 IP'">{{ log.clientIp || '—' }}</div>
+              </td>
+              <td v-if="logColumnVisible('clientUa')" class="log-col-client-ua">
+                <div v-if="log.clientUserAgent" class="muted small client-ua-line" :title="log.clientUserAgent">{{ log.clientUserAgent }}</div>
+                <div v-else class="muted small">—</div>
               </td>
               <td v-if="logColumnVisible('status')" class="log-col-status">
                 <div class="stacked-cell">
@@ -612,6 +623,16 @@ onMounted(load)
                   <strong class="mono detail-wrap">{{ selected.clientKeyId }}</strong>
                   <CopyButton :text="selected.clientKeyId" title="复制调用方密钥 ID" :size="13" />
                 </div>
+                <strong v-else class="muted">—</strong>
+              </div>
+              <div class="detail-item">
+                <span>来源 IP</span>
+                <strong v-if="selected.clientIp" class="mono detail-wrap" :title="selected.clientIp">{{ selected.clientIp }}</strong>
+                <strong v-else class="muted">—</strong>
+              </div>
+              <div class="detail-item">
+                <span>User-Agent</span>
+                <strong v-if="selected.clientUserAgent" class="mono detail-wrap" :title="selected.clientUserAgent">{{ selected.clientUserAgent }}</strong>
                 <strong v-else class="muted">—</strong>
               </div>
               <div class="detail-item">

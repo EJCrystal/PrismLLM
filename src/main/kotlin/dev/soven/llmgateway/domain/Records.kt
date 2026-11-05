@@ -262,6 +262,10 @@ data class RequestLogRecord(
     val traceId: String? = null,
     val clientKeyId: String?,
     val clientKeyName: String?,
+    /** 调用方 IP；取不到时为 null。 */
+    val clientIp: String? = null,
+    /** 调用方 User-Agent，截断保存；缺失时为 null。 */
+    val clientUserAgent: String? = null,
     val alias: String,
     val channelId: String?,
     val channelName: String?,
