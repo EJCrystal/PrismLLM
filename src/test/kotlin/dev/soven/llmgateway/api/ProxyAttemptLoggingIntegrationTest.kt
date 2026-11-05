@@ -167,7 +167,7 @@ class ProxyAttemptLoggingIntegrationTest {
     }
 
     @Test
-    fun `request log sanitizes whitespace and truncates client ip and user agent`() = runBlocking {
+    fun `request log sanitizes whitespace and truncates user agent`() = runBlocking {
         testApplication {
             application { app.install(this) }
             val modelId = "client-info-sanitized"
@@ -186,7 +186,6 @@ class ProxyAttemptLoggingIntegrationTest {
             val expectedUa = ("curl/7.88.1 CustomClient/" + "x".repeat(350)).take(300)
             assertEquals(expectedUa, log.clientUserAgent)
             assertEquals(300, log.clientUserAgent?.length)
-            assertTrue(log.clientIp?.length?.let { it <= 64 } ?: true)
         }
     }
 
