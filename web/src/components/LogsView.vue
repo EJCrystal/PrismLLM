@@ -135,10 +135,21 @@ function attemptProtocolLabel(attempt: RequestLogAttempt, log: RequestLog): stri
   return protocolLabel(attempt.upstreamProtocol || log.upstreamProtocol)
 }
 
-const selectedConversion = computed(() => protocolConversion(selected.value?.protocol, selected.value?.upstreamProtocol))
-const selectedInboundEndpoint = computed(() => protocolEndpoint(selected.value?.protocol))
+const selectedConversion = computed(() =>
+  protocolConversion(
+    selected.value?.protocol,
+    selected.value?.upstreamProtocol,
+    selected.value?.stream,
+    selected.value?.upstreamAttempts,
+  ),
+)
+const selectedInboundEndpoint = computed(() =>
+  protocolEndpoint(selected.value?.protocol, selected.value?.stream),
+)
 const selectedOutboundEndpoint = computed(() =>
-  selected.value?.upstreamProtocol ? protocolEndpoint(selected.value.upstreamProtocol) : null,
+  selected.value?.upstreamProtocol
+    ? protocolEndpoint(selected.value.upstreamProtocol, selected.value?.stream)
+    : null,
 )
 
 function attemptStatusClass(attempt: RequestLogAttempt): string {
@@ -439,7 +450,12 @@ onMounted(load)
                 <div class="stacked-cell">
                   <span class="badge info">{{ log.alias }}</span>
                   <div class="request-meta">
-                    <ProtocolEndpoints :inbound="log.protocol" :outbound="log.upstreamProtocol" />
+                    <ProtocolEndpoints
+                      :inbound="log.protocol"
+                      :outbound="log.upstreamProtocol"
+                      :stream="log.stream"
+                      :upstream-attempts="log.upstreamAttempts"
+                    />
                     <span class="mode-badge" :class="`mode-${requestModeClass(log.stream)}`">{{ requestModeLabel(log.stream) }}</span>
                     <span class="reasoning-badge" :class="reasoningEffortClass(log.reasoningEffort)">
                       推理 {{ reasoningEffortLabel(log.reasoningEffort) }}
@@ -593,7 +609,7 @@ onMounted(load)
                   <div class="detail-protocol-header" :title="selectedInboundEndpoint.endpointPath || selectedInboundEndpoint.label">
                     <ProtocolIcon v-if="selectedInboundEndpoint.known" :protocol="selectedInboundEndpoint.value" :size="16" />
                     <strong>{{ selectedInboundEndpoint.label }}</strong>
-                    <span v-if="!selectedConversion.outbound" class="badge neutral small">未发起上游请求</span>
+                    <span v-if="!selectedConversion.outbound" class="badge neutral small">{{ (selected.upstreamAttempts ?? 0) > 0 ? '出站协议未知' : '未发起上游请求' }}</span>
                   </div>
                 </template>
               </div>

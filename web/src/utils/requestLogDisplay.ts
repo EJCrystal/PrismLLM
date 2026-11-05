@@ -84,14 +84,17 @@ const PROTOCOL_ENDPOINTS: Record<string, ProtocolEndpointDefinition> = {
   },
 }
 
-export function protocolEndpoint(value: string | null | undefined): ProtocolEndpointInfo {
+export function protocolEndpoint(value: string | null | undefined, stream?: boolean | null): ProtocolEndpointInfo {
   const normalized = String(value ?? '').trim()
   const definition = PROTOCOL_ENDPOINTS[normalized]
   if (!definition) {
     const label = protocolLabel(normalized)
     return { value: normalized, label, shortName: label, apiFormat: label, endpointPath: '', known: false }
   }
-  return { value: normalized, ...definition, known: true }
+  const endpointPath = normalized === 'gemini' && stream
+    ? '/v1beta/models/{model}:streamGenerateContent?alt=sse'
+    : definition.endpointPath
+  return { value: normalized, ...definition, endpointPath, known: true }
 }
 
 export interface ProtocolConversionInfo {
@@ -101,15 +104,21 @@ export interface ProtocolConversionInfo {
   title: string
 }
 
-export function protocolConversion(inbound: string | null | undefined, outbound: string | null | undefined): ProtocolConversionInfo {
-  const from = protocolEndpoint(inbound)
-  const to = String(outbound ?? '').trim() ? protocolEndpoint(outbound) : null
+export function protocolConversion(
+  inbound: string | null | undefined,
+  outbound: string | null | undefined,
+  stream?: boolean | null,
+  upstreamAttempts?: number | null,
+): ProtocolConversionInfo {
+  const from = protocolEndpoint(inbound, stream)
+  const to = String(outbound ?? '').trim() ? protocolEndpoint(outbound, stream) : null
   if (!to) {
+    const outboundReason = (upstreamAttempts ?? 0) > 0 ? '出站协议未知' : '未发起上游请求'
     return {
       converted: false,
       inbound: from,
       outbound: null,
-      title: `入站协议：${from.label}（${from.apiFormat}）\n出站协议：未知（未发起上游请求）`,
+      title: `入站协议：${from.label}（${from.apiFormat}）\n出站协议：未知（${outboundReason}）`,
     }
   }
   if (from.value === to.value) {

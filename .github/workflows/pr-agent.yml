@@ -49,7 +49,9 @@ jobs:
     if: >-
       github.event_name == 'check_run' &&
       github.event.check_run.app.slug == 'coderabbitai' &&
-      github.event.check_run.conclusion == 'success'
+      github.event.check_run.conclusion == 'success' &&
+      !contains(github.event.check_run.output.title, 'rate limited') &&
+      !contains(github.event.check_run.output.summary, 'Rate limited')
     runs-on: ubuntu-latest
     steps:
       - name: Mark Gate as Success by CodeRabbit
@@ -70,17 +72,26 @@ jobs:
     if: >-
       github.event_name == 'check_run' &&
       github.event.check_run.app.slug == 'coderabbitai' &&
-      github.event.check_run.conclusion == 'skipped' &&
-      github.event.check_run.pull_requests[0].number != null
+      github.event.check_run.conclusion == 'skipped'
     runs-on: ubuntu-latest
     steps:
       - name: Invite CodeRabbit to review once per head SHA
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.check_run.pull_requests[0].number }}
+          CHECK_PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
           HEAD_SHA: ${{ github.event.check_run.head_sha }}
         run: |
+          PR_NUMBER=""
+          if [ -n "$CHECK_PR_URL" ] && [ "$CHECK_PR_URL" != "null" ]; then
+            PR_NUMBER="${CHECK_PR_URL##*/}"
+          else
+            PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number // empty')
+          fi
+          if [ -z "$PR_NUMBER" ]; then
+            echo "未找到对应的 PR，跳过。"
+            exit 0
+          fi
           STARS=$(gh api "repos/${REPO}" -q .stargazers_count)
           if [ "${STARS}" -ge 10 ]; then
             echo "仓库已有 ${STARS} stars，CodeRabbit 后续会自动审查，无需邀请。"
@@ -113,7 +124,11 @@ jobs:
       (
         github.event_name == 'check_run' &&
         github.event.check_run.app.slug == 'coderabbitai' &&
-        github.event.check_run.conclusion != 'success'
+        (
+          github.event.check_run.conclusion != 'success' ||
+          contains(github.event.check_run.output.title, 'rate limited') ||
+          contains(github.event.check_run.output.summary, 'Rate limited')
+        )
       )
     runs-on: ubuntu-latest
     steps:
@@ -152,7 +167,14 @@ jobs:
             HEAD_SHA=$(gh api "$COMMENT_PR_URL" -q .head.sha)
           elif [ "$EVENT_NAME" = "check_run" ]; then
             HEAD_SHA="$CHECK_HEAD_SHA"
-            PR_NUMBER="${CHECK_PR_URL##*/}"
+            if [ -n "$CHECK_PR_URL" ] && [ "$CHECK_PR_URL" != "null" ]; then
+              PR_NUMBER="${CHECK_PR_URL##*/}"
+            else
+              PR_NUMBER=$(gh api "repos/${REPO}/commits/${CHECK_HEAD_SHA}/pulls" -q '.[0].number // empty')
+              if [ -n "$PR_NUMBER" ]; then
+                CHECK_PR_URL="https://api.github.com/repos/${REPO}/pulls/${PR_NUMBER}"
+              fi
+            fi
             HTML_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
             jq -n \
               --arg url "$CHECK_PR_URL" \
@@ -189,14 +211,23 @@ jobs:
 
       # 如果是通过 CodeRabbit 未成功审查的 Check 触发的，在 PR 留一条友好提示
       - name: Notify fallback to PR Agent
-        if: github.event_name == 'check_run' && github.event.check_run.pull_requests[0].number != null
+        if: github.event_name == 'check_run'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.check_run.pull_requests[0].number }}
+          CHECK_PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
+          CHECK_HEAD_SHA: ${{ github.event.check_run.head_sha }}
         run: |
-          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-            -f body="> 💡 **提示**：检测到 CodeRabbit 未完成审查（跳过或超额），已自动无缝切换至 **PR-Agent（模型：${DISPLAY_MODEL}）** 进行代码审查与改进建议。" || true
+          PR_NUMBER=""
+          if [ -n "$CHECK_PR_URL" ] && [ "$CHECK_PR_URL" != "null" ]; then
+            PR_NUMBER="${CHECK_PR_URL##*/}"
+          else
+            PR_NUMBER=$(gh api "repos/${REPO}/commits/${CHECK_HEAD_SHA}/pulls" -q '.[0].number // empty')
+          fi
+          if [ -n "$PR_NUMBER" ]; then
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              -f body="> 💡 **提示**：检测到 CodeRabbit 未完成审查（跳过或超额），已自动无缝切换至 **PR-Agent（模型：${DISPLAY_MODEL}）** 进行代码审查与改进建议。" || true
+          fi
 
       - name: Run PR Agent with LLM Gateway
         id: run_pr_agent

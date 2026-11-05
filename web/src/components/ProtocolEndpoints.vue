@@ -7,15 +7,19 @@ const props = withDefaults(
   defineProps<{
     inbound: string
     outbound?: string | null
+    stream?: boolean | null
+    upstreamAttempts?: number | null
     size?: number
   }>(),
   {
     outbound: null,
+    stream: null,
+    upstreamAttempts: null,
     size: 16,
   },
 )
 
-const info = computed(() => protocolConversion(props.inbound, props.outbound))
+const info = computed(() => protocolConversion(props.inbound, props.outbound, props.stream, props.upstreamAttempts))
 </script>
 
 <template>

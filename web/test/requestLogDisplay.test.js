@@ -53,6 +53,8 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     assert.equal(protocolEndpoint('messages').endpointPath, '/v1/messages')
     assert.equal(protocolEndpoint('gemini').apiFormat, 'gemini/contents')
     assert.equal(protocolEndpoint('gemini').endpointPath, '/v1beta/models/{model}:generateContent')
+    assert.equal(protocolEndpoint('gemini', false).endpointPath, '/v1beta/models/{model}:generateContent')
+    assert.equal(protocolEndpoint('gemini', true).endpointPath, '/v1beta/models/{model}:streamGenerateContent?alt=sse')
     assert.equal(protocolEndpoint('custom_protocol').known, false)
     assert.equal(protocolEndpoint('custom_protocol').apiFormat, 'custom_protocol')
     assert.equal(protocolEndpoint(null).known, false)
@@ -74,6 +76,11 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     assert.equal(unknown.converted, false)
     assert.equal(unknown.outbound, null)
     assert.match(unknown.title, /出站协议：未知（未发起上游请求）/)
+
+    const unknownWithAttempts = protocolConversion('messages', null, false, 2)
+    assert.equal(unknownWithAttempts.converted, false)
+    assert.equal(unknownWithAttempts.outbound, null)
+    assert.match(unknownWithAttempts.title, /出站协议：未知（出站协议未知）/)
   })
 
   it('比较最终路由上游自报模型，兼容缺少自报值的历史尝试', () => {
