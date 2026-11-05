@@ -1,0 +1,146 @@
+name: PR Agent (Fallback for CodeRabbit)
+
+'on':
+  # 场景 1：当 Check Run 完成时检查（核心自动兜底：CodeRabbit 超额时自动接管）
+  check_run:
+    types: [completed]
+
+  # 场景 2：开发者在评论区主动使用指令（如 /review, /improve, /ask）
+  issue_comment:
+    types: [created]
+
+  # 场景 3：手动在 GitHub 页面点击 Run workflow 触发验证
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull Request 编号（如 74、75，用于手动指定测试目标）'
+        required: true
+        type: string
+
+jobs:
+  pr_agent_fallback:
+    # 触发条件：
+    # A. 页面手动触发 workflow_dispatch
+    # B. 评论区有人发指令（且不是机器人发的）
+    # C. CodeRabbit 的 Check Run 结束且结论为 neutral/超额受限
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.sender.type != 'Bot' &&
+        github.event.issue.pull_request != null &&
+        startsWith(github.event.comment.body, '/')
+      ) ||
+      (
+        github.event_name == 'check_run' &&
+        github.event.check_run.app.slug == 'coderabbitai' &&
+        (
+          github.event.check_run.conclusion == 'neutral' ||
+          contains(github.event.check_run.output.title, 'rate limited') ||
+          contains(github.event.check_run.output.summary, 'Rate limited')
+        )
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 解析模型名称：复用 GitHub Variables 中配置的 LLM_GATEWAY_REVIEW_MODEL
+      - name: Resolve Model Configuration
+        id: model_setup
+        run: |
+          RAW_MODEL="${{ vars.LLM_GATEWAY_REVIEW_MODEL || 'deepseek-chat' }}"
+          # 若配置的模型名未包含前缀（如 deepseek-chat, gpt-4o），补充 openai/ 前缀以确保 LiteLLM 正确路由至网关的 OpenAI 兼容端点
+          if [[ "$RAW_MODEL" != *"/"* ]]; then
+            RESOLVED_MODEL="openai/$RAW_MODEL"
+          else
+            RESOLVED_MODEL="$RAW_MODEL"
+          fi
+          {
+            echo "RESOLVED_MODEL=$RESOLVED_MODEL"
+            echo "DISPLAY_MODEL=$RAW_MODEL"
+          } >> "$GITHUB_ENV"
+
+      # 规范化 PR 上下文：PR-Agent Action 原生要求 issue_comment 或 pull_request 事件结构
+      # 在 check_run / workflow_dispatch 触发时构造标准 issue_comment 上下文，确保顺利执行
+      - name: Prepare PR Event Context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CHECK_PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
+          DISPATCH_PR: ${{ inputs.pr_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT_NAME" != "issue_comment" ]; then
+            TARGET_PR_URL="$CHECK_PR_URL"
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              TARGET_PR_URL="https://api.github.com/repos/${REPO}/pulls/${DISPATCH_PR}"
+            fi
+
+            MOCK_EVENT_PATH="${RUNNER_TEMP}/pr_agent_event.json"
+            cat <<EOF > "$MOCK_EVENT_PATH"
+          {
+            "action": "created",
+            "issue": {
+              "pull_request": {
+                "url": "$TARGET_PR_URL"
+              }
+            },
+            "comment": {
+              "id": 1,
+              "body": "/review"
+            },
+            "sender": {
+              "type": "User"
+            }
+          }
+          EOF
+            {
+              echo "GITHUB_EVENT_NAME=issue_comment"
+              echo "GITHUB_EVENT_PATH=$MOCK_EVENT_PATH"
+              echo "TARGET_PR_URL=$TARGET_PR_URL"
+            } >> "$GITHUB_ENV"
+          fi
+
+      # 如果是通过 CodeRabbit 超额 Check 触发的，在 PR 留一条友好提示
+      - name: Notify fallback to PR Agent
+        if: github.event_name == 'check_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
+        run: |
+          if [ -n "$PR_URL" ]; then
+            gh api "$PR_URL/comments" -f body="> 💡 **提示**：检测到 CodeRabbit 达到每小时配额上限，已自动无缝切换至 **PR-Agent（模型：${DISPLAY_MODEL}）** 进行代码审查与改进建议。" || true
+          fi
+
+      - name: Run PR Agent with LLM Gateway
+        uses: qodo-ai/pr-agent@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # 复用仓库已有的网关配置
+          # Secret: LLM_GATEWAY_KEY
+          # Variable: LLM_GATEWAY_BASE_URL
+          OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
+          OPENAI.KEY: ${{ secrets.LLM_GATEWAY_KEY }}
+          OPENAI.API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          OPENAI__API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          OPENAI_API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+
+          # 动态加载解析后的模型名称
+          CONFIG.MODEL: ${{ env.RESOLVED_MODEL }}
+          CONFIG.FALLBACK_MODELS: "['${{ env.RESOLVED_MODEL }}']"
+
+          # 自动执行的指令列表：超额接管时自动执行 describe 与 review
+          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
+          GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
+          GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"
+
+          # 中文支持与审查重点
+          PR_REVIEWER.EXTRA_INSTRUCTIONS: "Please write the entire review, summaries, explanations, and advice in Simplified Chinese (简体中文). Pay special attention to security, boundary conditions, and test coverage."
+          PR_CODE_SUGGESTIONS.EXTRA_INSTRUCTIONS: "Please write all suggestions and explanations in Simplified Chinese (简体中文)."
+          PR_DESCRIPTION.EXTRA_INSTRUCTIONS: "Please write the PR description and summary in Simplified Chinese (简体中文)."
