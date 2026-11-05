@@ -4,6 +4,7 @@ import {
   attemptFailureReason,
   attemptHasError,
   attemptResultLabel,
+  effectiveProtocolEndpoint,
   protocolConversion,
   protocolEndpoint,
   protocolLabel,
@@ -95,6 +96,21 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     assert.equal(bothMissing.outbound, null)
     assert.match(bothMissing.title, /入站协议：未知/)
     assert.match(bothMissing.title, /出站协议：未知（未发起上游请求）/)
+  })
+
+  it('有效端点在入站缺失时回退到出站已知端点', () => {
+    const missingInbound = protocolConversion(null, 'responses')
+    const endpoint = effectiveProtocolEndpoint(missingInbound)
+    assert.equal(endpoint.value, 'responses')
+    assert.equal(endpoint.shortName, 'Responses')
+    assert.equal(endpoint.known, true)
+
+    const normal = protocolConversion('chat_completions', 'gemini')
+    assert.equal(effectiveProtocolEndpoint(normal).value, 'chat_completions')
+
+    const bothEmpty = protocolConversion(null, null)
+    assert.equal(effectiveProtocolEndpoint(bothEmpty).value, '')
+    assert.equal(effectiveProtocolEndpoint(bothEmpty).known, false)
   })
 
   it('比较最终路由上游自报模型，兼容缺少自报值的历史尝试', () => {

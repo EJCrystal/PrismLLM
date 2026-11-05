@@ -104,6 +104,13 @@ export interface ProtocolConversionInfo {
   title: string
 }
 
+export function effectiveProtocolEndpoint(info: ProtocolConversionInfo): ProtocolEndpointInfo {
+  if (!info.inbound.value && info.outbound) {
+    return info.outbound
+  }
+  return info.inbound
+}
+
 export function protocolConversion(
   inbound: string | null | undefined,
   outbound: string | null | undefined,

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { protocolConversion } from '../utils/requestLogDisplay'
+import { protocolConversion, effectiveProtocolEndpoint } from '../utils/requestLogDisplay'
 import ProtocolIcon from './ProtocolIcon.vue'
 
 const props = withDefaults(
@@ -20,6 +20,7 @@ const props = withDefaults(
 )
 
 const info = computed(() => protocolConversion(props.inbound, props.outbound, props.stream, props.upstreamAttempts))
+const displayEndpoint = computed(() => effectiveProtocolEndpoint(info.value))
 </script>
 
 <template>
@@ -48,7 +49,7 @@ const info = computed(() => protocolConversion(props.inbound, props.outbound, pr
     </span>
   </span>
 
-  <!-- 未发生转换（透传 / 无请求）：极简展示单协议徽标，删减重复噪音 -->
+  <!-- 未发生转换（透传 / 无请求 / 仅出站已知）：展示单协议徽标，删减重复噪音 -->
   <span
     v-else
     class="protocol-endpoints"
@@ -57,9 +58,9 @@ const info = computed(() => protocolConversion(props.inbound, props.outbound, pr
     :title="info.title"
   >
     <span class="protocol-endpoint">
-      <ProtocolIcon v-if="info.inbound.known" :protocol="info.inbound.value" :size="size" />
+      <ProtocolIcon v-if="displayEndpoint.known" :protocol="displayEndpoint.value" :size="size" />
       <span v-else class="protocol-endpoint-unknown" aria-hidden="true">?</span>
-      <span class="protocol-endpoint-name">{{ info.inbound.shortName }}</span>
+      <span class="protocol-endpoint-name">{{ displayEndpoint.shortName }}</span>
     </span>
   </span>
 </template>

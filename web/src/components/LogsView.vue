@@ -606,11 +606,21 @@ onMounted(load)
                   </span>
                 </template>
                 <template v-else>
-                  <div class="detail-protocol-header" :title="selectedInboundEndpoint.endpointPath || selectedInboundEndpoint.label">
-                    <ProtocolIcon v-if="selectedInboundEndpoint.known" :protocol="selectedInboundEndpoint.value" :size="16" />
-                    <strong>{{ selectedInboundEndpoint.label }}</strong>
-                    <span v-if="!selectedConversion.outbound" class="badge neutral small">{{ (selected.upstreamAttempts ?? 0) > 0 ? '出站协议未知' : '未发起上游请求' }}</span>
+                  <div class="detail-protocol-header" :title="selectedConversion.title">
+                    <template v-if="!selectedInboundEndpoint.value && selectedOutboundEndpoint">
+                      <ProtocolIcon v-if="selectedOutboundEndpoint.known" :protocol="selectedOutboundEndpoint.value" :size="16" />
+                      <strong>{{ selectedOutboundEndpoint.label }}</strong>
+                      <span class="badge neutral small">出站协议</span>
+                    </template>
+                    <template v-else>
+                      <ProtocolIcon v-if="selectedInboundEndpoint.known" :protocol="selectedInboundEndpoint.value" :size="16" />
+                      <strong>{{ selectedInboundEndpoint.label }}</strong>
+                      <span v-if="!selectedConversion.outbound" class="badge neutral small">{{ (selected.upstreamAttempts ?? 0) > 0 ? '出站协议未知' : '未发起上游请求' }}</span>
+                    </template>
                   </div>
+                  <span v-if="!selectedInboundEndpoint.value && selectedOutboundEndpoint?.endpointPath" class="mono muted small detail-endpoint">
+                    {{ selectedOutboundEndpoint.endpointPath }}
+                  </span>
                 </template>
               </div>
               <div class="detail-item">
