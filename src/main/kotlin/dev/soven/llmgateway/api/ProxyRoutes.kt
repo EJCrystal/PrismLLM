@@ -87,6 +87,7 @@ import java.util.UUID
 import org.slf4j.LoggerFactory
 
 private val proxyLogger = LoggerFactory.getLogger("dev.soven.llmgateway.api.ProxyRoutes")
+private val USER_AGENT_WHITESPACE = Regex("[\\r\\n\\t]+")
 
 /**
  * 原生协议数据面。负责调用方鉴权、别名路由、流式透传和请求日志。
@@ -168,6 +169,14 @@ private suspend fun handleProxy(
     val traceContext = TraceContextFactory.fromHeaderOrCreate(call.request.headers["traceparent"])
     call.response.header("traceparent", traceContext.traceparent)
     call.response.header("X-Trace-Id", traceContext.traceId)
+    // 在任何提前抛出的错误前捕获来源信息，保证失败请求的日志同样带 IP 与 User-Agent。
+    val clientAccess = requestAccessLogMetadata(call, app.config.trustedProxyNetworks)
+    // 复用访问日志的 IP 解析（信任代理、XFF 反向遍历）；UA 单独清洗，避免日志转义把空格变成 %20。
+    val clientUserAgent = call.request.headers[HttpHeaders.UserAgent]
+        ?.replace(USER_AGENT_WHITESPACE, " ")
+        ?.trim()
+        ?.take(300)
+        ?.takeUnless { it.isEmpty() }
 
     val requestId = call.request.headers["X-Request-Id"]
         ?.take(64)
@@ -739,6 +748,8 @@ private suspend fun handleProxy(
                 traceId = traceContext.traceId,
                 clientKeyId = clientKey?.id,
                 clientKeyName = clientKey?.name,
+                clientIp = clientAccess.clientIp.takeUnless { it == "-" }?.take(64),
+                clientUserAgent = clientUserAgent,
                 alias = alias,
                 channelId = channelId,
                 channelName = channelName,

@@ -133,7 +133,7 @@ internal fun requestAccessLogMetadata(
     )
 }
 
-private fun requestAccessLogMetadata(
+internal fun requestAccessLogMetadata(
     call: io.ktor.server.application.ApplicationCall,
     trustedProxyNetworks: List<TrustedProxyNetwork>,
 ): RequestAccessLogMetadata =

@@ -38,6 +38,17 @@ describe('requestLogSearch: 请求日志当前页搜索', () => {
     assert.equal(filterRequestLogs(logs, 'model_not_found').length, 1)
   })
 
+  it('可以按来源 IP 和 User-Agent 搜索', () => {
+    const rows = [
+      { requestId: 'req-a', clientIp: '203.0.113.7', clientUserAgent: 'curl/8.5.0' },
+      { requestId: 'req-b', clientIp: '198.51.100.2', clientUserAgent: 'python-httpx/0.27' },
+      { requestId: 'req-c', clientIp: null, clientUserAgent: null },
+    ]
+    assert.deepEqual(filterRequestLogs(rows, '203.0.113.7').map((log) => log.requestId), ['req-a'])
+    assert.deepEqual(filterRequestLogs(rows, 'httpx').map((log) => log.requestId), ['req-b'])
+    assert.equal(filterRequestLogs(rows, 'no-match-ip').length, 0)
+  })
+
   it('空搜索返回全部当前已加载记录', () => {
     assert.equal(filterRequestLogs(logs, '  '), logs)
   })

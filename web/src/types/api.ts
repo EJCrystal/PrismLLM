@@ -459,6 +459,8 @@ export interface RequestLog {
   traceId: string | null
   clientKeyId: string | null
   clientKeyName: string | null
+  clientIp: string | null
+  clientUserAgent: string | null
   alias: string
   channelId: string | null
   channelName: string | null

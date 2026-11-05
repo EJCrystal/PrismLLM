@@ -87,6 +87,8 @@ class RequestLogRepository(private val database: Database) {
             it[traceId] = record.traceId
             it[clientKeyId] = record.clientKeyId
             it[clientKeyName] = record.clientKeyName
+            it[clientIp] = record.clientIp
+            it[clientUserAgent] = record.clientUserAgent
             it[alias] = record.alias
             it[channelId] = record.channelId
             it[channelName] = record.channelName
@@ -631,6 +633,8 @@ class RequestLogRepository(private val database: Database) {
         traceId = row[RequestLogs.traceId],
         clientKeyId = row[RequestLogs.clientKeyId],
         clientKeyName = row[RequestLogs.clientKeyName],
+        clientIp = row[RequestLogs.clientIp],
+        clientUserAgent = row[RequestLogs.clientUserAgent],
         alias = row[RequestLogs.alias],
         channelId = row[RequestLogs.channelId],
         channelName = row[RequestLogs.channelName],
