@@ -63,6 +63,43 @@ jobs:
             -f context="AI Review Gate" \
             -f description="CodeRabbit 审查通过" || true
 
+  # 2.5 CodeRabbit 因 star < 10 跳过审查时，自动帮它发一条 @coderabbitai review，
+  #     让它真正参与审查而不是被静默跳过；PR-Agent 兜底不受影响，两者互补。
+  #     同一 HEAD SHA 只邀请一次，连续 push 不会刷屏。
+  request_coderabbit_review:
+    if: >-
+      github.event_name == 'check_run' &&
+      github.event.check_run.app.slug == 'coderabbitai' &&
+      github.event.check_run.conclusion == 'skipped' &&
+      github.event.check_run.pull_requests[0].number != null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Invite CodeRabbit to review once per head SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.check_run.pull_requests[0].number }}
+          HEAD_SHA: ${{ github.event.check_run.head_sha }}
+        run: |
+          STARS=$(gh api "repos/${REPO}" -q .stargazers_count)
+          if [ "${STARS}" -ge 10 ]; then
+            echo "仓库已有 ${STARS} stars，CodeRabbit 后续会自动审查，无需邀请。"
+            exit 0
+          fi
+          MARKER="<!-- coderabbit-skip-invite:${HEAD_SHA} -->"
+          if gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+              -q "[.[] | select(.body | contains(\"${MARKER}\"))] | length" \
+              | grep -qv '^0$'; then
+            echo "该 HEAD SHA 已邀请过 CodeRabbit 审查，跳过。"
+            exit 0
+          fi
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            -f body="${MARKER}
+          > 💡 **提示**：当前仓库 star 数不足 10，CodeRabbit 已跳过自动审查，已自动发送 @coderabbitai review 邀请其参与本次审查。PR-Agent 兜底审查不受影响。" || true
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            -f body="@coderabbitai review" || true
+          sleep 30
+
   # 3. 核心审查与兜底 Job：CodeRabbit 超额、评论区 /review 指令或手动触发
   pr_agent_review:
     if: >-
