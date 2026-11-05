@@ -346,24 +346,34 @@ jobs:
             #   <!-- pr-agent-review-state:v1
             #   {"findings":[{"state":"ACTIVE",...}], ...}
             #   -->
-            # 里，其中 ACTIVE 表示仍未解决。只看本次运行之后写入的评论，避免历史 SHA
-            # 的旧意见永久卡住合并；persistent_comment 下 PR-Agent 是原地编辑同一条评论，
-            # created_at 不变、只有 updated_at 变，所以按 updated_at 取窗口。
+            # 里，其中 ACTIVE 表示仍未解决。判定规则：
+            # - 只统计 PR-Agent 自己的评论（作者过滤），否则公开仓库里任何人贴一段
+            #   伪造状态块就能卡住门禁
+            # - 只统计 last_seen_head_sha 等于当前 HEAD 的 finding。PR-Agent 会把历史
+            #   finding 一直留在列表里、只有再次命中时更新 last_seen_head_sha，按 HEAD
+            #   过滤才能让已修复的意见自动失效，而不是永久卡住合并
+            # - jq 的 "s" 只影响 ^/$ 锚定，跨行匹配必须用 "m"，这里用 "ms" 兼容两种语义
             # 解析失败按未通过处理（fail closed），不要静默放行。
-            START_ISO=$(date -u -d "@${START_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+            if ! COMMENTS_NDJSON=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]'); then
+              echo "::error::拉取 PR 评论失败，无法校验 PR-Agent 意见状态"
+              gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+                -f state="failure" \
+                -f context="AI Review Gate" \
+                -f description="拉取 PR 评论失败，无法校验审查意见" || true
+              exit 1
+            fi
             if ! ACTIVE_FINDINGS=$(
-              gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
-                | jq -s --arg since "${START_ISO}" '
-                    [ .[]
-                      | select((.updated_at // .created_at) >= $since)
-                      | select((.body // "") | contains("pr-agent-review-state:v1"))
-                      | .body
-                      | (capture("pr-agent-review-state:v1\\s*(?<state>\\{.*?\\})\\s*-->"; "s").state
-                         // error("unparsable pr-agent review state"))
-                      | fromjson
-                      | .findings[]?
-                      | select(.state == "ACTIVE")
-                    ] | length'
+              printf '%s\n' "${COMMENTS_NDJSON}" | jq -s --arg head "${HEAD_SHA}" '
+                  [ .[]
+                    | select((.user.login // "") | test("^(github-actions|pr-agent|qodo)"))
+                    | select((.body // "") | contains("pr-agent-review-state:v1"))
+                    | .body
+                    | (capture("pr-agent-review-state:v1\\s*(?<state>\\{.*?\\})\\s*-->"; "ms").state
+                       // error("unparsable pr-agent review state"))
+                    | fromjson
+                    | .findings[]?
+                    | select(.state == "ACTIVE" and (.last_seen_head_sha // "") == $head)
+                  ] | length'
             ); then
               echo "::error::无法解析 PR-Agent 审查状态，按未通过处理"
               gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
