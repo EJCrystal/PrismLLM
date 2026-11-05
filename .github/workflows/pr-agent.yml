@@ -136,6 +136,7 @@ jobs:
         uses: actions/checkout@v4
 
       # 解析模型名称：复用 GitHub Variables 中配置的 LLM_GATEWAY_REVIEW_MODEL
+      # 思考等级同理，由 LLM_GATEWAY_REVIEW_MODEL_REASONING_EFFORT 指定。
       - name: Resolve Model Configuration
         id: model_setup
         run: |
@@ -149,6 +150,23 @@ jobs:
             echo "RESOLVED_MODEL=$RESOLVED_MODEL"
             echo "DISPLAY_MODEL=$RAW_MODEL"
           } >> "$GITHUB_ENV"
+
+          # 思考等级：留空表示沿用 PR-Agent 默认（medium，且仅对 litellm 已知支持的模型生效）。
+          # 自定义 OpenAI 兼容端点（本仓库的 LLM Gateway）不在 litellm 元数据里，必须同时把
+          # 模型登记到 additional_reasoning_effort_models，否则 reasoning_effort 会被静默丢弃。
+          RAW_EFFORT="${{ vars.LLM_GATEWAY_REVIEW_MODEL_REASONING_EFFORT || '' }}"
+          if [ -n "$RAW_EFFORT" ]; then
+            case "$RAW_EFFORT" in
+              none|minimal|low|medium|high|xhigh|max)
+                echo "REVIEW_REASONING_EFFORT=$RAW_EFFORT" >> "$GITHUB_ENV"
+                echo "REVIEW_REASONING_MODELS=['$RAW_MODEL']" >> "$GITHUB_ENV"
+                echo "思考等级：$RAW_EFFORT（模型 $RAW_MODEL 已登记为支持该参数）"
+                ;;
+              *)
+                echo "::warning::LLM_GATEWAY_REVIEW_MODEL_REASONING_EFFORT 取值无效：$RAW_EFFORT，已忽略；可用值为 none/minimal/low/medium/high/xhigh/max"
+                ;;
+            esac
+          fi
 
       # 规范化 PR 上下文并获取 HEAD_SHA
       - name: Prepare PR Event Context
@@ -252,6 +270,10 @@ jobs:
           CONFIG.FALLBACK_MODELS: "['${{ env.RESOLVED_MODEL }}']"
           CONFIG.CUSTOM_MODEL_MAX_TOKENS: "128000"
           CONFIG.MAX_MODEL_TOKENS: "64000"
+          # 由 LLM_GATEWAY_REVIEW_MODEL_REASONING_EFFORT 决定；未配置时回落到 PR-Agent 默认值，
+          # 且 additional_reasoning_effort_models 为空，不会向上游发送 reasoning_effort。
+          CONFIG.REASONING_EFFORT: ${{ env.REVIEW_REASONING_EFFORT || 'medium' }}
+          CONFIG.ADDITIONAL_REASONING_EFFORT_MODELS: ${{ env.REVIEW_REASONING_MODELS || '[]' }}
           GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
           GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
           GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"
