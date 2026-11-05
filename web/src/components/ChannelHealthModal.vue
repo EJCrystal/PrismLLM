@@ -96,8 +96,8 @@ async function clearCooldown(scope: 'channel' | 'key' | 'candidate', keyId?: str
     emit('changed')
     await load()
   } catch (cause) {
+    hasUncertainCooldownClear.value = true
     if (controller.signal.aborted) {
-      hasUncertainCooldownClear.value = true
       error.value = '解除冷却请求超时，请刷新以确认冷却状态'
     } else {
       error.value = cause instanceof Error ? cause.message : '解除冷却失败，请重试'

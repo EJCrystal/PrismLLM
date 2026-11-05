@@ -127,6 +127,7 @@ let listRevision = 0
 let listDisposed = false
 const healthWindow = ref<HealthWindow>('24h')
 const healthReport = ref<ChannelHealthReport | null>(null)
+const healthSuccessRateCache = ref<{ window: HealthWindow; rates: Map<string, number | null> } | null>(null)
 const healthTarget = ref<Channel | null>(null)
 const healthLoading = ref(false)
 const healthError = ref('')
@@ -173,7 +174,11 @@ function channelHealthTitle(channel: Channel): string {
   return `${channel.name}：${row?.reason || (healthLoading.value ? '正在汇总' : '健康度未读取')}；点击查看成功率、延迟、密钥和模型明细`
 }
 function channelSuccessRateText(channel: Channel): string {
-  return channelHealthSuccessRateText(healthByChannel.value.get(channel.id), healthLoading.value, healthError.value)
+  const cachedRate = healthSuccessRateCache.value?.window === healthWindow.value
+    ? healthSuccessRateCache.value.rates.get(channel.id)
+    : undefined
+  const cachedRow = cachedRate === undefined ? undefined : { metrics: { successRate: cachedRate } }
+  return channelHealthSuccessRateText(healthByChannel.value.get(channel.id) ?? cachedRow, healthLoading.value, healthError.value)
 }
 function onCloseHealthModal(changed = false) {
   healthTarget.value = null
@@ -185,7 +190,13 @@ async function loadHealth() {
   healthError.value = ''
   try {
     const result = await api.getChannelHealth(healthWindow.value)
-    if (request === healthRevision) { healthReport.value = result; syncCooldownTimer() }
+    if (request === healthRevision) {
+      healthReport.value = result
+      const rates = new Map<string, number | null>()
+      for (const row of result.channels) rates.set(row.channelId, row.metrics.successRate)
+      healthSuccessRateCache.value = { window: result.window, rates }
+      syncCooldownTimer()
+    }
   } catch (cause) {
     if (request === healthRevision) { healthReport.value = null; syncCooldownTimer(); healthError.value = errorMessage(cause) }
   } finally { if (request === healthRevision) healthLoading.value = false }
