@@ -214,8 +214,18 @@ jobs:
       # 思考等级同理，由 LLM_GATEWAY_REVIEW_MODEL_REASONING_EFFORT 指定。
       - name: Resolve Model Configuration
         id: model_setup
+        env:
+          # 通过 env 传入仓库变量，避免表达式直接插入 shell 脚本造成命令注入。
+          MODEL_INPUT: ${{ vars.LLM_GATEWAY_REVIEW_MODEL }}
+          EFFORT_INPUT: ${{ vars.LLM_GATEWAY_REVIEW_MODEL_REASONING_EFFORT }}
         run: |
-          RAW_MODEL="${{ vars.LLM_GATEWAY_REVIEW_MODEL || 'deepseek-chat' }}"
+          set -euo pipefail
+          RAW_MODEL="${MODEL_INPUT:-deepseek-chat}"
+          # 模型名会写入 GITHUB_ENV 和 JSON，先限制字符集，避免引号或换行破坏配置。
+          if ! [[ "$RAW_MODEL" =~ ^[A-Za-z0-9._:/@+-]+$ ]]; then
+            echo "::error::LLM_GATEWAY_REVIEW_MODEL 含非法字符：$RAW_MODEL"
+            exit 1
+          fi
           if [[ "$RAW_MODEL" != *"/"* ]]; then
             RESOLVED_MODEL="openai/$RAW_MODEL"
           else
@@ -229,12 +239,13 @@ jobs:
           # 思考等级：留空表示沿用 PR-Agent 默认（medium，且仅对 litellm 已知支持的模型生效）。
           # 自定义 OpenAI 兼容端点（本仓库的 LLM Gateway）不在 litellm 元数据里，必须同时把
           # 模型登记到 additional_reasoning_effort_models，否则 reasoning_effort 会被静默丢弃。
-          RAW_EFFORT="${{ vars.LLM_GATEWAY_REVIEW_MODEL_REASONING_EFFORT || '' }}"
+          RAW_EFFORT="${EFFORT_INPUT:-}"
           if [ -n "$RAW_EFFORT" ]; then
             case "$RAW_EFFORT" in
               none|minimal|low|medium|high|xhigh|max)
                 echo "REVIEW_REASONING_EFFORT=$RAW_EFFORT" >> "$GITHUB_ENV"
-                echo "REVIEW_REASONING_MODELS=['$RAW_MODEL']" >> "$GITHUB_ENV"
+                # 用 jq 构造 JSON 数组，模型名中的引号/换行会被正确转义。
+                echo "REVIEW_REASONING_MODELS=$(jq -cn --arg model "$RAW_MODEL" '[$model]')" >> "$GITHUB_ENV"
                 echo "思考等级：$RAW_EFFORT（模型 $RAW_MODEL 已登记为支持该参数）"
                 ;;
               *)
