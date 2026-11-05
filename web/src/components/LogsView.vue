@@ -8,6 +8,8 @@ import CopyButton from './CopyButton.vue'
 import CursorLoadMore from './CursorLoadMore.vue'
 import Icon from './Icon.vue'
 import InfoPopover from './InfoPopover.vue'
+import ProtocolEndpoints from './ProtocolEndpoints.vue'
+import ProtocolIcon from './ProtocolIcon.vue'
 import { vScrollHint } from '../directives/scrollHint'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
@@ -20,6 +22,8 @@ import {
   attemptFailureReason,
   attemptHasError,
   attemptResultLabel,
+  protocolConversion,
+  protocolEndpoint,
   protocolLabel,
   reasoningEffortClass,
   reasoningEffortLabel,
@@ -72,18 +76,20 @@ function clearFilters() {
   modelFilter.value = ''
   statusFilter.value = ''
 }
-type LogColumnId = 'time' | 'request' | 'model' | 'channel' | 'status' | 'latency' | 'usage' | 'cost'
+type LogColumnId = 'time' | 'request' | 'model' | 'channel' | 'clientIp' | 'clientUa' | 'status' | 'latency' | 'usage' | 'cost'
 const logColumns: Array<{ id: LogColumnId; label: string }> = [
   { id: 'time', label: '时间' },
   { id: 'request', label: '请求 ID' },
   { id: 'model', label: '请求模型' },
   { id: 'channel', label: '渠道与上游模型' },
+  { id: 'clientIp', label: '来源 IP' },
+  { id: 'clientUa', label: 'User-Agent' },
   { id: 'status', label: '状态与错误' },
   { id: 'latency', label: '耗时' },
   { id: 'usage', label: 'Token 用量' },
   { id: 'cost', label: '费用' },
 ]
-const defaultLogColumns: Record<LogColumnId, boolean> = { time: true, request: true, model: true, channel: true, status: true, latency: true, usage: true, cost: true }
+const defaultLogColumns: Record<LogColumnId, boolean> = { time: true, request: true, model: true, channel: true, clientIp: false, clientUa: false, status: true, latency: true, usage: true, cost: true }
 function readLogColumns(): Record<LogColumnId, boolean> {
   try {
     const raw = localStorage.getItem('prism-llm.logs.columns') ?? localStorage.getItem('llm-gateway.logs.columns')
@@ -128,6 +134,23 @@ function attemptProtocolLabel(attempt: RequestLogAttempt, log: RequestLog): stri
   // 出站协议缺失时保持未知，不要把入站协议当成出站协议展示。
   return protocolLabel(attempt.upstreamProtocol || log.upstreamProtocol)
 }
+
+const selectedConversion = computed(() =>
+  protocolConversion(
+    selected.value?.protocol,
+    selected.value?.upstreamProtocol,
+    selected.value?.stream,
+    selected.value?.upstreamAttempts,
+  ),
+)
+const selectedInboundEndpoint = computed(() =>
+  protocolEndpoint(selected.value?.protocol, selected.value?.stream),
+)
+const selectedOutboundEndpoint = computed(() =>
+  selected.value?.upstreamProtocol
+    ? protocolEndpoint(selected.value.upstreamProtocol, selected.value?.stream)
+    : null,
+)
 
 function attemptStatusClass(attempt: RequestLogAttempt): string {
   if (attempt.skipped) return 'neutral'
@@ -405,6 +428,8 @@ onMounted(load)
               <th v-if="logColumnVisible('request')" class="log-col-request">请求 ID</th>
               <th v-if="logColumnVisible('model')" class="log-col-model">请求模型 / 协议 / 模式</th>
               <th v-if="logColumnVisible('channel')" class="log-col-channel">渠道 / 上游模型</th>
+              <th v-if="logColumnVisible('clientIp')" class="log-col-client-ip">来源 IP</th>
+              <th v-if="logColumnVisible('clientUa')" class="log-col-client-ua">User-Agent</th>
               <th v-if="logColumnVisible('status')" class="log-col-status">状态 / 错误</th>
               <th v-if="logColumnVisible('latency')" class="log-col-latency">首 token / 总耗时</th>
               <th v-if="logColumnVisible('usage')" class="log-col-usage">Token 用量</th>
@@ -425,8 +450,12 @@ onMounted(load)
                 <div class="stacked-cell">
                   <span class="badge info">{{ log.alias }}</span>
                   <div class="request-meta">
-                    <span class="muted small">入站 {{ protocolLabel(log.protocol) }}</span>
-                    <span class="muted small">出站 {{ protocolLabel(log.upstreamProtocol) }}</span>
+                    <ProtocolEndpoints
+                      :inbound="log.protocol"
+                      :outbound="log.upstreamProtocol"
+                      :stream="log.stream"
+                      :upstream-attempts="log.upstreamAttempts"
+                    />
                     <span class="mode-badge" :class="`mode-${requestModeClass(log.stream)}`">{{ requestModeLabel(log.stream) }}</span>
                     <span class="reasoning-badge" :class="reasoningEffortClass(log.reasoningEffort)">
                       推理 {{ reasoningEffortLabel(log.reasoningEffort) }}
@@ -450,6 +479,13 @@ onMounted(load)
                   </InfoPopover>
                 </div>
                 <span v-if="log.upstreamAttempts != null && log.upstreamAttempts > 1" class="badge warning">尝试 {{ log.upstreamAttempts }} 次</span>
+              </td>
+              <td v-if="logColumnVisible('clientIp')" class="log-col-client-ip">
+                <div class="mono small client-ip-line" :title="log.clientIp || '未记录 IP'">{{ log.clientIp || '—' }}</div>
+              </td>
+              <td v-if="logColumnVisible('clientUa')" class="log-col-client-ua">
+                <div v-if="log.clientUserAgent" class="muted small client-ua-line" :title="log.clientUserAgent">{{ log.clientUserAgent }}</div>
+                <div v-else class="muted small">—</div>
               </td>
               <td v-if="logColumnVisible('status')" class="log-col-status">
                 <div class="stacked-cell">
@@ -550,13 +586,42 @@ onMounted(load)
                 <span>状态</span>
                 <strong><span class="badge" :class="statusClass(selected.statusCode)">{{ selected.statusCode }}</span></strong>
               </div>
-              <div class="detail-item">
-                <span>入站协议</span>
-                <strong>{{ protocolLabel(selected.protocol) }}</strong>
-              </div>
-              <div class="detail-item">
-                <span>出站协议</span>
-                <strong>{{ protocolLabel(selected.upstreamProtocol) }}</strong>
+              <div class="detail-item detail-protocol-item">
+                <span>协议</span>
+                <template v-if="selectedConversion.converted">
+                  <div class="detail-protocol-flow" :title="selectedConversion.title">
+                    <span class="detail-protocol-node">
+                      <ProtocolIcon v-if="selectedInboundEndpoint.known" :protocol="selectedInboundEndpoint.value" :size="14" />
+                      <strong>{{ selectedInboundEndpoint.shortName }}</strong>
+                    </span>
+                    <span class="detail-protocol-arrow" aria-hidden="true">→</span>
+                    <span class="detail-protocol-node">
+                      <ProtocolIcon v-if="selectedOutboundEndpoint?.known" :protocol="selectedOutboundEndpoint.value" :size="14" />
+                      <strong>{{ selectedOutboundEndpoint?.shortName }}</strong>
+                    </span>
+                    <span class="badge warning small">已转换</span>
+                  </div>
+                  <span class="mono muted small detail-endpoint">
+                    {{ selectedInboundEndpoint.endpointPath || '—' }} → {{ selectedOutboundEndpoint?.endpointPath || '—' }}
+                  </span>
+                </template>
+                <template v-else>
+                  <div class="detail-protocol-header" :title="selectedConversion.title">
+                    <template v-if="!selectedInboundEndpoint.value && selectedOutboundEndpoint">
+                      <ProtocolIcon v-if="selectedOutboundEndpoint.known" :protocol="selectedOutboundEndpoint.value" :size="16" />
+                      <strong>{{ selectedOutboundEndpoint.label }}</strong>
+                      <span class="badge neutral small">出站协议</span>
+                    </template>
+                    <template v-else>
+                      <ProtocolIcon v-if="selectedInboundEndpoint.known" :protocol="selectedInboundEndpoint.value" :size="16" />
+                      <strong>{{ selectedInboundEndpoint.label }}</strong>
+                      <span v-if="!selectedConversion.outbound" class="badge neutral small">{{ (selected.upstreamAttempts ?? 0) > 0 ? '出站协议未知' : '未发起上游请求' }}</span>
+                    </template>
+                  </div>
+                  <span v-if="!selectedInboundEndpoint.value && selectedOutboundEndpoint?.endpointPath" class="mono muted small detail-endpoint">
+                    {{ selectedOutboundEndpoint.endpointPath }}
+                  </span>
+                </template>
               </div>
               <div class="detail-item">
                 <span>模式</span>
@@ -612,6 +677,16 @@ onMounted(load)
                   <strong class="mono detail-wrap">{{ selected.clientKeyId }}</strong>
                   <CopyButton :text="selected.clientKeyId" title="复制调用方密钥 ID" :size="13" />
                 </div>
+                <strong v-else class="muted">—</strong>
+              </div>
+              <div class="detail-item">
+                <span>来源 IP</span>
+                <strong v-if="selected.clientIp" class="mono detail-wrap" :title="selected.clientIp">{{ selected.clientIp }}</strong>
+                <strong v-else class="muted">—</strong>
+              </div>
+              <div class="detail-item">
+                <span>User-Agent</span>
+                <strong v-if="selected.clientUserAgent" class="mono detail-wrap" :title="selected.clientUserAgent">{{ selected.clientUserAgent }}</strong>
                 <strong v-else class="muted">—</strong>
               </div>
               <div class="detail-item">

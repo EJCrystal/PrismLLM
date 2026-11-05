@@ -5957,7 +5957,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("47", result.getString(1))
+                        assertEquals("48", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())

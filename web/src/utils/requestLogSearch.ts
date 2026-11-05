@@ -15,6 +15,8 @@ const SEARCH_FIELDS = [
   'upstreamErrorCode',
   'reasoningEffort',
   'clientKeyName',
+  'clientIp',
+  'clientUserAgent',
 ] as const
 
 export type SearchableLog = Partial<Record<typeof SEARCH_FIELDS[number], unknown>>
