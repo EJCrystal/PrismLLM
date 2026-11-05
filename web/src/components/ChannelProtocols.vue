@@ -18,7 +18,7 @@ const slots = computed(() => channelProtocolSlots(props.protocols))
 </script>
 
 <template>
-  <div class="channel-protocol-matrix" role="group" aria-label="渠道支持协议及优先级">
+  <div class="channel-protocol-matrix" role="group" aria-label="渠道支持协议及转换优先级">
     <div
       v-for="slot in slots"
       :key="slot.protocol"

@@ -274,7 +274,7 @@ describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
       assert.equal(slots[0].protocol, 'chat_completions')
       assert.equal(slots[0].enabled, true)
       assert.equal(slots[0].priority, 2)
-      assert.equal(slots[0].title, 'OpenAI Chat Completions · 优先级 2')
+      assert.equal(slots[0].title, 'OpenAI Chat Completions · 转换优先级 2（同协议优先）')
 
       // slot 1: responses (未配置)
       assert.equal(slots[1].protocol, 'responses')
@@ -286,7 +286,7 @@ describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
       assert.equal(slots[2].protocol, 'messages')
       assert.equal(slots[2].enabled, true)
       assert.equal(slots[2].priority, 1)
-      assert.equal(slots[2].title, 'Anthropic Messages · 优先级 1')
+      assert.equal(slots[2].title, 'Anthropic Messages · 转换优先级 1（同协议优先）')
 
       // slot 3: gemini (未配置)
       assert.equal(slots[3].protocol, 'gemini')
@@ -306,10 +306,10 @@ describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
         slots.map((s) => s.priority),
         [4, 3, 2, 1],
       )
-      assert.equal(slots[0].title, 'OpenAI Chat Completions · 优先级 4')
-      assert.equal(slots[1].title, 'OpenAI Responses · 优先级 3')
-      assert.equal(slots[2].title, 'Anthropic Messages · 优先级 2')
-      assert.equal(slots[3].title, 'Google Gemini · 优先级 1')
+      assert.equal(slots[0].title, 'OpenAI Chat Completions · 转换优先级 4（同协议优先）')
+      assert.equal(slots[1].title, 'OpenAI Responses · 转换优先级 3（同协议优先）')
+      assert.equal(slots[2].title, 'Anthropic Messages · 转换优先级 2（同协议优先）')
+      assert.equal(slots[3].title, 'Google Gemini · 转换优先级 1（同协议优先）')
     })
   })
 })

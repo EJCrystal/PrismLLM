@@ -32,7 +32,7 @@ export interface ProtocolSlotInfo {
 
 /**
  * 计算渠道协议槽位信息（固定按 chat_completions, responses, messages, gemini 顺序排列）。
- * 若渠道启用了该协议，enabled 为 true 且 priority 为在渠道 protocols 数组中的 1-based 优先级序号；
+ * 若渠道启用了该协议，enabled 为 true 且 priority 为在渠道 protocols 数组中的 1-based 转换优先级序号（同协议优先）；
  * 若未启用，enabled 为 false，priority 为 null。
  */
 export function channelProtocolSlots(protocols: readonly string[] | null | undefined): ProtocolSlotInfo[] {
@@ -43,7 +43,7 @@ export function channelProtocolSlots(protocols: readonly string[] | null | undef
     const priority = enabled ? index + 1 : null
     const config = PROTOCOL_CONFIG[proto]
     const title = enabled
-      ? `${config.label} · 优先级 ${priority}`
+      ? `${config.label} · 转换优先级 ${priority}（同协议优先）`
       : `${config.label} · 未配置`
     return {
       protocol: proto,
