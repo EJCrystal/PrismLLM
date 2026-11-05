@@ -261,7 +261,7 @@ jobs:
                   fi
                   ;;
               esac
-            done < <(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json comments --jq '.comments[] | {createdAt, author: .author.login, body}')
+            done < <(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json comments --jq '.comments[] | {createdAt, author: (.author.login // ""), body: (.body // "")}')
             if [ "$landed" != "true" ]; then
               while IFS= read -r line; do
                 created=$(echo "$line" | jq -r '.submittedAt')
@@ -277,7 +277,7 @@ jobs:
                     fi
                     ;;
                 esac
-              done < <(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json reviews --jq '.reviews[] | {submittedAt, author: .author.login, body}')
+              done < <(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json reviews --jq '.reviews[] | {submittedAt, author: (.author.login // ""), body: (.body // "")}')
             fi
           fi
 
