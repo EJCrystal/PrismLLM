@@ -111,16 +111,15 @@ jobs:
             -f body="@coderabbitai review" || true
           sleep 30
 
-  # 3. 核心审查与兜底 Job：CodeRabbit 超额、评论区 /review 指令或手动触发
-  pr_agent_review:
+  # 3. 兜底与手动触发：CodeRabbit 未完成审查或手动 Run workflow 时，发一条真实的 /review 评论，
+  #    统一走 issue_comment 路径（job 4）。容器内伪造事件不可行：$GITHUB_ENV 无法覆盖
+  #    GITHUB_EVENT_NAME，PR-Agent 收到的仍是 check_run/workflow_dispatch，会在
+  #    apply_repo_settings 后直接 exit 0。
+  #    /review 必须用 PAT 发送：GITHUB_TOKEN 发出的评论不会触发新的 workflow，
+  #    且 sender 为 Bot，会被 job 4 与 PR-Agent 自身的 Bot 过滤跳过。
+  trigger_pr_agent:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (
-        github.event_name == 'issue_comment' &&
-        github.event.sender.type != 'Bot' &&
-        github.event.issue.pull_request != null &&
-        startsWith(github.event.comment.body, '/')
-      ) ||
       (
         github.event_name == 'check_run' &&
         github.event.check_run.app.slug == 'coderabbitai' &&
@@ -130,6 +129,82 @@ jobs:
           contains(github.event.check_run.output.summary, 'Rate limited')
         )
       )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post /review to trigger PR-Agent
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRIGGER_TOKEN: ${{ secrets.PR_AGENT_TRIGGER_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          CHECK_PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
+          CHECK_HEAD_SHA: ${{ github.event.check_run.head_sha }}
+          DISPATCH_PR: ${{ inputs.pr_number }}
+          DISPLAY_MODEL: ${{ vars.LLM_GATEWAY_REVIEW_MODEL || 'deepseek-chat' }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "check_run" ]; then
+            HEAD_SHA="$CHECK_HEAD_SHA"
+            if [ -n "$CHECK_PR_URL" ] && [ "$CHECK_PR_URL" != "null" ]; then
+              PR_NUMBER="${CHECK_PR_URL##*/}"
+            else
+              PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number // empty')
+            fi
+            if [ -z "$PR_NUMBER" ]; then
+              echo "未找到对应的 PR，跳过 check_run 兜底审查。"
+              exit 0
+            fi
+          else
+            if ! [[ "$DISPATCH_PR" =~ ^[0-9]+$ ]]; then
+              echo "::error::pr_number 必须是数字：$DISPATCH_PR"
+              exit 1
+            fi
+            PR_NUMBER="$DISPATCH_PR"
+            HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" -q .head.sha)
+          fi
+
+          set_gate() {
+            gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+              -f state="$1" -f context="AI Review Gate" -f description="$2" || true
+          }
+
+          if [ -z "$TRIGGER_TOKEN" ]; then
+            echo "::error::未配置 secret PR_AGENT_TRIGGER_TOKEN，无法触发 PR-Agent 兜底审查"
+            set_gate failure "缺少 PR_AGENT_TRIGGER_TOKEN，无法触发 PR-Agent"
+            exit 1
+          fi
+
+          # CodeRabbit 的 check 可能在同一 SHA 上多次结束，兜底只触发一次；手动触发不去重。
+          MARKER="<!-- pr-agent-fallback:${HEAD_SHA} -->"
+          if [ "$EVENT_NAME" = "check_run" ]; then
+            SEEN=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+              --jq ".[] | select((.body // \"\") | contains(\"${MARKER}\")) | .id" | wc -l)
+            if [ "$SEEN" -gt 0 ]; then
+              echo "该 HEAD SHA 已触发过 PR-Agent 兜底审查，跳过。"
+              exit 0
+            fi
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              -f body="${MARKER}
+          > 💡 **提示**：检测到 CodeRabbit 未完成审查（跳过或超额），已自动无缝切换至 **PR-Agent（模型：${DISPLAY_MODEL}）** 进行代码审查与改进建议。"
+          fi
+
+          # 指令必须独占评论正文，PR-Agent 只识别以 / 开头的评论。
+          if ! GH_TOKEN="$TRIGGER_TOKEN" gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              -f body="/review" > /dev/null; then
+            echo "::error::使用 PR_AGENT_TRIGGER_TOKEN 发送 /review 失败，请检查 token 是否过期或缺少 Issues 写权限"
+            set_gate failure "发送 /review 失败，请检查 PR_AGENT_TRIGGER_TOKEN"
+            exit 1
+          fi
+          set_gate pending "已触发 PR-Agent 审查，等待结果..."
+          echo "已在 PR #${PR_NUMBER} 发送 /review（HEAD ${HEAD_SHA}）"
+
+  # 4. 核心审查 Job：评论区 /review 等指令（含 job 3 代发的 /review）
+  pr_agent_review:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.sender.type != 'Bot' &&
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -150,90 +225,20 @@ jobs:
             echo "DISPLAY_MODEL=$RAW_MODEL"
           } >> "$GITHUB_ENV"
 
-      # 规范化 PR 上下文并获取 HEAD_SHA
+      # 获取 PR 编号与 HEAD_SHA，供门禁步骤使用
       - name: Prepare PR Event Context
         id: prepare_context
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
-          CHECK_PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
-          CHECK_HEAD_SHA: ${{ github.event.check_run.head_sha }}
-          DISPATCH_PR: ${{ inputs.pr_number }}
-          REPO: ${{ github.repository }}
           COMMENT_PR_URL: ${{ github.event.issue.pull_request.url }}
         run: |
-          HEAD_SHA=""
-          PR_NUMBER=""
-          if [ "$EVENT_NAME" = "issue_comment" ]; then
-            HEAD_SHA=$(gh api "$COMMENT_PR_URL" -q .head.sha)
-            PR_NUMBER="${COMMENT_PR_URL##*/}"
-          elif [ "$EVENT_NAME" = "check_run" ]; then
-            HEAD_SHA="$CHECK_HEAD_SHA"
-            if [ -n "$CHECK_PR_URL" ] && [ "$CHECK_PR_URL" != "null" ]; then
-              PR_NUMBER="${CHECK_PR_URL##*/}"
-            else
-              PR_NUMBER=$(gh api "repos/${REPO}/commits/${CHECK_HEAD_SHA}/pulls" -q '.[0].number // empty')
-              if [ -n "$PR_NUMBER" ]; then
-                CHECK_PR_URL="https://api.github.com/repos/${REPO}/pulls/${PR_NUMBER}"
-              fi
-            fi
-            if [ -z "$PR_NUMBER" ]; then
-              echo "未找到对应的 PR，跳过 check_run 兜底审查。"
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            HTML_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
-            jq -n \
-              --arg url "$CHECK_PR_URL" \
-              --arg html_url "$HTML_URL" \
-              --argjson num "$PR_NUMBER" \
-              '{
-                action: "created",
-                issue: { number: $num, pull_request: { url: $url, html_url: $html_url } },
-                pull_request: { number: $num, url: $url, html_url: $html_url },
-                comment: { id: 1, body: "/review" },
-                sender: { type: "User" }
-              }' \
-              > "$GITHUB_EVENT_PATH"
-            echo "GITHUB_EVENT_NAME=issue_comment" >> "$GITHUB_ENV"
-          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            PR_NUMBER="$DISPATCH_PR"
-            TARGET_PR_URL="https://api.github.com/repos/${REPO}/pulls/${DISPATCH_PR}"
-            HEAD_SHA=$(gh api "$TARGET_PR_URL" -q .head.sha)
-            HTML_URL="https://github.com/${REPO}/pull/${DISPATCH_PR}"
-            jq -n \
-              --arg url "$TARGET_PR_URL" \
-              --arg html_url "$HTML_URL" \
-              --argjson num "$DISPATCH_PR" \
-              '{
-                action: "created",
-                issue: { number: $num, pull_request: { url: $url, html_url: $html_url } },
-                pull_request: { number: $num, url: $url, html_url: $html_url },
-                comment: { id: 1, body: "/review" },
-                sender: { type: "User" }
-              }' \
-              > "$GITHUB_EVENT_PATH"
-            echo "GITHUB_EVENT_NAME=issue_comment" >> "$GITHUB_ENV"
-          fi
+          HEAD_SHA=$(gh api "$COMMENT_PR_URL" -q .head.sha)
+          PR_NUMBER="${COMMENT_PR_URL##*/}"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_ENV"
 
-      # 如果是通过 CodeRabbit 未成功审查的 Check 触发的，在 PR 留一条友好提示
-      - name: Notify fallback to PR Agent
-        if: github.event_name == 'check_run' && steps.prepare_context.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ env.PR_NUMBER }}
-        run: |
-          if [ -n "$PR_NUMBER" ]; then
-            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-              -f body="> 💡 **提示**：检测到 CodeRabbit 未完成审查（跳过或超额），已自动无缝切换至 **PR-Agent（模型：${DISPLAY_MODEL}）** 进行代码审查与改进建议。" || true
-          fi
-
       - name: Run PR Agent with LLM Gateway
         id: run_pr_agent
-        if: steps.prepare_context.outputs.skip != 'true'
         # 直接按 digest 运行 github_action 镜像，绕开 action 包装层：
         # qodo-ai/pr-agent@v0.49.0 的 Dockerfile 只是 FROM
         # pragent/pr-agent:github_action（滚动 tag），pin action 版本并不能 pin 住
@@ -264,16 +269,16 @@ jobs:
       # 网关零请求）却把门禁标成通过。这里以 HEAD SHA 上 PR-Agent 的实际输出
       # （review 或评论）为准，没有则判失败，避免假阳性放行。
       - name: Verify review landed and update AI Review Gate
-        if: always() && steps.prepare_context.outputs.skip != 'true'
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ env.PR_NUMBER || inputs.pr_number }}
+          PR_NUMBER: ${{ env.PR_NUMBER }}
           HEAD_SHA: ${{ env.HEAD_SHA }}
           OUTCOME: ${{ steps.run_pr_agent.outcome }}
         run: |
           set -euo pipefail
-          # dispatch/check_run 路径 PR_NUMBER 可能为空，从 PR API 反查。
+          # PR_NUMBER 为空时从 PR API 反查。
           if [ -z "${PR_NUMBER}" ] || [ "${PR_NUMBER}" = "null" ]; then
             PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number // empty')
           fi
