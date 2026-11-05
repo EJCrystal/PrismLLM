@@ -1,6 +1,6 @@
 name: Debug PR-Agent Settings (throwaway)
 
-# 临时排查工作流：定位 pragent/pr-agent 镜像在 Actions 里
+# 临时排查工作流：定位 pragent/pr-agent 镜像在 pr-agent.yml 里
 # "Applying repo settings" 之后 exit 0 静默退出的原因。
 # 只跑在 debug/pr-agent-diag 分支，验证完成后连同分支一起删除。
 
@@ -9,8 +9,10 @@ name: Debug PR-Agent Settings (throwaway)
     branches: [debug/pr-agent-diag]
 
 permissions:
-  contents: read
+  issues: write
   pull-requests: write
+  contents: read
+  statuses: write
 
 env:
   DIAG_IMAGE: pragent/pr-agent@sha256:80edef71baa3df28c129d858d4b53784abfc14704c235efb32b6c461d5399a6d
@@ -36,12 +38,38 @@ jobs:
               comment: { id: 1, body: "/review" },
               sender: { type: "User" }
             }' > /tmp/diagevent/event.json
+          cp /tmp/diagevent/event.json "$GITHUB_EVENT_PATH"
           echo "DIAG_EVENT=/tmp/diagevent/event.json" >> "$GITHUB_ENV"
+          echo "GITHUB_EVENT_NAME=issue_comment" >> "$GITHUB_ENV"
+          echo "HEAD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           head -c 200 /tmp/diagevent/event.json
 
-      # 第一步：完全复刻 pr-agent.yml 里的 docker run（真实 entrypoint），
-      # 确认静默退出能在本工作流复现，并拿到退出码。
-      - name: Baseline with real entrypoint
+      # 第一步：与 pr-agent.yml 的 "Run PR Agent with LLM Gateway" 完全一致
+      # （同样的 uses: docker:// 包装、同样的 env），确认能否复现静默退出。
+      - name: A - exact replica of pr-agent.yml step
+        id: replica
+        continue-on-error: true
+        uses: docker://pragent/pr-agent@sha256:80edef71baa3df28c129d858d4b53784abfc14704c235efb32b6c461d5399a6d
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
+          OPENAI.KEY: ${{ secrets.LLM_GATEWAY_KEY }}
+          OPENAI.API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          OPENAI__API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          OPENAI_API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          CONFIG.MODEL: openai/deepseek-flash
+          CONFIG.FALLBACK_MODELS: "['openai/deepseek-flash']"
+          CONFIG.CUSTOM_MODEL_MAX_TOKENS: "128000"
+          CONFIG.MAX_MODEL_TOKENS: "64000"
+          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
+          GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
+          GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"
+          PR_REVIEWER.EXTRA_INSTRUCTIONS: "Please write the entire review, summaries, explanations, and advice in Simplified Chinese (简体中文). Pay special attention to security, boundary conditions, and test coverage."
+          PR_CODE_SUGGESTIONS.EXTRA_INSTRUCTIONS: "Please write all suggestions and explanations in Simplified Chinese (简体中文)."
+          PR_DESCRIPTION.EXTRA_INSTRUCTIONS: "Please write the PR description and summary in Simplified Chinese (简体中文)."
+
+      # 第二步：同样环境，但用 python 覆盖 entrypoint 逐段打点。
+      - name: B - instrumented apply_repo_settings
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -52,6 +80,8 @@ jobs:
           OPENAI_API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
           CONFIG.MODEL: openai/deepseek-flash
           CONFIG.FALLBACK_MODELS: "['openai/deepseek-flash']"
+          CONFIG.CUSTOM_MODEL_MAX_TOKENS: "128000"
+          CONFIG.MAX_MODEL_TOKENS: "64000"
           GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
           GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
           GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"
@@ -63,37 +93,6 @@ jobs:
             -v "${DIAG_EVENT}:/github/workflow/event.json:ro" \
             --env-file /tmp/diagenv \
             -e GITHUB_EVENT_PATH=/github/workflow/event.json \
-            -e GITHUB_EVENT_NAME=issue_comment \
-            -e GITHUB_ACTIONS=true \
-            -e CI=true \
-            -e HOME=/github/home \
-            --entrypoint /entrypoint.sh \
-            "${DIAG_IMAGE}"
-          echo "BASELINE_EXIT=$?"
-
-      # 第二步：逐段打点，定位到底死在哪一行。
-      - name: Instrumented apply_repo_settings
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
-          OPENAI.KEY: ${{ secrets.LLM_GATEWAY_KEY }}
-          OPENAI.API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
-          OPENAI__API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
-          OPENAI_API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
-          CONFIG.MODEL: openai/deepseek-flash
-          CONFIG.FALLBACK_MODELS: "['openai/deepseek-flash']"
-          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
-          GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
-          GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"
-        run: |
-          set -uo pipefail
-          env | grep -v -E '^(PATH|HOME|PWD|OLDPWD|SHLVL|_|SHELL)=' > /tmp/diagenv
-          docker run --rm --workdir /github/workspace \
-            -v "${GITHUB_WORKSPACE}:/github/workspace" \
-            -v "${DIAG_EVENT}:/github/workflow/event.json:ro" \
-            --env-file /tmp/diagenv \
-            -e GITHUB_EVENT_PATH=/github/workflow/event.json \
-            -e GITHUB_EVENT_NAME=issue_comment \
             -e GITHUB_ACTIONS=true \
             -e CI=true \
             -e HOME=/github/home \
