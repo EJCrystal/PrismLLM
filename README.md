@@ -108,6 +108,8 @@ java -jar target/prism-llm-0.1.0-SNAPSHOT.jar
 
 ## 测试
 
+<!-- CI/CD AI Review Gate verification test -->
+
 ```bash
 # 后端测试套件（含基于 Testcontainers 的全链路测试）
 mvn test
