@@ -12,7 +12,10 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
 private val geminiSafetyReasons = setOf("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL")
-private val geminiRequestFields = setOf("contents", "systemInstruction", "generationConfig", "tools", "toolConfig", "safetySettings", "cachedContent")
+private val geminiRequestFields = setOf(
+    "contents", "systemInstruction", "generationConfig", "tools", "toolConfig", "safetySettings", "cachedContent",
+    "prompt_cache_key", "client_metadata",
+)
 private val geminiGenerationConfigFields = setOf(
     "maxOutputTokens", "temperature", "topP", "topK", "stopSequences", "seed",
     "frequencyPenalty", "presencePenalty", "responseLogprobs", "logprobs",

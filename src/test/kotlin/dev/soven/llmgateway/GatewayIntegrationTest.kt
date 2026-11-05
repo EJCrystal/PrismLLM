@@ -529,12 +529,13 @@ class GatewayIntegrationTest {
             val response = client.options("/v1/chat/completions") {
                 header(HttpHeaders.Origin, "https://console.example.com")
                 header(HttpHeaders.AccessControlRequestMethod, "POST")
-                header(HttpHeaders.AccessControlRequestHeaders, "authorization,content-type,traceparent")
+                header(HttpHeaders.AccessControlRequestHeaders, "authorization,content-type,traceparent,x-prompt-cache-key")
             }
 
             assertEquals(HttpStatusCode.OK, response.status)
             assertEquals("https://console.example.com", response.headers[HttpHeaders.AccessControlAllowOrigin])
             assertTrue(response.headers[HttpHeaders.AccessControlAllowHeaders].orEmpty().contains("traceparent"))
+            assertTrue(response.headers[HttpHeaders.AccessControlAllowHeaders].orEmpty().contains("x-prompt-cache-key", ignoreCase = true))
 
             val actual = client.post("/v1/chat/completions") {
                 header(HttpHeaders.Origin, "https://console.example.com")
@@ -7036,6 +7037,65 @@ class GatewayIntegrationTest {
             val log = awaitRequestLog()
             assertEquals(GatewayProtocol.RESPONSES, log.protocol)
             assertEquals(GatewayProtocol.MESSAGES, log.upstreamProtocol)
+        }
+    }
+
+    @Test
+    fun `responses with prompt_cache_key and client_metadata converts to messages and preserves affinity`() = runBlocking {
+        val channel1 = createChannelWithBaseUrl(
+            name = "responses-to-messages-ch1",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        val channel2 = createChannelWithBaseUrl(
+            name = "responses-to-messages-ch2",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.MESSAGES),
+            modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
+            authType = "anthropic",
+        )
+        exposeAsModel("affinity-model", channel1 to "claude-sonnet-4-5", channel2 to "claude-sonnet-4-5")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            // 发送带 prompt_cache_key 和 client_metadata 的请求
+            val response1 = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{
+                    "model": "affinity-model",
+                    "input": "hi",
+                    "max_output_tokens": 32,
+                    "prompt_cache_key": "cindy-session-affinity-test",
+                    "client_metadata": {"session_id": "cindy-123"}
+                }""")
+            }
+            assertEquals(HttpStatusCode.OK, response1.status, response1.bodyAsText())
+            val upstreamRequest = Json.parseToJsonElement(fake.requests.last().body).jsonObject
+            assertFalse(upstreamRequest.containsKey("prompt_cache_key"), "上游 messages 请求中不应含有 prompt_cache_key")
+            assertFalse(upstreamRequest.containsKey("client_metadata"), "上游 messages 请求中不应含有 client_metadata")
+            val log1 = awaitRequestLog()
+            val firstChannel = log1.channelName
+
+            // 再次发送相同 prompt_cache_key 的请求，必须保持路由亲和性（命中同一 channel）
+            val response2 = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{
+                    "model": "affinity-model",
+                    "input": "hi again",
+                    "max_output_tokens": 32,
+                    "prompt_cache_key": "cindy-session-affinity-test",
+                    "client_metadata": {"session_id": "cindy-123"}
+                }""")
+            }
+            assertEquals(HttpStatusCode.OK, response2.status, response2.bodyAsText())
+            awaitRequestLogCount(2)
+            val log2 = awaitRequestLog()
+            assertEquals(firstChannel, log2.channelName, "相同 prompt_cache_key 请求应保持渠道路由亲和性")
         }
     }
 
