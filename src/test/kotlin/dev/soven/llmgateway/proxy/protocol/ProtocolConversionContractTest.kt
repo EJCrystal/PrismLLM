@@ -293,6 +293,51 @@ class ProtocolConversionContractTest {
         }
     }
 
+    @Test
+    fun `prompt_cache_key and client_metadata are accepted across protocols and safely omitted from converted upstream request`() {
+        val targets = listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI)
+
+        // Responses -> Chat / Messages / Gemini
+        val responsesRequest = json("""{
+            "model": "public",
+            "input": "hi",
+            "prompt_cache_key": "cindy-thread-123",
+            "client_metadata": {"session_id": "uuid-abc-123"}
+        }""")
+        targets.forEach { target ->
+            val converted = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, target, responsesRequest, "upstream")
+            assertFalse(converted.containsKey("prompt_cache_key"), "$target 不应包含 prompt_cache_key")
+            assertFalse(converted.containsKey("client_metadata"), "$target 不应包含 client_metadata")
+        }
+
+        // Chat -> Responses / Messages / Gemini
+        val chatRequest = json("""{
+            "model": "public",
+            "messages": [{"role": "user", "content": "hi"}],
+            "prompt_cache_key": "cindy-thread-123",
+            "client_metadata": {"session_id": "uuid-abc-123"}
+        }""")
+        listOf(GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI).forEach { target ->
+            val converted = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, target, chatRequest, "upstream")
+            assertFalse(converted.containsKey("prompt_cache_key"), "$target 不应包含 prompt_cache_key")
+            assertFalse(converted.containsKey("client_metadata"), "$target 不应包含 client_metadata")
+        }
+
+        // Messages -> Chat / Responses / Gemini
+        val messagesRequest = json("""{
+            "model": "public",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1024,
+            "prompt_cache_key": "cindy-thread-123",
+            "client_metadata": {"session_id": "uuid-abc-123"}
+        }""")
+        listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI).forEach { target ->
+            val converted = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, target, messagesRequest, "upstream")
+            assertFalse(converted.containsKey("prompt_cache_key"), "$target 不应包含 prompt_cache_key")
+            assertFalse(converted.containsKey("client_metadata"), "$target 不应包含 client_metadata")
+        }
+    }
+
     private fun eachDirection(test: (GatewayProtocol, GatewayProtocol) -> Unit) {
         protocols.forEach { inbound -> protocols.filter { it != inbound }.forEach { outbound -> test(inbound, outbound) } }
     }

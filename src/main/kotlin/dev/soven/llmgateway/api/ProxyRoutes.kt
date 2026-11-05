@@ -279,9 +279,14 @@ private suspend fun handleProxy(
                 eligibleConversion.add(candidate)
             }
         }
-        // 每个 scope 每请求只推进一次轮询计数，避免同档两渠道时起点固定。
-        val ordered = app.tierSharing.order(alias, eligibleNative) +
-            app.tierSharing.order("$alias|conversion", eligibleConversion)
+        val promptCacheKey = (requestJson["prompt_cache_key"] as? JsonPrimitive)
+            ?.takeIf { it.isString }
+            ?.content
+            ?.takeIf { it.isNotBlank() }
+            ?: call.request.headers["X-Prompt-Cache-Key"]?.takeIf { it.isNotBlank() }
+        // 每个 scope 每请求只推进一次轮询计数，避免同档两渠道时起点固定；提供 prompt_cache_key 时同档按亲和性路由。
+        val ordered = app.tierSharing.order(alias, eligibleNative, promptCacheKey) +
+            app.tierSharing.order("$alias|conversion", eligibleConversion, promptCacheKey)
         var lastError: GatewayException? = null
         var conversionError: ProtocolConversionException? = null
         var retryFrom: String? = null

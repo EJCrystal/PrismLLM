@@ -15,16 +15,19 @@ import kotlinx.serialization.json.put
 internal val messagesRequestFields = setOf(
     "model", "messages", "system", "max_tokens", "stream", "temperature", "top_p",
     "stop_sequences", "metadata", "tools", "tool_choice", "thinking",
+    "prompt_cache_key", "client_metadata",
 )
 internal val responsesRequestFields = setOf(
     "model", "input", "instructions", "max_output_tokens", "stream", "temperature", "top_p",
     "tools", "tool_choice", "reasoning", "text", "user", "metadata", "parallel_tool_calls",
     "store", "include", "truncation",
+    "prompt_cache_key", "client_metadata",
 )
 internal val chatRequestFields = setOf(
     "model", "messages", "stream", "temperature", "top_p", "max_tokens", "max_completion_tokens",
     "stop", "user", "reasoning_effort", "response_format", "tools", "tool_choice",
     "parallel_tool_calls", "stream_options",
+    "prompt_cache_key", "client_metadata",
 )
 
 internal fun JsonObject.asChatUpstream(model: String): JsonObject {
