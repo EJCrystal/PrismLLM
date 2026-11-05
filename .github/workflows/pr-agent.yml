@@ -61,8 +61,10 @@ jobs:
           else
             RESOLVED_MODEL="$RAW_MODEL"
           fi
-          echo "RESOLVED_MODEL=$RESOLVED_MODEL" >> $GITHUB_ENV
-          echo "DISPLAY_MODEL=$RAW_MODEL" >> $GITHUB_ENV
+          {
+            echo "RESOLVED_MODEL=$RESOLVED_MODEL"
+            echo "DISPLAY_MODEL=$RAW_MODEL"
+          } >> "$GITHUB_ENV"
 
       # 规范化 PR 上下文：PR-Agent Action 原生要求 issue_comment 或 pull_request 事件结构
       # 在 check_run / workflow_dispatch 触发时构造标准 issue_comment 上下文，确保顺利执行
@@ -97,9 +99,11 @@ jobs:
             }
           }
           EOF
-            echo "GITHUB_EVENT_NAME=issue_comment" >> $GITHUB_ENV
-            echo "GITHUB_EVENT_PATH=$MOCK_EVENT_PATH" >> $GITHUB_ENV
-            echo "TARGET_PR_URL=$TARGET_PR_URL" >> $GITHUB_ENV
+            {
+              echo "GITHUB_EVENT_NAME=issue_comment"
+              echo "GITHUB_EVENT_PATH=$MOCK_EVENT_PATH"
+              echo "TARGET_PR_URL=$TARGET_PR_URL"
+            } >> "$GITHUB_ENV"
           fi
 
       # 如果是通过 CodeRabbit 超额 Check 触发的，在 PR 留一条友好提示
