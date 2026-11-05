@@ -1,0 +1,102 @@
+name: Debug PR-Agent Settings (throwaway)
+
+# 临时排查工作流：定位 pragent/pr-agent 镜像在 Actions 里
+# "Applying repo settings" 之后 exit 0 静默退出的原因。
+# 只跑在 debug/pr-agent-diag 分支，验证完成后连同分支一起删除。
+
+'on':
+  push:
+    branches: [debug/pr-agent-diag]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  DIAG_IMAGE: pragent/pr-agent@sha256:80edef71baa3df28c129d858d4b53784abfc14704c235efb32b6c461d5399a6d
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build synthetic issue_comment event
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/diagevent
+          jq -n \
+            --arg url "https://api.github.com/repos/EJCrystal/PrismLLM/pulls/84" \
+            --arg html_url "https://github.com/EJCrystal/PrismLLM/pull/84" \
+            '{
+              action: "created",
+              issue: { number: 84, pull_request: { url: $url, html_url: $html_url } },
+              pull_request: { number: 84, url: $url, html_url: $html_url },
+              comment: { id: 1, body: "/review" },
+              sender: { type: "User" }
+            }' > /tmp/diagevent/event.json
+          echo "DIAG_EVENT=/tmp/diagevent/event.json" >> "$GITHUB_ENV"
+          head -c 200 /tmp/diagevent/event.json
+
+      # 第一步：完全复刻 pr-agent.yml 里的 docker run（真实 entrypoint），
+      # 确认静默退出能在本工作流复现，并拿到退出码。
+      - name: Baseline with real entrypoint
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
+          OPENAI.KEY: ${{ secrets.LLM_GATEWAY_KEY }}
+          OPENAI.API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          OPENAI__API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          OPENAI_API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          CONFIG.MODEL: openai/deepseek-flash
+          CONFIG.FALLBACK_MODELS: "['openai/deepseek-flash']"
+          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
+          GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
+          GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"
+        run: |
+          set -uo pipefail
+          env > /tmp/diagenv
+          docker run --rm --workdir /github/workspace \
+            -v "${GITHUB_WORKSPACE}:/github/workspace" \
+            -v "${DIAG_EVENT}:/github/workflow/event.json:ro" \
+            --env-file /tmp/diagenv \
+            -e GITHUB_EVENT_PATH=/github/workflow/event.json \
+            -e GITHUB_ACTIONS=true \
+            -e CI=true \
+            -e HOME=/github/home \
+            --entrypoint /entrypoint.sh \
+            "${DIAG_IMAGE}"
+          echo "BASELINE_EXIT=$?"
+
+      # 第二步：逐段打点，定位到底死在哪一行。
+      - name: Instrumented apply_repo_settings
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
+          OPENAI.KEY: ${{ secrets.LLM_GATEWAY_KEY }}
+          OPENAI.API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          OPENAI__API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          OPENAI_API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          CONFIG.MODEL: openai/deepseek-flash
+          CONFIG.FALLBACK_MODELS: "['openai/deepseek-flash']"
+          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
+          GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
+          GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"
+        run: |
+          set -uo pipefail
+          env > /tmp/diagenv
+          docker run --rm --workdir /github/workspace \
+            -v "${GITHUB_WORKSPACE}:/github/workspace" \
+            -v "${DIAG_EVENT}:/github/workflow/event.json:ro" \
+            --env-file /tmp/diagenv \
+            -e GITHUB_EVENT_PATH=/github/workflow/event.json \
+            -e GITHUB_ACTIONS=true \
+            -e CI=true \
+            -e HOME=/github/home \
+            -e PYTHONFAULTHANDLER=1 \
+            -e PYTHONUNBUFFERED=1 \
+            --entrypoint python \
+            "${DIAG_IMAGE}" -u /github/workspace/.github/debug/diag_pr_agent.py
+          echo "DIAG_EXIT=$?"
