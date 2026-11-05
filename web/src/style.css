@@ -6977,6 +6977,8 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .logs-table .log-col-request { width: 116px; }
 .logs-table .log-col-model { width: 208px; }
 .logs-table .log-col-channel { width: 184px; }
+.logs-table .log-col-client-ip { width: 132px; }
+.logs-table .log-col-client-ua { width: 180px; }
 .logs-table .log-col-status { width: 136px; }
 .logs-table .log-col-latency { width: 112px; }
 .logs-table .log-col-usage { width: 218px; }
@@ -6984,6 +6986,8 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .logs-table.logs-density-compact th, .logs-table.logs-density-compact td { padding-top: 7px; padding-bottom: 7px; }
 .logs-table.logs-density-compact .stacked-cell { gap: 3px; }
 .logs-table.logs-density-compact .request-meta { gap: 2px 7px; }
+.logs-table .log-col-client-ip .client-ip-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-table .log-col-client-ua .client-ua-line { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .text-truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .data-table td > .mono, .data-table td > .primary-cell { max-width: 100%; }
 @media (min-width: 641px) {

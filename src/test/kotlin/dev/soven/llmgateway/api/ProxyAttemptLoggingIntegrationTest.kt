@@ -143,6 +143,30 @@ class ProxyAttemptLoggingIntegrationTest {
     }
 
     @Test
+    fun `request log records client ip and user agent`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val modelId = "client-info"
+            createChannel(modelId, "${fake.baseUrl}/ok/v1")
+            val requestId = UUID.randomUUID().toString()
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                header("X-Request-Id", requestId)
+                header(HttpHeaders.UserAgent, "prism-llm-integration-test/1.0")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"$modelId","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog(requestId)
+            assertEquals("prism-llm-integration-test/1.0", log.clientUserAgent)
+            assertTrue(!log.clientIp.isNullOrBlank(), "clientIp 应记录，实际为 ${log.clientIp}")
+            // 管理面响应同样携带来源信息。
+            assertEquals(log.clientIp, awaitRequestLog(requestId).toResponse().clientIp)
+            assertEquals(log.clientUserAgent, awaitRequestLog(requestId).toResponse().clientUserAgent)
+        }
+    }
+
+    @Test
     fun `malformed stream metadata does not interrupt delivery or erase reported model`() = runBlocking {
         testApplication {
             application { app.install(this) }
