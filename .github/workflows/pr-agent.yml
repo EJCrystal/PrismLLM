@@ -81,8 +81,7 @@ jobs:
               TARGET_PR_URL="https://api.github.com/repos/${REPO}/pulls/${DISPATCH_PR}"
             fi
 
-            MOCK_EVENT_PATH="${RUNNER_TEMP}/pr_agent_event.json"
-            cat <<EOF > "$MOCK_EVENT_PATH"
+            cat <<EOF > "$GITHUB_EVENT_PATH"
           {
             "action": "created",
             "issue": {
@@ -99,11 +98,7 @@ jobs:
             }
           }
           EOF
-            {
-              echo "GITHUB_EVENT_NAME=issue_comment"
-              echo "GITHUB_EVENT_PATH=$MOCK_EVENT_PATH"
-              echo "TARGET_PR_URL=$TARGET_PR_URL"
-            } >> "$GITHUB_ENV"
+            echo "GITHUB_EVENT_NAME=issue_comment" >> "$GITHUB_ENV"
           fi
 
       # 如果是通过 CodeRabbit 超额 Check 触发的，在 PR 留一条友好提示
@@ -131,9 +126,11 @@ jobs:
           OPENAI__API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
           OPENAI_API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
 
-          # 动态加载解析后的模型名称
+          # 动态加载解析后的模型名称与自定义 token 预算（针对中转站自定义模型名称）
           CONFIG.MODEL: ${{ env.RESOLVED_MODEL }}
           CONFIG.FALLBACK_MODELS: "['${{ env.RESOLVED_MODEL }}']"
+          CONFIG.CUSTOM_MODEL_MAX_TOKENS: "128000"
+          CONFIG.MAX_MODEL_TOKENS: "64000"
 
           # 自动执行的指令列表：超额接管时自动执行 describe 与 review
           GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
