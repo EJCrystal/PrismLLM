@@ -4878,6 +4878,8 @@ textarea:disabled {
   width: 124px;
   min-width: 124px;
   max-width: 124px;
+  padding-left: 6px;
+  padding-right: 6px;
   white-space: nowrap;
 }
 
@@ -4994,8 +4996,8 @@ textarea:disabled {
 
   .channels-table th:nth-child(3),
   .channels-table td:nth-child(3) {
-    width: 120px;
-    min-width: 120px;
+    width: 124px;
+    min-width: 124px;
   }
 
   .channels-table th:nth-child(4),

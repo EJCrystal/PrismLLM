@@ -24,6 +24,7 @@ const slots = computed(() => channelProtocolSlots(props.protocols))
       :key="slot.protocol"
       class="channel-protocol-slot"
       :class="{ 'is-active': slot.enabled, 'is-disabled': !slot.enabled }"
+      role="img"
       :title="slot.title"
       :aria-label="slot.title"
     >
