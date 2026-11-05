@@ -200,12 +200,13 @@ jobs:
 
       - name: Run PR Agent with LLM Gateway
         id: run_pr_agent
-        # 直接运行 release 版本镜像，绕开 action 包装层：qodo-ai/pr-agent@v0.49.0 的
-        # Dockerfile 只是 FROM pragent/pr-agent:github_action（滚动 tag），pin action
-        # 版本并不能 pin 住运行时镜像。2026-11-05 起该滚动 tag 的新构建会在
-        # apply_repo_settings 内静默退出（无 review、无错误日志、exit 0），而 0.49.0
-        # release 镜像与 action 版本对应、内容可复现。
-        uses: docker://pragent/pr-agent:0.49.0
+        # 直接按 digest 运行 github_action 镜像，绕开 action 包装层：
+        # qodo-ai/pr-agent@v0.49.0 的 Dockerfile 只是 FROM
+        # pragent/pr-agent:github_action（滚动 tag），pin action 版本并不能 pin 住
+        # 运行时镜像；该 tag 的新构建会在 apply_repo_settings 内静默退出（无 review、
+        # 无错误日志、exit 0）。此 digest 为 2026-10-16 构建，已在本地完整复现
+        # （apply_repo_settings 通过、review 正常发起），按上游建议用 digest pin。
+        uses: docker://pragent/pr-agent@sha256:80edef71baa3df28c129d858d4b53784abfc14704c235efb32b6c461d5399a6d
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
