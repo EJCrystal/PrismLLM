@@ -20,7 +20,7 @@ import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import ChannelHealthModal from './ChannelHealthModal.vue'
-import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthSymbol } from '../utils/channelHealth'
+import { HEALTH_LABELS, healthPercent, healthSymbol } from '../utils/channelHealth'
 import { cooldownSummaryText } from '../utils/cooldown'
 import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
@@ -125,13 +125,14 @@ interface RateLimitTarget {
 const channels = ref<Channel[]>([])
 let listRevision = 0
 let listDisposed = false
-const healthWindow = ref<HealthWindow>('24h')
+// 列表健康度固定按 24 小时汇总；时间范围切换交由健康度详情弹窗自行选择。
+const healthWindow: HealthWindow = '24h'
 const healthReport = ref<ChannelHealthReport | null>(null)
 const healthTarget = ref<Channel | null>(null)
 const healthLoading = ref(false)
 const healthError = ref('')
 let healthRevision = 0
-const healthByChannel = computed(() => new Map(healthReport.value?.window === healthWindow.value ? healthReport.value.channels.map(row => [row.channelId, row]) : []))
+const healthByChannel = computed(() => new Map(healthReport.value?.window === healthWindow ? healthReport.value.channels.map(row => [row.channelId, row]) : []))
 const cooldownNow = ref(Date.now())
 let cooldownTimer: ReturnType<typeof setInterval> | null = null
 let cooldownRefreshAt = 0
@@ -177,13 +178,12 @@ async function loadHealth() {
   healthLoading.value = true
   healthError.value = ''
   try {
-    const result = await api.getChannelHealth(healthWindow.value)
+    const result = await api.getChannelHealth(healthWindow)
     if (request === healthRevision) { healthReport.value = result; syncCooldownTimer() }
   } catch (cause) {
     if (request === healthRevision) { healthReport.value = null; syncCooldownTimer(); healthError.value = errorMessage(cause) }
   } finally { if (request === healthRevision) healthLoading.value = false }
 }
-watch(healthWindow, loadHealth)
 onBeforeUnmount(() => {
   listDisposed = true
   healthRevision++
@@ -1133,7 +1133,6 @@ onMounted(load)
       <div v-if="channels.length" class="channel-list-toolbar">
         <span class="channel-sort-note">数字越小，路由优先级越高</span>
         <div class="channel-list-filters" role="group" aria-label="渠道筛选">
-          <FilterSelect v-model="healthWindow" label="健康观察" :clearable="false" :options="HEALTH_WINDOWS.map(option => ({ value: option.id, label: option.label }))" />
           <FilterSelect v-model="channelStatusFilter" label="状态" default-value="all" :options="channelStatusOptions.map(option => ({ value: option.id, label: option.label + '（' + option.count + '）' }))" />
           <FilterSelect v-model="channelModelFilter" label="模型" searchable :options="[{ value: '', label: '全部模型' }, ...channelModelOptions.map(model => ({ value: model, label: model }))]" />
           <button v-if="channelStatusFilter !== 'all' || channelModelFilter" type="button" class="filter-reset" @click="channelStatusFilter = 'all'; channelModelFilter = ''">清除筛选</button>
