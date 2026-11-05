@@ -49,7 +49,9 @@ jobs:
     if: >-
       github.event_name == 'check_run' &&
       github.event.check_run.app.slug == 'coderabbitai' &&
-      github.event.check_run.conclusion == 'success'
+      github.event.check_run.conclusion == 'success' &&
+      !contains(github.event.check_run.output.title, 'rate limited') &&
+      !contains(github.event.check_run.output.summary, 'Rate limited')
     runs-on: ubuntu-latest
     steps:
       - name: Mark Gate as Success by CodeRabbit
@@ -62,6 +64,52 @@ jobs:
             -f state="success" \
             -f context="AI Review Gate" \
             -f description="CodeRabbit 审查通过" || true
+
+  # 2.5 CodeRabbit 因 star < 10 跳过审查时，自动帮它发一条 @coderabbitai review，
+  #     让它真正参与审查而不是被静默跳过；PR-Agent 兜底不受影响，两者互补。
+  #     同一 HEAD SHA 只邀请一次，连续 push 不会刷屏。
+  request_coderabbit_review:
+    if: >-
+      github.event_name == 'check_run' &&
+      github.event.check_run.app.slug == 'coderabbitai' &&
+      github.event.check_run.conclusion == 'skipped'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Invite CodeRabbit to review once per head SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          CHECK_PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
+          HEAD_SHA: ${{ github.event.check_run.head_sha }}
+        run: |
+          PR_NUMBER=""
+          if [ -n "$CHECK_PR_URL" ] && [ "$CHECK_PR_URL" != "null" ]; then
+            PR_NUMBER="${CHECK_PR_URL##*/}"
+          else
+            PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number // empty')
+          fi
+          if [ -z "$PR_NUMBER" ]; then
+            echo "未找到对应的 PR，跳过。"
+            exit 0
+          fi
+          STARS=$(gh api "repos/${REPO}" -q .stargazers_count)
+          if [ "${STARS}" -ge 10 ]; then
+            echo "仓库已有 ${STARS} stars，CodeRabbit 后续会自动审查，无需邀请。"
+            exit 0
+          fi
+          MARKER="<!-- coderabbit-skip-invite:${HEAD_SHA} -->"
+          if gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+              -q "[.[] | select(.body | contains(\"${MARKER}\"))] | length" \
+              | grep -qv '^0$'; then
+            echo "该 HEAD SHA 已邀请过 CodeRabbit 审查，跳过。"
+            exit 0
+          fi
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            -f body="${MARKER}
+          > 💡 **提示**：当前仓库 star 数不足 10，CodeRabbit 已跳过自动审查，已自动发送 @coderabbitai review 邀请其参与本次审查。PR-Agent 兜底审查不受影响。" || true
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            -f body="@coderabbitai review" || true
+          sleep 30
 
   # 3. 核心审查与兜底 Job：CodeRabbit 超额、评论区 /review 指令或手动触发
   pr_agent_review:
@@ -77,7 +125,7 @@ jobs:
         github.event_name == 'check_run' &&
         github.event.check_run.app.slug == 'coderabbitai' &&
         (
-          github.event.check_run.conclusion == 'neutral' ||
+          github.event.check_run.conclusion != 'success' ||
           contains(github.event.check_run.output.title, 'rate limited') ||
           contains(github.event.check_run.output.summary, 'Rate limited')
         )
@@ -115,38 +163,84 @@ jobs:
           COMMENT_PR_URL: ${{ github.event.issue.pull_request.url }}
         run: |
           HEAD_SHA=""
+          PR_NUMBER=""
           if [ "$EVENT_NAME" = "issue_comment" ]; then
             HEAD_SHA=$(gh api "$COMMENT_PR_URL" -q .head.sha)
+            PR_NUMBER="${COMMENT_PR_URL##*/}"
           elif [ "$EVENT_NAME" = "check_run" ]; then
             HEAD_SHA="$CHECK_HEAD_SHA"
-            jq -n --arg url "$CHECK_PR_URL" \
-              '{action:"created",issue:{pull_request:{url:$url}},comment:{id:1,body:"/review"},sender:{type:"User"}}' \
+            if [ -n "$CHECK_PR_URL" ] && [ "$CHECK_PR_URL" != "null" ]; then
+              PR_NUMBER="${CHECK_PR_URL##*/}"
+            else
+              PR_NUMBER=$(gh api "repos/${REPO}/commits/${CHECK_HEAD_SHA}/pulls" -q '.[0].number // empty')
+              if [ -n "$PR_NUMBER" ]; then
+                CHECK_PR_URL="https://api.github.com/repos/${REPO}/pulls/${PR_NUMBER}"
+              fi
+            fi
+            if [ -z "$PR_NUMBER" ]; then
+              echo "未找到对应的 PR，跳过 check_run 兜底审查。"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            HTML_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
+            jq -n \
+              --arg url "$CHECK_PR_URL" \
+              --arg html_url "$HTML_URL" \
+              --argjson num "$PR_NUMBER" \
+              '{
+                action: "created",
+                issue: { number: $num, pull_request: { url: $url, html_url: $html_url } },
+                pull_request: { number: $num, url: $url, html_url: $html_url },
+                comment: { id: 1, body: "/review" },
+                sender: { type: "User" }
+              }' \
               > "$GITHUB_EVENT_PATH"
             echo "GITHUB_EVENT_NAME=issue_comment" >> "$GITHUB_ENV"
           elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            PR_NUMBER="$DISPATCH_PR"
             TARGET_PR_URL="https://api.github.com/repos/${REPO}/pulls/${DISPATCH_PR}"
             HEAD_SHA=$(gh api "$TARGET_PR_URL" -q .head.sha)
-            jq -n --arg url "$TARGET_PR_URL" \
-              '{action:"created",issue:{pull_request:{url:$url}},comment:{id:1,body:"/review"},sender:{type:"User"}}' \
+            HTML_URL="https://github.com/${REPO}/pull/${DISPATCH_PR}"
+            jq -n \
+              --arg url "$TARGET_PR_URL" \
+              --arg html_url "$HTML_URL" \
+              --argjson num "$DISPATCH_PR" \
+              '{
+                action: "created",
+                issue: { number: $num, pull_request: { url: $url, html_url: $html_url } },
+                pull_request: { number: $num, url: $url, html_url: $html_url },
+                comment: { id: 1, body: "/review" },
+                sender: { type: "User" }
+              }' \
               > "$GITHUB_EVENT_PATH"
             echo "GITHUB_EVENT_NAME=issue_comment" >> "$GITHUB_ENV"
           fi
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_ENV"
 
-      # 如果是通过 CodeRabbit 超额 Check 触发的，在 PR 留一条友好提示
+      # 如果是通过 CodeRabbit 未成功审查的 Check 触发的，在 PR 留一条友好提示
       - name: Notify fallback to PR Agent
-        if: github.event_name == 'check_run'
+        if: github.event_name == 'check_run' && steps.prepare_context.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ env.PR_NUMBER }}
         run: |
-          if [ -n "$PR_URL" ]; then
-            gh api "$PR_URL/comments" -f body="> 💡 **提示**：检测到 CodeRabbit 达到每小时配额上限，已自动无缝切换至 **PR-Agent（模型：${DISPLAY_MODEL}）** 进行代码审查与改进建议。" || true
+          if [ -n "$PR_NUMBER" ]; then
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              -f body="> 💡 **提示**：检测到 CodeRabbit 未完成审查（跳过或超额），已自动无缝切换至 **PR-Agent（模型：${DISPLAY_MODEL}）** 进行代码审查与改进建议。" || true
           fi
 
       - name: Run PR Agent with LLM Gateway
         id: run_pr_agent
-        uses: qodo-ai/pr-agent@main
+        if: steps.prepare_context.outputs.skip != 'true'
+        # 直接按 digest 运行 github_action 镜像，绕开 action 包装层：
+        # qodo-ai/pr-agent@v0.49.0 的 Dockerfile 只是 FROM
+        # pragent/pr-agent:github_action（滚动 tag），pin action 版本并不能 pin 住
+        # 运行时镜像；该 tag 的新构建会在 apply_repo_settings 内静默退出（无 review、
+        # 无错误日志、exit 0）。此 digest 为 2026-10-16 构建，已在本地完整复现
+        # （apply_repo_settings 通过、review 正常发起），按上游建议用 digest pin。
+        uses: docker://pragent/pr-agent@sha256:80edef71baa3df28c129d858d4b53784abfc14704c235efb32b6c461d5399a6d
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
@@ -165,25 +259,105 @@ jobs:
           PR_CODE_SUGGESTIONS.EXTRA_INSTRUCTIONS: "Please write all suggestions and explanations in Simplified Chinese (简体中文)."
           PR_DESCRIPTION.EXTRA_INSTRUCTIONS: "Please write the PR description and summary in Simplified Chinese (简体中文)."
 
-      # PR-Agent 执行完成后更新门禁状态
-      - name: Update AI Review Gate Status
-        if: always()
+      # PR-Agent 执行完成后更新门禁状态。
+      # 步骤 exit 0 不等于审查真实发生：曾出现容器静默退出（无评论、无报错、
+      # 网关零请求）却把门禁标成通过。这里以 HEAD SHA 上 PR-Agent 的实际输出
+      # （review 或评论）为准，没有则判失败，避免假阳性放行。
+      - name: Verify review landed and update AI Review Gate
+        if: always() && steps.prepare_context.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          SHA: ${{ env.HEAD_SHA }}
+          PR_NUMBER: ${{ env.PR_NUMBER || inputs.pr_number }}
+          HEAD_SHA: ${{ env.HEAD_SHA }}
           OUTCOME: ${{ steps.run_pr_agent.outcome }}
         run: |
-          if [ -n "$SHA" ]; then
-            if [ "$OUTCOME" = "success" ]; then
-              gh api "repos/${REPO}/statuses/${SHA}" \
-                -f state="success" \
-                -f context="AI Review Gate" \
-                -f description="PR-Agent 审查通过" || true
-            else
-              gh api "repos/${REPO}/statuses/${SHA}" \
+          set -euo pipefail
+          # dispatch/check_run 路径 PR_NUMBER 可能为空，从 PR API 反查。
+          if [ -z "${PR_NUMBER}" ] || [ "${PR_NUMBER}" = "null" ]; then
+            PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number // empty')
+          fi
+
+          if [ -z "${PR_NUMBER}" ] || [ "${PR_NUMBER}" = "null" ]; then
+            echo "未找到对应的 PR，无法验证审查产出。"
+            if [ -n "${HEAD_SHA}" ]; then
+              gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
                 -f state="failure" \
                 -f context="AI Review Gate" \
-                -f description="PR-Agent 审查未通过或执行异常" || true
+                -f description="未找到关联 PR，无法验证审查" || true
             fi
+            exit 1
+          fi
+
+          landed=false
+          if [ "$OUTCOME" = "success" ]; then
+            # PR-Agent 的输出：issue 评论（walkthrough/摘要）或 review（/review 的评审）。
+            # 以 HEAD SHA 起算：本次运行之后才产生的 bot 输出才算本次审查落地。
+            START_EPOCH=$(gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}" -q .run_started_at | xargs -I{} date -d "{}" +%s)
+            START_EPOCH=$((START_EPOCH - 60))
+            while IFS= read -r line; do
+              created=$(echo "$line" | jq -r '.createdAt // empty')
+              [ -z "$created" ] && continue
+              author=$(echo "$line" | jq -r '.author')
+              body=$(echo "$line" | jq -r '.body // ""')
+              created_epoch=$(date -d "$created" +%s 2>/dev/null || echo 0)
+              case "$author" in
+                github-actions*|pr-agent*|qodo*)
+                  if [ "$created_epoch" -ge "$START_EPOCH" ]; then
+                    # 排除本 workflow 自身发出的提示评论与失败错误消息，避免假阳性
+                    if echo "$body" | grep -qiE "检测到 CodeRabbit|coderabbit-skip-invite|Failed to review PR"; then
+                      continue
+                    fi
+                    if echo "$body" | grep -qiE "PR Reviewer Guide|PR Code Suggestions|<!-- pr-agent:|Persistent review" \
+                       || { echo "$body" | grep -qiE "pr-agent" && echo "$body" | grep -q "${HEAD_SHA:0:7}"; }; then
+                      landed=true
+                      break
+                    fi
+                  fi
+                  ;;
+              esac
+            done < <(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json comments --jq '.comments[] | {createdAt, author: (.author.login // ""), body: (.body // "")}')
+            if [ "$landed" != "true" ]; then
+              while IFS= read -r line; do
+                created=$(echo "$line" | jq -r '.submittedAt // empty')
+                [ -z "$created" ] && continue
+                author=$(echo "$line" | jq -r '.author')
+                body=$(echo "$line" | jq -r '.body // ""')
+                created_epoch=$(date -d "$created" +%s 2>/dev/null || echo 0)
+                case "$author" in
+                  github-actions*|pr-agent*|qodo*)
+                    if [ "$created_epoch" -ge "$START_EPOCH" ]; then
+                      if echo "$body" | grep -qiE "检测到 CodeRabbit|coderabbit-skip-invite|Failed to review PR"; then
+                        continue
+                      fi
+                      if echo "$body" | grep -qiE "PR Reviewer Guide|PR Code Suggestions|<!-- pr-agent:|Persistent review" \
+                         || { echo "$body" | grep -qiE "pr-agent" && echo "$body" | grep -q "${HEAD_SHA:0:7}"; }; then
+                        landed=true
+                        break
+                      fi
+                    fi
+                    ;;
+                esac
+              done < <(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json reviews --jq '.reviews[] | {submittedAt, author: (.author.login // ""), body: (.body // "")}')
+            fi
+          fi
+
+          if [ "$landed" = "true" ]; then
+            gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+              -f state="success" \
+              -f context="AI Review Gate" \
+              -f description="PR-Agent 审查通过" || true
+          elif [ "$OUTCOME" = "success" ]; then
+            echo "::warning::PR-Agent 步骤成功但 PR 上没有它的输出（评论/review），疑似静默失败"
+            gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+              -f state="failure" \
+              -f context="AI Review Gate" \
+              -f description="PR-Agent 未产出审查（静默失败），请查看 Actions 日志" || true
+            exit 1
+          else
+            gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+              -f state="failure" \
+              -f context="AI Review Gate" \
+              -f description="PR-Agent 审查未通过或执行异常" || true
+            exit 1
           fi

@@ -41,6 +41,120 @@ export function protocolLabel(value: string | null | undefined): string {
   return PROTOCOL_LABELS[normalized] || normalized
 }
 
+export interface ProtocolEndpointInfo {
+  value: string
+  label: string
+  shortName: string
+  apiFormat: string
+  endpointPath: string
+  known: boolean
+}
+
+interface ProtocolEndpointDefinition {
+  label: string
+  shortName: string
+  apiFormat: string
+  endpointPath: string
+}
+
+const PROTOCOL_ENDPOINTS: Record<string, ProtocolEndpointDefinition> = {
+  chat_completions: {
+    label: 'OpenAI Chat Completions',
+    shortName: 'Chat',
+    apiFormat: 'openai/chat_completions',
+    endpointPath: '/v1/chat/completions',
+  },
+  responses: {
+    label: 'OpenAI Responses',
+    shortName: 'Responses',
+    apiFormat: 'openai/responses',
+    endpointPath: '/v1/responses',
+  },
+  messages: {
+    label: 'Anthropic Messages',
+    shortName: 'Messages',
+    apiFormat: 'anthropic/messages',
+    endpointPath: '/v1/messages',
+  },
+  gemini: {
+    label: 'Google Gemini',
+    shortName: 'Gemini',
+    apiFormat: 'gemini/contents',
+    endpointPath: '/v1beta/models/{model}:generateContent',
+  },
+}
+
+export function protocolEndpoint(value: string | null | undefined, stream?: boolean | null): ProtocolEndpointInfo {
+  const normalized = String(value ?? '').trim()
+  if (!Object.hasOwn(PROTOCOL_ENDPOINTS, normalized)) {
+    const label = protocolLabel(normalized)
+    return { value: normalized, label, shortName: label, apiFormat: label, endpointPath: '', known: false }
+  }
+  const definition = PROTOCOL_ENDPOINTS[normalized]
+  const endpointPath = normalized === 'gemini' && stream
+    ? '/v1beta/models/{model}:streamGenerateContent?alt=sse'
+    : definition.endpointPath
+  return { value: normalized, ...definition, endpointPath, known: true }
+}
+
+export interface ProtocolConversionInfo {
+  converted: boolean
+  inbound: ProtocolEndpointInfo
+  outbound: ProtocolEndpointInfo | null
+  title: string
+}
+
+export function effectiveProtocolEndpoint(info: ProtocolConversionInfo): ProtocolEndpointInfo {
+  if (!info.inbound.value && info.outbound) {
+    return info.outbound
+  }
+  return info.inbound
+}
+
+export function protocolConversion(
+  inbound: string | null | undefined,
+  outbound: string | null | undefined,
+  stream?: boolean | null,
+  upstreamAttempts?: number | null,
+): ProtocolConversionInfo {
+  const from = protocolEndpoint(inbound, stream)
+  const to = String(outbound ?? '').trim() ? protocolEndpoint(outbound, stream) : null
+  if (!from.value) {
+    const outboundReason = to ? to.label : ((upstreamAttempts ?? 0) > 0 ? '出站协议未知' : '未发起上游请求')
+    return {
+      converted: false,
+      inbound: from,
+      outbound: to,
+      title: to
+        ? `入站协议：未知\n出站协议：${to.label}（${to.apiFormat}）`
+        : `入站协议：未知\n出站协议：未知（${outboundReason}）`,
+    }
+  }
+  if (!to) {
+    const outboundReason = (upstreamAttempts ?? 0) > 0 ? '出站协议未知' : '未发起上游请求'
+    return {
+      converted: false,
+      inbound: from,
+      outbound: null,
+      title: `入站协议：${from.label}（${from.apiFormat}）\n出站协议：未知（${outboundReason}）`,
+    }
+  }
+  if (from.value === to.value) {
+    return {
+      converted: false,
+      inbound: from,
+      outbound: to,
+      title: `入站 / 出站协议一致，透传未转换（${to.apiFormat}）`,
+    }
+  }
+  return {
+    converted: true,
+    inbound: from,
+    outbound: to,
+    title: `入站协议：${from.label}（${from.apiFormat}）\n出站协议：已由入站协议转换（${to.apiFormat}）`,
+  }
+}
+
 export interface ReportedModelAttemptInput {
   channelId?: string | null
   channelKeyId?: string | null
