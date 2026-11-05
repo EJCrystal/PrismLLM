@@ -602,7 +602,7 @@ onMounted(load)
                     <span class="badge warning small">已转换</span>
                   </div>
                   <span class="mono muted small detail-endpoint">
-                    {{ selectedInboundEndpoint.endpointPath }} → {{ selectedOutboundEndpoint?.endpointPath }}
+                    {{ selectedInboundEndpoint.endpointPath || '—' }} → {{ selectedOutboundEndpoint?.endpointPath || '—' }}
                   </span>
                 </template>
                 <template v-else>

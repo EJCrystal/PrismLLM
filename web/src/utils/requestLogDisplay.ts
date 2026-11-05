@@ -112,6 +112,17 @@ export function protocolConversion(
 ): ProtocolConversionInfo {
   const from = protocolEndpoint(inbound, stream)
   const to = String(outbound ?? '').trim() ? protocolEndpoint(outbound, stream) : null
+  if (!from.value) {
+    const outboundReason = to ? to.label : ((upstreamAttempts ?? 0) > 0 ? '出站协议未知' : '未发起上游请求')
+    return {
+      converted: false,
+      inbound: from,
+      outbound: to,
+      title: to
+        ? `入站协议：未知\n出站协议：${to.label}（${to.apiFormat}）`
+        : `入站协议：未知\n出站协议：未知（${outboundReason}）`,
+    }
+  }
   if (!to) {
     const outboundReason = (upstreamAttempts ?? 0) > 0 ? '出站协议未知' : '未发起上游请求'
     return {

@@ -83,6 +83,18 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     assert.equal(unknownWithAttempts.converted, false)
     assert.equal(unknownWithAttempts.outbound, null)
     assert.match(unknownWithAttempts.title, /出站协议：未知（出站协议未知）/)
+
+    const missingInbound = protocolConversion(null, 'responses')
+    assert.equal(missingInbound.converted, false)
+    assert.equal(missingInbound.outbound.apiFormat, 'openai/responses')
+    assert.match(missingInbound.title, /入站协议：未知/)
+    assert.match(missingInbound.title, /出站协议：OpenAI Responses（openai\/responses）/)
+
+    const bothMissing = protocolConversion(null, null, false, 0)
+    assert.equal(bothMissing.converted, false)
+    assert.equal(bothMissing.outbound, null)
+    assert.match(bothMissing.title, /入站协议：未知/)
+    assert.match(bothMissing.title, /出站协议：未知（未发起上游请求）/)
   })
 
   it('比较最终路由上游自报模型，兼容缺少自报值的历史尝试', () => {
