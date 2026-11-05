@@ -58,7 +58,7 @@ docker run --rm \
   -e "GITHUB_TRIGGERING_ACTOR" \
   -e "GITHUB_WORKSPACE" \
   -e "GITHUB_ACTION" \
-  -e "GITHUB_EVENT_PATH" \
+  -e GITHUB_EVENT_PATH=/github/workflow/event.json \
   -e "GITHUB_ACTION_REPOSITORY" \
   -e "GITHUB_ACTION_REF" \
   -e "GITHUB_PATH" \
