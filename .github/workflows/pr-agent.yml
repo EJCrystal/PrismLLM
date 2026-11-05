@@ -386,7 +386,10 @@ jobs:
                                | (capture("pr-agent-review-state:v1\\s*(?<state>\\{.*?\\})\\s*-->"; "ms").state
                                   // error("unparsable pr-agent review state"))
                                | fromjson
-                               | .findings[]?
+                               # 语法有效但结构不符（缺 findings、非数组、被截断）同样按解析失败处理。
+                               | if type == "object" and (.findings | type) == "array"
+                                 then .findings[]
+                                 else error("invalid pr-agent review state structure") end
                                | select(.state == "ACTIVE" and ((.last_seen_head_sha // $head) == $head))
                              ] | length)
                   }
