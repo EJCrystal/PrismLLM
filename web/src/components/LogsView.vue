@@ -25,7 +25,6 @@ import {
   protocolConversion,
   protocolEndpoint,
   protocolLabel,
-  reasoningEffortClass,
   reasoningEffortLabel,
   reportedModelStatus,
   tokenUsageLabel,
@@ -457,7 +456,7 @@ onMounted(load)
                       :upstream-attempts="log.upstreamAttempts"
                     />
                     <span class="mode-badge" :class="`mode-${requestModeClass(log.stream)}`">{{ requestModeLabel(log.stream) }}</span>
-                    <span class="reasoning-badge" :class="reasoningEffortClass(log.reasoningEffort)">
+                    <span class="reasoning-badge">
                       推理 {{ reasoningEffortLabel(log.reasoningEffort) }}
                     </span>
                   </div>
@@ -709,7 +708,7 @@ onMounted(load)
               </div>
               <div class="detail-item">
                 <span>推理强度</span>
-                <strong><span class="reasoning-badge" :class="reasoningEffortClass(selected.reasoningEffort)">{{ reasoningEffortLabel(selected.reasoningEffort) }}</span></strong>
+                <strong><span class="reasoning-badge">{{ reasoningEffortLabel(selected.reasoningEffort) }}</span></strong>
               </div>
               <div class="detail-item">
                 <span>缓存命中</span>

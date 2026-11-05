@@ -7100,6 +7100,76 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `X-Prompt-Cache-Key header fallback preserves affinity and body field wins`() = runBlocking {
+        val channels = (1..4).map { index ->
+            createChannelWithBaseUrl(
+                name = "header-affinity-ch$index",
+                baseUrl = fake.baseUrl + "/ok/v1",
+                protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
+                modelMappings = listOf(ChannelModelRecord("gpt-4o-mini")),
+            )
+        }
+        exposeAsModel("header-affinity-model", *channels.map { it to "gpt-4o-mini" }.toTypedArray())
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            var sent = 0
+
+            // awaitRequestLogCount 只查 list(10)，本轮请求数会超过 10，这里放宽读取上限。
+            suspend fun awaitLogCount(count: Int, timeoutMs: Long = 5_000) {
+                val deadline = System.currentTimeMillis() + timeoutMs
+                while (System.currentTimeMillis() < deadline) {
+                    if (app.requestLogRepository.list(500).size >= count) return
+                    delay(50)
+                }
+                error("expected $count request logs within ${timeoutMs}ms")
+            }
+
+            suspend fun send(headerKey: String?, bodyKey: String?): String {
+                val bodyKeyField = bodyKey?.let { """"prompt_cache_key": $it,""" } ?: ""
+                val response = client.post("/v1/chat/completions") {
+                    header(HttpHeaders.Authorization, "Bearer $key")
+                    if (headerKey != null) header("X-Prompt-Cache-Key", headerKey)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"model":"header-affinity-model",$bodyKeyField"messages":[{"role":"user","content":"hi"}]}""")
+                }
+                assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+                sent += 1
+                awaitLogCount(sent)
+                return awaitRequestLog().channelName ?: error("请求日志缺少渠道名")
+            }
+
+            // 单次比对有 1/4 概率因两个不同 key 恰好命中同一渠道而漏检（4 个同档渠道），
+            // 因此每个场景用 6 组不同 key 重复校验，漏检概率降到 (1/4)^6。
+            (1..6).map { "affinity-key-$it" }.forEach { probe ->
+                // 仅凭请求头即可建立亲和：相同 header 命中同一渠道
+                val headerOnly = send(probe, null)
+                assertEquals(
+                    headerOnly,
+                    send(probe, null),
+                    "相同 X-Prompt-Cache-Key 应保持渠道路由亲和性（$probe）",
+                )
+
+                // 请求体空白串必须被过滤并回退到请求头，否则所有请求会吸附到同一渠道
+                assertEquals(
+                    headerOnly,
+                    send(probe, "\"   \""),
+                    "空白 prompt_cache_key 应回退到 X-Prompt-Cache-Key（$probe）",
+                )
+
+                // 请求体优先于请求头：换掉 header 不影响命中渠道
+                val bodyFirst = send("ignored-header-a-$probe", "\"$probe\"")
+                assertEquals(
+                    bodyFirst,
+                    send("ignored-header-b-$probe", "\"$probe\""),
+                    "请求体 prompt_cache_key 应优先于请求头（$probe）",
+                )
+            }
+        }
+    }
+
+    @Test
     fun `six explicit converters route non streaming requests and record actual protocols`() = runBlocking {
         assertSixConverterRoutes(stream = false)
     }

@@ -19,6 +19,11 @@ class TierSharing {
     private val channelCounters = ConcurrentHashMap<String, AtomicLong>()
     private val keyCounters = ConcurrentHashMap<String, AtomicLong>()
 
+    private companion object {
+        /** 亲和 key 来自客户端，超长输入会在每个渠道与密钥上重复哈希，截断以限制 CPU 放大。 */
+        const val MAX_AFFINITY_KEY_LENGTH = 512
+    }
+
     /**
      * 按 scope（对外模型 ID）轮转同档候选的起点。首个请求从档内顺序的第一名开始。
      * 当提供 affinityKey 时，使用最高随机权重哈希（HRW/Rendezvous Hashing）独立计算亲和分数，
@@ -26,7 +31,8 @@ class TierSharing {
      */
     fun order(scope: String, candidates: List<RouteCandidate>, affinityKey: String? = null): List<RouteCandidate> {
         if (candidates.size <= 1) return candidates
-        val channelOffset = if (affinityKey != null) {
+        val affinity = affinityKey?.take(MAX_AFFINITY_KEY_LENGTH)
+        val channelOffset = if (affinity != null) {
             0L
         } else {
             channelCounters.computeIfAbsent(scope) { AtomicLong() }.getAndIncrement()
@@ -34,7 +40,7 @@ class TierSharing {
         return candidates
             .groupBy { it.position }
             .toSortedMap()
-            .flatMap { (_, tier) -> orderTier(scope, tier, channelOffset, affinityKey) }
+            .flatMap { (_, tier) -> orderTier(scope, tier, channelOffset, affinity) }
     }
 
     private fun orderTier(

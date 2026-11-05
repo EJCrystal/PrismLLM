@@ -9,21 +9,19 @@ import {
   protocolEndpoint,
   protocolLabel,
   reportedModelStatus,
-  reasoningEffortClass,
   reasoningEffortLabel,
   tokenUsageLabel,
   tokenUsageState,
 } from '../src/utils/requestLogDisplay'
 
 describe('requestLogDisplay: 请求日志状态展示', () => {
-  it('把缺省推理强度明确展示为 none，并为等级提供样式类别', () => {
+  it('把缺省推理强度明确展示为 none，其余档位原样小写展示', () => {
     assert.equal(reasoningEffortLabel(null), 'none')
-    assert.equal(reasoningEffortClass(undefined), 'reasoning-none')
+    assert.equal(reasoningEffortLabel(undefined), 'none')
     assert.equal(reasoningEffortLabel(' HIGH '), 'high')
-    assert.equal(reasoningEffortClass('max'), 'reasoning-max')
+    assert.equal(reasoningEffortLabel('max'), 'max')
     assert.equal(reasoningEffortLabel('xhigh'), 'xhigh')
     assert.equal(reasoningEffortLabel('unsupported'), 'unsupported')
-    assert.equal(reasoningEffortClass('unsupported'), 'reasoning-custom')
   })
 
   it('区分没有发起上游请求和上游未返回用量', () => {
