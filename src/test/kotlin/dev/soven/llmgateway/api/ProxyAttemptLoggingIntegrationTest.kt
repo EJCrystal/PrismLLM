@@ -167,6 +167,30 @@ class ProxyAttemptLoggingIntegrationTest {
     }
 
     @Test
+    fun `request log sanitizes whitespace and truncates client ip and user agent`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val modelId = "client-info-sanitized"
+            createChannel(modelId, "${fake.baseUrl}/ok/v1")
+            val requestId = UUID.randomUUID().toString()
+            val rawUa = "curl/7.88.1\tCustomClient/" + "x".repeat(350)
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                header("X-Request-Id", requestId)
+                header(HttpHeaders.UserAgent, rawUa)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"$modelId","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val log = awaitRequestLog(requestId)
+            val expectedUa = ("curl/7.88.1 CustomClient/" + "x".repeat(350)).take(300)
+            assertEquals(expectedUa, log.clientUserAgent)
+            assertEquals(300, log.clientUserAgent?.length)
+            assertTrue(log.clientIp?.length?.let { it <= 64 } ?: true)
+        }
+    }
+
+    @Test
     fun `malformed stream metadata does not interrupt delivery or erase reported model`() = runBlocking {
         testApplication {
             application { app.install(this) }

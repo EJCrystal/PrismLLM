@@ -747,7 +747,7 @@ private suspend fun handleProxy(
                 traceId = traceContext.traceId,
                 clientKeyId = clientKey?.id,
                 clientKeyName = clientKey?.name,
-                clientIp = clientAccess.clientIp.takeUnless { it == "-" },
+                clientIp = clientAccess.clientIp.takeUnless { it == "-" }?.take(64),
                 clientUserAgent = clientUserAgent,
                 alias = alias,
                 channelId = channelId,
