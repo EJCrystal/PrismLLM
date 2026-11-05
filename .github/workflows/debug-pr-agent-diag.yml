@@ -68,7 +68,29 @@ jobs:
           PR_CODE_SUGGESTIONS.EXTRA_INSTRUCTIONS: "Please write all suggestions and explanations in Simplified Chinese (简体中文)."
           PR_DESCRIPTION.EXTRA_INSTRUCTIONS: "Please write the PR description and summary in Simplified Chinese (简体中文)."
 
-      # 第二步：同样环境，但用 python 覆盖 entrypoint 逐段打点。
+      # 第二步：在 runner 上原样复刻包装命令，只换成打点脚本。
+      - name: C - exact wrapper command with instrumentation
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
+          OPENAI.KEY: ${{ secrets.LLM_GATEWAY_KEY }}
+          OPENAI.API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          OPENAI__API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          OPENAI_API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
+          CONFIG.MODEL: openai/deepseek-flash
+          CONFIG.FALLBACK_MODELS: "['openai/deepseek-flash']"
+          CONFIG.CUSTOM_MODEL_MAX_TOKENS: "128000"
+          CONFIG.MAX_MODEL_TOKENS: "64000"
+          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
+          GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
+          GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"
+          PR_REVIEWER.EXTRA_INSTRUCTIONS: "Please write the entire review, summaries, explanations, and advice in Simplified Chinese (简体中文). Pay special attention to security, boundary conditions, and test coverage."
+          PR_CODE_SUGGESTIONS.EXTRA_INSTRUCTIONS: "Please write all suggestions and explanations in Simplified Chinese (简体中文)."
+          PR_DESCRIPTION.EXTRA_INSTRUCTIONS: "Please write the PR description and summary in Simplified Chinese (简体中文)."
+        run: bash .github/debug/run_exact_wrapper.sh
+
+      # 第三步：同样环境，但用 python 覆盖 entrypoint 逐段打点。
       - name: B - instrumented apply_repo_settings
         continue-on-error: true
         env:
