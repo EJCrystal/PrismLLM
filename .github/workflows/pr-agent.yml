@@ -252,7 +252,7 @@ jobs:
             START_EPOCH=$((START_EPOCH - 60))
             while IFS= read -r line; do
               created=$(echo "$line" | jq -r '.createdAt')
-              author=$(echo "$line" | jq -r '.author.login')
+              author=$(echo "$line" | jq -r '.author')
               body=$(echo "$line" | jq -r '.body // ""')
               created_epoch=$(date -d "$created" +%s)
               case "$author" in
@@ -268,7 +268,7 @@ jobs:
             if [ "$landed" != "true" ]; then
               while IFS= read -r line; do
                 created=$(echo "$line" | jq -r '.submittedAt')
-                author=$(echo "$line" | jq -r '.author.login')
+                author=$(echo "$line" | jq -r '.author')
                 body=$(echo "$line" | jq -r '.body // ""')
                 created_epoch=$(date -d "$created" +%s)
                 case "$author" in
