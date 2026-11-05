@@ -8,6 +8,7 @@ import type { AdminAuditLog, Channel, ChannelHealthReport, ChannelKeyState, Heal
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import ActionMenu from './ActionMenu.vue'
+import ChannelProtocols from './ChannelProtocols.vue'
 import { vScrollHint } from '../directives/scrollHint'
 import Modal from './Modal.vue'
 import PriceEditorModal from './PriceEditorModal.vue'
@@ -1167,7 +1168,7 @@ onMounted(load)
                   优先级 <span class="channel-sort-arrow" aria-hidden="true">{{ prioritySortDirection === 'asc' ? '↑' : '↓' }}</span>
                 </button>
               </th>
-              <th>协议</th>
+              <th class="channel-protocols-col">协议</th>
               <th>授权模型</th>
               <th>状态 / 健康</th>
               <th>更新时间</th>
@@ -1227,12 +1228,8 @@ onMounted(load)
                 />
                 <span v-else class="badge neutral">{{ channel.priority ?? 1 }}</span>
               </td>
-              <td>
-                <div class="protocol-badges channel-protocol-list">
-                  <span v-for="protocol in channel.protocols" :key="protocol" class="badge info">
-                    {{ protocol }}
-                  </span>
-                </div>
+              <td class="channel-protocols-col">
+                <ChannelProtocols :protocols="channel.protocols" />
               </td>
               <td>
                 <div v-if="channel.models?.length" class="channel-model-list">
