@@ -23,6 +23,10 @@
   --danger-soft: rgba(248, 113, 113, 0.14);
   --info: #175cd3;
   --info-soft: #eff8ff;
+  /* 推理强度徽标使用紫色，与模型/流式徽标的蓝色区分；不跟随 --info（护眼主题下为棕色）。 */
+  --reasoning: #7c3aed;
+  --reasoning-soft: rgba(124, 58, 237, 0.12);
+  --reasoning-line: rgba(124, 58, 237, 0.3);
   --shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
   --shadow-soft: 0 2px 8px rgba(15, 23, 42, 0.035);
   --radius: 14px;
@@ -54,6 +58,10 @@
   --danger-soft: rgba(248, 113, 113, 0.14);
   --info: #60a5fa;
   --info-soft: rgba(96, 165, 250, 0.14);
+  /* 深色背景上提高亮度，保持同一紫色语义。 */
+  --reasoning: #a78bfa;
+  --reasoning-soft: rgba(167, 139, 250, 0.16);
+  --reasoning-line: rgba(167, 139, 250, 0.38);
   --shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
   --shadow-soft: 0 2px 8px rgba(0, 0, 0, 0.2);
   --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
@@ -5353,6 +5361,12 @@ textarea:disabled {
   white-space: nowrap;
 }
 
+.reasoning-badge {
+  border-color: var(--reasoning-line);
+  background: var(--reasoning-soft);
+  color: var(--reasoning);
+}
+
 .mode-streaming {
   border-color: color-mix(in srgb, var(--info) 28%, var(--line));
   background: var(--info-soft);
@@ -5363,47 +5377,6 @@ textarea:disabled {
   border-color: color-mix(in srgb, var(--success-fill) 28%, var(--line));
   background: var(--success-soft);
   color: var(--success);
-}
-
-.reasoning-none,
-.reasoning-max {
-  color: var(--muted);
-}
-
-.reasoning-custom {
-  border-color: var(--line-strong);
-  background: var(--bg);
-  color: var(--ink);
-}
-
-.reasoning-minimal {
-  border-color: color-mix(in srgb, var(--success-fill) 22%, var(--line));
-  background: var(--success-soft);
-  color: var(--success);
-}
-
-.reasoning-low {
-  border-color: color-mix(in srgb, var(--success-fill) 28%, var(--line));
-  background: var(--success-soft);
-  color: var(--success);
-}
-
-.reasoning-medium {
-  border-color: color-mix(in srgb, var(--info) 28%, var(--line));
-  background: var(--info-soft);
-  color: var(--info);
-}
-
-.reasoning-high {
-  border-color: color-mix(in srgb, var(--warning-fill) 32%, var(--line));
-  background: var(--warning-soft);
-  color: var(--warning);
-}
-
-.reasoning-xhigh {
-  border-color: color-mix(in srgb, var(--danger-fill) 22%, var(--line));
-  background: var(--danger-soft);
-  color: var(--danger);
 }
 
 .duration-cell {

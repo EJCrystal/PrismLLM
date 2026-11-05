@@ -1,13 +1,6 @@
-const REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
-
 export function reasoningEffortLabel(value: string | null | undefined): string {
   const normalized = String(value ?? '').trim().toLowerCase()
   return normalized || 'none'
-}
-
-export function reasoningEffortClass(value: string | null | undefined): string {
-  const label = reasoningEffortLabel(value)
-  return REASONING_LEVELS.has(label) ? `reasoning-${label}` : 'reasoning-custom'
 }
 
 export interface TokenUsageInput {
