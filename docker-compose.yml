@@ -36,7 +36,9 @@ services:
 volumes:
   pgdata:
     name: prism-llm_pgdata
+    external: true
 
 networks:
   default:
     name: prism-llm_default
+    external: true
