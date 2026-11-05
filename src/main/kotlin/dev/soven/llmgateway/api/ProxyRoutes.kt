@@ -87,6 +87,7 @@ import java.util.UUID
 import org.slf4j.LoggerFactory
 
 private val proxyLogger = LoggerFactory.getLogger("dev.soven.llmgateway.api.ProxyRoutes")
+private val USER_AGENT_WHITESPACE = Regex("[\\r\\n\\t]+")
 
 /**
  * 原生协议数据面。负责调用方鉴权、别名路由、流式透传和请求日志。
@@ -172,7 +173,7 @@ private suspend fun handleProxy(
     val clientAccess = requestAccessLogMetadata(call, app.config.trustedProxyNetworks)
     // 复用访问日志的 IP 解析（信任代理、XFF 反向遍历）；UA 单独清洗，避免日志转义把空格变成 %20。
     val clientUserAgent = call.request.headers[HttpHeaders.UserAgent]
-        ?.replace(Regex("[\\r\\n\\t]+"), " ")
+        ?.replace(USER_AGENT_WHITESPACE, " ")
         ?.trim()
         ?.take(300)
         ?.takeUnless { it.isEmpty() }
