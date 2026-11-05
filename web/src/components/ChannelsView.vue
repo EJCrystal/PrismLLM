@@ -8,6 +8,7 @@ import type { AdminAuditLog, Channel, ChannelHealthReport, ChannelKeyState, Heal
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import ActionMenu from './ActionMenu.vue'
+import ChannelProtocols from './ChannelProtocols.vue'
 import { vScrollHint } from '../directives/scrollHint'
 import Modal from './Modal.vue'
 import PriceEditorModal from './PriceEditorModal.vue'
@@ -20,7 +21,7 @@ import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import ChannelHealthModal from './ChannelHealthModal.vue'
-import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthSymbol, channelHealthSuccessRateText } from '../utils/channelHealth'
+import { HEALTH_LABELS, healthPercent, healthSymbol, channelHealthSuccessRateText } from '../utils/channelHealth'
 import { cooldownSummaryText } from '../utils/cooldown'
 import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
@@ -125,14 +126,15 @@ interface RateLimitTarget {
 const channels = ref<Channel[]>([])
 let listRevision = 0
 let listDisposed = false
-const healthWindow = ref<HealthWindow>('24h')
+// 列表健康度固定按 24 小时汇总；时间范围切换交由健康度详情弹窗自行选择。
+const healthWindow: HealthWindow = '24h'
 const healthReport = ref<ChannelHealthReport | null>(null)
 const healthSuccessRateCache = ref<{ window: HealthWindow; rates: Map<string, number | null> } | null>(null)
 const healthTarget = ref<Channel | null>(null)
 const healthLoading = ref(false)
 const healthError = ref('')
 let healthRevision = 0
-const healthByChannel = computed(() => new Map(healthReport.value?.window === healthWindow.value ? healthReport.value.channels.map(row => [row.channelId, row]) : []))
+const healthByChannel = computed(() => new Map(healthReport.value?.window === healthWindow ? healthReport.value.channels.map(row => [row.channelId, row]) : []))
 const cooldownNow = ref(Date.now())
 let cooldownTimer: ReturnType<typeof setInterval> | null = null
 let cooldownRefreshAt = 0
@@ -174,7 +176,7 @@ function channelHealthTitle(channel: Channel): string {
   return `${channel.name}：${row?.reason || (healthLoading.value ? '正在汇总' : '健康度未读取')}；点击查看成功率、延迟、密钥和模型明细`
 }
 function channelSuccessRateText(channel: Channel): string {
-  const cachedRate = healthSuccessRateCache.value?.window === healthWindow.value
+  const cachedRate = healthSuccessRateCache.value?.window === healthWindow
     ? healthSuccessRateCache.value.rates.get(channel.id)
     : undefined
   const cachedRow = cachedRate === undefined ? undefined : { metrics: { successRate: cachedRate } }
@@ -189,7 +191,7 @@ async function loadHealth() {
   healthLoading.value = true
   healthError.value = ''
   try {
-    const result = await api.getChannelHealth(healthWindow.value)
+    const result = await api.getChannelHealth(healthWindow)
     if (request === healthRevision) {
       healthReport.value = result
       const rates = new Map<string, number | null>()
@@ -201,7 +203,6 @@ async function loadHealth() {
     if (request === healthRevision) { healthReport.value = null; syncCooldownTimer(); healthError.value = errorMessage(cause) }
   } finally { if (request === healthRevision) healthLoading.value = false }
 }
-watch(healthWindow, loadHealth)
 onBeforeUnmount(() => {
   listDisposed = true
   healthRevision++
@@ -1151,7 +1152,6 @@ onMounted(load)
       <div v-if="channels.length" class="channel-list-toolbar">
         <span class="channel-sort-note">数字越小，路由优先级越高</span>
         <div class="channel-list-filters" role="group" aria-label="渠道筛选">
-          <FilterSelect v-model="healthWindow" label="健康观察" :clearable="false" :options="HEALTH_WINDOWS.map(option => ({ value: option.id, label: option.label }))" />
           <FilterSelect v-model="channelStatusFilter" label="状态" default-value="all" :options="channelStatusOptions.map(option => ({ value: option.id, label: option.label + '（' + option.count + '）' }))" />
           <FilterSelect v-model="channelModelFilter" label="模型" searchable :options="[{ value: '', label: '全部模型' }, ...channelModelOptions.map(model => ({ value: model, label: model }))]" />
           <button v-if="channelStatusFilter !== 'all' || channelModelFilter" type="button" class="filter-reset" @click="channelStatusFilter = 'all'; channelModelFilter = ''">清除筛选</button>
@@ -1186,7 +1186,7 @@ onMounted(load)
                   优先级 <span class="channel-sort-arrow" aria-hidden="true">{{ prioritySortDirection === 'asc' ? '↑' : '↓' }}</span>
                 </button>
               </th>
-              <th>协议</th>
+              <th class="channel-protocols-col">协议</th>
               <th>授权模型</th>
               <th>状态 / 健康</th>
               <th>更新时间</th>
@@ -1246,12 +1246,8 @@ onMounted(load)
                 />
                 <span v-else class="badge neutral">{{ channel.priority ?? 1 }}</span>
               </td>
-              <td>
-                <div class="protocol-badges channel-protocol-list">
-                  <span v-for="protocol in channel.protocols" :key="protocol" class="badge info">
-                    {{ protocol }}
-                  </span>
-                </div>
+              <td class="channel-protocols-col">
+                <ChannelProtocols :protocols="channel.protocols" />
               </td>
               <td>
                 <div v-if="channel.models?.length" class="channel-model-list">
