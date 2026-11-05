@@ -322,4 +322,25 @@ class TierSharingTest {
             assertEquals(expected, actual, "同渠道内相同 keyPriority 的候选也应保持亲和稳定")
         }
     }
+
+    @Test
+    fun `removing an unrelated cooled-down channel preserves affinity for remaining channels`() {
+        val sharing = TierSharing()
+        val c1 = candidate(0, "c1")
+        val c2 = candidate(0, "c2")
+        val c3 = candidate(0, "c3")
+        val all = listOf(c1, c2, c3)
+
+        // 找一个初始首选不是 c1 的 affinityKey（例如首选为 c2 或 c3）
+        val affinityKey = (1..100).map { "prompt_key_$it" }.first { key ->
+            sharing.order("scope", all, key).first().channel.name != "c1"
+        }
+        val originalFirst = sharing.order("scope", all, affinityKey).first().channel.name
+
+        // 当不相关的渠道 c1 进入冷却被剔除时，剩余可用渠道集为 [c2, c3]
+        val withoutC1 = listOf(c2, c3)
+        val newFirst = sharing.order("scope", withoutC1, affinityKey).first().channel.name
+
+        assertEquals(originalFirst, newFirst, "非首选渠道进入冷却被移除后，原首选渠道亲和性必须保持不变")
+    }
 }

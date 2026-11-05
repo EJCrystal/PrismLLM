@@ -7092,6 +7092,7 @@ class GatewayIntegrationTest {
                 }""")
             }
             assertEquals(HttpStatusCode.OK, response2.status, response2.bodyAsText())
+            awaitRequestLogCount(2)
             val log2 = awaitRequestLog()
             assertEquals(firstChannel, log2.channelName, "相同 prompt_cache_key 请求应保持渠道路由亲和性")
         }

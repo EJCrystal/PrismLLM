@@ -21,12 +21,13 @@ class TierSharing {
 
     /**
      * 按 scope（对外模型 ID）轮转同档候选的起点。首个请求从档内顺序的第一名开始。
-     * 当提供 affinityKey 时，使用哈希亲和性代替原子自增轮询，稳定路由至相同候选。
+     * 当提供 affinityKey 时，使用最高随机权重哈希（HRW/Rendezvous Hashing）独立计算亲和分数，
+     * 避免因无关渠道进入冷却改变剩余可用渠道的亲和目标，保持缓存亲和稳定。
      */
     fun order(scope: String, candidates: List<RouteCandidate>, affinityKey: String? = null): List<RouteCandidate> {
         if (candidates.size <= 1) return candidates
         val channelOffset = if (affinityKey != null) {
-            affinityOffset("$scope#channel#$affinityKey")
+            0L
         } else {
             channelCounters.computeIfAbsent(scope) { AtomicLong() }.getAndIncrement()
         }
@@ -43,11 +44,19 @@ class TierSharing {
         affinityKey: String?,
     ): List<RouteCandidate> {
         val channels = tier.groupBy { it.channel.id }.values.toList()
-        return rotateGroups(channels, channelOffset).flatMapIndexed { channelIndex, channelCandidates ->
+        val orderedChannels = if (affinityKey != null) {
+            channels.sortedByDescending { group ->
+                val channelId = group.first().channel.id
+                affinityOffset("$affinityKey#$scope#channel#$channelId")
+            }
+        } else {
+            rotateGroups(channels, channelOffset)
+        }
+        return orderedChannels.flatMapIndexed { channelIndex, channelCandidates ->
             val channelId = channelCandidates.first().channel.id
             val counterKey = "$scope|$channelId"
             val keyOffset = if (affinityKey != null) {
-                affinityOffset("$counterKey#key#$affinityKey")
+                0L
             } else if (channelIndex == 0) {
                 // 只推进当前首选渠道的密钥计数，避免渠道轮转与密钥轮转同步造成组合偏置。
                 keyCounters.computeIfAbsent(counterKey) { AtomicLong() }.getAndIncrement()
@@ -58,9 +67,17 @@ class TierSharing {
                 .groupBy { it.key.priority }
                 .toSortedMap()
                 .flatMap { (_, keyTier) ->
-                    // 同档密钥轮询或亲和；同一密钥内的多个上游模型名保持候选原有稳定顺序。
+                    // 同档密钥轮询或基于 HRW 的独立亲和排序；同一密钥内的多个上游模型名保持候选原有稳定顺序。
                     val keys = keyTier.groupBy { it.key.id }.values.toList()
-                    rotateGroups(keys, keyOffset).flatten()
+                    val orderedKeys = if (affinityKey != null) {
+                        keys.sortedByDescending { keyGroup ->
+                            val keyId = keyGroup.first().key.id
+                            affinityOffset("$affinityKey#$counterKey#key#$keyId")
+                        }
+                    } else {
+                        rotateGroups(keys, keyOffset)
+                    }
+                    orderedKeys.flatten()
                 }
         }
     }
@@ -77,6 +94,12 @@ class TierSharing {
             hash = hash xor key[i].code.toLong()
             hash *= 1099511628211L
         }
+        // SplitMix64 finalizer 提供强雪崩与均匀伪随机分布，避免哈希偏置
+        hash = hash xor (hash ushr 30)
+        hash *= -4658895280553007687L
+        hash = hash xor (hash ushr 27)
+        hash *= -7723592293117605633L
+        hash = hash xor (hash ushr 31)
         return hash and Long.MAX_VALUE
     }
 }
