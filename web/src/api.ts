@@ -130,7 +130,7 @@ export const api = {
 
   listChannels: () => requestList<Channel>('/channels'),
   getChannelHealth: (window: HealthWindow = '24h') => request<ChannelHealthReport>('/channel-health?' + new URLSearchParams({ window })),
-  getChannelHealthDetail: (id: string, window: HealthWindow = '24h') => request<ChannelHealthDetail>(`/channels/${encodeURIComponent(id)}/health?` + new URLSearchParams({ window })),
+  getChannelHealthDetail: (id: string, window: HealthWindow = '24h', options: RequestOptions = {}) => request<ChannelHealthDetail>(`/channels/${encodeURIComponent(id)}/health?` + new URLSearchParams({ window }), options),
   clearChannelCooldown: (id: string, payload: { scope: 'channel' | 'key' | 'candidate'; keyId?: string; upstreamModel?: string }) =>
     request<null>(`/channels/${encodeURIComponent(id)}/cooldown/clear`, { method: 'POST', body: JSON.stringify(payload) }),
   listQuotaProviders: () => requestList<QuotaProvider>('/quota-providers'),

@@ -21,21 +21,39 @@ const hasCooldownCleared = ref(false)
 const hasManualRefreshed = ref(false)
 const manualRefreshing = ref(false)
 let revision = 0
-async function load() {
+let loadController: AbortController | null = null
+async function load(timeoutMs = 15_000) {
+  loadController?.abort()
+  const controller = new AbortController()
+  loadController = controller
   const request = ++revision
   loading.value = true
   error.value = ''
   detail.value = null
   selectedBucket.value = null
+  const timer = setTimeout(() => { controller.abort() }, timeoutMs)
   try {
-    const result = await api.getChannelHealthDetail(props.channel.id, window.value)
+    const result = await api.getChannelHealthDetail(props.channel.id, window.value, { signal: controller.signal })
     if (request === revision) detail.value = result
   } catch (cause) {
-    if (request === revision) error.value = cause instanceof Error ? cause.message : '读取渠道健康度失败，请重试'
-  } finally { if (request === revision) loading.value = false }
+    if (request === revision) {
+      if (controller.signal.aborted) {
+        error.value = '读取渠道健康度超时，请重试'
+      } else {
+        error.value = cause instanceof Error ? cause.message : '读取渠道健康度失败，请重试'
+      }
+    }
+  } finally {
+    clearTimeout(timer)
+    if (loadController === controller) loadController = null
+    if (request === revision) loading.value = false
+  }
 }
-watch([window, () => props.channel.id], load, { immediate: true })
-onBeforeUnmount(() => { revision++ })
+watch([window, () => props.channel.id], () => void load(), { immediate: true })
+onBeforeUnmount(() => {
+  revision++
+  loadController?.abort()
+})
 const summary = computed(() => detail.value?.report.channels[0])
 const metrics = computed(() => summary.value?.metrics)
 const rows = computed<HealthBreakdown[]>(() => detail.value?.[dimension.value] || [])
