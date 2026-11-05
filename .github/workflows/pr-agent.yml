@@ -80,28 +80,10 @@ jobs:
             if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
               TARGET_PR_URL="https://api.github.com/repos/${REPO}/pulls/${DISPATCH_PR}"
             fi
-            export TARGET_PR_URL
 
-            python3 -c '
-          import json, os
-          data = {
-              "action": "created",
-              "issue": {
-                  "pull_request": {
-                      "url": os.environ["TARGET_PR_URL"]
-                  }
-              },
-              "comment": {
-                  "id": 1,
-                  "body": "/review"
-              },
-              "sender": {
-                  "type": "User"
-              }
-          }
-          with open(os.environ["GITHUB_EVENT_PATH"], "w", encoding="utf-8") as f:
-              json.dump(data, f)
-          '
+            jq -n --arg url "$TARGET_PR_URL" \
+              '{action:"created",issue:{pull_request:{url:$url}},comment:{id:1,body:"/review"},sender:{type:"User"}}' \
+              > "$GITHUB_EVENT_PATH"
             echo "GITHUB_EVENT_NAME=issue_comment" >> "$GITHUB_ENV"
           fi
 
