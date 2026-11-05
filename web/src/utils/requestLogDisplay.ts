@@ -86,11 +86,11 @@ const PROTOCOL_ENDPOINTS: Record<string, ProtocolEndpointDefinition> = {
 
 export function protocolEndpoint(value: string | null | undefined, stream?: boolean | null): ProtocolEndpointInfo {
   const normalized = String(value ?? '').trim()
-  const definition = PROTOCOL_ENDPOINTS[normalized]
-  if (!definition) {
+  if (!Object.hasOwn(PROTOCOL_ENDPOINTS, normalized)) {
     const label = protocolLabel(normalized)
     return { value: normalized, label, shortName: label, apiFormat: label, endpointPath: '', known: false }
   }
+  const definition = PROTOCOL_ENDPOINTS[normalized]
   const endpointPath = normalized === 'gemini' && stream
     ? '/v1beta/models/{model}:streamGenerateContent?alt=sse'
     : definition.endpointPath

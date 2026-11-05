@@ -271,8 +271,19 @@ jobs:
         run: |
           set -euo pipefail
           # dispatch/check_run 路径 PR_NUMBER 可能为空，从 PR API 反查。
-          if [ -z "${PR_NUMBER}" ]; then
-            PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number')
+          if [ -z "${PR_NUMBER}" ] || [ "${PR_NUMBER}" = "null" ]; then
+            PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number // empty')
+          fi
+
+          if [ -z "${PR_NUMBER}" ] || [ "${PR_NUMBER}" = "null" ]; then
+            echo "未找到对应的 PR，无法验证审查产出。"
+            if [ -n "${HEAD_SHA}" ]; then
+              gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+                -f state="failure" \
+                -f context="AI Review Gate" \
+                -f description="未找到关联 PR，无法验证审查" || true
+            fi
+            exit 1
           fi
 
           landed=false
@@ -282,10 +293,11 @@ jobs:
             START_EPOCH=$(gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}" -q .run_started_at | xargs -I{} date -d "{}" +%s)
             START_EPOCH=$((START_EPOCH - 60))
             while IFS= read -r line; do
-              created=$(echo "$line" | jq -r '.createdAt')
+              created=$(echo "$line" | jq -r '.createdAt // empty')
+              [ -z "$created" ] && continue
               author=$(echo "$line" | jq -r '.author')
               body=$(echo "$line" | jq -r '.body // ""')
-              created_epoch=$(date -d "$created" +%s)
+              created_epoch=$(date -d "$created" +%s 2>/dev/null || echo 0)
               case "$author" in
                 github-actions*|pr-agent*|qodo*)
                   if [ "$created_epoch" -ge "$START_EPOCH" ] \
@@ -298,10 +310,11 @@ jobs:
             done < <(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json comments --jq '.comments[] | {createdAt, author: (.author.login // ""), body: (.body // "")}')
             if [ "$landed" != "true" ]; then
               while IFS= read -r line; do
-                created=$(echo "$line" | jq -r '.submittedAt')
+                created=$(echo "$line" | jq -r '.submittedAt // empty')
+                [ -z "$created" ] && continue
                 author=$(echo "$line" | jq -r '.author')
                 body=$(echo "$line" | jq -r '.body // ""')
-                created_epoch=$(date -d "$created" +%s)
+                created_epoch=$(date -d "$created" +%s 2>/dev/null || echo 0)
                 case "$author" in
                   github-actions*|pr-agent*|qodo*)
                     if [ "$created_epoch" -ge "$START_EPOCH" ] \

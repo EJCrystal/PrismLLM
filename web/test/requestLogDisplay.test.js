@@ -57,6 +57,8 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     assert.equal(protocolEndpoint('gemini', true).endpointPath, '/v1beta/models/{model}:streamGenerateContent?alt=sse')
     assert.equal(protocolEndpoint('custom_protocol').known, false)
     assert.equal(protocolEndpoint('custom_protocol').apiFormat, 'custom_protocol')
+    assert.equal(protocolEndpoint('constructor').known, false)
+    assert.equal(protocolEndpoint('toString').known, false)
     assert.equal(protocolEndpoint(null).known, false)
   })
 
