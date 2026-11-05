@@ -1,6 +1,60 @@
-import type { ChannelModelMapping } from '../types/api'
+import type { ChannelModelMapping, ProtocolId } from '../types/api'
 
 export const VISIBLE_MODEL_LIMIT = 3
+
+export const ORDERED_PROTOCOLS: readonly ProtocolId[] = [
+  'chat_completions',
+  'responses',
+  'messages',
+  'gemini',
+] as const
+
+export interface ProtocolSlotConfig {
+  label: string
+  shortName: string
+}
+
+export const PROTOCOL_CONFIG: Record<ProtocolId, ProtocolSlotConfig> = {
+  chat_completions: { label: 'OpenAI Chat Completions', shortName: 'Chat' },
+  responses: { label: 'OpenAI Responses', shortName: 'Responses' },
+  messages: { label: 'Anthropic Messages', shortName: 'Messages' },
+  gemini: { label: 'Google Gemini', shortName: 'Gemini' },
+}
+
+export interface ProtocolSlotInfo {
+  protocol: ProtocolId
+  label: string
+  shortName: string
+  enabled: boolean
+  priority: number | null
+  title: string
+}
+
+/**
+ * 计算渠道协议槽位信息（固定按 chat_completions, responses, messages, gemini 顺序排列）。
+ * 若渠道启用了该协议，enabled 为 true 且 priority 为在渠道 protocols 数组中的 1-based 优先级序号；
+ * 若未启用，enabled 为 false，priority 为 null。
+ */
+export function channelProtocolSlots(protocols: readonly string[] | null | undefined): ProtocolSlotInfo[] {
+  const activeList = Array.isArray(protocols) ? protocols : []
+  return ORDERED_PROTOCOLS.map((proto) => {
+    const index = activeList.indexOf(proto)
+    const enabled = index !== -1
+    const priority = enabled ? index + 1 : null
+    const config = PROTOCOL_CONFIG[proto]
+    const title = enabled
+      ? `${config.label} · 优先级 ${priority}`
+      : `${config.label} · 未配置`
+    return {
+      protocol: proto,
+      label: config.label,
+      shortName: config.shortName,
+      enabled,
+      priority,
+      title,
+    }
+  })
+}
 
 export interface DisplayChannel {
   models?: string[] | null

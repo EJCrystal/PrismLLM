@@ -4873,6 +4873,58 @@ textarea:disabled {
   font-size: 10px;
 }
 
+.channels-table th.channel-protocols-col,
+.channels-table td.channel-protocols-col {
+  width: 124px;
+  min-width: 124px;
+  max-width: 124px;
+  white-space: nowrap;
+}
+
+.channel-protocol-matrix {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  vertical-align: middle;
+}
+
+.channel-protocol-slot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  transition: transform 0.15s ease, opacity 0.15s ease, filter 0.15s ease;
+  user-select: none;
+}
+
+.channel-protocol-slot .protocol-svg {
+  display: block;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.channel-protocol-slot.is-active {
+  cursor: pointer;
+}
+
+.channel-protocol-slot.is-active:hover {
+  transform: translateY(-1.5px) scale(1.06);
+}
+
+.channel-protocol-slot.is-disabled {
+  opacity: 0.22;
+  filter: grayscale(1);
+  cursor: default;
+}
+
+.channel-protocol-slot.is-disabled:hover {
+  opacity: 0.45;
+  filter: grayscale(0.85);
+}
+
 .channels-table td:nth-child(6),
 .channels-table th:nth-child(6) {
   width: 150px;

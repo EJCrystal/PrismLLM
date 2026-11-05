@@ -9,6 +9,8 @@ import {
   hiddenModelsTitle,
   channelLandingUrl,
   recentProbeByChannel,
+  ORDERED_PROTOCOLS,
+  channelProtocolSlots,
 } from '../src/utils/channelDisplay'
 
 describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
@@ -228,6 +230,86 @@ describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
       assert.equal(visible[0].displayName, 'unmapped-model')
       assert.equal(visible[0].isCustom, false)
       assert.equal(visible[0].title, '')
+    })
+  })
+
+  describe('channelProtocolSlots: 渠道协议固定矩阵与优先级展示', () => {
+    it('协议槽位严格按 chat_completions -> responses -> messages -> gemini 顺序排列', () => {
+      assert.deepEqual(ORDERED_PROTOCOLS, [
+        'chat_completions',
+        'responses',
+        'messages',
+        'gemini',
+      ])
+      const slots = channelProtocolSlots([])
+      assert.equal(slots.length, 4)
+      assert.deepEqual(
+        slots.map((s) => s.protocol),
+        ['chat_completions', 'responses', 'messages', 'gemini'],
+      )
+    })
+
+    it('未启用或缺省时所有槽位处于未配置置灰状态', () => {
+      const slotsFromEmpty = channelProtocolSlots([])
+      for (const slot of slotsFromEmpty) {
+        assert.equal(slot.enabled, false)
+        assert.equal(slot.priority, null)
+        assert.match(slot.title, /· 未配置$/)
+      }
+
+      const slotsFromNull = channelProtocolSlots(null)
+      assert.equal(slotsFromNull.length, 4)
+      assert.equal(slotsFromNull[0].enabled, false)
+
+      const slotsFromUndefined = channelProtocolSlots(undefined)
+      assert.equal(slotsFromUndefined.length, 4)
+      assert.equal(slotsFromUndefined[0].enabled, false)
+    })
+
+    it('部分启用时槽位保持固定位置，启用项标明优先级与对应悬停提示', () => {
+      // 渠道优先使用 Anthropic Messages，回退到 OpenAI Chat
+      const slots = channelProtocolSlots(['messages', 'chat_completions'])
+
+      // slot 0: chat_completions (第二顺位)
+      assert.equal(slots[0].protocol, 'chat_completions')
+      assert.equal(slots[0].enabled, true)
+      assert.equal(slots[0].priority, 2)
+      assert.equal(slots[0].title, 'OpenAI Chat Completions · 优先级 2')
+
+      // slot 1: responses (未配置)
+      assert.equal(slots[1].protocol, 'responses')
+      assert.equal(slots[1].enabled, false)
+      assert.equal(slots[1].priority, null)
+      assert.equal(slots[1].title, 'OpenAI Responses · 未配置')
+
+      // slot 2: messages (第一顺位)
+      assert.equal(slots[2].protocol, 'messages')
+      assert.equal(slots[2].enabled, true)
+      assert.equal(slots[2].priority, 1)
+      assert.equal(slots[2].title, 'Anthropic Messages · 优先级 1')
+
+      // slot 3: gemini (未配置)
+      assert.equal(slots[3].protocol, 'gemini')
+      assert.equal(slots[3].enabled, false)
+      assert.equal(slots[3].priority, null)
+      assert.equal(slots[3].title, 'Google Gemini · 未配置')
+    })
+
+    it('全部启用时无论自定义顺序如何，位置固定且各自优先级序号准确', () => {
+      // 倒序配置
+      const slots = channelProtocolSlots(['gemini', 'messages', 'responses', 'chat_completions'])
+      assert.deepEqual(
+        slots.map((s) => s.protocol),
+        ['chat_completions', 'responses', 'messages', 'gemini'],
+      )
+      assert.deepEqual(
+        slots.map((s) => s.priority),
+        [4, 3, 2, 1],
+      )
+      assert.equal(slots[0].title, 'OpenAI Chat Completions · 优先级 4')
+      assert.equal(slots[1].title, 'OpenAI Responses · 优先级 3')
+      assert.equal(slots[2].title, 'Anthropic Messages · 优先级 2')
+      assert.equal(slots[3].title, 'Google Gemini · 优先级 1')
     })
   })
 })
