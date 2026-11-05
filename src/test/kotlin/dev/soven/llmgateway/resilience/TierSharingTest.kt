@@ -324,6 +324,18 @@ class TierSharingTest {
     }
 
     @Test
+    fun `affinity key is truncated so oversized client input cannot amplify hashing`() {
+        val sharing = TierSharing()
+        val candidates = (1..4).map { candidate(0, "channel-$it") }
+
+        val prefix = "k".repeat(512)
+        val expected = sharing.order("shared-model", candidates, prefix).map { it.channel.name }
+        val oversized = sharing.order("shared-model", candidates, prefix + "x".repeat(100_000)).map { it.channel.name }
+
+        assertEquals(expected, oversized, "超过 512 字符的部分不参与亲和计算，避免超长 key 反复哈希")
+    }
+
+    @Test
     fun `removing an unrelated cooled-down channel preserves affinity for remaining channels`() {
         val sharing = TierSharing()
         val c1 = candidate(0, "c1")

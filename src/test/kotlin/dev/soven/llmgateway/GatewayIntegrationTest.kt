@@ -7100,6 +7100,51 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `X-Prompt-Cache-Key header fallback preserves affinity and body field wins`() = runBlocking {
+        val channels = (1..4).map { index ->
+            createChannelWithBaseUrl(
+                name = "header-affinity-ch$index",
+                baseUrl = fake.baseUrl + "/ok/v1",
+                protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
+                modelMappings = listOf(ChannelModelRecord("gpt-4o-mini")),
+            )
+        }
+        exposeAsModel("header-affinity-model", *channels.map { it to "gpt-4o-mini" }.toTypedArray())
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            var sent = 0
+
+            suspend fun send(headerKey: String?, bodyKey: String?): String {
+                val bodyKeyField = bodyKey?.let { """"prompt_cache_key": $it,""" } ?: ""
+                val response = client.post("/v1/chat/completions") {
+                    header(HttpHeaders.Authorization, "Bearer $key")
+                    if (headerKey != null) header("X-Prompt-Cache-Key", headerKey)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"model":"header-affinity-model",$bodyKeyField"messages":[{"role":"user","content":"hi"}]}""")
+                }
+                assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+                sent += 1
+                awaitRequestLogCount(sent)
+                return awaitRequestLog().channelName ?: error("请求日志缺少渠道名")
+            }
+
+            // 仅凭请求头即可建立亲和：相同 header 命中同一渠道
+            val headerOnly = send("header-only-key", null)
+            assertEquals(headerOnly, send("header-only-key", null), "相同 X-Prompt-Cache-Key 应保持渠道路由亲和性")
+
+            // 请求体空白串必须被过滤并回退到请求头，否则所有请求会吸附到同一渠道
+            val blankBody = send("header-only-key", "\"   \"")
+            assertEquals(headerOnly, blankBody, "空白 prompt_cache_key 应回退到 X-Prompt-Cache-Key")
+
+            // 请求体优先于请求头：换掉 header 不影响命中渠道
+            val bodyFirst = send("ignored-header-a", "\"body-key\"")
+            assertEquals(bodyFirst, send("ignored-header-b", "\"body-key\""), "请求体 prompt_cache_key 应优先于请求头")
+        }
+    }
+
+    @Test
     fun `six explicit converters route non streaming requests and record actual protocols`() = runBlocking {
         assertSixConverterRoutes(stream = false)
     }
