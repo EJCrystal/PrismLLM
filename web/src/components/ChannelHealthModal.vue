@@ -20,6 +20,7 @@ const selectedBucket = ref<number | null>(null)
 const hasCooldownCleared = ref(false)
 const hasManualRefreshed = ref(false)
 const manualRefreshing = ref(false)
+const hasUncertainCooldownClear = ref(false)
 let revision = 0
 let loadController: AbortController | null = null
 async function load(timeoutMs = 15_000) {
@@ -96,6 +97,7 @@ async function clearCooldown(scope: 'channel' | 'key' | 'candidate', keyId?: str
     await load()
   } catch (cause) {
     if (controller.signal.aborted) {
+      hasUncertainCooldownClear.value = true
       error.value = '解除冷却请求超时，请刷新以确认冷却状态'
     } else {
       error.value = cause instanceof Error ? cause.message : '解除冷却失败，请重试'
@@ -121,7 +123,7 @@ async function handleManualRefresh() {
 }
 function tryClose() {
   if (clearing.value || manualRefreshing.value) return
-  emit('close', hasCooldownCleared.value || hasManualRefreshed.value)
+  emit('close', hasCooldownCleared.value || hasManualRefreshed.value || hasUncertainCooldownClear.value)
 }
 </script>
 
