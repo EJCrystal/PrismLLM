@@ -65,59 +65,17 @@ jobs:
             -f context="AI Review Gate" \
             -f description="CodeRabbit 审查通过" || true
 
-  # 2.5 CodeRabbit 因 star < 10 跳过审查时，自动帮它发一条 @coderabbitai review，
-  #     让它真正参与审查而不是被静默跳过；PR-Agent 兜底不受影响，两者互补。
-  #     同一 HEAD SHA 只邀请一次，连续 push 不会刷屏。
-  request_coderabbit_review:
-    if: >-
-      github.event_name == 'check_run' &&
-      github.event.check_run.app.slug == 'coderabbitai' &&
-      github.event.check_run.conclusion == 'skipped'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Invite CodeRabbit to review once per head SHA
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          CHECK_PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
-          HEAD_SHA: ${{ github.event.check_run.head_sha }}
-        run: |
-          PR_NUMBER=""
-          if [ -n "$CHECK_PR_URL" ] && [ "$CHECK_PR_URL" != "null" ]; then
-            PR_NUMBER="${CHECK_PR_URL##*/}"
-          else
-            PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number // empty')
-          fi
-          if [ -z "$PR_NUMBER" ]; then
-            echo "未找到对应的 PR，跳过。"
-            exit 0
-          fi
-          STARS=$(gh api "repos/${REPO}" -q .stargazers_count)
-          if [ "${STARS}" -ge 10 ]; then
-            echo "仓库已有 ${STARS} stars，CodeRabbit 后续会自动审查，无需邀请。"
-            exit 0
-          fi
-          MARKER="<!-- coderabbit-skip-invite:${HEAD_SHA} -->"
-          if gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
-              -q "[.[] | select(.body | contains(\"${MARKER}\"))] | length" \
-              | grep -qv '^0$'; then
-            echo "该 HEAD SHA 已邀请过 CodeRabbit 审查，跳过。"
-            exit 0
-          fi
-          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-            -f body="${MARKER}
-          > 💡 **提示**：当前仓库 star 数不足 10，CodeRabbit 已跳过自动审查，已自动发送 @coderabbitai review 邀请其参与本次审查。PR-Agent 兜底审查不受影响。" || true
-          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-            -f body="@coderabbitai review" || true
-          sleep 30
-
-  # 3. 兜底与手动触发：CodeRabbit 未完成审查或手动 Run workflow 时，发一条真实的 /review 评论，
-  #    统一走 issue_comment 路径（job 4）。容器内伪造事件不可行：$GITHUB_ENV 无法覆盖
-  #    GITHUB_EVENT_NAME，PR-Agent 收到的仍是 check_run/workflow_dispatch，会在
-  #    apply_repo_settings 后直接 exit 0。
-  #    /review 必须用 PAT 发送：GITHUB_TOKEN 发出的评论不会触发新的 workflow，
-  #    且 sender 为 Bot，会被 job 4 与 PR-Agent 自身的 Bot 过滤跳过。
-  trigger_pr_agent:
+  # 3. 审查路由：CodeRabbit 优先，PR-Agent 仅在 CodeRabbit 确认不可用时兜底。
+  #    - CodeRabbit 跳过（star < 10 不自动审查）：只邀请 CodeRabbit，不发 /review；
+  #      邀请后若 CodeRabbit 限流，会产生新的 check_run 再次进入本 job 走兜底；
+  #      若等待期内 CodeRabbit 毫无响应，同样兜底。
+  #    - CodeRabbit 限流、超额或失败：发 /review 交给 PR-Agent（job 4）。
+  #    - 手动 Run workflow：明确指定 PR-Agent，直接发 /review。
+  #    同一 commit 已有对应的触发评论（含人工发的）就不再重复发送，避免评论区噪声。
+  #    触发评论必须用 PAT 发送：GITHUB_TOKEN 发出的评论不会触发新的 workflow，
+  #    sender 为 Bot 会被 job 4 与 PR-Agent 过滤，CodeRabbit 也不响应机器人发起的指令。
+  route_review:
+    # Actions 表达式的 contains() 对字符串不区分大小写，'Rate Limited' 等写法同样命中。
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (
@@ -126,12 +84,15 @@ jobs:
         (
           github.event.check_run.conclusion != 'success' ||
           contains(github.event.check_run.output.title, 'rate limited') ||
-          contains(github.event.check_run.output.summary, 'Rate limited')
+          contains(github.event.check_run.output.summary, 'rate limited')
         )
       )
+    concurrency:
+      group: review-route-${{ github.event.check_run.head_sha || inputs.pr_number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
-      - name: Post /review to trigger PR-Agent
+      - name: Route review to CodeRabbit or PR-Agent
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRIGGER_TOKEN: ${{ secrets.PR_AGENT_TRIGGER_TOKEN }}
@@ -139,8 +100,13 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           CHECK_PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
           CHECK_HEAD_SHA: ${{ github.event.check_run.head_sha }}
+          CHECK_RUN_ID: ${{ github.event.check_run.id }}
+          CHECK_CONCLUSION: ${{ github.event.check_run.conclusion }}
+          CHECK_TITLE: ${{ github.event.check_run.output.title }}
+          CHECK_SUMMARY: ${{ github.event.check_run.output.summary }}
           DISPATCH_PR: ${{ inputs.pr_number }}
-          DISPLAY_MODEL: ${{ vars.LLM_GATEWAY_REVIEW_MODEL || 'deepseek-chat' }}
+          # CodeRabbit 接受邀请后通常数秒内就会创建新的 check run
+          INVITE_WAIT_SECONDS: "300"
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "check_run" ]; then
@@ -151,7 +117,7 @@ jobs:
               PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number // empty')
             fi
             if [ -z "$PR_NUMBER" ]; then
-              echo "未找到对应的 PR，跳过 check_run 兜底审查。"
+              echo "未找到对应的 PR，跳过。"
               exit 0
             fi
           else
@@ -169,34 +135,113 @@ jobs:
           }
 
           if [ -z "$TRIGGER_TOKEN" ]; then
-            echo "::error::未配置 secret PR_AGENT_TRIGGER_TOKEN，无法触发 PR-Agent 兜底审查"
-            set_gate failure "缺少 PR_AGENT_TRIGGER_TOKEN，无法触发 PR-Agent"
+            echo "::error::未配置 secret PR_AGENT_TRIGGER_TOKEN，无法触发审查"
+            set_gate failure "缺少 PR_AGENT_TRIGGER_TOKEN，无法触发审查"
             exit 1
           fi
 
-          # CodeRabbit 的 check 可能在同一 SHA 上多次结束，兜底只触发一次；手动触发不去重。
-          MARKER="<!-- pr-agent-fallback:${HEAD_SHA} -->"
-          if [ "$EVENT_NAME" = "check_run" ]; then
-            SEEN=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
-              --jq ".[] | select((.body // \"\") | contains(\"${MARKER}\")) | .id" | wc -l)
-            if [ "$SEEN" -gt 0 ]; then
-              echo "该 HEAD SHA 已触发过 PR-Agent 兜底审查，跳过。"
+          # 本 commit 的起算时间：init_gate 在 push 时写入的首个门禁状态，取不到则用提交时间。
+          SINCE=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/statuses" --paginate \
+            --jq '.[] | select(.context == "AI Review Gate") | .created_at' | sort | head -1)
+          if [ -z "$SINCE" ]; then
+            SINCE=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" -q .commit.committer.date)
+          fi
+
+          # 本 commit 推送后是否已有人（含本 workflow、人工）发过匹配的触发指令。
+          has_trigger() {
+            local count
+            count=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
+              | jq -s --arg since "$SINCE" --arg re "$1" \
+                  '[.[] | select(.created_at >= $since)
+                        | select((.body // "") | gsub("^\\s+|\\s+$"; "") | test($re; "i"))] | length')
+            [ "$count" -gt 0 ]
+          }
+
+          post_as_pat() {
+            if ! GH_TOKEN="$TRIGGER_TOKEN" gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+                -f body="$1" > /dev/null; then
+              echo "::error::使用 PR_AGENT_TRIGGER_TOKEN 发送「$1」失败，请检查 token 是否过期或缺少写权限"
+              set_gate failure "发送审查指令失败，请检查 PR_AGENT_TRIGGER_TOKEN"
+              exit 1
+            fi
+          }
+
+          # CodeRabbit 在本 commit 上最新的 check run id（filter=all 才能看到被替换掉的旧 run）。
+          latest_coderabbit_run() {
+            gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100" \
+              --jq '[.check_runs[] | select(.app.slug == "coderabbitai") | .id] | max // 0'
+          }
+
+          # PR 级切换标记：CodeRabbit 在本 PR 上限流或对邀请无响应后写入，此后直到合并都只用 PR-Agent。
+          SWITCH_MARKER="<!-- pr-agent-fallback-pr -->"
+          pr_switched() {
+            local count
+            count=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
+              | jq -s --arg m "$SWITCH_MARKER" \
+                  '[.[] | select(.user.login == "github-actions[bot]" and ((.body // "") | contains($m)))] | length')
+            [ "$count" -gt 0 ]
+          }
+
+          # $1 原因；$2 为 sticky 时把本 PR 永久切换到 PR-Agent（仅首次切换时留一条提示）。
+          fallback_to_pr_agent() {
+            if [ "${2:-}" = "sticky" ] && ! pr_switched; then
+              gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+                -f body="${SWITCH_MARKER}
+          > 💡 **提示**：检测到 CodeRabbit 不可用（$1），本 PR 合并前的审查将改由 **PR-Agent** 兜底，不再邀请 CodeRabbit。" > /dev/null
+            fi
+            if has_trigger '^/review$'; then
+              echo "本 commit 已有 /review，不再重复触发 PR-Agent。"
               exit 0
             fi
-            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-              -f body="${MARKER}
-          > 💡 **提示**：检测到 CodeRabbit 未完成审查（跳过或超额），已自动无缝切换至 **PR-Agent（模型：${DISPLAY_MODEL}）** 进行代码审查与改进建议。"
+            echo "CodeRabbit 不可用（$1），交给 PR-Agent。"
+            post_as_pat "/review"
+            set_gate pending "已触发 PR-Agent 审查（CodeRabbit 不可用）..."
+            exit 0
+          }
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            post_as_pat "/review"
+            set_gate pending "已手动触发 PR-Agent 审查，等待结果..."
+            exit 0
           fi
 
-          # 指令必须独占评论正文，PR-Agent 只识别以 / 开头的评论。
-          if ! GH_TOKEN="$TRIGGER_TOKEN" gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-              -f body="/review" > /dev/null; then
-            echo "::error::使用 PR_AGENT_TRIGGER_TOKEN 发送 /review 失败，请检查 token 是否过期或缺少 Issues 写权限"
-            set_gate failure "发送 /review 失败，请检查 PR_AGENT_TRIGGER_TOKEN"
-            exit 1
+          # 同一 commit 已有更新的 CodeRabbit check run 时，以新的为准，本次事件已过期。
+          if [ "$(latest_coderabbit_run)" -gt "$CHECK_RUN_ID" ]; then
+            echo "CodeRabbit 在本 commit 上已有更新的 check run，本次事件已过期，跳过。"
+            exit 0
           fi
-          set_gate pending "已触发 PR-Agent 审查，等待结果..."
-          echo "已在 PR #${PR_NUMBER} 发送 /review（HEAD ${HEAD_SHA}）"
+
+          if pr_switched; then
+            fallback_to_pr_agent "本 PR 此前已切换到 PR-Agent"
+          fi
+
+          if printf '%s\n%s\n' "$CHECK_TITLE" "$CHECK_SUMMARY" | grep -qi "rate limited"; then
+            fallback_to_pr_agent "限流" sticky
+          fi
+
+          if [ "$CHECK_CONCLUSION" != "skipped" ]; then
+            # 失败、取消、超时多为偶发，只对本 commit 兜底，下个 commit 仍先用 CodeRabbit。
+            fallback_to_pr_agent "check run 结论为 ${CHECK_CONCLUSION}"
+          fi
+
+          if has_trigger '^@coderabbitai (full )?review$'; then
+            fallback_to_pr_agent "邀请后仍跳过审查" sticky
+          fi
+
+          echo "CodeRabbit 跳过了自动审查，先邀请 CodeRabbit。"
+          post_as_pat "@coderabbitai review"
+          set_gate pending "已邀请 CodeRabbit 审查，等待结果..."
+
+          # CodeRabbit 接受邀请（含随后限流）都会创建新的 check run，完成时由新事件继续路由。
+          deadline=$(( $(date +%s) + INVITE_WAIT_SECONDS ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            sleep 15
+            if [ "$(latest_coderabbit_run)" -gt "$CHECK_RUN_ID" ]; then
+              echo "CodeRabbit 已开始处理，后续由它的 check run 结果决定是否兜底。"
+              exit 0
+            fi
+          done
+          fallback_to_pr_agent "邀请后 ${INVITE_WAIT_SECONDS} 秒内无响应" sticky
 
   # 4. 核心审查 Job：评论区 /review 等指令（含 job 3 代发的 /review）
   pr_agent_review:
