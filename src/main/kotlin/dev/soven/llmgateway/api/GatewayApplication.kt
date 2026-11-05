@@ -441,6 +441,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             allowHeader(HttpHeaders.ContentType)
             allowHeader("X-CSRF-Token")
             allowHeader("X-Request-Id")
+            allowHeader("X-Prompt-Cache-Key")
             allowHeader("traceparent")
             exposeHeader("traceparent")
             exposeHeader("X-Trace-Id")

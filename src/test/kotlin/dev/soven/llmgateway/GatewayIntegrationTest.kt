@@ -529,12 +529,13 @@ class GatewayIntegrationTest {
             val response = client.options("/v1/chat/completions") {
                 header(HttpHeaders.Origin, "https://console.example.com")
                 header(HttpHeaders.AccessControlRequestMethod, "POST")
-                header(HttpHeaders.AccessControlRequestHeaders, "authorization,content-type,traceparent")
+                header(HttpHeaders.AccessControlRequestHeaders, "authorization,content-type,traceparent,x-prompt-cache-key")
             }
 
             assertEquals(HttpStatusCode.OK, response.status)
             assertEquals("https://console.example.com", response.headers[HttpHeaders.AccessControlAllowOrigin])
             assertTrue(response.headers[HttpHeaders.AccessControlAllowHeaders].orEmpty().contains("traceparent"))
+            assertTrue(response.headers[HttpHeaders.AccessControlAllowHeaders].orEmpty().contains("x-prompt-cache-key", ignoreCase = true))
 
             val actual = client.post("/v1/chat/completions") {
                 header(HttpHeaders.Origin, "https://console.example.com")
