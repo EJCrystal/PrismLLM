@@ -18,6 +18,7 @@ const error = ref('')
 const dimension = ref<'byModel' | 'byProtocol' | 'byKey'>('byModel')
 const selectedBucket = ref<number | null>(null)
 const hasCooldownCleared = ref(false)
+const hasManualRefreshed = ref(false)
 let revision = 0
 async function load() {
   const request = ++revision
@@ -77,16 +78,24 @@ async function clearCooldown(scope: 'channel' | 'key' | 'candidate', keyId?: str
 function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: number; successRate: number | null } }) {
   return `${formatTime(bucket.from)} 至 ${formatTime(bucket.to)}，${bucket.metrics.attempts} 次尝试，成功率 ${healthPercent(bucket.metrics.successRate)}`
 }
+async function handleManualRefresh() {
+  await load()
+  hasManualRefreshed.value = true
+}
+function tryClose() {
+  if (clearing.value) return
+  emit('close', hasCooldownCleared.value || hasManualRefreshed.value)
+}
 </script>
 
 <template>
-  <Modal :title="`${channel.name} · 渠道健康度`" wide @close="$emit('close', hasCooldownCleared)">
+  <Modal :title="`${channel.name} · 渠道健康度`" wide @close="tryClose">
     <div class="health-detail">
       <div class="health-detail-toolbar">
         <div class="health-window-tabs" role="group" aria-label="健康度时间范围">
           <button v-for="option in HEALTH_WINDOWS" :key="option.id" type="button" :aria-pressed="window === option.id" :class="{ active: window === option.id }" @click="window = option.id">{{ option.label }}</button>
         </div>
-        <button class="button ghost mini" :disabled="loading" @click="load">刷新</button>
+        <button class="button ghost mini" :disabled="loading || Boolean(clearing)" @click="handleManualRefresh">刷新</button>
       </div>
       <p class="muted small">真实请求观测 · 不发起额外探测，也不修改路由优先级。所有时间按请求完成时间统计。</p>
       <ErrorState v-if="error" :message="error" @retry="load" />
