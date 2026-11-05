@@ -63,6 +63,7 @@ jobs:
             -v "${DIAG_EVENT}:/github/workflow/event.json:ro" \
             --env-file /tmp/diagenv \
             -e GITHUB_EVENT_PATH=/github/workflow/event.json \
+            -e GITHUB_EVENT_NAME=issue_comment \
             -e GITHUB_ACTIONS=true \
             -e CI=true \
             -e HOME=/github/home \
@@ -92,6 +93,7 @@ jobs:
             -v "${DIAG_EVENT}:/github/workflow/event.json:ro" \
             --env-file /tmp/diagenv \
             -e GITHUB_EVENT_PATH=/github/workflow/event.json \
+            -e GITHUB_EVENT_NAME=issue_comment \
             -e GITHUB_ACTIONS=true \
             -e CI=true \
             -e HOME=/github/home \

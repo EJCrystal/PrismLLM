@@ -56,6 +56,9 @@ from pr_agent.git_providers.utils import (  # noqa: E402
 )
 
 mark("IMPORT_OK")
+# 复刻 run_action 在 apply_repo_settings 之前做的 token 注入
+get_settings().set("GITHUB.USER_TOKEN", os.environ.get("GITHUB_TOKEN", ""))
+get_settings().set("GITHUB.DEPLOYMENT_TYPE", "user")
 mark("use_repo_settings_file", repr(get_settings().config.get("use_repo_settings_file")))
 mark("git_provider", repr(get_settings().config.get("git_provider")))
 mark("enable_per_directory_settings", repr(get_settings().config.get("enable_per_directory_settings")))
@@ -85,4 +88,20 @@ except BaseException as exc:  # noqa: BLE001 - 诊断需要捕获 SystemExit
     traceback.print_exc()
     print(f"APPLY_ERR {type(exc).__name__}: {exc!r}", flush=True)
 
-mark("DONE")
+mark("DONE settings stage")
+
+# 最后再原样跑一遍真实的 run_action（它会自己读 GITHUB_EVENT_PATH）。
+# 用 try/except BaseException 包住，SystemExit 也能看到。
+try:
+    import asyncio
+
+    from pr_agent.servers.github_action_runner import run_action
+
+    mark("R1 before run_action")
+    asyncio.run(run_action())
+    mark("R1 run_action returned")
+except BaseException as exc:  # noqa: BLE001
+    traceback.print_exc()
+    print(f"RUN_ACTION_ERR {type(exc).__name__}: {exc!r}", flush=True)
+
+mark("DONE run_action")
