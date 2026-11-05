@@ -290,6 +290,7 @@ jobs:
           fi
 
           landed=false
+          ACTIVE_FINDINGS=0
           if [ "$OUTCOME" = "success" ]; then
             # PR-Agent 的输出：issue 评论（walkthrough/摘要）或 review（/review 的评审）。
             # 以 HEAD SHA 起算：本次运行之后才产生的 bot 输出才算本次审查落地。
@@ -340,6 +341,43 @@ jobs:
                 esac
               done < <(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json reviews --jq '.reviews[] | {submittedAt, author: (.author.login // ""), body: (.body // "")}')
             fi
+
+            # 产出存在不等于意见已解决：PR-Agent 把结构化 findings 埋在评论末尾的
+            #   <!-- pr-agent-review-state:v1
+            #   {"findings":[{"state":"ACTIVE",...}], ...}
+            #   -->
+            # 里，其中 ACTIVE 表示仍未解决。只看本次运行之后产生的评论，避免历史 SHA
+            # 的旧意见永久卡住合并。解析失败按未通过处理（fail closed），不要静默放行。
+            START_ISO=$(date -u -d "@${START_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+            if ! ACTIVE_FINDINGS=$(
+              gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
+                | jq -s --arg since "${START_ISO}" '
+                    [ .[]
+                      | select(.created_at >= $since)
+                      | select((.body // "") | contains("pr-agent-review-state:v1"))
+                      | .body
+                      | capture("pr-agent-review-state:v1\\s*(?<state>\\{.*?\\})\\s*-->"; "s").state
+                      | fromjson
+                      | .findings[]?
+                      | select(.state == "ACTIVE")
+                    ] | length'
+            ); then
+              echo "::error::无法解析 PR-Agent 审查状态，按未通过处理"
+              gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+                -f state="failure" \
+                -f context="AI Review Gate" \
+                -f description="PR-Agent 审查状态解析失败，请查看 Actions 日志" || true
+              exit 1
+            fi
+          fi
+
+          if [ "$landed" = "true" ] && [ "${ACTIVE_FINDINGS}" -gt 0 ]; then
+            echo "::error::PR-Agent 仍有 ${ACTIVE_FINDINGS} 条未解决的 ACTIVE 意见，门禁不予放行"
+            gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+              -f state="failure" \
+              -f context="AI Review Gate" \
+              -f description="PR-Agent 仍有 ${ACTIVE_FINDINGS} 条未解决意见" || true
+            exit 1
           fi
 
           if [ "$landed" = "true" ]; then
