@@ -57,7 +57,7 @@ jobs:
           GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"
         run: |
           set -uo pipefail
-          env > /tmp/diagenv
+          env | grep -v -E '^(PATH|HOME|PWD|OLDPWD|SHLVL|_|SHELL)=' > /tmp/diagenv
           docker run --rm --workdir /github/workspace \
             -v "${GITHUB_WORKSPACE}:/github/workspace" \
             -v "${DIAG_EVENT}:/github/workflow/event.json:ro" \
@@ -86,7 +86,7 @@ jobs:
           GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"
         run: |
           set -uo pipefail
-          env > /tmp/diagenv
+          env | grep -v -E '^(PATH|HOME|PWD|OLDPWD|SHLVL|_|SHELL)=' > /tmp/diagenv
           docker run --rm --workdir /github/workspace \
             -v "${GITHUB_WORKSPACE}:/github/workspace" \
             -v "${DIAG_EVENT}:/github/workflow/event.json:ro" \
