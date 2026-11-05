@@ -400,8 +400,10 @@ jobs:
               exit 1
             fi
             read -r MARKED_COMMENTS ALLOWED_COMMENTS ACTIVE_FINDINGS <<< "${REVIEW_STATE}"
-            if [ "${MARKED_COMMENTS}" -gt 0 ] && [ "${ALLOWED_COMMENTS}" -eq 0 ]; then
-              echo "::error::存在 PR-Agent 状态块但没有一条来自已知机器人账号，按未通过处理"
+            # 只要有一条机器人状态块的作者不在已知列表中就判失败，即使同时存在已知机器人的评论：
+            # 否则 PR-Agent 更换账号后，新账号的 ACTIVE 意见会被静默忽略。
+            if [ "${MARKED_COMMENTS}" -gt "${ALLOWED_COMMENTS}" ]; then
+              echo "::error::存在 $((MARKED_COMMENTS - ALLOWED_COMMENTS)) 条 PR-Agent 状态块来自未知机器人账号，按未通过处理"
               gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
                 -f state="failure" \
                 -f context="AI Review Gate" \
