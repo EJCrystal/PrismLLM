@@ -21,7 +21,7 @@ import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import ChannelHealthModal from './ChannelHealthModal.vue'
-import { HEALTH_LABELS, healthPercent, healthSymbol } from '../utils/channelHealth'
+import { HEALTH_LABELS, healthPercent, healthSymbol, channelHealthSuccessRateText } from '../utils/channelHealth'
 import { cooldownSummaryText } from '../utils/cooldown'
 import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
@@ -129,6 +129,7 @@ let listDisposed = false
 // 列表健康度固定按 24 小时汇总；时间范围切换交由健康度详情弹窗自行选择。
 const healthWindow: HealthWindow = '24h'
 const healthReport = ref<ChannelHealthReport | null>(null)
+const healthSuccessRateCache = ref<{ window: HealthWindow; rates: Map<string, number | null> } | null>(null)
 const healthTarget = ref<Channel | null>(null)
 const healthLoading = ref(false)
 const healthError = ref('')
@@ -174,13 +175,30 @@ function channelHealthTitle(channel: Channel): string {
   const row = healthByChannel.value.get(channel.id)
   return `${channel.name}：${row?.reason || (healthLoading.value ? '正在汇总' : '健康度未读取')}；点击查看成功率、延迟、密钥和模型明细`
 }
+function channelSuccessRateText(channel: Channel): string {
+  const cachedRate = healthSuccessRateCache.value?.window === healthWindow
+    ? healthSuccessRateCache.value.rates.get(channel.id)
+    : undefined
+  const cachedRow = cachedRate === undefined ? undefined : { metrics: { successRate: cachedRate } }
+  return channelHealthSuccessRateText(healthByChannel.value.get(channel.id) ?? cachedRow, healthLoading.value, healthError.value)
+}
+function onCloseHealthModal(changed = false) {
+  healthTarget.value = null
+  if (changed) void loadHealth()
+}
 async function loadHealth() {
   const request = ++healthRevision
   healthLoading.value = true
   healthError.value = ''
   try {
     const result = await api.getChannelHealth(healthWindow)
-    if (request === healthRevision) { healthReport.value = result; syncCooldownTimer() }
+    if (request === healthRevision) {
+      healthReport.value = result
+      const rates = new Map<string, number | null>()
+      for (const row of result.channels) rates.set(row.channelId, row.metrics.successRate)
+      healthSuccessRateCache.value = { window: result.window, rates }
+      syncCooldownTimer()
+    }
   } catch (cause) {
     if (request === healthRevision) { healthReport.value = null; syncCooldownTimer(); healthError.value = errorMessage(cause) }
   } finally { if (request === healthRevision) healthLoading.value = false }
@@ -1287,7 +1305,7 @@ onMounted(load)
                 </button>
                 <button type="button" class="channel-observation" :title="channelHealthTitle(channel)" :aria-label="channelHealthTitle(channel)" @click="healthTarget = channel">
                   <span class="health-status-icon" :data-state="channelHealthState(channel)" aria-hidden="true">{{ healthSymbol(channelHealthState(channel)) }}</span>
-                  <span><strong>{{ healthLoading ? '汇总中…' : healthError ? '读取失败' : healthPercent(healthByChannel.get(channel.id)?.metrics.successRate) }}</strong><small>{{ healthByChannel.get(channel.id)?.metrics.attempts ?? 0 }} 次 · {{ HEALTH_LABELS[channelHealthState(channel)] }}</small></span>
+                  <span><strong>{{ channelSuccessRateText(channel) }}</strong><small>{{ healthByChannel.get(channel.id)?.metrics.attempts ?? 0 }} 次 · {{ HEALTH_LABELS[channelHealthState(channel)] }}</small></span>
                 </button>
                 <div v-if="healthByChannel.get(channel.id)?.metrics.p95FirstTokenMs != null" class="muted small health-list-latency">P95 首 token {{ formatDuration(healthByChannel.get(channel.id)?.metrics.p95FirstTokenMs) }}</div>
                 <button v-if="channelCooldownText(channel)" type="button" class="channel-cooldown muted small" :title="channelCooldownTitle(channel)" @click="healthTarget = channel">
@@ -1313,7 +1331,7 @@ onMounted(load)
       </div>
     </div>
 
-    <ChannelHealthModal v-if="healthTarget" :key="healthTarget.id" :channel="healthTarget" :initial-window="healthWindow" @close="healthTarget = null; loadHealth()" />
+    <ChannelHealthModal v-if="healthTarget" :key="healthTarget.id" :channel="healthTarget" :initial-window="healthWindow" @close="onCloseHealthModal" />
     <ChannelQuotaModal v-if="quotaTarget" :key="quotaTarget.id" :channel="quotaTarget" @close="quotaTarget = null" @saved="onQuotaSaved" />
 
     <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide @close="closeChannelForm">

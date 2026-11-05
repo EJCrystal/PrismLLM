@@ -10,29 +10,52 @@ import ErrorState from './ErrorState.vue'
 import { vScrollHint } from '../directives/scrollHint'
 
 const props = defineProps<{ channel: Channel; initialWindow: HealthWindow }>()
-defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: [changed?: boolean]; changed: [] }>()
 const window = ref<HealthWindow>(props.initialWindow)
 const detail = ref<ChannelHealthDetail | null>(null)
 const loading = ref(false)
 const error = ref('')
 const dimension = ref<'byModel' | 'byProtocol' | 'byKey'>('byModel')
 const selectedBucket = ref<number | null>(null)
+const hasCooldownCleared = ref(false)
+const hasManualRefreshed = ref(false)
+const manualRefreshing = ref(false)
+const hasUncertainCooldownClear = ref(false)
 let revision = 0
-async function load() {
+let loadController: AbortController | null = null
+async function load(timeoutMs = 15_000) {
+  loadController?.abort()
+  const controller = new AbortController()
+  loadController = controller
   const request = ++revision
   loading.value = true
   error.value = ''
   detail.value = null
   selectedBucket.value = null
+  const timer = setTimeout(() => { controller.abort() }, timeoutMs)
   try {
-    const result = await api.getChannelHealthDetail(props.channel.id, window.value)
+    const result = await api.getChannelHealthDetail(props.channel.id, window.value, { signal: controller.signal })
     if (request === revision) detail.value = result
   } catch (cause) {
-    if (request === revision) error.value = cause instanceof Error ? cause.message : '读取渠道健康度失败，请重试'
-  } finally { if (request === revision) loading.value = false }
+    if (request === revision) {
+      if (controller.signal.aborted) {
+        error.value = '读取渠道健康度超时，请重试'
+      } else {
+        error.value = cause instanceof Error ? cause.message : '读取渠道健康度失败，请重试'
+      }
+    }
+  } finally {
+    clearTimeout(timer)
+    if (loadController === controller) loadController = null
+    if (request === revision) loading.value = false
+  }
 }
-watch([window, () => props.channel.id], load, { immediate: true })
-onBeforeUnmount(() => { revision++ })
+watch([window, () => props.channel.id], () => void load(), { immediate: true })
+onBeforeUnmount(() => {
+  revision++
+  loadController?.abort()
+  clearingController?.abort()
+})
 const summary = computed(() => detail.value?.report.channels[0])
 const metrics = computed(() => summary.value?.metrics)
 const rows = computed<HealthBreakdown[]>(() => detail.value?.[dimension.value] || [])
@@ -50,6 +73,7 @@ const unavailableGroups = computed(() => {
 })
 const hasCooldown = computed(() => (summary.value?.coolingCandidates ?? 0) > 0 || unavailable.value.some(row => row.state === 'COOLDOWN'))
 const clearing = ref<string | null>(null)
+let clearingController: AbortController | null = null
 const availabilityLabel: Record<string, string> = { CHANNEL_DISABLED: '渠道停用', MANUAL_DISABLED: '人工停用', AUTO_TEMPORARY: '自动临时停用', AUTO_PERMANENT: '自动永久停用', COOLDOWN: '冷却中' }
 function groupHasCooldown(rows: AvailabilityRow[]): boolean {
   return rows.some(row => row.state === 'COOLDOWN' && row.cooldownScope === 'key')
@@ -58,32 +82,59 @@ function cooldownText(row: AvailabilityRow): string {
   const reason = row.state === 'COOLDOWN' ? cooldownReasonLabel(row.reason) : row.reason
   return [reason, row.until ? `截至 ${formatTime(row.until)}` : ''].filter(Boolean).join(' · ')
 }
-async function clearCooldown(scope: 'channel' | 'key' | 'candidate', keyId?: string, upstreamModel?: string) {
+async function clearCooldown(scope: 'channel' | 'key' | 'candidate', keyId?: string, upstreamModel?: string, timeoutMs = 15_000) {
   if (clearing.value) return
   clearing.value = [scope, keyId, upstreamModel].filter(Boolean).join(':')
   error.value = ''
+  clearingController?.abort()
+  const controller = new AbortController()
+  clearingController = controller
+  const timer = setTimeout(() => { controller.abort() }, timeoutMs)
   try {
-    await api.clearChannelCooldown(props.channel.id, { scope, keyId, upstreamModel })
+    await api.clearChannelCooldown(props.channel.id, { scope, keyId, upstreamModel }, { signal: controller.signal })
+    hasCooldownCleared.value = true
+    emit('changed')
     await load()
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '解除冷却失败，请重试'
+    hasUncertainCooldownClear.value = true
+    if (controller.signal.aborted) {
+      error.value = '解除冷却请求超时，请刷新以确认冷却状态'
+    } else {
+      error.value = cause instanceof Error ? cause.message : '解除冷却失败，请重试'
+    }
   } finally {
+    clearTimeout(timer)
+    if (clearingController === controller) clearingController = null
     clearing.value = null
   }
 }
 function bucketLabel(bucket: { from: number; to: number; metrics: { attempts: number; successRate: number | null } }) {
   return `${formatTime(bucket.from)} 至 ${formatTime(bucket.to)}，${bucket.metrics.attempts} 次尝试，成功率 ${healthPercent(bucket.metrics.successRate)}`
 }
+async function handleManualRefresh() {
+  if (manualRefreshing.value || loading.value) return
+  manualRefreshing.value = true
+  try {
+    await load()
+    hasManualRefreshed.value = true
+  } finally {
+    manualRefreshing.value = false
+  }
+}
+function tryClose() {
+  if (clearing.value || manualRefreshing.value) return
+  emit('close', hasCooldownCleared.value || hasManualRefreshed.value || hasUncertainCooldownClear.value)
+}
 </script>
 
 <template>
-  <Modal :title="`${channel.name} · 渠道健康度`" wide @close="$emit('close')">
+  <Modal :title="`${channel.name} · 渠道健康度`" wide @close="tryClose">
     <div class="health-detail">
       <div class="health-detail-toolbar">
         <div class="health-window-tabs" role="group" aria-label="健康度时间范围">
           <button v-for="option in HEALTH_WINDOWS" :key="option.id" type="button" :aria-pressed="window === option.id" :class="{ active: window === option.id }" @click="window = option.id">{{ option.label }}</button>
         </div>
-        <button class="button ghost mini" :disabled="loading" @click="load">刷新</button>
+        <button class="button ghost mini" :disabled="loading || Boolean(clearing) || manualRefreshing" @click="handleManualRefresh">刷新</button>
       </div>
       <p class="muted small">真实请求观测 · 不发起额外探测，也不修改路由优先级。所有时间按请求完成时间统计。</p>
       <ErrorState v-if="error" :message="error" @retry="load" />

@@ -12,6 +12,16 @@ export function healthPercent(rate: number | null | undefined): string {
   if (rate > 0.999 && rate < 1) return '>99.9%'
   return `${(rate * 100).toFixed(1)}%`
 }
+export function channelHealthSuccessRateText(
+  row: { metrics: { successRate: number | null } } | null | undefined,
+  loading: boolean,
+  error: string,
+): string {
+  if (row?.metrics.successRate != null) return healthPercent(row.metrics.successRate)
+  if (loading) return '汇总中…'
+  if (error) return '读取失败'
+  return healthPercent(null)
+}
 /** Trend colours describe observed error bands, not a guarantee of current availability. */
 export function healthBucketState(metrics: HealthMetrics, minimumSamples = 20, warningRate = 0.05, criticalRate = 0.2): HealthState {
   if (metrics.attempts < minimumSamples || metrics.successRate == null) return 'UNKNOWN'
