@@ -152,15 +152,36 @@ jobs:
             HEAD_SHA=$(gh api "$COMMENT_PR_URL" -q .head.sha)
           elif [ "$EVENT_NAME" = "check_run" ]; then
             HEAD_SHA="$CHECK_HEAD_SHA"
-            jq -n --arg url "$CHECK_PR_URL" \
-              '{action:"created",issue:{pull_request:{url:$url}},comment:{id:1,body:"/review"},sender:{type:"User"}}' \
+            PR_NUMBER="${CHECK_PR_URL##*/}"
+            HTML_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
+            jq -n \
+              --arg url "$CHECK_PR_URL" \
+              --arg html_url "$HTML_URL" \
+              --argjson num "$PR_NUMBER" \
+              '{
+                action: "created",
+                issue: { number: $num, pull_request: { url: $url, html_url: $html_url } },
+                pull_request: { number: $num, url: $url, html_url: $html_url },
+                comment: { id: 1, body: "/review" },
+                sender: { type: "User" }
+              }' \
               > "$GITHUB_EVENT_PATH"
             echo "GITHUB_EVENT_NAME=issue_comment" >> "$GITHUB_ENV"
           elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             TARGET_PR_URL="https://api.github.com/repos/${REPO}/pulls/${DISPATCH_PR}"
             HEAD_SHA=$(gh api "$TARGET_PR_URL" -q .head.sha)
-            jq -n --arg url "$TARGET_PR_URL" \
-              '{action:"created",issue:{pull_request:{url:$url}},comment:{id:1,body:"/review"},sender:{type:"User"}}' \
+            HTML_URL="https://github.com/${REPO}/pull/${DISPATCH_PR}"
+            jq -n \
+              --arg url "$TARGET_PR_URL" \
+              --arg html_url "$HTML_URL" \
+              --argjson num "$DISPATCH_PR" \
+              '{
+                action: "created",
+                issue: { number: $num, pull_request: { url: $url, html_url: $html_url } },
+                pull_request: { number: $num, url: $url, html_url: $html_url },
+                comment: { id: 1, body: "/review" },
+                sender: { type: "User" }
+              }' \
               > "$GITHUB_EVENT_PATH"
             echo "GITHUB_EVENT_NAME=issue_comment" >> "$GITHUB_ENV"
           fi
@@ -168,14 +189,14 @@ jobs:
 
       # 如果是通过 CodeRabbit 未成功审查的 Check 触发的，在 PR 留一条友好提示
       - name: Notify fallback to PR Agent
-        if: github.event_name == 'check_run'
+        if: github.event_name == 'check_run' && github.event.check_run.pull_requests[0].number != null
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.check_run.pull_requests[0].number }}
         run: |
-          if [ -n "$PR_URL" ]; then
-            gh api "$PR_URL/comments" -f body="> 💡 **提示**：检测到 CodeRabbit 未完成审查（跳过或超额），已自动无缝切换至 **PR-Agent（模型：${DISPLAY_MODEL}）** 进行代码审查与改进建议。" || true
-          fi
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            -f body="> 💡 **提示**：检测到 CodeRabbit 未完成审查（跳过或超额），已自动无缝切换至 **PR-Agent（模型：${DISPLAY_MODEL}）** 进行代码审查与改进建议。" || true
 
       - name: Run PR Agent with LLM Gateway
         id: run_pr_agent
