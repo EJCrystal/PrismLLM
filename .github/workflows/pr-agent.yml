@@ -200,7 +200,10 @@ jobs:
 
       - name: Run PR Agent with LLM Gateway
         id: run_pr_agent
-        uses: qodo-ai/pr-agent@main
+        # 固定 release tag：@main + rolling 预构建镜像（pragent/pr-agent:github_action）
+        # 组合曾出现容器静默退出（无 review、无错误日志、exit 0），release 的
+        # action 定义与镜像经过发布验证，行为可复现。
+        uses: qodo-ai/pr-agent@v0.49.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
@@ -219,25 +222,81 @@ jobs:
           PR_CODE_SUGGESTIONS.EXTRA_INSTRUCTIONS: "Please write all suggestions and explanations in Simplified Chinese (简体中文)."
           PR_DESCRIPTION.EXTRA_INSTRUCTIONS: "Please write the PR description and summary in Simplified Chinese (简体中文)."
 
-      # PR-Agent 执行完成后更新门禁状态
-      - name: Update AI Review Gate Status
+      # PR-Agent 执行完成后更新门禁状态。
+      # 步骤 exit 0 不等于审查真实发生：曾出现容器静默退出（无评论、无报错、
+      # 网关零请求）却把门禁标成通过。这里以 HEAD SHA 上 PR-Agent 的实际输出
+      # （review 或评论）为准，没有则判失败，避免假阳性放行。
+      - name: Verify review landed and update AI Review Gate
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          SHA: ${{ env.HEAD_SHA }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ env.HEAD_SHA }}
           OUTCOME: ${{ steps.run_pr_agent.outcome }}
         run: |
-          if [ -n "$SHA" ]; then
-            if [ "$OUTCOME" = "success" ]; then
-              gh api "repos/${REPO}/statuses/${SHA}" \
-                -f state="success" \
-                -f context="AI Review Gate" \
-                -f description="PR-Agent 审查通过" || true
-            else
-              gh api "repos/${REPO}/statuses/${SHA}" \
-                -f state="failure" \
-                -f context="AI Review Gate" \
-                -f description="PR-Agent 审查未通过或执行异常" || true
+          set -euo pipefail
+          # dispatch/check_run 路径 PR_NUMBER 可能为空，从 PR API 反查。
+          if [ -z "${PR_NUMBER}" ]; then
+            PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number')
+          fi
+
+          landed=false
+          if [ "$OUTCOME" = "success" ]; then
+            # PR-Agent 的输出：issue 评论（walkthrough/摘要）或 review（/review 的评审）。
+            # 以 HEAD SHA 起算：本次运行之后才产生的 bot 输出才算本次审查落地。
+            START_EPOCH=$(gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}" -q .run_started_at | xargs -I{} date -d "{}" +%s)
+            START_EPOCH=$((START_EPOCH - 60))
+            while IFS= read -r line; do
+              created=$(echo "$line" | jq -r '.createdAt')
+              author=$(echo "$line" | jq -r '.author.login')
+              body=$(echo "$line" | jq -r '.body // ""')
+              created_epoch=$(date -d "$created" +%s)
+              case "$author" in
+                github-actions*|pr-agent*|qodo*)
+                  if [ "$created_epoch" -ge "$START_EPOCH" ] \
+                     && { echo "$body" | grep -qiE "pr-agent|PR Reviewer Guide" || echo "$body" | grep -q "${HEAD_SHA:0:7}"; }; then
+                    landed=true
+                    break
+                  fi
+                  ;;
+              esac
+            done < <(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json comments --jq '.comments[] | {createdAt, author: .author.login, body}')
+            if [ "$landed" != "true" ]; then
+              while IFS= read -r line; do
+                created=$(echo "$line" | jq -r '.submittedAt')
+                author=$(echo "$line" | jq -r '.author.login')
+                body=$(echo "$line" | jq -r '.body // ""')
+                created_epoch=$(date -d "$created" +%s)
+                case "$author" in
+                  github-actions*|pr-agent*|qodo*)
+                    if [ "$created_epoch" -ge "$START_EPOCH" ] \
+                       && { echo "$body" | grep -qiE "pr-agent|PR Reviewer Guide" || echo "$body" | grep -q "${HEAD_SHA:0:7}"; }; then
+                      landed=true
+                      break
+                    fi
+                    ;;
+                esac
+              done < <(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json reviews --jq '.reviews[] | {submittedAt, author: .author.login, body}')
             fi
+          fi
+
+          if [ "$landed" = "true" ]; then
+            gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+              -f state="success" \
+              -f context="AI Review Gate" \
+              -f description="PR-Agent 审查通过" || true
+          elif [ "$OUTCOME" = "success" ]; then
+            echo "::warning::PR-Agent 步骤成功但 PR 上没有它的输出（评论/review），疑似静默失败"
+            gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+              -f state="failure" \
+              -f context="AI Review Gate" \
+              -f description="PR-Agent 未产出审查（静默失败），请查看 Actions 日志" || true
+            exit 1
+          else
+            gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+              -f state="failure" \
+              -f context="AI Review Gate" \
+              -f description="PR-Agent 审查未通过或执行异常" || true
+            exit 1
           fi
