@@ -346,17 +346,20 @@ jobs:
             #   <!-- pr-agent-review-state:v1
             #   {"findings":[{"state":"ACTIVE",...}], ...}
             #   -->
-            # 里，其中 ACTIVE 表示仍未解决。只看本次运行之后产生的评论，避免历史 SHA
-            # 的旧意见永久卡住合并。解析失败按未通过处理（fail closed），不要静默放行。
+            # 里，其中 ACTIVE 表示仍未解决。只看本次运行之后写入的评论，避免历史 SHA
+            # 的旧意见永久卡住合并；persistent_comment 下 PR-Agent 是原地编辑同一条评论，
+            # created_at 不变、只有 updated_at 变，所以按 updated_at 取窗口。
+            # 解析失败按未通过处理（fail closed），不要静默放行。
             START_ISO=$(date -u -d "@${START_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
             if ! ACTIVE_FINDINGS=$(
               gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
                 | jq -s --arg since "${START_ISO}" '
                     [ .[]
-                      | select(.created_at >= $since)
+                      | select((.updated_at // .created_at) >= $since)
                       | select((.body // "") | contains("pr-agent-review-state:v1"))
                       | .body
-                      | capture("pr-agent-review-state:v1\\s*(?<state>\\{.*?\\})\\s*-->"; "s").state
+                      | (capture("pr-agent-review-state:v1\\s*(?<state>\\{.*?\\})\\s*-->"; "s").state
+                         // error("unparsable pr-agent review state"))
                       | fromjson
                       | .findings[]?
                       | select(.state == "ACTIVE")
