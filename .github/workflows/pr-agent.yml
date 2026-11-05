@@ -75,6 +75,7 @@ jobs:
   #    触发评论必须用 PAT 发送：GITHUB_TOKEN 发出的评论不会触发新的 workflow，
   #    sender 为 Bot 会被 job 4 与 PR-Agent 过滤，CodeRabbit 也不响应机器人发起的指令。
   route_review:
+    # Actions 表达式的 contains() 对字符串不区分大小写，'Rate Limited' 等写法同样命中。
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (
@@ -83,7 +84,7 @@ jobs:
         (
           github.event.check_run.conclusion != 'success' ||
           contains(github.event.check_run.output.title, 'rate limited') ||
-          contains(github.event.check_run.output.summary, 'Rate limited')
+          contains(github.event.check_run.output.summary, 'rate limited')
         )
       )
     concurrency:
