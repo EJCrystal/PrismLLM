@@ -308,6 +308,7 @@ const probing = ref(false)
 const probeResults = ref<ProtocolProbeResult[]>([])
 const channelKeys = ref<ChannelKeyEditorDraft[]>([])
 const selectedChannelKeyId = ref<string | null>(null)
+const expandedChannelKeyId = ref<string | null>(null)
 type ChannelFormSectionId = 'basic' | 'protocols' | 'keys' | 'models' | 'routing'
 const activeFormSection = ref<ChannelFormSectionId>('basic')
 const isMobile = useMediaQuery('(max-width: 640px)')
@@ -456,6 +457,17 @@ const selectedChannelKey = computed(() => (
   || null
 ))
 
+function channelKeyPriority(key: ChannelKeyEditorDraft): number {
+  const value = Number(key.priority)
+  return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY
+}
+
+const defaultChannelKey = computed(() => (
+  channelKeys.value.reduce<ChannelKeyEditorDraft | null>((best, key) => (
+    !best || channelKeyPriority(key) < channelKeyPriority(best) ? key : best
+  ), null)
+))
+
 const visibleMappingModels = computed(() => {
   const query = mappingSearch.value.trim().toLowerCase()
   const source = query || showAllMappings.value
@@ -530,7 +542,12 @@ function handleFormSectionKeydown(event: KeyboardEvent, index: number): void {
 }
 
 function toggleKeyAccordion(key: ChannelKeyEditorDraft): void {
-  selectedChannelKeyId.value = selectedChannelKeyId.value === key.localId ? null : key.localId
+  if (expandedChannelKeyId.value === key.localId) {
+    expandedChannelKeyId.value = null
+    return
+  }
+  expandedChannelKeyId.value = key.localId
+  selectedChannelKeyId.value = key.localId
 }
 
 function removeSelectedKey(): void {
@@ -541,6 +558,7 @@ function removeSelectedKey(): void {
 
 function focusChannelKeyInForm(key: ChannelKeyEditorDraft): void {
   selectedChannelKeyId.value = key.localId
+  expandedChannelKeyId.value = key.localId
   focusFormSection('keys')
   nextTick(() => {
     const tab = document.getElementById(channelKeyTabId(key.localId))
@@ -550,8 +568,11 @@ function focusChannelKeyInForm(key: ChannelKeyEditorDraft): void {
 }
 
 watch(isMobile, (mobile) => {
-  if (!mobile && !selectedChannelKeyId.value) {
-    selectedChannelKeyId.value = channelKeys.value[0]?.localId || null
+  if (!selectedChannelKeyId.value) {
+    selectedChannelKeyId.value = defaultChannelKey.value?.localId || null
+  }
+  if (mobile && !expandedChannelKeyId.value) {
+    expandedChannelKeyId.value = selectedChannelKeyId.value
   }
 })
 
@@ -588,6 +609,7 @@ function addKey() {
   const key = newKeyDraft({ name: `密钥 ${index}`, priority: 1 })
   channelKeys.value.push(key)
   selectedChannelKeyId.value = key.localId
+  expandedChannelKeyId.value = key.localId
   focusChannelKeyTab(key.localId)
 }
 
@@ -600,6 +622,7 @@ function removeKey(index: number): void {
   if (selectedChannelKeyId.value === removed.localId) {
     const nextKey = channelKeys.value[Math.min(index, channelKeys.value.length - 1)]
     selectedChannelKeyId.value = nextKey.localId
+    if (expandedChannelKeyId.value === removed.localId) expandedChannelKeyId.value = nextKey.localId
     focusChannelKeyTab(nextKey.localId)
   }
 }
@@ -930,6 +953,7 @@ function openCreate() {
   modelRequests.invalidate()
   channelKeys.value = [newKeyDraft({ name: '默认密钥', priority: 1 })]
   selectedChannelKeyId.value = channelKeys.value[0].localId
+  expandedChannelKeyId.value = channelKeys.value[0].localId
   clearMappings()
   Object.assign(form, {
     name: '',
@@ -959,9 +983,9 @@ function openEdit(channel: Channel): void {
     ? channel.keys
     : [{ name: '默认密钥', state: 'ACTIVE' as const, priority: 1, models: channel.models || [] }]
   channelKeys.value = savedKeys.map((key) => newKeyDraft(key))
-  selectedChannelKeyId.value = isMobile.value && channelKeys.value.length > 1
-    ? null
-    : channelKeys.value[0]?.localId || null
+  const initialKey = isMobile.value ? defaultChannelKey.value : channelKeys.value[0]
+  selectedChannelKeyId.value = initialKey?.localId || null
+  expandedChannelKeyId.value = isMobile.value ? initialKey?.localId || null : null
   clearMappings()
   ;(channel.modelMappings || []).forEach((mapping) => {
     originalMappings[mapping.upstreamModel] = {
@@ -1796,14 +1820,14 @@ onMounted(() => {
                 v-for="(key, index) in channelKeys"
                 :key="key.localId"
                 class="channel-key-accordion-item"
-                :class="{ 'is-open': selectedChannelKeyId === key.localId }"
+                :class="{ 'is-open': expandedChannelKeyId === key.localId }"
               >
                 <button
                   :id="channelKeyTabId(key.localId)"
                   type="button"
                   class="channel-key-accordion-head"
-                  :aria-expanded="selectedChannelKeyId === key.localId"
-                  :aria-controls="selectedChannelKeyId === key.localId ? 'channel-key-panel-' + key.localId : undefined"
+                  :aria-expanded="expandedChannelKeyId === key.localId"
+                  :aria-controls="expandedChannelKeyId === key.localId ? 'channel-key-panel-' + key.localId : undefined"
                   :title="keyStateBadge(key.state).label + ' · ' + key.models.length + ' 个模型 · 优先级 ' + key.priority"
                   @click="toggleKeyAccordion(key)"
                 >
@@ -1819,7 +1843,7 @@ onMounted(() => {
                   <Icon name="chevron" :size="14" class="channel-key-accordion-chevron" />
                 </button>
                 <div
-                  v-if="selectedChannelKeyId === key.localId"
+                  v-if="expandedChannelKeyId === key.localId"
                   :id="'channel-key-panel-' + key.localId"
                   class="channel-key-accordion-panel"
                 >
