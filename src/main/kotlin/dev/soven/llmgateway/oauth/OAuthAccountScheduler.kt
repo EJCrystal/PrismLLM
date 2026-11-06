@@ -126,7 +126,7 @@ class OAuthAccountScheduler(
             val fallback = defaultCooldownMs * (1L shl (state.consecutiveRateLimits - 1).coerceAtMost(4))
             val cooldown = (retryAfterMs?.takeIf { it > 0 } ?: fallback)
                 .coerceIn(MIN_RETRY_AFTER_MS, maxCooldownMs)
-            state.cooldownUntil = maxOf(state.cooldownUntil ?: 0L, nowMs + cooldown)
+            state.cooldownUntil = maxOf(state.cooldownUntil ?: 0L, saturatedAdd(nowMs, cooldown))
             publishIfDue(key.id, state, nowMs, force = true)
         }
     }
@@ -224,7 +224,10 @@ class OAuthAccountScheduler(
         mutex.withLock {
             for (stored in states) {
                 val state = AccountState()
-                state.hits.addAll(stored.snapshot.hits.asSequence().filter { it > 0 }.sorted().toList())
+                // 丢弃损坏或来自未来时钟的命中，避免异常时间戳把窗口截止时间推到溢出。
+                state.hits.addAll(
+                    stored.snapshot.hits.asSequence().filter { it in 1..nowMs }.sorted().toList(),
+                )
                 state.prune(nowMs, stored.policy)
                 state.cooldownUntil = stored.snapshot.cooldownUntil?.takeIf { it > nowMs }
                 state.consecutiveRateLimits = stored.snapshot.consecutiveRateLimits.coerceAtLeast(0)
@@ -254,7 +257,10 @@ class OAuthAccountScheduler(
         nowMs: Long,
     ): OAuthAccountDecision.Denied? {
         state.cooldownUntil?.takeIf { it > nowMs }?.let { until ->
-            return OAuthAccountDecision.Denied(OAuthAccountDenyReason.COOLDOWN, until - nowMs)
+            return OAuthAccountDecision.Denied(
+                OAuthAccountDenyReason.COOLDOWN,
+                saturatedSubtract(until, nowMs).coerceAtLeast(1),
+            )
         }
         state.quota
             ?.takeIf { it.isFresh(nowMs, quotaMaxAgeMs) }
@@ -265,7 +271,8 @@ class OAuthAccountScheduler(
         val limit = policy.windowLimit
         if (limit != null && state.hits.size >= limit) {
             val oldest = state.hits.first()
-            val retryAfterMs = (oldest + policy.windowSeconds * 1_000L - nowMs).coerceAtLeast(1)
+            val deadline = saturatedAdd(oldest, windowSpanMs(policy.windowSeconds))
+            val retryAfterMs = saturatedSubtract(deadline, nowMs).coerceAtLeast(1)
             return OAuthAccountDecision.Denied(OAuthAccountDenyReason.WINDOW, retryAfterMs)
         }
         if (state.activeRequests >= policy.maxConcurrentRequests) {
@@ -295,10 +302,15 @@ class OAuthAccountScheduler(
         var quota: OAuthQuotaSnapshot? = null
 
         fun prune(nowMs: Long, policy: OAuthAccountPolicy) {
-            val cutoff = nowMs - policy.windowSeconds * 1_000L
+            val limit = policy.windowLimit
+            if (limit == null) {
+                // 不限窗口时命中不参与准入判断，也不应长期占用内存。
+                hits.clear()
+                return
+            }
+            val cutoff = saturatedSubtract(nowMs, windowSpanMs(policy.windowSeconds))
             while (hits.isNotEmpty() && hits.first() <= cutoff) hits.removeFirst()
-            val cap = policy.windowLimit ?: MAX_TRACKED_HITS
-            while (hits.size > cap) hits.removeFirst()
+            while (hits.size > limit) hits.removeFirst()
         }
 
         fun snapshot(keyId: String, updatedAt: Long) = OAuthWindowSnapshot(
@@ -317,8 +329,17 @@ class OAuthAccountScheduler(
         const val CONCURRENCY_RETRY_MS = 1_000L
         /** 高频请求下窗口命中会持续变化，快照最多每秒发布一次。 */
         const val SNAPSHOT_INTERVAL_MS = 1_000L
-        const val MAX_TRACKED_HITS = 100_000
         const val MAX_CONSECUTIVE_RATE_LIMITS = 16
         const val DEFAULT_QUOTA_MAX_AGE_MS = 900_000L
     }
 }
+
+/** 窗口时长换算为毫秒；策略已限制在 60..604800 秒，这里只防御异常构造。 */
+private fun windowSpanMs(windowSeconds: Int): Long = windowSeconds.toLong() * 1_000L
+
+/** 饱和加法：异常时钟或恢复快照最多停在上界，不会溢出成负数。 */
+private fun saturatedAdd(base: Long, delta: Long): Long =
+    if (delta > 0 && base > Long.MAX_VALUE - delta) Long.MAX_VALUE else base + delta
+
+private fun saturatedSubtract(value: Long, delta: Long): Long =
+    if (delta > 0 && value < Long.MIN_VALUE + delta) Long.MIN_VALUE else value - delta

@@ -220,7 +220,7 @@ class OAuthQuotaService(
                 .GET()
                 .build()
             val response = try {
-                send(client, request)
+                sendBounded(client, request)
             } catch (_: HttpTimeoutException) {
                 throw QuotaProbeException("timeout")
             } catch (cause: InterruptedException) {

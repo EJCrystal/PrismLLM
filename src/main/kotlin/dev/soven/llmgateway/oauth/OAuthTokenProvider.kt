@@ -118,7 +118,7 @@ internal suspend fun postTokenRequest(
         val request = builder
             .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
             .build()
-        val response = send(client, request)
+        val response = sendBounded(client, request)
         val text = response.body().toString(StandardCharsets.UTF_8)
         if (response.statusCode() !in 200..299) throw httpFailure(response.statusCode(), text)
         return parseJsonObject(text)
@@ -225,7 +225,8 @@ private fun extractErrorCode(text: String): String? = runCatching {
     ?.take(80)
     ?.takeIf { it.isNotBlank() }
 
-internal suspend fun send(client: HttpClient, request: HttpRequest): HttpResponse<ByteArray> =
+/** 有界读取响应体；token 与额度查询共用，避免上游返回超大响应时占满内存。 */
+internal suspend fun sendBounded(client: HttpClient, request: HttpRequest): HttpResponse<ByteArray> =
     suspendCancellableCoroutine { continuation ->
         val future = client.sendAsync(
             request,

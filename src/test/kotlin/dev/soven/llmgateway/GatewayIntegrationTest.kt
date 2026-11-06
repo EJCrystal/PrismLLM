@@ -1519,6 +1519,88 @@ class GatewayIntegrationTest {
         }
     }
 
+    @Test
+    fun `admin oauth interactive login rejects a key deleted during login`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val key = channel.keys.single()
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            val started = client.post("/admin/api/oauth-login/start") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"provider":"chatgpt","channelId":"${channel.id}","keyId":"${key.id}"}""")
+            }
+            assertEquals(HttpStatusCode.OK, started.status)
+            val startedBody = Json.parseToJsonElement(started.bodyAsText()).jsonObject
+            val loginId = startedBody["loginId"]!!.jsonPrimitive.content
+            val state = startedBody["authorizeUrl"]!!.jsonPrimitive.content
+                .substringAfter("state=").substringBefore("&")
+
+            // 登录期间目标被删除：完成回调必须拒绝绑定，且不消耗授权码。
+            app.channelRepository.delete(channel.id)
+            val completed = client.post("/admin/api/oauth-login/$loginId/complete") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"callbackUrl":"http://localhost:1455/auth/callback?code=auth-code&state=$state"}""")
+            }
+            assertEquals(HttpStatusCode.Conflict, completed.status)
+            assertTrue(completed.bodyAsText().contains("oauth_login_stale"))
+            assertEquals(0, fake.tokenRequests.size)
+        }
+    }
+
+    @Test
+    fun `admin oauth interactive login retries binding after an email conflict`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val key = channel.keys.single()
+        val conflicting = createChannel("openai-conflict", "ok")
+        app.oauthAccountRepository.upsert(
+            keyId = conflicting.keys.single().id,
+            provider = OAuthProvider.CHATGPT,
+            accountEmail = "login@example.com",
+            refreshToken = app.credentialCipher.encrypt("conflict-refresh-token"),
+        )
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            val started = client.post("/admin/api/oauth-login/start") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"provider":"chatgpt","channelId":"${channel.id}","keyId":"${key.id}"}""")
+            }
+            assertEquals(HttpStatusCode.OK, started.status)
+            val startedBody = Json.parseToJsonElement(started.bodyAsText()).jsonObject
+            val loginId = startedBody["loginId"]!!.jsonPrimitive.content
+            val state = startedBody["authorizeUrl"]!!.jsonPrimitive.content
+                .substringAfter("state=").substringBefore("&")
+            suspend fun complete() = client.post("/admin/api/oauth-login/$loginId/complete") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"callbackUrl":"http://localhost:1455/auth/callback?code=auth-code&state=$state"}""")
+            }
+
+            val conflicted = complete()
+            assertEquals(HttpStatusCode.Conflict, conflicted.status)
+            assertTrue(conflicted.bodyAsText().contains("oauth_account_email_exists"))
+            assertEquals(1, fake.tokenRequests.size)
+
+            // 解除原绑定后用同一登录会话重试：不再交换授权码，直接完成绑定。
+            app.channelRepository.delete(conflicting.id)
+            val retried = complete()
+            assertEquals(HttpStatusCode.OK, retried.status)
+            val account = Json.parseToJsonElement(retried.bodyAsText()).jsonObject
+            assertEquals("login@example.com", account["accountEmail"]!!.jsonPrimitive.content)
+            assertEquals(1, fake.tokenRequests.size)
+        }
+    }
+
     @Tag("channel-key-rate-limit")
     @Test
     fun `channel key RPM is shared across models and fails over to backup`() = runBlocking {

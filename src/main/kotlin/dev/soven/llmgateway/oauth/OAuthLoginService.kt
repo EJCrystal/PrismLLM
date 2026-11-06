@@ -4,6 +4,7 @@ import dev.soven.llmgateway.config.OAuthConfig
 import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthProvider
+import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.security.CredentialCipher
 import kotlinx.serialization.json.JsonObject
@@ -46,6 +47,9 @@ sealed interface OAuthLoginResult {
     /** 回调地址缺少 code/state，或 state 与本次登录不匹配。 */
     data class InvalidRequest(val reason: String) : OAuthLoginResult
 
+    /** 登录期间目标密钥被删除或替换了凭据，不能把授权结果写到新目标上。 */
+    data object StaleTarget : OAuthLoginResult
+
     data object UnsupportedProvider : OAuthLoginResult
 }
 
@@ -58,12 +62,15 @@ sealed interface OAuthLoginResult {
  * - code、verifier 与任何 token 都不写日志、不返回给浏览器，只把最终账号信息写入库。
  * - 回调地址只解析 query 参数；state 必须与本次会话一致，防止把其他登录的 code 串进来。
  * - 换取 token 使用账号绑定的同一个代理出口。
+ * - 授权码只能使用一次：交换成功后 token 短暂留在会话里，绑定失败（如邮箱冲突）时
+ *   管理员处理完冲突可用同一 loginId 重试；绑定成功或会话过期立即释放。
  *
  * @author 文杰
  * @since 2026-11-06
  */
 class OAuthLoginService(
     private val repository: OAuthAccountRepository,
+    private val channels: ChannelRepository,
     private val cipher: CredentialCipher,
     private val config: OAuthConfig,
     private val now: () -> Long = System::currentTimeMillis,
@@ -77,6 +84,7 @@ class OAuthLoginService(
         channelId: String,
         keyId: String,
         proxyUrl: String?,
+        credentialNonce: String,
     ): OAuthLoginStartResult {
         val providerConfig = providerConfig(provider)?.takeIf { it.supportsLogin }
             ?: return OAuthLoginStartResult.UnsupportedProvider
@@ -93,6 +101,7 @@ class OAuthLoginService(
             channelId = channelId,
             keyId = keyId,
             proxyUrl = proxyUrl,
+            credentialNonce = credentialNonce,
             verifier = verifier,
             state = state,
             redirectUri = providerConfig.redirectUri!!,
@@ -137,43 +146,72 @@ class OAuthLoginService(
         if (parsed.state != session.state) {
             return OAuthLoginResult.InvalidRequest("state 不匹配，请重新生成登录链接")
         }
-        if (!session.claimed.compareAndSet(false, true)) return OAuthLoginResult.Expired
-        // code 是一次性的：无论成功与否都不再复用这个会话。
-        pending.remove(loginId)
+        // 登录期间目标密钥被删除或换过凭据时拒绝绑定，避免覆盖管理员刚导入的新凭据。
+        val key = channels.find(session.channelId)?.keys?.firstOrNull { it.id == session.keyId }
+        if (key == null || key.credentialNonce != session.credentialNonce) {
+            pending.remove(loginId)
+            return OAuthLoginResult.StaleTarget
+        }
 
-        val providerConfig = providerConfig(session.provider) ?: return OAuthLoginResult.UnsupportedProvider
-        val tokens = try {
-            exchange(providerConfig, session, code)
-        } catch (cause: OAuthRefreshException) {
-            return OAuthLoginResult.Failed(cause.errorCode)
+        // 授权码只能交换一次：成功后把 token 留在会话里，绑定失败时可用同一 loginId 重试。
+        val tokens = session.tokens ?: run {
+            if (!session.claimed.compareAndSet(false, true)) return OAuthLoginResult.Expired
+            val providerConfig = providerConfig(session.provider)
+            if (providerConfig == null) {
+                pending.remove(loginId)
+                return OAuthLoginResult.UnsupportedProvider
+            }
+            val exchanged = try {
+                exchange(providerConfig, session, code)
+            } catch (cause: OAuthRefreshException) {
+                // code 已消耗，无法重试；重新发起登录即可。
+                pending.remove(loginId)
+                return OAuthLoginResult.Failed(cause.errorCode)
+            }
+            session.tokens = exchanged
+            session.tokenExpiresAt = now() + exchanged.expiresInSeconds * 1_000
+            exchanged
         }
         val refreshToken = tokens.refreshToken
-            ?: return OAuthLoginResult.Failed("missing_refresh_token")
-        val accessToken = tokens.accessToken
-            ?: return OAuthLoginResult.Failed("missing_access_token")
-        val claims = parseOAuthTokenClaims(tokens.idToken) ?: parseOAuthTokenClaims(accessToken)
-        val account = repository.upsert(
-            keyId = session.keyId,
-            provider = session.provider,
-            accountEmail = claims?.email?.take(MAX_EMAIL_CHARS),
-            accountPlan = claims?.planType?.take(MAX_PLAN_CHARS),
-            proxyUrl = session.proxyUrl,
-            refreshToken = cipher.encrypt(refreshToken),
-            accessToken = cipher.encrypt(accessToken),
-            accessTokenExpiresAt = now() + tokens.expiresInSeconds * 1_000,
-            tokenType = "Bearer",
-            scope = tokens.scope?.take(MAX_SCOPE_CHARS),
-        )
-        claims?.chatgptAccountId?.take(MAX_ACCOUNT_ID_CHARS)?.let { accountId ->
-            repository.updateChatgptAccountId(session.keyId, accountId)
+        if (refreshToken == null) {
+            pending.remove(loginId)
+            return OAuthLoginResult.Failed("missing_refresh_token")
         }
-        logger.info(
-            "oauth interactive login completed, keyId={}, provider={}, plan={}",
-            session.keyId,
-            session.provider.value,
-            claims?.planType,
-        )
-        return OAuthLoginResult.Completed(repository.find(session.keyId) ?: account)
+        val accessToken = tokens.accessToken
+        if (accessToken == null) {
+            pending.remove(loginId)
+            return OAuthLoginResult.Failed("missing_access_token")
+        }
+        // 绑定阶段互斥：并发提交只允许一个请求写库，其余按已使用处理。
+        if (!session.binding.compareAndSet(false, true)) return OAuthLoginResult.Expired
+        try {
+            val claims = parseOAuthTokenClaims(tokens.idToken) ?: parseOAuthTokenClaims(accessToken)
+            val account = repository.upsert(
+                keyId = session.keyId,
+                provider = session.provider,
+                accountEmail = claims?.email?.take(MAX_EMAIL_CHARS),
+                accountPlan = claims?.planType?.take(MAX_PLAN_CHARS),
+                proxyUrl = session.proxyUrl,
+                refreshToken = cipher.encrypt(refreshToken),
+                accessToken = cipher.encrypt(accessToken),
+                accessTokenExpiresAt = session.tokenExpiresAt,
+                tokenType = "Bearer",
+                scope = tokens.scope?.take(MAX_SCOPE_CHARS),
+            )
+            claims?.chatgptAccountId?.take(MAX_ACCOUNT_ID_CHARS)?.let { accountId ->
+                repository.updateChatgptAccountId(session.keyId, accountId)
+            }
+            pending.remove(loginId)
+            logger.info(
+                "oauth interactive login completed, keyId={}, provider={}, plan={}",
+                session.keyId,
+                session.provider.value,
+                claims?.planType,
+            )
+            return OAuthLoginResult.Completed(repository.find(session.keyId) ?: account)
+        } finally {
+            session.binding.set(false)
+        }
     }
 
     private suspend fun exchange(
@@ -220,12 +258,19 @@ class OAuthLoginService(
         val channelId: String,
         val keyId: String,
         val proxyUrl: String?,
+        /** 发起登录时目标密钥的凭据 nonce；凭据被替换后完成回调会拒绝绑定。 */
+        val credentialNonce: String,
         val verifier: String,
         val state: String,
         val redirectUri: String,
         val createdAt: Long,
         val expiresAt: Long,
         val claimed: AtomicBoolean = AtomicBoolean(false),
+        /** 绑定阶段的互斥；交换成功后允许在绑定失败时重试。 */
+        val binding: AtomicBoolean = AtomicBoolean(false),
+        /** 授权码交换结果；绑定成功或会话过期后释放。 */
+        @Volatile var tokens: LoginTokens? = null,
+        @Volatile var tokenExpiresAt: Long = 0,
     )
 
     private companion object {

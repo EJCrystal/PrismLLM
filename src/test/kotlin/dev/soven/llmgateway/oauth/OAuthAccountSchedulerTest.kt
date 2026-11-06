@@ -62,6 +62,44 @@ class OAuthAccountSchedulerTest {
     }
 
     @Test
+    fun `switching to an unlimited window drops stale hits`() = runTest {
+        val limited = OAuthAccountPolicy(windowLimit = 5, windowSeconds = 3_600, maxConcurrentRequests = 5)
+        val key = key(policy = limited)
+        repeat(3) { assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key)) }
+        assertEquals(3, assertNotNull(scheduler.runtimeState(key.id, limited)).windowUsed)
+
+        val unlimited = limited.copy(windowLimit = null)
+        assertEquals(0, assertNotNull(scheduler.runtimeState(key.id, unlimited)).windowUsed)
+    }
+
+    @Test
+    fun `cooldown deadlines saturate near the clock limit`() = runTest {
+        clock = Long.MAX_VALUE - 10
+        val key = key()
+        scheduler.recordRateLimited(key, 60_000)
+        assertEquals(Long.MAX_VALUE, snapshots.last().cooldownUntil)
+
+        val denied = scheduler.acquire(key)
+        assertIs<OAuthAccountDecision.Denied>(denied)
+        assertEquals(OAuthAccountDenyReason.COOLDOWN, denied.reason)
+        assertEquals(10, denied.retryAfterMs)
+    }
+
+    @Test
+    fun `window deadlines saturate near the clock limit`() = runTest {
+        clock = Long.MAX_VALUE - 10
+        val key = key(
+            policy = OAuthAccountPolicy(windowLimit = 1, windowSeconds = 3_600, maxConcurrentRequests = 5),
+        )
+        assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key))
+
+        val denied = scheduler.acquire(key)
+        assertIs<OAuthAccountDecision.Denied>(denied)
+        assertEquals(OAuthAccountDenyReason.WINDOW, denied.reason)
+        assertEquals(10, denied.retryAfterMs)
+    }
+
+    @Test
     fun `concurrency cap blocks a second in-flight request until release`() = runTest {
         val key = key(policy = OAuthAccountPolicy(windowLimit = 10, windowSeconds = 3_600, maxConcurrentRequests = 1))
         val first = scheduler.acquire(key)

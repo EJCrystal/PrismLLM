@@ -730,15 +730,22 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val channel = app.channelRepository.find(request.channelId.trim())
                 ?: throw notFound("channel_not_found", "渠道不存在")
             val keyId = request.keyId.trim()
-            if (channel.keys.none { it.id == keyId }) {
-                throw notFound("channel_key_not_found", "渠道密钥不存在")
-            }
+            val key = channel.keys.firstOrNull { it.id == keyId }
+                ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
             val proxyUrl = request.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
             if (proxyUrl != null && proxyUrl.length > MAX_OAUTH_PROXY_CHARS) {
                 throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
             }
             validateOAuthProxyUrl(app, proxyUrl)
-            when (val result = app.oauthLoginService.start(provider, channel.id, keyId, proxyUrl)) {
+            when (
+                val result = app.oauthLoginService.start(
+                    provider,
+                    channel.id,
+                    keyId,
+                    proxyUrl,
+                    key.credentialNonce,
+                )
+            ) {
                 OAuthLoginStartResult.UnsupportedProvider -> throw badRequest(
                     "oauth_login_unsupported",
                     "该提供方未配置授权地址与回调地址，请改为导入 refresh token",
@@ -773,9 +780,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val result = try {
                 app.oauthLoginService.complete(loginId, request.callbackUrl)
             } catch (cause: Throwable) {
-                // 与导入一致：同一提供方下邮箱唯一。
+                // 与导入一致：同一提供方下邮箱唯一。交换成功的 token 留在登录会话里，
+                // 解除原绑定后可以用同一 loginId 重试，不必重新走浏览器授权。
                 if (isUniqueViolation(cause)) {
-                    throw conflict("oauth_account_email_exists", "同一提供方下该邮箱已绑定到其他密钥")
+                    throw conflict(
+                        "oauth_account_email_exists",
+                        "同一提供方下该邮箱已绑定到其他密钥，解除原绑定后可用同一登录会话重试",
+                    )
                 }
                 throw cause
             }
@@ -785,6 +796,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     "登录会话不存在或已过期，请重新生成登录链接",
                 )
                 is OAuthLoginResult.InvalidRequest -> throw badRequest("oauth_login_invalid_callback", result.reason)
+                OAuthLoginResult.StaleTarget -> {
+                    call.markAdminAuditDetails(buildJsonObject { put("result", "stale") })
+                    throw conflict("oauth_login_stale", "密钥凭据在登录期间已被修改，请重新发起登录")
+                }
                 OAuthLoginResult.UnsupportedProvider -> throw badRequest(
                     "oauth_login_unsupported",
                     "该提供方未配置授权地址与回调地址，请改为导入 refresh token",

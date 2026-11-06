@@ -316,7 +316,12 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val oauthTokenProviders = OAuthTokenProviderRegistry(buildOAuthTokenProviders(config.oauth))
     val oauthTokenService = OAuthTokenService(oauthAccountRepository, credentialCipher, oauthTokenProviders, config.oauth)
     /** 交互式 OAuth 登录：PKCE 会话只保存在内存，单次使用。 */
-    val oauthLoginService = OAuthLoginService(oauthAccountRepository, credentialCipher, config.oauth)
+    val oauthLoginService = OAuthLoginService(
+        oauthAccountRepository,
+        channelRepository,
+        credentialCipher,
+        config.oauth,
+    )
     /** 额度插件仅在管理面查询阶段使用，不参与请求转发。 */
     val channelQuotaProviderRegistry = ChannelQuotaProviderRegistry(config.quotaPluginDir)
     val channelQuotaService = ChannelQuotaService(channelQuotaProviderRegistry, credentialCipher, oauthTokenService)

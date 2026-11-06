@@ -207,8 +207,9 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
   ```
 
   - `callbackUrl` 支持完整 URL、裸查询串或 `?查询串`，最长 4096 字符；必须是浏览器登录后真实产生的地址，不要手工拼接。
-  - 登录会话只存在于内存、只能使用一次；过期、重复提交或 `state` 不匹配返回 `400 oauth_login_expired` / `400 oauth_login_invalid_callback`。
-  - 换取 token 失败返回 `502 oauth_login_failed`；提供方未配置授权参数返回 `400 oauth_login_unsupported`；邮箱已绑定返回 `409 oauth_account_email_exists`。
+  - 登录会话只存在于内存，10 分钟有效；授权码只能交换一次，绑定成功后会话立即失效。过期或重复提交返回 `400 oauth_login_expired`，`state` 不匹配返回 `400 oauth_login_invalid_callback`。
+  - 发起登录后目标密钥被删除或替换凭据时返回 `409 oauth_login_stale`，不会把授权结果写到新目标上。
+  - 换取 token 失败返回 `502 oauth_login_failed`；提供方未配置授权参数返回 `400 oauth_login_unsupported`；邮箱已绑定返回 `409 oauth_account_email_exists`，解除原绑定后可用同一 `loginId` 重试，不会再次请求 token 端点。
   - 成功后与手动导入一样绑定到指定密钥，并清空该账号与密钥的冷却和失败计数；响应不包含 token。
 
 - 编辑调度策略：
