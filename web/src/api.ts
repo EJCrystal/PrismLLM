@@ -262,14 +262,14 @@ export const api = {
     if (beforeId != null) params.set('beforeId', String(beforeId))
     return requestList<RequestLog>('/request-logs?' + params)
   },
-  getUsageReport: ({ from, to, clientKeyId = null, channelId = null, model = null, protocol = null, timezoneOffsetMinutes = 0 }: UsageReportQuery) => {
+  getUsageReport: ({ from, to, clientKeyId = null, channelId = null, model = null, protocol = null, timezoneOffsetMinutes = 0 }: UsageReportQuery, options: RequestOptions = {}) => {
     const params = new URLSearchParams({ from: String(from), to: String(to) })
     if (clientKeyId) params.set('clientKeyId', clientKeyId)
     if (channelId) params.set('channelId', channelId)
     if (model) params.set('model', model)
     if (protocol) params.set('protocol', protocol)
     if (timezoneOffsetMinutes) params.set('timezoneOffsetMinutes', String(timezoneOffsetMinutes))
-    return request<UsageReport>(`/usage-report?${params}`)
+    return request<UsageReport>(`/usage-report?${params}`, options)
   },
   getRetentionPolicy: () => request<RetentionPolicy>('/request-log-retention'),
   updateRetentionPolicy: (payload: { cleanupEnabled: boolean }) =>
