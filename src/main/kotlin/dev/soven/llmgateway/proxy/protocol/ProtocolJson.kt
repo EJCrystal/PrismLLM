@@ -50,6 +50,41 @@ internal fun validateMessagesTool(tool: JsonObject, path: String) {
     }
 }
 
+/**
+ * Anthropic 允许一轮的并行 tool_use 分散在连续多条 assistant 消息里，由同一条 user 消息统一给出结果；
+ * Chat、Responses、Gemini 都要求一条 assistant 的工具调用后紧跟全部工具结果，所以先把相邻的 assistant 合并。
+ * 只合并前一条已经带 tool_use 的消息，普通连续 assistant 消息保持原样。
+ */
+internal fun joinSplitToolCalls(messages: List<JsonElement>): List<JsonElement> {
+    val joined = mutableListOf<JsonElement>()
+    messages.forEach { element ->
+        val message = element as? JsonObject
+        val previous = joined.lastOrNull() as? JsonObject
+        if (message != null && previous != null &&
+            previous.string("role") == "assistant" && message.string("role") == "assistant" &&
+            previous.containsToolUse()
+        ) {
+            joined[joined.lastIndex] = JsonObject(
+                previous + ("content" to JsonArray(assistantBlocks(previous) + assistantBlocks(message))),
+            )
+        } else {
+            joined += element
+        }
+    }
+    return joined
+}
+
+private fun JsonObject.containsToolUse(): Boolean =
+    (this["content"] as? JsonArray)?.any { (it as? JsonObject)?.string("type") == "tool_use" } == true
+
+private fun assistantBlocks(message: JsonObject): List<JsonElement> = when (val content = message["content"]) {
+    is JsonArray -> content.toList()
+    is JsonPrimitive -> content.contentOrNull?.takeIf { it.isNotEmpty() }
+        ?.let { listOf(JsonObject(mapOf("type" to JsonPrimitive("text"), "text" to JsonPrimitive(it)))) }
+        .orEmpty()
+    else -> emptyList()
+}
+
 internal fun validateResponsesRequest(request: JsonObject) {
     request.string("previous_response_id")?.let {
         unsupported("previous_response_id", "协议转换不支持 Responses 有状态续接")

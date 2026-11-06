@@ -658,6 +658,49 @@ class ProtocolConversionTest {
     }
 
     @Test
+    fun `split parallel tool calls are joined into one assistant message`() {
+        val request = json(
+            """{"model":"m","max_tokens":8,"messages":[
+                {"role":"user","content":"compare"},
+                {"role":"assistant","content":[{"type":"text","text":"looking"},{"type":"tool_use","id":"a","name":"first","input":{}}]},
+                {"role":"assistant","content":[{"type":"tool_use","id":"b","name":"second","input":{}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"A"},{"type":"tool_result","tool_use_id":"b","content":"B"}]}
+            ]}""",
+        )
+        val chat = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, request, "m")
+        val messages = chat["messages"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("user", "assistant", "tool", "tool"), messages.map { it["role"]!!.jsonPrimitive.content })
+        assertEquals("looking", messages[1]["content"]!!.jsonPrimitive.content)
+        assertEquals(
+            listOf("a", "b"),
+            messages[1]["tool_calls"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content },
+        )
+
+        val gemini = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI, request, "m")
+        val model = gemini["contents"]!!.jsonArray.map { it.jsonObject }
+            .single { it["role"]!!.jsonPrimitive.content == "model" }
+        assertEquals(
+            listOf("first", "second"),
+            model["parts"]!!.jsonArray.map { it.jsonObject }
+                .mapNotNull { it["functionCall"]?.jsonObject?.get("name")?.jsonPrimitive?.content },
+        )
+    }
+
+    @Test
+    fun `consecutive assistant messages without tool calls stay separate`() {
+        val request = json(
+            """{"model":"m","max_tokens":8,"messages":[
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":[{"type":"text","text":"one"}]},
+                {"role":"assistant","content":[{"type":"text","text":"two"}]}
+            ]}""",
+        )
+        val chat = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, request, "m")
+        val messages = chat["messages"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("user", "assistant", "assistant"), messages.map { it["role"]!!.jsonPrimitive.content })
+    }
+
+    @Test
     fun `chat string stop converts to anthropic stop sequences`() {
         val request = json("""{"model":"m","messages":[{"role":"user","content":"hi"}],"stop":"END"}""")
         val converted = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, request, "m")

@@ -21,7 +21,7 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
     request.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { put("instructions", it) }
 
     val input = mutableListOf<JsonObject>()
-    request.array("messages").forEachIndexed { index, element ->
+    joinSplitToolCalls(request.array("messages")).forEachIndexed { index, element ->
         val path = "messages[$index]"
         val message = element as? JsonObject ?: unsupported(path, "消息必须是对象")
         val role = message.string("role") ?: unsupported("$path.role", "缺少 role")

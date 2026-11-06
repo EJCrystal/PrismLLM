@@ -297,7 +297,7 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
     messages.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { system ->
         put("systemInstruction", buildJsonObject { put("parts", buildJsonArray { add(buildJsonObject { put("text", system) }) }) })
     }
-    messages.array("messages").forEachIndexed { index, element ->
+    joinSplitToolCalls(messages.array("messages")).forEachIndexed { index, element ->
         val message = element as? JsonObject ?: unsupported("messages[$index]", "消息必须是对象")
         val parts = mutableListOf<JsonObject>()
         when (val content = message["content"]) {
