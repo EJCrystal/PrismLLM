@@ -738,6 +738,7 @@ private fun geminiContentsToChat(contents: JsonElement?): JsonArray = buildJsonA
                             val name = call.string("name") ?: unsupported("contents[$index].parts[$partIndex].functionCall.name", "functionCall 缺少 name")
                             val callId = "call_${index}_$partIndex"
                             pendingIds.getOrPut(name) { ArrayDeque() }.addLast(callId)
+                            toolImages.rememberToolName(callId, name)
                             toolCalls += buildJsonObject {
                                 put("id", callId)
                                 put("type", "function")
@@ -767,13 +768,15 @@ private fun geminiContentsToChat(contents: JsonElement?): JsonArray = buildJsonA
                 flushText()
                 if (parts.isNotEmpty() || toolCalls.isNotEmpty()) {
                     if (role == "assistant") toolImages.flush()
+                    // 用户内容正好可以承载上一条工具结果里的图片，避免图片单独成一条 user 消息。
+                    val contentParts = if (role == "assistant" || parts.isEmpty()) parts else toolImages.take() + parts
                     messages += buildJsonObject {
                         put("role", role)
                         when {
-                            parts.isEmpty() -> put("content", JsonNull)
-                            parts.size == 1 && (parts[0] as JsonObject).string("type") == "text" ->
-                                put("content", (parts[0] as JsonObject).string("text").orEmpty())
-                            else -> put("content", JsonArray(parts))
+                            contentParts.isEmpty() -> put("content", JsonNull)
+                            contentParts.size == 1 && (contentParts[0] as JsonObject).string("type") == "text" ->
+                                put("content", (contentParts[0] as JsonObject).string("text").orEmpty())
+                            else -> put("content", JsonArray(contentParts))
                         }
                         if (toolCalls.isNotEmpty()) put("tool_calls", JsonArray(toolCalls))
                     }

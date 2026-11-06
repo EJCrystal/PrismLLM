@@ -255,6 +255,48 @@ class ToolImageConversionTest {
     }
 
     @Test
+    fun `gemini function response image merges into the following user content`() {
+        // 图片可以跟 functionResponse 同一条 user 内容，也可以在下一条 user 内容里；
+        // 两种情况下都应并入该 user 消息，而不是额外产生一条连续的 user 消息。
+        for (sameContent in listOf(true, false)) {
+            val userContents = if (sameContent) {
+                """{"role":"user","parts":[
+                    {"functionResponse":{"name":"Read","response":{"content":"shot"},"parts":[
+                        {"inlineData":{"mimeType":"image/png","data":"$pngA"}}
+                    ]}},
+                    {"text":"what is in the image?"}
+                ]}"""
+            } else {
+                """{"role":"user","parts":[
+                    {"functionResponse":{"name":"Read","response":{"content":"shot"},"parts":[
+                        {"inlineData":{"mimeType":"image/png","data":"$pngA"}}
+                    ]}}
+                ]},
+                {"role":"user","parts":[{"text":"what is in the image?"}]}"""
+            }
+            val converted = convert(
+                GatewayProtocol.GEMINI,
+                GatewayProtocol.CHAT_COMPLETIONS,
+                """{"contents":[
+                    {"role":"user","parts":[{"text":"look"}]},
+                    {"role":"model","parts":[{"functionCall":{"name":"Read","args":{}}}]},
+                    $userContents
+                ]}""",
+            )
+            val messages = converted.messages()
+            assertEquals(listOf("user", "assistant", "tool", "user"), messages.roles())
+            assertEquals(
+                "shot\n\n[The tool returned an image; it follows in the next message.]",
+                messages[2].text(),
+            )
+            val user = messages[3].parts()
+            assertTrue(user[0]["text"]!!.jsonPrimitive.content.contains("Read (tool call call_1_0)"))
+            assertEquals(listOf("data:image/png;base64,$pngA"), messages[3].imageUrls())
+            assertEquals("what is in the image?", user.last()["text"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
     fun `chat tool content with an image converts to an anthropic tool result`() {
         val converted = convert(
             GatewayProtocol.CHAT_COMPLETIONS,
