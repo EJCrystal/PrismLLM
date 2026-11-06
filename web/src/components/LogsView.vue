@@ -134,6 +134,11 @@ function attemptProtocolLabel(attempt: RequestLogAttempt, log: RequestLog): stri
   return protocolLabel(attempt.upstreamProtocol || log.upstreamProtocol)
 }
 
+function attemptCandidateLabel(attempt: RequestLogAttempt): string {
+  const channel = attempt.channelName || (attempt.channelId ? attempt.channelId.slice(0, 8) : '—')
+  return attempt.channelKeyName ? channel + ' · ' + attempt.channelKeyName : channel
+}
+
 const selectedConversion = computed(() =>
   protocolConversion(
     selected.value?.protocol,
@@ -811,60 +816,79 @@ onMounted(load)
               <span v-else>尝试记录</span>
               <p v-if="!hasAttemptDetail" class="muted small">无尝试明细</p>
               <div v-else class="attempt-list">
-                <div v-for="(attempt, attemptIndex) in selectedAttempts" :key="attempt.index + '-' + attemptIndex" class="attempt-row">
-                  <div class="attempt-head">
-                    <span class="attempt-index">{{ attempt.skipped ? '跳过' : '#' + attempt.index }}</span>
-                    <span v-if="attempt.skipped" class="badge attempt-status neutral" aria-label="路由跳过，未发起上游请求">跳过</span>
-                    <span
-                      v-else
-                      class="badge attempt-status"
-                      :class="attemptStatusClass(attempt)"
-                      :aria-label="attemptStatusAriaLabel(attempt, attemptIndex < selectedAttempts.length - 1)"
-                    >
-                      HTTP {{ attempt.statusCode ?? '—' }}
-                    </span>
-                    <span
-                      v-if="attempt.upstreamErrorStatusCode != null && attempt.upstreamErrorStatusCode !== attempt.statusCode"
-                      class="badge danger"
-                    >错误状态 {{ attempt.upstreamErrorStatusCode }}</span>
-                    <span class="attempt-result" role="status">{{ attemptResultLabel(attempt, attemptIndex < selectedAttempts.length - 1) }}</span>
-                    <span class="sr-only">{{ attempt.skipped ? '路由跳过，未发起上游请求' : '第 ' + attempt.index + ' 次尝试' }}</span>
-                    <span v-if="!attempt.skipped" class="attempt-duration">{{ formatDuration(attempt.elapsedMs) }}</span>
+                <div
+                  v-for="(attempt, attemptIndex) in selectedAttempts"
+                  :key="attempt.index + '-' + attemptIndex"
+                  class="attempt-row"
+                  :class="{ 'attempt-row-skipped': attempt.skipped }"
+                >
+                  <div v-if="attempt.skipped" class="attempt-head">
+                    <span class="badge attempt-status neutral" aria-label="路由跳过，未发起上游请求">跳过</span>
+                    <div class="attempt-skip-body">
+                      <div class="attempt-skip-line">
+                        <span class="attempt-skip-target" :title="attemptCandidateLabel(attempt)">{{ attemptCandidateLabel(attempt) }}</span>
+                        <span class="attempt-skip-reason">{{ attemptFailureReason(attempt) }}</span>
+                      </div>
+                      <div class="attempt-skip-meta">
+                        <span class="mono" :title="attempt.upstreamModel || ''">{{ attempt.upstreamModel || '—' }}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{{ attemptProtocolLabel(attempt, selected) }}</span>
+                      </div>
+                    </div>
                   </div>
-                  <div class="attempt-route">
-                    <div class="attempt-field">
-                      <span class="attempt-label">渠道</span>
-                      <span class="attempt-value" :title="attempt.channelName || attempt.channelId || ''">
-                        {{ attempt.channelName || (attempt.channelId ? attempt.channelId.slice(0, 8) : '—') }}
+                  <template v-else>
+                    <div class="attempt-head">
+                      <span class="attempt-index">#{{ attempt.index }}</span>
+                      <span
+                        class="badge attempt-status"
+                        :class="attemptStatusClass(attempt)"
+                        :aria-label="attemptStatusAriaLabel(attempt, attemptIndex < selectedAttempts.length - 1)"
+                      >
+                        HTTP {{ attempt.statusCode ?? '—' }}
                       </span>
+                      <span
+                        v-if="attempt.upstreamErrorStatusCode != null && attempt.upstreamErrorStatusCode !== attempt.statusCode"
+                        class="badge danger"
+                      >错误状态 {{ attempt.upstreamErrorStatusCode }}</span>
+                      <span class="attempt-result" role="status">{{ attemptResultLabel(attempt, attemptIndex < selectedAttempts.length - 1) }}</span>
+                      <span class="sr-only">第 {{ attempt.index }} 次尝试</span>
+                      <span class="attempt-duration">{{ formatDuration(attempt.elapsedMs) }}</span>
                     </div>
-                    <div class="attempt-field">
-                      <span class="attempt-label">密钥</span>
-                      <span class="attempt-value" :title="attempt.channelKeyName || ''">{{ attempt.channelKeyName || '—' }}</span>
+                    <div class="attempt-route">
+                      <div class="attempt-field">
+                        <span class="attempt-label">渠道</span>
+                        <span class="attempt-value" :title="attempt.channelName || attempt.channelId || ''">
+                          {{ attempt.channelName || (attempt.channelId ? attempt.channelId.slice(0, 8) : '—') }}
+                        </span>
+                      </div>
+                      <div class="attempt-field">
+                        <span class="attempt-label">密钥</span>
+                        <span class="attempt-value" :title="attempt.channelKeyName || ''">{{ attempt.channelKeyName || '—' }}</span>
+                      </div>
+                      <div class="attempt-field">
+                        <span class="attempt-label">上游模型</span>
+                        <span class="attempt-value mono" :title="attempt.upstreamModel || ''">{{ attempt.upstreamModel || '—' }}</span>
+                      </div>
+                      <div class="attempt-field">
+                        <span class="attempt-label">出站协议</span>
+                        <span class="attempt-value">{{ attemptProtocolLabel(attempt, selected) }}</span>
+                      </div>
                     </div>
-                    <div class="attempt-field">
-                      <span class="attempt-label">上游模型</span>
-                      <span class="attempt-value mono" :title="attempt.upstreamModel || ''">{{ attempt.upstreamModel || '—' }}</span>
+                    <div class="attempt-detail">
+                      <div class="attempt-field">
+                        <span class="attempt-label">首 token</span>
+                        <span class="attempt-value">{{ formatDuration(attempt.firstTokenMs) }}</span>
+                      </div>
+                      <div class="attempt-field">
+                        <span class="attempt-label">上游错误码</span>
+                        <span class="attempt-value mono">{{ attempt.upstreamErrorCode || '—' }}</span>
+                      </div>
+                      <div class="attempt-field attempt-field-wide">
+                        <span class="attempt-label">原因</span>
+                        <span class="attempt-value">{{ attemptFailureReason(attempt) }}</span>
+                      </div>
                     </div>
-                    <div class="attempt-field">
-                      <span class="attempt-label">出站协议</span>
-                      <span class="attempt-value">{{ attemptProtocolLabel(attempt, selected) }}</span>
-                    </div>
-                  </div>
-                  <div class="attempt-detail">
-                    <div class="attempt-field">
-                      <span class="attempt-label">首 token</span>
-                      <span class="attempt-value">{{ formatDuration(attempt.firstTokenMs) }}</span>
-                    </div>
-                    <div class="attempt-field">
-                      <span class="attempt-label">上游错误码</span>
-                      <span class="attempt-value mono">{{ attempt.upstreamErrorCode || '—' }}</span>
-                    </div>
-                    <div class="attempt-field attempt-field-wide">
-                      <span class="attempt-label">原因</span>
-                      <span class="attempt-value">{{ attemptFailureReason(attempt) }}</span>
-                    </div>
-                  </div>
+                  </template>
                 </div>
               </div>
             </div>
