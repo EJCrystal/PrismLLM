@@ -240,4 +240,68 @@ class UpstreamRequestPolicyTest {
             assertFalse(body.containsKey("max_tokens"), "max_tokens should be stripped when max_completion_tokens is configured")
         }
     }
+
+    @Test
+    fun `chat completion body automatically normalizes reasoning_content in assistant messages`() {
+        val request = json("""
+            {
+                "model": "deepseek-flash",
+                "reasoning_effort": "max",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"}
+                ]
+            }
+        """.trimIndent())
+
+        val policy = UpstreamRequestPolicy(
+            UpstreamRequestOverrides(), UpstreamRequestOverrides(), GatewayProtocol.CHAT_COMPLETIONS, "bearer",
+        )
+        val body = policy.body(request, "deepseek-flash")
+        val messages = body["messages"] as kotlinx.serialization.json.JsonArray
+        val assistant = messages[1].jsonObject
+        assertEquals("", assistant["reasoning_content"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `channel reasoning content policy overrides the global default and honors opt out`() {
+        val request = json("""
+            {
+                "model": "ds-proxy",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"}
+                ]
+            }
+        """.trimIndent())
+
+        fun assistantReasoning(global: UpstreamRequestOverrides, channel: UpstreamRequestOverrides): String? =
+            UpstreamRequestPolicy(global, channel, GatewayProtocol.CHAT_COMPLETIONS, "bearer")
+                .body(request, "ds-proxy")["messages"]
+                .let { it as kotlinx.serialization.json.JsonArray }[1]
+                .jsonObject["reasoning_content"]?.jsonPrimitive?.content
+
+        // 默认 auto：自定义模型名不触发
+        assertNull(assistantReasoning(UpstreamRequestOverrides(), UpstreamRequestOverrides()))
+        // 全局 always 生效
+        assertEquals("", assistantReasoning(UpstreamRequestOverrides(reasoningContentPolicy = "always"), UpstreamRequestOverrides()))
+        // 渠道 never 覆盖全局 always
+        assertNull(assistantReasoning(
+            UpstreamRequestOverrides(reasoningContentPolicy = "always"),
+            UpstreamRequestOverrides(reasoningContentPolicy = "never"),
+        ))
+        // 渠道不继承全局时，全局 always 不生效
+        assertNull(assistantReasoning(
+            UpstreamRequestOverrides(reasoningContentPolicy = "always"),
+            UpstreamRequestOverrides(inheritGlobal = false),
+        ))
+    }
+
+    @Test
+    fun `rejects unknown reasoning content policy at save time`() {
+        val error = assertFailsWith<GatewayException> {
+            validateUpstreamRequestOverrides(UpstreamRequestOverrides(reasoningContentPolicy = "sometimes"))
+        }
+        assertEquals("invalid_request_overrides", error.code)
+    }
 }

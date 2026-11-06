@@ -88,6 +88,10 @@ class UpstreamRequestPolicy(
         channel.protocols[protocol?.value]?.let(::add)
     }
     private val profile = layers.asReversed().firstNotNullOfOrNull { it.headerProfile } ?: "auto"
+    private val reasoningContentPolicy: ReasoningContentPolicy =
+        channel.reasoningContentPolicy?.let(ReasoningContentPolicy::fromValue)
+            ?: (if (channel.inheritGlobal) global.reasoningContentPolicy?.let(ReasoningContentPolicy::fromValue) else null)
+            ?: ReasoningContentPolicy.AUTO
 
     fun applyHeaders(builder: HttpRequestBuilder) {
         val result = linkedMapOf<String, String?>()
@@ -119,8 +123,13 @@ class UpstreamRequestPolicy(
         val routed = if (protocol == GatewayProtocol.GEMINI) JsonObject(original - "model" - "stream")
             else JsonObject(original + ("model" to JsonPrimitive(upstreamModel)))
         val merged = layers.fold(routed) { current, layer -> mergePatch(current, layer.body) }
-        val result = if (protocol == GatewayProtocol.CHAT_COMPLETIONS && "max_completion_tokens" in merged) {
-            JsonObject(merged - "max_tokens")
+        val result = if (protocol == GatewayProtocol.CHAT_COMPLETIONS) {
+            val withoutMaxTokens = if ("max_completion_tokens" in merged) {
+                JsonObject(merged - "max_tokens")
+            } else {
+                merged
+            }
+            ChatReasoningContentNormalizer.normalize(withoutMaxTokens, upstreamModel, reasoningContentPolicy)
         } else {
             merged
         }
@@ -152,6 +161,11 @@ fun validateUpstreamRequestOverrides(overrides: UpstreamRequestOverrides) {
     fun invalid(message: String): Nothing = throw badRequest("invalid_request_overrides", message)
     if (overrides.protocols.keys.any { GatewayProtocol.fromValue(it) == null }) {
         invalid("按协议覆盖的键必须是 chat_completions、responses、messages 或 gemini")
+    }
+    if (overrides.reasoningContentPolicy != null &&
+        ReasoningContentPolicy.fromValue(overrides.reasoningContentPolicy) == null
+    ) {
+        invalid("reasoning_content 处理策略必须是 auto、always 或 never")
     }
     val layers = listOf(overrides.common()) + overrides.protocols.values
     layers.forEach { layer ->

@@ -244,7 +244,11 @@ function channelFormSnapshot(useEditor = true): string {
       priority: form.priority,
       requestOverrides: useEditor && overrideEditor.value
         ? overrideEditor.value.getSnapshot()
-        : requestOverrideDraftSnapshot(createRequestOverrideDrafts(form.requestOverrides), form.requestOverrides.inheritGlobal !== false),
+        : requestOverrideDraftSnapshot(
+            createRequestOverrideDrafts(form.requestOverrides),
+            form.requestOverrides.inheritGlobal !== false,
+            form.requestOverrides.reasoningContentPolicy ?? null,
+          ),
     },
     keys: channelKeys.value.map((key) => ({
       id: key.id, name: key.name, credential: key.credential, state: key.state, priority: key.priority,
