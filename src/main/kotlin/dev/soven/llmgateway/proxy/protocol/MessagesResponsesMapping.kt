@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.proxy.protocol
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -25,26 +26,27 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
         val message = element as? JsonObject ?: unsupported(path, "消息必须是对象")
         val role = message.string("role") ?: unsupported("$path.role", "缺少 role")
         if (role !in setOf("user", "assistant")) unsupported("$path.role", "不支持的消息角色")
-        val text = mutableListOf<JsonObject>()
-        fun flushText() {
-            if (text.isEmpty()) return
+        val parts = mutableListOf<JsonObject>()
+        fun flushParts() {
+            if (parts.isEmpty()) return
             input += buildJsonObject {
                 put("type", "message")
                 put("role", role)
-                put("content", JsonArray(text.toList()))
+                put("content", JsonArray(parts.toList()))
             }
-            text.clear()
+            parts.clear()
         }
         when (val content = message["content"]) {
             JsonNull -> Unit
-            is JsonPrimitive -> text += responseTextBlock(content.content, role)
+            is JsonPrimitive -> parts += responseTextBlock(content.content, role)
             is JsonArray -> content.forEachIndexed { partIndex, partElement ->
                 val partPath = "$path.content[$partIndex]"
                 val part = partElement as? JsonObject ?: unsupported(partPath, "内容块必须是对象")
                 when (part.string("type")) {
-                    "text" -> text += responseTextBlock(part.string("text").orEmpty(), role)
+                    "text" -> parts += responseTextBlock(part.string("text").orEmpty(), role)
+                    "image" -> parts += imagePartFromAnthropic(part, partPath).toResponsesPart()
                     "tool_use" -> {
-                        flushText()
+                        flushParts()
                         input += buildJsonObject {
                             put("type", "function_call")
                             put("call_id", part.string("id") ?: unsupported("$partPath.id", "tool_use 缺少 id"))
@@ -53,20 +55,29 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
                         }
                     }
                     "tool_result" -> {
-                        flushText()
+                        flushParts()
+                        val result = part.toolResultContent("$partPath.content")
                         input += buildJsonObject {
                             put("type", "function_call_output")
                             put("call_id", part.string("tool_use_id") ?: unsupported("$partPath.tool_use_id", "tool_result 缺少 tool_use_id"))
-                            put("output", part.toolResultContent("$partPath.content"))
+                            if (result.images.isEmpty()) {
+                                put("output", result.text)
+                            } else {
+                                // Responses 的 output 可以带图片，不像 Chat 的 tool 消息只能放文本。
+                                put("output", buildJsonArray {
+                                    if (result.text.isNotEmpty()) add(responsesTextPart(result.text))
+                                    result.images.forEach { add(it.toResponsesPart()) }
+                                })
+                            }
                         }
                     }
                     else -> unsupported("$partPath.type", "第一版不支持该 Messages 内容类型")
                 }
             }
-            JsonNull, null -> Unit
+            null -> Unit
             else -> unsupported("$path.content", "无法识别的内容")
         }
-        flushText()
+        flushParts()
     }
     put("input", JsonArray(input))
     request["tools"]?.takeIf { it !is JsonNull }?.let { element ->
@@ -134,11 +145,11 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
                 "message", null -> {
                     flushToolResults()
                     val role = item.string("role") ?: "user"
-                    val text = item.textContentStrict("content", "$path.content")
                     when (role) {
-                        "system", "developer" -> system += text
-                        "user", "assistant" -> if (text.isNotEmpty()) {
-                            messages += messageWithBlocks(role, listOf(messageTextBlock(text)))
+                        "system", "developer" -> system += item.textContentStrict("content", "$path.content")
+                        "user", "assistant" -> {
+                            val blocks = responsesContentToMessagesBlocks(item["content"], "$path.content")
+                            if (blocks.isNotEmpty()) messages += messageWithBlocks(role, blocks)
                         }
                         else -> unsupported("$path.role", "不支持的消息角色")
                     }
@@ -155,7 +166,7 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
                 "function_call_output" -> toolResults += buildJsonObject {
                     put("type", "tool_result")
                     put("tool_use_id", item.string("call_id") ?: unsupported("$path.call_id", "function_call_output 缺少 call_id"))
-                    put("content", item.textContentStrict("output", "$path.output"))
+                    put("content", responsesOutputToToolResult(item["output"], "$path.output"))
                 }
                 "reasoning" -> Unit
                 else -> unsupported("$path.type", "第一版不支持 Responses 输入项 "+item.string("type"))
@@ -285,6 +296,33 @@ internal fun responsesToMessagesResponse(response: JsonObject, model: String): J
     TokenUsage.fromResponses(response["usage"] as? JsonObject)?.let { put("usage", it.toMessages()) }
 }
 
+
+/** Responses 消息内容可以是字符串，也可以是 input_text / input_image 内容项数组。 */
+internal fun responsesContentToMessagesBlocks(content: JsonElement?, path: String): List<JsonObject> = when (content) {
+    null, JsonNull -> emptyList()
+    is JsonPrimitive -> content.content.takeIf { it.isNotEmpty() }?.let { listOf(messageTextBlock(it)) } ?: emptyList()
+    is JsonArray -> content.mapIndexedNotNull { index, element ->
+        val obj = element as? JsonObject ?: unsupported("$path[$index]", "内容块必须是对象")
+        when (obj.string("type")) {
+            "text", "input_text", "output_text" ->
+                obj.string("text")?.takeIf { it.isNotEmpty() }?.let { messageTextBlock(it) }
+            "refusal" -> obj.string("refusal")?.takeIf { it.isNotEmpty() }?.let { messageTextBlock(it) }
+            "input_image" -> imagePartFromResponses(obj, "$path[$index]").toAnthropicBlock()
+            else -> unsupported("$path[$index].type", "第一版不支持该 Responses 内容类型")
+        }
+    }
+    else -> unsupported(path, "无法识别的内容")
+}
+
+/** Anthropic tool_result 的 content：纯文本保持字符串，带图片时用内容块数组。 */
+internal fun responsesOutputToToolResult(output: JsonElement?, path: String): JsonElement {
+    val result = responsesToolOutputContent(output, path)
+    if (result.images.isEmpty()) return JsonPrimitive(result.text)
+    return buildJsonArray {
+        if (result.text.isNotEmpty()) add(messageTextBlock(result.text))
+        result.images.forEach { add(it.toAnthropicBlock()) }
+    }
+}
 
 private fun responseTextBlock(text: String, role: String): JsonObject = buildJsonObject {
     put("type", if (role == "assistant") "output_text" else "input_text")

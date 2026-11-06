@@ -11,6 +11,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 
 internal val messagesRequestFields = setOf(
     "model", "messages", "system", "max_tokens", "stream", "temperature", "top_p",
@@ -63,17 +64,254 @@ internal fun validateResponsesRequest(request: JsonObject) {
     rejectExtraMetadata(request["metadata"], "metadata")
 }
 
-internal fun JsonObject.toolResultContent(path: String): String = when (val value = this["content"]) {
-    is JsonPrimitive -> value.contentOrNull.orEmpty()
-    is JsonArray -> value.mapIndexed { index, element ->
-        val obj = element as? JsonObject ?: unsupported("$path[$index]", "tool_result 内容块必须是对象")
-        when (obj.string("type")) {
-            "text" -> obj.string("text").orEmpty()
-            "image" -> unsupported("$path[$index].type", "跨协议转换不支持 tool_result 图片内容")
-            else -> unsupported("$path[$index].type", "第一版不支持 tool_result 内容类型 ${obj.string("type")}")
+/** 跨协议转换中的图片。base64 与远程 URL 两种来源统一用 [dataUrl] 表示。 */
+internal data class ImagePart(
+    val mediaType: String? = null,
+    val data: String? = null,
+    val url: String? = null,
+) {
+    fun dataUrl(): String? = when {
+        url != null -> url
+        data != null -> "data:${mediaType ?: "image/png"};base64,$data"
+        else -> null
+    }
+}
+
+internal data class ToolResultContent(
+    val text: String,
+    val images: List<ImagePart>,
+)
+
+internal fun parseImageUrl(url: String, path: String): ImagePart {
+    if (!url.startsWith("data:")) return ImagePart(url = url)
+    val comma = url.indexOf(',')
+    if (comma <= 5) unsupported(path, "无法识别的 data URL 图片")
+    val metadata = url.substring(5, comma)
+    val data = url.substring(comma + 1)
+    if (!metadata.endsWith(";base64")) unsupported(path, "仅支持 base64 data URL 图片")
+    val mediaType = metadata.removeSuffix(";base64").substringBefore(';').ifBlank { "image/png" }
+    return ImagePart(mediaType = mediaType, data = data)
+}
+
+internal fun imagePartFromAnthropic(block: JsonObject, path: String): ImagePart {
+    val source = block["source"] as? JsonObject ?: unsupported("$path.source", "image 缺少 source")
+    return when (source.string("type")) {
+        "base64" -> ImagePart(
+            mediaType = source.string("media_type") ?: unsupported("$path.source.media_type", "image 缺少 media_type"),
+            data = source.string("data") ?: unsupported("$path.source.data", "image 缺少 data"),
+        )
+        "url" -> ImagePart(url = source.string("url") ?: unsupported("$path.source.url", "image 缺少 url"))
+        else -> unsupported("$path.source.type", "不支持的 image source 类型 ${source.string("type")}")
+    }
+}
+
+internal fun imagePartFromChat(part: JsonObject, path: String): ImagePart {
+    val value = part["image_url"] ?: unsupported("$path.image_url", "image_url 缺少 url")
+    val url = when (value) {
+        is JsonPrimitive -> value.contentOrNull
+        is JsonObject -> value.string("url")
+        else -> null
+    } ?: unsupported("$path.image_url", "image_url 缺少 url")
+    return parseImageUrl(url, "$path.image_url")
+}
+
+internal fun imagePartFromResponses(part: JsonObject, path: String): ImagePart {
+    if (part.string("file_id") != null) unsupported("$path.file_id", "跨协议转换不支持 Responses file_id 图片")
+    val value = part["image_url"] ?: unsupported("$path.image_url", "input_image 缺少 image_url")
+    val url = when (value) {
+        is JsonPrimitive -> value.contentOrNull
+        is JsonObject -> value.string("url")
+        else -> null
+    } ?: unsupported("$path.image_url", "input_image 缺少 image_url")
+    return parseImageUrl(url, "$path.image_url")
+}
+
+internal fun imagePartFromGemini(part: JsonObject, path: String): ImagePart {
+    val inline = part["inlineData"] as? JsonObject
+    if (inline != null) {
+        val mediaType = inline.string("mimeType") ?: unsupported("$path.inlineData.mimeType", "inlineData 缺少 mimeType")
+        if (!mediaType.startsWith("image/")) unsupported("$path.inlineData.mimeType", "第一版不支持非图片多模态内容")
+        return ImagePart(
+            mediaType = mediaType,
+            data = inline.string("data") ?: unsupported("$path.inlineData.data", "inlineData 缺少 data"),
+        )
+    }
+    val file = part["fileData"] as? JsonObject
+    if (file != null) {
+        val mediaType = file.string("mimeType")
+        if (mediaType != null && !mediaType.startsWith("image/")) {
+            unsupported("$path.fileData.mimeType", "第一版不支持非图片多模态内容")
         }
-    }.joinToString("\n")
-    JsonNull, null -> ""
+        return ImagePart(
+            mediaType = mediaType,
+            url = file.string("fileUri") ?: unsupported("$path.fileData.fileUri", "fileData 缺少 fileUri"),
+        )
+    }
+    unsupported(path, "不是图片内容")
+}
+
+internal fun chatTextPart(text: String): JsonObject = buildJsonObject {
+    put("type", "text")
+    put("text", text)
+}
+
+internal fun responsesTextPart(text: String): JsonObject = buildJsonObject {
+    put("type", "input_text")
+    put("text", text)
+}
+
+internal fun ImagePart.toChatPart(): JsonObject = buildJsonObject {
+    put("type", "image_url")
+    putJsonObject("image_url") {
+        put("url", dataUrl() ?: unsupported("image", "图片缺少可用的 URL 或数据"))
+    }
+}
+
+internal fun ImagePart.toResponsesPart(): JsonObject = buildJsonObject {
+    put("type", "input_image")
+    put("image_url", dataUrl() ?: unsupported("image", "图片缺少可用的 URL 或数据"))
+}
+
+internal fun ImagePart.toAnthropicBlock(): JsonObject = buildJsonObject {
+    put("type", "image")
+    putJsonObject("source") {
+        if (url != null && data == null) {
+            put("type", "url")
+            put("url", url)
+        } else {
+            put("type", "base64")
+            put("media_type", mediaType ?: "image/png")
+            put("data", data ?: unsupported("image", "图片缺少数据"))
+        }
+    }
+}
+
+internal fun ImagePart.toGeminiPart(): JsonObject = buildJsonObject {
+    if (data != null) {
+        putJsonObject("inlineData") {
+            put("mimeType", mediaType ?: "image/png")
+            put("data", data)
+        }
+    } else if (url != null) {
+        putJsonObject("fileData") {
+            put("mimeType", mediaType ?: "image/png")
+            put("fileUri", url)
+        }
+    } else {
+        unsupported("image", "图片缺少可用的 URL 或数据")
+    }
+}
+
+/**
+ * Chat 的 tool 消息只能承载文本，工具返回的图片要挪到后面的 user 消息里。
+ *
+ * 图片先攒起来，作为下一条 user 消息的开头；下一条是 assistant 时单独补一条 user 消息，
+ * 避免出现两条连续的 user 消息（部分模型的对话模板会拒绝）。
+ */
+internal class ChatToolImageRelocator(private val messages: MutableList<JsonObject>) {
+    private val toolNames = mutableMapOf<String, String>()
+    private val deferred = mutableListOf<JsonElement>()
+
+    fun rememberToolName(callId: String, name: String) {
+        toolNames[callId] = name
+    }
+
+    /** tool 消息的文本：原内容加一句图片去向说明。 */
+    fun toolText(content: ToolResultContent): String {
+        if (content.images.isEmpty()) return content.text
+        val note = if (content.images.size == 1) {
+            "[The tool returned an image; it follows in the next message.]"
+        } else {
+            "[The tool returned ${content.images.size} images; they follow in the next message.]"
+        }
+        return if (content.text.isBlank()) note else "${content.text}\n\n$note"
+    }
+
+    /** 把工具返回的图片记为下一条 user 消息的开头。 */
+    fun defer(callId: String, images: List<ImagePart>) {
+        if (images.isEmpty()) return
+        val name = toolNames[callId]
+        val source = if (name != null) "$name (tool call $callId)" else "tool call $callId"
+        deferred += chatTextPart("[From the result of $source:]")
+        images.forEach { deferred += it.toChatPart() }
+    }
+
+    /** 取出攒下的图片内容；没有则返回空列表。 */
+    fun take(): List<JsonElement> {
+        if (deferred.isEmpty()) return emptyList()
+        val parts = deferred.toList()
+        deferred.clear()
+        return parts
+    }
+
+    /** 下一条是 assistant 时，把攒下的图片单独补成一条 user 消息。 */
+    fun flush() {
+        val parts = take()
+        if (parts.isEmpty()) return
+        messages += buildJsonObject {
+            put("role", "user")
+            put("content", JsonArray(parts))
+        }
+    }
+}
+
+/** Chat 的 tool 消息 content 通常是字符串；部分客户端会传 text/image 内容块数组。 */
+internal fun chatContentToToolResultContent(content: JsonElement?, path: String): ToolResultContent = when (content) {
+    null, JsonNull -> ToolResultContent("", emptyList())
+    is JsonPrimitive -> ToolResultContent(content.contentOrNull.orEmpty(), emptyList())
+    is JsonArray -> {
+        val text = mutableListOf<String>()
+        val images = mutableListOf<ImagePart>()
+        content.forEachIndexed { index, element ->
+            val obj = element as? JsonObject ?: unsupported("$path[$index]", "内容块必须是对象")
+            when (obj.string("type")) {
+                "text" -> text += obj.string("text").orEmpty()
+                "image_url" -> images += imagePartFromChat(obj, "$path[$index]")
+                "input_image" -> images += imagePartFromResponses(obj, "$path[$index]")
+                else -> unsupported("$path[$index].type", "第一版不支持 tool 消息中的该内容类型")
+            }
+        }
+        ToolResultContent(text.joinToString("\n"), images)
+    }
+    else -> unsupported(path, "无法识别的内容")
+}
+
+/** Responses function_call_output 的 output 可以是字符串，也可以是 input_text / input_image 内容项数组。 */
+internal fun responsesToolOutputContent(output: JsonElement?, path: String): ToolResultContent = when (output) {
+    null, JsonNull -> ToolResultContent("", emptyList())
+    is JsonPrimitive -> ToolResultContent(output.contentOrNull.orEmpty(), emptyList())
+    is JsonArray -> {
+        val text = mutableListOf<String>()
+        val images = mutableListOf<ImagePart>()
+        output.forEachIndexed { index, element ->
+            val obj = element as? JsonObject ?: unsupported("$path[$index]", "内容块必须是对象")
+            when (obj.string("type")) {
+                "text", "input_text", "output_text" -> text += obj.string("text").orEmpty()
+                "input_image" -> images += imagePartFromResponses(obj, "$path[$index]")
+                else -> unsupported("$path[$index].type", "第一版不支持 function_call_output 中的该内容类型")
+            }
+        }
+        ToolResultContent(text.joinToString("\n"), images)
+    }
+    else -> unsupported(path, "无法识别的内容")
+}
+
+internal fun JsonObject.toolResultContent(path: String): ToolResultContent = when (val value = this["content"]) {
+    JsonNull, null -> ToolResultContent("", emptyList())
+    is JsonPrimitive -> ToolResultContent(value.contentOrNull.orEmpty(), emptyList())
+    is JsonArray -> {
+        val text = mutableListOf<String>()
+        val images = mutableListOf<ImagePart>()
+        value.forEachIndexed { index, element ->
+            val obj = element as? JsonObject ?: unsupported("$path[$index]", "tool_result 内容块必须是对象")
+            when (obj.string("type")) {
+                "text" -> text += obj.string("text").orEmpty()
+                "image" -> images += imagePartFromAnthropic(obj, "$path[$index]")
+                else -> unsupported("$path[$index].type", "第一版不支持 tool_result 内容类型 ${obj.string("type")}")
+            }
+        }
+        ToolResultContent(text.joinToString("\n"), images)
+    }
     else -> unsupported(path, "无法识别的 tool_result 内容")
 }
 

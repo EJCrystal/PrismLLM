@@ -36,7 +36,7 @@
 
 ## 支持边界
 
-本轮保持四种协议已有功能范围，不增加管理端选项、数据库字段或新的协议能力：
+不增加管理端选项或数据库字段，协议能力限定在四种协议本身能表达的范围内：
 
 | 能力 | 行为 |
 | --- | --- |
@@ -50,7 +50,8 @@
 | 流式输出 | 文本、工具参数增量、结束原因、末尾用量与错误；没有结束原因的 EOF 不伪造成功结束，代理层仍检测缺失终止事件的流中断 |
 | 安全停止原因 | Chat `content_filter`、Responses `incomplete/content_filter` 与 Messages `refusal` 相互映射，普通响应与流式返回均不降级为自然结束 |
 | Gemini | 四协议全矩阵；Gemini 的模型与 stream 位于 URL，转换后的请求体不携带 model/stream。`cachedContent`、非空 `safetySettings`、`responseModalities` 与非单候选仍明确拒绝 |
-| 图片、文件、音频、内置工具 | 仍不支持跨协议转换；Messages 工具仅接受缺省 type 或 custom，Gemini 仅支持 functionDeclarations，其它类型在调用上游前明确拒绝 |
+| 图片 | 用户消息和工具结果里的图片支持四协议互转：Messages `image`、Chat `image_url`、Responses `input_image`、Gemini `inlineData`/`fileData` 按 base64 或 URL 双向映射。Chat 的 tool 消息只能承载文本，工具返回的图片会移到随后的 user 消息并标注来源，紧跟用户自己的内容，避免连续两条 user 消息；Messages ↔ Responses 与 Gemini 直接把图片放进工具结果本身 |
+| 文件、音频、内置工具 | 仍不支持跨协议转换；Messages 工具仅接受缺省 type 或 custom，Gemini 仅支持 functionDeclarations，其它类型在调用上游前明确拒绝 |
 | Responses 状态续接与存储 | 拒绝 `previous_response_id`、`store=true`、非空 `include`、自动 `truncation`；允许原有无副作用默认值 |
 | 结构化输出 | Chat ↔ Responses 保留已有映射；转换到 Messages 仍拒绝 |
 | Messages 专有扩展 | `context_management`、`output_config` 等仍明确报错，不通过删除字段绕过 |
@@ -59,4 +60,4 @@
 
 ## 验证
 
-`ProtocolConversionTest` 保留既有回归；`ProtocolConversionContractTest` 覆盖十二方向接口、透传、末帧、错误、异常 EOF 和会话隔离；`MessagesResponsesConversionTest` 覆盖直转顺序、工具参数、缓存用量与不支持字段。数据面集成测试覆盖六方向的普通和流式请求、实际出站端点及尝试日志。
+`ProtocolConversionTest` 保留既有回归；`ProtocolConversionContractTest` 覆盖十二方向接口、透传、末帧、错误、异常 EOF 和会话隔离；`MessagesResponsesConversionTest` 覆盖直转顺序、工具参数、缓存用量与不支持字段；`ToolImageConversionTest` 覆盖工具结果图片的重定位、并行工具结果、历史轮次与各协议间图片映射。数据面集成测试覆盖六方向的普通和流式请求、实际出站端点及尝试日志。
