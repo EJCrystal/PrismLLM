@@ -6,6 +6,7 @@ import { clearUpstreamModelCache } from '../upstreamModelCache'
 import { ApiError } from '../types/api'
 import type { AdminAuditLog, Channel, ChannelHealthReport, ChannelKeyState, HealthState, HealthWindow, ModelDefaultPrice, ModelPrice, ProtocolProbeResult, RuntimeOccupancy, UpstreamRequestOverrides } from '../types/api'
 import { useAutoRefresh } from '../composables/useAutoRefresh'
+import { useMediaQuery } from '../composables/useMediaQuery'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import ActionMenu from './ActionMenu.vue'
@@ -22,9 +23,9 @@ import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import ChannelHealthModal from './ChannelHealthModal.vue'
-import { HEALTH_LABELS, healthPercent, healthSymbol, channelHealthSuccessRateText } from '../utils/channelHealth'
+import ChannelKeyEditor from './ChannelKeyEditor.vue'
+import { HEALTH_LABELS, healthSymbol, channelHealthSuccessRateText } from '../utils/channelHealth'
 import { cooldownSummaryText } from '../utils/cooldown'
-import SecretInput from './SecretInput.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
 import FilterSelect from './FilterSelect.vue'
@@ -38,12 +39,8 @@ import {
   channelModelFilterOptions,
 } from '../utils/channelDisplay'
 import type { ChannelFormDraft, OriginalModelMapping } from '../utils/channelForm'
-import { buildChannelPayload, buildPriorityUpdatePayload, canonicalModelSnapshot, isKeyRoutable, mergeProbedProtocols, parseManualModelIds, removeProbeAddedProtocols } from '../utils/channelForm'
-import {
-  channelKeyRateLimitSummary,
-  normalizeChannelKeyRateLimit,
-  validateChannelKeyRateLimit,
-} from '../utils/channelKeyRateLimit'
+import { buildChannelPayload, buildPriorityUpdatePayload, canonicalModelSnapshot, isKeyRoutable, mergeProbedProtocols, removeProbeAddedProtocols } from '../utils/channelForm'
+import { channelKeyRateLimitSummary, normalizeChannelKeyRateLimit, validateChannelKeyRateLimit } from '../utils/channelKeyRateLimit'
 import {
   canProbeSavedChannel,
   createRequestTracker,
@@ -53,6 +50,8 @@ import {
 import { createRequestOverrideDrafts, normalizeRequestOverrides, requestOverrideDraftSnapshot } from '../utils/requestOverrides'
 import type { ChannelDisplayModel } from '../utils/channelDisplay'
 import type { ChannelKeyRateLimitDraft } from '../utils/channelKeyRateLimit'
+import type { ChannelKeyEditorDraft } from '../types/channelEditor'
+import { keyStateBadge, keyStateTone } from '../utils/channelKey'
 import {
   buildPricePrompt,
   channelPriceSummaries,
@@ -64,35 +63,6 @@ import {
 interface RequestOverridesEditorExpose {
   getValue: () => UpstreamRequestOverrides
   getSnapshot: () => string
-}
-
-interface KeyModelOption {
-  id: string
-  ownedBy?: string | null
-  authorized?: boolean
-}
-
-interface ChannelKeyEditorDraft {
-  localId: string
-  id: string | null
-  name: string
-  credential: string
-  state: ChannelKeyState
-  originalState: ChannelKeyState
-  priority: number | string | null
-  stateVersion: number | null
-  autoDisableReason: string | null
-  autoDisableUntil: number | null
-  rateLimit: ChannelKeyRateLimitDraft & Record<string, unknown>
-  models: string[]
-  availableModels: KeyModelOption[]
-  manualModels: string[]
-  showManualModels: boolean
-  manualModelsText: string
-  manualModelsError: string
-  modelsLoading: boolean
-  modelsError: string
-  modelsRequestId: number
 }
 
 type NewKeyOverrides = Partial<Pick<ChannelKeyEditorDraft, 'id' | 'name' | 'state' | 'priority' | 'stateVersion' | 'autoDisableReason' | 'autoDisableUntil' | 'models'>> & {
@@ -340,6 +310,12 @@ const probing = ref(false)
 const probeResults = ref<ProtocolProbeResult[]>([])
 const channelKeys = ref<ChannelKeyEditorDraft[]>([])
 const selectedChannelKeyId = ref<string | null>(null)
+const expandedChannelKeyId = ref<string | null>(null)
+type ChannelFormSectionId = 'basic' | 'protocols' | 'keys' | 'models' | 'routing'
+const activeFormSection = ref<ChannelFormSectionId>('basic')
+const isMobile = useMediaQuery('(max-width: 640px)')
+const mappingSearch = ref('')
+const showAllMappings = ref(false)
 let keyDraftSeq = 0
 const canonicalModels = reactive<Record<string, string>>({})
 const originalMappings = reactive<Record<string, OriginalModelMapping>>({})
@@ -367,14 +343,10 @@ const protocolOptions: Array<{ value: string; label: string }> = [
   { value: 'gemini', label: 'Gemini' },
 ]
 
-function protocolLabel(value: string): string {
-  return protocolOptions.find((item) => item.value === value)?.label || value
-}
-
 function authTypeLabel(value: string): string {
-  if (value === 'anthropic') return 'Anthropic API key（x-api-key）'
-  if (value === 'google') return 'Google API key（x-goog-api-key）'
-  return 'Bearer token'
+  if (value === 'anthropic') return 'Anthropic'
+  if (value === 'google') return 'Google'
+  return 'Bearer'
 }
 
 function setProtocolAuthType(protocol: string, value: string): void {
@@ -449,6 +421,69 @@ const authorizedModels = computed(() => {
   return [...models].sort()
 })
 const mappingCount = computed(() => authorizedModels.value.filter((modelId) => canonicalModels[modelId]?.trim()).length)
+const formSectionTabs = computed<Array<{ id: ChannelFormSectionId; label: string; count: string }>>(() => [
+  { id: 'basic', label: '基础', count: '' },
+  { id: 'protocols', label: '协议', count: String(form.protocols.length) },
+  { id: 'keys', label: '密钥', count: String(channelKeys.value.length) },
+  { id: 'models', label: '模型', count: String(authorizedModels.value.length) },
+  { id: 'routing', label: '路由', count: form.enabled ? '启用' : '停用' },
+])
+
+const protocolRows = computed(() => {
+  const resultByProtocol = new Map(probeResults.value.map((result) => [result.protocol, result]))
+  const enabled = form.protocols
+    .map((protocol) => protocolOptions.find((option) => option.value === protocol))
+    .filter((option): option is { value: string; label: string } => Boolean(option))
+  const disabled = protocolOptions.filter((option) => !form.protocols.includes(option.value))
+  return [...enabled, ...disabled].map((option) => {
+    const result = resultByProtocol.get(option.value)
+    const state = result ? probeState(result) : null
+    return {
+      ...option,
+      enabled: form.protocols.includes(option.value),
+      index: form.protocols.indexOf(option.value),
+      probe: result && state
+        ? {
+            className: state.className,
+            title: result.message,
+            detail: `${state.label}${result.statusCode ? ` (${result.statusCode})` : ''}`,
+          }
+        : null,
+    }
+  })
+})
+
+const selectedChannelKey = computed(() => (
+  channelKeys.value.find((key) => key.localId === selectedChannelKeyId.value)
+  || channelKeys.value[0]
+  || null
+))
+
+function channelKeyPriority(key: ChannelKeyEditorDraft): number {
+  const value = Number(key.priority)
+  return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY
+}
+
+const defaultChannelKey = computed(() => (
+  channelKeys.value.reduce<ChannelKeyEditorDraft | null>((best, key) => (
+    !best || channelKeyPriority(key) < channelKeyPriority(best) ? key : best
+  ), null)
+))
+
+const visibleMappingModels = computed(() => {
+  const query = mappingSearch.value.trim().toLowerCase()
+  const source = query || showAllMappings.value
+    ? authorizedModels.value
+    : authorizedModels.value.filter((modelId) => canonicalModels[modelId]?.trim())
+  return query
+    ? source.filter((modelId) => modelId.toLowerCase().includes(query))
+    : source
+})
+
+watch(mappingCount, (count) => {
+  if (count === 0) showAllMappings.value = true
+})
+
 const canProbeProtocols = computed(() => {
   const savedChannel = channels.value.find((channel) => channel.id === editingId.value)
   if (!savedChannel?.keys?.length) return false
@@ -470,6 +505,78 @@ const canProbeProtocols = computed(() => {
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
 }
+
+function formSectionTabId(section: ChannelFormSectionId): string {
+  return `channel-form-tab-${section}`
+}
+
+function scrollFormToTop(): void {
+  nextTick(() => {
+    const body = document.querySelector('.channel-form')?.closest('.modal-body')
+    if (body instanceof HTMLElement) body.scrollTop = 0
+  })
+}
+
+function setActiveFormSection(section: ChannelFormSectionId): void {
+  if (activeFormSection.value === section) return
+  activeFormSection.value = section
+  scrollFormToTop()
+}
+
+function focusFormSection(section: ChannelFormSectionId): void {
+  if (activeFormSection.value !== section) {
+    activeFormSection.value = section
+    scrollFormToTop()
+  }
+  nextTick(() => document.getElementById(formSectionTabId(section))?.focus())
+}
+
+function handleFormSectionKeydown(event: KeyboardEvent, index: number): void {
+  let nextIndex = index
+  if (event.key === 'ArrowRight') nextIndex = (index + 1) % formSectionTabs.value.length
+  else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + formSectionTabs.value.length) % formSectionTabs.value.length
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = formSectionTabs.value.length - 1
+  else return
+
+  event.preventDefault()
+  focusFormSection(formSectionTabs.value[nextIndex].id)
+}
+
+function toggleKeyAccordion(key: ChannelKeyEditorDraft): void {
+  if (expandedChannelKeyId.value === key.localId) {
+    expandedChannelKeyId.value = null
+    return
+  }
+  expandedChannelKeyId.value = key.localId
+  selectedChannelKeyId.value = key.localId
+}
+
+function removeSelectedKey(): void {
+  const key = selectedChannelKey.value
+  if (!key) return
+  removeKey(channelKeys.value.indexOf(key))
+}
+
+function focusChannelKeyInForm(key: ChannelKeyEditorDraft): void {
+  selectedChannelKeyId.value = key.localId
+  expandedChannelKeyId.value = key.localId
+  focusFormSection('keys')
+  nextTick(() => {
+    const tab = document.getElementById(channelKeyTabId(key.localId))
+    tab?.scrollIntoView({ block: 'center' })
+    tab?.focus({ preventScroll: true })
+  })
+}
+
+watch(isMobile, (mobile) => {
+  if (!selectedChannelKeyId.value) {
+    selectedChannelKeyId.value = defaultChannelKey.value?.localId || null
+  }
+  if (mobile && !expandedChannelKeyId.value) {
+    expandedChannelKeyId.value = selectedChannelKeyId.value
+  }
+})
 
 function newKeyDraft(overrides: NewKeyOverrides = {}): ChannelKeyEditorDraft {
   const state: ChannelKeyState = overrides.state || (overrides.enabled === false ? 'MANUAL_DISABLED' : 'ACTIVE')
@@ -497,25 +604,6 @@ function newKeyDraft(overrides: NewKeyOverrides = {}): ChannelKeyEditorDraft {
   }
 }
 
-function keyStateBadge(state: ChannelKeyState): { label: string; class: string } {
-  switch (state) {
-    case 'ACTIVE':
-      return { label: '正常', class: 'success' }
-    case 'MANUAL_DISABLED':
-      return { label: '人工停用', class: 'neutral' }
-    case 'AUTO_TEMPORARY':
-      return { label: '临时停用', class: 'warning' }
-    case 'AUTO_PERMANENT':
-      return { label: '永久停用', class: 'danger' }
-    default:
-      return { label: state || '正常', class: 'neutral' }
-  }
-}
-
-function toggleKeyState(key: ChannelKeyEditorDraft): void {
-  key.state = key.state === 'ACTIVE' ? 'MANUAL_DISABLED' : 'ACTIVE'
-}
-
 function addKey() {
   const names = new Set(channelKeys.value.map((key) => key.name.trim()))
   let index = channelKeys.value.length + 1
@@ -523,6 +611,7 @@ function addKey() {
   const key = newKeyDraft({ name: `密钥 ${index}`, priority: 1 })
   channelKeys.value.push(key)
   selectedChannelKeyId.value = key.localId
+  expandedChannelKeyId.value = key.localId
   focusChannelKeyTab(key.localId)
 }
 
@@ -531,6 +620,7 @@ function removeKey(index: number): void {
   if (selectedChannelKeyId.value === removed.localId) {
     const nextKey = channelKeys.value[Math.min(index, channelKeys.value.length - 1)]
     selectedChannelKeyId.value = nextKey?.localId ?? null
+    if (expandedChannelKeyId.value === removed.localId) expandedChannelKeyId.value = nextKey?.localId ?? null
     if (nextKey) focusChannelKeyTab(nextKey.localId)
   }
 }
@@ -545,8 +635,8 @@ function focusChannelKeyTab(localId: string): void {
 
 function handleChannelKeyTabKeydown(event: KeyboardEvent, index: number): void {
   let nextIndex = index
-  if (event.key === 'ArrowRight') nextIndex = (index + 1) % channelKeys.value.length
-  else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + channelKeys.value.length) % channelKeys.value.length
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (index + 1) % channelKeys.value.length
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (index - 1 + channelKeys.value.length) % channelKeys.value.length
   else if (event.key === 'Home') nextIndex = 0
   else if (event.key === 'End') nextIndex = channelKeys.value.length - 1
   else return
@@ -568,53 +658,6 @@ function applyRateLimit(rule: unknown): void {
   if (!rateLimitTarget.value) return
   rateLimitTarget.value.key.rateLimit = normalizeChannelKeyRateLimit(rule)
   rateLimitTarget.value = null
-}
-
-function keyModelOptions(key: ChannelKeyEditorDraft): KeyModelOption[] {
-  const options = new Map<string, KeyModelOption>()
-  ;(key.availableModels || []).forEach((model) => options.set(model.id, model))
-  ;[...(key.manualModels || []), ...(key.models || [])].forEach((modelId) => {
-    if (!options.has(modelId)) options.set(modelId, { id: modelId })
-  })
-  return [...options.values()].sort((left, right) => left.id.localeCompare(right.id))
-}
-
-function openManualKeyModels(key: ChannelKeyEditorDraft): void {
-  key.showManualModels = true
-  nextTick(() => document.getElementById(`manual-models-${key.localId}`)?.focus())
-}
-
-function closeManualKeyModels(key: ChannelKeyEditorDraft): void {
-  key.showManualModels = false
-  key.manualModelsText = ''
-  key.manualModelsError = ''
-  nextTick(() => document.getElementById(`manual-models-button-${key.localId}`)?.focus())
-}
-
-function addManualKeyModels(key: ChannelKeyEditorDraft): void {
-  try {
-    const models = parseManualModelIds(key.manualModelsText)
-    key.manualModels = [...new Set([...key.manualModels, ...models])]
-    key.models = [...new Set([...key.models, ...models])].sort()
-    closeManualKeyModels(key)
-  } catch (cause) {
-    key.manualModelsError = errorMessage(cause)
-  }
-}
-
-function toggleKeyModel(key: ChannelKeyEditorDraft, modelId: string): void {
-  const selected = new Set(key.models)
-  if (selected.has(modelId)) selected.delete(modelId)
-  else selected.add(modelId)
-  key.models = [...selected].sort()
-}
-
-function selectAllKeyModels(key: ChannelKeyEditorDraft): void {
-  key.models = keyModelOptions(key).map((model) => model.id)
-}
-
-function clearKeyModels(key: ChannelKeyEditorDraft): void {
-  key.models = []
 }
 
 async function loadKeyModels(key: ChannelKeyEditorDraft): Promise<void> {
@@ -898,6 +941,9 @@ async function onDefaultPricesSaved() {
 
 function openCreate() {
   editingId.value = null
+  activeFormSection.value = 'basic'
+  mappingSearch.value = ''
+  showAllMappings.value = true
   probeRequests.invalidate()
   probing.value = false
   probeResults.value = []
@@ -905,6 +951,7 @@ function openCreate() {
   modelRequests.invalidate()
   channelKeys.value = [newKeyDraft({ name: '默认密钥', priority: 1 })]
   selectedChannelKeyId.value = channelKeys.value[0].localId
+  expandedChannelKeyId.value = channelKeys.value[0].localId
   clearMappings()
   Object.assign(form, {
     name: '',
@@ -922,6 +969,9 @@ function openCreate() {
 
 function openEdit(channel: Channel): void {
   editingId.value = channel.id
+  activeFormSection.value = 'basic'
+  mappingSearch.value = ''
+  showAllMappings.value = false
   probeRequests.invalidate()
   probing.value = false
   probeResults.value = []
@@ -931,7 +981,9 @@ function openEdit(channel: Channel): void {
     ? channel.keys
     : [{ name: '默认密钥', state: 'ACTIVE' as const, priority: 1, models: channel.models || [] }]
   channelKeys.value = savedKeys.map((key) => newKeyDraft(key))
-  selectedChannelKeyId.value = channelKeys.value[0]?.localId || null
+  const initialKey = isMobile.value ? defaultChannelKey.value : channelKeys.value[0]
+  selectedChannelKeyId.value = initialKey?.localId || null
+  expandedChannelKeyId.value = isMobile.value ? initialKey?.localId || null : null
   clearMappings()
   ;(channel.modelMappings || []).forEach((mapping) => {
     originalMappings[mapping.upstreamModel] = {
@@ -942,6 +994,7 @@ function openEdit(channel: Channel): void {
       canonicalModels[mapping.upstreamModel] = mapping.canonicalModelId
     }
   })
+  showAllMappings.value = mappingCount.value === 0
   Object.assign(form, {
     name: channel.name,
     baseUrl: channel.baseUrl,
@@ -1055,10 +1108,12 @@ async function probeProtocols(): Promise<void> {
 async function save(): Promise<void> {
   if (saving.value) return
   if (!form.name.trim() || !form.baseUrl.trim()) {
+    focusFormSection('basic')
     notify('请填写渠道名称和基础地址', 'error')
     return
   }
   if (form.protocols.length === 0) {
+    focusFormSection('protocols')
     notify('至少选择一个支持协议', 'error')
     return
   }
@@ -1066,34 +1121,41 @@ async function save(): Promise<void> {
   for (const key of channelKeys.value) {
     const name = key.name.trim()
     if (!name) {
+      focusChannelKeyInForm(key)
       notify('密钥名称不能为空', 'error')
       return
     }
     if (names.has(name)) {
+      focusChannelKeyInForm(key)
       notify(`密钥名称不能重复：${name}`, 'error')
       return
     }
     names.add(name)
     if (!Number.isInteger(Number(key.priority)) || Number(key.priority) < 1 || Number(key.priority) > 1000) {
+      focusChannelKeyInForm(key)
       notify('密钥优先级必须是 1..1000 的整数', 'error')
       return
     }
     if (!key.id && !key.credential.trim()) {
+      focusChannelKeyInForm(key)
       notify(`新建密钥「${name}」必须提供上游凭据`, 'error')
       return
     }
     if (!key.models.length) {
+      focusChannelKeyInForm(key)
       notify(`密钥「${name}」至少需要授权一个模型`, 'error')
       return
     }
     try {
       validateChannelKeyRateLimit(key.rateLimit)
     } catch (cause) {
+      focusChannelKeyInForm(key)
       notify(`密钥「${name}」限流规则无效：${errorMessage(cause)}`, 'error')
       return
     }
   }
   if (authorizedModels.value.length === 0) {
+    focusFormSection('keys')
     notify('请至少授权一个上游模型', 'error')
     return
   }
@@ -1543,399 +1605,407 @@ onMounted(() => {
     <ChannelHealthModal v-if="healthTarget" :key="healthTarget.id" :channel="healthTarget" :initial-window="healthWindow" @close="onCloseHealthModal" />
     <ChannelQuotaModal v-if="quotaTarget" :key="quotaTarget.id" :channel="quotaTarget" @close="quotaTarget = null" @saved="onQuotaSaved" />
 
-    <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide @close="closeChannelForm">
-      <form class="form-grid" @submit.prevent="save">
-        <section class="channel-form-section">
-          <div class="channel-form-section-head">
-            <div><h3>基础连接</h3><p>配置渠道名称、地址和默认鉴权方式。</p></div>
-            <span class="badge info">步骤 1</span>
-          </div>
-        <label class="field">
-          <span>渠道名称</span>
-          <input v-model="form.name" placeholder="例如 openai-primary" autocomplete="off" />
-          <small>渠道在网关中的唯一标识名称。</small>
-        </label>
-        <label class="field">
-          <span>基础地址</span>
-          <input v-model="form.baseUrl" placeholder="https://api.openai.com/v1" autocomplete="off" />
-          <small>网关会按请求协议在此地址后追加对应端点。模型列表可通过 <code>/models</code> 读取，也可手动添加。</small>
-        </label>
-        <label class="field">
-          <span>上游鉴权</span>
-          <select v-model="form.authType">
-            <option value="bearer">Bearer token</option>
-            <option value="anthropic">Anthropic API key（x-api-key）</option>
-            <option value="google">Google API key（x-goog-api-key）</option>
-          </select>
-          <small>这是未单独配置协议时的默认鉴权方式；各协议可在下方单独覆盖。</small>
-        </label>
-        </section>
-
-        <section class="channel-form-section">
-          <div class="channel-form-section-head">
-            <div><h3>协议与请求</h3><p>选择支持的协议，分别设置鉴权并调整上游请求覆盖。</p></div>
-            <span class="badge info">步骤 2</span>
-          </div>
-        <div class="field">
-          <span>支持协议与转换优先级</span>
-          <div class="protocol-options">
-            <label v-for="item in protocolOptions" :key="item.value">
-              <input v-model="form.protocols" type="checkbox" :value="item.value" @change="keepProtocolAsManual(item.value)" /> {{ item.label }}
+    <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide roomy mobile-fullscreen @close="closeChannelForm">
+      <template #subhead>
+        <nav class="channel-form-tabs" role="tablist" aria-label="渠道配置分区">
+          <button
+            v-for="(section, index) in formSectionTabs"
+            :id="formSectionTabId(section.id)"
+            :key="section.id"
+            type="button"
+            class="channel-form-tab"
+            :class="{ 'is-active': activeFormSection === section.id }"
+            role="tab"
+            :aria-selected="activeFormSection === section.id"
+            :aria-controls="'channel-form-panel-' + section.id"
+            :tabindex="activeFormSection === section.id ? 0 : -1"
+            @click="setActiveFormSection(section.id)"
+            @keydown="handleFormSectionKeydown($event, index)"
+          >
+            <span>{{ section.label }}</span>
+            <span v-if="section.count" class="channel-form-tab-count">{{ section.count }}</span>
+          </button>
+        </nav>
+      </template>
+      <form class="channel-form" @submit.prevent="save">
+        <div class="channel-form-sections">
+          <section
+            v-show="activeFormSection === 'basic'"
+            id="channel-form-panel-basic"
+            class="channel-form-section"
+            role="tabpanel"
+            aria-labelledby="channel-form-tab-basic"
+          >
+            <div class="channel-form-section-head">
+              <div><h3>基础连接</h3><p>名称、地址和默认鉴权方式。</p></div>
+            </div>
+            <div class="channel-form-row channel-form-row-two">
+              <label class="field">
+                <span>渠道名称</span>
+                <input v-model="form.name" placeholder="例如 openai-primary" autocomplete="off" />
+                <small>网关内唯一名称。</small>
+              </label>
+              <label class="field">
+                <span>上游鉴权</span>
+                <select v-model="form.authType">
+                  <option value="bearer">Bearer token</option>
+                  <option value="anthropic">Anthropic API key</option>
+                  <option value="google">Google API key</option>
+                </select>
+                <small>未单独配置协议时使用；Anthropic/Google 使用专用请求头。</small>
+              </label>
+            </div>
+            <label class="field">
+              <span>基础地址</span>
+              <input v-model="form.baseUrl" placeholder="https://api.openai.com/v1" autocomplete="off" />
+              <small>按协议自动追加端点；模型可读取或手动添加。</small>
             </label>
-          </div>
-          <div v-if="form.protocols.length" class="protocol-order-list">
-            <small>同协议优先；需要转换时按以下顺序选择目标协议。</small>
-            <div v-for="(protocol, index) in form.protocols" :key="protocol" class="protocol-order-item">
-              <span class="badge info">{{ protocolLabel(protocol) }}</span>
-              <button type="button" class="icon-button" :disabled="index === 0" title="上移" @click="moveProtocol(index, -1)">↑</button>
-              <button type="button" class="icon-button" :disabled="index === form.protocols.length - 1" title="下移" @click="moveProtocol(index, 1)">↓</button>
-            </div>
-          </div>
-          <div v-if="form.protocols.length" class="protocol-auth-settings">
-            <small>协议级鉴权（可选）：选择“继承渠道默认”即可继续使用上方设置。</small>
-            <div v-for="protocol in form.protocols" :key="'auth-' + protocol" class="protocol-auth-row">
-              <span class="badge info">{{ protocolLabel(protocol) }}</span>
-              <select
-                :value="form.protocolAuthTypes[protocol] || ''"
-                :aria-label="protocolLabel(protocol) + '鉴权方式'"
-                @change="setProtocolAuthTypeFromEvent(protocol, $event)"
-              >
-                <option value="">继承渠道默认（{{ authTypeLabel(form.authType) }}）</option>
-                <option value="bearer">Bearer token</option>
-                <option value="anthropic">Anthropic API key（x-api-key）</option>
-                <option value="google">Google API key（x-goog-api-key）</option>
-              </select>
-            </div>
-          </div>
-          <div class="protocol-probe-row">
-            <button
-              type="button"
-              class="button subtle mini"
-              :disabled="!canProbeProtocols || probing"
-              @click="probeProtocols"
-            >
-              {{ probing ? '探测中…' : '探测协议' }}
-            </button>
-            <span v-if="!editingId" class="muted small">保存渠道后可探测</span>
-            <span v-else-if="!canProbeProtocols" class="muted small">保存地址、凭据、鉴权方式或请求配置后可探测</span>
-            <span v-else class="muted small">使用已保存密钥探测全部四种协议（含未勾选项），每种最多 1 token</span>
-          </div>
-          <div v-if="probeResults.length" class="probe-results">
-            <span
-              v-for="result in probeResults"
-              :key="result.protocol"
-              class="badge"
-              :class="probeState(result).className"
-              :title="result.message"
-            >
-              {{ result.protocol }} · {{ probeState(result).label }}{{ result.statusCode ? ` (${result.statusCode})` : '' }}
-            </span>
-          </div>
-          <small>请求只会路由到支持对应协议的渠道。</small>
-        </div>
-        <details class="request-overrides-details">
-          <summary>上游请求配置 · 自定义 UA、请求头与请求体</summary>
-          <div class="request-overrides-fields">
-            <RequestOverridesEditor ref="overrideEditor" :value="form.requestOverrides" :disabled="saving" @changed="overrideRevision += 1" />
-          </div>
-        </details>
-        </section>
+          </section>
 
-        <section class="channel-form-section">
-          <div class="channel-form-section-head">
-            <div><h3>上游密钥</h3><p>密钥共享渠道地址和协议配置，可分别授权模型与限流。</p></div>
-            <span class="badge info">步骤 3</span>
-          </div>
-        <div class="field channel-key-pool">
-          <div class="channel-model-auth-head">
-            <div>
-              <span>上游密钥</span>
-              <small>同一渠道的密钥共用基础地址、协议和协议级鉴权配置；未覆盖的协议继承渠道默认鉴权方式。</small>
+          <section
+            v-show="activeFormSection === 'protocols'"
+            id="channel-form-panel-protocols"
+            class="channel-form-section"
+            role="tabpanel"
+            aria-labelledby="channel-form-tab-protocols"
+          >
+            <div class="channel-form-section-head">
+              <div><h3>协议与请求</h3><p>选择协议、鉴权方式和转换顺序。</p></div>
+              <div class="channel-form-section-actions">
+                <span class="badge neutral">{{ form.protocols.length }} 个启用</span>
+              </div>
             </div>
-            <div class="section-head-actions">
-              <span class="badge info">{{ channelKeys.length }} 个密钥</span>
-              <button type="button" class="button ghost mini" @click="showAutoDisableSettings = true">自动禁用规则</button>
-            </div>
-          </div>
-          <div class="channel-key-tabs" role="tablist" aria-label="渠道密钥">
-            <button
-              v-for="(key, index) in channelKeys"
-              :id="channelKeyTabId(key.localId)"
-              :key="key.localId"
-              type="button"
-              class="channel-key-tab"
-              role="tab"
-              :aria-selected="selectedChannelKeyId === key.localId"
-              :aria-controls="`channel-key-panel-${key.localId}`"
-              :tabindex="selectedChannelKeyId === key.localId ? 0 : -1"
-              @click="selectedChannelKeyId = key.localId"
-              @keydown="handleChannelKeyTabKeydown($event, index)"
-            >
-              <span class="channel-key-tab-name">{{ key.name.trim() || `密钥 ${index + 1}` }}</span>
-              <span
-                v-if="channelKeyConcurrent(editingId, key.id) > 0"
-                class="channel-key-tab-live"
-                :title="`当前在途 ${channelKeyConcurrent(editingId, key.id)} 个请求`"
-              >{{ channelKeyConcurrent(editingId, key.id) }}</span>
-            </button>
-          </div>
-          <p v-if="channelKeys.length === 0" class="muted small">
-            当前渠道没有静态密钥。可保存后在「订阅账号」页关联 OAuth 账号，账号会作为该渠道路由凭据。
-          </p>
-          <div class="channel-key-list">
-            <div
-              v-for="(key, index) in channelKeys"
-              :id="`channel-key-panel-${key.localId}`"
-              :key="key.localId"
-              v-show="selectedChannelKeyId === key.localId"
-              class="channel-key-card"
-              role="tabpanel"
-              tabindex="0"
-              :aria-labelledby="channelKeyTabId(key.localId)"
-            >
-              <div class="channel-key-card-head">
-                <label class="field">
-                  <span>密钥名称</span>
-                  <input v-model="key.name" placeholder="例如 primary" autocomplete="off" />
-                </label>
-                <label class="field">
-                  <span>密钥优先级</span>
+
+            <div class="protocol-table">
+              <div class="protocol-table-head" aria-hidden="true">
+                <span>启用</span>
+                <span>协议</span>
+                <span>鉴权方式</span>
+                <span>顺序</span>
+                <span>探测</span>
+              </div>
+              <div
+                v-for="row in protocolRows"
+                :key="row.value"
+                class="protocol-row"
+                :class="{ 'is-disabled': !row.enabled }"
+              >
+                <label class="protocol-check">
                   <input
-                    v-model.number="key.priority"
-                    type="number"
-                    min="1"
-                    max="1000"
-                    step="1"
-                    title="数值越小越优先；同优先级密钥轮询"
+                    v-model="form.protocols"
+                    type="checkbox"
+                    :value="row.value"
+                    :aria-label="'启用 ' + row.label"
+                    @change="keepProtocolAsManual(row.value)"
                   />
-                  <small>数值越小越优先（1..1000）；同优先级密钥轮询分摊。</small>
                 </label>
-                <div class="channel-key-toggle-field">
-                  <span>状态</span>
-                  <div class="channel-key-status-row">
-                    <span class="badge" :class="keyStateBadge(key.state).class">{{ keyStateBadge(key.state).label }}</span>
+                <div class="protocol-name">
+                  <strong>{{ row.label }}</strong>
+                </div>
+                <select
+                  :value="form.protocolAuthTypes[row.value] || ''"
+                  :disabled="!row.enabled"
+                  :aria-label="row.label + '鉴权方式'"
+                  @change="setProtocolAuthTypeFromEvent(row.value, $event)"
+                >
+                  <option value="">继承默认 · {{ authTypeLabel(form.authType) }}</option>
+                  <option value="bearer">Bearer</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="google">Google</option>
+                </select>
+                <div class="protocol-order-actions" aria-label="协议顺序">
+                  <button type="button" class="icon-button" :disabled="row.index <= 0" title="上移" :aria-label="'上移 ' + row.label" @click="moveProtocol(row.index, -1)">↑</button>
+                  <button type="button" class="icon-button" :disabled="row.index < 0 || row.index >= form.protocols.length - 1" title="下移" :aria-label="'下移 ' + row.label" @click="moveProtocol(row.index, 1)">↓</button>
+                </div>
+                <div class="protocol-probe-cell">
+                  <span v-if="row.probe" class="badge" :class="row.probe.className" :title="row.probe.title">{{ row.probe.detail }}</span>
+                  <span v-else class="muted small">未探测</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="protocol-probe-row">
+              <button
+                type="button"
+                class="button subtle mini"
+                :disabled="!canProbeProtocols || probing"
+                @click="probeProtocols"
+              >
+                {{ probing ? '探测中…' : '探测全部协议' }}
+              </button>
+              <span v-if="!editingId" class="muted small">保存渠道后可探测。</span>
+              <span v-else-if="!canProbeProtocols" class="muted small">保存地址、凭据或鉴权后可探测。</span>
+              <span v-else class="muted small">使用已保存密钥探测四种协议，每种最多 1 token。</span>
+            </div>
+            <p class="channel-form-note">同协议优先；需要转换时按上方顺序选择目标协议。</p>
+
+            <details class="request-overrides-details">
+              <summary>高级：上游请求覆盖（UA / 请求头 / 请求体）</summary>
+              <div class="request-overrides-fields">
+                <RequestOverridesEditor ref="overrideEditor" :value="form.requestOverrides" :disabled="saving" @changed="overrideRevision += 1" />
+              </div>
+            </details>
+          </section>
+
+          <section
+            v-show="activeFormSection === 'keys'"
+            id="channel-form-panel-keys"
+            class="channel-form-section"
+            role="tabpanel"
+            aria-labelledby="channel-form-tab-keys"
+          >
+            <div class="channel-form-section-head">
+              <div><h3>上游密钥</h3><p>共享地址与协议，可分别授权模型和限流。</p></div>
+              <div class="channel-form-section-actions">
+                <span class="badge neutral">{{ channelKeys.length }} 个</span>
+                <button type="button" class="button ghost mini" @click="showAutoDisableSettings = true">自动禁用规则</button>
+              </div>
+            </div>
+
+            <p v-if="channelKeys.length === 0" class="muted small">
+              当前渠道没有静态密钥。可保存后在「订阅账号」页关联 OAuth 账号，账号会作为该渠道路由凭据。
+            </p>
+
+            <div v-if="!isMobile" class="channel-key-workspace">
+              <div class="channel-key-nav">
+                <div class="channel-key-tabs" role="tablist" aria-label="渠道密钥" aria-orientation="vertical">
+                  <button
+                    v-for="(key, index) in channelKeys"
+                    :id="channelKeyTabId(key.localId)"
+                    :key="key.localId"
+                    type="button"
+                    class="channel-key-nav-item"
+                    :class="{ 'is-active': selectedChannelKey?.localId === key.localId }"
+                    role="tab"
+                    :aria-selected="selectedChannelKey?.localId === key.localId"
+                    :aria-controls="selectedChannelKey?.localId === key.localId ? 'channel-key-panel-' + key.localId : undefined"
+                    :tabindex="selectedChannelKey?.localId === key.localId ? 0 : -1"
+                    :title="keyStateBadge(key.state).label + ' · ' + key.models.length + ' 个模型 · 优先级 ' + key.priority"
+                    @click="selectedChannelKeyId = key.localId"
+                    @keydown="handleChannelKeyTabKeydown($event, index)"
+                  >
+                    <span class="channel-key-nav-dot" :class="'is-' + keyStateTone(key.state)" aria-hidden="true"></span>
+                    <span class="channel-key-nav-body">
+                      <span class="channel-key-nav-name">{{ key.name.trim() || `密钥 ${index + 1}` }}</span>
+                      <span class="channel-key-nav-meta">{{ keyStateBadge(key.state).label }} · {{ key.models.length }} 个模型 · 优先级 {{ key.priority }}</span>
+                    </span>
+                    <span
+                      v-if="channelKeyConcurrent(editingId, key.id) > 0"
+                      class="channel-key-nav-live"
+                      :title="`当前在途 ${channelKeyConcurrent(editingId, key.id)} 个请求`"
+                    >{{ channelKeyConcurrent(editingId, key.id) }}</span>
+                  </button>
+                </div>
+                <button type="button" class="button ghost mini channel-key-add" @click="addKey">＋ 添加密钥</button>
+              </div>
+              <div
+                v-if="selectedChannelKey"
+                :id="'channel-key-panel-' + selectedChannelKey.localId"
+                class="channel-key-detail"
+                role="tabpanel"
+                :aria-labelledby="channelKeyTabId(selectedChannelKey.localId)"
+              >
+                <ChannelKeyEditor
+                  :key="selectedChannelKey.localId"
+                  :channel-key="selectedChannelKey"
+                  :concurrent="channelKeyConcurrent(editingId, selectedChannelKey.id)"
+                  @remove="removeSelectedKey"
+                  @edit-rate-limit="openRateLimitEditor(selectedChannelKey)"
+                  @load-models="loadKeyModels(selectedChannelKey)"
+                />
+              </div>
+            </div>
+
+            <div v-else class="channel-key-accordion">
+              <div
+                v-for="(key, index) in channelKeys"
+                :key="key.localId"
+                class="channel-key-accordion-item"
+                :class="{ 'is-open': expandedChannelKeyId === key.localId }"
+              >
+                <button
+                  :id="channelKeyTabId(key.localId)"
+                  type="button"
+                  class="channel-key-accordion-head"
+                  :aria-expanded="expandedChannelKeyId === key.localId"
+                  :aria-controls="expandedChannelKeyId === key.localId ? 'channel-key-panel-' + key.localId : undefined"
+                  :title="keyStateBadge(key.state).label + ' · ' + key.models.length + ' 个模型 · 优先级 ' + key.priority"
+                  @click="toggleKeyAccordion(key)"
+                >
+                  <span class="channel-key-nav-dot" :class="'is-' + keyStateTone(key.state)" aria-hidden="true"></span>
+                  <span class="channel-key-nav-body">
+                    <span class="channel-key-nav-name">{{ key.name.trim() || `密钥 ${index + 1}` }}</span>
+                    <span class="channel-key-nav-meta">{{ keyStateBadge(key.state).label }} · {{ key.models.length }} 个模型 · 优先级 {{ key.priority }}</span>
+                  </span>
+                  <span
+                    v-if="channelKeyConcurrent(editingId, key.id) > 0"
+                    class="channel-key-nav-live"
+                  >{{ channelKeyConcurrent(editingId, key.id) }}</span>
+                  <Icon name="chevron" :size="14" class="channel-key-accordion-chevron" />
+                </button>
+                <div
+                  v-if="expandedChannelKeyId === key.localId"
+                  :id="'channel-key-panel-' + key.localId"
+                  class="channel-key-accordion-panel"
+                >
+                  <ChannelKeyEditor
+                    :key="key.localId"
+                    :channel-key="key"
+                    :concurrent="channelKeyConcurrent(editingId, key.id)"
+                    @remove="removeKey(index)"
+                    @edit-rate-limit="openRateLimitEditor(key)"
+                    @load-models="loadKeyModels(key)"
+                  />
+                </div>
+              </div>
+              <button type="button" class="button ghost channel-key-add" @click="addKey">＋ 添加密钥</button>
+            </div>
+
+            <p class="channel-form-note">同一模型可以配置在多个密钥上；低优先级密钥只在高优先级密钥失败、冷却或不可用时启用。</p>
+          </section>
+
+          <section
+            v-show="activeFormSection === 'models'"
+            id="channel-form-panel-models"
+            class="channel-form-section"
+            role="tabpanel"
+            aria-labelledby="channel-form-tab-models"
+          >
+            <div class="channel-form-section-head">
+              <div><h3>模型映射</h3><p>设置对外模型 ID；留空沿用上游名。</p></div>
+              <div class="channel-form-section-actions">
+                <span class="badge neutral">{{ authorizedModels.length }} 个模型</span>
+                <span v-if="mappingCount" class="badge info">{{ mappingCount }} 个自定义</span>
+              </div>
+            </div>
+
+            <div v-if="!authorizedModels.length" class="channel-form-empty">
+              <Icon name="models" :size="24" />
+              <strong>还没有可映射的模型</strong>
+              <p>先在“密钥”里读取或手动添加模型。</p>
+              <button type="button" class="button subtle" @click="setActiveFormSection('keys')">去配置密钥</button>
+            </div>
+
+            <template v-else>
+              <div class="channel-mapping-toolbar">
+                <label class="search-box channel-mapping-search">
+                  <Icon name="search" :size="15" />
+                  <input v-model="mappingSearch" type="search" placeholder="搜索上游模型" />
+                </label>
+                <button
+                  v-if="mappingCount"
+                  type="button"
+                  class="button ghost mini"
+                  @click="showAllMappings = !showAllMappings"
+                >
+                  {{ showAllMappings ? '只看自定义' : `显示全部 ${authorizedModels.length} 个` }}
+                </button>
+              </div>
+
+              <div class="channel-canonical-section">
+                <div class="channel-canonical-header">
+                  <span>上游模型</span>
+                  <span></span>
+                  <span>对外模型 ID（留空沿用上游名；多个上游可映射为同一个 ID）</span>
+                </div>
+                <div v-for="modelId in visibleMappingModels" :key="modelId" class="channel-canonical-row">
+                  <div class="channel-canonical-model">
                     <button
                       type="button"
-                      class="button subtle mini channel-key-state-btn"
-                      @click="toggleKeyState(key)"
+                      class="channel-canonical-upstream"
+                      :title="'点击将「' + modelId + '」填入右侧'"
+                      @click="copyUpstreamToCanonical(modelId)"
                     >
-                      {{ key.state === 'ACTIVE' ? '停用' : '启用' }}
+                      <code>{{ modelId }}</code>
+                    </button>
+                    <button
+                      type="button"
+                      class="button ghost mini channel-model-test-btn"
+                      :disabled="!canTestModel(modelId)"
+                      :title="canTestModel(modelId) ? '测试模型连通性' : '保存渠道和模型后可测试'"
+                      @click="openModelTest(modelId)"
+                    >
+                      测试
+                    </button>
+                    <button
+                      type="button"
+                      class="button ghost mini channel-mapping-fill-btn"
+                      @click="copyUpstreamToCanonical(modelId)"
+                    >填入</button>
+                  </div>
+                  <button
+                    type="button"
+                    class="channel-canonical-arrow-btn"
+                    :title="'点击将「' + modelId + '」填入右侧输入框'"
+                    :aria-label="'填入 ' + modelId"
+                    @click="copyUpstreamToCanonical(modelId)"
+                  >
+                    <Icon name="arrow" :size="13" />
+                  </button>
+                  <div class="channel-canonical-input-wrap">
+                    <span class="channel-canonical-input-prefix">
+                      <Icon name="models" :size="13" />
+                    </span>
+                    <input
+                      :id="`canonical-input-${modelId}`"
+                      v-model="canonicalModels[modelId]"
+                      placeholder="留空沿用上游名"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                    <button
+                      v-if="canonicalModels[modelId]"
+                      type="button"
+                      class="channel-canonical-clear"
+                      title="恢复默认（沿用上游名）"
+                      @click="clearMapping(modelId)"
+                    >
+                      <Icon name="close" :size="12" />
                     </button>
                   </div>
                 </div>
-                <div class="channel-key-action-field">
-                  <span>操作</span>
-                  <button type="button" class="button ghost mini channel-key-delete" @click="removeKey(index)">删除</button>
-                </div>
+                <p v-if="!visibleMappingModels.length" class="channel-form-empty-inline">没有匹配的模型。</p>
               </div>
-              <div v-if="key.originalState === 'AUTO_PERMANENT'" class="callout" :class="key.state === 'ACTIVE' ? 'info' : 'danger'">
-                <strong>{{ key.state === 'ACTIVE' ? '保存后重新启用' : '已自动永久停用' }}<template v-if="key.autoDisableReason">：{{ key.autoDisableReason }}</template></strong>
-                <p>{{ key.state === 'ACTIVE' ? '保存后将人工恢复为正常状态，可保留当前凭据或在下方替换凭据；失败计数会重置，但上游问题未解决时可能再次触发禁用。' : '上游鉴权、账号或余额问题触发了永久禁用，不会自动恢复。修复上游问题后可点击「启用」并保存，当前凭据无需更换。' }}</p>
-              </div>
-              <div v-else-if="key.originalState === 'AUTO_TEMPORARY'" class="callout" :class="key.state === 'ACTIVE' ? 'info' : 'warning'">
-                <strong>{{ key.state === 'ACTIVE' ? '保存后提前启用' : '已自动临时停用' }}<template v-if="key.autoDisableReason">：{{ key.autoDisableReason }}</template></strong>
-                <p>
-                  <template v-if="key.autoDisableUntil">恢复时间：{{ formatTime(key.autoDisableUntil) }}（到期后自动可用）。</template>
-                  {{ key.state === 'ACTIVE' ? '提前启用无需更换凭据，保存后立即恢复为正常状态。' : '可等待到期自动恢复，或点击「启用」并在保存后提前恢复。' }}
-                </p>
-              </div>
-              <label class="field">
-                <span>上游凭据</span>
-                <SecretInput
-                  v-model="key.credential"
-                  :placeholder="key.id ? '留空保持当前凭据' : '输入上游凭据（Bearer Token 或 Anthropic API key）'"
-                  autocomplete="new-password"
-                />
-              </label>
-              <div class="channel-key-rate-limit-row">
-                <div>
-                  <strong>上游分组限流</strong>
-                  <small>{{ channelKeyRateLimitSummary(key.rateLimit) }}。按当前渠道与密钥共享计数，覆盖全部模型。</small>
-                  <small v-if="key.id" class="channel-key-live" :class="{ 'is-active': channelKeyConcurrent(editingId, key.id) > 0 }">
-                    实时占用：在途 {{ channelKeyConcurrent(editingId, key.id) }} 个请求
-                  </small>
-                </div>
-                <button type="button" class="button ghost mini" @click="openRateLimitEditor(key)">
-                  {{ key.rateLimit?.enabled ? '编辑限流' : '配置限流' }}
-                </button>
-              </div>
-              <div class="channel-key-models">
-                <div class="channel-model-auth-toolbar">
-                  <span class="muted small">可用模型（{{ key.models.length }}）</span>
-                  <button type="button" class="button subtle mini" :disabled="key.modelsLoading" @click="loadKeyModels(key)">
-                    {{ key.modelsLoading ? '读取中…' : '读取模型' }}
-                  </button>
-                  <button
-                    :id="`manual-models-button-${key.localId}`"
-                    type="button"
-                    class="button subtle mini"
-                    :aria-expanded="key.showManualModels"
-                    :aria-controls="`manual-models-panel-${key.localId}`"
-                    @click="openManualKeyModels(key)"
-                  >手动添加</button>
-                  <button type="button" class="button ghost mini" @click="selectAllKeyModels(key)">全选</button>
-                  <button type="button" class="button ghost mini" @click="clearKeyModels(key)">清空</button>
-                </div>
-                <div v-if="key.showManualModels" :id="`manual-models-panel-${key.localId}`" class="channel-key-manual-models">
-                  <label class="field" :for="`manual-models-${key.localId}`">
-                    <span>上游模型 ID</span>
-                    <textarea
-                      :id="`manual-models-${key.localId}`"
-                      v-model="key.manualModelsText"
-                      rows="3"
-                      placeholder="填写上游实际使用的模型 ID，可批量粘贴"
-                      spellcheck="false"
-                      autocapitalize="off"
-                      :aria-invalid="!!key.manualModelsError"
-                      :aria-describedby="`manual-models-hint-${key.localId}`"
-                      @input="key.manualModelsError = ''"
-                    ></textarea>
-                    <small :id="`manual-models-hint-${key.localId}`">支持换行、逗号、分号或空格分隔；添加后自动勾选，重复 ID 会合并。</small>
-                  </label>
-                  <div v-if="key.manualModelsError" class="callout danger" role="alert">{{ key.manualModelsError }}</div>
-                  <div class="channel-key-manual-model-actions">
-                    <button type="button" class="button subtle mini" :disabled="!key.manualModelsText.trim()" @click="addManualKeyModels(key)">添加并选中</button>
-                    <button type="button" class="button ghost mini" @click="closeManualKeyModels(key)">取消</button>
-                  </div>
-                </div>
-                <div v-if="key.modelsError" class="callout danger">
-                  {{ key.modelsError }}
-                  <p>可点击“手动添加”填写上游模型 ID，然后保存渠道。</p>
-                </div>
-                <div v-if="keyModelOptions(key).length" class="channel-model-auth-body">
-                  <div class="channel-model-auth-list">
-                    <label v-for="model in keyModelOptions(key)" :key="model.id" class="channel-model-option">
-                      <input
-                        type="checkbox"
-                        :checked="key.models.includes(model.id)"
-                        @change="toggleKeyModel(key, model.id)"
-                      />
-                      <span>
-                        <code>{{ model.id }}</code>
-                        <small v-if="model.ownedBy">上游 owned_by: {{ model.ownedBy }}</small>
-                      </span>
-                    </label>
-                  </div>
-                </div>
-                <div v-else class="channel-model-auth-placeholder">
-                  点击“读取模型”获取列表，或点击“手动添加”填写该密钥可用的上游模型 ID。
-                </div>
-              </div>
-            </div>
-          </div>
-          <button type="button" class="button ghost mini channel-key-add" @click="addKey">添加密钥</button>
-          <small>同一模型可以配置在多个密钥上；低优先级密钥只在高优先级密钥失败、冷却或不可用时启用。</small>
-        </div>
-        </section>
+              <p class="channel-form-note">测试会使用已保存的渠道配置发送一次真实上游请求。</p>
+            </template>
+          </section>
 
-        <section v-if="authorizedModels.length" class="channel-form-section">
-          <div class="channel-form-section-head">
-            <div><h3>模型映射</h3><p>为调用方设置对外模型 ID，并保留上游实际模型名。</p></div>
-            <span class="badge info">步骤 4</span>
-          </div>
-        <div v-if="authorizedModels.length" class="channel-canonical-section">
-          <div class="channel-model-auth-head">
-            <div>
-              <span>对外模型 ID</span>
-              <small>调用方在请求体里使用的模型名；留空则直接使用上游模型名。</small>
-            </div>
-            <span v-if="mappingCount" class="badge info">{{ mappingCount }} 个已自定义</span>
-            <span v-else class="badge neutral">全部沿用上游名</span>
-          </div>
-          <div class="channel-canonical-list">
-            <div class="channel-model-test-toolbar">
-              <span class="muted small">测试会使用已保存的渠道配置发送一次真实上游请求。</span>
-            </div>
-            <div class="channel-canonical-header">
-              <span>上游模型</span>
-              <span></span>
-              <span>
-                对外模型 ID（留空沿用上游名；多个上游可映射为同一个 ID）
-              </span>
-            </div>
-            <div v-for="modelId in authorizedModels" :key="modelId" class="channel-canonical-row">
-              <div class="channel-canonical-model">
-                <button
-                  type="button"
-                  class="channel-canonical-upstream"
-                  :title="'点击将「' + modelId + '」填入右侧'"
-                  @click="copyUpstreamToCanonical(modelId)"
-                >
-                  <code>{{ modelId }}</code>
-                </button>
-                <button
-                  type="button"
-                  class="button ghost mini channel-model-test-btn"
-                  :disabled="!canTestModel(modelId)"
-                  :title="canTestModel(modelId) ? '测试模型连通性' : '保存渠道和模型后可测试'"
-                  @click="openModelTest(modelId)"
-                >
-                  测试
-                </button>
-              </div>
-              <button
-                type="button"
-                class="channel-canonical-arrow-btn"
-                :title="'点击将「' + modelId + '」填入右侧输入框'"
-                :aria-label="'填入 ' + modelId"
-                @click="copyUpstreamToCanonical(modelId)"
-              >
-                <Icon name="arrow" :size="13" />
-              </button>
-              <div class="channel-canonical-input-wrap">
-                <span class="channel-canonical-input-prefix">
-                  <Icon name="models" :size="13" />
-                </span>
-                <input
-                  :id="`canonical-input-${modelId}`"
-                  v-model="canonicalModels[modelId]"
-                  :placeholder="'留空沿用上游模型名（点击箭头填入）'"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <button
-                  v-if="canonicalModels[modelId]"
-                  type="button"
-                  class="channel-canonical-clear"
-                  title="恢复默认（沿用上游名）"
-                  @click="clearMapping(modelId)"
-                >
-                  <Icon name="close" :size="12" />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        </section>
-
-        <section class="channel-form-section">
-          <div class="channel-form-section-head">
-            <div><h3>路由状态</h3><p>优先级越小越优先；停用后渠道不会参与路由。</p></div>
-            <span class="badge info">步骤 5</span>
-          </div>
-        <label class="field">
-          <span>渠道优先级</span>
-          <input v-model.number="form.priority" type="number" min="1" max="1000" step="1" />
-          <small>数值越小越优先（1..1000）：同优先级渠道轮询分摊，低优先级只在高优先级全部失败或冷却时启用。</small>
-        </label>
-        <div class="field channel-enabled-field">
-          <span>渠道状态</span>
-          <button
-            type="button"
-            class="channel-status-toggle"
-            role="switch"
-            :class="form.enabled ? 'is-enabled' : 'is-disabled'"
-            :aria-checked="form.enabled"
-            :aria-label="form.enabled ? '渠道已启用' : '渠道已停用'"
-            :title="form.enabled ? '点击停用该渠道' : '点击启用该渠道'"
-            @click="form.enabled = !form.enabled"
+          <section
+            v-show="activeFormSection === 'routing'"
+            id="channel-form-panel-routing"
+            class="channel-form-section"
+            role="tabpanel"
+            aria-labelledby="channel-form-tab-routing"
           >
-            <span class="channel-status-track" aria-hidden="true"><span></span></span>
-            <span class="channel-status-label">{{ form.enabled ? '启用' : '停用' }}</span>
-          </button>
-          <small>停用后不会参与模型路由。</small>
+            <div class="channel-form-section-head">
+              <div><h3>路由状态</h3><p>优先级越小越优先；停用后不参与路由。</p></div>
+            </div>
+            <div class="channel-form-row channel-form-row-two">
+              <label class="field">
+                <span>渠道优先级</span>
+                <input v-model.number="form.priority" type="number" min="1" max="1000" step="1" />
+                <small>1..1000，越小越优先；同级轮询。</small>
+              </label>
+              <div class="field channel-enabled-field">
+                <span>渠道状态</span>
+                <button
+                  type="button"
+                  class="channel-status-toggle"
+                  role="switch"
+                  :class="form.enabled ? 'is-enabled' : 'is-disabled'"
+                  :aria-checked="form.enabled"
+                  :aria-label="form.enabled ? '渠道已启用' : '渠道已停用'"
+                  :title="form.enabled ? '点击停用该渠道' : '点击启用该渠道'"
+                  @click="form.enabled = !form.enabled"
+                >
+                  <span class="channel-status-track" aria-hidden="true"><span></span></span>
+                  <span class="channel-status-label">{{ form.enabled ? '启用' : '停用' }}</span>
+                </button>
+                <small>停用后不会参与模型路由。</small>
+              </div>
+            </div>
+          </section>
         </div>
-        </section>
       </form>
       <template #footer>
         <span v-if="isFormDirty" class="form-dirty-indicator"><span class="form-dirty-dot"></span>有未保存修改</span>
@@ -2022,10 +2092,10 @@ onMounted(() => {
 .channel-status-label { flex: 0 0 auto; white-space: nowrap; }
 .channel-status-track { position: relative; display: inline-flex; align-items: center; width: 34px; height: 20px; flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--danger-fill) 58%, var(--line-strong)); border-radius: 999px; background: var(--danger-soft); transition: background .16s ease, border-color .16s ease; }
 .channel-status-track > span { position: absolute; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(16, 24, 40, .2); transition: transform .16s ease; }
-.channel-status-toggle.is-enabled .channel-status-track { border-color: var(--success-fill); background: var(--success-fill); }
+.channel-status-toggle.is-enabled .channel-status-track { border-color: var(--success); background: var(--success); }
 .channel-status-toggle.is-enabled .channel-status-track > span { transform: translateX(14px); }
 .channel-status-toggle.is-enabled .channel-status-label { color: var(--success); }
-.channel-status-toggle.is-disabled .channel-status-track { border-color: var(--danger-fill); background: var(--danger-fill); }
+.channel-status-toggle.is-disabled .channel-status-track { border-color: var(--danger); background: var(--danger); }
 .channel-status-toggle.is-disabled .channel-status-label { color: var(--danger); }
 .channel-status-toggle:disabled { opacity: .55; cursor: wait; }
 .channel-status-toggle:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; border-radius: 4px; }
@@ -2035,76 +2105,92 @@ onMounted(() => {
 .channel-health-probe { margin-top: 3px; }
 .channel-cooldown { display: flex; align-items: flex-start; gap: 4px; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--warning); font: inherit; font-size: 12px; line-height: 1.4; text-align: left; white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
 .channel-cooldown:hover { text-decoration: underline; }
-.channel-form-section { display: grid; gap: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--panel) 94%, var(--bg)); }
-.channel-form-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
-.channel-form-section-head h3 { margin: 0; font-size: 14px; }
-.channel-form-section-head p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
-.channel-form-section > .field, .channel-form-section > .request-overrides-details { margin: 0; }
+.channel-form { display: block; --form-muted: color-mix(in srgb, var(--muted) 80%, var(--ink)); }
+.channel-form-tabs { display: flex; align-items: stretch; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+.channel-form-tabs::-webkit-scrollbar { display: none; }
+.channel-form-tab { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 46px; padding: 0 13px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: color-mix(in srgb, var(--muted) 80%, var(--ink)); font: inherit; font-size: 13px; font-weight: 650; white-space: nowrap; cursor: pointer; transition: color .14s ease, border-color .14s ease; }
+.channel-form-tab:hover { color: var(--ink); }
+.channel-form-tab.is-active { color: var(--brand-deep); border-bottom-color: var(--brand); }
+.channel-form-tab:focus-visible { outline: 2px solid var(--brand); outline-offset: -3px; border-radius: 8px 8px 0 0; }
+.channel-form-tab-count { min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--bg); color: color-mix(in srgb, var(--muted) 80%, var(--ink)); font-size: 10px; font-variant-numeric: tabular-nums; line-height: 18px; text-align: center; }
+.channel-form-tab.is-active .channel-form-tab-count { background: var(--info-soft); color: var(--brand-deep); }
+.channel-form-sections { padding-top: 20px; }
+.channel-form-section { display: grid; gap: 16px; padding: 0; border: 0; background: transparent; }
+.channel-form-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.channel-form-section-head h3 { margin: 0; font-size: 15px; letter-spacing: -0.01em; }
+.channel-form-section-head p { margin: 4px 0 0; color: var(--form-muted); font-size: 12px; line-height: 1.5; }
+.channel-form-section-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.channel-form-row { display: grid; gap: 12px; }
+.channel-form-row-two { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+.channel-form .field small { color: var(--form-muted); }
+.channel-form-note { margin: 0; color: var(--form-muted); font-size: 11px; line-height: 1.6; }
+.channel-form-empty { display: grid; justify-items: start; gap: 8px; padding: 20px; border: 1px dashed var(--line-strong); border-radius: 12px; background: var(--bg); }
+.channel-form-empty > svg { color: var(--muted); }
+.channel-form-empty strong { font-size: 13px; }
+.channel-form-empty p { margin: 0; color: var(--form-muted); font-size: 12px; line-height: 1.5; }
+.channel-form-empty .button.subtle { color: var(--brand-deep); }
+.channel-form-empty-inline { margin: 0; padding: 16px; color: var(--form-muted); font-size: 12px; text-align: center; }
+
+.protocol-table { display: grid; gap: 6px; }
+.protocol-table-head { display: grid; grid-template-columns: 30px minmax(0, 1.1fr) minmax(0, 1.5fr) 76px 110px; align-items: center; gap: 10px; padding: 0 10px; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .02em; }
+.protocol-row { display: grid; grid-template-columns: 30px minmax(0, 1.1fr) minmax(0, 1.5fr) 76px 110px; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); transition: border-color .14s ease, opacity .14s ease; }
+.protocol-row:not(.is-disabled):hover { border-color: var(--line-strong); }
+.protocol-row.is-disabled { opacity: .58; background: var(--bg); }
+.protocol-check { display: grid; place-items: center; }
+.protocol-check input { width: 16px; min-height: auto; height: 16px; margin: 0; }
+.protocol-name { min-width: 0; }
+.protocol-name strong { display: block; overflow: hidden; color: var(--ink); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.protocol-row select { min-height: 34px; padding: 6px 30px 6px 9px; font-size: 12px; }
+.protocol-order-actions { display: flex; gap: 4px; }
+.protocol-order-actions .icon-button { width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--muted); font-size: 14px; }
+.protocol-order-actions .icon-button:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+.protocol-probe-cell { min-width: 0; }
+.protocol-probe-cell .badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.protocol-probe-row { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.protocol-probe-row .button { flex: 0 0 auto; }
 .form-dirty-indicator { display: inline-flex; align-items: center; gap: 7px; margin-right: auto; color: var(--warning); font-size: 12px; font-weight: 650; }
 .form-dirty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warning-fill); box-shadow: 0 0 0 3px var(--warning-soft); }
 
-.channel-key-manual-models {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-  margin-top: 8px;
-}
+.channel-key-workspace { display: grid; grid-template-columns: 210px minmax(0, 1fr); align-items: start; gap: 18px; min-width: 0; }
+.channel-key-nav { display: grid; align-content: start; gap: 3px; min-width: 0; }
+.channel-key-tabs { display: grid; gap: 3px; min-width: 0; }
+.channel-key-nav-item { display: flex; align-items: flex-start; gap: 9px; width: 100%; padding: 10px 11px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--ink); text-align: left; cursor: pointer; font: inherit; transition: background .14s ease, border-color .14s ease; }
+.channel-key-nav-item:hover { background: var(--bg); }
+.channel-key-nav-item.is-active { border-color: var(--line); background: var(--bg); }
+.channel-key-nav-item:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.channel-key-nav-dot { width: 8px; height: 8px; flex: 0 0 auto; margin-top: 5px; border-radius: 50%; background: var(--line-strong); }
+.channel-key-nav-dot.is-success { background: var(--success-fill); box-shadow: 0 0 0 3px var(--success-soft); }
+.channel-key-nav-dot.is-warning { background: var(--warning-fill); box-shadow: 0 0 0 3px var(--warning-soft); }
+.channel-key-nav-dot.is-danger { background: var(--danger-fill); box-shadow: 0 0 0 3px var(--danger-soft); }
+.channel-key-nav-body { display: grid; gap: 3px; min-width: 0; flex: 1 1 auto; }
+.channel-key-nav-name { overflow: hidden; color: var(--ink); font-size: 12.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.channel-key-nav-meta { overflow: hidden; color: var(--form-muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.channel-key-nav-live { flex: 0 0 auto; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--success-soft); color: var(--success); font-size: 10px; font-variant-numeric: tabular-nums; line-height: 18px; text-align: center; }
+.channel-key-nav .channel-key-add { justify-content: flex-start; margin-top: 6px; }
+.channel-key-detail { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.channel-key-accordion { display: grid; gap: 8px; }
+.channel-key-accordion-item { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.channel-key-accordion-item.is-open { border-color: var(--line-strong); }
+.channel-key-accordion-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px; border: 0; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.channel-key-accordion-head:focus-visible { outline: 2px solid var(--brand); outline-offset: -3px; }
+.channel-key-accordion-chevron { flex: 0 0 auto; color: var(--muted); transition: transform .16s ease; }
+.channel-key-accordion-item.is-open .channel-key-accordion-chevron { transform: rotate(180deg); }
+.channel-key-accordion-panel { padding: 0 12px 14px; border-top: 1px solid var(--line); }
+.channel-key-accordion-panel .channel-key-editor { padding-top: 14px; }
+.channel-key-accordion > .channel-key-add { justify-self: start; }
 
-.channel-key-manual-model-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.channel-key-rate-limit-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel);
-}
-
-.channel-key-rate-limit-row > div {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.channel-key-rate-limit-row strong { font-size: 13px; }
-.channel-key-rate-limit-row small { color: var(--muted); line-height: 1.5; }
-.channel-key-rate-limit-row small.channel-key-live.is-active { color: var(--success); font-weight: 600; }
-.channel-key-rate-limit-row .button { flex: 0 0 auto; min-height: 36px; }
-
-.channel-key-tab {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-
-.channel-key-tab-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.channel-key-tab-live {
-  flex: 0 0 auto;
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--success-soft);
-  color: var(--success);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  line-height: 18px;
-  text-align: center;
-}
+.channel-mapping-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.channel-mapping-search { flex: 1 1 220px; max-width: 320px; }
+.channel-canonical-section { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.channel-canonical-header { display: grid; grid-template-columns: minmax(200px, 1.2fr) 24px minmax(220px, 1.8fr); align-items: center; gap: 10px; padding: 0 10px; color: var(--form-muted); font-size: 10px; font-weight: 650; letter-spacing: .02em; }
+.channel-canonical-row { display: grid; grid-template-columns: minmax(200px, 1.2fr) 28px minmax(220px, 1.8fr); align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); transition: border-color .14s ease; }
+.channel-canonical-row:hover { border-color: var(--line-strong); }
+.channel-canonical-model { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.channel-canonical-model .channel-canonical-upstream { min-width: 0; flex: 1 1 auto; }
+.channel-canonical-input-wrap input { min-height: 34px; height: 34px; background: var(--panel); font-size: 12px; }
+.channel-canonical-input-wrap input::placeholder { color: var(--form-muted); opacity: 1; font-size: 10.5px; }
+.channel-mapping-search.search-box input::placeholder { color: var(--form-muted); opacity: 1; }
+.channel-mapping-fill-btn { display: none; }
 
 .channel-occupancy {
   display: flex;
@@ -2187,9 +2273,62 @@ onMounted(() => {
 }
 
 @media (max-width: 640px) {
-  .channel-key-rate-limit-row { align-items: stretch; flex-direction: column; }
-  .channel-key-rate-limit-row .button { align-self: flex-start; }
-  .channel-form-section { padding: 13px; border-radius: 12px; }
+  .channel-form-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; overflow: visible; }
+  .channel-form-tab { min-height: 44px; padding: 0 2px; font-size: 12px; }
+  .channel-form-tab-count { display: none; }
+  .channel-form-sections { padding-top: 16px; }
+  .channel-form-section { gap: 14px; }
   .channel-form-section-head { align-items: flex-start; }
+  .channel-form-section-head h3 { font-size: 14px; }
+  .channel-form-section-actions { justify-content: flex-start; }
+  .channel-form-row-two { grid-template-columns: 1fr; }
+  .channel-form-note { font-size: 12px; }
+  .channel-form .field input,
+  .channel-form .field select,
+  .channel-form .field textarea { min-height: 44px; font-size: 16px; }
+  .channel-form .field small { font-size: 12px; }
+  .channel-form .button.mini { min-height: 40px; }
+
+  .protocol-table-head { display: none; }
+  .protocol-row {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "check name order"
+      "auth auth auth"
+      "probe probe probe";
+    gap: 8px;
+    padding: 10px;
+  }
+  .protocol-check { grid-area: check; min-height: 44px; }
+  .protocol-check input { width: 18px; height: 18px; }
+  .protocol-name { grid-area: name; }
+  .protocol-row select { grid-area: auth; width: 100%; min-height: 44px; font-size: 16px; }
+  .protocol-order-actions { grid-area: order; }
+  .protocol-order-actions .icon-button { width: 40px; height: 40px; }
+  .protocol-probe-cell { grid-area: probe; }
+  .protocol-probe-row { align-items: flex-start; flex-direction: column; gap: 7px; }
+
+  .channel-key-accordion { gap: 7px; }
+  .channel-key-accordion-head { min-height: 56px; padding: 11px 12px; }
+  .channel-key-nav-meta { font-size: 11.5px; }
+  .channel-key-accordion-panel { padding: 0 11px 12px; }
+  .channel-key-accordion-panel .channel-key-editor { padding-top: 12px; }
+  .channel-key-accordion > .channel-key-add { width: 100%; min-height: 42px; }
+
+  .channel-mapping-toolbar { align-items: stretch; flex-direction: column; }
+  .channel-mapping-toolbar > .button { align-self: flex-start; }
+  .channel-mapping-search { width: 100%; max-width: none; min-height: 44px; }
+  .channel-mapping-search input { height: 44px; min-height: 44px; font-size: 16px; }
+  .channel-canonical-section { padding: 10px; }
+  .channel-canonical-header { display: none; }
+  .channel-canonical-row { grid-template-columns: 1fr; gap: 7px; padding: 9px 10px; }
+  .channel-canonical-model { flex-wrap: wrap; }
+  .channel-canonical-upstream { min-height: 40px; }
+  .channel-canonical-arrow-btn { display: none; }
+  .channel-mapping-fill-btn { display: inline-flex; }
+  .channel-canonical-input-wrap input { min-height: 44px; height: 44px; padding-right: 46px !important; font-size: 16px; }
+  .channel-canonical-input-wrap input::placeholder { font-size: 12px; }
+  .channel-canonical-clear { width: 34px; height: 34px; }
+  .channel-model-test-btn { min-height: 34px; }
 }
 </style>

@@ -5,14 +5,16 @@ import Icon from './Icon.vue'
 defineProps({
   title: { type: String, required: true },
   wide: { type: Boolean, default: false },
+  roomy: { type: Boolean, default: false },
+  mobileFullscreen: { type: Boolean, default: false },
 })
 defineEmits(['close'])
 </script>
 
 <template>
   <Teleport to="body">
-    <Dialog :open="true" class="modal-backdrop" @close="$emit('close')">
-      <DialogPanel as="section" class="modal" :class="{ wide }">
+    <Dialog :open="true" class="modal-backdrop" :class="{ 'is-fullscreen': mobileFullscreen }" @close="$emit('close')">
+      <DialogPanel as="section" class="modal" :class="{ wide, roomy, 'mobile-fullscreen': mobileFullscreen }">
         <header class="modal-head">
           <div>
             <p class="eyebrow">配置</p>
@@ -22,6 +24,9 @@ defineEmits(['close'])
             <Icon name="close" :size="18" />
           </button>
         </header>
+        <div v-if="$slots.subhead" class="modal-subhead">
+          <slot name="subhead" />
+        </div>
         <div class="modal-body">
           <slot />
         </div>
