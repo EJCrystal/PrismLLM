@@ -498,7 +498,7 @@ function formSectionTabId(section: ChannelFormSectionId): string {
 
 function scrollFormToTop(): void {
   nextTick(() => {
-    const body = document.querySelector('.modal-body')
+    const body = document.querySelector('.channel-form')?.closest('.modal-body')
     if (body instanceof HTMLElement) body.scrollTop = 0
   })
 }
@@ -1732,33 +1732,35 @@ onMounted(() => {
             </div>
 
             <div v-if="!isMobile" class="channel-key-workspace">
-              <div class="channel-key-nav" role="tablist" aria-label="渠道密钥" aria-orientation="vertical">
-                <button
-                  v-for="(key, index) in channelKeys"
-                  :id="channelKeyTabId(key.localId)"
-                  :key="key.localId"
-                  type="button"
-                  class="channel-key-nav-item"
-                  :class="{ 'is-active': selectedChannelKey?.localId === key.localId }"
-                  role="tab"
-                  :aria-selected="selectedChannelKey?.localId === key.localId"
-                  :aria-controls="selectedChannelKey?.localId === key.localId ? 'channel-key-panel-' + key.localId : undefined"
-                  :tabindex="selectedChannelKey?.localId === key.localId ? 0 : -1"
-                  :title="keyStateBadge(key.state).label + ' · ' + key.models.length + ' 个模型 · 优先级 ' + key.priority"
-                  @click="selectedChannelKeyId = key.localId"
-                  @keydown="handleChannelKeyTabKeydown($event, index)"
-                >
-                  <span class="channel-key-nav-dot" :class="'is-' + keyStateTone(key.state)" aria-hidden="true"></span>
-                  <span class="channel-key-nav-body">
-                    <span class="channel-key-nav-name">{{ key.name.trim() || `密钥 ${index + 1}` }}</span>
-                    <span class="channel-key-nav-meta">{{ keyStateBadge(key.state).label }} · {{ key.models.length }} 个模型 · 优先级 {{ key.priority }}</span>
-                  </span>
-                  <span
-                    v-if="channelKeyConcurrent(editingId, key.id) > 0"
-                    class="channel-key-nav-live"
-                    :title="`当前在途 ${channelKeyConcurrent(editingId, key.id)} 个请求`"
-                  >{{ channelKeyConcurrent(editingId, key.id) }}</span>
-                </button>
+              <div class="channel-key-nav">
+                <div class="channel-key-tabs" role="tablist" aria-label="渠道密钥" aria-orientation="vertical">
+                  <button
+                    v-for="(key, index) in channelKeys"
+                    :id="channelKeyTabId(key.localId)"
+                    :key="key.localId"
+                    type="button"
+                    class="channel-key-nav-item"
+                    :class="{ 'is-active': selectedChannelKey?.localId === key.localId }"
+                    role="tab"
+                    :aria-selected="selectedChannelKey?.localId === key.localId"
+                    :aria-controls="selectedChannelKey?.localId === key.localId ? 'channel-key-panel-' + key.localId : undefined"
+                    :tabindex="selectedChannelKey?.localId === key.localId ? 0 : -1"
+                    :title="keyStateBadge(key.state).label + ' · ' + key.models.length + ' 个模型 · 优先级 ' + key.priority"
+                    @click="selectedChannelKeyId = key.localId"
+                    @keydown="handleChannelKeyTabKeydown($event, index)"
+                  >
+                    <span class="channel-key-nav-dot" :class="'is-' + keyStateTone(key.state)" aria-hidden="true"></span>
+                    <span class="channel-key-nav-body">
+                      <span class="channel-key-nav-name">{{ key.name.trim() || `密钥 ${index + 1}` }}</span>
+                      <span class="channel-key-nav-meta">{{ keyStateBadge(key.state).label }} · {{ key.models.length }} 个模型 · 优先级 {{ key.priority }}</span>
+                    </span>
+                    <span
+                      v-if="channelKeyConcurrent(editingId, key.id) > 0"
+                      class="channel-key-nav-live"
+                      :title="`当前在途 ${channelKeyConcurrent(editingId, key.id)} 个请求`"
+                    >{{ channelKeyConcurrent(editingId, key.id) }}</span>
+                  </button>
+                </div>
                 <button type="button" class="button ghost mini channel-key-add" @click="addKey">＋ 添加密钥</button>
               </div>
               <div
@@ -2116,6 +2118,7 @@ onMounted(() => {
 
 .channel-key-workspace { display: grid; grid-template-columns: 210px minmax(0, 1fr); align-items: start; gap: 18px; min-width: 0; }
 .channel-key-nav { display: grid; align-content: start; gap: 3px; min-width: 0; }
+.channel-key-tabs { display: grid; gap: 3px; min-width: 0; }
 .channel-key-nav-item { display: flex; align-items: flex-start; gap: 9px; width: 100%; padding: 10px 11px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--ink); text-align: left; cursor: pointer; font: inherit; transition: background .14s ease, border-color .14s ease; }
 .channel-key-nav-item:hover { background: var(--bg); }
 .channel-key-nav-item.is-active { border-color: var(--line); background: var(--bg); }
