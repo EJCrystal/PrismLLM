@@ -5391,11 +5391,6 @@ textarea:disabled {
   white-space: nowrap;
 }
 
-.duration-first {
-  color: var(--ink);
-  font-weight: 650;
-}
-
 /* Request detail */
 .detail-stack {
   display: grid;
@@ -5425,6 +5420,32 @@ textarea:disabled {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px 18px;
+}
+
+/* 详情弹窗按“概况 / 路由 / 用量”分组，避免二十多个字段平铺难以定位。 */
+.detail-section-title {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.detail-grid > .detail-section-title:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.detail-item-wide {
+  grid-column: 1 / -1;
+}
+
+.detail-item-span-2 {
+  grid-column: span 2;
 }
 
 .detail-item {
@@ -5659,6 +5680,11 @@ textarea:disabled {
 @media (max-width: 480px) {
   .detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .detail-item-wide,
+  .detail-item-span-2 {
+    grid-column: auto;
   }
 
   .detail-price-row {
@@ -7101,6 +7127,36 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
   .logs-table .log-col-channel .info-popover-trigger { min-width: 20px; min-height: 20px; padding: 0; border-radius: 999px; }
 }
 .logs-table .attempt-chip { padding: 1px 7px; font-size: 10px; }
+/* 请求日志时间列：日期弱化、时刻突出，数字等宽便于纵向扫读。 */
+.logs-table .time-cell { display: grid; gap: 1px; font-variant-numeric: tabular-nums; }
+.logs-table .time-date { color: var(--muted); font-size: 10.5px; line-height: 1.3; }
+.logs-table .time-clock { color: var(--ink); font-size: 12px; font-weight: 600; line-height: 1.35; letter-spacing: 0.01em; }
+/* 状态列：HTTP 状态与阶段同行，错误码独占一行，长错误码不再被徽标挤压。 */
+.logs-table .status-head { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.logs-table .stage-chip { flex: 0 0 auto; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 5%, transparent); color: var(--muted); font-size: 10px; line-height: 1.5; white-space: nowrap; }
+.logs-table .error-code { max-width: 100%; overflow: hidden; color: var(--danger); font-size: 10.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+/* 耗时列：标签弱化、数值突出，首 token 与总耗时保持同一基线。 */
+.logs-table .duration-cell { gap: 2px; }
+.logs-table .duration-row { display: inline-flex; align-items: baseline; gap: 5px; }
+.logs-table .duration-label { color: var(--muted); font-size: 10px; }
+.logs-table .duration-value { color: var(--ink); font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.logs-table .duration-row.is-total .duration-value { font-size: 11.5px; font-weight: 600; }
+/* 用量列：标签与数字分层，数字等宽；第二行保持弱化。 */
+.logs-table .usage-tokens, .logs-table .usage-detail { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+.logs-table .usage-cell em { margin-right: 3px; color: var(--muted); font-size: 10px; font-style: normal; }
+.logs-table .usage-tokens b { color: var(--ink); font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.logs-table .usage-detail b { color: var(--muted); font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* 横向可滚动时给两侧固定列加一层浅阴影，提示被覆盖的内容方向。 */
+.logs-table th.actions-col, .logs-table td.actions-col,
+.logs-table th.time-col, .logs-table td.time-col { transition: box-shadow 0.15s ease; }
+.table-scroll.is-h-scrollable:not(.is-h-scroll-end) .logs-table th.actions-col,
+.table-scroll.is-h-scrollable:not(.is-h-scroll-end) .logs-table td.actions-col {
+  box-shadow: -8px 0 10px -10px color-mix(in srgb, var(--ink) 28%, transparent);
+}
+.table-scroll.is-h-scrollable:not(.is-h-scroll-start) .logs-table th.time-col,
+.table-scroll.is-h-scrollable:not(.is-h-scroll-start) .logs-table td.time-col {
+  box-shadow: 8px 0 10px -10px color-mix(in srgb, var(--ink) 28%, transparent);
+}
 .logs-table .log-col-client-ip { width: 132px; }
 .logs-table .log-col-client-ua { width: 180px; }
 .logs-table .log-col-status { width: 136px; }

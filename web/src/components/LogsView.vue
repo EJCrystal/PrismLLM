@@ -187,7 +187,7 @@ const errorCount = computed(() => logs.value.filter((log) => log.statusCode >= 4
 const averageLatency = computed(() => {
   if (logs.value.length === 0) return '—'
   const total = logs.value.reduce((sum, log) => sum + log.totalMs, 0)
-  return `${Math.round(total / logs.value.length)} ms`
+  return formatDuration(total / logs.value.length)
 })
 
 async function refresh() {
@@ -438,7 +438,12 @@ onMounted(load)
           </thead>
           <tbody>
             <tr v-for="log in filtered" :key="log.requestId">
-              <td v-if="logColumnVisible('time')" class="time-col log-col-time muted nowrap">{{ formatTime(log.createdAt, { style: 'medium' }) }}</td>
+              <td v-if="logColumnVisible('time')" class="time-col log-col-time nowrap">
+                <div class="time-cell">
+                  <span class="time-date">{{ formatTime(log.createdAt, { style: 'dateOnly' }) }}</span>
+                  <span class="time-clock">{{ formatTime(log.createdAt, { style: 'timeOnly' }) }}</span>
+                </div>
+              </td>
               <td v-if="logColumnVisible('request')" class="log-col-request">
                 <div class="request-id-cell">
                   <code class="request-id" :title="log.requestId">{{ log.requestId.slice(0, 12) }}…</code>
@@ -503,29 +508,37 @@ onMounted(load)
               </td>
               <td v-if="logColumnVisible('status')" class="log-col-status">
                 <div class="stacked-cell">
-                  <span class="badge" :class="statusClass(log.statusCode)">{{ log.statusCode }}</span>
-                  <template v-if="log.errorCode">
-                    <span class="badge warning" :title="log.errorCode">{{ log.errorCode }}</span>
-                    <span v-if="log.failureStage" class="stage-text">{{ stageLabel(log.failureStage) }}阶段</span>
-                  </template>
+                  <div class="status-head">
+                    <span class="badge" :class="statusClass(log.statusCode)">{{ log.statusCode }}</span>
+                    <span v-if="log.errorCode && log.failureStage" class="stage-chip" :title="`${stageLabel(log.failureStage)}阶段`">{{ stageLabel(log.failureStage) }}阶段</span>
+                  </div>
+                  <code v-if="log.errorCode" class="error-code" :title="log.errorCode">{{ log.errorCode }}</code>
                 </div>
               </td>
               <td v-if="logColumnVisible('latency')" class="nowrap log-col-latency">
                 <div class="duration-cell">
-                  <span class="duration-first">首 {{ formatDuration(log.firstTokenMs) }}</span>
-                  <span class="muted small">总 {{ formatDuration(log.totalMs) }}</span>
+                  <span class="duration-row">
+                    <span class="duration-label">首</span>
+                    <span class="duration-value">{{ formatDuration(log.firstTokenMs) }}</span>
+                  </span>
+                  <span class="duration-row is-total">
+                    <span class="duration-label">总</span>
+                    <span class="duration-value">{{ formatDuration(log.totalMs) }}</span>
+                  </span>
                 </div>
               </td>
               <td v-if="logColumnVisible('usage')" class="usage-cell log-col-usage" :class="usageStateClass(log)">
                 <div class="usage-cell-body">
                   <template v-if="log.usageKnown">
-                    <span :title="`输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 总 ${formatTokens(log.totalTokens)}`">
-                      输入 {{ formatTokensCompact(log.inputTokens) }} · 输出 {{ formatTokensCompact(log.outputTokens) }} · 总
-                      {{ formatTokensCompact(log.totalTokens) }}
+                    <span class="usage-tokens" :title="`输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 总 ${formatTokens(log.totalTokens)}`">
+                      <span><em>输入</em><b>{{ formatTokensCompact(log.inputTokens) }}</b></span>
+                      <span><em>输出</em><b>{{ formatTokensCompact(log.outputTokens) }}</b></span>
+                      <span><em>总</em><b>{{ formatTokensCompact(log.totalTokens) }}</b></span>
                     </span>
-                    <span class="muted" :title="usageDetailTitle(log)">
-                      推理 {{ formatTokensCompact(log.reasoningTokens) }} · 速率 {{ formatThroughput(log) }} tok/s · 缓存
-                      {{ formatCacheHit(log) }}
+                    <span class="usage-detail" :title="usageDetailTitle(log)">
+                      <span><em>推理</em><b>{{ formatTokensCompact(log.reasoningTokens) }}</b></span>
+                      <span><em>速率</em><b>{{ formatThroughput(log) }} tok/s</b></span>
+                      <span><em>缓存</em><b>{{ formatCacheHit(log) }}</b></span>
                     </span>
                   </template>
                   <span v-else class="usage-state-label">{{ tokenUsageLabel(log) }}</span>
@@ -596,6 +609,7 @@ onMounted(load)
             </div>
 
             <div class="detail-grid">
+              <div class="detail-section-title">请求概况</div>
               <div class="detail-item">
                 <span>状态</span>
                 <strong><span class="badge" :class="statusClass(selected.statusCode)">{{ selected.statusCode }}</span></strong>
@@ -653,6 +667,7 @@ onMounted(load)
                 <span>上游错误码</span>
                 <strong class="mono">{{ selected.upstreamErrorCode || '—' }}</strong>
               </div>
+              <div class="detail-section-title">路由与渠道</div>
               <div class="detail-item">
                 <span>请求模型</span>
                 <strong>{{ selected.alias }}</strong>
@@ -665,7 +680,7 @@ onMounted(load)
                 <span>上游密钥</span>
                 <strong>{{ selected.channelKeyName || '—' }}</strong>
               </div>
-              <div class="detail-item">
+              <div class="detail-item detail-item-wide">
                 <span>渠道 ID</span>
                 <div v-if="selected.channelId" class="detail-value-copy">
                   <strong class="mono detail-wrap">{{ selected.channelId }}</strong>
@@ -685,7 +700,7 @@ onMounted(load)
                 <span>调用方密钥</span>
                 <strong>{{ selected.clientKeyName || (selected.clientKeyId ? '未命名密钥' : '—') }}</strong>
               </div>
-              <div class="detail-item">
+              <div class="detail-item detail-item-wide">
                 <span>调用方密钥 ID</span>
                 <div v-if="selected.clientKeyId" class="detail-value-copy">
                   <strong class="mono detail-wrap">{{ selected.clientKeyId }}</strong>
@@ -698,11 +713,12 @@ onMounted(load)
                 <strong v-if="selected.clientIp" class="mono detail-wrap" :title="selected.clientIp">{{ selected.clientIp }}</strong>
                 <strong v-else class="muted">—</strong>
               </div>
-              <div class="detail-item">
+              <div class="detail-item detail-item-span-2">
                 <span>User-Agent</span>
                 <strong v-if="selected.clientUserAgent" class="mono detail-wrap" :title="selected.clientUserAgent">{{ selected.clientUserAgent }}</strong>
                 <strong v-else class="muted">—</strong>
               </div>
+              <div class="detail-section-title">耗时与用量</div>
               <div class="detail-item">
                 <span>首 token</span>
                 <strong>{{ formatDuration(selected.firstTokenMs) }}</strong>
