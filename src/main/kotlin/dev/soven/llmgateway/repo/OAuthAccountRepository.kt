@@ -130,8 +130,13 @@ class OAuthAccountRepository(private val database: Database) {
                 .map { toRecord(it, emptyList(), emptySet()) }
         }
 
-    /** 后台额度扫描：只返回仍可自动刷新、且读数已过期的 ChatGPT 账号。 */
-    suspend fun listDueForQuota(checkedBefore: Long, limit: Int = 100): List<OAuthAccountRecord> =
+    /**
+     * 后台额度扫描：只返回仍可自动刷新、且距上次尝试已过期的 ChatGPT 账号。
+     *
+     * 排序用“最近一次尝试”而不是“最近一次成功读数”，否则持续失败的账号会一直排在
+     * 队首、每轮被重新选中，账号数超过一轮上限时会把健康账号饿死。
+     */
+    suspend fun listDueForQuota(attemptedBefore: Long, limit: Int = 100): List<OAuthAccountRecord> =
         suspendTransaction(database) {
             OAuthAccounts.selectAll()
                 .where {
@@ -139,11 +144,11 @@ class OAuthAccountRepository(private val database: Database) {
                         (OAuthAccounts.enabled eq true) and
                         (OAuthAccounts.provider eq OAuthProvider.CHATGPT.value) and
                         (
-                            OAuthAccounts.quotaCheckedAt.isNull() or
-                                (OAuthAccounts.quotaCheckedAt less checkedBefore)
+                            OAuthAccounts.quotaAttemptedAt.isNull() or
+                                (OAuthAccounts.quotaAttemptedAt less attemptedBefore)
                             )
                 }
-                .orderBy(OAuthAccounts.quotaCheckedAt to SortOrder.ASC_NULLS_FIRST)
+                .orderBy(OAuthAccounts.quotaAttemptedAt to SortOrder.ASC_NULLS_FIRST)
                 .limit(limit.coerceIn(1, 1_000))
                 .map { toRecord(it, emptyList(), emptySet()) }
         }
@@ -423,15 +428,24 @@ class OAuthAccountRepository(private val database: Database) {
             it[quotaCreditsUnlimited] = snapshot.creditsUnlimited
             it[quotaResetCredits] = snapshot.resetCredits
             it[quotaCheckedAt] = snapshot.checkedAt
+            it[quotaAttemptedAt] = snapshot.checkedAt
             it[quotaError] = null
             if (accountPlan != null) it[OAuthAccounts.accountPlan] = accountPlan.take(32)
         } > 0
     }
 
-    /** 记录一次额度读取失败；保留上一次成功读数，只更新错误信息。 */
-    suspend fun saveQuotaError(accountId: String, errorCode: String): Boolean = suspendTransaction(database) {
+    /**
+     * 记录一次额度读取失败；保留上一次成功读数与它的新鲜度时间，只更新错误信息、
+     * 并推进“最近一次尝试”，让这轮扫描不会反复选中同一个失败账号。
+     */
+    suspend fun saveQuotaError(
+        accountId: String,
+        errorCode: String,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean = suspendTransaction(database) {
         OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
             it[quotaError] = sanitizeQuotaError(errorCode)
+            it[quotaAttemptedAt] = now
         } > 0
     }
 

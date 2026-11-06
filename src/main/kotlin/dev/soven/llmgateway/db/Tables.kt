@@ -116,6 +116,8 @@ object OAuthAccounts : Table("oauth_accounts") {
     val quotaCreditsUnlimited = bool("quota_credits_unlimited").default(false)
     val quotaResetCredits = integer("quota_reset_credits").nullable()
     val quotaCheckedAt = long("quota_checked_at").nullable()
+    /** 最近一次额度读取尝试（成功或失败），只用于后台扫描排序，不代表读数新鲜度。 */
+    val quotaAttemptedAt = long("quota_attempted_at").nullable()
     val quotaError = varchar("quota_error", 200).nullable()
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")

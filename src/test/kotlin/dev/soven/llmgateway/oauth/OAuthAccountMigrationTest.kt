@@ -81,6 +81,8 @@ class OAuthAccountMigrationTest {
                     assertEquals(7, rows.getInt("priority"))
                     assertEquals(40, rows.getInt("window_limit"))
                     assertEquals("acc-1", rows.getString("chatgpt_account_id"))
+                    // V53 用成功读数时间回填首次尝试时间，保持迁移前的刷新节奏。
+                    assertEquals(2000, rows.getLong("quota_attempted_at"))
                 }
                 statement.executeQuery("select channel_id from oauth_account_channels where account_id = 'key-1'").use { rows ->
                     assertEquals(true, rows.next())
