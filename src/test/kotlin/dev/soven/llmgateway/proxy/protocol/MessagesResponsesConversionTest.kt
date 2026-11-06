@@ -165,6 +165,54 @@ class MessagesResponsesConversionTest {
     }
 
     @Test
+    fun `messages system turns fold into instructions before a reply and reminders after`() {
+        val converted = MessagesToResponses.convertRequest(json("""{
+            "model":"public","max_tokens":64,
+            "system":"You are Claude Code.",
+            "messages":[
+                {"role":"system","content":[{"type":"text","text":"env: working dir /home/me"}]},
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":"hello"},
+                {"role":"system","content":"the user switched rooms"},
+                {"role":"user","content":"again"}
+            ]
+        }"""), "upstream")
+
+        assertEquals(
+            "You are Claude Code.\n\nenv: working dir /home/me",
+            converted["instructions"]!!.jsonPrimitive.content,
+        )
+        val input = converted["input"]!!.jsonArray
+        assertEquals(listOf("message", "message", "message"), input.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        assertTrue(input.none { it.jsonObject["role"]?.jsonPrimitive?.content in setOf("system", "developer") })
+        assertEquals("user", input[0].jsonObject["role"]!!.jsonPrimitive.content)
+        assertEquals("hi", input[0].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+        assertEquals("assistant", input[1].jsonObject["role"]!!.jsonPrimitive.content)
+
+        val reminder = input[2].jsonObject["content"]!!.jsonArray
+        assertEquals(2, reminder.size)
+        val reminderText = reminder[0].jsonObject["text"]!!.jsonPrimitive.content
+        assertTrue(reminderText.startsWith("<system-reminder>\n"))
+        assertTrue(reminderText.contains("the user switched rooms"))
+        assertTrue(reminderText.endsWith("\n</system-reminder>"))
+        assertEquals("again", reminder[1].jsonObject["text"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `messages developer turns fold like system turns`() {
+        val converted = MessagesToResponses.convertRequest(json("""{
+            "model":"public","max_tokens":64,
+            "messages":[
+                {"role":"developer","content":"follow the harness rules"},
+                {"role":"user","content":"hi"}
+            ]
+        }"""), "upstream")
+
+        assertEquals("follow the harness rules", converted["instructions"]!!.jsonPrimitive.content)
+        assertEquals("user", converted["input"]!!.jsonArray.single().jsonObject["role"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `direct responses reject reasoning blocks that cannot be represented faithfully`() {
         val unsupportedReasoning = json("""{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"plan"}]}]}""")
         assertEquals("output[0].type", assertFailsWith<ProtocolConversionException> {
