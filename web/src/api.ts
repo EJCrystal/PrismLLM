@@ -143,7 +143,7 @@ export const api = {
 
   listChannels: () => requestList<Channel>('/channels'),
   getOccupancy: () => request<RuntimeOccupancy>('/occupancy'),
-  getChannelHealth: (window: HealthWindow = '24h') => request<ChannelHealthReport>('/channel-health?' + new URLSearchParams({ window })),
+  getChannelHealth: (window: HealthWindow = '24h', options: RequestOptions = {}) => request<ChannelHealthReport>('/channel-health?' + new URLSearchParams({ window }), options),
   getChannelHealthDetail: (id: string, window: HealthWindow = '24h', options: RequestOptions = {}) => request<ChannelHealthDetail>(`/channels/${encodeURIComponent(id)}/health?` + new URLSearchParams({ window }), options),
   clearChannelCooldown: (id: string, payload: { scope: 'channel' | 'key' | 'candidate'; keyId?: string; upstreamModel?: string }, options: RequestOptions = {}) =>
     request<null>(`/channels/${encodeURIComponent(id)}/cooldown/clear`, { ...options, method: 'POST', body: JSON.stringify(payload) }),

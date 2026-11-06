@@ -109,6 +109,19 @@ describe('API 契约的运行时形状', () => {
     assert.equal(requestedMethod, 'GET')
   })
 
+  it('渠道健康度请求透传取消信号', async (t) => {
+    const originalFetch = globalThis.fetch
+    let requestedSignal = null
+    t.after(() => { globalThis.fetch = originalFetch })
+    globalThis.fetch = async (_input, init = {}) => {
+      requestedSignal = init.signal
+      return new Response(JSON.stringify({ window: '24h', channels: [] }), { status: 200 })
+    }
+    const controller = new AbortController()
+    await api.getChannelHealth('24h', { signal: controller.signal })
+    assert.equal(requestedSignal, controller.signal)
+  })
+
   it('非空成功响应无法解析时抛出明确错误', async (t) => {
     const originalFetch = globalThis.fetch
     t.after(() => { globalThis.fetch = originalFetch })
