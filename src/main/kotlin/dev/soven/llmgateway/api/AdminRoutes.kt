@@ -202,6 +202,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(app.currencyExchangeService.getRates())
         }
 
+        get("/system-config") {
+            call.requireAdmin(app)
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(buildSystemConfigResponse(app.config))
+        }
+
         post("/model-suggestions") {
             call.requireAdmin(app)
             val request = call.receive<ModelSuggestionRequest>()
