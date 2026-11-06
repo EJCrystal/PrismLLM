@@ -436,6 +436,7 @@ jobs:
 
           landed=false
           ACTIVE_FINDINGS=0
+          LANDED_BODIES=""
           if [ "$OUTCOME" = "success" ]; then
             # PR-Agent 的输出：issue 评论（walkthrough/摘要）或 review（/review 的评审）。
             # 以 HEAD SHA 起算：本次运行之后才产生的 bot 输出才算本次审查落地。
@@ -457,7 +458,7 @@ jobs:
                     if echo "$body" | grep -qiE "PR Reviewer Guide|PR Code Suggestions|<!-- pr-agent:|Persistent review" \
                        || { echo "$body" | grep -qiE "pr-agent" && echo "$body" | grep -q "${HEAD_SHA:0:7}"; }; then
                       landed=true
-                      break
+                      LANDED_BODIES="${LANDED_BODIES}${body}"$'\n'
                     fi
                   fi
                   ;;
@@ -479,7 +480,7 @@ jobs:
                       if echo "$body" | grep -qiE "PR Reviewer Guide|PR Code Suggestions|<!-- pr-agent:|Persistent review" \
                          || { echo "$body" | grep -qiE "pr-agent" && echo "$body" | grep -q "${HEAD_SHA:0:7}"; }; then
                         landed=true
-                        break
+                        LANDED_BODIES="${LANDED_BODIES}${body}"$'\n'
                       fi
                     fi
                     ;;
@@ -551,6 +552,26 @@ jobs:
                 -f state="failure" \
                 -f context="AI Review Gate" \
                 -f description="PR-Agent 状态块作者不在已知机器人列表中" || true
+              exit 1
+            fi
+          fi
+
+          # 分块审查必须完整：失败块、未纳入文件或被裁剪文件都视为覆盖不足，不予放行。
+          if [ "$landed" = "true" ]; then
+            if grep -qE '[0-9]+ chunk\(s\) failed' <<< "${LANDED_BODIES}"; then
+              echo "::error::PR-Agent 分块审查存在失败块，覆盖不完整"
+              gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+                -f state="failure" \
+                -f context="AI Review Gate" \
+                -f description="PR-Agent 分块审查存在失败块" || true
+              exit 1
+            fi
+            if grep -qF '**Review coverage:**' <<< "${LANDED_BODIES}"; then
+              echo "::error::PR-Agent 审查覆盖不完整，存在未纳入或被裁剪的文件"
+              gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+                -f state="failure" \
+                -f context="AI Review Gate" \
+                -f description="PR-Agent 审查未覆盖全部文件" || true
               exit 1
             fi
           fi
