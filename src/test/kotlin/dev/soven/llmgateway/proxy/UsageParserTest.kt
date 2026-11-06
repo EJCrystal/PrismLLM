@@ -129,6 +129,22 @@ class UsageParserTest {
     }
 
     @Test
+    fun `parses anthropic reasoning and thinking tokens from usage details`() {
+        val jsonWithDetails = Json.parseToJsonElement(
+            """{"type":"message","usage":{"input_tokens":10,"output_tokens":40,"output_tokens_details":{"reasoning_tokens":25}}}""",
+        ).jsonObject
+        val usageWithDetails = UsageParser.fromAnthropicJson(jsonWithDetails)
+        assertEquals(25, usageWithDetails?.reasoning)
+        assertEquals(40, usageWithDetails?.output)
+
+        val jsonWithThinking = Json.parseToJsonElement(
+            """{"type":"message","usage":{"input_tokens":10,"output_tokens":40,"thinking_tokens":30}}""",
+        ).jsonObject
+        val usageWithThinking = UsageParser.fromAnthropicJson(jsonWithThinking)
+        assertEquals(30, usageWithThinking?.reasoning)
+    }
+
+    @Test
     fun `parses cache write tokens from prompt details in chat completions`() {
         val line = """data: {"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":10}}}"""
 

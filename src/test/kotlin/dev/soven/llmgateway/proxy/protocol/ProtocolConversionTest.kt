@@ -427,6 +427,11 @@ class ProtocolConversionTest {
         assertFalse(chatFromMessages.containsKey("context_management"))
         assertFalse(chatFromMessages.containsKey("output_config"))
 
+        val messagesWithEffort = json("""{"model":"m","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"high"}}""")
+        val chatWithEffort = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, messagesWithEffort, "m")
+        assertEquals("high", chatWithEffort["reasoning_effort"]!!.jsonPrimitive.content)
+        assertFalse(chatWithEffort.containsKey("output_config"))
+
         for ((body, field) in listOf(
             """{"model":"m","input":"hi","store":true}""" to "store",
             """{"model":"m","input":"hi","truncation":"auto"}""" to "truncation",

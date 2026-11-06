@@ -114,13 +114,17 @@ object UsageParser {
         val isPartialStreamEvent = eventType == "message_start" || eventType == "message_delta"
         val total = usage.long("total_tokens")
             ?: if (!isPartialStreamEvent && input != null && output != null) input + output else null
-        if (input == null && output == null && cacheReadTokens == null && total == null) return null
+        val reasoning = (usage["output_tokens_details"] as? JsonObject)?.long("reasoning_tokens")
+            ?: (usage["output_tokens_details"] as? JsonObject)?.long("thinking_tokens")
+            ?: usage.long("reasoning_tokens")
+            ?: usage.long("thinking_tokens")
+        if (input == null && output == null && cacheReadTokens == null && total == null && reasoning == null) return null
         return Usage(
             input = input,
             output = output,
             cached = cacheReadTokens,
             cacheWrite = cacheCreationTokens,
-            reasoning = null,
+            reasoning = reasoning,
             total = total,
         )
     }
