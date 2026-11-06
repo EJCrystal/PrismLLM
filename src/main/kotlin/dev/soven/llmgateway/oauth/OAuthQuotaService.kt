@@ -310,7 +310,7 @@ private fun parseQuotaWindow(window: JsonObject?, now: Long): OAuthQuotaWindow? 
 }
 
 /** 一年，避免上游返回异常大的窗口时长。 */
-private const val MAX_WINDOW_SECONDS = 31_536_000L
+internal const val MAX_WINDOW_SECONDS = 31_536_000L
 
 /** 2100 年，避免 reset_at 溢出或误把毫秒当秒。 */
-private const val MAX_EPOCH_SECONDS = 4_102_444_800L
+internal const val MAX_EPOCH_SECONDS = 4_102_444_800L

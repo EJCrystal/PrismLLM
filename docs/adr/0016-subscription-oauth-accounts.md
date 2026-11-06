@@ -45,6 +45,8 @@
 - 读数写入 `channel_key_oauth_accounts` 的 `quota_*` 列，并同步给调度器。`quota_checked_at` 为空或早于扫描间隔的账号才会被扫描；重启时从库中恢复读数，不必等第一轮扫描。
 - 额度拦截条件：读数未过期（默认 15 分钟），没有 credits（`credits.balance == 0` 且非 `unlimited`），且 5 小时或每周窗口 `used_percent >= 100`。命中时拒绝新请求，`retryAfterMs` 取用尽窗口中较晚的重置时间，拒绝原因记为 `oauth_quota`。
 - 读数过期后只展示、不再拦截，交给滑动窗口与 429 冷却兜底；上游额度接口异常不会把账号长期误停。
+- 每次上游回复都会读取 `x-codex-primary-*` 与 `x-codex-secondary-*` 响应头（`used-percent`、`window-minutes`、`reset-at` / `reset-after-seconds`），按窗口时长合并进内存读数，并保留轮询才有 `credits`、`allowed` 与重置次数。刚打到 100% 的账号会在下一次请求就被拦下，不必等下一轮扫描。
+- 响应头读数只更新内存，不逐请求写库；管理面进度条最多滞后一个扫描周期，重启后由第一轮扫描恢复。
 - 额度是账号级硬限制，与窗口/并发/冷却一样不进入 fail-open。
 
 ### 账号排序

@@ -292,6 +292,42 @@ class OAuthAccountSchedulerTest {
     }
 
     @Test
+    fun `reply headers update the quota reading before the next sweep`() = runTest {
+        val key = key(policy = OAuthAccountPolicy(maxConcurrentRequests = 5))
+        scheduler.noteQuota(
+            key.id,
+            OAuthQuotaSnapshot(
+                primary = OAuthQuotaWindow(usedPercent = 60.0, windowSeconds = 18_000, resetsAt = clock + 1_800_000),
+                creditsBalance = 0.0,
+                resetCredits = 1,
+                checkedAt = clock,
+            ),
+        )
+        scheduler.noteQuotaHeaders(
+            key,
+            OAuthQuotaHeaderReading(
+                primary = OAuthQuotaWindow(usedPercent = 100.0, windowSeconds = 18_000, resetsAt = clock + 1_800_000),
+            ),
+            clock,
+        )
+
+        val denied = scheduler.check(key)
+        assertIs<OAuthAccountDecision.Denied>(denied)
+        assertEquals(OAuthAccountDenyReason.QUOTA, denied.reason)
+
+        // 轮询才有的 credits 与重置次数仍在，窗口回落后立即恢复准入。
+        assertEquals(0.0, scheduler.routingHints(listOf(key))[key.id]?.quota?.creditsBalance)
+        scheduler.noteQuotaHeaders(
+            key,
+            OAuthQuotaHeaderReading(
+                primary = OAuthQuotaWindow(usedPercent = 30.0, windowSeconds = 18_000),
+            ),
+            clock,
+        )
+        assertNull(scheduler.check(key))
+    }
+
+    @Test
     fun `routing hints expose window usage and fresh quota without consuming slots`() = runTest {
         val key = key(policy = OAuthAccountPolicy(windowLimit = 10, maxConcurrentRequests = 5))
         assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key))

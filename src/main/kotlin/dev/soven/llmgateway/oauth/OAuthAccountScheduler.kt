@@ -141,6 +141,22 @@ class OAuthAccountScheduler(
         }
     }
 
+    /**
+     * 记录一次回复头里的额度读数。比轮询更及时，能让刚打到 100% 的账号在下一次请求
+     * 就被拦下；只更新内存态，下一次额度扫描仍会以 `/wham/usage` 的完整读数覆盖。
+     */
+    internal suspend fun noteQuotaHeaders(
+        key: ChannelKeyRecord,
+        reading: OAuthQuotaHeaderReading?,
+        nowMs: Long = now(),
+    ) {
+        if (reading == null || key.oauthPolicy == null) return
+        mutex.withLock {
+            val state = states.getOrPut(key.id) { AccountState() }
+            state.quota = state.quota.mergeQuotaHeaders(reading, nowMs)
+        }
+    }
+
     /** 上游成功响应后清零连续 429 计数；已生效的冷却不会被提前解除。 */
     suspend fun recordSuccess(keyId: String, nowMs: Long = now()) {
         mutex.withLock {

@@ -14,6 +14,7 @@ import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
 import dev.soven.llmgateway.oauth.OAuthAccountLease
 import dev.soven.llmgateway.oauth.OAuthTokenUnavailableException
 import dev.soven.llmgateway.oauth.OAuthUnavailableReason
+import dev.soven.llmgateway.oauth.parseCodexQuotaHeaders
 import dev.soven.llmgateway.oauth.parseRateLimitResetMs
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
 import dev.soven.llmgateway.proxy.upstreamRequestUrl
@@ -1157,6 +1158,10 @@ private suspend fun proxyStream(
                 setBody(TextContent(body, ContentType.Application.Json))
             }.execute { response ->
                 state.upstreamStatus = response.status.value
+                app.oauthAccountScheduler.noteQuotaHeaders(
+                    candidate.key,
+                    parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
+                )
                 if (!response.status.isSuccess()) {
                     throw upstreamException(
                         response.status,
@@ -1375,6 +1380,10 @@ private suspend fun proxyJson(
                 setBody(TextContent(body, ContentType.Application.Json))
             }
             state.upstreamStatus = response.status.value
+            app.oauthAccountScheduler.noteQuotaHeaders(
+                candidate.key,
+                parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
+            )
             val text = response.bodyAsText()
             if (!response.status.isSuccess()) {
                 throw upstreamException(
