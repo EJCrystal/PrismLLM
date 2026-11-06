@@ -21,6 +21,8 @@ data class UpstreamRequestOverrides(
     val headers: Map<String, String?> = emptyMap(),
     val body: JsonObject = JsonObject(emptyMap()),
     val protocols: Map<String, UpstreamProtocolOverrides> = emptyMap(),
+    /** auto / always / never：是否在 Chat Completions 请求中补齐 assistant 的 reasoning_content。 */
+    val reasoningContentPolicy: String? = null,
 ) {
     fun common() = UpstreamProtocolOverrides(headerProfile, userAgent, headers, body)
 }

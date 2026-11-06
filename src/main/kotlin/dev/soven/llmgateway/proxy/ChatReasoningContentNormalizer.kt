@@ -11,6 +11,27 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 
 /**
+ * 渠道级 reasoning_content 处理策略，随渠道或全局的请求覆盖配置保存。
+ *
+ * @author 文杰
+ * @since 2026-11-06
+ */
+enum class ReasoningContentPolicy(val value: String) {
+    /** 仅在上游是已知需要该字段的思考模型，或历史中已出现思考内容时补齐。 */
+    AUTO("auto"),
+
+    /** 始终补齐，适用于自定义命名但实际是 DeepSeek 等思考模型的上游。 */
+    ALWAYS("always"),
+
+    /** 完全不改写，适用于会拒绝历史中 reasoning_content 的上游。 */
+    NEVER("never");
+
+    companion object {
+        fun fromValue(value: String): ReasoningContentPolicy? = entries.firstOrNull { it.value == value }
+    }
+}
+
+/**
  * 针对上游 Chat Completions 协议自动规范化并补齐 assistant 消息中的 reasoning_content。
  *
  * 背景：
@@ -20,8 +41,11 @@ import kotlinx.serialization.json.put
  * "The `reasoning_content` in the thinking mode must be passed back to the API."
  *
  * 处理规则：
- * 1. 当请求处于思考模式（显式 reasoning_effort/reasoning）、或者上游模型为思考模型/DeepSeek、
- *    或者消息历史中已存在 reasoning 迹象时触发补齐。
+ * 1. 是否触发由渠道级 [ReasoningContentPolicy] 决定：
+ *    - auto（默认）：上游模型名是思考模型/DeepSeek，或消息历史中已存在 reasoning 迹象时触发；
+ *      不因 reasoning_effort 单独触发，避免给 Groq 等接受 reasoning_effort 却拒绝 reasoning_content 的上游注入该字段；
+ *    - always：始终触发，适用于自定义命名但实际是思考模型的上游；
+ *    - never：完全不改写。
  * 2. 遍历 messages 数组中 role="assistant" 的消息：
  *    - 若已存在有效的 reasoning_content 字符串，保留原样；
  *    - 若存在 reasoning_content=null，替换为空字符串 ""；
@@ -35,11 +59,23 @@ import kotlinx.serialization.json.put
 object ChatReasoningContentNormalizer {
     private val THINK_TAG_REGEX = Regex("<think>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
 
-    fun normalize(body: JsonObject, upstreamModel: String): JsonObject {
+    private val THINKING_MODEL_MARKERS = listOf("deepseek", "reasoner", "-r1", "r1-", "_r1", "thinking", "qwq")
+    private val REASONER_MODEL_MARKERS = listOf("reasoner", "-r1", "r1-", "_r1")
+
+    private fun isThinkingModel(name: String): Boolean = THINKING_MODEL_MARKERS.any(name::contains)
+
+    private fun isReasonerModel(name: String): Boolean = REASONER_MODEL_MARKERS.any(name::contains)
+
+    fun normalize(
+        body: JsonObject,
+        upstreamModel: String,
+        policy: ReasoningContentPolicy = ReasoningContentPolicy.AUTO,
+    ): JsonObject {
+        if (policy == ReasoningContentPolicy.NEVER) return body
         val messagesElement = body["messages"] as? JsonArray ?: return body
         if (messagesElement.isEmpty()) return body
 
-        if (!shouldNormalize(body, upstreamModel, messagesElement)) {
+        if (policy == ReasoningContentPolicy.AUTO && !shouldNormalize(body, upstreamModel, messagesElement)) {
             return body
         }
 
@@ -80,32 +116,17 @@ object ChatReasoningContentNormalizer {
         upstreamModel: String,
         messages: JsonArray,
     ): Boolean {
-        // 1. 显式启用了推理强度 (reasoning_effort 存在)
+        val models = listOf(upstreamModel.lowercase(), body.string("model")?.lowercase().orEmpty())
+        // 1. 显式关闭思考时，只有强制思考的模型才需要回传思考内容。
+        // 不能仅凭 reasoning_effort 判定：Groq 等上游接受 reasoning_effort，却会拒绝历史中的 reasoning_content。
         val effort = body.string("reasoning_effort")
             ?: (body["reasoning"] as? JsonObject)?.string("effort")
-        if (effort != null) {
-            if (effort.equals("none", ignoreCase = true)) {
-                // 如果显式关闭思考，仅当模型强制包含 "reasoner" 时才需处理
-                val lowerModel = upstreamModel.lowercase()
-                val requestModel = body.string("model")?.lowercase().orEmpty()
-                return lowerModel.contains("reasoner") || requestModel.contains("reasoner")
-            }
-            return true
+        if (effort != null && effort.equals("none", ignoreCase = true)) {
+            return models.any(::isReasonerModel)
         }
 
         // 2. 模型名称包含已知思考模型或 DeepSeek 标识
-        val lowerModel = upstreamModel.lowercase()
-        val requestModel = body.string("model")?.lowercase().orEmpty()
-        val isThinkingModel = listOf(lowerModel, requestModel).any { name ->
-            name.contains("deepseek") ||
-                name.contains("reasoner") ||
-                name.contains("-r1") ||
-                name.contains("r1-") ||
-                name.contains("_r1") ||
-                name.contains("thinking") ||
-                name.contains("qwq")
-        }
-        if (isThinkingModel) {
+        if (models.any(::isThinkingModel)) {
             return true
         }
 

@@ -165,6 +165,18 @@ UA 删除有特殊处理：`userAgent:""` 或 `headers:{"User-Agent":null}` 都�
 
 管理面 UA 输入框留空表示本层不覆盖，不表示删除。通用请求体补丁会作用于全部协议；`reasoning`、`max_tokens`、`generationConfig` 等协议专用字段应放在相应的 `protocols` 规则中，以免其他协议拒绝参数。
 
+## reasoning_content 处理策略
+
+DeepSeek 等思考模型要求多轮对话回传 assistant 消息的 `reasoning_content`，缺失时上游直接返回 400。网关在发往 Chat Completions 上游前会按 `reasoningContentPolicy` 规范化该字段：
+
+| 取值 | 行为 |
+| --- | --- |
+| 省略 / `auto` | 仅当上游模型名匹配思考模型（`deepseek`、`reasoner`、`r1`、`thinking`、`qwq`），或历史消息中已出现思考内容时补齐；**不因 `reasoning_effort` 单独触发** |
+| `always` | 始终补齐，适用于自定义模型名但实际由思考模型提供服务的上游 |
+| `never` | 完全不改写，适用于 Groq 等接受 `reasoning_effort` 却拒绝历史中 `reasoning_content` 的上游 |
+
+该字段位于 `overrides` / `requestOverrides` 顶层（与 `inheritGlobal` 同级），不区分协议，也不受「配置范围」影响。渠道未配置时继承全局；`inheritGlobal:false` 时忽略全局设置。补齐内容来源依次为已有 `reasoning_content`、`reasoning` / `thought` 别名字段、`content` 中的 `<think>` 标签，最后回退为空字符串。
+
 ## 示例 1：全局保留自动预设，只覆盖 Responses 参数
 
 完整请求见 [upstream-request-global.json](examples/upstream-request-global.json)。该配置保留各协议自动 UA，为全部请求加入团队标识，仅为 Responses 设置推理强度与 `store`。

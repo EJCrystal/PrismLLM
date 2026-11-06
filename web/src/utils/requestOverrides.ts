@@ -8,6 +8,15 @@ export const REQUEST_OVERRIDE_SCOPES = [
   { id: 'gemini', label: 'Gemini（仅该协议）', errorLabel: 'Gemini' },
 ]
 
+export const REASONING_CONTENT_POLICIES = [
+  { id: '', label: '跟随上级 / 自动判断' },
+  { id: 'auto', label: '自动：仅思考模型补齐' },
+  { id: 'always', label: '始终补齐' },
+  { id: 'never', label: '从不补齐' },
+]
+
+const REASONING_CONTENT_POLICY_IDS = new Set(REASONING_CONTENT_POLICIES.map(({ id }) => id))
+
 const PROFILES = new Set(['auto', 'none', 'claude', 'codex', 'google', 'antigravity'])
 const MANAGED_HEADERS = new Set([
   'authorization', 'proxy-authorization', 'x-api-key', 'x-goog-api-key', 'cookie', 'set-cookie',
@@ -33,8 +42,12 @@ export interface RequestOverrideEditorDraft {
 export type RequestOverrideDrafts = Record<string, RequestOverrideEditorDraft>
 
 /** Snapshot raw editor text too, so invalid or partially typed JSON remains dirty. */
-export function requestOverrideDraftSnapshot(drafts: RequestOverrideDrafts, inheritGlobal: boolean): string {
-  return JSON.stringify({ drafts, inheritGlobal })
+export function requestOverrideDraftSnapshot(
+  drafts: RequestOverrideDrafts,
+  inheritGlobal: boolean,
+  reasoningContentPolicy: string | null = null,
+): string {
+  return JSON.stringify({ drafts, inheritGlobal, reasoningContentPolicy })
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -61,7 +74,12 @@ export function normalizeRequestOverrides(value: unknown = {}): UpstreamRequestO
     const layer = normalizeLayer((value as Partial<UpstreamRequestOverrides>).protocols?.[id as ProtocolId])
     if (hasOverrides(layer)) protocols[id as ProtocolId] = layer
   }
-  return { inheritGlobal: (value as Partial<UpstreamRequestOverrides>).inheritGlobal !== false, ...normalizeLayer(value), protocols }
+  return {
+    inheritGlobal: (value as Partial<UpstreamRequestOverrides>).inheritGlobal !== false,
+    ...normalizeLayer(value),
+    protocols,
+    reasoningContentPolicy: (value as Partial<UpstreamRequestOverrides>).reasoningContentPolicy ?? null,
+  }
 }
 
 export function createRequestOverrideDrafts(value: unknown = {}): RequestOverrideDrafts {
@@ -121,7 +139,14 @@ function validateLayer(layer: RequestOverrideDraft, label: string): void {
   if (jsonDepth(layer.body) > 32) throw new Error(`${label}请求体覆盖嵌套不能超过 32 层`)
 }
 
-export function buildRequestOverrides(drafts: RequestOverrideDrafts, inheritGlobal = true): UpstreamRequestOverrides {
+export function buildRequestOverrides(
+  drafts: RequestOverrideDrafts,
+  inheritGlobal = true,
+  reasoningContentPolicy: string | null = null,
+): UpstreamRequestOverrides {
+  if (reasoningContentPolicy !== null && !REASONING_CONTENT_POLICY_IDS.has(reasoningContentPolicy)) {
+    throw new Error('reasoning_content 处理策略无效')
+  }
   const layers: Record<string, RequestOverrideDraft> = {}
   for (const { id, label, errorLabel } of REQUEST_OVERRIDE_SCOPES) {
     const draft = drafts[id]
@@ -135,7 +160,12 @@ export function buildRequestOverrides(drafts: RequestOverrideDrafts, inheritGlob
     validateLayer(layer, validationLabel)
     layers[id] = layer
   }
-  const result: UpstreamRequestOverrides = { inheritGlobal, ...layers.common, protocols: {} }
+  const result: UpstreamRequestOverrides = {
+    inheritGlobal,
+    ...layers.common,
+    protocols: {},
+    reasoningContentPolicy: reasoningContentPolicy || null,
+  }
   for (const { id } of REQUEST_OVERRIDE_SCOPES.slice(1)) {
     if (hasOverrides(layers[id])) result.protocols[id as ProtocolId] = layers[id]
   }

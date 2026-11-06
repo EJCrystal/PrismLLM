@@ -317,4 +317,63 @@ class ChatReasoningContentNormalizerTest {
         assertEquals("thought", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
         assertEquals("", messages[3].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
     }
+
+    @Test
+    fun `does not inject reasoning_content for reasoning_effort alone on a non-thinking model`() {
+        // Groq 等上游接受 reasoning_effort，却会拒绝历史消息中的 reasoning_content。
+        val input = json("""
+            {
+                "model": "openai/gpt-oss-120b",
+                "reasoning_effort": "high",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"}
+                ]
+            }
+        """.trimIndent())
+
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "openai/gpt-oss-120b")
+
+        assertEquals(input, normalized)
+        assertFalse(normalized["messages"]!!.jsonArray[1].jsonObject.containsKey("reasoning_content"))
+    }
+
+    @Test
+    fun `never policy leaves thinking model requests untouched`() {
+        val input = json("""
+            {
+                "model": "deepseek-flash",
+                "reasoning_effort": "max",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"}
+                ]
+            }
+        """.trimIndent())
+
+        val normalized = ChatReasoningContentNormalizer.normalize(
+            input, "deepseek-flash", ReasoningContentPolicy.NEVER,
+        )
+
+        assertEquals(input, normalized)
+    }
+
+    @Test
+    fun `always policy injects for custom-named thinking proxies`() {
+        val input = json("""
+            {
+                "model": "ds-proxy",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"}
+                ]
+            }
+        """.trimIndent())
+
+        val auto = ChatReasoningContentNormalizer.normalize(input, "ds-proxy", ReasoningContentPolicy.AUTO)
+        assertFalse(auto["messages"]!!.jsonArray[1].jsonObject.containsKey("reasoning_content"))
+
+        val always = ChatReasoningContentNormalizer.normalize(input, "ds-proxy", ReasoningContentPolicy.ALWAYS)
+        assertEquals("", always["messages"]!!.jsonArray[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
+    }
 }

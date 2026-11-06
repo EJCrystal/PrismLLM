@@ -6,6 +6,7 @@ import {
   buildRequestOverrides,
   createRequestOverrideDrafts,
   requestOverrideDraftSnapshot,
+  REASONING_CONTENT_POLICIES,
   REQUEST_OVERRIDE_SCOPES,
 } from '../utils/requestOverrides'
 import type { RequestOverrideDrafts } from '../utils/requestOverrides'
@@ -26,6 +27,7 @@ const emit = defineEmits<{
 }>()
 const scope = ref('common')
 const inheritGlobal = ref(true)
+const reasoningContentPolicy = ref('')
 const drafts = reactive<RequestOverrideDrafts>(createRequestOverrideDrafts(props.value))
 const availableProfiles = ref<UpstreamHeaderProfile[]>(props.profiles || [])
 const profileError = ref('')
@@ -33,11 +35,12 @@ const profileError = ref('')
 watch(() => props.value, (value) => {
   Object.assign(drafts, createRequestOverrideDrafts(value))
   inheritGlobal.value = value.inheritGlobal !== false
+  reasoningContentPolicy.value = value.reasoningContentPolicy ?? ''
 }, { immediate: true })
 watch(() => props.profiles, (profiles) => {
   if (profiles) availableProfiles.value = profiles
 }, { deep: true })
-watch([drafts, inheritGlobal], () => emit('changed'), { deep: true })
+watch([drafts, inheritGlobal, reasoningContentPolicy], () => emit('changed'), { deep: true })
 
 if (props.profiles === null) {
   api.getUpstreamRequestSettings().then((settings) => {
@@ -70,6 +73,12 @@ const scopeSummaries = computed(() => REQUEST_OVERRIDE_SCOPES.map(({ id, label, 
     summary: fields.length ? fields.join(' · ') : '继承 / 未配置',
   }
 }))
+const reasoningContentPolicyOptions = computed(() => REASONING_CONTENT_POLICIES.map((item) => ({
+  ...item,
+  label: item.id === ''
+    ? (!props.global && inheritGlobal.value ? '跟随全局 / 自动判断' : '自动判断（默认）')
+    : item.label,
+})))
 const previewProfile = computed(() => {
   const selected = current.value.headerProfile || drafts.common.headerProfile || 'auto'
   if (selected === 'auto' && scope.value === 'common') return null
@@ -80,11 +89,11 @@ const uaPlaceholder = computed(() => previewProfile.value?.headers?.['User-Agent
 const previewHeaders = computed(() => JSON.stringify(previewProfile.value?.headers || {}, null, 2))
 
 function getValue(): UpstreamRequestOverrides {
-  return buildRequestOverrides(drafts, props.global || inheritGlobal.value)
+  return buildRequestOverrides(drafts, props.global || inheritGlobal.value, reasoningContentPolicy.value || null)
 }
 
 function getSnapshot(): string {
-  return requestOverrideDraftSnapshot(drafts, props.global || inheritGlobal.value)
+  return requestOverrideDraftSnapshot(drafts, props.global || inheritGlobal.value, reasoningContentPolicy.value || null)
 }
 
 function errorMessage(cause: unknown): string {
@@ -99,6 +108,16 @@ defineExpose({ getValue, getSnapshot })
     <label v-if="!global" class="check-row">
       <input v-model="inheritGlobal" type="checkbox" :disabled="disabled" />
       <span>继承全局请求配置</span>
+    </label>
+    <label class="field">
+      <span>Chat Completions reasoning_content</span>
+      <select v-model="reasoningContentPolicy" :disabled="disabled">
+        <option v-for="item in reasoningContentPolicyOptions" :key="item.id" :value="item.id">{{ item.label }}</option>
+      </select>
+      <small>
+        思考模型多轮对话要求回传 assistant 的 reasoning_content。自动仅对 DeepSeek 等已知思考模型或历史已含思考内容时补齐；
+        Groq 等会拒绝该字段的上游请选择“从不补齐”。该设置按渠道生效，不受下方配置范围影响。
+      </small>
     </label>
     <label class="field">
       <span>配置范围</span>
