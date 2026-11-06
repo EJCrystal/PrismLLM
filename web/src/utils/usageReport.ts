@@ -114,6 +114,20 @@ export function usagePercent(requests: number | string | null | undefined, error
   return `${(usageRate(requests, errors) * 100).toFixed(1)}%`
 }
 
+/**
+ * 缓存命中率 = 缓存读 token / 输入 token。输入为 0 时无法计算，返回 null。
+ * 输入 token 已包含缓存读与缓存写，命中率只统计缓存读。
+ */
+export function usageCacheHitRate(
+  inputTokens: number | string | null | undefined,
+  cachedTokens: number | string | null | undefined,
+): number | null {
+  const input = Number(inputTokens) || 0
+  if (input <= 0) return null
+  const cached = Math.max(0, Number(cachedTokens) || 0)
+  return Math.min(1, cached / input)
+}
+
 export function usageGranularityLabel(granularity: string | null | undefined): string {
   return ({ hour: '按小时', day: '按天', week: '按周' } as Record<string, string>)[granularity ?? ''] || '按天'
 }
@@ -196,13 +210,9 @@ export function buildTrendPoints<T>(
 
 export function usageTrendMax<T>(
   rows: T[] | null | undefined,
-  primary: (row: T) => unknown,
-  secondary: ((row: T) => unknown) | null = null,
+  ...accessors: Array<(row: T) => unknown>
 ): number {
-  const values = (rows || []).flatMap((row) => [
-    Number(primary(row)) || 0,
-    ...(secondary ? [Number(secondary(row)) || 0] : []),
-  ])
+  const values = (rows || []).flatMap((row) => accessors.map((accessor) => Number(accessor(row)) || 0))
   return Math.max(0, ...values)
 }
 

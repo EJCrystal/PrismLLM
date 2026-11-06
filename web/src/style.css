@@ -6694,6 +6694,20 @@ textarea:disabled {
   opacity: 0.8;
 }
 
+.usage-chart-line.tertiary {
+  stroke: var(--success-fill);
+  stroke-width: 1.6;
+  stroke-dasharray: 2 4;
+  opacity: 0.9;
+}
+
+.usage-chart-line.quaternary {
+  stroke: var(--reasoning);
+  stroke-width: 1.6;
+  stroke-dasharray: 6 3;
+  opacity: 0.85;
+}
+
 .usage-chart-axis {
   display: flex;
   align-items: center;
@@ -6738,6 +6752,14 @@ textarea:disabled {
 
 .usage-chart-legend .dot.secondary {
   background: var(--warning-fill);
+}
+
+.usage-chart-legend .dot.tertiary {
+  background: var(--success-fill);
+}
+
+.usage-chart-legend .dot.quaternary {
+  background: var(--reasoning);
 }
 
 .usage-chart-empty {
@@ -7054,6 +7076,8 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .usage-chart-crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
 .usage-chart-point { fill: var(--brand); stroke: var(--panel); stroke-width: 2; }
 .usage-chart-point.secondary { fill: var(--warning-fill); }
+.usage-chart-point.tertiary { fill: var(--success-fill); }
+.usage-chart-point.quaternary { fill: var(--reasoning); }
 .usage-chart-axis { margin-left: 48px; }
 
 @media (max-width: 640px) {
