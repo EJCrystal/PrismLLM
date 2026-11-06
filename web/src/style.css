@@ -7096,7 +7096,10 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.logs-table .log-col-channel .info-popover-trigger { min-width: 20px; min-height: 20px; padding: 0; border-radius: 999px; }
+/* 紧凑核验按钮仅用于桌面端，移动端保留 36px 触控尺寸。 */
+@media (min-width: 641px) {
+  .logs-table .log-col-channel .info-popover-trigger { min-width: 20px; min-height: 20px; padding: 0; border-radius: 999px; }
+}
 .logs-table .attempt-chip { padding: 1px 7px; font-size: 10px; }
 .logs-table .log-col-client-ip { width: 132px; }
 .logs-table .log-col-client-ua { width: 180px; }
