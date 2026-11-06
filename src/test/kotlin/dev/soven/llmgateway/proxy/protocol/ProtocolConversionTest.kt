@@ -418,9 +418,17 @@ class ProtocolConversionTest {
         val chat = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, compatible, "m")
         assertEquals("u1", chat["user"]!!.jsonPrimitive.content)
 
+        val withInclude = json("""{"model":"m","input":"hi","include":["reasoning.encrypted_content","message.output_tokens"]}""")
+        val chatWithInclude = ProtocolConversion.convertRequest(GatewayProtocol.RESPONSES, GatewayProtocol.CHAT_COMPLETIONS, withInclude, "m")
+        assertFalse(chatWithInclude.containsKey("include"))
+
+        val messagesWithExtensions = json("""{"model":"m","messages":[{"role":"user","content":"hi"}],"context_management":{"edits":[]},"output_config":{"format":{"type":"text"}}}""")
+        val chatFromMessages = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, messagesWithExtensions, "m")
+        assertFalse(chatFromMessages.containsKey("context_management"))
+        assertFalse(chatFromMessages.containsKey("output_config"))
+
         for ((body, field) in listOf(
             """{"model":"m","input":"hi","store":true}""" to "store",
-            """{"model":"m","input":"hi","include":["reasoning.encrypted_content"]}""" to "include",
             """{"model":"m","input":"hi","truncation":"auto"}""" to "truncation",
             """{"model":"m","input":"hi","metadata":{"trace":"x"}}""" to "metadata.trace",
         )) {
