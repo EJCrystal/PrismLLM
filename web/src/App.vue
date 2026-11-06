@@ -6,6 +6,7 @@ import Icon from './components/Icon.vue'
 import ToastStack from './components/ToastStack.vue'
 import LoginView from './components/LoginView.vue'
 import ChannelsView from './components/ChannelsView.vue'
+import OAuthAccountsView from './components/OAuthAccountsView.vue'
 import ClientKeysView from './components/ClientKeysView.vue'
 import LogsView from './components/LogsView.vue'
 import UsageReportsView from './components/UsageReportsView.vue'
@@ -16,6 +17,7 @@ import InfoPopover from './components/InfoPopover.vue'
 
 const navItems = [
   { id: 'channels', label: '渠道', icon: 'channels' },
+  { id: 'oauth-accounts', label: '订阅账号', icon: 'users' },
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
   { id: 'usage-reports', label: '用量报表', icon: 'chart' },
@@ -26,6 +28,10 @@ const meta = {
   channels: {
     title: '渠道',
     desc: '管理上游接入点，支持多协议组合。凭据加密保存，创建后不再回显。',
+  },
+  'oauth-accounts': {
+    title: '订阅账号',
+    desc: '把 ChatGPT / Antigravity 的 OAuth 账号绑定到渠道密钥，统一管理 token 刷新、账号滑动窗口与 429 冷却。refresh token 只在导入时提交一次。',
   },
   'client-keys': {
     title: '调用方密钥',
@@ -206,6 +212,7 @@ onBeforeUnmount(() => {
 
       <main class="content" :class="{ 'content-data': isDataView, 'logs-content': view === 'logs' }">
         <ChannelsView v-if="view === 'channels'" />
+        <OAuthAccountsView v-else-if="view === 'oauth-accounts'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
         <LogsView v-else-if="view === 'logs'" />
         <UsageReportsView v-else-if="view === 'usage-reports'" />

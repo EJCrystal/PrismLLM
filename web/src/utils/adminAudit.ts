@@ -16,6 +16,11 @@ const actionLabels: Record<string, string> = {
   'channel.delete': '删除渠道',
   'channel_key.auto_disable': '自动禁用上游密钥',
   'channel_key.auto_recover': '自动恢复上游密钥',
+  'oauth_account.import': '导入订阅账号',
+  'oauth_account.policy.update': '更新订阅账号调度策略',
+  'oauth_account.refresh': '刷新订阅账号 Token',
+  'oauth_account.quota.refresh': '读取订阅账号上游额度',
+  'oauth_account.cooldown.clear': '解除订阅账号冷却',
   'key_auto_disable_settings.update': '更新密钥自动禁用规则',
   'client_key.create': '创建调用方密钥',
   'client_key.update': '更新调用方密钥',
@@ -73,6 +78,12 @@ interface AuditDetails {
   errorCode?: string | null
   previousState?: string | null
   state?: string | null
+  provider?: string | null
+  proxyUrl?: string | null
+  result?: string | null
+  windowLimit?: number | null
+  windowSeconds?: number | null
+  maxConcurrentRequests?: number | null
   before?: KeyAutoDisableSettingsResponse | null
   after?: KeyAutoDisableSettingsResponse | null
 }
@@ -132,6 +143,39 @@ export function auditDetailsRows(entry: AuditEntry | null | undefined): AuditDet
       ['修改前', keyAutoDisableRuleLabel(details.before)],
       ['修改后', keyAutoDisableRuleLabel(details.after)],
     ]
+  }
+  if (entry?.action === 'oauth_account.import') {
+    return [
+      ['渠道 ID', displayDetail(details.channelId)],
+      ['密钥 ID', displayDetail(details.keyId)],
+      ['提供方', displayDetail(details.provider)],
+      ['账号代理', displayDetail(details.proxyUrl)],
+    ]
+  }
+  if (entry?.action === 'oauth_account.policy.update') {
+    return [
+      ['密钥 ID', displayDetail(details.keyId)],
+      ['窗口请求数', details.windowLimit == null ? '不限制' : details.windowLimit],
+      ['窗口时长（秒）', displayDetail(details.windowSeconds)],
+      ['单号最大并发', displayDetail(details.maxConcurrentRequests)],
+    ]
+  }
+  if (entry?.action === 'oauth_account.refresh') {
+    return [
+      ['密钥 ID', displayDetail(details.keyId)],
+      ['结果', details.result === 'success' ? '成功' : details.result === 'failed' ? '失败' : displayDetail(details.result)],
+      ['错误码', displayDetail(details.errorCode)],
+    ]
+  }
+  if (entry?.action === 'oauth_account.quota.refresh') {
+    return [
+      ['密钥 ID', displayDetail(details.keyId)],
+      ['结果', details.result === 'success' ? '成功' : details.result === 'failed' ? '失败' : displayDetail(details.result)],
+      ['错误码', displayDetail(details.errorCode)],
+    ]
+  }
+  if (entry?.action === 'oauth_account.cooldown.clear') {
+    return [['密钥 ID', displayDetail(details.keyId)]]
   }
   return []
 }

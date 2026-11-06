@@ -2331,6 +2331,82 @@ input[type="password"]::-ms-clear,
   background: color-mix(in srgb, var(--brand) 4%, var(--panel));
 }
 
+/* 订阅账号上游额度：窗口使用率进度条。 */
+.oauth-quota-cell {
+  min-width: 168px;
+}
+
+.quota-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quota-row + .quota-row {
+  margin-top: 4px;
+}
+
+.quota-label {
+  flex: 0 0 auto;
+  min-width: 42px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.quota-track {
+  flex: 1 1 auto;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(152, 162, 179, 0.24);
+  overflow: hidden;
+}
+
+.quota-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--success-fill);
+}
+
+.quota-fill.is-warning {
+  background: var(--warning-fill);
+}
+
+.quota-fill.is-danger {
+  background: var(--danger-fill);
+}
+
+.quota-value {
+  flex: 0 0 auto;
+  min-width: 34px;
+  text-align: right;
+}
+
+/* 订阅账号浏览器登录：登录链接与生成动作。 */
+.oauth-login-link {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  word-break: break-all;
+}
+
+.oauth-login-link a {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--brand);
+}
+
+.oauth-login-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.oauth-login-actions small {
+  color: var(--muted);
+}
+
 .actions-col {
   width: 1%;
   min-width: 58px;

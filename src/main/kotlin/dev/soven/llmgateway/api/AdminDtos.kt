@@ -14,6 +14,11 @@ import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.domain.ModelTestSettingsRecord
+import dev.soven.llmgateway.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.domain.OAuthAccountRecord
+import dev.soven.llmgateway.domain.OAuthAccountRuntimeState
+import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
+import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamRequestSettingsRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderCatalogSnapshot
@@ -1232,4 +1237,182 @@ fun ModelConnectivityTestResult.toResponse(
     errorMessage = errorMessage,
     usage = usage?.toTestResponse(),
     upstreamReportedModel = upstreamReportedModel,
+)
+
+/**
+ * 订阅账号导入/重新授权。refresh token 只在请求中出现一次，服务端加密后不再回显。
+ *
+ * @author 文杰
+ * @since 2026-11-06
+ */
+@Serializable
+data class OAuthAccountImportRequest(
+    val provider: String,
+    val refreshToken: String,
+    val accountEmail: String? = null,
+    val accountPlan: String? = null,
+    val proxyUrl: String? = null,
+    val accessToken: String? = null,
+    val accessTokenExpiresAt: Long? = null,
+    val tokenType: String? = null,
+    val scope: String? = null,
+)
+
+@Serializable
+data class OAuthLoginStartRequest(
+    val provider: String,
+    val channelId: String,
+    val keyId: String,
+    val proxyUrl: String? = null,
+)
+
+@Serializable
+data class OAuthLoginStartResponse(
+    val loginId: String,
+    val authorizeUrl: String,
+    val redirectUri: String,
+    val expiresAt: Long,
+)
+
+@Serializable
+data class OAuthLoginCompleteRequest(
+    /** 浏览器最终停留的回调地址；只需包含 code 与 state。 */
+    val callbackUrl: String,
+)
+
+@Serializable
+data class OAuthAccountPolicyRequest(
+    val windowLimit: Int? = null,
+    val windowSeconds: Int = 10_800,
+    val maxConcurrentRequests: Int = 1,
+)
+
+@Serializable
+data class OAuthAccountPolicyResponse(
+    val windowLimit: Int? = null,
+    val windowSeconds: Int,
+    val maxConcurrentRequests: Int,
+)
+
+@Serializable
+data class OAuthAccountRuntimeResponse(
+    val windowUsed: Int = 0,
+    val cooldownUntil: Long? = null,
+    val consecutiveRateLimits: Int = 0,
+    val activeRequests: Int = 0,
+    val quotaBlockedUntil: Long? = null,
+)
+
+@Serializable
+data class OAuthQuotaWindowResponse(
+    val usedPercent: Double,
+    val remainingPercent: Double,
+    val windowSeconds: Int? = null,
+    val resetsAt: Long? = null,
+)
+
+@Serializable
+data class OAuthQuotaResponse(
+    val primary: OAuthQuotaWindowResponse? = null,
+    val secondary: OAuthQuotaWindowResponse? = null,
+    val allowed: Boolean? = null,
+    val creditsBalance: Double? = null,
+    val creditsUnlimited: Boolean = false,
+    val resetCredits: Int? = null,
+    val checkedAt: Long,
+    val error: String? = null,
+)
+
+@Serializable
+data class OAuthAccountResponse(
+    val keyId: String,
+    val keyName: String,
+    val channelId: String,
+    val channelName: String,
+    val provider: String,
+    val accountEmail: String? = null,
+    val accountPlan: String? = null,
+    val authState: String,
+    val tokenType: String,
+    val scope: String? = null,
+    val accessTokenExpiresAt: Long? = null,
+    val lastRefreshedAt: Long? = null,
+    val refreshFailureCount: Int = 0,
+    val lastRefreshError: String? = null,
+    val proxyUrl: String? = null,
+    /** 上游账号 id；用于额度查询与多账号去重，不参与鉴权。 */
+    val chatgptAccountId: String? = null,
+    val quota: OAuthQuotaResponse? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val policy: OAuthAccountPolicyResponse,
+    val runtime: OAuthAccountRuntimeResponse,
+)
+
+@Serializable
+data class OAuthProviderResponse(
+    val id: String,
+    val label: String,
+    val configured: Boolean,
+    /** 是否支持从网关发起交互式登录；不支持时只能导入 refresh token。 */
+    val loginSupported: Boolean = false,
+)
+
+fun OAuthAccountPolicy.toResponse() = OAuthAccountPolicyResponse(
+    windowLimit = windowLimit,
+    windowSeconds = windowSeconds,
+    maxConcurrentRequests = maxConcurrentRequests,
+)
+
+fun OAuthQuotaWindow.toResponse() = OAuthQuotaWindowResponse(
+    usedPercent = usedPercent,
+    remainingPercent = remainingPercent,
+    windowSeconds = windowSeconds,
+    resetsAt = resetsAt,
+)
+
+fun OAuthQuotaSnapshot.toResponse() = OAuthQuotaResponse(
+    primary = primary?.toResponse(),
+    secondary = secondary?.toResponse(),
+    allowed = allowed,
+    creditsBalance = creditsBalance,
+    creditsUnlimited = creditsUnlimited,
+    resetCredits = resetCredits,
+    checkedAt = checkedAt,
+    error = error,
+)
+
+fun OAuthAccountRecord.toResponse(
+    channel: ChannelRecord,
+    key: ChannelKeyRecord,
+    policy: OAuthAccountPolicy,
+    runtime: OAuthAccountRuntimeState?,
+) = OAuthAccountResponse(
+    keyId = keyId,
+    keyName = key.name,
+    channelId = channel.id,
+    channelName = channel.name,
+    provider = provider.value,
+    accountEmail = accountEmail,
+    accountPlan = accountPlan,
+    authState = authState.value,
+    tokenType = tokenType,
+    scope = scope,
+    accessTokenExpiresAt = accessTokenExpiresAt,
+    lastRefreshedAt = lastRefreshedAt,
+    refreshFailureCount = refreshFailureCount,
+    lastRefreshError = lastRefreshError,
+    proxyUrl = proxyUrl,
+    chatgptAccountId = chatgptAccountId,
+    quota = quota?.toResponse(),
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+    policy = policy.toResponse(),
+    runtime = OAuthAccountRuntimeResponse(
+        windowUsed = runtime?.windowUsed ?: 0,
+        cooldownUntil = runtime?.cooldownUntil,
+        consecutiveRateLimits = runtime?.consecutiveRateLimits ?: 0,
+        activeRequests = runtime?.activeRequests ?: 0,
+        quotaBlockedUntil = runtime?.quotaBlockedUntil,
+    ),
 )

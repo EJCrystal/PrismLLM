@@ -2,6 +2,7 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.ChannelKeyModels
 import dev.soven.llmgateway.db.ChannelKeyHealth
+import dev.soven.llmgateway.db.ChannelKeyOAuthAccounts
 import dev.soven.llmgateway.db.ChannelKeyRateLimits
 import dev.soven.llmgateway.db.ChannelKeyQuotaSettings
 import dev.soven.llmgateway.db.ChannelKeys
@@ -13,6 +14,7 @@ import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import kotlinx.serialization.json.Json
 import dev.soven.llmgateway.resilience.ChannelKeyState
@@ -496,6 +498,16 @@ internal fun loadChannelKeysInTransaction(
     val quotasByKey = ChannelKeyQuotaSettings.selectAll()
         .where { ChannelKeyQuotaSettings.keyId inList keyRows.map { it[ChannelKeys.id] } }
         .associateBy { it[ChannelKeyQuotaSettings.keyId] }
+    // 只有订阅账号会出现在这里；普通静态密钥不加载调度策略。
+    val oauthPoliciesByKey = ChannelKeyOAuthAccounts.selectAll()
+        .where { ChannelKeyOAuthAccounts.keyId inList keyRows.map { it[ChannelKeys.id] } }
+        .associate { row ->
+            row[ChannelKeyOAuthAccounts.keyId] to OAuthAccountPolicy(
+                windowLimit = row[ChannelKeyOAuthAccounts.windowLimit],
+                windowSeconds = row[ChannelKeyOAuthAccounts.windowSeconds],
+                maxConcurrentRequests = row[ChannelKeyOAuthAccounts.maxConcurrentRequests],
+            )
+        }
     return keyRows.groupBy { it[ChannelKeys.channelId] }.mapValues { (_, rows) ->
         rows.map { row ->
             val quotaRow = quotasByKey[row[ChannelKeys.id]]
@@ -524,6 +536,7 @@ internal fun loadChannelKeysInTransaction(
                         EncryptedCredential(ciphertext, entry[ChannelKeyQuotaSettings.credentialNonce], entry[ChannelKeyQuotaSettings.credentialKeyVersion])
                     }
                 },
+                oauthPolicy = oauthPoliciesByKey[row[ChannelKeys.id]],
             )
         }
     }

@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.plugin.quota
 
 import dev.soven.llmgateway.domain.*
+import dev.soven.llmgateway.oauth.KeyCredentialResolver
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.spi.quota.*
@@ -15,6 +16,9 @@ import kotlin.test.*
 
 class ChannelQuotaServiceTest {
     private val cipher = CredentialCipher(ByteArray(32) { 7 })
+    private val credentials = KeyCredentialResolver { key ->
+        cipher.decrypt(key.credentialCiphertext, key.credentialNonce)
+    }
 
     @Test
     fun queriesSharedBalanceOnceAndExpiresOrInvalidatesCache() = runBlocking {
@@ -482,7 +486,7 @@ class ChannelQuotaServiceTest {
     private suspend fun withService(provider: ChannelQuotaProvider, now: () -> Long = System::currentTimeMillis,
         timeoutMs: Long = 45_000, action: suspend (ChannelQuotaService) -> Unit) {
         ChannelQuotaProviderRegistry(builtIns = listOf(provider)).use { registry ->
-            ChannelQuotaService(registry, cipher, now, timeoutMs).use { action(it) }
+            ChannelQuotaService(registry, cipher, credentials, now, timeoutMs).use { action(it) }
         }
     }
 }

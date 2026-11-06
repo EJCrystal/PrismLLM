@@ -9,6 +9,13 @@ import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.authTypeFor
+import dev.soven.llmgateway.oauth.OAuthAccountDecision
+import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
+import dev.soven.llmgateway.oauth.OAuthAccountLease
+import dev.soven.llmgateway.oauth.OAuthTokenUnavailableException
+import dev.soven.llmgateway.oauth.OAuthUnavailableReason
+import dev.soven.llmgateway.oauth.parseCodexQuotaHeaders
+import dev.soven.llmgateway.oauth.parseRateLimitResetMs
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
 import dev.soven.llmgateway.proxy.upstreamRequestUrl
 import dev.soven.llmgateway.proxy.BillingCalculator
@@ -250,8 +257,8 @@ private suspend fun handleProxy(
 
         phase = FailureStage.UPSTREAM
 
-        /** 记录候选在路由阶段因冷却被跳过的事件，保持与实际上游尝试的相对顺序。 */
-        fun markSkipped(candidate: RouteCandidate) {
+        /** 记录候选在路由阶段被跳过的事件，保持与实际上游尝试的相对顺序。 */
+        fun markSkipped(candidate: RouteCandidate, reason: String) {
             if (skippedEvents.containsKey(candidate)) return
             val event = UpstreamAttemptRecord(
                 index = 0,
@@ -267,14 +274,42 @@ private suspend fun handleProxy(
                 },
                 elapsedMs = 0,
                 skipped = true,
-                skipReason = "cooldown",
+                skipReason = reason,
             )
             attemptEvents += event
             skippedEvents[candidate] = event
         }
 
-        // 先按冷却分拣：可尝试的候选进同档轮询，冷却中的保序作为 fail-open 兜底，
+        var lastError: GatewayException? = null
+        var conversionError: ProtocolConversionException? = null
+        var retryFrom: String? = null
+        var retryReason: String? = null
+        var rateLimitRetryAfterMs: Long? = null
+        var rateLimitReason: ChannelKeyRateLimitReason? = null
+        var oauthRateLimitReason: OAuthAccountDenyReason? = null
+        val rateLimitedCandidates = mutableSetOf<RouteCandidate>()
+        fun rememberRateLimitDenial(candidate: RouteCandidate, decision: ChannelKeyRateLimitDecision.Denied) {
+            rateLimitedCandidates += candidate
+            val current = rateLimitRetryAfterMs
+            if (current == null || decision.retryAfterMs < current) {
+                rateLimitRetryAfterMs = decision.retryAfterMs
+                rateLimitReason = decision.reason
+                oauthRateLimitReason = null
+            }
+        }
+        fun rememberRateLimitDenial(candidate: RouteCandidate, decision: OAuthAccountDecision.Denied) {
+            rateLimitedCandidates += candidate
+            val current = rateLimitRetryAfterMs
+            if (current == null || decision.retryAfterMs < current) {
+                rateLimitRetryAfterMs = decision.retryAfterMs
+                oauthRateLimitReason = decision.reason
+                rateLimitReason = null
+            }
+        }
+
+        // 先按冷却与账号级调度分拣：可尝试的候选进同档轮询，冷却中的保序作为 fail-open 兜底，
         // 轮询份额只在可尝试候选间分摊，不被冷却候选扭曲。
+        // 账号级窗口/并发/冷却属于硬限制，不进入 fail-open。
         val eligibleNative = mutableListOf<RouteCandidate>()
         val eligibleConversion = mutableListOf<RouteCandidate>()
         val blocked = mutableListOf<RouteCandidate>()
@@ -282,8 +317,17 @@ private suspend fun handleProxy(
             if (app.candidateCooldown.isBlocked(candidate.channel.id, candidate.key.id, candidate.upstreamModel)) {
                 app.metrics.upstreamCooldownSkipped(candidate.channel.name)
                 blocked.add(candidate)
-                markSkipped(candidate)
-            } else if (protocol in candidate.channel.protocols) {
+                markSkipped(candidate, "cooldown")
+                continue
+            }
+            val oauthDenial = app.oauthAccountScheduler.check(candidate.key)
+            if (oauthDenial != null) {
+                app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, oauthDenial.reason.metricValue)
+                rememberRateLimitDenial(candidate, oauthDenial)
+                markSkipped(candidate, oauthDenial.reason.metricValue)
+                continue
+            }
+            if (protocol in candidate.channel.protocols) {
                 eligibleNative.add(candidate)
             } else {
                 eligibleConversion.add(candidate)
@@ -295,23 +339,14 @@ private suspend fun handleProxy(
             ?.takeIf { it.isNotBlank() }
             ?: call.request.headers["X-Prompt-Cache-Key"]?.takeIf { it.isNotBlank() }
         // 每个 scope 每请求只推进一次轮询计数，避免同档两渠道时起点固定；提供 prompt_cache_key 时同档按亲和性路由。
-        val ordered = app.tierSharing.order(alias, eligibleNative, promptCacheKey) +
-            app.tierSharing.order("$alias|conversion", eligibleConversion, promptCacheKey)
-        var lastError: GatewayException? = null
-        var conversionError: ProtocolConversionException? = null
-        var retryFrom: String? = null
-        var retryReason: String? = null
-        var rateLimitRetryAfterMs: Long? = null
-        var rateLimitReason: ChannelKeyRateLimitReason? = null
-        val rateLimitedCandidates = mutableSetOf<RouteCandidate>()
-        fun rememberRateLimitDenial(candidate: RouteCandidate, decision: ChannelKeyRateLimitDecision.Denied) {
-            rateLimitedCandidates += candidate
-            val current = rateLimitRetryAfterMs
-            if (current == null || decision.retryAfterMs < current) {
-                rateLimitRetryAfterMs = decision.retryAfterMs
-                rateLimitReason = decision.reason
-            }
-        }
+        // 订阅账号可再按 drain / least_used / pace 重排，但亲和优先，避免打散 prompt cache。
+        val ordered = app.oauthAccountRouting.order(
+            app.tierSharing.order(alias, eligibleNative, promptCacheKey),
+            affinityApplied = promptCacheKey != null,
+        ) + app.oauthAccountRouting.order(
+            app.tierSharing.order("$alias|conversion", eligibleConversion, promptCacheKey),
+            affinityApplied = promptCacheKey != null,
+        )
 
         /**
          * 尝试单个候选并把结果记入冷却。返回 null 表示响应已完成，返回异常交由外层决定是否继续。
@@ -320,6 +355,7 @@ private suspend fun handleProxy(
             candidate: RouteCandidate,
             permit: CooldownPermit,
             rateLimitLease: ChannelKeyRateLimitLease?,
+            oauthLease: OAuthAccountLease?,
         ): GatewayException? = try {
             val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
             if (remainingMs <= 0) {
@@ -448,6 +484,7 @@ private suspend fun handleProxy(
                 recordAttempt(state.statusCode, null, state.committed, state.errorCode)
                 if (state.errorCode == null) {
                     app.candidateCooldown.recordSuccess(permit)
+                    app.oauthAccountScheduler.recordSuccess(candidate.key.id)
                     recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed)
                 } else {
                     // 首 token 之后才出现的流异常不算凭据失效，只进入渠道冷却。
@@ -477,6 +514,13 @@ private suspend fun handleProxy(
                     throw cancelled
                 }
                 app.metrics.upstreamError(candidate.channel.name, e.code)
+                if (e.upstreamStatus == 429) {
+                    // 账号级 429 冷却：优先使用 Retry-After，其次解析响应体里的重置时间。
+                    app.oauthAccountScheduler.recordRateLimited(
+                        candidate.key,
+                        e.retryAfterMs ?: parseRateLimitResetMs(e.upstreamErrorBody),
+                    )
+                }
                 val kind = classifyFailure(e)
                 if (kind == null) {
                     app.candidateCooldown.release(permit)
@@ -568,7 +612,11 @@ private suspend fun handleProxy(
                 throw e
             }
         } finally {
-            app.channelKeyRateLimiter.release(rateLimitLease)
+            try {
+                app.channelKeyRateLimiter.release(rateLimitLease)
+            } finally {
+                app.oauthAccountScheduler.release(oauthLease)
+            }
         }
 
         var index = 0
@@ -578,7 +626,7 @@ private suspend fun handleProxy(
             if (permit == null) {
                 app.metrics.upstreamCooldownSkipped(candidate.channel.name)
                 blocked.add(candidate)
-                markSkipped(candidate)
+                markSkipped(candidate, "cooldown")
                 index++
                 continue
             }
@@ -590,8 +638,23 @@ private suspend fun handleProxy(
                 rememberRateLimitDenial(candidate, rateDecision)
                 continue
             }
+            val rateLimitLease = (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease
+            val oauthDecision = app.oauthAccountScheduler.acquire(candidate.key)
+            if (oauthDecision is OAuthAccountDecision.Denied) {
+                // 账号级限制是硬限制：归还本地并发额度，但不把候选放进 fail-open 重试。
+                app.channelKeyRateLimiter.release(rateLimitLease)
+                app.candidateCooldown.release(permit)
+                app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, oauthDecision.reason.metricValue)
+                rememberRateLimitDenial(candidate, oauthDecision)
+                continue
+            }
             val error = app.upstreamOccupancy.track(candidate.channel.id, candidate.key.id) {
-                runAttempt(candidate, permit, (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease)
+                runAttempt(
+                    candidate,
+                    permit,
+                    rateLimitLease,
+                    (oauthDecision as OAuthAccountDecision.Allowed).lease,
+                )
             }
             if (error == null) return
             if (error.code != "no_candidate") lastError = error
@@ -614,8 +677,22 @@ private suspend fun handleProxy(
                 rememberRateLimitDenial(candidate, rateDecision)
                 continue
             }
+            val rateLimitLease = (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease
+            val oauthDecision = app.oauthAccountScheduler.acquire(candidate.key)
+            if (oauthDecision is OAuthAccountDecision.Denied) {
+                app.channelKeyRateLimiter.release(rateLimitLease)
+                app.candidateCooldown.release(permit)
+                app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, oauthDecision.reason.metricValue)
+                rememberRateLimitDenial(candidate, oauthDecision)
+                continue
+            }
             val error = app.upstreamOccupancy.track(candidate.channel.id, candidate.key.id) {
-                runAttempt(candidate, permit, (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease)
+                runAttempt(
+                    candidate,
+                    permit,
+                    rateLimitLease,
+                    (oauthDecision as OAuthAccountDecision.Allowed).lease,
+                )
             }
             if (error == null) return
             if (error.code != "no_candidate") lastError = error
@@ -629,11 +706,15 @@ private suspend fun handleProxy(
             rateLimitRetryAfterMs != null &&
             rateLimitedCandidates.containsAll(candidates)
         ) {
+            val oauthReason = oauthRateLimitReason
             throw GatewayException(
                 HttpStatusCode.TooManyRequests,
-                "upstream_key_rate_limit_exceeded",
-                when (rateLimitReason) {
-                    ChannelKeyRateLimitReason.CONCURRENCY -> "上游密钥分组并发请求数已达上限"
+                if (oauthReason != null) "subscription_account_rate_limited" else "upstream_key_rate_limit_exceeded",
+                when {
+                    oauthReason == OAuthAccountDenyReason.WINDOW -> "订阅账号请求窗口已用尽"
+                    oauthReason == OAuthAccountDenyReason.CONCURRENCY -> "订阅账号并发请求数已达上限"
+                    oauthReason == OAuthAccountDenyReason.COOLDOWN -> "订阅账号触发上游限流，冷却中"
+                    rateLimitReason == ChannelKeyRateLimitReason.CONCURRENCY -> "上游密钥分组并发请求数已达上限"
                     else -> "上游密钥分组每分钟请求数已达上限"
                 },
                 "rate_limit_error",
@@ -860,6 +941,10 @@ private class CandidateUnavailableException : RuntimeException(null, null, false
  */
 private fun classifyFailure(e: GatewayException): FailureKind? = when (e.code) {
     "upstream_unreachable", "upstream_empty_stream", "upstream_timeout", "stream_interrupted" -> FailureKind.TRANSPORT
+    // 订阅账号需要重新授权：长冷却按密钥记键，修复靠管理员重新导入。
+    "subscription_account_unavailable" -> FailureKind.AUTH_REJECTED
+    // token 刷新失败：短冷却按密钥记键，不影响同渠道其他账号。
+    "subscription_account_refresh_failed" -> FailureKind.CREDENTIAL_TRANSIENT
     "upstream_error" -> when (e.upstreamStatus) {
         429 -> FailureKind.RATE_LIMITED
         401, 403 -> FailureKind.AUTH_REJECTED
@@ -1079,6 +1164,10 @@ private suspend fun proxyStream(
                 setBody(TextContent(body, ContentType.Application.Json))
             }.execute { response ->
                 state.upstreamStatus = response.status.value
+                app.oauthAccountScheduler.noteQuotaHeaders(
+                    candidate.key,
+                    parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
+                )
                 if (!response.status.isSuccess()) {
                     throw upstreamException(
                         response.status,
@@ -1297,6 +1386,10 @@ private suspend fun proxyJson(
                 setBody(TextContent(body, ContentType.Application.Json))
             }
             state.upstreamStatus = response.status.value
+            app.oauthAccountScheduler.noteQuotaHeaders(
+                candidate.key,
+                parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
+            )
             val text = response.bodyAsText()
             if (!response.status.isSuccess()) {
                 throw upstreamException(
@@ -1357,9 +1450,27 @@ private fun protocolNotSupported(alias: String, protocol: GatewayProtocol): Gate
         "invalid_request_error",
     )
 
-private fun decryptCredential(app: GatewayApplication, candidate: RouteCandidate): String = runCatching {
-    app.credentialCipher.decrypt(candidate.key.credentialCiphertext, candidate.key.credentialNonce)
-}.getOrElse {
+/**
+ * 数据面凭据解析：OAuth 账号取 access token，普通密钥解密静态凭据。
+ * 账号不可用按可切换错误处理，让路由继续尝试其他候选，绝不回退到 refresh token。
+ */
+private suspend fun decryptCredential(app: GatewayApplication, candidate: RouteCandidate): String = try {
+    app.oauthTokenService.resolveCredential(candidate.key)
+} catch (cause: CancellationException) {
+    throw cause
+} catch (cause: OAuthTokenUnavailableException) {
+    throw GatewayException(
+        HttpStatusCode.BadGateway,
+        when (cause.reason) {
+            OAuthUnavailableReason.REFRESH_FAILED -> "subscription_account_refresh_failed"
+            else -> "subscription_account_unavailable"
+        },
+        cause.message ?: "订阅账号不可用",
+        "api_error",
+        retryable = true,
+    )
+} catch (cause: Throwable) {
+    if (cause is VirtualMachineError) throw cause
     throw GatewayException(
         HttpStatusCode.BadGateway,
         "upstream_credential_invalid",

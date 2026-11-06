@@ -1,14 +1,17 @@
 package dev.soven.llmgateway.plugin.quota
 
 import com.google.common.cache.CacheBuilder
+import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.domain.ChannelQuotaCredentialSource
+import dev.soven.llmgateway.oauth.KeyCredentialResolver
 import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider
 import dev.soven.llmgateway.spi.quota.ChannelQuotaQuery
 import dev.soven.llmgateway.spi.quota.ChannelQuotaResult
 import dev.soven.llmgateway.spi.quota.ChannelQuotaStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -28,6 +31,7 @@ import kotlin.coroutines.resume
 class ChannelQuotaService(
     private val registry: ChannelQuotaProviderRegistry,
     private val cipher: CredentialCipher,
+    private val credentials: KeyCredentialResolver,
     private val now: () -> Long = System::currentTimeMillis,
     private val timeoutMs: Long = 45_000,
 ) : AutoCloseable {
@@ -94,11 +98,29 @@ class ChannelQuotaService(
         attribution: AtomicReference<QueryAttribution>,
         specificKey: Boolean,
         cacheable: AtomicBoolean,
-    ): ChannelQuotaSnapshot =
-        suspendCancellableCoroutine { continuation ->
+    ): ChannelQuotaSnapshot {
+        // 凭据解析可能触发订阅账号刷新，必须在挂起上下文完成；阻塞线程只消费解析结果。
+        val eligibleKeys = if (channel.quota.credentialSource == ChannelQuotaCredentialSource.DEDICATED) {
+            emptyList()
+        } else {
+            quotaKeys(channel, specificKey)
+        }
+        val resolvedKeys = eligibleKeys.mapNotNull { key ->
+            try {
+                key to credentials.resolveCredential(key)
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: VirtualMachineError) {
+                throw cause
+            } catch (cause: Throwable) {
+                // 单个账号不可用时跳过，其他账号仍可查询。
+                null
+            }
+        }
+        return suspendCancellableCoroutine { continuation ->
             val task = FutureTask {
                 val result = try {
-                    queryWithCredential(channel, provider, attribution, specificKey)
+                    queryWithCredential(channel, provider, attribution, eligibleKeys.size, resolvedKeys)
                 } catch (cause: Throwable) {
                     // 插件异常可能包含凭据或完整上游响应，不返回也不记录其文本。
                     if (cause is VirtualMachineError) throw cause
@@ -114,12 +136,20 @@ class ChannelQuotaService(
                 continuation.resume(snapshot(channel, "ERROR", "额度查询繁忙，请稍后重试"))
             }
         }
+    }
+
+    private fun quotaKeys(channel: ChannelRecord, specificKey: Boolean): List<ChannelKeyRecord> =
+        // 明确选中的密钥可查询停用账户的余额，且不得切换到另一个账户。
+        channel.keys.filter { it.credentialSet && (specificKey || it.isRoutable(now())) }
+            .sortedWith(compareBy({ it.priority }, { it.name }, { it.id }))
+            .take(if (specificKey) 1 else 2)
 
     private fun queryWithCredential(
         channel: ChannelRecord,
         provider: ChannelQuotaProvider,
         attribution: AtomicReference<QueryAttribution>,
-        specificKey: Boolean,
+        eligibleKeyCount: Int,
+        resolvedKeys: List<Pair<ChannelKeyRecord, String>>,
     ): ChannelQuotaSnapshot {
         val secrets = mutableListOf<String>()
         fun query(credential: String): ChannelQuotaResult = provider.query(ChannelQuotaQuery(
@@ -138,14 +168,11 @@ class ChannelQuotaService(
             attribution.set(QueryAttribution(ChannelQuotaCredentialSource.DEDICATED))
             query(credential)
         } else {
-            // 明确选中的密钥可查询停用账户的余额，且不得切换到另一个账户。
-            val keys = channel.keys.filter { it.credentialSet && (specificKey || it.isRoutable(now())) }
-                .sortedWith(compareBy({ it.priority }, { it.name }, { it.id })).take(if (specificKey) 1 else 2)
-            if (keys.isEmpty()) return snapshot(channel, "ERROR", "没有可用于额度查询的启用密钥")
+            if (eligibleKeyCount == 0) return snapshot(channel, "ERROR", "没有可用于额度查询的启用密钥")
+            if (resolvedKeys.isEmpty()) return snapshot(channel, "ERROR", "密钥凭据暂不可用，无法查询额度")
             var result: ChannelQuotaResult? = null
-            for (key in keys) {
+            for ((key, credential) in resolvedKeys) {
                 if (Thread.currentThread().isInterrupted) throw InterruptedException("quota query cancelled")
-                val credential = cipher.decrypt(key.credentialCiphertext, key.credentialNonce)
                 secrets += credential
                 val keyRef = ChannelQuotaKeyRef(key.id, safeText(key.name, secrets, 120) ?: "未命名密钥")
                 attribution.updateAndGet { QueryAttribution(ChannelQuotaCredentialSource.CHANNEL_KEY, it.keys + keyRef) }

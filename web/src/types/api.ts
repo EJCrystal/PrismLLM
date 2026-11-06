@@ -664,3 +664,104 @@ export interface UsageReportQuery {
   protocol?: string | null
   timezoneOffsetMinutes?: number
 }
+
+export interface OAuthProviderInfo {
+  id: string
+  label: string
+  configured: boolean
+  loginSupported: boolean
+}
+
+export interface OAuthAccountPolicy {
+  windowLimit: number | null
+  windowSeconds: number
+  maxConcurrentRequests: number
+}
+
+export interface OAuthAccountRuntime {
+  windowUsed: number
+  cooldownUntil: number | null
+  consecutiveRateLimits: number
+  activeRequests: number
+  quotaBlockedUntil: number | null
+}
+
+export interface OAuthQuotaWindow {
+  usedPercent: number
+  remainingPercent: number
+  windowSeconds: number | null
+  resetsAt: number | null
+}
+
+export interface OAuthQuota {
+  primary: OAuthQuotaWindow | null
+  secondary: OAuthQuotaWindow | null
+  allowed: boolean | null
+  creditsBalance: number | null
+  creditsUnlimited: boolean
+  resetCredits: number | null
+  checkedAt: number
+  error: string | null
+}
+
+export type OAuthAuthState = 'ACTIVE' | 'REAUTH_REQUIRED'
+
+export interface OAuthAccount {
+  keyId: string
+  keyName: string
+  channelId: string
+  channelName: string
+  provider: string
+  accountEmail: string | null
+  accountPlan: string | null
+  authState: OAuthAuthState
+  tokenType: string
+  scope: string | null
+  accessTokenExpiresAt: number | null
+  lastRefreshedAt: number | null
+  refreshFailureCount: number
+  lastRefreshError: string | null
+  proxyUrl: string | null
+  chatgptAccountId: string | null
+  quota: OAuthQuota | null
+  createdAt: number
+  updatedAt: number
+  policy: OAuthAccountPolicy
+  runtime: OAuthAccountRuntime
+}
+
+export interface OAuthLoginStartRequest {
+  provider: string
+  channelId: string
+  keyId: string
+  proxyUrl?: string | null
+}
+
+export interface OAuthLoginStart {
+  loginId: string
+  authorizeUrl: string
+  redirectUri: string
+  expiresAt: number
+}
+
+export interface OAuthLoginCompleteRequest {
+  callbackUrl: string
+}
+
+export interface OAuthAccountImportRequest {
+  provider: string
+  refreshToken: string
+  accountEmail?: string | null
+  accountPlan?: string | null
+  proxyUrl?: string | null
+  accessToken?: string | null
+  accessTokenExpiresAt?: number | null
+  tokenType?: string | null
+  scope?: string | null
+}
+
+export interface OAuthAccountPolicyRequest {
+  windowLimit?: number | null
+  windowSeconds?: number
+  maxConcurrentRequests?: number
+}

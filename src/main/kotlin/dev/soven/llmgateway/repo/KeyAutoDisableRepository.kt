@@ -208,6 +208,14 @@ class KeyAutoDisableRepository(
         }
     }
 
+    /**
+     * 管理员替换密钥凭据后重置健康计数。只清计数，不改启停状态：
+     * 自动停用的密钥仍需管理员显式恢复，人工停用的密钥不应被重新授权悄悄启用。
+     */
+    suspend fun resetKeyHealth(keyId: String): Boolean = suspendTransaction(database) {
+        ChannelKeyHealth.deleteWhere { ChannelKeyHealth.keyId eq keyId } > 0
+    }
+
     suspend fun recordOutcome(
         key: ChannelKeyRecord,
         signal: KeyAttemptSignal,

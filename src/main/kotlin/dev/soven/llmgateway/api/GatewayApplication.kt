@@ -22,7 +22,17 @@ import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
 import dev.soven.llmgateway.repo.CooldownStateRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
 import dev.soven.llmgateway.repo.RetentionSettingsRepository
+import dev.soven.llmgateway.oauth.OAuthAccountRouting
+import dev.soven.llmgateway.oauth.OAuthAccountScheduler
+import dev.soven.llmgateway.oauth.OAuthLoginService
+import dev.soven.llmgateway.oauth.OAuthQuotaService
+import dev.soven.llmgateway.oauth.OAuthTokenProviderRegistry
+import dev.soven.llmgateway.oauth.OAuthTokenService
+import dev.soven.llmgateway.oauth.OAuthWindowStateWriter
+import dev.soven.llmgateway.oauth.buildOAuthTokenProviders
 import dev.soven.llmgateway.repo.ModelTestSettingsRepository
+import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.repo.OAuthWindowRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
@@ -303,9 +313,41 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         autoRefreshEnabled = config.upstreamHeaderRefreshEnabled,
         manifestUrl = config.upstreamHeaderCatalogUrl,
     )
+    /** 订阅账号 access token 解析与后台轮换；未配置任何 Provider 时后台任务不扫描。 */
+    val oauthAccountRepository = OAuthAccountRepository(databaseFactory.database)
+    val oauthTokenProviders = OAuthTokenProviderRegistry(buildOAuthTokenProviders(config.oauth))
+    val oauthTokenService = OAuthTokenService(oauthAccountRepository, credentialCipher, oauthTokenProviders, config.oauth)
+    /** 交互式 OAuth 登录：PKCE 会话只保存在内存，单次使用。 */
+    val oauthLoginService = OAuthLoginService(
+        oauthAccountRepository,
+        channelRepository,
+        credentialCipher,
+        config.oauth,
+    )
     /** 额度插件仅在管理面查询阶段使用，不参与请求转发。 */
     val channelQuotaProviderRegistry = ChannelQuotaProviderRegistry(config.quotaPluginDir)
-    val channelQuotaService = ChannelQuotaService(channelQuotaProviderRegistry, credentialCipher)
+    val channelQuotaService = ChannelQuotaService(channelQuotaProviderRegistry, credentialCipher, oauthTokenService)
+    /** 订阅账号级调度：账号级滑动窗口、单号并发与 429 冷却。内存态权威，快照异步落库。 */
+    val oauthWindowRepository = OAuthWindowRepository(databaseFactory.database)
+    val oauthWindowStateWriter = OAuthWindowStateWriter(oauthWindowRepository, scope)
+    val oauthAccountScheduler = OAuthAccountScheduler(
+        defaultCooldownMs = config.oauth.rateLimitDefaultMs,
+        maxCooldownMs = config.oauth.rateLimitMaxMs,
+        quotaMaxAgeMs = config.oauth.quotaMaxAgeMs,
+        onSnapshot = oauthWindowStateWriter::submit,
+    )
+    /** 订阅账号在候选池内的排序策略；只重排同一渠道同一优先级内的账号。 */
+    val oauthAccountRouting = OAuthAccountRouting(
+        strategy = config.oauth.routing,
+        hints = oauthAccountScheduler::routingHints,
+    )
+    /** 上游额度观测：定时读取 ChatGPT 用量，同步给调度器做额度准入。 */
+    val oauthQuotaService = OAuthQuotaService(
+        repository = oauthAccountRepository,
+        tokenService = oauthTokenService,
+        config = config.oauth,
+        onQuota = oauthAccountScheduler::noteQuota,
+    )
 
     fun install(app: Application) {
         databaseFactory.migrate()
@@ -314,6 +356,13 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         runBlocking { upstreamHeaderCatalogService.initialize() }
         runBlocking { seedAdmin() }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
+        runBlocking { oauthAccountScheduler.restore(oauthWindowRepository.loadAll()) }
+        runBlocking {
+            // 上次运行留下的额度读数立即恢复，重启后不必等第一轮扫描才能拦截已用尽账号。
+            oauthAccountRepository.listAll().forEach { account ->
+                account.quota?.let { oauthAccountScheduler.noteQuota(account.keyId, it) }
+            }
+        }
         runBlocking {
             val storedCleanupEnabled = retentionSettingsRepository.loadCleanupEnabled()
             if (storedCleanupEnabled != null) {
@@ -483,6 +532,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         modelPriceReferenceService.start(scope)
         if (config.upstreamHeaderRefreshEnabled) upstreamHeaderCatalogService.start(scope)
         startKeyAutoRecovery()
+        oauthTokenService.start(scope)
+        oauthQuotaService.start(scope)
         runBlocking { syncLogRetentionJob() }
     }
 
@@ -550,9 +601,15 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         shuttingDown.set(true)
         runBlocking { requestLogWriter.closeAndDrain(5_000) }
         runBlocking { cooldownStateWriter.closeAndDrain(1_000) }
+        runBlocking {
+            oauthAccountScheduler.flushSnapshots()
+            oauthWindowStateWriter.closeAndDrain(2_000)
+        }
         runBlocking { logRetentionJob.getAndSet(null)?.cancelAndJoin() }
         runBlocking { keyAutoRecoveryJob.getAndSet(null)?.cancelAndJoin() }
         runBlocking { channelHealthIndexJob?.cancelAndJoin() }
+        oauthQuotaService.close()
+        oauthTokenService.close()
         scope.cancel()
         httpClient.close()
         channelQuotaService.close()

@@ -206,6 +206,16 @@ export interface AttemptDisplayInput {
 
 const SKIP_REASON_LABELS: Record<string, string> = {
   cooldown: '冷却中',
+  oauth_window: '订阅账号窗口已用尽',
+  oauth_concurrency: '订阅账号并发已满',
+  oauth_cooldown: '订阅账号限流冷却中',
+}
+
+const SKIP_REASON_RESULT_LABELS: Record<string, string> = {
+  cooldown: '冷却',
+  oauth_window: '订阅账号窗口已用尽',
+  oauth_concurrency: '订阅账号并发已满',
+  oauth_cooldown: '订阅账号限流冷却中',
 }
 
 export function skipReasonLabel(value: string | null | undefined): string {
@@ -221,7 +231,10 @@ export function attemptHasError(attempt: AttemptDisplayInput | null | undefined)
 
 export function attemptResultLabel(attempt: AttemptDisplayInput | null | undefined, hasFollowingAttempt = false): string {
   if (!attempt) return '—'
-  if (attempt.skipped) return attempt.skipReason === 'cooldown' ? '跳过（冷却）' : '路由跳过'
+  if (attempt.skipped) {
+    const label = SKIP_REASON_RESULT_LABELS[String(attempt.skipReason ?? '').trim()]
+    return label ? `跳过（${label}）` : '路由跳过'
+  }
   if (attempt.errorCode === 'client_disconnect') return '客户端断开'
   if (attempt.errorCode === 'client_cancelled') return '客户端取消'
   // 缺少状态码只说明没收到响应：连接失败与超时前都已发出请求，不能一律判为未到达上游。

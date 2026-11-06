@@ -15,7 +15,43 @@ describe('adminAudit: 管理操作审计展示', () => {
     assert.equal(auditActionLabel('model_price.batch'), '批量套用模型单价')
     assert.equal(auditActionLabel('model_default_price.create'), '创建模型默认价')
     assert.equal(auditActionLabel('request_log.retention.update'), '更新请求日志保留策略')
+    assert.equal(auditActionLabel('oauth_account.import'), '导入订阅账号')
+    assert.equal(auditActionLabel('oauth_account.refresh'), '刷新订阅账号 Token')
+    assert.equal(auditActionLabel('oauth_account.quota.refresh'), '读取订阅账号上游额度')
     assert.equal(auditActionLabel('future.action'), 'future.action')
+  })
+
+  it('展示订阅账号操作的关键参数', () => {
+    assert.deepEqual(
+      auditDetailsRows({
+        action: 'oauth_account.import',
+        details: { channelId: 'c1', keyId: 'k1', provider: 'chatgpt', proxyUrl: 'http://127.0.0.1:8080' },
+      }),
+      [['渠道 ID', 'c1'], ['密钥 ID', 'k1'], ['提供方', 'chatgpt'], ['账号代理', 'http://127.0.0.1:8080']],
+    )
+    assert.deepEqual(
+      auditDetailsRows({ action: 'oauth_account.import', details: { channelId: 'c1', keyId: 'k1', provider: 'chatgpt' } }),
+      [['渠道 ID', 'c1'], ['密钥 ID', 'k1'], ['提供方', 'chatgpt'], ['账号代理', '—']],
+    )
+    assert.deepEqual(
+      auditDetailsRows({
+        action: 'oauth_account.policy.update',
+        details: { keyId: 'k1', windowLimit: null, windowSeconds: 10_800, maxConcurrentRequests: 2 },
+      }),
+      [['密钥 ID', 'k1'], ['窗口请求数', '不限制'], ['窗口时长（秒）', 10_800], ['单号最大并发', 2]],
+    )
+    assert.deepEqual(
+      auditDetailsRows({ action: 'oauth_account.refresh', details: { keyId: 'k1', result: 'failed', errorCode: 'http_503' } }),
+      [['密钥 ID', 'k1'], ['结果', '失败'], ['错误码', 'http_503']],
+    )
+    assert.deepEqual(
+      auditDetailsRows({ action: 'oauth_account.cooldown.clear', details: { keyId: 'k1' } }),
+      [['密钥 ID', 'k1']],
+    )
+    assert.deepEqual(
+      auditDetailsRows({ action: 'oauth_account.quota.refresh', details: { keyId: 'k1', result: 'success' } }),
+      [['密钥 ID', 'k1'], ['结果', '成功'], ['错误码', '—']],
+    )
   })
 
   it('成功与失败使用明确文案和状态颜色', () => {
