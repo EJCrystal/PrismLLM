@@ -288,8 +288,9 @@ private fun convertGeminiSchema(
 }
 
 /**
- * 数组元素 schema：items 能转换就用它，否则退回 prefixItems。
- * 封闭元组写成 prefixItems + items:false，items:false 本身不可表达，但元素结构仍在 prefixItems 里。
+ * 数组元素 schema：prefixItems 的前缀元素和 items 的后续元素都收集到同一个分支列表，
+ * 再按元素类型的 anyOf 近似 tuple。items:false 本身不可表达，但前缀结构仍保留；
+ * items:true 表示额外元素不受限，有 prefixItems 时只保留元组结构。
  */
 private fun elementItems(
     source: JsonObject,
@@ -299,48 +300,35 @@ private fun elementItems(
     refs: Set<String>,
     budget: GeminiSchemaBudget,
 ): JsonObject? {
-    val items = source["items"]
+    val branches = mutableListOf<JsonObject>()
     val prefix = source["prefixItems"] as? JsonArray
-    if (items != null) {
-        // items:true 表示额外元素不受限，有 prefixItems 时优先保留元组结构。
-        val itemsIsAny = items is JsonPrimitive && !items.isString && items.booleanOrNull == true
-        if (!(itemsIsAny && prefix != null)) {
-            val converted = if (items is JsonArray) {
-                tupleItems(items, defs, depth, path, refs, budget, tail = null)
-            } else {
-                convertGeminiSchema(
-                    schema = items,
-                    defs = defs,
-                    isRoot = false,
-                    depth = depth + 1,
-                    path = "$path.items",
-                    refs = refs,
-                    budget = budget,
-                )
-            }
-            if (converted != null) {
-                // 前缀元素和后续元素都能表达时一起放进 anyOf，避免只保留其中一侧。
-                return prefix?.let { tupleItems(it, defs, depth, path, refs, budget, tail = converted) } ?: converted
-            }
+    prefix?.forEachIndexed { index, element ->
+        convertGeminiSchema(
+            schema = element,
+            defs = defs,
+            isRoot = false,
+            depth = depth + 1,
+            path = "$path.prefixItems[$index]",
+            refs = refs,
+            budget = budget,
+        )?.let { branches += it }
+    }
+    val items = source["items"]
+    val itemsIsAny = items is JsonPrimitive && !items.isString && items.booleanOrNull == true
+    if (items != null && !(itemsIsAny && prefix != null)) {
+        val elements = if (items is JsonArray) items else JsonArray(listOf(items))
+        elements.forEachIndexed { index, element ->
+            convertGeminiSchema(
+                schema = element,
+                defs = defs,
+                isRoot = false,
+                depth = depth + 1,
+                path = if (items is JsonArray) "$path.items[$index]" else "$path.items",
+                refs = refs,
+                budget = budget,
+            )?.let { branches += it }
         }
     }
-    return prefix?.let { tupleItems(it, defs, depth, path, refs, budget, tail = null) }
-}
-
-/** JSON Schema 的 tuple 形式（items 是数组，或 2020-12 的 prefixItems）在 Schema 里没有对应表示，按元素类型的 anyOf 近似。 */
-private fun tupleItems(
-    tuple: JsonArray,
-    defs: Map<String, JsonElement>,
-    depth: Int,
-    path: String,
-    refs: Set<String>,
-    budget: GeminiSchemaBudget,
-    tail: JsonObject?,
-): JsonObject? {
-    val branches = tuple.mapIndexedNotNull { index, element ->
-        convertGeminiSchema(element, defs, isRoot = false, depth = depth + 1, path = "$path[$index]", refs = refs, budget = budget)
-    }.toMutableList()
-    if (tail != null) branches += tail
     return when (branches.size) {
         0 -> null
         1 -> branches.single()
