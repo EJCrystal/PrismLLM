@@ -5752,6 +5752,52 @@ textarea:disabled {
   background: var(--bg);
 }
 
+.attempt-row.attempt-row-skipped {
+  gap: 0;
+  padding: 8px 12px;
+  border-style: dashed;
+}
+
+.attempt-skip-body {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+}
+
+.attempt-skip-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+}
+
+.attempt-skip-target {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attempt-skip-reason {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.attempt-skip-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .attempt-head {
   display: flex;
   flex-wrap: wrap;
