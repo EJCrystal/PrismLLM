@@ -2,7 +2,7 @@ package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ChannelRecord
-import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.UpstreamCredential
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.authTypeFor
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
@@ -38,15 +38,15 @@ import kotlinx.serialization.json.contentOrNull
  */
 suspend fun fetchUpstreamModels(
     channel: ChannelRecord,
-    key: ChannelKeyRecord,
+    credentialRef: UpstreamCredential,
     credentials: KeyCredentialResolver,
     httpClient: HttpClient,
     authorizedOnly: Boolean = true,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): List<UpstreamModel> {
-    if (authorizedOnly && key.models.isEmpty()) return emptyList()
-    val credential = resolveSavedCredential(credentials, key)
+    if (authorizedOnly && credentialRef.models.isEmpty() && !credentialRef.isOAuth) return emptyList()
+    val credential = resolveSavedCredential(credentials, credentialRef)
 
     val protocol = channel.modelListProtocol()
     val models = fetchUpstreamModels(
@@ -54,7 +54,7 @@ suspend fun fetchUpstreamModels(
         protocol = protocol, globalOverrides = globalOverrides, channelOverrides = channel.requestOverrides,
         headerProfiles = headerProfiles,
     )
-    return if (authorizedOnly) models.filter { it.id in key.models } else models
+    return if (authorizedOnly) models.filter { credentialRef.supports(it.id) } else models
 }
 
 /**

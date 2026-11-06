@@ -4,6 +4,7 @@ import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.domain.OAuthRoutingStrategy
@@ -124,16 +125,28 @@ class OAuthAccountRoutingTest {
         )
         val a = key("a")
         val b = key("b")
-        val static = key("s").copy(oauthPolicy = null)
-        val candidates = listOf(candidate(a), candidate(static), candidate(b))
+        val static = ChannelKeyRecord(
+            id = "s",
+            channelId = "ch",
+            name = "s",
+            credentialCiphertext = "c",
+            credentialNonce = "n",
+            credentialKeyVersion = 1,
+            state = ChannelKeyState.ACTIVE,
+            priority = 1,
+            models = listOf("m"),
+            createdAt = 0,
+            updatedAt = 0,
+        )
+        val candidates = listOf(candidate(a), staticCandidate(static), candidate(b))
 
         assertEquals(
             ids("b", "s", "a"),
-            routing.order(candidates, affinityApplied = false).map { it.key.id },
+            routing.order(candidates, affinityApplied = false).map { it.credential.id },
         )
         assertEquals(
             ids("a", "s", "b"),
-            routing.order(candidates, affinityApplied = true).map { it.key.id },
+            routing.order(candidates, affinityApplied = true).map { it.credential.id },
         )
     }
 
@@ -152,27 +165,44 @@ class OAuthAccountRoutingTest {
         now = { now },
     )
 
-    private suspend fun order(routing: OAuthAccountRouting, vararg keys: ChannelKeyRecord): List<String> =
-        routing.order(keys.map(::candidate), affinityApplied = false).map { it.key.id }
+    private suspend fun order(routing: OAuthAccountRouting, vararg keys: OAuthAccountRecord): List<String> =
+        routing.order(keys.map(::candidate), affinityApplied = false).map { it.credential.id }
 
     private fun ids(vararg ids: String): List<String> = ids.toList()
 
-    private fun key(id: String, priority: Int = 1, windowLimit: Int? = null): ChannelKeyRecord = ChannelKeyRecord(
+    private fun key(id: String, priority: Int = 1, windowLimit: Int? = null): OAuthAccountRecord = OAuthAccountRecord(
         id = id,
-        channelId = "ch",
         name = id,
-        credentialCiphertext = "c",
-        credentialNonce = "n",
-        credentialKeyVersion = 1,
-        state = ChannelKeyState.ACTIVE,
+        provider = dev.soven.llmgateway.domain.OAuthProvider.CHATGPT,
+        refreshTokenCiphertext = "c",
+        refreshTokenNonce = "n",
+        refreshTokenKeyVersion = 1,
         priority = priority,
         models = listOf("m"),
         createdAt = 0,
         updatedAt = 0,
-        oauthPolicy = OAuthAccountPolicy(windowLimit = windowLimit, maxConcurrentRequests = 5),
+        policy = OAuthAccountPolicy(windowLimit = windowLimit, maxConcurrentRequests = 5),
     )
 
-    private fun candidate(key: ChannelKeyRecord): RouteCandidate = RouteCandidate(
+    private fun candidate(account: OAuthAccountRecord): RouteCandidate = RouteCandidate(
+        channel = channel(),
+        credential = account,
+        upstreamModel = "m",
+        position = 0,
+    )
+
+    private fun channel() = ChannelRecord(
+        id = "ch",
+        name = "ch",
+        baseUrl = "https://example.test",
+        authType = "bearer",
+        protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
+        enabled = true,
+        createdAt = 0,
+        updatedAt = 0,
+    )
+
+    private fun staticCandidate(key: ChannelKeyRecord): RouteCandidate = RouteCandidate(
         channel = ChannelRecord(
             id = key.channelId,
             name = key.channelId,
@@ -183,7 +213,7 @@ class OAuthAccountRoutingTest {
             createdAt = 0,
             updatedAt = 0,
         ),
-        key = key,
+        credential = key,
         upstreamModel = "m",
         position = 0,
     )

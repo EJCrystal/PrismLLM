@@ -43,18 +43,38 @@ data class ChannelKeyRateLimitPolicy(
 }
 
 /**
+ * 数据面可路由的上游凭据。静态渠道密钥与订阅账号都实现这一接口，
+ * 路由、冷却、并发占用和凭据解析不再依赖 channel_keys 这一张表。
+ */
+sealed interface UpstreamCredential {
+    val id: String
+    val name: String
+    val priority: Int
+    val models: List<String>
+    val enabled: Boolean
+
+    /** 订阅账号的账号级调度策略；静态密钥为 null。 */
+    val oauthPolicy: OAuthAccountPolicy?
+    val isOAuth: Boolean
+
+    fun supports(upstreamModel: String): Boolean
+
+    fun isRoutable(now: Long = System.currentTimeMillis()): Boolean
+}
+
+/**
  * 渠道下的上游密钥。凭据只以密文形式存在，模型集合表示该密钥可调用的上游模型。
  */
 data class ChannelKeyRecord(
-    val id: String,
+    override val id: String,
     val channelId: String,
-    val name: String,
+    override val name: String,
     val credentialCiphertext: String,
     val credentialNonce: String,
     val credentialKeyVersion: Int,
     val state: ChannelKeyState,
-    val priority: Int,
-    val models: List<String> = emptyList(),
+    override val priority: Int,
+    override val models: List<String> = emptyList(),
     val rateLimit: ChannelKeyRateLimitPolicy = ChannelKeyRateLimitPolicy(),
     val createdAt: Long,
     val updatedAt: Long,
@@ -67,13 +87,13 @@ data class ChannelKeyRecord(
     /** null 表示尚未单独配置；不继承渠道的账户身份。 */
     val quota: ChannelQuotaSettings? = null,
     val quotaCredential: EncryptedCredential? = null,
-    /** 非空表示这是订阅账号，需要走账号级滑动窗口、并发与 429 冷却。 */
-    val oauthPolicy: OAuthAccountPolicy? = null,
-) {
-    val credentialSet: Boolean get() = credentialCiphertext.isNotBlank()
+) : UpstreamCredential {
+    override val oauthPolicy: OAuthAccountPolicy? get() = null
 
-    /** 是否处于启用状态；自动停用与人工停用都不算启用。 */
-    val enabled: Boolean get() = state == ChannelKeyState.ACTIVE
+    override val isOAuth: Boolean get() = false
+
+    override val enabled: Boolean get() = state == ChannelKeyState.ACTIVE
+    val credentialSet: Boolean get() = credentialCiphertext.isNotBlank()
 
     /** 只有临时停用会到期自动恢复。 */
     val autoRecoverable: Boolean get() = state == ChannelKeyState.AUTO_TEMPORARY
@@ -82,14 +102,14 @@ data class ChannelKeyRecord(
      * 是否允许路由。临时停用到期即视为可用，不依赖后台清理任务；
      * 人工停用与永久停用永不自动放行。
      */
-    fun isRoutable(now: Long = System.currentTimeMillis()): Boolean = when (state) {
+    override fun isRoutable(now: Long): Boolean = when (state) {
         ChannelKeyState.ACTIVE -> true
         ChannelKeyState.AUTO_TEMPORARY -> autoDisableUntil != null && now >= autoDisableUntil &&
             (probeUntil == null || now >= probeUntil)
         ChannelKeyState.MANUAL_DISABLED, ChannelKeyState.AUTO_PERMANENT -> false
     }
 
-    fun supports(upstreamModel: String): Boolean = upstreamModel in models
+    override fun supports(upstreamModel: String): Boolean = upstreamModel in models
 }
 
 data class ChannelRecord(
@@ -104,6 +124,8 @@ data class ChannelRecord(
     val modelMappings: List<ChannelModelRecord> = emptyList(),
     val priority: Int = 0,
     val keys: List<ChannelKeyRecord> = emptyList(),
+    /** 通过 oauth_account_channels 关联到本渠道的订阅账号。 */
+    val oauthAccounts: List<OAuthAccountRecord> = emptyList(),
     val requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     val quota: ChannelQuotaSettings = ChannelQuotaSettings(),
     /** 仅供额度插件使用，不加入模型转发密钥集合。 */
@@ -122,6 +144,14 @@ data class ChannelRecord(
         .filter { it.isRoutable(now) && it.supports(upstreamModel) }
         .sortedWith(compareBy({ it.priority }, { it.name }, { it.id }))
         .toList()
+
+    /** 支持指定上游模型的可路由凭据，静态密钥与订阅账号一起参与排序。 */
+    fun credentialsFor(upstreamModel: String, now: Long = System.currentTimeMillis()): List<UpstreamCredential> =
+        (keys + oauthAccounts)
+            .asSequence()
+            .filter { it.isRoutable(now) && it.supports(upstreamModel) }
+            .sortedWith(compareBy({ it.priority }, { it.name }, { it.id }))
+            .toList()
 }
 
 /**
@@ -132,11 +162,19 @@ data class ChannelRecord(
  */
 data class RouteCandidate(
     val channel: ChannelRecord,
-    val key: ChannelKeyRecord,
+    val credential: UpstreamCredential,
     val upstreamModel: String,
     /** 选路档位：直连候选取渠道优先级，数值越小越优先。 */
     val position: Int,
 ) {
+    /** 仅静态渠道密钥可用的旧能力（自动禁用、密钥限流）；订阅账号为 null。 */
+    val channelKey: ChannelKeyRecord?
+        get() = credential as? ChannelKeyRecord
+
+    /** 订阅账号专属能力（账号级窗口、并发、额度）；静态密钥为 null。 */
+    val oauthAccount: OAuthAccountRecord?
+        get() = credential as? OAuthAccountRecord
+
     /** 计费使用的模型 ID：优先渠道配置的规范 ID，未配置时回退上游模型。 */
     val pricingModelId: String
         get() = channel.modelMappings

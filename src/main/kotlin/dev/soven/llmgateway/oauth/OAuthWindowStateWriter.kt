@@ -35,10 +35,10 @@ class OAuthWindowStateWriter(
 
     fun submit(snapshot: OAuthWindowSnapshot) {
         if (signal.isClosedForSend) {
-            logger.warn("oauth window state writer closed, dropped keyId={}", snapshot.keyId)
+            logger.warn("oauth window state writer closed, dropped accountId={}", snapshot.accountId)
             return
         }
-        pending[snapshot.keyId] = snapshot
+        pending[snapshot.accountId] = snapshot
         signal.trySend(Unit)
     }
 
@@ -53,7 +53,7 @@ class OAuthWindowStateWriter(
             } catch (cause: CancellationException) {
                 throw cause
             } catch (cause: Throwable) {
-                logger.error("oauth window state write failed, keyId={}", entry.key, cause)
+                logger.error("oauth window state write failed, accountId={}", entry.key, cause)
             }
         }
         // 高 QPS 下窗口命中持续变化；限制落库频率，内存态仍然是权威来源。

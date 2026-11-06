@@ -46,8 +46,11 @@ class MessagesResponsesConversionTest {
         val converted = MessagesToResponses.convertRequest(request, "upstream")
         val input = converted["input"]!!.jsonArray
         assertEquals(listOf("message", "function_call", "message", "function_call_output", "message"), input.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        assertEquals("before", input[0].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
         assertEquals("{\"city\":\"SZ\"}", input[1].jsonObject["arguments"]!!.jsonPrimitive.content)
+        assertEquals("after", input[2].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
         assertEquals("sunny\nwarm", input[3].jsonObject["output"]!!.jsonPrimitive.content)
+        assertEquals("thanks", input[4].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
         assertEquals("system", converted["instructions"]!!.jsonPrimitive.content)
         assertEquals("user_1", converted["user"]!!.jsonPrimitive.content)
         assertEquals("medium", converted["reasoning"]!!.jsonObject["effort"]!!.jsonPrimitive.content)
@@ -162,6 +165,75 @@ class MessagesResponsesConversionTest {
         )
         assertEquals("answer", input[1].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
         assertEquals("call_1", input[3].jsonObject["call_id"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `messages system turns fold into instructions before a reply and reminders after`() {
+        val converted = MessagesToResponses.convertRequest(json("""{
+            "model":"public","max_tokens":64,
+            "system":"You are Claude Code.",
+            "messages":[
+                {"role":"system","content":[{"type":"text","text":"env: working dir /home/me"}]},
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":"hello"},
+                {"role":"system","content":"the user switched rooms"},
+                {"role":"user","content":"again"}
+            ]
+        }"""), "upstream")
+
+        assertEquals(
+            "You are Claude Code.\n\nenv: working dir /home/me",
+            converted["instructions"]!!.jsonPrimitive.content,
+        )
+        val input = converted["input"]!!.jsonArray
+        assertEquals(listOf("message", "message", "message"), input.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        assertTrue(input.none { it.jsonObject["role"]?.jsonPrimitive?.content in setOf("system", "developer") })
+        assertEquals("user", input[0].jsonObject["role"]!!.jsonPrimitive.content)
+        assertEquals("hi", input[0].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+        assertEquals("assistant", input[1].jsonObject["role"]!!.jsonPrimitive.content)
+
+        val reminder = input[2].jsonObject["content"]!!.jsonArray
+        assertEquals(2, reminder.size)
+        val reminderText = reminder[0].jsonObject["text"]!!.jsonPrimitive.content
+        assertTrue(reminderText.startsWith("<system-reminder>\n"))
+        assertTrue(reminderText.contains("the user switched rooms"))
+        assertTrue(reminderText.endsWith("\n</system-reminder>"))
+        assertEquals("again", reminder[1].jsonObject["text"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `messages developer turns fold like system turns`() {
+        val converted = MessagesToResponses.convertRequest(json("""{
+            "model":"public","max_tokens":64,
+            "messages":[
+                {"role":"developer","content":"follow the harness rules"},
+                {"role":"user","content":"hi"}
+            ]
+        }"""), "upstream")
+
+        assertEquals("follow the harness rules", converted["instructions"]!!.jsonPrimitive.content)
+        assertEquals("user", converted["input"]!!.jsonArray.single().jsonObject["role"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `messages system turn after a user becomes a reminder at its position`() {
+        val converted = MessagesToResponses.convertRequest(json("""{
+            "model":"public","max_tokens":64,
+            "messages":[
+                {"role":"user","content":"hi"},
+                {"role":"system","content":"apply the pending plan"},
+                {"role":"assistant","content":"ok"}
+            ]
+        }"""), "upstream")
+
+        assertFalse(converted.containsKey("instructions"))
+        val input = converted["input"]!!.jsonArray
+        assertEquals(listOf("user", "assistant"), input.map { it.jsonObject["role"]!!.jsonPrimitive.content })
+        val userBlocks = input[0].jsonObject["content"]!!.jsonArray
+        assertEquals("hi", userBlocks[0].jsonObject["text"]!!.jsonPrimitive.content)
+        val reminder = userBlocks[1].jsonObject["text"]!!.jsonPrimitive.content
+        assertTrue(reminder.startsWith("<system-reminder>\n"))
+        assertTrue(reminder.contains("apply the pending plan"))
     }
 
     @Test

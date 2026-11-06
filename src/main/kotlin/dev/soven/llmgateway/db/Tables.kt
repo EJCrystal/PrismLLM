@@ -70,14 +70,18 @@ object ChannelKeyQuotaSettings : Table("channel_key_quota_settings") {
 }
 
 /**
- * 订阅账号 OAuth 状态，与 [ChannelKeys] 一对一。
- * 长期 refresh token 复用 channel_keys 的加密凭据列；这里只保存短期 access token 缓存和刷新诊断。
+ * 独立的订阅账号。凭据、刷新状态、调度策略与额度全部属于账号自身，
+ * 渠道通过 [OAuthAccountChannels] 与账号建立多对多关联。
  */
-object ChannelKeyOAuthAccounts : Table("channel_key_oauth_accounts") {
-    val keyId = varchar("key_id", 36).references(ChannelKeys.id, onDelete = ReferenceOption.CASCADE)
+object OAuthAccounts : Table("oauth_accounts") {
+    val id = varchar("id", 36)
+    val name = varchar("name", 100)
     val provider = varchar("provider", 32)
     val accountEmail = varchar("account_email", 320).nullable()
     val accountPlan = varchar("account_plan", 32).nullable()
+    val refreshTokenCiphertext = text("refresh_token_ciphertext")
+    val refreshTokenNonce = text("refresh_token_nonce")
+    val refreshTokenKeyVersion = integer("refresh_token_key_version")
     val accessTokenCiphertext = text("access_token_ciphertext").nullable()
     val accessTokenNonce = text("access_token_nonce").nullable()
     val accessTokenKeyVersion = integer("access_token_key_version").nullable()
@@ -86,6 +90,9 @@ object ChannelKeyOAuthAccounts : Table("channel_key_oauth_accounts") {
     val scope = text("scope").nullable()
     /** ACTIVE / REAUTH_REQUIRED。 */
     val authState = varchar("auth_state", 20).default("ACTIVE")
+    /** 人工启停；停用后仍保留凭据与历史，重新启用即可恢复调度。 */
+    val enabled = bool("enabled").default(true)
+    val priority = integer("priority").default(1)
     val refreshFailureCount = integer("refresh_failure_count").default(0)
     val lastRefreshError = varchar("last_refresh_error", 200).nullable()
     val lastRefreshedAt = long("last_refreshed_at").nullable()
@@ -113,21 +120,39 @@ object ChannelKeyOAuthAccounts : Table("channel_key_oauth_accounts") {
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
 
-    override val primaryKey = PrimaryKey(keyId)
+    override val primaryKey = PrimaryKey(id)
+}
+
+/** 订阅账号与渠道的多对多关联；同一账号可以被多个渠道复用。 */
+object OAuthAccountChannels : Table("oauth_account_channels") {
+    val accountId = varchar("account_id", 36).references(OAuthAccounts.id, onDelete = ReferenceOption.CASCADE)
+    val channelId = varchar("channel_id", 36).references(Channels.id, onDelete = ReferenceOption.CASCADE)
+    val createdAt = long("created_at")
+
+    override val primaryKey = PrimaryKey(accountId, channelId)
+}
+
+/** 账号显式授权的上游模型；没有记录表示继承所关联渠道的全部模型。 */
+object OAuthAccountModels : Table("oauth_account_models") {
+    val accountId = varchar("account_id", 36).references(OAuthAccounts.id, onDelete = ReferenceOption.CASCADE)
+    val upstreamModel = varchar("upstream_model", 200)
+    val createdAt = long("created_at")
+
+    override val primaryKey = PrimaryKey(accountId, upstreamModel)
 }
 
 /**
  * 订阅账号级调度状态快照。内存态是权威来源，这里只用于重启恢复。
  * 窗口命中按时间升序保存为 JSON 数组，窗口上限决定行内最多保留多少条。
  */
-object ChannelKeyOAuthWindows : Table("channel_key_oauth_windows") {
-    val keyId = varchar("key_id", 36).references(ChannelKeyOAuthAccounts.keyId, onDelete = ReferenceOption.CASCADE)
+object OAuthAccountWindows : Table("oauth_account_windows") {
+    val accountId = varchar("account_id", 36).references(OAuthAccounts.id, onDelete = ReferenceOption.CASCADE)
     val hits = text("hits").default("[]")
     val cooldownUntil = long("cooldown_until").nullable()
     val consecutiveRateLimits = integer("consecutive_rate_limits").default(0)
     val updatedAt = long("updated_at")
 
-    override val primaryKey = PrimaryKey(keyId)
+    override val primaryKey = PrimaryKey(accountId)
 }
 
 /** 渠道密钥显式授权的上游模型。 */

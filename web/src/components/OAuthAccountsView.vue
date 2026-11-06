@@ -31,7 +31,7 @@ const providers = ref<OAuthProviderInfo[]>([])
 const channels = ref<Channel[]>([])
 const loading = ref(true)
 const error = ref('')
-const busyKeyId = ref<string | null>(null)
+const busyId = ref<string | null>(null)
 const now = ref(Date.now())
 let clock: number | undefined
 
@@ -43,8 +43,8 @@ const loginCompleting = ref(false)
 const loginSession = ref<OAuthLoginStart | null>(null)
 const callbackUrl = ref('')
 const reauthTarget = ref<OAuthAccount | null>(null)
-const selectedTarget = ref('')
 const importForm = reactive({
+  name: '',
   provider: 'chatgpt',
   refreshToken: '',
   accountEmail: '',
@@ -52,6 +52,8 @@ const importForm = reactive({
   proxyUrl: '',
   accessToken: '',
   accessTokenExpiresAt: '',
+  channelIds: [] as string[],
+  priority: 1,
 })
 
 const showPolicy = ref(false)
@@ -63,23 +65,35 @@ const policyForm = reactive<{ windowLimit: string | number; windowSeconds: strin
   maxConcurrentRequests: 1,
 })
 
-const activeCount = computed(() => accounts.value.filter((item) => item.authState === 'ACTIVE').length)
+const showSettings = ref(false)
+const settingsSaving = ref(false)
+const settingsTarget = ref<OAuthAccount | null>(null)
+const settingsForm = reactive({
+  name: '',
+  priority: 1,
+  enabled: true,
+  proxyUrl: '',
+  clearProxy: false,
+  models: '',
+  channelIds: [] as string[],
+})
+
+const activeCount = computed(() => accounts.value.filter((item) => item.enabled && item.authState === 'ACTIVE').length)
 const reauthCount = computed(() => accounts.value.filter((item) => item.authState === 'REAUTH_REQUIRED').length)
 const coolingCount = computed(() => accounts.value.filter((item) => isOAuthAccountCooling(item, now.value)).length)
 const configuredProviders = computed(() => providers.value.filter((item) => item.configured))
-const boundKeyIds = computed(() => new Set(accounts.value.map((item) => item.keyId)))
-const keyOptions = computed(() =>
-  channels.value.flatMap((channel) =>
-    channel.keys.map((key) => ({
-      value: `${channel.id}:${key.id}`,
-      label: `${channel.name} / ${key.name}`,
-      disabled: boundKeyIds.value.has(key.id),
-    })),
-  ),
-)
+const channelOptions = computed(() => [...channels.value].sort((a, b) => a.name.localeCompare(b.name)))
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
+}
+
+function channelSummary(account: OAuthAccount): string {
+  return account.channels.map((channel) => channel.name).join('、') || '未关联渠道'
+}
+
+function modelsLabel(account: OAuthAccount): string {
+  return account.models.length === 0 ? '全部渠道模型' : `${account.models.length} 个模型`
 }
 
 async function load() {
@@ -112,13 +126,9 @@ function resetLoginSession() {
   loginCompleting.value = false
 }
 
-function openImport() {
-  reauthTarget.value = null
-  selectedTarget.value = ''
-  resetLoginSession()
-  const provider = configuredProviders.value[0]?.id ?? providers.value[0]?.id ?? 'chatgpt'
-  importMode.value = providerSupportsLogin(provider) ? 'login' : 'token'
+function resetImportForm(provider: string) {
   Object.assign(importForm, {
+    name: '',
     provider,
     refreshToken: '',
     accountEmail: '',
@@ -126,16 +136,25 @@ function openImport() {
     proxyUrl: '',
     accessToken: '',
     accessTokenExpiresAt: '',
+    channelIds: [],
+    priority: 1,
   })
+}
+
+function openImport() {
+  reauthTarget.value = null
+  resetLoginSession()
+  const provider = configuredProviders.value[0]?.id ?? providers.value[0]?.id ?? 'chatgpt'
+  resetImportForm(provider)
+  importMode.value = providerSupportsLogin(provider) ? 'login' : 'token'
   showImport.value = true
 }
 
 function openReauth(account: OAuthAccount) {
   reauthTarget.value = account
-  selectedTarget.value = `${account.channelId}:${account.keyId}`
   resetLoginSession()
-  importMode.value = providerSupportsLogin(account.provider) ? 'login' : 'token'
   Object.assign(importForm, {
+    name: account.name,
     provider: account.provider,
     refreshToken: '',
     accountEmail: account.accountEmail ?? '',
@@ -143,7 +162,10 @@ function openReauth(account: OAuthAccount) {
     proxyUrl: account.proxyUrl ?? '',
     accessToken: '',
     accessTokenExpiresAt: '',
+    channelIds: [...account.channelIds],
+    priority: account.priority,
   })
+  importMode.value = providerSupportsLogin(account.provider) ? 'login' : 'token'
   showImport.value = true
 }
 
@@ -153,7 +175,6 @@ function switchImportMode(mode: 'login' | 'token') {
   resetLoginSession()
 }
 
-// 切换提供方后旧的登录会话不再有效，回到该提供方支持的模式。
 watch(
   () => importForm.provider,
   (provider) => {
@@ -162,28 +183,15 @@ watch(
   },
 )
 
-function resolveImportTarget(): { channelId: string; keyId: string } | null {
-  if (reauthTarget.value) {
-    return { channelId: reauthTarget.value.channelId, keyId: reauthTarget.value.keyId }
-  }
-  const [channel, key] = selectedTarget.value.split(':')
-  if (!channel || !key) {
-    notify('请选择要绑定的渠道密钥', 'error')
-    return null
-  }
-  return { channelId: channel, keyId: key }
-}
-
 async function beginLogin() {
   if (loginStarting.value) return
-  const target = resolveImportTarget()
-  if (!target) return
   loginStarting.value = true
   try {
     loginSession.value = await api.startOAuthLogin({
       provider: importForm.provider,
-      channelId: target.channelId,
-      keyId: target.keyId,
+      accountId: reauthTarget.value?.id ?? null,
+      name: importForm.name.trim() || null,
+      channelIds: [...importForm.channelIds],
       proxyUrl: importForm.proxyUrl.trim() || null,
     })
     callbackUrl.value = ''
@@ -195,7 +203,11 @@ async function beginLogin() {
 }
 
 async function completeLogin() {
-  if (!loginSession.value || loginCompleting.value) return
+  if (loginCompleting.value) return
+  if (!loginSession.value) {
+    notify('请先生成登录链接并完成浏览器授权', 'error')
+    return
+  }
   const problem = oauthLoginCallbackError(callbackUrl.value)
   if (problem) {
     notify(problem, 'error')
@@ -205,7 +217,13 @@ async function completeLogin() {
   loginCompleting.value = true
   try {
     await api.completeOAuthLogin(loginSession.value.loginId, { callbackUrl: callback })
-    notify('订阅账号已通过浏览器登录绑定')
+    if (reauthTarget.value) {
+      await api.updateOAuthAccountSettings(reauthTarget.value.id, {
+        name: importForm.name.trim() || null,
+        priority: Number(importForm.priority),
+      })
+    }
+    notify(reauthTarget.value ? '订阅账号已重新授权' : '订阅账号已通过浏览器登录')
     showImport.value = false
     await load()
   } catch (cause) {
@@ -224,16 +242,22 @@ async function submitImport() {
 }
 
 async function saveImport() {
-  const target = resolveImportTarget()
-  if (!target) return
-  const { channelId, keyId } = target
   importSaving.value = true
   try {
     const payload = buildOAuthImportPayload({
       ...importForm,
       accessTokenExpiresAt: fromLocalInput(importForm.accessTokenExpiresAt),
-    })
-    await api.importOAuthAccount(channelId, keyId, payload)
+    }, Date.now(), { allowEmptyRefreshToken: reauthTarget.value != null })
+    if (reauthTarget.value) {
+      await api.updateOAuthAccount(reauthTarget.value.id, payload)
+      await api.updateOAuthAccountSettings(reauthTarget.value.id, {
+        name: importForm.name.trim() || null,
+        priority: Number(importForm.priority),
+      })
+      await api.updateOAuthAccountChannels(reauthTarget.value.id, { channelIds: [...importForm.channelIds] })
+    } else {
+      await api.importOAuthAccount(payload)
+    }
     notify(reauthTarget.value ? '订阅账号已重新授权' : '订阅账号已导入')
     showImport.value = false
     await load()
@@ -245,44 +269,44 @@ async function saveImport() {
 }
 
 async function refreshToken(account: OAuthAccount) {
-  if (busyKeyId.value != null) return
-  busyKeyId.value = account.keyId
+  if (busyId.value != null) return
+  busyId.value = account.id
   try {
-    await api.refreshOAuthAccount(account.keyId)
+    await api.refreshOAuthAccount(account.id)
     notify('access token 已刷新')
     await load()
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
-    busyKeyId.value = null
+    busyId.value = null
   }
 }
 
 async function refreshQuota(account: OAuthAccount) {
-  if (busyKeyId.value != null) return
-  busyKeyId.value = account.keyId
+  if (busyId.value != null) return
+  busyId.value = account.id
   try {
-    await api.refreshOAuthAccountQuota(account.keyId)
+    await api.refreshOAuthAccountQuota(account.id)
     notify('上游额度已更新')
     await load()
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
-    busyKeyId.value = null
+    busyId.value = null
   }
 }
 
 async function clearCooldown(account: OAuthAccount) {
-  if (busyKeyId.value != null) return
-  busyKeyId.value = account.keyId
+  if (busyId.value != null) return
+  busyId.value = account.id
   try {
-    await api.clearOAuthAccountCooldown(account.keyId)
+    await api.clearOAuthAccountCooldown(account.id)
     notify('账号冷却已解除')
     await load()
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
-    busyKeyId.value = null
+    busyId.value = null
   }
 }
 
@@ -298,7 +322,7 @@ async function savePolicy() {
   if (!policyTarget.value) return
   policySaving.value = true
   try {
-    await api.updateOAuthAccountPolicy(policyTarget.value.keyId, buildOAuthPolicyPayload(policyForm))
+    await api.updateOAuthAccountPolicy(policyTarget.value.id, buildOAuthPolicyPayload(policyForm))
     notify('账号调度策略已更新')
     showPolicy.value = false
     await load()
@@ -306,6 +330,65 @@ async function savePolicy() {
     notify(errorMessage(cause), 'error')
   } finally {
     policySaving.value = false
+  }
+}
+
+function openSettings(account: OAuthAccount) {
+  settingsTarget.value = account
+  Object.assign(settingsForm, {
+    name: account.name,
+    priority: account.priority,
+    enabled: account.enabled,
+    proxyUrl: account.proxyUrl ?? '',
+    clearProxy: false,
+    models: account.models.join(', '),
+    channelIds: [...account.channelIds],
+  })
+  showSettings.value = true
+}
+
+async function saveSettings() {
+  if (!settingsTarget.value) return
+  settingsSaving.value = true
+  try {
+    const proxyUrl = settingsForm.proxyUrl.trim() || null
+    const clearProxy = settingsForm.clearProxy || (proxyUrl == null && settingsTarget.value.proxyUrl != null)
+    if (clearProxy && proxyUrl != null) {
+      notify('不能同时填写代理和勾选清除代理', 'error')
+      return
+    }
+    await api.updateOAuthAccountSettings(settingsTarget.value.id, {
+      name: settingsForm.name.trim() || null,
+      priority: Number(settingsForm.priority),
+      enabled: settingsForm.enabled,
+      proxyUrl: clearProxy ? null : proxyUrl,
+      clearProxy,
+    })
+    const models = settingsForm.models.split(/[,\n]/).map((item) => item.trim()).filter(Boolean)
+    await api.updateOAuthAccountModels(settingsTarget.value.id, { models })
+    await api.updateOAuthAccountChannels(settingsTarget.value.id, { channelIds: [...settingsForm.channelIds] })
+    notify('账号设置已更新')
+    showSettings.value = false
+    await load()
+  } catch (cause) {
+    notify(errorMessage(cause), 'error')
+  } finally {
+    settingsSaving.value = false
+  }
+}
+
+async function deleteAccount(account: OAuthAccount) {
+  if (!window.confirm(`删除订阅账号「${account.name}」？该账号的 token、额度和冷却状态会一并删除。`)) return
+  if (busyId.value != null) return
+  busyId.value = account.id
+  try {
+    await api.deleteOAuthAccount(account.id)
+    notify('订阅账号已删除')
+    await load()
+  } catch (cause) {
+    notify(errorMessage(cause), 'error')
+  } finally {
+    busyId.value = null
   }
 }
 
@@ -327,7 +410,7 @@ onBeforeUnmount(() => {
       <div class="section-head page-actions">
         <button type="button" class="button primary" @click="openImport">
           <Icon name="plus" :size="17" />
-          导入账号
+          新建账号
         </button>
       </div>
 
@@ -335,12 +418,12 @@ onBeforeUnmount(() => {
         <div class="stat-card">
           <span>订阅账号</span>
           <strong>{{ accounts.length }}</strong>
-          <small>已绑定 OAuth 的渠道密钥</small>
+          <small>独立账号，可关联多个渠道</small>
         </div>
         <div class="stat-card">
-          <span>正常</span>
+          <span>可用</span>
           <strong class="text-success">{{ activeCount }}</strong>
-          <small>可自动刷新 access token</small>
+          <small>已启用且可自动刷新 access token</small>
         </div>
         <div class="stat-card">
           <span>需重新授权</span>
@@ -365,8 +448,8 @@ onBeforeUnmount(() => {
         :empty="accounts.length === 0"
         icon="users"
         title="还没有订阅账号"
-        desc="先在渠道里创建密钥，再把 ChatGPT 或 Antigravity 的 refresh token 绑定到该密钥。"
-        action-text="导入账号"
+        desc="直接新建 ChatGPT 或 Antigravity 账号，再按需关联渠道；账号不再依赖任何渠道密钥。"
+        action-text="新建账号"
         @action="openImport"
       />
       <div v-else class="table-scroll">
@@ -384,13 +467,15 @@ onBeforeUnmount(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="account in accounts" :key="account.keyId">
+            <tr v-for="account in accounts" :key="account.id">
               <td>
-                <div class="primary-cell" :title="account.accountEmail || account.keyName">
-                  {{ account.accountEmail || account.keyName }}
+                <div class="primary-cell" :title="account.accountEmail || account.name">
+                  {{ account.accountEmail || account.name }}
                 </div>
                 <div class="channel-id-cell">
-                  <span class="muted small">{{ account.channelName }} / {{ account.keyName }}</span>
+                  <span class="muted small">{{ channelSummary(account) }}</span>
+                  <span class="badge neutral small">优先级 {{ account.priority }}</span>
+                  <span class="badge neutral small">{{ modelsLabel(account) }}</span>
                 </div>
               </td>
               <td>
@@ -401,6 +486,7 @@ onBeforeUnmount(() => {
                 <span class="badge" :class="oauthAuthStateBadge(account.authState)">
                   {{ oauthAuthStateLabel(account.authState) }}
                 </span>
+                <span v-if="!account.enabled" class="badge neutral">已停用</span>
                 <div v-if="account.authState === 'REAUTH_REQUIRED' && account.lastRefreshError" class="small text-danger">
                   {{ account.lastRefreshError }}
                 </div>
@@ -423,65 +509,41 @@ onBeforeUnmount(() => {
                     <span class="quota-value small muted">{{ Math.round(window.usedPercent) }}%</span>
                   </div>
                   <div class="small muted">
-                    <span v-if="oauthQuotaCreditsLabel(account.quota)">{{ oauthQuotaCreditsLabel(account.quota) }} · </span>
-                    <span>{{ account.quota.checkedAt > 0 ? formatTime(account.quota.checkedAt) + ' 更新' : '尚未成功读取' }}</span>
-                  </div>
-                  <div v-if="account.quota.error" class="small text-danger">读取失败：{{ account.quota.error }}</div>
-                  <div v-if="isOAuthQuotaBlocked(account, now)" class="small text-danger">
-                    额度用尽，等待重置（{{ formatCooldownRemaining(account.runtime.quotaBlockedUntil, now) }}）
+                    <span v-if="oauthQuotaCreditsLabel(account.quota)">{{ oauthQuotaCreditsLabel(account.quota) }}</span>
+                    <span v-if="isOAuthQuotaBlocked(account, now)" class="text-danger">额度用尽</span>
                   </div>
                 </template>
-                <span v-else class="muted small">未读取</span>
+                <span v-else class="muted small">暂无读数</span>
+              </td>
+              <td>
+                <div class="small">{{ oauthPolicySummary(account.policy) }}</div>
+                <div class="small muted">{{ oauthRuntimeSummary(account, now) }}</div>
+                <div v-if="formatCooldownRemaining(account.runtime.cooldownUntil, now)" class="small text-warning">
+                  冷却剩余 {{ formatCooldownRemaining(account.runtime.cooldownUntil, now) }}
+                </div>
               </td>
               <td class="muted small">
-                <div>{{ oauthPolicySummary(account.policy) }}</div>
-                <div>{{ oauthRuntimeSummary(account, now) }}</div>
-              </td>
-              <td class="muted">
-                <div>{{ formatTime(account.lastRefreshedAt, { fallback: '从未刷新' }) }}</div>
-                <div v-if="account.refreshFailureCount > 0" class="small text-danger">
-                  连续失败 {{ account.refreshFailureCount }} 次
-                </div>
+                {{ account.lastRefreshedAt ? formatTime(account.lastRefreshedAt) : '尚未刷新' }}
               </td>
               <td class="actions-col">
                 <div class="row-actions">
-                  <button type="button" class="button mini" :disabled="busyKeyId != null" @click="openReauth(account)">
-                    重新授权
+                  <button type="button" class="button small" :disabled="busyId === account.id" @click="refreshToken(account)">
+                    刷新 token
+                  </button>
+                  <button type="button" class="button small" :disabled="busyId === account.id" @click="refreshQuota(account)">
+                    刷新额度
+                  </button>
+                  <button type="button" class="button small" @click="openPolicy(account)">调度策略</button>
+                  <button type="button" class="button small" @click="openSettings(account)">设置</button>
+                  <button type="button" class="button small" @click="openReauth(account)">重新授权</button>
+                  <button type="button" class="button small danger" :disabled="busyId === account.id" @click="deleteAccount(account)">
+                    删除
                   </button>
                   <button
+                    v-if="account.runtime.cooldownUntil && account.runtime.cooldownUntil > now"
                     type="button"
-                    class="icon-button"
-                    title="刷新 access token"
-                    aria-label="刷新 access token"
-                    :disabled="busyKeyId != null"
-                    @click="refreshToken(account)"
-                  >
-                    <Icon name="refresh" :size="16" />
-                  </button>
-                  <button
-                    type="button"
-                    class="icon-button"
-                    title="读取上游额度"
-                    aria-label="读取上游额度"
-                    :disabled="busyKeyId != null || account.provider !== 'chatgpt'"
-                    @click="refreshQuota(account)"
-                  >
-                    <Icon name="chart" :size="16" />
-                  </button>
-                  <button
-                    type="button"
-                    class="icon-button"
-                    title="编辑调度策略"
-                    aria-label="编辑调度策略"
-                    @click="openPolicy(account)"
-                  >
-                    <Icon name="edit" :size="16" />
-                  </button>
-                  <button
-                    v-if="isOAuthAccountCooling(account, now)"
-                    type="button"
-                    class="button mini ghost"
-                    :disabled="busyKeyId != null"
+                    class="button small"
+                    :disabled="busyId === account.id"
                     @click="clearCooldown(account)"
                   >
                     解除冷却
@@ -494,33 +556,17 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <Modal v-if="showImport" :title="reauthTarget ? '重新授权订阅账号' : '导入订阅账号'" wide @close="showImport = false">
+    <Modal v-if="showImport" :title="reauthTarget ? '重新授权订阅账号' : '新建订阅账号'" wide @close="showImport = false">
       <form class="form-grid" @submit.prevent="submitImport">
-        <label v-if="!reauthTarget" class="field">
-          <span>绑定渠道密钥</span>
-          <select v-model="selectedTarget">
-            <option value="">请选择渠道密钥</option>
-            <option v-for="option in keyOptions" :key="option.value" :value="option.value" :disabled="option.disabled">
-              {{ option.label }}{{ option.disabled ? '（已绑定）' : '' }}
-            </option>
-          </select>
-          <small>一个密钥只能绑定一个订阅账号；已绑定的密钥需要直接重新授权。</small>
+        <label class="field">
+          <span>账号名称</span>
+          <input v-model="importForm.name" autocomplete="off" placeholder="可选，默认使用邮箱" />
         </label>
-        <div v-else class="field">
-          <span>绑定渠道密钥</span>
-          <div class="muted">{{ reauthTarget.channelName }} / {{ reauthTarget.keyName }}</div>
-          <small>重新授权会替换该密钥的 refresh token，并清空旧的账号冷却与失败计数。</small>
-        </div>
 
         <label class="field">
           <span>提供方</span>
           <select v-model="importForm.provider" :disabled="reauthTarget != null">
-            <option
-              v-for="provider in providers"
-              :key="provider.id"
-              :value="provider.id"
-              :disabled="!provider.configured"
-            >
+            <option v-for="provider in providers" :key="provider.id" :value="provider.id" :disabled="!provider.configured">
               {{ provider.label }}{{ provider.configured ? '' : '（未配置）' }}
             </option>
           </select>
@@ -529,25 +575,31 @@ onBeforeUnmount(() => {
           </small>
         </label>
 
+        <div class="field">
+          <span>关联渠道</span>
+          <div class="oauth-channel-picker">
+            <label v-for="channel in channelOptions" :key="channel.id" class="checkbox-row">
+              <input v-model="importForm.channelIds" type="checkbox" :value="channel.id" />
+              <span>{{ channel.name }}</span>
+            </label>
+            <span v-if="channelOptions.length === 0" class="muted small">还没有渠道；可以先创建账号，稍后再关联。</span>
+          </div>
+          <small>同一账号可以关联多个渠道；不关联时账号保留，但不会参与任何路由。</small>
+        </div>
+
+        <label class="field">
+          <span>优先级</span>
+          <input v-model.number="importForm.priority" type="number" min="1" max="1000" />
+          <small>数值越小越优先；只影响账号之间的排序，不改变渠道优先级。</small>
+        </label>
+
         <div v-if="providerSupportsLogin(importForm.provider)" class="field">
           <span>授权方式</span>
           <div class="health-window-tabs" role="tablist" aria-label="授权方式">
-            <button
-              type="button"
-              role="tab"
-              :aria-selected="importMode === 'login'"
-              :class="{ active: importMode === 'login' }"
-              @click="switchImportMode('login')"
-            >
+            <button type="button" role="tab" :aria-selected="importMode === 'login'" :class="{ active: importMode === 'login' }" @click="switchImportMode('login')">
               浏览器登录
             </button>
-            <button
-              type="button"
-              role="tab"
-              :aria-selected="importMode === 'token'"
-              :class="{ active: importMode === 'token' }"
-              @click="switchImportMode('token')"
-            >
+            <button type="button" role="tab" :aria-selected="importMode === 'token'" :class="{ active: importMode === 'token' }" @click="switchImportMode('token')">
               导入 refresh token
             </button>
           </div>
@@ -557,16 +609,14 @@ onBeforeUnmount(() => {
         <label class="field">
           <span>账号代理</span>
           <input v-model="importForm.proxyUrl" autocomplete="off" placeholder="http://127.0.0.1:7890" />
-          <small>可选。登录换 token、刷新 token 与调用上游使用同一出口，只支持无认证的 HTTP 正向代理；本机以外的代理主机需由服务端列入 OAUTH_PROXY_ALLOWED_HOSTS。</small>
+          <small>可选。登录换 token、刷新 token 与调用上游使用同一出口，只支持无认证的 HTTP 正向代理。</small>
         </label>
 
         <template v-if="importMode === 'login'">
           <div class="field">
             <span>登录链接</span>
             <div v-if="loginSession" class="callout info oauth-login-link">
-              <a :href="loginSession.authorizeUrl" target="_blank" rel="noopener noreferrer">
-                {{ loginSession.authorizeUrl }}
-              </a>
+              <a :href="loginSession.authorizeUrl" target="_blank" rel="noopener noreferrer">{{ loginSession.authorizeUrl }}</a>
               <CopyButton :text="loginSession.authorizeUrl" title="复制登录链接" />
             </div>
             <div v-else class="oauth-login-actions">
@@ -579,30 +629,17 @@ onBeforeUnmount(() => {
 
           <label v-if="loginSession" class="field">
             <span>回调地址</span>
-            <textarea
-              v-model="callbackUrl"
-              rows="3"
-              spellcheck="false"
-              placeholder="登录完成后浏览器会跳转到本机回调地址，把地址栏里的完整 URL 粘贴到这里"
-            ></textarea>
-            <small>
-              回调地址形如 {{ loginSession.redirectUri }}?code=…&state=…；如果浏览器打不开页面，直接复制地址栏内容即可。
-            </small>
+            <textarea v-model="callbackUrl" rows="3" spellcheck="false" placeholder="登录完成后把浏览器地址栏里的完整 URL 粘贴到这里"></textarea>
+            <small>回调地址形如 {{ loginSession.redirectUri }}?code=…&amp;state=…</small>
           </label>
         </template>
 
         <template v-else>
           <label class="field">
             <span>Refresh token</span>
-            <input
-              v-model="importForm.refreshToken"
-              type="password"
-              autocomplete="off"
-              placeholder="粘贴账号的 refresh token"
-            />
-            <small>只在导入时提交一次，服务端加密保存，之后不再回显。</small>
+            <input v-model="importForm.refreshToken" type="password" autocomplete="off" placeholder="粘贴账号的 refresh token" />
+            <small>{{ reauthTarget ? '留空表示保留现有 refresh token；重新授权时请填写新的 token。' : '只在导入时提交一次，服务端加密保存，之后不再回显。' }}</small>
           </label>
-
           <label class="field">
             <span>账号邮箱</span>
             <input v-model="importForm.accountEmail" autocomplete="off" placeholder="可选，用于识别账号" />
@@ -611,7 +648,6 @@ onBeforeUnmount(() => {
             <span>套餐</span>
             <input v-model="importForm.accountPlan" autocomplete="off" placeholder="例如 free" />
           </label>
-
           <label class="field">
             <span>Access token</span>
             <input v-model="importForm.accessToken" type="password" autocomplete="off" placeholder="可选，已有短期 token 时填写" />
@@ -619,51 +655,79 @@ onBeforeUnmount(() => {
           <label class="field">
             <span>Access token 到期时间</span>
             <input v-model="importForm.accessTokenExpiresAt" type="datetime-local" />
-            <small>access token 与到期时间必须同时填写；留空则导入后自动刷新。</small>
           </label>
         </template>
+
+        <div class="form-actions">
+          <button type="button" class="button" @click="showImport = false">取消</button>
+          <button type="submit" class="button primary" :disabled="importSaving || loginCompleting">
+            {{ importSaving || loginCompleting ? '提交中…' : reauthTarget ? '重新授权' : '创建账号' }}
+          </button>
+        </div>
       </form>
-      <template #footer>
-        <button type="button" class="button ghost" @click="showImport = false">取消</button>
-        <button
-          v-if="importMode === 'login'"
-          type="button"
-          class="button primary"
-          :disabled="!loginSession || loginCompleting || !callbackUrl.trim()"
-          @click="completeLogin"
-        >
-          {{ loginCompleting ? '绑定中…' : '完成登录' }}
-        </button>
-        <button v-else type="button" class="button primary" :disabled="importSaving" @click="saveImport">
-          {{ importSaving ? '保存中…' : reauthTarget ? '重新授权' : '导入账号' }}
-        </button>
-      </template>
     </Modal>
 
     <Modal v-if="showPolicy && policyTarget" title="账号调度策略" @close="showPolicy = false">
       <form class="form-grid" @submit.prevent="savePolicy">
         <label class="field">
           <span>窗口请求数</span>
-          <input v-model="policyForm.windowLimit" type="number" min="1" step="1" placeholder="留空表示不限制" />
-          <small>按账号统计，不区分模型；留空只保留并发与 429 冷却。</small>
+          <input v-model="policyForm.windowLimit" type="number" min="1" max="100000" placeholder="留空表示不限" />
         </label>
         <label class="field">
           <span>窗口时长（秒）</span>
-          <input v-model="policyForm.windowSeconds" type="number" min="60" max="604800" step="1" />
-          <small>默认 10800 秒（3 小时），修改不会重置已有命中。</small>
+          <input v-model="policyForm.windowSeconds" type="number" min="60" max="604800" />
         </label>
         <label class="field">
           <span>单号最大并发</span>
-          <input v-model="policyForm.maxConcurrentRequests" type="number" min="1" max="1000" step="1" />
-          <small>同一账号同时进行的上游请求数，超出后跳过该候选。</small>
+          <input v-model="policyForm.maxConcurrentRequests" type="number" min="1" max="1000" />
         </label>
+        <div class="form-actions">
+          <button type="button" class="button" @click="showPolicy = false">取消</button>
+          <button type="submit" class="button primary" :disabled="policySaving">{{ policySaving ? '保存中…' : '保存' }}</button>
+        </div>
       </form>
-      <template #footer>
-        <button type="button" class="button ghost" @click="showPolicy = false">取消</button>
-        <button type="button" class="button primary" :disabled="policySaving" @click="savePolicy">
-          {{ policySaving ? '保存中…' : '保存策略' }}
-        </button>
-      </template>
+    </Modal>
+
+    <Modal v-if="showSettings && settingsTarget" title="账号设置" @close="showSettings = false">
+      <form class="form-grid" @submit.prevent="saveSettings">
+        <label class="field">
+          <span>账号名称</span>
+          <input v-model="settingsForm.name" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span>优先级</span>
+          <input v-model.number="settingsForm.priority" type="number" min="1" max="1000" />
+        </label>
+        <label class="checkbox-row">
+          <input v-model="settingsForm.enabled" type="checkbox" />
+          <span>启用账号</span>
+        </label>
+        <label class="field">
+          <span>账号代理</span>
+          <input v-model="settingsForm.proxyUrl" autocomplete="off" placeholder="http://127.0.0.1:7890" :disabled="settingsForm.clearProxy" />
+        </label>
+        <label class="field">
+          <span>模型授权</span>
+          <textarea v-model="settingsForm.models" rows="3" placeholder="留空表示继承所关联渠道的全部模型；多个模型用逗号或换行分隔"></textarea>
+        </label>
+        <div class="field">
+          <span>关联渠道</span>
+          <div class="oauth-channel-picker">
+            <label v-for="channel in channelOptions" :key="channel.id" class="checkbox-row">
+              <input v-model="settingsForm.channelIds" type="checkbox" :value="channel.id" />
+              <span>{{ channel.name }}</span>
+            </label>
+          </div>
+        </div>
+        <label class="checkbox-row">
+          <input v-model="settingsForm.clearProxy" type="checkbox" />
+          <span>清除代理</span>
+        </label>
+        <div class="form-actions">
+          <button type="button" class="button" @click="showSettings = false">取消</button>
+          <button type="submit" class="button primary" :disabled="settingsSaving">{{ settingsSaving ? '保存中…' : '保存' }}</button>
+        </div>
+      </form>
     </Modal>
   </section>
 </template>

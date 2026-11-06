@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.oauth
 
-import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthRoutingStrategy
 import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.domain.saturatedAdd
@@ -8,7 +8,7 @@ import dev.soven.llmgateway.domain.saturatedSubtract
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 订阅账号的候选排序。只在同一渠道、同一密钥优先级内重排 OAuth 账号，
+ * 订阅账号的候选排序。只在同一渠道、同一凭据优先级内重排 OAuth 账号，
  * 静态密钥和不同优先级档位保持原有顺序；启用 prompt cache 亲和时完全让位给亲和路由。
  *
  * 策略：
@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class OAuthAccountRouting(
     private val strategy: OAuthRoutingStrategy,
-    private val hints: suspend (Collection<ChannelKeyRecord>, Long) -> Map<String, OAuthRoutingHint> = { _, _ -> emptyMap() },
+    private val hints: suspend (Collection<OAuthAccountRecord>, Long) -> Map<String, OAuthRoutingHint> = { _, _ -> emptyMap() },
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     /** 每个渠道与密钥档位当前正在耗尽的账号。 */
@@ -36,13 +36,13 @@ class OAuthAccountRouting(
         if (affinityApplied || strategy == OAuthRoutingStrategy.ROUND_ROBIN || candidates.size < 2) {
             return candidates
         }
-        val oauthKeys = candidates.map { it.key }.filter { it.oauthPolicy != null }.distinctBy { it.id }
-        if (oauthKeys.size < 2) return candidates
+        val oauthAccounts = candidates.mapNotNull { it.credential as? OAuthAccountRecord }.distinctBy { it.id }
+        if (oauthAccounts.size < 2) return candidates
         val nowMs = now()
         val readings = if (strategy == OAuthRoutingStrategy.DRAIN) {
             emptyMap()
         } else {
-            hints(oauthKeys, nowMs)
+            hints(oauthAccounts, nowMs)
         }
 
         val result = ArrayList<RouteCandidate>(candidates.size)
@@ -52,7 +52,7 @@ class OAuthAccountRouting(
             var end = start + 1
             while (end < candidates.size &&
                 candidates[end].channel.id == first.channel.id &&
-                candidates[end].key.priority == first.key.priority
+                candidates[end].credential.priority == first.credential.priority
             ) {
                 end++
             }
@@ -68,16 +68,16 @@ class OAuthAccountRouting(
         readings: Map<String, OAuthRoutingHint>,
         nowMs: Long,
     ): List<RouteCandidate> {
-        // 同一密钥的多个上游模型名保持连续；按首次出现顺序分组。
+        // 同一凭据的多个上游模型名保持连续；按首次出现顺序分组。
         val groups = LinkedHashMap<String, MutableList<RouteCandidate>>()
-        for (candidate in run) groups.getOrPut(candidate.key.id) { mutableListOf() }.add(candidate)
-        val keyGroups = groups.values.toList()
-        val slots = keyGroups.indices.filter { keyGroups[it].first().key.oauthPolicy != null }
+        for (candidate in run) groups.getOrPut(candidate.credential.id) { mutableListOf() }.add(candidate)
+        val credentialGroups = groups.values.toList()
+        val slots = credentialGroups.indices.filter { credentialGroups[it].first().credential.isOAuth }
         if (slots.isEmpty()) return run
         if (slots.size < 2) {
             // 只剩一个可用账号时也推进 drain 指针，避免它在其他账号恢复后回抢。
             if (strategy == OAuthRoutingStrategy.DRAIN) {
-                val only = keyGroups[slots.single()].first().key
+                val only = credentialGroups[slots.single()].first().credential as OAuthAccountRecord
                 drained[poolKey(channelId, only)] = only.id
             }
             return run
@@ -86,68 +86,68 @@ class OAuthAccountRouting(
         val ranked = when (strategy) {
             OAuthRoutingStrategy.ROUND_ROBIN -> return run
             OAuthRoutingStrategy.DRAIN -> drainOrder(
-                poolKey = poolKey(channelId, keyGroups[slots.first()].first().key),
-                keyGroups = keyGroups,
+                poolKey = poolKey(channelId, credentialGroups[slots.first()].first().credential),
+                credentialGroups = credentialGroups,
                 slots = slots,
             )
             OAuthRoutingStrategy.LEAST_USED -> rank(
-                keyGroups = keyGroups,
+                credentialGroups = credentialGroups,
                 slots = slots,
-                score = { key -> usedShare(key, readings[key.id]) },
+                score = { account -> usedShare(account, readings[account.id]) },
                 highestFirst = false,
             )
             OAuthRoutingStrategy.PACE -> rank(
-                keyGroups = keyGroups,
+                credentialGroups = credentialGroups,
                 slots = slots,
-                score = { key -> pace(key, readings[key.id], nowMs) },
+                score = { account -> pace(account, readings[account.id], nowMs) },
                 highestFirst = true,
             )
         }
-        val reordered = ArrayList<List<RouteCandidate>>(keyGroups.size)
-        reordered.addAll(keyGroups)
+        val reordered = ArrayList<List<RouteCandidate>>(credentialGroups.size)
+        reordered.addAll(credentialGroups)
         slots.forEachIndexed { index, slot -> reordered[slot] = ranked[index] }
         return reordered.flatten()
     }
 
     private fun drainOrder(
         poolKey: String,
-        keyGroups: List<List<RouteCandidate>>,
+        credentialGroups: List<List<RouteCandidate>>,
         slots: List<Int>,
     ): List<List<RouteCandidate>> {
         val current = drained[poolKey]
-        val currentSlot = current?.let { keyId ->
-            slots.firstOrNull { keyGroups[it].first().key.id == keyId }
+        val currentSlot = current?.let { accountId ->
+            slots.firstOrNull { credentialGroups[it].first().credential.id == accountId }
         }
         if (currentSlot != null) {
-            return listOf(keyGroups[currentSlot]) + slots.filter { it != currentSlot }.map { keyGroups[it] }
+            return listOf(credentialGroups[currentSlot]) + slots.filter { it != currentSlot }.map { credentialGroups[it] }
         }
         val next = slots.first()
-        drained[poolKey] = keyGroups[next].first().key.id
-        return slots.map { keyGroups[it] }
+        drained[poolKey] = credentialGroups[next].first().credential.id
+        return slots.map { credentialGroups[it] }
     }
 
     private fun rank(
-        keyGroups: List<List<RouteCandidate>>,
+        credentialGroups: List<List<RouteCandidate>>,
         slots: List<Int>,
-        score: (ChannelKeyRecord) -> Double?,
+        score: (OAuthAccountRecord) -> Double?,
         highestFirst: Boolean,
     ): List<List<RouteCandidate>> {
         // 无读数的账号排在已知账号之后；同分保持原有轮询顺序。
         val sorted = slots.sortedWith(
-            compareBy<Int> { score(keyGroups[it].first().key) == null }
+            compareBy<Int> { score(credentialGroups[it].first().credential as OAuthAccountRecord) == null }
                 .thenBy { slot ->
-                    val value = score(keyGroups[slot].first().key) ?: 0.0
+                    val value = score(credentialGroups[slot].first().credential as OAuthAccountRecord) ?: 0.0
                     if (highestFirst) -value else value
                 },
         )
-        return sorted.map { keyGroups[it] }
+        return sorted.map { credentialGroups[it] }
     }
 
     /** 最近一次额度读数中已用比例的最高值；没有读数时退回本地窗口用量。 */
-    private fun usedShare(key: ChannelKeyRecord, hint: OAuthRoutingHint?): Double? {
+    private fun usedShare(account: OAuthAccountRecord, hint: OAuthRoutingHint?): Double? {
         val shares = listOfNotNull(hint?.quota?.primary?.usedPercent, hint?.quota?.secondary?.usedPercent)
         if (shares.isNotEmpty()) return shares.max()
-        val limit = key.oauthPolicy?.windowLimit?.takeIf { it > 0 } ?: return null
+        val limit = account.oauthPolicy?.windowLimit?.takeIf { it > 0 } ?: return null
         return (hint?.windowUsed ?: 0).toDouble() / limit * 100
     }
 
@@ -155,7 +155,7 @@ class OAuthAccountRouting(
      * 剩余比例除以距离重置的小时数。上游额度优先取窗口跨度最长的一档（通常为每周窗口）；
      * 没有额度读数时用本地滑动窗口估算。
      */
-    private fun pace(key: ChannelKeyRecord, hint: OAuthRoutingHint?, nowMs: Long): Double? {
+    private fun pace(account: OAuthAccountRecord, hint: OAuthRoutingHint?, nowMs: Long): Double? {
         val quota = hint?.quota
         val window = listOfNotNull(quota?.primary, quota?.secondary)
             .maxByOrNull { it.windowSeconds ?: 0 }
@@ -164,7 +164,7 @@ class OAuthAccountRouting(
                 ?.let { (saturatedSubtract(it, nowMs) / 3_600_000.0).coerceAtLeast(MIN_PACE_HOURS) }
             return if (hours != null) window.remainingPercent / hours else window.remainingPercent
         }
-        val policy = key.oauthPolicy ?: return null
+        val policy = account.oauthPolicy ?: return null
         val limit = policy.windowLimit?.takeIf { it > 0 } ?: return null
         val remaining = (limit - (hint?.windowUsed ?: 0)).coerceAtLeast(0).toDouble() / limit * 100
         val hours = hint?.windowOldestAt
@@ -176,7 +176,8 @@ class OAuthAccountRouting(
         return remaining / hours
     }
 
-    private fun poolKey(channelId: String, key: ChannelKeyRecord): String = "$channelId#${key.priority}"
+    private fun poolKey(channelId: String, credential: dev.soven.llmgateway.domain.UpstreamCredential): String =
+        "$channelId#${credential.priority}"
 
     private companion object {
         /** 距重置不足 15 分钟时按 15 分钟计，避免除零并避免余量被无限放大。 */

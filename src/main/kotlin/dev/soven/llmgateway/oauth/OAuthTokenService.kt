@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.OAuthAccessToken
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAuthState
+import dev.soven.llmgateway.domain.UpstreamCredential
 import dev.soven.llmgateway.domain.saturatedAdd
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.security.CredentialCipher
@@ -38,7 +39,7 @@ enum class OAuthUnavailableReason {
 }
 
 /**
- * 订阅账号不可用。非 OAuth 密钥不会抛出该异常，而是返回 null 走静态凭据路径。
+ * 订阅账号不可用。静态密钥不会抛出该异常，而是直接走解密路径。
  *
  * @author 文杰
  * @since 2026-11-06
@@ -62,10 +63,10 @@ sealed interface OAuthRefreshResult {
  * 订阅账号 access token 的解析、刷新与后台轮换。
  *
  * 约束：
- * - 同一账号的刷新按 keyId 串行，避免并发刷新把 refresh token 轮换链打断。
- * - 刷新失败不修改 channel_keys 的启停状态；账号不可用由 [OAuthAccountRecord.authState] 表达。
+ * - 同一账号的刷新按 accountId 串行，避免并发刷新把 refresh token 轮换链打断。
+ * - 刷新失败不修改账号启停状态；账号不可用由 [OAuthAccountRecord.authState] 表达。
  * - 后台任务只处理仍可自动刷新的账号，终态账号等待管理员重新导入。
- * - 日志只记录 keyId、provider 和错误码，不记录任何 token。
+ * - 日志只记录 accountId、provider 和错误码，不记录任何 token。
  *
  * @author 文杰
  * @since 2026-11-06
@@ -85,8 +86,8 @@ class OAuthTokenService(
      * 返回可用的 access token。普通静态密钥返回 null；
      * OAuth 账号不可用时抛出 [OAuthTokenUnavailableException]，调用方应切换到其他候选。
      */
-    suspend fun accessToken(keyId: String, forceRefresh: Boolean = false): OAuthAccessToken? {
-        val account = repository.find(keyId) ?: return null
+    suspend fun accessToken(accountId: String, forceRefresh: Boolean = false): OAuthAccessToken? {
+        val account = repository.find(accountId) ?: return null
         return accessToken(account, forceRefresh)
     }
 
@@ -94,25 +95,22 @@ class OAuthTokenService(
      * 数据面统一的凭据解析入口：OAuth 账号取 access token，普通密钥解密静态凭据。
      * OAuth 账号不可用时绝不回退到 refresh token，避免把长期凭据发给上游。
      *
-     * 渠道记录里带有账号级策略即视为订阅账号，静态密钥不再查询账号表，
-     * 避免每个转发请求都多一次数据库往返。
+     * 凭据类型在候选构建阶段已经确定：静态密钥直接解密，订阅账号按账号 id 读取
+     * access token，不再通过 channel_keys 判断账号身份。
      */
-    override suspend fun resolveCredential(key: ChannelKeyRecord): String {
-        if (key.oauthPolicy == null) {
-            return cipher.decrypt(key.credentialCiphertext, key.credentialNonce)
-        }
-        val token = accessToken(key.id)
+    override suspend fun resolveCredential(credential: UpstreamCredential): String = when (credential) {
+        is ChannelKeyRecord -> cipher.decrypt(credential.credentialCiphertext, credential.credentialNonce)
+        is OAuthAccountRecord -> accessToken(credential.id)?.accessToken
             ?: throw OAuthTokenUnavailableException(
                 OAuthUnavailableReason.REAUTH_REQUIRED,
                 "订阅账号已删除",
             )
-        return token.accessToken
     }
 
     private suspend fun accessToken(account: OAuthAccountRecord, forceRefresh: Boolean): OAuthAccessToken {
         if (!forceRefresh) cachedAccessToken(account)?.let { return it }
-        return lockFor(account.keyId).withLock {
-            val latest = repository.find(account.keyId)
+        return lockFor(account.id).withLock {
+            val latest = repository.find(account.id)
                 ?: throw OAuthTokenUnavailableException(
                     OAuthUnavailableReason.REAUTH_REQUIRED,
                     "订阅账号已删除",
@@ -123,13 +121,13 @@ class OAuthTokenService(
     }
 
     /** 管理面手动刷新。即使账号已标记为需要重新授权，也允许再试一次。 */
-    suspend fun refreshNow(keyId: String): OAuthRefreshResult {
-        if (repository.find(keyId) == null) return OAuthRefreshResult.NotOAuthAccount
-        return lockFor(keyId).withLock {
-            val latest = repository.find(keyId) ?: return@withLock OAuthRefreshResult.NotOAuthAccount
+    suspend fun refreshNow(accountId: String): OAuthRefreshResult {
+        if (repository.find(accountId) == null) return OAuthRefreshResult.NotOAuthAccount
+        return lockFor(accountId).withLock {
+            val latest = repository.find(accountId) ?: return@withLock OAuthRefreshResult.NotOAuthAccount
             try {
                 refreshLocked(latest, force = true)
-                OAuthRefreshResult.Refreshed(repository.find(keyId) ?: latest)
+                OAuthRefreshResult.Refreshed(repository.findDetailed(accountId) ?: latest)
             } catch (cause: OAuthTokenUnavailableException) {
                 OAuthRefreshResult.Failed(cause.reason, cause.errorCode)
             }
@@ -171,7 +169,7 @@ class OAuthTokenService(
             due.map { account ->
                 async {
                     semaphore.withPermit {
-                        when (refreshNow(account.keyId)) {
+                        when (refreshNow(account.id)) {
                             is OAuthRefreshResult.Refreshed -> refreshed.incrementAndGet()
                             is OAuthRefreshResult.Failed -> failed.incrementAndGet()
                             OAuthRefreshResult.NotOAuthAccount -> Unit
@@ -207,7 +205,7 @@ class OAuthTokenService(
                 account.lastRefreshError,
             )
         }
-        val context = repository.loadRefreshContext(account.keyId)
+        val context = repository.loadRefreshContext(account.id)
             ?: throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号已删除")
         val provider = providers.find(context.account.provider)
             ?: throw OAuthTokenUnavailableException(
@@ -217,7 +215,7 @@ class OAuthTokenService(
         val refreshToken = try {
             cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce)
         } catch (_: Exception) {
-            recordRefreshFailure(account.keyId, "credential_decrypt_failed", terminal = true, context.refreshTokenCiphertext)
+            recordRefreshFailure(account.id, "credential_decrypt_failed", terminal = true, context.refreshTokenCiphertext)
             throw OAuthTokenUnavailableException(
                 OAuthUnavailableReason.REAUTH_REQUIRED,
                 "订阅账号凭据无法解密，请重新导入",
@@ -227,7 +225,7 @@ class OAuthTokenService(
         val response = try {
             provider.refresh(refreshToken, context.account.proxyUrl)
         } catch (cause: OAuthRefreshException) {
-            recordRefreshFailure(account.keyId, cause.errorCode, cause.terminal, context.refreshTokenCiphertext)
+            recordRefreshFailure(account.id, cause.errorCode, cause.terminal, context.refreshTokenCiphertext)
             throw OAuthTokenUnavailableException(
                 if (cause.terminal) OAuthUnavailableReason.REAUTH_REQUIRED else OAuthUnavailableReason.REFRESH_FAILED,
                 cause.message ?: "订阅账号刷新失败",
@@ -237,7 +235,7 @@ class OAuthTokenService(
             throw cause
         } catch (cause: Throwable) {
             if (cause is VirtualMachineError) throw cause
-            recordRefreshFailure(account.keyId, "refresh_failed", terminal = false, context.refreshTokenCiphertext)
+            recordRefreshFailure(account.id, "refresh_failed", terminal = false, context.refreshTokenCiphertext)
             throw OAuthTokenUnavailableException(
                 OAuthUnavailableReason.REFRESH_FAILED,
                 "订阅账号刷新失败",
@@ -248,7 +246,7 @@ class OAuthTokenService(
         val rotatedRefreshToken = response.refreshToken?.takeIf { it.isNotBlank() }?.let(cipher::encrypt)
         val expiresAt = saturatedAdd(now(), response.expiresInSeconds * 1_000)
         repository.saveRefreshed(
-            keyId = account.keyId,
+            accountId = account.id,
             accessToken = accessToken,
             expiresAt = expiresAt,
             tokenType = response.tokenType,
@@ -263,8 +261,8 @@ class OAuthTokenService(
             "credential_replaced",
         )
         logger.debug(
-            "oauth token refreshed, keyId={}, provider={}, expiresAt={}",
-            account.keyId,
+            "oauth token refreshed, accountId={}, provider={}, expiresAt={}",
+            account.id,
             context.account.provider.value,
             expiresAt,
         )
@@ -276,13 +274,13 @@ class OAuthTokenService(
      * 避免旧 refresh token 的终态错误把刚导入的新凭据标记为需要重新授权。
      */
     private suspend fun recordRefreshFailure(
-        keyId: String,
+        accountId: String,
         errorCode: String,
         terminal: Boolean,
         expectedRefreshCiphertext: String,
     ) {
         val recorded = repository.recordFailure(
-            keyId = keyId,
+            accountId = accountId,
             errorCode = errorCode,
             terminal = terminal,
             expectedRefreshCiphertext = expectedRefreshCiphertext,
@@ -297,7 +295,7 @@ class OAuthTokenService(
         }
     }
 
-    private fun lockFor(keyId: String): Mutex = locks[(keyId.hashCode() and Int.MAX_VALUE) % locks.size]
+    private fun lockFor(accountId: String): Mutex = locks[(accountId.hashCode() and Int.MAX_VALUE) % locks.size]
 
     private companion object {
         const val LOCK_STRIPES = 64

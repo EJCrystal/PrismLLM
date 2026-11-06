@@ -1,12 +1,12 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.domain.ChannelQuotaSettings
+import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelQuotaCredentialSource
 
 import dev.soven.llmgateway.domain.AdminAuditRecord
 import dev.soven.llmgateway.domain.ClientKeyRecord
-import dev.soven.llmgateway.domain.ChannelRecord
-import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ModelPriceRecord
@@ -1247,6 +1247,7 @@ fun ModelConnectivityTestResult.toResponse(
  */
 @Serializable
 data class OAuthAccountImportRequest(
+    val name: String? = null,
     val provider: String,
     val refreshToken: String,
     val accountEmail: String? = null,
@@ -1256,13 +1257,18 @@ data class OAuthAccountImportRequest(
     val accessTokenExpiresAt: Long? = null,
     val tokenType: String? = null,
     val scope: String? = null,
+    val channelIds: List<String> = emptyList(),
+    val models: List<String> = emptyList(),
+    val priority: Int = 1,
 )
 
 @Serializable
 data class OAuthLoginStartRequest(
     val provider: String,
-    val channelId: String,
-    val keyId: String,
+    /** 为空表示新建账号；非空表示对已有账号重新授权。 */
+    val accountId: String? = null,
+    val name: String? = null,
+    val channelIds: List<String> = emptyList(),
     val proxyUrl: String? = null,
 )
 
@@ -1285,6 +1291,26 @@ data class OAuthAccountPolicyRequest(
     val windowLimit: Int? = null,
     val windowSeconds: Int = 10_800,
     val maxConcurrentRequests: Int = 1,
+)
+
+@Serializable
+data class OAuthAccountSettingsRequest(
+    val name: String? = null,
+    val priority: Int? = null,
+    val enabled: Boolean? = null,
+    val proxyUrl: String? = null,
+    val clearProxy: Boolean = false,
+)
+
+@Serializable
+data class OAuthAccountChannelsRequest(
+    val channelIds: List<String>,
+)
+
+@Serializable
+data class OAuthAccountModelsRequest(
+    /** 空列表表示继承所关联渠道的全部模型。 */
+    val models: List<String>,
 )
 
 @Serializable
@@ -1325,14 +1351,18 @@ data class OAuthQuotaResponse(
 
 @Serializable
 data class OAuthAccountResponse(
-    val keyId: String,
-    val keyName: String,
-    val channelId: String,
-    val channelName: String,
+    val id: String,
+    val name: String,
     val provider: String,
     val accountEmail: String? = null,
     val accountPlan: String? = null,
     val authState: String,
+    val enabled: Boolean,
+    val priority: Int,
+    /** 空列表表示继承所关联渠道的全部模型。 */
+    val models: List<String> = emptyList(),
+    val channelIds: List<String> = emptyList(),
+    val channels: List<OAuthAccountChannelResponse> = emptyList(),
     val tokenType: String,
     val scope: String? = null,
     val accessTokenExpiresAt: Long? = null,
@@ -1347,6 +1377,12 @@ data class OAuthAccountResponse(
     val updatedAt: Long,
     val policy: OAuthAccountPolicyResponse,
     val runtime: OAuthAccountRuntimeResponse,
+)
+
+@Serializable
+data class OAuthAccountChannelResponse(
+    val id: String,
+    val name: String,
 )
 
 @Serializable
@@ -1383,19 +1419,21 @@ fun OAuthQuotaSnapshot.toResponse() = OAuthQuotaResponse(
 )
 
 fun OAuthAccountRecord.toResponse(
-    channel: ChannelRecord,
-    key: ChannelKeyRecord,
+    channels: List<OAuthAccountChannelResponse>,
     policy: OAuthAccountPolicy,
     runtime: OAuthAccountRuntimeState?,
 ) = OAuthAccountResponse(
-    keyId = keyId,
-    keyName = key.name,
-    channelId = channel.id,
-    channelName = channel.name,
+    id = id,
+    name = name,
     provider = provider.value,
     accountEmail = accountEmail,
     accountPlan = accountPlan,
     authState = authState.value,
+    enabled = enabled,
+    priority = priority,
+    models = models,
+    channelIds = channelIds.sorted(),
+    channels = channels,
     tokenType = tokenType,
     scope = scope,
     accessTokenExpiresAt = accessTokenExpiresAt,

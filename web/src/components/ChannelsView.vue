@@ -299,6 +299,8 @@ const loading = ref(true)
 const error = ref('')
 const channelStatusFilter = ref<ChannelStatusFilter>('all')
 const channelModelFilter = ref('')
+const channelNameFilter = ref('')
+const hasChannelFilters = computed(() => channelStatusFilter.value !== 'all' || !!channelModelFilter.value || !!channelNameFilter.value.trim())
 const prioritySortDirection = ref<'asc' | 'desc'>('asc')
 const channelToggleSavingIds = ref<string[]>([])
 const showForm = ref(false)
@@ -397,7 +399,7 @@ watch(channelModelOptions, (models) => {
   if (channelModelFilter.value && !models.includes(channelModelFilter.value)) channelModelFilter.value = ''
 })
 const displayedChannels = computed(() => channels.value
-  .filter((channel) => channelMatchesFilters(channel, channelStatusFilter.value, channelModelFilter.value))
+  .filter((channel) => channelMatchesFilters(channel, channelStatusFilter.value, channelModelFilter.value, channelNameFilter.value))
   .sort((left, right) => {
     const comparison = (left.priority ?? 1) - (right.priority ?? 1)
     return prioritySortDirection.value === 'asc' ? comparison : -comparison
@@ -614,16 +616,12 @@ function addKey() {
 }
 
 function removeKey(index: number): void {
-  if (channelKeys.value.length <= 1) {
-    notify('至少保留一个密钥', 'warning')
-    return
-  }
   const [removed] = channelKeys.value.splice(index, 1)
   if (selectedChannelKeyId.value === removed.localId) {
     const nextKey = channelKeys.value[Math.min(index, channelKeys.value.length - 1)]
-    selectedChannelKeyId.value = nextKey.localId
-    if (expandedChannelKeyId.value === removed.localId) expandedChannelKeyId.value = nextKey.localId
-    focusChannelKeyTab(nextKey.localId)
+    selectedChannelKeyId.value = nextKey?.localId ?? null
+    if (expandedChannelKeyId.value === removed.localId) expandedChannelKeyId.value = nextKey?.localId ?? null
+    if (nextKey) focusChannelKeyTab(nextKey.localId)
   }
 }
 
@@ -1119,11 +1117,6 @@ async function save(): Promise<void> {
     notify('至少选择一个支持协议', 'error')
     return
   }
-  if (channelKeys.value.length === 0) {
-    focusFormSection('keys')
-    notify('渠道至少需要一个密钥', 'error')
-    return
-  }
   const names = new Set()
   for (const key of channelKeys.value) {
     const name = key.name.trim()
@@ -1277,11 +1270,15 @@ onMounted(() => {
 
     <div class="panel table-panel">
       <div v-if="channels.length" class="channel-list-toolbar">
-        <span class="channel-sort-note">数字越小，路由优先级越高</span>
+        <label class="search-box channel-name-search">
+          <Icon name="search" :size="15" />
+          <input v-model="channelNameFilter" type="search" aria-label="按渠道名称筛选" placeholder="按名称筛选渠道" autocomplete="off" />
+        </label>
         <div class="channel-list-filters" role="group" aria-label="渠道筛选">
+          <span class="channel-sort-note">数字越小，路由优先级越高</span>
           <FilterSelect v-model="channelStatusFilter" label="状态" default-value="all" :options="channelStatusOptions.map(option => ({ value: option.id, label: option.label + '（' + option.count + '）' }))" />
           <FilterSelect v-model="channelModelFilter" label="模型" searchable :options="[{ value: '', label: '全部模型' }, ...channelModelOptions.map(model => ({ value: model, label: model }))]" />
-          <button v-if="channelStatusFilter !== 'all' || channelModelFilter" type="button" class="filter-reset" @click="channelStatusFilter = 'all'; channelModelFilter = ''">清除筛选</button>
+          <button v-if="hasChannelFilters" type="button" class="filter-reset" @click="channelStatusFilter = 'all'; channelModelFilter = ''; channelNameFilter = ''">清除筛选</button>
         </div>
       </div>
       <ErrorState v-if="healthError" title="健康度读取失败" :message="healthError" :busy="healthLoading" @retry="loadHealth" />
@@ -1297,7 +1294,7 @@ onMounted(() => {
         action-text="新建渠道"
         @action="openCreate"
       />
-      <div v-else v-scroll-hint class="table-scroll channel-table-view">
+      <div v-else v-scroll-hint class="table-scroll table-scroll-paged channel-table-view">
         <table class="data-table channels-table">
           <thead>
             <tr>
@@ -1765,6 +1762,10 @@ onMounted(() => {
               </div>
             </div>
 
+            <p v-if="channelKeys.length === 0" class="muted small">
+              当前渠道没有静态密钥。可保存后在「订阅账号」页关联 OAuth 账号，账号会作为该渠道路由凭据。
+            </p>
+
             <div v-if="!isMobile" class="channel-key-workspace">
               <div class="channel-key-nav">
                 <div class="channel-key-tabs" role="tablist" aria-label="渠道密钥" aria-orientation="vertical">
@@ -2220,7 +2221,15 @@ onMounted(() => {
 @media (max-width: 640px) {
   .channel-table-view { display: none; }
   :deep(.table-scroll-hint) { display: none !important; }
-  .channel-mobile-list { display: grid; gap: 12px; padding: 12px; }
+  .channel-mobile-list {
+    display: grid;
+    flex: 1 1 auto;
+    align-content: start;
+    gap: 12px;
+    min-height: 0;
+    padding: 12px;
+    overflow: auto;
+  }
   .channel-mobile-empty { display: block; padding: 28px 12px; text-align: center; }
   .channel-mobile-card { display: grid; gap: 10px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
   .channel-mobile-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }

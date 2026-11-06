@@ -1,7 +1,8 @@
 package dev.soven.llmgateway.repo
 
-import dev.soven.llmgateway.db.ChannelKeyOAuthAccounts
-import dev.soven.llmgateway.db.ChannelKeys
+import dev.soven.llmgateway.db.OAuthAccountChannels
+import dev.soven.llmgateway.db.OAuthAccountModels
+import dev.soven.llmgateway.db.OAuthAccounts
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAuthState
@@ -14,17 +15,20 @@ import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.isNull
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
+import java.util.UUID
 
-/** 刷新时同时需要账号状态和 channel_keys 中 refresh token 的密文。 */
+/** 刷新时同时需要账号状态和账号自身的 refresh token 密文。 */
 data class OAuthRefreshContext(
     val account: OAuthAccountRecord,
     val refreshTokenCiphertext: String,
@@ -32,199 +36,382 @@ data class OAuthRefreshContext(
     val refreshTokenKeyVersion: Int,
 )
 
-/** 跨步骤操作期间目标密钥的凭据被替换，不能再写入旧流程的结果。 */
-class CredentialChangedException : RuntimeException("目标密钥凭据已变化")
+/** 跨步骤操作期间目标账号的凭据被替换，不能再写入旧流程的结果。 */
+class CredentialChangedException : RuntimeException("目标账号凭据已变化")
+
+/** 新建独立订阅账号的输入。 */
+data class NewOAuthAccount(
+    val name: String,
+    val provider: OAuthProvider,
+    val accountEmail: String? = null,
+    val accountPlan: String? = null,
+    val refreshToken: EncryptedCredential,
+    val accessToken: EncryptedCredential? = null,
+    val accessTokenExpiresAt: Long? = null,
+    val tokenType: String = "Bearer",
+    val scope: String? = null,
+    val proxyUrl: String? = null,
+    val channelIds: Collection<String> = emptyList(),
+    val models: Collection<String> = emptyList(),
+    val priority: Int = 1,
+    val enabled: Boolean = true,
+)
+
+/** 重新授权或导入已有账号时更新的字段；refreshToken 为空表示保留原凭据。 */
+data class OAuthAccountCredentialUpdate(
+    val provider: OAuthProvider,
+    val accountEmail: String? = null,
+    val accountPlan: String? = null,
+    val refreshToken: EncryptedCredential? = null,
+    val accessToken: EncryptedCredential? = null,
+    val accessTokenExpiresAt: Long? = null,
+    val tokenType: String = "Bearer",
+    val scope: String? = null,
+    val proxyUrl: String? = null,
+    val expectedCredentialFingerprint: String? = null,
+)
 
 /**
- * 订阅账号 OAuth 状态的持久化。只读写密文，不解密、不记录任何 token。
+ * 独立订阅账号的持久化。账号凭据只读写密文，不解密、不记录任何 token。
  *
  * @author 文杰
  * @since 2026-11-06
  */
 class OAuthAccountRepository(private val database: Database) {
-    suspend fun find(keyId: String): OAuthAccountRecord? = suspendTransaction(database) {
-        ChannelKeyOAuthAccounts.selectAll()
-            .where { ChannelKeyOAuthAccounts.keyId eq keyId }
-            .singleOrNull()
-            ?.let(::toRecord)
+    /** 数据面快速路径：只读账号本体，不加载模型与渠道关联。 */
+    suspend fun find(id: String): OAuthAccountRecord? = suspendTransaction(database) {
+        OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }.singleOrNull()
+            ?.let { toRecord(it, emptyList(), emptySet()) }
+    }
+
+    /** 管理面详情：同时加载账号授权的模型和关联渠道。 */
+    suspend fun findDetailed(id: String): OAuthAccountRecord? = suspendTransaction(database) {
+        val rows = OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }.toList()
+        loadRelations(rows).singleOrNull()
     }
 
     /** 管理面账号看板：按最近变更倒序返回全部订阅账号。 */
     suspend fun listAll(limit: Int = 5_000): List<OAuthAccountRecord> = suspendTransaction(database) {
-        ChannelKeyOAuthAccounts.selectAll()
-            .orderBy(ChannelKeyOAuthAccounts.updatedAt to SortOrder.DESC)
+        val rows = OAuthAccounts.selectAll()
+            .orderBy(OAuthAccounts.updatedAt to SortOrder.DESC)
             .limit(limit.coerceIn(1, 20_000))
-            .map(::toRecord)
+            .toList()
+        loadRelations(rows)
+    }
+
+    /** 数据面候选：按渠道加载关联账号，包含停用账号，由路由阶段过滤。 */
+    suspend fun listByChannel(limit: Int = 20_000): Map<String, List<OAuthAccountRecord>> = suspendTransaction(database) {
+        val links = OAuthAccountChannels.selectAll()
+            .limit(limit.coerceIn(1, 100_000))
+            .toList()
+        if (links.isEmpty()) return@suspendTransaction emptyMap()
+        val accountIds = links.map { it[OAuthAccountChannels.accountId] }.distinct()
+        val rows = OAuthAccounts.selectAll().where { OAuthAccounts.id inList accountIds }.toList()
+        val accounts = loadRelations(rows).associateBy { it.id }
+        links.groupBy { it[OAuthAccountChannels.channelId] }.mapValues { (_, channelLinks) ->
+            channelLinks.mapNotNull { accounts[it[OAuthAccountChannels.accountId]] }
+        }
     }
 
     /** 后台扫描：只返回仍可自动刷新、且已进入提前刷新窗口的账号。 */
     suspend fun listDueForRefresh(dueBefore: Long, limit: Int = 100): List<OAuthAccountRecord> =
         suspendTransaction(database) {
-            ChannelKeyOAuthAccounts.selectAll()
+            OAuthAccounts.selectAll()
                 .where {
-                    (ChannelKeyOAuthAccounts.authState eq OAuthAuthState.ACTIVE.value) and
+                    (OAuthAccounts.authState eq OAuthAuthState.ACTIVE.value) and
+                        (OAuthAccounts.enabled eq true) and
                         (
-                            ChannelKeyOAuthAccounts.accessTokenExpiresAt.isNull() or
-                                (ChannelKeyOAuthAccounts.accessTokenExpiresAt less dueBefore)
+                            OAuthAccounts.accessTokenExpiresAt.isNull() or
+                                (OAuthAccounts.accessTokenExpiresAt less dueBefore)
                             )
                 }
-                // 尚未拿到过 access token 的账号优先，避免长期被到期账号挤占批次。
-                .orderBy(ChannelKeyOAuthAccounts.accessTokenExpiresAt to SortOrder.ASC_NULLS_FIRST)
+                .orderBy(OAuthAccounts.accessTokenExpiresAt to SortOrder.ASC_NULLS_FIRST)
                 .limit(limit.coerceIn(1, 1_000))
-                .map(::toRecord)
+                .map { toRecord(it, emptyList(), emptySet()) }
         }
-
-    /**
-     * 读取一次刷新所需的全部输入。没有 OAuth 绑定返回 null，表示这是普通静态密钥。
-     */
-    suspend fun loadRefreshContext(keyId: String): OAuthRefreshContext? = suspendTransaction(database) {
-        val accountRow = ChannelKeyOAuthAccounts.selectAll()
-            .where { ChannelKeyOAuthAccounts.keyId eq keyId }
-            .singleOrNull()
-            ?: return@suspendTransaction null
-        val keyRow = ChannelKeys.selectAll()
-            .where { ChannelKeys.id eq keyId }
-            .singleOrNull()
-            ?: return@suspendTransaction null
-        OAuthRefreshContext(
-            account = toRecord(accountRow),
-            refreshTokenCiphertext = keyRow[ChannelKeys.credentialCiphertext],
-            refreshTokenNonce = keyRow[ChannelKeys.credentialNonce],
-            refreshTokenKeyVersion = keyRow[ChannelKeys.credentialKeyVersion],
-        )
-    }
-
-    /**
-     * 导入或重新授权一个订阅账号。refresh token 与 OAuth 行在同一事务写入；
-     * 未提供 access token 时清空旧缓存，避免把旧账号的 token 用到新凭据上。
-     */
-    suspend fun upsert(
-        keyId: String,
-        provider: OAuthProvider,
-        accountEmail: String? = null,
-        accountPlan: String? = null,
-        proxyUrl: String? = null,
-        refreshToken: EncryptedCredential? = null,
-        accessToken: EncryptedCredential? = null,
-        accessTokenExpiresAt: Long? = null,
-        tokenType: String = "Bearer",
-        scope: String? = null,
-        now: Long = System.currentTimeMillis(),
-        /**
-         * 非空时在锁定密钥行后校验凭据指纹；跨步骤操作（如浏览器登录）用它防止
-         * 覆盖管理员并发替换的新凭据。校验与写入在同一事务内完成。
-         */
-        expectedCredentialFingerprint: String? = null,
-    ): OAuthAccountRecord = suspendTransaction(database) {
-        require((accessToken == null) == (accessTokenExpiresAt == null)) {
-            "access token and expiry must be provided together"
-        }
-        val keyRow = ChannelKeys.selectAll()
-            .where { ChannelKeys.id eq keyId }
-            .forUpdate()
-            .singleOrNull()
-            ?: throw IllegalArgumentException("channel key not found: $keyId")
-        if (expectedCredentialFingerprint != null) {
-            val current = credentialFingerprint(
-                keyRow[ChannelKeys.credentialCiphertext],
-                keyRow[ChannelKeys.credentialNonce],
-                keyRow[ChannelKeys.credentialKeyVersion],
-            )
-            if (current != expectedCredentialFingerprint) throw CredentialChangedException()
-        }
-        if (refreshToken != null) {
-            // 管理员导入属于凭据变更：推进 state_version，让并发编辑感知冲突，并触发冷却清理。
-            ChannelKeys.update({ ChannelKeys.id eq keyId }) {
-                it[credentialCiphertext] = refreshToken.ciphertext
-                it[credentialNonce] = refreshToken.nonce
-                it[credentialKeyVersion] = refreshToken.keyVersion
-                it[updatedAt] = now
-                it[stateVersion] = keyRow[ChannelKeys.stateVersion] + 1
-            }
-        }
-        val existing = ChannelKeyOAuthAccounts.selectAll()
-            .where { ChannelKeyOAuthAccounts.keyId eq keyId }
-            .forUpdate()
-            .singleOrNull()
-        if (existing == null) {
-            ChannelKeyOAuthAccounts.insert {
-                it[ChannelKeyOAuthAccounts.keyId] = keyId
-                it[ChannelKeyOAuthAccounts.provider] = provider.value
-                it[ChannelKeyOAuthAccounts.accountEmail] = accountEmail
-                it[ChannelKeyOAuthAccounts.accountPlan] = accountPlan
-                it[ChannelKeyOAuthAccounts.accessTokenCiphertext] = accessToken?.ciphertext
-                it[ChannelKeyOAuthAccounts.accessTokenNonce] = accessToken?.nonce
-                it[ChannelKeyOAuthAccounts.accessTokenKeyVersion] = accessToken?.keyVersion
-                it[ChannelKeyOAuthAccounts.accessTokenExpiresAt] = accessTokenExpiresAt
-                it[ChannelKeyOAuthAccounts.tokenType] = tokenType
-                it[ChannelKeyOAuthAccounts.scope] = scope
-                it[ChannelKeyOAuthAccounts.authState] = OAuthAuthState.ACTIVE.value
-                it[ChannelKeyOAuthAccounts.refreshFailureCount] = 0
-                it[ChannelKeyOAuthAccounts.lastRefreshError] = null
-                it[ChannelKeyOAuthAccounts.lastRefreshedAt] = if (accessToken != null) now else null
-                it[ChannelKeyOAuthAccounts.proxyUrl] = proxyUrl
-                it[ChannelKeyOAuthAccounts.createdAt] = now
-                it[ChannelKeyOAuthAccounts.updatedAt] = now
-            }
-        } else {
-            ChannelKeyOAuthAccounts.update({ ChannelKeyOAuthAccounts.keyId eq keyId }) {
-                it[ChannelKeyOAuthAccounts.provider] = provider.value
-                it[ChannelKeyOAuthAccounts.accountEmail] = accountEmail
-                it[ChannelKeyOAuthAccounts.accountPlan] = accountPlan
-                it[ChannelKeyOAuthAccounts.accessTokenCiphertext] = accessToken?.ciphertext
-                it[ChannelKeyOAuthAccounts.accessTokenNonce] = accessToken?.nonce
-                it[ChannelKeyOAuthAccounts.accessTokenKeyVersion] = accessToken?.keyVersion
-                it[ChannelKeyOAuthAccounts.accessTokenExpiresAt] = accessTokenExpiresAt
-                it[ChannelKeyOAuthAccounts.tokenType] = tokenType
-                it[ChannelKeyOAuthAccounts.scope] = scope
-                it[ChannelKeyOAuthAccounts.authState] = OAuthAuthState.ACTIVE.value
-                it[ChannelKeyOAuthAccounts.refreshFailureCount] = 0
-                it[ChannelKeyOAuthAccounts.lastRefreshError] = null
-                it[ChannelKeyOAuthAccounts.lastRefreshedAt] = if (accessToken != null) now else null
-                it[ChannelKeyOAuthAccounts.proxyUrl] = proxyUrl
-                it[ChannelKeyOAuthAccounts.updatedAt] = now
-            }
-        }
-        ChannelKeyOAuthAccounts.selectAll()
-            .where { ChannelKeyOAuthAccounts.keyId eq keyId }
-            .single()
-            .let(::toRecord)
-    }
 
     /** 后台额度扫描：只返回仍可自动刷新、且读数已过期的 ChatGPT 账号。 */
     suspend fun listDueForQuota(checkedBefore: Long, limit: Int = 100): List<OAuthAccountRecord> =
         suspendTransaction(database) {
-            ChannelKeyOAuthAccounts.selectAll()
+            OAuthAccounts.selectAll()
                 .where {
-                    (ChannelKeyOAuthAccounts.authState eq OAuthAuthState.ACTIVE.value) and
-                        (ChannelKeyOAuthAccounts.provider eq OAuthProvider.CHATGPT.value) and
+                    (OAuthAccounts.authState eq OAuthAuthState.ACTIVE.value) and
+                        (OAuthAccounts.enabled eq true) and
+                        (OAuthAccounts.provider eq OAuthProvider.CHATGPT.value) and
                         (
-                            ChannelKeyOAuthAccounts.quotaCheckedAt.isNull() or
-                                (ChannelKeyOAuthAccounts.quotaCheckedAt less checkedBefore)
+                            OAuthAccounts.quotaCheckedAt.isNull() or
+                                (OAuthAccounts.quotaCheckedAt less checkedBefore)
                             )
                 }
-                .orderBy(ChannelKeyOAuthAccounts.quotaCheckedAt to SortOrder.ASC_NULLS_FIRST)
+                .orderBy(OAuthAccounts.quotaCheckedAt to SortOrder.ASC_NULLS_FIRST)
                 .limit(limit.coerceIn(1, 1_000))
-                .map(::toRecord)
+                .map { toRecord(it, emptyList(), emptySet()) }
         }
 
+    suspend fun create(
+        input: NewOAuthAccount,
+        now: Long = System.currentTimeMillis(),
+    ): OAuthAccountRecord = suspendTransaction(database) {
+        require((input.accessToken == null) == (input.accessTokenExpiresAt == null)) {
+            "access token and expiry must be provided together"
+        }
+        val id = UUID.randomUUID().toString()
+        OAuthAccounts.insert {
+            it[OAuthAccounts.id] = id
+            it[name] = input.name.take(100)
+            it[provider] = input.provider.value
+            it[accountEmail] = input.accountEmail
+            it[accountPlan] = input.accountPlan
+            it[refreshTokenCiphertext] = input.refreshToken.ciphertext
+            it[refreshTokenNonce] = input.refreshToken.nonce
+            it[refreshTokenKeyVersion] = input.refreshToken.keyVersion
+            it[accessTokenCiphertext] = input.accessToken?.ciphertext
+            it[accessTokenNonce] = input.accessToken?.nonce
+            it[accessTokenKeyVersion] = input.accessToken?.keyVersion
+            it[accessTokenExpiresAt] = input.accessTokenExpiresAt
+            it[tokenType] = input.tokenType.take(32)
+            it[scope] = input.scope
+            it[authState] = OAuthAuthState.ACTIVE.value
+            it[enabled] = input.enabled
+            it[priority] = input.priority.coerceIn(1, 1_000)
+            it[refreshFailureCount] = 0
+            it[lastRefreshError] = null
+            it[lastRefreshedAt] = if (input.accessToken != null) now else null
+            it[proxyUrl] = input.proxyUrl
+            it[windowLimit] = null
+            it[windowSeconds] = 10_800
+            it[maxConcurrentRequests] = 1
+            it[createdAt] = now
+            it[OAuthAccounts.updatedAt] = now
+        }
+        replaceChannels(id, input.channelIds, now)
+        replaceModels(id, input.models, now)
+        requireNotNull(findDetailedInTransaction(id))
+    }
+
+    /**
+     * 重新授权或导入账号凭据。只有传入 refreshToken 才会替换长期凭据；
+     * access token 未提供时清空旧缓存，避免把旧账号的 token 用到新凭据上。
+     */
+    suspend fun updateCredentials(
+        accountId: String,
+        input: OAuthAccountCredentialUpdate,
+        now: Long = System.currentTimeMillis(),
+    ): OAuthAccountRecord? = suspendTransaction(database) {
+        require((input.accessToken == null) == (input.accessTokenExpiresAt == null)) {
+            "access token and expiry must be provided together"
+        }
+        val row = OAuthAccounts.selectAll()
+            .where { OAuthAccounts.id eq accountId }
+            .forUpdate()
+            .singleOrNull() ?: return@suspendTransaction null
+        val currentProvider = OAuthProvider.fromValue(row[OAuthAccounts.provider])
+            ?: throw IllegalStateException("未知的 OAuth provider: ${row[OAuthAccounts.provider]}")
+        require(currentProvider == input.provider) { "不能修改订阅账号的提供方" }
+        if (input.expectedCredentialFingerprint != null) {
+            val current = credentialFingerprint(
+                row[OAuthAccounts.refreshTokenCiphertext],
+                row[OAuthAccounts.refreshTokenNonce],
+                row[OAuthAccounts.refreshTokenKeyVersion],
+            )
+            if (current != input.expectedCredentialFingerprint) throw CredentialChangedException()
+        }
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+            it[provider] = input.provider.value
+            it[accountEmail] = input.accountEmail
+            it[accountPlan] = input.accountPlan
+            input.refreshToken?.let { refresh ->
+                it[refreshTokenCiphertext] = refresh.ciphertext
+                it[refreshTokenNonce] = refresh.nonce
+                it[refreshTokenKeyVersion] = refresh.keyVersion
+            }
+            it[accessTokenCiphertext] = input.accessToken?.ciphertext
+            it[accessTokenNonce] = input.accessToken?.nonce
+            it[accessTokenKeyVersion] = input.accessToken?.keyVersion
+            it[accessTokenExpiresAt] = input.accessTokenExpiresAt
+            it[tokenType] = input.tokenType.take(32)
+            it[scope] = input.scope
+            it[authState] = OAuthAuthState.ACTIVE.value
+            it[refreshFailureCount] = 0
+            it[lastRefreshError] = null
+            it[lastRefreshedAt] = if (input.accessToken != null) now else null
+            it[proxyUrl] = input.proxyUrl
+            it[OAuthAccounts.updatedAt] = now
+        }
+        findDetailedInTransaction(accountId)
+    }
+
+    suspend fun updateSettings(
+        accountId: String,
+        name: String? = null,
+        priority: Int? = null,
+        enabled: Boolean? = null,
+        proxyUrl: String? = null,
+        clearProxy: Boolean = false,
+        now: Long = System.currentTimeMillis(),
+    ): OAuthAccountRecord? = suspendTransaction(database) {
+        require(!(clearProxy && proxyUrl != null))
+        val changed = OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+            name?.let { value -> it[OAuthAccounts.name] = value.take(100) }
+            priority?.let { value -> it[OAuthAccounts.priority] = value.coerceIn(1, 1_000) }
+            enabled?.let { value -> it[OAuthAccounts.enabled] = value }
+            if (clearProxy) it[OAuthAccounts.proxyUrl] = null
+            proxyUrl?.let { value -> it[OAuthAccounts.proxyUrl] = value }
+            it[OAuthAccounts.updatedAt] = now
+        }
+        if (changed == 0) null else findDetailedInTransaction(accountId)
+    }
+
+    suspend fun updatePolicy(
+        accountId: String,
+        policy: OAuthAccountPolicy,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean = suspendTransaction(database) {
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+            it[windowLimit] = policy.windowLimit
+            it[windowSeconds] = policy.windowSeconds
+            it[maxConcurrentRequests] = policy.maxConcurrentRequests
+            it[OAuthAccounts.updatedAt] = now
+        } > 0
+    }
+
+    suspend fun setChannels(
+        accountId: String,
+        channelIds: Collection<String>,
+        now: Long = System.currentTimeMillis(),
+    ): OAuthAccountRecord? = suspendTransaction(database) {
+        if (OAuthAccounts.selectAll().where { OAuthAccounts.id eq accountId }.empty()) {
+            return@suspendTransaction null
+        }
+        replaceChannels(accountId, channelIds, now)
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) { it[OAuthAccounts.updatedAt] = now }
+        findDetailedInTransaction(accountId)
+    }
+
+    suspend fun setModels(
+        accountId: String,
+        models: Collection<String>,
+        now: Long = System.currentTimeMillis(),
+    ): OAuthAccountRecord? = suspendTransaction(database) {
+        if (OAuthAccounts.selectAll().where { OAuthAccounts.id eq accountId }.empty()) {
+            return@suspendTransaction null
+        }
+        replaceModels(accountId, models, now)
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) { it[OAuthAccounts.updatedAt] = now }
+        findDetailedInTransaction(accountId)
+    }
+
+    suspend fun delete(accountId: String): Boolean = suspendTransaction(database) {
+        OAuthAccounts.deleteWhere { OAuthAccounts.id eq accountId } > 0
+    }
+
+    /** 读取一次刷新所需的全部输入。 */
+    suspend fun loadRefreshContext(accountId: String): OAuthRefreshContext? = suspendTransaction(database) {
+        val row = OAuthAccounts.selectAll()
+            .where { OAuthAccounts.id eq accountId }
+            .singleOrNull() ?: return@suspendTransaction null
+        OAuthRefreshContext(
+            account = toRecord(row, emptyList(), emptySet()),
+            refreshTokenCiphertext = row[OAuthAccounts.refreshTokenCiphertext],
+            refreshTokenNonce = row[OAuthAccounts.refreshTokenNonce],
+            refreshTokenKeyVersion = row[OAuthAccounts.refreshTokenKeyVersion],
+        )
+    }
+
+    /**
+     * 保存一次成功刷新。传入 expectedRefreshCiphertext 时先锁账号行并校验凭据未被替换；
+     * 刷新轮换出的新 refresh token 与 access token 在同一事务写入。
+     */
+    suspend fun saveRefreshed(
+        accountId: String,
+        accessToken: EncryptedCredential,
+        expiresAt: Long,
+        tokenType: String,
+        scope: String?,
+        rotatedRefreshToken: EncryptedCredential? = null,
+        expectedRefreshCiphertext: String? = null,
+        now: Long = System.currentTimeMillis(),
+    ): OAuthAccountRecord? = suspendTransaction(database) {
+        val row = OAuthAccounts.selectAll()
+            .where { OAuthAccounts.id eq accountId }
+            .forUpdate()
+            .singleOrNull() ?: return@suspendTransaction null
+        if (expectedRefreshCiphertext != null && row[OAuthAccounts.refreshTokenCiphertext] != expectedRefreshCiphertext) {
+            return@suspendTransaction null
+        }
+        val updated = OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+            it[accessTokenCiphertext] = accessToken.ciphertext
+            it[accessTokenNonce] = accessToken.nonce
+            it[accessTokenKeyVersion] = accessToken.keyVersion
+            it[accessTokenExpiresAt] = expiresAt
+            it[OAuthAccounts.tokenType] = tokenType.take(32)
+            it[OAuthAccounts.scope] = scope
+            it[authState] = OAuthAuthState.ACTIVE.value
+            it[refreshFailureCount] = 0
+            it[lastRefreshError] = null
+            it[lastRefreshedAt] = now
+            it[OAuthAccounts.updatedAt] = now
+            rotatedRefreshToken?.let { refresh ->
+                it[refreshTokenCiphertext] = refresh.ciphertext
+                it[refreshTokenNonce] = refresh.nonce
+                it[refreshTokenKeyVersion] = refresh.keyVersion
+            }
+        }
+        if (updated == 0) return@suspendTransaction null
+        OAuthAccounts.selectAll()
+            .where { OAuthAccounts.id eq accountId }
+            .single()
+            .let { toRecord(it, emptyList(), emptySet()) }
+    }
+
+    /**
+     * 记录一次刷新失败；终态错误同时把账号标记为需要重新授权。
+     * 传入 expectedRefreshCiphertext 时先锁账号行并校验凭据未被替换。
+     */
+    suspend fun recordFailure(
+        accountId: String,
+        errorCode: String,
+        terminal: Boolean,
+        expectedRefreshCiphertext: String? = null,
+        now: Long = System.currentTimeMillis(),
+    ): OAuthAccountRecord? = suspendTransaction(database) {
+        val row = OAuthAccounts.selectAll()
+            .where { OAuthAccounts.id eq accountId }
+            .forUpdate()
+            .singleOrNull() ?: return@suspendTransaction null
+        if (expectedRefreshCiphertext != null && row[OAuthAccounts.refreshTokenCiphertext] != expectedRefreshCiphertext) {
+            return@suspendTransaction null
+        }
+        val failureCount = row[OAuthAccounts.refreshFailureCount] + 1
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+            it[refreshFailureCount] = failureCount
+            it[lastRefreshError] = sanitizeErrorCode(errorCode)
+            if (terminal) it[authState] = OAuthAuthState.REAUTH_REQUIRED.value
+            it[OAuthAccounts.updatedAt] = now
+        }
+        OAuthAccounts.selectAll()
+            .where { OAuthAccounts.id eq accountId }
+            .single()
+            .let { toRecord(it, emptyList(), emptySet()) }
+    }
+
     /** 从 access token 解析出的 ChatGPT 账号 id，刷新成功后写入。 */
-    suspend fun updateChatgptAccountId(keyId: String, accountId: String): Boolean = suspendTransaction(database) {
-        ChannelKeyOAuthAccounts.update({
-            (ChannelKeyOAuthAccounts.keyId eq keyId) and
-                (ChannelKeyOAuthAccounts.chatgptAccountId.isNull() or (ChannelKeyOAuthAccounts.chatgptAccountId neq accountId))
+    suspend fun updateChatgptAccountId(accountId: String, chatgptAccountId: String): Boolean = suspendTransaction(database) {
+        OAuthAccounts.update({
+            (OAuthAccounts.id eq accountId) and
+                (OAuthAccounts.chatgptAccountId.isNull() or (OAuthAccounts.chatgptAccountId neq chatgptAccountId))
         }) {
-            it[chatgptAccountId] = accountId.take(128)
+            it[OAuthAccounts.chatgptAccountId] = chatgptAccountId.take(128)
         } > 0
     }
 
     /** 保存一次成功的额度读数；`accountPlan` 非空时同步上游给出的套餐名。 */
     suspend fun saveQuota(
-        keyId: String,
+        accountId: String,
         snapshot: OAuthQuotaSnapshot,
         accountPlan: String? = null,
     ): Boolean = suspendTransaction(database) {
-        ChannelKeyOAuthAccounts.update({ ChannelKeyOAuthAccounts.keyId eq keyId }) {
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
             it[quotaPrimaryUsedPercent] = snapshot.primary?.usedPercent?.coerceIn(0.0, 100.0)
             it[quotaPrimaryWindowSeconds] = snapshot.primary?.windowSeconds
             it[quotaPrimaryResetsAt] = snapshot.primary?.resetsAt
@@ -237,165 +424,124 @@ class OAuthAccountRepository(private val database: Database) {
             it[quotaResetCredits] = snapshot.resetCredits
             it[quotaCheckedAt] = snapshot.checkedAt
             it[quotaError] = null
-            if (accountPlan != null) it[ChannelKeyOAuthAccounts.accountPlan] = accountPlan.take(32)
+            if (accountPlan != null) it[OAuthAccounts.accountPlan] = accountPlan.take(32)
         } > 0
     }
 
     /** 记录一次额度读取失败；保留上一次成功读数，只更新错误信息。 */
-    suspend fun recordQuotaFailure(keyId: String, errorCode: String): Boolean = suspendTransaction(database) {
-        ChannelKeyOAuthAccounts.update({ ChannelKeyOAuthAccounts.keyId eq keyId }) {
+    suspend fun saveQuotaError(accountId: String, errorCode: String): Boolean = suspendTransaction(database) {
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
             it[quotaError] = sanitizeQuotaError(errorCode)
         } > 0
     }
 
-    /** 更新账号级调度策略；重新导入凭据不会重置这里的管理员配置。 */
-    suspend fun updatePolicy(
-        keyId: String,
-        policy: OAuthAccountPolicy,
-        now: Long = System.currentTimeMillis(),
-    ): Boolean = suspendTransaction(database) {
-        ChannelKeyOAuthAccounts.update({ ChannelKeyOAuthAccounts.keyId eq keyId }) {
-            it[windowLimit] = policy.windowLimit
-            it[windowSeconds] = policy.windowSeconds
-            it[maxConcurrentRequests] = policy.maxConcurrentRequests
-            it[updatedAt] = now
-        } > 0
+    private fun findDetailedInTransaction(accountId: String): OAuthAccountRecord? {
+        val rows = OAuthAccounts.selectAll().where { OAuthAccounts.id eq accountId }.toList()
+        return loadRelations(rows).singleOrNull()
     }
 
-    /**
-     * 保存一次成功的刷新。整个写入以 channel_keys 中的凭据密文仍等于本次读取值为前提，
-     * 避免把旧账号的 access token 覆盖到管理员并发导入的新凭据上。
-     */
-    suspend fun saveRefreshed(
-        keyId: String,
-        accessToken: EncryptedCredential,
-        expiresAt: Long,
-        tokenType: String,
-        scope: String?,
-        rotatedRefreshToken: EncryptedCredential?,
-        expectedRefreshCiphertext: String,
-        now: Long = System.currentTimeMillis(),
-    ): OAuthAccountRecord? = suspendTransaction(database) {
-        // 与 upsert 使用同一把行锁，二者串行；凭据已变化时放弃本次刷新结果。
-        val current = ChannelKeys.selectAll()
-            .where { ChannelKeys.id eq keyId }
-            .forUpdate()
-            .singleOrNull()
-            ?: return@suspendTransaction null
-        if (current[ChannelKeys.credentialCiphertext] != expectedRefreshCiphertext) {
-            return@suspendTransaction null
+    private fun loadRelations(rows: List<ResultRow>): List<OAuthAccountRecord> {
+        if (rows.isEmpty()) return emptyList()
+        val ids = rows.map { it[OAuthAccounts.id] }
+        val modelsByAccount = OAuthAccountModels.selectAll()
+            .where { OAuthAccountModels.accountId inList ids }
+            .groupBy { it[OAuthAccountModels.accountId] }
+            .mapValues { (_, models) -> models.map { it[OAuthAccountModels.upstreamModel] }.sorted() }
+        val channelsByAccount = OAuthAccountChannels.selectAll()
+            .where { OAuthAccountChannels.accountId inList ids }
+            .groupBy { it[OAuthAccountChannels.accountId] }
+            .mapValues { (_, links) -> links.map { it[OAuthAccountChannels.channelId] }.toSet() }
+        return rows.map { row ->
+            toRecord(
+                row,
+                modelsByAccount[row[OAuthAccounts.id]].orEmpty(),
+                channelsByAccount[row[OAuthAccounts.id]].orEmpty(),
+            )
         }
-        val updated = ChannelKeyOAuthAccounts.update({ ChannelKeyOAuthAccounts.keyId eq keyId }) {
-            it[accessTokenCiphertext] = accessToken.ciphertext
-            it[accessTokenNonce] = accessToken.nonce
-            it[accessTokenKeyVersion] = accessToken.keyVersion
-            it[accessTokenExpiresAt] = expiresAt
-            it[ChannelKeyOAuthAccounts.tokenType] = tokenType
-            it[ChannelKeyOAuthAccounts.scope] = scope
-            it[authState] = OAuthAuthState.ACTIVE.value
-            it[refreshFailureCount] = 0
-            it[lastRefreshError] = null
-            it[lastRefreshedAt] = now
-            it[ChannelKeyOAuthAccounts.updatedAt] = now
-        }
-        if (updated == 0) return@suspendTransaction null
-        if (rotatedRefreshToken != null) {
-            ChannelKeys.update({ ChannelKeys.id eq keyId }) {
-                it[credentialCiphertext] = rotatedRefreshToken.ciphertext
-                it[credentialNonce] = rotatedRefreshToken.nonce
-                it[credentialKeyVersion] = rotatedRefreshToken.keyVersion
+    }
+
+    private fun replaceChannels(accountId: String, channelIds: Collection<String>, now: Long) {
+        OAuthAccountChannels.deleteWhere { OAuthAccountChannels.accountId eq accountId }
+        channelIds.map(String::trim).filter(String::isNotEmpty).distinct().forEach { channelId ->
+            OAuthAccountChannels.insert {
+                it[OAuthAccountChannels.accountId] = accountId
+                it[OAuthAccountChannels.channelId] = channelId
+                it[createdAt] = now
             }
         }
-        ChannelKeyOAuthAccounts.selectAll()
-            .where { ChannelKeyOAuthAccounts.keyId eq keyId }
-            .single()
-            .let(::toRecord)
     }
 
-    /**
-     * 记录一次刷新失败；终态错误同时把账号标记为需要重新授权。
-     * 传入 [expectedRefreshCiphertext] 时先锁密钥行并校验凭据未被替换：
-     * 刷新期间管理员重新导入凭据，旧 refresh token 的失败结果不能写到新凭据上。
-     */
-    suspend fun recordFailure(
-        keyId: String,
-        errorCode: String,
-        terminal: Boolean,
-        expectedRefreshCiphertext: String? = null,
-        now: Long = System.currentTimeMillis(),
-    ): OAuthAccountRecord? = suspendTransaction(database) {
-        if (expectedRefreshCiphertext != null) {
-            // 与 saveRefreshed / upsert 使用同一把密钥行锁，保证校验与失败写入串行。
-            val keyRow = ChannelKeys.selectAll()
-                .where { ChannelKeys.id eq keyId }
-                .forUpdate()
-                .singleOrNull()
-                ?: return@suspendTransaction null
-            if (keyRow[ChannelKeys.credentialCiphertext] != expectedRefreshCiphertext) {
-                return@suspendTransaction null
+    private fun replaceModels(accountId: String, models: Collection<String>, now: Long) {
+        OAuthAccountModels.deleteWhere { OAuthAccountModels.accountId eq accountId }
+        models.map(String::trim).filter(String::isNotEmpty).distinct().forEach { model ->
+            OAuthAccountModels.insert {
+                it[OAuthAccountModels.accountId] = accountId
+                it[upstreamModel] = model.take(200)
+                it[createdAt] = now
             }
         }
-        val row = ChannelKeyOAuthAccounts.selectAll()
-            .where { ChannelKeyOAuthAccounts.keyId eq keyId }
-            .forUpdate()
-            .singleOrNull()
-            ?: return@suspendTransaction null
-        val failureCount = row[ChannelKeyOAuthAccounts.refreshFailureCount] + 1
-        ChannelKeyOAuthAccounts.update({ ChannelKeyOAuthAccounts.keyId eq keyId }) {
-            it[refreshFailureCount] = failureCount
-            it[lastRefreshError] = sanitizeErrorCode(errorCode)
-            if (terminal) it[authState] = OAuthAuthState.REAUTH_REQUIRED.value
-            it[ChannelKeyOAuthAccounts.updatedAt] = now
-        }
-        ChannelKeyOAuthAccounts.selectAll()
-            .where { ChannelKeyOAuthAccounts.keyId eq keyId }
-            .single()
-            .let(::toRecord)
     }
 
-    private fun toRecord(row: ResultRow) = OAuthAccountRecord(
-        keyId = row[ChannelKeyOAuthAccounts.keyId],
-        provider = OAuthProvider.fromValue(row[ChannelKeyOAuthAccounts.provider])
-            ?: throw IllegalStateException("未知的 OAuth provider: ${row[ChannelKeyOAuthAccounts.provider]}"),
-        accountEmail = row[ChannelKeyOAuthAccounts.accountEmail],
-        accountPlan = row[ChannelKeyOAuthAccounts.accountPlan],
-        accessTokenCiphertext = row[ChannelKeyOAuthAccounts.accessTokenCiphertext],
-        accessTokenNonce = row[ChannelKeyOAuthAccounts.accessTokenNonce],
-        accessTokenKeyVersion = row[ChannelKeyOAuthAccounts.accessTokenKeyVersion],
-        accessTokenExpiresAt = row[ChannelKeyOAuthAccounts.accessTokenExpiresAt],
-        tokenType = row[ChannelKeyOAuthAccounts.tokenType],
-        scope = row[ChannelKeyOAuthAccounts.scope],
-        authState = OAuthAuthState.fromValue(row[ChannelKeyOAuthAccounts.authState])
-            ?: throw IllegalStateException("未知的 OAuth 账号状态: ${row[ChannelKeyOAuthAccounts.authState]}"),
-        refreshFailureCount = row[ChannelKeyOAuthAccounts.refreshFailureCount],
-        lastRefreshError = row[ChannelKeyOAuthAccounts.lastRefreshError],
-        lastRefreshedAt = row[ChannelKeyOAuthAccounts.lastRefreshedAt],
-        proxyUrl = row[ChannelKeyOAuthAccounts.proxyUrl],
-        chatgptAccountId = row[ChannelKeyOAuthAccounts.chatgptAccountId],
+    private fun toRecord(
+        row: ResultRow,
+        models: List<String>,
+        channelIds: Set<String>,
+    ) = OAuthAccountRecord(
+        id = row[OAuthAccounts.id],
+        name = row[OAuthAccounts.name],
+        provider = OAuthProvider.fromValue(row[OAuthAccounts.provider])
+            ?: throw IllegalStateException("未知的 OAuth provider: ${row[OAuthAccounts.provider]}"),
+        accountEmail = row[OAuthAccounts.accountEmail],
+        accountPlan = row[OAuthAccounts.accountPlan],
+        refreshTokenCiphertext = row[OAuthAccounts.refreshTokenCiphertext],
+        refreshTokenNonce = row[OAuthAccounts.refreshTokenNonce],
+        refreshTokenKeyVersion = row[OAuthAccounts.refreshTokenKeyVersion],
+        accessTokenCiphertext = row[OAuthAccounts.accessTokenCiphertext],
+        accessTokenNonce = row[OAuthAccounts.accessTokenNonce],
+        accessTokenKeyVersion = row[OAuthAccounts.accessTokenKeyVersion],
+        accessTokenExpiresAt = row[OAuthAccounts.accessTokenExpiresAt],
+        tokenType = row[OAuthAccounts.tokenType],
+        scope = row[OAuthAccounts.scope],
+        authState = OAuthAuthState.fromValue(row[OAuthAccounts.authState])
+            ?: throw IllegalStateException("未知的 OAuth 账号状态: ${row[OAuthAccounts.authState]}"),
+        enabled = row[OAuthAccounts.enabled],
+        priority = row[OAuthAccounts.priority],
+        models = models,
+        channelIds = channelIds,
+        refreshFailureCount = row[OAuthAccounts.refreshFailureCount],
+        lastRefreshError = row[OAuthAccounts.lastRefreshError],
+        lastRefreshedAt = row[OAuthAccounts.lastRefreshedAt],
+        proxyUrl = row[OAuthAccounts.proxyUrl],
+        policy = OAuthAccountPolicy(
+            windowLimit = row[OAuthAccounts.windowLimit],
+            windowSeconds = row[OAuthAccounts.windowSeconds],
+            maxConcurrentRequests = row[OAuthAccounts.maxConcurrentRequests],
+        ),
+        chatgptAccountId = row[OAuthAccounts.chatgptAccountId],
         quota = toQuota(row),
-        createdAt = row[ChannelKeyOAuthAccounts.createdAt],
-        updatedAt = row[ChannelKeyOAuthAccounts.updatedAt],
+        createdAt = row[OAuthAccounts.createdAt],
+        updatedAt = row[OAuthAccounts.updatedAt],
     )
 
     private fun toQuota(row: ResultRow): OAuthQuotaSnapshot? {
-        val checkedAt = row[ChannelKeyOAuthAccounts.quotaCheckedAt]
-        val error = row[ChannelKeyOAuthAccounts.quotaError]
+        val checkedAt = row[OAuthAccounts.quotaCheckedAt]
+        val error = row[OAuthAccounts.quotaError]
         if (checkedAt == null && error == null) return null
         return OAuthQuotaSnapshot(
             primary = quotaWindow(
-                row[ChannelKeyOAuthAccounts.quotaPrimaryUsedPercent],
-                row[ChannelKeyOAuthAccounts.quotaPrimaryWindowSeconds],
-                row[ChannelKeyOAuthAccounts.quotaPrimaryResetsAt],
+                row[OAuthAccounts.quotaPrimaryUsedPercent],
+                row[OAuthAccounts.quotaPrimaryWindowSeconds],
+                row[OAuthAccounts.quotaPrimaryResetsAt],
             ),
             secondary = quotaWindow(
-                row[ChannelKeyOAuthAccounts.quotaSecondaryUsedPercent],
-                row[ChannelKeyOAuthAccounts.quotaSecondaryWindowSeconds],
-                row[ChannelKeyOAuthAccounts.quotaSecondaryResetsAt],
+                row[OAuthAccounts.quotaSecondaryUsedPercent],
+                row[OAuthAccounts.quotaSecondaryWindowSeconds],
+                row[OAuthAccounts.quotaSecondaryResetsAt],
             ),
-            allowed = row[ChannelKeyOAuthAccounts.quotaAllowed],
-            creditsBalance = row[ChannelKeyOAuthAccounts.quotaCreditsBalance],
-            creditsUnlimited = row[ChannelKeyOAuthAccounts.quotaCreditsUnlimited],
-            resetCredits = row[ChannelKeyOAuthAccounts.quotaResetCredits],
+            allowed = row[OAuthAccounts.quotaAllowed],
+            creditsBalance = row[OAuthAccounts.quotaCreditsBalance],
+            creditsUnlimited = row[OAuthAccounts.quotaCreditsUnlimited],
+            resetCredits = row[OAuthAccounts.quotaResetCredits],
             checkedAt = checkedAt ?: 0,
             error = error,
         )

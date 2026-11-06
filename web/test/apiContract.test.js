@@ -74,18 +74,22 @@ describe('API 契约的运行时形状', () => {
       calls.push({ url: String(input), method: init.method || 'GET', body: init.body })
       return new Response(null, { status: 204 })
     }
-    await api.importOAuthAccount('channel/1', 'key 2', { provider: 'chatgpt', refreshToken: 'rt' })
+    await api.importOAuthAccount({ provider: 'chatgpt', refreshToken: 'rt', channelIds: ['channel/1'] })
     await api.updateOAuthAccountPolicy('key 2', { windowLimit: 5 })
     await api.refreshOAuthAccount('key 2')
     await api.clearOAuthAccountCooldown('key 2')
 
     assert.deepEqual(calls.map((call) => [call.method, call.url]), [
-      ['PUT', '/admin/api/channels/channel%2F1/keys/key%202/oauth-account'],
+      ['POST', '/admin/api/oauth-accounts'],
       ['PUT', '/admin/api/oauth-accounts/key%202/policy'],
       ['POST', '/admin/api/oauth-accounts/key%202/refresh'],
       ['POST', '/admin/api/oauth-accounts/key%202/cooldown/clear'],
     ])
-    assert.deepEqual(JSON.parse(calls[0].body), { provider: 'chatgpt', refreshToken: 'rt' })
+    assert.deepEqual(JSON.parse(calls[0].body), {
+      provider: 'chatgpt',
+      refreshToken: 'rt',
+      channelIds: ['channel/1'],
+    })
     assert.deepEqual(JSON.parse(calls[1].body), { windowLimit: 5 })
   })
 

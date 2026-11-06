@@ -156,6 +156,7 @@ export function oauthLoginCallbackError(raw: string): string | null {
 }
 
 export interface OAuthImportForm {
+  name: string
   provider: string
   refreshToken: string
   accountEmail: string
@@ -163,17 +164,23 @@ export interface OAuthImportForm {
   proxyUrl: string
   accessToken: string
   accessTokenExpiresAt: number | null
+  channelIds: string[]
+  priority: number
 }
 
 /**
  * 校验并转换导入表单。refresh token 必填；access token 与到期时间必须成对出现，
  * 避免后端保存一个无法使用的 token。
  */
-export function buildOAuthImportPayload(form: OAuthImportForm, now: number = Date.now()): OAuthAccountImportRequest {
+export function buildOAuthImportPayload(
+  form: OAuthImportForm,
+  now: number = Date.now(),
+  options: { allowEmptyRefreshToken?: boolean } = {},
+): OAuthAccountImportRequest {
   const provider = form.provider.trim()
   if (!provider) throw new Error('请选择账号提供方')
   const refreshToken = form.refreshToken.trim()
-  if (!refreshToken) throw new Error('请填写 refresh token')
+  if (!refreshToken && !options.allowEmptyRefreshToken) throw new Error('请填写 refresh token')
   const accessToken = form.accessToken.trim()
   if (accessToken && form.accessTokenExpiresAt == null) {
     throw new Error('填写 access token 时必须同时填写到期时间')
@@ -186,6 +193,11 @@ export function buildOAuthImportPayload(form: OAuthImportForm, now: number = Dat
   }
 
   const payload: OAuthAccountImportRequest = { provider, refreshToken }
+  const name = (form.name ?? '').trim()
+  if (name) payload.name = name
+  const channelIds = form.channelIds ?? []
+  if (channelIds.length > 0) payload.channelIds = channelIds
+  if ((form.priority ?? 1) !== 1) payload.priority = form.priority
   const email = form.accountEmail.trim()
   if (email) payload.accountEmail = email
   const plan = form.accountPlan.trim()

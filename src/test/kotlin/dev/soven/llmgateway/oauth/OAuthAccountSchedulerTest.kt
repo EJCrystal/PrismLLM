@@ -1,12 +1,11 @@
 package dev.soven.llmgateway.oauth
 
-import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.domain.OAuthStoredWindowState
 import dev.soven.llmgateway.domain.OAuthWindowSnapshot
-import dev.soven.llmgateway.resilience.ChannelKeyState
 import kotlinx.coroutines.test.runTest
 import java.time.Instant
 import kotlin.test.Test
@@ -158,18 +157,6 @@ class OAuthAccountSchedulerTest {
     }
 
     @Test
-    fun `static keys are always allowed and never publish state`() = runTest {
-        val key = key(policy = null)
-        repeat(5) {
-            val decision = scheduler.acquire(key)
-            assertIs<OAuthAccountDecision.Allowed>(decision)
-            assertNull((decision as OAuthAccountDecision.Allowed).lease)
-        }
-        assertNull(scheduler.check(key))
-        assertTrue(snapshots.isEmpty())
-    }
-
-    @Test
     fun `check reports a denial without consuming a window slot`() = runTest {
         val key = key(policy = OAuthAccountPolicy(windowLimit = 1, windowSeconds = 3_600, maxConcurrentRequests = 5))
         assertNull(scheduler.check(key))
@@ -192,7 +179,7 @@ class OAuthAccountSchedulerTest {
             listOf(
                 OAuthStoredWindowState(
                     snapshot = OAuthWindowSnapshot(
-                        keyId = key.id,
+                        accountId = key.id,
                         hits = listOf(clock - 7_200_000, clock - 1_800_000),
                         cooldownUntil = clock + 30_000,
                         consecutiveRateLimits = 3,
@@ -395,18 +382,17 @@ class OAuthAccountSchedulerTest {
         assertTrue(scheduler.routingHints(listOf(key(policy = OAuthAccountPolicy()).copy(id = "key-3"))).isEmpty())
     }
 
-    private fun key(policy: OAuthAccountPolicy? = OAuthAccountPolicy()): ChannelKeyRecord = ChannelKeyRecord(
+    private fun key(policy: OAuthAccountPolicy? = OAuthAccountPolicy()): OAuthAccountRecord = OAuthAccountRecord(
         id = "key-1",
-        channelId = "channel-1",
         name = "account",
-        credentialCiphertext = "cipher",
-        credentialNonce = "nonce",
-        credentialKeyVersion = 1,
-        state = ChannelKeyState.ACTIVE,
+        provider = dev.soven.llmgateway.domain.OAuthProvider.CHATGPT,
+        refreshTokenCiphertext = "refresh-cipher",
+        refreshTokenNonce = "refresh-nonce",
+        refreshTokenKeyVersion = 1,
         priority = 0,
         createdAt = 0,
         updatedAt = 0,
-        oauthPolicy = policy,
+        policy = policy ?: OAuthAccountPolicy(),
     )
 }
 

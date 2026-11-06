@@ -4,6 +4,7 @@ import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.repo.ChannelRepository
+import dev.soven.llmgateway.repo.OAuthAccountRepository
 
 /**
  * 一个允许直连的渠道模型，以及它对外使用的规范 ID。
@@ -23,10 +24,11 @@ data class DirectModel(
  */
 class UpstreamModelCatalog(
     private val channelRepository: ChannelRepository,
+    private val oauthAccountRepository: OAuthAccountRepository,
 ) {
     suspend fun listDirectModels(): List<DirectModel> =
         directExposureChannels().flatMap { channel ->
-            channel.modelMappings.filter { mapping -> channel.keysFor(mapping.upstreamModel).isNotEmpty() }.map { mapping ->
+            channel.modelMappings.filter { mapping -> channel.credentialsFor(mapping.upstreamModel).isNotEmpty() }.map { mapping ->
                 DirectModel(
                     publicId = mapping.canonicalModelId ?: mapping.upstreamModel,
                     upstreamModel = mapping.upstreamModel,
@@ -48,10 +50,10 @@ class UpstreamModelCatalog(
                 channel.modelMappings
                     .filter { (it.canonicalModelId ?: it.upstreamModel) == model }
                     .flatMap { mapping ->
-                        channel.keysFor(mapping.upstreamModel).map { key ->
+                        channel.credentialsFor(mapping.upstreamModel).map { credential ->
                             RouteCandidate(
                                 channel = channel,
-                                key = key,
+                                credential = credential,
                                 upstreamModel = mapping.upstreamModel,
                                 position = channel.priority,
                             )
@@ -61,12 +63,16 @@ class UpstreamModelCatalog(
             .sortedWith(compareBy(
                 { it.position },
                 { it.channel.name },
-                { it.key.priority },
-                { it.key.name },
-                { it.key.id },
+                { it.credential.priority },
+                { it.credential.name },
+                { it.credential.id },
                 { it.upstreamModel },
             ))
 
-    private suspend fun directExposureChannels(): List<ChannelRecord> =
-        channelRepository.list().filter { it.enabled }
+    private suspend fun directExposureChannels(): List<ChannelRecord> {
+        val accountsByChannel = oauthAccountRepository.listByChannel()
+        return channelRepository.list()
+            .filter { it.enabled }
+            .map { channel -> channel.copy(oauthAccounts = accountsByChannel[channel.id].orEmpty()) }
+    }
 }

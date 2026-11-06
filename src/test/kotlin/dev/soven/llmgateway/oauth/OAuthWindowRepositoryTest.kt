@@ -1,20 +1,17 @@
 package dev.soven.llmgateway.oauth
 
 import dev.soven.llmgateway.config.GatewayConfig
-import dev.soven.llmgateway.db.ChannelKeyOAuthAccounts
 import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.OAuthWindowSnapshot
 import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.repo.OAuthWindowRepository
 import dev.soven.llmgateway.security.CredentialCipher
 import kotlinx.coroutines.runBlocking
-import org.jetbrains.exposed.v1.core.eq
-import org.jetbrains.exposed.v1.jdbc.deleteWhere
-import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -63,20 +60,19 @@ class OAuthWindowRepositoryTest {
 
     @Test
     fun `new accounts use the default scheduling policy`() = runBlocking {
-        val (channelId, keyId) = createAccount()
-        val key = channels.find(channelId)!!.keys.single { it.id == keyId }
-        assertEquals(OAuthAccountPolicy(), key.oauthPolicy)
+        val accountId = createAccount()
+        assertEquals(OAuthAccountPolicy(), accounts.find(accountId)!!.policy)
     }
 
     @Test
     fun `persists and restores a snapshot together with the account policy`() = runBlocking {
-        val (channelId, keyId) = createAccount()
+        val accountId = createAccount()
         val policy = OAuthAccountPolicy(windowLimit = 7, windowSeconds = 3_600, maxConcurrentRequests = 2)
-        assertTrue(accounts.updatePolicy(keyId, policy))
+        assertTrue(accounts.updatePolicy(accountId, policy))
 
         windows.upsert(
             OAuthWindowSnapshot(
-                keyId = keyId,
+                accountId = accountId,
                 hits = listOf(1_000L, 2_000L),
                 cooldownUntil = 5_000L,
                 consecutiveRateLimits = 3,
@@ -84,24 +80,22 @@ class OAuthWindowRepositoryTest {
             ),
         )
 
-        val stored = windows.loadAll().single { it.snapshot.keyId == keyId }
+        val stored = windows.loadAll().single { it.snapshot.accountId == accountId }
         assertEquals(listOf(1_000L, 2_000L), stored.snapshot.hits)
         assertEquals(5_000L, stored.snapshot.cooldownUntil)
         assertEquals(3, stored.snapshot.consecutiveRateLimits)
         assertEquals(policy, stored.policy)
 
-        // 渠道加载时一并带出账号级调度策略。
-        val key = channels.find(channelId)!!.keys.single { it.id == keyId }
-        assertEquals(policy, key.oauthPolicy)
+        assertEquals(policy, accounts.find(accountId)!!.policy)
     }
 
     @Test
     fun `upsert keeps one row per account and replaces the snapshot`() = runBlocking {
-        val (_, keyId) = createAccount()
-        windows.upsert(OAuthWindowSnapshot(keyId, hits = listOf(1L, 2L), updatedAt = 1L))
-        windows.upsert(OAuthWindowSnapshot(keyId, hits = listOf(3L), cooldownUntil = 9L, updatedAt = 2L))
+        val accountId = createAccount()
+        windows.upsert(OAuthWindowSnapshot(accountId, hits = listOf(1L, 2L), updatedAt = 1L))
+        windows.upsert(OAuthWindowSnapshot(accountId, hits = listOf(3L), cooldownUntil = 9L, updatedAt = 2L))
 
-        val matching = windows.loadAll().filter { it.snapshot.keyId == keyId }
+        val matching = windows.loadAll().filter { it.snapshot.accountId == accountId }
         assertEquals(1, matching.size)
         assertEquals(listOf(3L), matching.single().snapshot.hits)
         assertEquals(9L, matching.single().snapshot.cooldownUntil)
@@ -109,17 +103,15 @@ class OAuthWindowRepositoryTest {
 
     @Test
     fun `deleting the oauth account cascades the window state`() = runBlocking {
-        val (_, keyId) = createAccount()
-        windows.upsert(OAuthWindowSnapshot(keyId, hits = listOf(1L), updatedAt = 1L))
+        val accountId = createAccount()
+        windows.upsert(OAuthWindowSnapshot(accountId, hits = listOf(1L), updatedAt = 1L))
 
-        transaction(factory.database) {
-            ChannelKeyOAuthAccounts.deleteWhere { ChannelKeyOAuthAccounts.keyId eq keyId }
-        }
+        assertTrue(accounts.delete(accountId))
 
-        assertTrue(windows.loadAll().none { it.snapshot.keyId == keyId })
+        assertTrue(windows.loadAll().none { it.snapshot.accountId == accountId })
     }
 
-    private fun createAccount(): Pair<String, String> = runBlocking {
+    private fun createAccount(): String = runBlocking {
         val channel = channels.create(
             name = "oauth-window-" + UUID.randomUUID(),
             baseUrl = "https://chatgpt.example/v1",
@@ -127,12 +119,15 @@ class OAuthWindowRepositoryTest {
             authType = "bearer",
             enabled = true,
         )
-        val keyId = channel.keys.single().id
-        accounts.upsert(
-            keyId,
-            OAuthProvider.CHATGPT,
-            accountEmail = "window-${UUID.randomUUID()}@example.com",
+        accounts.create(
+            NewOAuthAccount(
+                name = "window-account",
+                provider = OAuthProvider.CHATGPT,
+                accountEmail = "window-${UUID.randomUUID()}@example.com",
+                refreshToken = cipher.encrypt("refresh-token"),
+                channelIds = listOf(channel.id),
+            ),
         )
-        channel.id to keyId
+            .id
     }
 }

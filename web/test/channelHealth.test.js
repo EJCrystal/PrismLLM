@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthBucketState, healthSymbol, channelHealthSuccessRateText } from '../src/utils/channelHealth'
+import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthBucketState, healthSymbol, channelHealthSuccessRateText, healthCacheHitText } from '../src/utils/channelHealth'
 
 describe('channel health display', () => {
   it('shows unknown rather than zero for missing samples', () => {
@@ -10,6 +10,8 @@ describe('channel health display', () => {
     assert.equal(healthPercent(0), '0.0%')
     assert.equal(healthPercent(1), '100.0%')
     assert.equal(healthPercent(0.9999), '>99.9%')
+    assert.equal(healthPercent(1.2), '100.0%')
+    assert.equal(healthPercent(-0.2), '0.0%')
   })
 
   it('keeps sparse buckets unknown and distinguishes the failure bands', () => {
@@ -51,5 +53,17 @@ describe('channel health display', () => {
     assert.equal(channelHealthSuccessRateText(nullRateRow, true, ''), '汇总中…')
     assert.equal(channelHealthSuccessRateText(nullRateRow, false, '网络异常'), '读取失败')
     assert.equal(channelHealthSuccessRateText(nullRateRow, false, ''), '—')
+  })
+
+  it('shows cache hit rate from usage totals without inventing data', () => {
+    assert.equal(healthCacheHitText(null), '—')
+    assert.equal(healthCacheHitText(undefined), '—')
+    assert.equal(healthCacheHitText(undefined, true), '汇总中…')
+    assert.equal(healthCacheHitText({ inputTokens: 0, cachedTokens: 0 }), '—')
+    assert.equal(healthCacheHitText({ inputTokens: 1000, cachedTokens: 250 }), '25.0%')
+    assert.equal(healthCacheHitText({ inputTokens: 1000, cachedTokens: 0 }), '0.0%')
+    assert.equal(healthCacheHitText({ inputTokens: 100, cachedTokens: 120 }), '100.0%')
+    // 刷新时保留旧值，避免数字闪烁
+    assert.equal(healthCacheHitText({ inputTokens: 1000, cachedTokens: 250 }, true), '25.0%')
   })
 })
