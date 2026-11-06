@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { api } from '../api'
-import type { Channel, ChannelHealthDetail, HealthWindow, HealthBreakdown } from '../types/api'
-import { HEALTH_WINDOWS, HEALTH_LABELS, healthSymbol, healthPercent, healthBucketState } from '../utils/channelHealth'
+import type { Channel, ChannelHealthDetail, HealthWindow, HealthBreakdown, UsageReport } from '../types/api'
+import { HEALTH_WINDOWS, HEALTH_LABELS, healthSymbol, healthPercent, healthBucketState, healthCacheHitText } from '../utils/channelHealth'
 import { cooldownReasonLabel } from '../utils/cooldown'
-import { formatDuration, formatTime } from '../utils/format'
+import { formatDuration, formatTime, formatTokensCompact } from '../utils/format'
 import Modal from './Modal.vue'
 import ErrorState from './ErrorState.vue'
 import { vScrollHint } from '../directives/scrollHint'
@@ -13,6 +13,8 @@ const props = defineProps<{ channel: Channel; initialWindow: HealthWindow }>()
 const emit = defineEmits<{ close: [changed?: boolean]; changed: [] }>()
 const window = ref<HealthWindow>(props.initialWindow)
 const detail = ref<ChannelHealthDetail | null>(null)
+const usage = ref<UsageReport | null>(null)
+const usageState = ref<'idle' | 'loading' | 'ready' | 'failed'>('idle')
 const loading = ref(false)
 const error = ref('')
 const dimension = ref<'byModel' | 'byProtocol' | 'byKey'>('byModel')
@@ -23,19 +25,28 @@ const manualRefreshing = ref(false)
 const hasUncertainCooldownClear = ref(false)
 let revision = 0
 let loadController: AbortController | null = null
+let usageRevision = 0
+let usageController: AbortController | null = null
 async function load(timeoutMs = 15_000) {
   loadController?.abort()
+  usageController?.abort()
+  usageRevision++
   const controller = new AbortController()
   loadController = controller
   const request = ++revision
   loading.value = true
   error.value = ''
   detail.value = null
+  usage.value = null
+  usageState.value = 'idle'
   selectedBucket.value = null
   const timer = setTimeout(() => { controller.abort() }, timeoutMs)
   try {
     const result = await api.getChannelHealthDetail(props.channel.id, window.value, { signal: controller.signal })
-    if (request === revision) detail.value = result
+    if (request === revision) {
+      detail.value = result
+      void loadUsage(result.report.from, result.report.to, request)
+    }
   } catch (cause) {
     if (request === revision) {
       if (controller.signal.aborted) {
@@ -50,14 +61,43 @@ async function load(timeoutMs = 15_000) {
     if (request === revision) loading.value = false
   }
 }
+/** 缓存用量沿用健康度窗口，从用量报表按渠道聚合读取；失败不影响健康度主体。 */
+async function loadUsage(from: number, to: number, request: number, timeoutMs = 15_000) {
+  const controller = new AbortController()
+  usageController = controller
+  const token = ++usageRevision
+  usageState.value = 'loading'
+  const timer = setTimeout(() => { controller.abort() }, timeoutMs)
+  try {
+    const report = await api.getUsageReport(
+      { from, to, channelId: props.channel.id },
+      { signal: controller.signal },
+    )
+    if (token === usageRevision && request === revision) {
+      usage.value = report
+      usageState.value = 'ready'
+    }
+  } catch {
+    if (token === usageRevision && request === revision) {
+      usage.value = null
+      usageState.value = 'failed'
+    }
+  } finally {
+    clearTimeout(timer)
+    if (usageController === controller) usageController = null
+  }
+}
 watch([window, () => props.channel.id], () => void load(), { immediate: true })
 onBeforeUnmount(() => {
   revision++
+  usageRevision++
   loadController?.abort()
+  usageController?.abort()
   clearingController?.abort()
 })
 const summary = computed(() => detail.value?.report.channels[0])
 const metrics = computed(() => summary.value?.metrics)
+const cacheHitText = computed(() => healthCacheHitText(usage.value?.total, usageState.value === 'loading'))
 const rows = computed<HealthBreakdown[]>(() => detail.value?.[dimension.value] || [])
 const activeBucket = computed(() => selectedBucket.value == null ? null : detail.value?.trend[selectedBucket.value])
 type AvailabilityRow = ChannelHealthDetail['availability'][number]
@@ -158,6 +198,17 @@ function tryClose() {
           <div><span>最终成功率（含其他渠道兜底）</span><strong>{{ healthPercent(summary.requests.successRate) }}</strong></div>
           <div><span>重试 / 切换率</span><strong>{{ healthPercent(summary.requests.failoverRate) }}</strong></div>
         </div>
+        <section class="health-section" aria-label="缓存使用">
+          <h3>缓存使用 <small class="muted">来自用量报表 · 仅展示，不参与健康度判定</small></h3>
+          <div class="health-request-summary">
+            <div><span>缓存命中率</span><strong>{{ cacheHitText }}</strong></div>
+            <div><span>缓存读 / 输入 token</span><strong>{{ formatTokensCompact(usage?.total.cachedTokens) }} / {{ formatTokensCompact(usage?.total.inputTokens) }}</strong></div>
+            <div><span>缓存写 token</span><strong>{{ formatTokensCompact(usage?.total.cachedWriteTokens) }}</strong></div>
+          </div>
+          <p v-if="usageState === 'failed'" class="muted small">缓存用量读取失败，不影响健康度统计。</p>
+          <p v-else-if="usage && usage.total.requests === 0" class="muted small">此时间范围没有可统计的用量。</p>
+          <p v-else class="muted small">口径与用量报表一致：缓存读 ÷ 输入 token，输入已包含缓存读与缓存写；上游未上报缓存用量时按 0 统计，只含成功请求。</p>
+        </section>
         <section class="health-section" aria-label="健康度历史">
           <h3>成功率趋势 <small class="muted">{{ window === '24h' ? '每小时' : '每 24 小时' }}</small></h3>
           <div class="health-history">
