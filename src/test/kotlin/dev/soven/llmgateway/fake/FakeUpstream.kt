@@ -196,6 +196,14 @@ class FakeUpstream {
                 )
                 return
             }
+            "shape-422" -> {
+                call.respondText(
+                    """{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[0].role: unknown variant `developer`, expected one of `system`, `user`, `assistant`, `tool`","type":"invalid_request_error","code":null}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.UnprocessableEntity,
+                )
+                return
+            }
             "pseudo-400-blank-code" -> {
                 call.respondText(
                     """{"error":{"code":"","type":"upstream_error","message":"provider failure"}}""",
@@ -374,6 +382,14 @@ class FakeUpstream {
                     """{"error":{"message":"Invalid parameter: max_tokens must be positive","type":"invalid_request_error","param":"max_tokens","code":null}}""",
                     ContentType.Application.Json,
                     HttpStatusCode.BadRequest,
+                )
+                return
+            }
+            "shape-422" -> {
+                call.respondText(
+                    """{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[0].role: unknown variant `developer`, expected one of `system`, `user`, `assistant`, `tool`","type":"invalid_request_error","code":null}}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.UnprocessableEntity,
                 )
                 return
             }

@@ -5,6 +5,7 @@ import type { UpstreamHeaderProfile, UpstreamRequestOverrides } from '../types/a
 import {
   buildRequestOverrides,
   createRequestOverrideDrafts,
+  DEVELOPER_ROLE_POLICIES,
   requestOverrideDraftSnapshot,
   REASONING_CONTENT_POLICIES,
   REQUEST_OVERRIDE_SCOPES,
@@ -28,6 +29,7 @@ const emit = defineEmits<{
 const scope = ref('common')
 const inheritGlobal = ref(true)
 const reasoningContentPolicy = ref('')
+const developerRolePolicy = ref('')
 const drafts = reactive<RequestOverrideDrafts>(createRequestOverrideDrafts(props.value))
 const availableProfiles = ref<UpstreamHeaderProfile[]>(props.profiles || [])
 const profileError = ref('')
@@ -36,11 +38,12 @@ watch(() => props.value, (value) => {
   Object.assign(drafts, createRequestOverrideDrafts(value))
   inheritGlobal.value = value.inheritGlobal !== false
   reasoningContentPolicy.value = value.reasoningContentPolicy ?? ''
+  developerRolePolicy.value = value.developerRolePolicy ?? ''
 }, { immediate: true })
 watch(() => props.profiles, (profiles) => {
   if (profiles) availableProfiles.value = profiles
 }, { deep: true })
-watch([drafts, inheritGlobal, reasoningContentPolicy], () => emit('changed'), { deep: true })
+watch([drafts, inheritGlobal, reasoningContentPolicy, developerRolePolicy], () => emit('changed'), { deep: true })
 
 if (props.profiles === null) {
   api.getUpstreamRequestSettings().then((settings) => {
@@ -79,6 +82,12 @@ const reasoningContentPolicyOptions = computed(() => REASONING_CONTENT_POLICIES.
     ? (!props.global && inheritGlobal.value ? '跟随全局 / 自动判断' : '自动判断（默认）')
     : item.label,
 })))
+const developerRolePolicyOptions = computed(() => DEVELOPER_ROLE_POLICIES.map((item) => ({
+  ...item,
+  label: item.id === ''
+    ? (!props.global && inheritGlobal.value ? '跟随全局 / 自动判断' : '自动判断（默认）')
+    : item.label,
+})))
 const previewProfile = computed(() => {
   const selected = current.value.headerProfile || drafts.common.headerProfile || 'auto'
   if (selected === 'auto' && scope.value === 'common') return null
@@ -89,11 +98,21 @@ const uaPlaceholder = computed(() => previewProfile.value?.headers?.['User-Agent
 const previewHeaders = computed(() => JSON.stringify(previewProfile.value?.headers || {}, null, 2))
 
 function getValue(): UpstreamRequestOverrides {
-  return buildRequestOverrides(drafts, props.global || inheritGlobal.value, reasoningContentPolicy.value || null)
+  return buildRequestOverrides(
+    drafts,
+    props.global || inheritGlobal.value,
+    reasoningContentPolicy.value || null,
+    developerRolePolicy.value || null,
+  )
 }
 
 function getSnapshot(): string {
-  return requestOverrideDraftSnapshot(drafts, props.global || inheritGlobal.value, reasoningContentPolicy.value || null)
+  return requestOverrideDraftSnapshot(
+    drafts,
+    props.global || inheritGlobal.value,
+    reasoningContentPolicy.value || null,
+    developerRolePolicy.value || null,
+  )
 }
 
 function errorMessage(cause: unknown): string {
@@ -117,6 +136,17 @@ defineExpose({ getValue, getSnapshot })
       <small>
         思考模型多轮对话要求回传 assistant 的 reasoning_content。自动仅对 DeepSeek 等已知思考模型或历史已含思考内容时补齐；
         Groq 等会拒绝该字段的上游请选择“从不补齐”。该设置按渠道生效，不受下方配置范围影响。
+      </small>
+    </label>
+    <label class="field">
+      <span>developer 角色</span>
+      <select v-model="developerRolePolicy" :disabled="disabled">
+        <option v-for="item in developerRolePolicyOptions" :key="item.id" :value="item.id">{{ item.label }}</option>
+      </select>
+      <small>
+        部分 OpenAI 兼容上游只接受 system/user/assistant/tool，收到 developer 会返回 400/422。
+        自动仅对 Chat Completions 上游改写；Responses 上游如需改写请选择“始终归一化”。
+        该设置按渠道生效，不受下方配置范围影响。
       </small>
     </label>
     <label class="field">

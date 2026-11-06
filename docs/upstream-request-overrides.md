@@ -177,6 +177,18 @@ DeepSeek 等思考模型要求多轮对话回传 assistant 消息的 `reasoning_
 
 该字段位于 `overrides` / `requestOverrides` 顶层（与 `inheritGlobal` 同级），不区分协议，也不受「配置范围」影响。渠道未配置时继承全局；`inheritGlobal:false` 时忽略全局设置。补齐内容来源依次为已有 `reasoning_content`、`reasoning` / `thought` 别名字段、`content` 中的 `<think>` 标签，最后回退为空字符串。
 
+## developer 角色处理策略
+
+`developer` 是 OpenAI 在 Responses / Chat Completions 中替代 `system` 的新角色，但部分 OpenAI 兼容上游只接受 `system`、`user`、`assistant`、`tool`，收到 `developer` 会直接返回 400/422。网关在发往上游前按 `developerRolePolicy` 归一化：
+
+| 取值 | 行为 |
+| --- | --- |
+| 省略 / `auto` | 仅对 Chat Completions 上游把 `messages[].role=developer` 改写为 `system`；Responses 保留 `developer`，兼容依赖该角色的 Codex 中转 |
+| `always` | Chat Completions 与 Responses 上游都改写，适用于拒绝 `developer` 的自建 Responses 中转；同时处理 `messages[]` 与 `input[]` |
+| `never` | 完全不改写 |
+
+改写只替换角色名，消息内容、字段顺序和其他角色保持不变；Responses 的 `input` 为字符串时不做处理。与 `reasoningContentPolicy` 一样，该字段位于 `overrides` / `requestOverrides` 顶层，渠道未配置时继承全局，`inheritGlobal:false` 时忽略全局设置。
+
 ## 示例 1：全局保留自动预设，只覆盖 Responses 参数
 
 完整请求见 [upstream-request-global.json](examples/upstream-request-global.json)。该配置保留各协议自动 UA，为全部请求加入团队标识，仅为 Responses 设置推理强度与 `store`。
