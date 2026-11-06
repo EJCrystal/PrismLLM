@@ -12,6 +12,8 @@ data class OAuthProviderConfig(
     val clientId: String,
     val clientSecret: String? = null,
     val tokenEndpoint: String,
+    /** 上游额度查询地址；为空表示该提供方不支持额度观测。 */
+    val usageUrl: String? = null,
 )
 
 /**
@@ -30,15 +32,23 @@ data class OAuthConfig(
     val rateLimitDefaultMs: Long = 300_000,
     /** 单次 429 冷却上限，避免上游给出异常长的重置时间。 */
     val rateLimitMaxMs: Long = 21_600_000,
+    /** 后台额度扫描间隔。 */
+    val quotaIntervalMs: Long = 300_000,
+    /** 额度读数的有效期；过期读数只展示，不参与准入拦截。 */
+    val quotaMaxAgeMs: Long = 900_000,
     val chatGpt: OAuthProviderConfig = OAuthProviderConfig(
         clientId = DEFAULT_CHATGPT_CLIENT_ID,
         tokenEndpoint = "https://auth.openai.com/oauth/token",
+        usageUrl = DEFAULT_CHATGPT_USAGE_URL,
     ),
     val antigravity: OAuthProviderConfig? = null,
 ) {
     companion object {
         /** Codex CLI 的公开 OAuth 客户端 ID；可用 OAUTH_CHATGPT_CLIENT_ID 覆盖。 */
         const val DEFAULT_CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+
+        /** ChatGPT 的额度查询地址；可用 OAUTH_CHATGPT_USAGE_URL 覆盖。 */
+        const val DEFAULT_CHATGPT_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
         fun fromEnv(env: Map<String, String>): OAuthConfig {
             fun value(name: String, default: String? = null): String? =
@@ -52,6 +62,8 @@ data class OAuthConfig(
             val requestTimeoutMs = longValue("OAUTH_REQUEST_TIMEOUT_MS", 30_000)
             val rateLimitDefaultMs = longValue("OAUTH_RATE_LIMIT_DEFAULT_MS", 300_000)
             val rateLimitMaxMs = longValue("OAUTH_RATE_LIMIT_MAX_MS", 21_600_000)
+            val quotaIntervalMs = longValue("OAUTH_QUOTA_INTERVAL_MS", 300_000)
+            val quotaMaxAgeMs = longValue("OAUTH_QUOTA_MAX_AGE_MS", 900_000)
             require(refreshIntervalMs in 60_000..86_400_000) {
                 "OAUTH_REFRESH_INTERVAL_MS 必须在 60000..86400000 之间"
             }
@@ -67,12 +79,20 @@ data class OAuthConfig(
             require(rateLimitMaxMs in rateLimitDefaultMs..604_800_000) {
                 "OAUTH_RATE_LIMIT_MAX_MS 必须在默认冷却时间..604800000 之间"
             }
+            require(quotaIntervalMs in 60_000..86_400_000) {
+                "OAUTH_QUOTA_INTERVAL_MS 必须在 60000..86400000 之间"
+            }
+            require(quotaMaxAgeMs in quotaIntervalMs..86_400_000) {
+                "OAUTH_QUOTA_MAX_AGE_MS 必须在扫描间隔..86400000 之间"
+            }
 
             val chatGpt = OAuthProviderConfig(
                 clientId = value("OAUTH_CHATGPT_CLIENT_ID", DEFAULT_CHATGPT_CLIENT_ID)!!,
                 tokenEndpoint = value("OAUTH_CHATGPT_TOKEN_ENDPOINT", "https://auth.openai.com/oauth/token")!!,
+                usageUrl = value("OAUTH_CHATGPT_USAGE_URL", DEFAULT_CHATGPT_USAGE_URL),
             )
             validateEndpoint("OAUTH_CHATGPT_TOKEN_ENDPOINT", chatGpt.tokenEndpoint)
+            chatGpt.usageUrl?.let { validateEndpoint("OAUTH_CHATGPT_USAGE_URL", it) }
 
             val antigravityClientId = value("OAUTH_ANTIGRAVITY_CLIENT_ID")
             val antigravity = antigravityClientId?.let { clientId ->
@@ -92,6 +112,8 @@ data class OAuthConfig(
                 requestTimeoutMs = requestTimeoutMs,
                 rateLimitDefaultMs = rateLimitDefaultMs,
                 rateLimitMaxMs = rateLimitMaxMs,
+                quotaIntervalMs = quotaIntervalMs,
+                quotaMaxAgeMs = quotaMaxAgeMs,
                 chatGpt = chatGpt,
                 antigravity = antigravity,
             )

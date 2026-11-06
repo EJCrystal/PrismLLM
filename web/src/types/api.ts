@@ -659,6 +659,25 @@ export interface OAuthAccountRuntime {
   cooldownUntil: number | null
   consecutiveRateLimits: number
   activeRequests: number
+  quotaBlockedUntil: number | null
+}
+
+export interface OAuthQuotaWindow {
+  usedPercent: number
+  remainingPercent: number
+  windowSeconds: number | null
+  resetsAt: number | null
+}
+
+export interface OAuthQuota {
+  primary: OAuthQuotaWindow | null
+  secondary: OAuthQuotaWindow | null
+  allowed: boolean | null
+  creditsBalance: number | null
+  creditsUnlimited: boolean
+  resetCredits: number | null
+  checkedAt: number
+  error: string | null
 }
 
 export type OAuthAuthState = 'ACTIVE' | 'REAUTH_REQUIRED'
@@ -679,6 +698,8 @@ export interface OAuthAccount {
   refreshFailureCount: number
   lastRefreshError: string | null
   proxyUrl: string | null
+  chatgptAccountId: string | null
+  quota: OAuthQuota | null
   createdAt: number
   updatedAt: number
   policy: OAuthAccountPolicy

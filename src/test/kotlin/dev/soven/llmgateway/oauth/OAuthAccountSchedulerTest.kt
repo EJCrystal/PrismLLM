@@ -2,6 +2,8 @@ package dev.soven.llmgateway.oauth
 
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
+import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.domain.OAuthStoredWindowState
 import dev.soven.llmgateway.domain.OAuthWindowSnapshot
 import dev.soven.llmgateway.resilience.ChannelKeyState
@@ -215,6 +217,78 @@ class OAuthAccountSchedulerTest {
     fun `clear cooldown on an unused account is a no-op`() = runTest {
         assertFalse(scheduler.clearCooldown("missing"))
         assertTrue(snapshots.isEmpty())
+    }
+
+    @Test
+    fun `exhausted upstream quota blocks admission until the window resets`() = runTest {
+        val key = key()
+        scheduler.noteQuota(
+            key.id,
+            OAuthQuotaSnapshot(
+                primary = OAuthQuotaWindow(usedPercent = 100.0, windowSeconds = 18_000, resetsAt = clock + 600_000),
+                secondary = OAuthQuotaWindow(usedPercent = 42.5, windowSeconds = 604_800, resetsAt = clock + 86_400_000),
+                checkedAt = clock,
+            ),
+        )
+
+        val denied = scheduler.acquire(key)
+        assertIs<OAuthAccountDecision.Denied>(denied)
+        assertEquals(OAuthAccountDenyReason.QUOTA, denied.reason)
+        assertEquals(600_000, denied.retryAfterMs)
+
+        // 用尽窗口已过重置时间后放行，即使读数本身还没过期。
+        clock += 600_000
+        assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key))
+    }
+
+    @Test
+    fun `quota snapshot with credits or headroom does not block`() = runTest {
+        val key = key(policy = OAuthAccountPolicy(windowLimit = null, maxConcurrentRequests = 5))
+        scheduler.noteQuota(
+            key.id,
+            OAuthQuotaSnapshot(
+                primary = OAuthQuotaWindow(usedPercent = 100.0, resetsAt = clock + 600_000),
+                creditsBalance = 25.0,
+                checkedAt = clock,
+            ),
+        )
+        assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key))
+
+        scheduler.noteQuota(
+            key.id,
+            OAuthQuotaSnapshot(
+                primary = OAuthQuotaWindow(usedPercent = 99.9, resetsAt = clock + 600_000),
+                checkedAt = clock,
+            ),
+        )
+        assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key))
+    }
+
+    @Test
+    fun `exhausted quota without a reset time blocks only while the reading is fresh`() = runTest {
+        val key = key()
+        scheduler.noteQuota(key.id, OAuthQuotaSnapshot(primary = OAuthQuotaWindow(usedPercent = 100.0), checkedAt = clock))
+
+        val denied = scheduler.acquire(key)
+        assertIs<OAuthAccountDecision.Denied>(denied)
+        assertEquals(OAuthAccountDenyReason.QUOTA, denied.reason)
+        assertEquals(900_000, denied.retryAfterMs)
+
+        clock += 900_001
+        assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key))
+    }
+
+    @Test
+    fun `stale quota readings are displayed but never block`() = runTest {
+        val key = key()
+        scheduler.noteQuota(
+            key.id,
+            OAuthQuotaSnapshot(
+                primary = OAuthQuotaWindow(usedPercent = 100.0, resetsAt = clock + 3_600_000),
+                checkedAt = clock - 900_001,
+            ),
+        )
+        assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key))
     }
 
     private fun key(policy: OAuthAccountPolicy? = OAuthAccountPolicy()): ChannelKeyRecord = ChannelKeyRecord(

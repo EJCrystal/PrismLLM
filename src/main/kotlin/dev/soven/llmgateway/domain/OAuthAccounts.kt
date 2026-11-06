@@ -55,6 +55,10 @@ data class OAuthAccountRecord(
     val lastRefreshError: String? = null,
     val lastRefreshedAt: Long? = null,
     val proxyUrl: String? = null,
+    /** ChatGPT 账号 id，来自 access token JWT，用于读取上游额度。 */
+    val chatgptAccountId: String? = null,
+    /** 最近一次上游额度读数；从未读取或读取失败时为 null。 */
+    val quota: OAuthQuotaSnapshot? = null,
     val createdAt: Long,
     val updatedAt: Long,
 ) {
@@ -72,6 +76,67 @@ data class OAuthAccountRecord(
         val ahead = minOf(refreshAheadMs, maxOf(60_000, lifetime / 2))
         return expiresAt - ahead
     }
+}
+
+/**
+ * 上游额度窗口。`usedPercent` 是 0..100 的使用比例，`resetsAt` 是 epoch millis。
+ *
+ * @author 文杰
+ * @since 2026-11-06
+ */
+data class OAuthQuotaWindow(
+    val usedPercent: Double,
+    val windowSeconds: Int? = null,
+    val resetsAt: Long? = null,
+) {
+    val remainingPercent: Double
+        get() = (100.0 - usedPercent).coerceIn(0.0, 100.0)
+
+    /** 窗口已用尽，且重置时间还没到。 */
+    fun isExhausted(now: Long): Boolean = usedPercent >= 100.0 && (resetsAt == null || resetsAt > now)
+}
+
+/**
+ * 上游额度快照。ChatGPT 的 `/wham/usage` 给出 5 小时与每周两个窗口，
+ * 以及账号是否仍被允许请求、credits 余额和可重置额度次数。
+ *
+ * @author 文杰
+ * @since 2026-11-06
+ */
+data class OAuthQuotaSnapshot(
+    val primary: OAuthQuotaWindow? = null,
+    val secondary: OAuthQuotaWindow? = null,
+    val allowed: Boolean? = null,
+    val creditsBalance: Double? = null,
+    val creditsUnlimited: Boolean = false,
+    val resetCredits: Int? = null,
+    val checkedAt: Long,
+    val error: String? = null,
+) {
+    /** 额度用尽后仍可继续消耗 credits，不应按用尽处理。 */
+    val hasCredits: Boolean
+        get() = creditsUnlimited || (creditsBalance ?: 0.0) > 0.0
+
+    /**
+     * 账号被上游额度拦下时的最早可重试时间：取所有已用尽窗口中最晚的重置时间。
+     * 没有可用读数或仍有 credits 时返回 null，表示不据此拦截。
+     */
+    /**
+     * 额度用尽时预计恢复的时间。上游没有给出重置时间时，按 [fallbackMs] 保守拦截，
+     * 至少不会在读数过期前继续打一个已知用尽的账号；[fallbackMs] 为 0 表示不拦截。
+     */
+    fun blockedUntil(now: Long, fallbackMs: Long = 0): Long? {
+        if (hasCredits) return null
+        val windows = listOfNotNull(primary, secondary)
+        val exhausted = windows.filter { it.isExhausted(now) }
+        if (exhausted.isEmpty()) return null
+        val resets = exhausted.mapNotNull { it.resetsAt }
+        if (resets.isNotEmpty()) return resets.maxOrNull()?.takeIf { it > now }
+        return fallbackMs.takeIf { it > 0 }?.let { now + it }
+    }
+
+    /** 读数是否仍可作为调度依据；过期读数只展示，不拦截。 */
+    fun isFresh(now: Long, maxAgeMs: Long): Boolean = checkedAt > 0 && now - checkedAt <= maxAgeMs
 }
 
 /**
@@ -142,5 +207,7 @@ data class OAuthAccountRuntimeState(
     val cooldownUntil: Long? = null,
     val consecutiveRateLimits: Int = 0,
     val activeRequests: Int = 0,
+    /** 上游额度用尽时预计恢复的时间；只在读数未过期时给出。 */
+    val quotaBlockedUntil: Long? = null,
 )
 

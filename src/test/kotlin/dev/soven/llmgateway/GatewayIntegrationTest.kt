@@ -5,6 +5,8 @@ import ch.qos.logback.classic.spi.ThrowableProxyUtil
 import ch.qos.logback.core.AppenderBase
 import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
+import dev.soven.llmgateway.config.OAuthConfig
+import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.domain.ChannelQuotaCredentialSource
@@ -20,6 +22,8 @@ import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.fake.FakeUpstream
+import dev.soven.llmgateway.oauth.OAuthAccountDecision
+import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
 import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
@@ -78,6 +82,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.double
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -144,6 +149,7 @@ class GatewayIntegrationTest {
         fake.failingModels.clear()
         fake.keyStatuses.clear()
         fake.keyErrorBodies.clear()
+        fake.resetQuotaUsage()
         fake.clearChatHold()
         app = GatewayApplication(config())
         app.databaseFactory.migrate()
@@ -1334,6 +1340,85 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.BadGateway, failed.status)
             assertTrue(failed.bodyAsText().contains("oauth_refresh_failed"))
             assertEquals("network_error", app.oauthAccountRepository.find(key.id)!!.lastRefreshError)
+        }
+    }
+
+    @Test
+    fun `admin oauth quota refresh reads upstream usage and persists the snapshot`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val key = channel.keys.single()
+        app.oauthAccountRepository.upsert(key.id, OAuthProvider.CHATGPT, accountEmail = "quota@example.com")
+        app.oauthAccountRepository.updateChatgptAccountId(key.id, "acc-quota")
+        val accountKey = app.channelRepository.find(channel.id)!!.keys.single()
+        app.oauthAccountRepository.saveRefreshed(
+            key.id,
+            accessToken = app.credentialCipher.encrypt("quota-access-token"),
+            expiresAt = System.currentTimeMillis() + 3_600_000,
+            tokenType = "Bearer",
+            scope = null,
+            rotatedRefreshToken = null,
+            expectedRefreshCiphertext = accountKey.credentialCiphertext,
+        )
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            suspend fun refreshQuota(keyId: String) = client.post("/admin/api/oauth-accounts/$keyId/quota/refresh") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+            }
+
+            val missing = refreshQuota("missing")
+            assertEquals(HttpStatusCode.NotFound, missing.status)
+            assertTrue(missing.bodyAsText().contains("oauth_account_not_found"))
+
+            val response = refreshQuota(key.id)
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("plus", body["accountPlan"]!!.jsonPrimitive.content)
+            val quota = body["quota"]!!.jsonObject
+            assertEquals(100.0, quota["primary"]!!.jsonObject["usedPercent"]!!.jsonPrimitive.double)
+            assertEquals(18_000, quota["primary"]!!.jsonObject["windowSeconds"]!!.jsonPrimitive.int)
+            assertEquals(42.5, quota["secondary"]!!.jsonObject["usedPercent"]!!.jsonPrimitive.double)
+            assertFalse(quota["allowed"]!!.jsonPrimitive.boolean)
+            assertEquals(1, quota["resetCredits"]!!.jsonPrimitive.int)
+            // 上游只给了 reset_after_seconds，接口返回换算后的绝对恢复时间。
+            val blockedUntil = assertNotNull(body["runtime"]!!.jsonObject["quotaBlockedUntil"]?.jsonPrimitive?.long)
+            assertTrue(blockedUntil > System.currentTimeMillis())
+
+            val upstreamRequest = fake.quotaRequests.single()
+            assertEquals("Bearer quota-access-token", upstreamRequest.authorization)
+            assertEquals("acc-quota", upstreamRequest.requestHeaders["chatgpt-account-id"]?.single())
+            assertEquals("codex_cli_rs", upstreamRequest.requestHeaders["originator"]?.single())
+
+            val auditResponse = client.get("/admin/api/audit-logs?limit=20") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, auditResponse.status)
+            val quotaAudits = Json.parseToJsonElement(auditResponse.bodyAsText()).jsonArray
+                .map { it.jsonObject }
+                .filter { it["action"]!!.jsonPrimitive.content == "oauth_account.quota.refresh" }
+            // 成功与 404 失败各一条，失败记录保留错误码便于追溯。
+            assertEquals(2, quotaAudits.size)
+            val successAudit = quotaAudits.first {
+                it["details"]!!.jsonObject["result"]!!.jsonPrimitive.content == "success"
+            }
+            assertEquals(key.id, successAudit["details"]!!.jsonObject["keyId"]!!.jsonPrimitive.content)
+
+            val stored = assertNotNull(app.oauthAccountRepository.find(key.id))
+            assertEquals(100.0, assertNotNull(stored.quota).primary!!.usedPercent)
+            assertEquals("acc-quota", stored.chatgptAccountId)
+            // 额度用尽立即参与准入拦截，不必等下一次 429。
+            val decision = app.oauthAccountScheduler.acquire(accountKey)
+            assertIs<OAuthAccountDecision.Denied>(decision)
+            assertEquals(OAuthAccountDenyReason.QUOTA, decision.reason)
+
+            // 上游读取失败时保留上一次成功读数，只记录错误码。
+            fake.quotaUsageStatus = 503
+            app.oauthQuotaService.refreshNow(key.id)
+            val degraded = assertNotNull(app.oauthAccountRepository.find(key.id))
+            assertEquals("http_503", assertNotNull(degraded.quota).error)
+            assertEquals(100.0, assertNotNull(degraded.quota!!.primary).usedPercent)
         }
     }
 
@@ -6348,7 +6433,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("50", result.getString(1))
+                        assertEquals("51", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -7755,6 +7840,14 @@ class GatewayIntegrationTest {
         keyAutoRecoveryIntervalMs = keyAutoRecoveryIntervalMs,
         upstreamHeaderRefreshEnabled = false,
         upstreamHeaderRefreshIntervalMs = 3_600_000,
+        // 订阅账号的 token 刷新与额度查询都指向假上游，测试不访问真实 OAuth 端点。
+        oauth = OAuthConfig(
+            chatGpt = OAuthProviderConfig(
+                clientId = OAuthConfig.DEFAULT_CHATGPT_CLIENT_ID,
+                tokenEndpoint = fake.baseUrl + "/oauth/token",
+                usageUrl = fake.baseUrl + "/oauth/usage",
+            ),
+        ),
     )
 
     private fun requestLog(requestId: String, createdAt: Long) = RequestLogRecord(

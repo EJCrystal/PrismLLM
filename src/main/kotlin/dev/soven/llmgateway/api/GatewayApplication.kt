@@ -22,6 +22,7 @@ import dev.soven.llmgateway.repo.CooldownStateRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
 import dev.soven.llmgateway.repo.RetentionSettingsRepository
 import dev.soven.llmgateway.oauth.OAuthAccountScheduler
+import dev.soven.llmgateway.oauth.OAuthQuotaService
 import dev.soven.llmgateway.oauth.OAuthTokenProviderRegistry
 import dev.soven.llmgateway.oauth.OAuthTokenService
 import dev.soven.llmgateway.oauth.OAuthWindowStateWriter
@@ -321,7 +322,15 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val oauthAccountScheduler = OAuthAccountScheduler(
         defaultCooldownMs = config.oauth.rateLimitDefaultMs,
         maxCooldownMs = config.oauth.rateLimitMaxMs,
+        quotaMaxAgeMs = config.oauth.quotaMaxAgeMs,
         onSnapshot = oauthWindowStateWriter::submit,
+    )
+    /** 上游额度观测：定时读取 ChatGPT 用量，同步给调度器做额度准入。 */
+    val oauthQuotaService = OAuthQuotaService(
+        repository = oauthAccountRepository,
+        tokenService = oauthTokenService,
+        config = config.oauth,
+        onQuota = oauthAccountScheduler::noteQuota,
     )
 
     fun install(app: Application) {
@@ -332,6 +341,12 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         runBlocking { seedAdmin() }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
         runBlocking { oauthAccountScheduler.restore(oauthWindowRepository.loadAll()) }
+        runBlocking {
+            // 上次运行留下的额度读数立即恢复，重启后不必等第一轮扫描才能拦截已用尽账号。
+            oauthAccountRepository.listAll().forEach { account ->
+                account.quota?.let { oauthAccountScheduler.noteQuota(account.keyId, it) }
+            }
+        }
         runBlocking {
             val storedCleanupEnabled = retentionSettingsRepository.loadCleanupEnabled()
             if (storedCleanupEnabled != null) {
@@ -502,6 +517,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         if (config.upstreamHeaderRefreshEnabled) upstreamHeaderCatalogService.start(scope)
         startKeyAutoRecovery()
         oauthTokenService.start(scope)
+        oauthQuotaService.start(scope)
         runBlocking { syncLogRetentionJob() }
     }
 
@@ -576,6 +592,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         runBlocking { logRetentionJob.getAndSet(null)?.cancelAndJoin() }
         runBlocking { keyAutoRecoveryJob.getAndSet(null)?.cancelAndJoin() }
         runBlocking { channelHealthIndexJob?.cancelAndJoin() }
+        oauthQuotaService.close()
         oauthTokenService.close()
         scope.cancel()
         httpClient.close()

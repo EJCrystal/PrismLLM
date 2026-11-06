@@ -53,6 +53,20 @@ class FakeUpstream {
     val failingModels = ConcurrentHashMap.newKeySet<String>()
     val keyStatuses = ConcurrentHashMap<String, Int>()
     val keyErrorBodies = ConcurrentHashMap<String, String>()
+    val quotaRequests = ConcurrentLinkedQueue<FakeRequest>()
+
+    /** `/oauth/usage` 的响应，测试可替换为额度用尽或错误响应。 */
+    @Volatile
+    var quotaUsageBody: String = DEFAULT_QUOTA_USAGE_BODY
+
+    @Volatile
+    var quotaUsageStatus: Int = 200
+
+    fun resetQuotaUsage() {
+        quotaRequests.clear()
+        quotaUsageBody = DEFAULT_QUOTA_USAGE_BODY
+        quotaUsageStatus = 200
+    }
     private val chatHold = AtomicReference<CompletableDeferred<Unit>?>(null)
 
     fun holdChatRequests(): CompletableDeferred<Unit> =
@@ -80,6 +94,23 @@ class FakeUpstream {
             get("/v1/models") {
                 recordModelRequest(call, "ok")
                 call.respondText(MODELS_BODY, ContentType.Application.Json)
+            }
+            get("/oauth/usage") {
+                quotaRequests.add(
+                    FakeRequest(
+                        scenario = "oauth-usage",
+                        body = "",
+                        authorization = call.request.headers[HttpHeaders.Authorization],
+                        requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
+                        uri = call.request.uri,
+                        path = call.request.path(),
+                    ),
+                )
+                call.respondText(
+                    quotaUsageBody,
+                    ContentType.Application.Json,
+                    HttpStatusCode.fromValue(quotaUsageStatus),
+                )
             }
             get("/{scenario}/v1beta/models") {
                 recordModelRequest(call, call.parameters["scenario"] ?: "ok")
@@ -705,6 +736,8 @@ class FakeUpstream {
             """{"error":{"message":"not found","type":"not_found_error","code":"not_found"}}"""
         private const val MODELS_BODY =
             """{"object":"list","data":[{"id":"gpt-4o-mini","object":"model","owned_by":"fake"},{"id":"deepseek-chat","object":"model","owned_by":"fake"}]}"""
+        private const val DEFAULT_QUOTA_USAGE_BODY =
+            """{"plan_type":"plus","rate_limit":{"allowed":false,"primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_after_seconds":600},"secondary_window":{"used_percent":42.5,"limit_window_seconds":604800,"reset_after_seconds":86400}},"credits":{"balance":0,"unlimited":false},"rate_limit_reset_credits":{"available_count":1}}"""
         private const val RESPONSES_NON_STREAM_BODY =
             """{"id":"resp_fake","object":"response","status":"completed","model":"gpt-4o-mini","output":[],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":13}}"""
         private const val RESPONSES_FINAL_EVENT =

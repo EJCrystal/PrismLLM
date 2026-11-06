@@ -198,7 +198,7 @@ private fun extractErrorCode(text: String): String? = runCatching {
     ?.take(80)
     ?.takeIf { it.isNotBlank() }
 
-private suspend fun send(client: HttpClient, request: HttpRequest): HttpResponse<ByteArray> =
+internal suspend fun send(client: HttpClient, request: HttpRequest): HttpResponse<ByteArray> =
     suspendCancellableCoroutine { continuation ->
         val future = client.sendAsync(
             request,

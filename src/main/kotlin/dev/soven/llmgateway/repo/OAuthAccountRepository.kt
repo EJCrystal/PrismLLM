@@ -6,6 +6,8 @@ import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAuthState
 import dev.soven.llmgateway.domain.OAuthProvider
+import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
+import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.security.EncryptedCredential
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
@@ -13,6 +15,7 @@ import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.isNull
 import org.jetbrains.exposed.v1.core.less
+import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.insert
@@ -171,6 +174,63 @@ class OAuthAccountRepository(private val database: Database) {
             .let(::toRecord)
     }
 
+    /** 后台额度扫描：只返回仍可自动刷新、且读数已过期的 ChatGPT 账号。 */
+    suspend fun listDueForQuota(checkedBefore: Long, limit: Int = 100): List<OAuthAccountRecord> =
+        suspendTransaction(database) {
+            ChannelKeyOAuthAccounts.selectAll()
+                .where {
+                    (ChannelKeyOAuthAccounts.authState eq OAuthAuthState.ACTIVE.value) and
+                        (ChannelKeyOAuthAccounts.provider eq OAuthProvider.CHATGPT.value) and
+                        (
+                            ChannelKeyOAuthAccounts.quotaCheckedAt.isNull() or
+                                (ChannelKeyOAuthAccounts.quotaCheckedAt less checkedBefore)
+                            )
+                }
+                .orderBy(ChannelKeyOAuthAccounts.quotaCheckedAt to SortOrder.ASC_NULLS_FIRST)
+                .limit(limit.coerceIn(1, 1_000))
+                .map(::toRecord)
+        }
+
+    /** 从 access token 解析出的 ChatGPT 账号 id，刷新成功后写入。 */
+    suspend fun updateChatgptAccountId(keyId: String, accountId: String): Boolean = suspendTransaction(database) {
+        ChannelKeyOAuthAccounts.update({
+            (ChannelKeyOAuthAccounts.keyId eq keyId) and
+                (ChannelKeyOAuthAccounts.chatgptAccountId.isNull() or (ChannelKeyOAuthAccounts.chatgptAccountId neq accountId))
+        }) {
+            it[chatgptAccountId] = accountId.take(128)
+        } > 0
+    }
+
+    /** 保存一次成功的额度读数；`accountPlan` 非空时同步上游给出的套餐名。 */
+    suspend fun saveQuota(
+        keyId: String,
+        snapshot: OAuthQuotaSnapshot,
+        accountPlan: String? = null,
+    ): Boolean = suspendTransaction(database) {
+        ChannelKeyOAuthAccounts.update({ ChannelKeyOAuthAccounts.keyId eq keyId }) {
+            it[quotaPrimaryUsedPercent] = snapshot.primary?.usedPercent?.coerceIn(0.0, 100.0)
+            it[quotaPrimaryWindowSeconds] = snapshot.primary?.windowSeconds
+            it[quotaPrimaryResetsAt] = snapshot.primary?.resetsAt
+            it[quotaSecondaryUsedPercent] = snapshot.secondary?.usedPercent?.coerceIn(0.0, 100.0)
+            it[quotaSecondaryWindowSeconds] = snapshot.secondary?.windowSeconds
+            it[quotaSecondaryResetsAt] = snapshot.secondary?.resetsAt
+            it[quotaAllowed] = snapshot.allowed
+            it[quotaCreditsBalance] = snapshot.creditsBalance
+            it[quotaCreditsUnlimited] = snapshot.creditsUnlimited
+            it[quotaResetCredits] = snapshot.resetCredits
+            it[quotaCheckedAt] = snapshot.checkedAt
+            it[quotaError] = null
+            if (accountPlan != null) it[ChannelKeyOAuthAccounts.accountPlan] = accountPlan.take(32)
+        } > 0
+    }
+
+    /** 记录一次额度读取失败；保留上一次成功读数，只更新错误信息。 */
+    suspend fun recordQuotaFailure(keyId: String, errorCode: String): Boolean = suspendTransaction(database) {
+        ChannelKeyOAuthAccounts.update({ ChannelKeyOAuthAccounts.keyId eq keyId }) {
+            it[quotaError] = sanitizeQuotaError(errorCode)
+        } > 0
+    }
+
     /** 更新账号级调度策略；重新导入凭据不会重置这里的管理员配置。 */
     suspend fun updatePolicy(
         keyId: String,
@@ -278,12 +338,46 @@ class OAuthAccountRepository(private val database: Database) {
         lastRefreshError = row[ChannelKeyOAuthAccounts.lastRefreshError],
         lastRefreshedAt = row[ChannelKeyOAuthAccounts.lastRefreshedAt],
         proxyUrl = row[ChannelKeyOAuthAccounts.proxyUrl],
+        chatgptAccountId = row[ChannelKeyOAuthAccounts.chatgptAccountId],
+        quota = toQuota(row),
         createdAt = row[ChannelKeyOAuthAccounts.createdAt],
         updatedAt = row[ChannelKeyOAuthAccounts.updatedAt],
     )
+
+    private fun toQuota(row: ResultRow): OAuthQuotaSnapshot? {
+        val checkedAt = row[ChannelKeyOAuthAccounts.quotaCheckedAt]
+        val error = row[ChannelKeyOAuthAccounts.quotaError]
+        if (checkedAt == null && error == null) return null
+        return OAuthQuotaSnapshot(
+            primary = quotaWindow(
+                row[ChannelKeyOAuthAccounts.quotaPrimaryUsedPercent],
+                row[ChannelKeyOAuthAccounts.quotaPrimaryWindowSeconds],
+                row[ChannelKeyOAuthAccounts.quotaPrimaryResetsAt],
+            ),
+            secondary = quotaWindow(
+                row[ChannelKeyOAuthAccounts.quotaSecondaryUsedPercent],
+                row[ChannelKeyOAuthAccounts.quotaSecondaryWindowSeconds],
+                row[ChannelKeyOAuthAccounts.quotaSecondaryResetsAt],
+            ),
+            allowed = row[ChannelKeyOAuthAccounts.quotaAllowed],
+            creditsBalance = row[ChannelKeyOAuthAccounts.quotaCreditsBalance],
+            creditsUnlimited = row[ChannelKeyOAuthAccounts.quotaCreditsUnlimited],
+            resetCredits = row[ChannelKeyOAuthAccounts.quotaResetCredits],
+            checkedAt = checkedAt ?: 0,
+            error = error,
+        )
+    }
+
+    private fun quotaWindow(usedPercent: Double?, windowSeconds: Int?, resetsAt: Long?): OAuthQuotaWindow? =
+        usedPercent?.let { OAuthQuotaWindow(it, windowSeconds, resetsAt) }
 
     private fun sanitizeErrorCode(value: String): String = value
         .filter { it.isLetterOrDigit() || it in "._-" }
         .take(80)
         .ifBlank { "refresh_failed" }
+
+    private fun sanitizeQuotaError(value: String): String = value
+        .filter { it.isLetterOrDigit() || it in "._-" }
+        .take(120)
+        .ifBlank { "quota_read_failed" }
 }

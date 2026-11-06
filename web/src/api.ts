@@ -163,6 +163,8 @@ export const api = {
     }),
   refreshOAuthAccount: (keyId: string) =>
     request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(keyId)}/refresh`, { method: 'POST' }),
+  refreshOAuthAccountQuota: (keyId: string) =>
+    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(keyId)}/quota/refresh`, { method: 'POST' }),
   clearOAuthAccountCooldown: (keyId: string) =>
     request<null>(`/oauth-accounts/${encodeURIComponent(keyId)}/cooldown/clear`, { method: 'POST' }),
   listChannelModels: (id: string) => request<ChannelModelsResponse>(`/channels/${encodeURIComponent(id)}/models`),

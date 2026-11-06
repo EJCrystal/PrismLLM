@@ -11,11 +11,16 @@ import { fromLocalInput, formatTime } from '../utils/format'
 import {
   buildOAuthImportPayload,
   buildOAuthPolicyPayload,
+  formatCooldownRemaining,
   isOAuthAccountCooling,
+  isOAuthQuotaBlocked,
   oauthAuthStateBadge,
   oauthAuthStateLabel,
   oauthPolicySummary,
   oauthProviderLabel,
+  oauthQuotaCreditsLabel,
+  oauthQuotaTone,
+  oauthQuotaWindows,
   oauthRuntimeSummary,
 } from '../utils/oauthAccount'
 
@@ -165,6 +170,20 @@ async function refreshToken(account: OAuthAccount) {
   }
 }
 
+async function refreshQuota(account: OAuthAccount) {
+  if (busyKeyId.value != null) return
+  busyKeyId.value = account.keyId
+  try {
+    await api.refreshOAuthAccountQuota(account.keyId)
+    notify('上游额度已更新')
+    await load()
+  } catch (cause) {
+    notify(errorMessage(cause), 'error')
+  } finally {
+    busyKeyId.value = null
+  }
+}
+
 async function clearCooldown(account: OAuthAccount) {
   if (busyKeyId.value != null) return
   busyKeyId.value = account.keyId
@@ -270,6 +289,7 @@ onBeforeUnmount(() => {
               <th>提供方</th>
               <th>状态</th>
               <th>Token</th>
+              <th>上游额度</th>
               <th>调度</th>
               <th>最近刷新</th>
               <th class="actions-col">操作</th>
@@ -301,6 +321,30 @@ onBeforeUnmount(() => {
                 <div>{{ account.accessTokenExpiresAt ? '到期 ' + formatTime(account.accessTokenExpiresAt) : '尚未获取 token' }}</div>
                 <div v-if="account.proxyUrl" class="mono" :title="account.proxyUrl">{{ account.proxyUrl }}</div>
               </td>
+              <td class="oauth-quota-cell">
+                <template v-if="account.quota">
+                  <div v-for="window in oauthQuotaWindows(account.quota)" :key="window.key" class="quota-row">
+                    <span class="quota-label">{{ window.label }}</span>
+                    <span class="quota-track">
+                      <span
+                        class="quota-fill"
+                        :class="'is-' + oauthQuotaTone(window.usedPercent)"
+                        :style="{ width: window.usedPercent + '%' }"
+                      ></span>
+                    </span>
+                    <span class="quota-value small muted">{{ Math.round(window.usedPercent) }}%</span>
+                  </div>
+                  <div class="small muted">
+                    <span v-if="oauthQuotaCreditsLabel(account.quota)">{{ oauthQuotaCreditsLabel(account.quota) }} · </span>
+                    <span>{{ account.quota.checkedAt > 0 ? formatTime(account.quota.checkedAt) + ' 更新' : '尚未成功读取' }}</span>
+                  </div>
+                  <div v-if="account.quota.error" class="small text-danger">读取失败：{{ account.quota.error }}</div>
+                  <div v-if="isOAuthQuotaBlocked(account, now)" class="small text-danger">
+                    额度用尽，等待重置（{{ formatCooldownRemaining(account.runtime.quotaBlockedUntil, now) }}）
+                  </div>
+                </template>
+                <span v-else class="muted small">未读取</span>
+              </td>
               <td class="muted small">
                 <div>{{ oauthPolicySummary(account.policy) }}</div>
                 <div>{{ oauthRuntimeSummary(account, now) }}</div>
@@ -325,6 +369,16 @@ onBeforeUnmount(() => {
                     @click="refreshToken(account)"
                   >
                     <Icon name="refresh" :size="16" />
+                  </button>
+                  <button
+                    type="button"
+                    class="icon-button"
+                    title="读取上游额度"
+                    aria-label="读取上游额度"
+                    :disabled="busyKeyId != null || account.provider !== 'chatgpt'"
+                    @click="refreshQuota(account)"
+                  >
+                    <Icon name="chart" :size="16" />
                   </button>
                   <button
                     type="button"

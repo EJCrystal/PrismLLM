@@ -3,6 +3,7 @@ package dev.soven.llmgateway.oauth
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthAccountRuntimeState
+import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthStoredWindowState
 import dev.soven.llmgateway.domain.OAuthWindowSnapshot
 import kotlinx.coroutines.NonCancellable
@@ -13,6 +14,7 @@ import kotlinx.coroutines.withContext
 /** 账号级准入被拒绝的原因，同时用作指标与请求日志的跳过原因。 */
 enum class OAuthAccountDenyReason(val metricValue: String) {
     COOLDOWN("oauth_cooldown"),
+    QUOTA("oauth_quota"),
     WINDOW("oauth_window"),
     CONCURRENCY("oauth_concurrency"),
 }
@@ -45,6 +47,8 @@ data class OAuthAccountLease(val keyId: String)
 class OAuthAccountScheduler(
     private val defaultCooldownMs: Long = DEFAULT_COOLDOWN_MS,
     private val maxCooldownMs: Long = MAX_COOLDOWN_MS,
+    /** 上游额度读数的有效期；过期读数只展示，不参与准入拦截。 */
+    private val quotaMaxAgeMs: Long = DEFAULT_QUOTA_MAX_AGE_MS,
     private val now: () -> Long = System::currentTimeMillis,
     private val onSnapshot: (OAuthWindowSnapshot) -> Unit = {},
 ) {
@@ -118,6 +122,16 @@ class OAuthAccountScheduler(
         }
     }
 
+    /**
+     * 记录一次上游额度读数。额度用尽时立即生效，不必等到下一次 429：
+     * 读数过期或仍有 credits 时不做拦截，交给窗口与 429 冷却兜底。
+     */
+    suspend fun noteQuota(keyId: String, quota: OAuthQuotaSnapshot) {
+        mutex.withLock {
+            states.getOrPut(keyId) { AccountState() }.quota = quota
+        }
+    }
+
     /** 上游成功响应后清零连续 429 计数；已生效的冷却不会被提前解除。 */
     suspend fun recordSuccess(keyId: String, nowMs: Long = now()) {
         mutex.withLock {
@@ -142,6 +156,9 @@ class OAuthAccountScheduler(
             cooldownUntil = state.cooldownUntil,
             consecutiveRateLimits = state.consecutiveRateLimits,
             activeRequests = state.activeRequests,
+            quotaBlockedUntil = state.quota
+                ?.takeIf { it.isFresh(nowMs, quotaMaxAgeMs) }
+                ?.blockedUntil(nowMs, quotaMaxAgeMs),
         )
     }
 
@@ -191,6 +208,12 @@ class OAuthAccountScheduler(
         state.cooldownUntil?.takeIf { it > nowMs }?.let { until ->
             return OAuthAccountDecision.Denied(OAuthAccountDenyReason.COOLDOWN, until - nowMs)
         }
+        state.quota
+            ?.takeIf { it.isFresh(nowMs, quotaMaxAgeMs) }
+            ?.blockedUntil(nowMs, quotaMaxAgeMs)
+            ?.let { until ->
+                return OAuthAccountDecision.Denied(OAuthAccountDenyReason.QUOTA, until - nowMs)
+            }
         val limit = policy.windowLimit
         if (limit != null && state.hits.size >= limit) {
             val oldest = state.hits.first()
@@ -221,6 +244,7 @@ class OAuthAccountScheduler(
         var cooldownUntil: Long? = null
         var consecutiveRateLimits: Int = 0
         var lastPublishedAt: Long? = null
+        var quota: OAuthQuotaSnapshot? = null
 
         fun prune(nowMs: Long, policy: OAuthAccountPolicy) {
             val cutoff = nowMs - policy.windowSeconds * 1_000L
@@ -247,5 +271,6 @@ class OAuthAccountScheduler(
         const val SNAPSHOT_INTERVAL_MS = 1_000L
         const val MAX_TRACKED_HITS = 100_000
         const val MAX_CONSECUTIVE_RATE_LIMITS = 16
+        const val DEFAULT_QUOTA_MAX_AGE_MS = 900_000L
     }
 }

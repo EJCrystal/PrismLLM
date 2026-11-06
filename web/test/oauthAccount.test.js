@@ -6,10 +6,15 @@ import {
   formatCooldownRemaining,
   formatWindowSeconds,
   isOAuthAccountCooling,
+  isOAuthQuotaBlocked,
   oauthAuthStateBadge,
   oauthAuthStateLabel,
   oauthPolicySummary,
   oauthProviderLabel,
+  oauthQuotaCreditsLabel,
+  oauthQuotaSummary,
+  oauthQuotaTone,
+  oauthQuotaWindows,
   oauthRuntimeSummary,
 } from '../src/utils/oauthAccount'
 
@@ -117,5 +122,64 @@ describe('oauthAccount: 导入与策略表单', () => {
     assert.throws(() => buildOAuthPolicyPayload({ windowLimit: '', windowSeconds: '30', maxConcurrentRequests: '1' }), /60\.\.604800/)
     assert.throws(() => buildOAuthPolicyPayload({ windowLimit: '', windowSeconds: '3600', maxConcurrentRequests: '0' }), /1\.\.1000/)
     assert.throws(() => buildOAuthPolicyPayload({ windowLimit: '1.5', windowSeconds: '3600', maxConcurrentRequests: '1' }), /必须是整数/)
+  })
+})
+
+describe('oauthAccount: 上游额度展示', () => {
+  const quota = {
+    primary: { usedPercent: 100, remainingPercent: 0, windowSeconds: 18_000, resetsAt: NOW + 600_000 },
+    secondary: { usedPercent: 42.5, remainingPercent: 57.5, windowSeconds: 604_800, resetsAt: NOW + 86_400_000 },
+    allowed: false,
+    creditsBalance: 12.5,
+    creditsUnlimited: false,
+    resetCredits: 1,
+    checkedAt: NOW,
+    error: null,
+  }
+
+  it('按窗口时长标注并保留使用率', () => {
+    const windows = oauthQuotaWindows(quota)
+    assert.equal(windows.length, 2)
+    assert.equal(windows[0].label, '5 小时')
+    assert.equal(windows[1].label, '7 天')
+    assert.equal(windows[1].usedPercent, 42.5)
+    assert.deepEqual(oauthQuotaWindows(null), [])
+  })
+
+  it('使用率分级用于进度条配色', () => {
+    assert.equal(oauthQuotaTone(12), 'success')
+    assert.equal(oauthQuotaTone(79.9), 'success')
+    assert.equal(oauthQuotaTone(80), 'warning')
+    assert.equal(oauthQuotaTone(100), 'danger')
+  })
+
+  it('credits 与紧凑摘要', () => {
+    assert.equal(oauthQuotaCreditsLabel(quota), 'Credits 12.5')
+    assert.equal(oauthQuotaCreditsLabel({ ...quota, creditsUnlimited: true }), 'Credits 不限')
+    assert.equal(oauthQuotaCreditsLabel({ ...quota, creditsBalance: null }), null)
+    assert.equal(oauthQuotaSummary(quota), '5 小时 100% · 7 天 43% · Credits 12.5')
+    assert.equal(oauthQuotaSummary(null), null)
+  })
+
+  it('额度拦截只在后端给出未过期的恢复时间时生效', () => {
+    assert.equal(isOAuthQuotaBlocked({ runtime: { quotaBlockedUntil: NOW + 60_000 } }, NOW), true)
+    assert.equal(isOAuthQuotaBlocked({ runtime: { quotaBlockedUntil: NOW } }, NOW), false)
+    assert.equal(isOAuthQuotaBlocked({ runtime: { quotaBlockedUntil: null } }, NOW), false)
+    assert.match(
+      oauthRuntimeSummary(
+        {
+          policy: { windowLimit: null, windowSeconds: 10_800, maxConcurrentRequests: 2 },
+          runtime: {
+            windowUsed: 0,
+            cooldownUntil: null,
+            consecutiveRateLimits: 0,
+            activeRequests: 0,
+            quotaBlockedUntil: NOW + 60_000,
+          },
+        },
+        NOW,
+      ),
+      /额度用尽/,
+    )
   })
 })

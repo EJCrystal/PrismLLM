@@ -17,6 +17,7 @@ describe('adminAudit: 管理操作审计展示', () => {
     assert.equal(auditActionLabel('request_log.retention.update'), '更新请求日志保留策略')
     assert.equal(auditActionLabel('oauth_account.import'), '导入订阅账号')
     assert.equal(auditActionLabel('oauth_account.refresh'), '刷新订阅账号 Token')
+    assert.equal(auditActionLabel('oauth_account.quota.refresh'), '读取订阅账号上游额度')
     assert.equal(auditActionLabel('future.action'), 'future.action')
   })
 
@@ -46,6 +47,10 @@ describe('adminAudit: 管理操作审计展示', () => {
     assert.deepEqual(
       auditDetailsRows({ action: 'oauth_account.cooldown.clear', details: { keyId: 'k1' } }),
       [['密钥 ID', 'k1']],
+    )
+    assert.deepEqual(
+      auditDetailsRows({ action: 'oauth_account.quota.refresh', details: { keyId: 'k1', result: 'success' } }),
+      [['密钥 ID', 'k1'], ['结果', '成功'], ['错误码', '—']],
     )
   })
 

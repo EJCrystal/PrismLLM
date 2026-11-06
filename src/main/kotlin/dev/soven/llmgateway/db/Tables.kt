@@ -95,6 +95,21 @@ object ChannelKeyOAuthAccounts : Table("channel_key_oauth_accounts") {
     val windowLimit = integer("window_limit").nullable()
     val windowSeconds = integer("window_seconds").default(10_800)
     val maxConcurrentRequests = integer("max_concurrent_requests").default(1)
+    /** ChatGPT 账号 id，来自 access token JWT，用于读取 /wham/usage。 */
+    val chatgptAccountId = varchar("chatgpt_account_id", 128).nullable()
+    /** 上游额度快照：5 小时窗口（primary）与每周窗口（secondary）。 */
+    val quotaPrimaryUsedPercent = double("quota_primary_used_percent").nullable()
+    val quotaPrimaryWindowSeconds = integer("quota_primary_window_seconds").nullable()
+    val quotaPrimaryResetsAt = long("quota_primary_resets_at").nullable()
+    val quotaSecondaryUsedPercent = double("quota_secondary_used_percent").nullable()
+    val quotaSecondaryWindowSeconds = integer("quota_secondary_window_seconds").nullable()
+    val quotaSecondaryResetsAt = long("quota_secondary_resets_at").nullable()
+    val quotaAllowed = bool("quota_allowed").nullable()
+    val quotaCreditsBalance = double("quota_credits_balance").nullable()
+    val quotaCreditsUnlimited = bool("quota_credits_unlimited").default(false)
+    val quotaResetCredits = integer("quota_reset_credits").nullable()
+    val quotaCheckedAt = long("quota_checked_at").nullable()
+    val quotaError = varchar("quota_error", 200).nullable()
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
 

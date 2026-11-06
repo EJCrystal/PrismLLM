@@ -17,6 +17,8 @@ import dev.soven.llmgateway.domain.ModelTestSettingsRecord
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAccountRuntimeState
+import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
+import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamRequestSettingsRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderCatalogSnapshot
@@ -1244,6 +1246,27 @@ data class OAuthAccountRuntimeResponse(
     val cooldownUntil: Long? = null,
     val consecutiveRateLimits: Int = 0,
     val activeRequests: Int = 0,
+    val quotaBlockedUntil: Long? = null,
+)
+
+@Serializable
+data class OAuthQuotaWindowResponse(
+    val usedPercent: Double,
+    val remainingPercent: Double,
+    val windowSeconds: Int? = null,
+    val resetsAt: Long? = null,
+)
+
+@Serializable
+data class OAuthQuotaResponse(
+    val primary: OAuthQuotaWindowResponse? = null,
+    val secondary: OAuthQuotaWindowResponse? = null,
+    val allowed: Boolean? = null,
+    val creditsBalance: Double? = null,
+    val creditsUnlimited: Boolean = false,
+    val resetCredits: Int? = null,
+    val checkedAt: Long,
+    val error: String? = null,
 )
 
 @Serializable
@@ -1263,6 +1286,9 @@ data class OAuthAccountResponse(
     val refreshFailureCount: Int = 0,
     val lastRefreshError: String? = null,
     val proxyUrl: String? = null,
+    /** 上游账号 id；用于额度查询与多账号去重，不参与鉴权。 */
+    val chatgptAccountId: String? = null,
+    val quota: OAuthQuotaResponse? = null,
     val createdAt: Long,
     val updatedAt: Long,
     val policy: OAuthAccountPolicyResponse,
@@ -1280,6 +1306,24 @@ fun OAuthAccountPolicy.toResponse() = OAuthAccountPolicyResponse(
     windowLimit = windowLimit,
     windowSeconds = windowSeconds,
     maxConcurrentRequests = maxConcurrentRequests,
+)
+
+fun OAuthQuotaWindow.toResponse() = OAuthQuotaWindowResponse(
+    usedPercent = usedPercent,
+    remainingPercent = remainingPercent,
+    windowSeconds = windowSeconds,
+    resetsAt = resetsAt,
+)
+
+fun OAuthQuotaSnapshot.toResponse() = OAuthQuotaResponse(
+    primary = primary?.toResponse(),
+    secondary = secondary?.toResponse(),
+    allowed = allowed,
+    creditsBalance = creditsBalance,
+    creditsUnlimited = creditsUnlimited,
+    resetCredits = resetCredits,
+    checkedAt = checkedAt,
+    error = error,
 )
 
 fun OAuthAccountRecord.toResponse(
@@ -1303,6 +1347,8 @@ fun OAuthAccountRecord.toResponse(
     refreshFailureCount = refreshFailureCount,
     lastRefreshError = lastRefreshError,
     proxyUrl = proxyUrl,
+    chatgptAccountId = chatgptAccountId,
+    quota = quota?.toResponse(),
     createdAt = createdAt,
     updatedAt = updatedAt,
     policy = policy.toResponse(),
@@ -1311,5 +1357,6 @@ fun OAuthAccountRecord.toResponse(
         cooldownUntil = runtime?.cooldownUntil,
         consecutiveRateLimits = runtime?.consecutiveRateLimits ?: 0,
         activeRequests = runtime?.activeRequests ?: 0,
+        quotaBlockedUntil = runtime?.quotaBlockedUntil,
     ),
 )

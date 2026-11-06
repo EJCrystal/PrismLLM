@@ -1,4 +1,11 @@
-import type { OAuthAccount, OAuthAccountImportRequest, OAuthAccountPolicy, OAuthAccountPolicyRequest } from '../types/api'
+import type {
+  OAuthAccount,
+  OAuthAccountImportRequest,
+  OAuthAccountPolicy,
+  OAuthAccountPolicyRequest,
+  OAuthQuota,
+  OAuthQuotaWindow,
+} from '../types/api'
 
 /**
  * 订阅账号看板的展示与表单转换工具。全部为纯函数，便于在 node:test 中直接验证。
@@ -65,7 +72,76 @@ export function oauthRuntimeSummary(
   parts.push(`并发 ${account.runtime.activeRequests}/${account.policy.maxConcurrentRequests}`)
   const cooldown = formatCooldownRemaining(account.runtime.cooldownUntil, now)
   if (cooldown) parts.push(`冷却剩余 ${cooldown}`)
+  if (isOAuthQuotaBlocked(account, now)) parts.push('额度用尽')
   return parts.join(' · ')
+}
+
+export interface OAuthQuotaWindowView {
+  key: 'primary' | 'secondary'
+  label: string
+  usedPercent: number
+  remainingPercent: number
+  resetsAt: number | null
+}
+
+function quotaWindowView(
+  key: 'primary' | 'secondary',
+  window: OAuthQuotaWindow | null,
+  fallbackLabel: string,
+): OAuthQuotaWindowView | null {
+  if (!window) return null
+  return {
+    key,
+    label: window.windowSeconds ? formatWindowSeconds(window.windowSeconds) : fallbackLabel,
+    usedPercent: Math.max(0, Math.min(100, window.usedPercent)),
+    remainingPercent: Math.max(0, Math.min(100, window.remainingPercent)),
+    resetsAt: window.resetsAt,
+  }
+}
+
+/** 上游额度窗口；按窗口时长标注（如 5 小时 / 7 天），缺失时退回主/次窗口。 */
+export function oauthQuotaWindows(quota: OAuthQuota | null | undefined): OAuthQuotaWindowView[] {
+  if (!quota) return []
+  return [
+    quotaWindowView('primary', quota.primary, '主窗口'),
+    quotaWindowView('secondary', quota.secondary, '次窗口'),
+  ].filter((window): window is OAuthQuotaWindowView => window != null)
+}
+
+/** 使用率对应的展示等级：用尽 / 偏高 / 正常。 */
+export function oauthQuotaTone(usedPercent: number): 'success' | 'warning' | 'danger' {
+  if (usedPercent >= 100) return 'danger'
+  if (usedPercent >= 80) return 'warning'
+  return 'success'
+}
+
+export function formatQuotaNumber(value: number): string {
+  if (!Number.isFinite(value)) return '—'
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
+
+/** credits 余额；上游没有给出时返回 null。 */
+export function oauthQuotaCreditsLabel(quota: OAuthQuota | null | undefined): string | null {
+  if (!quota) return null
+  if (quota.creditsUnlimited) return 'Credits 不限'
+  if (quota.creditsBalance != null) return `Credits ${formatQuotaNumber(quota.creditsBalance)}`
+  return null
+}
+
+export function isOAuthQuotaBlocked(account: Pick<OAuthAccount, 'runtime'>, now: number): boolean {
+  const until = account.runtime.quotaBlockedUntil
+  return until != null && until > now
+}
+
+/** 额度单元格的紧凑文本；无读数时返回 null。 */
+export function oauthQuotaSummary(quota: OAuthQuota | null | undefined): string | null {
+  if (!quota) return null
+  const parts = oauthQuotaWindows(quota).map(
+    (window) => `${window.label} ${Math.round(window.usedPercent)}%`,
+  )
+  const credits = oauthQuotaCreditsLabel(quota)
+  if (credits) parts.push(credits)
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 
 export interface OAuthImportForm {

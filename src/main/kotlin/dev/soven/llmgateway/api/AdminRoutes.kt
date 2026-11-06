@@ -15,6 +15,7 @@ import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.PricingMode
+import dev.soven.llmgateway.oauth.OAuthQuotaResult
 import dev.soven.llmgateway.oauth.OAuthRefreshException
 import dev.soven.llmgateway.oauth.OAuthRefreshResult
 import dev.soven.llmgateway.oauth.OAuthUnavailableReason
@@ -834,6 +835,45 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     )
                 }
                 is OAuthRefreshResult.Refreshed -> {
+                    call.markAdminAuditDetails(buildJsonObject {
+                        put("keyId", keyId)
+                        put("result", "success")
+                    })
+                    val (channel, key) = resolveOAuthAccountTarget(app, keyId)
+                        ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+                    val policy = key.oauthPolicy ?: OAuthAccountPolicy()
+                    call.respond(
+                        result.account.toResponse(
+                            channel, key, policy, app.oauthAccountScheduler.runtimeState(keyId, policy),
+                        ),
+                    )
+                }
+            }
+        }
+
+        post("/oauth-accounts/{keyId}/quota/refresh") {
+            call.requireAdmin(app)
+            val keyId = call.requiredParam("keyId", "缺少账号 id")
+            when (val result = app.oauthQuotaService.refreshNow(keyId)) {
+                OAuthQuotaResult.NotFound -> throw notFound("oauth_account_not_found", "订阅账号不存在")
+                OAuthQuotaResult.NotSupported -> throw badRequest(
+                    "oauth_quota_unsupported",
+                    "该账号不支持额度查询，或还没有可用的 access token",
+                )
+                is OAuthQuotaResult.Failed -> {
+                    call.markAdminAuditDetails(buildJsonObject {
+                        put("keyId", keyId)
+                        put("result", "failed")
+                        put("errorCode", result.errorCode)
+                    })
+                    throw GatewayException(
+                        HttpStatusCode.BadGateway,
+                        "oauth_quota_failed",
+                        "额度读取失败（${result.errorCode}），请检查账号凭据与代理出口",
+                        "api_error",
+                    )
+                }
+                is OAuthQuotaResult.Refreshed -> {
                     call.markAdminAuditDetails(buildJsonObject {
                         put("keyId", keyId)
                         put("result", "success")

@@ -19,6 +19,7 @@ const actionLabels: Record<string, string> = {
   'oauth_account.import': '导入订阅账号',
   'oauth_account.policy.update': '更新订阅账号调度策略',
   'oauth_account.refresh': '刷新订阅账号 Token',
+  'oauth_account.quota.refresh': '读取订阅账号上游额度',
   'oauth_account.cooldown.clear': '解除订阅账号冷却',
   'key_auto_disable_settings.update': '更新密钥自动禁用规则',
   'client_key.create': '创建调用方密钥',
@@ -160,6 +161,13 @@ export function auditDetailsRows(entry: AuditEntry | null | undefined): AuditDet
     ]
   }
   if (entry?.action === 'oauth_account.refresh') {
+    return [
+      ['密钥 ID', displayDetail(details.keyId)],
+      ['结果', details.result === 'success' ? '成功' : details.result === 'failed' ? '失败' : displayDetail(details.result)],
+      ['错误码', displayDetail(details.errorCode)],
+    ]
+  }
+  if (entry?.action === 'oauth_account.quota.refresh') {
     return [
       ['密钥 ID', displayDetail(details.keyId)],
       ['结果', details.result === 'success' ? '成功' : details.result === 'failed' ? '失败' : displayDetail(details.result)],

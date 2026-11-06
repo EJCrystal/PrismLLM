@@ -37,6 +37,16 @@
 - 内存态是权威来源，`channel_key_oauth_windows` 只保存重启恢复所需的快照（窗口命中、冷却截止时间、连续 429 次数）。快照按账号合并写透，最多每秒发布一次；关闭时强制刷新。
 - 修改窗口策略不会重置已有命中；窗口缩小后旧命中按时间自然滑出，期间可能持续拒绝。
 
+### 上游额度观测
+
+- ChatGPT 提供 `/backend-api/wham/usage` 只读接口，返回 `rate_limit.primary_window`（5 小时）与 `secondary_window`（每周）的 `used_percent`、`limit_window_seconds`、`reset_at` / `reset_after_seconds`，以及 `credits` 余额与 `rate_limit_reset_credits.available_count`。`OAuthQuotaService` 每 5 分钟按账号扫描一次，最多 4 个并发。
+- 读取走账号绑定的同一个代理出口，请求头与 Codex 客户端一致（`Authorization`、`chatgpt-account-id`、`originator`、`User-Agent`）。账号 id 优先取库中值，缺失时从 access token 的 `https://api.openai.com/auth` 声明解析并回写。
+- 401 时强制刷新一次 access token 再重试；其余失败只记录脱敏错误码（`http_<status>`、`timeout`、`network_error`、`invalid_response`），保留上一次成功读数。
+- 读数写入 `channel_key_oauth_accounts` 的 `quota_*` 列，并同步给调度器。`quota_checked_at` 为空或早于扫描间隔的账号才会被扫描；重启时从库中恢复读数，不必等第一轮扫描。
+- 额度拦截条件：读数未过期（默认 15 分钟），没有 credits（`credits.balance == 0` 且非 `unlimited`），且 5 小时或每周窗口 `used_percent >= 100`。命中时拒绝新请求，`retryAfterMs` 取用尽窗口中较晚的重置时间，拒绝原因记为 `oauth_quota`。
+- 读数过期后只展示、不再拦截，交给滑动窗口与 429 冷却兜底；上游额度接口异常不会把账号长期误停。
+- 额度是账号级硬限制，与窗口/并发/冷却一样不进入 fail-open。
+
 ### Provider 与代理
 
 - `OAuthTokenProvider` 只负责一次刷新请求，不读写数据库。ChatGPT 使用 Auth0 兼容的 JSON 请求体，client id 默认取 Codex CLI 的公开客户端并可由 `OAUTH_CHATGPT_CLIENT_ID` 覆盖；Antigravity 使用 Google OAuth 表单编码，只有显式配置 `OAUTH_ANTIGRAVITY_CLIENT_ID` 后才注册。
@@ -48,15 +58,18 @@
 
 - 订阅账号与渠道密钥一对一绑定。导入/重新授权走 `PUT /admin/api/channels/{id}/keys/{keyId}/oauth-account`，只接受已配置的 provider；refresh token 必填，access token 与到期时间必须成对出现；代理地址复用刷新路径的校验，只允许无认证 HTTP 代理。
 - 重新授权视为替换密钥凭据：加密写入 refresh token、清空旧 access token 缓存、重置刷新失败计数，并清空账号级冷却、密钥级候选冷却与自动禁用健康计数。密钥启停状态不变，人工停用与自动停用都需要管理员显式恢复。
-- `GET /admin/api/oauth-accounts` 返回账号、渠道/密钥名称、策略与实时调度状态（窗口用量、并发、冷却截止时间）；实时状态来自内存，未使用过的账号返回零值。响应禁止缓存，且不包含任何 token。
+- `GET /admin/api/oauth-accounts` 返回账号、渠道/密钥名称、策略、上游额度快照与实时调度状态（窗口用量、并发、冷却与额度拦截截止时间）；实时状态来自内存，未使用过的账号返回零值。响应禁止缓存，且不包含任何 token。
+- 看板以进度条展示 5 小时与每周窗口的使用比例、重置时间与 credits；额度用尽时显示等待重置的剩余时间。
 - 调度策略通过 `PUT /admin/api/oauth-accounts/{keyId}/policy` 单独编辑，重新导入凭据不会重置策略。
+- `POST /admin/api/oauth-accounts/{keyId}/quota/refresh` 立即读取上游额度；失败返回 502 `oauth_quota_failed`，不支持或缺少 access token 时返回 400 `oauth_quota_unsupported`。
 - `POST /admin/api/oauth-accounts/{keyId}/refresh` 允许对 `REAUTH_REQUIRED` 账号再试一次；失败按原因返回 502 `oauth_refresh_failed`。`POST .../cooldown/clear` 同时清除账号冷却与密钥冷却。
-- 四个写操作都写入管理操作审计，只记录渠道/密钥 id、provider、账号代理、策略参数与刷新结果，不记录任何 token。
+- 五个写操作都写入管理操作审计，只记录渠道/密钥 id、provider、账号代理、策略参数与操作结果，不记录任何 token。
 
 ## Consequences
 
 - 管理面已提供导入/重新授权、账号看板与调度策略编辑；交互式 OAuth 登录仍需在网关外获取 refresh token 后导入。
 - 数据面每个 OAuth 请求都会读取一次账号行以获取最新 `auth_state` 与 token 到期时间；静态密钥已在内存中区分，不受影响。若账号数量增长到数据库往返成为瓶颈，可在此基础上增加短 TTL 缓存。
-- 账号级滑动窗口、单号并发与 429 冷却已经接入路由准入和失败结算；调度状态的内存态与单实例假设一致，多副本部署需要改为共享计数或按账号分片。
+- 账号级滑动窗口、单号并发、429 冷却与上游额度已经接入路由准入和失败结算；调度状态的内存态与单实例假设一致，多副本部署需要改为共享计数或按账号分片。
+- 额度观测依赖上游私有接口。接口不可用或返回结构变化时解析失败，只影响额度展示与拦截，不影响 token 刷新与正常转发。
 - 单实例假设不变：串行刷新依赖进程内互斥锁，多副本部署需要改为数据库租约或分布式锁。
 - CONTEXT.md 与《路由与容灾机制》的范围边界已同步：交互式订阅登录仍在范围外，token 刷新与账号池调度已纳入。
