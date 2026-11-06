@@ -40,7 +40,7 @@ import {
 } from '../utils/channelDisplay'
 import type { ChannelFormDraft, OriginalModelMapping } from '../utils/channelForm'
 import { buildChannelPayload, buildPriorityUpdatePayload, canonicalModelSnapshot, isKeyRoutable, mergeProbedProtocols, removeProbeAddedProtocols } from '../utils/channelForm'
-import { normalizeChannelKeyRateLimit, validateChannelKeyRateLimit } from '../utils/channelKeyRateLimit'
+import { channelKeyRateLimitSummary, normalizeChannelKeyRateLimit, validateChannelKeyRateLimit } from '../utils/channelKeyRateLimit'
 import {
   canProbeSavedChannel,
   createRequestTracker,
