@@ -41,7 +41,7 @@
 | 能力 | 行为 |
 | --- | --- |
 | 文本、系统提示、输出 token 上限、采样参数 | 按目标协议字段映射；转换到 Messages 时缺失 token 上限默认 4096，启用思考时必要时提高到预算加 1 |
-| 函数工具、选择工具、工具调用与结果 | 映射声明、调用 ID、参数及结果；直接转换保留文本和工具项目的原始顺序；Responses → Chat 将连续工具调用合并到同一条 assistant 消息，并保留其前置 assistant 文本，不跨工具结果或其它角色合并 |
+| 函数工具、选择工具、工具调用与结果 | 映射声明、调用 ID、参数及结果；直接转换保留文本和工具项目的原始顺序；Responses → Chat 将连续工具调用合并到同一条 assistant 消息，并保留其前置 assistant 文本，不跨工具结果或其它角色合并。工具结果里的 tool_reference 块（Claude Code 的 ToolSearch）没有对应表示，转成一句「Tool X is loaded and can be called now.」文本 |
 | 并行工具开关 | Messages 的 `disable_parallel_tool_use` 与 Responses/Chat 的 `parallel_tool_calls` 对应 |
 | 用量 | 统一计数后输出目标字段；Messages 缓存读写加入输入总量，Responses/Chat 输入量不重复增加缓存 |
 | 思考参数 | 沿用已有 budget 与 effort 的分档近似映射，不声称无损；转换到 Messages 时保留显式 token 上限，将预算限制在上限减 1，且不低于 1024；启用思考但显式上限不大于 1024 时本地报错，不隐式提高调用方上限或关闭思考 |

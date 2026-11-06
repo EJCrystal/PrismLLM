@@ -627,6 +627,37 @@ class ProtocolConversionTest {
     }
 
     @Test
+    fun `anthropic tool reference content becomes a loaded tool note`() {
+        val request = json(
+            """{"model":"m","max_tokens":8,"messages":[
+                {"role":"user","content":"search for a tool"},
+                {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"ToolSearch","input":{"query":"bash"}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[
+                    {"type":"tool_reference","tool_name":"Bash"},
+                    {"type":"text","text":"done"}
+                ]}]}
+            ]}""",
+        )
+        val expected = "Tool Bash is loaded and can be called now.\ndone"
+
+        val chat = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, request, "m")
+        val tool = chat["messages"]!!.jsonArray.map { it.jsonObject }
+            .single { it["role"]!!.jsonPrimitive.content == "tool" }
+        assertEquals(expected, tool["content"]!!.jsonPrimitive.content)
+
+        val responses = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES, request, "m")
+        val output = responses["input"]!!.jsonArray.map { it.jsonObject }
+            .single { it["type"]!!.jsonPrimitive.content == "function_call_output" }
+        assertEquals(expected, output["output"]!!.jsonPrimitive.content)
+
+        val gemini = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI, request, "m")
+        val response = gemini["contents"]!!.jsonArray.map { it.jsonObject }
+            .flatMap { content -> content["parts"]!!.jsonArray.map { part -> part.jsonObject } }
+            .single { it["functionResponse"] != null }["functionResponse"]!!.jsonObject
+        assertEquals(expected, response["response"]!!.jsonObject["content"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `chat string stop converts to anthropic stop sequences`() {
         val request = json("""{"model":"m","messages":[{"role":"user","content":"hi"}],"stop":"END"}""")
         val converted = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, request, "m")

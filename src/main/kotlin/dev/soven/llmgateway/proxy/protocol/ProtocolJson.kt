@@ -307,6 +307,11 @@ internal fun JsonObject.toolResultContent(path: String): ToolResultContent = whe
             when (obj.string("type")) {
                 "text" -> text += obj.string("text").orEmpty()
                 "image" -> images += imagePartFromAnthropic(obj, "$path[$index]")
+                // Claude Code 的 ToolSearch 用 tool_reference 声明某个延迟加载的工具已就绪；目标协议没有对应块，
+                // 转成一句说明，避免整轮请求因为一个没有内容的信息块失败。
+                "tool_reference" -> obj.string("tool_name")?.takeIf { it.isNotBlank() }?.let { name ->
+                    text += "Tool $name is loaded and can be called now."
+                }
                 else -> unsupported("$path[$index].type", "第一版不支持 tool_result 内容类型 ${obj.string("type")}")
             }
         }
