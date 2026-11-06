@@ -12,6 +12,7 @@ import dev.soven.llmgateway.domain.UpstreamEnvelope
 import dev.soven.llmgateway.domain.upstreamEnvelope
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistEnvelope
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistCloak
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistSuspension
 import dev.soven.llmgateway.domain.authTypeFor
 import dev.soven.llmgateway.oauth.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
@@ -529,6 +530,12 @@ private suspend fun handleProxy(
                         oauthAccount,
                         e.retryAfterMs ?: parseRateLimitResetMs(e.upstreamErrorBody),
                     )
+                }
+                if (e.upstreamStatus == 403 && oauthAccount != null &&
+                    CodeAssistSuspension.isSuspended(e.upstreamErrorBody)
+                ) {
+                    // Antigravity 封禁账号：不是鉴权故障，按两小时账号级冷却处理并继续换候选。
+                    app.oauthAccountScheduler.recordRateLimited(oauthAccount, CodeAssistSuspension.REST_MS)
                 }
                 val kind = classifyFailure(e)
                 if (kind == null) {

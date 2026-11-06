@@ -31,6 +31,7 @@ import dev.soven.llmgateway.oauth.OAuthTokenService
 import dev.soven.llmgateway.oauth.ProviderChannelProvisioner
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistProjectResolver
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistModelCatalog
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistQuotaClient
 import dev.soven.llmgateway.oauth.OAuthWindowStateWriter
 import dev.soven.llmgateway.oauth.buildOAuthTokenProviders
 import dev.soven.llmgateway.repo.ModelTestSettingsRepository
@@ -323,6 +324,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val codeAssistProjectResolver = CodeAssistProjectResolver(oauthAccountRepository, httpClient)
     /** Antigravity 的模型目录与家族/变体映射。 */
     val codeAssistModelCatalog = CodeAssistModelCatalog(httpClient)
+    /** Antigravity 的额度读取。 */
+    val codeAssistQuotaClient = CodeAssistQuotaClient(httpClient)
     val modelCatalog = UpstreamModelCatalog(channelRepository, oauthAccountRepository)
     val oauthTokenProviders = OAuthTokenProviderRegistry(buildOAuthTokenProviders(config.oauth))
     val oauthTokenService = OAuthTokenService(oauthAccountRepository, credentialCipher, oauthTokenProviders, config.oauth)
@@ -354,6 +357,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         repository = oauthAccountRepository,
         tokenService = oauthTokenService,
         config = config.oauth,
+        projectResolver = codeAssistProjectResolver,
+        antigravityQuota = codeAssistQuotaClient,
         onQuota = oauthAccountScheduler::noteQuota,
     )
 
