@@ -428,14 +428,15 @@ class ProtocolConversionTest {
     }
 
     @Test
-    fun `unsupported multimodal content is rejected`() {
+    fun `chat image content converts to an anthropic image block`() {
         val request = json(
             """{"model":"x","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
         )
-        val error = assertFailsWith<ProtocolConversionException> {
-            ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, request, "claude")
-        }
-        assertTrue(error.field.contains("content"))
+        val converted = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, request, "claude")
+        val block = converted["messages"]!!.jsonArray.single().jsonObject["content"]!!.jsonArray.single().jsonObject
+        assertEquals("image", block["type"]!!.jsonPrimitive.content)
+        assertEquals("url", block["source"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("https://example.com/a.png", block["source"]!!.jsonObject["url"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -633,14 +634,14 @@ class ProtocolConversionTest {
     }
 
     @Test
-    fun `chat image content is rejected when converting to responses`() {
+    fun `chat image content converts to a responses input image`() {
         val request = json(
             """{"model":"m","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
         )
-        val error = assertFailsWith<ProtocolConversionException> {
-            ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, request, "m")
-        }
-        assertTrue(error.field.contains("content"))
+        val converted = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, request, "m")
+        val part = converted["input"]!!.jsonArray.single().jsonObject["content"]!!.jsonArray.single().jsonObject
+        assertEquals("input_image", part["type"]!!.jsonPrimitive.content)
+        assertEquals("https://example.com/a.png", part["image_url"]!!.jsonPrimitive.content)
     }
 
     @Test

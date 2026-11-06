@@ -6832,7 +6832,7 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"model":"converted-unsupported","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
+                    """{"model":"converted-unsupported","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]}""",
                 )
             }
             assertEquals(HttpStatusCode.BadRequest, response.status)
@@ -6897,7 +6897,7 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"model":"probe-conversion-request","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
+                    """{"model":"probe-conversion-request","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]}""",
                 )
             }
             assertEquals(HttpStatusCode.BadRequest, response.status, response.bodyAsText())
@@ -6972,7 +6972,7 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"model":"conversion-fallback","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
+                    """{"model":"conversion-fallback","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]}""",
                 )
             }
             assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
