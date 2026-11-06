@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildClientKeyPayload, quotaSummary } from '../src/utils/clientKeyQuota'
+import { buildClientKeyPayload, concurrencySummary, quotaSummary } from '../src/utils/clientKeyQuota'
 
 describe('clientKeyQuota: 调用方密钥额度配置', () => {
   it('空限额不提交为 0，保持不限制语义', () => {
@@ -67,11 +67,16 @@ describe('clientKeyQuota: 调用方密钥额度配置', () => {
       },
     })
 
-    assert.equal(summary, '25 / 100 token · USD 0.25 / 1.5 · EUR 0.5 / 2 · 并发 1 / 3 · 7 / 60 次/分钟')
+    assert.equal(summary, '25 / 100 token · USD 0.25 / 1.5 · EUR 0.5 / 2 · 7 / 60 次/分钟')
   })
 
   it('无配置时显示未设置限额', () => {
     assert.equal(quotaSummary({ dailyTokenLimit: null, maxConcurrentRequests: null }), '未设置限额')
+  })
+
+  it('实时并发占用优先展示上限，未配置上限时只展示在途数', () => {
+    assert.equal(concurrencySummary({ maxConcurrentRequests: 3 }, 2), '并发 2 / 3')
+    assert.equal(concurrencySummary({ maxConcurrentRequests: null }, 2), '在途 2')
   })
 
   it('统一美元计费时，仅设置 USD 上限且自动将其他币种限额置空', () => {

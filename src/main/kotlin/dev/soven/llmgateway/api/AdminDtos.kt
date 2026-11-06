@@ -448,6 +448,38 @@ data class ClientKeyQuotaUsageResponse(
     val currentMinuteRequests: Int = 0,
 )
 
+/**
+ * 管理面实时占用快照。计数只在当前实例内存中，进程重启或换实例后归零。
+ *
+ * @author 文杰
+ * @since 2026-11-06
+ */
+@Serializable
+data class OccupancyResponse(
+    val sampledAt: Long,
+    val channels: List<ChannelOccupancyResponse> = emptyList(),
+    val clientKeys: List<ClientKeyOccupancyResponse> = emptyList(),
+)
+
+@Serializable
+data class ChannelOccupancyResponse(
+    val channelId: String,
+    val concurrentRequests: Int,
+    val keys: List<ChannelKeyOccupancyResponse> = emptyList(),
+)
+
+@Serializable
+data class ChannelKeyOccupancyResponse(
+    val keyId: String,
+    val concurrentRequests: Int,
+)
+
+@Serializable
+data class ClientKeyOccupancyResponse(
+    val clientKeyId: String,
+    val concurrentRequests: Int,
+)
+
 @Serializable
 data class UsageReportResponse(
     val from: Long,

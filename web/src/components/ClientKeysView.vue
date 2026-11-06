@@ -2,7 +2,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
-import type { ClientKey } from '../types/api'
+import type { ClientKey, RuntimeOccupancy } from '../types/api'
+import { useAutoRefresh } from '../composables/useAutoRefresh'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import ActionMenu from './ActionMenu.vue'
@@ -11,7 +12,7 @@ import Modal from './Modal.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
 import { formatTime } from '../utils/format'
-import { buildClientKeyPayload, quotaSummary } from '../utils/clientKeyQuota'
+import { buildClientKeyPayload, concurrencySummary, quotaSummary } from '../utils/clientKeyQuota'
 import { useClientKeyActions } from '../utils/clientKeyActions'
 import { useSecretReveal } from '../utils/secretReveal'
 
@@ -30,6 +31,23 @@ interface ClientKeyForm {
 const keys = ref<ClientKey[]>([])
 const loading = ref(true)
 const error = ref('')
+// 实时占用独立轮询；计数只在网关单实例内存中，读取失败时保留上一次快照。
+const occupancy = ref<RuntimeOccupancy | null>(null)
+const occupancyRefreshMs = ref(5_000)
+let occupancyRevision = 0
+const liveConcurrent = computed(() => new Map((occupancy.value?.clientKeys ?? []).map((row) => [row.clientKeyId, row.concurrentRequests])))
+function keyConcurrent(clientKeyId: string): number {
+  return liveConcurrent.value.get(clientKeyId) ?? 0
+}
+async function loadOccupancy(): Promise<void> {
+  const request = ++occupancyRevision
+  try {
+    const result = await api.getOccupancy()
+    if (request === occupancyRevision) occupancy.value = result
+  } catch {
+    // 占用是辅助信息，保留上一次快照，避免把在途数误显示为 0。
+  }
+}
 const showForm = ref(false)
 const saving = ref(false)
 const editingId = ref<string | null>(null)
@@ -182,7 +200,11 @@ function keyMoreAction(id: string, key: ClientKey) {
   if (id === 'delete') remove(key)
 }
 
-onMounted(load)
+useAutoRefresh(occupancyRefreshMs, () => { void loadOccupancy() }, () => loading.value || document.hidden)
+onMounted(() => {
+  void load()
+  void loadOccupancy()
+})
 </script>
 
 <template>
@@ -255,7 +277,13 @@ onMounted(load)
                   {{ key.revokedAt ? '已撤销' : key.enabled ? '启用' : '停用' }}
                 </span>
               </td>
-              <td class="muted small">{{ quotaSummary(key) }}</td>
+              <td class="muted small">
+                <div>{{ quotaSummary(key) }}</div>
+                <div class="client-key-occupancy" :class="{ 'is-active': keyConcurrent(key.id) > 0 }">
+                  <span class="client-key-occupancy-dot" aria-hidden="true"></span>
+                  {{ concurrencySummary(key, keyConcurrent(key.id)) }}
+                </div>
+              </td>
               <td class="muted">{{ formatTime(key.expiresAt, { fallback: '永不过期' }) }}</td>
               <td class="muted">
                 <div>{{ formatTime(key.createdAt) }}</div>
@@ -373,3 +401,26 @@ onMounted(load)
     </Modal>
   </section>
 </template>
+
+<style scoped>
+.client-key-occupancy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.client-key-occupancy-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+.client-key-occupancy.is-active { color: var(--success); font-weight: 600; }
+.client-key-occupancy.is-active .client-key-occupancy-dot {
+  background: var(--success-fill);
+  box-shadow: 0 0 0 3px var(--success-soft);
+}
+</style>

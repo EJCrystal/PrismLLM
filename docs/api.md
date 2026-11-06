@@ -168,6 +168,29 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
   - `scope=candidate`：需同时提供 `keyId` 与 `upstreamModel`，只清除该候选。
   - 操作写入管理操作审计，动作为 `channel.cooldown.clear`。
 
+### 5. 实时占用
+
+`GET /admin/api/occupancy` 返回当前实例内存中的在途请求数，管理台按 5 秒轮询展示：
+
+```json
+{
+  "sampledAt": 1762400000000,
+  "channels": [
+    {
+      "channelId": "ch_...",
+      "concurrentRequests": 3,
+      "keys": [{ "keyId": "ck_...", "concurrentRequests": 2 }]
+    }
+  ],
+  "clientKeys": [{ "clientKeyId": "ck_...", "concurrentRequests": 1 }]
+}
+```
+
+- 渠道计数是该渠道下各渠道密钥在途尝试之和；只有大于零的条目会出现在快照中。
+- 渠道密钥计数覆盖所有实际发往上游的尝试，与是否配置并发上限无关；它只用于展示，不改变限流判定。
+- 调用方密钥计数从请求通过鉴权与额度检查开始，到响应结束、失败或客户端断开后释放。
+- 计数只保存在单实例进程内存中，进程重启或切换实例后归零，不做跨实例聚合。
+
 ---
 
 ## 三、调用方密钥生命周期与审计
