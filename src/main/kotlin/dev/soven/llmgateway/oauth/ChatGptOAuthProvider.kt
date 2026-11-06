@@ -15,6 +15,7 @@ import kotlinx.serialization.json.put
 class ChatGptOAuthProvider(
     private val config: OAuthProviderConfig,
     private val timeoutMs: Long = 30_000,
+    private val proxyAllowedHosts: Set<String> = emptySet(),
 ) : OAuthTokenProvider {
     override val provider = OAuthProvider.CHATGPT
 
@@ -30,6 +31,7 @@ class ChatGptOAuthProvider(
             body = body,
             proxyUrl = proxyUrl,
             timeoutMs = timeoutMs,
+            proxyAllowedHosts = proxyAllowedHosts,
         )
         return response.toOAuthTokenResponse()
     }

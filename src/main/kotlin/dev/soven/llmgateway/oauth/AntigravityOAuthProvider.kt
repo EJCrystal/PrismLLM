@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets
 class AntigravityOAuthProvider(
     private val config: OAuthProviderConfig,
     private val timeoutMs: Long = 30_000,
+    private val proxyAllowedHosts: Set<String> = emptySet(),
 ) : OAuthTokenProvider {
     override val provider = OAuthProvider.ANTIGRAVITY
 
@@ -31,6 +32,7 @@ class AntigravityOAuthProvider(
             body = form,
             proxyUrl = proxyUrl,
             timeoutMs = timeoutMs,
+            proxyAllowedHosts = proxyAllowedHosts,
         )
         return response.toOAuthTokenResponse()
     }

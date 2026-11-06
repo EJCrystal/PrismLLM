@@ -207,6 +207,22 @@ class OAuthTokenServiceTest {
         assertFailsWith<OAuthRefreshException> { proxyAddress("http://127.0.0.1:8080/path") }
         assertNull(proxyAddress(null))
         assertEquals(8080, proxyAddress("http://127.0.0.1:8080")!!.port)
+        assertEquals(8080, proxyAddress("http://LOCALHOST:8080")!!.port)
+    }
+
+    @Test
+    fun `account proxy hosts outside loopback require an explicit allowlist`() {
+        val denied = assertFailsWith<OAuthRefreshException> { proxyAddress("http://proxy.example.com:8080") }
+        assertEquals("proxy_not_allowed", denied.errorCode)
+
+        // 白名单条目统一小写，URI 主机大小写不敏感。
+        assertEquals(
+            8080,
+            proxyAddress("http://Proxy.Example.com:8080", setOf("proxy.example.com"))!!.port,
+        )
+        assertTrue(isProxyHostAllowed("[::1]", emptySet()))
+        assertFalse(isProxyHostAllowed("10.0.0.12", emptySet()))
+        assertTrue(isProxyHostAllowed("10.0.0.12", setOf("10.0.0.12")))
     }
 
     private fun service(): OAuthTokenService {

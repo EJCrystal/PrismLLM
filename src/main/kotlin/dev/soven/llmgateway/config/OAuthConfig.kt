@@ -47,6 +47,11 @@ data class OAuthConfig(
     val quotaMaxAgeMs: Long = 900_000,
     /** 同一渠道、同一密钥优先级内订阅账号的排序策略；不影响静态密钥。 */
     val routing: OAuthRoutingStrategy = OAuthRoutingStrategy.ROUND_ROBIN,
+    /**
+     * 允许作为账号代理出口的主机。回环地址（127.0.0.1、localhost、::1）始终允许，
+     * 其余主机必须显式列入 `OAUTH_PROXY_ALLOWED_HOSTS`，避免管理面输入变成任意内网探测入口。
+     */
+    val proxyAllowedHosts: Set<String> = emptySet(),
     val chatGpt: OAuthProviderConfig = OAuthProviderConfig(
         clientId = DEFAULT_CHATGPT_CLIENT_ID,
         tokenEndpoint = "https://auth.openai.com/oauth/token",
@@ -115,6 +120,8 @@ data class OAuthConfig(
                         ?: error("OAUTH_ROUTING 只支持 round_robin、drain、least_used 或 pace")
                 }!!
 
+            val proxyAllowedHosts = parseProxyAllowedHosts(value("OAUTH_PROXY_ALLOWED_HOSTS"))
+
             val chatGpt = OAuthProviderConfig(
                 clientId = value("OAUTH_CHATGPT_CLIENT_ID", DEFAULT_CHATGPT_CLIENT_ID)!!,
                 tokenEndpoint = value("OAUTH_CHATGPT_TOKEN_ENDPOINT", "https://auth.openai.com/oauth/token")!!,
@@ -152,6 +159,7 @@ data class OAuthConfig(
                 quotaIntervalMs = quotaIntervalMs,
                 quotaMaxAgeMs = quotaMaxAgeMs,
                 routing = routing,
+                proxyAllowedHosts = proxyAllowedHosts,
                 chatGpt = chatGpt,
                 antigravity = antigravity,
             )
@@ -179,10 +187,28 @@ data class OAuthConfig(
             ) { "$name 必须使用 https（仅本机回环地址允许 http）" }
         }
 
+        /** 账号代理主机白名单；条目只接受主机名或 IPv4，避免把协议、端口或凭据混进来。 */
+        private fun parseProxyAllowedHosts(raw: String?): Set<String> {
+            if (raw == null) return emptySet()
+            val hosts = raw.split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+            require(hosts.size <= MAX_PROXY_ALLOWED_HOSTS) {
+                "OAUTH_PROXY_ALLOWED_HOSTS 最多允许 $MAX_PROXY_ALLOWED_HOSTS 个主机"
+            }
+            hosts.forEach { host ->
+                require(host.length <= 253 && PROXY_HOST_PATTERN.matches(host)) {
+                    "OAUTH_PROXY_ALLOWED_HOSTS 只接受主机名或 IPv4，不能包含协议、端口、路径或凭据：$host"
+                }
+            }
+            return hosts.toSet()
+        }
+
         /** Java 的 URI 把 IPv6 字面量保留为 `[::1]`，比较前去掉方括号。 */
         private fun isLoopbackHost(host: String?): Boolean =
             host != null && host.removePrefix("[").removeSuffix("]") in LOOPBACK_HOSTS
 
         private val LOOPBACK_HOSTS = setOf("127.0.0.1", "localhost", "::1")
+
+        private const val MAX_PROXY_ALLOWED_HOSTS = 32
+        private val PROXY_HOST_PATTERN = Regex("[a-z0-9][a-z0-9._-]*")
     }
 }

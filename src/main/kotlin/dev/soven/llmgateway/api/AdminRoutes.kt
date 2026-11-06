@@ -737,7 +737,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (proxyUrl != null && proxyUrl.length > MAX_OAUTH_PROXY_CHARS) {
                 throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
             }
-            validateOAuthProxyUrl(proxyUrl)
+            validateOAuthProxyUrl(app, proxyUrl)
             when (val result = app.oauthLoginService.start(provider, channel.id, keyId, proxyUrl)) {
                 OAuthLoginStartResult.UnsupportedProvider -> throw badRequest(
                     "oauth_login_unsupported",
@@ -856,7 +856,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (proxyUrl != null && proxyUrl.length > MAX_OAUTH_PROXY_CHARS) {
                 throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
             }
-            validateOAuthProxyUrl(proxyUrl)
+            validateOAuthProxyUrl(app, proxyUrl)
             val account = try {
                 app.oauthAccountRepository.upsert(
                     keyId = keyId,
@@ -2098,10 +2098,10 @@ private suspend fun clearKeyCooldown(app: GatewayApplication, channelId: String,
     app.candidateCooldown.confirmDeletions(cleared)
 }
 
-private fun validateOAuthProxyUrl(proxyUrl: String?) {
+private fun validateOAuthProxyUrl(app: GatewayApplication, proxyUrl: String?) {
     if (proxyUrl == null) return
     try {
-        proxyAddress(proxyUrl)
+        proxyAddress(proxyUrl, app.config.oauth.proxyAllowedHosts)
     } catch (cause: OAuthRefreshException) {
         throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
     }

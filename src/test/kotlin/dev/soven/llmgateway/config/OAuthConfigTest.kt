@@ -56,6 +56,41 @@ class OAuthConfigTest {
     }
 
     @Test
+    fun `proxy allowlist is empty by default and normalizes configured hosts`() {
+        assertEquals(emptySet(), OAuthConfig.fromEnv(emptyMap()).proxyAllowedHosts)
+        assertEquals(
+            setOf("proxy.example.com", "10.0.0.12"),
+            OAuthConfig.fromEnv(
+                mapOf("OAUTH_PROXY_ALLOWED_HOSTS" to " Proxy.Example.com , 10.0.0.12 "),
+            ).proxyAllowedHosts,
+        )
+        assertEquals(
+            emptySet(),
+            OAuthConfig.fromEnv(mapOf("OAUTH_PROXY_ALLOWED_HOSTS" to " , ")).proxyAllowedHosts,
+        )
+    }
+
+    @Test
+    fun `proxy allowlist rejects schemes ports paths credentials and oversized lists`() {
+        for (bad in listOf(
+            "http://proxy.example.com",
+            "proxy.example.com:8080",
+            "user:pass@proxy.example.com",
+            "proxy.example.com/path",
+            "*.example.com",
+        )) {
+            assertFailsWith<IllegalArgumentException> {
+                OAuthConfig.fromEnv(mapOf("OAUTH_PROXY_ALLOWED_HOSTS" to bad))
+            }
+        }
+        assertFailsWith<IllegalArgumentException> {
+            OAuthConfig.fromEnv(
+                mapOf("OAUTH_PROXY_ALLOWED_HOSTS" to (1..33).joinToString(",") { "p$it.example.com" }),
+            )
+        }
+    }
+
+    @Test
     fun `antigravity stays import only unless login parameters are added`() {
         val antigravity = OAuthConfig.fromEnv(mapOf("OAUTH_ANTIGRAVITY_CLIENT_ID" to "client")).antigravity!!
         assertFalse(antigravity.supportsLogin)

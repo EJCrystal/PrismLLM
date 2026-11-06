@@ -557,7 +557,7 @@ onBeforeUnmount(() => {
         <label class="field">
           <span>账号代理</span>
           <input v-model="importForm.proxyUrl" autocomplete="off" placeholder="http://127.0.0.1:7890" />
-          <small>可选。登录换 token、刷新 token 与调用上游使用同一出口，只支持无认证的 HTTP 正向代理。</small>
+          <small>可选。登录换 token、刷新 token 与调用上游使用同一出口，只支持无认证的 HTTP 正向代理；本机以外的代理主机需由服务端列入 OAUTH_PROXY_ALLOWED_HOSTS。</small>
         </label>
 
         <template v-if="importMode === 'login'">

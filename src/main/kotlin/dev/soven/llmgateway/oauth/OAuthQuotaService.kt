@@ -200,7 +200,7 @@ class OAuthQuotaService(
         proxyUrl: String?,
     ): CodexUsage {
         val proxy = try {
-            proxyAddress(proxyUrl)
+            proxyAddress(proxyUrl, config.proxyAllowedHosts)
         } catch (cause: OAuthRefreshException) {
             throw QuotaProbeException(cause.errorCode)
         }

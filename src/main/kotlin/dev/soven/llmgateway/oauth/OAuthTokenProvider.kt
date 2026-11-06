@@ -81,8 +81,10 @@ class OAuthTokenProviderRegistry(providers: Collection<OAuthTokenProvider>) {
 }
 
 fun buildOAuthTokenProviders(config: OAuthConfig): List<OAuthTokenProvider> = buildList {
-    add(ChatGptOAuthProvider(config.chatGpt, config.requestTimeoutMs))
-    config.antigravity?.let { add(AntigravityOAuthProvider(it, config.requestTimeoutMs)) }
+    add(ChatGptOAuthProvider(config.chatGpt, config.requestTimeoutMs, config.proxyAllowedHosts))
+    config.antigravity?.let {
+        add(AntigravityOAuthProvider(it, config.requestTimeoutMs, config.proxyAllowedHosts))
+    }
 }
 
 private const val MAX_RESPONSE_BYTES = 256 * 1024
@@ -99,8 +101,9 @@ internal suspend fun postTokenRequest(
     proxyUrl: String?,
     timeoutMs: Long,
     headers: Map<String, String> = emptyMap(),
+    proxyAllowedHosts: Set<String> = emptySet(),
 ): JsonObject {
-    val proxy = proxyAddress(proxyUrl)
+    val proxy = proxyAddress(proxyUrl, proxyAllowedHosts)
     val client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofMillis(minOf(timeoutMs, 10_000)))
         .followRedirects(HttpClient.Redirect.NEVER)
@@ -139,8 +142,11 @@ internal suspend fun postTokenRequest(
 /**
  * 账号代理只支持无认证的 HTTP 正向代理。Java HttpClient 不支持 SOCKS5，
  * 需要 SOCKS5 时应在网关外提供本地 HTTP 桥接。
+ *
+ * 代理目标默认只允许本机回环地址，其他主机必须由 [allowedHosts] 显式放行：
+ * 管理面输入不应成为访问任意内网主机的跳板。回环地址始终允许，便于本地代理调试。
  */
-internal fun proxyAddress(proxyUrl: String?): InetSocketAddress? {
+internal fun proxyAddress(proxyUrl: String?, allowedHosts: Set<String> = emptySet()): InetSocketAddress? {
     val value = proxyUrl?.trim()?.takeIf { it.isNotEmpty() } ?: return null
     val uri = runCatching { URI(value) }.getOrElse {
         throw OAuthRefreshException(false, "proxy_invalid", "账号代理地址无效")
@@ -160,8 +166,26 @@ internal fun proxyAddress(proxyUrl: String?): InetSocketAddress? {
     }
     val port = if (uri.port == -1) 80 else uri.port
     if (port !in 1..65_535) throw OAuthRefreshException(false, "proxy_invalid", "账号代理端口无效")
+    if (!isProxyHostAllowed(uri.host, allowedHosts)) {
+        throw OAuthRefreshException(
+            false,
+            "proxy_not_allowed",
+            "账号代理主机不在允许列表内；本机回环地址以外的代理需要配置 OAUTH_PROXY_ALLOWED_HOSTS",
+        )
+    }
     return InetSocketAddress(uri.host, port)
 }
+
+/** Java 的 URI 把 IPv6 字面量保留为 `[::1]`，比较前去掉方括号并统一小写。 */
+internal fun normalizeProxyHost(host: String): String =
+    host.trim().removePrefix("[").removeSuffix("]").lowercase()
+
+internal fun isProxyHostAllowed(host: String?, allowedHosts: Set<String>): Boolean {
+    val normalized = host?.takeIf { it.isNotBlank() }?.let(::normalizeProxyHost) ?: return false
+    return normalized in LOOPBACK_PROXY_HOSTS || normalized in allowedHosts
+}
+
+private val LOOPBACK_PROXY_HOSTS = setOf("127.0.0.1", "localhost", "::1")
 
 internal fun JsonObject.toOAuthTokenResponse(): OAuthTokenResponse {
     val accessToken = (this["access_token"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }

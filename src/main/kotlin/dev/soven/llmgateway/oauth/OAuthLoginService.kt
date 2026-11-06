@@ -200,6 +200,7 @@ class OAuthLoginService(
             proxyUrl = session.proxyUrl,
             timeoutMs = config.requestTimeoutMs,
             headers = headers,
+            proxyAllowedHosts = config.proxyAllowedHosts,
         )
         return response.toLoginTokens()
     }

@@ -186,7 +186,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 
   - `provider` 仅支持 `chatgpt` 与 `antigravity`，且必须已配置。
   - `accessToken` 与 `accessTokenExpiresAt` 可选，但必须成对出现且未过期；留空则导入后按需刷新。
-  - `proxyUrl` 只支持无认证的 `http://主机:端口`。
+  - `proxyUrl` 只支持无认证的 `http://主机:端口`；目标主机默认为本机回环地址，其他主机需要服务端配置 `OAUTH_PROXY_ALLOWED_HOSTS`，否则返回 `400 invalid_oauth_proxy`。
   - 重新授权会替换凭据，并清空账号冷却、密钥冷却与失败计数；密钥启停状态不变。
   - 同一提供方下邮箱唯一，重复绑定返回 `409 oauth_account_email_exists`。
 

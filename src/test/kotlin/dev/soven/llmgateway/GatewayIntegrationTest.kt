@@ -1191,6 +1191,13 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.BadRequest, proxy.status)
             assertTrue(proxy.bodyAsText().contains("invalid_oauth_proxy"))
 
+            // 远程代理主机默认不放行，避免管理面输入被用来访问任意内网主机。
+            val remoteProxy = import(
+                """{"provider":"chatgpt","refreshToken":"rt","proxyUrl":"http://proxy.example.com:8080"}""",
+            )
+            assertEquals(HttpStatusCode.BadRequest, remoteProxy.status)
+            assertTrue(remoteProxy.bodyAsText().contains("OAUTH_PROXY_ALLOWED_HOSTS"))
+
             val missingExpiry = import("""{"provider":"chatgpt","refreshToken":"rt","accessToken":"at"}""")
             assertEquals(HttpStatusCode.BadRequest, missingExpiry.status)
             assertTrue(missingExpiry.bodyAsText().contains("invalid_oauth_access_token"))
