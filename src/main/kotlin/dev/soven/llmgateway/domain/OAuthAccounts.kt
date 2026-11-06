@@ -132,7 +132,7 @@ data class OAuthQuotaSnapshot(
         if (exhausted.isEmpty()) return null
         val resets = exhausted.mapNotNull { it.resetsAt }
         if (resets.isNotEmpty()) return resets.maxOrNull()?.takeIf { it > now }
-        return fallbackMs.takeIf { it > 0 }?.let { now + it }
+        return fallbackMs.takeIf { it > 0 }?.let { saturatedAdd(now, it) }
     }
 
     /** 读数是否仍可作为调度依据；过期读数只展示，不拦截。 */

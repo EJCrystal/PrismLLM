@@ -225,7 +225,19 @@ class OAuthTokenServiceTest {
         assertTrue(isProxyHostAllowed("10.0.0.12", setOf("10.0.0.12")))
     }
 
-    private fun service(): OAuthTokenService {
+    @Test
+    fun `refresh near the clock limit saturates the access token expiry`() = runBlocking {
+        val keyId = createChannel("rt-overflow").keys.single().id
+        accounts.upsert(keyId, OAuthProvider.CHATGPT, accountEmail = email("overflow"))
+        val service = service(now = { Long.MAX_VALUE - 10 })
+
+        service.accessToken(keyId, forceRefresh = true)
+
+        val account = assertNotNull(accounts.find(keyId))
+        assertEquals(Long.MAX_VALUE, account.accessTokenExpiresAt)
+    }
+
+    private fun service(now: () -> Long = System::currentTimeMillis): OAuthTokenService {
         val provider = ChatGptOAuthProvider(
             OAuthProviderConfig(
                 clientId = "test-client",
@@ -238,6 +250,7 @@ class OAuthTokenServiceTest {
             cipher = cipher,
             providers = OAuthTokenProviderRegistry(listOf(provider)),
             config = OAuthConfig(refreshAheadMs = 900_000),
+            now = now,
         )
     }
 

@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthQuotaWindow
+import dev.soven.llmgateway.domain.saturatedAdd
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -301,7 +302,7 @@ private fun parseQuotaWindow(window: JsonObject?, now: Long): OAuthQuotaWindow? 
         ?.let { it * 1_000 }
     val resetAfter = (window["reset_after_seconds"] as? JsonPrimitive)?.longOrNull
         ?.takeIf { it in 1..MAX_WINDOW_SECONDS }
-        ?.let { now + it * 1_000 }
+        ?.let { saturatedAdd(now, it * 1_000) }
     return OAuthQuotaWindow(
         usedPercent = used.coerceIn(0.0, 100.0),
         windowSeconds = seconds,

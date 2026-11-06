@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.OAuthAccessToken
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAuthState
+import dev.soven.llmgateway.domain.saturatedAdd
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.security.CredentialCipher
 import kotlinx.coroutines.CancellationException
@@ -160,7 +161,7 @@ class OAuthTokenService(
     private suspend fun refreshDueAccounts() {
         val available = providers.available()
         if (available.isEmpty()) return
-        val due = repository.listDueForRefresh(now() + config.refreshAheadMs)
+        val due = repository.listDueForRefresh(saturatedAdd(now(), config.refreshAheadMs))
             .filter { it.provider in available }
         if (due.isEmpty()) return
         val refreshed = AtomicInteger()
@@ -245,7 +246,7 @@ class OAuthTokenService(
         }
         val accessToken = cipher.encrypt(response.accessToken)
         val rotatedRefreshToken = response.refreshToken?.takeIf { it.isNotBlank() }?.let(cipher::encrypt)
-        val expiresAt = now() + response.expiresInSeconds * 1_000
+        val expiresAt = saturatedAdd(now(), response.expiresInSeconds * 1_000)
         repository.saveRefreshed(
             keyId = account.keyId,
             accessToken = accessToken,

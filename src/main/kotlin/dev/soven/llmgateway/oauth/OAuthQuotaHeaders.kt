@@ -2,6 +2,7 @@ package dev.soven.llmgateway.oauth
 
 import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthQuotaWindow
+import dev.soven.llmgateway.domain.saturatedAdd
 
 /**
  * 上游响应头里的额度读数。ChatGPT 在每次回复上带 `x-codex-primary-*` 与
@@ -56,7 +57,7 @@ private fun parseEpochSeconds(raw: String?): Long? {
 
 private fun parseResetAfterSeconds(raw: String?, nowMs: Long): Long? {
     val seconds = raw?.trim()?.toLongOrNull()?.takeIf { it in 1..MAX_WINDOW_SECONDS } ?: return null
-    return nowMs + seconds * 1_000
+    return saturatedAdd(nowMs, seconds * 1_000)
 }
 
 /**

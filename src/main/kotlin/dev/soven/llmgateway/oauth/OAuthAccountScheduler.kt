@@ -6,6 +6,8 @@ import dev.soven.llmgateway.domain.OAuthAccountRuntimeState
 import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthStoredWindowState
 import dev.soven.llmgateway.domain.OAuthWindowSnapshot
+import dev.soven.llmgateway.domain.saturatedAdd
+import dev.soven.llmgateway.domain.saturatedSubtract
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -126,6 +128,7 @@ class OAuthAccountScheduler(
             val fallback = defaultCooldownMs * (1L shl (state.consecutiveRateLimits - 1).coerceAtMost(4))
             val cooldown = (retryAfterMs?.takeIf { it > 0 } ?: fallback)
                 .coerceIn(MIN_RETRY_AFTER_MS, maxCooldownMs)
+            // 饱和加法：异常时钟不会把冷却截止时间溢出成负数而让 429 冷却立即失效。
             state.cooldownUntil = maxOf(state.cooldownUntil ?: 0L, saturatedAdd(nowMs, cooldown))
             publishIfDue(key.id, state, nowMs, force = true)
         }

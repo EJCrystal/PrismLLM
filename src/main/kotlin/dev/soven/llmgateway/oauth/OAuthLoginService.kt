@@ -4,6 +4,7 @@ import dev.soven.llmgateway.config.OAuthConfig
 import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthProvider
+import dev.soven.llmgateway.domain.saturatedAdd
 import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.CredentialChangedException
 import dev.soven.llmgateway.repo.OAuthAccountRepository
@@ -97,7 +98,7 @@ class OAuthLoginService(
         val verifier = randomToken(48)
         val state = randomToken(24)
         val loginId = randomToken(18)
-        val expiresAt = now() + LOGIN_TTL_MS
+        val expiresAt = saturatedAdd(now(), LOGIN_TTL_MS)
         pending[loginId] = PendingLogin(
             provider = provider,
             channelId = channelId,

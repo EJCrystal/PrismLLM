@@ -30,6 +30,20 @@ class OAuthQuotaHeadersTest {
     }
 
     @Test
+    fun `reset after seconds saturates near the clock limit`() {
+        val reading = parseCodexQuotaHeaders(
+            mapOf(
+                "x-codex-primary-used-percent" to "100",
+                "x-codex-primary-window-minutes" to "300",
+                "x-codex-primary-reset-after-seconds" to "60",
+            )::get,
+            Long.MAX_VALUE - 10,
+        )!!
+
+        assertEquals(Long.MAX_VALUE, reading.primary?.resetsAt)
+    }
+
+    @Test
     fun `ignores incomplete windows and clamps the used share`() {
         assertNull(parseCodexQuotaHeaders({ null }, now))
         assertNull(

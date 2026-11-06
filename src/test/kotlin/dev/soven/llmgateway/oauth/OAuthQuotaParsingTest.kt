@@ -112,6 +112,8 @@ class OAuthQuotaParsingTest {
         )
         assertNull(snapshot.blockedUntil(now))
         assertEquals(now + 60_000, snapshot.blockedUntil(now, 60_000))
+        // 异常时钟下按上界饱和，不会得到负数。
+        assertEquals(Long.MAX_VALUE, snapshot.blockedUntil(Long.MAX_VALUE - 10, 60_000))
     }
 
     @Test
