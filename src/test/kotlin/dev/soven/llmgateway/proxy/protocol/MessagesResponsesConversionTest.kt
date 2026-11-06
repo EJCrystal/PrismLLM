@@ -128,6 +128,11 @@ class MessagesResponsesConversionTest {
         val responsesReq = json("""{"input":"hi","include":["reasoning.encrypted_content","message.output_tokens"]}""")
         val messagesFromResponses = ResponsesToMessages.convertRequest(responsesReq, "upstream")
         assertFalse(messagesFromResponses.containsKey("include"))
+
+        val messagesWithEffort = json("""{"messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"high"}}""")
+        val responsesWithEffort = MessagesToResponses.convertRequest(messagesWithEffort, "upstream")
+        assertEquals("high", responsesWithEffort["reasoning"]!!.jsonObject["effort"]!!.jsonPrimitive.content)
+        assertFalse(responsesWithEffort.containsKey("output_config"))
     }
 
     @Test

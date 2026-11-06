@@ -39,5 +39,59 @@ class ReasoningEffortTest {
         ).jsonObject
 
         assertNull(ReasoningEffort.fromRequest(request, GatewayProtocol.RESPONSES))
+        assertNull(ReasoningEffort.fromRequest(request, GatewayProtocol.MESSAGES))
+    }
+
+    @Test
+    fun `messages reads output_config effort`() {
+        val request = Json.parseToJsonElement(
+            """{"output_config":{"effort":"high"}}""",
+        ).jsonObject
+
+        assertEquals("high", ReasoningEffort.fromRequest(request, GatewayProtocol.MESSAGES))
+    }
+
+    @Test
+    fun `messages reads thinking effort`() {
+        val request = Json.parseToJsonElement(
+            """{"thinking":{"type":"enabled","effort":"xhigh"}}""",
+        ).jsonObject
+
+        assertEquals("xhigh", ReasoningEffort.fromRequest(request, GatewayProtocol.MESSAGES))
+    }
+
+    @Test
+    fun `messages maps budget_tokens to reasoning effort tiers`() {
+        val cases = listOf(
+            1024L to "low",
+            4096L to "medium",
+            8192L to "high",
+            16384L to "xhigh",
+            32768L to "max",
+        )
+        cases.forEach { (budget, expected) ->
+            val request = Json.parseToJsonElement(
+                """{"thinking":{"type":"enabled","budget_tokens":$budget}}""",
+            ).jsonObject
+            assertEquals(expected, ReasoningEffort.fromRequest(request, GatewayProtocol.MESSAGES))
+        }
+    }
+
+    @Test
+    fun `messages returns none when thinking is disabled`() {
+        val request = Json.parseToJsonElement(
+            """{"thinking":{"type":"disabled"}}""",
+        ).jsonObject
+
+        assertEquals("none", ReasoningEffort.fromRequest(request, GatewayProtocol.MESSAGES))
+    }
+
+    @Test
+    fun `messages prefers output_config effort over thinking budget`() {
+        val request = Json.parseToJsonElement(
+            """{"output_config":{"effort":"high"},"thinking":{"type":"enabled","budget_tokens":1024}}""",
+        ).jsonObject
+
+        assertEquals("high", ReasoningEffort.fromRequest(request, GatewayProtocol.MESSAGES))
     }
 }

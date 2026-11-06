@@ -105,13 +105,22 @@ internal fun thinkingAndMaxTokens(effort: String, requestedMaxTokens: Long?, max
 }
 
 internal fun JsonObject.thinkingEffort(): String? {
+    val outputConfigEffort = ((this["output_config"] as? JsonObject)?.get("effort") as? JsonPrimitive)
+        ?.takeIf { it.isString }?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+    if (outputConfigEffort != null) return outputConfigEffort
+
     val thinking = this["thinking"] as? JsonObject ?: return null
+    val thinkingEffort = (thinking["effort"] as? JsonPrimitive)
+        ?.takeIf { it.isString }?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+    if (thinkingEffort != null) return thinkingEffort
+
     if (thinking.string("type") == "disabled") return "none"
     val budget = thinking.long("budget_tokens") ?: return null
     return when {
         budget <= 1024 -> "low"
         budget <= 4096 -> "medium"
         budget <= 8192 -> "high"
+        budget <= 16384 -> "xhigh"
         else -> "max"
     }
 }
