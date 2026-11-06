@@ -46,7 +46,7 @@
 | 用量 | 统一计数后输出目标字段；Messages 缓存读写加入输入总量，Responses/Chat 输入量不重复增加缓存 |
 | 思考参数 | 沿用已有 budget 与 effort 的分档近似映射，不声称无损；转换到 Messages 时保留显式 token 上限，将预算限制在上限减 1，且不低于 1024；启用思考但显式上限不大于 1024 时本地报错，不隐式提高调用方上限或关闭思考 |
 | 推理响应 | Messages thinking 可转为 Responses reasoning；直转中无法表示的 redacted_thinking 或缺少 Anthropic 签名的 Responses reasoning 明确报错，不伪造 thinking 块 |
-| 思考历史 | Messages → Chat 将 assistant 的 thinking 块合并为 `reasoning_content`，`redacted_thinking` 无对应表示直接丢弃，仅含被丢弃块的消息整条省略；其它方向的思考历史仍明确拒绝 |
+| 思考历史 | Messages → Chat 将 assistant 的 thinking 块合并为 `reasoning_content`，`redacted_thinking` 无对应表示直接丢弃；Messages → Responses 同时省略 thinking 与 `redacted_thinking`，因为 Responses 的 reasoning 项需要上游自己的加密内容，伪造会被拒绝；仅含被省略块的消息整条不输出。Messages → Gemini 将 thinking 转为 `thought` part，`redacted_thinking` 仍明确拒绝 |
 | 流式输出 | 文本、工具参数增量、结束原因、末尾用量与错误；没有结束原因的 EOF 不伪造成功结束，代理层仍检测缺失终止事件的流中断 |
 | 安全停止原因 | Chat `content_filter`、Responses `incomplete/content_filter` 与 Messages `refusal` 相互映射，普通响应与流式返回均不降级为自然结束 |
 | Gemini | 四协议全矩阵；Gemini 的模型与 stream 位于 URL，转换后的请求体不携带 model/stream。`cachedContent`、非空 `safetySettings`、`responseModalities` 与非单候选仍明确拒绝 |
