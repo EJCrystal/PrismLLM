@@ -314,6 +314,24 @@ class GeminiSchemaConversionTest {
     }
 
     @Test
+    fun `allOf branch refs do not leak into sibling properties`() {
+        val schema = parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+            "${'$'}defs":{"Base":{"type":"object","properties":{"id":{"type":"string"}}}},
+            "type":"object",
+            "properties":{"value":{"allOf":[
+                {"${'$'}ref":"#/${'$'}defs/Base"},
+                {"properties":{"other":{"${'$'}ref":"#/${'$'}defs/Base"}}}
+            ]}}
+        }}]}""")
+        val value = schema["properties"]!!.jsonObject["value"]!!.jsonObject
+        assertEquals(listOf("id", "other"), value["properties"]!!.jsonObject.keys.sorted())
+        assertEquals(
+            "object",
+            value["properties"]!!.jsonObject["other"]!!.jsonObject["type"]!!.jsonPrimitive.content,
+        )
+    }
+
+    @Test
     fun `chat and responses tool schemas use the same conversion`() {
         val chat = ProtocolConversion.convertRequest(
             GatewayProtocol.CHAT_COMPLETIONS,

@@ -118,7 +118,8 @@ private fun resolveReference(
 /**
  * allOf 是交集，Gemini 没有对应关键字：把分支摊平进节点，属性与 required 取并集，
  * 同名属性递归合并，其余关键字以先出现的为准。分支里的 allOf 继续摊平。
- * 各分支都基于进入本节点时的引用栈解析，兄弟分支重复引用同一定义不算循环。
+ * 各分支都基于进入本节点时的引用栈解析，分支里用过的引用不进入合并结果的子节点，
+ * 否则兄弟分支或合并后的属性合法复用同一定义时会被误判为循环。
  */
 private fun mergeAllOf(
     source: JsonObject,
@@ -131,7 +132,6 @@ private fun mergeAllOf(
     if (depth > MAX_GEMINI_SCHEMA_DEPTH) return ResolvedSchema(source, refs)
     val branches = source["allOf"] as? JsonArray ?: return ResolvedSchema(source, refs)
     var merged = JsonObject(source - "allOf")
-    var mergedRefs = refs
     branches.forEachIndexed { index, branch ->
         val branchPath = "$path.allOf[$index]"
         budget.spend(branchPath)
@@ -147,13 +147,12 @@ private fun mergeAllOf(
             else -> unsupported(branchPath, "工具 schema 的 allOf 分支必须是对象")
         }
         val schema = resolved.schema ?: unsupported(branchPath, "工具 schema 的 allOf 分支没有可表达的值域")
-        mergedRefs = mergedRefs + resolved.refs
         merged = mergeSchema(merged, schema, branchPath)
     }
     return if (merged.containsKey("allOf")) {
-        mergeAllOf(merged, defs, mergedRefs, path, depth + 1, budget)
+        mergeAllOf(merged, defs, refs, path, depth + 1, budget)
     } else {
-        ResolvedSchema(merged, mergedRefs)
+        ResolvedSchema(merged, refs)
     }
 }
 
