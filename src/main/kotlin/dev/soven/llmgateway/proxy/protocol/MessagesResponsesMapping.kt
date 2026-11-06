@@ -18,69 +18,98 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
     if (request["stop_sequences"].let { it != null && it !is JsonNull }) unsupported("stop_sequences", "Responses 不支持 stop_sequences")
     (request["metadata"] as? JsonObject)?.string("user_id")?.let { put("user", it) }
     request.thinkingEffort()?.let { effort -> putJsonObject("reasoning") { put("effort", effort) } }
-    request.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { put("instructions", it) }
-
+    val instructions = mutableListOf<String>()
+    request.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { instructions += it }
     val input = mutableListOf<JsonObject>()
+    var conversationStarted = false
+
+    fun addMessage(role: String, blocks: List<JsonObject>) {
+        if (blocks.isEmpty()) return
+        val last = input.lastOrNull()
+        if (last?.string("type") == "message" && last.string("role") == role) {
+            input[input.lastIndex] = JsonObject(
+                last + ("content" to JsonArray(last.array("content") + blocks)),
+            )
+        } else {
+            input += buildJsonObject {
+                put("type", "message")
+                put("role", role)
+                put("content", JsonArray(blocks))
+            }
+        }
+    }
+
+    fun addSystemTurn(text: String) {
+        if (text.isBlank()) return
+        if (conversationStarted) {
+            addMessage("user", listOf(responseTextBlock("<system-reminder>\n$text\n</system-reminder>", "user")))
+        } else {
+            instructions += text
+        }
+    }
+
     joinSplitToolCalls(request.array("messages")).forEachIndexed { index, element ->
         val path = "messages[$index]"
         val message = element as? JsonObject ?: unsupported(path, "消息必须是对象")
         val role = message.string("role") ?: unsupported("$path.role", "缺少 role")
-        if (role !in setOf("user", "assistant")) unsupported("$path.role", "不支持的消息角色")
-        val parts = mutableListOf<JsonObject>()
-        fun flushParts() {
-            if (parts.isEmpty()) return
-            input += buildJsonObject {
-                put("type", "message")
-                put("role", role)
-                put("content", JsonArray(parts.toList()))
-            }
-            parts.clear()
-        }
-        when (val content = message["content"]) {
-            JsonNull -> Unit
-            is JsonPrimitive -> parts += responseTextBlock(content.content, role)
-            is JsonArray -> content.forEachIndexed { partIndex, partElement ->
-                val partPath = "$path.content[$partIndex]"
-                val part = partElement as? JsonObject ?: unsupported(partPath, "内容块必须是对象")
-                when (part.string("type")) {
-                    "text" -> parts += responseTextBlock(part.string("text").orEmpty(), role)
-                    "image" -> parts += imagePartFromAnthropic(part, partPath).toResponsesPart()
-                    // Responses 的 reasoning 项要带上游自己的加密内容，伪造一个会被拒绝；思考历史不是继续对话的必需输入，直接省略。
-                    "thinking", "redacted_thinking" -> Unit
-                    "tool_use" -> {
-                        flushParts()
-                        input += buildJsonObject {
-                            put("type", "function_call")
-                            put("call_id", part.string("id") ?: unsupported("$partPath.id", "tool_use 缺少 id"))
-                            put("name", part.string("name") ?: unsupported("$partPath.name", "tool_use 缺少 name"))
-                            put("arguments", part["input"]?.takeIf { it != JsonNull }?.toString() ?: "{}")
-                        }
-                    }
-                    "tool_result" -> {
-                        flushParts()
-                        val result = part.toolResultContent("$partPath.content")
-                        input += buildJsonObject {
-                            put("type", "function_call_output")
-                            put("call_id", part.string("tool_use_id") ?: unsupported("$partPath.tool_use_id", "tool_result 缺少 tool_use_id"))
-                            if (result.images.isEmpty()) {
-                                put("output", result.text)
-                            } else {
-                                // Responses 的 output 可以带图片，不像 Chat 的 tool 消息只能放文本。
-                                put("output", buildJsonArray {
-                                    if (result.text.isNotEmpty()) add(responsesTextPart(result.text))
-                                    result.images.forEach { add(it.toResponsesPart()) }
-                                })
-                            }
-                        }
-                    }
-                    else -> unsupported("$partPath.type", "第一版不支持该 Messages 内容类型")
+        when (role) {
+            "system", "developer" -> addSystemTurn(message.textContentStrict("content", "$path.content"))
+            "user", "assistant" -> {
+                conversationStarted = true
+                val parts = mutableListOf<JsonObject>()
+                fun flushParts() {
+                    addMessage(role, parts.toList())
+                    parts.clear()
                 }
+                when (val content = message["content"]) {
+                    JsonNull -> Unit
+                    is JsonPrimitive -> parts += responseTextBlock(content.content, role)
+                    is JsonArray -> content.forEachIndexed { partIndex, partElement ->
+                        val partPath = "$path.content[$partIndex]"
+                        val part = partElement as? JsonObject ?: unsupported(partPath, "内容块必须是对象")
+                        when (part.string("type")) {
+                            "text" -> parts += responseTextBlock(part.string("text").orEmpty(), role)
+                            "image" -> parts += imagePartFromAnthropic(part, partPath).toResponsesPart()
+                            // Responses 的 reasoning 项要带上游自己的加密内容，伪造一个会被拒绝；思考历史不是继续对话的必需输入，直接省略。
+                            "thinking", "redacted_thinking" -> Unit
+                            "tool_use" -> {
+                                flushParts()
+                                input += buildJsonObject {
+                                    put("type", "function_call")
+                                    put("call_id", part.string("id") ?: unsupported("$partPath.id", "tool_use 缺少 id"))
+                                    put("name", part.string("name") ?: unsupported("$partPath.name", "tool_use 缺少 name"))
+                                    put("arguments", part["input"]?.takeIf { it != JsonNull }?.toString() ?: "{}")
+                                }
+                            }
+                            "tool_result" -> {
+                                flushParts()
+                                val result = part.toolResultContent("$partPath.content")
+                                input += buildJsonObject {
+                                    put("type", "function_call_output")
+                                    put("call_id", part.string("tool_use_id") ?: unsupported("$partPath.tool_use_id", "tool_result 缺少 tool_use_id"))
+                                    if (result.images.isEmpty()) {
+                                        put("output", result.text)
+                                    } else {
+                                        // Responses 的 output 可以带图片，不像 Chat 的 tool 消息只能放文本。
+                                        put("output", buildJsonArray {
+                                            if (result.text.isNotEmpty()) add(responsesTextPart(result.text))
+                                            result.images.forEach { add(it.toResponsesPart()) }
+                                        })
+                                    }
+                                }
+                            }
+                            else -> unsupported("$partPath.type", "第一版不支持该 Messages 内容类型")
+                        }
+                    }
+                    null -> Unit
+                    else -> unsupported("$path.content", "无法识别的内容")
+                }
+                flushParts()
             }
-            null -> Unit
-            else -> unsupported("$path.content", "无法识别的内容")
+            else -> unsupported("$path.role", "不支持的消息角色: $role")
         }
-        flushParts()
     }
+    if (instructions.isNotEmpty()) put("instructions", instructions.joinToString("\n\n"))
     put("input", JsonArray(input))
     request["tools"]?.takeIf { it !is JsonNull }?.let { element ->
         val tools = element as? JsonArray ?: unsupported("tools", "tools 必须是数组")

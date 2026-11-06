@@ -32,6 +32,27 @@ class ShapeRefusalTest {
                 """{"error":{"message":"Failed to deserialize the JSON body into the target type"}}""",
             ),
         )
+        assertTrue(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"sub2api: Upstream request failed","type":"upstream_error"}}""",
+            ),
+        )
+        assertFalse(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Upstream request failed, insufficient_quota","type":"upstream_error"}}""",
+            ),
+        )
+        // 这些字段名包含 quota/credit/balance 词根，但仍是未知字段，属于形状拒绝。
+        assertTrue(ShapeRefusal.matches(400, """{"error":{"message":"unknown parameter: credit_limit"}}"""))
+        assertTrue(ShapeRefusal.matches(400, """{"error":{"message":"unknown field: balance_target"}}"""))
+        assertTrue(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"additional properties are not allowed: quota_exceeded_policy"}}""",
+            ),
+        )
         // 缺失必填字段是所有上游都会拒绝的请求错误，不属于形状不兼容。
         assertFalse(ShapeRefusal.matches(400, """{"error":{"message":"messages: field required"}}"""))
         assertFalse(ShapeRefusal.matches(400, """{"error":{"message":"Invalid parameter: max_tokens must be positive"}}"""))

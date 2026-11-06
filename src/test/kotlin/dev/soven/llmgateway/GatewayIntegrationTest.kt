@@ -7789,6 +7789,50 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `messages system turns convert to responses without an unsupported role`() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            name = "messages-to-responses-system",
+            baseUrl = fake.baseUrl + "/ok/v1",
+            protocols = listOf(GatewayProtocol.RESPONSES),
+            modelMappings = listOf(ChannelModelRecord("gpt-4o-mini")),
+        )
+        exposeAsModel("converted-responses-system", channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/messages") {
+                header("x-api-key", key)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"model":"converted-responses-system","max_tokens":32,"system":"You are Claude Code.","messages":[
+                        {"role":"system","content":"env: working dir /home/me"},
+                        {"role":"user","content":"hi"},
+                        {"role":"assistant","content":"hello"},
+                        {"role":"system","content":"the user switched rooms"}
+                    ]}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            assertEquals("/ok/v1/responses", fake.requests.last().path)
+            val upstream = Json.parseToJsonElement(fake.requests.last().body).jsonObject
+            assertEquals(
+                "You are Claude Code.\n\nenv: working dir /home/me",
+                upstream["instructions"]!!.jsonPrimitive.content,
+            )
+            val input = upstream["input"]!!.jsonArray
+            assertTrue(input.none { it.jsonObject["role"]?.jsonPrimitive?.content in setOf("system", "developer") })
+            val reminder = input.last().jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content
+            assertTrue(reminder.contains("the user switched rooms"))
+            assertTrue(reminder.startsWith("<system-reminder>\n"))
+
+            val log = awaitRequestLog()
+            assertEquals(GatewayProtocol.MESSAGES, log.protocol)
+            assertEquals(GatewayProtocol.RESPONSES, log.upstreamProtocol)
+        }
+    }
+
+    @Test
     fun `responses request converts to messages-only channel`() = runBlocking {
         val channel = createChannelWithBaseUrl(
             name = "responses-to-messages",
