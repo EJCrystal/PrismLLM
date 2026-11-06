@@ -5784,10 +5784,14 @@ textarea:disabled {
 }
 
 .attempt-skip-reason {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   margin-left: auto;
+  overflow-wrap: anywhere;
   color: var(--muted);
   font-size: 12px;
-  white-space: nowrap;
+  text-align: right;
 }
 
 .attempt-skip-meta {
