@@ -222,6 +222,62 @@ class GeminiSchemaConversionTest {
     }
 
     @Test
+    fun `allOf branches can reference the same definition`() {
+        val schema = parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+            "${'$'}defs":{"Base":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
+            "type":"object",
+            "properties":{"value":{"allOf":[
+                {"${'$'}ref":"#/${'$'}defs/Base"},
+                {"${'$'}ref":"#/${'$'}defs/Base"}
+            ]}}
+        }}]}""")
+        val value = schema["properties"]!!.jsonObject["value"]!!.jsonObject
+        assertEquals("object", value["type"]!!.jsonPrimitive.content)
+        assertEquals(
+            "string",
+            value["properties"]!!.jsonObject["id"]!!.jsonObject["type"]!!.jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `closed tuple keeps prefixItems when items is false`() {
+        val schema = parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+            "type":"object",
+            "properties":{"pair":{"type":"array","prefixItems":[{"type":"string"},{"type":"integer"}],"items":false}}
+        }}]}""")
+        val pair = schema["properties"]!!.jsonObject["pair"]!!.jsonObject
+        assertEquals("array", pair["type"]!!.jsonPrimitive.content)
+        val items = pair["items"]!!.jsonObject["anyOf"]!!.jsonArray
+        assertEquals(listOf("string", "integer"), items.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `exponential reference expansion is rejected by the node budget`() {
+        val levels = 6
+        val definitions = buildString {
+            append("\"${'$'}defs\":{")
+            (0 until levels).forEach { level ->
+                if (level > 0) append(',')
+                append("\"L$level\":{\"type\":\"object\",\"properties\":{")
+                (0 until 10).forEach { index ->
+                    if (index > 0) append(',')
+                    append("\"p$index\":{\"${'$'}ref\":\"#/${'$'}defs/L${level + 1}\"}")
+                }
+                append("}}")
+            }
+            append(",\"L$levels\":{\"type\":\"string\"}}")
+        }
+        val failure = assertFailsWith<ProtocolConversionException> {
+            parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+                $definitions,
+                "type":"object",
+                "properties":{"root":{"${'$'}ref":"#/${'$'}defs/L0"}}
+            }}]}""")
+        }
+        assertTrue(failure.message!!.contains("节点数超过上限"))
+    }
+
+    @Test
     fun `chat and responses tool schemas use the same conversion`() {
         val chat = ProtocolConversion.convertRequest(
             GatewayProtocol.CHAT_COMPLETIONS,

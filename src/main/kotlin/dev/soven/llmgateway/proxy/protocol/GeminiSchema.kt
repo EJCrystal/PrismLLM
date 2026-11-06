@@ -39,6 +39,19 @@ private val geminiNumberKeywords = setOf("minimum", "maximum", "exclusiveMinimum
 /** 防止异常 schema 递归过深；正常工具声明远达不到这个层数。 */
 private const val MAX_GEMINI_SCHEMA_DEPTH = 16
 
+/** $ref 展开与 allOf 摊平可能把少量定义放大成指数级节点，单次工具 schema 转换的累计节点上限。 */
+private const val MAX_GEMINI_SCHEMA_NODES = 4096
+
+private class GeminiSchemaBudget {
+    private var remaining = MAX_GEMINI_SCHEMA_NODES
+
+    fun spend(path: String) {
+        if (--remaining < 0) {
+            unsupported(path, "工具 schema 展开后的节点数超过上限 $MAX_GEMINI_SCHEMA_NODES")
+        }
+    }
+}
+
 /** 工具声明的 parameters；schema 缺失或无法转换时退回空 object schema。 */
 internal fun geminiParameters(schema: JsonElement?, path: String = "parameters"): JsonObject =
     schema?.let {
@@ -49,6 +62,7 @@ internal fun geminiParameters(schema: JsonElement?, path: String = "parameters")
             depth = 0,
             path = path,
             refs = emptySet(),
+            budget = GeminiSchemaBudget(),
         )
     } ?: buildJsonObject { put("type", "object") }
 
@@ -75,11 +89,13 @@ private fun resolveReference(
     defs: Map<String, JsonElement>,
     refs: Set<String>,
     path: String,
+    budget: GeminiSchemaBudget,
 ): ResolvedSchema {
     var current = source
     var seen = refs
     while (true) {
         val ref = current.string("\$ref") ?: return ResolvedSchema(current, seen)
+        budget.spend(path)
         if (ref in seen) unsupported("$path.\$ref", "工具 schema 的 \$ref 循环引用，Gemini 无法表达递归结构")
         val target = defs[ref] ?: unsupported("$path.\$ref", "无法解析工具 schema 的 \$ref: $ref")
         seen = seen + ref
@@ -99,6 +115,7 @@ private fun resolveReference(
 /**
  * allOf 是交集，Gemini 没有对应关键字：把分支摊平进节点，属性与 required 取并集，
  * 同名属性递归合并，其余关键字以先出现的为准。分支里的 allOf 继续摊平。
+ * 各分支都基于进入本节点时的引用栈解析，兄弟分支重复引用同一定义不算循环。
  */
 private fun mergeAllOf(
     source: JsonObject,
@@ -106,6 +123,7 @@ private fun mergeAllOf(
     refs: Set<String>,
     path: String,
     depth: Int,
+    budget: GeminiSchemaBudget,
 ): ResolvedSchema {
     if (depth > MAX_GEMINI_SCHEMA_DEPTH) return ResolvedSchema(source, refs)
     val branches = source["allOf"] as? JsonArray ?: return ResolvedSchema(source, refs)
@@ -113,11 +131,12 @@ private fun mergeAllOf(
     var mergedRefs = refs
     branches.forEachIndexed { index, branch ->
         val branchPath = "$path.allOf[$index]"
+        budget.spend(branchPath)
         val resolved = when (branch) {
-            is JsonObject -> resolveReference(branch, defs, mergedRefs, branchPath)
+            is JsonObject -> resolveReference(branch, defs, refs, branchPath, budget)
             is JsonPrimitive -> when {
                 branch.isString -> unsupported(branchPath, "工具 schema 的 allOf 分支必须是对象")
-                branch.booleanOrNull == true -> ResolvedSchema(JsonObject(emptyMap()), mergedRefs)
+                branch.booleanOrNull == true -> ResolvedSchema(JsonObject(emptyMap()), refs)
                 branch.booleanOrNull == false ->
                     unsupported(branchPath, "工具 schema 的 allOf 含 false 分支，没有可表达的值域")
                 else -> unsupported(branchPath, "工具 schema 的 allOf 分支必须是对象")
@@ -125,11 +144,11 @@ private fun mergeAllOf(
             else -> unsupported(branchPath, "工具 schema 的 allOf 分支必须是对象")
         }
         val schema = resolved.schema ?: unsupported(branchPath, "工具 schema 的 allOf 分支没有可表达的值域")
-        mergedRefs = resolved.refs
+        mergedRefs = mergedRefs + resolved.refs
         merged = mergeSchema(merged, schema, branchPath)
     }
     return if (merged.containsKey("allOf")) {
-        mergeAllOf(merged, defs, mergedRefs, path, depth + 1)
+        mergeAllOf(merged, defs, mergedRefs, path, depth + 1, budget)
     } else {
         ResolvedSchema(merged, mergedRefs)
     }
@@ -177,8 +196,10 @@ private fun convertGeminiSchema(
     depth: Int,
     path: String,
     refs: Set<String>,
+    budget: GeminiSchemaBudget,
 ): JsonObject? {
     if (depth > MAX_GEMINI_SCHEMA_DEPTH) return buildJsonObject { put("type", "string") }
+    budget.spend(path)
     val raw = when (schema) {
         is JsonObject -> schema
         // true 表示任意值，按空 schema 处理；false 表示没有合法值，由调用方丢弃。
@@ -189,16 +210,16 @@ private fun convertGeminiSchema(
         }
         else -> return null
     }
-    val reference = resolveReference(raw, defs, refs, path)
+    val reference = resolveReference(raw, defs, refs, path, budget)
     val resolved = reference.schema ?: return null
-    val allOf = mergeAllOf(resolved, defs, reference.refs, path, depth)
+    val allOf = mergeAllOf(resolved, defs, reference.refs, path, depth, budget)
     val source = allOf.schema ?: return null
     val nodeRefs = allOf.refs
     val out = LinkedHashMap<String, JsonElement>()
-    val hasItems = source.containsKey("items")
     source.forEach { (key, value) ->
         when {
-            key.startsWith("x-") || key == "\$ref" || key == "const" || key == "type" -> Unit
+            key.startsWith("x-") || key == "\$ref" || key == "const" || key == "type" ||
+                key == "items" || key == "prefixItems" -> Unit
             key == "properties" && value is JsonObject -> {
                 val properties = LinkedHashMap<String, JsonElement>()
                 value.forEach { (name, property) ->
@@ -209,17 +230,10 @@ private fun convertGeminiSchema(
                         depth = depth + 1,
                         path = "$path.properties.$name",
                         refs = nodeRefs,
+                        budget = budget,
                     )?.let { properties[name] = it }
                 }
                 if (properties.isNotEmpty()) out["properties"] = JsonObject(properties)
-            }
-            key == "items" || (key == "prefixItems" && !hasItems) -> {
-                val items = if (value is JsonArray) {
-                    tupleItems(value, defs, depth, path, nodeRefs)
-                } else {
-                    convertGeminiSchema(value, defs, isRoot = false, depth = depth + 1, path = "$path.items", refs = nodeRefs)
-                }
-                if (items != null) out["items"] = items
             }
             key == "enum" -> geminiStringEnum(value)?.let { out["enum"] = it }
             key == "anyOf" || key == "oneOf" -> {
@@ -232,6 +246,7 @@ private fun convertGeminiSchema(
                             depth = depth + 1,
                             path = "$path.$key[$index]",
                             refs = nodeRefs,
+                            budget = budget,
                         )
                     }
                     .orEmpty()
@@ -242,6 +257,7 @@ private fun convertGeminiSchema(
             else -> Unit
         }
     }
+    elementItems(source, defs, depth, path, nodeRefs, budget)?.let { out["items"] = it }
     when (val type = source["type"]) {
         is JsonPrimitive -> type.contentOrNull?.let { out["type"] = JsonPrimitive(it) }
         is JsonArray -> {
@@ -268,6 +284,43 @@ private fun convertGeminiSchema(
     return JsonObject(out)
 }
 
+/**
+ * 数组元素 schema：items 能转换就用它，否则退回 prefixItems。
+ * 封闭元组写成 prefixItems + items:false，items:false 本身不可表达，但元素结构仍在 prefixItems 里。
+ */
+private fun elementItems(
+    source: JsonObject,
+    defs: Map<String, JsonElement>,
+    depth: Int,
+    path: String,
+    refs: Set<String>,
+    budget: GeminiSchemaBudget,
+): JsonObject? {
+    val items = source["items"]
+    val prefix = source["prefixItems"] as? JsonArray
+    if (items != null) {
+        // items:true 表示额外元素不受限，有 prefixItems 时优先保留元组结构。
+        val itemsIsAny = items is JsonPrimitive && !items.isString && items.booleanOrNull == true
+        if (!(itemsIsAny && prefix != null)) {
+            val converted = if (items is JsonArray) {
+                tupleItems(items, defs, depth, path, refs, budget)
+            } else {
+                convertGeminiSchema(
+                    schema = items,
+                    defs = defs,
+                    isRoot = false,
+                    depth = depth + 1,
+                    path = "$path.items",
+                    refs = refs,
+                    budget = budget,
+                )
+            }
+            if (converted != null) return converted
+        }
+    }
+    return prefix?.let { tupleItems(it, defs, depth, path, refs, budget) }
+}
+
 /** JSON Schema 的 tuple 形式（items 是数组，或 2020-12 的 prefixItems）在 Schema 里没有对应表示，按元素类型的 anyOf 近似。 */
 private fun tupleItems(
     tuple: JsonArray,
@@ -275,9 +328,10 @@ private fun tupleItems(
     depth: Int,
     path: String,
     refs: Set<String>,
+    budget: GeminiSchemaBudget,
 ): JsonObject? {
     val branches = tuple.mapIndexedNotNull { index, element ->
-        convertGeminiSchema(element, defs, isRoot = false, depth = depth + 1, path = "$path[$index]", refs = refs)
+        convertGeminiSchema(element, defs, isRoot = false, depth = depth + 1, path = "$path[$index]", refs = refs, budget = budget)
     }
     return when (branches.size) {
         0 -> null
