@@ -108,6 +108,9 @@ jobs:
           DISPATCH_PR: ${{ inputs.pr_number }}
           # CodeRabbit 接受邀请后通常数秒内就会创建新的 check run
           INVITE_WAIT_SECONDS: "300"
+          # CodeRabbit 的限流提示先以评论出现，带 rate limited 结论的 check run 会晚几秒；
+          # 邀请前等一小段时间复查，避免限流时仍发出邀请。
+          RATE_LIMIT_WAIT_SECONDS: "45"
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "check_run" ]; then
@@ -192,6 +195,20 @@ jobs:
             [ "$runs" -gt 0 ]
           }
 
+          # CodeRabbit 限流时会先发一条普通评论（rate limited by coderabbit.ai），
+          # 带 rate limited 结论的 check run 会晚几秒才出现。
+          coderabbit_rate_limited() {
+            local count
+            count=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
+              | jq -s --arg since "$SINCE" '
+                  [ .[]
+                    | select(.user.login == "coderabbitai[bot]")
+                    | select(((.updated_at // .created_at) // "") >= $since)
+                    | select((.body // "") | test("rate limited by coderabbit.ai|Review limit reached"; "i"))
+                  ] | length')
+            [ "$count" -gt 0 ]
+          }
+
           # PR 级切换标记：CodeRabbit 在本 PR 上限流或对邀请无响应后写入，此后直到合并都只用 PR-Agent。
           SWITCH_MARKER="<!-- pr-agent-fallback-pr -->"
           pr_switched() {
@@ -249,6 +266,23 @@ jobs:
             # 失败、取消、超时多为偶发，只对本 commit 兜底，下个 commit 仍先用 CodeRabbit。
             fallback_to_pr_agent "check run 结论为 ${CHECK_CONCLUSION}"
           fi
+
+          # 限流提示是普通评论，可能先于 rate-limited check run 出现。
+          # 邀请前先看评论并短暂等待复查，避免限流时还发一条重复的邀请。
+          rate_limit_deadline=$(( $(date +%s) + RATE_LIMIT_WAIT_SECONDS ))
+          while :; do
+            if coderabbit_rate_limited; then
+              fallback_to_pr_agent "限流" sticky
+            fi
+            if [ "$(latest_coderabbit_run)" -gt "$CHECK_RUN_ID" ]; then
+              echo "等待期间 CodeRabbit 已有新的 check run，交给它的结果处理。"
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$rate_limit_deadline" ]; then
+              break
+            fi
+            sleep 5
+          done
 
           if has_trigger '^@coderabbitai (full )?review$'; then
             fallback_to_pr_agent "邀请后仍跳过审查" sticky
