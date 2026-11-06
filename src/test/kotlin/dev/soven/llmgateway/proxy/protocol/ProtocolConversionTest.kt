@@ -3,6 +3,7 @@ package dev.soven.llmgateway.proxy.protocol
 import dev.soven.llmgateway.domain.GatewayProtocol
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -174,6 +175,83 @@ class ProtocolConversionTest {
         assertEquals("sys", converted["messages"]!!.jsonArray[0].jsonObject["content"]!!.jsonPrimitive.content)
         assertEquals("function", converted["tools"]!!.jsonArray[0].jsonObject["type"]!!.jsonPrimitive.content)
         assertEquals("required", converted["tool_choice"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `messages thinking history converts to chat reasoning content`() {
+        val request = json(
+            """{
+              "model":"claude","max_tokens":64,
+              "messages":[
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":[{"type":"thinking","thinking":"step one","signature":"sig"},{"type":"text","text":"answer"}]},
+                {"role":"user","content":"next"}
+              ]
+            }""",
+        )
+        val converted = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, request, "deepseek-v4.1-flash")
+        val messages = converted["messages"]!!.jsonArray
+        assertEquals("step one", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
+        assertEquals("answer", messages[1].jsonObject["content"]!!.jsonPrimitive.content)
+        assertFalse(messages[0].jsonObject.containsKey("reasoning_content"))
+        assertFalse(messages[2].jsonObject.containsKey("reasoning_content"))
+    }
+
+    @Test
+    fun `messages thinking only assistant turn keeps reasoning content`() {
+        val request = json(
+            """{
+              "model":"claude","max_tokens":64,
+              "messages":[
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":[{"type":"thinking","thinking":"plan"}]}
+              ]
+            }""",
+        )
+        val converted = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, request, "deepseek-v4.1-flash")
+        val assistant = converted["messages"]!!.jsonArray[1].jsonObject
+        assertEquals("plan", assistant["reasoning_content"]!!.jsonPrimitive.content)
+        assertEquals(JsonNull, assistant["content"])
+    }
+
+    @Test
+    fun `messages thinking with tool use keeps reasoning content and tool calls`() {
+        val request = json(
+            """{
+              "model":"claude","max_tokens":64,
+              "messages":[
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"q":"x"}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}
+              ]
+            }""",
+        )
+        val converted = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, request, "deepseek-v4.1-flash")
+        val assistant = converted["messages"]!!.jsonArray[1].jsonObject
+        assertEquals("plan", assistant["reasoning_content"]!!.jsonPrimitive.content)
+        assertEquals(JsonNull, assistant["content"])
+        assertEquals("lookup", assistant["tool_calls"]!!.jsonArray[0].jsonObject["function"]!!.jsonObject["name"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `messages redacted thinking history is dropped when converting to chat`() {
+        val request = json(
+            """{
+              "model":"claude","max_tokens":64,
+              "messages":[
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":[{"type":"redacted_thinking","data":"opaque"},{"type":"text","text":"answer"}]},
+                {"role":"user","content":"again"},
+                {"role":"assistant","content":[{"type":"redacted_thinking","data":"opaque"}]}
+              ]
+            }""",
+        )
+        val converted = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS, request, "deepseek-v4.1-flash")
+        val messages = converted["messages"]!!.jsonArray
+        // 只含 redacted_thinking 的 assistant 轮次没有可表示内容，整条丢弃。
+        assertEquals(3, messages.size)
+        assertEquals("answer", messages[1].jsonObject["content"]!!.jsonPrimitive.content)
+        assertFalse(messages[1].jsonObject.containsKey("reasoning_content"))
     }
 
     @Test
