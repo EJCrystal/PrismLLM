@@ -539,6 +539,14 @@ function removeSelectedKey(): void {
   removeKey(channelKeys.value.indexOf(key))
 }
 
+function focusChannelKeyInForm(key: ChannelKeyEditorDraft): void {
+  selectedChannelKeyId.value = key.localId
+  focusFormSection('keys')
+  nextTick(() => {
+    document.getElementById(channelKeyTabId(key.localId))?.scrollIntoView({ block: 'center' })
+  })
+}
+
 watch(isMobile, (mobile) => {
   if (!mobile && !selectedChannelKeyId.value) {
     selectedChannelKeyId.value = channelKeys.value[0]?.localId || null
@@ -1094,35 +1102,35 @@ async function save(): Promise<void> {
   for (const key of channelKeys.value) {
     const name = key.name.trim()
     if (!name) {
-      focusFormSection('keys')
+      focusChannelKeyInForm(key)
       notify('密钥名称不能为空', 'error')
       return
     }
     if (names.has(name)) {
-      focusFormSection('keys')
+      focusChannelKeyInForm(key)
       notify(`密钥名称不能重复：${name}`, 'error')
       return
     }
     names.add(name)
     if (!Number.isInteger(Number(key.priority)) || Number(key.priority) < 1 || Number(key.priority) > 1000) {
-      focusFormSection('keys')
+      focusChannelKeyInForm(key)
       notify('密钥优先级必须是 1..1000 的整数', 'error')
       return
     }
     if (!key.id && !key.credential.trim()) {
-      focusFormSection('keys')
+      focusChannelKeyInForm(key)
       notify(`新建密钥「${name}」必须提供上游凭据`, 'error')
       return
     }
     if (!key.models.length) {
-      focusFormSection('keys')
+      focusChannelKeyInForm(key)
       notify(`密钥「${name}」至少需要授权一个模型`, 'error')
       return
     }
     try {
       validateChannelKeyRateLimit(key.rateLimit)
     } catch (cause) {
-      focusFormSection('keys')
+      focusChannelKeyInForm(key)
       notify(`密钥「${name}」限流规则无效：${errorMessage(cause)}`, 'error')
       return
     }
