@@ -15,6 +15,7 @@ import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
@@ -24,6 +25,7 @@ import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.oauth.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
 import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
@@ -1024,9 +1026,9 @@ class GatewayIntegrationTest {
             baseUrl = "${fake.baseUrl}/ok/v1",
             keys = listOf(
                 NewChannelKey(
-                    name = "free-account",
-                    credential = app.credentialCipher.encrypt("oauth-refresh-token"),
-                    models = listOf("m1"),
+                    name = "unused-static-key",
+                    credential = app.credentialCipher.encrypt("unused-static-secret"),
+                    models = emptyList(),
                 ),
             ),
             authType = "bearer",
@@ -1034,19 +1036,18 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
-        val keyId = channel.keys.single().id
-        app.oauthAccountRepository.upsert(keyId, OAuthProvider.CHATGPT, accountEmail = "window@example.com")
+        val account = createOAuthAccount(channel, "window@example.com")
         app.oauthAccountRepository.saveRefreshed(
-            keyId = keyId,
+            accountId = account.id,
             accessToken = app.credentialCipher.encrypt("oauth-access-token"),
             expiresAt = System.currentTimeMillis() + 3_600_000,
             tokenType = "Bearer",
             scope = null,
             rotatedRefreshToken = null,
-            expectedRefreshCiphertext = channel.keys.single().credentialCiphertext,
+            expectedRefreshCiphertext = account.refreshTokenCiphertext,
         )
         app.oauthAccountRepository.updatePolicy(
-            keyId,
+            account.id,
             OAuthAccountPolicy(windowLimit = 1, windowSeconds = 3_600, maxConcurrentRequests = 1),
         )
         exposeAsModel("oauth-window-model", channel to "m1")
@@ -1079,9 +1080,9 @@ class GatewayIntegrationTest {
             baseUrl = "${fake.baseUrl}/ok/v1",
             keys = listOf(
                 NewChannelKey(
-                    name = "expired-account",
-                    credential = app.credentialCipher.encrypt("oauth-refresh-token"),
-                    models = listOf("m1"),
+                    name = "unused-static-key",
+                    credential = app.credentialCipher.encrypt("unused-static-secret"),
+                    models = emptyList(),
                 ),
             ),
             authType = "bearer",
@@ -1089,9 +1090,8 @@ class GatewayIntegrationTest {
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
-        val keyId = channel.keys.single().id
-        app.oauthAccountRepository.upsert(keyId, OAuthProvider.CHATGPT, accountEmail = "reauth@example.com")
-        app.oauthAccountRepository.recordFailure(keyId, "invalid_grant", terminal = true)
+        val account = createOAuthAccount(channel, "reauth@example.com")
+        app.oauthAccountRepository.recordFailure(account.id, "invalid_grant", terminal = true)
         exposeAsModel("oauth-reauth-model", channel to "m1")
         val clientKey = createClientKey()
 
@@ -1114,22 +1114,21 @@ class GatewayIntegrationTest {
     @Test
     fun `admin model listing resolves the subscription access token`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        val key = channel.keys.single()
-        app.oauthAccountRepository.upsert(key.id, OAuthProvider.CHATGPT, accountEmail = "models@example.com")
+        val account = createOAuthAccount(channel, "models@example.com")
         app.oauthAccountRepository.saveRefreshed(
-            keyId = key.id,
+            accountId = account.id,
             accessToken = app.credentialCipher.encrypt("oauth-models-token"),
             expiresAt = System.currentTimeMillis() + 3_600_000,
             tokenType = "Bearer",
             scope = null,
             rotatedRefreshToken = null,
-            expectedRefreshCiphertext = key.credentialCiphertext,
+            expectedRefreshCiphertext = account.refreshTokenCiphertext,
         )
         val session = app.sessions.create("admin")
 
         testApplication {
             application { app.install(this) }
-            val response = client.get("/admin/api/channels/${channel.id}/models") {
+            val response = client.get("/admin/api/channels/${channel.id}/models?keyId=${account.id}") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
             }
 
@@ -1142,20 +1141,19 @@ class GatewayIntegrationTest {
     @Test
     fun `admin oauth import binds the account and lists it on the dashboard`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        val key = channel.keys.single()
         val expiresAt = System.currentTimeMillis() + 3_600_000
 
         testApplication {
             application { app.install(this) }
             val (cookie, csrf) = client.loginAdmin()
-            val response = client.put("/admin/api/channels/${channel.id}/keys/${key.id}/oauth-account") {
+            val response = client.post("/admin/api/oauth-accounts") {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
                 setBody(
                     """{"provider":"chatgpt","refreshToken":"refresh-token-value","accountEmail":"free@example.com",""" +
                         """"accountPlan":"free","proxyUrl":"http://127.0.0.1:8080","accessToken":"access-token-value",""" +
-                        """"accessTokenExpiresAt":$expiresAt}""",
+                        """"accessTokenExpiresAt":$expiresAt,"channelIds":["${channel.id}"]}""",
                 )
             }
 
@@ -1164,8 +1162,9 @@ class GatewayIntegrationTest {
             assertFalse(body.contains("refresh-token-value"))
             assertFalse(body.contains("access-token-value"))
             val account = Json.parseToJsonElement(body).jsonObject
-            assertEquals(key.id, account["keyId"]!!.jsonPrimitive.content)
-            assertEquals(channel.id, account["channelId"]!!.jsonPrimitive.content)
+            val accountId = account["id"]!!.jsonPrimitive.content
+            assertTrue(accountId.isNotBlank())
+            assertEquals(channel.id, account["channelIds"]!!.jsonArray.single().jsonPrimitive.content)
             assertEquals("chatgpt", account["provider"]!!.jsonPrimitive.content)
             assertEquals("ACTIVE", account["authState"]!!.jsonPrimitive.content)
             assertEquals("free@example.com", account["accountEmail"]!!.jsonPrimitive.content)
@@ -1183,8 +1182,7 @@ class GatewayIntegrationTest {
             assertEquals("no-store", listing.headers["Cache-Control"])
             assertFalse(listing.bodyAsText().contains("refresh-token-value"))
             val entries = Json.parseToJsonElement(listing.bodyAsText()).jsonArray
-            assertEquals(1, entries.size)
-            assertEquals(key.id, entries.single().jsonObject["keyId"]!!.jsonPrimitive.content)
+            assertTrue(entries.any { it.jsonObject["id"]!!.jsonPrimitive.content == accountId })
 
             val auditResponse = client.get("/admin/api/audit-logs?limit=20") {
                 header(HttpHeaders.Cookie, cookie)
@@ -1207,26 +1205,25 @@ class GatewayIntegrationTest {
                 .associate { it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["configured"]!!.jsonPrimitive.boolean }
             assertEquals(mapOf("chatgpt" to true, "antigravity" to false), byProvider)
 
-            val stored = app.channelRepository.find(channel.id)!!.keys.single()
-            assertNotEquals("refresh-token-value", stored.credentialCiphertext)
+            val stored = assertNotNull(app.oauthAccountRepository.find(accountId))
+            assertNotEquals("refresh-token-value", stored.refreshTokenCiphertext)
             assertEquals(
                 "refresh-token-value",
-                app.credentialCipher.decrypt(stored.credentialCiphertext, stored.credentialNonce),
+                app.credentialCipher.decrypt(stored.refreshTokenCiphertext, stored.refreshTokenNonce),
             )
-            assertEquals(10_800, assertNotNull(stored.oauthPolicy).windowSeconds)
-            assertEquals("free@example.com", app.oauthAccountRepository.find(key.id)!!.accountEmail)
+            assertEquals(10_800, stored.policy.windowSeconds)
+            assertEquals("free@example.com", stored.accountEmail)
         }
     }
 
     @Test
     fun `admin oauth import rejects unconfigured providers and invalid input`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        val key = channel.keys.single()
 
         testApplication {
             application { app.install(this) }
             val (cookie, csrf) = client.loginAdmin()
-            suspend fun import(body: String) = client.put("/admin/api/channels/${channel.id}/keys/${key.id}/oauth-account") {
+            suspend fun import(body: String) = client.post("/admin/api/oauth-accounts") {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
@@ -1268,16 +1265,16 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.BadRequest, expiredAccess.status)
             assertTrue(expiredAccess.bodyAsText().contains("invalid_oauth_access_token"))
 
-            val missingKey = client.put("/admin/api/channels/${channel.id}/keys/missing/oauth-account") {
-                header(HttpHeaders.Cookie, cookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"provider":"chatgpt","refreshToken":"rt"}""")
-            }
-            assertEquals(HttpStatusCode.NotFound, missingKey.status)
+            val missingChannel = import(
+                """{"provider":"chatgpt","refreshToken":"rt","channelIds":["missing"]}""",
+            )
+            assertEquals(HttpStatusCode.BadRequest, missingChannel.status)
+            assertTrue(missingChannel.bodyAsText().contains("invalid_oauth_channels"))
 
-            assertEquals(0, scalarInt("select count(*) from channel_key_oauth_accounts"))
-            assertNull(app.channelRepository.find(channel.id)!!.keys.single().oauthPolicy)
+            assertEquals(
+                0,
+                scalarInt("select count(*) from oauth_account_channels where channel_id = '${channel.id}'"),
+            )
         }
     }
 
@@ -1285,35 +1282,41 @@ class GatewayIntegrationTest {
     fun `admin oauth import rejects the same account email on another key`() = runBlocking {
         val first = createChannel("openai-a", "ok")
         val second = createChannel("openai-b", "ok")
-        val secondCredential = second.keys.single().credentialCiphertext
 
         testApplication {
             application { app.install(this) }
             val (cookie, csrf) = client.loginAdmin()
-            suspend fun import(channel: ChannelRecord, keyId: String, refreshToken: String) =
-                client.put("/admin/api/channels/${channel.id}/keys/$keyId/oauth-account") {
+            suspend fun import(channel: ChannelRecord, refreshToken: String) =
+                client.post("/admin/api/oauth-accounts") {
                     header(HttpHeaders.Cookie, cookie)
                     header("X-CSRF-Token", csrf)
                     contentType(ContentType.Application.Json)
-                    setBody("""{"provider":"chatgpt","refreshToken":"$refreshToken","accountEmail":"same@example.com"}""")
+                    setBody(
+                        """{"provider":"chatgpt","refreshToken":"$refreshToken","accountEmail":"same@example.com","channelIds":["${channel.id}"]}""",
+                    )
                 }
 
-            assertEquals(HttpStatusCode.OK, import(first, first.keys.single().id, "rt-a").status)
-            val duplicated = import(second, second.keys.single().id, "rt-b")
+            assertEquals(HttpStatusCode.OK, import(first, "rt-a").status)
+            val duplicated = import(second, "rt-b")
             assertEquals(HttpStatusCode.Conflict, duplicated.status)
             assertTrue(duplicated.bodyAsText().contains("oauth_account_email_exists"))
 
-            // 冲突时整个事务回滚，第二个密钥的凭据不能被替换。
-            assertEquals(secondCredential, app.channelRepository.find(second.id)!!.keys.single().credentialCiphertext)
-            assertEquals(1, scalarInt("select count(*) from channel_key_oauth_accounts"))
+            // 冲突时整个事务回滚，不会留下第二个账号或渠道关联。
+            assertEquals(1, scalarInt("select count(*) from oauth_accounts where account_email = 'same@example.com'"))
+            assertEquals(
+                1,
+                scalarInt(
+                    "select count(*) from oauth_account_channels c join oauth_accounts a on a.id = c.account_id " +
+                        "where a.account_email = 'same@example.com'",
+                ),
+            )
         }
     }
 
     @Test
     fun `admin oauth policy update validates and persists limits`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        val key = channel.keys.single()
-        app.oauthAccountRepository.upsert(key.id, OAuthProvider.CHATGPT, accountEmail = "policy@example.com")
+        val account = createOAuthAccount(channel, "policy@example.com")
 
         testApplication {
             application { app.install(this) }
@@ -1325,14 +1328,14 @@ class GatewayIntegrationTest {
                 setBody(body)
             }
 
-            val ok = update(key.id, """{"windowLimit":10,"windowSeconds":3600,"maxConcurrentRequests":2}""")
+            val ok = update(account.id, """{"windowLimit":10,"windowSeconds":3600,"maxConcurrentRequests":2}""")
             assertEquals(HttpStatusCode.OK, ok.status)
             val policy = Json.parseToJsonElement(ok.bodyAsText()).jsonObject["policy"]!!.jsonObject
             assertEquals(10, policy["windowLimit"]!!.jsonPrimitive.int)
             assertEquals(3_600, policy["windowSeconds"]!!.jsonPrimitive.int)
             assertEquals(2, policy["maxConcurrentRequests"]!!.jsonPrimitive.int)
 
-            val invalid = update(key.id, """{"windowLimit":0}""")
+            val invalid = update(account.id, """{"windowLimit":0}""")
             assertEquals(HttpStatusCode.BadRequest, invalid.status)
             assertTrue(invalid.bodyAsText().contains("invalid_oauth_policy"))
 
@@ -1340,7 +1343,7 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.NotFound, missing.status)
             assertTrue(missing.bodyAsText().contains("oauth_account_not_found"))
 
-            val stored = assertNotNull(app.channelRepository.find(channel.id)!!.keys.single().oauthPolicy)
+            val stored = assertNotNull(app.oauthAccountRepository.find(account.id)).policy
             assertEquals(10, stored.windowLimit)
             assertEquals(3_600, stored.windowSeconds)
             assertEquals(2, stored.maxConcurrentRequests)
@@ -1350,19 +1353,17 @@ class GatewayIntegrationTest {
     @Test
     fun `admin oauth cooldown clear releases account and key cooldown`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        val key = channel.keys.single()
-        app.oauthAccountRepository.upsert(key.id, OAuthProvider.CHATGPT, accountEmail = "cooldown@example.com")
-        val accountKey = app.channelRepository.find(channel.id)!!.keys.single()
-        app.oauthAccountScheduler.recordRateLimited(accountKey, 600_000)
-        val permit = assertNotNull(app.candidateCooldown.forceAcquire(channel.id, key.id, "m1"))
+        val account = createOAuthAccount(channel, "cooldown@example.com")
+        app.oauthAccountScheduler.recordRateLimited(account, 600_000)
+        val permit = assertNotNull(app.candidateCooldown.forceAcquire(channel.id, account.id, "m1"))
         app.candidateCooldown.recordFailure(permit, FailureKind.AUTH_REJECTED)
-        assertNotNull(app.oauthAccountScheduler.runtimeState(key.id, accountKey.oauthPolicy!!)?.cooldownUntil)
-        assertNotNull(app.candidateCooldown.cooldownState(channel.id, key.id, "m1"))
+        assertNotNull(app.oauthAccountScheduler.runtimeState(account.id, account.policy)?.cooldownUntil)
+        assertNotNull(app.candidateCooldown.cooldownState(channel.id, account.id, "m1"))
 
         testApplication {
             application { app.install(this) }
             val (cookie, csrf) = client.loginAdmin()
-            val response = client.post("/admin/api/oauth-accounts/${key.id}/cooldown/clear") {
+            val response = client.post("/admin/api/oauth-accounts/${account.id}/cooldown/clear") {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
             }
@@ -1374,15 +1375,14 @@ class GatewayIntegrationTest {
             }
             assertEquals(HttpStatusCode.NotFound, missing.status)
 
-            assertNull(app.oauthAccountScheduler.runtimeState(key.id, accountKey.oauthPolicy!!)!!.cooldownUntil)
-            assertNull(app.candidateCooldown.cooldownState(channel.id, key.id, "m1"))
+            assertNull(app.oauthAccountScheduler.runtimeState(account.id, account.policy)!!.cooldownUntil)
+            assertNull(app.candidateCooldown.cooldownState(channel.id, account.id, "m1"))
         }
     }
 
     @Test
     fun `admin oauth manual refresh reports missing accounts and refresh failures`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        val key = channel.keys.single()
 
         testApplication {
             application { app.install(this) }
@@ -1392,39 +1392,41 @@ class GatewayIntegrationTest {
                 header("X-CSRF-Token", csrf)
             }
 
-            val notOAuth = refresh(key.id)
+            val notOAuth = refresh("missing")
             assertEquals(HttpStatusCode.NotFound, notOAuth.status)
             assertTrue(notOAuth.bodyAsText().contains("oauth_account_not_found"))
 
             // 代理指向本机未监听端口，刷新请求快速失败，避免测试访问真实 OAuth 端点。
-            app.oauthAccountRepository.upsert(
-                key.id,
-                OAuthProvider.CHATGPT,
-                accountEmail = "refresh@example.com",
-                proxyUrl = "http://127.0.0.1:1",
+            val account = app.oauthAccountRepository.create(
+                NewOAuthAccount(
+                    name = "refresh@example.com",
+                    provider = OAuthProvider.CHATGPT,
+                    accountEmail = "refresh@example.com",
+                    refreshToken = app.credentialCipher.encrypt("oauth-refresh-token"),
+                    proxyUrl = "http://127.0.0.1:1",
+                    channelIds = listOf(channel.id),
+                ),
             )
-            val failed = refresh(key.id)
+            val failed = refresh(account.id)
             assertEquals(HttpStatusCode.BadGateway, failed.status)
             assertTrue(failed.bodyAsText().contains("oauth_refresh_failed"))
-            assertEquals("network_error", app.oauthAccountRepository.find(key.id)!!.lastRefreshError)
+            assertEquals("network_error", app.oauthAccountRepository.find(account.id)!!.lastRefreshError)
         }
     }
 
     @Test
     fun `admin oauth quota refresh reads upstream usage and persists the snapshot`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        val key = channel.keys.single()
-        app.oauthAccountRepository.upsert(key.id, OAuthProvider.CHATGPT, accountEmail = "quota@example.com")
-        app.oauthAccountRepository.updateChatgptAccountId(key.id, "acc-quota")
-        val accountKey = app.channelRepository.find(channel.id)!!.keys.single()
+        val account = createOAuthAccount(channel, "quota@example.com")
+        app.oauthAccountRepository.updateChatgptAccountId(account.id, "acc-quota")
         app.oauthAccountRepository.saveRefreshed(
-            key.id,
+            account.id,
             accessToken = app.credentialCipher.encrypt("quota-access-token"),
             expiresAt = System.currentTimeMillis() + 3_600_000,
             tokenType = "Bearer",
             scope = null,
             rotatedRefreshToken = null,
-            expectedRefreshCiphertext = accountKey.credentialCiphertext,
+            expectedRefreshCiphertext = account.refreshTokenCiphertext,
         )
 
         testApplication {
@@ -1439,7 +1441,7 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.NotFound, missing.status)
             assertTrue(missing.bodyAsText().contains("oauth_account_not_found"))
 
-            val response = refreshQuota(key.id)
+            val response = refreshQuota(account.id)
             assertEquals(HttpStatusCode.OK, response.status)
             val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
             assertEquals("plus", body["accountPlan"]!!.jsonPrimitive.content)
@@ -1470,20 +1472,20 @@ class GatewayIntegrationTest {
             val successAudit = quotaAudits.first {
                 it["details"]!!.jsonObject["result"]!!.jsonPrimitive.content == "success"
             }
-            assertEquals(key.id, successAudit["details"]!!.jsonObject["keyId"]!!.jsonPrimitive.content)
+            assertEquals(account.id, successAudit["details"]!!.jsonObject["accountId"]!!.jsonPrimitive.content)
 
-            val stored = assertNotNull(app.oauthAccountRepository.find(key.id))
+            val stored = assertNotNull(app.oauthAccountRepository.find(account.id))
             assertEquals(100.0, assertNotNull(stored.quota).primary!!.usedPercent)
             assertEquals("acc-quota", stored.chatgptAccountId)
             // 额度用尽立即参与准入拦截，不必等下一次 429。
-            val decision = app.oauthAccountScheduler.acquire(accountKey)
+            val decision = app.oauthAccountScheduler.acquire(account)
             assertIs<OAuthAccountDecision.Denied>(decision)
             assertEquals(OAuthAccountDenyReason.QUOTA, decision.reason)
 
             // 上游读取失败时保留上一次成功读数，只记录错误码。
             fake.quotaUsageStatus = 503
-            app.oauthQuotaService.refreshNow(key.id)
-            val degraded = assertNotNull(app.oauthAccountRepository.find(key.id))
+            app.oauthQuotaService.refreshNow(account.id)
+            val degraded = assertNotNull(app.oauthAccountRepository.find(account.id))
             assertEquals("http_503", assertNotNull(degraded.quota).error)
             assertEquals(100.0, assertNotNull(degraded.quota!!.primary).usedPercent)
         }
@@ -1492,7 +1494,6 @@ class GatewayIntegrationTest {
     @Test
     fun `admin oauth interactive login exchanges the callback and binds the account`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        val key = channel.keys.single()
 
         testApplication {
             application { app.install(this) }
@@ -1503,7 +1504,9 @@ class GatewayIntegrationTest {
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
-            val started = start("""{"provider":"chatgpt","channelId":"${channel.id}","keyId":"${key.id}"}""")
+            val started = start(
+                """{"provider":"chatgpt","name":"login account","channelIds":["${channel.id}"]}""",
+            )
             assertEquals(HttpStatusCode.OK, started.status)
             assertEquals("no-store", started.headers["Cache-Control"])
             val startedBody = Json.parseToJsonElement(started.bodyAsText()).jsonObject
@@ -1530,6 +1533,7 @@ class GatewayIntegrationTest {
             val completed = complete("http://localhost:1455/auth/callback?code=auth-code&state=$state")
             assertEquals(HttpStatusCode.OK, completed.status)
             val account = Json.parseToJsonElement(completed.bodyAsText()).jsonObject
+            val accountId = account["id"]!!.jsonPrimitive.content
             assertEquals("login@example.com", account["accountEmail"]!!.jsonPrimitive.content)
             assertEquals("plus", account["accountPlan"]!!.jsonPrimitive.content)
             assertEquals("acc-login", account["chatgptAccountId"]!!.jsonPrimitive.content)
@@ -1549,12 +1553,11 @@ class GatewayIntegrationTest {
             assertEquals(1, fake.tokenRequests.size)
 
             // refresh token 与 access token 都加密落库，响应不回显。
-            val storedKey = app.channelRepository.find(channel.id)!!.keys.single()
+            val storedAccount = assertNotNull(app.oauthAccountRepository.find(accountId))
             assertEquals(
                 "login-refresh-token",
-                app.credentialCipher.decrypt(storedKey.credentialCiphertext, storedKey.credentialNonce),
+                app.credentialCipher.decrypt(storedAccount.refreshTokenCiphertext, storedAccount.refreshTokenNonce),
             )
-            val storedAccount = assertNotNull(app.oauthAccountRepository.find(key.id))
             assertEquals(
                 "login-access-token",
                 app.credentialCipher.decrypt(
@@ -1580,9 +1583,9 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `admin oauth interactive login rejects a key deleted during login`() = runBlocking {
+    fun `admin oauth interactive login rejects an account deleted during login`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        val key = channel.keys.single()
+        val account = createOAuthAccount(channel, "stale@example.com")
 
         testApplication {
             application { app.install(this) }
@@ -1591,7 +1594,7 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
-                setBody("""{"provider":"chatgpt","channelId":"${channel.id}","keyId":"${key.id}"}""")
+                setBody("""{"provider":"chatgpt","accountId":"${account.id}"}""")
             }
             assertEquals(HttpStatusCode.OK, started.status)
             val startedBody = Json.parseToJsonElement(started.bodyAsText()).jsonObject
@@ -1600,7 +1603,7 @@ class GatewayIntegrationTest {
                 .substringAfter("state=").substringBefore("&")
 
             // 登录期间目标被删除：完成回调必须拒绝绑定，且不消耗授权码。
-            app.channelRepository.delete(channel.id)
+            app.oauthAccountRepository.delete(account.id)
             val completed = client.post("/admin/api/oauth-login/$loginId/complete") {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
@@ -1616,13 +1619,14 @@ class GatewayIntegrationTest {
     @Test
     fun `admin oauth interactive login retries binding after an email conflict`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        val key = channel.keys.single()
         val conflicting = createChannel("openai-conflict", "ok")
-        app.oauthAccountRepository.upsert(
-            keyId = conflicting.keys.single().id,
-            provider = OAuthProvider.CHATGPT,
-            accountEmail = "login@example.com",
-            refreshToken = app.credentialCipher.encrypt("conflict-refresh-token"),
+        app.oauthAccountRepository.listAll()
+            .filter { it.accountEmail == "login@example.com" }
+            .forEach { app.oauthAccountRepository.delete(it.id) }
+        val conflictingAccount = createOAuthAccount(
+            conflicting,
+            "login@example.com",
+            refreshToken = "conflict-refresh-token",
         )
 
         testApplication {
@@ -1632,7 +1636,7 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
-                setBody("""{"provider":"chatgpt","channelId":"${channel.id}","keyId":"${key.id}"}""")
+                setBody("""{"provider":"chatgpt","channelIds":["${channel.id}"]}""")
             }
             assertEquals(HttpStatusCode.OK, started.status)
             val startedBody = Json.parseToJsonElement(started.bodyAsText()).jsonObject
@@ -1652,7 +1656,7 @@ class GatewayIntegrationTest {
             assertEquals(1, fake.tokenRequests.size)
 
             // 解除原绑定后用同一登录会话重试：不再交换授权码，直接完成绑定。
-            app.channelRepository.delete(conflicting.id)
+            app.oauthAccountRepository.delete(conflictingAccount.id)
             val retried = complete()
             assertEquals(HttpStatusCode.OK, retried.status)
             val account = Json.parseToJsonElement(retried.bodyAsText()).jsonObject
@@ -6731,7 +6735,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("51", result.getString(1))
+                        assertEquals("52", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -9403,6 +9407,21 @@ class GatewayIntegrationTest {
 
     private fun mappingsOf(vararg models: String): List<ChannelModelRecord> =
         models.map { ChannelModelRecord(upstreamModel = it) }
+
+    private suspend fun createOAuthAccount(
+        channel: ChannelRecord,
+        email: String,
+        refreshToken: String = "oauth-refresh-token",
+        provider: OAuthProvider = OAuthProvider.CHATGPT,
+    ): OAuthAccountRecord = app.oauthAccountRepository.create(
+        NewOAuthAccount(
+            name = email,
+            provider = provider,
+            accountEmail = email,
+            refreshToken = app.credentialCipher.encrypt(refreshToken),
+            channelIds = listOf(channel.id),
+        ),
+    )
 
     private suspend fun createChannelWithProtocols(
         name: String,

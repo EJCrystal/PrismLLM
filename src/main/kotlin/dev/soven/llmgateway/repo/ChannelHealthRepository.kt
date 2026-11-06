@@ -1,11 +1,16 @@
 package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.db.OAuthAccountChannels
+import dev.soven.llmgateway.db.OAuthAccounts
 import dev.soven.llmgateway.report.*
+import org.jetbrains.exposed.v1.core.JoinType
+import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.LongColumnType
 import org.jetbrains.exposed.v1.core.TextColumnType
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
+import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import java.sql.ResultSet
 
@@ -49,10 +54,18 @@ class ChannelHealthRepository(private val database: Database, private val slowFi
             """.trimIndent(), args(report.from, now, channel.id)) { rs ->
                 buildList { while (rs.next()) add(HealthError(rs.getString("code"), rs.getLong("n"), rs.getLong("last_at"))) }
             }.orEmpty()
+            val oauthNames = OAuthAccountChannels
+                .join(OAuthAccounts, JoinType.INNER, OAuthAccountChannels.accountId, OAuthAccounts.id)
+                .selectAll()
+                .where { OAuthAccountChannels.channelId eq channel.id }
+                .associate { it[OAuthAccounts.id] to it[OAuthAccounts.name] }
             ChannelHealthDetail(
                 report, trend, breakdown("coalesce(upstream_model, '未知模型')"),
                 breakdown("coalesce(upstream_protocol, '未知协议')"),
-                breakdown("coalesce(channel_key_id, '未知密钥')", channel.keys.associate { it.id to it.name }), errors, availability,
+                breakdown(
+                    "coalesce(channel_key_id, '未知密钥')",
+                    channel.keys.associate { it.id to it.name } + oauthNames,
+                ), errors, availability,
             )
         }
 

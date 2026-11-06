@@ -93,8 +93,8 @@ class OAuthQuotaService(
         worker.getAndSet(null)?.cancel()
     }
 
-    suspend fun refreshNow(keyId: String): OAuthQuotaResult {
-        val account = repository.find(keyId) ?: return OAuthQuotaResult.NotFound
+    suspend fun refreshNow(accountId: String): OAuthQuotaResult {
+        val account = repository.find(accountId) ?: return OAuthQuotaResult.NotFound
         return refreshAccount(account)
     }
 
@@ -102,32 +102,32 @@ class OAuthQuotaService(
         if (account.provider != OAuthProvider.CHATGPT) return OAuthQuotaResult.NotSupported
         val usageUrl = config.chatGpt.usageUrl ?: return OAuthQuotaResult.NotSupported
         val token = try {
-            tokenService.accessToken(account.keyId)
+            tokenService.accessToken(account.id)
         } catch (cause: OAuthTokenUnavailableException) {
-            return failed(account.keyId, cause.errorCode ?: "credential_unavailable")
+            return failed(account.id, cause.errorCode ?: "credential_unavailable")
         } ?: return OAuthQuotaResult.NotFound
 
         val claims = parseOAuthTokenClaims(token.accessToken)
         val accountId = account.chatgptAccountId ?: claims?.chatgptAccountId
-            ?: return failed(account.keyId, "account_id_missing")
+            ?: return failed(account.id, "account_id_missing")
         if (account.chatgptAccountId != accountId) {
-            repository.updateChatgptAccountId(account.keyId, accountId)
+            repository.updateChatgptAccountId(account.id, accountId)
         }
 
         val usage = try {
             readUsage(usageUrl, token.accessToken, accountId, account.proxyUrl)
         } catch (cause: QuotaProbeException) {
-            if (cause.status != 401) return failed(account.keyId, cause.errorCode)
+            if (cause.status != 401) return failed(account.id, cause.errorCode)
             // access token 可能刚被上游吊销：强制刷新一次再试。
             val refreshed = try {
-                tokenService.accessToken(account.keyId, forceRefresh = true)
+                tokenService.accessToken(account.id, forceRefresh = true)
             } catch (refreshCause: OAuthTokenUnavailableException) {
-                return failed(account.keyId, refreshCause.errorCode ?: "credential_unavailable")
+                return failed(account.id, refreshCause.errorCode ?: "credential_unavailable")
             } ?: return OAuthQuotaResult.NotFound
             try {
                 readUsage(usageUrl, refreshed.accessToken, accountId, account.proxyUrl)
             } catch (retryCause: QuotaProbeException) {
-                return failed(account.keyId, retryCause.errorCode)
+                return failed(account.id, retryCause.errorCode)
             }
         }
 
@@ -140,21 +140,21 @@ class OAuthQuotaService(
             resetCredits = usage.resetCredits,
             checkedAt = now(),
         )
-        repository.saveQuota(account.keyId, snapshot, usage.planType)
-        onQuota(account.keyId, snapshot)
+        repository.saveQuota(account.id, snapshot, usage.planType)
+        onQuota(account.id, snapshot)
         logger.debug(
-            "oauth quota read, keyId={}, primary={}, secondary={}, allowed={}",
-            account.keyId,
+            "oauth quota read, accountId={}, primary={}, secondary={}, allowed={}",
+            account.id,
             usage.primary?.usedPercent,
             usage.secondary?.usedPercent,
             usage.allowed,
         )
-        return OAuthQuotaResult.Refreshed(repository.find(account.keyId) ?: account)
+        return OAuthQuotaResult.Refreshed(repository.findDetailed(account.id) ?: account)
     }
 
-    private suspend fun failed(keyId: String, errorCode: String): OAuthQuotaResult {
-        repository.recordQuotaFailure(keyId, errorCode)
-        logger.debug("oauth quota read failed, keyId={}, error={}", keyId, errorCode)
+    private suspend fun failed(accountId: String, errorCode: String): OAuthQuotaResult {
+        repository.saveQuotaError(accountId, errorCode)
+        logger.debug("oauth quota read failed, accountId={}, error={}", accountId, errorCode)
         return OAuthQuotaResult.Failed(errorCode)
     }
 
@@ -180,8 +180,8 @@ class OAuthQuotaService(
                         } catch (cause: Throwable) {
                             failed.incrementAndGet()
                             logger.warn(
-                                "oauth quota read failed, keyId={}, error={}",
-                                account.keyId,
+                                "oauth quota read failed, accountId={}, error={}",
+                                account.id,
                                 cause::class.simpleName,
                             )
                         }

@@ -70,14 +70,14 @@ class TierSharing {
                 keyCounters[counterKey]?.get() ?: 0L
             }
             channelCandidates
-                .groupBy { it.key.priority }
+                .groupBy { it.credential.priority }
                 .toSortedMap()
                 .flatMap { (_, keyTier) ->
                     // 同档密钥轮询或基于 HRW 的独立亲和排序；同一密钥内的多个上游模型名保持候选原有稳定顺序。
-                    val keys = keyTier.groupBy { it.key.id }.values.toList()
+                    val keys = keyTier.groupBy { it.credential.id }.values.toList()
                     val orderedKeys = if (affinityKey != null) {
                         keys.sortedByDescending { keyGroup ->
-                            val keyId = keyGroup.first().key.id
+                            val keyId = keyGroup.first().credential.id
                             affinityOffset("$affinityKey#$counterKey#key#$keyId")
                         }
                     } else {

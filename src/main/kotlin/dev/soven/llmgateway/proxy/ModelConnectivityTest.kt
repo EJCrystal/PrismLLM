@@ -2,7 +2,7 @@ package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ChannelRecord
-import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.UpstreamCredential
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.authTypeFor
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
@@ -49,7 +49,7 @@ data class ModelConnectivityTestResult(
  */
 suspend fun testChannelModelConnectivity(
     channel: ChannelRecord,
-    key: ChannelKeyRecord,
+    credentialRef: UpstreamCredential,
     model: String,
     protocol: GatewayProtocol,
     prompt: String,
@@ -60,7 +60,7 @@ suspend fun testChannelModelConnectivity(
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): ModelConnectivityTestResult {
-    val credential = resolveSavedCredential(credentials, key)
+    val credential = resolveSavedCredential(credentials, credentialRef)
 
     val startedAt = System.currentTimeMillis()
     return try {

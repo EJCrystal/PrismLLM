@@ -5,9 +5,10 @@ import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.saturatedAdd
-import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.CredentialChangedException
+import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.repo.OAuthAccountCredentialUpdate
 import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.security.credentialFingerprint
 import kotlinx.serialization.json.JsonObject
@@ -50,7 +51,7 @@ sealed interface OAuthLoginResult {
     /** 回调地址缺少 code/state，或 state 与本次登录不匹配。 */
     data class InvalidRequest(val reason: String) : OAuthLoginResult
 
-    /** 登录期间目标密钥被删除或替换了凭据，不能把授权结果写到新目标上。 */
+    /** 登录期间目标账号被删除或替换了凭据，不能把授权结果写到新目标上。 */
     data object StaleTarget : OAuthLoginResult
 
     data object UnsupportedProvider : OAuthLoginResult
@@ -84,7 +85,6 @@ internal sealed interface LoginBinding<out T> {
  */
 class OAuthLoginService(
     private val repository: OAuthAccountRepository,
-    private val channels: ChannelRepository,
     private val cipher: CredentialCipher,
     private val config: OAuthConfig,
     private val now: () -> Long = System::currentTimeMillis,
@@ -95,10 +95,11 @@ class OAuthLoginService(
 
     fun start(
         provider: OAuthProvider,
-        channelId: String,
-        keyId: String,
+        accountId: String?,
+        name: String?,
+        channelIds: Collection<String>,
         proxyUrl: String?,
-        credentialFingerprint: String,
+        credentialFingerprint: String?,
     ): OAuthLoginStartResult {
         val providerConfig = providerConfig(provider)?.takeIf { it.supportsLogin }
             ?: return OAuthLoginStartResult.UnsupportedProvider
@@ -112,8 +113,9 @@ class OAuthLoginService(
         val expiresAt = saturatedAdd(now(), LOGIN_TTL_MS)
         pending[loginId] = PendingLogin(
             provider = provider,
-            channelId = channelId,
-            keyId = keyId,
+            accountId = accountId,
+            name = name,
+            channelIds = channelIds,
             proxyUrl = proxyUrl,
             credentialFingerprint = credentialFingerprint,
             verifier = verifier,
@@ -160,11 +162,15 @@ class OAuthLoginService(
         if (parsed.state != session.state) {
             return OAuthLoginResult.InvalidRequest("state 不匹配，请重新生成登录链接")
         }
-        // 登录期间目标密钥被删除或换过凭据时拒绝绑定，避免覆盖管理员刚导入的新凭据。
-        val key = channels.find(session.channelId)?.keys?.firstOrNull { it.id == session.keyId }
-        if (key == null || key.credentialFingerprint() != session.credentialFingerprint) {
-            pending.remove(loginId)
-            return OAuthLoginResult.StaleTarget
+        // 登录期间目标账号被删除或换过凭据时拒绝绑定，避免覆盖管理员刚导入的新凭据。
+        val target = session.accountId?.let { accountId ->
+            repository.find(accountId)?.takeIf { account ->
+                session.credentialFingerprint == null ||
+                    account.credentialFingerprint() == session.credentialFingerprint
+            } ?: run {
+                pending.remove(loginId)
+                return OAuthLoginResult.StaleTarget
+            }
         }
 
         // 授权码只能交换一次：成功后把 token 留在会话里，绑定失败时可用同一 loginId 重试。
@@ -201,35 +207,58 @@ class OAuthLoginService(
         val binding = session.bindOnce {
             val claims = parseOAuthTokenClaims(tokens.idToken) ?: parseOAuthTokenClaims(accessToken)
             val account = try {
-                repository.upsert(
-                    keyId = session.keyId,
-                    provider = session.provider,
-                    accountEmail = claims?.email?.take(MAX_EMAIL_CHARS),
-                    accountPlan = claims?.planType?.take(MAX_PLAN_CHARS),
-                    proxyUrl = session.proxyUrl,
-                    refreshToken = cipher.encrypt(refreshToken),
-                    accessToken = cipher.encrypt(accessToken),
-                    accessTokenExpiresAt = session.tokenExpiresAt,
-                    tokenType = "Bearer",
-                    scope = tokens.scope?.take(MAX_SCOPE_CHARS),
-                    expectedCredentialFingerprint = session.credentialFingerprint,
-                )
+                if (target != null) {
+                    repository.updateCredentials(
+                        accountId = target.id,
+                        input = OAuthAccountCredentialUpdate(
+                            provider = session.provider,
+                            accountEmail = claims?.email?.take(MAX_EMAIL_CHARS),
+                            accountPlan = claims?.planType?.take(MAX_PLAN_CHARS),
+                            proxyUrl = session.proxyUrl,
+                            refreshToken = cipher.encrypt(refreshToken),
+                            accessToken = cipher.encrypt(accessToken),
+                            accessTokenExpiresAt = session.tokenExpiresAt,
+                            tokenType = "Bearer",
+                            scope = tokens.scope?.take(MAX_SCOPE_CHARS),
+                            expectedCredentialFingerprint = session.credentialFingerprint,
+                        ),
+                    ) ?: return@bindOnce null
+                } else {
+                    repository.create(
+                        NewOAuthAccount(
+                            name = session.name ?: claims?.email?.take(MAX_EMAIL_CHARS) ?: providerLabel(session.provider),
+                            provider = session.provider,
+                            accountEmail = claims?.email?.take(MAX_EMAIL_CHARS),
+                            accountPlan = claims?.planType?.take(MAX_PLAN_CHARS),
+                            refreshToken = cipher.encrypt(refreshToken),
+                            accessToken = cipher.encrypt(accessToken),
+                            accessTokenExpiresAt = session.tokenExpiresAt,
+                            tokenType = "Bearer",
+                            scope = tokens.scope?.take(MAX_SCOPE_CHARS),
+                            proxyUrl = session.proxyUrl,
+                            channelIds = session.channelIds,
+                        ),
+                    )
+                }
             } catch (_: CredentialChangedException) {
                 // 校验与写入在同一事务内；凭据在预检查之后又被替换时按目标失效处理。
                 pending.remove(loginId)
                 return@bindOnce null
             }
             claims?.chatgptAccountId?.take(MAX_ACCOUNT_ID_CHARS)?.let { accountId ->
-                repository.updateChatgptAccountId(session.keyId, accountId)
+                repository.updateChatgptAccountId(account.id, accountId)
+            }
+            if (session.accountId != null && session.channelIds.isNotEmpty()) {
+                repository.setChannels(account.id, session.channelIds)
             }
             pending.remove(loginId)
             logger.info(
-                "oauth interactive login completed, keyId={}, provider={}, plan={}",
-                session.keyId,
+                "oauth interactive login completed, accountId={}, provider={}, plan={}",
+                account.id,
                 session.provider.value,
                 claims?.planType,
             )
-            OAuthLoginResult.Completed(repository.find(session.keyId) ?: account)
+            OAuthLoginResult.Completed(repository.findDetailed(account.id) ?: account)
         }
         return when (binding) {
             LoginBinding.Busy, LoginBinding.Consumed -> OAuthLoginResult.Expired
@@ -276,13 +305,19 @@ class OAuthLoginService(
         OAuthProvider.ANTIGRAVITY -> config.antigravity
     }
 
+    private fun providerLabel(provider: OAuthProvider): String = when (provider) {
+        OAuthProvider.CHATGPT -> "ChatGPT 账号"
+        OAuthProvider.ANTIGRAVITY -> "Antigravity 账号"
+    }
+
     internal class PendingLogin(
         val provider: OAuthProvider,
-        val channelId: String,
-        val keyId: String,
+        val accountId: String?,
+        val name: String?,
+        val channelIds: Collection<String>,
         val proxyUrl: String?,
-        /** 发起登录时目标密钥的凭据指纹；密文、nonce 或密钥版本变化都会拒绝绑定。 */
-        val credentialFingerprint: String,
+        /** 发起登录时目标账号的凭据指纹；新账号为 null。 */
+        val credentialFingerprint: String?,
         val verifier: String,
         val state: String,
         val redirectUri: String,

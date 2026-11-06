@@ -28,7 +28,7 @@ class OAuthWindowStateWriterTest {
         writer.submit(snapshot("account-b", listOf(2)))
         writer.closeAndDrain(5_000)
 
-        assertEquals(setOf("account-a", "account-b"), store.writes.map { it.keyId }.toSet())
+        assertEquals(setOf("account-a", "account-b"), store.writes.map { it.accountId }.toSet())
     }
 
     @Test
@@ -39,11 +39,11 @@ class OAuthWindowStateWriterTest {
         writer.submit(snapshot("account-b", listOf(2)))
         writer.closeAndDrain(5_000)
 
-        assertEquals(listOf("account-b"), store.writes.map { it.keyId })
+        assertEquals(listOf("account-b"), store.writes.map { it.accountId })
     }
 
-    private fun snapshot(keyId: String, hits: List<Long>) = OAuthWindowSnapshot(
-        keyId = keyId,
+    private fun snapshot(accountId: String, hits: List<Long>) = OAuthWindowSnapshot(
+        accountId = accountId,
         hits = hits,
         updatedAt = 1,
     )
@@ -54,7 +54,7 @@ class OAuthWindowStateWriterTest {
         override suspend fun loadAll(limit: Int): List<OAuthStoredWindowState> = emptyList()
 
         override suspend fun upsert(snapshot: OAuthWindowSnapshot) {
-            if (snapshot.keyId in failKeys) error("write failed")
+            if (snapshot.accountId in failKeys) error("write failed")
             writes += snapshot
         }
     }

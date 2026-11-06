@@ -10,7 +10,9 @@ import dev.soven.llmgateway.domain.OAuthAuthState
 import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.repo.OAuthAccountCredentialUpdate
 import dev.soven.llmgateway.security.CredentialCipher
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
@@ -95,9 +97,7 @@ class OAuthTokenServiceTest {
 
     @Test
     fun refreshesCachesAndPersistsRotatedRefreshToken() = runBlocking {
-        val channel = createChannel("rt-1")
-        val keyId = channel.keys.single().id
-        accounts.upsert(keyId, OAuthProvider.CHATGPT, accountEmail = email("cache"), accountPlan = "free")
+        val keyId = createAccount("rt-1", accountEmail = email("cache"), accountPlan = "free")
         val service = service()
 
         val first = service.accessToken(keyId)
@@ -124,9 +124,7 @@ class OAuthTokenServiceTest {
     @Test
     fun terminalRefreshFailureMarksAccountForReauthorization() = runBlocking {
         reply = { 400 to """{"error":"invalid_grant","error_description":"refresh token revoked"}""" }
-        val channel = createChannel("rt-terminal")
-        val keyId = channel.keys.single().id
-        accounts.upsert(keyId, OAuthProvider.CHATGPT, accountEmail = email("terminal"))
+        val keyId = createAccount("rt-terminal", accountEmail = email("terminal"))
         val service = service()
 
         val error = assertFailsWith<OAuthTokenUnavailableException> { service.accessToken(keyId) }
@@ -142,8 +140,8 @@ class OAuthTokenServiceTest {
         val hits = tokenRequests.get()
         assertFailsWith<OAuthTokenUnavailableException> { service.accessToken(keyId) }
         assertEquals(hits, tokenRequests.get())
-        val key = channels.find(channel.id)!!.keys.single()
-        assertFailsWith<OAuthTokenUnavailableException> { service.resolveCredential(key) }
+        val accountForResolve = accounts.find(keyId)!!
+        assertFailsWith<OAuthTokenUnavailableException> { service.resolveCredential(accountForResolve) }
 
         // 管理面手动刷新允许再试一次。
         val result = service.refreshNow(keyId)
@@ -154,17 +152,17 @@ class OAuthTokenServiceTest {
     @Test
     fun `a failure does not overwrite credentials imported during the refresh`() = runBlocking {
         reply = { 400 to """{"error":"invalid_grant","error_description":"refresh token revoked"}""" }
-        val channel = createChannel("rt-old")
-        val keyId = channel.keys.single().id
-        accounts.upsert(keyId, OAuthProvider.CHATGPT, accountEmail = email("replace"))
+        val keyId = createAccount("rt-old", accountEmail = email("replace"))
         // 模拟管理员在刷新请求进行期间重新导入凭据。
         beforeReply.set {
             runBlocking {
-                accounts.upsert(
+                accounts.updateCredentials(
                     keyId,
-                    OAuthProvider.CHATGPT,
-                    accountEmail = email("replace-new"),
-                    refreshToken = cipher.encrypt("rt-new"),
+                    OAuthAccountCredentialUpdate(
+                        provider = OAuthProvider.CHATGPT,
+                        accountEmail = email("replace-new"),
+                        refreshToken = cipher.encrypt("rt-new"),
+                    ),
                 )
             }
         }
@@ -186,8 +184,7 @@ class OAuthTokenServiceTest {
     @Test
     fun transientRefreshFailureKeepsAccountActive() = runBlocking {
         reply = { 503 to "{}" }
-        val keyId = createChannel("rt-transient").keys.single().id
-        accounts.upsert(keyId, OAuthProvider.CHATGPT, accountEmail = email("transient"))
+        val keyId = createAccount("rt-transient", accountEmail = email("transient"))
         val service = service()
 
         val error = assertFailsWith<OAuthTokenUnavailableException> { service.accessToken(keyId) }
@@ -213,8 +210,7 @@ class OAuthTokenServiceTest {
 
     @Test
     fun unconfiguredProviderIsReportedWithoutCallingUpstream() = runBlocking {
-        val keyId = createChannel("rt-1").keys.single().id
-        accounts.upsert(keyId, OAuthProvider.ANTIGRAVITY, accountEmail = email("antigravity"))
+        val keyId = createAccount("rt-1", provider = OAuthProvider.ANTIGRAVITY, accountEmail = email("antigravity"))
         val service = service()
 
         val error = assertFailsWith<OAuthTokenUnavailableException> { service.accessToken(keyId) }
@@ -224,15 +220,13 @@ class OAuthTokenServiceTest {
 
     @Test
     fun refreshScanSkipsAccountsWaitingForReauthorization() = runBlocking {
-        val dueId = createChannel("rt-due").keys.single().id
-        val terminalId = createChannel("rt-terminal-scan").keys.single().id
-        accounts.upsert(dueId, OAuthProvider.CHATGPT, accountEmail = email("due"))
-        accounts.upsert(terminalId, OAuthProvider.CHATGPT, accountEmail = email("reauth"))
+        val dueId = createAccount("rt-due", accountEmail = email("due"))
+        val terminalId = createAccount("rt-terminal-scan", accountEmail = email("reauth"))
         accounts.recordFailure(terminalId, "invalid_grant", terminal = true)
 
         val due = accounts.listDueForRefresh(System.currentTimeMillis() + 900_000)
-        assertTrue(due.any { it.keyId == dueId })
-        assertFalse(due.any { it.keyId == terminalId })
+        assertTrue(due.any { it.id == dueId })
+        assertFalse(due.any { it.id == terminalId })
     }
 
     @Test
@@ -262,8 +256,7 @@ class OAuthTokenServiceTest {
 
     @Test
     fun `refresh near the clock limit saturates the access token expiry`() = runBlocking {
-        val keyId = createChannel("rt-overflow").keys.single().id
-        accounts.upsert(keyId, OAuthProvider.CHATGPT, accountEmail = email("overflow"))
+        val keyId = createAccount("rt-overflow", accountEmail = email("overflow"))
         val service = service(now = { Long.MAX_VALUE - 10 })
 
         service.accessToken(keyId, forceRefresh = true)
@@ -297,6 +290,25 @@ class OAuthTokenServiceTest {
             authType = "bearer",
             enabled = true,
         )
+    }
+
+    private fun createAccount(
+        credential: String,
+        provider: OAuthProvider = OAuthProvider.CHATGPT,
+        accountEmail: String? = null,
+        accountPlan: String? = null,
+    ): String = runBlocking {
+        val channel = createChannel("unused-static-key-${UUID.randomUUID()}")
+        accounts.create(
+            NewOAuthAccount(
+                name = "account-${UUID.randomUUID()}",
+                provider = provider,
+                accountEmail = accountEmail,
+                accountPlan = accountPlan,
+                refreshToken = cipher.encrypt(credential),
+                channelIds = listOf(channel.id),
+            ),
+        ).id
     }
 
     private fun email(prefix: String): String = "$prefix-${UUID.randomUUID()}@example.com"

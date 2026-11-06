@@ -502,15 +502,11 @@ function addKey() {
 }
 
 function removeKey(index: number): void {
-  if (channelKeys.value.length <= 1) {
-    notify('至少保留一个密钥', 'warning')
-    return
-  }
   const [removed] = channelKeys.value.splice(index, 1)
   if (selectedChannelKeyId.value === removed.localId) {
     const nextKey = channelKeys.value[Math.min(index, channelKeys.value.length - 1)]
-    selectedChannelKeyId.value = nextKey.localId
-    focusChannelKeyTab(nextKey.localId)
+    selectedChannelKeyId.value = nextKey?.localId ?? null
+    if (nextKey) focusChannelKeyTab(nextKey.localId)
   }
 }
 
@@ -1041,10 +1037,6 @@ async function save(): Promise<void> {
     notify('至少选择一个支持协议', 'error')
     return
   }
-  if (channelKeys.value.length === 0) {
-    notify('渠道至少需要一个密钥', 'error')
-    return
-  }
   const names = new Set()
   for (const key of channelKeys.value) {
     const name = key.name.trim()
@@ -1519,6 +1511,9 @@ onMounted(() => {
               >{{ channelKeyConcurrent(editingId, key.id) }}</span>
             </button>
           </div>
+          <p v-if="channelKeys.length === 0" class="muted small">
+            当前渠道没有静态密钥。可保存后在「订阅账号」页关联 OAuth 账号，账号会作为该渠道路由凭据。
+          </p>
           <div class="channel-key-list">
             <div
               v-for="(key, index) in channelKeys"

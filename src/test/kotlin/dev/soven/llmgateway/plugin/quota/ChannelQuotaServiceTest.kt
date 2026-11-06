@@ -16,7 +16,8 @@ import kotlin.test.*
 
 class ChannelQuotaServiceTest {
     private val cipher = CredentialCipher(ByteArray(32) { 7 })
-    private val credentials = KeyCredentialResolver { key ->
+    private val credentials = KeyCredentialResolver { credential ->
+        val key = credential as ChannelKeyRecord
         cipher.decrypt(key.credentialCiphertext, key.credentialNonce)
     }
 

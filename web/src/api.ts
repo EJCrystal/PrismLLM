@@ -35,6 +35,9 @@ import type {
   ModelTestSettings,
   OAuthAccount,
   OAuthAccountImportRequest,
+  OAuthAccountChannelsRequest,
+  OAuthAccountModelsRequest,
+  OAuthAccountSettingsRequest,
   OAuthAccountPolicyRequest,
   OAuthLoginCompleteRequest,
   OAuthLoginStart,
@@ -156,20 +159,39 @@ export const api = {
   deleteChannel: (id: string) => request<null>(`/channels/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listOAuthProviders: () => requestList<OAuthProviderInfo>('/oauth-providers'),
   listOAuthAccounts: () => requestList<OAuthAccount>('/oauth-accounts'),
-  importOAuthAccount: (channelId: string, keyId: string, payload: OAuthAccountImportRequest) =>
-    request<OAuthAccount>(
-      `/channels/${encodeURIComponent(channelId)}/keys/${encodeURIComponent(keyId)}/oauth-account`,
-      { method: 'PUT', body: JSON.stringify(payload) },
-    ),
-  updateOAuthAccountPolicy: (keyId: string, payload: OAuthAccountPolicyRequest) =>
-    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(keyId)}/policy`, {
+  importOAuthAccount: (payload: OAuthAccountImportRequest) =>
+    request<OAuthAccount>('/oauth-accounts', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteOAuthAccount: (id: string) =>
+    request<null>(`/oauth-accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  updateOAuthAccount: (id: string, payload: OAuthAccountImportRequest) =>
+    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
-  refreshOAuthAccount: (keyId: string) =>
-    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(keyId)}/refresh`, { method: 'POST' }),
-  refreshOAuthAccountQuota: (keyId: string) =>
-    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(keyId)}/quota/refresh`, { method: 'POST' }),
+  updateOAuthAccountSettings: (id: string, payload: OAuthAccountSettingsRequest) =>
+    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(id)}/settings`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  updateOAuthAccountChannels: (id: string, payload: OAuthAccountChannelsRequest) =>
+    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(id)}/channels`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  updateOAuthAccountModels: (id: string, payload: OAuthAccountModelsRequest) =>
+    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(id)}/models`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  updateOAuthAccountPolicy: (id: string, payload: OAuthAccountPolicyRequest) =>
+    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(id)}/policy`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  refreshOAuthAccount: (id: string) =>
+    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(id)}/refresh`, { method: 'POST' }),
+  refreshOAuthAccountQuota: (id: string) =>
+    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(id)}/quota/refresh`, { method: 'POST' }),
   startOAuthLogin: (payload: OAuthLoginStartRequest) =>
     request<OAuthLoginStart>('/oauth-login/start', { method: 'POST', body: JSON.stringify(payload) }),
   completeOAuthLogin: (loginId: string, payload: OAuthLoginCompleteRequest) =>
@@ -177,8 +199,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  clearOAuthAccountCooldown: (keyId: string) =>
-    request<null>(`/oauth-accounts/${encodeURIComponent(keyId)}/cooldown/clear`, { method: 'POST' }),
+  clearOAuthAccountCooldown: (id: string) =>
+    request<null>(`/oauth-accounts/${encodeURIComponent(id)}/cooldown/clear`, { method: 'POST' }),
   listChannelModels: (id: string) => request<ChannelModelsResponse>(`/channels/${encodeURIComponent(id)}/models`),
   discoverChannelModels: (payload: ModelDiscoveryRequest) =>
     request<ChannelModelsResponse>('/channels/model-discovery', { method: 'POST', body: JSON.stringify(payload) }),

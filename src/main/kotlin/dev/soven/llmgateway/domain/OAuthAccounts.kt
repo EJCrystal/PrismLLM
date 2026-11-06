@@ -32,18 +32,37 @@ enum class OAuthAuthState(val value: String) {
     }
 }
 
+/** 同一渠道同一优先级档位内的订阅账号排序策略。 */
+enum class OAuthRoutingStrategy(val value: String) {
+    ROUND_ROBIN("round_robin"),
+    DRAIN("drain"),
+    LEAST_USED("least_used"),
+    PACE("pace"),
+    ;
+
+    companion object {
+        fun fromValue(value: String): OAuthRoutingStrategy? =
+            entries.firstOrNull { it.value == value.trim().lowercase() }
+    }
+}
+
 /**
- * 订阅账号的 OAuth 状态。长期 refresh token 不在这里，仍保存在 channel_keys 的加密凭据列。
- * access token 只保存密文，读取时按需解密。
+ * 独立的订阅账号。长期 refresh token、短期 access token、调度策略、额度与渠道关联
+ * 都保存在账号自身，不再依附于 channel_keys。
  *
  * @author 文杰
  * @since 2026-11-06
  */
 data class OAuthAccountRecord(
-    val keyId: String,
+    override val id: String,
+    override val name: String,
     val provider: OAuthProvider,
     val accountEmail: String? = null,
     val accountPlan: String? = null,
+    /** 长期凭据只以密文形式在进程内传递，禁止解密后写入日志或响应。 */
+    val refreshTokenCiphertext: String,
+    val refreshTokenNonce: String,
+    val refreshTokenKeyVersion: Int,
     val accessTokenCiphertext: String? = null,
     val accessTokenNonce: String? = null,
     val accessTokenKeyVersion: Int? = null,
@@ -51,17 +70,36 @@ data class OAuthAccountRecord(
     val tokenType: String = "Bearer",
     val scope: String? = null,
     val authState: OAuthAuthState = OAuthAuthState.ACTIVE,
+    override val enabled: Boolean = true,
+    override val priority: Int = 1,
+    /** 空列表表示继承所关联渠道的全部模型。 */
+    override val models: List<String> = emptyList(),
+    val channelIds: Set<String> = emptySet(),
     val refreshFailureCount: Int = 0,
     val lastRefreshError: String? = null,
     val lastRefreshedAt: Long? = null,
+    /** 账号级出口代理；刷新 access token 与调用上游必须使用同一个代理。 */
     val proxyUrl: String? = null,
+    val policy: OAuthAccountPolicy = OAuthAccountPolicy(),
     /** ChatGPT 账号 id，来自 access token JWT，用于读取上游额度。 */
     val chatgptAccountId: String? = null,
     /** 最近一次上游额度读数；从未读取或读取失败时为 null。 */
     val quota: OAuthQuotaSnapshot? = null,
     val createdAt: Long,
     val updatedAt: Long,
-) {
+) : UpstreamCredential {
+    override val oauthPolicy: OAuthAccountPolicy get() = policy
+
+    override val isOAuth: Boolean get() = true
+
+    override fun supports(upstreamModel: String): Boolean = models.isEmpty() || upstreamModel in models
+
+    /**
+     * 停用的账号不参与路由；等待重新授权的账号仍保留为候选，让数据面返回
+     * `subscription_account_unavailable` 并继续尝试其他候选，而不是误报模型不存在。
+     */
+    override fun isRoutable(now: Long): Boolean = enabled
+
     val hasAccessToken: Boolean
         get() = accessTokenCiphertext != null && accessTokenNonce != null &&
             accessTokenKeyVersion != null && accessTokenExpiresAt != null
@@ -117,10 +155,6 @@ data class OAuthQuotaSnapshot(
     val hasCredits: Boolean
         get() = creditsUnlimited || (creditsBalance ?: 0.0) > 0.0
 
-    /**
-     * 账号被上游额度拦下时的最早可重试时间：取所有已用尽窗口中最晚的重置时间。
-     * 没有可用读数或仍有 credits 时返回 null，表示不据此拦截。
-     */
     /**
      * 额度用尽时预计恢复的时间。上游没有给出重置时间时，按 [fallbackMs] 保守拦截，
      * 至少不会在读数过期前继续打一个已知用尽的账号；[fallbackMs] 为 0 表示不拦截。
@@ -183,7 +217,7 @@ data class OAuthAccountPolicy(
  * @since 2026-11-06
  */
 data class OAuthWindowSnapshot(
-    val keyId: String,
+    val accountId: String,
     val hits: List<Long> = emptyList(),
     val cooldownUntil: Long? = null,
     val consecutiveRateLimits: Int = 0,
@@ -198,42 +232,11 @@ data class OAuthStoredWindowState(
 
 /**
  * 账号级调度的实时视图，只用于管理面看板，不参与路由判定。
- *
- * @author 文杰
- * @since 2026-11-06
  */
 data class OAuthAccountRuntimeState(
     val windowUsed: Int = 0,
     val cooldownUntil: Long? = null,
     val consecutiveRateLimits: Int = 0,
     val activeRequests: Int = 0,
-    /** 上游额度用尽时预计恢复的时间；只在读数未过期时给出。 */
     val quotaBlockedUntil: Long? = null,
 )
-
-/**
- * 订阅账号在候选池内的排序策略。策略只作用于同一渠道、同一密钥优先级内的账号，
- * 静态密钥与不同优先级档位保持原有顺序。
- *
- * @author 文杰
- * @since 2026-11-06
- */
-enum class OAuthRoutingStrategy(val value: String) {
-    /** 同档内均匀轮询，默认行为。 */
-    ROUND_ROBIN("round_robin"),
-
-    /** 固定使用当前账号，直到它额度用尽、命中窗口或进入冷却，再顺延到下一个。 */
-    DRAIN("drain"),
-
-    /** 最近一次额度读数中已用比例最低的账号优先；没有读数的账号排在已知账号之后。 */
-    LEAST_USED("least_used"),
-
-    /** 按剩余额度摊到距离重置的每小时计算，余量最高者优先。 */
-    PACE("pace"),
-    ;
-
-    companion object {
-        fun fromValue(value: String): OAuthRoutingStrategy? =
-            entries.firstOrNull { it.value == value.trim().lowercase() }
-    }
-}

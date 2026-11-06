@@ -40,7 +40,7 @@ class TierSharingTest {
                 ),
             ),
         ),
-        key = ChannelKeyRecord(
+                credential = ChannelKeyRecord(
             id = "key-$name-$keyName",
             channelId = "id-$name",
             name = keyName,
@@ -93,7 +93,7 @@ class TierSharingTest {
         return channelKeys.map { key ->
             dev.soven.llmgateway.domain.RouteCandidate(
                 channel = channel,
-                key = key,
+                credential = key,
                 upstreamModel = upstreamModel,
                 position = position,
             )
@@ -111,7 +111,7 @@ class TierSharingTest {
         repeat(4) {
             assertEquals(
                 "low-priority-key",
-                sharing.order("shared-model", candidates).first().key.name,
+                sharing.order("shared-model", candidates).first().credential.name,
                 "跨渠道时渠道档位优先，低档渠道的密钥优先级 1 不应越过高档渠道的密钥优先级 999",
             )
         }
@@ -125,7 +125,7 @@ class TierSharingTest {
             channelCandidates(20, "c5", listOf("k5a" to 1))
 
         val heads = (1..4).map {
-            sharing.order("shared-model", candidates).first().let { "${it.channel.name}/${it.key.name}" }
+            sharing.order("shared-model", candidates).first().let { "${it.channel.name}/${it.credential.name}" }
         }
 
         assertEquals(listOf("c1/k1a", "c2/k2a", "c1/k1b", "c2/k2b"), heads)
@@ -199,8 +199,8 @@ class TierSharingTest {
             candidate(0, "b", keyName = "k1"),
         )
 
-        val first = sharing.order("shared-model", candidates).map { "${it.channel.name}/${it.key.name}" }
-        val second = sharing.order("shared-model", candidates).map { "${it.channel.name}/${it.key.name}" }
+        val first = sharing.order("shared-model", candidates).map { "${it.channel.name}/${it.credential.name}" }
+        val second = sharing.order("shared-model", candidates).map { "${it.channel.name}/${it.credential.name}" }
 
         assertEquals(listOf("a/k1", "a/k2", "b/k1"), first)
         assertEquals(listOf("b/k1", "a/k2", "a/k1"), second)
@@ -215,7 +215,7 @@ class TierSharingTest {
         )
 
         repeat(4) {
-            val ordered = sharing.order("shared-model", candidates).map { it.key.name }
+            val ordered = sharing.order("shared-model", candidates).map { it.credential.name }
             assertEquals(listOf("primary", "backup"), ordered)
         }
     }
@@ -231,7 +231,7 @@ class TierSharingTest {
             val ordered = sharing.order("deepseek-flash", candidates)
             assertEquals(
                 listOf("primary" to "deepseek-v4.1-flash", "fallback" to "deepseek-flash"),
-                ordered.map { it.key.name to it.upstreamModel },
+                ordered.map { it.credential.name to it.upstreamModel },
             )
         }
     }
@@ -247,7 +247,7 @@ class TierSharingTest {
         )
 
         val firstChoices = (1..4).map {
-            sharing.order("shared-model", candidates).first().let { "${it.channel.name}/${it.key.name}" }
+            sharing.order("shared-model", candidates).first().let { "${it.channel.name}/${it.credential.name}" }
         }
 
         assertEquals(setOf("a/k1", "a/k2", "b/k1", "b/k2"), firstChoices.toSet())
@@ -263,10 +263,10 @@ class TierSharingTest {
         )
 
         val fixedKey = "prompt_cache_session_42"
-        val firstWithAffinity = sharing.order("shared-model", candidates, fixedKey).map { "${it.channel.name}/${it.key.name}" }
+        val firstWithAffinity = sharing.order("shared-model", candidates, fixedKey).map { "${it.channel.name}/${it.credential.name}" }
 
         repeat(5) {
-            val repeatWithAffinity = sharing.order("shared-model", candidates, fixedKey).map { "${it.channel.name}/${it.key.name}" }
+            val repeatWithAffinity = sharing.order("shared-model", candidates, fixedKey).map { "${it.channel.name}/${it.credential.name}" }
             assertEquals(firstWithAffinity, repeatWithAffinity, "相同 affinityKey 必须产生完全一致的候选排序")
         }
 
@@ -315,10 +315,10 @@ class TierSharingTest {
         )
 
         val fixedKey = "key_affinity_prompt_123"
-        val expected = sharing.order("shared-model", candidates, fixedKey).map { it.key.name }
+        val expected = sharing.order("shared-model", candidates, fixedKey).map { it.credential.name }
 
         repeat(5) {
-            val actual = sharing.order("shared-model", candidates, fixedKey).map { it.key.name }
+            val actual = sharing.order("shared-model", candidates, fixedKey).map { it.credential.name }
             assertEquals(expected, actual, "同渠道内相同 keyPriority 的候选也应保持亲和稳定")
         }
     }

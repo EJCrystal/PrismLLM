@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.repo
 
-import dev.soven.llmgateway.db.ChannelKeyOAuthAccounts
-import dev.soven.llmgateway.db.ChannelKeyOAuthWindows
+import dev.soven.llmgateway.db.OAuthAccountWindows
+import dev.soven.llmgateway.db.OAuthAccounts
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthStoredWindowState
 import dev.soven.llmgateway.domain.OAuthWindowSnapshot
@@ -34,24 +34,24 @@ class OAuthWindowRepository(private val database: Database) : OAuthWindowStore {
 
     /** 恢复全部账号状态，同时带回当前调度策略用于裁剪过期窗口。 */
     override suspend fun loadAll(limit: Int): List<OAuthStoredWindowState> = suspendTransaction(database) {
-        ChannelKeyOAuthWindows
-            .join(ChannelKeyOAuthAccounts, JoinType.INNER, ChannelKeyOAuthWindows.keyId, ChannelKeyOAuthAccounts.keyId)
+        OAuthAccountWindows
+            .join(OAuthAccounts, JoinType.INNER, OAuthAccountWindows.accountId, OAuthAccounts.id)
             .selectAll()
-            .orderBy(ChannelKeyOAuthWindows.updatedAt to SortOrder.ASC)
+            .orderBy(OAuthAccountWindows.updatedAt to SortOrder.ASC)
             .limit(limit.coerceIn(1, 100_000))
             .map { row ->
                 OAuthStoredWindowState(
                     snapshot = OAuthWindowSnapshot(
-                        keyId = row[ChannelKeyOAuthWindows.keyId],
-                        hits = decodeHits(row[ChannelKeyOAuthWindows.hits]),
-                        cooldownUntil = row[ChannelKeyOAuthWindows.cooldownUntil],
-                        consecutiveRateLimits = row[ChannelKeyOAuthWindows.consecutiveRateLimits],
-                        updatedAt = row[ChannelKeyOAuthWindows.updatedAt],
+                        accountId = row[OAuthAccountWindows.accountId],
+                        hits = decodeHits(row[OAuthAccountWindows.hits]),
+                        cooldownUntil = row[OAuthAccountWindows.cooldownUntil],
+                        consecutiveRateLimits = row[OAuthAccountWindows.consecutiveRateLimits],
+                        updatedAt = row[OAuthAccountWindows.updatedAt],
                     ),
                     policy = OAuthAccountPolicy(
-                        windowLimit = row[ChannelKeyOAuthAccounts.windowLimit],
-                        windowSeconds = row[ChannelKeyOAuthAccounts.windowSeconds],
-                        maxConcurrentRequests = row[ChannelKeyOAuthAccounts.maxConcurrentRequests],
+                        windowLimit = row[OAuthAccounts.windowLimit],
+                        windowSeconds = row[OAuthAccounts.windowSeconds],
+                        maxConcurrentRequests = row[OAuthAccounts.maxConcurrentRequests],
                     ),
                 )
             }
@@ -59,8 +59,8 @@ class OAuthWindowRepository(private val database: Database) : OAuthWindowStore {
 
     override suspend fun upsert(snapshot: OAuthWindowSnapshot) {
         suspendTransaction(database) {
-            ChannelKeyOAuthWindows.upsert(ChannelKeyOAuthWindows.keyId) {
-                it[keyId] = snapshot.keyId
+            OAuthAccountWindows.upsert(OAuthAccountWindows.accountId) {
+                it[accountId] = snapshot.accountId
                 it[hits] = encodeHits(snapshot.hits)
                 it[cooldownUntil] = snapshot.cooldownUntil
                 it[consecutiveRateLimits] = snapshot.consecutiveRateLimits

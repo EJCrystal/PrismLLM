@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.domain.ChannelRecord
-import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.UpstreamCredential
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.authTypeFor
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
@@ -43,7 +43,7 @@ data class ProtocolProbeResult(
  */
 suspend fun probeUpstreamProtocols(
     channel: ChannelRecord,
-    key: ChannelKeyRecord,
+    credentialRef: UpstreamCredential,
     model: String,
     credentials: KeyCredentialResolver,
     httpClient: HttpClient,
@@ -51,7 +51,7 @@ suspend fun probeUpstreamProtocols(
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): List<ProtocolProbeResult> {
-    val credential = resolveSavedCredential(credentials, key)
+    val credential = resolveSavedCredential(credentials, credentialRef)
 
     return GatewayProtocol.entries.map { protocol ->
         try {
