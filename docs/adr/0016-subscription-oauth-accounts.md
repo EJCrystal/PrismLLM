@@ -41,6 +41,7 @@
 
 - `OAuthTokenProvider` 只负责一次刷新请求，不读写数据库。ChatGPT 使用 Auth0 兼容的 JSON 请求体，client id 默认取 Codex CLI 的公开客户端并可由 `OAUTH_CHATGPT_CLIENT_ID` 覆盖；Antigravity 使用 Google OAuth 表单编码，只有显式配置 `OAUTH_ANTIGRAVITY_CLIENT_ID` 后才注册。
 - 每个账号可绑定一个 `proxy_url`。刷新 access token 与后续调用上游必须使用同一个出口；当前只支持无认证的 `http://主机:端口`，Java HttpClient 不支持 SOCKS5，需要时在网关外桥接。
+- 账号代理由管理员在导入时指定，与渠道 `base_url` 同属管理面信任边界：能配置代理的管理员本就可以改写上游地址。代理地址不允许携带账号密码，导入操作会把代理地址写入管理审计，便于追溯出口配置；不限制目标主机，否则会挡住住宅代理等合法用途。
 - 刷新请求不跟随重定向，响应体限制 256 KB。
 
 ### 管理面
@@ -50,7 +51,7 @@
 - `GET /admin/api/oauth-accounts` 返回账号、渠道/密钥名称、策略与实时调度状态（窗口用量、并发、冷却截止时间）；实时状态来自内存，未使用过的账号返回零值。响应禁止缓存，且不包含任何 token。
 - 调度策略通过 `PUT /admin/api/oauth-accounts/{keyId}/policy` 单独编辑，重新导入凭据不会重置策略。
 - `POST /admin/api/oauth-accounts/{keyId}/refresh` 允许对 `REAUTH_REQUIRED` 账号再试一次；失败按原因返回 502 `oauth_refresh_failed`。`POST .../cooldown/clear` 同时清除账号冷却与密钥冷却。
-- 四个写操作都写入管理操作审计，只记录渠道/密钥 id、provider、策略参数与刷新结果，不记录任何 token。
+- 四个写操作都写入管理操作审计，只记录渠道/密钥 id、provider、账号代理、策略参数与刷新结果，不记录任何 token。
 
 ## Consequences
 

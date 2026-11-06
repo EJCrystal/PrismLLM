@@ -48,20 +48,25 @@ internal fun parseRateLimitResetMs(body: String?, now: Long = System.currentTime
     return null
 }
 
+/**
+ * 提示值先按 [MAX_HINT_MS] 过滤再换算，避免上游返回的超大整数在乘 1000 时溢出成
+ * 负数或错误的正数：异常值按"没有提示"处理，由调用方回落到默认退避。
+ */
 private fun secondsHint(obj: JsonObject, key: String): Long? =
-    number(obj[key])?.let { it * 1_000 }?.takeIf { it > 0 }
+    number(obj[key])?.takeIf { it in 1..MAX_HINT_SECONDS }?.let { it * 1_000 }
 
 private fun millisHint(obj: JsonObject, key: String): Long? =
-    number(obj[key])?.takeIf { it > 0 }
+    number(obj[key])?.takeIf { it in 1..MAX_HINT_MS }
 
 private fun epochHint(obj: JsonObject, key: String, now: Long): Long? {
     val text = (obj[key] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: return null
     val epochMs = text.toLongOrNull()
-        ?.let { value -> if (value > EPOCH_MILLIS_THRESHOLD) value else value * 1_000 }
+        // 秒级时间戳只接受正数，负数或 0 不参与换算，避免乘法溢出。
+        ?.let { value -> if (value > EPOCH_MILLIS_THRESHOLD) value else (value * 1_000).takeIf { value > 0 } }
         ?: runCatching { Instant.parse(text).toEpochMilli() }.getOrNull()
         ?: runCatching { OffsetDateTime.parse(text).toInstant().toEpochMilli() }.getOrNull()
         ?: return null
-    return (epochMs - now).takeIf { it > 0 }
+    return (epochMs - now).takeIf { it in 1..MAX_HINT_MS }
 }
 
 private fun number(element: JsonElement?): Long? {
@@ -80,9 +85,13 @@ private fun parseDurationMs(value: String?): Long? {
         "h" -> 3_600_000.0
         else -> return null
     }
-    return (amount * unitMs).toLong().takeIf { it > 0 }
+    return (amount * unitMs).toLong().takeIf { it in 1..MAX_HINT_MS }
 }
 
 /** 13 位以上按毫秒解释，10 位按秒解释。 */
 private const val EPOCH_MILLIS_THRESHOLD = 10_000_000_000L
+
+/** 提示上限 7 天；超出视为上游返回异常，忽略提示。 */
+private const val MAX_HINT_MS = 604_800_000L
+private const val MAX_HINT_SECONDS = MAX_HINT_MS / 1_000
 private val DURATION = Regex("""^(\d+(?:\.\d+)?)(ms|s|m|h)$""")

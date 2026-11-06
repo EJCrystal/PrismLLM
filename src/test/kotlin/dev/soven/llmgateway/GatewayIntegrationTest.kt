@@ -1120,6 +1120,19 @@ class GatewayIntegrationTest {
             assertEquals(1, entries.size)
             assertEquals(key.id, entries.single().jsonObject["keyId"]!!.jsonPrimitive.content)
 
+            val auditResponse = client.get("/admin/api/audit-logs?limit=20") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, auditResponse.status)
+            val importAudit = Json.parseToJsonElement(auditResponse.bodyAsText()).jsonArray
+                .map { it.jsonObject }
+                .single { it["action"]!!.jsonPrimitive.content == "oauth_account.import" }
+            assertEquals("chatgpt", importAudit["details"]!!.jsonObject["provider"]!!.jsonPrimitive.content)
+            assertEquals(
+                "http://127.0.0.1:8080",
+                importAudit["details"]!!.jsonObject["proxyUrl"]!!.jsonPrimitive.content,
+            )
+
             val providers = client.get("/admin/api/oauth-providers") {
                 header(HttpHeaders.Cookie, cookie)
             }

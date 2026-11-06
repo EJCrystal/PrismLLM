@@ -47,6 +47,19 @@ class OAuthAccountSchedulerTest {
     }
 
     @Test
+    fun `unlimited window does not accumulate hits`() = runTest {
+        val policy = OAuthAccountPolicy(windowLimit = null, windowSeconds = 3_600, maxConcurrentRequests = 100)
+        val key = key(policy = policy)
+        repeat(50) { assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key)) }
+
+        // 不限制窗口时命中不参与准入判断，也不应占用内存。
+        val state = assertNotNull(scheduler.runtimeState(key.id, policy))
+        assertEquals(0, state.windowUsed)
+        assertEquals(50, state.activeRequests)
+        assertEquals(0, snapshots.last().hits.size)
+    }
+
+    @Test
     fun `concurrency cap blocks a second in-flight request until release`() = runTest {
         val key = key(policy = OAuthAccountPolicy(windowLimit = 10, windowSeconds = 3_600, maxConcurrentRequests = 1))
         val first = scheduler.acquire(key)
@@ -255,5 +268,22 @@ class OAuthRateLimitHintsTest {
         assertNull(parseRateLimitResetMs("""{"error":{"message":"slow down"}}""", now))
         assertNull(parseRateLimitResetMs("""{"resets_in_seconds":0}""", now))
         assertNull(parseRateLimitResetMs("""{"resets_at":${now - 1_000}}""", now))
+    }
+
+    @Test
+    fun `ignores hints that would overflow or exceed the cap`() {
+        assertNull(parseRateLimitResetMs("""{"resets_in_seconds":9223372036854775807}""", now))
+        assertNull(parseRateLimitResetMs("""{"retry_after":9223372036854775807}""", now))
+        assertNull(parseRateLimitResetMs("""{"retry_after_ms":9223372036854775807}""", now))
+        assertNull(parseRateLimitResetMs("""{"resets_at":9223372036854775807}""", now))
+        assertNull(parseRateLimitResetMs("""{"resets_at":-9223372036854775808}""", now))
+        assertNull(parseRateLimitResetMs("""{"resets_in_seconds":604801}""", now))
+        assertNull(
+            parseRateLimitResetMs(
+                """{"error":{"details":[{"retryDelay":"999999999999999999999h"}]}}""",
+                now,
+            ),
+        )
+        assertEquals(604_800_000, parseRateLimitResetMs("""{"resets_in_seconds":604800}""", now))
     }
 }

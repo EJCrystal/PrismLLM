@@ -773,6 +773,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 put("channelId", channel.id)
                 put("keyId", keyId)
                 put("provider", provider.value)
+                // 代理地址不含账号密码（校验阶段已拒绝 userInfo），记录后便于追溯出口配置。
+                proxyUrl?.let { put("proxyUrl", it) }
             })
             val refreshedChannel = app.channelRepository.find(channel.id) ?: channel
             val key = refreshedChannel.keys.first { it.id == keyId }

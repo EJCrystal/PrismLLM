@@ -22,8 +22,15 @@ describe('adminAudit: 管理操作审计展示', () => {
 
   it('展示订阅账号操作的关键参数', () => {
     assert.deepEqual(
+      auditDetailsRows({
+        action: 'oauth_account.import',
+        details: { channelId: 'c1', keyId: 'k1', provider: 'chatgpt', proxyUrl: 'http://127.0.0.1:8080' },
+      }),
+      [['渠道 ID', 'c1'], ['密钥 ID', 'k1'], ['提供方', 'chatgpt'], ['账号代理', 'http://127.0.0.1:8080']],
+    )
+    assert.deepEqual(
       auditDetailsRows({ action: 'oauth_account.import', details: { channelId: 'c1', keyId: 'k1', provider: 'chatgpt' } }),
-      [['渠道 ID', 'c1'], ['密钥 ID', 'k1'], ['提供方', 'chatgpt']],
+      [['渠道 ID', 'c1'], ['密钥 ID', 'k1'], ['提供方', 'chatgpt'], ['账号代理', '—']],
     )
     assert.deepEqual(
       auditDetailsRows({

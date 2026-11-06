@@ -78,6 +78,7 @@ interface AuditDetails {
   previousState?: string | null
   state?: string | null
   provider?: string | null
+  proxyUrl?: string | null
   result?: string | null
   windowLimit?: number | null
   windowSeconds?: number | null
@@ -147,6 +148,7 @@ export function auditDetailsRows(entry: AuditEntry | null | undefined): AuditDet
       ['渠道 ID', displayDetail(details.channelId)],
       ['密钥 ID', displayDetail(details.keyId)],
       ['提供方', displayDetail(details.provider)],
+      ['账号代理', displayDetail(details.proxyUrl)],
     ]
   }
   if (entry?.action === 'oauth_account.policy.update') {
