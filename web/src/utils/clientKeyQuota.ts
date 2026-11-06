@@ -38,13 +38,17 @@ export function quotaSummary(key: ClientKey): string {
       quotas.push(`${currency} ${key.quotaUsage?.[usageField] ?? '0'} / ${limit}`)
     }
   }
-  if (key.maxConcurrentRequests != null) {
-    quotas.push(`并发 ${key.quotaUsage?.concurrentRequests ?? 0} / ${key.maxConcurrentRequests}`)
-  }
   if (key.requestsPerMinute != null) {
     quotas.push(`${key.quotaUsage?.currentMinuteRequests ?? 0} / ${key.requestsPerMinute} 次/分钟`)
   }
   return quotas.length ? quotas.join(' · ') : '未设置限额'
+}
+
+/** 实时并发占用；配置了并发上限时同时展示上限。 */
+export function concurrencySummary(key: ClientKey, concurrentRequests = key.quotaUsage?.concurrentRequests ?? 0): string {
+  return key.maxConcurrentRequests != null
+    ? `并发 ${concurrentRequests} / ${key.maxConcurrentRequests}`
+    : `在途 ${concurrentRequests}`
 }
 
 function optionalInteger(value: unknown): number | null {

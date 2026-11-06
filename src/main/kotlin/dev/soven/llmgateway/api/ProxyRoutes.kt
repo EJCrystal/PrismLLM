@@ -589,7 +589,9 @@ private suspend fun handleProxy(
                 rememberRateLimitDenial(candidate, rateDecision)
                 continue
             }
-            val error = runAttempt(candidate, permit, (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease)
+            val error = app.upstreamOccupancy.track(candidate.channel.id, candidate.key.id) {
+                runAttempt(candidate, permit, (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease)
+            }
             if (error == null) return
             if (error.code != "no_candidate") lastError = error
             if (error.code == "no_candidate") continue
@@ -611,7 +613,9 @@ private suspend fun handleProxy(
                 rememberRateLimitDenial(candidate, rateDecision)
                 continue
             }
-            val error = runAttempt(candidate, permit, (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease)
+            val error = app.upstreamOccupancy.track(candidate.channel.id, candidate.key.id) {
+                runAttempt(candidate, permit, (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease)
+            }
             if (error == null) return
             if (error.code != "no_candidate") lastError = error
             if (error.code == "no_candidate") continue

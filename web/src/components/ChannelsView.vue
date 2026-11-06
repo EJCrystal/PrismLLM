@@ -4,7 +4,8 @@ import { api } from '../api'
 import { notify } from '../toast'
 import { clearUpstreamModelCache } from '../upstreamModelCache'
 import { ApiError } from '../types/api'
-import type { AdminAuditLog, Channel, ChannelHealthReport, ChannelKeyState, HealthState, HealthWindow, ModelDefaultPrice, ModelPrice, ProtocolProbeResult, UpstreamRequestOverrides } from '../types/api'
+import type { AdminAuditLog, Channel, ChannelHealthReport, ChannelKeyState, HealthState, HealthWindow, ModelDefaultPrice, ModelPrice, ProtocolProbeResult, RuntimeOccupancy, UpstreamRequestOverrides } from '../types/api'
+import { useAutoRefresh } from '../composables/useAutoRefresh'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import ActionMenu from './ActionMenu.vue'
@@ -135,6 +136,37 @@ const healthLoading = ref(false)
 const healthError = ref('')
 let healthRevision = 0
 const healthByChannel = computed(() => new Map(healthReport.value?.window === healthWindow ? healthReport.value.channels.map(row => [row.channelId, row]) : []))
+// 实时占用来自单实例内存计数，独立轮询，避免为了几秒级的在途数反复拉取渠道配置。
+const occupancy = ref<RuntimeOccupancy | null>(null)
+const occupancyRefreshMs = ref(5_000)
+let occupancyRevision = 0
+const occupancyByChannel = computed(() => new Map((occupancy.value?.channels ?? []).map((row) => [row.channelId, row])))
+function channelConcurrent(channelId: string): number {
+  return occupancyByChannel.value.get(channelId)?.concurrentRequests ?? 0
+}
+function channelKeyConcurrent(channelId: string | null, keyId: string | null): number {
+  if (!channelId || !keyId) return 0
+  return occupancyByChannel.value.get(channelId)?.keys.find((key) => key.keyId === keyId)?.concurrentRequests ?? 0
+}
+function channelOccupancyTitle(channel: Channel): string {
+  const row = occupancyByChannel.value.get(channel.id)
+  if (!row) return `${channel.name}：实时占用暂不可用`
+  if (!row.keys.length) return `${channel.name}：当前没有在途请求`
+  const detail = row.keys.map((key) => {
+    const name = channel.keys.find((item) => item.id === key.keyId)?.name || key.keyId
+    return `${name} ${key.concurrentRequests}`
+  })
+  return `${channel.name}：当前在途 ${row.concurrentRequests} 个请求（${detail.join('，')}）`
+}
+async function loadOccupancy(): Promise<void> {
+  const request = ++occupancyRevision
+  try {
+    const result = await api.getOccupancy()
+    if (request === occupancyRevision && !listDisposed) occupancy.value = result
+  } catch {
+    // 占用是辅助信息，读取失败时保留上一次快照，避免把在途数误显示为 0。
+  }
+}
 const cooldownNow = ref(Date.now())
 let cooldownTimer: ReturnType<typeof setInterval> | null = null
 let cooldownRefreshAt = 0
@@ -1120,7 +1152,11 @@ function channelAction(id: string, channel: Channel) {
   if (id === 'delete') remove(channel)
 }
 
-onMounted(load)
+useAutoRefresh(occupancyRefreshMs, () => { void loadOccupancy() }, () => loading.value || document.hidden)
+onMounted(() => {
+  void load()
+  void loadOccupancy()
+})
 </script>
 
 <template>
@@ -1312,6 +1348,14 @@ onMounted(load)
                   <span><strong>{{ channelSuccessRateText(channel) }}</strong><small>{{ healthByChannel.get(channel.id)?.metrics.attempts ?? 0 }} 次 · {{ HEALTH_LABELS[channelHealthState(channel)] }}</small></span>
                 </button>
                 <div v-if="healthByChannel.get(channel.id)?.metrics.p95FirstTokenMs != null" class="muted small health-list-latency">P95 首 token {{ formatDuration(healthByChannel.get(channel.id)?.metrics.p95FirstTokenMs) }}</div>
+                <div
+                  class="channel-occupancy"
+                  :class="{ 'is-active': channelConcurrent(channel.id) > 0 }"
+                  :title="channelOccupancyTitle(channel)"
+                >
+                  <span class="channel-occupancy-dot" aria-hidden="true"></span>
+                  在途 {{ channelConcurrent(channel.id) }}
+                </div>
                 <button v-if="channelCooldownText(channel)" type="button" class="channel-cooldown muted small" :title="channelCooldownTitle(channel)" @click="healthTarget = channel">
                   {{ channelCooldownText(channel) }}
                 </button>
@@ -1465,7 +1509,14 @@ onMounted(load)
               :tabindex="selectedChannelKeyId === key.localId ? 0 : -1"
               @click="selectedChannelKeyId = key.localId"
               @keydown="handleChannelKeyTabKeydown($event, index)"
-            >{{ key.name.trim() || `密钥 ${index + 1}` }}</button>
+            >
+              <span class="channel-key-tab-name">{{ key.name.trim() || `密钥 ${index + 1}` }}</span>
+              <span
+                v-if="channelKeyConcurrent(editingId, key.id) > 0"
+                class="channel-key-tab-live"
+                :title="`当前在途 ${channelKeyConcurrent(editingId, key.id)} 个请求`"
+              >{{ channelKeyConcurrent(editingId, key.id) }}</span>
+            </button>
           </div>
           <div class="channel-key-list">
             <div
@@ -1536,6 +1587,9 @@ onMounted(load)
                 <div>
                   <strong>上游分组限流</strong>
                   <small>{{ channelKeyRateLimitSummary(key.rateLimit) }}。按当前渠道与密钥共享计数，覆盖全部模型。</small>
+                  <small v-if="key.id" class="channel-key-live" :class="{ 'is-active': channelKeyConcurrent(editingId, key.id) > 0 }">
+                    实时占用：在途 {{ channelKeyConcurrent(editingId, key.id) }} 个请求
+                  </small>
                 </div>
                 <button type="button" class="button ghost mini" @click="openRateLimitEditor(key)">
                   {{ key.rateLimit?.enabled ? '编辑限流' : '配置限流' }}
@@ -1849,7 +1903,58 @@ onMounted(load)
 
 .channel-key-rate-limit-row strong { font-size: 13px; }
 .channel-key-rate-limit-row small { color: var(--muted); line-height: 1.5; }
+.channel-key-rate-limit-row small.channel-key-live.is-active { color: var(--success); font-weight: 600; }
 .channel-key-rate-limit-row .button { flex: 0 0 auto; min-height: 36px; }
+
+.channel-key-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.channel-key-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-key-tab-live {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--success-soft);
+  color: var(--success);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  text-align: center;
+}
+
+.channel-occupancy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.channel-occupancy-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+.channel-occupancy.is-active { color: var(--success); font-weight: 600; }
+.channel-occupancy.is-active .channel-occupancy-dot {
+  background: var(--success-fill);
+  box-shadow: 0 0 0 3px var(--success-soft);
+}
 
 @media (max-width: 640px) {
   .channel-key-rate-limit-row { align-items: stretch; flex-direction: column; }

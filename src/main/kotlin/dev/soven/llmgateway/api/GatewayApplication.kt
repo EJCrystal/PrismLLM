@@ -6,6 +6,7 @@ import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.proxy.GatewayMetrics
 import dev.soven.llmgateway.proxy.isGeminiRequestPath
 import dev.soven.llmgateway.proxy.RequestLogWriter
+import dev.soven.llmgateway.proxy.UpstreamOccupancy
 import dev.soven.llmgateway.repo.ModelPriceRepository
 import dev.soven.llmgateway.repo.ModelDefaultPriceRepository
 import dev.soven.llmgateway.proxy.ModelPricingService
@@ -258,6 +259,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val keyAutoDisableRepository = KeyAutoDisableRepository(databaseFactory.database, adminAuditRepository)
     val keyAvailabilityGate = KeyAvailabilityGate()
     val channelKeyRateLimiter = ChannelKeyRateLimiter()
+    val upstreamOccupancy = UpstreamOccupancy()
     val requestLogRepository = RequestLogRepository(databaseFactory.database)
     val channelHealthRepository = dev.soven.llmgateway.repo.ChannelHealthRepository(databaseFactory.database, config.cooldown.ttftSlowThresholdMs)
     private var channelHealthIndexJob: Job? = null

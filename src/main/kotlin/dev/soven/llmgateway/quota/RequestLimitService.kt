@@ -38,6 +38,9 @@ class RequestLimitService(
         val usage = clientKeyQuotaService.currentUsage(clientKeyId)
         return usage.copy(currentMinuteRequests = rateLimiter.currentKeyUsage(clientKeyId))
     }
+
+    /** 当前各调用方密钥的在途请求数快照，仅用于管理面展示。 */
+    fun clientKeyOccupancy(): Map<String, Int> = clientKeyQuotaService.activeRequestCounts()
 }
 
 data class RequestLimitLease(

@@ -4535,6 +4535,65 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `occupancy endpoint reports in-flight channel key and client key requests`() = runBlocking {
+        val channel = createChannel("openai", "slow")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
+        val rawKey = createClientKey()
+        val clientKeyId = app.clientKeyRepository.list().single().id
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, _) = client.loginAdmin()
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $rawKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"messages":[]}""")
+            }
+            suspend fun occupancy() = Json.parseToJsonElement(
+                client.get("/admin/api/occupancy") { header(HttpHeaders.Cookie, cookie) }.bodyAsText(),
+            ).jsonObject
+
+            val first = async(Dispatchers.Default) { send() }
+            var ready = false
+            val deadline = System.currentTimeMillis() + 5_000
+            while (System.currentTimeMillis() < deadline && !ready) {
+                val json = occupancy()
+                ready = json["channels"]!!.jsonArray.any { row ->
+                    row.jsonObject["channelId"]!!.jsonPrimitive.content == channel.id &&
+                        row.jsonObject["keys"]!!.jsonArray.any { it.jsonObject["concurrentRequests"]!!.jsonPrimitive.content == "1" }
+                } && json["clientKeys"]!!.jsonArray.any {
+                    it.jsonObject["clientKeyId"]!!.jsonPrimitive.content == clientKeyId
+                }
+                if (!ready) delay(5)
+            }
+            assertTrue(ready, "在途请求未出现在占用快照中")
+
+            val snapshot = occupancy()
+            val channelRow = snapshot["channels"]!!.jsonArray.single {
+                it.jsonObject["channelId"]!!.jsonPrimitive.content == channel.id
+            }.jsonObject
+            assertEquals("1", channelRow["concurrentRequests"]!!.jsonPrimitive.content)
+            val keyRow = channelRow["keys"]!!.jsonArray.single().jsonObject
+            assertEquals(channel.keys.single().id, keyRow["keyId"]!!.jsonPrimitive.content)
+            assertEquals("1", keyRow["concurrentRequests"]!!.jsonPrimitive.content)
+            val clientKeyRow = snapshot["clientKeys"]!!.jsonArray.single().jsonObject
+            assertEquals(clientKeyId, clientKeyRow["clientKeyId"]!!.jsonPrimitive.content)
+            assertEquals("1", clientKeyRow["concurrentRequests"]!!.jsonPrimitive.content)
+
+            assertEquals(HttpStatusCode.OK, first.await().status)
+
+            var idle = false
+            val idleDeadline = System.currentTimeMillis() + 5_000
+            while (System.currentTimeMillis() < idleDeadline && !idle) {
+                val json = occupancy()
+                idle = json["channels"]!!.jsonArray.isEmpty() && json["clientKeys"]!!.jsonArray.isEmpty()
+                if (!idle) delay(5)
+            }
+            assertTrue(idle, "请求结束后占用计数未清零")
+        }
+    }
+
+    @Test
     fun `releases concurrency slot when request is rejected by routing`() = runBlocking {
         val key = createClientKey(ClientKeyQuotaLimits(maxConcurrentRequests = 1))
 

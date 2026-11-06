@@ -284,6 +284,28 @@ export interface ClientKeyQuotaUsage {
   currentMinuteRequests: number
 }
 
+export interface ChannelKeyOccupancy {
+  keyId: string
+  concurrentRequests: number
+}
+
+export interface ChannelOccupancy {
+  channelId: string
+  concurrentRequests: number
+  keys: ChannelKeyOccupancy[]
+}
+
+export interface ClientKeyOccupancy {
+  clientKeyId: string
+  concurrentRequests: number
+}
+
+export interface RuntimeOccupancy {
+  sampledAt: number
+  channels: ChannelOccupancy[]
+  clientKeys: ClientKeyOccupancy[]
+}
+
 export interface ClientKey {
   id: string
   name: string
