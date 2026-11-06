@@ -216,7 +216,7 @@ class MessagesResponsesConversionTest {
     }
 
     @Test
-    fun `messages system turn after a user but before a reply stays in instructions`() {
+    fun `messages system turn after a user becomes a reminder at its position`() {
         val converted = MessagesToResponses.convertRequest(json("""{
             "model":"public","max_tokens":64,
             "messages":[
@@ -226,10 +226,14 @@ class MessagesResponsesConversionTest {
             ]
         }"""), "upstream")
 
-        assertEquals("apply the pending plan", converted["instructions"]!!.jsonPrimitive.content)
+        assertFalse(converted.containsKey("instructions"))
         val input = converted["input"]!!.jsonArray
         assertEquals(listOf("user", "assistant"), input.map { it.jsonObject["role"]!!.jsonPrimitive.content })
-        assertEquals("hi", input[0].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+        val userBlocks = input[0].jsonObject["content"]!!.jsonArray
+        assertEquals("hi", userBlocks[0].jsonObject["text"]!!.jsonPrimitive.content)
+        val reminder = userBlocks[1].jsonObject["text"]!!.jsonPrimitive.content
+        assertTrue(reminder.startsWith("<system-reminder>\n"))
+        assertTrue(reminder.contains("apply the pending plan"))
     }
 
     @Test

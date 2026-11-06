@@ -21,7 +21,7 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
     val instructions = mutableListOf<String>()
     request.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { instructions += it }
     val input = mutableListOf<JsonObject>()
-    var replied = false
+    var conversationStarted = false
 
     fun addMessage(role: String, blocks: List<JsonObject>) {
         if (blocks.isEmpty()) return
@@ -41,7 +41,7 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
 
     fun addSystemTurn(text: String) {
         if (text.isBlank()) return
-        if (replied) {
+        if (conversationStarted) {
             addMessage("user", listOf(responseTextBlock("<system-reminder>\n$text\n</system-reminder>", "user")))
         } else {
             instructions += text
@@ -55,7 +55,7 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
         when (role) {
             "system", "developer" -> addSystemTurn(message.textContentStrict("content", "$path.content"))
             "user", "assistant" -> {
-                if (role == "assistant") replied = true
+                conversationStarted = true
                 val parts = mutableListOf<JsonObject>()
                 fun flushParts() {
                     addMessage(role, parts.toList())
@@ -71,9 +71,8 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
                             "text" -> parts += responseTextBlock(part.string("text").orEmpty(), role)
                             "image" -> parts += imagePartFromAnthropic(part, partPath).toResponsesPart()
                             // Responses 的 reasoning 项要带上游自己的加密内容，伪造一个会被拒绝；思考历史不是继续对话的必需输入，直接省略。
-                            "thinking", "redacted_thinking" -> replied = true
+                            "thinking", "redacted_thinking" -> Unit
                             "tool_use" -> {
-                                replied = true
                                 flushParts()
                                 input += buildJsonObject {
                                     put("type", "function_call")
@@ -83,7 +82,6 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
                                 }
                             }
                             "tool_result" -> {
-                                replied = true
                                 flushParts()
                                 val result = part.toolResultContent("$partPath.content")
                                 input += buildJsonObject {
