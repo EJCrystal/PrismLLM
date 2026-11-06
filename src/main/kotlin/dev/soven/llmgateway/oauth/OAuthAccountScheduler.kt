@@ -336,10 +336,3 @@ class OAuthAccountScheduler(
 
 /** 窗口时长换算为毫秒；策略已限制在 60..604800 秒，这里只防御异常构造。 */
 private fun windowSpanMs(windowSeconds: Int): Long = windowSeconds.toLong() * 1_000L
-
-/** 饱和加法：异常时钟或恢复快照最多停在上界，不会溢出成负数。 */
-private fun saturatedAdd(base: Long, delta: Long): Long =
-    if (delta > 0 && base > Long.MAX_VALUE - delta) Long.MAX_VALUE else base + delta
-
-private fun saturatedSubtract(value: Long, delta: Long): Long =
-    if (delta > 0 && value < Long.MIN_VALUE + delta) Long.MIN_VALUE else value - delta

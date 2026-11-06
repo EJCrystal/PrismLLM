@@ -80,6 +80,43 @@ class OAuthAccountRoutingTest {
     }
 
     @Test
+    fun `pace clamps a corrupt reset time instead of overflowing`() = runTest {
+        val routing = routing(
+            OAuthRoutingStrategy.PACE,
+            mapOf(
+                "a" to OAuthRoutingHint(
+                    quota = OAuthQuotaSnapshot(
+                        primary = OAuthQuotaWindow(
+                            usedPercent = 50.0,
+                            windowSeconds = 18_000,
+                            resetsAt = Long.MIN_VALUE,
+                        ),
+                        checkedAt = now,
+                    ),
+                ),
+                "b" to OAuthRoutingHint(quota = quotaWithRemaining(remaining = 50.0, hours = 1.0)),
+            ),
+        )
+
+        // 损坏的重置时间按“即将重置”计，而不是溢出成极长剩余时间。
+        assertEquals(ids("a", "b"), order(routing, key("a"), key("b")))
+    }
+
+    @Test
+    fun `pace clamps a corrupt local window deadline`() = runTest {
+        val routing = routing(
+            OAuthRoutingStrategy.PACE,
+            mapOf(
+                "a" to OAuthRoutingHint(windowUsed = 5, windowOldestAt = Long.MAX_VALUE),
+                "b" to OAuthRoutingHint(windowUsed = 5, windowOldestAt = now),
+            ),
+        )
+
+        // 饱和后的截止时间远在未来，a 的余量摊薄，排在 b 之后。
+        assertEquals(ids("b", "a"), order(routing, key("a", windowLimit = 10), key("b", windowLimit = 10)))
+    }
+
+    @Test
     fun `static keys keep their slots and affinity wins over the strategy`() = runTest {
         val routing = routing(
             OAuthRoutingStrategy.LEAST_USED,

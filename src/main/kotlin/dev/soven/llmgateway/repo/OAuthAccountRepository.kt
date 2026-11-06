@@ -9,6 +9,7 @@ import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.security.EncryptedCredential
+import dev.soven.llmgateway.security.credentialFingerprint
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
@@ -30,6 +31,9 @@ data class OAuthRefreshContext(
     val refreshTokenNonce: String,
     val refreshTokenKeyVersion: Int,
 )
+
+/** 跨步骤操作期间目标密钥的凭据被替换，不能再写入旧流程的结果。 */
+class CredentialChangedException : RuntimeException("目标密钥凭据已变化")
 
 /**
  * 订阅账号 OAuth 状态的持久化。只读写密文，不解密、不记录任何 token。
@@ -106,6 +110,11 @@ class OAuthAccountRepository(private val database: Database) {
         tokenType: String = "Bearer",
         scope: String? = null,
         now: Long = System.currentTimeMillis(),
+        /**
+         * 非空时在锁定密钥行后校验凭据指纹；跨步骤操作（如浏览器登录）用它防止
+         * 覆盖管理员并发替换的新凭据。校验与写入在同一事务内完成。
+         */
+        expectedCredentialFingerprint: String? = null,
     ): OAuthAccountRecord = suspendTransaction(database) {
         require((accessToken == null) == (accessTokenExpiresAt == null)) {
             "access token and expiry must be provided together"
@@ -115,6 +124,14 @@ class OAuthAccountRepository(private val database: Database) {
             .forUpdate()
             .singleOrNull()
             ?: throw IllegalArgumentException("channel key not found: $keyId")
+        if (expectedCredentialFingerprint != null) {
+            val current = credentialFingerprint(
+                keyRow[ChannelKeys.credentialCiphertext],
+                keyRow[ChannelKeys.credentialNonce],
+                keyRow[ChannelKeys.credentialKeyVersion],
+            )
+            if (current != expectedCredentialFingerprint) throw CredentialChangedException()
+        }
         if (refreshToken != null) {
             // 管理员导入属于凭据变更：推进 state_version，让并发编辑感知冲突，并触发冷却清理。
             ChannelKeys.update({ ChannelKeys.id eq keyId }) {

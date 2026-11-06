@@ -159,14 +159,17 @@ class OAuthAccountRouting(
             .maxByOrNull { it.windowSeconds ?: 0 }
         if (window != null) {
             val hours = window.resetsAt
-                ?.let { ((it - nowMs) / 3_600_000.0).coerceAtLeast(MIN_PACE_HOURS) }
+                ?.let { (saturatedSubtract(it, nowMs) / 3_600_000.0).coerceAtLeast(MIN_PACE_HOURS) }
             return if (hours != null) window.remainingPercent / hours else window.remainingPercent
         }
         val policy = key.oauthPolicy ?: return null
         val limit = policy.windowLimit?.takeIf { it > 0 } ?: return null
         val remaining = (limit - (hint?.windowUsed ?: 0)).coerceAtLeast(0).toDouble() / limit * 100
         val hours = hint?.windowOldestAt
-            ?.let { ((it + policy.windowSeconds * 1_000L - nowMs) / 3_600_000.0).coerceAtLeast(MIN_PACE_HOURS) }
+            ?.let { oldest ->
+                val deadline = saturatedAdd(oldest, policy.windowSeconds.toLong() * 1_000L)
+                (saturatedSubtract(deadline, nowMs) / 3_600_000.0).coerceAtLeast(MIN_PACE_HOURS)
+            }
             ?: (policy.windowSeconds / 3_600.0)
         return remaining / hours
     }

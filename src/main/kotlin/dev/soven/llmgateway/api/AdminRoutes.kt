@@ -43,6 +43,7 @@ import dev.soven.llmgateway.resilience.CandidateCooldown
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.ClientKeyHasher
 import dev.soven.llmgateway.security.PasswordHasher
+import dev.soven.llmgateway.security.credentialFingerprint
 import io.ktor.http.Cookie
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -743,7 +744,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     channel.id,
                     keyId,
                     proxyUrl,
-                    key.credentialNonce,
+                    key.credentialFingerprint(),
                 )
             ) {
                 OAuthLoginStartResult.UnsupportedProvider -> throw badRequest(
