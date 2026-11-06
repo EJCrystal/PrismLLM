@@ -130,6 +130,33 @@ class ToolImageConversionTest {
     }
 
     @Test
+    fun `tool result image before an assistant tool call keeps a valid turn order`() {
+        val converted = convert(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.CHAT_COMPLETIONS,
+            """{"model":"m","max_tokens":64,"messages":[
+                {"role":"user","content":"take a screenshot"},
+                {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"screenshot","input":{}}]},
+                {"role":"user","content":[$singleImageResult]},
+                {"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file_path":"shot.png"}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"file contents"}]},
+                {"role":"assistant","content":[{"type":"text","text":"done"}]}
+            ]}""",
+        )
+        val messages = converted.messages()
+        assertEquals(listOf("user", "assistant", "tool", "user", "assistant", "tool", "assistant"), messages.roles())
+        // 图片单独成一条 user 消息，位置在第二条 assistant 之前，且不与任何 user 消息相邻。
+        assertEquals(listOf("data:image/png;base64,$pngA"), messages[3].imageUrls())
+        assertEquals("toolu_2", messages[4]["tool_calls"]!!.jsonArray.single().jsonObject["id"]!!.jsonPrimitive.content)
+        assertEquals("file contents", messages[5].text())
+        assertTrue(
+            messages.zipWithNext().none { (left, right) ->
+                left["role"]!!.jsonPrimitive.content == "user" && right["role"]!!.jsonPrimitive.content == "user"
+            },
+        )
+    }
+
+    @Test
     fun `responses tool output image reaches a chat model`() {
         val converted = convert(
             GatewayProtocol.RESPONSES,
