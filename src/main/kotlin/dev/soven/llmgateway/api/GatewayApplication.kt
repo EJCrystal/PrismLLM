@@ -21,6 +21,7 @@ import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
 import dev.soven.llmgateway.repo.CooldownStateRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
 import dev.soven.llmgateway.repo.RetentionSettingsRepository
+import dev.soven.llmgateway.oauth.OAuthAccountRouting
 import dev.soven.llmgateway.oauth.OAuthAccountScheduler
 import dev.soven.llmgateway.oauth.OAuthLoginService
 import dev.soven.llmgateway.oauth.OAuthQuotaService
@@ -327,6 +328,11 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         maxCooldownMs = config.oauth.rateLimitMaxMs,
         quotaMaxAgeMs = config.oauth.quotaMaxAgeMs,
         onSnapshot = oauthWindowStateWriter::submit,
+    )
+    /** 订阅账号在候选池内的排序策略；只重排同一渠道同一优先级内的账号。 */
+    val oauthAccountRouting = OAuthAccountRouting(
+        strategy = config.oauth.routing,
+        hints = oauthAccountScheduler::routingHints,
     )
     /** 上游额度观测：定时读取 ChatGPT 用量，同步给调度器做额度准入。 */
     val oauthQuotaService = OAuthQuotaService(

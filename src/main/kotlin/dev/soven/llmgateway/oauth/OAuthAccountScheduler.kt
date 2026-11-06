@@ -32,6 +32,15 @@ sealed interface OAuthAccountDecision {
 /** 并发额度租约；窗口名额在准入时消耗，不需要归还。 */
 data class OAuthAccountLease(val keyId: String)
 
+/** 选路所需的账号实时读数；只读内存，不消耗窗口或并发名额。 */
+data class OAuthRoutingHint(
+    val windowUsed: Int = 0,
+    val windowOldestAt: Long? = null,
+    val activeRequests: Int = 0,
+    /** 未过期的上游额度读数；过期读数不参与排序。 */
+    val quota: OAuthQuotaSnapshot? = null,
+)
+
 /**
  * 订阅账号级调度：账号级滑动窗口、单号并发上限与 429 冷却。
  *
@@ -160,6 +169,29 @@ class OAuthAccountScheduler(
                 ?.takeIf { it.isFresh(nowMs, quotaMaxAgeMs) }
                 ?.blockedUntil(nowMs, quotaMaxAgeMs),
         )
+    }
+
+    /**
+     * 批量读取选路所需的账号状态。只返回订阅账号；从未使用过的账号不出现在结果中，
+     * 由调用方按零值处理。不创建状态，也不消耗窗口名额。
+     */
+    suspend fun routingHints(
+        keys: Collection<ChannelKeyRecord>,
+        nowMs: Long = now(),
+    ): Map<String, OAuthRoutingHint> = mutex.withLock {
+        val hints = HashMap<String, OAuthRoutingHint>(keys.size)
+        for (key in keys) {
+            val policy = key.oauthPolicy ?: continue
+            val state = states[key.id] ?: continue
+            state.prune(nowMs, policy)
+            hints[key.id] = OAuthRoutingHint(
+                windowUsed = state.hits.size,
+                windowOldestAt = state.hits.firstOrNull(),
+                activeRequests = state.activeRequests,
+                quota = state.quota?.takeIf { it.isFresh(nowMs, quotaMaxAgeMs) },
+            )
+        }
+        hints
     }
 
     /** 管理员重新导入凭据后解除账号冷却，并立即刷新持久化快照。 */

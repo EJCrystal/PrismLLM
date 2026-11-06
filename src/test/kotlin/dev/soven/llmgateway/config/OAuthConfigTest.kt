@@ -1,5 +1,6 @@
 package dev.soven.llmgateway.config
 
+import dev.soven.llmgateway.domain.OAuthRoutingStrategy
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -40,6 +41,18 @@ class OAuthConfigTest {
             mapOf("OAUTH_CHATGPT_REDIRECT_URI" to "https://gateway.example.com/callback"),
         ).chatGpt
         assertTrue(secure.supportsLogin)
+    }
+
+    @Test
+    fun `routing defaults to round robin and rejects unknown strategies`() {
+        assertEquals(OAuthRoutingStrategy.ROUND_ROBIN, OAuthConfig.fromEnv(emptyMap()).routing)
+        assertEquals(
+            OAuthRoutingStrategy.DRAIN,
+            OAuthConfig.fromEnv(mapOf("OAUTH_ROUTING" to "DRAIN")).routing,
+        )
+        assertFailsWith<IllegalStateException> {
+            OAuthConfig.fromEnv(mapOf("OAUTH_ROUTING" to "fastest"))
+        }
     }
 
     @Test

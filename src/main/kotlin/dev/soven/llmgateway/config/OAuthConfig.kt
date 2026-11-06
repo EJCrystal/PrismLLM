@@ -1,5 +1,6 @@
 package dev.soven.llmgateway.config
 
+import dev.soven.llmgateway.domain.OAuthRoutingStrategy
 import java.net.URI
 
 /**
@@ -44,6 +45,8 @@ data class OAuthConfig(
     val quotaIntervalMs: Long = 300_000,
     /** 额度读数的有效期；过期读数只展示，不参与准入拦截。 */
     val quotaMaxAgeMs: Long = 900_000,
+    /** 同一渠道、同一密钥优先级内订阅账号的排序策略；不影响静态密钥。 */
+    val routing: OAuthRoutingStrategy = OAuthRoutingStrategy.ROUND_ROBIN,
     val chatGpt: OAuthProviderConfig = OAuthProviderConfig(
         clientId = DEFAULT_CHATGPT_CLIENT_ID,
         tokenEndpoint = "https://auth.openai.com/oauth/token",
@@ -106,6 +109,11 @@ data class OAuthConfig(
             require(quotaMaxAgeMs in quotaIntervalMs..86_400_000) {
                 "OAUTH_QUOTA_MAX_AGE_MS 必须在扫描间隔..86400000 之间"
             }
+            val routing = value("OAUTH_ROUTING", OAuthRoutingStrategy.ROUND_ROBIN.value)
+                ?.let { raw ->
+                    OAuthRoutingStrategy.fromValue(raw)
+                        ?: error("OAUTH_ROUTING 只支持 round_robin、drain、least_used 或 pace")
+                }!!
 
             val chatGpt = OAuthProviderConfig(
                 clientId = value("OAUTH_CHATGPT_CLIENT_ID", DEFAULT_CHATGPT_CLIENT_ID)!!,
@@ -143,6 +151,7 @@ data class OAuthConfig(
                 rateLimitMaxMs = rateLimitMaxMs,
                 quotaIntervalMs = quotaIntervalMs,
                 quotaMaxAgeMs = quotaMaxAgeMs,
+                routing = routing,
                 chatGpt = chatGpt,
                 antigravity = antigravity,
             )

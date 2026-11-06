@@ -337,8 +337,14 @@ private suspend fun handleProxy(
             ?.takeIf { it.isNotBlank() }
             ?: call.request.headers["X-Prompt-Cache-Key"]?.takeIf { it.isNotBlank() }
         // 每个 scope 每请求只推进一次轮询计数，避免同档两渠道时起点固定；提供 prompt_cache_key 时同档按亲和性路由。
-        val ordered = app.tierSharing.order(alias, eligibleNative, promptCacheKey) +
-            app.tierSharing.order("$alias|conversion", eligibleConversion, promptCacheKey)
+        // 订阅账号可再按 drain / least_used / pace 重排，但亲和优先，避免打散 prompt cache。
+        val ordered = app.oauthAccountRouting.order(
+            app.tierSharing.order(alias, eligibleNative, promptCacheKey),
+            affinityApplied = promptCacheKey != null,
+        ) + app.oauthAccountRouting.order(
+            app.tierSharing.order("$alias|conversion", eligibleConversion, promptCacheKey),
+            affinityApplied = promptCacheKey != null,
+        )
 
         /**
          * 尝试单个候选并把结果记入冷却。返回 null 表示响应已完成，返回异常交由外层决定是否继续。

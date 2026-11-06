@@ -211,3 +211,29 @@ data class OAuthAccountRuntimeState(
     val quotaBlockedUntil: Long? = null,
 )
 
+/**
+ * 订阅账号在候选池内的排序策略。策略只作用于同一渠道、同一密钥优先级内的账号，
+ * 静态密钥与不同优先级档位保持原有顺序。
+ *
+ * @author 文杰
+ * @since 2026-11-06
+ */
+enum class OAuthRoutingStrategy(val value: String) {
+    /** 同档内均匀轮询，默认行为。 */
+    ROUND_ROBIN("round_robin"),
+
+    /** 固定使用当前账号，直到它额度用尽、命中窗口或进入冷却，再顺延到下一个。 */
+    DRAIN("drain"),
+
+    /** 最近一次额度读数中已用比例最低的账号优先；没有读数的账号排在已知账号之后。 */
+    LEAST_USED("least_used"),
+
+    /** 按剩余额度摊到距离重置的每小时计算，余量最高者优先。 */
+    PACE("pace"),
+    ;
+
+    companion object {
+        fun fromValue(value: String): OAuthRoutingStrategy? =
+            entries.firstOrNull { it.value == value.trim().lowercase() }
+    }
+}

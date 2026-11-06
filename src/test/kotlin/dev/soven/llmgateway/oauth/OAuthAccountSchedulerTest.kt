@@ -291,6 +291,36 @@ class OAuthAccountSchedulerTest {
         assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key))
     }
 
+    @Test
+    fun `routing hints expose window usage and fresh quota without consuming slots`() = runTest {
+        val key = key(policy = OAuthAccountPolicy(windowLimit = 10, maxConcurrentRequests = 5))
+        assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key))
+        assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key))
+        scheduler.noteQuota(
+            key.id,
+            OAuthQuotaSnapshot(
+                primary = OAuthQuotaWindow(usedPercent = 20.0, windowSeconds = 18_000, resetsAt = clock + 3_600_000),
+                checkedAt = clock,
+            ),
+        )
+
+        val hint = scheduler.routingHints(listOf(key)).getValue(key.id)
+        assertEquals(2, hint.windowUsed)
+        assertEquals(20.0, hint.quota?.primary?.usedPercent)
+
+        // 过期读数只展示，不参与排序。
+        val stale = key(policy = OAuthAccountPolicy()).copy(id = "key-2")
+        scheduler.noteQuota(
+            stale.id,
+            OAuthQuotaSnapshot(primary = OAuthQuotaWindow(usedPercent = 90.0), checkedAt = clock - 900_001),
+        )
+        assertNotNull(scheduler.routingHints(listOf(stale))[stale.id])
+        assertNull(scheduler.routingHints(listOf(stale))[stale.id]?.quota)
+
+        // 从未使用过的账号不创建状态。
+        assertTrue(scheduler.routingHints(listOf(key(policy = OAuthAccountPolicy()).copy(id = "key-3"))).isEmpty())
+    }
+
     private fun key(policy: OAuthAccountPolicy? = OAuthAccountPolicy()): ChannelKeyRecord = ChannelKeyRecord(
         id = "key-1",
         channelId = "channel-1",
