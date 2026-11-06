@@ -153,7 +153,7 @@ class OAuthQuotaService(
     }
 
     private suspend fun failed(accountId: String, errorCode: String): OAuthQuotaResult {
-        repository.saveQuotaError(accountId, errorCode)
+        repository.saveQuotaError(accountId, errorCode, now())
         logger.debug("oauth quota read failed, accountId={}, error={}", accountId, errorCode)
         return OAuthQuotaResult.Failed(errorCode)
     }

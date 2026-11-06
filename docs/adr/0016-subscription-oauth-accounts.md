@@ -77,8 +77,9 @@
 
 - V52 创建独立账号表与关联表，把旧 `channel_key_oauth_accounts` 的 `key_id` 复用为账号 id，把 `channel_keys.credential_*` 的 refresh token 搬到 `oauth_accounts.refresh_token_*`，同时迁移 access token、额度、策略、模型与窗口快照。
 - 迁移完成后删除仅用于承载 OAuth 账号的 `channel_keys` 行，避免同一账号在数据面出现两次候选；静态密钥不受影响。
-- 旧密钥的非 `ACTIVE` 状态统一映射为账号 `enabled=false`；自动临时停用的到期恢复不再沿用，需要管理员在账号页重新启用。
+- 旧密钥的非 `ACTIVE` 状态统一映射为账号 `enabled=false`；自动临时停用的到期恢复不再沿用，需要管理员在账号页重新启用。升级前请按迁移说明核对处于 `AUTO_TEMPORARY` 的密钥。
 - 旧表 `channel_key_oauth_accounts` 与 `channel_key_oauth_windows` 删除。历史请求日志中的 `channel_key_id` / `channel_key_name` 保留原值，仅作为审计信息。
+- 账号级窗口与并发取代密钥级限流，`channel_key_rate_limits` 不迁移；升级、回滚与限流配置的差异见 [V52 订阅账号解耦升级说明](../migrations/V52-independent-oauth-accounts.md)。
 
 ## Consequences
 
