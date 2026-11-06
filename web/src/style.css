@@ -2425,15 +2425,6 @@ input[type="password"]::-ms-clear,
   overflow-wrap: anywhere;
 }
 
-.model-report-marker {
-  flex: 0 0 auto;
-  min-width: 16px;
-  justify-content: center;
-  padding: 1px 4px;
-  line-height: 1.1;
-  font-size: 10px;
-}
-
 .key-prefix {
   padding: 5px 8px;
   border: 1px solid var(--line);
@@ -5242,6 +5233,18 @@ textarea:disabled {
   max-width: 260px;
 }
 
+/* 请求日志模型列：模型、协议各占一行，流式与推理固定同一行。 */
+.request-protocol {
+  display: flex;
+  align-items: center;
+  max-width: 100%;
+}
+
+.request-mode-row {
+  flex-wrap: nowrap;
+  max-width: none;
+}
+
 /* 请求日志：协议端点徽标，透传单协议，转换时流转。 */
 .protocol-endpoints {
   display: inline-flex;
@@ -7052,6 +7055,49 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .logs-table .log-col-request { width: 116px; }
 .logs-table .log-col-model { width: 208px; }
 .logs-table .log-col-channel { width: 184px; }
+/* 请求日志渠道列：渠道名 → 密钥 → 上游模型逐行对齐，模型用等宽代码块区分标识符。 */
+.logs-table .channel-cell { min-width: 0; max-width: 100%; }
+.logs-table .channel-name-cell {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.logs-table .channel-key-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  padding: 1px 6px 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.logs-table .channel-key-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-table .upstream-model-line { max-width: 100%; }
+.logs-table .upstream-model-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.logs-table .log-col-channel .info-popover-trigger { min-width: 20px; min-height: 20px; padding: 0; border-radius: 999px; }
+.logs-table .attempt-chip { padding: 1px 7px; font-size: 10px; }
 .logs-table .log-col-client-ip { width: 132px; }
 .logs-table .log-col-client-ua { width: 180px; }
 .logs-table .log-col-status { width: 136px; }
