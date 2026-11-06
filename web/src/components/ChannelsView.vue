@@ -107,6 +107,7 @@ const healthTarget = ref<Channel | null>(null)
 const healthLoading = ref(false)
 const healthError = ref('')
 let healthRevision = 0
+let healthController: AbortController | null = null
 const healthByChannel = computed(() => new Map(healthReport.value?.window === healthWindow ? healthReport.value.channels.map(row => [row.channelId, row]) : []))
 // 实时占用来自单实例内存计数，独立轮询，避免为了几秒级的在途数反复拉取渠道配置。
 const occupancy = ref<RuntimeOccupancy | null>(null)
@@ -215,10 +216,14 @@ function onCloseHealthModal(changed = false) {
   if (changed) void loadHealth()
 }
 async function loadHealth() {
+  healthController?.abort()
+  const controller = new AbortController()
+  healthController = controller
+  const timer = setTimeout(() => { controller.abort() }, 15_000)
   const request = ++healthRevision
   healthLoading.value = true
   try {
-    const result = await api.getChannelHealth(healthWindow)
+    const result = await api.getChannelHealth(healthWindow, { signal: controller.signal })
     if (request === healthRevision) {
       healthReport.value = result
       healthError.value = ''
@@ -230,14 +235,20 @@ async function loadHealth() {
   } catch (cause) {
     if (request === healthRevision) {
       // 后台轮询失败时保留上一份成功快照，避免成功率和次数在错误提示下跳成 0。
-      healthError.value = errorMessage(cause)
+      healthError.value = controller.signal.aborted ? '读取渠道健康度超时，请重试' : errorMessage(cause)
       syncCooldownTimer()
     }
-  } finally { if (request === healthRevision) healthLoading.value = false }
+  } finally {
+    clearTimeout(timer)
+    if (healthController === controller) healthController = null
+    if (request === healthRevision) healthLoading.value = false
+  }
 }
 onBeforeUnmount(() => {
   listDisposed = true
   healthRevision++
+  healthController?.abort()
+  healthController = null
   listRevision++
   if (cooldownTimer != null) clearInterval(cooldownTimer)
 })
@@ -1240,7 +1251,7 @@ function channelAction(id: string, channel: Channel) {
 }
 
 useAutoRefresh(healthRefreshMs, () => { void loadHealth() }, () => loading.value || healthLoading.value || document.hidden, { refreshOnVisible: true })
-useAutoRefresh(occupancyRefreshMs, () => { void loadOccupancy() }, () => loading.value || document.hidden, { refreshOnVisible: true })
+useAutoRefresh(occupancyRefreshMs, () => { void loadOccupancy() }, () => document.hidden, { refreshOnVisible: true })
 onMounted(() => {
   void load()
   void loadOccupancy()
