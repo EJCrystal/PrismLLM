@@ -543,7 +543,9 @@ function focusChannelKeyInForm(key: ChannelKeyEditorDraft): void {
   selectedChannelKeyId.value = key.localId
   focusFormSection('keys')
   nextTick(() => {
-    document.getElementById(channelKeyTabId(key.localId))?.scrollIntoView({ block: 'center' })
+    const tab = document.getElementById(channelKeyTabId(key.localId))
+    tab?.scrollIntoView({ block: 'center' })
+    tab?.focus({ preventScroll: true })
   })
 }
 
