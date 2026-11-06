@@ -8,6 +8,10 @@ import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.domain.UpstreamEnvelope
+import dev.soven.llmgateway.domain.upstreamEnvelope
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistEnvelope
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistCloak
 import dev.soven.llmgateway.domain.authTypeFor
 import dev.soven.llmgateway.oauth.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
@@ -1139,7 +1143,14 @@ private suspend fun proxyStream(
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
 ) {
-    val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel, stream = true)
+    val envelope = candidate.channel.upstreamEnvelope
+    val upstreamUrl = upstreamRequestUrl(
+        candidate.channel.baseUrl,
+        upstreamProtocol,
+        candidate.upstreamModel,
+        stream = true,
+        envelope = envelope,
+    )
     val credential = decryptCredential(app, candidate)
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
@@ -1157,7 +1168,17 @@ private suspend fun proxyStream(
     } else {
         streamRequest
     }
-    val body = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+    val bodyJson = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
+    val codeAssistProject = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential).project
+    } else {
+        null
+    }
+    val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        CodeAssistEnvelope.wrap(CodeAssistCloak.apply(bodyJson), candidate.upstreamModel, codeAssistProject).toString()
+    } else {
+        bodyJson.toString()
+    }
     val converter = ProtocolConversion.streamConverter(protocol, upstreamProtocol, alias)
 
     try {
@@ -1175,6 +1196,10 @@ private suspend fun proxyStream(
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 header(HttpHeaders.Accept, ContentType.Text.EventStream.toString())
                 policy.applyHeaders(this)
+                if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                    header(HttpHeaders.UserAgent, "antigravity/1.0.0")
+                    header("X-Goog-Api-Client", "gl-node/22.21.1")
+                }
                 setBody(TextContent(body, ContentType.Application.Json))
             }.execute { response ->
                 state.upstreamStatus = response.status.value
@@ -1200,7 +1225,7 @@ private suspend fun proxyStream(
                     withTimeout(app.config.firstTokenTimeoutMs) {
                         var found: String? = null
                         while (found == null) {
-                            val next = readProtocolLine(upstream, maxLineBytes) ?: break
+                            val next = readProtocolLine(upstream, maxLineBytes, envelope) ?: break
                             prefixLines.add(next)
                             recordReportedModel(next, state, upstreamProtocol)
                             if (
@@ -1269,7 +1294,9 @@ private suspend fun proxyStream(
                             if (converter?.failed != true && (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI)) {
                                 while (true) {
                                     val line = try {
-                                        withTimeout(app.config.idleTimeoutMs) { readProtocolLine(upstream, maxLineBytes) }
+                                        withTimeout(app.config.idleTimeoutMs) {
+                                            readProtocolLine(upstream, maxLineBytes, envelope)
+                                        }
                                     } catch (e: TimeoutCancellationException) {
                                         throw GatewayException(
                                             HttpStatusCode.GatewayTimeout,
@@ -1345,8 +1372,14 @@ private suspend fun proxyStream(
     }
 }
 
-internal suspend fun readProtocolLine(upstream: ByteReadChannel, maxLineBytes: Int): String? = try {
-    upstream.readUTF8Line(max = maxLineBytes)
+internal suspend fun readProtocolLine(
+    upstream: ByteReadChannel,
+    maxLineBytes: Int,
+    envelope: UpstreamEnvelope = UpstreamEnvelope.NONE,
+): String? = try {
+    upstream.readUTF8Line(max = maxLineBytes)?.let { line ->
+        if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.unwrapSseLine(line) else line
+    }
 } catch (_: TooLongLineException) {
     throw GatewayException(
         HttpStatusCode.BadGateway,
@@ -1371,7 +1404,13 @@ private suspend fun proxyJson(
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
 ) {
-    val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel)
+    val envelope = candidate.channel.upstreamEnvelope
+    val upstreamUrl = upstreamRequestUrl(
+        candidate.channel.baseUrl,
+        upstreamProtocol,
+        candidate.upstreamModel,
+        envelope = envelope,
+    )
     val credential = decryptCredential(app, candidate)
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
@@ -1384,7 +1423,17 @@ private suspend fun proxyJson(
         ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel)
     }
     val nonStreamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = false)
-    val body = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+    val bodyJson = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
+    val codeAssistProject = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential).project
+    } else {
+        null
+    }
+    val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        CodeAssistEnvelope.wrap(CodeAssistCloak.apply(bodyJson), candidate.upstreamModel, codeAssistProject).toString()
+    } else {
+        bodyJson.toString()
+    }
     try {
         withTimeout(timeoutMs) {
             state.upstreamCallStarted = true
@@ -1399,6 +1448,10 @@ private suspend fun proxyJson(
                 header("traceparent", traceparent)
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 policy.applyHeaders(this)
+                if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                    header(HttpHeaders.UserAgent, "antigravity/1.0.0")
+                    header("X-Goog-Api-Client", "gl-node/22.21.1")
+                }
                 setBody(TextContent(body, ContentType.Application.Json))
             }
             state.upstreamStatus = response.status.value
@@ -1418,7 +1471,12 @@ private suspend fun proxyJson(
                     allowNativeMessagesError = protocol == upstreamProtocol,
                 )
             }
-            val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+            val rawJson = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+            val json = if (envelope == UpstreamEnvelope.CODE_ASSIST && rawJson != null) {
+                CodeAssistEnvelope.unwrap(rawJson)
+            } else {
+                rawJson
+            }
             state.upstreamReportedModel = extractReportedModel(upstreamProtocol, json)
             state.usage = runCatching {
                 json ?: return@runCatching null
@@ -1430,7 +1488,11 @@ private suspend fun proxyJson(
                 }
             }.getOrNull()
             val clientBody = if (protocol == upstreamProtocol) {
-                text
+                if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                    (json ?: throw transportFailure(false)).toString()
+                } else {
+                    text
+                }
             } else {
                 val parsed = json ?: throw transportFailure(false)
                 ProtocolConversion.convertResponse(protocol, upstreamProtocol, parsed, model = alias).toString()

@@ -20,6 +20,7 @@ import java.util.Base64
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -83,9 +84,12 @@ class ProviderChannelProvisionerTest {
     }
 
     @Test
-    fun `provider without a supported protocol is not provisioned`() = runBlocking {
-        assertTrue(provisioner.ensure(OAuthProvider.ANTIGRAVITY) == null)
-        assertTrue(channels.findProviderChannel(OAuthProvider.ANTIGRAVITY) == null)
+    fun `antigravity is provisioned through code assist`() = runBlocking {
+        val channelId = provisioner.ensure(OAuthProvider.ANTIGRAVITY)
+        assertNotNull(channelId)
+        val channel = channels.find(channelId)!!
+        assertEquals(ChannelKind.PROVIDER, channel.kind)
+        assertEquals("https://daily-cloudcode-pa.googleapis.com", channel.baseUrl)
     }
 
     @Test
