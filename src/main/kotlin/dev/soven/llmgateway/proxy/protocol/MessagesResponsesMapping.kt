@@ -21,7 +21,7 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
     request.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { put("instructions", it) }
 
     val input = mutableListOf<JsonObject>()
-    request.array("messages").forEachIndexed { index, element ->
+    joinSplitToolCalls(request.array("messages")).forEachIndexed { index, element ->
         val path = "messages[$index]"
         val message = element as? JsonObject ?: unsupported(path, "消息必须是对象")
         val role = message.string("role") ?: unsupported("$path.role", "缺少 role")
@@ -45,6 +45,8 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
                 when (part.string("type")) {
                     "text" -> parts += responseTextBlock(part.string("text").orEmpty(), role)
                     "image" -> parts += imagePartFromAnthropic(part, partPath).toResponsesPart()
+                    // Responses 的 reasoning 项要带上游自己的加密内容，伪造一个会被拒绝；思考历史不是继续对话的必需输入，直接省略。
+                    "thinking", "redacted_thinking" -> Unit
                     "tool_use" -> {
                         flushParts()
                         input += buildJsonObject {

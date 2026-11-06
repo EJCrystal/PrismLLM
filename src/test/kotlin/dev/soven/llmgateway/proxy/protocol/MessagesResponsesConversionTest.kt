@@ -136,6 +136,35 @@ class MessagesResponsesConversionTest {
     }
 
     @Test
+    fun `messages thinking history is omitted instead of failing a responses request`() {
+        val converted = MessagesToResponses.convertRequest(json("""{
+            "model":"public","max_tokens":64,
+            "messages":[
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":[
+                    {"type":"thinking","thinking":"weigh the options","signature":"sig"},
+                    {"type":"redacted_thinking","data":"opaque"},
+                    {"type":"text","text":"answer"}
+                ]},
+                {"role":"user","content":"again"},
+                {"role":"assistant","content":[{"type":"thinking","thinking":"only thought","signature":"sig"}]},
+                {"role":"assistant","content":[
+                    {"type":"thinking","thinking":"call the tool","signature":"sig"},
+                    {"type":"tool_use","id":"call_1","name":"lookup","input":{}}
+                ]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"ok"}]}
+            ]
+        }"""), "upstream")
+        val input = converted["input"]!!.jsonArray
+        assertEquals(
+            listOf("message", "message", "message", "function_call", "function_call_output"),
+            input.map { it.jsonObject["type"]!!.jsonPrimitive.content },
+        )
+        assertEquals("answer", input[1].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+        assertEquals("call_1", input[3].jsonObject["call_id"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `direct responses reject reasoning blocks that cannot be represented faithfully`() {
         val unsupportedReasoning = json("""{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"plan"}]}]}""")
         assertEquals("output[0].type", assertFailsWith<ProtocolConversionException> {

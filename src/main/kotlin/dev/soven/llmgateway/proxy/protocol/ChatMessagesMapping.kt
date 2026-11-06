@@ -33,7 +33,7 @@ internal fun messagesToChatRequest(request: JsonObject): JsonObject = buildJsonO
             put("content", system)
         }
     }
-    request.array("messages").forEachIndexed { index, element ->
+    joinSplitToolCalls(request.array("messages")).forEachIndexed { index, element ->
         val message = element as? JsonObject ?: unsupported("messages[$index]", "消息必须是对象")
         val role = message.string("role") ?: unsupported("messages[$index].role", "缺少 role")
         val parts = mutableListOf<JsonElement>()

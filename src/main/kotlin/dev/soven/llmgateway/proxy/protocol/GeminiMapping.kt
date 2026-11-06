@@ -173,7 +173,7 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
                         add(buildJsonObject {
                             put("name", function.string("name") ?: unsupported("tools[$index].function.name", "工具缺少 name"))
                             function.string("description")?.let { put("description", it) }
-                            put("parameters", function["parameters"] ?: buildJsonObject { put("type", "object") })
+                            put("parameters", geminiParameters(function["parameters"], "tools[$index].function.parameters"))
                         })
                     }
                 })
@@ -297,7 +297,7 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
     messages.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { system ->
         put("systemInstruction", buildJsonObject { put("parts", buildJsonArray { add(buildJsonObject { put("text", system) }) }) })
     }
-    messages.array("messages").forEachIndexed { index, element ->
+    joinSplitToolCalls(messages.array("messages")).forEachIndexed { index, element ->
         val message = element as? JsonObject ?: unsupported("messages[$index]", "消息必须是对象")
         val parts = mutableListOf<JsonObject>()
         when (val content = message["content"]) {
@@ -371,7 +371,7 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
                         add(buildJsonObject {
                             put("name", tool.string("name") ?: unsupported("tools[$index].name", "工具缺少 name"))
                             tool.string("description")?.let { put("description", it) }
-                            put("parameters", tool["input_schema"] ?: buildJsonObject { put("type", "object") })
+                            put("parameters", geminiParameters(tool["input_schema"], "tools[$index].input_schema"))
                         })
                     }
                 })
@@ -566,7 +566,7 @@ internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: Stri
                     add(buildJsonObject {
                         put("name", tool.string("name") ?: unsupported("tools[$index].name", "工具缺少 name"))
                         tool.string("description")?.let { put("description", it) }
-                        put("parameters", tool["parameters"] ?: buildJsonObject { put("type", "object") })
+                        put("parameters", geminiParameters(tool["parameters"], "tools[$index].parameters"))
                     })
                 }
             })

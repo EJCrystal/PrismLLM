@@ -41,15 +41,15 @@
 | 能力 | 行为 |
 | --- | --- |
 | 文本、系统提示、输出 token 上限、采样参数 | 按目标协议字段映射；转换到 Messages 时缺失 token 上限默认 4096，启用思考时必要时提高到预算加 1 |
-| 函数工具、选择工具、工具调用与结果 | 映射声明、调用 ID、参数及结果；直接转换保留文本和工具项目的原始顺序；Responses → Chat 将连续工具调用合并到同一条 assistant 消息，并保留其前置 assistant 文本，不跨工具结果或其它角色合并 |
+| 函数工具、选择工具、工具调用与结果 | 映射声明、调用 ID、参数及结果；直接转换保留文本和工具项目的原始顺序；Responses → Chat 将连续工具调用合并到同一条 assistant 消息，并保留其前置 assistant 文本，不跨工具结果或其它角色合并。Messages 的并行 tool_use 若被拆到连续多条 assistant 消息，转换前先合并成一条，避免第一条调用没有工具消息接住。工具结果里的 tool_reference 块（Claude Code 的 ToolSearch）没有对应表示，转成一句「Tool X is loaded and can be called now.」文本 |
 | 并行工具开关 | Messages 的 `disable_parallel_tool_use` 与 Responses/Chat 的 `parallel_tool_calls` 对应 |
 | 用量 | 统一计数后输出目标字段；Messages 缓存读写加入输入总量，Responses/Chat 输入量不重复增加缓存 |
 | 思考参数 | 沿用已有 budget 与 effort 的分档近似映射，不声称无损；转换到 Messages 时保留显式 token 上限，将预算限制在上限减 1，且不低于 1024；启用思考但显式上限不大于 1024 时本地报错，不隐式提高调用方上限或关闭思考 |
 | 推理响应 | Messages thinking 可转为 Responses reasoning；直转中无法表示的 redacted_thinking 或缺少 Anthropic 签名的 Responses reasoning 明确报错，不伪造 thinking 块 |
-| 思考历史 | Messages → Chat 将 assistant 的 thinking 块合并为 `reasoning_content`，`redacted_thinking` 无对应表示直接丢弃，仅含被丢弃块的消息整条省略；其它方向的思考历史仍明确拒绝 |
+| 思考历史 | Messages → Chat 将 assistant 的 thinking 块合并为 `reasoning_content`，`redacted_thinking` 无对应表示直接丢弃；Messages → Responses 同时省略 thinking 与 `redacted_thinking`，因为 Responses 的 reasoning 项需要上游自己的加密内容，伪造会被拒绝；仅含被省略块的消息整条不输出。Messages → Gemini 将 thinking 转为 `thought` part，`redacted_thinking` 仍明确拒绝 |
 | 流式输出 | 文本、工具参数增量、结束原因、末尾用量与错误；没有结束原因的 EOF 不伪造成功结束，代理层仍检测缺失终止事件的流中断 |
 | 安全停止原因 | Chat `content_filter`、Responses `incomplete/content_filter` 与 Messages `refusal` 相互映射，普通响应与流式返回均不降级为自然结束 |
-| Gemini | 四协议全矩阵；Gemini 的模型与 stream 位于 URL，转换后的请求体不携带 model/stream。`cachedContent`、非空 `safetySettings`、`responseModalities` 与非单候选仍明确拒绝 |
+| Gemini | 四协议全矩阵；Gemini 的模型与 stream 位于 URL，转换后的请求体不携带 model/stream。`cachedContent`、非空 `safetySettings`、`responseModalities` 与非单候选仍明确拒绝。工具 schema 收敛到 Gemini Schema 子集：删除 `additionalProperties`、`$schema`、`$defs`、`x-*` 等字段，`const` 转 `enum`，`oneOf` 转 `anyOf`，`["string","null"]` 转 `nullable`，本地 `$ref` 展开、`allOf` 摊平成单个节点，tuple 形式的 `items`/`prefixItems` 近似为 `anyOf`，缺失 `type` 的节点按结构关键字和值域推断（Vertex 对缺 type 直接 400）。Gemini 的 `Schema.enum` 只接受字符串，非字符串枚举值放弃值域约束但保留原类型；`not`、外部或循环 `$ref`、分支全部无法转换的联合类型明确报错，不输出无类型节点；单次工具 schema 展开设有节点上限，防止引用放大耗尽资源 |
 | 图片 | 用户消息和工具结果里的图片支持四协议互转：Messages `image`、Chat `image_url`、Responses `input_image`、Gemini `inlineData`/`fileData` 按 base64 或 URL 双向映射。Chat 的 tool 消息只能承载文本，工具返回的图片会移到随后的 user 消息并标注来源，紧跟用户自己的内容，避免连续两条 user 消息；Messages ↔ Responses 与 Gemini 直接把图片放进工具结果本身 |
 | 文件、音频、内置工具 | 仍不支持跨协议转换；Messages 工具仅接受缺省 type 或 custom，Gemini 仅支持 functionDeclarations，其它类型在调用上游前明确拒绝 |
 | Responses 状态续接与存储 | 拒绝 `previous_response_id`、`store=true`、非空 `include`、自动 `truncation`；允许原有无副作用默认值 |
