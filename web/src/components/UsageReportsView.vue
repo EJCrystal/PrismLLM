@@ -25,6 +25,7 @@ import {
   usageTrendMax,
   usageModelOptions,
   usagePercent,
+  usageCacheHitRate,
   usageGranularityLabel,
   usageReportCsv,
 } from '../utils/usageReport'
@@ -57,13 +58,18 @@ interface DimensionOption {
   key: DimensionKey
 }
 
+type TrendSeriesId = 'requests' | 'errors' | 'input' | 'output' | 'cachedRead' | 'cachedWrite' | 'cost'
+
+interface TrendSeries {
+  id: TrendSeriesId
+  label: string
+  value: (row: UsageTrend) => number
+}
+
 interface TrendMetric {
   id: TrendMetricId
   label: string
-  primaryLabel: string
-  secondaryLabel?: string
-  value: (row: UsageTrend) => number
-  secondary?: (row: UsageTrend) => number
+  series: TrendSeries[]
 }
 
 const preset = ref('last7d')
@@ -98,9 +104,29 @@ const dimensions: DimensionOption[] = [
   { id: 'error', label: '错误', title: '按错误码', key: 'byErrorCode' },
 ]
 const trendMetrics: TrendMetric[] = [
-  { id: 'requests', label: '请求与错误', primaryLabel: '请求', secondaryLabel: '错误', value: (row) => row.requests, secondary: (row) => row.errors },
-  { id: 'tokens', label: '输入 / 输出 token', primaryLabel: '输入 token', secondaryLabel: '输出 token', value: (row) => row.inputTokens, secondary: (row) => row.outputTokens },
-  { id: 'cost', label: '费用', primaryLabel: '费用', value: (row) => usageCostForCurrency(row.costs, costMetricCurrency.value) },
+  {
+    id: 'requests',
+    label: '请求与错误',
+    series: [
+      { id: 'requests', label: '请求', value: (row) => row.requests },
+      { id: 'errors', label: '错误', value: (row) => row.errors },
+    ],
+  },
+  {
+    id: 'tokens',
+    label: 'Token 用量',
+    series: [
+      { id: 'input', label: '输入 token（含缓存）', value: (row) => row.inputTokens },
+      { id: 'output', label: '输出 token', value: (row) => row.outputTokens },
+      { id: 'cachedRead', label: '缓存读', value: (row) => row.cachedTokens },
+      { id: 'cachedWrite', label: '缓存写', value: (row) => row.cachedWriteTokens },
+    ],
+  },
+  {
+    id: 'cost',
+    label: '费用',
+    series: [{ id: 'cost', label: '费用', value: (row) => usageCostForCurrency(row.costs, costMetricCurrency.value) }],
+  },
 ]
 const protocolLabels: Record<string, string> = { chat_completions: 'Chat Completions', responses: 'Responses', messages: 'Messages' }
 
@@ -110,6 +136,7 @@ const emptyTotal: UsageTotal = {
 }
 const total = computed<UsageTotal>(() => report.value?.total || emptyTotal)
 const successRate = computed(() => usagePercent(total.value.requests, total.value.errors))
+const cacheHitText = computed(() => formatCacheHit(total.value))
 const activeDimension = computed(() => dimensions.find((item) => item.id === dimension.value) || dimensions[0])
 const dimensionRows = computed<UsageGroup[]>(() => report.value?.[activeDimension.value.key] || [])
 const trendRows = computed(() => fillTrendBuckets(
@@ -120,10 +147,16 @@ const trendRows = computed(() => fillTrendBuckets(
   reportTimezoneOffset(),
 ))
 const activeTrendMetric = computed(() => trendMetrics.find((item) => item.id === trendMetric.value) || trendMetrics[0])
+const trendSeriesClasses = ['', 'secondary', 'tertiary', 'quaternary']
+function trendSeriesClass(index: number): string {
+  return trendSeriesClasses[index] || ''
+}
+const trendSeriesMax = computed(() => activeTrendMetric.value.series.map((series) => (
+  Math.max(0, ...trendRows.value.map((row) => Number(series.value(row)) || 0))
+)))
 const trendMaxValue = computed(() => usageTrendMax(
   trendRows.value,
-  activeTrendMetric.value.value,
-  activeTrendMetric.value.secondary || null,
+  ...activeTrendMetric.value.series.map((series) => series.value),
 ))
 const chartScale = computed(() => usageChartScale(trendMaxValue.value))
 const chartIndex = ref<number | null>(null)
@@ -131,12 +164,19 @@ const chartSliderIndex = computed(() => Math.max(0, Math.min(trendRows.value.len
 const chartValueText = computed(() => {
   const row = trendRows.value[chartSliderIndex.value]
   if (!row) return ''
-  const metric = activeTrendMetric.value
-  return `${formatTimeRange(row.bucketStart)}，${metric.primaryLabel} ${formatTrendValue(metric.value(row))}${metric.secondary ? `，${metric.secondaryLabel} ${formatTrendValue(metric.secondary(row))}` : ''}`
+  const parts = activeTrendMetric.value.series.map((series) => `${series.label} ${formatTrendValue(series.value(row))}`)
+  if (trendMetric.value === 'tokens') parts.push(`缓存命中率 ${formatCacheHit(row)}`)
+  return `${formatTimeRange(row.bucketStart)}，${parts.join('，')}`
 })
 const chartRow = computed(() => chartIndex.value == null ? null : trendRows.value[chartIndex.value] || null)
-const chartPrimaryPoint = computed(() => chartRow.value == null ? null : usageChartPoint(chartIndex.value!, trendRows.value.length, activeTrendMetric.value.value(chartRow.value), chartScale.value.max))
-const chartSecondaryPoint = computed(() => chartRow.value == null || !activeTrendMetric.value.secondary ? null : usageChartPoint(chartIndex.value!, trendRows.value.length, activeTrendMetric.value.secondary(chartRow.value), chartScale.value.max))
+const chartSeriesPoints = computed(() => {
+  const row = chartRow.value
+  if (!row) return []
+  return activeTrendMetric.value.series.map((series, index) => {
+    const point = usageChartPoint(chartIndex.value!, trendRows.value.length, series.value(row), chartScale.value.max)
+    return { id: series.id, x: point.x, y: point.y, className: trendSeriesClass(index) }
+  })
+})
 function inspectChart(event: PointerEvent) {
   const rect = (event.currentTarget as SVGElement).getBoundingClientRect()
   const index = usageChartIndex(event.clientX, rect.left, rect.width, trendRows.value.length)
@@ -171,30 +211,19 @@ function selectChartBucket(): void {
   load({ range })
 }
 watch([trendRows, trendMetric, costMetricCurrency], () => { chartIndex.value = null })
-const trendPrimaryPoints = computed(() => buildTrendPoints(
-  trendRows.value,
-  activeTrendMetric.value.value,
-  640,
-  150,
-  8,
-  chartScale.value.max,
-))
-const trendSecondaryPoints = computed(() => {
-  if (!activeTrendMetric.value.secondary) return ''
-  return buildTrendPoints(trendRows.value, activeTrendMetric.value.secondary, 640, 150, 8, chartScale.value.max)
-})
-const trendSecondaryMax = computed(() => {
-  const secondary = activeTrendMetric.value.secondary
-  return secondary
-    ? Math.max(0, ...trendRows.value.map((row) => Number(secondary(row)) || 0))
-    : 0
-})
+const trendSeriesPoints = computed(() => activeTrendMetric.value.series.map((series, index) => ({
+  id: series.id,
+  label: series.label,
+  points: buildTrendPoints(trendRows.value, series.value, 640, 150, 8, chartScale.value.max),
+  max: trendSeriesMax.value[index] || 0,
+  className: trendSeriesClass(index),
+})))
 const trendArea = computed(() => {
-  if (!trendPrimaryPoints.value) return ''
-  const points = trendPrimaryPoints.value.split(' ')
-  const lastPoint = points.at(-1)
+  const seriesPoints = trendSeriesPoints.value[0]?.points
+  if (!seriesPoints) return ''
+  const lastPoint = seriesPoints.split(' ').at(-1)
   if (!lastPoint) return ''
-  return `8,142 ${trendPrimaryPoints.value} ${lastPoint.split(',')[0]},142`
+  return `8,142 ${seriesPoints} ${lastPoint.split(',')[0]},142`
 })
 const costCurrencies = computed(() => usageCostEntries(total.value.costs).map((entry) => entry.currency))
 const modelOptions = computed(() => usageModelOptions(report.value, channels.value))
@@ -258,6 +287,11 @@ function formatTrendValue(value: number): string {
     return `${costMetricCurrency.value} ${Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 8 })}`
   }
   return trendMetric.value === 'requests' ? formatNumber(value) : formatTokensCompact(value)
+}
+
+function formatCacheHit(row: Pick<UsageTrend, 'inputTokens' | 'cachedTokens'>): string {
+  const rate = usageCacheHitRate(row.inputTokens, row.cachedTokens)
+  return rate == null ? '—' : `${(rate * 100).toFixed(1)}%`
 }
 
 function displayName(row: UsageGroup): string {
@@ -555,6 +589,7 @@ onMounted(() => {
       <div class="usage-secondary-kpis">
         <span><b>{{ formatNumber(total.cachedTokens) }}</b> 缓存读</span>
         <span><b>{{ formatNumber(total.cachedWriteTokens) }}</b> 缓存写</span>
+        <span title="缓存命中率 = 缓存读 token / 输入 token；上游未返回缓存用量时按 0 统计"><b>{{ cacheHitText }}</b> 缓存命中率</span>
         <span><b>{{ formatNumber(total.reasoningTokens) }}</b> 推理 token</span>
         <span><b>{{ total.activeClientKeys }}</b> 活跃调用方密钥</span>
         <span><b>{{ total.failovers }}</b> 故障转移（{{ failoverRate }}）</span>
@@ -582,7 +617,7 @@ onMounted(() => {
         <div v-if="!trendRows.length" class="usage-chart-empty">该时间范围没有请求。</div>
         <div v-else class="usage-chart-wrap" @focusout="chartFocusOut">
           <div class="usage-chart-readout" aria-live="polite" aria-atomic="true">
-            <template v-if="chartRow"><strong>{{ formatTimeRange(chartRow.bucketStart) }}</strong><span>{{ activeTrendMetric.primaryLabel }} <b>{{ formatTrendValue(activeTrendMetric.value(chartRow)) }}</b></span><span v-if="activeTrendMetric.secondary">{{ activeTrendMetric.secondaryLabel }} <b>{{ formatTrendValue(activeTrendMetric.secondary(chartRow)) }}</b></span><button type="button" class="button ghost mini usage-chart-filter" @mousedown.prevent @click="selectChartBucket">只看此时间段</button></template>
+            <template v-if="chartRow"><strong>{{ formatTimeRange(chartRow.bucketStart) }}</strong><span v-for="series in activeTrendMetric.series" :key="series.id">{{ series.label }} <b>{{ formatTrendValue(series.value(chartRow)) }}</b></span><span v-if="trendMetric === 'tokens'">缓存命中率 <b>{{ formatCacheHit(chartRow) }}</b></span><button type="button" class="button ghost mini usage-chart-filter" @mousedown.prevent @click="selectChartBucket">只看此时间段</button></template>
             <span v-else class="muted">悬停或点按曲线查看读数，也可用左右方向键选择。</span>
           </div>
           <div class="usage-chart-with-axis">
@@ -590,19 +625,18 @@ onMounted(() => {
           <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? costMetricCurrency : trendMetric === 'tokens' ? '单位 token' : '单位 次'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @keydown="chartKey">
             <defs><linearGradient id="usage-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0.01"/></linearGradient></defs>
             <line v-for="tick in chartScale.ticks" :key="tick" x1="8" :y1="142 - tick / chartScale.max * 134" x2="632" :y2="142 - tick / chartScale.max * 134" class="usage-chart-grid" />
-            <polygon :points="trendArea" class="usage-chart-area" />
-            <polyline v-if="trendSecondaryPoints" :points="trendSecondaryPoints" class="usage-chart-line secondary" />
-            <polyline :points="trendPrimaryPoints" class="usage-chart-line" />
-            <template v-if="chartPrimaryPoint"><line :x1="chartPrimaryPoint.x" :x2="chartPrimaryPoint.x" y1="8" y2="142" class="usage-chart-crosshair" /><circle :cx="chartPrimaryPoint.x" :cy="chartPrimaryPoint.y" r="4" class="usage-chart-point" /><circle v-if="chartSecondaryPoint" :cx="chartSecondaryPoint.x" :cy="chartSecondaryPoint.y" r="3.5" class="usage-chart-point secondary" /></template>
+            <polygon v-if="trendArea" :points="trendArea" class="usage-chart-area" />
+            <polyline v-for="series in trendSeriesPoints" :key="series.id" :points="series.points" :class="['usage-chart-line', series.className]" />
+            <template v-if="chartSeriesPoints.length"><line :x1="chartSeriesPoints[0].x" :x2="chartSeriesPoints[0].x" y1="8" y2="142" class="usage-chart-crosshair" /><circle v-for="point in chartSeriesPoints" :key="point.id" :cx="point.x" :cy="point.y" :r="point.className ? 3.5 : 4" :class="['usage-chart-point', point.className]" /></template>
           </svg>
           </div>
           <div class="usage-chart-axis">
             <span v-for="(row, index) in trendRows" :key="row.bucketStart" :class="{ 'is-hidden': trendRows.length > 12 && index % Math.ceil(trendRows.length / 8) !== 0 }">{{ formatBucket(row.bucketStart) }}</span>
           </div>
           <div class="usage-chart-legend">
-            <span><i class="dot primary"></i>{{ activeTrendMetric.primaryLabel }} 最高 {{ formatTrendValue(Math.max(...trendRows.map(activeTrendMetric.value))) }}</span>
+            <span v-for="series in trendSeriesPoints" :key="series.id"><i :class="['dot', series.className]"></i>{{ series.label }} 最高 {{ formatTrendValue(series.max) }}</span>
+            <span v-if="trendMetric === 'tokens'" class="usage-chart-note" title="输入 token 包含缓存读与缓存写；缓存命中率只统计缓存读">缓存读 / 写是输入 token 的子集 · 整体缓存命中率 {{ cacheHitText }}</span>
             <span v-if="trendMetric === 'cost'">仅统计 {{ costMetricCurrency }}，不合并其他币种</span>
-            <span v-if="activeTrendMetric.secondary"><i class="dot secondary"></i>{{ activeTrendMetric.secondaryLabel }} 最高 {{ formatTrendValue(trendSecondaryMax) }}</span>
           </div>
         </div>
       </div>
