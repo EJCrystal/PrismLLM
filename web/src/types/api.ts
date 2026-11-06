@@ -707,14 +707,17 @@ export interface OAuthQuota {
 export type OAuthAuthState = 'ACTIVE' | 'REAUTH_REQUIRED'
 
 export interface OAuthAccount {
-  keyId: string
-  keyName: string
-  channelId: string
-  channelName: string
+  id: string
+  name: string
   provider: string
   accountEmail: string | null
   accountPlan: string | null
   authState: OAuthAuthState
+  enabled: boolean
+  priority: number
+  models: string[]
+  channelIds: string[]
+  channels: Array<{ id: string; name: string }>
   tokenType: string
   scope: string | null
   accessTokenExpiresAt: number | null
@@ -732,8 +735,9 @@ export interface OAuthAccount {
 
 export interface OAuthLoginStartRequest {
   provider: string
-  channelId: string
-  keyId: string
+  accountId?: string | null
+  name?: string | null
+  channelIds?: string[]
   proxyUrl?: string | null
 }
 
@@ -749,6 +753,7 @@ export interface OAuthLoginCompleteRequest {
 }
 
 export interface OAuthAccountImportRequest {
+  name?: string | null
   provider: string
   refreshToken: string
   accountEmail?: string | null
@@ -758,6 +763,25 @@ export interface OAuthAccountImportRequest {
   accessTokenExpiresAt?: number | null
   tokenType?: string | null
   scope?: string | null
+  channelIds?: string[]
+  models?: string[]
+  priority?: number
+}
+
+export interface OAuthAccountSettingsRequest {
+  name?: string | null
+  priority?: number
+  enabled?: boolean
+  proxyUrl?: string | null
+  clearProxy?: boolean
+}
+
+export interface OAuthAccountChannelsRequest {
+  channelIds: string[]
+}
+
+export interface OAuthAccountModelsRequest {
+  models: string[]
 }
 
 export interface OAuthAccountPolicyRequest {

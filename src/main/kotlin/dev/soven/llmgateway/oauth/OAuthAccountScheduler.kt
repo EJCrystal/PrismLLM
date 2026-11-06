@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.oauth
 
-import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthAccountRuntimeState
 import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
@@ -32,7 +32,7 @@ sealed interface OAuthAccountDecision {
 }
 
 /** 并发额度租约；窗口名额在准入时消耗，不需要归还。 */
-data class OAuthAccountLease(val keyId: String)
+data class OAuthAccountLease(val accountId: String)
 
 /** 选路所需的账号实时读数；只读内存，不消耗窗口或并发名额。 */
 data class OAuthRoutingHint(
@@ -72,29 +72,29 @@ class OAuthAccountScheduler(
     private val states = mutableMapOf<String, AccountState>()
 
     /** 预检查：只判断是否可准入，不消耗窗口名额或并发额度。 */
-    suspend fun check(key: ChannelKeyRecord): OAuthAccountDecision.Denied? {
-        val policy = key.oauthPolicy ?: return null
+    suspend fun check(account: OAuthAccountRecord): OAuthAccountDecision.Denied? {
+        val policy = account.oauthPolicy ?: return null
         return mutex.withLock {
             val nowMs = now()
-            val state = states[key.id] ?: return@withLock null
+            val state = states[account.id] ?: return@withLock null
             state.prune(nowMs, policy)
             denial(state, policy, nowMs)
         }
     }
 
-    suspend fun acquire(key: ChannelKeyRecord): OAuthAccountDecision {
-        val policy = key.oauthPolicy ?: return OAuthAccountDecision.Allowed(null)
+    suspend fun acquire(account: OAuthAccountRecord): OAuthAccountDecision {
+        val policy = account.oauthPolicy ?: return OAuthAccountDecision.Allowed(null)
         return mutex.withLock {
             val nowMs = now()
-            val state = states.getOrPut(key.id) { AccountState() }
+            val state = states.getOrPut(account.id) { AccountState() }
             state.prune(nowMs, policy)
             if (state.cooldownUntil?.let { it <= nowMs } == true) state.cooldownUntil = null
             denial(state, policy, nowMs)?.let { return@withLock it }
 
             if (policy.windowLimit != null) state.hits.addLast(nowMs)
             state.activeRequests += 1
-            publishIfDue(key.id, state, nowMs)
-            OAuthAccountDecision.Allowed(OAuthAccountLease(key.id))
+            publishIfDue(account.id, state, nowMs)
+            OAuthAccountDecision.Allowed(OAuthAccountLease(account.id))
         }
     }
 
@@ -103,7 +103,7 @@ class OAuthAccountScheduler(
         if (lease == null) return
         withContext(NonCancellable) {
             mutex.withLock {
-                val state = states[lease.keyId] ?: return@withLock
+                val state = states[lease.accountId] ?: return@withLock
                 if (state.activeRequests > 0) state.activeRequests -= 1
             }
         }
@@ -114,13 +114,13 @@ class OAuthAccountScheduler(
      * 没有提示时按连续 429 次数指数退避。
      */
     suspend fun recordRateLimited(
-        key: ChannelKeyRecord,
+        account: OAuthAccountRecord,
         retryAfterMs: Long?,
         nowMs: Long = now(),
     ) {
-        val policy = key.oauthPolicy ?: return
+        val policy = account.oauthPolicy ?: return
         mutex.withLock {
-            val state = states.getOrPut(key.id) { AccountState() }
+            val state = states.getOrPut(account.id) { AccountState() }
             state.prune(nowMs, policy)
             state.consecutiveRateLimits =
                 (state.consecutiveRateLimits + 1).coerceAtMost(MAX_CONSECUTIVE_RATE_LIMITS)
@@ -130,7 +130,7 @@ class OAuthAccountScheduler(
                 .coerceIn(MIN_RETRY_AFTER_MS, maxCooldownMs)
             // 饱和加法：异常时钟不会把冷却截止时间溢出成负数而让 429 冷却立即失效。
             state.cooldownUntil = maxOf(state.cooldownUntil ?: 0L, saturatedAdd(nowMs, cooldown))
-            publishIfDue(key.id, state, nowMs, force = true)
+            publishIfDue(account.id, state, nowMs, force = true)
         }
     }
 
@@ -138,9 +138,9 @@ class OAuthAccountScheduler(
      * 记录一次上游额度读数。额度用尽时立即生效，不必等到下一次 429：
      * 读数过期或仍有 credits 时不做拦截，交给窗口与 429 冷却兜底。
      */
-    suspend fun noteQuota(keyId: String, quota: OAuthQuotaSnapshot) {
+    suspend fun noteQuota(accountId: String, quota: OAuthQuotaSnapshot) {
         mutex.withLock {
-            states.getOrPut(keyId) { AccountState() }.quota = quota
+            states.getOrPut(accountId) { AccountState() }.quota = quota
         }
     }
 
@@ -149,34 +149,34 @@ class OAuthAccountScheduler(
      * 就被拦下；只更新内存态，下一次额度扫描仍会以 `/wham/usage` 的完整读数覆盖。
      */
     internal suspend fun noteQuotaHeaders(
-        key: ChannelKeyRecord,
+        account: OAuthAccountRecord,
         reading: OAuthQuotaHeaderReading?,
         nowMs: Long = now(),
     ) {
-        if (reading == null || key.oauthPolicy == null) return
+        if (reading == null || account.oauthPolicy == null) return
         mutex.withLock {
-            val state = states.getOrPut(key.id) { AccountState() }
+            val state = states.getOrPut(account.id) { AccountState() }
             state.quota = state.quota.mergeQuotaHeaders(reading, nowMs)
         }
     }
 
     /** 上游成功响应后清零连续 429 计数；已生效的冷却不会被提前解除。 */
-    suspend fun recordSuccess(keyId: String, nowMs: Long = now()) {
+    suspend fun recordSuccess(accountId: String, nowMs: Long = now()) {
         mutex.withLock {
-            val state = states[keyId] ?: return@withLock
+            val state = states[accountId] ?: return@withLock
             if (state.consecutiveRateLimits == 0) return@withLock
             state.consecutiveRateLimits = 0
-            publishIfDue(keyId, state, nowMs, force = true)
+            publishIfDue(accountId, state, nowMs, force = true)
         }
     }
 
     /** 管理面看板读取实时状态；从未使用过的账号返回 null，由调用方展示为零值。 */
     suspend fun runtimeState(
-        keyId: String,
+        accountId: String,
         policy: OAuthAccountPolicy,
         nowMs: Long = now(),
     ): OAuthAccountRuntimeState? = mutex.withLock {
-        val state = states[keyId] ?: return@withLock null
+        val state = states[accountId] ?: return@withLock null
         state.prune(nowMs, policy)
         if (state.cooldownUntil?.let { it <= nowMs } == true) state.cooldownUntil = null
         OAuthAccountRuntimeState(
@@ -195,15 +195,15 @@ class OAuthAccountScheduler(
      * 由调用方按零值处理。不创建状态，也不消耗窗口名额。
      */
     suspend fun routingHints(
-        keys: Collection<ChannelKeyRecord>,
+        accounts: Collection<OAuthAccountRecord>,
         nowMs: Long = now(),
     ): Map<String, OAuthRoutingHint> = mutex.withLock {
-        val hints = HashMap<String, OAuthRoutingHint>(keys.size)
-        for (key in keys) {
-            val policy = key.oauthPolicy ?: continue
-            val state = states[key.id] ?: continue
+        val hints = HashMap<String, OAuthRoutingHint>(accounts.size)
+        for (account in accounts) {
+            val policy = account.oauthPolicy ?: continue
+            val state = states[account.id] ?: continue
             state.prune(nowMs, policy)
-            hints[key.id] = OAuthRoutingHint(
+            hints[account.id] = OAuthRoutingHint(
                 windowUsed = state.hits.size,
                 windowOldestAt = state.hits.firstOrNull(),
                 activeRequests = state.activeRequests,
@@ -214,11 +214,11 @@ class OAuthAccountScheduler(
     }
 
     /** 管理员重新导入凭据后解除账号冷却，并立即刷新持久化快照。 */
-    suspend fun clearCooldown(keyId: String, nowMs: Long = now()): Boolean = mutex.withLock {
-        val state = states[keyId] ?: return@withLock false
+    suspend fun clearCooldown(accountId: String, nowMs: Long = now()): Boolean = mutex.withLock {
+        val state = states[accountId] ?: return@withLock false
         state.cooldownUntil = null
         state.consecutiveRateLimits = 0
-        publishIfDue(keyId, state, nowMs, force = true)
+        publishIfDue(accountId, state, nowMs, force = true)
         true
     }
 
@@ -235,7 +235,7 @@ class OAuthAccountScheduler(
                 state.cooldownUntil = stored.snapshot.cooldownUntil?.takeIf { it > nowMs }
                 state.consecutiveRateLimits = stored.snapshot.consecutiveRateLimits.coerceAtLeast(0)
                 state.lastPublishedAt = nowMs
-                this.states[stored.snapshot.keyId] = state
+                this.states[stored.snapshot.accountId] = state
             }
         }
     }
@@ -243,7 +243,7 @@ class OAuthAccountScheduler(
     /** 关闭前把内存态全部提交给写透队列，避免限速发布丢掉最后一次变更。 */
     suspend fun flushSnapshots(nowMs: Long = now()) {
         val snapshots = mutex.withLock {
-            states.map { (keyId, state) -> state.snapshot(keyId, nowMs) }
+            states.map { (accountId, state) -> state.snapshot(accountId, nowMs) }
         }
         for (snapshot in snapshots) {
             try {
@@ -285,7 +285,7 @@ class OAuthAccountScheduler(
     }
 
     private fun publishIfDue(
-        keyId: String,
+        accountId: String,
         state: AccountState,
         nowMs: Long,
         force: Boolean = false,
@@ -293,7 +293,7 @@ class OAuthAccountScheduler(
         val last = state.lastPublishedAt
         if (!force && last != null && nowMs - last < SNAPSHOT_INTERVAL_MS) return
         state.lastPublishedAt = nowMs
-        onSnapshot(state.snapshot(keyId, nowMs))
+        onSnapshot(state.snapshot(accountId, nowMs))
     }
 
     private class AccountState {
@@ -316,8 +316,8 @@ class OAuthAccountScheduler(
             while (hits.size > limit) hits.removeFirst()
         }
 
-        fun snapshot(keyId: String, updatedAt: Long) = OAuthWindowSnapshot(
-            keyId = keyId,
+        fun snapshot(accountId: String, updatedAt: Long) = OAuthWindowSnapshot(
+            accountId = accountId,
             hits = hits.toList(),
             cooldownUntil = cooldownUntil,
             consecutiveRateLimits = consecutiveRateLimits,

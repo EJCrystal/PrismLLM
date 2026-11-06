@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.api.GatewayException
-import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.UpstreamCredential
 import dev.soven.llmgateway.oauth.KeyCredentialResolver
 import dev.soven.llmgateway.oauth.OAuthTokenUnavailableException
 import io.ktor.http.HttpStatusCode
@@ -14,9 +14,9 @@ import kotlinx.coroutines.CancellationException
  * @author 文杰
  * @since 2026-11-06
  */
-internal suspend fun resolveSavedCredential(credentials: KeyCredentialResolver, key: ChannelKeyRecord): String =
+internal suspend fun resolveSavedCredential(credentials: KeyCredentialResolver, credential: UpstreamCredential): String =
     try {
-        credentials.resolveCredential(key)
+        credentials.resolveCredential(credential)
     } catch (cause: CancellationException) {
         throw cause
     } catch (cause: OAuthTokenUnavailableException) {

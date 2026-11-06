@@ -58,8 +58,9 @@ class OAuthLoginSessionTest {
 
     private fun session() = OAuthLoginService.PendingLogin(
         provider = OAuthProvider.CHATGPT,
-        channelId = "ch-test",
-        keyId = "ck-test",
+        accountId = "acct-test",
+        name = "test account",
+        channelIds = listOf("ch-test"),
         proxyUrl = null,
         credentialFingerprint = "fingerprint",
         verifier = "verifier",

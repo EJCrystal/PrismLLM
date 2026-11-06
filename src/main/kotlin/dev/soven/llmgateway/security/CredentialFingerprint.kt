@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.security
 
 import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.OAuthAccountRecord
 import java.security.MessageDigest
 
 /**
@@ -20,3 +21,6 @@ fun credentialFingerprint(ciphertext: String, nonce: String, keyVersion: Int): S
 
 fun ChannelKeyRecord.credentialFingerprint(): String =
     credentialFingerprint(credentialCiphertext, credentialNonce, credentialKeyVersion)
+
+fun OAuthAccountRecord.credentialFingerprint(): String =
+    credentialFingerprint(refreshTokenCiphertext, refreshTokenNonce, refreshTokenKeyVersion)

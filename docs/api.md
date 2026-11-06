@@ -193,32 +193,42 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 
 ### 6. 订阅账号（OAuth）
 
-订阅账号与渠道密钥一对一绑定，refresh token 加密保存在密钥凭据列，access token 由网关自动刷新。详细语义见 ADR 0016。
+订阅账号是独立的上游凭据实体：账号拥有自己的 id、refresh/access token、代理、优先级、模型授权、调度策略与额度，**不再依附于任何渠道密钥**。渠道通过多对多关联引用账号，同一账号可以被多个渠道复用；删除渠道只删除关联，不删除账号。详细语义见 ADR 0016。
 
 - 查看可用的 OAuth 提供方：`GET /admin/api/oauth-providers`，返回 `id`、`label`、`configured` 与 `loginSupported`；未配置客户端参数的提供方不能导入，`loginSupported=false` 的提供方只能手动导入 refresh token。
-- 账号看板：`GET /admin/api/oauth-accounts`，返回账号、渠道/密钥名称、授权状态、token 到期时间、上游额度读数、调度策略与实时状态（窗口用量、并发、冷却截止时间、额度拦截截止时间）。响应不包含任何 token，且禁止缓存。
+- 账号看板：`GET /admin/api/oauth-accounts`，返回账号 `id` / `name`、provider、授权状态、是否启用、优先级、授权模型、关联渠道（`channelIds` 与 `channels[{id,name}]`）、token 到期时间、上游额度读数、调度策略与实时状态。响应不包含任何 token，且禁止缓存。
+  - `models` 为空表示继承所关联渠道的全部模型。
+  - `authState=REAUTH_REQUIRED` 的账号仍保留为候选，但凭据解析会返回 `subscription_account_unavailable` 并继续尝试其他候选；不会把 refresh token 发给上游。
   - `quota`：最近一次成功读取的上游额度快照，包含 5 小时与每周窗口的 `usedPercent` / `remainingPercent` / `windowSeconds` / `resetsAt`、`allowed`、credits 余额与可重置次数、`checkedAt` 与最近一次失败错误码。
   - `runtime.quotaBlockedUntil`：额度读数未过期且某个窗口已用尽时的预计恢复时间；此时新请求会被拒绝。
-- 导入或重新授权：
+- 新建账号（不需要先建渠道或密钥）：
 
   ```bash
-  curl -b cookies.txt -X PUT http://localhost:8080/admin/api/channels/<channel-id>/keys/<key-id>/oauth-account \
+  curl -b cookies.txt -X POST http://localhost:8080/admin/api/oauth-accounts \
     -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
-    -d '{"provider":"chatgpt","refreshToken":"<refresh-token>","accountEmail":"free@example.com","proxyUrl":"http://127.0.0.1:7890"}'
+    -d '{"name":"Free 账号","provider":"chatgpt","refreshToken":"<refresh-token>","accountEmail":"free@example.com","channelIds":["<channel-id>"],"priority":1,"proxyUrl":"http://127.0.0.1:7890"}'
   ```
 
   - `provider` 仅支持 `chatgpt` 与 `antigravity`，且必须已配置。
+  - `channelIds` 可选且可包含多个渠道；不关联时账号保留，但不会参与路由。
+  - 渠道本身不再必须持有静态密钥：可以创建渠道后只关联订阅账号，数据面会把账号作为该渠道路由凭据。
   - `accessToken` 与 `accessTokenExpiresAt` 可选，但必须成对出现且未过期；留空则导入后按需刷新。
+  - `priority` 取值 1..1000，数值越小越优先；只影响同渠道内账号之间的排序。
   - `proxyUrl` 只支持无认证的 `http://主机:端口`；目标主机默认为本机回环地址，其他主机需要服务端配置 `OAUTH_PROXY_ALLOWED_HOSTS`，否则返回 `400 invalid_oauth_proxy`。
-  - 重新授权会替换凭据，并清空账号冷却、密钥冷却与失败计数；密钥启停状态不变。
-  - 同一提供方下邮箱唯一，重复绑定返回 `409 oauth_account_email_exists`。
+  - 同一提供方下邮箱唯一，重复创建返回 `409 oauth_account_email_exists`。
+
+- 重新授权（替换凭据）：`PUT /admin/api/oauth-accounts/<account-id>`，请求体与新建一致。只替换 refresh/access token，不改启停状态；成功后清空账号级冷却与各关联渠道下的候选冷却。留空 refresh token 表示保留现有长期凭据。
+- 修改账号设置：`PUT /admin/api/oauth-accounts/<account-id>/settings`，请求体 `{name, priority, enabled, proxyUrl, clearProxy}`；`enabled=false` 后账号不再参与路由。
+- 调整关联渠道：`PUT /admin/api/oauth-accounts/<account-id>/channels`，请求体 `{"channelIds":["..."]}`；整体替换关联集合。
+- 调整模型授权：`PUT /admin/api/oauth-accounts/<account-id>/models`，请求体 `{"models":["..."]}`；传空数组表示继承所关联渠道的全部模型。
+- 删除账号：`DELETE /admin/api/oauth-accounts/<account-id>`；token、额度与调度状态一并删除，不影响渠道或静态密钥。
 
 - 浏览器登录（交互式授权）：提供方配置了授权地址与回调地址时可用，网关使用 PKCE + `state` 完成授权码交换。
 
   ```bash
   curl -b cookies.txt -X POST http://localhost:8080/admin/api/oauth-login/start \
     -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
-    -d '{"provider":"chatgpt","channelId":"<channel-id>","keyId":"<key-id>","proxyUrl":"http://127.0.0.1:7890"}'
+    -d '{"provider":"chatgpt","name":"新账号","channelIds":["<channel-id>"],"proxyUrl":"http://127.0.0.1:7890"}'
   ```
 
   返回一次性 `loginId`、`authorizeUrl`（10 分钟内有效）与 `redirectUri`。在浏览器打开 `authorizeUrl` 完成登录后，把浏览器最终停留的完整回调地址提交给网关：
@@ -229,16 +239,17 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
     -d '{"callbackUrl":"http://localhost:1455/auth/callback?code=<code>&state=<state>"}'
   ```
 
+  - 新建账号时不要传 `accountId`；对已有账号重新授权时传 `accountId`，可附带新的 `name` 与 `channelIds`。
   - `callbackUrl` 支持完整 URL、裸查询串或 `?查询串`，最长 4096 字符；必须是浏览器登录后真实产生的地址，不要手工拼接。
   - 登录会话只存在于内存，10 分钟有效；授权码只能交换一次，绑定成功后会话立即失效。过期或重复提交返回 `400 oauth_login_expired`，`state` 不匹配返回 `400 oauth_login_invalid_callback`。
-  - 发起登录后目标密钥被删除或替换凭据时返回 `409 oauth_login_stale`，不会把授权结果写到新目标上。
-  - 换取 token 失败返回 `502 oauth_login_failed`；提供方未配置授权参数返回 `400 oauth_login_unsupported`；邮箱已绑定返回 `409 oauth_account_email_exists`，解除原绑定后可用同一 `loginId` 重试，不会再次请求 token 端点。
-  - 成功后与手动导入一样绑定到指定密钥，并清空该账号与密钥的冷却和失败计数；响应不包含 token。
+  - 重新授权期间目标账号被删除或替换凭据时返回 `409 oauth_login_stale`，不会把授权结果写到新目标上。
+  - 换取 token 失败返回 `502 oauth_login_failed`；提供方未配置授权参数返回 `400 oauth_login_unsupported`；邮箱已存在返回 `409 oauth_account_email_exists`，删除原账号后可用同一 `loginId` 重试，不会再次请求 token 端点。
+  - 成功后账号立即写入关联渠道并清空冷却；响应不包含 token。
 
 - 编辑调度策略：
 
   ```bash
-  curl -b cookies.txt -X PUT http://localhost:8080/admin/api/oauth-accounts/<key-id>/policy \
+  curl -b cookies.txt -X PUT http://localhost:8080/admin/api/oauth-accounts/<account-id>/policy \
     -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
     -d '{"windowLimit":40,"windowSeconds":10800,"maxConcurrentRequests":1}'
   ```
@@ -246,10 +257,11 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
   `windowLimit` 为 `null` 表示不限制窗口；`windowSeconds` 取值 60..604800；`maxConcurrentRequests` 取值 1..1000。
 
 - 手动刷新额度、刷新 token 与解除冷却：
-  - `POST /admin/api/oauth-accounts/<key-id>/quota/refresh`：立即读取一次上游额度并写入快照；失败保留上一次成功读数，返回 `502 oauth_quota_failed`，账号不支持或没有可用 access token 时返回 `400 oauth_quota_unsupported`。
-  - `POST /admin/api/oauth-accounts/<key-id>/refresh`：允许对 `REAUTH_REQUIRED` 账号再试一次；失败返回 `502 oauth_refresh_failed`。
-  - `POST /admin/api/oauth-accounts/<key-id>/cooldown/clear`：同时清除账号级冷却与密钥级候选冷却。
-- 以上写操作分别写入审计动作 `oauth_account.import`、`oauth_account.login.start`、`oauth_account.login`、`oauth_account.policy.update`、`oauth_account.quota.refresh`、`oauth_account.refresh` 与 `oauth_account.cooldown.clear`，只记录渠道/密钥 id、provider、策略参数与操作结果。
+  - `POST /admin/api/oauth-accounts/<account-id>/quota/refresh`：立即读取一次上游额度并写入快照；失败保留上一次成功读数，返回 `502 oauth_quota_failed`，账号不支持或没有可用 access token 时返回 `400 oauth_quota_unsupported`。
+  - `POST /admin/api/oauth-accounts/<account-id>/refresh`：允许对 `REAUTH_REQUIRED` 账号再试一次；失败返回 `502 oauth_refresh_failed`。
+  - `POST /admin/api/oauth-accounts/<account-id>/cooldown/clear`：清除账号级冷却，并清理该账号在所有关联渠道下的候选冷却。
+- 以上写操作分别写入审计动作 `oauth_account.import`、`oauth_account.delete`、`oauth_account.settings.update`、`oauth_account.login.start`、`oauth_account.login`、`oauth_account.policy.update`、`oauth_account.quota.refresh`、`oauth_account.refresh` 与 `oauth_account.cooldown.clear`，只记录账号 id、provider、策略参数、渠道 id 与操作结果。
+
 ---
 
 ## 三、调用方密钥生命周期与审计

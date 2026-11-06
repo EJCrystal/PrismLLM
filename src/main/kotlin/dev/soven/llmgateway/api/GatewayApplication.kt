@@ -303,7 +303,6 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         }
     }
 
-    val modelCatalog = UpstreamModelCatalog(channelRepository)
     val modelPriceReferenceService = ModelPriceReferenceService(httpClient)
     val currencyExchangeService = CurrencyExchangeService(httpClient)
     val upstreamHeaderCatalogService = UpstreamHeaderCatalogService(
@@ -315,12 +314,12 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     )
     /** 订阅账号 access token 解析与后台轮换；未配置任何 Provider 时后台任务不扫描。 */
     val oauthAccountRepository = OAuthAccountRepository(databaseFactory.database)
+    val modelCatalog = UpstreamModelCatalog(channelRepository, oauthAccountRepository)
     val oauthTokenProviders = OAuthTokenProviderRegistry(buildOAuthTokenProviders(config.oauth))
     val oauthTokenService = OAuthTokenService(oauthAccountRepository, credentialCipher, oauthTokenProviders, config.oauth)
     /** 交互式 OAuth 登录：PKCE 会话只保存在内存，单次使用。 */
     val oauthLoginService = OAuthLoginService(
         oauthAccountRepository,
-        channelRepository,
         credentialCipher,
         config.oauth,
     )
@@ -360,7 +359,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         runBlocking {
             // 上次运行留下的额度读数立即恢复，重启后不必等第一轮扫描才能拦截已用尽账号。
             oauthAccountRepository.listAll().forEach { account ->
-                account.quota?.let { oauthAccountScheduler.noteQuota(account.keyId, it) }
+                account.quota?.let { oauthAccountScheduler.noteQuota(account.id, it) }
             }
         }
         runBlocking {

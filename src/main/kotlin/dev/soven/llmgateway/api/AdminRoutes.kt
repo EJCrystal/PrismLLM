@@ -5,6 +5,7 @@ import dev.soven.llmgateway.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
+import dev.soven.llmgateway.domain.UpstreamCredential
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
@@ -30,6 +31,8 @@ import dev.soven.llmgateway.proxy.resolveSavedCredential
 import dev.soven.llmgateway.proxy.testChannelModelConnectivity
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.repo.NewOAuthAccount
+import dev.soven.llmgateway.repo.OAuthAccountCredentialUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableSettingsAuditContext
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.resilience.KeyDisablePolicy
@@ -383,11 +386,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
         get("/channels/{id}/models") {
             call.requireAdmin(app)
             val id = call.requiredParam("id", "缺少渠道 id")
-            val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
-            val key = resolveChannelKey(channel, call.request.queryParameters["keyId"])
+            val channel = app.channelRepository.find(id)?.let { channelWithCredentials(app, it) }
+                ?: throw notFound("channel_not_found", "渠道不存在")
+            val credential = resolveChannelCredential(channel, call.request.queryParameters["keyId"])
             val mappingByUpstream = channel.modelMappings.associateBy { it.upstreamModel }
             val models = fetchUpstreamModels(
-                channel, key, app.oauthTokenService, app.httpClient, authorizedOnly = false,
+                channel, credential, app.oauthTokenService, app.httpClient, authorizedOnly = false,
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
                 headerProfiles = app.upstreamHeaderCatalogService.profiles(),
             )
@@ -396,7 +400,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     ChannelModelResponse(
                         id = it.id,
                         ownedBy = it.ownedBy,
-                        authorized = it.id in key.models,
+                        authorized = credential.supports(it.id),
                         canonicalModelId = mapping?.canonicalModelId,
                         mappingSource = mapping?.mappingSource,
                     )
@@ -416,15 +420,18 @@ fun Route.adminRoutes(app: GatewayApplication) {
             }
             val saved = request.channelId
                 ?.takeIf { it.isNotBlank() }
-                ?.let { app.channelRepository.find(it) ?: throw notFound("channel_not_found", "渠道不存在") }
-            val savedKey = saved?.let { channel ->
+                ?.let { channelId ->
+                    app.channelRepository.find(channelId)?.let { channelWithCredentials(app, it) }
+                        ?: throw notFound("channel_not_found", "渠道不存在")
+                }
+            val savedCredential = saved?.let { channel ->
                 request.keyId?.takeIf { it.isNotBlank() }?.let { keyId ->
-                    channel.keys.firstOrNull { it.id == keyId }?.also { key ->
-                        if (!key.isRoutable()) throw channelKeyUnavailable(key)
+                    (channel.keys + channel.oauthAccounts).firstOrNull { it.id == keyId }?.also { credential ->
+                        if (!credential.isRoutable()) throw credentialUnavailable(credential)
                     }
-                        ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
-                } ?: channel.keys.filter { it.isRoutable() }.minWithOrNull(compareBy({ it.priority }, { it.name }))
-                    ?: channel.keys.minWithOrNull(compareBy({ it.priority }, { it.name }))
+                        ?: throw notFound("channel_key_not_found", "渠道密钥或订阅账号不存在")
+                } ?: (channel.keys + channel.oauthAccounts).filter { it.isRoutable() }
+                    .minWithOrNull(compareBy({ it.priority }, { it.name }, { it.id }))
             }
             val authType = request.authType ?: saved?.authType ?: "bearer"
             if (authType !in SUPPORTED_UPSTREAM_AUTH_TYPES) {
@@ -438,11 +445,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     if (baseUrl.trimEnd('/') != channel.baseUrl.trimEnd('/')) {
                         throw badRequest("invalid_channel", "基础地址已变更，请重新输入上游凭据")
                     }
-                    val key = savedKey ?: throw badRequest("invalid_channel", "渠道没有可用密钥")
-                    resolveSavedCredential(app.oauthTokenService, key)
+                    val target = savedCredential ?: throw badRequest("invalid_channel", "渠道没有可用上游凭据")
+                    resolveSavedCredential(app.oauthTokenService, target)
                 }
                 ?: throw badRequest("invalid_channel", "发现上游模型需要提供凭据")
-            val authorized = savedKey?.models?.toSet().orEmpty()
+            val authorized = savedCredential?.models?.toSet().orEmpty()
             val mappingByUpstream = saved?.modelMappings?.associateBy { it.upstreamModel }.orEmpty()
             val discoveryProtocols = request.protocols?.takeIf { it.isNotEmpty() }?.let(::parseProtocols)
                 ?: saved?.protocols.orEmpty()
@@ -461,7 +468,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     ChannelModelResponse(
                         id = it.id,
                         ownedBy = it.ownedBy,
-                        authorized = it.id in authorized,
+                        authorized = (savedCredential?.isOAuth == true && savedCredential.models.isEmpty()) || it.id in authorized,
                         canonicalModelId = mapping?.canonicalModelId,
                         mappingSource = mapping?.mappingSource,
                     )
@@ -472,14 +479,15 @@ fun Route.adminRoutes(app: GatewayApplication) {
         post("/channels/{id}/probe-protocols") {
             call.requireAdmin(app)
             val id = call.requiredParam("id", "缺少渠道 id")
-            val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
+            val channel = app.channelRepository.find(id)?.let { channelWithCredentials(app, it) }
+                ?: throw notFound("channel_not_found", "渠道不存在")
             val request = call.receive<ProtocolProbeRequest>()
-            val key = resolveChannelKey(channel, request.keyId)
+            val credential = resolveChannelCredential(channel, request.keyId)
             val globalOverrides = app.upstreamRequestSettingsRepository.load().overrides
             val headerProfiles = app.upstreamHeaderCatalogService.profiles()
             val model = request.model?.takeIf { it.isNotBlank() } ?: run {
                 val models = fetchUpstreamModels(
-                    channel, key, app.oauthTokenService, app.httpClient,
+                    channel, credential, app.oauthTokenService, app.httpClient,
                     globalOverrides = globalOverrides,
                     headerProfiles = headerProfiles,
                 )
@@ -491,15 +499,15 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 )
             }
             val results = probeUpstreamProtocols(
-                channel, key, model, app.oauthTokenService, app.httpClient,
+                channel, credential, model, app.oauthTokenService, app.httpClient,
                 globalOverrides = globalOverrides,
                 headerProfiles = headerProfiles,
             )
             call.respond(
                 ProtocolProbeResponse(
                     model = model,
-                    keyId = key.id,
-                    keyName = key.name,
+                    keyId = credential.id,
+                    keyName = credential.name,
                     results = results.map {
                         ProtocolProbeResultResponse(
                             protocol = it.protocol.value,
@@ -515,7 +523,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
         post("/channels/{id}/model-test") {
             call.requireAdmin(app)
             val channelId = call.requiredParam("id", "缺少渠道 id")
-            val channel = app.channelRepository.find(channelId)
+            val channel = app.channelRepository.find(channelId)?.let { channelWithCredentials(app, it) }
                 ?: throw notFound("channel_not_found", "渠道不存在")
             val request = call.receive<ChannelModelTestRequest>()
             val model = request.model.trim()
@@ -525,7 +533,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (model !in channel.models) {
                 throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
             }
-            val key = resolveChannelKeyForModel(channel, model, request.keyId)
+            val credential = resolveChannelCredentialForModel(channel, model, request.keyId)
             val protocol = GatewayProtocol.fromValue(request.protocol.trim())
                 ?: throw badRequest("invalid_model_test_protocol", "测试协议无效")
             if (protocol !in channel.protocols) {
@@ -538,7 +546,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             }
             val result = testChannelModelConnectivity(
                 channel = channel,
-                key = key,
+                credentialRef = credential,
                 model = model,
                 protocol = protocol,
                 prompt = prompt,
@@ -547,13 +555,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
                 headerProfiles = app.upstreamHeaderCatalogService.profiles(),
             )
-            call.respond(result.toResponse(model, protocol, key.id, key.name, prompt))
+            call.respond(result.toResponse(model, protocol, credential.id, credential.name, prompt))
         }
 
         post("/channels") {
             call.requireAdmin(app)
             val request = call.receive<ChannelRequest>()
-            validateChannel(request, credentialRequired = true)
+            validateChannel(request, credentialRequired = false)
             val protocols = parseProtocols(request.protocols ?: GatewayProtocol.default.map { it.value })
             if (app.channelRepository.findByName(request.name) != null) {
                 throw conflict("channel_name_exists", "渠道名称已存在")
@@ -710,14 +718,235 @@ fun Route.adminRoutes(app: GatewayApplication) {
         get("/oauth-accounts") {
             call.requireAdmin(app)
             call.response.headers.append("Cache-Control", "no-store")
-            val channels = app.channelRepository.list()
-            val byKey = channels.flatMap { channel -> channel.keys.map { it.id to (channel to it) } }.toMap()
-            val accounts = app.oauthAccountRepository.listAll().mapNotNull { account ->
-                val (channel, key) = byKey[account.keyId] ?: return@mapNotNull null
-                val policy = key.oauthPolicy ?: OAuthAccountPolicy()
-                account.toResponse(channel, key, policy, app.oauthAccountScheduler.runtimeState(account.keyId, policy))
+            val channelsById = app.channelRepository.list().associateBy { it.id }
+            val accounts = app.oauthAccountRepository.listAll().map { account ->
+                account.toResponse(
+                    channels = account.channelIds.sorted().mapNotNull { channelId ->
+                        channelsById[channelId]?.let { channel -> OAuthAccountChannelResponse(channel.id, channel.name) }
+                    },
+                    policy = account.policy,
+                    runtime = app.oauthAccountScheduler.runtimeState(account.id, account.policy),
+                )
             }
             call.respond(accounts)
+        }
+
+        post("/oauth-accounts") {
+            call.requireAdmin(app)
+            val request = call.receive<OAuthAccountImportRequest>()
+            val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
+                ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
+            if (app.oauthTokenProviders.find(provider) == null) {
+                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未配置，请先设置客户端参数")
+            }
+            val refreshToken = request.refreshToken.trim()
+            if (refreshToken.length > MAX_OAUTH_CREDENTIAL_CHARS) {
+                throw badRequest("invalid_oauth_refresh_token", "refresh token 长度超出限制")
+            }
+            if (refreshToken.isEmpty()) throw badRequest("invalid_oauth_refresh_token", "refresh token 不能为空")
+            val accessToken = request.accessToken?.trim()?.takeIf { it.isNotEmpty() }
+            val expiresAt = request.accessTokenExpiresAt
+            if ((accessToken == null) != (expiresAt == null)) {
+                throw badRequest("invalid_oauth_access_token", "access token 与到期时间必须同时提供")
+            }
+            if (accessToken != null && accessToken.length > MAX_OAUTH_CREDENTIAL_CHARS) {
+                throw badRequest("invalid_oauth_access_token", "access token 长度超出限制")
+            }
+            if (expiresAt != null && expiresAt <= System.currentTimeMillis()) {
+                throw badRequest("invalid_oauth_access_token", "access token 到期时间必须晚于当前时间")
+            }
+            val proxyUrl = request.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
+            if (proxyUrl != null && proxyUrl.length > MAX_OAUTH_PROXY_CHARS) {
+                throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
+            }
+            validateOAuthProxyUrl(app, proxyUrl)
+            val channelIds = request.channelIds.map(String::trim).filter(String::isNotEmpty).distinct()
+            val existingChannelIds = app.channelRepository.list().map { it.id }.toSet()
+            channelIds.firstOrNull { it !in existingChannelIds }?.let { missing ->
+                throw badRequest("invalid_oauth_channels", "渠道不存在: $missing")
+            }
+            if (request.priority !in 1..1000) {
+                throw badRequest("invalid_oauth_priority", "账号优先级必须在 1..1000 之间")
+            }
+            val account = try {
+                app.oauthAccountRepository.create(
+                    NewOAuthAccount(
+                        name = request.name?.trim()?.takeIf { it.isNotEmpty() }
+                            ?: request.accountEmail?.trim()?.takeIf { it.isNotEmpty() }
+                            ?: OAUTH_PROVIDER_LABELS[provider]
+                            ?: provider.value,
+                        provider = provider,
+                        accountEmail = request.accountEmail?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_EMAIL_CHARS),
+                        accountPlan = request.accountPlan?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_PLAN_CHARS),
+                        refreshToken = app.credentialCipher.encrypt(refreshToken),
+                        accessToken = accessToken?.let(app.credentialCipher::encrypt),
+                        accessTokenExpiresAt = expiresAt,
+                        tokenType = request.tokenType?.trim()?.takeIf { it.isNotEmpty() }?.take(40) ?: "Bearer",
+                        scope = request.scope?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_SCOPE_CHARS),
+                        proxyUrl = proxyUrl,
+                        channelIds = channelIds,
+                        models = request.models,
+                        priority = request.priority,
+                    ),
+                )
+            } catch (cause: Throwable) {
+                if (isUniqueViolation(cause)) {
+                    throw conflict("oauth_account_email_exists", "同一提供方下该邮箱已存在账号")
+                }
+                throw cause
+            }
+            clearOAuthAccountCooldown(app, account)
+            call.markAdminAuditDetails(buildJsonObject {
+                put("accountId", account.id)
+                put("provider", provider.value)
+                put("channels", channelIds.joinToString(","))
+                proxyUrl?.let { put("proxyUrl", it) }
+            })
+            call.respond(oauthAccountResponse(app, account))
+        }
+
+        delete("/oauth-accounts/{id}") {
+            call.requireAdmin(app)
+            val accountId = call.requiredParam("id", "缺少账号 id")
+            val existing = app.oauthAccountRepository.findDetailed(accountId)
+                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            if (!app.oauthAccountRepository.delete(accountId)) {
+                throw notFound("oauth_account_not_found", "订阅账号不存在")
+            }
+            clearOAuthAccountCooldown(app, existing)
+            call.markAdminAuditDetails(buildJsonObject { put("accountId", accountId) })
+            call.respond(HttpStatusCode.NoContent)
+        }
+
+        put("/oauth-accounts/{id}") {
+            call.requireAdmin(app)
+            val accountId = call.requiredParam("id", "缺少账号 id")
+            val existing = app.oauthAccountRepository.find(accountId)
+                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            val request = call.receive<OAuthAccountImportRequest>()
+            val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
+                ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
+            if (app.oauthTokenProviders.find(provider) == null) {
+                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未配置，请先设置客户端参数")
+            }
+            if (existing.provider != provider) {
+                throw badRequest("invalid_oauth_provider", "重新授权不能修改账号的提供方")
+            }
+            val refreshToken = request.refreshToken.trim()
+            if (refreshToken.length > MAX_OAUTH_CREDENTIAL_CHARS) {
+                throw badRequest("invalid_oauth_refresh_token", "refresh token 长度超出限制")
+            }
+            val accessToken = request.accessToken?.trim()?.takeIf { it.isNotEmpty() }
+            val expiresAt = request.accessTokenExpiresAt
+            if ((accessToken == null) != (expiresAt == null)) {
+                throw badRequest("invalid_oauth_access_token", "access token 与到期时间必须同时提供")
+            }
+            val proxyUrl = request.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
+            if (proxyUrl != null && proxyUrl.length > MAX_OAUTH_PROXY_CHARS) {
+                throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
+            }
+            validateOAuthProxyUrl(app, proxyUrl)
+            val account = try {
+                app.oauthAccountRepository.updateCredentials(
+                    accountId = accountId,
+                    input = OAuthAccountCredentialUpdate(
+                        provider = provider,
+                        accountEmail = request.accountEmail?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_EMAIL_CHARS),
+                        accountPlan = request.accountPlan?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_PLAN_CHARS),
+                        refreshToken = refreshToken.takeIf { it.isNotEmpty() }?.let(app.credentialCipher::encrypt),
+                        accessToken = accessToken?.let(app.credentialCipher::encrypt),
+                        accessTokenExpiresAt = expiresAt,
+                        tokenType = request.tokenType?.trim()?.takeIf { it.isNotEmpty() }?.take(40) ?: "Bearer",
+                        scope = request.scope?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_SCOPE_CHARS),
+                        proxyUrl = proxyUrl,
+                    ),
+                ) ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            } catch (cause: Throwable) {
+                if (isUniqueViolation(cause)) {
+                    throw conflict("oauth_account_email_exists", "同一提供方下该邮箱已存在账号")
+                }
+                throw cause
+            }
+            clearOAuthAccountCooldown(app, account)
+            call.markAdminAuditDetails(buildJsonObject {
+                put("accountId", account.id)
+                put("provider", provider.value)
+                proxyUrl?.let { put("proxyUrl", it) }
+            })
+            call.respond(oauthAccountResponse(app, account))
+        }
+
+        put("/oauth-accounts/{id}/settings") {
+            call.requireAdmin(app)
+            val accountId = call.requiredParam("id", "缺少账号 id")
+            val request = call.receive<OAuthAccountSettingsRequest>()
+            if (request.priority != null && request.priority !in 1..1000) {
+                throw badRequest("invalid_oauth_priority", "账号优先级必须在 1..1000 之间")
+            }
+            val proxyUrl = request.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
+            if (proxyUrl != null && proxyUrl.length > MAX_OAUTH_PROXY_CHARS) {
+                throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
+            }
+            if (request.clearProxy && proxyUrl != null) {
+                throw badRequest("invalid_oauth_proxy", "不能同时更换和清除账号代理")
+            }
+            validateOAuthProxyUrl(app, proxyUrl)
+            val account = app.oauthAccountRepository.updateSettings(
+                accountId = accountId,
+                name = request.name?.trim()?.takeIf { it.isNotEmpty() },
+                priority = request.priority,
+                enabled = request.enabled,
+                proxyUrl = proxyUrl,
+                clearProxy = request.clearProxy,
+            ) ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            call.markAdminAuditDetails(buildJsonObject {
+                put("accountId", accountId)
+                request.name?.let { put("name", it) }
+                request.priority?.let { put("priority", it) }
+                request.enabled?.let { put("enabled", it) }
+            })
+            call.respond(oauthAccountResponse(app, account))
+        }
+
+        put("/oauth-accounts/{id}/channels") {
+            call.requireAdmin(app)
+            val accountId = call.requiredParam("id", "缺少账号 id")
+            val request = call.receive<OAuthAccountChannelsRequest>()
+            val channels = app.channelRepository.list()
+            val channelsById = channels.associateBy { it.id }
+            val channelIds = request.channelIds.map(String::trim).filter(String::isNotEmpty).distinct()
+            channelIds.firstOrNull { it !in channelsById }?.let { missing ->
+                throw badRequest("invalid_oauth_channels", "渠道不存在: $missing")
+            }
+            val account = app.oauthAccountRepository.setChannels(accountId, channelIds)
+                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            call.markAdminAuditDetails(buildJsonObject {
+                put("accountId", accountId)
+                put("channels", channelIds.joinToString(","))
+            })
+            call.respond(
+                account.toResponse(
+                    channels = account.channelIds.sorted().mapNotNull { id ->
+                        channelsById[id]?.let { channel -> OAuthAccountChannelResponse(channel.id, channel.name) }
+                    },
+                    policy = account.policy,
+                    runtime = app.oauthAccountScheduler.runtimeState(account.id, account.policy),
+                ),
+            )
+        }
+
+        put("/oauth-accounts/{id}/models") {
+            call.requireAdmin(app)
+            val accountId = call.requiredParam("id", "缺少账号 id")
+            val request = call.receive<OAuthAccountModelsRequest>()
+            val models = request.models.map(String::trim).filter(String::isNotEmpty).distinct()
+            val account = app.oauthAccountRepository.setModels(accountId, models)
+                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            call.markAdminAuditDetails(buildJsonObject {
+                put("accountId", accountId)
+                put("modelCount", models.size)
+            })
+            call.respond(oauthAccountResponse(app, account))
         }
 
         post("/oauth-login/start") {
@@ -728,23 +957,32 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (app.oauthTokenProviders.find(provider) == null) {
                 throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未配置，请先设置客户端参数")
             }
-            val channel = app.channelRepository.find(request.channelId.trim())
-                ?: throw notFound("channel_not_found", "渠道不存在")
-            val keyId = request.keyId.trim()
-            val key = channel.keys.firstOrNull { it.id == keyId }
-                ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
+            val target = request.accountId?.trim()?.takeIf { it.isNotEmpty() }?.let { accountId ->
+                app.oauthAccountRepository.findDetailed(accountId)
+                    ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            }
+            if (target != null && target.provider != provider) {
+                throw badRequest("invalid_oauth_provider", "重新授权不能修改账号的提供方")
+            }
             val proxyUrl = request.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
             if (proxyUrl != null && proxyUrl.length > MAX_OAUTH_PROXY_CHARS) {
                 throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
             }
             validateOAuthProxyUrl(app, proxyUrl)
+            val existingChannelIds = app.channelRepository.list().map { it.id }.toSet()
+            val channelIds = request.channelIds.map(String::trim).filter(String::isNotEmpty).distinct()
+                .ifEmpty { target?.channelIds?.toList().orEmpty() }
+            channelIds.firstOrNull { it !in existingChannelIds }?.let { missing ->
+                throw badRequest("invalid_oauth_channels", "渠道不存在: $missing")
+            }
             when (
                 val result = app.oauthLoginService.start(
-                    provider,
-                    channel.id,
-                    keyId,
-                    proxyUrl,
-                    key.credentialFingerprint(),
+                    provider = provider,
+                    accountId = target?.id,
+                    name = request.name?.trim()?.takeIf { it.isNotEmpty() },
+                    channelIds = channelIds,
+                    proxyUrl = proxyUrl,
+                    credentialFingerprint = target?.credentialFingerprint(),
                 )
             ) {
                 OAuthLoginStartResult.UnsupportedProvider -> throw badRequest(
@@ -753,9 +991,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 )
                 is OAuthLoginStartResult.Started -> {
                     call.markAdminAuditDetails(buildJsonObject {
-                        put("channelId", channel.id)
-                        put("keyId", keyId)
+                        target?.let { put("accountId", it.id) }
                         put("provider", provider.value)
+                        put("channels", channelIds.joinToString(","))
                         proxyUrl?.let { put("proxyUrl", it) }
                     })
                     call.response.headers.append("Cache-Control", "no-store")
@@ -781,12 +1019,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val result = try {
                 app.oauthLoginService.complete(loginId, request.callbackUrl)
             } catch (cause: Throwable) {
-                // 与导入一致：同一提供方下邮箱唯一。交换成功的 token 留在登录会话里，
-                // 解除原绑定后可以用同一 loginId 重试，不必重新走浏览器授权。
                 if (isUniqueViolation(cause)) {
                     throw conflict(
                         "oauth_account_email_exists",
-                        "同一提供方下该邮箱已绑定到其他密钥，解除原绑定后可用同一登录会话重试",
+                        "同一提供方下该邮箱已存在账号，删除原账号后可用同一登录会话重试",
                     )
                 }
                 throw cause
@@ -799,7 +1035,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 is OAuthLoginResult.InvalidRequest -> throw badRequest("oauth_login_invalid_callback", result.reason)
                 OAuthLoginResult.StaleTarget -> {
                     call.markAdminAuditDetails(buildJsonObject { put("result", "stale") })
-                    throw conflict("oauth_login_stale", "密钥凭据在登录期间已被修改，请重新发起登录")
+                    throw conflict("oauth_login_stale", "账号凭据在登录期间已被修改，请重新发起登录")
                 }
                 OAuthLoginResult.UnsupportedProvider -> throw badRequest(
                     "oauth_login_unsupported",
@@ -818,103 +1054,24 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     )
                 }
                 is OAuthLoginResult.Completed -> {
-                    val (channel, key) = resolveOAuthAccountTarget(app, result.account.keyId)
-                        ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
-                    app.oauthAccountScheduler.clearCooldown(key.id)
-                    clearKeyCooldown(app, channel.id, key.id)
-                    app.keyAutoDisableRepository.resetKeyHealth(key.id)
+                    clearOAuthAccountCooldown(app, result.account)
                     call.markAdminAuditDetails(buildJsonObject {
-                        put("channelId", channel.id)
-                        put("keyId", key.id)
+                        put("accountId", result.account.id)
                         put("provider", result.account.provider.value)
                         put("result", "success")
                     })
-                    val policy = key.oauthPolicy ?: OAuthAccountPolicy()
                     call.response.headers.append("Cache-Control", "no-store")
-                    call.respond(
-                        result.account.toResponse(
-                            channel, key, policy, app.oauthAccountScheduler.runtimeState(key.id, policy),
-                        ),
-                    )
+                    call.respond(oauthAccountResponse(app, result.account))
                 }
             }
         }
 
-        put("/channels/{id}/keys/{keyId}/oauth-account") {
+        put("/oauth-accounts/{id}/policy") {
             call.requireAdmin(app)
-            val channel = app.channelRepository.find(call.requiredParam("id", "缺少渠道 id"))
-                ?: throw notFound("channel_not_found", "渠道不存在")
-            val keyId = call.requiredParam("keyId", "缺少密钥 id")
-            if (channel.keys.none { it.id == keyId }) throw notFound("channel_key_not_found", "渠道密钥不存在")
-            val request = call.receive<OAuthAccountImportRequest>()
-            val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
-                ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
-            if (app.oauthTokenProviders.find(provider) == null) {
-                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未配置，请先设置客户端参数")
+            val accountId = call.requiredParam("id", "缺少账号 id")
+            if (app.oauthAccountRepository.find(accountId) == null) {
+                throw notFound("oauth_account_not_found", "订阅账号不存在")
             }
-            val refreshToken = request.refreshToken.trim()
-            if (refreshToken.isEmpty()) throw badRequest("invalid_oauth_refresh_token", "refresh token 不能为空")
-            if (refreshToken.length > MAX_OAUTH_CREDENTIAL_CHARS) {
-                throw badRequest("invalid_oauth_refresh_token", "refresh token 长度超出限制")
-            }
-            val accessToken = request.accessToken?.trim()?.takeIf { it.isNotEmpty() }
-            val expiresAt = request.accessTokenExpiresAt
-            if ((accessToken == null) != (expiresAt == null)) {
-                throw badRequest("invalid_oauth_access_token", "access token 与到期时间必须同时提供")
-            }
-            if (accessToken != null && accessToken.length > MAX_OAUTH_CREDENTIAL_CHARS) {
-                throw badRequest("invalid_oauth_access_token", "access token 长度超出限制")
-            }
-            if (expiresAt != null && expiresAt <= System.currentTimeMillis()) {
-                throw badRequest("invalid_oauth_access_token", "access token 到期时间必须晚于当前时间")
-            }
-            val proxyUrl = request.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
-            if (proxyUrl != null && proxyUrl.length > MAX_OAUTH_PROXY_CHARS) {
-                throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
-            }
-            validateOAuthProxyUrl(app, proxyUrl)
-            val account = try {
-                app.oauthAccountRepository.upsert(
-                    keyId = keyId,
-                    provider = provider,
-                    accountEmail = request.accountEmail?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_EMAIL_CHARS),
-                    accountPlan = request.accountPlan?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_PLAN_CHARS),
-                    proxyUrl = proxyUrl,
-                    refreshToken = app.credentialCipher.encrypt(refreshToken),
-                    accessToken = accessToken?.let(app.credentialCipher::encrypt),
-                    accessTokenExpiresAt = expiresAt,
-                    tokenType = request.tokenType?.trim()?.takeIf { it.isNotEmpty() }?.take(40) ?: "Bearer",
-                    scope = request.scope?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_SCOPE_CHARS),
-                )
-            } catch (cause: Throwable) {
-                // 同一 provider 下邮箱唯一，避免同一账号被拆成多个密钥重复计入滑动窗口。
-                if (isUniqueViolation(cause)) {
-                    throw conflict("oauth_account_email_exists", "同一提供方下该邮箱已绑定到其他密钥")
-                }
-                throw cause
-            }
-            // 重新授权后解除旧凭据留下的账号冷却、密钥冷却与失败计数，否则新凭据仍会被本地拦截。
-            app.oauthAccountScheduler.clearCooldown(keyId)
-            clearKeyCooldown(app, channel.id, keyId)
-            app.keyAutoDisableRepository.resetKeyHealth(keyId)
-            call.markAdminAuditDetails(buildJsonObject {
-                put("channelId", channel.id)
-                put("keyId", keyId)
-                put("provider", provider.value)
-                // 代理地址不含账号密码（校验阶段已拒绝 userInfo），记录后便于追溯出口配置。
-                proxyUrl?.let { put("proxyUrl", it) }
-            })
-            val refreshedChannel = app.channelRepository.find(channel.id) ?: channel
-            val key = refreshedChannel.keys.first { it.id == keyId }
-            val policy = key.oauthPolicy ?: OAuthAccountPolicy()
-            call.respond(account.toResponse(refreshedChannel, key, policy, app.oauthAccountScheduler.runtimeState(keyId, policy)))
-        }
-
-        put("/oauth-accounts/{keyId}/policy") {
-            call.requireAdmin(app)
-            val keyId = call.requiredParam("keyId", "缺少账号 id")
-            val (channel, key) = resolveOAuthAccountTarget(app, keyId)
-                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
             val request = call.receive<OAuthAccountPolicyRequest>()
             val policy = try {
                 OAuthAccountPolicy(
@@ -925,28 +1082,28 @@ fun Route.adminRoutes(app: GatewayApplication) {
             } catch (cause: IllegalArgumentException) {
                 throw badRequest("invalid_oauth_policy", cause.message ?: "账号调度策略无效")
             }
-            if (!app.oauthAccountRepository.updatePolicy(keyId, policy)) {
+            if (!app.oauthAccountRepository.updatePolicy(accountId, policy)) {
                 throw notFound("oauth_account_not_found", "订阅账号不存在")
             }
             call.markAdminAuditDetails(buildJsonObject {
-                put("keyId", keyId)
+                put("accountId", accountId)
                 request.windowLimit?.let { put("windowLimit", it) }
                 put("windowSeconds", request.windowSeconds)
                 put("maxConcurrentRequests", request.maxConcurrentRequests)
             })
-            val account = app.oauthAccountRepository.find(keyId)
+            val account = app.oauthAccountRepository.findDetailed(accountId)
                 ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
-            call.respond(account.toResponse(channel, key, policy, app.oauthAccountScheduler.runtimeState(keyId, policy)))
+            call.respond(oauthAccountResponse(app, account))
         }
 
-        post("/oauth-accounts/{keyId}/refresh") {
+        post("/oauth-accounts/{id}/refresh") {
             call.requireAdmin(app)
-            val keyId = call.requiredParam("keyId", "缺少账号 id")
-            when (val result = app.oauthTokenService.refreshNow(keyId)) {
+            val accountId = call.requiredParam("id", "缺少账号 id")
+            when (val result = app.oauthTokenService.refreshNow(accountId)) {
                 OAuthRefreshResult.NotOAuthAccount -> throw notFound("oauth_account_not_found", "订阅账号不存在")
                 is OAuthRefreshResult.Failed -> {
                     call.markAdminAuditDetails(buildJsonObject {
-                        put("keyId", keyId)
+                        put("accountId", accountId)
                         put("result", "failed")
                         result.errorCode?.let { put("errorCode", it) }
                     })
@@ -963,25 +1120,18 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 }
                 is OAuthRefreshResult.Refreshed -> {
                     call.markAdminAuditDetails(buildJsonObject {
-                        put("keyId", keyId)
+                        put("accountId", accountId)
                         put("result", "success")
                     })
-                    val (channel, key) = resolveOAuthAccountTarget(app, keyId)
-                        ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
-                    val policy = key.oauthPolicy ?: OAuthAccountPolicy()
-                    call.respond(
-                        result.account.toResponse(
-                            channel, key, policy, app.oauthAccountScheduler.runtimeState(keyId, policy),
-                        ),
-                    )
+                    call.respond(oauthAccountResponse(app, result.account))
                 }
             }
         }
 
-        post("/oauth-accounts/{keyId}/quota/refresh") {
+        post("/oauth-accounts/{id}/quota/refresh") {
             call.requireAdmin(app)
-            val keyId = call.requiredParam("keyId", "缺少账号 id")
-            when (val result = app.oauthQuotaService.refreshNow(keyId)) {
+            val accountId = call.requiredParam("id", "缺少账号 id")
+            when (val result = app.oauthQuotaService.refreshNow(accountId)) {
                 OAuthQuotaResult.NotFound -> throw notFound("oauth_account_not_found", "订阅账号不存在")
                 OAuthQuotaResult.NotSupported -> throw badRequest(
                     "oauth_quota_unsupported",
@@ -989,7 +1139,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 )
                 is OAuthQuotaResult.Failed -> {
                     call.markAdminAuditDetails(buildJsonObject {
-                        put("keyId", keyId)
+                        put("accountId", accountId)
                         put("result", "failed")
                         put("errorCode", result.errorCode)
                     })
@@ -1002,29 +1152,21 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 }
                 is OAuthQuotaResult.Refreshed -> {
                     call.markAdminAuditDetails(buildJsonObject {
-                        put("keyId", keyId)
+                        put("accountId", accountId)
                         put("result", "success")
                     })
-                    val (channel, key) = resolveOAuthAccountTarget(app, keyId)
-                        ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
-                    val policy = key.oauthPolicy ?: OAuthAccountPolicy()
-                    call.respond(
-                        result.account.toResponse(
-                            channel, key, policy, app.oauthAccountScheduler.runtimeState(keyId, policy),
-                        ),
-                    )
+                    call.respond(oauthAccountResponse(app, result.account))
                 }
             }
         }
 
-        post("/oauth-accounts/{keyId}/cooldown/clear") {
+        post("/oauth-accounts/{id}/cooldown/clear") {
             call.requireAdmin(app)
-            val keyId = call.requiredParam("keyId", "缺少账号 id")
-            val (channel, _) = resolveOAuthAccountTarget(app, keyId)
+            val accountId = call.requiredParam("id", "缺少账号 id")
+            val account = app.oauthAccountRepository.findDetailed(accountId)
                 ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
-            app.oauthAccountScheduler.clearCooldown(keyId)
-            clearKeyCooldown(app, channel.id, keyId)
-            call.markAdminAuditDetails(buildJsonObject { put("keyId", keyId) })
+            clearOAuthAccountCooldown(app, account)
+            call.markAdminAuditDetails(buildJsonObject { put("accountId", accountId) })
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -1553,40 +1695,52 @@ private fun channelKeyUnavailable(key: ChannelKeyRecord): GatewayException =
         badRequest("channel_key_disabled", "渠道密钥已停用")
     }
 
-/** 选择显式指定的密钥；未指定时使用优先级最高的启用密钥。 */
-private fun resolveChannelKey(channel: ChannelRecord, keyId: String?): ChannelKeyRecord {
-    if (!keyId.isNullOrBlank()) {
-        val key = channel.keys.firstOrNull { it.id == keyId }
-            ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
-        if (!key.isRoutable()) throw channelKeyUnavailable(key)
-        return key
+/** 静态密钥复用具体的停用错误码；订阅账号统一返回凭据停用。 */
+private fun credentialUnavailable(credential: UpstreamCredential): GatewayException =
+    when (credential) {
+        is ChannelKeyRecord -> channelKeyUnavailable(credential)
+        else -> badRequest("channel_key_disabled", "渠道凭据已停用")
     }
-    return channel.keys
+
+/** 管理面渠道操作需要同时看到静态密钥与关联订阅账号。 */
+private suspend fun channelWithCredentials(app: GatewayApplication, channel: ChannelRecord): ChannelRecord =
+    channel.copy(oauthAccounts = app.oauthAccountRepository.listByChannel()[channel.id].orEmpty())
+
+/** 选择显式指定的上游凭据（密钥或账号）；未指定时取优先级最高的可路由凭据。 */
+private fun resolveChannelCredential(channel: ChannelRecord, credentialId: String?): UpstreamCredential {
+    val credentials = channel.keys + channel.oauthAccounts
+    if (!credentialId.isNullOrBlank()) {
+        val credential = credentials.firstOrNull { it.id == credentialId }
+            ?: throw notFound("channel_key_not_found", "渠道密钥或订阅账号不存在")
+        if (!credential.isRoutable()) throw credentialUnavailable(credential)
+        return credential
+    }
+    return credentials
         .filter { it.isRoutable() }
         .minWithOrNull(compareBy({ it.priority }, { it.name }, { it.id }))
-        ?: throw badRequest("channel_key_unavailable", "渠道没有可用的启用密钥")
+        ?: throw badRequest("channel_key_unavailable", "渠道没有可用的上游凭据")
 }
 
-/** 为指定模型选择密钥；显式 keyId 必须支持该模型。 */
-private fun resolveChannelKeyForModel(
+/** 为指定模型选择上游凭据；显式 id 必须支持该模型。 */
+private fun resolveChannelCredentialForModel(
     channel: ChannelRecord,
     model: String,
-    keyId: String?,
-): ChannelKeyRecord {
-    if (!keyId.isNullOrBlank()) {
-        val key = channel.keys.firstOrNull { it.id == keyId }
-            ?: throw notFound("channel_key_not_found", "渠道密钥不存在")
-        if (!key.isRoutable()) throw channelKeyUnavailable(key)
+    credentialId: String?,
+): UpstreamCredential {
+    if (!credentialId.isNullOrBlank()) {
+        val credential = (channel.keys + channel.oauthAccounts).firstOrNull { it.id == credentialId }
+            ?: throw notFound("channel_key_not_found", "渠道密钥或订阅账号不存在")
+        if (!credential.isRoutable()) throw credentialUnavailable(credential)
         if (model !in channel.models) {
             throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
         }
-        if (!key.supports(model)) {
-            throw badRequest("model_not_authorized", "密钥「${key.name}」未授权模型「$model」")
+        if (!credential.supports(model)) {
+            throw badRequest("model_not_authorized", "凭据「${credential.name}」未授权模型「$model」")
         }
-        return key
+        return credential
     }
-    return channel.keysFor(model).firstOrNull()
-        ?: throw badRequest("channel_key_unavailable", "没有启用密钥支持模型「$model」")
+    return channel.credentialsFor(model).firstOrNull()
+        ?: throw badRequest("channel_key_unavailable", "没有启用凭据支持模型「$model」")
 }
 
 private fun validateChannel(request: ChannelRequest, credentialRequired: Boolean) {
@@ -1655,8 +1809,7 @@ private fun normalizeNewKeys(
 ): List<NewChannelKey> {
     val channelModels = modelMappings.map { it.upstreamModel }.toSet()
     if (request.keys.isNullOrEmpty()) {
-        val credential = request.credential?.takeIf { it.isNotBlank() }
-            ?: throw badRequest("invalid_channel", "新建渠道必须提供上游凭据")
+        val credential = request.credential?.takeIf { it.isNotBlank() } ?: return emptyList()
         return listOf(
             NewChannelKey(
                 name = DEFAULT_CHANNEL_KEY_NAME,
@@ -1714,6 +1867,19 @@ private fun normalizeUpdatedKeys(
         }
     }
     if (encryptedCredential == null && modelMappings == null) return null
+    if (existing.keys.isEmpty()) {
+        return if (encryptedCredential == null) {
+            emptyList()
+        } else {
+            listOf(
+                ChannelKeyUpdate(
+                    name = DEFAULT_CHANNEL_KEY_NAME,
+                    credential = encryptedCredential,
+                    models = channelModels.toList(),
+                ),
+            )
+        }
+    }
     if (existing.keys.size != 1) throw badRequest("invalid_channel", "渠道已配置多个密钥，请显式提交 keys")
     val current = existing.keys.single()
     return listOf(
@@ -2105,25 +2271,32 @@ private fun adminUnauthorized(message: String): GatewayException =
 private fun adminForbidden(code: String, message: String): GatewayException =
     GatewayException(HttpStatusCode.Forbidden, code, message, "permission_error")
 
-/** 订阅账号看板：按 keyId 反查所属渠道与密钥；不是订阅账号时返回 null。 */
-private suspend fun resolveOAuthAccountTarget(
+/** 管理面账号响应：把账号关联的渠道 ID 展开成名称，并带上实时调度状态。 */
+private suspend fun oauthAccountResponse(
     app: GatewayApplication,
-    keyId: String,
-): Pair<ChannelRecord, ChannelKeyRecord>? {
-    for (channel in app.channelRepository.list()) {
-        val key = channel.keys.firstOrNull { it.id == keyId } ?: continue
-        return if (key.oauthPolicy == null) null else channel to key
-    }
-    return null
+    account: dev.soven.llmgateway.domain.OAuthAccountRecord,
+): OAuthAccountResponse {
+    val channelsById = app.channelRepository.list().associateBy { it.id }
+    return account.toResponse(
+        channels = account.channelIds.sorted().mapNotNull { channelId ->
+            channelsById[channelId]?.let { channel -> OAuthAccountChannelResponse(channel.id, channel.name) }
+        },
+        policy = account.policy,
+        runtime = app.oauthAccountScheduler.runtimeState(account.id, account.policy),
+    )
 }
 
-/**
- * 管理面解除订阅账号冷却时同时清掉候选冷却。
- * 重新授权后如果只清账号冷却，旧的候选冷却仍会让请求跳过该密钥。
- */
-private suspend fun clearKeyCooldown(app: GatewayApplication, channelId: String, keyId: String) {
+/** 账号重新授权或管理员解除冷却后，同时清理各关联渠道下该账号的候选冷却。 */
+private suspend fun clearOAuthAccountCooldown(
+    app: GatewayApplication,
+    account: dev.soven.llmgateway.domain.OAuthAccountRecord,
+) {
+    app.oauthAccountScheduler.clearCooldown(account.id)
+    if (account.channelIds.isEmpty()) return
     val baselineSeq = app.cooldownStateWriter.currentSeq()
-    val cleared = app.candidateCooldown.clearKey(channelId, keyId)
+    val cleared = account.channelIds.flatMap { channelId ->
+        app.candidateCooldown.clearKey(channelId, account.id)
+    }
     if (!app.cooldownStateWriter.deleteNow(cleared.toSet(), baselineSeq, 5_000)) {
         throw GatewayException(
             HttpStatusCode.ServiceUnavailable,
