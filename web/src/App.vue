@@ -58,7 +58,7 @@ const view = ref<keyof typeof meta>('channels')
 const navOpen = ref(false)
 const accountOpen = ref(false)
 const currentMeta = computed(() => meta[view.value] || meta.channels)
-const isDataView = computed(() => view.value === 'logs' || view.value === 'audit-logs')
+const isDataView = computed(() => view.value === 'channels' || view.value === 'logs' || view.value === 'audit-logs')
 
 async function restoreSession() {
   try {
