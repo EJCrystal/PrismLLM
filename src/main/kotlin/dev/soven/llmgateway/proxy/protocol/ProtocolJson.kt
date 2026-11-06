@@ -16,6 +16,7 @@ internal val messagesRequestFields = setOf(
     "model", "messages", "system", "max_tokens", "stream", "temperature", "top_p",
     "stop_sequences", "metadata", "tools", "tool_choice", "thinking",
     "prompt_cache_key", "client_metadata",
+    "context_management", "output_config",
 )
 internal val responsesRequestFields = setOf(
     "model", "input", "instructions", "max_output_tokens", "stream", "temperature", "top_p",
@@ -55,9 +56,6 @@ internal fun validateResponsesRequest(request: JsonObject) {
     rejectUnknownFields(request, responsesRequestFields, "request")
     (request["store"] as? JsonPrimitive)?.let { store ->
         if (store.booleanOrNull != false) unsupported("store", "协议转换仅支持 Responses store=false")
-    }
-    (request["include"] as? JsonArray)?.takeIf { it.isNotEmpty() }?.let {
-        unsupported("include", "协议转换不支持 Responses include 扩展")
     }
     request.string("truncation")?.takeIf { it != "disabled" }?.let {
         unsupported("truncation", "协议转换仅支持 truncation=disabled")

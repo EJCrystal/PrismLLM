@@ -105,13 +105,10 @@ class MessagesResponsesConversionTest {
     @Test
     fun `direct conversion rejects unsupported semantics instead of dropping them`() {
         val cases = listOf(
-            Triple(MessagesToResponses, """{"messages":[],"context_management":{}}""", "request.context_management"),
-            Triple(MessagesToResponses, """{"messages":[],"output_config":{}}""", "request.output_config"),
             Triple(MessagesToResponses, """{"messages":[],"stop_sequences":["END"]}""", "stop_sequences"),
             Triple(MessagesToResponses, """{"messages":[],"metadata":{"trace":"value"}}""", "metadata.trace"),
             Triple(ResponsesToMessages, """{"input":"hi","previous_response_id":"resp_1"}""", "previous_response_id"),
             Triple(ResponsesToMessages, """{"input":"hi","store":true}""", "store"),
-            Triple(ResponsesToMessages, """{"input":"hi","include":["reasoning.encrypted_content"]}""", "include"),
             Triple(ResponsesToMessages, """{"input":"hi","truncation":"auto"}""", "truncation"),
             Triple(ResponsesToMessages, """{"input":"hi","text":{"format":{"type":"json_schema"}}}""", "text.format"),
         )
@@ -119,6 +116,18 @@ class MessagesResponsesConversionTest {
             val error = assertFailsWith<ProtocolConversionException> { converter.convertRequest(json(request), "upstream") }
             assertEquals(field, error.field)
         }
+    }
+
+    @Test
+    fun `direct conversion strips compatible client extensions without failing`() {
+        val messagesReq = json("""{"messages":[{"role":"user","content":"hi"}],"context_management":{"edits":[]},"output_config":{"format":{"type":"text"}}}""")
+        val responsesFromMessages = MessagesToResponses.convertRequest(messagesReq, "upstream")
+        assertFalse(responsesFromMessages.containsKey("context_management"))
+        assertFalse(responsesFromMessages.containsKey("output_config"))
+
+        val responsesReq = json("""{"input":"hi","include":["reasoning.encrypted_content","message.output_tokens"]}""")
+        val messagesFromResponses = ResponsesToMessages.convertRequest(responsesReq, "upstream")
+        assertFalse(messagesFromResponses.containsKey("include"))
     }
 
     @Test
