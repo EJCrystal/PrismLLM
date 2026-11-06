@@ -1169,13 +1169,30 @@ private suspend fun proxyStream(
         streamRequest
     }
     val bodyJson = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
-    val codeAssistProject = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential).project
+    val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential)
     } else {
         null
     }
+    val codeAssistProject = codeAssistContext?.project
+    // 进程启动后第一次请求时补一次模型目录，避免重启后家族 id 失去变体映射。
+    if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null &&
+        app.codeAssistModelCatalog.snapshot().isEmpty()
+    ) {
+        runCatching {
+            app.codeAssistModelCatalog.fetch(
+                credential,
+                codeAssistProject,
+                listOfNotNull(codeAssistContext?.tier),
+            )
+        }
+    }
     val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        CodeAssistEnvelope.wrap(CodeAssistCloak.apply(bodyJson), candidate.upstreamModel, codeAssistProject).toString()
+        val sentModel = app.codeAssistModelCatalog.sentId(
+            candidate.upstreamModel,
+            ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
+        )
+        CodeAssistEnvelope.wrap(CodeAssistCloak.apply(bodyJson), sentModel, codeAssistProject).toString()
     } else {
         bodyJson.toString()
     }
@@ -1424,13 +1441,30 @@ private suspend fun proxyJson(
     }
     val nonStreamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = false)
     val bodyJson = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
-    val codeAssistProject = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential).project
+    val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential)
     } else {
         null
     }
+    val codeAssistProject = codeAssistContext?.project
+    // 进程启动后第一次请求时补一次模型目录，避免重启后家族 id 失去变体映射。
+    if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null &&
+        app.codeAssistModelCatalog.snapshot().isEmpty()
+    ) {
+        runCatching {
+            app.codeAssistModelCatalog.fetch(
+                credential,
+                codeAssistProject,
+                listOfNotNull(codeAssistContext?.tier),
+            )
+        }
+    }
     val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        CodeAssistEnvelope.wrap(CodeAssistCloak.apply(bodyJson), candidate.upstreamModel, codeAssistProject).toString()
+        val sentModel = app.codeAssistModelCatalog.sentId(
+            candidate.upstreamModel,
+            ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
+        )
+        CodeAssistEnvelope.wrap(CodeAssistCloak.apply(bodyJson), sentModel, codeAssistProject).toString()
     } else {
         bodyJson.toString()
     }

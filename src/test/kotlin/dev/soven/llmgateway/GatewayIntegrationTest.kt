@@ -1211,7 +1211,7 @@ class GatewayIntegrationTest {
                 .associate {
                     it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["managedChannel"]!!.jsonPrimitive.boolean
                 }
-            assertEquals(mapOf("chatgpt" to true, "antigravity" to false), managed)
+            assertEquals(mapOf("chatgpt" to true, "antigravity" to true), managed)
 
             val stored = assertNotNull(app.oauthAccountRepository.find(accountId))
             assertNotEquals("refresh-token-value", stored.refreshTokenCiphertext)
@@ -6743,7 +6743,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("54", result.getString(1))
+                        assertEquals("55", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())

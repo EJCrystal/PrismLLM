@@ -30,6 +30,7 @@ import dev.soven.llmgateway.oauth.OAuthTokenProviderRegistry
 import dev.soven.llmgateway.oauth.OAuthTokenService
 import dev.soven.llmgateway.oauth.ProviderChannelProvisioner
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistProjectResolver
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistModelCatalog
 import dev.soven.llmgateway.oauth.OAuthWindowStateWriter
 import dev.soven.llmgateway.oauth.buildOAuthTokenProviders
 import dev.soven.llmgateway.repo.ModelTestSettingsRepository
@@ -320,6 +321,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val providerChannelProvisioner = ProviderChannelProvisioner(channelRepository, oauthAccountRepository)
     /** Antigravity 的 Code Assist project/tier 发现与缓存。 */
     val codeAssistProjectResolver = CodeAssistProjectResolver(oauthAccountRepository, httpClient)
+    /** Antigravity 的模型目录与家族/变体映射。 */
+    val codeAssistModelCatalog = CodeAssistModelCatalog(httpClient)
     val modelCatalog = UpstreamModelCatalog(channelRepository, oauthAccountRepository)
     val oauthTokenProviders = OAuthTokenProviderRegistry(buildOAuthTokenProviders(config.oauth))
     val oauthTokenService = OAuthTokenService(oauthAccountRepository, credentialCipher, oauthTokenProviders, config.oauth)

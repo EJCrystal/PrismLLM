@@ -1,0 +1,138 @@
+package dev.soven.llmgateway.proxy.codeassist
+
+import io.ktor.client.HttpClient
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.contentType
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
+import org.slf4j.LoggerFactory
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Code Assist 的模型目录：fetchAvailableModels 按 tier 逐级尝试，被 400 的 tier
+ * 记一天不再试；结果收成家族模型，供渠道模型列表和请求时的变体选择使用。
+ * 对应 magpie 的 modelInfo / askTiers / tierRefused 与 antigravityFamilies。
+ *
+ * @author 文杰
+ * @since 2026-11-06
+ */
+class CodeAssistModelCatalog(
+    private val httpClient: HttpClient,
+    private val baseUrl: String = "https://daily-cloudcode-pa.googleapis.com",
+    private val now: () -> Long = System::currentTimeMillis,
+) {
+    private val logger = LoggerFactory.getLogger(CodeAssistModelCatalog::class.java)
+    private val json = Json { ignoreUnknownKeys = true }
+    private val refused = ConcurrentHashMap<String, Long>()
+
+    @Volatile
+    private var snapshot: List<AntigravityModels.Model> = emptyList()
+
+    /** 拉取并收成家族模型；全部 tier 都失败时返回空列表。 */
+    suspend fun fetch(accessToken: String, project: String, tiers: List<String>): List<AntigravityModels.Model> {
+        val candidates = (tiers.filter { it.isNotBlank() }.distinct() + listOf(""))
+            .filter { tier -> tier.isEmpty() || !isRefused(project, tier) }
+        for (tier in candidates) {
+            val response = runCatching { requestModels(accessToken, project, tier) }.getOrElse { cause ->
+                logger.warn("fetchAvailableModels failed, tier={}, error={}", tier, cause::class.simpleName)
+                return@getOrElse null
+            }
+            when {
+                response == null -> continue
+                response.status == 400 && tier.isNotEmpty() -> {
+                    refused[tierKey(project, tier)] = now() + TIER_REFUSED_MS
+                    logger.info("fetchAvailableModels refused tier {}, trying the next", tier)
+                }
+                response.status !in 200..299 -> {
+                    logger.warn("fetchAvailableModels status {}", response.status)
+                }
+                else -> {
+                    val raw = parseModels(response.body)
+                    snapshot = raw
+                    return AntigravityModels.collapse(raw)
+                }
+            }
+        }
+        return emptyList()
+    }
+
+    /** 请求时把家族模型落到当前等级的具体变体。 */
+    fun sentId(model: String, effort: String?): String =
+        if (snapshot.isEmpty()) model else AntigravityModels.sentId(model, effort, snapshot)
+
+    /** 仅供测试与诊断。 */
+    fun snapshot(): List<AntigravityModels.Model> = snapshot
+
+    private suspend fun requestModels(accessToken: String, project: String, tier: String): HttpResult {
+        val body = buildJsonObject {
+            put("project", project)
+            if (tier.isNotEmpty()) {
+                putJsonObject("entitlement") { put("userTier", tier) }
+            }
+        }
+        val response = httpClient.post(baseUrl + "/v1internal:fetchAvailableModels") {
+            header(HttpHeaders.Authorization, "Bearer " + accessToken)
+            header("X-Goog-Api-Client", "gl-node/22.21.1")
+            contentType(ContentType.Application.Json)
+            setBody(body.toString())
+        }
+        return HttpResult(response.status.value, response.bodyAsText())
+    }
+
+    internal fun parseModels(text: String): List<AntigravityModels.Model> {
+        val root = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return emptyList()
+        val models = root["models"] as? JsonObject ?: return emptyList()
+        return models.entries.mapNotNull { (id, value) ->
+            val model = value as? JsonObject ?: return@mapNotNull null
+            if ((model["disabled"] as? JsonPrimitive)?.booleanOrNull == true) return@mapNotNull null
+            if (id.startsWith("chat_") || id.startsWith("tab_")) return@mapNotNull null
+            if (id in HIDDEN) return@mapNotNull null
+            AntigravityModels.Model(
+                id = id,
+                name = (model["displayName"] as? JsonPrimitive)?.contentOrNull ?: id,
+                context = (model["maxTokens"] as? JsonPrimitive)?.longOrNull,
+                output = (model["maxOutputTokens"] as? JsonPrimitive)?.longOrNull,
+                imageInput = (model["supportsImages"] as? JsonPrimitive)?.booleanOrNull == true,
+            )
+        }
+    }
+
+    private fun isRefused(project: String, tier: String): Boolean {
+        val until = refused[tierKey(project, tier)] ?: return false
+        if (until <= now()) {
+            refused.remove(tierKey(project, tier))
+            return false
+        }
+        return true
+    }
+
+    private fun tierKey(project: String, tier: String): String = project + "\u0000" + tier
+
+    private data class HttpResult(val status: Int, val body: String)
+
+    private companion object {
+        const val TIER_REFUSED_MS = 24 * 60 * 60 * 1000L
+        /** Antigravity 列出但不用于对话的模型。 */
+        val HIDDEN = setOf(
+            "chat_20706",
+            "chat_23310",
+            "tab_flash_lite_preview",
+            "tab_jump_flash_lite_preview",
+            "gemini-2.5-flash-thinking",
+            "gemini-2.5-pro",
+        )
+    }
+}

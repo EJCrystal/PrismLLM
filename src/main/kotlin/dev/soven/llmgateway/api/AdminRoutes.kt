@@ -745,6 +745,56 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(HttpStatusCode.NoContent)
         }
 
+        post("/oauth-providers/{provider}/models/refresh") {
+            call.requireAdmin(app)
+            val provider = OAuthProvider.fromValue(
+                call.requiredParam("provider", "缺少 provider").trim().lowercase(),
+            ) ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
+            val channelId = app.providerChannelProvisioner.ensure(provider)
+                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
+            val account = app.oauthAccountRepository.listAll().firstOrNull { it.provider == provider }
+                ?: throw badRequest("oauth_account_missing", "该提供方还没有订阅账号，无法读取模型目录")
+            val token = try {
+                app.oauthTokenService.accessToken(account.id)
+            } catch (cause: Throwable) {
+                throw GatewayException(
+                    HttpStatusCode.BadGateway,
+                    "oauth_credential_unavailable",
+                    "读取账号凭据失败: " + (cause.message ?: cause::class.simpleName),
+                    "upstream_error",
+                    retryable = true,
+                )
+            } ?: throw badRequest("oauth_credential_unavailable", "账号还没有可用的 access token")
+            val context = app.codeAssistProjectResolver.context(account, token.accessToken)
+            val models = app.codeAssistModelCatalog.fetch(
+                token.accessToken,
+                context.project.orEmpty(),
+                listOfNotNull(context.tier),
+            )
+            if (models.isEmpty()) {
+                throw GatewayException(
+                    HttpStatusCode.BadGateway,
+                    "model_catalog_unavailable",
+                    "上游没有返回可用模型",
+                    "upstream_error",
+                    retryable = true,
+                )
+            }
+            app.channelRepository.replaceModels(
+                channelId,
+                models.map { ChannelModelRecord(upstreamModel = it.id) },
+            )
+            call.markAdminAuditDetails(buildJsonObject {
+                put("provider", provider.value)
+                put("models", models.joinToString(",") { it.id })
+            })
+            call.respond(
+                OAuthProviderModelsResponse(
+                    models = models.map { OAuthProviderModelResponse(it.id, it.name) },
+                ),
+            )
+        }
+
         get("/oauth-accounts") {
             call.requireAdmin(app)
             call.response.headers.append("Cache-Control", "no-store")

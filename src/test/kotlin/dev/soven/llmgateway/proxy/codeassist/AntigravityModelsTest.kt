@@ -1,0 +1,48 @@
+package dev.soven.llmgateway.proxy.codeassist
+
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+/** Antigravity 模型家族与思考等级变体的映射。 */
+class AntigravityModelsTest {
+    private val raw = listOf(
+        AntigravityModels.Model("gemini-3.7-flash", "Gemini 3.7 Flash"),
+        AntigravityModels.Model("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"),
+        AntigravityModels.Model("gemini-3.7-flash-medium", "Gemini 3.7 Flash (Medium)"),
+        AntigravityModels.Model("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"),
+        AntigravityModels.Model("gemini-2.5-pro", "Gemini 2.5 Pro"),
+    )
+
+    @Test
+    fun splitsIdsAndNames() {
+        assertEquals("gemini-3.7-flash" to "high", AntigravityModels.splitId("gemini-3.7-flash-high"))
+        assertEquals("gemini-3.7-flash" to "minimal", AntigravityModels.splitId("gemini-3.7-flash-extra-low"))
+        assertEquals("gemini-3.7-flash" to "", AntigravityModels.splitId("gemini-3.7-flash"))
+        assertEquals("Gemini 3.7 Flash" to "medium", AntigravityModels.nameLevel("Gemini 3.7 Flash (Medium)"))
+    }
+
+    @Test
+    fun collapsesFamiliesToOneModel() {
+        val collapsed = AntigravityModels.collapse(raw)
+        assertEquals(listOf("gemini-3.7-flash", "gemini-2.5-pro"), collapsed.map { it.id })
+        assertEquals("Gemini 3.7 Flash", collapsed.first().name)
+    }
+
+    @Test
+    fun picksTheVariantForTheRequestedLevel() {
+        assertEquals("gemini-3.7-flash-high", AntigravityModels.sentId("gemini-3.7-flash", "high", raw))
+        assertEquals("gemini-3.7-flash-medium", AntigravityModels.sentId("gemini-3.7-flash", "medium", raw))
+        assertEquals("gemini-3.7-flash-low", AntigravityModels.sentId("gemini-3.7-flash", "minimal", raw))
+        // 没有 xhigh 就用最近的高档
+        assertEquals("gemini-3.7-flash-high", AntigravityModels.sentId("gemini-3.7-flash", "max", raw))
+        // 不给等级时用家族本身的 id
+        assertEquals("gemini-3.7-flash", AntigravityModels.sentId("gemini-3.7-flash", null, raw))
+    }
+
+    @Test
+    fun keepsVariantIdsAndSingleModels() {
+        assertEquals("gemini-3.7-flash-medium", AntigravityModels.sentId("gemini-3.7-flash-medium", null, raw))
+        assertEquals("gemini-3.7-flash-high", AntigravityModels.sentId("gemini-3.7-flash-medium", "high", raw))
+        assertEquals("gemini-2.5-pro", AntigravityModels.sentId("gemini-2.5-pro", "high", raw))
+    }
+}
