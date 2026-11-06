@@ -67,4 +67,21 @@ class UpstreamOccupancyTest {
         slots.forEach { occupancy.end(it) }
         assertTrue(occupancy.snapshot().isEmpty())
     }
+
+    @Test
+    fun `snapshot tolerates slots being added and removed concurrently`() = runBlocking {
+        val occupancy = UpstreamOccupancy()
+        // 反复让映射在 0/1 个槽位之间切换，覆盖 toMap() 单元素分支的竞态窗口。
+        val churn = launch(Dispatchers.Default) {
+            repeat(20_000) {
+                val slot = occupancy.begin("channel-a", "key-1")
+                occupancy.end(slot)
+            }
+        }
+        repeat(20_000) {
+            occupancy.snapshot()
+        }
+        churn.join()
+        assertTrue(occupancy.snapshot().isEmpty())
+    }
 }
