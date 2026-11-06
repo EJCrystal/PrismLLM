@@ -4759,12 +4759,18 @@ textarea:disabled {
 .channel-page-actions .button { min-height: 38px; padding: 8px 13px; }
 .channel-list-toolbar {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
   padding: 11px 14px;
   border-bottom: 1px solid var(--line);
+}
+
+.channel-name-search {
+  flex: 0 1 232px;
+  width: 232px;
 }
 
 .channel-sort-note {
@@ -4871,6 +4877,11 @@ textarea:disabled {
 .channels-table th.channel-name-col {
   z-index: 4;
   background: var(--table-head-bg);
+}
+
+.content-data .table-scroll-paged .channels-table th.channel-name-col,
+.content-data .table-scroll-paged .channels-table th.actions-col {
+  z-index: 6;
 }
 
 .channels-table td.channel-name-col {
@@ -5040,6 +5051,11 @@ textarea:disabled {
   .channel-list-toolbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .channel-name-search {
+    flex: none;
+    width: 100%;
   }
 
   .channel-page-head { gap: 8px; }

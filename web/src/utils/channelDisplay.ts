@@ -57,6 +57,7 @@ export function channelProtocolSlots(protocols: readonly string[] | null | undef
 }
 
 export interface DisplayChannel {
+  name?: string | null
   models?: string[] | null
   modelMappings?: ChannelModelMapping[] | null
 }
@@ -110,9 +111,12 @@ export function channelMatchesFilters(
   channel: DisplayChannel & { enabled: boolean },
   status: ChannelStatusFilter,
   model: string,
+  name = '',
 ): boolean {
   if (status === 'enabled' && !channel.enabled) return false
   if (status === 'disabled' && channel.enabled) return false
+  const keyword = name.trim().toLocaleLowerCase()
+  if (keyword && !String(channel.name ?? '').toLocaleLowerCase().includes(keyword)) return false
   return !model || channelDisplayModels(channel).some((item) => item.displayName === model)
 }
 

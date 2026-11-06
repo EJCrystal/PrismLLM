@@ -139,6 +139,21 @@ describe('channelDisplay: 渠道列表与 +N 模型展示逻辑', () => {
       assert.equal(channelMatchesFilters(channels[0], 'enabled', 'wire-a'), false)
       assert.equal(channelMatchesFilters(channels[1], 'all', ''), true)
     })
+
+    it('渠道名称筛选忽略大小写和首尾空格，并可与状态、模型筛选叠加', () => {
+      const namedChannels = [
+        { id: 'named-one', name: '主线路 Alpha', enabled: true, models: ['wire-a', 'model-z'], modelMappings: [{ upstreamModel: 'wire-a', canonicalModelId: 'public-a' }] },
+        { id: 'named-two', name: '备用线路 Beta', enabled: false, models: ['model-b', 'public-a'], modelMappings: [] },
+      ]
+
+      assert.equal(channelMatchesFilters(namedChannels[0], 'all', '', 'alpha'), true)
+      assert.equal(channelMatchesFilters(namedChannels[0], 'all', '', '  主线路  '), true)
+      assert.equal(channelMatchesFilters(namedChannels[0], 'all', '', 'beta'), false)
+      assert.equal(channelMatchesFilters(namedChannels[1], 'disabled', 'public-a', 'beta'), true)
+      assert.equal(channelMatchesFilters(namedChannels[0], 'disabled', 'public-a', 'alpha'), false)
+      assert.equal(channelMatchesFilters(namedChannels[0], 'all', 'wire-a', 'alpha'), false)
+      assert.equal(channelMatchesFilters(namedChannels[0], 'all', '', '   '), true)
+    })
   })
 
   describe('+N 折叠徽章展示 (hiddenModelsTitle)', () => {
