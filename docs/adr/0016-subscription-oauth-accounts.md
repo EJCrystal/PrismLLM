@@ -80,6 +80,13 @@
 - 旧密钥的非 `ACTIVE` 状态统一映射为账号 `enabled=false`；自动临时停用的到期恢复不再沿用，需要管理员在账号页重新启用。
 - 旧表 `channel_key_oauth_accounts` 与 `channel_key_oauth_windows` 删除。历史请求日志中的 `channel_key_id` / `channel_key_name` 保留原值，仅作为审计信息。
 
+### 端点渠道
+
+- 订阅凭据只能用于提供方自己的官方端点，因此端点写成代码常量（ProviderEndpoints），不随渠道配置变化。
+- 每个已实现上游协议的 provider 由 ProviderChannelProvisioner 置备一条 kind=provider 的系统渠道，账号导入或登录完成后自动关联；账号与渠道的一对一关系由唯一索引保证。
+- 系统渠道不可编辑、不可删除，也不出现在渠道列表；账号页只展示上游端点。
+- Antigravity 走 Google Code Assist 的信封协议（v1internal:streamGenerateContent），网关尚未实现，因此不置备渠道，账号仍按原有方式手工关联。
+
 ## Consequences
 
 - 订阅账号可以跨渠道复用，删除渠道不再删除账号；账号池调度、额度与代理都按账号聚合。

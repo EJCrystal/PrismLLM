@@ -28,12 +28,14 @@ class DatabaseFactory(config: GatewayConfig) : AutoCloseable {
 
     val database: Database = Database.connect(dataSource)
 
-    fun migrate() {
-        Flyway.configure()
+    /** 执行迁移并返回本次真正应用的版本，供启动期的一次性数据搬迁判断。 */
+    fun migrate(): Set<String> {
+        val result = Flyway.configure()
             .dataSource(dataSource)
             .locations("classpath:db/migration")
             .load()
             .migrate()
+        return result.migrations.mapNotNull { it.version }.toSet()
     }
 
     fun ping(): Boolean = runCatching {

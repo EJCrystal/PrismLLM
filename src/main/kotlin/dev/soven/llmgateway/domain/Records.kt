@@ -132,7 +132,11 @@ data class ChannelRecord(
     val quotaCredential: EncryptedCredential? = null,
     /** Optional per-protocol overrides; an absent entry inherits [authType]. */
     val protocolAuthTypes: Map<String, String> = emptyMap(),
+    /** custom: 用户自建；provider: 系统按订阅 provider 置备。 */
+    val kind: ChannelKind = ChannelKind.CUSTOM,
+    val provider: OAuthProvider? = null,
 ) {
+    val isProviderChannel: Boolean get() = kind == ChannelKind.PROVIDER
     val models: List<String> get() = modelMappings.map { it.upstreamModel }
 
     /**

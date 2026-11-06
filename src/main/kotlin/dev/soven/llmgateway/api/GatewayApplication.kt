@@ -28,6 +28,7 @@ import dev.soven.llmgateway.oauth.OAuthLoginService
 import dev.soven.llmgateway.oauth.OAuthQuotaService
 import dev.soven.llmgateway.oauth.OAuthTokenProviderRegistry
 import dev.soven.llmgateway.oauth.OAuthTokenService
+import dev.soven.llmgateway.oauth.ProviderChannelProvisioner
 import dev.soven.llmgateway.oauth.OAuthWindowStateWriter
 import dev.soven.llmgateway.oauth.buildOAuthTokenProviders
 import dev.soven.llmgateway.repo.ModelTestSettingsRepository
@@ -314,6 +315,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     )
     /** 订阅账号 access token 解析与后台轮换；未配置任何 Provider 时后台任务不扫描。 */
     val oauthAccountRepository = OAuthAccountRepository(databaseFactory.database)
+    /** 订阅账号的官方端点渠道：按 provider 置备，账号导入时自动挂上。 */
+    val providerChannelProvisioner = ProviderChannelProvisioner(channelRepository, oauthAccountRepository)
     val modelCatalog = UpstreamModelCatalog(channelRepository, oauthAccountRepository)
     val oauthTokenProviders = OAuthTokenProviderRegistry(buildOAuthTokenProviders(config.oauth))
     val oauthTokenService = OAuthTokenService(oauthAccountRepository, credentialCipher, oauthTokenProviders, config.oauth)
@@ -349,11 +352,15 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     )
 
     fun install(app: Application) {
-        databaseFactory.migrate()
+        val appliedMigrations = databaseFactory.migrate()
         channelHealthIndexJob = dev.soven.llmgateway.report.startChannelHealthIndexer(requestLogRepository, scope)
         runBlocking { upstreamRequestSettingsRepository.load() }
         runBlocking { upstreamHeaderCatalogService.initialize() }
         runBlocking { seedAdmin() }
+        // 只在本次启动真正应用了 V54 时做一次性搬迁；后续导入由账号接口自行挂载。
+        if ("54" in appliedMigrations) {
+            runBlocking { providerChannelProvisioner.reconcile() }
+        }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
         runBlocking { oauthAccountScheduler.restore(oauthWindowRepository.loadAll()) }
         runBlocking {

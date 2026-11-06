@@ -23,6 +23,9 @@ object Channels : Table("channels") {
     val quotaCredentialKeyVersion = integer("quota_credential_key_version").default(1)
     val enabled = bool("enabled")
     val priority = integer("priority").default(1)
+    /** custom: 用户自建；provider: 系统按订阅 provider 置备，端点由代码常量固定。 */
+    val kind = varchar("kind", 16).default("custom")
+    val provider = varchar("provider", 32).nullable()
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
 

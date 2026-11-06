@@ -8,6 +8,8 @@ import dev.soven.llmgateway.db.ChannelKeys
 import dev.soven.llmgateway.db.ChannelModels
 import dev.soven.llmgateway.db.Channels
 import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.domain.ChannelKind
+import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelRecord
@@ -125,6 +127,14 @@ class ChannelRepository(private val database: Database, private val credentialCi
         Channels.selectAll().where { Channels.id eq id }.singleOrNull()?.let(::toRecordWithRelations)
     }
 
+    /** 按订阅 provider 查找系统置备的渠道。 */
+    suspend fun findProviderChannel(provider: OAuthProvider): ChannelRecord? = suspendTransaction(database) {
+        Channels.selectAll()
+            .where { (Channels.kind eq ChannelKind.PROVIDER.value) and (Channels.provider eq provider.value) }
+            .singleOrNull()
+            ?.let(::toRecordWithRelations)
+    }
+
     suspend fun findByName(name: String): ChannelRecord? = suspendTransaction(database) {
         Channels.selectAll().where { Channels.name eq name }.singleOrNull()?.let(::toRecordWithRelations)
     }
@@ -142,6 +152,8 @@ class ChannelRepository(private val database: Database, private val credentialCi
         quota: ChannelQuotaSettings = ChannelQuotaSettings(),
         quotaCredential: EncryptedCredential? = null,
         protocolAuthTypes: Map<String, String> = emptyMap(),
+        kind: ChannelKind = ChannelKind.CUSTOM,
+        provider: OAuthProvider? = null,
     ): ChannelRecord = suspendTransaction(database) {
         val storedProtocols = protocols.distinct()
         require(storedProtocols.isNotEmpty()) { "channel requires at least one protocol" }
@@ -156,6 +168,8 @@ class ChannelRepository(private val database: Database, private val credentialCi
             it[Channels.protocols] = storedProtocols.joinToString(",") { protocol -> protocol.value }
             it[Channels.enabled] = enabled
             it[Channels.priority] = priority
+            it[Channels.kind] = kind.value
+            it[Channels.provider] = provider?.value
             it[Channels.requestOverrides] = Json.encodeToString(requestOverrides)
             it[Channels.quotaSettings] = Json.encodeToString(quota)
             it.setQuotaCredential(quotaCredential, clear = false)
@@ -221,6 +235,14 @@ class ChannelRepository(private val database: Database, private val credentialCi
             if (keys != null) saveKeys(id, keys, now)
             Channels.selectAll().where { Channels.id eq id }.single().let(::toRecordWithRelations)
         }
+    }
+
+    /** 只替换渠道的模型映射；系统置备渠道用它维护官方模型列表。 */
+    suspend fun replaceModels(id: String, modelMappings: List<ChannelModelRecord>): Boolean = suspendTransaction(database) {
+        if (Channels.selectAll().where { Channels.id eq id }.empty()) return@suspendTransaction false
+        val now = System.currentTimeMillis()
+        saveModels(id, modelMappings, now)
+        Channels.update({ Channels.id eq id }) { it[updatedAt] = now } > 0
     }
 
     suspend fun delete(id: String): Boolean = suspendTransaction(database) {
@@ -431,6 +453,8 @@ class ChannelRepository(private val database: Database, private val credentialCi
         protocols = GatewayProtocol.parse(row[Channels.protocols]),
         enabled = row[Channels.enabled],
         priority = row[Channels.priority],
+        kind = ChannelKind.fromValue(row[Channels.kind]) ?: ChannelKind.CUSTOM,
+        provider = row[Channels.provider]?.let(OAuthProvider::fromValue),
         createdAt = row[Channels.createdAt],
         updatedAt = row[Channels.updatedAt],
         requestOverrides = Json.decodeFromString<UpstreamRequestOverrides>(row[Channels.requestOverrides]),

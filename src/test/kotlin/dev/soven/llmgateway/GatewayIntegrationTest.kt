@@ -1164,7 +1164,10 @@ class GatewayIntegrationTest {
             val account = Json.parseToJsonElement(body).jsonObject
             val accountId = account["id"]!!.jsonPrimitive.content
             assertTrue(accountId.isNotBlank())
-            assertEquals(channel.id, account["channelIds"]!!.jsonArray.single().jsonPrimitive.content)
+            // 订阅账号只服务官方端点：请求里的 channelIds 被忽略，改挂系统置备渠道。
+            val providerChannelId = assertNotNull(app.channelRepository.findProviderChannel(OAuthProvider.CHATGPT)).id
+            assertEquals(providerChannelId, account["channelIds"]!!.jsonArray.single().jsonPrimitive.content)
+            assertTrue(account["channelIds"]!!.jsonArray.none { it.jsonPrimitive.content == channel.id })
             assertEquals("chatgpt", account["provider"]!!.jsonPrimitive.content)
             assertEquals("ACTIVE", account["authState"]!!.jsonPrimitive.content)
             assertEquals("free@example.com", account["accountEmail"]!!.jsonPrimitive.content)
@@ -1204,6 +1207,11 @@ class GatewayIntegrationTest {
             val byProvider = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
                 .associate { it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["configured"]!!.jsonPrimitive.boolean }
             assertEquals(mapOf("chatgpt" to true, "antigravity" to false), byProvider)
+            val managed = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
+                .associate {
+                    it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["managedChannel"]!!.jsonPrimitive.boolean
+                }
+            assertEquals(mapOf("chatgpt" to true, "antigravity" to false), managed)
 
             val stored = assertNotNull(app.oauthAccountRepository.find(accountId))
             assertNotEquals("refresh-token-value", stored.refreshTokenCiphertext)
@@ -6735,7 +6743,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("52", result.getString(1))
+                        assertEquals("54", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())

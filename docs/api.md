@@ -193,9 +193,11 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 
 ### 6. 订阅账号（OAuth）
 
-订阅账号是独立的上游凭据实体：账号拥有自己的 id、refresh/access token、代理、优先级、模型授权、调度策略与额度，**不再依附于任何渠道密钥**。渠道通过多对多关联引用账号，同一账号可以被多个渠道复用；删除渠道只删除关联，不删除账号。详细语义见 ADR 0016。
+订阅账号是独立的上游凭据实体：账号拥有自己的 id、refresh/access token、代理、优先级、模型授权、调度策略与额度，**不再依附于任何渠道密钥**。
 
-- 查看可用的 OAuth 提供方：`GET /admin/api/oauth-providers`，返回 `id`、`label`、`configured` 与 `loginSupported`；未配置客户端参数的提供方不能导入，`loginSupported=false` 的提供方只能手动导入 refresh token。
+订阅凭据只能用于提供方自己的官方端点，因此端点由代码常量固定：网关为每个已实现上游协议的 provider 置备一条 kind=provider 的系统渠道，账号导入后自动关联到它，用户不再手工选择渠道。这类渠道不可编辑、不可删除，也不出现在渠道列表里。详细语义见 ADR 0016。
+
+- 查看可用的 OAuth 提供方：`GET /admin/api/oauth-providers`，返回 `id`、`label`、`configured`、`loginSupported` 与 `managedChannel`；未配置客户端参数的提供方不能导入，`loginSupported=false` 的提供方只能手动导入 refresh token，`managedChannel=true` 表示账号的端点渠道由系统维护。
 - 账号看板：`GET /admin/api/oauth-accounts`，返回账号 `id` / `name`、provider、授权状态、是否启用、优先级、授权模型、关联渠道（`channelIds` 与 `channels[{id,name}]`）、token 到期时间、上游额度读数、调度策略与实时状态。响应不包含任何 token，且禁止缓存。
   - `models` 为空表示继承所关联渠道的全部模型。
   - `authState=REAUTH_REQUIRED` 的账号仍保留为候选，但凭据解析会返回 `subscription_account_unavailable` 并继续尝试其他候选；不会把 refresh token 发给上游。
@@ -210,7 +212,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
   ```
 
   - `provider` 仅支持 `chatgpt` 与 `antigravity`，且必须已配置。
-  - `channelIds` 可选且可包含多个渠道；不关联时账号保留，但不会参与路由。
+  - `channelIds` 已废弃：`managedChannel=true` 的提供方会忽略该字段，导入后自动关联系统端点渠道；只有上游协议尚未实现的提供方（当前是 `antigravity`）仍按原方式手工关联。
   - 渠道本身不再必须持有静态密钥：可以创建渠道后只关联订阅账号，数据面会把账号作为该渠道路由凭据。
   - `accessToken` 与 `accessTokenExpiresAt` 可选，但必须成对出现且未过期；留空则导入后按需刷新。
   - `priority` 取值 1..1000，数值越小越优先；只影响同渠道内账号之间的排序。
@@ -219,7 +221,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 
 - 重新授权（替换凭据）：`PUT /admin/api/oauth-accounts/<account-id>`，请求体与新建一致。只替换 refresh/access token，不改启停状态；成功后清空账号级冷却与各关联渠道下的候选冷却。留空 refresh token 表示保留现有长期凭据。
 - 修改账号设置：`PUT /admin/api/oauth-accounts/<account-id>/settings`，请求体 `{name, priority, enabled, proxyUrl, clearProxy}`；`enabled=false` 后账号不再参与路由。
-- 调整关联渠道：`PUT /admin/api/oauth-accounts/<account-id>/channels`，请求体 `{"channelIds":["..."]}`；整体替换关联集合。
+- 调整关联渠道：`PUT /admin/api/oauth-accounts/<account-id>/channels`，请求体 `{"channelIds":["..."]}`；整体替换关联集合。`managedChannel=true` 的提供方返回 `400 oauth_account_channel_managed`，关联由系统维护。
 - 调整模型授权：`PUT /admin/api/oauth-accounts/<account-id>/models`，请求体 `{"models":["..."]}`；传空数组表示继承所关联渠道的全部模型。
 - 删除账号：`DELETE /admin/api/oauth-accounts/<account-id>`；token、额度与调度状态一并删除，不影响渠道或静态密钥。
 
