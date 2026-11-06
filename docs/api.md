@@ -198,6 +198,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 订阅凭据只能用于提供方自己的官方端点，因此端点由代码常量固定：网关为每个已实现上游协议的 provider 置备一条 kind=provider 的系统渠道，账号导入后自动关联到它，用户不再手工选择渠道。这类渠道不可编辑、不可删除，也不出现在渠道列表里。详细语义见 ADR 0016。
 
 - 查看可用的 OAuth 提供方：`GET /admin/api/oauth-providers`，返回 `id`、`label`、`configured`、`loginSupported` 与 `managedChannel`；未配置客户端参数的提供方不能导入，`loginSupported=false` 的提供方只能手动导入 refresh token，`managedChannel=true` 表示账号的端点渠道由系统维护。
+- 维护官方模型列表：`PUT /admin/api/oauth-providers/{provider}/models`，请求体 `{"models":["..."]}`；整体替换系统端点渠道的模型映射，用于官方模型变更。
 - 账号看板：`GET /admin/api/oauth-accounts`，返回账号 `id` / `name`、provider、授权状态、是否启用、优先级、授权模型、关联渠道（`channelIds` 与 `channels[{id,name}]`）、token 到期时间、上游额度读数、调度策略与实时状态。响应不包含任何 token，且禁止缓存。
   - `models` 为空表示继承所关联渠道的全部模型。
   - `authState=REAUTH_REQUIRED` 的账号仍保留为候选，但凭据解析会返回 `subscription_account_unavailable` 并继续尝试其他候选；不会把 refresh token 发给上游。
