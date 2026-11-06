@@ -9,6 +9,7 @@ import {
   isOAuthQuotaBlocked,
   oauthAuthStateBadge,
   oauthAuthStateLabel,
+  oauthLoginCallbackError,
   oauthPolicySummary,
   oauthProviderLabel,
   oauthQuotaCreditsLabel,
@@ -159,6 +160,23 @@ describe('oauthAccount: 上游额度展示', () => {
     assert.equal(oauthQuotaCreditsLabel({ ...quota, creditsBalance: null }), null)
     assert.equal(oauthQuotaSummary(quota), '5 小时 100% · 7 天 43% · Credits 12.5')
     assert.equal(oauthQuotaSummary(null), null)
+  })
+
+  it('浏览器登录回调只接受带 code 或 error 的地址', () => {
+    assert.equal(oauthLoginCallbackError(''), '请粘贴浏览器最终停留的地址')
+    assert.equal(oauthLoginCallbackError('   '), '请粘贴浏览器最终停留的地址')
+    assert.match(oauthLoginCallbackError('http://localhost:1455/auth/callback'), /缺少 code/)
+    assert.equal(
+      oauthLoginCallbackError('http://localhost:1455/auth/callback?code=abc&state=xyz'),
+      null,
+    )
+    assert.equal(oauthLoginCallbackError('?code=abc&state=xyz'), null)
+    assert.equal(oauthLoginCallbackError('code=abc'), null)
+    assert.equal(
+      oauthLoginCallbackError('http://localhost:1455/auth/callback?error=access_denied&state=xyz'),
+      null,
+    )
+    assert.match(oauthLoginCallbackError('https://example.com/auth/callback'), /缺少 code/)
   })
 
   it('额度拦截只在后端给出未过期的恢复时间时生效', () => {

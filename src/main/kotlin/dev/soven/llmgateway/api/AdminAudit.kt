@@ -126,6 +126,8 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "POST" && CHANNEL_PROBE_PATTERN.matches(path) -> "channel.probe_protocols"
     method == "POST" && CHANNEL_MODEL_TEST_PATTERN.matches(path) -> "channel.model_test"
     method == "POST" && CHANNEL_COOLDOWN_CLEAR_PATTERN.matches(path) -> "channel.cooldown.clear"
+    method == "POST" && path == "/admin/api/oauth-login/start" -> "oauth_account.login.start"
+    method == "POST" && OAUTH_LOGIN_COMPLETE_PATTERN.matches(path) -> "oauth_account.login"
     method == "PUT" && OAUTH_ACCOUNT_IMPORT_PATTERN.matches(path) -> "oauth_account.import"
     method == "PUT" && OAUTH_ACCOUNT_POLICY_PATTERN.matches(path) -> "oauth_account.policy.update"
     method == "POST" && OAUTH_ACCOUNT_REFRESH_PATTERN.matches(path) -> "oauth_account.refresh"
@@ -171,6 +173,7 @@ private val CHANNEL_MODEL_TEST_PATTERN = Regex("^/admin/api/channels/[^/]+/model
 private val CHANNEL_COOLDOWN_CLEAR_PATTERN = Regex("^/admin/api/channels/[^/]+/cooldown/clear$")
 private val CHANNEL_ITEM_PATTERN = Regex("^/admin/api/channels/[^/]+$")
 private val OAUTH_ACCOUNT_IMPORT_PATTERN = Regex("^/admin/api/channels/[^/]+/keys/[^/]+/oauth-account$")
+private val OAUTH_LOGIN_COMPLETE_PATTERN = Regex("^/admin/api/oauth-login/[^/]+/complete$")
 private val OAUTH_ACCOUNT_POLICY_PATTERN = Regex("^/admin/api/oauth-accounts/[^/]+/policy$")
 private val OAUTH_ACCOUNT_REFRESH_PATTERN = Regex("^/admin/api/oauth-accounts/[^/]+/refresh$")
 private val OAUTH_ACCOUNT_QUOTA_REFRESH_PATTERN = Regex("^/admin/api/oauth-accounts/[^/]+/quota/refresh$")

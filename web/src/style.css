@@ -2382,6 +2382,31 @@ input[type="password"]::-ms-clear,
   text-align: right;
 }
 
+/* 订阅账号浏览器登录：登录链接与生成动作。 */
+.oauth-login-link {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  word-break: break-all;
+}
+
+.oauth-login-link a {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--brand);
+}
+
+.oauth-login-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.oauth-login-actions small {
+  color: var(--muted);
+}
+
 .actions-col {
   width: 1%;
   min-width: 58px;

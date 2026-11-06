@@ -14,7 +14,15 @@ data class OAuthProviderConfig(
     val tokenEndpoint: String,
     /** 上游额度查询地址；为空表示该提供方不支持额度观测。 */
     val usageUrl: String? = null,
-)
+    /** 交互式登录授权地址；为空表示该提供方不支持从网关发起登录。 */
+    val authorizeUrl: String? = null,
+    /** 交互式登录回调地址，必须与 OAuth 客户端登记的一致。 */
+    val redirectUri: String? = null,
+    /** 交互式登录申请的 scope；为空时由提供方决定。 */
+    val loginScopes: String? = null,
+) {
+    val supportsLogin: Boolean get() = authorizeUrl != null && redirectUri != null
+}
 
 /**
  * 订阅账号 OAuth 的运行配置。Antigravity 只有显式配置 client id 后才启用。
@@ -40,6 +48,9 @@ data class OAuthConfig(
         clientId = DEFAULT_CHATGPT_CLIENT_ID,
         tokenEndpoint = "https://auth.openai.com/oauth/token",
         usageUrl = DEFAULT_CHATGPT_USAGE_URL,
+        authorizeUrl = DEFAULT_CHATGPT_AUTHORIZE_URL,
+        redirectUri = DEFAULT_CHATGPT_REDIRECT_URI,
+        loginScopes = DEFAULT_CHATGPT_LOGIN_SCOPES,
     ),
     val antigravity: OAuthProviderConfig? = null,
 ) {
@@ -49,6 +60,16 @@ data class OAuthConfig(
 
         /** ChatGPT 的额度查询地址；可用 OAUTH_CHATGPT_USAGE_URL 覆盖。 */
         const val DEFAULT_CHATGPT_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+
+        /** ChatGPT 的交互式登录授权地址；可用 OAUTH_CHATGPT_AUTHORIZE_URL 覆盖。 */
+        const val DEFAULT_CHATGPT_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
+
+        /** Codex 客户端登记的回调地址，端口不可更改；可用 OAUTH_CHATGPT_REDIRECT_URI 覆盖。 */
+        const val DEFAULT_CHATGPT_REDIRECT_URI = "http://localhost:1455/auth/callback"
+
+        /** 与 Codex CLI 一致的登录 scope。 */
+        const val DEFAULT_CHATGPT_LOGIN_SCOPES =
+            "openid profile email offline_access api.connectors.read api.connectors.invoke"
 
         fun fromEnv(env: Map<String, String>): OAuthConfig {
             fun value(name: String, default: String? = null): String? =
@@ -90,9 +111,17 @@ data class OAuthConfig(
                 clientId = value("OAUTH_CHATGPT_CLIENT_ID", DEFAULT_CHATGPT_CLIENT_ID)!!,
                 tokenEndpoint = value("OAUTH_CHATGPT_TOKEN_ENDPOINT", "https://auth.openai.com/oauth/token")!!,
                 usageUrl = value("OAUTH_CHATGPT_USAGE_URL", DEFAULT_CHATGPT_USAGE_URL),
+                authorizeUrl = value("OAUTH_CHATGPT_AUTHORIZE_URL", DEFAULT_CHATGPT_AUTHORIZE_URL),
+                redirectUri = value("OAUTH_CHATGPT_REDIRECT_URI", DEFAULT_CHATGPT_REDIRECT_URI),
+                loginScopes = value("OAUTH_CHATGPT_LOGIN_SCOPES", DEFAULT_CHATGPT_LOGIN_SCOPES),
             )
             validateEndpoint("OAUTH_CHATGPT_TOKEN_ENDPOINT", chatGpt.tokenEndpoint)
             chatGpt.usageUrl?.let { validateEndpoint("OAUTH_CHATGPT_USAGE_URL", it) }
+            chatGpt.authorizeUrl?.let { validateEndpoint("OAUTH_CHATGPT_AUTHORIZE_URL", it) }
+            chatGpt.redirectUri?.let { validateRedirectUri("OAUTH_CHATGPT_REDIRECT_URI", it) }
+            require(chatGpt.loginScopes == null || chatGpt.loginScopes.length <= 512) {
+                "OAUTH_CHATGPT_LOGIN_SCOPES 长度不能超过 512"
+            }
 
             val antigravityClientId = value("OAUTH_ANTIGRAVITY_CLIENT_ID")
             val antigravity = antigravityClientId?.let { clientId ->
@@ -119,6 +148,17 @@ data class OAuthConfig(
             )
         }
 
+        /** 回调地址允许本机 http（Codex 固定走 localhost:1455），其余必须是 https。 */
+        private fun validateRedirectUri(name: String, value: String) {
+            val uri = runCatching { URI(value) }.getOrElse { error("$name 不是合法 URL") }
+            require(
+                uri.host != null && uri.userInfo == null && uri.rawQuery == null && uri.rawFragment == null,
+            ) { "$name 必须是完整 URL，且不能包含账号密码、查询参数或片段" }
+            require(uri.scheme == "https" || (uri.scheme == "http" && isLoopbackHost(uri.host))) {
+                "$name 必须使用 https（仅本机回环地址允许 http）"
+            }
+        }
+
         /** 只允许 https；本机回环地址允许 http，便于集成测试和本地代理调试。 */
         private fun validateEndpoint(name: String, value: String) {
             val uri = runCatching { URI(value) }.getOrElse { error("$name 不是合法 URL") }
@@ -126,9 +166,14 @@ data class OAuthConfig(
                 uri.host != null && uri.userInfo == null && uri.rawQuery == null && uri.rawFragment == null,
             ) { "$name 必须是完整 URL，且不能包含账号密码、查询参数或片段" }
             require(
-                uri.scheme == "https" ||
-                    (uri.scheme == "http" && uri.host in setOf("127.0.0.1", "localhost")),
+                uri.scheme == "https" || (uri.scheme == "http" && isLoopbackHost(uri.host)),
             ) { "$name 必须使用 https（仅本机回环地址允许 http）" }
         }
+
+        /** Java 的 URI 把 IPv6 字面量保留为 `[::1]`，比较前去掉方括号。 */
+        private fun isLoopbackHost(host: String?): Boolean =
+            host != null && host.removePrefix("[").removeSuffix("]") in LOOPBACK_HOSTS
+
+        private val LOOPBACK_HOSTS = setOf("127.0.0.1", "localhost", "::1")
     }
 }

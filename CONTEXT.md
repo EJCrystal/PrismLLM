@@ -108,7 +108,7 @@ _Avoid_: 数据归档、额度重置
 
 ## 已接受的边界
 
-**只做原生协议透传**：支持 OpenAI Chat Completions、Responses、Anthropic Messages 和 Gemini generateContent / streamGenerateContent，上游必须兼容对应协议。不做跨协议转换或交互式订阅 OAuth 登录；订阅账号由管理员导入 refresh token 后接入，token 刷新、上游额度观测与账号级调度见 ADR 0016。
+**只做原生协议透传**：支持 OpenAI Chat Completions、Responses、Anthropic Messages 和 Gemini generateContent / streamGenerateContent，上游必须兼容对应协议。不做跨协议转换；订阅账号由管理员手动导入 refresh token 或通过浏览器 PKCE 登录接入，token 刷新、上游额度观测与账号级调度见 ADR 0016。
 避免：把客户端请求头预设当成协议转换或订阅凭据管理。
 
 **v1 单实例**：网关和 PostgreSQL 各一个实例。调用方密钥、团队策略、渠道、渠道授权模型、对外模型 ID 和渠道密钥限流规则都从数据库读取，管理面写入后立即生效；调用方密钥的固定分钟窗口、渠道密钥的 RPM 令牌桶，以及两者的并发计数只保存在进程内存中，候选冷却状态内存为准、变更异步写透数据库并在启动时恢复。不引入 Redis 或配置中心。

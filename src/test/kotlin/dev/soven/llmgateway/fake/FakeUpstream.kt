@@ -67,6 +67,21 @@ class FakeUpstream {
         quotaUsageBody = DEFAULT_QUOTA_USAGE_BODY
         quotaUsageStatus = 200
     }
+
+    val tokenRequests = ConcurrentLinkedQueue<FakeRequest>()
+
+    /** `/oauth/token` 的响应，测试可替换为错误响应。 */
+    @Volatile
+    var oauthTokenBody: String = DEFAULT_OAUTH_TOKEN_BODY
+
+    @Volatile
+    var oauthTokenStatus: Int = 200
+
+    fun resetOAuthToken() {
+        tokenRequests.clear()
+        oauthTokenBody = DEFAULT_OAUTH_TOKEN_BODY
+        oauthTokenStatus = 200
+    }
     private val chatHold = AtomicReference<CompletableDeferred<Unit>?>(null)
 
     fun holdChatRequests(): CompletableDeferred<Unit> =
@@ -94,6 +109,23 @@ class FakeUpstream {
             get("/v1/models") {
                 recordModelRequest(call, "ok")
                 call.respondText(MODELS_BODY, ContentType.Application.Json)
+            }
+            post("/oauth/token") {
+                tokenRequests.add(
+                    FakeRequest(
+                        scenario = "oauth-token",
+                        body = call.receiveText(),
+                        authorization = call.request.headers[HttpHeaders.Authorization],
+                        requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
+                        uri = call.request.uri,
+                        path = call.request.path(),
+                    ),
+                )
+                call.respondText(
+                    oauthTokenBody,
+                    ContentType.Application.Json,
+                    HttpStatusCode.fromValue(oauthTokenStatus),
+                )
             }
             get("/oauth/usage") {
                 quotaRequests.add(
@@ -736,6 +768,8 @@ class FakeUpstream {
             """{"error":{"message":"not found","type":"not_found_error","code":"not_found"}}"""
         private const val MODELS_BODY =
             """{"object":"list","data":[{"id":"gpt-4o-mini","object":"model","owned_by":"fake"},{"id":"deepseek-chat","object":"model","owned_by":"fake"}]}"""
+        private const val DEFAULT_OAUTH_TOKEN_BODY =
+            """{"access_token":"login-access-token","refresh_token":"login-refresh-token","id_token":"eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6ImxvZ2luQGV4YW1wbGUuY29tIiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjYy1sb2dpbiIsImNoYXRncHRfcGxhbl90eXBlIjoicGx1cyJ9fQ.sig","expires_in":3600,"token_type":"Bearer","scope":"openid profile email offline_access"}"""
         private const val DEFAULT_QUOTA_USAGE_BODY =
             """{"plan_type":"plus","rate_limit":{"allowed":false,"primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_after_seconds":600},"secondary_window":{"used_percent":42.5,"limit_window_seconds":604800,"reset_after_seconds":86400}},"credits":{"balance":0,"unlimited":false},"rate_limit_reset_credits":{"available_count":1}}"""
         private const val RESPONSES_NON_STREAM_BODY =

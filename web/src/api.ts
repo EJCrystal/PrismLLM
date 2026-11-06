@@ -36,6 +36,9 @@ import type {
   OAuthAccount,
   OAuthAccountImportRequest,
   OAuthAccountPolicyRequest,
+  OAuthLoginCompleteRequest,
+  OAuthLoginStart,
+  OAuthLoginStartRequest,
   OAuthProviderInfo,
   PageOptions,
   ProtocolProbeResponse,
@@ -165,6 +168,13 @@ export const api = {
     request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(keyId)}/refresh`, { method: 'POST' }),
   refreshOAuthAccountQuota: (keyId: string) =>
     request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(keyId)}/quota/refresh`, { method: 'POST' }),
+  startOAuthLogin: (payload: OAuthLoginStartRequest) =>
+    request<OAuthLoginStart>('/oauth-login/start', { method: 'POST', body: JSON.stringify(payload) }),
+  completeOAuthLogin: (loginId: string, payload: OAuthLoginCompleteRequest) =>
+    request<OAuthAccount>(`/oauth-login/${encodeURIComponent(loginId)}/complete`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   clearOAuthAccountCooldown: (keyId: string) =>
     request<null>(`/oauth-accounts/${encodeURIComponent(keyId)}/cooldown/clear`, { method: 'POST' }),
   listChannelModels: (id: string) => request<ChannelModelsResponse>(`/channels/${encodeURIComponent(id)}/models`),

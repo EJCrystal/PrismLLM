@@ -144,6 +144,17 @@ export function oauthQuotaSummary(quota: OAuthQuota | null | undefined): string 
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
+/**
+ * 浏览器登录回调的提交前检查。回调必须是完整 URL 或裸查询串，
+ * 且包含 code（成功）或 error（授权失败）；空值与明显错误在此拦下。
+ */
+export function oauthLoginCallbackError(raw: string): string | null {
+  const text = raw.trim()
+  if (!text) return '请粘贴浏览器最终停留的地址'
+  if (/(^|[?&])(code|error)=/.test(text)) return null
+  return '回调地址缺少 code 参数，请复制登录跳转后浏览器地址栏里的完整 URL'
+}
+
 export interface OAuthImportForm {
   provider: string
   refreshToken: string

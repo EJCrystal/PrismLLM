@@ -6,7 +6,6 @@ import ch.qos.logback.core.AppenderBase
 import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.config.OAuthConfig
-import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.domain.ChannelQuotaCredentialSource
@@ -150,6 +149,7 @@ class GatewayIntegrationTest {
         fake.keyStatuses.clear()
         fake.keyErrorBodies.clear()
         fake.resetQuotaUsage()
+        fake.resetOAuthToken()
         fake.clearChatHold()
         app = GatewayApplication(config())
         app.databaseFactory.migrate()
@@ -1419,6 +1419,96 @@ class GatewayIntegrationTest {
             val degraded = assertNotNull(app.oauthAccountRepository.find(key.id))
             assertEquals("http_503", assertNotNull(degraded.quota).error)
             assertEquals(100.0, assertNotNull(degraded.quota!!.primary).usedPercent)
+        }
+    }
+
+    @Test
+    fun `admin oauth interactive login exchanges the callback and binds the account`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val key = channel.keys.single()
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            suspend fun start(body: String) = client.post("/admin/api/oauth-login/start") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            val started = start("""{"provider":"chatgpt","channelId":"${channel.id}","keyId":"${key.id}"}""")
+            assertEquals(HttpStatusCode.OK, started.status)
+            assertEquals("no-store", started.headers["Cache-Control"])
+            val startedBody = Json.parseToJsonElement(started.bodyAsText()).jsonObject
+            val loginId = startedBody["loginId"]!!.jsonPrimitive.content
+            val authorizeUrl = startedBody["authorizeUrl"]!!.jsonPrimitive.content
+            assertTrue(authorizeUrl.startsWith("https://auth.openai.com/oauth/authorize?"))
+            assertTrue(authorizeUrl.contains("code_challenge_method=S256"))
+            assertEquals("http://localhost:1455/auth/callback", startedBody["redirectUri"]!!.jsonPrimitive.content)
+            val state = authorizeUrl.substringAfter("state=").substringBefore("&")
+
+            suspend fun complete(callback: String, id: String = loginId) = client.post("/admin/api/oauth-login/$id/complete") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"callbackUrl":"$callback"}""")
+            }
+
+            // state 不匹配时拒绝，且不消耗会话、不调用 token 端点。
+            val wrongState = complete("http://localhost:1455/auth/callback?code=auth-code&state=wrong")
+            assertEquals(HttpStatusCode.BadRequest, wrongState.status)
+            assertTrue(wrongState.bodyAsText().contains("oauth_login_invalid_callback"))
+            assertEquals(0, fake.tokenRequests.size)
+
+            val completed = complete("http://localhost:1455/auth/callback?code=auth-code&state=$state")
+            assertEquals(HttpStatusCode.OK, completed.status)
+            val account = Json.parseToJsonElement(completed.bodyAsText()).jsonObject
+            assertEquals("login@example.com", account["accountEmail"]!!.jsonPrimitive.content)
+            assertEquals("plus", account["accountPlan"]!!.jsonPrimitive.content)
+            assertEquals("acc-login", account["chatgptAccountId"]!!.jsonPrimitive.content)
+            assertEquals("ACTIVE", account["authState"]!!.jsonPrimitive.content)
+
+            val tokenRequest = fake.tokenRequests.single()
+            assertTrue(tokenRequest.body.contains("grant_type=authorization_code"))
+            assertTrue(tokenRequest.body.contains("code=auth-code"))
+            assertTrue(tokenRequest.body.contains("code_verifier="))
+            assertFalse(tokenRequest.body.contains("state="))
+            assertEquals("codex_cli_rs", tokenRequest.requestHeaders["originator"]?.single())
+
+            // 会话单次使用：重复提交同一个回调只会得到过期，不会再次换取 token。
+            val replay = complete("http://localhost:1455/auth/callback?code=auth-code&state=$state")
+            assertEquals(HttpStatusCode.BadRequest, replay.status)
+            assertTrue(replay.bodyAsText().contains("oauth_login_expired"))
+            assertEquals(1, fake.tokenRequests.size)
+
+            // refresh token 与 access token 都加密落库，响应不回显。
+            val storedKey = app.channelRepository.find(channel.id)!!.keys.single()
+            assertEquals(
+                "login-refresh-token",
+                app.credentialCipher.decrypt(storedKey.credentialCiphertext, storedKey.credentialNonce),
+            )
+            val storedAccount = assertNotNull(app.oauthAccountRepository.find(key.id))
+            assertEquals(
+                "login-access-token",
+                app.credentialCipher.decrypt(
+                    assertNotNull(storedAccount.accessTokenCiphertext),
+                    assertNotNull(storedAccount.accessTokenNonce),
+                ),
+            )
+
+            val auditResponse = client.get("/admin/api/audit-logs?limit=20") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            val loginAudits = Json.parseToJsonElement(auditResponse.bodyAsText()).jsonArray
+                .map { it.jsonObject }
+                .filter { it["action"]!!.jsonPrimitive.content == "oauth_account.login" }
+            // state 不匹配、成功、会话重放各一条。
+            assertEquals(3, loginAudits.size)
+            assertTrue(
+                loginAudits.any {
+                    it["details"]?.jsonObject?.get("result")?.jsonPrimitive?.content == "success"
+                },
+            )
         }
     }
 
@@ -7842,8 +7932,7 @@ class GatewayIntegrationTest {
         upstreamHeaderRefreshIntervalMs = 3_600_000,
         // 订阅账号的 token 刷新与额度查询都指向假上游，测试不访问真实 OAuth 端点。
         oauth = OAuthConfig(
-            chatGpt = OAuthProviderConfig(
-                clientId = OAuthConfig.DEFAULT_CHATGPT_CLIENT_ID,
+            chatGpt = OAuthConfig().chatGpt.copy(
                 tokenEndpoint = fake.baseUrl + "/oauth/token",
                 usageUrl = fake.baseUrl + "/oauth/usage",
             ),

@@ -646,6 +646,7 @@ export interface OAuthProviderInfo {
   id: string
   label: string
   configured: boolean
+  loginSupported: boolean
 }
 
 export interface OAuthAccountPolicy {
@@ -704,6 +705,24 @@ export interface OAuthAccount {
   updatedAt: number
   policy: OAuthAccountPolicy
   runtime: OAuthAccountRuntime
+}
+
+export interface OAuthLoginStartRequest {
+  provider: string
+  channelId: string
+  keyId: string
+  proxyUrl?: string | null
+}
+
+export interface OAuthLoginStart {
+  loginId: string
+  authorizeUrl: string
+  redirectUri: string
+  expiresAt: number
+}
+
+export interface OAuthLoginCompleteRequest {
+  callbackUrl: string
 }
 
 export interface OAuthAccountImportRequest {

@@ -98,6 +98,7 @@ internal suspend fun postTokenRequest(
     body: String,
     proxyUrl: String?,
     timeoutMs: Long,
+    headers: Map<String, String> = emptyMap(),
 ): JsonObject {
     val proxy = proxyAddress(proxyUrl)
     val client = HttpClient.newBuilder()
@@ -106,10 +107,12 @@ internal suspend fun postTokenRequest(
         .apply { proxy?.let { this.proxy(ProxySelector.of(it)) } }
         .build()
     try {
-        val request = HttpRequest.newBuilder(URI(endpoint))
+        val builder = HttpRequest.newBuilder(URI(endpoint))
             .timeout(Duration.ofMillis(timeoutMs))
             .header("Accept", "application/json")
             .header("Content-Type", contentType)
+        for ((name, value) in headers) builder.header(name, value)
+        val request = builder
             .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
             .build()
         val response = send(client, request)

@@ -1227,6 +1227,28 @@ data class OAuthAccountImportRequest(
 )
 
 @Serializable
+data class OAuthLoginStartRequest(
+    val provider: String,
+    val channelId: String,
+    val keyId: String,
+    val proxyUrl: String? = null,
+)
+
+@Serializable
+data class OAuthLoginStartResponse(
+    val loginId: String,
+    val authorizeUrl: String,
+    val redirectUri: String,
+    val expiresAt: Long,
+)
+
+@Serializable
+data class OAuthLoginCompleteRequest(
+    /** 浏览器最终停留的回调地址；只需包含 code 与 state。 */
+    val callbackUrl: String,
+)
+
+@Serializable
 data class OAuthAccountPolicyRequest(
     val windowLimit: Int? = null,
     val windowSeconds: Int = 10_800,
@@ -1300,6 +1322,8 @@ data class OAuthProviderResponse(
     val id: String,
     val label: String,
     val configured: Boolean,
+    /** 是否支持从网关发起交互式登录；不支持时只能导入 refresh token。 */
+    val loginSupported: Boolean = false,
 )
 
 fun OAuthAccountPolicy.toResponse() = OAuthAccountPolicyResponse(

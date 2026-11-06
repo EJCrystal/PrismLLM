@@ -172,7 +172,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 
 订阅账号与渠道密钥一对一绑定，refresh token 加密保存在密钥凭据列，access token 由网关自动刷新。详细语义见 ADR 0016。
 
-- 查看可用的 OAuth 提供方：`GET /admin/api/oauth-providers`，返回 `id`、`label` 与 `configured`；未配置客户端参数的提供方不能导入。
+- 查看可用的 OAuth 提供方：`GET /admin/api/oauth-providers`，返回 `id`、`label`、`configured` 与 `loginSupported`；未配置客户端参数的提供方不能导入，`loginSupported=false` 的提供方只能手动导入 refresh token。
 - 账号看板：`GET /admin/api/oauth-accounts`，返回账号、渠道/密钥名称、授权状态、token 到期时间、上游额度读数、调度策略与实时状态（窗口用量、并发、冷却截止时间、额度拦截截止时间）。响应不包含任何 token，且禁止缓存。
   - `quota`：最近一次成功读取的上游额度快照，包含 5 小时与每周窗口的 `usedPercent` / `remainingPercent` / `windowSeconds` / `resetsAt`、`allowed`、credits 余额与可重置次数、`checkedAt` 与最近一次失败错误码。
   - `runtime.quotaBlockedUntil`：额度读数未过期且某个窗口已用尽时的预计恢复时间；此时新请求会被拒绝。
@@ -190,6 +190,27 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
   - 重新授权会替换凭据，并清空账号冷却、密钥冷却与失败计数；密钥启停状态不变。
   - 同一提供方下邮箱唯一，重复绑定返回 `409 oauth_account_email_exists`。
 
+- 浏览器登录（交互式授权）：提供方配置了授权地址与回调地址时可用，网关使用 PKCE + `state` 完成授权码交换。
+
+  ```bash
+  curl -b cookies.txt -X POST http://localhost:8080/admin/api/oauth-login/start \
+    -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
+    -d '{"provider":"chatgpt","channelId":"<channel-id>","keyId":"<key-id>","proxyUrl":"http://127.0.0.1:7890"}'
+  ```
+
+  返回一次性 `loginId`、`authorizeUrl`（10 分钟内有效）与 `redirectUri`。在浏览器打开 `authorizeUrl` 完成登录后，把浏览器最终停留的完整回调地址提交给网关：
+
+  ```bash
+  curl -b cookies.txt -X POST http://localhost:8080/admin/api/oauth-login/<login-id>/complete \
+    -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
+    -d '{"callbackUrl":"http://localhost:1455/auth/callback?code=<code>&state=<state>"}'
+  ```
+
+  - `callbackUrl` 支持完整 URL、裸查询串或 `?查询串`，最长 4096 字符；必须是浏览器登录后真实产生的地址，不要手工拼接。
+  - 登录会话只存在于内存、只能使用一次；过期、重复提交或 `state` 不匹配返回 `400 oauth_login_expired` / `400 oauth_login_invalid_callback`。
+  - 换取 token 失败返回 `502 oauth_login_failed`；提供方未配置授权参数返回 `400 oauth_login_unsupported`；邮箱已绑定返回 `409 oauth_account_email_exists`。
+  - 成功后与手动导入一样绑定到指定密钥，并清空该账号与密钥的冷却和失败计数；响应不包含 token。
+
 - 编辑调度策略：
 
   ```bash
@@ -204,7 +225,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
   - `POST /admin/api/oauth-accounts/<key-id>/quota/refresh`：立即读取一次上游额度并写入快照；失败保留上一次成功读数，返回 `502 oauth_quota_failed`，账号不支持或没有可用 access token 时返回 `400 oauth_quota_unsupported`。
   - `POST /admin/api/oauth-accounts/<key-id>/refresh`：允许对 `REAUTH_REQUIRED` 账号再试一次；失败返回 `502 oauth_refresh_failed`。
   - `POST /admin/api/oauth-accounts/<key-id>/cooldown/clear`：同时清除账号级冷却与密钥级候选冷却。
-- 以上写操作分别写入审计动作 `oauth_account.import`、`oauth_account.policy.update`、`oauth_account.quota.refresh`、`oauth_account.refresh` 与 `oauth_account.cooldown.clear`，只记录渠道/密钥 id、provider、策略参数与操作结果。
+- 以上写操作分别写入审计动作 `oauth_account.import`、`oauth_account.login.start`、`oauth_account.login`、`oauth_account.policy.update`、`oauth_account.quota.refresh`、`oauth_account.refresh` 与 `oauth_account.cooldown.clear`，只记录渠道/密钥 id、provider、策略参数与操作结果。
 
 ---
 
