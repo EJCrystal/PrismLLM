@@ -56,6 +56,17 @@ sealed interface OAuthLoginResult {
     data object UnsupportedProvider : OAuthLoginResult
 }
 
+/** 绑定阶段的结果：同一登录会话最多只有一个请求能真正写库。 */
+internal sealed interface LoginBinding<out T> {
+    data class Bound<T>(val value: T) : LoginBinding<T>
+
+    /** 另一个请求正在绑定，本次按已使用处理。 */
+    data object Busy : LoginBinding<Nothing>
+
+    /** 会话已经成功绑定过，晚到的并发请求不能再次写库。 */
+    data object Consumed : LoginBinding<Nothing>
+}
+
 /**
  * 交互式 OAuth 登录：在网关内生成 PKCE 授权链接，管理员在浏览器完成登录后
  * 把回调地址粘回管理面，由网关用 code + verifier 换取 token 并直接绑定账号。
@@ -185,9 +196,9 @@ class OAuthLoginService(
             pending.remove(loginId)
             return OAuthLoginResult.Failed("missing_access_token")
         }
-        // 绑定阶段互斥：并发提交只允许一个请求写库，其余按已使用处理。
-        if (!session.binding.compareAndSet(false, true)) return OAuthLoginResult.Expired
-        try {
+        // 绑定阶段互斥：并发提交只允许一个请求写库；成功绑定后会话永久消耗，
+        // 已经持有会话引用的晚到请求不会再写一次库或重复记审计。
+        val binding = session.bindOnce {
             val claims = parseOAuthTokenClaims(tokens.idToken) ?: parseOAuthTokenClaims(accessToken)
             val account = try {
                 repository.upsert(
@@ -206,7 +217,7 @@ class OAuthLoginService(
             } catch (_: CredentialChangedException) {
                 // 校验与写入在同一事务内；凭据在预检查之后又被替换时按目标失效处理。
                 pending.remove(loginId)
-                return OAuthLoginResult.StaleTarget
+                return@bindOnce null
             }
             claims?.chatgptAccountId?.take(MAX_ACCOUNT_ID_CHARS)?.let { accountId ->
                 repository.updateChatgptAccountId(session.keyId, accountId)
@@ -218,9 +229,11 @@ class OAuthLoginService(
                 session.provider.value,
                 claims?.planType,
             )
-            return OAuthLoginResult.Completed(repository.find(session.keyId) ?: account)
-        } finally {
-            session.binding.set(false)
+            OAuthLoginResult.Completed(repository.find(session.keyId) ?: account)
+        }
+        return when (binding) {
+            LoginBinding.Busy, LoginBinding.Consumed -> OAuthLoginResult.Expired
+            is LoginBinding.Bound -> binding.value ?: OAuthLoginResult.StaleTarget
         }
     }
 
@@ -263,7 +276,7 @@ class OAuthLoginService(
         OAuthProvider.ANTIGRAVITY -> config.antigravity
     }
 
-    private class PendingLogin(
+    internal class PendingLogin(
         val provider: OAuthProvider,
         val channelId: String,
         val keyId: String,
@@ -276,12 +289,32 @@ class OAuthLoginService(
         val createdAt: Long,
         val expiresAt: Long,
         val claimed: AtomicBoolean = AtomicBoolean(false),
-        /** 绑定阶段的互斥；交换成功后允许在绑定失败时重试。 */
-        val binding: AtomicBoolean = AtomicBoolean(false),
         /** 授权码交换结果；绑定成功或会话过期后释放。 */
         @Volatile var tokens: LoginTokens? = null,
         @Volatile var tokenExpiresAt: Long = 0,
-    )
+    ) {
+        /** 绑定阶段的互斥；交换成功后允许在绑定失败时重试。 */
+        private val binding = AtomicBoolean(false)
+
+        /** 绑定成功标记；一旦置位不再重置，晚到的并发请求不能复用同一会话写库。 */
+        private val completed = AtomicBoolean(false)
+
+        /**
+         * 在互斥保护下执行一次绑定。[block] 正常返回后会话永久消耗；
+         * 抛异常时不消耗，管理员处理完冲突（如邮箱重复）可以用缓存的 token 重试。
+         */
+        suspend fun <T> bindOnce(block: suspend () -> T): LoginBinding<T> {
+            if (!binding.compareAndSet(false, true)) return LoginBinding.Busy
+            try {
+                if (completed.get()) return LoginBinding.Consumed
+                val value = block()
+                completed.set(true)
+                return LoginBinding.Bound(value)
+            } finally {
+                binding.set(false)
+            }
+        }
+    }
 
     private companion object {
         const val LOGIN_TTL_MS = 600_000L
@@ -316,7 +349,7 @@ class OAuthLoginService(
 }
 
 /** 一次授权码交换得到的 token；只保留后续绑定账号所需的字段。 */
-private data class LoginTokens(
+internal data class LoginTokens(
     val accessToken: String?,
     val refreshToken: String?,
     val idToken: String?,

@@ -72,6 +72,12 @@ class ClientKeyQuotaService(
         return ClientKeyQuotaUsage(stored.tokens, stored.costs, concurrentRequests[clientKeyId] ?: 0)
     }
 
+    /** 当前在途请求数快照，仅用于管理面展示；不读取数据库。 */
+    fun activeRequestCounts(): Map<String, Int> =
+        concurrentRequests.entries
+            .mapNotNull { (clientKeyId, count) -> count.takeIf { it > 0 }?.let { clientKeyId to it } }
+            .toMap()
+
     private fun lockFor(clientKeyId: String): Mutex =
         locks[Math.floorMod(clientKeyId.hashCode(), locks.size)]
 }

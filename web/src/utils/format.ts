@@ -19,12 +19,12 @@ function getDateTimeFormatter(options: Intl.DateTimeFormatOptions): Intl.DateTim
  *
  * @param {number|string|Date|null} value 时间戳或日期
  * @param {object} options 格式化选项
- * @param {'short'|'medium'|'timeOnly'} options.style 样式：short (分), medium (秒), timeOnly (时分秒)
+ * @param {'short'|'medium'|'timeOnly'|'dateOnly'} options.style 样式：short (分), medium (秒), timeOnly (时分秒), dateOnly (仅日期)
  * @param {string} options.fallback 缺省值占位符
  * @returns {string}
  */
 export interface FormatTimeOptions {
-  style?: 'short' | 'medium' | 'timeOnly'
+  style?: 'short' | 'medium' | 'timeOnly' | 'dateOnly'
   fallback?: string
 }
 
@@ -41,6 +41,8 @@ export function formatTime(
     options = { dateStyle: 'short', timeStyle: 'medium' }
   } else if (style === 'timeOnly') {
     options = { hour: '2-digit', minute: '2-digit', second: '2-digit' }
+  } else if (style === 'dateOnly') {
+    options = { dateStyle: 'short' }
   } else {
     options = { dateStyle: 'short', timeStyle: 'short' }
   }

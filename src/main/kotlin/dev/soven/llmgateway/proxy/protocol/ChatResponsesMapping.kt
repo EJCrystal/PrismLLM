@@ -27,6 +27,7 @@ internal fun responsesToChatRequest(request: JsonObject): JsonObject = buildJson
     }
 
     val messages = mutableListOf<JsonObject>()
+    val toolImages = ChatToolImageRelocator(messages)
     request.string("instructions")?.takeIf { it.isNotBlank() }?.let { instructions ->
         messages += buildJsonObject {
             put("role", "system")
@@ -42,20 +43,34 @@ internal fun responsesToChatRequest(request: JsonObject): JsonObject = buildJson
         is JsonArray -> input.forEachIndexed { index, element ->
             val item = element as? JsonObject ?: unsupported("input[$index]", "输入项必须是对象")
             when (item.string("type")) {
-                "message", null -> messages += responsesMessageToChat(item, "input[$index]")
+                "message", null -> {
+                    val message = responsesMessageToChat(item, "input[$index]")
+                    if (message.string("role") == "assistant") {
+                        toolImages.flush()
+                        messages += message
+                    } else {
+                        // 用户自己的消息正好可以承载上一条工具结果里的图片。
+                        val deferred = if (chatContentIsEmpty(message)) emptyList() else toolImages.take()
+                        messages += prependChatParts(message, deferred)
+                    }
+                }
                 "function_call" -> {
+                    val callId = item.string("call_id") ?: item.string("id") ?: unsupported("input[$index].call_id", "function_call 缺少 call_id")
+                    val name = item.string("name") ?: unsupported("input[$index].name", "function_call 缺少 name")
                     val call = buildJsonObject {
-                        put("id", item.string("call_id") ?: item.string("id") ?: unsupported("input[$index].call_id", "function_call 缺少 call_id"))
+                        put("id", callId)
                         put("type", "function")
                         putJsonObject("function") {
-                            put("name", item.string("name") ?: unsupported("input[$index].name", "function_call 缺少 name"))
+                            put("name", name)
                             put("arguments", item.string("arguments").orEmpty().ifEmpty { "{}" })
                         }
                     }
+                    toolImages.rememberToolName(callId, name)
                     val previous = messages.lastOrNull()
                     if (previous?.string("role") == "assistant") {
                         messages[messages.lastIndex] = JsonObject(previous + ("tool_calls" to JsonArray(previous.array("tool_calls") + call)))
                     } else {
+                        toolImages.flush()
                         messages += buildJsonObject {
                             put("role", "assistant")
                             put("content", JsonNull)
@@ -63,18 +78,24 @@ internal fun responsesToChatRequest(request: JsonObject): JsonObject = buildJson
                         }
                     }
                 }
-                "function_call_output" -> messages += buildJsonObject {
-                    put("role", "tool")
-                    put("tool_call_id", item.string("call_id") ?: unsupported("input[$index].call_id", "function_call_output 缺少 call_id"))
-                    put("content", item.textContentStrict("output", "input[$index].output"))
+                "function_call_output" -> {
+                    val callId = item.string("call_id") ?: unsupported("input[$index].call_id", "function_call_output 缺少 call_id")
+                    val result = responsesToolOutputContent(item["output"], "input[$index].output")
+                    messages += buildJsonObject {
+                        put("role", "tool")
+                        put("tool_call_id", callId)
+                        put("content", toolImages.toolText(result))
+                    }
+                    toolImages.defer(callId, result.images)
                 }
                 "reasoning" -> Unit
                 else -> unsupported("input[$index].type", "第一版不支持 Responses 输入项 ${item.string("type")}")
             }
         }
-        JsonNull, null -> Unit
+        null -> Unit
         else -> unsupported("input", "input 必须是字符串或数组")
     }
+    toolImages.flush()
     put("messages", JsonArray(messages))
     request["tools"]?.takeIf { it !is JsonNull }?.let { toolsElement ->
         val tools = toolsElement as? JsonArray ?: unsupported("tools", "tools 必须是数组")
@@ -119,18 +140,16 @@ internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): Js
         when (message.string("role")) {
             "system", "developer" -> system += message.textContentStrict("content", "messages[$index].content")
             "user", "assistant" -> {
-                val role = message.string("role")
-                val text = message.textContentStrict("content", "messages[$index].content")
-                if (text.isNotEmpty() || message["tool_calls"] == null) {
+                val role = message.string("role") ?: "user"
+                val parts = chatContentToResponsesParts(message["content"], role, "messages[$index].content")
+                val hasContent = parts.any {
+                    it.string("type") == "input_image" || !it.string("text").isNullOrEmpty()
+                }
+                if (hasContent || message["tool_calls"] == null) {
                     input += buildJsonObject {
                         put("type", "message")
                         put("role", role)
-                        put("content", buildJsonArray {
-                            add(buildJsonObject {
-                                put("type", if (role == "assistant") "output_text" else "input_text")
-                                put("text", text)
-                            })
-                        })
+                        put("content", JsonArray(parts))
                     }
                 }
                 (message["tool_calls"] as? JsonArray)?.forEachIndexed { callIndex, callElement ->
@@ -147,7 +166,7 @@ internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): Js
             "tool" -> input += buildJsonObject {
                 put("type", "function_call_output")
                 put("call_id", message.string("tool_call_id") ?: unsupported("messages[$index].tool_call_id", "tool 消息缺少 tool_call_id"))
-                put("output", message.textContentStrict("content", "messages[$index].content"))
+                put("output", chatContentToResponsesOutput(message["content"], "messages[$index].content"))
             }
             else -> unsupported("messages[$index].role", "不支持的消息角色")
         }
@@ -306,8 +325,14 @@ internal fun chatToResponsesResponse(chat: JsonObject, model: String): JsonObjec
 }
 
 internal fun responsesMessageToChat(item: JsonObject, path: String): JsonObject {
+    val parts = mutableListOf<JsonElement>()
     val text = mutableListOf<String>()
     val refusals = mutableListOf<String>()
+    fun flushText() {
+        if (text.isEmpty()) return
+        parts += chatTextPart(text.joinToString("\n"))
+        text.clear()
+    }
     when (val content = item["content"]) {
         JsonNull -> Unit
         is JsonPrimitive -> text += content.content
@@ -316,19 +341,98 @@ internal fun responsesMessageToChat(item: JsonObject, path: String): JsonObject 
             when (obj.string("type")) {
                 "input_text", "output_text", "text" -> text += obj.string("text").orEmpty()
                 "refusal" -> obj.string("refusal")?.takeIf { it.isNotEmpty() }?.let { refusals += it }
-                "input_image", "input_file", "input_audio" -> unsupported("$path.content[$index].type", "第一版不支持多模态内容")
+                "input_image" -> {
+                    flushText()
+                    parts += imagePartFromResponses(obj, "$path.content[$index]").toChatPart()
+                }
+                "input_file", "input_audio" -> unsupported("$path.content[$index].type", "第一版不支持该多模态内容")
                 else -> unsupported("$path.content[$index].type", "第一版不支持该 Responses 内容")
             }
         }
-        JsonNull, null -> Unit
+        null -> Unit
         else -> unsupported("$path.content", "无法识别的内容")
     }
+    flushText()
     return buildJsonObject {
         put("role", item.string("role") ?: "user")
-        if (text.isNotEmpty()) put("content", text.joinToString("\n"))
-        else if (refusals.isNotEmpty()) put("content", JsonNull)
-        else put("content", "")
+        when {
+            parts.isEmpty() && refusals.isNotEmpty() -> put("content", JsonNull)
+            parts.isEmpty() -> put("content", "")
+            parts.size == 1 && parts[0] is JsonObject && (parts[0] as JsonObject).string("type") == "text" ->
+                put("content", (parts[0] as JsonObject).string("text").orEmpty())
+            else -> put("content", JsonArray(parts))
+        }
         if (refusals.isNotEmpty()) put("refusal", refusals.joinToString("\n"))
+    }
+}
+
+internal fun chatContentIsEmpty(message: JsonObject): Boolean = when (val content = message["content"]) {
+    null, JsonNull -> true
+    is JsonPrimitive -> content.content.isEmpty()
+    is JsonArray -> content.isEmpty()
+    else -> false
+}
+
+/** 把攒下的工具图片放到用户消息内容的最前面。 */
+internal fun prependChatParts(message: JsonObject, parts: List<JsonElement>): JsonObject {
+    if (parts.isEmpty()) return message
+    val existing = when (val content = message["content"]) {
+        null, JsonNull -> emptyList()
+        is JsonPrimitive -> listOf(chatTextPart(content.content))
+        is JsonArray -> content.toList()
+        else -> emptyList()
+    }
+    return JsonObject(message + ("content" to JsonArray(parts + existing)))
+}
+
+/** Chat 消息内容转为 Responses 的 input_text / input_image 内容项。 */
+internal fun chatContentToResponsesParts(content: JsonElement?, role: String, path: String): List<JsonObject> {
+    val textType = if (role == "assistant") "output_text" else "input_text"
+    fun textBlock(text: String): JsonObject = buildJsonObject {
+        put("type", textType)
+        put("text", text)
+    }
+    return when (content) {
+        null, JsonNull -> listOf(textBlock(""))
+        is JsonPrimitive -> listOf(textBlock(content.content))
+        is JsonArray -> {
+            val parts = mutableListOf<JsonObject>()
+            val text = mutableListOf<String>()
+            fun flushText() {
+                if (text.isEmpty()) return
+                parts += textBlock(text.joinToString("\n"))
+                text.clear()
+            }
+            content.forEachIndexed { index, element ->
+                val obj = element as? JsonObject ?: unsupported("$path[$index]", "内容块必须是对象")
+                when (obj.string("type")) {
+                    "text" -> text += obj.string("text").orEmpty()
+                    "image_url" -> {
+                        flushText()
+                        parts += imagePartFromChat(obj, "$path[$index]").toResponsesPart()
+                    }
+                    "input_image" -> {
+                        flushText()
+                        parts += imagePartFromResponses(obj, "$path[$index]").toResponsesPart()
+                    }
+                    "input_file", "input_audio" -> unsupported("$path[$index].type", "第一版不支持该多模态内容")
+                    else -> unsupported("$path[$index].type", "第一版不支持该 Chat 内容")
+                }
+            }
+            flushText()
+            parts.ifEmpty { listOf(textBlock("")) }
+        }
+        else -> unsupported(path, "无法识别的内容")
+    }
+}
+
+/** Responses function_call_output 的 output：纯文本保持字符串，带图片时用内容项数组。 */
+internal fun chatContentToResponsesOutput(content: JsonElement?, path: String): JsonElement {
+    val result = chatContentToToolResultContent(content, path)
+    if (result.images.isEmpty()) return JsonPrimitive(result.text)
+    return buildJsonArray {
+        if (result.text.isNotEmpty()) add(responsesTextPart(result.text))
+        result.images.forEach { add(it.toResponsesPart()) }
     }
 }
 

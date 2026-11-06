@@ -1348,6 +1348,27 @@ fun Route.adminRoutes(app: GatewayApplication) {
             )
         }
 
+        get("/occupancy") {
+            call.requireAdmin(app)
+            call.response.headers.append("Cache-Control", "no-store")
+            val channels = app.upstreamOccupancy.snapshot().entries
+                .groupBy({ it.key.channelId }, { it.key.keyId to it.value })
+                .map { (channelId, keys) ->
+                    ChannelOccupancyResponse(
+                        channelId = channelId,
+                        concurrentRequests = keys.sumOf { it.second },
+                        keys = keys
+                            .sortedBy { it.first }
+                            .map { (keyId, count) -> ChannelKeyOccupancyResponse(keyId, count) },
+                    )
+                }
+                .sortedBy { it.channelId }
+            val clientKeys = app.requestLimitService.clientKeyOccupancy()
+                .map { (clientKeyId, count) -> ClientKeyOccupancyResponse(clientKeyId, count) }
+                .sortedBy { it.clientKeyId }
+            call.respond(OccupancyResponse(System.currentTimeMillis(), channels, clientKeys))
+        }
+
         get("/request-logs") {
             call.requireAdmin(app)
             val limit = call.queryInt("limit", default = 100, min = 1, max = 1000)

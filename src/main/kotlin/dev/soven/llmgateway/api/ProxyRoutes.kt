@@ -25,6 +25,7 @@ import dev.soven.llmgateway.quota.ChannelKeyRateLimitReason
 import dev.soven.llmgateway.quota.RequestLimitLease
 import dev.soven.llmgateway.quota.quotaTokensFromUsage
 import dev.soven.llmgateway.proxy.ReasoningEffort
+import dev.soven.llmgateway.proxy.ShapeRefusal
 import dev.soven.llmgateway.proxy.TraceContextFactory
 import dev.soven.llmgateway.proxy.applyUpstreamAuthentication
 import dev.soven.llmgateway.proxy.Usage
@@ -647,12 +648,14 @@ private suspend fun handleProxy(
                 rememberRateLimitDenial(candidate, oauthDecision)
                 continue
             }
-            val error = runAttempt(
-                candidate,
-                permit,
-                rateLimitLease,
-                (oauthDecision as OAuthAccountDecision.Allowed).lease,
-            )
+            val error = app.upstreamOccupancy.track(candidate.channel.id, candidate.key.id) {
+                runAttempt(
+                    candidate,
+                    permit,
+                    rateLimitLease,
+                    (oauthDecision as OAuthAccountDecision.Allowed).lease,
+                )
+            }
             if (error == null) return
             if (error.code != "no_candidate") lastError = error
             if (error.code == "no_candidate") continue
@@ -683,12 +686,14 @@ private suspend fun handleProxy(
                 rememberRateLimitDenial(candidate, oauthDecision)
                 continue
             }
-            val error = runAttempt(
-                candidate,
-                permit,
-                rateLimitLease,
-                (oauthDecision as OAuthAccountDecision.Allowed).lease,
-            )
+            val error = app.upstreamOccupancy.track(candidate.channel.id, candidate.key.id) {
+                runAttempt(
+                    candidate,
+                    permit,
+                    rateLimitLease,
+                    (oauthDecision as OAuthAccountDecision.Allowed).lease,
+                )
+            }
             if (error == null) return
             if (error.code != "no_candidate") lastError = error
             if (error.code == "no_candidate") continue
@@ -945,7 +950,8 @@ private fun classifyFailure(e: GatewayException): FailureKind? = when (e.code) {
         401, 403 -> FailureKind.AUTH_REJECTED
         404 -> FailureKind.MODEL_NOT_FOUND
         null -> null
-        else -> if (e.upstreamStatus >= 500 || e.retryable) FailureKind.SERVER_ERROR else null
+        // 形状拒绝只说明该上游读不懂请求，换候选即可，当前渠道不应因此冷却。
+        else -> if (e.upstreamStatus >= 500 || (e.retryable && !e.shapeRefused)) FailureKind.SERVER_ERROR else null
     }
     else -> null
 }
@@ -1592,6 +1598,9 @@ private fun upstreamException(
     val parsedError = parseUpstreamError(body)
     val upstreamCode = parsedError.code ?: parsedError.type ?: parsedError.status
     val isPseudo400 = isUpstreamPseudo400(status.value, parsedError, body)
+    // 422 与命中 shape refusal 词表的 400 说明上游读不懂请求的形状，换一个候选渠道可能就能服务：
+    // 这类错误可重试，但不让当前渠道冷却。伪 400 是渠道自身故障，仍按原逻辑处理。
+    val shapeRefused = !isPseudo400 && ShapeRefusal.matches(status.value, body)
     val mapped = when {
         nativeResponseBody != null && !isPseudo400 -> status
         status.value == 429 -> HttpStatusCode.TooManyRequests
@@ -1606,7 +1615,8 @@ private fun upstreamException(
         status.value >= 500 -> "上游服务不可用"
         else -> "上游返回错误 ${status.value}"
     }
-    val retryable = isPseudo400 || status.value == 429 || status.value >= 500 || status.value == 401 || status.value == 403 || status.value == 404
+    val retryable = isPseudo400 || shapeRefused || status.value == 429 || status.value >= 500 ||
+        status.value == 401 || status.value == 403 || status.value == 404
     return GatewayException(
         status = mapped,
         code = "upstream_error",
@@ -1618,6 +1628,7 @@ private fun upstreamException(
         upstreamStatus = status.value,
         nativeResponseBody = nativeResponseBody.takeUnless { isPseudo400 },
         upstreamErrorBody = body.take(MAX_KEY_MATCH_BODY_CHARS),
+        shapeRefused = shapeRefused,
     )
 }
 

@@ -18,6 +18,9 @@ export const vScrollHint: ObjectDirective<HTMLElement> = {
     const update = () => {
       const max = element.scrollWidth - element.clientWidth
       hint.hidden = max <= 2
+      element.classList.toggle('is-h-scrollable', max > 2)
+      element.classList.toggle('is-h-scroll-start', element.scrollLeft <= 1)
+      element.classList.toggle('is-h-scroll-end', max > 2 && element.scrollLeft >= max - 1)
       const fraction = Math.min(1, Math.max(0, element.scrollLeft / Math.max(1, max)))
       const width = Math.min(1, element.clientWidth / Math.max(1, element.scrollWidth))
       text.textContent = fraction >= .99 ? '已到最右侧，可向回滑动' : fraction > .01 ? '左右滑动查看其余列' : '向左滑动查看其余列'

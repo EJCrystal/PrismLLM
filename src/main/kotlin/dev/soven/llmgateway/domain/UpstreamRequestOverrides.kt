@@ -23,6 +23,8 @@ data class UpstreamRequestOverrides(
     val protocols: Map<String, UpstreamProtocolOverrides> = emptyMap(),
     /** auto / always / never：是否在 Chat Completions 请求中补齐 assistant 的 reasoning_content。 */
     val reasoningContentPolicy: String? = null,
+    /** auto / always / never：是否把上游不支持的 developer 角色归一化为 system。 */
+    val developerRolePolicy: String? = null,
 ) {
     fun common() = UpstreamProtocolOverrides(headerProfile, userAgent, headers, body)
 }

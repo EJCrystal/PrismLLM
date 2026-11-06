@@ -712,6 +712,66 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `422 shape refusal fails over to next candidate without cooling down the channel`() = runBlocking {
+        val primary = createChannel("shape-422-primary", "shape-422")
+        val secondary = createChannel("shape-422-secondary", "ok")
+        exposeAsModel("shape-422-chat", primary to "m1", secondary to "m2")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"shape-422-chat","stream":true,"input":"hi"}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(2, fake.requests.size)
+            val log = awaitRequestLog()
+            assertEquals(secondary.id, log.channelId)
+            assertEquals(2, log.upstreamAttempts)
+
+            val failedAttempt = log.attempts.first()
+            assertEquals(primary.id, failedAttempt.channelId)
+            assertEquals(422, failedAttempt.statusCode)
+            assertEquals("upstream_error", failedAttempt.errorCode)
+            assertTrue(failedAttempt.retryable)
+            // 形状拒绝是请求与上游不匹配，不是渠道故障，不应让主渠道进入冷却。
+            assertFalse(app.candidateCooldown.isBlocked(primary.id, primary.keys.single().id, "m1"))
+
+            val succeededAttempt = log.attempts.last()
+            assertEquals(secondary.id, succeededAttempt.channelId)
+            assertEquals(200, succeededAttempt.statusCode)
+            assertTrue(succeededAttempt.committed)
+        }
+    }
+
+    @Test
+    fun `all 422 candidates exhausted returns unprocessable entity`() = runBlocking {
+        val primary = createChannel("all-shape-422", "shape-422")
+        exposeAsModel("exhausted-shape-422-chat", primary to "m1")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"exhausted-shape-422-chat","stream":false,"input":"hi"}""")
+            }
+
+            assertEquals(HttpStatusCode.UnprocessableEntity, response.status)
+            assertEquals(1, fake.requests.size)
+            val log = awaitRequestLog()
+            assertEquals(1, log.upstreamAttempts)
+            val failedAttempt = log.attempts.single()
+            assertEquals(422, failedAttempt.statusCode)
+            assertTrue(failedAttempt.retryable)
+        }
+    }
+
+    @Test
     fun `standard 400 does not retry and returns bad request immediately`() = runBlocking {
         val primary = createChannel("standard-400-primary", "standard-400")
         val secondary = createChannel("standard-400-secondary", "ok")
@@ -5189,6 +5249,65 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `occupancy endpoint reports in-flight channel key and client key requests`() = runBlocking {
+        val channel = createChannel("openai", "slow")
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
+        val rawKey = createClientKey()
+        val clientKeyId = app.clientKeyRepository.list().single().id
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, _) = client.loginAdmin()
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $rawKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"fast-chat","stream":true,"messages":[]}""")
+            }
+            suspend fun occupancy() = Json.parseToJsonElement(
+                client.get("/admin/api/occupancy") { header(HttpHeaders.Cookie, cookie) }.bodyAsText(),
+            ).jsonObject
+
+            val first = async(Dispatchers.Default) { send() }
+            var ready = false
+            val deadline = System.currentTimeMillis() + 5_000
+            while (System.currentTimeMillis() < deadline && !ready) {
+                val json = occupancy()
+                ready = json["channels"]!!.jsonArray.any { row ->
+                    row.jsonObject["channelId"]!!.jsonPrimitive.content == channel.id &&
+                        row.jsonObject["keys"]!!.jsonArray.any { it.jsonObject["concurrentRequests"]!!.jsonPrimitive.content == "1" }
+                } && json["clientKeys"]!!.jsonArray.any {
+                    it.jsonObject["clientKeyId"]!!.jsonPrimitive.content == clientKeyId
+                }
+                if (!ready) delay(5)
+            }
+            assertTrue(ready, "在途请求未出现在占用快照中")
+
+            val snapshot = occupancy()
+            val channelRow = snapshot["channels"]!!.jsonArray.single {
+                it.jsonObject["channelId"]!!.jsonPrimitive.content == channel.id
+            }.jsonObject
+            assertEquals("1", channelRow["concurrentRequests"]!!.jsonPrimitive.content)
+            val keyRow = channelRow["keys"]!!.jsonArray.single().jsonObject
+            assertEquals(channel.keys.single().id, keyRow["keyId"]!!.jsonPrimitive.content)
+            assertEquals("1", keyRow["concurrentRequests"]!!.jsonPrimitive.content)
+            val clientKeyRow = snapshot["clientKeys"]!!.jsonArray.single().jsonObject
+            assertEquals(clientKeyId, clientKeyRow["clientKeyId"]!!.jsonPrimitive.content)
+            assertEquals("1", clientKeyRow["concurrentRequests"]!!.jsonPrimitive.content)
+
+            assertEquals(HttpStatusCode.OK, first.await().status)
+
+            var idle = false
+            val idleDeadline = System.currentTimeMillis() + 5_000
+            while (System.currentTimeMillis() < idleDeadline && !idle) {
+                val json = occupancy()
+                idle = json["channels"]!!.jsonArray.isEmpty() && json["clientKeys"]!!.jsonArray.isEmpty()
+                if (!idle) delay(5)
+            }
+            assertTrue(idle, "请求结束后占用计数未清零")
+        }
+    }
+
+    @Test
     fun `releases concurrency slot when request is rejected by routing`() = runBlocking {
         val key = createClientKey(ClientKeyQuotaLimits(maxConcurrentRequests = 1))
 
@@ -7486,7 +7605,7 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"model":"converted-unsupported","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
+                    """{"model":"converted-unsupported","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]}""",
                 )
             }
             assertEquals(HttpStatusCode.BadRequest, response.status)
@@ -7551,7 +7670,7 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"model":"probe-conversion-request","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
+                    """{"model":"probe-conversion-request","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]}""",
                 )
             }
             assertEquals(HttpStatusCode.BadRequest, response.status, response.bodyAsText())
@@ -7626,7 +7745,7 @@ class GatewayIntegrationTest {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"model":"conversion-fallback","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""",
+                    """{"model":"conversion-fallback","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]}""",
                 )
             }
             assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())

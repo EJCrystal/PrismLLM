@@ -36,6 +36,13 @@ describe('utils: format 格式化工具函数库', () => {
       assert.equal(res.includes(':'), true)
     })
 
+    it('支持 dateOnly 样式', () => {
+      const res = formatTime(fixedTs, { style: 'dateOnly' })
+      assert.equal(typeof res, 'string')
+      assert.equal(res !== '—', true)
+      assert.equal(res.includes(':'), false)
+    })
+
     it('空值、null 或无效日期回退自定义 fallback', () => {
       assert.equal(formatTime(null), '—')
       assert.equal(formatTime(undefined, { fallback: '永不过期' }), '永不过期')

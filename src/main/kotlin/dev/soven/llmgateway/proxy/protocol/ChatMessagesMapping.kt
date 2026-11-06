@@ -25,54 +25,79 @@ internal fun messagesToChatRequest(request: JsonObject): JsonObject = buildJsonO
     request.thinkingEffort()?.let { put("reasoning_effort", it) }
 
     val messages = mutableListOf<JsonObject>()
+    val toolImages = ChatToolImageRelocator(messages)
+
     request.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { system ->
         messages += buildJsonObject {
             put("role", "system")
             put("content", system)
         }
     }
-    request.array("messages").forEachIndexed { index, element ->
+    joinSplitToolCalls(request.array("messages")).forEachIndexed { index, element ->
         val message = element as? JsonObject ?: unsupported("messages[$index]", "消息必须是对象")
         val role = message.string("role") ?: unsupported("messages[$index].role", "缺少 role")
-        val text = mutableListOf<String>()
+        val parts = mutableListOf<JsonElement>()
         val reasoning = mutableListOf<String>()
         val toolCalls = mutableListOf<JsonObject>()
-        val toolResults = mutableListOf<JsonObject>()
+        val toolMessages = mutableListOf<JsonObject>()
         when (val content = message["content"]) {
             JsonNull -> Unit
-            is JsonPrimitive -> text += content.content
+            is JsonPrimitive -> parts += chatTextPart(content.content)
             is JsonArray -> content.forEachIndexed { partIndex, partElement ->
-                val part = partElement as? JsonObject
-                    ?: unsupported("messages[$index].content[$partIndex]", "内容块必须是对象")
+                val path = "messages[$index].content[$partIndex]"
+                val part = partElement as? JsonObject ?: unsupported(path, "内容块必须是对象")
                 when (part.string("type")) {
-                    "text" -> text += part.string("text").orEmpty()
+                    "text" -> parts += chatTextPart(part.string("text").orEmpty())
                     // 思考历史转为 Chat 的 reasoning_content；加密的 redacted_thinking 无对应表示，直接丢弃。
                     "thinking" -> part.string("thinking")?.takeIf { it.isNotEmpty() }?.let { reasoning += it }
                     "redacted_thinking" -> Unit
-                    "tool_use" -> toolCalls += chatToolCallFromAnthropic(part, "messages[$index].content[$partIndex]")
-                    "tool_result" -> toolResults += chatToolMessageFromAnthropic(part, "messages[$index].content[$partIndex]")
-                    "image", "document" -> unsupported(
-                        "messages[$index].content[$partIndex].type",
-                        "第一版不支持 ${part.string("type")} 内容",
-                    )
-                    else -> unsupported("messages[$index].content[$partIndex].type", "未知内容类型")
+                    "tool_use" -> {
+                        val call = chatToolCallFromAnthropic(part, path)
+                        call.string("id")?.let { id ->
+                            (call["function"] as? JsonObject)?.string("name")?.let { toolImages.rememberToolName(id, it) }
+                        }
+                        toolCalls += call
+                    }
+                    "tool_result" -> {
+                        val result = part.toolResultContent("$path.content")
+                        val callId = part.string("tool_use_id") ?: unsupported("$path.tool_use_id", "tool_result 缺少 tool_use_id")
+                        toolMessages += buildJsonObject {
+                            put("role", "tool")
+                            put("tool_call_id", callId)
+                            put("content", toolImages.toolText(result))
+                        }
+                        toolImages.defer(callId, result.images)
+                    }
+                    "image" -> parts += imagePartFromAnthropic(part, path).toChatPart()
+                    "document" -> unsupported("$path.type", "第一版不支持 document 内容")
+                    else -> unsupported("$path.type", "未知内容类型")
                 }
             }
-            JsonNull, null -> Unit
+            null -> Unit
             else -> unsupported("messages[$index].content", "无法识别的内容")
         }
-        messages += toolResults
+        // 工具图片跟在下一条 user 消息里；下一条是 assistant 时单独补一条 user 消息。
+        if (role == "assistant") toolImages.flush()
+        messages += toolMessages
         // reasoning_content 只属于 assistant 消息；其它角色上的思考块按无效输入忽略。
         val reasoningContent = reasoning.joinToString("\n").takeIf { it.isNotEmpty() && role == "assistant" }
-        if (text.isNotEmpty() || toolCalls.isNotEmpty() || reasoningContent != null) {
+        val contentParts = if (parts.isEmpty()) parts else toolImages.take() + parts
+        if (contentParts.isNotEmpty() || toolCalls.isNotEmpty() || reasoningContent != null) {
             messages += buildJsonObject {
                 put("role", role)
-                if (text.isNotEmpty()) put("content", text.joinToString("\n")) else put("content", JsonNull)
+                if (contentParts.isEmpty()) {
+                    put("content", JsonNull)
+                } else if (contentParts.all { it is JsonObject && it.string("type") == "text" }) {
+                    put("content", contentParts.joinToString("\n") { (it as JsonObject).string("text").orEmpty() })
+                } else {
+                    put("content", JsonArray(contentParts))
+                }
                 if (reasoningContent != null) put("reasoning_content", reasoningContent)
                 if (toolCalls.isNotEmpty()) put("tool_calls", JsonArray(toolCalls))
             }
         }
     }
+    toolImages.flush()
     put("messages", JsonArray(messages))
     request["tools"]?.takeIf { it !is JsonNull }?.let { toolsElement ->
         val tools = toolsElement as? JsonArray ?: unsupported("tools", "tools 必须是数组")
@@ -145,7 +170,7 @@ internal fun chatToMessagesRequest(chat: JsonObject, upstreamModel: String): Jso
             "tool" -> pendingToolResults += buildJsonObject {
                 put("type", "tool_result")
                 put("tool_use_id", message.string("tool_call_id") ?: unsupported("messages[$index].tool_call_id", "tool 消息缺少 tool_call_id"))
-                put("content", message.textContentStrict("content", "messages[$index].content"))
+                put("content", chatContentToToolResult(message["content"], "messages[$index].content"))
             }
             else -> unsupported("messages[$index].role", "不支持的消息角色")
         }
@@ -276,7 +301,9 @@ internal fun chatMessageToAnthropic(message: JsonObject, path: String): JsonObje
                         put("text", text)
                     }
                 }
-                "image_url", "input_image", "input_file", "input_audio" -> unsupported("$path.content[$index].type", "第一版不支持多模态内容")
+                "image_url" -> blocks += imagePartFromChat(obj, "$path.content[$index]").toAnthropicBlock()
+                "input_image" -> blocks += imagePartFromResponses(obj, "$path.content[$index]").toAnthropicBlock()
+                "input_file", "input_audio" -> unsupported("$path.content[$index].type", "第一版不支持该多模态内容")
                 else -> unsupported("$path.content[$index].type", "第一版不支持该 Chat 内容")
             }
         }
@@ -308,13 +335,15 @@ internal fun chatToolCallFromAnthropic(block: JsonObject, path: String): JsonObj
     }
 }
 
-internal fun chatToolMessageFromAnthropic(block: JsonObject, path: String): JsonObject = buildJsonObject {
-    put("role", "tool")
-    put("tool_call_id", block.string("tool_use_id") ?: unsupported("$path.tool_use_id", "tool_result 缺少 tool_use_id"))
-    put("content", block.toolResultContent("$path.content"))
+/** Anthropic tool_result 的 content：纯文本保持字符串，带图片时用内容块数组。 */
+internal fun chatContentToToolResult(content: JsonElement?, path: String): JsonElement {
+    val result = chatContentToToolResultContent(content, path)
+    if (result.images.isEmpty()) return JsonPrimitive(result.text)
+    return buildJsonArray {
+        if (result.text.isNotEmpty()) add(messageTextBlock(result.text))
+        result.images.forEach { add(it.toAnthropicBlock()) }
+    }
 }
-
-/** Anthropic tool_result 的 content 既可以是字符串，也可以是 text/image 内容块数组。 */
 
 internal fun anthropicToolChoiceToChat(choice: JsonObject?): JsonElement {
     if (choice == null) return JsonPrimitive("auto")

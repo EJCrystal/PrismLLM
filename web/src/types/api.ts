@@ -112,6 +112,7 @@ export interface UpstreamRequestOverrides extends UpstreamProtocolOverrides {
   inheritGlobal: boolean
   protocols: Partial<Record<ProtocolId, UpstreamProtocolOverrides>>
   reasoningContentPolicy: string | null
+  developerRolePolicy: string | null
 }
 
 export interface Channel {
@@ -282,6 +283,28 @@ export interface ClientKeyQuotaUsage {
   dailyEurCost: string
   concurrentRequests: number
   currentMinuteRequests: number
+}
+
+export interface ChannelKeyOccupancy {
+  keyId: string
+  concurrentRequests: number
+}
+
+export interface ChannelOccupancy {
+  channelId: string
+  concurrentRequests: number
+  keys: ChannelKeyOccupancy[]
+}
+
+export interface ClientKeyOccupancy {
+  clientKeyId: string
+  concurrentRequests: number
+}
+
+export interface RuntimeOccupancy {
+  sampledAt: number
+  channels: ChannelOccupancy[]
+  clientKeys: ClientKeyOccupancy[]
 }
 
 export interface ClientKey {
