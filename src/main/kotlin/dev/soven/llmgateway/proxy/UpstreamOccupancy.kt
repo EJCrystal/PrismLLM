@@ -35,14 +35,10 @@ class UpstreamOccupancy {
     /**
      * 返回当前在途槽位；计数归零的槽位会立即移除，不会随历史密钥持续增长。
      *
-     * 这里显式遍历复制，不用 [Map.toMap]：后者在 size == 1 时走单元素分支，
-     * 若唯一的槽位在 size 读取与迭代之间被并发 end 移除，会抛 NoSuchElementException。
+     * 用 [HashMap] 的复制构造器遍历 [ConcurrentHashMap] 的条目，其迭代器弱一致，
+     * 并发 end 移除槽位时不会像 [Map.toMap] 的单元素分支那样抛 NoSuchElementException。
      */
-    fun snapshot(): Map<Slot, Int> {
-        val snapshot = HashMap<Slot, Int>(counters.size)
-        counters.forEach { (slot, count) -> snapshot[slot] = count }
-        return snapshot
-    }
+    fun snapshot(): Map<Slot, Int> = HashMap(counters)
 
     data class Slot(val channelId: String, val keyId: String)
 }
