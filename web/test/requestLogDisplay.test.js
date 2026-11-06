@@ -151,6 +151,14 @@ describe('requestLogDisplay: 请求日志状态展示', () => {
     assert.equal(attemptFailureReason(skipped), '冷却中')
   })
 
+  it('订阅账号级调度跳过原因使用可读标签', () => {
+    assert.equal(attemptResultLabel({ skipped: true, skipReason: 'oauth_window' }), '跳过（订阅账号窗口已用尽）')
+    assert.equal(attemptResultLabel({ skipped: true, skipReason: 'oauth_concurrency' }), '跳过（订阅账号并发已满）')
+    assert.equal(attemptResultLabel({ skipped: true, skipReason: 'oauth_cooldown' }), '跳过（订阅账号限流冷却中）')
+    assert.equal(attemptFailureReason({ skipped: true, skipReason: 'oauth_window' }), '订阅账号窗口已用尽')
+    assert.equal(attemptResultLabel({ skipped: true, skipReason: 'unknown' }), '路由跳过')
+  })
+
   it('尝试记录区分成功、失败后切换和终止', () => {
     assert.equal(attemptResultLabel({ statusCode: 200, committed: true }), '成功')
     assert.equal(attemptResultLabel({ statusCode: 500, errorCode: 'upstream_error', retryable: true }, true), '失败，已切换')

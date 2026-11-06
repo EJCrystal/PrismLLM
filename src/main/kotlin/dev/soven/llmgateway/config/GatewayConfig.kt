@@ -38,6 +38,8 @@ data class GatewayConfig(
     /** 可信额度插件 JAR 所在目录；不存在时视为空目录。 */
     val quotaPluginDir: Path = Path.of("plugins"),
     val trustedProxyNetworks: List<TrustedProxyNetwork> = emptyList(),
+    /** 订阅账号 OAuth 的刷新参数与各 Provider 客户端配置。 */
+    val oauth: OAuthConfig = OAuthConfig(),
 ) {
     companion object {
         fun fromEnv(env: Map<String, String> = System.getenv()): GatewayConfig {
@@ -128,6 +130,7 @@ data class GatewayConfig(
                 quotaPluginDir = Path.of(value("QUOTA_PLUGIN_DIR", "plugins")),
                 trustedProxyNetworks = runCatching { TrustedProxyNetwork.parseList(value("TRUSTED_PROXY_CIDRS", "")) }
                     .getOrElse { cause -> error("TRUSTED_PROXY_CIDRS 配置无效: ${cause.message}") },
+                oauth = OAuthConfig.fromEnv(env),
             )
         }
     }

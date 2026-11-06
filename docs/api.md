@@ -168,6 +168,41 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
   - `scope=candidate`：需同时提供 `keyId` 与 `upstreamModel`，只清除该候选。
   - 操作写入管理操作审计，动作为 `channel.cooldown.clear`。
 
+### 5. 订阅账号（OAuth）
+
+订阅账号与渠道密钥一对一绑定，refresh token 加密保存在密钥凭据列，access token 由网关自动刷新。详细语义见 ADR 0016。
+
+- 查看可用的 OAuth 提供方：`GET /admin/api/oauth-providers`，返回 `id`、`label` 与 `configured`；未配置客户端参数的提供方不能导入。
+- 账号看板：`GET /admin/api/oauth-accounts`，返回账号、渠道/密钥名称、授权状态、token 到期时间、调度策略与实时状态（窗口用量、并发、冷却截止时间）。响应不包含任何 token，且禁止缓存。
+- 导入或重新授权：
+
+  ```bash
+  curl -b cookies.txt -X PUT http://localhost:8080/admin/api/channels/<channel-id>/keys/<key-id>/oauth-account \
+    -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
+    -d '{"provider":"chatgpt","refreshToken":"<refresh-token>","accountEmail":"free@example.com","proxyUrl":"http://127.0.0.1:7890"}'
+  ```
+
+  - `provider` 仅支持 `chatgpt` 与 `antigravity`，且必须已配置。
+  - `accessToken` 与 `accessTokenExpiresAt` 可选，但必须成对出现且未过期；留空则导入后按需刷新。
+  - `proxyUrl` 只支持无认证的 `http://主机:端口`。
+  - 重新授权会替换凭据，并清空账号冷却、密钥冷却与失败计数；密钥启停状态不变。
+  - 同一提供方下邮箱唯一，重复绑定返回 `409 oauth_account_email_exists`。
+
+- 编辑调度策略：
+
+  ```bash
+  curl -b cookies.txt -X PUT http://localhost:8080/admin/api/oauth-accounts/<key-id>/policy \
+    -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
+    -d '{"windowLimit":40,"windowSeconds":10800,"maxConcurrentRequests":1}'
+  ```
+
+  `windowLimit` 为 `null` 表示不限制窗口；`windowSeconds` 取值 60..604800；`maxConcurrentRequests` 取值 1..1000。
+
+- 手动刷新与解除冷却：
+  - `POST /admin/api/oauth-accounts/<key-id>/refresh`：允许对 `REAUTH_REQUIRED` 账号再试一次；失败返回 `502 oauth_refresh_failed`。
+  - `POST /admin/api/oauth-accounts/<key-id>/cooldown/clear`：同时清除账号级冷却与密钥级候选冷却。
+- 以上写操作分别写入审计动作 `oauth_account.import`、`oauth_account.policy.update`、`oauth_account.refresh` 与 `oauth_account.cooldown.clear`，只记录渠道/密钥 id、provider、策略参数与刷新结果。
+
 ---
 
 ## 三、调用方密钥生命周期与审计

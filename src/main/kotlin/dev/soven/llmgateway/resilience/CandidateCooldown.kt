@@ -82,6 +82,9 @@ enum class FailureKind {
 
     /** 上游返回 404，模型映射类错误，等时间没有用。 */
     MODEL_NOT_FOUND,
+
+    /** 订阅账号 token 刷新失败：瞬时错误，但只影响该账号，按密钥短冷却。 */
+    CREDENTIAL_TRANSIENT,
 }
 
 /**
@@ -126,6 +129,7 @@ class DefaultCooldownClassifier : CooldownClassifier {
         upstreamModel: String,
     ): CooldownAction = when (kind) {
         FailureKind.TRANSPORT, FailureKind.SERVER_ERROR -> CooldownAction.Transient(CooldownKey.Channel(channelId))
+        FailureKind.CREDENTIAL_TRANSIENT -> CooldownAction.Transient(CooldownKey.Key(channelId, keyId))
         FailureKind.RATE_LIMITED -> CooldownAction.RateLimited(CooldownKey.KeyCandidate(channelId, keyId, upstreamModel), retryAfterMs)
         FailureKind.AUTH_REJECTED -> CooldownAction.AuthFailure(CooldownKey.Key(channelId, keyId))
         FailureKind.MODEL_NOT_FOUND -> CooldownAction.None

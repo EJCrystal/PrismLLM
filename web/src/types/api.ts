@@ -641,3 +641,64 @@ export interface UsageReportQuery {
   protocol?: string | null
   timezoneOffsetMinutes?: number
 }
+
+export interface OAuthProviderInfo {
+  id: string
+  label: string
+  configured: boolean
+}
+
+export interface OAuthAccountPolicy {
+  windowLimit: number | null
+  windowSeconds: number
+  maxConcurrentRequests: number
+}
+
+export interface OAuthAccountRuntime {
+  windowUsed: number
+  cooldownUntil: number | null
+  consecutiveRateLimits: number
+  activeRequests: number
+}
+
+export type OAuthAuthState = 'ACTIVE' | 'REAUTH_REQUIRED'
+
+export interface OAuthAccount {
+  keyId: string
+  keyName: string
+  channelId: string
+  channelName: string
+  provider: string
+  accountEmail: string | null
+  accountPlan: string | null
+  authState: OAuthAuthState
+  tokenType: string
+  scope: string | null
+  accessTokenExpiresAt: number | null
+  lastRefreshedAt: number | null
+  refreshFailureCount: number
+  lastRefreshError: string | null
+  proxyUrl: string | null
+  createdAt: number
+  updatedAt: number
+  policy: OAuthAccountPolicy
+  runtime: OAuthAccountRuntime
+}
+
+export interface OAuthAccountImportRequest {
+  provider: string
+  refreshToken: string
+  accountEmail?: string | null
+  accountPlan?: string | null
+  proxyUrl?: string | null
+  accessToken?: string | null
+  accessTokenExpiresAt?: number | null
+  tokenType?: string | null
+  scope?: string | null
+}
+
+export interface OAuthAccountPolicyRequest {
+  windowLimit?: number | null
+  windowSeconds?: number
+  maxConcurrentRequests?: number
+}

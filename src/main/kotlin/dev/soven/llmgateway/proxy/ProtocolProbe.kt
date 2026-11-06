@@ -1,13 +1,12 @@
 package dev.soven.llmgateway.proxy
 
-import dev.soven.llmgateway.api.GatewayException
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.authTypeFor
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
-import dev.soven.llmgateway.security.CredentialCipher
+import dev.soven.llmgateway.oauth.KeyCredentialResolver
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -15,7 +14,6 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -47,22 +45,13 @@ suspend fun probeUpstreamProtocols(
     channel: ChannelRecord,
     key: ChannelKeyRecord,
     model: String,
-    credentialCipher: CredentialCipher,
+    credentials: KeyCredentialResolver,
     httpClient: HttpClient,
     timeoutMs: Long = 20_000,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): List<ProtocolProbeResult> {
-    val credential = runCatching {
-        credentialCipher.decrypt(key.credentialCiphertext, key.credentialNonce)
-    }.getOrElse {
-        throw GatewayException(
-            HttpStatusCode.BadGateway,
-            "upstream_credential_invalid",
-            "渠道凭据无法解密",
-            retryable = false,
-        )
-    }
+    val credential = resolveSavedCredential(credentials, key)
 
     return GatewayProtocol.entries.map { protocol ->
         try {

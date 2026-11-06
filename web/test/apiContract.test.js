@@ -61,6 +61,34 @@ describe('API 契约的运行时形状', () => {
     assert.equal(params.get('result'), 'success')
   })
 
+  it('订阅账号接口使用约定路径、方法并编码 id', async (t) => {
+    const originalFetch = globalThis.fetch
+    const originalDocument = globalThis.document
+    const calls = []
+    t.after(() => {
+      globalThis.fetch = originalFetch
+      globalThis.document = originalDocument
+    })
+    globalThis.document = { cookie: '' }
+    globalThis.fetch = async (input, init = {}) => {
+      calls.push({ url: String(input), method: init.method || 'GET', body: init.body })
+      return new Response(null, { status: 204 })
+    }
+    await api.importOAuthAccount('channel/1', 'key 2', { provider: 'chatgpt', refreshToken: 'rt' })
+    await api.updateOAuthAccountPolicy('key 2', { windowLimit: 5 })
+    await api.refreshOAuthAccount('key 2')
+    await api.clearOAuthAccountCooldown('key 2')
+
+    assert.deepEqual(calls.map((call) => [call.method, call.url]), [
+      ['PUT', '/admin/api/channels/channel%2F1/keys/key%202/oauth-account'],
+      ['PUT', '/admin/api/oauth-accounts/key%202/policy'],
+      ['POST', '/admin/api/oauth-accounts/key%202/refresh'],
+      ['POST', '/admin/api/oauth-accounts/key%202/cooldown/clear'],
+    ])
+    assert.deepEqual(JSON.parse(calls[0].body), { provider: 'chatgpt', refreshToken: 'rt' })
+    assert.deepEqual(JSON.parse(calls[1].body), { windowLimit: 5 })
+  })
+
   it('非空成功响应无法解析时抛出明确错误', async (t) => {
     const originalFetch = globalThis.fetch
     t.after(() => { globalThis.fetch = originalFetch })

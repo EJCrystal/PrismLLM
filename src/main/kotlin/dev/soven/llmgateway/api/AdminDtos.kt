@@ -14,6 +14,9 @@ import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.domain.ModelTestSettingsRecord
+import dev.soven.llmgateway.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.domain.OAuthAccountRecord
+import dev.soven.llmgateway.domain.OAuthAccountRuntimeState
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamRequestSettingsRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderCatalogSnapshot
@@ -1200,4 +1203,113 @@ fun ModelConnectivityTestResult.toResponse(
     errorMessage = errorMessage,
     usage = usage?.toTestResponse(),
     upstreamReportedModel = upstreamReportedModel,
+)
+
+/**
+ * 订阅账号导入/重新授权。refresh token 只在请求中出现一次，服务端加密后不再回显。
+ *
+ * @author 文杰
+ * @since 2026-11-06
+ */
+@Serializable
+data class OAuthAccountImportRequest(
+    val provider: String,
+    val refreshToken: String,
+    val accountEmail: String? = null,
+    val accountPlan: String? = null,
+    val proxyUrl: String? = null,
+    val accessToken: String? = null,
+    val accessTokenExpiresAt: Long? = null,
+    val tokenType: String? = null,
+    val scope: String? = null,
+)
+
+@Serializable
+data class OAuthAccountPolicyRequest(
+    val windowLimit: Int? = null,
+    val windowSeconds: Int = 10_800,
+    val maxConcurrentRequests: Int = 1,
+)
+
+@Serializable
+data class OAuthAccountPolicyResponse(
+    val windowLimit: Int? = null,
+    val windowSeconds: Int,
+    val maxConcurrentRequests: Int,
+)
+
+@Serializable
+data class OAuthAccountRuntimeResponse(
+    val windowUsed: Int = 0,
+    val cooldownUntil: Long? = null,
+    val consecutiveRateLimits: Int = 0,
+    val activeRequests: Int = 0,
+)
+
+@Serializable
+data class OAuthAccountResponse(
+    val keyId: String,
+    val keyName: String,
+    val channelId: String,
+    val channelName: String,
+    val provider: String,
+    val accountEmail: String? = null,
+    val accountPlan: String? = null,
+    val authState: String,
+    val tokenType: String,
+    val scope: String? = null,
+    val accessTokenExpiresAt: Long? = null,
+    val lastRefreshedAt: Long? = null,
+    val refreshFailureCount: Int = 0,
+    val lastRefreshError: String? = null,
+    val proxyUrl: String? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val policy: OAuthAccountPolicyResponse,
+    val runtime: OAuthAccountRuntimeResponse,
+)
+
+@Serializable
+data class OAuthProviderResponse(
+    val id: String,
+    val label: String,
+    val configured: Boolean,
+)
+
+fun OAuthAccountPolicy.toResponse() = OAuthAccountPolicyResponse(
+    windowLimit = windowLimit,
+    windowSeconds = windowSeconds,
+    maxConcurrentRequests = maxConcurrentRequests,
+)
+
+fun OAuthAccountRecord.toResponse(
+    channel: ChannelRecord,
+    key: ChannelKeyRecord,
+    policy: OAuthAccountPolicy,
+    runtime: OAuthAccountRuntimeState?,
+) = OAuthAccountResponse(
+    keyId = keyId,
+    keyName = key.name,
+    channelId = channel.id,
+    channelName = channel.name,
+    provider = provider.value,
+    accountEmail = accountEmail,
+    accountPlan = accountPlan,
+    authState = authState.value,
+    tokenType = tokenType,
+    scope = scope,
+    accessTokenExpiresAt = accessTokenExpiresAt,
+    lastRefreshedAt = lastRefreshedAt,
+    refreshFailureCount = refreshFailureCount,
+    lastRefreshError = lastRefreshError,
+    proxyUrl = proxyUrl,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+    policy = policy.toResponse(),
+    runtime = OAuthAccountRuntimeResponse(
+        windowUsed = runtime?.windowUsed ?: 0,
+        cooldownUntil = runtime?.cooldownUntil,
+        consecutiveRateLimits = runtime?.consecutiveRateLimits ?: 0,
+        activeRequests = runtime?.activeRequests ?: 0,
+    ),
 )

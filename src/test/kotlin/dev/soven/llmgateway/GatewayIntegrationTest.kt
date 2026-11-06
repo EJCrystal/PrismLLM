@@ -13,6 +13,8 @@ import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
@@ -76,9 +78,11 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
@@ -945,6 +949,379 @@ class GatewayIntegrationTest {
         }
 
         assertEquals(1, fake.requests.size)
+    }
+
+    @Test
+    fun `subscription account window skips the candidate without calling upstream`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "oauth-window",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "free-account",
+                    credential = app.credentialCipher.encrypt("oauth-refresh-token"),
+                    models = listOf("m1"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        val keyId = channel.keys.single().id
+        app.oauthAccountRepository.upsert(keyId, OAuthProvider.CHATGPT, accountEmail = "window@example.com")
+        app.oauthAccountRepository.saveRefreshed(
+            keyId = keyId,
+            accessToken = app.credentialCipher.encrypt("oauth-access-token"),
+            expiresAt = System.currentTimeMillis() + 3_600_000,
+            tokenType = "Bearer",
+            scope = null,
+            rotatedRefreshToken = null,
+            expectedRefreshCiphertext = channel.keys.single().credentialCiphertext,
+        )
+        app.oauthAccountRepository.updatePolicy(
+            keyId,
+            OAuthAccountPolicy(windowLimit = 1, windowSeconds = 3_600, maxConcurrentRequests = 1),
+        )
+        exposeAsModel("oauth-window-model", channel to "m1")
+        val clientKey = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            suspend fun send() = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"oauth-window-model","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, send().status)
+            val denied = send()
+            assertEquals(HttpStatusCode.TooManyRequests, denied.status)
+            assertTrue(denied.bodyAsText().contains("subscription_account_rate_limited"))
+            assertTrue(denied.headers[HttpHeaders.RetryAfter]?.toLongOrNull()?.let { it >= 1 } == true)
+            awaitRequestLogCount(2)
+        }
+
+        assertEquals(1, fake.requests.size)
+        assertEquals("Bearer oauth-access-token", fake.requests.single().authorization)
+    }
+
+    @Test
+    fun `subscription account requiring reauthorization never sends the refresh token upstream`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "oauth-reauth",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "expired-account",
+                    credential = app.credentialCipher.encrypt("oauth-refresh-token"),
+                    models = listOf("m1"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("m1"),
+        )
+        val keyId = channel.keys.single().id
+        app.oauthAccountRepository.upsert(keyId, OAuthProvider.CHATGPT, accountEmail = "reauth@example.com")
+        app.oauthAccountRepository.recordFailure(keyId, "invalid_grant", terminal = true)
+        exposeAsModel("oauth-reauth-model", channel to "m1")
+        val clientKey = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $clientKey")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"oauth-reauth-model","messages":[]}""")
+            }
+
+            assertEquals(HttpStatusCode.BadGateway, response.status)
+            assertTrue(response.bodyAsText().contains("subscription_account_unavailable"))
+            awaitRequestLogCount(1)
+        }
+
+        assertEquals(0, fake.requests.size)
+    }
+
+    @Test
+    fun `admin model listing resolves the subscription access token`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val key = channel.keys.single()
+        app.oauthAccountRepository.upsert(key.id, OAuthProvider.CHATGPT, accountEmail = "models@example.com")
+        app.oauthAccountRepository.saveRefreshed(
+            keyId = key.id,
+            accessToken = app.credentialCipher.encrypt("oauth-models-token"),
+            expiresAt = System.currentTimeMillis() + 3_600_000,
+            tokenType = "Bearer",
+            scope = null,
+            rotatedRefreshToken = null,
+            expectedRefreshCiphertext = key.credentialCiphertext,
+        )
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.get("/admin/api/channels/${channel.id}/models") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+        }
+
+        assertEquals("Bearer oauth-models-token", fake.modelRequests.single().authorization)
+    }
+
+    @Test
+    fun `admin oauth import binds the account and lists it on the dashboard`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val key = channel.keys.single()
+        val expiresAt = System.currentTimeMillis() + 3_600_000
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            val response = client.put("/admin/api/channels/${channel.id}/keys/${key.id}/oauth-account") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"provider":"chatgpt","refreshToken":"refresh-token-value","accountEmail":"free@example.com",""" +
+                        """"accountPlan":"free","proxyUrl":"http://127.0.0.1:8080","accessToken":"access-token-value",""" +
+                        """"accessTokenExpiresAt":$expiresAt}""",
+                )
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = response.bodyAsText()
+            assertFalse(body.contains("refresh-token-value"))
+            assertFalse(body.contains("access-token-value"))
+            val account = Json.parseToJsonElement(body).jsonObject
+            assertEquals(key.id, account["keyId"]!!.jsonPrimitive.content)
+            assertEquals(channel.id, account["channelId"]!!.jsonPrimitive.content)
+            assertEquals("chatgpt", account["provider"]!!.jsonPrimitive.content)
+            assertEquals("ACTIVE", account["authState"]!!.jsonPrimitive.content)
+            assertEquals("free@example.com", account["accountEmail"]!!.jsonPrimitive.content)
+            assertEquals(expiresAt, account["accessTokenExpiresAt"]!!.jsonPrimitive.long)
+            assertEquals("http://127.0.0.1:8080", account["proxyUrl"]!!.jsonPrimitive.content)
+            val policy = account["policy"]!!.jsonObject
+            assertEquals(10_800, policy["windowSeconds"]!!.jsonPrimitive.int)
+            assertEquals(1, policy["maxConcurrentRequests"]!!.jsonPrimitive.int)
+            assertEquals(0, account["runtime"]!!.jsonObject["windowUsed"]!!.jsonPrimitive.int)
+
+            val listing = client.get("/admin/api/oauth-accounts") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, listing.status)
+            assertEquals("no-store", listing.headers["Cache-Control"])
+            assertFalse(listing.bodyAsText().contains("refresh-token-value"))
+            val entries = Json.parseToJsonElement(listing.bodyAsText()).jsonArray
+            assertEquals(1, entries.size)
+            assertEquals(key.id, entries.single().jsonObject["keyId"]!!.jsonPrimitive.content)
+
+            val providers = client.get("/admin/api/oauth-providers") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, providers.status)
+            val byProvider = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
+                .associate { it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["configured"]!!.jsonPrimitive.boolean }
+            assertEquals(mapOf("chatgpt" to true, "antigravity" to false), byProvider)
+
+            val stored = app.channelRepository.find(channel.id)!!.keys.single()
+            assertNotEquals("refresh-token-value", stored.credentialCiphertext)
+            assertEquals(
+                "refresh-token-value",
+                app.credentialCipher.decrypt(stored.credentialCiphertext, stored.credentialNonce),
+            )
+            assertEquals(10_800, assertNotNull(stored.oauthPolicy).windowSeconds)
+            assertEquals("free@example.com", app.oauthAccountRepository.find(key.id)!!.accountEmail)
+        }
+    }
+
+    @Test
+    fun `admin oauth import rejects unconfigured providers and invalid input`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val key = channel.keys.single()
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            suspend fun import(body: String) = client.put("/admin/api/channels/${channel.id}/keys/${key.id}/oauth-account") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+
+            val unconfigured = import("""{"provider":"antigravity","refreshToken":"rt"}""")
+            assertEquals(HttpStatusCode.BadRequest, unconfigured.status)
+            assertTrue(unconfigured.bodyAsText().contains("oauth_provider_not_configured"))
+
+            val unknownProvider = import("""{"provider":"gemini","refreshToken":"rt"}""")
+            assertEquals(HttpStatusCode.BadRequest, unknownProvider.status)
+            assertTrue(unknownProvider.bodyAsText().contains("invalid_oauth_provider"))
+
+            val blankToken = import("""{"provider":"chatgpt","refreshToken":"   "}""")
+            assertEquals(HttpStatusCode.BadRequest, blankToken.status)
+            assertTrue(blankToken.bodyAsText().contains("invalid_oauth_refresh_token"))
+
+            val proxy = import(
+                """{"provider":"chatgpt","refreshToken":"rt","proxyUrl":"socks5://127.0.0.1:1080"}""",
+            )
+            assertEquals(HttpStatusCode.BadRequest, proxy.status)
+            assertTrue(proxy.bodyAsText().contains("invalid_oauth_proxy"))
+
+            val missingExpiry = import("""{"provider":"chatgpt","refreshToken":"rt","accessToken":"at"}""")
+            assertEquals(HttpStatusCode.BadRequest, missingExpiry.status)
+            assertTrue(missingExpiry.bodyAsText().contains("invalid_oauth_access_token"))
+
+            val expiredAccess = import(
+                """{"provider":"chatgpt","refreshToken":"rt","accessToken":"at","accessTokenExpiresAt":${System.currentTimeMillis() - 1}}""",
+            )
+            assertEquals(HttpStatusCode.BadRequest, expiredAccess.status)
+            assertTrue(expiredAccess.bodyAsText().contains("invalid_oauth_access_token"))
+
+            val missingKey = client.put("/admin/api/channels/${channel.id}/keys/missing/oauth-account") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"provider":"chatgpt","refreshToken":"rt"}""")
+            }
+            assertEquals(HttpStatusCode.NotFound, missingKey.status)
+
+            assertEquals(0, scalarInt("select count(*) from channel_key_oauth_accounts"))
+            assertNull(app.channelRepository.find(channel.id)!!.keys.single().oauthPolicy)
+        }
+    }
+
+    @Test
+    fun `admin oauth import rejects the same account email on another key`() = runBlocking {
+        val first = createChannel("openai-a", "ok")
+        val second = createChannel("openai-b", "ok")
+        val secondCredential = second.keys.single().credentialCiphertext
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            suspend fun import(channel: ChannelRecord, keyId: String, refreshToken: String) =
+                client.put("/admin/api/channels/${channel.id}/keys/$keyId/oauth-account") {
+                    header(HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"provider":"chatgpt","refreshToken":"$refreshToken","accountEmail":"same@example.com"}""")
+                }
+
+            assertEquals(HttpStatusCode.OK, import(first, first.keys.single().id, "rt-a").status)
+            val duplicated = import(second, second.keys.single().id, "rt-b")
+            assertEquals(HttpStatusCode.Conflict, duplicated.status)
+            assertTrue(duplicated.bodyAsText().contains("oauth_account_email_exists"))
+
+            // 冲突时整个事务回滚，第二个密钥的凭据不能被替换。
+            assertEquals(secondCredential, app.channelRepository.find(second.id)!!.keys.single().credentialCiphertext)
+            assertEquals(1, scalarInt("select count(*) from channel_key_oauth_accounts"))
+        }
+    }
+
+    @Test
+    fun `admin oauth policy update validates and persists limits`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val key = channel.keys.single()
+        app.oauthAccountRepository.upsert(key.id, OAuthProvider.CHATGPT, accountEmail = "policy@example.com")
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            suspend fun update(keyId: String, body: String) = client.put("/admin/api/oauth-accounts/$keyId/policy") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+
+            val ok = update(key.id, """{"windowLimit":10,"windowSeconds":3600,"maxConcurrentRequests":2}""")
+            assertEquals(HttpStatusCode.OK, ok.status)
+            val policy = Json.parseToJsonElement(ok.bodyAsText()).jsonObject["policy"]!!.jsonObject
+            assertEquals(10, policy["windowLimit"]!!.jsonPrimitive.int)
+            assertEquals(3_600, policy["windowSeconds"]!!.jsonPrimitive.int)
+            assertEquals(2, policy["maxConcurrentRequests"]!!.jsonPrimitive.int)
+
+            val invalid = update(key.id, """{"windowLimit":0}""")
+            assertEquals(HttpStatusCode.BadRequest, invalid.status)
+            assertTrue(invalid.bodyAsText().contains("invalid_oauth_policy"))
+
+            val missing = update("missing", """{"windowLimit":5}""")
+            assertEquals(HttpStatusCode.NotFound, missing.status)
+            assertTrue(missing.bodyAsText().contains("oauth_account_not_found"))
+
+            val stored = assertNotNull(app.channelRepository.find(channel.id)!!.keys.single().oauthPolicy)
+            assertEquals(10, stored.windowLimit)
+            assertEquals(3_600, stored.windowSeconds)
+            assertEquals(2, stored.maxConcurrentRequests)
+        }
+    }
+
+    @Test
+    fun `admin oauth cooldown clear releases account and key cooldown`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val key = channel.keys.single()
+        app.oauthAccountRepository.upsert(key.id, OAuthProvider.CHATGPT, accountEmail = "cooldown@example.com")
+        val accountKey = app.channelRepository.find(channel.id)!!.keys.single()
+        app.oauthAccountScheduler.recordRateLimited(accountKey, 600_000)
+        val permit = assertNotNull(app.candidateCooldown.forceAcquire(channel.id, key.id, "m1"))
+        app.candidateCooldown.recordFailure(permit, FailureKind.AUTH_REJECTED)
+        assertNotNull(app.oauthAccountScheduler.runtimeState(key.id, accountKey.oauthPolicy!!)?.cooldownUntil)
+        assertNotNull(app.candidateCooldown.cooldownState(channel.id, key.id, "m1"))
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            val response = client.post("/admin/api/oauth-accounts/${key.id}/cooldown/clear") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+            }
+            assertEquals(HttpStatusCode.NoContent, response.status)
+
+            val missing = client.post("/admin/api/oauth-accounts/missing/cooldown/clear") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+            }
+            assertEquals(HttpStatusCode.NotFound, missing.status)
+
+            assertNull(app.oauthAccountScheduler.runtimeState(key.id, accountKey.oauthPolicy!!)!!.cooldownUntil)
+            assertNull(app.candidateCooldown.cooldownState(channel.id, key.id, "m1"))
+        }
+    }
+
+    @Test
+    fun `admin oauth manual refresh reports missing accounts and refresh failures`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        val key = channel.keys.single()
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            suspend fun refresh(keyId: String) = client.post("/admin/api/oauth-accounts/$keyId/refresh") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+            }
+
+            val notOAuth = refresh(key.id)
+            assertEquals(HttpStatusCode.NotFound, notOAuth.status)
+            assertTrue(notOAuth.bodyAsText().contains("oauth_account_not_found"))
+
+            // 代理指向本机未监听端口，刷新请求快速失败，避免测试访问真实 OAuth 端点。
+            app.oauthAccountRepository.upsert(
+                key.id,
+                OAuthProvider.CHATGPT,
+                accountEmail = "refresh@example.com",
+                proxyUrl = "http://127.0.0.1:1",
+            )
+            val failed = refresh(key.id)
+            assertEquals(HttpStatusCode.BadGateway, failed.status)
+            assertTrue(failed.bodyAsText().contains("oauth_refresh_failed"))
+            assertEquals("network_error", app.oauthAccountRepository.find(key.id)!!.lastRefreshError)
+        }
     }
 
     @Tag("channel-key-rate-limit")
@@ -5958,7 +6335,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("48", result.getString(1))
+                        assertEquals("50", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())

@@ -8,7 +8,7 @@ import dev.soven.llmgateway.domain.authTypeFor
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamModel
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
-import dev.soven.llmgateway.security.CredentialCipher
+import dev.soven.llmgateway.oauth.KeyCredentialResolver
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
@@ -39,23 +39,14 @@ import kotlinx.serialization.json.contentOrNull
 suspend fun fetchUpstreamModels(
     channel: ChannelRecord,
     key: ChannelKeyRecord,
-    credentialCipher: CredentialCipher,
+    credentials: KeyCredentialResolver,
     httpClient: HttpClient,
     authorizedOnly: Boolean = true,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): List<UpstreamModel> {
     if (authorizedOnly && key.models.isEmpty()) return emptyList()
-    val credential = runCatching {
-        credentialCipher.decrypt(key.credentialCiphertext, key.credentialNonce)
-    }.getOrElse {
-        throw GatewayException(
-            HttpStatusCode.BadGateway,
-            "upstream_credential_invalid",
-            "渠道凭据无法解密",
-            retryable = false,
-        )
-    }
+    val credential = resolveSavedCredential(credentials, key)
 
     val protocol = channel.modelListProtocol()
     val models = fetchUpstreamModels(

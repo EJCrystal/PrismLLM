@@ -67,6 +67,8 @@ data class ChannelKeyRecord(
     /** null 表示尚未单独配置；不继承渠道的账户身份。 */
     val quota: ChannelQuotaSettings? = null,
     val quotaCredential: EncryptedCredential? = null,
+    /** 非空表示这是订阅账号，需要走账号级滑动窗口、并发与 429 冷却。 */
+    val oauthPolicy: OAuthAccountPolicy? = null,
 ) {
     val credentialSet: Boolean get() = credentialCiphertext.isNotBlank()
 
@@ -340,6 +342,6 @@ data class UpstreamAttemptRecord(
     val retryable: Boolean = false,
     /** 该条记录是路由阶段被跳过的候选，没有发起上游请求。 */
     val skipped: Boolean = false,
-    /** 跳过原因；当前为 cooldown。skipped=false 时为 null。 */
+    /** 跳过原因：cooldown 或 oauth_window / oauth_concurrency / oauth_cooldown。skipped=false 时为 null。 */
     val skipReason: String? = null,
 )

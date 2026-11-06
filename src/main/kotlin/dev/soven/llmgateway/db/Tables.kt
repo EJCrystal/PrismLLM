@@ -69,6 +69,52 @@ object ChannelKeyQuotaSettings : Table("channel_key_quota_settings") {
     override val primaryKey = PrimaryKey(keyId)
 }
 
+/**
+ * 订阅账号 OAuth 状态，与 [ChannelKeys] 一对一。
+ * 长期 refresh token 复用 channel_keys 的加密凭据列；这里只保存短期 access token 缓存和刷新诊断。
+ */
+object ChannelKeyOAuthAccounts : Table("channel_key_oauth_accounts") {
+    val keyId = varchar("key_id", 36).references(ChannelKeys.id, onDelete = ReferenceOption.CASCADE)
+    val provider = varchar("provider", 32)
+    val accountEmail = varchar("account_email", 320).nullable()
+    val accountPlan = varchar("account_plan", 32).nullable()
+    val accessTokenCiphertext = text("access_token_ciphertext").nullable()
+    val accessTokenNonce = text("access_token_nonce").nullable()
+    val accessTokenKeyVersion = integer("access_token_key_version").nullable()
+    val accessTokenExpiresAt = long("access_token_expires_at").nullable()
+    val tokenType = varchar("token_type", 32).default("Bearer")
+    val scope = text("scope").nullable()
+    /** ACTIVE / REAUTH_REQUIRED。 */
+    val authState = varchar("auth_state", 20).default("ACTIVE")
+    val refreshFailureCount = integer("refresh_failure_count").default(0)
+    val lastRefreshError = varchar("last_refresh_error", 200).nullable()
+    val lastRefreshedAt = long("last_refreshed_at").nullable()
+    /** 账号级出口代理；刷新 access token 与调用上游必须使用同一个代理。 */
+    val proxyUrl = varchar("proxy_url", 500).nullable()
+    /** 账号级滑动窗口上限；null 表示不限。窗口按账号统计，不区分模型。 */
+    val windowLimit = integer("window_limit").nullable()
+    val windowSeconds = integer("window_seconds").default(10_800)
+    val maxConcurrentRequests = integer("max_concurrent_requests").default(1)
+    val createdAt = long("created_at")
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(keyId)
+}
+
+/**
+ * 订阅账号级调度状态快照。内存态是权威来源，这里只用于重启恢复。
+ * 窗口命中按时间升序保存为 JSON 数组，窗口上限决定行内最多保留多少条。
+ */
+object ChannelKeyOAuthWindows : Table("channel_key_oauth_windows") {
+    val keyId = varchar("key_id", 36).references(ChannelKeyOAuthAccounts.keyId, onDelete = ReferenceOption.CASCADE)
+    val hits = text("hits").default("[]")
+    val cooldownUntil = long("cooldown_until").nullable()
+    val consecutiveRateLimits = integer("consecutive_rate_limits").default(0)
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(keyId)
+}
+
 /** 渠道密钥显式授权的上游模型。 */
 object ChannelKeyModels : Table("channel_key_models") {
     val keyId = varchar("key_id", 36).references(ChannelKeys.id, onDelete = ReferenceOption.CASCADE)
