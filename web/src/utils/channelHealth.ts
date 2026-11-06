@@ -10,8 +10,10 @@ export function healthSymbol(state: HealthState): string {
 }
 export function healthPercent(rate: number | null | undefined): string {
   if (rate == null || !Number.isFinite(rate)) return '—'
-  if (rate > 0.999 && rate < 1) return '>99.9%'
-  return `${(rate * 100).toFixed(1)}%`
+  // 展示层兜底：百分比不超过 100%，避免异常上游数据把命中率显示成 120%。
+  const clamped = Math.min(1, Math.max(0, rate))
+  if (clamped > 0.999 && clamped < 1) return '>99.9%'
+  return `${(clamped * 100).toFixed(1)}%`
 }
 /**
  * 渠道详情里的缓存命中率只作展示，不参与健康度判定。

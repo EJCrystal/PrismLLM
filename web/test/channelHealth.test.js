@@ -10,6 +10,8 @@ describe('channel health display', () => {
     assert.equal(healthPercent(0), '0.0%')
     assert.equal(healthPercent(1), '100.0%')
     assert.equal(healthPercent(0.9999), '>99.9%')
+    assert.equal(healthPercent(1.2), '100.0%')
+    assert.equal(healthPercent(-0.2), '0.0%')
   })
 
   it('keeps sparse buckets unknown and distinguishes the failure bands', () => {
