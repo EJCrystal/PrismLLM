@@ -173,7 +173,7 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
                         add(buildJsonObject {
                             put("name", function.string("name") ?: unsupported("tools[$index].function.name", "工具缺少 name"))
                             function.string("description")?.let { put("description", it) }
-                            put("parameters", geminiParameters(function["parameters"]))
+                            put("parameters", geminiParameters(function["parameters"], "tools[$index].function.parameters"))
                         })
                     }
                 })
@@ -371,7 +371,7 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
                         add(buildJsonObject {
                             put("name", tool.string("name") ?: unsupported("tools[$index].name", "工具缺少 name"))
                             tool.string("description")?.let { put("description", it) }
-                            put("parameters", geminiParameters(tool["input_schema"]))
+                            put("parameters", geminiParameters(tool["input_schema"], "tools[$index].input_schema"))
                         })
                     }
                 })
@@ -566,7 +566,7 @@ internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: Stri
                     add(buildJsonObject {
                         put("name", tool.string("name") ?: unsupported("tools[$index].name", "工具缺少 name"))
                         tool.string("description")?.let { put("description", it) }
-                        put("parameters", geminiParameters(tool["parameters"]))
+                        put("parameters", geminiParameters(tool["parameters"], "tools[$index].parameters"))
                     })
                 }
             })

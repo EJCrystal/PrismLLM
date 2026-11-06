@@ -8,7 +8,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /** 跨协议转 Gemini 时，调用方的 JSON Schema 要收敛到 Gemini Schema 能表达的字段。 */
 class GeminiSchemaConversionTest {
@@ -73,6 +75,24 @@ class GeminiSchemaConversionTest {
     }
 
     @Test
+    fun `enum value types distinguish strings from booleans and numbers`() {
+        val schema = parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+            "type":"object",
+            "properties":{
+                "flag":{"enum":["true","false"]},
+                "switches":{"enum":[true,false]},
+                "count":{"enum":[1,2]},
+                "ratio":{"enum":[1.5,2]}
+            }
+        }}]}""")
+        val properties = schema["properties"]!!.jsonObject
+        assertEquals("string", properties["flag"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("boolean", properties["switches"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("integer", properties["count"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("number", properties["ratio"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `boolean schemas are shaped or dropped`() {
         val schema = parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
             "type":"object",
@@ -86,6 +106,119 @@ class GeminiSchemaConversionTest {
         assertFalse(properties.containsKey("never"))
         assertEquals("string", properties["anyValue"]!!.jsonObject["type"]!!.jsonPrimitive.content)
         assertEquals("string", properties["list"]!!.jsonObject["items"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `non string enum values keep their type without an invalid enum`() {
+        val schema = parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+            "type":"object",
+            "properties":{
+                "count":{"enum":[1,2]},
+                "ratio":{"enum":[1.5,2]},
+                "switches":{"enum":[true,false]},
+                "mode":{"const":5},
+                "name":{"enum":["a","b"]}
+            }
+        }}]}""")
+        val properties = schema["properties"]!!.jsonObject
+        assertEquals("integer", properties["count"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertFalse(properties["count"]!!.jsonObject.containsKey("enum"))
+        assertEquals("number", properties["ratio"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertFalse(properties["ratio"]!!.jsonObject.containsKey("enum"))
+        assertEquals("boolean", properties["switches"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertFalse(properties["switches"]!!.jsonObject.containsKey("enum"))
+        assertEquals("integer", properties["mode"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertFalse(properties["mode"]!!.jsonObject.containsKey("enum"))
+        assertEquals("string", properties["name"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals(
+            listOf("a", "b"),
+            properties["name"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content },
+        )
+    }
+
+    @Test
+    fun `tuple items become an anyof element schema`() {
+        val schema = parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+            "type":"object",
+            "properties":{
+                "pair":{"type":"array","items":[{"type":"string"},{"type":"integer"}]},
+                "single":{"type":"array","items":[{"type":"string"}]},
+                "legacy":{"type":"array","prefixItems":[{"type":"string"},{"type":"boolean"}]}
+            }
+        }}]}""")
+        val properties = schema["properties"]!!.jsonObject
+        val pair = properties["pair"]!!.jsonObject["items"]!!.jsonObject["anyOf"]!!.jsonArray
+        assertEquals(listOf("string", "integer"), pair.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        assertEquals(
+            "string",
+            properties["single"]!!.jsonObject["items"]!!.jsonObject["type"]!!.jsonPrimitive.content,
+        )
+        val legacy = properties["legacy"]!!.jsonObject["items"]!!.jsonObject["anyOf"]!!.jsonArray
+        assertEquals(listOf("string", "boolean"), legacy.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `local refs are expanded and allOf is flattened`() {
+        val schema = parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+            "${'$'}defs":{
+                "Color":{"type":"string","enum":["red","blue"]},
+                "Point":{"type":"object","properties":{"x":{"type":"integer"}},"required":["x"]}
+            },
+            "type":"object",
+            "properties":{
+                "color":{"${'$'}ref":"#/${'$'}defs/Color"},
+                "point":{"${'$'}ref":"#/${'$'}defs/Point"},
+                "mixed":{"allOf":[
+                    {"type":"object","properties":{"a":{"type":"string"}},"required":["a"]},
+                    {"properties":{"b":{"type":"integer"}},"required":["b"]}
+                ]}
+            },
+            "required":["color"]
+        }}]}""")
+        assertFalse(schema.containsKey("${'$'}defs"))
+        val properties = schema["properties"]!!.jsonObject
+        val color = properties["color"]!!.jsonObject
+        assertEquals("string", color["type"]!!.jsonPrimitive.content)
+        assertEquals(listOf("red", "blue"), color["enum"]!!.jsonArray.map { it.jsonPrimitive.content })
+        val point = properties["point"]!!.jsonObject
+        assertEquals("object", point["type"]!!.jsonPrimitive.content)
+        assertEquals(
+            "integer",
+            point["properties"]!!.jsonObject["x"]!!.jsonObject["type"]!!.jsonPrimitive.content,
+        )
+        val mixed = properties["mixed"]!!.jsonObject
+        assertEquals("object", mixed["type"]!!.jsonPrimitive.content)
+        assertFalse(mixed.containsKey("allOf"))
+        assertEquals(listOf("a", "b"), mixed["properties"]!!.jsonObject.keys.sorted())
+        assertEquals(
+            listOf("a", "b"),
+            mixed["required"]!!.jsonArray.map { it.jsonPrimitive.content }.sorted(),
+        )
+    }
+
+    @Test
+    fun `unresolvable references and empty unions are rejected`() {
+        val external = assertFailsWith<ProtocolConversionException> {
+            parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+                "type":"object","properties":{"x":{"${'$'}ref":"https://example.com/schema.json"}}
+            }}]}""")
+        }
+        assertTrue(external.field.endsWith("properties.x.\$ref"))
+
+        val union = assertFailsWith<ProtocolConversionException> {
+            parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+                "type":"object","properties":{"x":{"anyOf":[false,false]}}
+            }}]}""")
+        }
+        assertTrue(union.field.endsWith("properties.x.anyOf"))
+
+        val recursive = assertFailsWith<ProtocolConversionException> {
+            parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+                "${'$'}defs":{"Node":{"type":"object","properties":{"next":{"${'$'}ref":"#/${'$'}defs/Node"}}}},
+                "type":"object","properties":{"root":{"${'$'}ref":"#/${'$'}defs/Node"}}
+            }}]}""")
+        }
+        assertTrue(recursive.field.endsWith("properties.root.properties.next.\$ref"))
     }
 
     @Test
