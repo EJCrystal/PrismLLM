@@ -92,6 +92,10 @@ class UpstreamRequestPolicy(
         channel.reasoningContentPolicy?.let(ReasoningContentPolicy::fromValue)
             ?: (if (channel.inheritGlobal) global.reasoningContentPolicy?.let(ReasoningContentPolicy::fromValue) else null)
             ?: ReasoningContentPolicy.AUTO
+    private val developerRolePolicy: DeveloperRolePolicy =
+        channel.developerRolePolicy?.let(DeveloperRolePolicy::fromValue)
+            ?: (if (channel.inheritGlobal) global.developerRolePolicy?.let(DeveloperRolePolicy::fromValue) else null)
+            ?: DeveloperRolePolicy.AUTO
 
     fun applyHeaders(builder: HttpRequestBuilder) {
         val result = linkedMapOf<String, String?>()
@@ -123,15 +127,16 @@ class UpstreamRequestPolicy(
         val routed = if (protocol == GatewayProtocol.GEMINI) JsonObject(original - "model" - "stream")
             else JsonObject(original + ("model" to JsonPrimitive(upstreamModel)))
         val merged = layers.fold(routed) { current, layer -> mergePatch(current, layer.body) }
-        val result = if (protocol == GatewayProtocol.CHAT_COMPLETIONS) {
-            val withoutMaxTokens = if ("max_completion_tokens" in merged) {
-                JsonObject(merged - "max_tokens")
-            } else {
-                merged
-            }
-            ChatReasoningContentNormalizer.normalize(withoutMaxTokens, upstreamModel, reasoningContentPolicy)
+        val compatible = if (protocol == GatewayProtocol.CHAT_COMPLETIONS && "max_completion_tokens" in merged) {
+            JsonObject(merged - "max_tokens")
         } else {
             merged
+        }
+        val normalized = DeveloperRoleNormalizer.normalize(compatible, protocol, developerRolePolicy)
+        val result = if (protocol == GatewayProtocol.CHAT_COMPLETIONS) {
+            ChatReasoningContentNormalizer.normalize(normalized, upstreamModel, reasoningContentPolicy)
+        } else {
+            normalized
         }
         if (result.toString().toByteArray(Charsets.UTF_8).size.toLong() > limitBytes) {
             throw GatewayException(
@@ -166,6 +171,11 @@ fun validateUpstreamRequestOverrides(overrides: UpstreamRequestOverrides) {
         ReasoningContentPolicy.fromValue(overrides.reasoningContentPolicy) == null
     ) {
         invalid("reasoning_content 处理策略必须是 auto、always 或 never")
+    }
+    if (overrides.developerRolePolicy != null &&
+        DeveloperRolePolicy.fromValue(overrides.developerRolePolicy) == null
+    ) {
+        invalid("developer 角色处理策略必须是 auto、always 或 never")
     }
     val layers = listOf(overrides.common()) + overrides.protocols.values
     layers.forEach { layer ->

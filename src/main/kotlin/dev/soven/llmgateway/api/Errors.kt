@@ -21,6 +21,8 @@ class GatewayException(
     val nativeResponseBody: String? = null,
     /** 仅用于密钥规则匹配与审计的内部错误体，已截断，不返回调用方、不落请求日志。 */
     val upstreamErrorBody: String? = null,
+    /** 上游只是读不懂请求形状（如 422、未知角色/字段）；可故障转移，但不冷却当前渠道。 */
+    val shapeRefused: Boolean = false,
 ) : RuntimeException(message)
 
 /**

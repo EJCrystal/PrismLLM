@@ -1,0 +1,45 @@
+package dev.soven.llmgateway.proxy
+
+import kotlin.test.Test
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+class ShapeRefusalTest {
+    @Test
+    fun `422 is always a shape refusal`() {
+        assertTrue(ShapeRefusal.matches(422, """{"error":{"message":"unprocessable"}}"""))
+        assertTrue(
+            ShapeRefusal.matches(
+                422,
+                """{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[0].role: unknown variant `developer`"}}""",
+            ),
+        )
+    }
+
+    @Test
+    fun `400 matches known shape vocabulary only`() {
+        assertTrue(ShapeRefusal.matches(400, """{"error":{"message":"Unknown parameter: 'foo'"}}"""))
+        assertTrue(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Additional properties are not allowed ('x' was unexpected)"}}""",
+            ),
+        )
+        assertTrue(ShapeRefusal.matches(400, """{"error":{"message":"Unknown variant `developer`, expected one of ..."}}"""))
+        assertTrue(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Failed to deserialize the JSON body into the target type"}}""",
+            ),
+        )
+        // 缺失必填字段是所有上游都会拒绝的请求错误，不属于形状不兼容。
+        assertFalse(ShapeRefusal.matches(400, """{"error":{"message":"messages: field required"}}"""))
+        assertFalse(ShapeRefusal.matches(400, """{"error":{"message":"Invalid parameter: max_tokens must be positive"}}"""))
+    }
+
+    @Test
+    fun `other statuses never match`() {
+        assertFalse(ShapeRefusal.matches(500, "unknown variant developer"))
+        assertFalse(ShapeRefusal.matches(404, "failed to deserialize"))
+    }
+}

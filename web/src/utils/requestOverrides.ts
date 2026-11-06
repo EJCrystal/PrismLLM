@@ -17,6 +17,15 @@ export const REASONING_CONTENT_POLICIES = [
 
 const REASONING_CONTENT_POLICY_IDS = new Set(REASONING_CONTENT_POLICIES.map(({ id }) => id))
 
+export const DEVELOPER_ROLE_POLICIES = [
+  { id: '', label: '跟随上级 / 自动判断' },
+  { id: 'auto', label: '自动：仅 Chat Completions 归一化' },
+  { id: 'always', label: '始终归一化（含 Responses）' },
+  { id: 'never', label: '从不改写' },
+]
+
+const DEVELOPER_ROLE_POLICY_IDS = new Set(DEVELOPER_ROLE_POLICIES.map(({ id }) => id))
+
 const PROFILES = new Set(['auto', 'none', 'claude', 'codex', 'google', 'antigravity'])
 const MANAGED_HEADERS = new Set([
   'authorization', 'proxy-authorization', 'x-api-key', 'x-goog-api-key', 'cookie', 'set-cookie',
@@ -46,8 +55,9 @@ export function requestOverrideDraftSnapshot(
   drafts: RequestOverrideDrafts,
   inheritGlobal: boolean,
   reasoningContentPolicy: string | null = null,
+  developerRolePolicy: string | null = null,
 ): string {
-  return JSON.stringify({ drafts, inheritGlobal, reasoningContentPolicy })
+  return JSON.stringify({ drafts, inheritGlobal, reasoningContentPolicy, developerRolePolicy })
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -79,6 +89,7 @@ export function normalizeRequestOverrides(value: unknown = {}): UpstreamRequestO
     ...normalizeLayer(value),
     protocols,
     reasoningContentPolicy: (value as Partial<UpstreamRequestOverrides>).reasoningContentPolicy ?? null,
+    developerRolePolicy: (value as Partial<UpstreamRequestOverrides>).developerRolePolicy ?? null,
   }
 }
 
@@ -143,9 +154,13 @@ export function buildRequestOverrides(
   drafts: RequestOverrideDrafts,
   inheritGlobal = true,
   reasoningContentPolicy: string | null = null,
+  developerRolePolicy: string | null = null,
 ): UpstreamRequestOverrides {
   if (reasoningContentPolicy !== null && !REASONING_CONTENT_POLICY_IDS.has(reasoningContentPolicy)) {
     throw new Error('reasoning_content 处理策略无效')
+  }
+  if (developerRolePolicy !== null && !DEVELOPER_ROLE_POLICY_IDS.has(developerRolePolicy)) {
+    throw new Error('developer 角色处理策略无效')
   }
   const layers: Record<string, RequestOverrideDraft> = {}
   for (const { id, label, errorLabel } of REQUEST_OVERRIDE_SCOPES) {
@@ -165,6 +180,7 @@ export function buildRequestOverrides(
     ...layers.common,
     protocols: {},
     reasoningContentPolicy: reasoningContentPolicy || null,
+    developerRolePolicy: developerRolePolicy || null,
   }
   for (const { id } of REQUEST_OVERRIDE_SCOPES.slice(1)) {
     if (hasOverrides(layers[id])) result.protocols[id as ProtocolId] = layers[id]
