@@ -119,8 +119,13 @@ class UpstreamRequestPolicy(
         val routed = if (protocol == GatewayProtocol.GEMINI) JsonObject(original - "model" - "stream")
             else JsonObject(original + ("model" to JsonPrimitive(upstreamModel)))
         val merged = layers.fold(routed) { current, layer -> mergePatch(current, layer.body) }
-        val result = if (protocol == GatewayProtocol.CHAT_COMPLETIONS && "max_completion_tokens" in merged) {
-            JsonObject(merged - "max_tokens")
+        val result = if (protocol == GatewayProtocol.CHAT_COMPLETIONS) {
+            val withoutMaxTokens = if ("max_completion_tokens" in merged) {
+                JsonObject(merged - "max_tokens")
+            } else {
+                merged
+            }
+            ChatReasoningContentNormalizer.normalize(withoutMaxTokens, upstreamModel)
         } else {
             merged
         }

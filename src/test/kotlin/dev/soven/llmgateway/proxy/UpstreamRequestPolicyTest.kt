@@ -240,4 +240,26 @@ class UpstreamRequestPolicyTest {
             assertFalse(body.containsKey("max_tokens"), "max_tokens should be stripped when max_completion_tokens is configured")
         }
     }
+
+    @Test
+    fun `chat completion body automatically normalizes reasoning_content in assistant messages`() {
+        val request = json("""
+            {
+                "model": "deepseek-flash",
+                "reasoning_effort": "max",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"}
+                ]
+            }
+        """.trimIndent())
+
+        val policy = UpstreamRequestPolicy(
+            UpstreamRequestOverrides(), UpstreamRequestOverrides(), GatewayProtocol.CHAT_COMPLETIONS, "bearer",
+        )
+        val body = policy.body(request, "deepseek-flash")
+        val messages = body["messages"] as kotlinx.serialization.json.JsonArray
+        val assistant = messages[1].jsonObject
+        assertEquals("", assistant["reasoning_content"]?.jsonPrimitive?.content)
+    }
 }
