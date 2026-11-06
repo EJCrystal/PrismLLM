@@ -40,6 +40,8 @@ data class GatewayConfig(
     val trustedProxyNetworks: List<TrustedProxyNetwork> = emptyList(),
     /** 订阅账号 OAuth 的刷新参数与各 Provider 客户端配置。 */
     val oauth: OAuthConfig = OAuthConfig(),
+    /** 启动时显式提供的环境变量键，仅用于管理台展示配置来源。 */
+    val providedEnvKeys: Set<String> = emptySet(),
 ) {
     companion object {
         fun fromEnv(env: Map<String, String> = System.getenv()): GatewayConfig {
@@ -131,6 +133,7 @@ data class GatewayConfig(
                 trustedProxyNetworks = runCatching { TrustedProxyNetwork.parseList(value("TRUSTED_PROXY_CIDRS", "")) }
                     .getOrElse { cause -> error("TRUSTED_PROXY_CIDRS 配置无效: ${cause.message}") },
                 oauth = OAuthConfig.fromEnv(env),
+                providedEnvKeys = env.filterValues { it.isNotBlank() }.keys,
             )
         }
     }
