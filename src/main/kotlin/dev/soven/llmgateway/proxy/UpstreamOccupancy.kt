@@ -1,7 +1,6 @@
 package dev.soven.llmgateway.proxy
 
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 单实例内的上游在途请求计数，仅用于管理面实时占用展示。
@@ -10,16 +9,17 @@ import java.util.concurrent.atomic.AtomicInteger
  * 数据只保存在进程内存中，进程退出即清零，不跨实例共享。
  */
 class UpstreamOccupancy {
-    private val counters = ConcurrentHashMap<Slot, AtomicInteger>()
+    private val counters = ConcurrentHashMap<Slot, Int>()
 
     fun begin(channelId: String, keyId: String): Slot {
         val slot = Slot(channelId, keyId)
-        counters.computeIfAbsent(slot) { AtomicInteger() }.incrementAndGet()
+        // compute 对单个槽位原子执行，计数归零移除条目时不会与并发的 begin/end 丢失计数。
+        counters.compute(slot) { _, current -> (current ?: 0) + 1 }
         return slot
     }
 
     fun end(slot: Slot) {
-        counters[slot]?.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
+        counters.computeIfPresent(slot) { _, current -> (current - 1).takeIf { it > 0 } }
     }
 
     /** 在一次上游尝试期间持有占用名额，尝试结束（含取消与异常）后释放。 */
@@ -32,10 +32,8 @@ class UpstreamOccupancy {
         }
     }
 
-    /** 返回当前在途数大于零的槽位；空闲槽位不进入快照。 */
-    fun snapshot(): Map<Slot, Int> = counters.entries
-        .mapNotNull { (slot, counter) -> counter.get().takeIf { it > 0 }?.let { slot to it } }
-        .toMap()
+    /** 返回当前在途槽位；计数归零的槽位会立即移除，不会随历史密钥持续增长。 */
+    fun snapshot(): Map<Slot, Int> = counters.toMap()
 
     data class Slot(val channelId: String, val keyId: String)
 }

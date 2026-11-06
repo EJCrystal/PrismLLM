@@ -1,6 +1,9 @@
 package dev.soven.llmgateway.proxy
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
@@ -49,6 +52,19 @@ class UpstreamOccupancyTest {
         started.await()
         assertEquals(1, occupancy.snapshot()[UpstreamOccupancy.Slot("channel-a", "key-1")])
         job.cancelAndJoin()
+        assertTrue(occupancy.snapshot().isEmpty())
+    }
+
+    @Test
+    fun `concurrent begin and end keep counts consistent and release empty slots`() = runBlocking {
+        val occupancy = UpstreamOccupancy()
+        val slots = (1..500).map {
+            async(Dispatchers.Default) { occupancy.begin("channel-a", "key-${it % 5}") }
+        }.awaitAll()
+
+        assertEquals(500, occupancy.snapshot().values.sum())
+
+        slots.forEach { occupancy.end(it) }
         assertTrue(occupancy.snapshot().isEmpty())
     }
 }
