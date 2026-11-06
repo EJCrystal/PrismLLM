@@ -46,8 +46,11 @@ class MessagesResponsesConversionTest {
         val converted = MessagesToResponses.convertRequest(request, "upstream")
         val input = converted["input"]!!.jsonArray
         assertEquals(listOf("message", "function_call", "message", "function_call_output", "message"), input.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        assertEquals("before", input[0].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
         assertEquals("{\"city\":\"SZ\"}", input[1].jsonObject["arguments"]!!.jsonPrimitive.content)
+        assertEquals("after", input[2].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
         assertEquals("sunny\nwarm", input[3].jsonObject["output"]!!.jsonPrimitive.content)
+        assertEquals("thanks", input[4].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
         assertEquals("system", converted["instructions"]!!.jsonPrimitive.content)
         assertEquals("user_1", converted["user"]!!.jsonPrimitive.content)
         assertEquals("medium", converted["reasoning"]!!.jsonObject["effort"]!!.jsonPrimitive.content)
@@ -210,6 +213,23 @@ class MessagesResponsesConversionTest {
 
         assertEquals("follow the harness rules", converted["instructions"]!!.jsonPrimitive.content)
         assertEquals("user", converted["input"]!!.jsonArray.single().jsonObject["role"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `messages system turn after a user but before a reply stays in instructions`() {
+        val converted = MessagesToResponses.convertRequest(json("""{
+            "model":"public","max_tokens":64,
+            "messages":[
+                {"role":"user","content":"hi"},
+                {"role":"system","content":"apply the pending plan"},
+                {"role":"assistant","content":"ok"}
+            ]
+        }"""), "upstream")
+
+        assertEquals("apply the pending plan", converted["instructions"]!!.jsonPrimitive.content)
+        val input = converted["input"]!!.jsonArray
+        assertEquals(listOf("user", "assistant"), input.map { it.jsonObject["role"]!!.jsonPrimitive.content })
+        assertEquals("hi", input[0].jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
     }
 
     @Test

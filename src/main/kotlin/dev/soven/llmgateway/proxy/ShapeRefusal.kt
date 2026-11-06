@@ -33,7 +33,9 @@ object ShapeRefusal {
 
     /** 余额或额度耗尽不是请求形状问题，不能因为同一段错误文本而触发换渠道。 */
     private val QUOTA_WORDS = Regex(
-        """insufficient_quota|insufficient_balance|quota|balance|credit|billing|余额|额度|欠费|套餐""",
+        """\binsufficient_quota\b|\binsufficient_balance\b|\bquota\s+(?:exceeded|exhausted|limit reached)\b|""" +
+            """\bquota_(?:exceeded|exhausted)\b|\bcredit[\s_-]?balance(?:_exhausted)?\b|""" +
+            """\bout of (?:quota|credit)\b|\bbilling\b|余额不足|余额不够|额度不足|额度用尽|欠费|请充值""",
         RegexOption.IGNORE_CASE,
     )
 
