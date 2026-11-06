@@ -312,13 +312,29 @@ class OAuthAccountRepository(private val database: Database) {
             .let(::toRecord)
     }
 
-    /** 记录一次刷新失败；终态错误同时把账号标记为需要重新授权。 */
+    /**
+     * 记录一次刷新失败；终态错误同时把账号标记为需要重新授权。
+     * 传入 [expectedRefreshCiphertext] 时先锁密钥行并校验凭据未被替换：
+     * 刷新期间管理员重新导入凭据，旧 refresh token 的失败结果不能写到新凭据上。
+     */
     suspend fun recordFailure(
         keyId: String,
         errorCode: String,
         terminal: Boolean,
+        expectedRefreshCiphertext: String? = null,
         now: Long = System.currentTimeMillis(),
     ): OAuthAccountRecord? = suspendTransaction(database) {
+        if (expectedRefreshCiphertext != null) {
+            // 与 saveRefreshed / upsert 使用同一把密钥行锁，保证校验与失败写入串行。
+            val keyRow = ChannelKeys.selectAll()
+                .where { ChannelKeys.id eq keyId }
+                .forUpdate()
+                .singleOrNull()
+                ?: return@suspendTransaction null
+            if (keyRow[ChannelKeys.credentialCiphertext] != expectedRefreshCiphertext) {
+                return@suspendTransaction null
+            }
+        }
         val row = ChannelKeyOAuthAccounts.selectAll()
             .where { ChannelKeyOAuthAccounts.keyId eq keyId }
             .forUpdate()

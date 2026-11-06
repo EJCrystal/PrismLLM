@@ -217,7 +217,7 @@ class OAuthTokenService(
         val refreshToken = try {
             cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce)
         } catch (_: Exception) {
-            repository.recordFailure(account.keyId, "credential_decrypt_failed", terminal = true, now())
+            recordRefreshFailure(account.keyId, "credential_decrypt_failed", terminal = true, context.refreshTokenCiphertext)
             throw OAuthTokenUnavailableException(
                 OAuthUnavailableReason.REAUTH_REQUIRED,
                 "订阅账号凭据无法解密，请重新导入",
@@ -227,7 +227,7 @@ class OAuthTokenService(
         val response = try {
             provider.refresh(refreshToken, context.account.proxyUrl)
         } catch (cause: OAuthRefreshException) {
-            repository.recordFailure(account.keyId, cause.errorCode, cause.terminal, now())
+            recordRefreshFailure(account.keyId, cause.errorCode, cause.terminal, context.refreshTokenCiphertext)
             throw OAuthTokenUnavailableException(
                 if (cause.terminal) OAuthUnavailableReason.REAUTH_REQUIRED else OAuthUnavailableReason.REFRESH_FAILED,
                 cause.message ?: "订阅账号刷新失败",
@@ -237,7 +237,7 @@ class OAuthTokenService(
             throw cause
         } catch (cause: Throwable) {
             if (cause is VirtualMachineError) throw cause
-            repository.recordFailure(account.keyId, "refresh_failed", terminal = false, now())
+            recordRefreshFailure(account.keyId, "refresh_failed", terminal = false, context.refreshTokenCiphertext)
             throw OAuthTokenUnavailableException(
                 OAuthUnavailableReason.REFRESH_FAILED,
                 "订阅账号刷新失败",
@@ -269,6 +269,32 @@ class OAuthTokenService(
             expiresAt,
         )
         return OAuthAccessToken(response.accessToken, expiresAt, response.tokenType)
+    }
+
+    /**
+     * 记录刷新失败。若凭据在刷新期间被管理员替换，放弃本次失败结果并提示重试，
+     * 避免旧 refresh token 的终态错误把刚导入的新凭据标记为需要重新授权。
+     */
+    private suspend fun recordRefreshFailure(
+        keyId: String,
+        errorCode: String,
+        terminal: Boolean,
+        expectedRefreshCiphertext: String,
+    ) {
+        val recorded = repository.recordFailure(
+            keyId = keyId,
+            errorCode = errorCode,
+            terminal = terminal,
+            expectedRefreshCiphertext = expectedRefreshCiphertext,
+            now = now(),
+        )
+        if (recorded == null) {
+            throw OAuthTokenUnavailableException(
+                OAuthUnavailableReason.REFRESH_FAILED,
+                "订阅账号凭据已被替换，请重试",
+                "credential_replaced",
+            )
+        }
     }
 
     private fun lockFor(keyId: String): Mutex = locks[(keyId.hashCode() and Int.MAX_VALUE) % locks.size]

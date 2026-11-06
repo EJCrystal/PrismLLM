@@ -42,6 +42,7 @@ class OAuthTokenServiceTest {
     private lateinit var server: HttpServer
     private val tokenRequests = AtomicInteger()
     private val lastRequestBody = AtomicReference<String>()
+    private val beforeReply = AtomicReference<(() -> Unit)?>(null)
     private var reply: () -> Pair<Int, String> = { 200 to SUCCESS }
 
     @BeforeAll
@@ -66,6 +67,7 @@ class OAuthTokenServiceTest {
         server.createContext("/token") { exchange ->
             tokenRequests.incrementAndGet()
             lastRequestBody.set(exchange.requestBody.readBytes().toString(Charsets.UTF_8))
+            beforeReply.get()?.invoke()
             val (status, body) = reply()
             val bytes = body.toByteArray()
             exchange.responseHeaders.add("Content-Type", "application/json")
@@ -87,6 +89,7 @@ class OAuthTokenServiceTest {
     fun reset() {
         tokenRequests.set(0)
         lastRequestBody.set(null)
+        beforeReply.set(null)
         reply = { 200 to SUCCESS }
     }
 
@@ -146,6 +149,38 @@ class OAuthTokenServiceTest {
         val result = service.refreshNow(keyId)
         assertIs<OAuthRefreshResult.Failed>(result)
         assertEquals(hits + 1, tokenRequests.get())
+    }
+
+    @Test
+    fun `a failure does not overwrite credentials imported during the refresh`() = runBlocking {
+        reply = { 400 to """{"error":"invalid_grant","error_description":"refresh token revoked"}""" }
+        val channel = createChannel("rt-old")
+        val keyId = channel.keys.single().id
+        accounts.upsert(keyId, OAuthProvider.CHATGPT, accountEmail = email("replace"))
+        // 模拟管理员在刷新请求进行期间重新导入凭据。
+        beforeReply.set {
+            runBlocking {
+                accounts.upsert(
+                    keyId,
+                    OAuthProvider.CHATGPT,
+                    accountEmail = email("replace-new"),
+                    refreshToken = cipher.encrypt("rt-new"),
+                )
+            }
+        }
+        val service = service()
+
+        val error = assertFailsWith<OAuthTokenUnavailableException> { service.accessToken(keyId) }
+        assertEquals(OAuthUnavailableReason.REFRESH_FAILED, error.reason)
+        assertEquals("credential_replaced", error.errorCode)
+
+        // 旧 refresh token 的终态错误不会把刚导入的新凭据标记为需要重新授权。
+        val account = accounts.find(keyId)!!
+        assertEquals(OAuthAuthState.ACTIVE, account.authState)
+        assertEquals(0, account.refreshFailureCount)
+        assertNull(account.lastRefreshError)
+        val context = accounts.loadRefreshContext(keyId)!!
+        assertEquals("rt-new", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
     }
 
     @Test
