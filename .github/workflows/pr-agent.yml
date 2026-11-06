@@ -70,6 +70,7 @@ jobs:
   #      邀请后若 CodeRabbit 限流，会产生新的 check_run 再次进入本 job 走兜底；
   #      若等待期内 CodeRabbit 毫无响应，同样兜底。
   #    - CodeRabbit 限流、超额或失败：发 /review 交给 PR-Agent（job 4）。
+  #    - 同一 commit 已有 CodeRabbit 审查在跑或已完成：不重复邀请，也不切 PR-Agent。
   #    - 手动 Run workflow：明确指定 PR-Agent，直接发 /review。
   #    同一 commit 已有对应的触发评论（含人工发的）就不再重复发送，避免评论区噪声。
   #    触发评论必须用 PAT 发送：GITHUB_TOKEN 发出的评论不会触发新的 workflow，
@@ -172,6 +173,25 @@ jobs:
               --jq '[.check_runs[] | select(.app.slug == "coderabbitai") | .id] | max // 0'
           }
 
+          # CodeRabbit 是否已在处理或已审完本 commit。只认 check run 的“接单/完成”信号：
+          # - 本 commit 上有未完成的 CodeRabbit check run：已接单，等它的结果
+          # - 本 commit 上有推送后开始且成功的 check run：已审完
+          # 不把结论为 skipped 的 run 当成已审，否则会漏掉 OSS 库必需的手动邀请；
+          # 也不用评论摘要判断：CodeRabbit 会在审查开始前先发摘要占位评论。
+          has_coderabbit_review() {
+            local runs
+            runs=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100" --paginate \
+              | jq -s --arg since "$SINCE" '
+                  [ .[].check_runs[]
+                    | select(.app.slug == "coderabbitai")
+                    | select(
+                        .status != "completed"
+                        or (.conclusion == "success" and .started_at >= $since)
+                      )
+                  ] | length')
+            [ "$runs" -gt 0 ]
+          }
+
           # PR 级切换标记：CodeRabbit 在本 PR 上限流或对邀请无响应后写入，此后直到合并都只用 PR-Agent。
           SWITCH_MARKER="<!-- pr-agent-fallback-pr -->"
           pr_switched() {
@@ -208,6 +228,12 @@ jobs:
           # 同一 commit 已有更新的 CodeRabbit check run 时，以新的为准，本次事件已过期。
           if [ "$(latest_coderabbit_run)" -gt "$CHECK_RUN_ID" ]; then
             echo "CodeRabbit 在本 commit 上已有更新的 check run，本次事件已过期，跳过。"
+            exit 0
+          fi
+
+          # 同一 commit 已在审查或已审完时，不再重复邀请，也不切 PR-Agent。
+          if has_coderabbit_review; then
+            echo "CodeRabbit 已在处理或已审完本 commit，跳过重复邀请与兜底。"
             exit 0
           fi
 
