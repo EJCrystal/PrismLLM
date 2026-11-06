@@ -388,19 +388,20 @@ onMounted(load)
             <input
               v-model="query"
               type="search"
-              aria-label="搜索已加载的请求日志"
+              aria-label="按关键词搜索已加载的请求日志"
               aria-describedby="logs-filter-scope"
-              placeholder="搜索 ID、模型、渠道、状态码或错误码"
+              placeholder="搜索请求 ID、错误信息、IP、UA 等"
             />
           </label>
-          <span id="logs-filter-scope" class="muted small logs-filter-scope">仅筛选已加载记录 · 显示 {{ filtered.length }} / {{ logs.length }} 条</span>
         </div>
         <div class="logs-filter-controls" role="group" aria-label="请求日志筛选">
+          <span class="logs-filter-label" aria-hidden="true">筛选</span>
           <FilterSelect v-model="channelFilter" label="渠道" searchable :options="[{ value: '', label: '全部渠道' }, ...filterOptions.channels]" />
           <FilterSelect v-model="modelFilter" label="请求模型" searchable :options="[{ value: '', label: '全部请求模型' }, ...filterOptions.models]" />
           <FilterSelect v-model="statusFilter" label="状态" :options="[{ value: '', label: '全部状态' }, { value: 'success', label: 'HTTP 成功（2xx）' }, { value: 'error', label: 'HTTP 异常（4xx / 5xx）' }, ...filterOptions.statuses]" />
           <button v-if="hasFilters" type="button" class="filter-reset" @click="clearFilters">清除筛选</button>
         </div>
+        <span id="logs-filter-scope" class="muted small logs-filter-scope">仅筛选已加载记录 · 显示 {{ filtered.length }} / {{ logs.length }} 条</span>
       </div>
 
       <TablePlaceholder
@@ -583,7 +584,10 @@ onMounted(load)
         >
           <div class="modal-head">
             <div>
-              <h2 id="request-detail-title">请求详情</h2>
+              <div class="detail-title-line">
+                <h2 id="request-detail-title">请求详情</h2>
+                <span class="badge" :class="statusClass(selected.statusCode)">{{ selected.statusCode }}</span>
+              </div>
               <p class="muted small">{{ formatTime(selected.createdAt) }}</p>
             </div>
             <button type="button" class="icon-button" title="关闭" data-autofocus @click="closeDetail">
@@ -591,30 +595,57 @@ onMounted(load)
             </button>
           </div>
 
-          <div class="modal-body detail-stack">
-            <div class="detail-id">
+          <div class="detail-meta-bar" role="group" aria-label="请求标识">
+            <div class="detail-meta-item">
               <span>请求 ID</span>
-              <div class="request-id-cell">
-                <code class="detail-id-value">{{ selected.requestId }}</code>
+              <div class="detail-meta-value">
+                <code :title="selected.requestId">{{ selected.requestId }}</code>
                 <CopyButton :text="selected.requestId" title="复制请求 ID" :size="14" />
               </div>
             </div>
-
-            <div class="detail-id">
+            <div class="detail-meta-item">
               <span>Trace ID</span>
-              <div class="request-id-cell">
-                <code class="detail-id-value">{{ selected.traceId || '—' }}</code>
+              <div class="detail-meta-value">
+                <code :title="selected.traceId || ''">{{ selected.traceId || '—' }}</code>
                 <CopyButton v-if="selected.traceId" :text="selected.traceId" title="复制 Trace ID" :size="14" />
               </div>
+            </div>
+          </div>
+
+          <div class="modal-body detail-stack">
+            <dl class="detail-summary" aria-label="请求摘要">
+              <div class="detail-summary-item">
+                <dt>请求模型</dt>
+                <dd :title="selected.alias">{{ selected.alias }}</dd>
+              </div>
+              <div class="detail-summary-item">
+                <dt>渠道</dt>
+                <dd :title="selected.channelName || ''">{{ selected.channelName || '—' }}</dd>
+              </div>
+              <div class="detail-summary-item">
+                <dt>总耗时</dt>
+                <dd>{{ formatDuration(selected.totalMs) }}</dd>
+              </div>
+              <div class="detail-summary-item">
+                <dt>费用</dt>
+                <dd>
+                  <span v-if="selected.costAmount != null" class="cost-line detail-cost">
+                    <span class="cost-amount">{{ formatCostAmount(selected) }}</span>
+                    <span class="cost-currency">{{ selected.costCurrency || '—' }}</span>
+                  </span>
+                  <span v-else>{{ selected.usageKnown ? '未配置' : '—' }}</span>
+                </dd>
+              </div>
+            </dl>
+
+            <div v-if="selected.errorMessage" class="detail-block detail-error">
+              <span>错误信息</span>
+              <p class="detail-message">{{ selected.errorMessage }}</p>
             </div>
 
             <div class="detail-grid">
               <div class="detail-section-title">请求概况</div>
-              <div class="detail-item">
-                <span>状态</span>
-                <strong><span class="badge" :class="statusClass(selected.statusCode)">{{ selected.statusCode }}</span></strong>
-              </div>
-              <div class="detail-item detail-protocol-item">
+              <div class="detail-item" :class="{ 'detail-protocol-item': selectedConversion.converted }">
                 <span>协议</span>
                 <template v-if="selectedConversion.converted">
                   <div class="detail-protocol-flow" :title="selectedConversion.title">
@@ -774,12 +805,6 @@ onMounted(load)
             </div>
 
             <div class="detail-block">
-              <span>错误信息</span>
-              <p v-if="selected.errorMessage" class="detail-message">{{ selected.errorMessage }}</p>
-              <p v-else class="muted">无错误信息</p>
-            </div>
-
-            <div class="detail-block">
               <span v-if="hasAttemptDetail">
                 尝试记录（{{ selectedAttempts.length }} 条<span v-if="skippedAttemptCount"> · 跳过 {{ skippedAttemptCount }}</span> · 上游调用 {{ selected.upstreamAttempts ?? selectedAttempts.filter((attempt) => !attempt.skipped).length }} 次）
               </span>
@@ -852,9 +877,10 @@ onMounted(load)
               <pre class="detail-code">{{ selected.upstreamErrorBody }}</pre>
             </div>
 
-            <p class="muted small detail-hint">
-              输出速率为输出 token / 总耗时；缓存命中为 cached / input。费用按渠道 + 上游模型的单价快照计算，推理 token 已包含在输出 token 中。缺失字段显示“—”，不做估算。日志不保存 prompt 与成功响应正文；失败请求的上游错误正文会截断并脱敏后保存。
-            </p>
+            <details class="detail-hint muted small">
+              <summary>字段与计费说明</summary>
+              <p>输出速率为输出 token / 总耗时；缓存命中为 cached / input。费用按渠道 + 上游模型的单价快照计算，推理 token 已包含在输出 token 中。缺失字段显示“—”，不做估算。日志不保存 prompt 与成功响应正文；失败请求的上游错误正文会截断并脱敏后保存。</p>
+            </details>
           </div>
 
           <div class="modal-foot">
