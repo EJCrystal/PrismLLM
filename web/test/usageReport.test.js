@@ -160,6 +160,7 @@ describe('usageReport: 用量报表展示', () => {
 import {
   usageRate,
   usagePercent,
+  usageCacheHitRate,
   fillTrendBuckets,
   buildTrendPoints,
   usageTrendMax,
@@ -174,6 +175,14 @@ describe('usageReport: 增强报表数据', () => {
     assert.equal(usageRate(0, 0), 0)
     assert.equal(usageRate(2, 3), 0)
     assert.equal(usagePercent(4, 1), '75.0%')
+  })
+
+  it('缓存命中率只按缓存读除以输入，输入为 0 时不可计算', () => {
+    assert.equal(usageCacheHitRate(100, 40), 0.4)
+    assert.equal(usageCacheHitRate('200', '50'), 0.25)
+    assert.equal(usageCacheHitRate(100, 120), 1, '异常上游数据不应超过 100%')
+    assert.equal(usageCacheHitRate(0, 10), null)
+    assert.equal(usageCacheHitRate(null, null), null)
   })
 
   it('空时间桶补齐后保持连续，且保留原始值', () => {
@@ -211,8 +220,9 @@ describe('usageReport: 增强报表数据', () => {
   })
 
   it('主次折线共用最大值，避免各自归一化后误读', () => {
-    const rows = [{ input: 100, output: 10 }, { input: 0, output: 50 }]
+    const rows = [{ input: 100, output: 10, cached: 80 }, { input: 0, output: 50, cached: 0 }]
     assert.equal(usageTrendMax(rows, (row) => row.input, (row) => row.output), 100)
+    assert.equal(usageTrendMax(rows, (row) => row.input, (row) => row.output, (row) => row.cached), 100)
     const primary = buildTrendPoints(rows, (row) => row.input, 640, 150, 8, 100)
     const secondary = buildTrendPoints(rows, (row) => row.output, 640, 150, 8, 100)
     assert.notEqual(primary.split(' ')[0].split(',')[1], secondary.split(' ')[0].split(',')[1])
