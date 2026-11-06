@@ -448,13 +448,15 @@ onMounted(load)
               <td v-if="logColumnVisible('model')" class="log-col-model">
                 <div class="stacked-cell">
                   <span class="badge info">{{ log.alias }}</span>
-                  <div class="request-meta">
+                  <div class="request-protocol">
                     <ProtocolEndpoints
                       :inbound="log.protocol"
                       :outbound="log.upstreamProtocol"
                       :stream="log.stream"
                       :upstream-attempts="log.upstreamAttempts"
                     />
+                  </div>
+                  <div class="request-meta request-mode-row">
                     <span class="mode-badge" :class="`mode-${requestModeClass(log.stream)}`">{{ requestModeLabel(log.stream) }}</span>
                     <span class="reasoning-badge">
                       推理 {{ reasoningEffortLabel(log.reasoningEffort) }}
@@ -463,21 +465,34 @@ onMounted(load)
                 </div>
               </td>
               <td v-if="logColumnVisible('channel')" class="log-col-channel">
-                <div class="primary-cell small">{{ log.channelName || (log.channelId ? log.channelId.slice(0, 8) : '—') }}</div>
-                <div v-if="log.channelKeyName" class="muted small">密钥 {{ log.channelKeyName }}</div>
-                <div class="mono muted small upstream-model-line">
-                  <span>{{ log.upstreamModel || '—' }}</span>
-                  <InfoPopover v-if="reportedModelStatus(log)" label="上游模型核验" :tone="reportedModelStatus(log)?.state === 'match' ? 'success' : reportedModelStatus(log)?.state === 'mismatch' ? 'danger' : 'warning'">
-                    <template #trigger><span aria-hidden="true">{{ reportedModelStatus(log)?.state === 'match' ? '✅' : reportedModelStatus(log)?.state === 'mismatch' ? '!' : '?' }}</span></template>
-                    <dl class="model-check-values">
-                      <dt>请求上游模型</dt><dd>{{ log.upstreamModel || '—' }}</dd>
-                      <dt>上游自报模型</dt><dd>{{ reportedModelStatus(log)?.reportedModel || '未返回' }}</dd>
-                    </dl>
-                    <p class="model-check-result" :class="reportedModelStatus(log)?.state === 'match' ? 'text-success' : reportedModelStatus(log)?.state === 'mismatch' ? 'text-danger' : 'text-warning'">{{ reportedModelStatus(log)?.state === 'match' ? '与请求模型一致' : reportedModelStatus(log)?.state === 'mismatch' ? '与请求模型不一致' : '暂时无法核验' }}</p>
-                    <p v-if="reportedModelStatus(log)?.state === 'unknown'" class="muted small">上游未返回自报模型，或该日志早于此功能。</p>
-                  </InfoPopover>
+                <div class="stacked-cell channel-cell">
+                  <div class="channel-name-cell" :title="log.channelName || log.channelId || ''">{{ log.channelName || (log.channelId ? log.channelId.slice(0, 8) : '—') }}</div>
+                  <div v-if="log.channelKeyName" class="channel-key-chip" :title="`上游密钥：${log.channelKeyName}`">
+                    <Icon name="keys" :size="10" />
+                    <span>{{ log.channelKeyName }}</span>
+                  </div>
+                  <div class="upstream-model-line">
+                    <span class="upstream-model-chip mono" :title="log.upstreamModel || '未记录上游模型'">{{ log.upstreamModel || '—' }}</span>
+                    <InfoPopover
+                      v-if="reportedModelStatus(log)"
+                      label="上游模型核验"
+                      :tone="reportedModelStatus(log)?.state === 'match' ? 'success' : reportedModelStatus(log)?.state === 'mismatch' ? 'danger' : 'warning'"
+                    >
+                      <template #trigger>
+                        <Icon v-if="reportedModelStatus(log)?.state === 'match'" name="check" :size="12" />
+                        <Icon v-else-if="reportedModelStatus(log)?.state === 'mismatch'" name="close" :size="12" />
+                        <Icon v-else name="info" :size="12" />
+                      </template>
+                      <dl class="model-check-values">
+                        <dt>请求上游模型</dt><dd>{{ log.upstreamModel || '—' }}</dd>
+                        <dt>上游自报模型</dt><dd>{{ reportedModelStatus(log)?.reportedModel || '未返回' }}</dd>
+                      </dl>
+                      <p class="model-check-result" :class="reportedModelStatus(log)?.state === 'match' ? 'text-success' : reportedModelStatus(log)?.state === 'mismatch' ? 'text-danger' : 'text-warning'">{{ reportedModelStatus(log)?.state === 'match' ? '与请求模型一致' : reportedModelStatus(log)?.state === 'mismatch' ? '与请求模型不一致' : '暂时无法核验' }}</p>
+                      <p v-if="reportedModelStatus(log)?.state === 'unknown'" class="muted small">上游未返回自报模型，或该日志早于此功能。</p>
+                    </InfoPopover>
+                  </div>
+                  <span v-if="log.upstreamAttempts != null && log.upstreamAttempts > 1" class="badge warning attempt-chip">尝试 {{ log.upstreamAttempts }} 次</span>
                 </div>
-                <span v-if="log.upstreamAttempts != null && log.upstreamAttempts > 1" class="badge warning">尝试 {{ log.upstreamAttempts }} 次</span>
               </td>
               <td v-if="logColumnVisible('clientIp')" class="log-col-client-ip">
                 <div class="mono small client-ip-line" :title="log.clientIp || '未记录 IP'">{{ log.clientIp || '—' }}</div>

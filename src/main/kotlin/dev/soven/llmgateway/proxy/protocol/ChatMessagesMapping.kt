@@ -35,6 +35,7 @@ internal fun messagesToChatRequest(request: JsonObject): JsonObject = buildJsonO
         val message = element as? JsonObject ?: unsupported("messages[$index]", "消息必须是对象")
         val role = message.string("role") ?: unsupported("messages[$index].role", "缺少 role")
         val text = mutableListOf<String>()
+        val reasoning = mutableListOf<String>()
         val toolCalls = mutableListOf<JsonObject>()
         val toolResults = mutableListOf<JsonObject>()
         when (val content = message["content"]) {
@@ -45,9 +46,12 @@ internal fun messagesToChatRequest(request: JsonObject): JsonObject = buildJsonO
                     ?: unsupported("messages[$index].content[$partIndex]", "内容块必须是对象")
                 when (part.string("type")) {
                     "text" -> text += part.string("text").orEmpty()
+                    // 思考历史转为 Chat 的 reasoning_content；加密的 redacted_thinking 无对应表示，直接丢弃。
+                    "thinking" -> part.string("thinking")?.takeIf { it.isNotEmpty() }?.let { reasoning += it }
+                    "redacted_thinking" -> Unit
                     "tool_use" -> toolCalls += chatToolCallFromAnthropic(part, "messages[$index].content[$partIndex]")
                     "tool_result" -> toolResults += chatToolMessageFromAnthropic(part, "messages[$index].content[$partIndex]")
-                    "image", "document", "thinking", "redacted_thinking" -> unsupported(
+                    "image", "document" -> unsupported(
                         "messages[$index].content[$partIndex].type",
                         "第一版不支持 ${part.string("type")} 内容",
                     )
@@ -58,10 +62,13 @@ internal fun messagesToChatRequest(request: JsonObject): JsonObject = buildJsonO
             else -> unsupported("messages[$index].content", "无法识别的内容")
         }
         messages += toolResults
-        if (text.isNotEmpty() || toolCalls.isNotEmpty()) {
+        // reasoning_content 只属于 assistant 消息；其它角色上的思考块按无效输入忽略。
+        val reasoningContent = reasoning.joinToString("\n").takeIf { it.isNotEmpty() && role == "assistant" }
+        if (text.isNotEmpty() || toolCalls.isNotEmpty() || reasoningContent != null) {
             messages += buildJsonObject {
                 put("role", role)
                 if (text.isNotEmpty()) put("content", text.joinToString("\n")) else put("content", JsonNull)
+                if (reasoningContent != null) put("reasoning_content", reasoningContent)
                 if (toolCalls.isNotEmpty()) put("tool_calls", JsonArray(toolCalls))
             }
         }
