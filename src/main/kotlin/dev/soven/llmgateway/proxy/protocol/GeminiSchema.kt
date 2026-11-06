@@ -72,11 +72,14 @@ private fun schemaDefinitions(schema: JsonElement): Map<String, JsonElement> {
     val definitions = LinkedHashMap<String, JsonElement>()
     listOf("\$defs", "definitions").forEach { keyword ->
         (root[keyword] as? JsonObject)?.forEach { (name, definition) ->
-            definitions["#/$keyword/$name"] = definition
+            definitions["#/$keyword/${jsonPointerToken(name)}"] = definition
         }
     }
     return definitions
 }
+
+/** JSON Pointer（RFC 6901）把定义名里的 ~ 和 / 转义成 ~0 和 ~1。 */
+private fun jsonPointerToken(name: String): String = name.replace("~", "~0").replace("/", "~1")
 
 private data class ResolvedSchema(val schema: JsonObject?, val refs: Set<String>)
 
@@ -100,8 +103,8 @@ private fun resolveReference(
         val target = defs[ref] ?: unsupported("$path.\$ref", "无法解析工具 schema 的 \$ref: $ref")
         seen = seen + ref
         current = when (target) {
-            // draft-07 忽略 $ref 的兄弟字段，2020-12 生效；这里合并保留，行为更接近后者。
-            is JsonObject -> JsonObject(target + (current - "\$ref"))
+            // draft-07 忽略 $ref 的兄弟字段，2020-12 生效；这里按后者合并，属性和 required 取并集。
+            is JsonObject -> mergeSchema(target, JsonObject(current - "\$ref"), "$path.\$ref")
             is JsonPrimitive -> when {
                 target.isString -> unsupported("$path.\$ref", "工具 schema 的 \$ref 目标必须是对象: $ref")
                 target.booleanOrNull == true -> JsonObject(current - "\$ref")
@@ -303,7 +306,7 @@ private fun elementItems(
         val itemsIsAny = items is JsonPrimitive && !items.isString && items.booleanOrNull == true
         if (!(itemsIsAny && prefix != null)) {
             val converted = if (items is JsonArray) {
-                tupleItems(items, defs, depth, path, refs, budget)
+                tupleItems(items, defs, depth, path, refs, budget, tail = null)
             } else {
                 convertGeminiSchema(
                     schema = items,
@@ -315,10 +318,13 @@ private fun elementItems(
                     budget = budget,
                 )
             }
-            if (converted != null) return converted
+            if (converted != null) {
+                // 前缀元素和后续元素都能表达时一起放进 anyOf，避免只保留其中一侧。
+                return prefix?.let { tupleItems(it, defs, depth, path, refs, budget, tail = converted) } ?: converted
+            }
         }
     }
-    return prefix?.let { tupleItems(it, defs, depth, path, refs, budget) }
+    return prefix?.let { tupleItems(it, defs, depth, path, refs, budget, tail = null) }
 }
 
 /** JSON Schema 的 tuple 形式（items 是数组，或 2020-12 的 prefixItems）在 Schema 里没有对应表示，按元素类型的 anyOf 近似。 */
@@ -329,10 +335,12 @@ private fun tupleItems(
     path: String,
     refs: Set<String>,
     budget: GeminiSchemaBudget,
+    tail: JsonObject?,
 ): JsonObject? {
     val branches = tuple.mapIndexedNotNull { index, element ->
         convertGeminiSchema(element, defs, isRoot = false, depth = depth + 1, path = "$path[$index]", refs = refs, budget = budget)
-    }
+    }.toMutableList()
+    if (tail != null) branches += tail
     return when (branches.size) {
         0 -> null
         1 -> branches.single()

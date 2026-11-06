@@ -278,6 +278,42 @@ class GeminiSchemaConversionTest {
     }
 
     @Test
+    fun `ref siblings merge with the referenced definition`() {
+        val schema = parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+            "${'$'}defs":{"Base":{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]}},
+            "type":"object",
+            "properties":{"value":{"${'$'}ref":"#/${'$'}defs/Base","properties":{"y":{"type":"integer"}}}}
+        }}]}""")
+        val value = schema["properties"]!!.jsonObject["value"]!!.jsonObject
+        assertEquals("object", value["type"]!!.jsonPrimitive.content)
+        assertEquals(listOf("x", "y"), value["properties"]!!.jsonObject.keys.sorted())
+        assertEquals(listOf("x"), value["required"]!!.jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `prefix items and item schema are unioned`() {
+        val schema = parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+            "type":"object",
+            "properties":{"tuple":{"type":"array","prefixItems":[{"type":"string"}],"items":{"type":"integer"}}}
+        }}]}""")
+        val items = schema["properties"]!!.jsonObject["tuple"]!!.jsonObject["items"]!!.jsonObject["anyOf"]!!.jsonArray
+        assertEquals(listOf("string", "integer"), items.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `escaped definition names resolve`() {
+        val schema = parameters("""{"model":"m","max_tokens":8,"messages":[],"tools":[{"name":"t","input_schema":{
+            "${'$'}defs":{"a/b":{"type":"string"}},
+            "type":"object",
+            "properties":{"value":{"${'$'}ref":"#/${'$'}defs/a~1b"}}
+        }}]}""")
+        assertEquals(
+            "string",
+            schema["properties"]!!.jsonObject["value"]!!.jsonObject["type"]!!.jsonPrimitive.content,
+        )
+    }
+
+    @Test
     fun `chat and responses tool schemas use the same conversion`() {
         val chat = ProtocolConversion.convertRequest(
             GatewayProtocol.CHAT_COMPLETIONS,
