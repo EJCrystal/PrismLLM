@@ -33,6 +33,8 @@ import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.proxy.HeaderProfileVersionSource
+import dev.soven.llmgateway.proxy.HtmlImageRenderer
+import dev.soven.llmgateway.proxy.SvgRenderResult
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.proxy.UpstreamHeaderProfiles
 import dev.soven.llmgateway.resilience.KeyAttemptOutcome
@@ -135,9 +137,32 @@ import kotlin.test.assertFailsWith
 class GatewayIntegrationTest {
     @TempDir
     lateinit var quotaPluginDirectory: Path
+    @TempDir
+    lateinit var iqJudgePluginDirectory: Path
     private lateinit var postgres: PostgreSQLContainer<*>
     private lateinit var fake: FakeUpstream
     private lateinit var app: GatewayApplication
+
+    private class TestVisionRenderer : HtmlImageRenderer {
+        override val label: String = "测试渲染器"
+
+        override fun render(html: String): SvgRenderResult =
+            SvgRenderResult.Success(byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte()), 512, 320)
+
+        override fun renderFrames(html: String, times: List<Float>): List<SvgRenderResult> = times.mapIndexed { index, _ ->
+            SvgRenderResult.Success(
+                byteArrayOf(
+                    0x89.toByte(),
+                    'P'.code.toByte(),
+                    'N'.code.toByte(),
+                    'G'.code.toByte(),
+                    index.toByte(),
+                ),
+                512,
+                320,
+            )
+        }
+    }
 
     @BeforeAll
     fun startInfrastructure() {
@@ -162,7 +187,7 @@ class GatewayIntegrationTest {
         fake.resetQuotaUsage()
         fake.resetOAuthToken()
         fake.clearChatHold()
-        app = GatewayApplication(config())
+        app = GatewayApplication(config(), visionRendererOverride = TestVisionRenderer())
         app.databaseFactory.migrate()
         truncateAll()
     }
@@ -5736,6 +5761,244 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin runs candy iq test and reads history`() = runBlocking {
+        val channel = createChannel("iq-test", "ok")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            val definitions = client.get("/admin/api/iq-tests/benchmarks") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, definitions.status)
+            assertEquals(2, Json.parseToJsonElement(definitions.bodyAsText()).jsonArray.size)
+
+            val judges = client.get("/admin/api/iq-tests/judges") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, judges.status)
+            val judgesBody = Json.parseToJsonElement(judges.bodyAsText()).jsonObject
+            val judgeIds = judgesBody["judges"]?.jsonArray?.map { it.jsonObject["id"]?.jsonPrimitive?.content }
+            assertTrue(judgeIds?.contains("local") == true, judges.bodyAsText())
+            assertTrue(judgeIds?.contains("manxue") == true, judges.bodyAsText())
+            assertEquals("local", judgesBody["defaultJudgeId"]?.jsonPrimitive?.content)
+
+            val targets = client.get("/admin/api/iq-tests/targets") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, targets.status)
+            assertTrue(targets.bodyAsText().contains(channel.id), targets.bodyAsText())
+
+            val run = client.post("/admin/api/iq-tests") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","judgeId":"local"}""")
+            }
+            assertEquals(HttpStatusCode.OK, run.status)
+            val body = Json.parseToJsonElement(run.bodyAsText()).jsonObject
+            assertEquals("candy", body["benchmark"]?.jsonPrimitive?.content)
+            assertEquals("incorrect", body["verdict"]?.jsonPrimitive?.content)
+            assertEquals("Hello!", body["responseText"]?.jsonPrimitive?.content)
+            assertEquals("21", body["expectedAnswer"]?.jsonPrimitive?.content)
+            assertEquals(1, body["checks"]?.jsonArray?.size)
+            assertEquals("local", body["judgeResult"]?.jsonObject?.get("judgeId")?.jsonPrimitive?.content)
+            assertEquals("failed", body["judgeResult"]?.jsonObject?.get("verdict")?.jsonPrimitive?.content)
+            assertTrue(body["prompt"]?.jsonPrimitive?.content?.contains("糖果") == true)
+            val id = body["id"]?.jsonPrimitive?.content
+
+            val history = client.get("/admin/api/iq-tests") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, history.status)
+            val items = Json.parseToJsonElement(history.bodyAsText()).jsonArray
+            assertEquals(1, items.size)
+            assertEquals(id, items[0].jsonObject["id"]?.jsonPrimitive?.content)
+            val historyPrompt = items[0].jsonObject["prompt"]
+            assertTrue(historyPrompt == null || historyPrompt is JsonNull)
+
+            val detail = client.get("/admin/api/iq-tests/$id") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, detail.status)
+            val detailBody = Json.parseToJsonElement(detail.bodyAsText()).jsonObject
+            assertEquals("Hello!", detailBody["responseText"]?.jsonPrimitive?.content)
+            assertEquals(1, detailBody["checks"]?.jsonArray?.size)
+        }
+    }
+
+    @Test
+    fun `admin classifies locally generated html with manxue`() = runBlocking {
+        val channel = createChannelWithBaseUrl("iq-html", "${fake.baseUrl}/iq-html/v1")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            suspend fun run(benchmark: String): kotlinx.serialization.json.JsonObject {
+                val response = client.post("/admin/api/iq-tests") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"$benchmark","judgeId":"manxue"}""")
+                }
+                assertEquals(HttpStatusCode.OK, response.status)
+                return Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            }
+
+            val candy = run("candy")
+            assertEquals("passed", candy["verdict"]?.jsonPrimitive?.content)
+            assertEquals("manxue", candy["judgeResult"]?.jsonObject?.get("judgeId")?.jsonPrimitive?.content)
+            assertEquals("passed", candy["judgeResult"]?.jsonObject?.get("verdict")?.jsonPrimitive?.content)
+
+            val pelican = run("pelican")
+            assertEquals("passed", pelican["verdict"]?.jsonPrimitive?.content)
+            assertEquals("manxue", pelican["judgeResult"]?.jsonObject?.get("judgeId")?.jsonPrimitive?.content)
+            assertEquals("passed", pelican["judgeResult"]?.jsonObject?.get("verdict")?.jsonPrimitive?.content)
+            assertTrue(fake.manxueRequests.any { it.body.contains("糖果测试答案") })
+            assertTrue(fake.manxueRequests.any { it.body.contains("<svg") })
+        }
+    }
+
+    @Test
+    fun `admin scores pelican svg with built-in vision judge`() = runBlocking {
+        val channel = createChannelWithBaseUrl("iq-html", "${fake.baseUrl}/iq-html/v1")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            val judges = client.get("/admin/api/iq-tests/judges") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val judgeIds = Json.parseToJsonElement(judges.bodyAsText()).jsonObject["judges"]?.jsonArray
+                ?.map { it.jsonObject["id"]?.jsonPrimitive?.content }
+            assertTrue(judgeIds?.contains("vision") == true, judges.bodyAsText())
+
+            val response = client.post("/admin/api/iq-tests") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"pelican","judgeId":"vision"}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("passed", body["verdict"]?.jsonPrimitive?.content)
+            val judge = assertNotNull(body["judgeResult"]?.jsonObject)
+            assertEquals("vision", judge["judgeId"]?.jsonPrimitive?.content)
+            assertEquals("passed", judge["verdict"]?.jsonPrimitive?.content)
+            assertEquals("视觉评分通过", judge["label"]?.jsonPrimitive?.content)
+            assertEquals(90.0, judge["score"]?.jsonPrimitive?.content?.toDouble())
+            val details = assertNotNull(judge["details"]?.jsonObject)
+            assertEquals(
+                "通过：白色长颈鸟，长喙和橙色喉囊清楚",
+                details["鹈鹕特征"]?.jsonPrimitive?.content,
+            )
+            assertNotNull(details["技术信息"])
+
+            val visionRequest = fake.requests.first { it.scenario == "vision" }
+            assertTrue(visionRequest.body.contains("data:image/png;base64,"))
+            assertEquals(6, Regex("data:image/png;base64,").findAll(visionRequest.body).count())
+            assertNull(visionRequest.authorization)
+        }
+    }
+
+    @Test
+    fun `admin local judge and manual verdict`() = runBlocking {
+        val channel = createChannelWithBaseUrl("iq-html", "${fake.baseUrl}/iq-html/v1")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            val customPrompt = "自定义：画一只戴墨镜的鹈鹕骑自行车。"
+            val run = client.post("/admin/api/iq-tests") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"pelican","judgeId":"local","prompt":"$customPrompt"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, run.status)
+            val body = Json.parseToJsonElement(run.bodyAsText()).jsonObject
+            assertEquals("review", body["verdict"]?.jsonPrimitive?.content)
+            assertEquals("local", body["judgeResult"]?.jsonObject?.get("judgeId")?.jsonPrimitive?.content)
+            assertEquals("review", body["judgeResult"]?.jsonObject?.get("verdict")?.jsonPrimitive?.content)
+            assertEquals(customPrompt, body["prompt"]?.jsonPrimitive?.content)
+            assertTrue(fake.requests.any { it.scenario == "iq-html" && it.body.contains(customPrompt) })
+            val id = body["id"]?.jsonPrimitive?.content
+
+            val manual = client.put("/admin/api/iq-tests/$id/manual-verdict") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"verdict":"passed","score":5,"note":"looks good"}""")
+            }
+            assertEquals(HttpStatusCode.OK, manual.status)
+            val updated = Json.parseToJsonElement(manual.bodyAsText()).jsonObject
+            assertEquals("passed", updated["verdict"]?.jsonPrimitive?.content)
+            assertEquals("人工通过", updated["verdictLabel"]?.jsonPrimitive?.content)
+            assertEquals("passed", updated["manualVerdict"]?.jsonPrimitive?.content)
+            assertEquals("5", updated["manualScore"]?.jsonPrimitive?.content)
+
+            val history = client.get("/admin/api/iq-tests") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val item = Json.parseToJsonElement(history.bodyAsText()).jsonArray
+                .map { it.jsonObject }
+                .first { it["id"]?.jsonPrimitive?.content == id }
+            assertEquals("passed", item["verdict"]?.jsonPrimitive?.content)
+            assertEquals("passed", item["manualVerdict"]?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun `admin rejects unknown iq judge`() = runBlocking {
+        val channel = createChannel("iq-test", "ok")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.post("/admin/api/iq-tests") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"pelican","judgeId":"missing"}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("iq_judge_not_found"), response.bodyAsText())
+        }
+    }
+
+    @Test
+    fun `admin rejects oversized iq prompt`() = runBlocking {
+        val channel = createChannel("iq-test", "ok")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.post("/admin/api/iq-tests") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"pelican","prompt":"${"a".repeat(20_001)}"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("提示词长度"), response.bodyAsText())
+        }
+    }
+
+    @Test
     fun `admin tests a channel model without reasoning effort`() = runBlocking {
         val channel = createChannel("model-test", "ok")
 
@@ -7032,7 +7295,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("55", result.getString(1))
+                        assertEquals("56", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -8469,6 +8732,17 @@ class GatewayIntegrationTest {
         drainTimeoutMs = 1_000,
         staticDir = Path.of("web/dist"),
         quotaPluginDir = quotaPluginDirectory,
+        manxueEnabled = true,
+        manxueApiBaseUrl = fake.baseUrl + "/manxue",
+        manxueTimeoutMs = 5_000,
+        iqDefaultJudge = "local",
+        iqJudgeTimeoutMs = 5_000,
+        iqJudgePluginDir = iqJudgePluginDirectory,
+        iqVisionEnabled = true,
+        iqVisionBaseUrl = fake.baseUrl + "/vision/v1",
+        iqVisionModel = "vision-test",
+        iqVisionTimeoutMs = 5_000,
+        iqVisionRenderWidth = 512,
         cookieSecure = false,
         retention = RetentionPolicy(cleanupEnabled = false),
         cooldown = CooldownPolicy(

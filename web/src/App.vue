@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from './api'
 import type { MeResponse } from './types/api'
 import Icon from './components/Icon.vue'
@@ -16,10 +16,13 @@ import AccountSettingsModal from './components/AccountSettingsModal.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import InfoPopover from './components/InfoPopover.vue'
 
+const IqTestView = defineAsyncComponent(() => import('./components/IqTestView.vue'))
+
 const navItems = [
   { id: 'channels', label: '渠道', icon: 'channels' },
   { id: 'oauth-accounts', label: '订阅账号', icon: 'users' },
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
+  { id: 'iq-test', label: '智商检测', icon: 'brain' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
   { id: 'usage-reports', label: '用量报表', icon: 'chart' },
   { id: 'audit-logs', label: '操作审计', icon: 'shield' },
@@ -38,6 +41,10 @@ const meta = {
   'client-keys': {
     title: '调用方密钥',
     desc: '调用方凭据只在创建或轮换时显示一次，请立即保存。服务端仅保存 SHA-256 哈希与展示前缀。',
+  },
+  'iq-test': {
+    title: '智商检测',
+    desc: '用鹈鹕骑行与糖果测试两道内置题观察模型表现。模型在本地生成 SVG/HTML，提示词可在运行前修改；判分器可选（本地结构 + 人工、满血AI 分类、视觉模型或外部 JAR）；糖果题按官方 21 规则判分。单次结果不代表模型整体能力。',
   },
 
   logs: {
@@ -220,6 +227,7 @@ onBeforeUnmount(() => {
         <ChannelsView v-if="view === 'channels'" />
         <OAuthAccountsView v-else-if="view === 'oauth-accounts'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
+        <IqTestView v-else-if="view === 'iq-test'" />
         <LogsView v-else-if="view === 'logs'" />
         <UsageReportsView v-else-if="view === 'usage-reports'" />
         <AdminAuditLogsView v-else-if="view === 'audit-logs'" />

@@ -151,7 +151,30 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
     -d '{"model": "gpt-4o-mini", "protocol": "chat_completions", "prompt": "请只回复 OK"}'
   ```
 
-### 4. 冷却可见性与手动解除
+### 4. 智商检测
+
+- 题目定义：`GET /admin/api/iq-tests/benchmarks`
+- 判分器列表：`GET /admin/api/iq-tests/judges`
+- 可测试目标：`GET /admin/api/iq-tests/targets`
+- 运行检测：`POST /admin/api/iq-tests`
+- 人工判定：`PUT /admin/api/iq-tests/<id>/manual-verdict`
+- 历史与详情：`GET /admin/api/iq-tests?limit=50`、`GET /admin/api/iq-tests/<id>`
+
+```bash
+curl -b cookies.txt -X POST http://localhost:8080/admin/api/iq-tests \
+  -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
+  -d '{"channelId":"<channel-id>","model":"gpt-4o-mini","benchmark":"pelican","judgeId":"local"}'
+```
+
+`benchmark` 支持 `pelican`（鹈鹕骑行）与 `candy`（糖果测试）。可选的 `prompt` 用于替换本次提示词，
+留空时使用题目内置提示词；实际使用的提示词会随记录保存，最长 20000 个字符。模型通过渠道已保存的凭据在本地生成
+SVG/HTML，再由 `judgeId` 指定的判分器判分；省略时使用 `IQ_DEFAULT_JUDGE`。内置判分器为 `local`（本地结构检查 + 人工评分）、
+`manxue`（把 HTML 发送到满血AI 分类）与 `vision`（把无头浏览器逐帧截图发送到配置的多模态端点）。生成请求不写入请求日志，
+也不消耗调用方密钥额度。
+糖果题按满血官方规则「可见文字中出现独立的 21」判分，判分器结果只作参考；鹈鹕题的最终判定顺序为
+人工判定 > 判分器结果 > 本地结构兜底。结果保留最近 200 次。详细说明见 `docs/iq-test.md`。
+
+### 5. 冷却可见性与手动解除
 
 - `GET /admin/api/channel-health?window=24h` 的每个渠道摘要包含 `cooldownUntil`、`cooldownReason`、`coolingCandidates` 和 `totalCandidates`，用于渠道列表展示冷却剩余时间与主因。
 - `GET /admin/api/channels/<id>/health` 的 `availability` 列表给出每个密钥/模型组合的状态、冷却原因和截止时间。
@@ -168,7 +191,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
   - `scope=candidate`：需同时提供 `keyId` 与 `upstreamModel`，只清除该候选。
   - 操作写入管理操作审计，动作为 `channel.cooldown.clear`。
 
-### 5. 实时占用
+### 6. 实时占用
 
 `GET /admin/api/occupancy` 返回当前实例内存中的在途请求数，管理台按 5 秒轮询展示：
 
@@ -191,7 +214,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 - 调用方密钥计数从请求通过鉴权与额度检查开始，到响应结束、失败或客户端断开后释放。
 - 计数只保存在单实例进程内存中，进程重启或切换实例后归零，不做跨实例聚合。
 
-### 6. 订阅账号（OAuth）
+### 7. 订阅账号（OAuth）
 
 订阅账号是独立的上游凭据实体：账号拥有自己的 id、refresh/access token、代理、优先级、模型授权、调度策略与额度，**不再依附于任何渠道密钥**。
 

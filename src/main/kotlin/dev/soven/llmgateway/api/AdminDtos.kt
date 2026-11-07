@@ -23,7 +23,15 @@ import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamRequestSettingsRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderCatalogSnapshot
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
+import dev.soven.llmgateway.domain.IqTestRunRecord
 import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.plugin.iq.IqJudgeInfo
+import dev.soven.llmgateway.plugin.iq.IqJudgePluginFailure
+import dev.soven.llmgateway.proxy.IqBenchmark
+import dev.soven.llmgateway.proxy.IqTestEvaluation
+import dev.soven.llmgateway.proxy.IqVerdict
+import dev.soven.llmgateway.proxy.analyzePelicanStructure
+import dev.soven.llmgateway.proxy.evaluateIqTest
 import dev.soven.llmgateway.proxy.ModelConnectivityTestResult
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.quota.ClientKeyQuotaUsage
@@ -35,10 +43,17 @@ import dev.soven.llmgateway.report.UsageTotal
 import dev.soven.llmgateway.resilience.KeyAutoDisableSettingsRecord
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.resilience.KeyDisableRule
+import dev.soven.llmgateway.spi.iq.IqJudgeResult
+import dev.soven.llmgateway.spi.iq.IqJudgeVerdict
+import dev.soven.llmgateway.spi.iq.IqStructureCheck
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * 管理面登录请求。
@@ -1273,6 +1288,268 @@ fun ModelConnectivityTestResult.toResponse(
     usage = usage?.toTestResponse(),
     upstreamReportedModel = upstreamReportedModel,
 )
+
+/** 智商检测的内置题目定义，供管理台展示默认提示词与判分口径。 */
+@Serializable
+data class IqBenchmarkDefinitionResponse(
+    val id: String,
+    val label: String,
+    val summary: String,
+    val prompt: String,
+    val grading: String,
+)
+
+fun IqBenchmark.toDefinitionResponse() = IqBenchmarkDefinitionResponse(
+    id = value,
+    label = label,
+    summary = summary,
+    prompt = prompt,
+    grading = grading,
+)
+
+/** 可供智商检测选择的渠道模型与可用凭据。 */
+@Serializable
+data class IqTestTargetCredentialResponse(
+    val id: String,
+    val name: String,
+    val priority: Int,
+)
+
+@Serializable
+data class IqTestTargetResponse(
+    val channelId: String,
+    val channelName: String,
+    val channelEnabled: Boolean,
+    val model: String,
+    val protocols: List<String>,
+    val credentials: List<IqTestTargetCredentialResponse>,
+)
+
+@Serializable
+data class IqTestRunRequest(
+    val channelId: String,
+    val model: String,
+    val benchmark: String,
+    val keyId: String? = null,
+    val protocol: String? = null,
+    val judgeId: String? = null,
+    /** 可选的本次提示词；留空时使用题目内置提示词。 */
+    val prompt: String? = null,
+)
+
+@Serializable
+data class IqTestCheckResponse(
+    val id: String,
+    val label: String,
+    val passed: Boolean,
+    val detail: String? = null,
+)
+
+fun IqStructureCheck.toResponse() = IqTestCheckResponse(
+    id = id,
+    label = label,
+    passed = passed,
+    detail = detail,
+)
+
+@Serializable
+data class IqJudgeResultResponse(
+    val judgeId: String,
+    val judgeLabel: String,
+    val verdict: String,
+    val label: String,
+    val reason: String? = null,
+    val score: Double? = null,
+    val details: Map<String, String> = emptyMap(),
+    val checkedAt: Long? = null,
+)
+
+@Serializable
+data class IqJudgeInfoResponse(
+    val id: String,
+    val label: String,
+    val description: String,
+    val builtIn: Boolean,
+    val apiVersion: Int,
+)
+
+@Serializable
+data class IqJudgeFailureResponse(
+    val source: String,
+    val message: String,
+)
+
+@Serializable
+data class IqJudgesResponse(
+    val judges: List<IqJudgeInfoResponse>,
+    val failures: List<IqJudgeFailureResponse>,
+    val defaultJudgeId: String,
+)
+
+@Serializable
+data class IqTestManualVerdictRequest(
+    val verdict: String,
+    val score: Int? = null,
+    val note: String? = null,
+)
+
+fun IqJudgeInfo.toResponse() = IqJudgeInfoResponse(
+    id = id,
+    label = displayName,
+    description = description,
+    builtIn = builtIn,
+    apiVersion = apiVersion,
+)
+
+fun IqJudgePluginFailure.toResponse() = IqJudgeFailureResponse(source, message)
+
+@Serializable
+data class IqTestRunResponse(
+    val id: Long,
+    val benchmark: String,
+    val benchmarkLabel: String,
+    val verdict: String,
+    val verdictLabel: String,
+    val success: Boolean,
+    val channelId: String,
+    val channelName: String,
+    val channelKeyId: String? = null,
+    val channelKeyName: String? = null,
+    val model: String,
+    val upstreamModel: String,
+    val protocol: String,
+    val statusCode: Int? = null,
+    val latencyMs: Long,
+    val createdAt: Long,
+    val prompt: String? = null,
+    val responseText: String? = null,
+    val html: String? = null,
+    val checks: List<IqTestCheckResponse> = emptyList(),
+    val expectedAnswer: Int? = null,
+    val matchedAnswer: Int? = null,
+    val errorMessage: String? = null,
+    val usage: ChannelModelTestUsageResponse? = null,
+    val upstreamReportedModel: String? = null,
+    val judgeResult: IqJudgeResultResponse? = null,
+    val manualVerdict: String? = null,
+    val manualScore: Int? = null,
+    val manualNote: String? = null,
+    val manualUpdatedAt: Long? = null,
+)
+
+fun IqTestRunRecord.toResponse(includeDetail: Boolean): IqTestRunResponse {
+    val benchmarkType = IqBenchmark.fromValue(benchmark)
+    val structure = if (includeDetail && benchmarkType == IqBenchmark.PELICAN) {
+        analyzePelicanStructure(responseText)
+    } else {
+        null
+    }
+    val automaticJudge = toJudgeResult()
+    val evaluation: IqTestEvaluation? = if (includeDetail && benchmarkType != null) {
+        evaluateIqTest(
+            benchmark = benchmarkType,
+            success = success,
+            responseText = responseText,
+            errorMessage = errorMessage,
+            structure = structure,
+            judgeResult = automaticJudge,
+            manualVerdict = manualVerdict,
+        )
+    } else {
+        null
+    }
+    val effectiveVerdict = evaluation?.verdict?.value ?: verdict
+    return IqTestRunResponse(
+        id = id,
+        benchmark = benchmarkType?.value ?: benchmark,
+        benchmarkLabel = benchmarkType?.label ?: benchmark,
+        verdict = effectiveVerdict,
+        verdictLabel = effectiveVerdictLabel(effectiveVerdict, benchmarkType, manualVerdict),
+        success = success,
+        channelId = channelId,
+        channelName = channelName,
+        channelKeyId = channelKeyId,
+        channelKeyName = channelKeyName,
+        model = model,
+        upstreamModel = upstreamModel,
+        protocol = protocol,
+        statusCode = statusCode,
+        latencyMs = latencyMs,
+        createdAt = createdAt,
+        prompt = prompt.takeIf { includeDetail },
+        responseText = responseText.takeIf { includeDetail },
+        html = evaluation?.html.takeIf { includeDetail },
+        checks = if (includeDetail) evaluation?.checks?.map { it.toResponse() }.orEmpty() else emptyList(),
+        expectedAnswer = evaluation?.expectedAnswer.takeIf { includeDetail },
+        matchedAnswer = evaluation?.matchedAnswer.takeIf { includeDetail },
+        errorMessage = errorMessage,
+        usage = usage?.toTestResponse(),
+        upstreamReportedModel = upstreamReportedModel,
+        judgeResult = toJudgeResponse(),
+        manualVerdict = manualVerdict,
+        manualScore = manualScore,
+        manualNote = manualNote,
+        manualUpdatedAt = manualUpdatedAt,
+    )
+}
+
+private fun IqTestRunRecord.toJudgeResult(): IqJudgeResult? {
+    val verdict = judgeVerdict
+        ?.let { value -> runCatching { IqJudgeVerdict.valueOf(value.uppercase()) }.getOrNull() }
+        ?: return null
+    return IqJudgeResult(
+        verdict = verdict,
+        label = judgeResultLabel ?: judgeLabel ?: judgeId ?: "判分器",
+        reason = judgeReason,
+        score = judgeScore,
+        details = parseJudgeDetails(judgeDetails),
+    )
+}
+
+private fun IqTestRunRecord.toJudgeResponse(): IqJudgeResultResponse? = judgeId?.let { id ->
+    IqJudgeResultResponse(
+        judgeId = id,
+        judgeLabel = judgeLabel ?: id,
+        verdict = judgeVerdict ?: "review",
+        label = judgeResultLabel ?: judgeVerdict ?: "无法判定",
+        reason = judgeReason,
+        score = judgeScore,
+        details = parseJudgeDetails(judgeDetails),
+        checkedAt = judgeCheckedAt,
+    )
+}
+
+private fun parseJudgeDetails(value: String?): Map<String, String> {
+    if (value.isNullOrBlank()) return emptyMap()
+    return runCatching {
+        Json.parseToJsonElement(value).jsonObject.mapValues { (_, element) ->
+            element.jsonPrimitive.contentOrNull ?: element.toString()
+        }
+    }.getOrDefault(emptyMap())
+}
+
+private fun effectiveVerdictLabel(
+    verdict: String,
+    benchmark: IqBenchmark?,
+    manualVerdict: String?,
+): String {
+    if (manualVerdict != null) {
+        return when (manualVerdict) {
+            IqVerdict.PASSED.value -> "人工通过"
+            IqVerdict.INCORRECT.value -> "人工未通过"
+            else -> iqVerdictLabel(verdict, benchmark)
+        }
+    }
+    return iqVerdictLabel(verdict, benchmark)
+}
+
+private fun iqVerdictLabel(verdict: String, benchmark: IqBenchmark?): String = when (verdict) {
+    IqVerdict.PASSED.value -> "通过"
+    IqVerdict.INCORRECT.value -> "未通过"
+    IqVerdict.REVIEW.value -> "需人工查看"
+    IqVerdict.FAILED.value -> "失败"
+    else -> verdict
+}
 
 /**
  * 订阅账号导入/重新授权。refresh token 只在请求中出现一次，服务端加密后不再回显。

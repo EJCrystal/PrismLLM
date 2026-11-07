@@ -11,6 +11,8 @@ const actionLabels: Record<string, string> = {
   'channel.discover_models': '发现渠道模型',
   'channel.probe_protocols': '探测渠道协议',
   'channel.model_test': '测试渠道模型',
+  'iq_test.run': '运行智商检测',
+  'iq_test.manual_verdict': '保存智商检测人工判定',
   'channel.create': '创建渠道',
   'channel.update': '更新渠道',
   'channel.delete': '删除渠道',
@@ -80,6 +82,14 @@ interface AuditDetails {
   state?: string | null
   provider?: string | null
   proxyUrl?: string | null
+  model?: string | null
+  benchmark?: string | null
+  protocol?: string | null
+  judgeId?: string | null
+  judgeVerdict?: string | null
+  id?: string | number | null
+  verdict?: string | null
+  score?: number | null
   result?: string | null
   windowLimit?: number | null
   windowSeconds?: number | null
@@ -176,6 +186,24 @@ export function auditDetailsRows(entry: AuditEntry | null | undefined): AuditDet
   }
   if (entry?.action === 'oauth_account.cooldown.clear') {
     return [['密钥 ID', displayDetail(details.keyId)]]
+  }
+  if (entry?.action === 'iq_test.run') {
+    return [
+      ['渠道 ID', displayDetail(details.channelId)],
+      ['模型', displayDetail(details.model)],
+      ['题目', details.benchmark === 'pelican' ? '鹈鹕骑行' : details.benchmark === 'candy' ? '糖果测试' : displayDetail(details.benchmark)],
+      ['凭据 ID', displayDetail(details.keyId)],
+      ['协议', displayDetail(details.protocol)],
+      ['判分器', displayDetail(details.judgeId)],
+      ['判分结论', displayDetail(details.judgeVerdict)],
+    ]
+  }
+  if (entry?.action === 'iq_test.manual_verdict') {
+    return [
+      ['记录 ID', displayDetail(details.id)],
+      ['结论', details.verdict === 'passed' ? '通过' : details.verdict === 'incorrect' ? '未通过' : displayDetail(details.verdict)],
+      ['评分', details.score == null ? '未评分' : `${details.score} / 5`],
+    ]
   }
   return []
 }

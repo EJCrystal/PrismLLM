@@ -57,6 +57,7 @@ suspend fun testChannelModelConnectivity(
     httpClient: HttpClient,
     timeoutMs: Long = 45_000,
     maxOutputTokens: Int = 128,
+    maxResponseChars: Int = MAX_RESPONSE_CHARS,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): ModelConnectivityTestResult {
@@ -92,7 +93,7 @@ suspend fun testChannelModelConnectivity(
                     success = true,
                     statusCode = status,
                     latencyMs = latencyMs,
-                    responseText = extractModelTestResponseText(protocol, json)?.take(MAX_RESPONSE_CHARS),
+                    responseText = extractModelTestResponseText(protocol, json)?.take(maxResponseChars),
                     errorMessage = null,
                     usage = extractModelTestUsage(protocol, json),
                     upstreamReportedModel = extractReportedModel(protocol, json),

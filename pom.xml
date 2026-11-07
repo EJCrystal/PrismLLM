@@ -68,7 +68,6 @@
             <artifactId>kotlinx-serialization-json</artifactId>
             <version>${serialization.version}</version>
         </dependency>
-
         <dependency>
             <groupId>io.ktor</groupId>
             <artifactId>ktor-server-core-jvm</artifactId>
@@ -258,6 +257,15 @@
                         <configuration>
                             <classifier>quota-spi</classifier>
                             <includes><include>dev/soven/llmgateway/spi/quota/**</include></includes>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>iq-judge-spi</id>
+                        <phase>package</phase>
+                        <goals><goal>jar</goal></goals>
+                        <configuration>
+                            <classifier>iq-judge-spi</classifier>
+                            <includes><include>dev/soven/llmgateway/spi/iq/**</include></includes>
                         </configuration>
                     </execution>
                 </executions>

@@ -21,6 +21,13 @@ import type {
   ClientKeyCreated,
   ClientKeyRequest,
   ExchangeRates,
+  IqBenchmarkDefinition,
+  IqJudgesResponse,
+  IqTestRunDetail,
+  IqTestRunRequest,
+  IqTestManualVerdictRequest,
+  IqTestRunSummary,
+  IqTestTarget,
   KeyAutoDisableSettingsRequest,
   KeyAutoDisableSettingsResponse,
   LoginRequest,
@@ -218,6 +225,18 @@ export const api = {
   testChannelModel: (id: string, payload: ChannelModelTestRequest) =>
     request<ChannelModelTestResult>(`/channels/${encodeURIComponent(id)}/model-test`, {
       method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  listIqBenchmarks: () => request<IqBenchmarkDefinition[]>('/iq-tests/benchmarks'),
+  listIqJudges: () => request<IqJudgesResponse>('/iq-tests/judges'),
+  listIqTargets: () => requestList<IqTestTarget>('/iq-tests/targets'),
+  listIqRuns: (limit = 50) => requestList<IqTestRunSummary>(`/iq-tests?limit=${limit}`),
+  getIqRun: (id: number) => request<IqTestRunDetail>(`/iq-tests/${id}`),
+  runIqTest: (payload: IqTestRunRequest) =>
+    request<IqTestRunDetail>('/iq-tests', { method: 'POST', body: JSON.stringify(payload) }),
+  submitIqManualVerdict: (id: number, payload: IqTestManualVerdictRequest) =>
+    request<IqTestRunDetail>(`/iq-tests/${id}/manual-verdict`, {
+      method: 'PUT',
       body: JSON.stringify(payload),
     }),
   getModelTestSettings: () => request<ModelTestSettings>('/model-test-settings'),
