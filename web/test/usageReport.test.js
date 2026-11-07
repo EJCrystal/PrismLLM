@@ -165,6 +165,7 @@ import {
   buildTrendPoints,
   usageTrendMax,
   usageModelOptions,
+  usageGroupLabel,
   usageReportCsv,
   reportTimezoneOffset,
 } from '../src/utils/usageReport'
@@ -247,6 +248,17 @@ describe('usageReport: 增强报表数据', () => {
   it('模型筛选容忍空响应并去重空白值', () => {
     assert.deepEqual(usageModelOptions(null, null), [])
     assert.deepEqual(usageModelOptions({}, [{ models: ['', '  ', null] }]), [])
+  })
+
+  it('分组名称只翻译映射自身的哨兵 ID，不被原型属性劫持', () => {
+    assert.equal(usageGroupLabel({ id: '__unresolved_model__', name: null }), '未解析模型')
+    assert.equal(usageGroupLabel({ id: 'gpt-6.1-sol', name: null }), 'gpt-6.1-sol')
+    assert.equal(usageGroupLabel({ id: 'row-id', name: '显示名' }), '显示名')
+    // toString / constructor 是 Object.prototype 上的继承属性，
+    // 直接下标会取到函数而不是标签，这里必须回退到 name / id。
+    assert.equal(usageGroupLabel({ id: 'toString', name: '真实模型名' }), '真实模型名')
+    assert.equal(usageGroupLabel({ id: 'constructor', name: null }), 'constructor')
+    assert.equal(usageGroupLabel({ id: 'hasOwnProperty', name: null }), 'hasOwnProperty')
   })
 
   it('CSV 导出包含分组维度和多币种费用，并正确转义逗号', () => {

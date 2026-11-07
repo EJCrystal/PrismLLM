@@ -132,6 +132,21 @@ export function usageGranularityLabel(granularity: string | null | undefined): s
   return ({ hour: '按小时', day: '按天', week: '按周' } as Record<string, string>)[granularity ?? ''] || '按天'
 }
 
+/** 后端给未归因分组用的哨兵 ID，展示层统一翻译成人话。 */
+const usageSentinelLabels: Record<string, string> = {
+  __unassigned_key__: '未关联调用方密钥',
+  __unrouted__: '未完成路由',
+  __unresolved_model__: '未解析模型',
+  __unassigned_channel_key__: '未使用渠道密钥',
+  __unknown_protocol__: '未知协议',
+}
+
+export function usageGroupLabel(row: { id: string; name?: string | null }): string {
+  // 用 hasOwn 判定哨兵：直接下标会把 toString / constructor 这类原型属性当成标签返回函数。
+  const sentinel = Object.hasOwn(usageSentinelLabels, row.id) ? usageSentinelLabels[row.id] : ''
+  return sentinel || row.name || row.id
+}
+
 export function reportTimezoneOffset(now = new Date()) {
   return -now.getTimezoneOffset()
 }

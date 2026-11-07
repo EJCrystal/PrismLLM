@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { api } from '../api'
 import type { Channel, ChannelHealthDetail, HealthWindow, HealthBreakdown, UsageReport } from '../types/api'
-import { HEALTH_WINDOWS, HEALTH_LABELS, healthSymbol, healthPercent, healthBucketState, healthCacheHitText } from '../utils/channelHealth'
+import { HEALTH_WINDOWS, HEALTH_LABELS, healthSymbol, healthPercent, healthBucketState, healthCacheHitText, healthCacheRows } from '../utils/channelHealth'
 import { cooldownReasonLabel } from '../utils/cooldown'
 import { formatDuration, formatTime, formatTokensCompact } from '../utils/format'
 import Modal from './Modal.vue'
@@ -98,6 +98,7 @@ onBeforeUnmount(() => {
 const summary = computed(() => detail.value?.report.channels[0])
 const metrics = computed(() => summary.value?.metrics)
 const cacheHitText = computed(() => healthCacheHitText(usage.value?.total, usageState.value === 'loading'))
+const cacheRows = computed(() => healthCacheRows(usage.value?.byModel))
 const rows = computed<HealthBreakdown[]>(() => detail.value?.[dimension.value] || [])
 const activeBucket = computed(() => selectedBucket.value == null ? null : detail.value?.trend[selectedBucket.value])
 type AvailabilityRow = ChannelHealthDetail['availability'][number]
@@ -208,6 +209,20 @@ function tryClose() {
           <p v-if="usageState === 'failed'" class="muted small">缓存用量读取失败，不影响健康度统计。</p>
           <p v-else-if="usage && usage.total.requests === 0" class="muted small">此时间范围没有可统计的用量。</p>
           <p v-else class="muted small">口径与用量报表一致：缓存读 ÷ 输入 token，输入已包含缓存读与缓存写；上游未上报缓存用量时按 0 统计，只含成功请求。</p>
+          <p v-if="cacheRows.length" class="muted small">按上游模型拆分，命中率各自计算，按输入 token 从多到少排列。来自请求日志，与上方按上游尝试统计的成功率口径不同，同样不参与健康度判定。</p>
+          <div v-if="cacheRows.length" v-scroll-hint class="table-scroll">
+            <table class="data-table compact-table health-cache-table">
+              <thead><tr><th>模型</th><th>缓存命中率</th><th>缓存读 / 输入 token</th><th>缓存写 token</th></tr></thead>
+              <tbody>
+                <tr v-for="row in cacheRows" :key="row.id">
+                  <td>{{ row.name }}</td>
+                  <td><strong>{{ row.rate }}</strong></td>
+                  <td>{{ formatTokensCompact(row.cachedTokens) }} / {{ formatTokensCompact(row.inputTokens) }}</td>
+                  <td>{{ formatTokensCompact(row.cachedWriteTokens) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
         <section class="health-section" aria-label="健康度历史">
           <h3>成功率趋势 <small class="muted">{{ window === '24h' ? '每小时' : '每 24 小时' }}</small></h3>
@@ -311,6 +326,8 @@ function tryClose() {
 .health-history-axis { display: flex; justify-content: space-between; gap: 12px; }
 .health-breakdown { min-width: 620px; }
 .health-breakdown td:first-child { max-width: 260px; overflow-wrap: anywhere; }
+.health-cache-table { min-width: 520px; }
+.health-cache-table td:first-child { max-width: 260px; overflow-wrap: anywhere; }
 .health-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .health-availability-groups { display: grid; gap: 14px; }
 .health-availability-key { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 650; }
