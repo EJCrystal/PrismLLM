@@ -20,6 +20,7 @@ import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -49,6 +50,9 @@ class FakeUpstream {
     val baseUrl: String get() = "http://127.0.0.1:$port"
     val requests = ConcurrentLinkedQueue<FakeRequest>()
     val modelRequests = ConcurrentLinkedQueue<FakeRequest>()
+    val manxueRequests = ConcurrentLinkedQueue<FakeRequest>()
+    @Volatile
+    var manxueQuality: String = "normal"
     val cancellations = AtomicInteger()
     val failingModels = ConcurrentHashMap.newKeySet<String>()
     val keyStatuses = ConcurrentHashMap<String, Int>()
@@ -102,6 +106,30 @@ class FakeUpstream {
 
     private fun Application.fakeModule() {
         routing {
+            post("/manxue/api/v1/tests") {
+                manxueRequests.add(
+                    FakeRequest(
+                        scenario = "manxue-html",
+                        body = call.receiveText(),
+                        authorization = call.request.headers[HttpHeaders.Authorization],
+                        requestHeaders = call.request.headers.entries().associate { it.key.lowercase() to it.value },
+                        uri = call.request.uri,
+                        path = call.request.path(),
+                    ),
+                )
+                call.respondText(
+                    """{"id":"manxue-test-1","benchmark":"html","status":"running","phase":"classifying"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.Accepted,
+                )
+            }
+            get("/manxue/api/v1/tests/{id}") {
+                val quality = manxueQuality
+                call.respondText(
+                    """{"id":"manxue-test-1","status":"succeeded","phase":"complete","assessment":{"quality":"$quality","label":"${if (quality == "normal") "正常" else "疑似降智"}","reason":"classification result","source":"test"}}""",
+                    ContentType.Application.Json,
+                )
+            }
             get("/{scenario}/v1/models") {
                 recordModelRequest(call, call.parameters["scenario"] ?: "ok")
                 call.respondText(MODELS_BODY, ContentType.Application.Json)
@@ -224,6 +252,30 @@ class FakeUpstream {
         if (respondKeyHealth(call, scenario)) return
 
         when (scenario) {
+            "vision" -> {
+                val content = """
+                    {"aspects":{
+                      "鹈鹕特征":{"status":"passed","detail":"白色长颈鸟，长喙和橙色喉囊清楚"},
+                      "自行车结构":{"status":"passed","detail":"双轮、双三角车架、车把、踏板和链条齐全"},
+                      "骑行关系":{"status":"passed","detail":"坐在车座上，双脚在踏板上，翅膀握住车把"},
+                      "动画连贯性":{"status":"passed","detail":"逐帧可见轮辐转动和腿脚位置变化"},
+                      "画面完成度":{"status":"passed","detail":"主体完整居中，无裁切或错误重叠"}
+                    },"verdict":"passed","score":90,"reason":"五项检测全部通过"}
+                """.trimIndent()
+                call.respondText(
+                    """{"id":"chatcmpl-vision","object":"chat.completion","model":${Json.encodeToString(model ?: "vision-test")},"choices":[{"index":0,"message":{"role":"assistant","content":${Json.encodeToString(content)}},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}""",
+                    ContentType.Application.Json,
+                )
+                return
+            }
+            "iq-html" -> {
+                val content = """<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><h1>糖果测试答案：21 颗</h1><p>先取完圆形 24 颗和五角星形西瓜 4 颗，共 28 颗；再取 1 颗。</p><svg viewBox="0 0 240 120"><circle cx="60" cy="60" r="40" fill="#f2a33a"><animate attributeName="cx" from="60" to="180" dur="2s" repeatCount="indefinite"/></circle><rect x="120" y="30" width="80" height="60" rx="16" fill="#7dd3fc"/></svg></body></html>"""
+                call.respondText(
+                    """{"id":"chatcmpl-iq-html","object":"chat.completion","model":${Json.encodeToString(model ?: "iq-html")},"choices":[{"index":0,"message":{"role":"assistant","content":${Json.encodeToString(content)}},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}""",
+                    ContentType.Application.Json,
+                )
+                return
+            }
             "key-route" -> {
                 if (call.request.headers[HttpHeaders.Authorization] == "Bearer key-primary") {
                     call.respondText(ERROR_401, ContentType.Application.Json, HttpStatusCode.Unauthorized)

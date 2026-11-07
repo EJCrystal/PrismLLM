@@ -26,7 +26,7 @@ services:
       - "8080:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Put trusted quota-provider JARs in ./plugins. The directory is read-only in the container.
+    # Put trusted quota-provider and IQ-judge JARs in ./plugins. The directory is read-only in the container.
     volumes:
       - ./plugins:/app/plugins:ro
     depends_on:

@@ -4,6 +4,7 @@ import { reactive, ref } from 'vue'
 import {
   canProbeSavedChannel,
   createRequestTracker,
+  hasCredentialDraft,
   sameProtocolSelection,
   watchChannelRequestInputs,
 } from '../src/utils/channelRequestState'
@@ -57,6 +58,13 @@ describe('channel request state', () => {
       credential: 'replacement-secret',
       authType: 'anthropic',
     }), false)
+  })
+
+  it('多个密钥的凭据都未修改时不产生凭据草稿', () => {
+    assert.equal(hasCredentialDraft([{ credential: '' }, { credential: '' }, { credential: '' }]), false)
+    assert.equal(hasCredentialDraft([{ credential: '   ' }, { credential: null }]), false)
+    assert.equal(hasCredentialDraft([]), false)
+    assert.equal(hasCredentialDraft([{ credential: '' }, { credential: 'sk-new' }]), true)
   })
 
   it('请求覆盖变更会丢弃正在返回的模型列表和协议探测', () => {

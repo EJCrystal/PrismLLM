@@ -1,0 +1,48 @@
+package dev.soven.llmgateway.plugin.iq
+
+import dev.soven.llmgateway.spi.iq.IqJudge
+import dev.soven.llmgateway.spi.iq.IqJudgeRequest
+import dev.soven.llmgateway.spi.iq.IqJudgeResult
+import dev.soven.llmgateway.spi.iq.IqJudgeVerdict
+
+/** 本地结构判分：不访问任何外部服务，结构通过后等待人工评分。 */
+class LocalStructureIqJudge : IqJudge {
+    override val id: String = "local"
+    override val displayName: String = "本地结构 + 人工"
+    override val description: String = "不访问外部服务，结构检查后由管理员评分。"
+
+    override fun judge(request: IqJudgeRequest): IqJudgeResult {
+        if (request.benchmark == "candy") {
+            return IqJudgeResult(
+                verdict = IqJudgeVerdict.REVIEW,
+                label = "由 21 规则判定",
+                reason = "糖果题不参与 HTML 结构判分，最终结果以可见文字中的独立 21 为准。",
+                details = mapOf("mode" to "rule"),
+            )
+        }
+        val structure = request.structure
+        return when {
+            !structure.htmlPresent || !structure.svgPresent -> IqJudgeResult(
+                verdict = IqJudgeVerdict.FAILED,
+                label = "未通过",
+                reason = "未生成可解析的 HTML/SVG。",
+                score = 0.0,
+                details = mapOf("mode" to "structure"),
+            )
+            structure.allPassed -> IqJudgeResult(
+                verdict = IqJudgeVerdict.REVIEW,
+                label = "结构通过，待人工评分",
+                reason = "本地结构检查全部通过；请结合预览人工确认鹈鹕与自行车是否可辨。",
+                score = null,
+                details = mapOf("mode" to "structure"),
+            )
+            else -> IqJudgeResult(
+                verdict = IqJudgeVerdict.INCORRECT,
+                label = "结构未通过",
+                reason = "本地结构检查未全部通过。",
+                score = 0.0,
+                details = mapOf("mode" to "structure"),
+            )
+        }
+    }
+}

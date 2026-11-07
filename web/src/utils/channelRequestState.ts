@@ -61,6 +61,10 @@ export function watchChannelRequestInputs(
   )
 }
 
+export function hasCredentialDraft(keys: Array<{ credential?: string | null }> | null | undefined): boolean {
+  return (keys || []).some((key) => String(key.credential ?? '').trim() !== '')
+}
+
 export function canProbeSavedChannel(
   savedChannel: Channel | null | undefined,
   {

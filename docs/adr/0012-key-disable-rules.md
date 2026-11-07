@@ -38,15 +38,15 @@ KeyDisableRule {
 
 默认规则按顺序匹配：401/402/403 且命中 `INSUFFICIENT_BALANCE` → 1 次永久禁用；401/403 且命中 `invalid_api_key`、`authentication_error`、`invalid_grant` 等稳定特征 → 连续 2 次永久禁用；401/403 账号停用/其他结算类 → 1 次永久禁用；其余 401/403 → 5 分钟内 3 次临时 30 分钟；429/5xx/传输层 → 5 分钟内 8 次临时 10 分钟；400/404/422 不参与。余额规则优先于凭据规则，避免混合错误体被后者提前匹配。
 
-## 渠道级覆盖（V56）
+## 渠道级覆盖（V57）
 
-全局规则只适合所有上游共有的失败特征。实际上游的错误体差异很大：「活动已关闭或 Key 失效」（`DEEPSEEK_ACTIVITY_DISABLED`）只由 Grox 返回，放进全局列表会命中其他渠道的同名文本。因此 V56 增加渠道级覆盖：
+全局规则只适合所有上游共有的失败特征。实际上游的错误体差异很大：「活动已关闭或 Key 失效」（`DEEPSEEK_ACTIVITY_DISABLED`）只由 Grox 返回，放进全局列表会命中其他渠道的同名文本。因此 V57 增加渠道级覆盖：
 
 - `channels.key_disable_policy` 为 `null` 表示继承全局设置；非空时**整表替换**全局策略（含 `enabled` 与完整规则列表），不按 id 合并。有序规则是「首条命中即止」，两套列表合并后顺序无法预测，所以刻意不做逐条覆盖。
 - `channels.key_disable_policy_revision` 每次保存覆盖策略自增；全局设置沿用 `key_auto_disable_settings.revision`。计数归属由 `channel_key_health.policy_scope`（`global` 或 `channel:<id>`）与 `policy_revision` 一起判定，作用域切换或策略修改都会丢弃旧计数，避免用旧规则的累计失败触发新规则。
 - 渠道策略的保存、清除与审计在同一事务提交；`PUT /admin/api/channels/{id}/key-disable-policy` 传 `{"override": null}` 恢复继承。
 - 管理台在渠道操作菜单提供「密钥自动禁用（已自定义 / 继承全局）」入口，自定义模式默认用当前生效规则初始化编辑器。
-- V56 迁移把 `activity_disabled` 从全局规则移到 Grox 的渠道覆盖，并把阈值改为 1：这是上游终态错误，等不到 5 分钟窗口内的第二次。
+- V57 迁移把 `activity_disabled` 从全局规则移到 Grox 的渠道覆盖，并把阈值改为 1：这是上游终态错误，等不到 5 分钟窗口内的第二次。
 
 ## 边界
 
@@ -60,9 +60,9 @@ KeyDisableRule {
 - V32：`channel_keys.state` 枚举替换原 `enabled` 布尔列，新增 `auto_disable_until bigint`；旧数据按 `enabled = true → ACTIVE`、`enabled = false and auto_disabled_at is not null → AUTO_PERMANENT`、其余 `MANUAL_DISABLED` 回填。
 - V35：`channel_keys.probe_until bigint` 保存探测租约；后台任务按 `KEY_AUTO_RECOVERY_INTERVAL_MS` 周期收尾已到期且无租约的临时停用。
 - V33：`key_auto_disable_settings.rules text` 保存规则列表；`channel_key_health.rule_counters text` 保存按规则分桶的失败时间戳。两者为空时分别回退到内置默认规则和空计数。
-- V56：`channels.key_disable_policy` / `key_disable_policy_revision` 保存渠道覆盖策略；`channel_key_health.policy_scope` 标记计数归属，升级前的计数默认为 `global`。
+- V57：`channels.key_disable_policy` / `key_disable_policy_revision` 保存渠道覆盖策略；`channel_key_health.policy_scope` 标记计数归属，升级前的计数默认为 `global`。
 - 规则引擎在 `resilience/KeyDisableRules.kt`，请求路径通过 `KeyAttemptSignal` 把状态码、截断后的上游错误体和传输层失败传入 `KeyAutoDisableRepository.recordOutcome()`；停用与审计在同一事务提交。
 - `KeyAutoDisablePolicy` 仅保留为旧管理 API 的兼容适配器；新规则通过 `KeyDisablePolicy` 直接保存。
 - 客户端取消、网关本地限流、请求体错误继续不计数；未命中任何规则的上游响应也不计数，且不打断连续计数。
 
-可视化方案与规则试跑见 `docs/design/key-auto-disable-rules.html`，V56 的迁移与部署核对项见 `docs/migrations/V56-channel-key-disable-policy.md`。
+可视化方案与规则试跑见 `docs/design/key-auto-disable-rules.html`，V57 的迁移与部署核对项见 `docs/migrations/V57-channel-key-disable-policy.md`。

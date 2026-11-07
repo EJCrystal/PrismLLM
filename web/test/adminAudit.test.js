@@ -18,7 +18,49 @@ describe('adminAudit: 管理操作审计展示', () => {
     assert.equal(auditActionLabel('oauth_account.import'), '导入订阅账号')
     assert.equal(auditActionLabel('oauth_account.refresh'), '刷新订阅账号 Token')
     assert.equal(auditActionLabel('oauth_account.quota.refresh'), '读取订阅账号上游额度')
+    assert.equal(auditActionLabel('iq_test.run'), '运行智商检测')
     assert.equal(auditActionLabel('future.action'), 'future.action')
+  })
+
+  it('展示智商检测操作的关键参数', () => {
+    assert.deepEqual(
+      auditDetailsRows({
+        action: 'iq_test.run',
+        details: {
+          channelId: 'c1',
+          model: 'm1',
+          benchmark: 'pelican',
+          keyId: 'k1',
+          protocol: 'chat_completions',
+          judgeId: 'local',
+          judgeVerdict: 'review',
+        },
+      }),
+      [
+        ['渠道 ID', 'c1'],
+        ['模型', 'm1'],
+        ['题目', '鹈鹕骑行'],
+        ['凭据 ID', 'k1'],
+        ['协议', 'chat_completions'],
+        ['判分器', 'local'],
+        ['判分结论', 'review'],
+      ],
+    )
+  })
+
+  it('展示智商检测人工判定的关键参数', () => {
+    assert.equal(auditActionLabel('iq_test.manual_verdict'), '保存智商检测人工判定')
+    assert.deepEqual(
+      auditDetailsRows({
+        action: 'iq_test.manual_verdict',
+        details: { id: 12, verdict: 'passed', score: 5 },
+      }),
+      [
+        ['记录 ID', 12],
+        ['结论', '通过'],
+        ['评分', '5 / 5'],
+      ],
+    )
   })
 
   it('展示订阅账号操作的关键参数', () => {

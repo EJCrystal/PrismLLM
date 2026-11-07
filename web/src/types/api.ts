@@ -692,6 +692,122 @@ export interface ChannelModelTestResult {
   usage: ChannelModelTestUsage | null
 }
 
+export type IqBenchmarkId = 'pelican' | 'candy'
+export type IqVerdict = 'passed' | 'incorrect' | 'review' | 'failed'
+
+export interface IqBenchmarkDefinition {
+  id: IqBenchmarkId
+  label: string
+  summary: string
+  prompt: string
+  grading: string
+}
+
+export interface IqTestTargetCredential {
+  id: string
+  name: string
+  priority: number
+}
+
+export interface IqTestTarget {
+  channelId: string
+  channelName: string
+  channelEnabled: boolean
+  model: string
+  protocols: ProtocolId[]
+  credentials: IqTestTargetCredential[]
+}
+
+export interface IqTestRunRequest {
+  channelId: string
+  model: string
+  benchmark: IqBenchmarkId
+  keyId?: string | null
+  protocol?: ProtocolId | null
+  judgeId?: string | null
+  /** 本次使用的提示词；留空时由服务端使用题目内置提示词。 */
+  prompt?: string | null
+}
+
+export interface IqTestCheck {
+  id: string
+  label: string
+  passed: boolean
+  detail: string | null
+}
+
+export interface IqJudgeResult {
+  judgeId: string
+  judgeLabel: string
+  verdict: IqVerdict
+  label: string
+  reason: string | null
+  score: number | null
+  details: Record<string, string>
+  checkedAt: number | null
+}
+
+export interface IqJudgeInfo {
+  id: string
+  label: string
+  description: string
+  builtIn: boolean
+  apiVersion: number
+}
+
+export interface IqJudgeFailure {
+  source: string
+  message: string
+}
+
+export interface IqJudgesResponse {
+  judges: IqJudgeInfo[]
+  failures: IqJudgeFailure[]
+  defaultJudgeId: string
+}
+
+export interface IqTestManualVerdictRequest {
+  verdict: 'passed' | 'incorrect'
+  score?: number | null
+  note?: string | null
+}
+
+export interface IqTestRunSummary {
+  id: number
+  benchmark: IqBenchmarkId
+  benchmarkLabel: string
+  verdict: IqVerdict
+  verdictLabel: string
+  success: boolean
+  channelId: string
+  channelName: string
+  channelKeyId: string | null
+  channelKeyName: string | null
+  model: string
+  upstreamModel: string
+  protocol: string
+  statusCode: number | null
+  latencyMs: number
+  createdAt: number
+  errorMessage: string | null
+  usage: ChannelModelTestUsage | null
+  judgeResult: IqJudgeResult | null
+  manualVerdict: 'passed' | 'incorrect' | null
+  manualScore: number | null
+  manualNote: string | null
+  manualUpdatedAt: number | null
+}
+
+export interface IqTestRunDetail extends IqTestRunSummary {
+  prompt: string | null
+  responseText: string | null
+  html: string | null
+  checks: IqTestCheck[]
+  expectedAnswer: number | null
+  matchedAnswer: number | null
+  upstreamReportedModel: string | null
+}
+
 export interface PageOptions {
   limit?: number
   beforeId?: number | null
