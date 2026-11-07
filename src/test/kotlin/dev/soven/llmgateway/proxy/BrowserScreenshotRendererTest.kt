@@ -172,6 +172,28 @@ class BrowserScreenshotRendererTest {
     }
 
     @Test
+    fun `cleanup does not follow symbolic links`() {
+        val root = Files.createTempDirectory("iq-vision-cleanup-")
+        val outside = Files.createTempDirectory("iq-vision-outside-")
+        try {
+            val keep = outside.resolve("keep.txt")
+            Files.writeString(keep, "keep")
+            Files.createDirectories(root.resolve("output"))
+            Files.writeString(root.resolve("output/frame.png"), "png")
+            Files.createSymbolicLink(root.resolve("output/link"), outside)
+            Files.createSymbolicLink(root.resolve("file-link"), keep)
+
+            deleteBrowserDirectory(root)
+
+            assertFalse(Files.exists(root))
+            assertEquals("keep", Files.readString(keep))
+        } finally {
+            runCatching { deleteBrowserDirectory(root) }
+            runCatching { deleteBrowserDirectory(outside) }
+        }
+    }
+
+    @Test
     fun `refuses to render as root without a privilege drop`() {
         val isolation = resolveBrowserIsolation(uid = 0, setpriv = null)
         assertNotNull(isolation.unavailableReason)

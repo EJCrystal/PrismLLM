@@ -303,6 +303,31 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy compares specificity by component`() {
+        val manyClasses = """
+            <html><head><style>.a.a.a.a.a.a.a.a.a.a.a{display:block}#answer{display:none}</style></head>
+            <body><p id="answer" class="a">答案是 21 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, manyClasses).verdict)
+    }
+
+    @Test
+    fun `candy asks for review when visibility depends on css variables`() {
+        val inline = """
+            <html><body><span style="--state:none;display:var(--state)">21</span>
+            <p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+        val stylesheet = """
+            <html><head><style>.ghost{display:var(--state)}</style></head>
+            <body><span class="ghost">21</span><p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.REVIEW, evaluateIqTest(IqBenchmark.CANDY, true, inline).verdict)
+        assertEquals(IqVerdict.REVIEW, evaluateIqTest(IqBenchmark.CANDY, true, stylesheet).verdict)
+    }
+
+    @Test
     fun `candy ignores invalid visibility declarations`() {
         val invalidDisplay = """<html><body><p style="display:none;display:invalid">答案是 21 颗。</p></body></html>"""
         val invalidVisibility =

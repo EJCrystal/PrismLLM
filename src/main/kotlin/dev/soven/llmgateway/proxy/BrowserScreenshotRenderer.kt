@@ -1,10 +1,16 @@
 package dev.soven.llmgateway.proxy
 
 import java.io.File
+import java.io.IOException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.SecureDirectoryStream
+import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributeView
+import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -57,7 +63,7 @@ class BrowserScreenshotRenderer(
                 renderFrame(directory, index, sanitizedSvg, styles, width, height, time)
             }
         } finally {
-            runCatching { directory.toFile().deleteRecursively() }
+            runCatching { deleteBrowserDirectory(directory) }
         }
     }
 
@@ -291,6 +297,74 @@ class BrowserScreenshotRenderer(
                 .firstOrNull { Files.isRegularFile(it) && Files.isExecutable(it) }
         }
     }
+}
+
+/**
+ * 删除浏览器临时目录，不跟随符号链接。
+ *
+ * `File.deleteRecursively()` 会遍历指向目录的链接；降权后的浏览器（或同 UID 进程）
+ * 若在输出目录里预置链接，root 清理时就可能删到临时目录之外。这里优先用
+ * `SecureDirectoryStream` 按已打开的目录句柄逐项删除，即使条目在检查后被替换成链接，
+ * 也只会删除链接本身；文件系统不支持安全目录流时退回不跟随链接的 `walkFileTree`。
+ */
+internal fun deleteBrowserDirectory(root: Path) {
+    val stream = Files.newDirectoryStream(root)
+    if (stream is SecureDirectoryStream<Path>) {
+        stream.use { deleteSecureEntries(it) }
+        Files.deleteIfExists(root)
+        return
+    }
+    stream.close()
+    deleteTreeWalk(root)
+}
+
+private fun deleteSecureEntries(directory: SecureDirectoryStream<Path>) {
+    for (entry in directory) {
+        val attributes = directory.getFileAttributeView(
+            entry,
+            BasicFileAttributeView::class.java,
+            LinkOption.NOFOLLOW_LINKS,
+        ).readAttributes()
+        if (!attributes.isDirectory) {
+            directory.deleteFile(entry)
+            continue
+        }
+        val child = try {
+            directory.newDirectoryStream(entry, LinkOption.NOFOLLOW_LINKS)
+        } catch (_: IOException) {
+            null
+        }
+        if (child is SecureDirectoryStream<Path>) {
+            child.use { deleteSecureEntries(it) }
+            try {
+                directory.deleteDirectory(entry)
+            } catch (_: IOException) {
+                // 目录在删除前被替换成链接：只删除链接本身。
+                directory.deleteFile(entry)
+            }
+        } else {
+            child?.close()
+            directory.deleteFile(entry)
+        }
+    }
+}
+
+private fun deleteTreeWalk(root: Path) {
+    Files.walkFileTree(
+        root,
+        object : SimpleFileVisitor<Path>() {
+            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                Files.deleteIfExists(file)
+                return FileVisitResult.CONTINUE
+            }
+
+            override fun postVisitDirectory(dir: Path, exc: IOException?): FileVisitResult {
+                if (exc != null) throw exc
+                Files.deleteIfExists(dir)
+                return FileVisitResult.CONTINUE
+            }
+        },
+    )
 }
 
 /**

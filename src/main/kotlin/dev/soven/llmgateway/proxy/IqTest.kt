@@ -273,17 +273,20 @@ private fun extractVisibleTextResult(raw: String): VisibleText {
     val analysis = parseVisibilityRules(document)
     document.select("script, style, template").remove()
     val body = document.body() ?: return VisibleText("", analysis.uncertain)
+    var uncertain = analysis.uncertain
     val states = HashMap<Element, ElementVisibility>()
     document.getAllElements().forEach { element ->
+        // display/visibility 由 CSS 变量决定时无法离线求值，转人工确认。
+        if (DYNAMIC_VISIBILITY_PATTERN.containsMatchIn(element.attr("style"))) uncertain = true
         states[element] = evaluateVisibility(element, analysis.rules)
     }
     // html 根元素上的 display/visibility 同样会隐藏整个页面，需要参与继承。
     val root = document.selectFirst("html") ?: body
     val rootState = states[root] ?: ElementVisibility(false, null)
-    if (rootState.displayHidden) return VisibleText("", analysis.uncertain)
+    if (rootState.displayHidden) return VisibleText("", uncertain)
     return VisibleText(
         visibleText(body, states, rootState.visibilityHidden ?: false),
-        analysis.uncertain,
+        uncertain,
     )
 }
 
@@ -311,13 +314,14 @@ private fun parseVisibilityRules(document: Document): VisibilityAnalysis {
             true -> Unit
         }
         val screen = screenApplicableCss(style.data())
-        uncertain = uncertain || screen.uncertain
+        uncertain = uncertain || screen.uncertain ||
+            DYNAMIC_VISIBILITY_PATTERN.containsMatchIn(screen.css)
         CSS_RULE_PATTERN.findAll(screen.css).forEach { match ->
             val declarations = parseVisibilityDeclarations(match.groupValues[2])
             if (declarations.isNotEmpty()) {
                 val ruleOrder = order++
                 splitCssSelectors(match.groupValues[1]).forEach { selector ->
-                    rules += VisibilityRule(selector, selectorSpecificity(selector), ruleOrder, declarations)
+                    rules += VisibilityRule(selector, specificityOf(selector), ruleOrder, declarations)
                 }
             }
         }
@@ -498,8 +502,8 @@ private fun matchingBrace(source: String, open: Int): Int {
 private fun evaluateVisibility(element: Element, rules: List<VisibilityRule>): ElementVisibility {
     var display: CssVisibilityValue? = null
     var visibility: CssVisibilityValue? = null
-    fun apply(declaration: VisibilityDeclaration, specificity: Int, order: Int) {
-        val value = CssVisibilityValue(declaration.hidden, declaration.important, specificity, order)
+    fun apply(declaration: VisibilityDeclaration, specificity: Specificity, order: Int, inline: Boolean) {
+        val value = CssVisibilityValue(declaration.hidden, declaration.important, inline, specificity, order)
         when (declaration.property) {
             "display" -> if (value.beats(display)) display = value
             "visibility" -> if (value.beats(visibility)) visibility = value
@@ -507,12 +511,12 @@ private fun evaluateVisibility(element: Element, rules: List<VisibilityRule>): E
     }
     rules.forEach { rule ->
         if (element.matchesSelector(rule.selector)) {
-            rule.declarations.forEach { apply(it, rule.specificity, rule.order) }
+            rule.declarations.forEach { apply(it, rule.specificity, rule.order, inline = false) }
         }
     }
-    // 内联样式优先级高于样式表；!important 的比较在 CssVisibilityValue 内统一处理。
+    // 内联样式优先级高于任何选择器；!important 的比较在 CssVisibilityValue 内统一处理。
     parseVisibilityDeclarations(element.attr("style")).forEach {
-        apply(it, INLINE_STYLE_SPECIFICITY, Int.MAX_VALUE)
+        apply(it, INLINE_STYLE_SPECIFICITY, Int.MAX_VALUE, inline = true)
     }
     // hidden 属性等价于 UA 的 display:none，只有显式 display:block 等声明能覆盖它。
     val displayHidden = display?.hidden == true ||
@@ -592,18 +596,11 @@ private fun splitCssSelectors(selectorList: String): List<String> {
     return selectors
 }
 
-/** 只用于 display/visibility 的层叠比较，按 ID、类、元素三档近似计算优先级。 */
-private fun selectorSpecificity(selector: String): Int {
-    val specificity = specificityOf(selector)
-    return specificity.ids * 100 + specificity.classes * 10 + specificity.elements
-}
-
-private data class Specificity(val ids: Int, val classes: Int, val elements: Int) {
-    fun plus(other: Specificity) = Specificity(
-        ids + other.ids,
-        classes + other.classes,
-        elements + other.elements,
-    )
+/** 按 ID、类、元素三档逐项比较；不能用十进制进位，否则 10 个类会超过 1 个 ID。 */
+private data class Specificity(val ids: Int, val classes: Int, val elements: Int) :
+    Comparable<Specificity> {
+    override fun compareTo(other: Specificity): Int =
+        compareValuesBy(this, other, { it.ids }, { it.classes }, { it.elements })
 }
 
 /**
@@ -811,7 +808,7 @@ private fun parseVisibilityDeclarations(block: String): List<VisibilityDeclarati
 
 private data class VisibilityRule(
     val selector: String,
-    val specificity: Int,
+    val specificity: Specificity,
     val order: Int,
     val declarations: List<VisibilityDeclaration>,
 )
@@ -826,18 +823,21 @@ private data class VisibilityDeclaration(
 private data class CssVisibilityValue(
     val hidden: Boolean?,
     val important: Boolean,
-    val specificity: Int,
+    val inline: Boolean,
+    val specificity: Specificity,
     val order: Int,
 ) {
     fun beats(other: CssVisibilityValue?): Boolean {
         if (other == null) return true
         if (important != other.important) return important
+        // 内联样式优先于任何选择器，但仍低于样式的 !important。
+        if (inline != other.inline) return inline
         if (specificity != other.specificity) return specificity > other.specificity
         return order >= other.order
     }
 }
 
-private const val INLINE_STYLE_SPECIFICITY = 1_000
+private val INLINE_STYLE_SPECIFICITY = Specificity(0, 0, 0)
 
 /** 离线判分按管理台预览的桌面视口求值媒体查询。 */
 private const val PREVIEW_VIEWPORT_WIDTH = 1024
@@ -854,6 +854,8 @@ private val CSS_RULE_PATTERN = Regex("(?is)([^{}]+)\\{([^{}]*)\\}")
 private val CSS_DECLARATION_PATTERN = Regex("(?i)([a-z-]+)\\s*:\\s*([^;{}]+)")
 private val IMPORTANT_DECLARATION_PATTERN = Regex("(?i)!\\s*important")
 private val VISIBILITY_DECLARATION_PATTERN = Regex("(?i)(?:^|[;{])\\s*(?:display|visibility)\\s*:")
+private val DYNAMIC_VISIBILITY_PATTERN =
+    Regex("(?i)(?:^|[;{])\\s*(?:display|visibility)\\s*:[^;{}]*\\bvar\\s*\\(")
 private val MEDIA_LENGTH_PATTERN = Regex("^([0-9]*\\.?[0-9]+)(px|em|rem)?$")
 private val DISPLAY_VISIBLE_VALUES = setOf(
     "block", "inline", "inline-block", "flow-root", "flex", "inline-flex", "grid", "inline-grid",
