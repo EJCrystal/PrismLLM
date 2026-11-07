@@ -297,16 +297,18 @@ fun prepareResponsesSearchRequest(request: JsonObject, syntheticName: String): J
         }
     }
     put("tools", JsonArray(tools))
-    // 客户端未指定 tool_choice 时保持不强制：auto 语义下由模型决定是否搜索，与内置搜索一致。
     val choice = request["tool_choice"]
     val choiceType = ((choice as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull
-    if (choiceType?.startsWith("web_search") == true) {
+    val forcedSearch = buildJsonObject {
+        put("type", "function")
+        put("name", syntheticName)
+    }
+    when {
         // 客户端强制内置搜索时，改写成强制调用合成函数，保留“必须搜索”的语义。
-        put("tool_choice", buildJsonObject {
-            put("type", "function")
-            put("name", syntheticName)
-        })
-    } else if (choice != null) {
-        put("tool_choice", choice)
+        choiceType?.startsWith("web_search") == true -> put("tool_choice", forcedSearch)
+        // 未指定 tool_choice 时首轮强制搜索一次，保证配置后端后内置 web_search 一定被执行；
+        // 后续轮次会降级为 auto，模型仍可直接作答。
+        choice == null -> put("tool_choice", forcedSearch)
+        else -> put("tool_choice", choice)
     }
 }
