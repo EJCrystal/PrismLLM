@@ -142,7 +142,9 @@ const usageSentinelLabels: Record<string, string> = {
 }
 
 export function usageGroupLabel(row: { id: string; name?: string | null }): string {
-  return usageSentinelLabels[row.id] || row.name || row.id
+  // 用 hasOwn 判定哨兵：直接下标会把 toString / constructor 这类原型属性当成标签返回函数。
+  const sentinel = Object.hasOwn(usageSentinelLabels, row.id) ? usageSentinelLabels[row.id] : ''
+  return sentinel || row.name || row.id
 }
 
 export function reportTimezoneOffset(now = new Date()) {
