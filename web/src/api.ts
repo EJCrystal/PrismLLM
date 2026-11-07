@@ -50,7 +50,6 @@ import type {
   RequestLog,
   RetentionPolicy,
   RuntimeOccupancy,
-  SystemConfigResponse,
   UpstreamRequestOverrides,
   UpstreamRequestSettings,
   UsageReport,
@@ -141,7 +140,6 @@ export const api = {
   changePassword: (payload: ChangePasswordRequest) =>
     request<null>('/account/password', { method: 'PUT', body: JSON.stringify(payload) }),
   getExchangeRates: () => request<ExchangeRates>('/exchange-rates'),
-  getSystemConfig: () => request<SystemConfigResponse>('/system-config'),
 
   listChannels: () => requestList<Channel>('/channels'),
   getOccupancy: () => request<RuntimeOccupancy>('/occupancy'),

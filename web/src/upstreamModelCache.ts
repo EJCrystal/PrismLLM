@@ -44,3 +44,8 @@ export function setUpstreamModelCache(channelId: string, models: ChannelModel[])
 export function clearUpstreamModelCache(channelId: string): void {
   if (cache.delete(channelId)) persistCache()
 }
+
+export function clearAllUpstreamModelCache(): void {
+  cache.clear()
+  persistCache()
+}

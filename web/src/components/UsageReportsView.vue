@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
-import { notify } from '../toast'
-import type { Channel, ClientKey, RetentionPolicy, UsageGroup, UsageReport, UsageTotal, UsageTrend } from '../types/api'
+import type { Channel, ClientKey, UsageGroup, UsageReport, UsageTotal, UsageTrend } from '../types/api'
 import Icon from './Icon.vue'
 import FilterPanel from './FilterPanel.vue'
 import { vScrollHint } from '../directives/scrollHint'
@@ -30,7 +29,6 @@ import {
   usageReportCsv,
 } from '../utils/usageReport'
 import { createLatestRequestGuard } from '../utils/latestRequest'
-import { createRetentionReportState } from '../utils/retentionReportState'
 import { usageChartBucketRange, usageChartIndex, usageChartPoint, usageChartScale } from '../utils/usageChart'
 
 type DimensionId = 'clientKey' | 'channel' | 'model' | 'channelKey' | 'protocol' | 'error'
@@ -80,15 +78,11 @@ const filters = ref<UsageFilters>({ clientKeyId: '', channelId: '', model: '', p
 const report = ref<UsageReport | null>(null)
 const exactRange = ref<ExactRange | null>(null)
 const previousReport = ref<UsageReport | null>(null)
-const retention = ref<RetentionPolicy | null>(null)
 const channels = ref<Channel[]>([])
 const clientKeys = ref<ClientKey[]>([])
 const loading = ref(true)
 const refreshing = ref(false)
 const error = ref('')
-const cleaning = ref(false)
-const updatingRetention = ref(false)
-const retentionState = createRetentionReportState()
 const requests = createLatestRequestGuard()
 const comparisonRequests = createLatestRequestGuard()
 const dimension = ref<DimensionId>('clientKey')
@@ -379,24 +373,19 @@ async function load({ quiet = false, range }: { quiet?: boolean; range?: ExactRa
   if (quiet) refreshing.value = true
   else loading.value = true
   error.value = ''
-  const requestRetentionVersion = retentionState.beginLoad()
   const previousSpan = Math.max(to - from, 60_000)
   comparisonRequests.invalidate()
   try {
     const result = await requests.run(async () => {
-      const [nextReport, nextRetention] = await Promise.all([
-        api.getUsageReport({
-          from,
-          to,
-          ...filters.value,
-          timezoneOffsetMinutes: reportTimezoneOffset(),
-        }),
-        api.getRetentionPolicy(),
-      ])
-      return { nextReport, nextRetention }
+      return api.getUsageReport({
+        from,
+        to,
+        ...filters.value,
+        timezoneOffsetMinutes: reportTimezoneOffset(),
+      })
     })
     if (!result.isLatest) return
-    report.value = result.value.nextReport
+    report.value = result.value
     previousReport.value = null
     void comparisonRequests.run(async () => api.getUsageReport({
       from: from - previousSpan,
@@ -406,11 +395,8 @@ async function load({ quiet = false, range }: { quiet?: boolean; range?: ExactRa
     }).catch(() => null)).then((comparison) => {
       if (comparison.isLatest) previousReport.value = comparison.value
     })
-    const currencies = usageCostEntries(result.value.nextReport?.total?.costs).map((entry) => entry.currency)
+    const currencies = usageCostEntries(result.value?.total?.costs).map((entry) => entry.currency)
     if (!currencies.includes(costMetricCurrency.value)) costMetricCurrency.value = currencies[0] || 'USD'
-    if (retentionState.shouldApplyRetention(requestRetentionVersion)) {
-      retention.value = result.value.nextRetention
-    }
   } catch (cause) {
     const isLatest = !(cause instanceof Error && 'isLatest' in cause) || Boolean(cause.isLatest)
     if (isLatest) error.value = errorMessage(cause)
@@ -447,39 +433,6 @@ function exportCsv() {
   link.download = `usage-${activeDimension.value.id}-${new Date().toISOString().slice(0, 10)}.csv`
   link.click()
   URL.revokeObjectURL(url)
-}
-
-async function cleanup() {
-  if (!window.confirm('清理超过保留期的请求日志？当天的额度账本不会删除。')) return
-  cleaning.value = true
-  try {
-    const result = await api.cleanupRequestLogs()
-    notify(`已清理 ${formatNumber(result.deleted)} 条请求日志`)
-    await load()
-  } catch (cause) {
-    notify(errorMessage(cause), 'error')
-  } finally {
-    cleaning.value = false
-  }
-}
-
-async function toggleCleanup(event: Event): Promise<void> {
-  if (!retention.value || updatingRetention.value) return
-  const input = event.currentTarget as HTMLInputElement
-  const previous = retention.value
-  const enabled = input.checked
-  updatingRetention.value = true
-  retentionState.beginToggle()
-  try {
-    retention.value = await api.updateRetentionPolicy({ cleanupEnabled: enabled })
-    notify('自动清理已' + (enabled ? '开启' : '关闭'))
-  } catch (cause) {
-    input.checked = previous.cleanupEnabled
-    notify(errorMessage(cause), 'error')
-  } finally {
-    retentionState.endToggle()
-    updatingRetention.value = false
-  }
 }
 
 onMounted(() => {
@@ -709,32 +662,6 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="retention" class="panel retention-panel">
-        <div class="retention-copy">
-          <div class="retention-title">
-            <h3>请求日志保留</h3>
-            <label class="retention-toggle" :class="{ 'is-saving': updatingRetention }">
-              <input
-                type="checkbox"
-                :checked="retention.cleanupEnabled"
-                :disabled="updatingRetention"
-                :aria-label="retention.cleanupEnabled ? '关闭自动清理' : '开启自动清理'"
-                @change="toggleCleanup"
-              />
-              <span class="switch"></span>
-              <span class="retention-status" :class="retention.cleanupEnabled ? 'is-on' : 'is-off'">
-                {{ updatingRetention ? '正在更新…' : (retention.cleanupEnabled ? '自动清理已开启' : '自动清理已关闭') }}
-              </span>
-            </label>
-          </div>
-          <p class="muted small">
-            保留 {{ retention.retentionDays }} 天 · 每批 {{ formatNumber(retention.batchSize) }} 条。清理日志会影响历史报表，但每日额度账本不受影响。
-          </p>
-        </div>
-        <button type="button" class="button subtle retention-action" :disabled="cleaning" @click="cleanup">
-          {{ cleaning ? '清理中…' : '立即清理过期日志' }}
-        </button>
-      </div>
     </template>
   </section>
 </template>
