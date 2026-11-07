@@ -215,15 +215,11 @@ enum class ChannelKeyDisableMode(val value: String) {
 fun KeyDisablePolicy.fallbackTo(global: KeyDisablePolicy): KeyDisablePolicy {
     if (!enabled || !global.enabled) return this
     val ownIds = rules.mapTo(HashSet(rules.size)) { it.id }
-    val merged = rules + global.rules.filterNot { it.id in ownIds }
-    return KeyDisablePolicy(
-        enabled = true,
-        rules = if (merged.size <= KeyDisablePolicy.MAX_EFFECTIVE_RULES) {
-            merged
-        } else {
-            merged.take(KeyDisablePolicy.MAX_EFFECTIVE_RULES)
-        },
-    )
+    // 合并结果本身就有上限：take 让合并后的条数不可能超过 MAX_EFFECTIVE_RULES，
+    // 不依赖后面的构造校验兜底，历史脏数据也走同一条路径。
+    val merged = (rules + global.rules.filterNot { it.id in ownIds })
+        .take(KeyDisablePolicy.MAX_EFFECTIVE_RULES)
+    return KeyDisablePolicy(enabled = true, rules = merged)
 }
 
 /** 渠道覆盖的大小上限；合并进全局兜底之前，单份策略不能超过 [KeyDisablePolicy.MAX_RULES]。 */
