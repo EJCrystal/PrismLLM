@@ -202,6 +202,8 @@ data class ChannelResponse(
     val provider: String? = null,
     /** 是否配置了渠道级密钥自动禁用策略；false 表示继承全局设置。 */
     val keyDisablePolicySet: Boolean = false,
+    /** inherit、custom 或 disabled，供渠道列表直接展示。 */
+    val keyDisableMode: String = "inherit",
 )
 
 @Serializable
@@ -290,14 +292,16 @@ fun KeyAutoDisableSettingsRecord.toResponse() = KeyAutoDisableSettingsResponse(
 
 /**
  * 渠道覆盖的自动禁用策略。`override` 为 null 表示继承全局设置；
- * [effective] 是解析后的实际生效策略，方便管理台在继承状态下展示当前规则。
+ * [effective] 是解析后的实际生效策略（自定义模式已把全局规则拼在后面），
+ * [globalPolicy] 是当前全局设置，管理台用它展示「未命中时回落到哪些规则」。
  */
 @Serializable
 data class ChannelKeyDisablePolicyResponse(
     val channelId: String,
-    val scope: String,
-    val revision: Long,
+    /** inherit、custom 或 disabled。 */
+    val mode: String,
     val override: KeyDisablePolicy? = null,
+    val globalPolicy: KeyDisablePolicy,
     val effective: KeyDisablePolicy,
 )
 
@@ -346,6 +350,7 @@ fun ChannelRecord.toResponse() = ChannelResponse(
     kind = kind.value,
     provider = provider?.value,
     keyDisablePolicySet = keyDisablePolicySet,
+    keyDisableMode = keyDisableMode.value,
 )
 
 @Serializable

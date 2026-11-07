@@ -6,6 +6,7 @@ import {
   buildKeyAutoDisableSettingsPayload,
   fromKeyDisableRuleDraft,
   keyAutoDisableRuleLabel,
+  newKeyDisableRule,
   normalizeKeyAutoDisableSettings,
   toKeyDisableRuleDraft,
 } from '../src/utils/keyAutoDisable'
@@ -134,5 +135,21 @@ describe('密钥自动禁用规则', () => {
       enabled: true,
       rules: [customRule({ action: 'PERMANENT' })],
     }))
+  })
+
+  it('新建规则的 id 避开已占用和保留的 id', () => {
+    assert.equal(newKeyDisableRule([]).id, 'custom_1')
+    assert.equal(newKeyDisableRule([{ id: 'custom_1' }]).id, 'custom_2')
+    // 渠道编辑器把全局规则 id 作为保留 id 传进来，避免自动生成的 id 静默接管全局规则。
+    assert.equal(newKeyDisableRule([], ['custom_1', 'custom_2']).id, 'custom_3')
+  })
+
+  it('渠道覆盖：关闭形态提交空规则列表', () => {
+    const payload = buildChannelKeyDisablePolicyPayload({ enabled: false, rules: [] })
+    assert.deepEqual(payload, { override: { enabled: false, rules: [] } })
+    // 关闭时不需要规则；启用时空规则仍然拒绝。
+    assert.deepEqual(normalizeKeyAutoDisableSettings({ enabled: false, rules: [] }), { enabled: false, rules: [] })
+    assert.deepEqual(normalizeKeyAutoDisableSettings({ enabled: false }), { enabled: false, rules: [] })
+    assert.throws(() => normalizeKeyAutoDisableSettings({ enabled: true, rules: [] }))
   })
 })
