@@ -1,8 +1,10 @@
 package dev.soven.llmgateway.repo
 
+import dev.soven.llmgateway.db.Channels
 import dev.soven.llmgateway.db.OAuthAccountChannels
 import dev.soven.llmgateway.db.OAuthAccountModels
 import dev.soven.llmgateway.db.OAuthAccounts
+import dev.soven.llmgateway.domain.ChannelKind
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAuthState
@@ -99,6 +101,23 @@ class OAuthAccountRepository(private val database: Database) {
         loadRelations(rows)
     }
 
+    /** V54 之前创建、还没改挂到系统渠道的账号；逐个搬迁，失败的下次启动继续。 */
+    suspend fun listPendingProviderChannel(limit: Int = 5_000): List<OAuthAccountRecord> = suspendTransaction(database) {
+        val rows = OAuthAccounts.selectAll()
+            .where { OAuthAccounts.providerChannelPending eq true }
+            .orderBy(OAuthAccounts.createdAt to SortOrder.ASC)
+            .limit(limit.coerceIn(1, 20_000))
+            .toList()
+        loadRelations(rows)
+    }
+
+    /** 账号已改挂到系统渠道；与改挂分开提交，重试时幂等。 */
+    suspend fun markProviderChannelSettled(accountId: String): Boolean = suspendTransaction(database) {
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+            it[providerChannelPending] = false
+        } > 0
+    }
+
     /** 数据面候选：按渠道加载关联账号，包含停用账号，由路由阶段过滤。 */
     suspend fun listByChannel(limit: Int = 20_000): Map<String, List<OAuthAccountRecord>> = suspendTransaction(database) {
         val links = OAuthAccountChannels.selectAll()
@@ -130,8 +149,13 @@ class OAuthAccountRepository(private val database: Database) {
                 .map { toRecord(it, emptyList(), emptySet()) }
         }
 
-    /** 后台额度扫描：只返回仍可自动刷新、且读数已过期的 ChatGPT 账号。 */
-    suspend fun listDueForQuota(checkedBefore: Long, limit: Int = 100): List<OAuthAccountRecord> =
+    /**
+     * 后台额度扫描：只返回仍可自动刷新、且距上次尝试已过期的 ChatGPT 账号。
+     *
+     * 排序用“最近一次尝试”而不是“最近一次成功读数”，否则持续失败的账号会一直排在
+     * 队首、每轮被重新选中，账号数超过一轮上限时会把健康账号饿死。
+     */
+    suspend fun listDueForQuota(attemptedBefore: Long, limit: Int = 100): List<OAuthAccountRecord> =
         suspendTransaction(database) {
             OAuthAccounts.selectAll()
                 .where {
@@ -139,11 +163,11 @@ class OAuthAccountRepository(private val database: Database) {
                         (OAuthAccounts.enabled eq true) and
                         (OAuthAccounts.provider eq OAuthProvider.CHATGPT.value) and
                         (
-                            OAuthAccounts.quotaCheckedAt.isNull() or
-                                (OAuthAccounts.quotaCheckedAt less checkedBefore)
+                            OAuthAccounts.quotaAttemptedAt.isNull() or
+                                (OAuthAccounts.quotaAttemptedAt less attemptedBefore)
                             )
                 }
-                .orderBy(OAuthAccounts.quotaCheckedAt to SortOrder.ASC_NULLS_FIRST)
+                .orderBy(OAuthAccounts.quotaAttemptedAt to SortOrder.ASC_NULLS_FIRST)
                 .limit(limit.coerceIn(1, 1_000))
                 .map { toRecord(it, emptyList(), emptySet()) }
         }
@@ -423,15 +447,24 @@ class OAuthAccountRepository(private val database: Database) {
             it[quotaCreditsUnlimited] = snapshot.creditsUnlimited
             it[quotaResetCredits] = snapshot.resetCredits
             it[quotaCheckedAt] = snapshot.checkedAt
+            it[quotaAttemptedAt] = snapshot.checkedAt
             it[quotaError] = null
             if (accountPlan != null) it[OAuthAccounts.accountPlan] = accountPlan.take(32)
         } > 0
     }
 
-    /** 记录一次额度读取失败；保留上一次成功读数，只更新错误信息。 */
-    suspend fun saveQuotaError(accountId: String, errorCode: String): Boolean = suspendTransaction(database) {
+    /**
+     * 记录一次额度读取失败；保留上一次成功读数与它的新鲜度时间，只更新错误信息、
+     * 并推进“最近一次尝试”，让这轮扫描不会反复选中同一个失败账号。
+     */
+    suspend fun saveQuotaError(
+        accountId: String,
+        errorCode: String,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean = suspendTransaction(database) {
         OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
             it[quotaError] = sanitizeQuotaError(errorCode)
+            it[quotaAttemptedAt] = now
         } > 0
     }
 
@@ -462,10 +495,21 @@ class OAuthAccountRepository(private val database: Database) {
 
     private fun replaceChannels(accountId: String, channelIds: Collection<String>, now: Long) {
         OAuthAccountChannels.deleteWhere { OAuthAccountChannels.accountId eq accountId }
-        channelIds.map(String::trim).filter(String::isNotEmpty).distinct().forEach { channelId ->
+        val ids = channelIds.map(String::trim).filter(String::isNotEmpty).distinct()
+        // 托管标记决定账号是否受 provider 渠道约束；只有挂在系统渠道上才算托管。
+        val managedIds = if (ids.isEmpty()) {
+            emptySet()
+        } else {
+            Channels.selectAll()
+                .where { (Channels.id inList ids) and (Channels.kind eq ChannelKind.PROVIDER.value) }
+                .map { it[Channels.id] }
+                .toSet()
+        }
+        ids.forEach { channelId ->
             OAuthAccountChannels.insert {
                 it[OAuthAccountChannels.accountId] = accountId
                 it[OAuthAccountChannels.channelId] = channelId
+                it[managed] = channelId in managedIds
                 it[createdAt] = now
             }
         }

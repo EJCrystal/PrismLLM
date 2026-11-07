@@ -352,15 +352,13 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     )
 
     fun install(app: Application) {
-        val appliedMigrations = databaseFactory.migrate()
+        databaseFactory.migrate()
         channelHealthIndexJob = dev.soven.llmgateway.report.startChannelHealthIndexer(requestLogRepository, scope)
         runBlocking { upstreamRequestSettingsRepository.load() }
         runBlocking { upstreamHeaderCatalogService.initialize() }
         runBlocking { seedAdmin() }
-        // 只在本次启动真正应用了 V54 时做一次性搬迁；后续导入由账号接口自行挂载。
-        if ("54" in appliedMigrations) {
-            runBlocking { providerChannelProvisioner.reconcile() }
-        }
+        // 每次启动都处理 V54 留下的待搬迁账号；逐账号清除标记，上次失败的重启后继续。
+        runBlocking { providerChannelProvisioner.reconcile() }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
         runBlocking { oauthAccountScheduler.restore(oauthWindowRepository.loadAll()) }
         runBlocking {

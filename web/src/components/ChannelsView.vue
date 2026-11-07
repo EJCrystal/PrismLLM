@@ -99,12 +99,15 @@ let listRevision = 0
 let listDisposed = false
 // 列表健康度固定按 24 小时汇总；时间范围切换交由健康度详情弹窗自行选择。
 const healthWindow: HealthWindow = '24h'
+// 健康度是 24 小时聚合，30 秒轮询足以兼顾新鲜度与查询成本；回到前台时立即补拉。
+const healthRefreshMs = ref(30_000)
 const healthReport = ref<ChannelHealthReport | null>(null)
 const healthSuccessRateCache = ref<{ window: HealthWindow; rates: Map<string, number | null> } | null>(null)
 const healthTarget = ref<Channel | null>(null)
 const healthLoading = ref(false)
 const healthError = ref('')
 let healthRevision = 0
+let healthController: AbortController | null = null
 const healthByChannel = computed(() => new Map(healthReport.value?.window === healthWindow ? healthReport.value.channels.map(row => [row.channelId, row]) : []))
 // 实时占用来自单实例内存计数，独立轮询，避免为了几秒级的在途数反复拉取渠道配置。
 const occupancy = ref<RuntimeOccupancy | null>(null)
@@ -151,7 +154,8 @@ function syncCooldownTimer() {
         .filter((value): value is number => typeof value === 'number')
         .reduce<number | null>((min, value) => (min == null || value < min ? value : min), null)
       // 最近一次冷却到期后重新拉取报告，避免列表长期停留在旧状态；限制刷新频率避免时钟偏快时每秒重复请求。
-      if (nextExpiry != null && now >= nextExpiry && !healthLoading.value && now - cooldownRefreshAt >= 10_000) {
+      // 健康度读取失败时交给 30 秒轮询重试，避免按冷却到期节奏放大失败请求。
+      if (nextExpiry != null && now >= nextExpiry && !healthLoading.value && !healthError.value && now - cooldownRefreshAt >= 10_000) {
         cooldownRefreshAt = now
         loadHealth()
       }
@@ -212,25 +216,39 @@ function onCloseHealthModal(changed = false) {
   if (changed) void loadHealth()
 }
 async function loadHealth() {
+  healthController?.abort()
+  const controller = new AbortController()
+  healthController = controller
+  const timer = setTimeout(() => { controller.abort() }, 15_000)
   const request = ++healthRevision
   healthLoading.value = true
-  healthError.value = ''
   try {
-    const result = await api.getChannelHealth(healthWindow)
+    const result = await api.getChannelHealth(healthWindow, { signal: controller.signal })
     if (request === healthRevision) {
       healthReport.value = result
+      healthError.value = ''
       const rates = new Map<string, number | null>()
       for (const row of result.channels) rates.set(row.channelId, row.metrics.successRate)
       healthSuccessRateCache.value = { window: result.window, rates }
       syncCooldownTimer()
     }
   } catch (cause) {
-    if (request === healthRevision) { healthReport.value = null; syncCooldownTimer(); healthError.value = errorMessage(cause) }
-  } finally { if (request === healthRevision) healthLoading.value = false }
+    if (request === healthRevision) {
+      // 后台轮询失败时保留上一份成功快照，避免成功率和次数在错误提示下跳成 0。
+      healthError.value = controller.signal.aborted ? '读取渠道健康度超时，请重试' : errorMessage(cause)
+      syncCooldownTimer()
+    }
+  } finally {
+    clearTimeout(timer)
+    if (healthController === controller) healthController = null
+    if (request === healthRevision) healthLoading.value = false
+  }
 }
 onBeforeUnmount(() => {
   listDisposed = true
   healthRevision++
+  healthController?.abort()
+  healthController = null
   listRevision++
   if (cooldownTimer != null) clearInterval(cooldownTimer)
 })
@@ -1233,7 +1251,8 @@ function channelAction(id: string, channel: Channel) {
   if (id === 'delete') remove(channel)
 }
 
-useAutoRefresh(occupancyRefreshMs, () => { void loadOccupancy() }, () => loading.value || document.hidden)
+useAutoRefresh(healthRefreshMs, () => { void loadHealth() }, () => loading.value || healthLoading.value || document.hidden, { refreshOnVisible: true })
+useAutoRefresh(occupancyRefreshMs, () => { void loadOccupancy() }, () => document.hidden, { refreshOnVisible: true })
 onMounted(() => {
   void load()
   void loadOccupancy()
@@ -1283,7 +1302,7 @@ onMounted(() => {
         </div>
       </div>
       <ErrorState v-if="healthError" title="健康度读取失败" :message="healthError" :busy="healthLoading" @retry="loadHealth" />
-      <p v-if="healthReport?.indexing" class="muted small health-indexing-note" role="status">正在分批补齐历史健康度；完成后点击刷新查看完整统计。</p>
+      <p v-if="healthReport?.indexing" class="muted small health-indexing-note" role="status">正在分批补齐历史健康度；完成后会自动更新。</p>
       <TablePlaceholder
         v-if="loading || channels.length === 0"
         :loading="loading"

@@ -6,6 +6,9 @@ import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.ProviderEndpoints
 import dev.soven.llmgateway.repo.ChannelRepository
 import dev.soven.llmgateway.repo.OAuthAccountRepository
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 
 /**
@@ -21,8 +24,11 @@ class ProviderChannelProvisioner(
 ) {
     private val logger = LoggerFactory.getLogger(ProviderChannelProvisioner::class.java)
 
+    /** 单实例部署下串行化「查不到就创建」，避免并发首次导入各建一条渠道。 */
+    private val ensureMutex = Mutex()
+
     /** 找到或创建 provider 渠道；网关尚未实现该 provider 的上游协议时返回 null。 */
-    suspend fun ensure(provider: OAuthProvider): String? {
+    suspend fun ensure(provider: OAuthProvider): String? = ensureMutex.withLock {
         val endpoint = ProviderEndpoints.of(provider)
         if (!endpoint.servable) return null
         channels.findProviderChannel(provider)?.let { return it.id }
@@ -46,14 +52,26 @@ class ProviderChannelProvisioner(
         return created.id
     }
 
-    /** 启动时把历史账号挂到各自的 provider 渠道；幂等，已就位的不写库。 */
+    /**
+     * 把 V54 标记为待搬迁的历史账号挂到各自的 provider 渠道。
+     * 每个账号成功后清除标记，中途失败的下次启动继续；协议未实现的 provider 保持待搬迁。
+     */
     suspend fun reconcile(): Int {
         var moved = 0
-        for (account in accounts.listAll()) {
-            val channelId = ensure(account.provider) ?: continue
-            if (account.channelIds == setOf(channelId)) continue
-            accounts.setChannels(account.id, listOf(channelId))
-            moved++
+        for (account in accounts.listPendingProviderChannel()) {
+            try {
+                val channelId = ensure(account.provider) ?: continue
+                if (account.channelIds != setOf(channelId)) {
+                    accounts.setChannels(account.id, listOf(channelId))
+                    moved++
+                }
+                accounts.markProviderChannelSettled(account.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 单个账号失败不阻塞其余账号；标记仍在，下次启动重试。
+                logger.warn("failed to move subscription account onto provider channel, accountId={}", account.id, e)
+            }
         }
         if (moved > 0) {
             logger.info("moved {} subscription accounts onto provider channels", moved)

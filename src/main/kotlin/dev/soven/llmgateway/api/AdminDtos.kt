@@ -563,6 +563,36 @@ data class RetentionPolicyResponse(
     val cutoff: Long,
 )
 
+/**
+ * 管理台系统配置总览。只包含可展示的运行参数，敏感值不会出现在响应中。
+ */
+@Serializable
+data class SystemConfigResponse(
+    val sections: List<SystemConfigSection>,
+)
+
+@Serializable
+data class SystemConfigSection(
+    val id: String,
+    val title: String,
+    val description: String,
+    val items: List<SystemConfigItem>,
+)
+
+/**
+ * 单个运行配置项。value 为原始值，由前端按 kind 格式化后展示。
+ */
+@Serializable
+data class SystemConfigItem(
+    val key: String,
+    val label: String,
+    val value: String,
+    val kind: String,
+    val source: String,
+    val restartRequired: Boolean = true,
+    val description: String? = null,
+)
+
 @Serializable
 data class UpdateRetentionPolicyRequest(
     val cleanupEnabled: Boolean,

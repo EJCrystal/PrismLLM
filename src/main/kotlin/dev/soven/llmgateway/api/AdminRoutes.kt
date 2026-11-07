@@ -202,6 +202,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(app.currencyExchangeService.getRates())
         }
 
+        get("/system-config") {
+            call.requireAdmin(app)
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(buildSystemConfigResponse(app.config))
+        }
+
         post("/model-suggestions") {
             call.requireAdmin(app)
             val request = call.receive<ModelSuggestionRequest>()
@@ -727,14 +733,15 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val provider = OAuthProvider.fromValue(
                 call.requiredParam("provider", "缺少 provider").trim().lowercase(),
             ) ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
-            val channelId = app.providerChannelProvisioner.ensure(provider)
-                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
             val request = call.receive<OAuthProviderModelsRequest>()
             val mappings = request.models
                 .map(String::trim)
                 .filter(String::isNotEmpty)
                 .distinct()
                 .map { ChannelModelRecord(upstreamModel = it) }
+            // 先校验请求体再置备渠道，避免非法请求在库里留下系统渠道。
+            val channelId = app.providerChannelProvisioner.ensure(provider)
+                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
             if (!app.channelRepository.replaceModels(channelId, mappings)) {
                 throw notFound("channel_not_found", "系统端点渠道不存在")
             }

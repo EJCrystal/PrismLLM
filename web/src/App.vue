@@ -11,6 +11,7 @@ import ClientKeysView from './components/ClientKeysView.vue'
 import LogsView from './components/LogsView.vue'
 import UsageReportsView from './components/UsageReportsView.vue'
 import AdminAuditLogsView from './components/AdminAuditLogsView.vue'
+import SystemSettingsView from './components/SystemSettingsView.vue'
 import AccountSettingsModal from './components/AccountSettingsModal.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import InfoPopover from './components/InfoPopover.vue'
@@ -22,6 +23,7 @@ const navItems = [
   { id: 'logs', label: '请求日志', icon: 'logs' },
   { id: 'usage-reports', label: '用量报表', icon: 'chart' },
   { id: 'audit-logs', label: '操作审计', icon: 'shield' },
+  { id: 'system-config', label: '系统配置', icon: 'settings' },
 ] as const
 
 const meta = {
@@ -49,6 +51,10 @@ const meta = {
   'audit-logs': {
     title: '操作审计',
     desc: '记录写操作与密钥自动禁用，仅追加、不可修改或删除。名称使用事件快照，不保存请求正文。',
+  },
+  'system-config': {
+    title: '系统配置',
+    desc: '集中查看网关运行参数，并管理模型测试、上游请求、密钥自动禁用与日志保留等全局设置。环境变量修改后需重启网关生效。',
   },
 }
 
@@ -217,6 +223,7 @@ onBeforeUnmount(() => {
         <LogsView v-else-if="view === 'logs'" />
         <UsageReportsView v-else-if="view === 'usage-reports'" />
         <AdminAuditLogsView v-else-if="view === 'audit-logs'" />
+        <SystemSettingsView v-else-if="view === 'system-config'" @navigate="selectView" />
       </main>
     </div>
   </div>

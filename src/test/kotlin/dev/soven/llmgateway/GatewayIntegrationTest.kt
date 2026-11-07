@@ -1287,6 +1287,27 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin oauth provider models rejects invalid body before provisioning`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            val before = scalarInt("select count(*) from channels where kind = 'provider'")
+            val response = client.put("/admin/api/oauth-providers/chatgpt/models") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"models":123}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertEquals(
+                before,
+                scalarInt("select count(*) from channels where kind = 'provider'"),
+                "请求体非法时不应置备系统渠道",
+            )
+        }
+    }
+
+    @Test
     fun `admin oauth import rejects the same account email on another key`() = runBlocking {
         val first = createChannel("openai-a", "ok")
         val second = createChannel("openai-b", "ok")
@@ -5490,6 +5511,30 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin system config overview requires session and hides secrets`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+
+            val unauthorized = client.get("/admin/api/system-config")
+            assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
+
+            val (sessionCookie, _) = client.loginAdmin()
+            val response = client.get("/admin/api/system-config") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals("no-store", response.headers[HttpHeaders.CacheControl])
+            assertTrue(body.contains("\"sections\""), "BODY=[$body]")
+            assertTrue(body.contains("\"MAX_ATTEMPTS\""), "BODY=[$body]")
+            assertFalse(body.contains("test-password"), "BODY=[$body]")
+            assertFalse(body.contains("GATEWAY_MASTER_KEY"), "BODY=[$body]")
+        }
+    }
+
+    @Test
     fun `admin tests a channel model without reasoning effort`() = runBlocking {
         val channel = createChannel("model-test", "ok")
 
@@ -6709,6 +6754,32 @@ class GatewayIntegrationTest {
                 }
             }
 
+            // 迁到 V53，构造一个仍关联两个手工渠道的 Antigravity 账号，验证 V54 不删除历史关联。
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("53"))
+                .load()
+                .migrate()
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into oauth_accounts (id, name, provider, refresh_token_ciphertext, refresh_token_nonce, refresh_token_key_version, created_at, updated_at)
+                        values ('v54-account', 'v54-account', 'antigravity', 'cipher', 'nonce', 1, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into oauth_account_channels (account_id, channel_id, created_at)
+                        values ('v54-account', 'migration-channel', 1),
+                               ('v54-account', 'alias-only-conversion', 1)
+                        """.trimIndent(),
+                    )
+                }
+            }
+
             Flyway.configure()
                 .dataSource(migrationUrl, postgres.username, postgres.password)
                 .locations("classpath:db/migration")
@@ -6717,6 +6788,23 @@ class GatewayIntegrationTest {
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
+                    statement.executeQuery("select count(*) from oauth_account_channels where account_id = 'v54-account'").use { result ->
+                        assertTrue(result.next())
+                        assertEquals(2, result.getInt(1), "V54 不应删除未托管账号的手工渠道关联")
+                    }
+                    statement.executeQuery("select count(*) from oauth_account_channels where account_id = 'v54-account' and managed").use { result ->
+                        assertTrue(result.next())
+                        assertEquals(0, result.getInt(1), "历史渠道不是系统置备渠道")
+                    }
+                    statement.executeQuery("select provider_channel_pending from oauth_accounts where id = 'v54-account'").use { result ->
+                        assertTrue(result.next())
+                        assertTrue(result.getBoolean(1), "迁移前的账号应标记为待搬迁")
+                    }
+                    statement.execute("update oauth_account_channels set managed = true where account_id = 'v54-account' and channel_id = 'migration-channel'")
+                    val duplicateManaged = runCatching {
+                        statement.execute("update oauth_account_channels set managed = true where account_id = 'v54-account' and channel_id = 'alias-only-conversion'")
+                    }
+                    assertTrue(duplicateManaged.isFailure, "一个账号最多只能有一条托管关联")
                     statement.executeQuery("select enabled from channels where id = 'alias-only-conversion'").use { result ->
                         assertTrue(result.next())
                         assertFalse(result.getBoolean(1), "原关闭直连的渠道应被转为停用")

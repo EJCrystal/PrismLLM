@@ -404,6 +404,30 @@ export interface CleanupResult {
   cutoff: number
 }
 
+export type SystemConfigValueKind = 'text' | 'number' | 'duration' | 'bytes' | 'boolean' | 'list' | 'count'
+export type SystemConfigSource = 'environment' | 'default' | 'derived'
+
+export interface SystemConfigItem {
+  key: string
+  label: string
+  value: string
+  kind: SystemConfigValueKind
+  source: SystemConfigSource
+  restartRequired: boolean
+  description?: string | null
+}
+
+export interface SystemConfigSection {
+  id: string
+  title: string
+  description: string
+  items: SystemConfigItem[]
+}
+
+export interface SystemConfigResponse {
+  sections: SystemConfigSection[]
+}
+
 export interface AdminAuditLog {
   id: number
   actor: string | null

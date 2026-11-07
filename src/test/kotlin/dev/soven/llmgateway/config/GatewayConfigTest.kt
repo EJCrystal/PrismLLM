@@ -33,6 +33,19 @@ class GatewayConfigTest {
     }
 
     @Test
+    fun providedEnvironmentKeysOnlyIncludeNonBlankValues() {
+        val config = GatewayConfig.fromEnv(
+            requiredEnv + mapOf(
+                "MAX_ATTEMPTS" to "4",
+                "CONNECT_TIMEOUT_MS" to " ",
+            ),
+        )
+
+        assertTrue("MAX_ATTEMPTS" in config.providedEnvKeys)
+        assertFalse("CONNECT_TIMEOUT_MS" in config.providedEnvKeys)
+    }
+
+    @Test
     fun trustedProxyNetworksCanBeConfiguredAsIpv4AndIpv6Cidrs() {
         val config = GatewayConfig.fromEnv(
             requiredEnv + ("TRUSTED_PROXY_CIDRS" to "172.19.0.0/16, 2001:db8:1234::/48"),

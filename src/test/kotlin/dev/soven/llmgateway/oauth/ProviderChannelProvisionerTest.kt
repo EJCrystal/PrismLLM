@@ -2,6 +2,7 @@ package dev.soven.llmgateway.oauth
 
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.db.DatabaseFactory
+import dev.soven.llmgateway.db.OAuthAccounts
 import dev.soven.llmgateway.domain.ChannelKind
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.OAuthProvider
@@ -11,7 +12,13 @@ import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.security.CredentialCipher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.jdbc.update
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -76,6 +83,22 @@ class ProviderChannelProvisionerTest {
     }
 
     @Test
+    fun `concurrent ensure calls create a single provider channel`() = runBlocking {
+        // 清掉已有渠道，让并发调用真的同时进入「查不到就创建」。
+        channels.findProviderChannel(OAuthProvider.CHATGPT)?.let { channels.delete(it.id) }
+
+        val ids = (1..8)
+            .map { async(Dispatchers.IO) { provisioner.ensure(OAuthProvider.CHATGPT) } }
+            .awaitAll()
+
+        assertEquals(1, ids.toSet().size)
+        assertEquals(
+            1,
+            channels.list().count { it.kind == ChannelKind.PROVIDER && it.provider == OAuthProvider.CHATGPT },
+        )
+    }
+
+    @Test
     fun `provider channel models can be replaced`() = runBlocking {
         val channelId = provisioner.ensure(OAuthProvider.CHATGPT)!!
         assertTrue(channels.replaceModels(channelId, listOf(ChannelModelRecord("custom-model"))))
@@ -107,12 +130,41 @@ class ProviderChannelProvisionerTest {
             ),
         )
         assertEquals(setOf(manual.id), account.channelIds)
+        // V54 会给迁移时已存在的账号打上待搬迁标记。
+        suspendTransaction(factory.database) {
+            OAuthAccounts.update({ OAuthAccounts.id eq account.id }) {
+                it[providerChannelPending] = true
+            }
+        }
 
-        provisioner.reconcile()
+        assertEquals(1, provisioner.reconcile())
 
         val providerChannel = channels.findProviderChannel(OAuthProvider.CHATGPT)!!
         assertEquals(setOf(providerChannel.id), accounts.findDetailed(account.id)!!.channelIds)
-        // 幂等：再跑一次不会新建渠道，也不会改动已就位的账号。
+        // 幂等：标记已清除，再跑一次不会新建渠道，也不会改动已就位的账号。
         assertEquals(0, provisioner.reconcile())
+    }
+
+    @Test
+    fun `reconcile leaves accounts created after the migration alone`() = runBlocking {
+        val manual = channels.create(
+            name = "manual-" + UUID.randomUUID(),
+            baseUrl = "https://example.test/v1",
+            keys = listOf(NewChannelKey("key", cipher.encrypt("token"))),
+            authType = "bearer",
+            enabled = true,
+        )
+        val account = accounts.create(
+            NewOAuthAccount(
+                name = "post-migration",
+                provider = OAuthProvider.CHATGPT,
+                accountEmail = "post-migration-${UUID.randomUUID()}@example.com",
+                refreshToken = cipher.encrypt("refresh-token"),
+                channelIds = listOf(manual.id),
+            ),
+        )
+
+        assertEquals(0, provisioner.reconcile())
+        assertEquals(setOf(manual.id), accounts.findDetailed(account.id)!!.channelIds)
     }
 }
