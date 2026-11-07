@@ -11,38 +11,42 @@ alter table channel_key_health
 -- 「活动已关闭或Key失效」的 DEEPSEEK_ACTIVITY_DISABLED 只由 Grox 上游返回，
 -- 放在全局会误伤其他渠道。固化到 Grox 的渠道覆盖策略，并把阈值收紧为 1：
 -- 这是上游终态错误，等不到 5 分钟窗口内的第二次。
-update channels c
-set key_disable_policy = (
-        select jsonb_build_object(
-            'enabled', s.enabled,
-            'rules', coalesce((
-                select jsonb_agg(
-                    case
-                        when elem ->> 'id' = 'activity_disabled' then elem || '{"threshold":1}'::jsonb
-                        else elem
-                    end
-                    order by ord
-                )
-                from jsonb_array_elements(s.rules::jsonb) with ordinality as t(elem, ord)
-            ), '[]'::jsonb)
-        )::text
-        from key_auto_disable_settings s
-        where s.id = 1
-    ),
-    key_disable_policy_revision = 1
-where c.name = 'Grox'
-  and c.key_disable_policy is null
-  and exists (
-      select 1
-      from key_auto_disable_settings s
-      where s.id = 1
-        and s.rules is not null
-        and jsonb_typeof(s.rules::jsonb) = 'array'
-        and s.rules::jsonb @> '[{"id":"activity_disabled"}]'::jsonb
-  );
-
--- 只有确认 Grox 覆盖策略已接管这条规则后才从全局删除，否则规则会两边都没有。
--- 第一步被跳过的两种情形（库里没有 Grox 渠道、Grox 已有覆盖策略）都必须保留全局规则。
+--
+-- 两步合成一条语句：删除全局规则的条件是本次搬迁确实写入了 Grox 覆盖策略（returning），
+-- 而不是「Grox 碰巧已经有一份含同 id 规则的覆盖」。后者可能是管理员此前独立配置的，
+-- 此时全局规则必须保留，否则规则会在没有任何接管者的情况下被删掉。
+with moved as (
+    update channels c
+    set key_disable_policy = (
+            select jsonb_build_object(
+                'enabled', s.enabled,
+                'rules', coalesce((
+                    select jsonb_agg(
+                        case
+                            when elem ->> 'id' = 'activity_disabled' then elem || '{"threshold":1}'::jsonb
+                            else elem
+                        end
+                        order by ord
+                    )
+                    from jsonb_array_elements(s.rules::jsonb) with ordinality as t(elem, ord)
+                ), '[]'::jsonb)
+            )::text
+            from key_auto_disable_settings s
+            where s.id = 1
+        ),
+        key_disable_policy_revision = 1
+    where c.name = 'Grox'
+      and c.key_disable_policy is null
+      and exists (
+          select 1
+          from key_auto_disable_settings s
+          where s.id = 1
+            and s.rules is not null
+            and jsonb_typeof(s.rules::jsonb) = 'array'
+            and s.rules::jsonb @> '[{"id":"activity_disabled"}]'::jsonb
+      )
+    returning c.id
+)
 update key_auto_disable_settings
 set rules = (
         select coalesce(jsonb_agg(elem order by ord), '[]'::jsonb)::text
@@ -54,11 +58,4 @@ where id = 1
   and rules is not null
   and jsonb_typeof(rules::jsonb) = 'array'
   and rules::jsonb @> '[{"id":"activity_disabled"}]'::jsonb
-  and exists (
-      select 1
-      from channels c
-      where c.name = 'Grox'
-        and c.key_disable_policy is not null
-        and jsonb_typeof(c.key_disable_policy::jsonb -> 'rules') = 'array'
-        and (c.key_disable_policy::jsonb -> 'rules') @> '[{"id":"activity_disabled"}]'::jsonb
-  );
+  and exists (select 1 from moved);
