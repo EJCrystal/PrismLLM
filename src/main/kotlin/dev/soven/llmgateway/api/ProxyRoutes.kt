@@ -9,6 +9,7 @@ import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.authTypeFor
+import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.oauth.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
 import dev.soven.llmgateway.oauth.OAuthAccountLease
@@ -35,6 +36,13 @@ import dev.soven.llmgateway.proxy.protocol.MAX_PROTOCOL_EVENT_BYTES
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversion
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversionException
 import dev.soven.llmgateway.proxy.protocol.asChatUpstream
+import dev.soven.llmgateway.proxy.protocol.responsesToChatRequest
+import dev.soven.llmgateway.proxy.search.ChatCaller
+import dev.soven.llmgateway.proxy.search.SearchConversation
+import dev.soven.llmgateway.proxy.search.WebSearchService
+import dev.soven.llmgateway.proxy.search.hasBuiltInWebSearch
+import dev.soven.llmgateway.proxy.search.prepareResponsesSearchRequest
+import dev.soven.llmgateway.proxy.search.syntheticWebSearchName
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.KeyAutoDisablePendingException
 import dev.soven.llmgateway.resilience.CandidateCooldown
@@ -241,6 +249,13 @@ private suspend fun handleProxy(
         }
         streamMode = stream
         phase = FailureStage.ROUTING
+        // 搜索设置每次请求读取一次：管理台保存后立即生效，未保存时沿用环境变量默认值。
+        val webSearchRuntime = if (protocol == GatewayProtocol.RESPONSES && hasBuiltInWebSearch(requestJson)) {
+            val settings = app.webSearchSettingsRepository.load().effective(app.config.webSearch)
+            WebSearchRuntime(WebSearchService.fromConfig(settings, app.searchHttpClient), settings.maxRounds)
+        } else {
+            null
+        }
         val allCandidates = app.modelCatalog.findCandidates(alias, null)
         if (allCandidates.isEmpty()) {
             throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
@@ -381,7 +396,13 @@ private suspend fun handleProxy(
             channelKeyId = candidate.credential.id
             channelKeyName = candidate.credential.name
             upstreamModel = candidate.upstreamModel
-            val attemptProtocol = if (protocol in candidate.channel.protocols) {
+            // 内置 web_search 无法转成 Chat；有搜索后端时，统一走“合成函数工具 + 多轮搜索”的 Chat 代理。
+            val searchRuntime = webSearchRuntime?.takeIf { it.available }
+                ?.takeIf { GatewayProtocol.CHAT_COMPLETIONS in candidate.channel.protocols }
+            val webSearchProxy = searchRuntime != null
+            val attemptProtocol = if (webSearchProxy) {
+                GatewayProtocol.CHAT_COMPLETIONS
+            } else if (protocol in candidate.channel.protocols) {
                 protocol
             } else {
                 candidate.channel.protocols.firstOrNull { ProtocolConversion.supports(protocol, it) }
@@ -454,7 +475,19 @@ private suspend fun handleProxy(
                             if (!probeClaimed) throw CandidateUnavailableException()
                         }
                     }
-                    if (stream) {
+                    if (searchRuntime != null) {
+                        if (stream) {
+                            proxySearchStream(
+                                app, call, requestJson, candidate, alias, remainingMs, state,
+                                traceContext.traceparent, globalOverrides, headerProfiles, searchRuntime,
+                            )
+                        } else {
+                            proxySearchJson(
+                                app, call, requestJson, candidate, alias, remainingMs, state,
+                                traceContext.traceparent, globalOverrides, headerProfiles, searchRuntime,
+                            )
+                        }
+                    } else if (stream) {
                         proxyStream(
                             app,
                             call,
@@ -1119,6 +1152,201 @@ private suspend fun ApplicationCall.receiveLimitedJson(limit: Long): JsonObject 
     }
     val element = runCatching { Json.parseToJsonElement(bytes.toString(Charsets.UTF_8)) }.getOrNull()
     return element as? JsonObject ?: throw badRequest("invalid_json", "请求体必须是 JSON 对象")
+}
+
+/** 单次请求使用的搜索运行时：设置已合并管理台值与环境变量默认值。 */
+private data class WebSearchRuntime(
+    val service: WebSearchService,
+    val maxRounds: Int,
+) {
+    val available: Boolean get() = service.available
+}
+
+/**
+ * Responses 内置 web_search 的代理路径：把请求转成 Chat，注入普通 web_search
+ * 函数工具，由网关代跑搜索并多轮续写，最后再编码回 Responses。
+ */
+private suspend fun proxySearchStream(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    requestJson: JsonObject,
+    candidate: RouteCandidate,
+    alias: String,
+    timeoutMs: Long,
+    state: ProxyState,
+    traceparent: String,
+    globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
+    webSearch: WebSearchRuntime,
+) {
+    val result = runSearchConversation(
+        app, call, requestJson, candidate, timeoutMs, state, traceparent, globalOverrides, headerProfiles, webSearch,
+    )
+    val responseId = "resp_" + UUID.randomUUID().toString().replace("-", "").take(24)
+    val createdAt = System.currentTimeMillis() / 1000
+    state.committed = true
+    state.statusCode = HttpStatusCode.OK.value
+    try {
+        call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
+            renderSearchSse(result, alias, responseId, createdAt).forEach { writeSseLine(it) }
+        }
+    } catch (e: ChannelWriteException) {
+        throw clientDisconnected()
+    }
+}
+
+private suspend fun proxySearchJson(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    requestJson: JsonObject,
+    candidate: RouteCandidate,
+    alias: String,
+    timeoutMs: Long,
+    state: ProxyState,
+    traceparent: String,
+    globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
+    webSearch: WebSearchRuntime,
+) {
+    val result = runSearchConversation(
+        app, call, requestJson, candidate, timeoutMs, state, traceparent, globalOverrides, headerProfiles, webSearch,
+    )
+    val responseId = "resp_" + UUID.randomUUID().toString().replace("-", "").take(24)
+    val createdAt = System.currentTimeMillis() / 1000
+    state.committed = true
+    state.statusCode = HttpStatusCode.OK.value
+    try {
+        call.respondText(
+            renderSearchResponse(result, alias, responseId, createdAt).toString(),
+            ContentType.Application.Json,
+            HttpStatusCode.OK,
+        )
+    } catch (e: ChannelWriteException) {
+        throw clientDisconnected()
+    }
+}
+
+private suspend fun runSearchConversation(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    requestJson: JsonObject,
+    candidate: RouteCandidate,
+    timeoutMs: Long,
+    state: ProxyState,
+    traceparent: String,
+    globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
+    webSearch: WebSearchRuntime,
+): dev.soven.llmgateway.proxy.search.SearchConversationResult {
+    val toolName = syntheticWebSearchName(requestJson)
+    val prepared = prepareResponsesSearchRequest(requestJson, toolName)
+    val chatRequest = responsesToChatRequest(prepared).asChatUpstream(candidate.upstreamModel)
+    val messages = (chatRequest["messages"] as? JsonArray).orEmpty()
+        .mapNotNull { it as? JsonObject }
+    val startedAt = System.nanoTime()
+    val caller = searchChatCaller(
+        app, call, candidate, chatRequest, state, startedAt, traceparent, globalOverrides, headerProfiles,
+    )
+    try {
+        return withTimeout(timeoutMs) {
+            SearchConversation(toolName, webSearch.service, webSearch.maxRounds)
+                .run(messages, caller)
+                .also { result -> state.usage = result.usage }
+        }
+    } catch (e: TimeoutCancellationException) {
+        throw GatewayException(
+            HttpStatusCode.GatewayTimeout, "upstream_timeout", "上游响应超时", "timeout_error",
+            retryable = true,
+        )
+    } catch (e: GatewayException) {
+        throw e
+    } catch (e: dev.soven.llmgateway.proxy.search.WebSearchException) {
+        throw GatewayException(
+            HttpStatusCode.BadGateway, "upstream_invalid_response",
+            e.message ?: "上游返回了无效响应", "api_error",
+            retryable = true,
+        )
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        throw GatewayException(
+            HttpStatusCode.BadGateway, "web_search_failed",
+            "web_search 代理失败: ${e.message ?: e::class.simpleName}", "api_error",
+            retryable = false,
+        )
+    }
+}
+
+private suspend fun searchChatCaller(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    candidate: RouteCandidate,
+    baseRequest: JsonObject,
+    state: ProxyState,
+    startedAt: Long,
+    traceparent: String,
+    globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
+): ChatCaller {
+    val upstreamProtocol = GatewayProtocol.CHAT_COMPLETIONS
+    val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel)
+    val credential = decryptCredential(app, candidate)
+    val authType = candidate.channel.authTypeFor(upstreamProtocol)
+    val policy = UpstreamRequestPolicy(
+        globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType, headerProfiles,
+    )
+    return ChatCaller { messages ->
+        val body = buildJsonObject {
+            baseRequest.forEach { (key, value) ->
+                if (key !in setOf("messages", "stream", "stream_options")) put(key, value)
+            }
+            put("messages", JsonArray(messages))
+            put("stream", false)
+        }
+        val requestBody = policy.body(body, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+        state.upstreamCallStarted = true
+        val response = app.httpClient.post(upstreamUrl) {
+            applyUpstreamAuthentication(
+                credential = credential,
+                authType = authType,
+                protocol = upstreamProtocol,
+                anthropicVersion = call.request.headers["anthropic-version"],
+                anthropicBeta = call.request.headers["anthropic-beta"],
+            )
+            header("traceparent", traceparent)
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            policy.applyHeaders(this)
+            setBody(TextContent(requestBody, ContentType.Application.Json))
+        }
+        state.upstreamStatus = response.status.value
+        if (state.attemptFirstTokenMs == null) {
+            state.attemptFirstTokenMs = (System.nanoTime() - startedAt) / 1_000_000
+            state.firstTokenMs = state.attemptFirstTokenMs
+        }
+        candidate.oauthAccount?.let { account ->
+            app.oauthAccountScheduler.noteQuotaHeaders(
+                account,
+                parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
+            )
+        }
+        val text = response.bodyAsText()
+        if (!response.status.isSuccess()) {
+            throw upstreamException(
+                response.status,
+                text,
+                retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
+                upstreamProtocol,
+                allowNativeMessagesError = false,
+            )
+        }
+        val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+            ?: throw GatewayException(
+                HttpStatusCode.BadGateway, "upstream_invalid_response", "上游返回了无效 JSON", "api_error",
+                retryable = true,
+            )
+        state.upstreamReportedModel = extractReportedModel(upstreamProtocol, json)
+        json
+    }
 }
 
 private suspend fun proxyStream(

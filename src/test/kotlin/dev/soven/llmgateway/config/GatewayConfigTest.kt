@@ -70,4 +70,29 @@ class GatewayConfigTest {
             TrustedProxyNetwork.parse("::ffff:192.0.2.0/95")
         }
     }
+
+    @Test
+    fun webSearchIsDisabledWithoutAKey() {
+        assertFalse(GatewayConfig.fromEnv(requiredEnv).webSearch.enabled)
+    }
+
+    @Test
+    fun webSearchApiKeyEnablesTavilyByDefault() {
+        val config = GatewayConfig.fromEnv(requiredEnv + ("WEB_SEARCH_API_KEY" to "tvly-test"))
+
+        assertTrue(config.webSearch.enabled)
+        assertEquals("tavily", config.webSearch.provider)
+    }
+
+    @Test
+    fun searxngRequiresABaseUrl() {
+        assertFailsWith<IllegalArgumentException> {
+            GatewayConfig.fromEnv(
+                requiredEnv + mapOf(
+                    "WEB_SEARCH_ENABLED" to "true",
+                    "WEB_SEARCH_PROVIDER" to "searxng",
+                ),
+            )
+        }
+    }
 }

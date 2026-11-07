@@ -62,13 +62,34 @@ openssl rand -base64 32
 | `UPSTREAM_HEADER_CATALOG_URL` | 空 | 可选的 HTTPS Manifest 链接，用于自定义覆盖全局请求头模板 |
 | `QUOTA_PLUGIN_DIR` | `plugins` | 渠道额度插件 JAR 所在目录；目录不存在时不加载扩展 |
 
+### Web 搜索代理
+
+启用后，网关会把 Responses 请求里的内置 `web_search` 改写成普通 `web_search` 函数工具，由网关调用搜索 API 代跑搜索，再以 `web_search_call` 返回给调用方。未启用时保留原有协议转换行为。
+
+搜索后端可以在管理台「系统配置 → Web 搜索」中直接编辑，保存后立即生效，无需重启。下面的环境变量是该页面的默认值：管理台保存过设置后以管理台为准；管理台未保存的密钥或地址回退到环境变量。
+
+| 变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `WEB_SEARCH_ENABLED` | 配置了 `WEB_SEARCH_API_KEY` 或 SearXNG 地址时为 `true` | 搜索代理默认开关 |
+| `WEB_SEARCH_PROVIDER` | `tavily` | `tavily`、`brave`、`exa`、`deepseek` 或 `searxng` |
+| `WEB_SEARCH_API_KEY` | 空 | 搜索 API 密钥；SearXNG 不需要 |
+| `WEB_SEARCH_BASE_URL` | 空 | 覆盖搜索 API 地址；SearXNG 必填 |
+| `WEB_SEARCH_MAX_RESULTS` | `6` | 每次搜索返回的页面数，范围 1..20 |
+| `WEB_SEARCH_TIMEOUT_MS` | `15000` | 单次搜索超时时间，范围 1000..120000 |
+| `WEB_SEARCH_MAX_ROUNDS` | `6` | 单次请求最多搜索轮数，范围 1..10 |
+| `WEB_SEARCH_MAX_PAGE_CHARS` | `1500` | 每个页面喂给模型的最大字符数，范围 100..10000 |
+
+搜索 API 密钥在数据库中使用 AES-256-GCM 加密，管理台只显示是否已配置，不返回密钥内容。搜索 API 的费用由对应供应商单独计费，网关只把多轮模型调用的 token 用量计入请求日志；搜索查询默认不写入请求日志。
+
+对应接口为 `GET/PUT /admin/api/web-search-settings`，仅管理员会话可访问。
+
 ## 管理台系统配置
 
 管理台「系统配置」页集中展示运行参数与全局业务设置：
 
 - **运行参数**：来自环境变量，进程启动时完成校验和加载；页面只读展示当前值、配置来源与“需重启”标记。修改 `.env` 或容器环境变量后需要重启网关。
-- **安全边界**：主密钥、数据库密码、管理员密码和 OAuth client secret 不会在页面或接口响应中展示。自定义请求头 Manifest 地址会去掉查询参数和片段。
-- **全局业务设置**：模型测试默认提示词、上游请求预设、密钥自动禁用规则可从该页进入编辑；请求日志保留策略在「用量报表」页管理，系统配置页提供摘要和入口。
+- **安全边界**：主密钥、数据库密码、管理员密码、OAuth client secret 和搜索 API 密钥不会在页面或接口响应中展示。自定义请求头 Manifest 地址会去掉查询参数和片段。
+- **全局业务设置**：模型测试默认提示词、上游请求预设、Web 搜索后端、密钥自动禁用规则可从该页进入编辑；请求日志保留策略在「用量报表」页管理，系统配置页提供摘要和入口。
 
 对应只读接口为 `GET /admin/api/system-config`，仅管理员会话可访问。
 

@@ -52,7 +52,8 @@
 | 安全停止原因 | Chat `content_filter`、Responses `incomplete/content_filter` 与 Messages `refusal` 相互映射，普通响应与流式返回均不降级为自然结束 |
 | Gemini | 四协议全矩阵；Gemini 的模型与 stream 位于 URL，转换后的请求体不携带 model/stream。`cachedContent`、非空 `safetySettings`、`responseModalities` 与非单候选仍明确拒绝。工具 schema 收敛到 Gemini Schema 子集：删除 `additionalProperties`、`$schema`、`$defs`、`x-*` 等字段，`const` 转 `enum`，`oneOf` 转 `anyOf`，`["string","null"]` 转 `nullable`，本地 `$ref` 展开、`allOf` 摊平成单个节点，tuple 形式的 `items`/`prefixItems` 近似为 `anyOf`，缺失 `type` 的节点按结构关键字和值域推断（Vertex 对缺 type 直接 400）。Gemini 的 `Schema.enum` 只接受字符串，非字符串枚举值放弃值域约束但保留原类型；`not`、外部或循环 `$ref`、分支全部无法转换的联合类型明确报错，不输出无类型节点；单次工具 schema 展开设有节点上限，防止引用放大耗尽资源 |
 | 图片 | 用户消息和工具结果里的图片支持四协议互转：Messages `image`、Chat `image_url`、Responses `input_image`、Gemini `inlineData`/`fileData` 按 base64 或 URL 双向映射。Chat 的 tool 消息只能承载文本，工具返回的图片会移到随后的 user 消息并标注来源，紧跟用户自己的内容，避免连续两条 user 消息；Messages ↔ Responses 与 Gemini 直接把图片放进工具结果本身 |
-| 文件、音频、内置工具 | 仍不支持跨协议转换；Messages 工具仅接受缺省 type 或 custom，Gemini 仅支持 functionDeclarations，其它类型在调用上游前明确拒绝 |
+| 文件、音频、内置工具 | 文件与音频仍不支持跨协议转换；Responses 的 `web_search*` 在配置搜索后端后由网关代理执行，其余内置工具仍明确拒绝 |
+| Responses 内置 web_search | 在管理台「系统配置 → Web 搜索」配置搜索后端（或设置 `WEB_SEARCH_*`）后，带 `web_search` 的 Responses 请求会转成 Chat 上游：网关注入普通 `web_search` 函数工具、执行搜索并多轮续写，最终编码为 `web_search_call`；未配置搜索后端时保持原有拒绝行为 |
 | Responses 状态续接与存储 | 拒绝 `previous_response_id`、`store=true`、非空 `include`、自动 `truncation`；允许原有无副作用默认值 |
 | 结构化输出 | Chat ↔ Responses 保留已有映射；转换到 Messages 仍拒绝 |
 | Messages 专有扩展 | `context_management`、`output_config` 等仍明确报错，不通过删除字段绕过 |

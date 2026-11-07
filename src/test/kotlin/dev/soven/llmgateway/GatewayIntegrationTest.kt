@@ -5506,6 +5506,57 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin web search settings round trip without exposing the api key`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+
+            val unauthorized = client.get("/admin/api/web-search-settings")
+            assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
+
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val initial = client.get("/admin/api/web-search-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, initial.status)
+            assertEquals(
+                "environment",
+                Json.parseToJsonElement(initial.bodyAsText()).jsonObject["source"]?.jsonPrimitive?.content,
+            )
+
+            val updated = client.put("/admin/api/web-search-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"provider":"tavily","apiKey":"tvly-secret","baseUrl":null,"maxResults":8,"timeoutMs":10000,"maxRounds":4,"maxPageChars":1200}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, updated.status)
+            val body = updated.bodyAsText()
+            val json = Json.parseToJsonElement(body).jsonObject
+            assertEquals(true, json["enabled"]?.jsonPrimitive?.boolean)
+            assertEquals("settings", json["source"]?.jsonPrimitive?.content)
+            assertEquals("settings", json["apiKeySource"]?.jsonPrimitive?.content)
+            assertEquals(true, json["apiKeySet"]?.jsonPrimitive?.boolean)
+            assertEquals(8, json["maxResults"]?.jsonPrimitive?.int)
+            assertEquals(1200, json["maxPageChars"]?.jsonPrimitive?.int)
+            assertFalse(body.contains("tvly-secret"), "BODY=[$body]")
+
+            // 共享测试数据库：把开关恢复为关闭，避免影响其它用例。
+            val disabled = client.put("/admin/api/web-search-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":false,"provider":"tavily","baseUrl":null,"maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, disabled.status)
+        }
+    }
+
+    @Test
     fun `admin tests a channel model without reasoning effort`() = runBlocking {
         val channel = createChannel("model-test", "ok")
 
@@ -6759,7 +6810,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("53", result.getString(1))
+                        assertEquals("54", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())

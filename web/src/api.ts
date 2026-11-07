@@ -33,6 +33,8 @@ import type {
   ModelPriceRequest,
   ModelSuggestionsResponse,
   ModelTestSettings,
+  WebSearchSettings,
+  WebSearchSettingsRequest,
   OAuthAccount,
   OAuthAccountImportRequest,
   OAuthAccountChannelsRequest,
@@ -235,6 +237,9 @@ export const api = {
     }),
   updateModelTestSettings: (payload: { defaultPrompt: string }) =>
     request<ModelTestSettings>('/model-test-settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  getWebSearchSettings: () => request<WebSearchSettings>('/web-search-settings'),
+  updateWebSearchSettings: (payload: WebSearchSettingsRequest) =>
+    request<WebSearchSettings>('/web-search-settings', { method: 'PUT', body: JSON.stringify(payload) }),
   getKeyAutoDisableSettings: () => request<KeyAutoDisableSettingsResponse>('/key-auto-disable-settings'),
   updateKeyAutoDisableSettings: (payload: KeyAutoDisableSettingsRequest) =>
     request<KeyAutoDisableSettingsResponse>('/key-auto-disable-settings', { method: 'PUT', body: JSON.stringify(payload) }),

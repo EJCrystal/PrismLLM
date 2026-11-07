@@ -31,6 +31,7 @@ import dev.soven.llmgateway.oauth.OAuthTokenService
 import dev.soven.llmgateway.oauth.OAuthWindowStateWriter
 import dev.soven.llmgateway.oauth.buildOAuthTokenProviders
 import dev.soven.llmgateway.repo.ModelTestSettingsRepository
+import dev.soven.llmgateway.repo.WebSearchSettingsRepository
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.repo.OAuthWindowRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
@@ -275,6 +276,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     private var channelHealthIndexJob: Job? = null
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
+    val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
     val upstreamRequestSettingsRepository = UpstreamRequestSettingsRepository(databaseFactory.database)
     val upstreamHeaderCatalogRepository = UpstreamHeaderCatalogRepository(databaseFactory.database)
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
@@ -298,6 +300,16 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val httpClient = HttpClient(Java) {
         install(HttpTimeout) {
             connectTimeoutMillis = config.connectTimeoutMs
+            requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+            socketTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+        }
+    }
+
+    /** 搜索后端不跟随跳转，避免把 API Key 带到别的站点。 */
+    val searchHttpClient = HttpClient(Java) {
+        followRedirects = false
+        install(HttpTimeout) {
+            connectTimeoutMillis = 10_000
             requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
             socketTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
         }
@@ -611,6 +623,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         oauthTokenService.close()
         scope.cancel()
         httpClient.close()
+        searchHttpClient.close()
         channelQuotaService.close()
         channelQuotaProviderRegistry.close()
         databaseFactory.close()

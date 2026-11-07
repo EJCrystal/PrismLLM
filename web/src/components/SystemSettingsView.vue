@@ -7,6 +7,8 @@ import type {
   RetentionPolicy,
   SystemConfigResponse,
   UpstreamRequestSettings,
+  WebSearchApiKeySource,
+  WebSearchSettings,
 } from '../types/api'
 import { formatNumber, formatTime } from '../utils/format'
 import {
@@ -19,6 +21,7 @@ import Icon from './Icon.vue'
 import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ModelTestSettingsModal from './ModelTestSettingsModal.vue'
 import UpstreamRequestSettingsModal from './UpstreamRequestSettingsModal.vue'
+import WebSearchSettingsModal from './WebSearchSettingsModal.vue'
 
 const emit = defineEmits<{
   (event: 'navigate', view: 'usage-reports'): void
@@ -32,12 +35,14 @@ const refreshing = ref(false)
 const cards = reactive({
   modelTest: { loading: true, error: '', data: null as ModelTestSettings | null },
   upstream: { loading: true, error: '', data: null as UpstreamRequestSettings | null },
+  webSearch: { loading: true, error: '', data: null as WebSearchSettings | null },
   autoDisable: { loading: true, error: '', data: null as KeyAutoDisableSettingsResponse | null },
   retention: { loading: true, error: '', data: null as RetentionPolicy | null },
 })
 
 const showModelTest = ref(false)
 const showUpstream = ref(false)
+const showWebSearch = ref(false)
 const showAutoDisable = ref(false)
 
 function errorMessage(cause: unknown): string {
@@ -80,6 +85,18 @@ async function loadUpstream() {
   }
 }
 
+async function loadWebSearch() {
+  cards.webSearch.loading = true
+  cards.webSearch.error = ''
+  try {
+    cards.webSearch.data = await api.getWebSearchSettings()
+  } catch (cause) {
+    cards.webSearch.error = errorMessage(cause)
+  } finally {
+    cards.webSearch.loading = false
+  }
+}
+
 async function loadAutoDisable() {
   cards.autoDisable.loading = true
   cards.autoDisable.error = ''
@@ -110,6 +127,7 @@ async function loadAll(refresh = false) {
     loadConfig(),
     loadModelTest(),
     loadUpstream(),
+    loadWebSearch(),
     loadAutoDisable(),
     loadRetention(),
   ])
@@ -123,6 +141,12 @@ function promptSummary(prompt: string): string {
 
 function updatedLabel(timestamp: number): string {
   return timestamp > 0 ? `更新于 ${formatTime(timestamp)}` : '使用默认设置'
+}
+
+function apiKeySourceLabel(source: WebSearchApiKeySource): string {
+  if (source === 'settings') return '管理台'
+  if (source === 'environment') return '环境变量'
+  return '无'
 }
 
 onMounted(() => { void loadAll() })
@@ -209,6 +233,42 @@ onMounted(() => { void loadAll() })
       <article class="panel system-config-card">
         <div class="system-config-card-head">
           <div class="system-config-card-title">
+            <Icon name="search" :size="18" />
+            <div>
+              <h3>Web 搜索</h3>
+              <small>内置 web_search 的搜索后端</small>
+            </div>
+          </div>
+          <span class="badge neutral">全局</span>
+        </div>
+        <div class="system-config-card-body">
+          <p v-if="cards.webSearch.loading" class="muted small">加载中…</p>
+          <div v-else-if="cards.webSearch.error" class="system-config-card-error" role="alert">
+            <p class="text-danger small">{{ cards.webSearch.error }}</p>
+            <button type="button" class="button ghost mini" @click="loadWebSearch">重新加载</button>
+          </div>
+          <template v-else-if="cards.webSearch.data">
+            <p>
+              {{ cards.webSearch.data.enabled ? '已启用' : '已关闭' }} ·
+              {{ cards.webSearch.data.provider }}
+            </p>
+            <p class="muted small">
+              <template v-if="cards.webSearch.data.apiKeySet">
+                密钥已配置（{{ apiKeySourceLabel(cards.webSearch.data.apiKeySource) }}）·
+              </template>
+              <template v-else>密钥未配置 · </template>
+              {{ cards.webSearch.data.source === 'settings' ? updatedLabel(cards.webSearch.data.updatedAt) : '使用环境变量默认值' }}
+            </p>
+          </template>
+        </div>
+        <div class="system-config-card-foot">
+          <button type="button" class="button subtle" @click="showWebSearch = true">编辑</button>
+        </div>
+      </article>
+
+      <article class="panel system-config-card">
+        <div class="system-config-card-head">
+          <div class="system-config-card-title">
             <Icon name="shield" :size="18" />
             <div>
               <h3>密钥自动禁用</h3>
@@ -277,7 +337,7 @@ onMounted(() => { void loadAll() })
     </div>
 
     <p class="callout info">
-      主密钥、数据库密码、管理员密码和 OAuth client secret 不会在此展示；此处仅显示运行参数与配置来源。
+      主密钥、数据库密码、管理员密码、OAuth client secret 和搜索 API 密钥不会在此展示；此处仅显示运行参数与配置来源。
     </p>
 
     <p v-if="configLoading" class="muted">正在读取运行参数…</p>
@@ -323,6 +383,7 @@ onMounted(() => { void loadAll() })
 
     <ModelTestSettingsModal v-if="showModelTest" @close="showModelTest = false" @saved="loadModelTest" />
     <UpstreamRequestSettingsModal v-if="showUpstream" @close="showUpstream = false" @saved="loadUpstream" />
+    <WebSearchSettingsModal v-if="showWebSearch" @close="showWebSearch = false" @saved="loadWebSearch" />
     <KeyAutoDisableSettingsModal v-if="showAutoDisable" @close="showAutoDisable = false" @saved="loadAutoDisable" />
   </section>
 </template>

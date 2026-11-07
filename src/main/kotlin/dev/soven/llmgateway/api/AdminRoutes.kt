@@ -11,6 +11,8 @@ import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
 import dev.soven.llmgateway.domain.effectiveAuthType
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.domain.WebSearchSettingsRecord
+import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.proxy.validateUpstreamRequestOverrides
 import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
@@ -206,6 +208,40 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             call.response.headers.append("Cache-Control", "no-store")
             call.respond(buildSystemConfigResponse(app.config))
+        }
+
+        get("/web-search-settings") {
+            call.requireAdmin(app)
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(webSearchSettingsResponse(app.webSearchSettingsRepository.load(), app.config.webSearch))
+        }
+
+        put("/web-search-settings") {
+            call.requireAdmin(app)
+            val request = call.receive<WebSearchSettingsRequest>()
+            val stored = app.webSearchSettingsRepository.load()
+            val provider = request.provider.trim().lowercase()
+            val record = WebSearchSettingsRecord(
+                enabled = request.enabled,
+                provider = provider,
+                apiKey = when {
+                    request.clearApiKey -> null
+                    !request.apiKey.isNullOrBlank() -> request.apiKey.trim()
+                    else -> stored?.apiKey
+                },
+                baseUrl = request.baseUrl?.trim()?.takeIf { it.isNotEmpty() },
+                maxResults = request.maxResults,
+                timeoutMs = request.timeoutMs,
+                maxRounds = request.maxRounds,
+                maxPageChars = request.maxPageChars,
+                updatedAt = 0,
+            )
+            webSearchSettingsError(record.effective(app.config.webSearch))?.let {
+                throw badRequest("invalid_web_search_settings", it)
+            }
+            app.webSearchSettingsRepository.save(record)
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(webSearchSettingsResponse(app.webSearchSettingsRepository.load(), app.config.webSearch))
         }
 
         post("/model-suggestions") {

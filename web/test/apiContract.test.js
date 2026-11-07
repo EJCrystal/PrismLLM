@@ -109,6 +109,53 @@ describe('API 契约的运行时形状', () => {
     assert.equal(requestedMethod, 'GET')
   })
 
+  it('Web 搜索设置接口使用约定路径与方法', async (t) => {
+    const originalFetch = globalThis.fetch
+    const originalDocument = globalThis.document
+    const calls = []
+    t.after(() => {
+      globalThis.fetch = originalFetch
+      globalThis.document = originalDocument
+    })
+    globalThis.document = { cookie: '' }
+    globalThis.fetch = async (input, init = {}) => {
+      calls.push({ url: String(input), method: init.method || 'GET', body: init.body })
+      return new Response(JSON.stringify({
+        enabled: true,
+        provider: 'tavily',
+        apiKeySet: true,
+        apiKeySource: 'settings',
+        baseUrl: null,
+        maxResults: 6,
+        timeoutMs: 15000,
+        maxRounds: 6,
+        maxPageChars: 1500,
+        source: 'settings',
+        updatedAt: 1,
+      }), { status: 200 })
+    }
+
+    await api.getWebSearchSettings()
+    assert.equal(calls[0].url, '/admin/api/web-search-settings')
+    assert.equal(calls[0].method, 'GET')
+
+    const payload = {
+      enabled: true,
+      provider: 'tavily',
+      apiKey: 'tvly-key',
+      clearApiKey: false,
+      baseUrl: null,
+      maxResults: 6,
+      timeoutMs: 15000,
+      maxRounds: 6,
+      maxPageChars: 1500,
+    }
+    await api.updateWebSearchSettings(payload)
+    assert.equal(calls[1].url, '/admin/api/web-search-settings')
+    assert.equal(calls[1].method, 'PUT')
+    assert.deepEqual(JSON.parse(calls[1].body), payload)
+  })
+
   it('渠道健康度请求透传取消信号', async (t) => {
     const originalFetch = globalThis.fetch
     let requestedSignal = null

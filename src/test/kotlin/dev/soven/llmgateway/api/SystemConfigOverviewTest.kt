@@ -4,6 +4,7 @@ import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.config.OAuthConfig
 import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.config.TrustedProxyNetwork
+import dev.soven.llmgateway.config.WebSearchConfig
 import dev.soven.llmgateway.report.RetentionPolicy
 import dev.soven.llmgateway.resilience.CooldownPolicy
 import java.nio.file.Path
@@ -21,7 +22,7 @@ class SystemConfigOverviewTest {
         val response = buildSystemConfigResponse(config())
 
         assertEquals(
-            listOf("runtime", "timeouts", "cooldown", "upstream", "oauth"),
+            listOf("runtime", "timeouts", "cooldown", "upstream", "web-search", "oauth"),
             response.sections.map { it.id },
         )
         assertEquals("4", response.item("MAX_ATTEMPTS").value)
@@ -30,6 +31,9 @@ class SystemConfigOverviewTest {
         assertEquals("duration", response.item("CONNECT_TIMEOUT_MS").kind)
         assertEquals("true", response.item("COOKIE_SECURE").value)
         assertEquals("1", response.item("TRUSTED_PROXY_CIDRS").value)
+        assertEquals("false", response.item("WEB_SEARCH_ENABLED").value)
+        assertEquals("tavily", response.item("WEB_SEARCH_PROVIDER").value)
+        assertEquals("6", response.item("WEB_SEARCH_MAX_RESULTS").value)
         assertEquals("round_robin", response.item("OAUTH_ROUTING").value)
     }
 
@@ -77,10 +81,34 @@ class SystemConfigOverviewTest {
         "missing config item $key",
     )
 
+    @Test
+    fun `web search api key only exposes whether it is configured`() {
+        val response = buildSystemConfigResponse(
+            config(
+                providedEnvKeys = setOf("WEB_SEARCH_ENABLED", "WEB_SEARCH_API_KEY"),
+                webSearch = WebSearchConfig(
+                    enabled = true,
+                    provider = "tavily",
+                    apiKey = "tvly-secret",
+                    baseUrl = "https://search.example.com/v1?token=hidden",
+                ),
+            ),
+        )
+
+        assertEquals("true", response.item("WEB_SEARCH_ENABLED").value)
+        assertEquals("environment", response.item("WEB_SEARCH_ENABLED").source)
+        assertEquals("已配置", response.item("WEB_SEARCH_API_KEY").value)
+        assertEquals("https://search.example.com/v1", response.item("WEB_SEARCH_BASE_URL").value)
+        val encoded = Json.encodeToString(response)
+        assertFalse(encoded.contains("tvly-secret"))
+        assertFalse(encoded.contains("token=hidden"))
+    }
+
     private fun config(
         providedEnvKeys: Set<String> = emptySet(),
         upstreamHeaderCatalogUrl: String? = null,
         antigravity: OAuthProviderConfig? = null,
+        webSearch: WebSearchConfig = WebSearchConfig(),
     ) = GatewayConfig(
         port = 8080,
         databaseUrl = "jdbc:postgresql://localhost:5432/llm_gateway",
@@ -108,6 +136,7 @@ class SystemConfigOverviewTest {
         quotaPluginDir = Path.of("plugins"),
         trustedProxyNetworks = TrustedProxyNetwork.parseList("10.0.0.0/8"),
         oauth = OAuthConfig(antigravity = antigravity),
+        webSearch = webSearch,
         providedEnvKeys = providedEnvKeys,
     )
 }

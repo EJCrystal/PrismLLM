@@ -42,6 +42,8 @@ data class GatewayConfig(
     val oauth: OAuthConfig = OAuthConfig(),
     /** 启动时显式提供的环境变量键，仅用于管理台展示配置来源。 */
     val providedEnvKeys: Set<String> = emptySet(),
+    /** Responses 内置 web_search 的网关代执行配置。 */
+    val webSearch: WebSearchConfig = WebSearchConfig(),
 ) {
     companion object {
         fun fromEnv(env: Map<String, String> = System.getenv()): GatewayConfig {
@@ -86,6 +88,33 @@ data class GatewayConfig(
             }
             require(upstreamHeaderRefreshIntervalMs in 60_000..604_800_000) {
                 "UPSTREAM_HEADER_REFRESH_INTERVAL_MS 必须在 60000..604800000 之间"
+            }
+
+            val webSearchProvider = value("WEB_SEARCH_PROVIDER", "tavily").trim().lowercase()
+            val webSearchApiKey = env["WEB_SEARCH_API_KEY"]?.trim()?.takeIf { it.isNotEmpty() }
+            val webSearchBaseUrl = env["WEB_SEARCH_BASE_URL"]?.trim()?.takeIf { it.isNotEmpty() }
+            val webSearchDefaultEnabled = webSearchApiKey != null ||
+                webSearchProvider == "searxng" && webSearchBaseUrl != null
+            val webSearchEnabled = value("WEB_SEARCH_ENABLED", webSearchDefaultEnabled.toString())
+                .toBooleanStrictOrNull()
+                ?: error("WEB_SEARCH_ENABLED 必须是 true 或 false")
+            val webSearchMaxResults = longValue("WEB_SEARCH_MAX_RESULTS", 6).toInt()
+            val webSearchTimeoutMs = longValue("WEB_SEARCH_TIMEOUT_MS", 15_000)
+            val webSearchMaxRounds = longValue("WEB_SEARCH_MAX_ROUNDS", 6).toInt()
+            val webSearchMaxPageChars = longValue("WEB_SEARCH_MAX_PAGE_CHARS", 1_500).toInt()
+            require(webSearchMaxResults in 1..20) { "WEB_SEARCH_MAX_RESULTS 必须在 1..20 之间" }
+            require(webSearchTimeoutMs in 1_000..120_000) { "WEB_SEARCH_TIMEOUT_MS 必须在 1000..120000 之间" }
+            require(webSearchMaxRounds in 1..10) { "WEB_SEARCH_MAX_ROUNDS 必须在 1..10 之间" }
+            require(webSearchMaxPageChars in 100..10_000) { "WEB_SEARCH_MAX_PAGE_CHARS 必须在 100..10000 之间" }
+            if (webSearchEnabled) {
+                require(webSearchProvider in setOf("tavily", "brave", "exa", "deepseek", "searxng")) {
+                    "WEB_SEARCH_PROVIDER 必须是 tavily、brave、exa、deepseek 或 searxng"
+                }
+                if (webSearchProvider == "searxng") {
+                    require(webSearchBaseUrl != null) { "SearXNG 需要配置 WEB_SEARCH_BASE_URL" }
+                } else {
+                    require(webSearchApiKey != null) { "WEB_SEARCH_API_KEY 不能为空" }
+                }
             }
 
             return GatewayConfig(
@@ -134,6 +163,16 @@ data class GatewayConfig(
                     .getOrElse { cause -> error("TRUSTED_PROXY_CIDRS 配置无效: ${cause.message}") },
                 oauth = OAuthConfig.fromEnv(env),
                 providedEnvKeys = env.filterValues { it.isNotBlank() }.keys,
+                webSearch = WebSearchConfig(
+                    enabled = webSearchEnabled,
+                    provider = webSearchProvider,
+                    apiKey = webSearchApiKey,
+                    baseUrl = webSearchBaseUrl,
+                    maxResults = webSearchMaxResults,
+                    timeoutMs = webSearchTimeoutMs,
+                    maxRounds = webSearchMaxRounds,
+                    maxPageChars = webSearchMaxPageChars,
+                ),
             )
         }
     }
