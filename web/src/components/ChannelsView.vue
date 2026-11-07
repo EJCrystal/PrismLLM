@@ -16,10 +16,7 @@ import Modal from './Modal.vue'
 import PriceEditorModal from './PriceEditorModal.vue'
 import DefaultPriceModal from './DefaultPriceModal.vue'
 import ModelTestModal from './ModelTestModal.vue'
-import ModelTestSettingsModal from './ModelTestSettingsModal.vue'
-import UpstreamRequestSettingsModal from './UpstreamRequestSettingsModal.vue'
 import RequestOverridesEditor from './RequestOverridesEditor.vue'
-import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import ChannelHealthModal from './ChannelHealthModal.vue'
@@ -258,11 +255,8 @@ const defaultPrices = ref<ModelDefaultPrice[]>([])
 const priceEditor = ref<PriceEditorTarget | null>(null)
 const showDefaultPrices = ref(false)
 const testTarget = ref<ModelTestTarget | null>(null)
-const showTestSettings = ref(false)
-const showRequestSettings = ref(false)
 const overrideEditor = ref<RequestOverridesEditorExpose | null>(null)
 const overrideRevision = ref(0)
-const showAutoDisableSettings = ref(false)
 const rateLimitTarget = ref<RateLimitTarget | null>(null)
 const quotaTarget = ref<Channel | null>(null)
 const formSnapshot = ref('')
@@ -1029,15 +1023,10 @@ function openEdit(channel: Channel): void {
 }
 
 function closeChannelForm() {
-  if (testTarget.value || showTestSettings.value || showRequestSettings.value || showAutoDisableSettings.value || rateLimitTarget.value) return
+  if (testTarget.value || rateLimitTarget.value) return
   if (isFormDirty.value && !window.confirm('当前渠道配置尚未保存，确定关闭吗？')) return
   showForm.value = false
   formSnapshot.value = ''
-}
-
-function onRequestSettingsSaved() {
-  channels.value.forEach((channel) => clearUpstreamModelCache(channel.id))
-  overrideRevision.value += 1
 }
 
 function clearMapping(modelId: string): void {
@@ -1234,18 +1223,6 @@ async function remove(channel: Channel): Promise<void> {
   }
 }
 
-const configActions = [
-  { id: 'request', label: '上游请求配置', icon: 'bolt' },
-  { id: 'disable', label: '密钥自动禁用', icon: 'shield' },
-  { id: 'test', label: '全局测试配置', icon: 'bolt' },
-  { id: 'prices', label: '模型默认价', icon: 'price' },
-]
-function openConfig(id: string) {
-  if (id === 'request') showRequestSettings.value = true
-  if (id === 'disable') showAutoDisableSettings.value = true
-  if (id === 'test') showTestSettings.value = true
-  if (id === 'prices') showDefaultPrices.value = true
-}
 function channelAction(id: string, channel: Channel) {
   if (id === 'prices') openPrice(channel)
   if (id === 'delete') remove(channel)
@@ -1267,7 +1244,10 @@ onMounted(() => {
         <div><dt>启用中</dt><dd class="text-success">{{ enabledCount }}</dd></div>
       </dl>
       <div class="section-head-actions channel-page-actions">
-        <ActionMenu label="配置" icon="settings" :items="configActions" @select="openConfig" />
+        <button type="button" class="button ghost" @click="showDefaultPrices = true">
+          <Icon name="price" :size="16" />
+          模型默认价
+        </button>
         <button type="button" class="button primary" @click="openCreate">
           <Icon name="plus" :size="17" />
           新建渠道
@@ -1778,9 +1758,10 @@ onMounted(() => {
               <div><h3>上游密钥</h3><p>共享地址与协议，可分别授权模型和限流。</p></div>
               <div class="channel-form-section-actions">
                 <span class="badge neutral">{{ channelKeys.length }} 个</span>
-                <button type="button" class="button ghost mini" @click="showAutoDisableSettings = true">自动禁用规则</button>
               </div>
             </div>
+
+            <p class="channel-form-note">全局密钥自动禁用规则在「系统配置」页统一管理。</p>
 
             <p v-if="channelKeys.length === 0" class="muted small">
               当前渠道没有静态密钥。可保存后在「订阅账号」页关联 OAuth 账号，账号会作为该渠道路由凭据。
@@ -2052,13 +2033,6 @@ onMounted(() => {
 
     </Modal>
 
-    <ModelTestSettingsModal
-      v-if="showTestSettings"
-      @close="showTestSettings = false"
-    />
-
-    <UpstreamRequestSettingsModal v-if="showRequestSettings" @close="showRequestSettings = false" @saved="onRequestSettingsSaved" />
-
     <PriceEditorModal
       v-if="priceEditor"
       :channels="priceEditor.channels"
@@ -2077,11 +2051,6 @@ onMounted(() => {
       :channels="channels"
       @close="showDefaultPrices = false"
       @saved="onDefaultPricesSaved"
-    />
-
-    <KeyAutoDisableSettingsModal
-      v-if="showAutoDisableSettings"
-      @close="showAutoDisableSettings = false"
     />
 
   </section>

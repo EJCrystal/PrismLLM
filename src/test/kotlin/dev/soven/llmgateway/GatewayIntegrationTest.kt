@@ -5639,30 +5639,6 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `admin system config overview requires session and hides secrets`() = runBlocking {
-        testApplication {
-            application { app.install(this) }
-            val client = jsonClient()
-
-            val unauthorized = client.get("/admin/api/system-config")
-            assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
-
-            val (sessionCookie, _) = client.loginAdmin()
-            val response = client.get("/admin/api/system-config") {
-                header(HttpHeaders.Cookie, sessionCookie)
-            }
-            val body = response.bodyAsText()
-
-            assertEquals(HttpStatusCode.OK, response.status)
-            assertEquals("no-store", response.headers[HttpHeaders.CacheControl])
-            assertTrue(body.contains("\"sections\""), "BODY=[$body]")
-            assertTrue(body.contains("\"MAX_ATTEMPTS\""), "BODY=[$body]")
-            assertFalse(body.contains("test-password"), "BODY=[$body]")
-            assertFalse(body.contains("GATEWAY_MASTER_KEY"), "BODY=[$body]")
-        }
-    }
-
-    @Test
     fun `admin web search settings round trip without exposing the api key`() = runBlocking {
         testApplication {
             application { app.install(this) }

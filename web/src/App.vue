@@ -54,7 +54,7 @@ const meta = {
   },
   'system-config': {
     title: '系统配置',
-    desc: '集中查看网关运行参数，并管理模型测试、上游请求、密钥自动禁用与日志保留等全局设置。环境变量修改后需重启网关生效。',
+    desc: '集中管理模型测试、上游请求、Web 搜索、密钥自动禁用与请求日志清理等全局设置，保存后立即生效。',
   },
 }
 
@@ -223,7 +223,7 @@ onBeforeUnmount(() => {
         <LogsView v-else-if="view === 'logs'" />
         <UsageReportsView v-else-if="view === 'usage-reports'" />
         <AdminAuditLogsView v-else-if="view === 'audit-logs'" />
-        <SystemSettingsView v-else-if="view === 'system-config'" @navigate="selectView" />
+        <SystemSettingsView v-else-if="view === 'system-config'" />
       </main>
     </div>
   </div>
