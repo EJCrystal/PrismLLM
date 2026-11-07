@@ -49,6 +49,15 @@ class IqTestTest {
     }
 
     @Test
+    fun `standalone svg preview gives widthless svg a definite size`() {
+        val html = extractHtmlDocument("<svg viewBox=\"0 0 800 520\"><circle r=\"2\" /></svg>")
+
+        assertNotNull(html)
+        assertTrue(html.contains("body>svg:not([width]){width:100%}"))
+        assertTrue(html.contains("body>svg{display:block;max-width:100%;max-height:100vh;height:auto}"))
+    }
+
+    @Test
     fun `pelican passes structural checks`() {
         val html = """
             <!DOCTYPE html>

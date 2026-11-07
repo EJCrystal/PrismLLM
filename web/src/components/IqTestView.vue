@@ -199,6 +199,9 @@ async function loadAll() {
     }
     syncSelectedTarget()
     await loadHistory()
+    if (!detail.value && history.value.length) {
+      await openRun(history.value[0], { scroll: false })
+    }
   } catch (cause) {
     loadError.value = errorMessage(cause)
     notify(loadError.value, 'error')
@@ -209,6 +212,16 @@ async function loadAll() {
 
 function resetPrompt() {
   promptText.value = benchmark.value?.prompt ?? ''
+}
+
+const STACKED_LAYOUT_QUERY = '(max-width: 1360px)'
+
+/** 宽屏时历史在独立侧栏，详情始终可见；堆叠布局下才需要把详情滚回视口。 */
+function scrollResultIntoView() {
+  if (!window.matchMedia(STACKED_LAYOUT_QUERY).matches) return
+  requestAnimationFrame(() => {
+    resultRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
 }
 
 async function run() {
@@ -245,15 +258,11 @@ async function run() {
   } finally {
     running.value = false
     stopTimer()
-    if (completed && window.matchMedia('(max-width: 1000px)').matches) {
-      requestAnimationFrame(() => {
-        resultRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      })
-    }
+    if (completed) scrollResultIntoView()
   }
 }
 
-async function openRun(run: IqTestRunSummary) {
+async function openRun(run: IqTestRunSummary, options: { scroll?: boolean } = {}) {
   if (detailLoading.value) return
   detailLoading.value = true
   runError.value = ''
@@ -273,9 +282,7 @@ async function openRun(run: IqTestRunSummary) {
       selectedProtocol.value = detail.value.protocol
       syncSelectedTarget()
     }
-    requestAnimationFrame(() => {
-      resultRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    })
+    if (options.scroll !== false) scrollResultIntoView()
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
@@ -738,19 +745,21 @@ onBeforeUnmount(stopTimer)
               :class="{ active: detail?.id === run.id }"
               @click="openRun(run)"
             >
-              <span class="iq-history-main">
-                <span class="badge" :class="iqVerdictTone(run.verdict)">{{ run.benchmarkLabel }}</span>
-                <span v-if="run.manualVerdict" class="badge info">人工</span>
-                <strong>{{ run.model }}</strong>
-                <small>
-                  {{ run.channelName }} · {{ formatIqTime(run.createdAt) }}
-                  <template v-if="run.judgeResult"> · {{ run.judgeResult.judgeLabel }}</template>
-                </small>
+              <span class="iq-history-top">
+                <span class="iq-history-main">
+                  <span class="badge" :class="iqVerdictTone(run.verdict)">{{ run.benchmarkLabel }}</span>
+                  <span v-if="run.manualVerdict" class="badge info">人工</span>
+                  <strong>{{ run.model }}</strong>
+                </span>
+                <span class="iq-history-side">
+                  <span class="badge" :class="iqVerdictTone(run.verdict)">{{ run.verdictLabel }}</span>
+                  <small>{{ formatIqLatency(run.latencyMs) }}</small>
+                </span>
               </span>
-              <span class="iq-history-side">
-                <span class="badge" :class="iqVerdictTone(run.verdict)">{{ run.verdictLabel }}</span>
-                <small>{{ formatIqLatency(run.latencyMs) }}</small>
-              </span>
+              <small class="iq-history-meta">
+                {{ run.channelName }} · {{ formatIqTime(run.createdAt) }}
+                <template v-if="run.judgeResult"> · {{ run.judgeResult.judgeLabel }}</template>
+              </small>
             </button>
           </div>
         </section>
@@ -828,7 +837,7 @@ onBeforeUnmount(stopTimer)
 
 .iq-layout {
   display: grid;
-  grid-template-columns: minmax(290px, 356px) minmax(0, 1fr);
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
   align-items: start;
   gap: 16px;
 }
@@ -1040,6 +1049,8 @@ onBeforeUnmount(stopTimer)
 
 .iq-main {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
+  align-items: start;
   min-width: 0;
   gap: 16px;
 }
@@ -1125,7 +1136,7 @@ onBeforeUnmount(stopTimer)
 
 .iq-result-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   padding: 12px;
   border: 1px solid var(--line);
@@ -1465,7 +1476,14 @@ onBeforeUnmount(stopTimer)
 }
 
 .iq-history {
+  position: sticky;
+  top: 16px;
+  grid-column: 2;
+  grid-row: 1;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  max-height: calc(100vh - 32px);
   gap: 12px;
   padding: 16px 18px;
 }
@@ -1507,14 +1525,15 @@ onBeforeUnmount(stopTimer)
 .iq-history-list {
   display: grid;
   gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .iq-history-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
   width: 100%;
-  gap: 12px;
+  gap: 4px;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -1522,6 +1541,14 @@ onBeforeUnmount(stopTimer)
   color: var(--ink);
   text-align: left;
   cursor: pointer;
+}
+
+.iq-history-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 10px;
 }
 
 .iq-history-item:hover {
@@ -1550,11 +1577,11 @@ onBeforeUnmount(stopTimer)
   white-space: nowrap;
 }
 
-.iq-history-main small {
-  flex-basis: 100%;
-  padding-left: 1px;
+.iq-history-meta {
   color: var(--muted);
   font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .iq-history-side {
@@ -1569,6 +1596,27 @@ onBeforeUnmount(stopTimer)
   font-size: 11px;
 }
 
+@media (max-width: 1360px) {
+  .iq-layout {
+    grid-template-columns: minmax(290px, 356px) minmax(0, 1fr);
+  }
+
+  .iq-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .iq-history {
+    position: static;
+    grid-column: auto;
+    grid-row: auto;
+    max-height: none;
+  }
+
+  .iq-history-list {
+    overflow: visible;
+  }
+}
+
 @media (max-width: 1000px) {
   .iq-layout {
     grid-template-columns: 1fr;
@@ -1576,10 +1624,6 @@ onBeforeUnmount(stopTimer)
 
   .iq-control {
     position: static;
-  }
-
-  .iq-result-summary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
