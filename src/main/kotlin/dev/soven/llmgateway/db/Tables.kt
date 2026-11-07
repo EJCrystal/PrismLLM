@@ -23,6 +23,9 @@ object Channels : Table("channels") {
     val quotaCredentialKeyVersion = integer("quota_credential_key_version").default(1)
     val enabled = bool("enabled")
     val priority = integer("priority").default(1)
+    /** custom: 用户自建；provider: 系统按订阅 provider 置备，端点由代码常量固定。 */
+    val kind = varchar("kind", 16).default("custom")
+    val provider = varchar("provider", 32).nullable()
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
 
@@ -77,6 +80,8 @@ object OAuthAccounts : Table("oauth_accounts") {
     val id = varchar("id", 36)
     val name = varchar("name", 100)
     val provider = varchar("provider", 32)
+    /** V54 之前创建的账号待改挂到系统渠道；搬迁成功的账号置为 false。 */
+    val providerChannelPending = bool("provider_channel_pending").default(false)
     val accountEmail = varchar("account_email", 320).nullable()
     val accountPlan = varchar("account_plan", 32).nullable()
     val refreshTokenCiphertext = text("refresh_token_ciphertext")
@@ -129,6 +134,8 @@ object OAuthAccounts : Table("oauth_accounts") {
 object OAuthAccountChannels : Table("oauth_account_channels") {
     val accountId = varchar("account_id", 36).references(OAuthAccounts.id, onDelete = ReferenceOption.CASCADE)
     val channelId = varchar("channel_id", 36).references(Channels.id, onDelete = ReferenceOption.CASCADE)
+    /** 挂在系统 provider 渠道上；每个账号最多一条，由部分唯一索引保证。 */
+    val managed = bool("managed").default(false)
     val createdAt = long("created_at")
 
     override val primaryKey = PrimaryKey(accountId, channelId)

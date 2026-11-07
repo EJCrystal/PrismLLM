@@ -4,6 +4,7 @@ import dev.soven.llmgateway.config.OAuthConfig
 import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthProvider
+import dev.soven.llmgateway.domain.ProviderEndpoints
 import dev.soven.llmgateway.domain.saturatedAdd
 import dev.soven.llmgateway.repo.CredentialChangedException
 import dev.soven.llmgateway.repo.NewOAuthAccount
@@ -237,6 +238,7 @@ class OAuthLoginService(
                             scope = tokens.scope?.take(MAX_SCOPE_CHARS),
                             proxyUrl = session.proxyUrl,
                             channelIds = session.channelIds,
+                            providerChannelPending = ProviderEndpoints.of(session.provider).servable,
                         ),
                     )
                 }

@@ -132,6 +132,8 @@ export interface Channel {
   keys: ChannelKey[]
   requestOverrides: UpstreamRequestOverrides
   quota: ChannelQuotaSettings
+  kind: 'custom' | 'provider'
+  provider?: string | null
 }
 
 export interface ChannelQuotaSettings {
@@ -726,6 +728,7 @@ export interface OAuthProviderInfo {
   label: string
   configured: boolean
   loginSupported: boolean
+  managedChannel: boolean
 }
 
 export interface OAuthAccountPolicy {

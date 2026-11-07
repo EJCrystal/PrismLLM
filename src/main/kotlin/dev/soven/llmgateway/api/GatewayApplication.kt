@@ -28,6 +28,7 @@ import dev.soven.llmgateway.oauth.OAuthLoginService
 import dev.soven.llmgateway.oauth.OAuthQuotaService
 import dev.soven.llmgateway.oauth.OAuthTokenProviderRegistry
 import dev.soven.llmgateway.oauth.OAuthTokenService
+import dev.soven.llmgateway.oauth.ProviderChannelProvisioner
 import dev.soven.llmgateway.oauth.OAuthWindowStateWriter
 import dev.soven.llmgateway.oauth.buildOAuthTokenProviders
 import dev.soven.llmgateway.repo.ModelTestSettingsRepository
@@ -326,6 +327,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     )
     /** 订阅账号 access token 解析与后台轮换；未配置任何 Provider 时后台任务不扫描。 */
     val oauthAccountRepository = OAuthAccountRepository(databaseFactory.database)
+    /** 订阅账号的官方端点渠道：按 provider 置备，账号导入时自动挂上。 */
+    val providerChannelProvisioner = ProviderChannelProvisioner(channelRepository, oauthAccountRepository)
     val modelCatalog = UpstreamModelCatalog(channelRepository, oauthAccountRepository)
     val oauthTokenProviders = OAuthTokenProviderRegistry(buildOAuthTokenProviders(config.oauth))
     val oauthTokenService = OAuthTokenService(oauthAccountRepository, credentialCipher, oauthTokenProviders, config.oauth)
@@ -366,6 +369,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         runBlocking { upstreamRequestSettingsRepository.load() }
         runBlocking { upstreamHeaderCatalogService.initialize() }
         runBlocking { seedAdmin() }
+        // 每次启动都处理 V54 留下的待搬迁账号；逐账号清除标记，上次失败的重启后继续。
+        runBlocking { providerChannelProvisioner.reconcile() }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
         runBlocking { oauthAccountScheduler.restore(oauthWindowRepository.loadAll()) }
         runBlocking {

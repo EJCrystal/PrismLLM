@@ -180,6 +180,9 @@ data class ChannelResponse(
     val requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     val protocolAuthTypes: Map<String, String> = emptyMap(),
     val quota: ChannelQuotaSettingsResponse = ChannelQuotaSettingsResponse(),
+    /** custom：用户自建；provider：系统按订阅 provider 置备。 */
+    val kind: String = "custom",
+    val provider: String? = null,
 )
 
 @Serializable
@@ -301,6 +304,8 @@ fun ChannelRecord.toResponse() = ChannelResponse(
     keys = keys.map { it.toResponse() },
     requestOverrides = requestOverrides,
     quota = ChannelQuotaSettingsResponse(quota.providerId, quota.config, quota.credentialSource, quotaCredential != null),
+    kind = kind.value,
+    provider = provider?.value,
 )
 
 @Serializable
@@ -1416,12 +1421,19 @@ data class OAuthAccountChannelResponse(
 )
 
 @Serializable
+data class OAuthProviderModelsRequest(
+    val models: List<String> = emptyList(),
+)
+
+@Serializable
 data class OAuthProviderResponse(
     val id: String,
     val label: String,
     val configured: Boolean,
     /** 是否支持从网关发起交互式登录；不支持时只能导入 refresh token。 */
     val loginSupported: Boolean = false,
+    /** 该 provider 的官方端点渠道由系统置备，账号导入后自动关联。 */
+    val managedChannel: Boolean = false,
 )
 
 fun OAuthAccountPolicy.toResponse() = OAuthAccountPolicyResponse(

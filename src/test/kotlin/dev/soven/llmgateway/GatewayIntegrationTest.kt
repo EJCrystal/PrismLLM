@@ -1164,7 +1164,10 @@ class GatewayIntegrationTest {
             val account = Json.parseToJsonElement(body).jsonObject
             val accountId = account["id"]!!.jsonPrimitive.content
             assertTrue(accountId.isNotBlank())
-            assertEquals(channel.id, account["channelIds"]!!.jsonArray.single().jsonPrimitive.content)
+            // 订阅账号只服务官方端点：请求里的 channelIds 被忽略，改挂系统置备渠道。
+            val providerChannelId = assertNotNull(app.channelRepository.findProviderChannel(OAuthProvider.CHATGPT)).id
+            assertEquals(providerChannelId, account["channelIds"]!!.jsonArray.single().jsonPrimitive.content)
+            assertTrue(account["channelIds"]!!.jsonArray.none { it.jsonPrimitive.content == channel.id })
             assertEquals("chatgpt", account["provider"]!!.jsonPrimitive.content)
             assertEquals("ACTIVE", account["authState"]!!.jsonPrimitive.content)
             assertEquals("free@example.com", account["accountEmail"]!!.jsonPrimitive.content)
@@ -1204,6 +1207,11 @@ class GatewayIntegrationTest {
             val byProvider = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
                 .associate { it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["configured"]!!.jsonPrimitive.boolean }
             assertEquals(mapOf("chatgpt" to true, "antigravity" to false), byProvider)
+            val managed = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
+                .associate {
+                    it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["managedChannel"]!!.jsonPrimitive.boolean
+                }
+            assertEquals(mapOf("chatgpt" to true, "antigravity" to false), managed)
 
             val stored = assertNotNull(app.oauthAccountRepository.find(accountId))
             assertNotEquals("refresh-token-value", stored.refreshTokenCiphertext)
@@ -1274,6 +1282,27 @@ class GatewayIntegrationTest {
             assertEquals(
                 0,
                 scalarInt("select count(*) from oauth_account_channels where channel_id = '${channel.id}'"),
+            )
+        }
+    }
+
+    @Test
+    fun `admin oauth provider models rejects invalid body before provisioning`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            val before = scalarInt("select count(*) from channels where kind = 'provider'")
+            val response = client.put("/admin/api/oauth-providers/chatgpt/models") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"models":123}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertEquals(
+                before,
+                scalarInt("select count(*) from channels where kind = 'provider'"),
+                "请求体非法时不应置备系统渠道",
             )
         }
     }
@@ -6798,6 +6827,32 @@ class GatewayIntegrationTest {
                 }
             }
 
+            // 迁到 V53，构造一个仍关联两个手工渠道的 Antigravity 账号，验证 V54 不删除历史关联。
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("53"))
+                .load()
+                .migrate()
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into oauth_accounts (id, name, provider, refresh_token_ciphertext, refresh_token_nonce, refresh_token_key_version, created_at, updated_at)
+                        values ('v54-account', 'v54-account', 'antigravity', 'cipher', 'nonce', 1, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into oauth_account_channels (account_id, channel_id, created_at)
+                        values ('v54-account', 'migration-channel', 1),
+                               ('v54-account', 'alias-only-conversion', 1)
+                        """.trimIndent(),
+                    )
+                }
+            }
+
             Flyway.configure()
                 .dataSource(migrationUrl, postgres.username, postgres.password)
                 .locations("classpath:db/migration")
@@ -6806,6 +6861,23 @@ class GatewayIntegrationTest {
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
+                    statement.executeQuery("select count(*) from oauth_account_channels where account_id = 'v54-account'").use { result ->
+                        assertTrue(result.next())
+                        assertEquals(2, result.getInt(1), "V54 不应删除未托管账号的手工渠道关联")
+                    }
+                    statement.executeQuery("select count(*) from oauth_account_channels where account_id = 'v54-account' and managed").use { result ->
+                        assertTrue(result.next())
+                        assertEquals(0, result.getInt(1), "历史渠道不是系统置备渠道")
+                    }
+                    statement.executeQuery("select provider_channel_pending from oauth_accounts where id = 'v54-account'").use { result ->
+                        assertTrue(result.next())
+                        assertTrue(result.getBoolean(1), "迁移前的账号应标记为待搬迁")
+                    }
+                    statement.execute("update oauth_account_channels set managed = true where account_id = 'v54-account' and channel_id = 'migration-channel'")
+                    val duplicateManaged = runCatching {
+                        statement.execute("update oauth_account_channels set managed = true where account_id = 'v54-account' and channel_id = 'alias-only-conversion'")
+                    }
+                    assertTrue(duplicateManaged.isFailure, "一个账号最多只能有一条托管关联")
                     statement.executeQuery("select enabled from channels where id = 'alias-only-conversion'").use { result ->
                         assertTrue(result.next())
                         assertFalse(result.getBoolean(1), "原关闭直连的渠道应被转为停用")

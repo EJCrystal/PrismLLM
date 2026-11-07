@@ -644,6 +644,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val updated = channelUpdateMutex.withLock {
                 val existing = app.channelRepository.find(id)
                     ?: throw notFound("channel_not_found", "渠道不存在")
+                if (existing.isProviderChannel) {
+                    throw badRequest("provider_channel_readonly", "系统置备的订阅端点渠道不可编辑")
+                }
                 val sameName = app.channelRepository.findByName(request.name)
                 if (sameName != null && sameName.id != id) throw conflict("channel_name_exists", "渠道名称已存在")
                 val encrypted = request.credential?.takeIf { it.isNotBlank() }?.let(app.credentialCipher::encrypt)
@@ -739,6 +742,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val id = call.requiredParam("id", "缺少渠道 id")
             channelUpdateMutex.withLock {
                 val channel = app.channelRepository.find(id) ?: throw notFound("channel_not_found", "渠道不存在")
+                if (channel.isProviderChannel) {
+                    throw badRequest("provider_channel_readonly", "系统置备的订阅端点渠道不可删除")
+                }
                 withContext(NonCancellable) {
                     if (!app.channelRepository.delete(id)) throw notFound("channel_not_found", "渠道不存在")
                     channel.keys.forEach { app.channelKeyRateLimiter.clearKey(channel.id, it.id) }
@@ -760,9 +766,34 @@ fun Route.adminRoutes(app: GatewayApplication) {
                             OAuthProvider.CHATGPT -> app.config.oauth.chatGpt.supportsLogin
                             OAuthProvider.ANTIGRAVITY -> app.config.oauth.antigravity?.supportsLogin == true
                         },
+                        managedChannel = dev.soven.llmgateway.domain.ProviderEndpoints.of(provider).servable,
                     )
                 },
             )
+        }
+
+        put("/oauth-providers/{provider}/models") {
+            call.requireAdmin(app)
+            val provider = OAuthProvider.fromValue(
+                call.requiredParam("provider", "缺少 provider").trim().lowercase(),
+            ) ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
+            val request = call.receive<OAuthProviderModelsRequest>()
+            val mappings = request.models
+                .map(String::trim)
+                .filter(String::isNotEmpty)
+                .distinct()
+                .map { ChannelModelRecord(upstreamModel = it) }
+            // 先校验请求体再置备渠道，避免非法请求在库里留下系统渠道。
+            val channelId = app.providerChannelProvisioner.ensure(provider)
+                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
+            if (!app.channelRepository.replaceModels(channelId, mappings)) {
+                throw notFound("channel_not_found", "系统端点渠道不存在")
+            }
+            call.markAdminAuditDetails(buildJsonObject {
+                put("provider", provider.value)
+                put("models", mappings.joinToString(",") { it.upstreamModel })
+            })
+            call.respond(HttpStatusCode.NoContent)
         }
 
         get("/oauth-accounts") {
@@ -818,7 +849,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (request.priority !in 1..1000) {
                 throw badRequest("invalid_oauth_priority", "账号优先级必须在 1..1000 之间")
             }
-            val account = try {
+            var account = try {
                 app.oauthAccountRepository.create(
                     NewOAuthAccount(
                         name = request.name?.trim()?.takeIf { it.isNotEmpty() }
@@ -837,6 +868,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         channelIds = channelIds,
                         models = request.models,
                         priority = request.priority,
+                        providerChannelPending = dev.soven.llmgateway.domain.ProviderEndpoints.of(provider).servable,
                     ),
                 )
             } catch (cause: Throwable) {
@@ -845,11 +877,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 }
                 throw cause
             }
+            account = attachProviderChannel(app, account)
             clearOAuthAccountCooldown(app, account)
             call.markAdminAuditDetails(buildJsonObject {
                 put("accountId", account.id)
                 put("provider", provider.value)
-                put("channels", channelIds.joinToString(","))
+                put("channels", account.channelIds.joinToString(","))
                 proxyUrl?.let { put("proxyUrl", it) }
             })
             call.respond(oauthAccountResponse(app, account))
@@ -896,7 +929,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
             }
             validateOAuthProxyUrl(app, proxyUrl)
-            val account = try {
+            var account = try {
                 app.oauthAccountRepository.updateCredentials(
                     accountId = accountId,
                     input = OAuthAccountCredentialUpdate(
@@ -917,6 +950,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 }
                 throw cause
             }
+            account = attachProviderChannel(app, account)
             clearOAuthAccountCooldown(app, account)
             call.markAdminAuditDetails(buildJsonObject {
                 put("accountId", account.id)
@@ -962,6 +996,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val accountId = call.requiredParam("id", "缺少账号 id")
             val request = call.receive<OAuthAccountChannelsRequest>()
+            val existingAccount = app.oauthAccountRepository.find(accountId)
+                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            if (app.providerChannelProvisioner.ensure(existingAccount.provider) != null) {
+                throw badRequest(
+                    "oauth_account_channel_managed",
+                    "订阅账号的端点渠道由系统维护，不能再手工关联渠道",
+                )
+            }
             val channels = app.channelRepository.list()
             val channelsById = channels.associateBy { it.id }
             val channelIds = request.channelIds.map(String::trim).filter(String::isNotEmpty).distinct()
@@ -1104,14 +1146,15 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     )
                 }
                 is OAuthLoginResult.Completed -> {
-                    clearOAuthAccountCooldown(app, result.account)
+                    val account = attachProviderChannel(app, result.account)
+                    clearOAuthAccountCooldown(app, account)
                     call.markAdminAuditDetails(buildJsonObject {
-                        put("accountId", result.account.id)
-                        put("provider", result.account.provider.value)
+                        put("accountId", account.id)
+                        put("provider", account.provider.value)
                         put("result", "success")
                     })
                     call.response.headers.append("Cache-Control", "no-store")
-                    call.respond(oauthAccountResponse(app, result.account))
+                    call.respond(oauthAccountResponse(app, account))
                 }
             }
         }
@@ -2337,6 +2380,25 @@ private suspend fun oauthAccountResponse(
 }
 
 /** 账号重新授权或管理员解除冷却后，同时清理各关联渠道下该账号的候选冷却。 */
+/**
+ * 订阅账号只服务官方端点：导入后统一挂到系统置备的 provider 渠道。
+ * provider 的上游协议尚未实现时保持账号原有的手工关联。
+ */
+private suspend fun attachProviderChannel(
+    app: GatewayApplication,
+    account: dev.soven.llmgateway.domain.OAuthAccountRecord,
+): dev.soven.llmgateway.domain.OAuthAccountRecord {
+    val channelId = app.providerChannelProvisioner.ensure(account.provider) ?: return account
+    val attached = if (account.channelIds == setOf(channelId)) {
+        account
+    } else {
+        app.oauthAccountRepository.setChannels(account.id, listOf(channelId)) ?: account
+    }
+    // 关联成功后再清标记；若进程在此前退出，启动对账会重新搬迁。
+    app.oauthAccountRepository.markProviderChannelSettled(account.id)
+    return attached
+}
+
 private suspend fun clearOAuthAccountCooldown(
     app: GatewayApplication,
     account: dev.soven.llmgateway.domain.OAuthAccountRecord,
