@@ -15,6 +15,7 @@ import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.NewIqTestRun
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthProvider
@@ -181,6 +182,7 @@ class GatewayIntegrationTest {
     @BeforeEach
     fun setUp() {
         fake.requests.clear()
+        fake.manxueRequests.clear()
         fake.modelRequests.clear()
         fake.cancellations.set(0)
         fake.failingModels.clear()
@@ -5865,7 +5867,9 @@ class GatewayIntegrationTest {
 
     @Test
     fun `admin runs candy iq test and reads history`() = runBlocking {
-        val channel = createChannel("iq-test", "ok")
+        val channel = createChannel("iq-test", "iq-json")
+        val candyResponse =
+            """{"answer":21,"reason":"先取完圆形苹果 7 颗、圆形桃子 9 颗、圆形西瓜 8 颗和五角星形西瓜 4 颗，再取一颗。"}"""
 
         testApplication {
             application { app.install(this) }
@@ -5903,12 +5907,17 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, run.status)
             val body = Json.parseToJsonElement(run.bodyAsText()).jsonObject
             assertEquals("candy", body["benchmark"]?.jsonPrimitive?.content)
-            assertEquals("incorrect", body["verdict"]?.jsonPrimitive?.content)
-            assertEquals("Hello!", body["responseText"]?.jsonPrimitive?.content)
+            assertEquals("passed", body["verdict"]?.jsonPrimitive?.content)
+            assertEquals(candyResponse, body["responseText"]?.jsonPrimitive?.content)
             assertEquals("21", body["expectedAnswer"]?.jsonPrimitive?.content)
-            assertEquals(1, body["checks"]?.jsonArray?.size)
-            assertEquals("local", body["judgeResult"]?.jsonObject?.get("judgeId")?.jsonPrimitive?.content)
-            assertEquals("failed", body["judgeResult"]?.jsonObject?.get("verdict")?.jsonPrimitive?.content)
+            assertEquals("21", body["matchedAnswer"]?.jsonPrimitive?.content)
+            assertEquals(2, body["checks"]?.jsonArray?.size)
+            assertEquals("json", body["checks"]!!.jsonArray.first().jsonObject["id"]?.jsonPrimitive?.content)
+            assertTrue(body["checks"]!!.jsonArray.all { it.jsonObject["passed"]?.jsonPrimitive?.boolean == true })
+            val judgeResult = body["judgeResult"]
+            assertTrue(judgeResult == null || judgeResult is JsonNull, run.bodyAsText())
+            val html = body["html"]
+            assertTrue(html == null || html is JsonNull, run.bodyAsText())
             assertTrue(body["prompt"]?.jsonPrimitive?.content?.contains("糖果") == true)
             val id = body["id"]?.jsonPrimitive?.content
 
@@ -5927,8 +5936,64 @@ class GatewayIntegrationTest {
             }
             assertEquals(HttpStatusCode.OK, detail.status)
             val detailBody = Json.parseToJsonElement(detail.bodyAsText()).jsonObject
-            assertEquals("Hello!", detailBody["responseText"]?.jsonPrimitive?.content)
-            assertEquals(1, detailBody["checks"]?.jsonArray?.size)
+            assertEquals(candyResponse, detailBody["responseText"]?.jsonPrimitive?.content)
+            assertEquals(2, detailBody["checks"]?.jsonArray?.size)
+        }
+    }
+
+    @Test
+    fun `admin keeps legacy candy html verdict in history detail`() = runBlocking {
+        val channel = createChannel("iq-test-legacy", "ok")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, _) = client.loginAdmin()
+            val record = app.iqTestRunRepository.insert(
+                NewIqTestRun(
+                    benchmark = "candy",
+                    channelId = channel.id,
+                    channelName = channel.name,
+                    channelKeyId = null,
+                    channelKeyName = null,
+                    model = "gpt-4o-mini",
+                    upstreamModel = "gpt-4o-mini",
+                    protocol = GatewayProtocol.CHAT_COMPLETIONS.value,
+                    success = true,
+                    statusCode = 200,
+                    latencyMs = 10,
+                    verdict = "passed",
+                    prompt = "legacy prompt",
+                    responseText = "<html><body><p>答案是 21 颗。</p></body></html>",
+                    expectedAnswer = 21,
+                    matchedAnswer = 21,
+                    errorMessage = null,
+                    usage = null,
+                    upstreamReportedModel = "gpt-4o-mini",
+                    judgeId = "local",
+                    judgeLabel = "本地结构 + 人工",
+                    judgeVerdict = "passed",
+                    judgeResultLabel = "通过",
+                    judgeReason = "旧版判分",
+                    judgeScore = null,
+                    judgeDetails = null,
+                    judgeCheckedAt = 0L,
+                ),
+            )
+
+            val detail = client.get("/admin/api/iq-tests/${record.id}") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, detail.status)
+            val body = Json.parseToJsonElement(detail.bodyAsText()).jsonObject
+            assertEquals("passed", body["verdict"]?.jsonPrimitive?.content)
+            assertNotNull(body["html"]?.jsonPrimitive?.content, detail.bodyAsText())
+            val checks = body["checks"]!!.jsonArray
+            assertEquals(1, checks.size)
+            assertTrue(
+                checks.single().jsonObject["label"]!!.jsonPrimitive.content.contains("最终答案包含 21"),
+                detail.bodyAsText(),
+            )
         }
     }
 
@@ -5956,7 +6021,7 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `admin classifies locally generated html with manxue`() = runBlocking {
+    fun `admin classifies pelican html with manxue`() = runBlocking {
         val channel = createChannelWithBaseUrl("iq-html", "${fake.baseUrl}/iq-html/v1")
 
         testApplication {
@@ -5975,17 +6040,12 @@ class GatewayIntegrationTest {
                 return Json.parseToJsonElement(response.bodyAsText()).jsonObject
             }
 
-            val candy = run("candy")
-            assertEquals("passed", candy["verdict"]?.jsonPrimitive?.content)
-            assertEquals("manxue", candy["judgeResult"]?.jsonObject?.get("judgeId")?.jsonPrimitive?.content)
-            assertEquals("passed", candy["judgeResult"]?.jsonObject?.get("verdict")?.jsonPrimitive?.content)
-
             val pelican = run("pelican")
             assertEquals("passed", pelican["verdict"]?.jsonPrimitive?.content)
             assertEquals("manxue", pelican["judgeResult"]?.jsonObject?.get("judgeId")?.jsonPrimitive?.content)
             assertEquals("passed", pelican["judgeResult"]?.jsonObject?.get("verdict")?.jsonPrimitive?.content)
-            assertTrue(fake.manxueRequests.any { it.body.contains("糖果测试答案") })
-            assertTrue(fake.manxueRequests.any { it.body.contains("<svg") })
+            assertEquals(1, fake.manxueRequests.size)
+            assertTrue(fake.manxueRequests.single().body.contains("<svg"))
         }
     }
 

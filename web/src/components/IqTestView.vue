@@ -95,10 +95,20 @@ const filteredHistory = computed(() =>
     ? history.value
     : history.value.filter((run) => run.benchmark === historyFilter.value),
 )
-const canRun = computed(() => !!selectedTarget.value && !!benchmark.value && !!selectedJudgeId.value && !running.value && !loading.value)
+const canRun = computed(() =>
+  !!selectedTarget.value &&
+  !!benchmark.value &&
+  (selectedBenchmark.value === 'candy' || !!selectedJudgeId.value) &&
+  !running.value &&
+  !loading.value,
+)
 const passedCheckCount = computed(() => detail.value?.checks.filter((check) => check.passed).length ?? 0)
 const previewHtml = computed(() => (detail.value?.html ? withIqPreviewCsp(detail.value.html) : ''))
 const sourceText = computed(() => detail.value?.html || detail.value?.responseText || '')
+// 旧版糖果记录带有 HTML 或判分器结果；新记录不再调用判分器。
+const legacyCandy = computed(
+  () => detail.value?.benchmark === 'candy' && (!!detail.value?.html || !!detail.value?.judgeResult),
+)
 
 const protocolLabels: Record<string, string> = {
   chat_completions: 'Chat Completions',
@@ -205,7 +215,7 @@ async function run() {
   const target = selectedTarget.value
   const item = benchmark.value
   const judgeId = selectedJudgeId.value
-  if (!target || !item || !judgeId) return
+  if (!target || !item || (item.id !== 'candy' && !judgeId)) return
   running.value = true
   runError.value = ''
   previewMode.value = 'preview'
@@ -218,7 +228,7 @@ async function run() {
       benchmark: item.id,
       keyId: selectedKeyId.value || null,
       protocol: (selectedProtocol.value || null) as ProtocolId | null,
-      judgeId,
+      judgeId: item.id === 'candy' ? null : judgeId,
       prompt: promptText.value.trim() || undefined,
     })
     detail.value = result
@@ -385,7 +395,7 @@ onBeforeUnmount(stopTimer)
             <p class="iq-prompt-meta">
               {{ promptText.trim().length.toLocaleString() }} 字符
               <template v-if="selectedBenchmark === 'candy'">
-                · 糖果题固定按 21 判定，修改题目后判分可能不再适用
+                · 糖果题按 JSON 的 answer 等于 21 判定，修改题目后判分可能不再适用
               </template>
               <template v-else>· 留空则使用内置默认提示词</template>
             </p>
@@ -448,33 +458,38 @@ onBeforeUnmount(stopTimer)
 
         <div class="iq-section">
           <span class="iq-section-label">判分器</span>
-          <label v-if="judges.length" class="field">
-            <span>{{ selectedBenchmark === 'pelican' ? '鹈鹕判分器' : '判分器（结果仅参考）' }}</span>
-            <select v-model="selectedJudgeId" :disabled="running">
-              <option v-for="judge in judges" :key="judge.id" :value="judge.id">
-                {{ judge.label }}{{ judge.builtIn ? '' : '（插件）' }}
-              </option>
-            </select>
-          </label>
-          <p v-if="selectedJudge?.description" class="iq-judge-description">{{ selectedJudge.description }}</p>
-          <p v-if="selectedJudge?.id === 'manxue'" class="callout warning iq-privacy-warning">
-            选择满血AI 时，生成的 HTML 会发送到 manxue.ai；渠道密钥不会离开本机。
+          <p v-if="selectedBenchmark === 'candy'" class="iq-judge-description">
+            糖果题只读取模型返回的 JSON 答案，不调用 HTML 判分器。
           </p>
-          <p v-else-if="selectedJudge?.id === 'vision'" class="callout warning iq-privacy-warning">
-            选择视觉判分器时，会把无头浏览器渲染的 6 帧截图发送到网关配置的视觉端点；渠道密钥不会发送。
-          </p>
-          <p v-else-if="selectedJudge && !selectedJudge.builtIn" class="callout warning iq-privacy-warning">
-            外部插件「{{ selectedJudge.label }}」会收到生成的 HTML，并可能发送到其配置的服务；请确认插件来源可信。
-          </p>
-          <details v-if="judgeFailures.length" class="iq-judge-failures">
-            <summary>{{ judgeFailures.length }} 个判分器插件加载失败</summary>
-            <ul>
-              <li v-for="failure in judgeFailures" :key="failure.source + failure.message">
-                {{ failure.source }}：{{ failure.message }}
-              </li>
-            </ul>
-          </details>
-          <p v-if="!judges.length" class="iq-no-target">没有可用判分器，请检查插件目录或配置。</p>
+          <template v-else>
+            <label v-if="judges.length" class="field">
+              <span>鹈鹕判分器</span>
+              <select v-model="selectedJudgeId" :disabled="running">
+                <option v-for="judge in judges" :key="judge.id" :value="judge.id">
+                  {{ judge.label }}{{ judge.builtIn ? '' : '（插件）' }}
+                </option>
+              </select>
+            </label>
+            <p v-if="selectedJudge?.description" class="iq-judge-description">{{ selectedJudge.description }}</p>
+            <p v-if="selectedJudge?.id === 'manxue'" class="callout warning iq-privacy-warning">
+              选择满血AI 时，生成的 HTML 会发送到 manxue.ai；渠道密钥不会离开本机。
+            </p>
+            <p v-else-if="selectedJudge?.id === 'vision'" class="callout warning iq-privacy-warning">
+              选择视觉判分器时，会把无头浏览器渲染的 6 帧截图发送到网关配置的视觉端点；渠道密钥不会发送。
+            </p>
+            <p v-else-if="selectedJudge && !selectedJudge.builtIn" class="callout warning iq-privacy-warning">
+              外部插件「{{ selectedJudge.label }}」会收到生成的 HTML，并可能发送到其配置的服务；请确认插件来源可信。
+            </p>
+            <details v-if="judgeFailures.length" class="iq-judge-failures">
+              <summary>{{ judgeFailures.length }} 个判分器插件加载失败</summary>
+              <ul>
+                <li v-for="failure in judgeFailures" :key="failure.source + failure.message">
+                  {{ failure.source }}：{{ failure.message }}
+                </li>
+              </ul>
+            </details>
+            <p v-if="!judges.length" class="iq-no-target">没有可用判分器，请检查插件目录或配置。</p>
+          </template>
         </div>
 
         <button type="button" class="button primary full iq-run-button" :disabled="!canRun" @click="run">
@@ -649,19 +664,29 @@ onBeforeUnmount(stopTimer)
               <div class="iq-candy-answer">
                 <div class="iq-section-head">
                   <strong>判分依据</strong>
+                  <span class="muted small">{{ passedCheckCount }}/{{ detail.checks.length }} 项通过</span>
                 </div>
-                <p>官方规则：HTML 可见文字中出现独立的 <strong>21</strong>（或“二十一”）即通过。</p>
-                <p class="iq-caveat">判分器结果只作参考，不改变本题通过/未通过。</p>
+                <p v-if="legacyCandy">历史记录按旧版规则判定：HTML 可见文字中出现独立的 <strong>21</strong> 即通过。</p>
+                <p v-else>读取模型返回的 JSON，<code>answer</code> 等于 <strong>21</strong> 即通过。</p>
+                <div class="iq-checks">
+                  <ul>
+                    <li v-for="check in detail.checks" :key="check.id" :class="{ passed: check.passed }">
+                      <Icon :name="check.passed ? 'check' : 'close'" :size="14" />
+                      <span>{{ check.label }}</span>
+                      <small v-if="check.detail">{{ check.detail }}</small>
+                    </li>
+                  </ul>
+                </div>
+                <p v-if="legacyCandy" class="iq-caveat">旧记录保留当时的判分结果，不会按新规则重算。</p>
+                <p v-else class="iq-caveat">JSON 无法解析或 answer 不是整数时判定为失败；不评价 reason 的推理质量。</p>
               </div>
               <aside v-if="detail.success && detail.expectedAnswer != null" class="iq-candy-grade">
                 <span class="muted small">本题判定</span>
                 <strong :class="detail.verdict === 'passed' ? 'iq-pass-text' : 'iq-fail-text'">{{ detail.verdictLabel }}</strong>
                 <p>期望答案：<strong>{{ detail.expectedAnswer }}</strong></p>
-                <p>回答中{{ detail.matchedAnswer != null ? '出现' : '未出现' }}独立数字 {{ detail.expectedAnswer }}。</p>
-                <p class="iq-caveat">
-                  官方判分只看可见文字中是否出现独立的 21；不评价推理过程。
-                  <template v-if="detail.judgeResult">{{ detail.judgeResult.judgeLabel }} 结果仅作参考。</template>
-                </p>
+                <p v-if="legacyCandy">回答中{{ detail.matchedAnswer != null ? '出现' : '未出现' }}独立数字 21。</p>
+                <p v-else>{{ detail.matchedAnswer != null ? 'answer 为 21。' : 'answer 不为 21 或无法解析。' }}</p>
+                <p v-if="!legacyCandy" class="iq-caveat">只按 JSON 的 answer 判定；不评价 reason 的推理质量。</p>
               </aside>
               <aside v-else class="iq-candy-grade">
                 <span class="muted small">本题判定</span>

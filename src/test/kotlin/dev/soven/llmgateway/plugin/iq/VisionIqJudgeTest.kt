@@ -88,18 +88,6 @@ class VisionIqJudgeTest {
     )
 
     @Test
-    fun `candy uses rule verdict without rendering`() {
-        val renderer = RecordingRenderer(SvgRenderResult.Failure("should not render"))
-        val judge = VisionIqJudge(renderer, RecordingAssessor(VisionAssessment(IqJudgeVerdict.PASSED)), "m")
-
-        val result = judge.judge(request("candy"))
-
-        assertEquals(IqJudgeVerdict.REVIEW, result.verdict)
-        assertEquals("由 21 规则判定", result.label)
-        assertEquals(0, renderer.calls)
-    }
-
-    @Test
     fun `render failure asks for manual review`() {
         val assessor = RecordingAssessor(VisionAssessment(IqJudgeVerdict.PASSED))
         val judge = VisionIqJudge(RecordingRenderer(SvgRenderResult.Failure("没有内联 SVG")), assessor, "m")

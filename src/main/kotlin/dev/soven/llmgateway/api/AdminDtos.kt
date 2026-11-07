@@ -32,6 +32,7 @@ import dev.soven.llmgateway.proxy.IqTestEvaluation
 import dev.soven.llmgateway.proxy.IqVerdict
 import dev.soven.llmgateway.proxy.analyzePelicanStructure
 import dev.soven.llmgateway.proxy.evaluateIqTest
+import dev.soven.llmgateway.proxy.evaluateLegacyCandy
 import dev.soven.llmgateway.proxy.ModelConnectivityTestResult
 import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.quota.ClientKeyQuotaUsage
@@ -1437,15 +1438,20 @@ fun IqTestRunRecord.toResponse(includeDetail: Boolean): IqTestRunResponse {
     }
     val automaticJudge = toJudgeResult()
     val evaluation: IqTestEvaluation? = if (includeDetail && benchmarkType != null) {
-        evaluateIqTest(
-            benchmark = benchmarkType,
-            success = success,
-            responseText = responseText,
-            errorMessage = errorMessage,
-            structure = structure,
-            judgeResult = automaticJudge,
-            manualVerdict = manualVerdict,
-        )
+        if (benchmarkType == IqBenchmark.CANDY && judgeId != null && success) {
+            // 旧版路由总会写入 judgeId；新版糖果题不再解析判分器，据此保留旧记录的结论与预览。
+            evaluateLegacyCandy(responseText, verdict, expectedAnswer, matchedAnswer)
+        } else {
+            evaluateIqTest(
+                benchmark = benchmarkType,
+                success = success,
+                responseText = responseText,
+                errorMessage = errorMessage,
+                structure = structure,
+                judgeResult = automaticJudge,
+                manualVerdict = manualVerdict,
+            )
+        }
     } else {
         null
     }

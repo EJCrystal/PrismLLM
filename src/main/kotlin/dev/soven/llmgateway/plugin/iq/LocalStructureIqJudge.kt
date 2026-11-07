@@ -12,14 +12,7 @@ class LocalStructureIqJudge : IqJudge {
     override val description: String = "不访问外部服务，结构检查后由管理员评分。"
 
     override fun judge(request: IqJudgeRequest): IqJudgeResult {
-        if (request.benchmark == "candy") {
-            return IqJudgeResult(
-                verdict = IqJudgeVerdict.REVIEW,
-                label = "由 21 规则判定",
-                reason = "糖果题不参与 HTML 结构判分，最终结果以可见文字中的独立 21 为准。",
-                details = mapOf("mode" to "rule"),
-            )
-        }
+        // 糖果题由 AdminRoutes 直接读取 JSON 答案，不会走到判分器。
         val structure = request.structure
         return when {
             !structure.htmlPresent || !structure.svgPresent -> IqJudgeResult(
