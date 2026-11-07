@@ -16,7 +16,7 @@ class SearchConversationTest {
     private val searchService = WebSearchService(listOf(
         object : WebSearchBackend {
             override val name = "fake"
-            override suspend fun search(query: String, limit: Int) = SearchOutput(
+            override suspend fun search(query: String, limit: Int, allowedDomains: List<String>) = SearchOutput(
                 summary = "1. Go downloads — https://go.dev/dl/\nGo 1.27.1 is the latest release.",
                 hits = listOf(hit),
             )
@@ -115,7 +115,7 @@ class SearchConversationTest {
         val countingService = WebSearchService(listOf(
             object : WebSearchBackend {
                 override val name = "counting"
-                override suspend fun search(query: String, limit: Int): SearchOutput {
+                override suspend fun search(query: String, limit: Int, allowedDomains: List<String>): SearchOutput {
                     searches += 1
                     return SearchOutput("result for $query", listOf(hit))
                 }
@@ -190,6 +190,79 @@ class SearchConversationTest {
         assertEquals("read_file", tools[0].jsonObject["name"]!!.toString().trim('"'))
         assertEquals("web_search", tools[1].jsonObject["name"]!!.toString().trim('"'))
         assertEquals("function", tools[1].jsonObject["type"]!!.toString().trim('"'))
+    }
+
+    @Test
+    fun `refusal is preserved when the upstream declines`() = runBlocking {
+        val result = SearchConversation("web_search", searchService).run(
+            listOf(obj("""{"role":"user","content":"hi"}""")),
+            call = {
+                obj(
+                    """{"choices":[{"message":{"role":"assistant","content":null,"refusal":"I can't help with that."},"finish_reason":"stop"}]}""",
+                )
+            },
+        )
+
+        assertEquals(listOf(ConversationPart.Refusal("I can't help with that.")), result.parts)
+    }
+
+    @Test
+    fun `refusal in the final round is preserved`() = runBlocking {
+        val result = SearchConversation("web_search", searchService, maxRounds = 0).run(
+            listOf(obj("""{"role":"user","content":"hi"}""")),
+            call = {
+                chat(
+                    content = "",
+                    finish = "tool_calls",
+                    input = 10,
+                    output = 2,
+                    calls = """[{"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"latest go\"}"}}]""",
+                )
+            },
+            finalCall = {
+                obj(
+                    """{"choices":[{"message":{"role":"assistant","content":null,"refusal":"I can't help with that."},"finish_reason":"stop"}]}""",
+                )
+            },
+        )
+
+        assertEquals(ConversationPart.Refusal("I can't help with that."), result.parts.last())
+    }
+
+    @Test
+    fun `parts are emitted while the conversation is still running`() = runBlocking {
+        val events = mutableListOf<String>()
+        val result = SearchConversation("web_search", searchService).run(
+            listOf(obj("""{"role":"user","content":"latest go?"}""")),
+            call = { messages ->
+                events += "call:${messages.size}"
+                if (messages.size == 1) {
+                    chat(
+                        content = "",
+                        finish = "tool_calls",
+                        input = 10,
+                        output = 2,
+                        calls = """[{"id":"c1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"latest go\"}"}}]""",
+                    )
+                } else {
+                    chat(content = "Answer.", finish = "stop", input = 12, output = 3)
+                }
+            },
+            onPart = { events += "part:${it::class.simpleName}" },
+        )
+
+        assertEquals(listOf("call:1", "part:Search", "call:3", "part:Text"), events)
+        assertEquals(ConversationPart.Text("Answer."), result.parts.last())
+    }
+
+    @Test
+    fun `reads allowed domains from the built-in search tool`() {
+        val request = obj(
+            """{"model":"m","tools":[{"type":"web_search","filters":{"allowed_domains":["example.com"," docs.example.com "]}}]}""",
+        )
+
+        assertEquals(listOf("example.com", "docs.example.com"), webSearchAllowedDomains(request))
+        assertEquals(emptyList(), webSearchAllowedDomains(obj("""{"model":"m","tools":[{"type":"web_search"}]}""")))
     }
 
     @Test

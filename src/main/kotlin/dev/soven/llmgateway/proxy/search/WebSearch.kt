@@ -24,6 +24,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -45,10 +46,10 @@ data class SearchOutput(
 
 class WebSearchException(message: String, val status: Int? = null) : Exception(message)
 
-/** 一个可替换的搜索 API。 */
+/** 一个可替换的搜索 API。allowedDomains 非空时只保留这些域名下的结果。 */
 interface WebSearchBackend {
     val name: String
-    suspend fun search(query: String, limit: Int): SearchOutput
+    suspend fun search(query: String, limit: Int, allowedDomains: List<String> = emptyList()): SearchOutput
 }
 
 /**
@@ -62,7 +63,7 @@ class WebSearchService(
 ) {
     val available: Boolean get() = backends.isNotEmpty()
 
-    suspend fun search(query: String): SearchOutput {
+    suspend fun search(query: String, allowedDomains: List<String> = emptyList()): SearchOutput {
         val trimmed = query.trim()
         require(trimmed.isNotEmpty()) { "搜索词不能为空" }
         var last: Throwable? = null
@@ -70,7 +71,7 @@ class WebSearchService(
             // withTimeoutOrNull 只在自身超时返回 null；外层请求的总超时取消会继续抛出，
             // 不能被当成后端失败吞掉，否则超时会变成 502 而不是 504。
             val output = try {
-                withTimeoutOrNull(timeoutMs) { backend.search(trimmed, maxResults) }
+                withTimeoutOrNull(timeoutMs) { backend.search(trimmed, maxResults, allowedDomains) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -125,8 +126,13 @@ private data class SearchPage(
     val age: String? = null,
 )
 
-private fun pagesOutput(pages: List<SearchPage>, maxChars: Int, limit: Int): SearchOutput {
-    val cleaned = pages.filter { it.url.isNotBlank() }.map {
+private fun pagesOutput(
+    pages: List<SearchPage>,
+    maxChars: Int,
+    limit: Int,
+    allowedDomains: List<String> = emptyList(),
+): SearchOutput {
+    val cleaned = pages.filter { it.url.isNotBlank() && hostAllowed(it.url, allowedDomains) }.map {
         it.copy(
             title = it.title.ifBlank { it.url },
             text = clip(plain(it.text), maxChars),
@@ -142,6 +148,16 @@ private fun pagesOutput(pages: List<SearchPage>, maxChars: Int, limit: Int): Sea
         summary = summary,
         hits = cleaned.map { SearchHit(it.title, it.url, it.text, it.age) },
     )
+}
+
+/** 域名限制按后缀匹配：example.com 同时允许 www.example.com。 */
+private fun hostAllowed(url: String, allowedDomains: List<String>): Boolean {
+    if (allowedDomains.isEmpty()) return true
+    val host = runCatching { java.net.URI(url).host }.getOrNull()?.lowercase() ?: return false
+    return allowedDomains.any { domain ->
+        val wanted = domain.lowercase().trim().trimStart('.')
+        wanted.isNotEmpty() && (host == wanted || host.endsWith(".$wanted"))
+    }
 }
 
 private fun plain(value: String): String = value
@@ -191,7 +207,7 @@ private class TavilyBackend(
     override val name = "Tavily"
     private val base = (baseUrl ?: "https://api.tavily.com").trimEnd('/')
 
-    override suspend fun search(query: String, limit: Int): SearchOutput {
+    override suspend fun search(query: String, limit: Int, allowedDomains: List<String>): SearchOutput {
         val body = client.preparePost("$base/search") {
             header(HttpHeaders.Authorization, "Bearer $apiKey")
             contentType(ContentType.Application.Json)
@@ -199,6 +215,9 @@ private class TavilyBackend(
                 put("query", query)
                 put("max_results", limit)
                 put("search_depth", "basic")
+                if (allowedDomains.isNotEmpty()) {
+                    put("include_domains", buildJsonArray { allowedDomains.forEach { add(JsonPrimitive(it)) } })
+                }
             }.toString())
         }.execute { response -> ensureSuccess(response, name, apiKey) }
         val json = Json.parseToJsonElement(body).jsonObject
@@ -211,7 +230,7 @@ private class TavilyBackend(
                 text = item.string("content").orEmpty(),
             )
         }
-        return pagesOutput(pages, maxPageChars, limit)
+        return pagesOutput(pages, maxPageChars, limit, allowedDomains)
     }
 }
 
@@ -224,7 +243,7 @@ private class BraveBackend(
     override val name = "Brave Search"
     private val base = (baseUrl ?: "https://api.search.brave.com").trimEnd('/')
 
-    override suspend fun search(query: String, limit: Int): SearchOutput {
+    override suspend fun search(query: String, limit: Int, allowedDomains: List<String>): SearchOutput {
         val body = client.prepareGet("$base/res/v1/web/search") {
             header("X-Subscription-Token", apiKey)
             parameter("q", query)
@@ -240,7 +259,7 @@ private class BraveBackend(
                 text = item.string("description").orEmpty(),
             )
         }
-        return pagesOutput(pages, maxPageChars, limit)
+        return pagesOutput(pages, maxPageChars, limit, allowedDomains)
     }
 }
 
@@ -253,7 +272,7 @@ private class ExaBackend(
     override val name = "Exa"
     private val base = (baseUrl ?: "https://api.exa.ai").trimEnd('/')
 
-    override suspend fun search(query: String, limit: Int): SearchOutput {
+    override suspend fun search(query: String, limit: Int, allowedDomains: List<String>): SearchOutput {
         val body = client.preparePost("$base/search") {
             header("X-API-Key", apiKey)
             contentType(ContentType.Application.Json)
@@ -263,6 +282,9 @@ private class ExaBackend(
                 put("contents", buildJsonObject {
                     put("text", buildJsonObject { put("maxCharacters", maxPageChars) })
                 })
+                if (allowedDomains.isNotEmpty()) {
+                    put("includeDomains", buildJsonArray { allowedDomains.forEach { add(JsonPrimitive(it)) } })
+                }
             }.toString())
         }.execute { response -> ensureSuccess(response, name, apiKey) }
         val json = Json.parseToJsonElement(body).jsonObject
@@ -276,7 +298,7 @@ private class ExaBackend(
                 age = item.string("publishedDate"),
             )
         }
-        return pagesOutput(pages, maxPageChars, limit)
+        return pagesOutput(pages, maxPageChars, limit, allowedDomains)
     }
 }
 
@@ -288,7 +310,7 @@ private class SearxngBackend(
     override val name = "SearXNG"
     private val base = baseUrl.trimEnd('/')
 
-    override suspend fun search(query: String, limit: Int): SearchOutput {
+    override suspend fun search(query: String, limit: Int, allowedDomains: List<String>): SearchOutput {
         val body = client.prepareGet("$base/search") {
             parameter("q", query)
             parameter("format", "json")
@@ -304,7 +326,7 @@ private class SearxngBackend(
                 age = item.string("publishedDate"),
             )
         }.take(limit)
-        return pagesOutput(pages, maxPageChars, limit)
+        return pagesOutput(pages, maxPageChars, limit, allowedDomains)
     }
 }
 
@@ -317,7 +339,7 @@ private class DeepSeekBackend(
     override val name = "DeepSeek Search"
     private val base = (baseUrl ?: "https://api.deepseek.com").trimEnd('/')
 
-    override suspend fun search(query: String, limit: Int): SearchOutput {
+    override suspend fun search(query: String, limit: Int, allowedDomains: List<String>): SearchOutput {
         val body = client.preparePost("$base/v1/tools/search") {
             header(HttpHeaders.Authorization, "Bearer $apiKey")
             contentType(ContentType.Application.Json)
@@ -337,6 +359,6 @@ private class DeepSeekBackend(
                 age = item.string("date"),
             )
         }
-        return pagesOutput(pages, maxPageChars, limit)
+        return pagesOutput(pages, maxPageChars, limit, allowedDomains)
     }
 }

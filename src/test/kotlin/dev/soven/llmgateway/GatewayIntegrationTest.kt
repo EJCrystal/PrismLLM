@@ -3,6 +3,7 @@ package dev.soven.llmgateway
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.ThrowableProxyUtil
 import ch.qos.logback.core.AppenderBase
+import com.sun.net.httpserver.HttpServer
 import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.config.OAuthConfig
@@ -21,6 +22,7 @@ import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
+import dev.soven.llmgateway.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.oauth.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
@@ -47,6 +49,7 @@ import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
 import dev.soven.llmgateway.report.RetentionPolicy
 import dev.soven.llmgateway.resilience.CooldownPolicy
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
 import io.ktor.client.request.delete
@@ -54,7 +57,9 @@ import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.options
+import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -64,9 +69,12 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.hooks.ResponseBodyReadyForSend
 import io.ktor.server.application.install
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import io.ktor.util.cio.ChannelWriteException
+import io.ktor.utils.io.readUTF8Line
 import org.flywaydb.core.Flyway
 import org.flywaydb.core.api.MigrationVersion
 import kotlinx.coroutines.delay
@@ -100,6 +108,7 @@ import org.slf4j.LoggerFactory
 import org.testcontainers.containers.PostgreSQLContainer
 import java.io.IOException
 import java.math.BigDecimal
+import java.net.InetSocketAddress
 import java.nio.file.Path
 import java.sql.DriverManager
 import java.util.concurrent.atomic.AtomicBoolean
@@ -4763,6 +4772,82 @@ class GatewayIntegrationTest {
             assertEquals(0L, log.reasoningTokens)
             assertEquals(13L, log.totalTokens)
             assertNotNull(log.firstTokenMs)
+        }
+    }
+
+    @Test
+    fun `responses web search streams search events before the final answer`() = runBlocking {
+        val searchServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        searchServer.createContext("/search") { exchange ->
+            val response =
+                """{"results":[{"title":"Go downloads","url":"https://go.dev/dl/","content":"Go 1.27.1 is the latest release."}]}"""
+            val bytes = response.toByteArray()
+            exchange.responseHeaders.add("Content-Type", "application/json")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        searchServer.start()
+        // 测试宿主会缓冲整个响应体，无法观察增量到达；这里用真实 Netty 宿主和流式客户端验证首事件时间。
+        val server = embeddedServer(Netty, port = 0, host = "127.0.0.1") { app.install(this) }
+        server.start(wait = false)
+        val http = HttpClient(CIO)
+        try {
+            val channel = createChannel("web-search", "web-search")
+            exposeAsModel("fast-chat", channel to "gpt-4o-mini")
+            val key = createClientKey()
+            app.webSearchSettingsRepository.save(
+                WebSearchSettingsRecord(
+                    enabled = true,
+                    provider = "tavily",
+                    apiKey = "tvly-test",
+                    baseUrl = "http://127.0.0.1:${searchServer.address.port}",
+                    maxResults = 3,
+                    timeoutMs = 2_000,
+                    maxRounds = 2,
+                    maxPageChars = 2_000,
+                    updatedAt = 0,
+                ),
+            )
+            val port = server.engine.resolvedConnectors().first().port
+
+            http.preparePost("http://127.0.0.1:$port/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"model":"fast-chat","stream":true,"input":"latest go?","tools":[{"type":"web_search"}]}""",
+                )
+            }.execute { response ->
+                assertEquals(HttpStatusCode.OK, response.status)
+                val body = response.bodyAsChannel()
+                val events = mutableListOf<String>()
+                val raw = mutableListOf<String>()
+                val started = System.currentTimeMillis()
+                var searchAt = -1L
+                var textAt = -1L
+                while (true) {
+                    val line = body.readUTF8Line() ?: break
+                    raw += line
+                    if (!line.startsWith("event: ")) continue
+                    val event = line.removePrefix("event: ")
+                    val elapsed = System.currentTimeMillis() - started
+                    when (event) {
+                        "response.web_search_call.completed" -> searchAt = elapsed
+                        "response.output_text.delta" -> if (textAt < 0) textAt = elapsed
+                    }
+                    events += event
+                }
+
+                assertEquals("response.created", events.first())
+                assertTrue(events.contains("response.web_search_call.completed"), "RAW=${raw.joinToString("\n")}")
+                assertTrue(events.contains("response.completed"), "RAW=${raw.joinToString("\n")}")
+                // 最终回答延迟 1 秒返回：搜索事件必须在那之前到达，而不是等回答完成后一起回放。
+                assertTrue(searchAt >= 0, "searchAt=${searchAt}ms")
+                assertTrue(textAt - searchAt >= 500, "searchAt=${searchAt}ms textAt=${textAt}ms")
+            }
+        } finally {
+            http.close()
+            server.stop(0, 1_000)
+            searchServer.stop(0)
         }
     }
 

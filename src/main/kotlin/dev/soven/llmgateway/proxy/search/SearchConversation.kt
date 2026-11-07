@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory
 /** 搜索代理一轮对话里按顺序产出的内容。 */
 sealed interface ConversationPart {
     data class Text(val text: String) : ConversationPart
+    data class Refusal(val text: String) : ConversationPart
     data class Search(val query: String, val hits: List<SearchHit>) : ConversationPart
     data class ToolCall(val id: String, val name: String, val arguments: String) : ConversationPart
 }
@@ -52,6 +53,7 @@ class SearchConversation(
     private val syntheticToolName: String,
     private val searchService: WebSearchService,
     private val maxRounds: Int = 6,
+    private val allowedDomains: List<String> = emptyList(),
 ) {
     private val logger = LoggerFactory.getLogger(SearchConversation::class.java)
 
@@ -61,16 +63,22 @@ class SearchConversation(
      * @param finalCall 达到轮数上限后的收尾调用，调用方应移除合成搜索工具，
      *   避免 `tool_choice=required` 再次强制模型调用搜索。
      * @param onUsage 每轮拿到用量时立即回调，便于上游中途失败时仍能记录已产生的用量。
+     * @param onPart 每产出一段内容立即回调，流式响应可以边搜边发事件。
      */
     suspend fun run(
         initialMessages: List<JsonObject>,
         call: ChatCaller,
         followUpCall: ChatCaller = call,
         finalCall: ChatCaller = call,
+        onPart: suspend (ConversationPart) -> Unit = {},
         onUsage: (Usage) -> Unit = {},
     ): SearchConversationResult {
         val messages = initialMessages.toMutableList()
         val parts = mutableListOf<ConversationPart>()
+        suspend fun add(part: ConversationPart) {
+            parts += part
+            onPart(part)
+        }
         var usage: Usage? = null
         var finishReason: String? = null
         var round = 0
@@ -87,7 +95,9 @@ class SearchConversation(
             finishReason = (choice["finish_reason"] as? JsonPrimitive)?.contentOrNull
 
             val text = messageText(message)
-            if (text.isNotBlank()) parts += ConversationPart.Text(text)
+            if (text.isNotBlank()) add(ConversationPart.Text(text))
+            val refusal = messageRefusal(message)
+            if (refusal.isNotBlank()) add(ConversationPart.Refusal(refusal))
 
             val calls = parseToolCalls(message)
             if (calls.isEmpty()) {
@@ -96,7 +106,7 @@ class SearchConversation(
             val synthetic = calls.filter { it.name == syntheticToolName }
             val clientCalls = calls.filter { it.name != syntheticToolName }
             if (clientCalls.isNotEmpty()) {
-                clientCalls.forEach { parts += ConversationPart.ToolCall(it.id, it.name, it.arguments) }
+                clientCalls.forEach { add(ConversationPart.ToolCall(it.id, it.name, it.arguments)) }
                 return SearchConversationResult(parts, usage, finishReason)
             }
 
@@ -112,10 +122,12 @@ class SearchConversation(
                 val finalChoice = (final["choices"] as? JsonArray)?.firstOrNull() as? JsonObject
                 val finalMessage = finalChoice?.get("message") as? JsonObject
                 val finalText = finalMessage?.let(::messageText).orEmpty()
-                if (finalText.isNotBlank()) parts += ConversationPart.Text(finalText)
+                if (finalText.isNotBlank()) add(ConversationPart.Text(finalText))
+                val finalRefusal = finalMessage?.let(::messageRefusal).orEmpty()
+                if (finalRefusal.isNotBlank()) add(ConversationPart.Refusal(finalRefusal))
                 finalMessage?.let(::parseToolCalls).orEmpty()
                     .filter { it.name != syntheticToolName }
-                    .forEach { parts += ConversationPart.ToolCall(it.id, it.name, it.arguments) }
+                    .forEach { add(ConversationPart.ToolCall(it.id, it.name, it.arguments)) }
                 finishReason = (finalChoice?.get("finish_reason") as? JsonPrimitive)?.contentOrNull
                     ?: finishReason
                 return SearchConversationResult(parts, usage, finishReason)
@@ -144,7 +156,7 @@ class SearchConversation(
                 val (call, result) = results[index]
                 val output = result.getOrNull()
                 if (output != null) {
-                    parts += ConversationPart.Search(queryOf(call), output.hits)
+                    add(ConversationPart.Search(queryOf(call), output.hits))
                     messages += toolMessage(call.id, output.summary)
                 } else {
                     logger.warn("web search failed: {}", result.exceptionOrNull()?.message)
@@ -155,7 +167,7 @@ class SearchConversation(
     }
 
     private suspend fun searchResult(query: String): Result<SearchOutput> = try {
-        Result.success(searchService.search(query))
+        Result.success(searchService.search(query, allowedDomains))
     } catch (e: TimeoutCancellationException) {
         Result.failure(e)
     } catch (e: CancellationException) {
@@ -193,6 +205,9 @@ private fun messageText(message: JsonObject): String = when (val content = messa
     }.joinToString("")
     else -> ""
 }
+
+private fun messageRefusal(message: JsonObject): String =
+    (message["refusal"] as? JsonPrimitive)?.contentOrNull.orEmpty()
 
 private fun assistantMessage(text: String, calls: List<ParsedCall>): JsonObject = buildJsonObject {
     put("role", "assistant")
@@ -246,6 +261,21 @@ fun hasBuiltInWebSearch(request: JsonObject): Boolean =
         val type = ((raw as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull
         type?.startsWith("web_search") == true
     }
+
+/**
+ * 读取内置搜索工具上的 `filters.allowed_domains`。
+ * 内置工具会被剥离，限制必须由搜索后端或结果过滤来落实，不能静默丢弃。
+ */
+fun webSearchAllowedDomains(request: JsonObject): List<String> =
+    (request["tools"] as? JsonArray).orEmpty()
+        .mapNotNull { it as? JsonObject }
+        .firstOrNull { tool ->
+            ((tool["type"] as? JsonPrimitive)?.contentOrNull)?.startsWith("web_search") == true
+        }
+        ?.let { tool -> (tool["filters"] as? JsonObject)?.get("allowed_domains") as? JsonArray }
+        ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf(String::isNotEmpty) }
+        ?.distinct()
+        .orEmpty()
 
 /** 客户端已有同名工具时，合成工具改名，避免覆盖。 */
 fun syntheticWebSearchName(request: JsonObject): String {

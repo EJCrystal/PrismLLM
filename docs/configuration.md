@@ -64,7 +64,7 @@ openssl rand -base64 32
 
 ### Web 搜索代理
 
-启用后，网关会把 Responses 请求里的内置 `web_search` 改写成普通 `web_search` 函数工具，由网关调用搜索 API 代跑搜索，再以 `web_search_call` 返回给调用方。同时支持原生 Responses 与 Chat 的渠道也会改走该代理，保证配置搜索后端后内置 `web_search` 一定被执行；只支持 Responses 的渠道保持透传。未启用时保留原有协议转换行为。
+启用后，网关会把 Responses 请求里的内置 `web_search` 改写成普通 `web_search` 函数工具，由网关调用搜索 API 代跑搜索，再以 `web_search_call` 返回给调用方。同时支持原生 Responses 与 Chat 的渠道也会改走该代理，保证配置搜索后端后内置 `web_search` 一定被执行；只支持 Responses 的渠道保持透传。`filters.allowed_domains` 会传给搜索后端并再次过滤结果；上游的 `refusal` 会保留为 Responses 拒绝内容项；流式请求在搜索和文本产出时增量发送事件。未启用时保留原有协议转换行为。
 
 搜索后端可以在管理台「系统配置 → Web 搜索」中直接编辑，保存后立即生效，无需重启。下面的环境变量是该页面的默认值：管理台保存过设置后以管理台为准；管理台未保存的密钥或地址回退到环境变量。
 

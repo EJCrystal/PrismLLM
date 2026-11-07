@@ -44,6 +44,7 @@ import dev.soven.llmgateway.proxy.search.addUsage
 import dev.soven.llmgateway.proxy.search.hasBuiltInWebSearch
 import dev.soven.llmgateway.proxy.search.prepareResponsesSearchRequest
 import dev.soven.llmgateway.proxy.search.syntheticWebSearchName
+import dev.soven.llmgateway.proxy.search.webSearchAllowedDomains
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.KeyAutoDisablePendingException
 import dev.soven.llmgateway.resilience.CandidateCooldown
@@ -1196,16 +1197,26 @@ private suspend fun proxySearchStream(
     headerProfiles: List<UpstreamHeaderProfile>,
     webSearch: WebSearchRuntime,
 ) {
-    val result = runSearchConversation(
-        app, call, requestJson, candidate, timeoutMs, state, traceparent, globalOverrides, headerProfiles, webSearch,
-    )
     val responseId = "resp_" + UUID.randomUUID().toString().replace("-", "").take(24)
     val createdAt = System.currentTimeMillis() / 1000
+    val emitter = SearchSseEmitter(alias, responseId, createdAt)
     state.committed = true
     state.statusCode = HttpStatusCode.OK.value
     try {
         call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
-            renderSearchSse(result, alias, responseId, createdAt).forEach { writeSseLine(it) }
+            // 先发 response.created，客户端立即拿到首个事件；搜索与文本产出时再增量发送。
+            emitter.created().forEach { writeSseLine(it) }
+            val result = try {
+                runSearchConversation(
+                    app, call, requestJson, candidate, timeoutMs, state, traceparent, globalOverrides,
+                    headerProfiles, webSearch,
+                ) { part -> emitter.part(part).forEach { writeSseLine(it) } }
+            } catch (e: GatewayException) {
+                state.errorCode = e.code
+                emitter.failed(e).forEach { writeSseLine(it) }
+                return@respondBytesWriter
+            }
+            emitter.completed(result).forEach { writeSseLine(it) }
         }
     } catch (e: ChannelWriteException) {
         throw clientDisconnected()
@@ -1254,6 +1265,7 @@ private suspend fun runSearchConversation(
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
     webSearch: WebSearchRuntime,
+    onPart: suspend (dev.soven.llmgateway.proxy.search.ConversationPart) -> Unit = {},
 ): dev.soven.llmgateway.proxy.search.SearchConversationResult {
     val toolName = syntheticWebSearchName(requestJson)
     val prepared = prepareResponsesSearchRequest(requestJson, toolName)
@@ -1277,8 +1289,13 @@ private suspend fun runSearchConversation(
     var attemptUsage: Usage? = null
     try {
         return withTimeout(timeoutMs) {
-            SearchConversation(toolName, webSearch.service, webSearch.maxRounds)
-                .run(messages, caller, followUpCaller, finalCaller) { roundUsage ->
+            SearchConversation(
+                toolName,
+                webSearch.service,
+                webSearch.maxRounds,
+                webSearchAllowedDomains(requestJson),
+            )
+                .run(messages, caller, followUpCaller, finalCaller, onPart) { roundUsage ->
                     attemptUsage = addUsage(attemptUsage, roundUsage)
                     state.usage = addUsage(previousUsage, attemptUsage)
                 }

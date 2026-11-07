@@ -324,6 +324,16 @@ class FakeUpstream {
                 call.respondText(ERROR_500, ContentType.Application.Json, HttpStatusCode.InternalServerError)
                 return
             }
+            "web-search" -> {
+                // 搜索代理的多轮对话：首轮要求调用合成搜索工具，最终回答延迟返回，便于断言搜索事件先到。
+                if (requests.count { it.scenario == "web-search" } == 1) {
+                    call.respondText(SEARCH_TOOL_CALL_BODY, ContentType.Application.Json)
+                } else {
+                    delay(1_000)
+                    call.respondText(SEARCH_FINAL_BODY, ContentType.Application.Json)
+                }
+                return
+            }
         }
         if (!stream) {
             call.respondText(
@@ -770,6 +780,10 @@ class FakeUpstream {
             """{"id":"fake","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"""
         private const val NON_STREAM_BODY =
             """{"id":"fake","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}"""
+        private const val SEARCH_TOOL_CALL_BODY =
+            """{"id":"fake","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"latest go\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}"""
+        private const val SEARCH_FINAL_BODY =
+            """{"id":"fake","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Go 1.27.1 is out."},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":5,"total_tokens":25}}"""
         private const val REPORTED_MODEL_NON_STREAM_BODY =
             """{"id":"fake","object":"chat.completion","model":"reported-by-upstream","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}"""
         private const val REPORTED_MODEL_CHUNK =

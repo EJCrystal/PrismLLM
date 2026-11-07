@@ -66,6 +66,39 @@ class WebSearchTest {
     }
 
     @Test
+    fun `allowed domains restrict tavily results`() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/search") { exchange ->
+            val body = exchange.requestBody.readBytes().decodeToString()
+            assertTrue(body.contains("include_domains"), body)
+            val response = """{"results":[
+                {"title":"Allowed","url":"https://docs.example.com/a","content":"A"},
+                {"title":"Other","url":"https://other.com/b","content":"B"}]}"""
+            val bytes = response.toByteArray()
+            exchange.responseHeaders.add("Content-Type", "application/json")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val service = WebSearchService.fromConfig(
+                WebSearchConfig(
+                    enabled = true,
+                    provider = "tavily",
+                    apiKey = "tvly-test",
+                    baseUrl = "http://127.0.0.1:${server.address.port}",
+                ),
+                HttpClient(Java),
+            )
+            val result = service.search("latest go", listOf("example.com"))
+            assertEquals(listOf("https://docs.example.com/a"), result.hits.map { it.url })
+            assertFalse(result.summary.contains("other.com"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `a timed out backend falls back to the next one`() = runBlocking {
         val service = WebSearchService(
             listOf(
@@ -200,5 +233,5 @@ private class FakeBackend(
     override val name: String,
     private val answer: suspend () -> SearchOutput,
 ) : WebSearchBackend {
-    override suspend fun search(query: String, limit: Int): SearchOutput = answer()
+    override suspend fun search(query: String, limit: Int, allowedDomains: List<String>): SearchOutput = answer()
 }

@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.long
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -75,5 +76,39 @@ class SearchResponsesTest {
         assertTrue(text.contains("response.output_text.delta"))
         assertTrue(text.contains("response.completed"))
         assertTrue(text.contains("\"sequence_number\":0"))
+    }
+
+    @Test
+    fun `refusal parts render as refusal content`() {
+        val refused = SearchConversationResult(listOf(ConversationPart.Refusal("I can't help with that.")), null, "stop")
+
+        val json = renderSearchResponse(refused, "m", "resp_test", 1)
+        val content = json["output"]!!.jsonArray[0].jsonObject["content"]!!.jsonArray
+        assertEquals("refusal", content[0].jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("I can't help with that.", content[0].jsonObject["refusal"]!!.jsonPrimitive.content)
+
+        val text = renderSearchSse(refused, "m", "resp_test", 1).joinToString("\n")
+        assertTrue(text.contains("response.refusal.delta"))
+        assertTrue(text.contains("response.refusal.done"))
+        assertTrue(text.contains("response.completed"))
+    }
+
+    @Test
+    fun `emitter sends created before parts and keeps sequence numbers increasing`() {
+        val emitter = SearchSseEmitter("m", "resp_test", 1)
+
+        val created = emitter.created()
+        assertEquals("event: response.created", created.first())
+
+        val part = emitter.part(ConversationPart.Text("hi"))
+        assertTrue(part.joinToString("\n").contains("response.output_text.delta"))
+
+        val done = emitter.completed(SearchConversationResult(listOf(ConversationPart.Text("hi")), null, "stop"))
+        assertTrue(done.joinToString("\n").contains("response.completed"))
+
+        val sequences = (created + part + done)
+            .filter { it.startsWith("data: ") }
+            .map { Json.parseToJsonElement(it.removePrefix("data: ")).jsonObject["sequence_number"]!!.jsonPrimitive.int }
+        assertEquals((0 until sequences.size).toList(), sequences)
     }
 }
