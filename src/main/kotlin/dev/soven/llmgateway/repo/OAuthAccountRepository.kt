@@ -1,8 +1,10 @@
 package dev.soven.llmgateway.repo
 
+import dev.soven.llmgateway.db.Channels
 import dev.soven.llmgateway.db.OAuthAccountChannels
 import dev.soven.llmgateway.db.OAuthAccountModels
 import dev.soven.llmgateway.db.OAuthAccounts
+import dev.soven.llmgateway.domain.ChannelKind
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAuthState
@@ -55,6 +57,8 @@ data class NewOAuthAccount(
     val models: Collection<String> = emptyList(),
     val priority: Int = 1,
     val enabled: Boolean = true,
+    /** 可服务的 provider 先标记待关联，挂到系统渠道后再清除；中途失败可由启动对账修复。 */
+    val providerChannelPending: Boolean = false,
 )
 
 /** 重新授权或导入已有账号时更新的字段；refreshToken 为空表示保留原凭据。 */
@@ -97,6 +101,33 @@ class OAuthAccountRepository(private val database: Database) {
             .limit(limit.coerceIn(1, 20_000))
             .toList()
         loadRelations(rows)
+    }
+
+    /**
+     * 指定 provider 下待改挂到系统渠道的账号。按 provider 过滤，避免协议未实现的
+     * 账号长期占满批次、把可服务账号饿死；逐个搬迁，失败的下次启动继续。
+     */
+    suspend fun listPendingProviderChannel(
+        providers: Collection<OAuthProvider>,
+        limit: Int = 5_000,
+    ): List<OAuthAccountRecord> = suspendTransaction(database) {
+        if (providers.isEmpty()) return@suspendTransaction emptyList()
+        val rows = OAuthAccounts.selectAll()
+            .where {
+                (OAuthAccounts.providerChannelPending eq true) and
+                    (OAuthAccounts.provider inList providers.map { it.value })
+            }
+            .orderBy(OAuthAccounts.createdAt to SortOrder.ASC)
+            .limit(limit.coerceIn(1, 20_000))
+            .toList()
+        loadRelations(rows)
+    }
+
+    /** 账号已改挂到系统渠道；与改挂分开提交，重试时幂等。 */
+    suspend fun markProviderChannelSettled(accountId: String): Boolean = suspendTransaction(database) {
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+            it[providerChannelPending] = false
+        } > 0
     }
 
     /** 数据面候选：按渠道加载关联账号，包含停用账号，由路由阶段过滤。 */
@@ -179,6 +210,7 @@ class OAuthAccountRepository(private val database: Database) {
             it[authState] = OAuthAuthState.ACTIVE.value
             it[enabled] = input.enabled
             it[priority] = input.priority.coerceIn(1, 1_000)
+            it[providerChannelPending] = input.providerChannelPending
             it[refreshFailureCount] = 0
             it[lastRefreshError] = null
             it[lastRefreshedAt] = if (input.accessToken != null) now else null
@@ -476,10 +508,21 @@ class OAuthAccountRepository(private val database: Database) {
 
     private fun replaceChannels(accountId: String, channelIds: Collection<String>, now: Long) {
         OAuthAccountChannels.deleteWhere { OAuthAccountChannels.accountId eq accountId }
-        channelIds.map(String::trim).filter(String::isNotEmpty).distinct().forEach { channelId ->
+        val ids = channelIds.map(String::trim).filter(String::isNotEmpty).distinct()
+        // 托管标记决定账号是否受 provider 渠道约束；只有挂在系统渠道上才算托管。
+        val managedIds = if (ids.isEmpty()) {
+            emptySet()
+        } else {
+            Channels.selectAll()
+                .where { (Channels.id inList ids) and (Channels.kind eq ChannelKind.PROVIDER.value) }
+                .map { it[Channels.id] }
+                .toSet()
+        }
+        ids.forEach { channelId ->
             OAuthAccountChannels.insert {
                 it[OAuthAccountChannels.accountId] = accountId
                 it[OAuthAccountChannels.channelId] = channelId
+                it[managed] = channelId in managedIds
                 it[createdAt] = now
             }
         }

@@ -848,7 +848,8 @@ async function load(): Promise<boolean> {
       api.listModelDefaultPrices(),
     ])
     if (request !== listRevision) return false
-    channels.value = channelsData ?? []
+    // 系统按订阅 provider 置备的端点渠道由账号页维护，不在渠道列表展示。
+    channels.value = (channelsData ?? []).filter((channel) => channel.kind !== 'provider')
     prices.value = pricesData ?? []
     defaultPrices.value = defaultPricesData ?? []
     void loadHealth()

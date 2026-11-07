@@ -115,6 +115,16 @@ async function load() {
   }
 }
 
+function providerManagesChannel(providerId: string): boolean {
+  return providers.value.find((item) => item.id === providerId)?.managedChannel === true
+}
+
+const importChannelsManaged = computed(() => providerManagesChannel(importForm.provider))
+const settingsChannelsManaged = computed(() => {
+  const target = settingsTarget.value
+  return target ? providerManagesChannel(target.provider) : false
+})
+
 function providerSupportsLogin(providerId: string): boolean {
   return providers.value.find((item) => item.id === providerId)?.loginSupported === true
 }
@@ -191,7 +201,7 @@ async function beginLogin() {
       provider: importForm.provider,
       accountId: reauthTarget.value?.id ?? null,
       name: importForm.name.trim() || null,
-      channelIds: [...importForm.channelIds],
+      channelIds: importChannelsManaged.value ? [] : [...importForm.channelIds],
       proxyUrl: importForm.proxyUrl.trim() || null,
     })
     callbackUrl.value = ''
@@ -254,7 +264,9 @@ async function saveImport() {
         name: importForm.name.trim() || null,
         priority: Number(importForm.priority),
       })
-      await api.updateOAuthAccountChannels(reauthTarget.value.id, { channelIds: [...importForm.channelIds] })
+      if (!importChannelsManaged.value) {
+        await api.updateOAuthAccountChannels(reauthTarget.value.id, { channelIds: [...importForm.channelIds] })
+      }
     } else {
       await api.importOAuthAccount(payload)
     }
@@ -366,7 +378,9 @@ async function saveSettings() {
     })
     const models = settingsForm.models.split(/[,\n]/).map((item) => item.trim()).filter(Boolean)
     await api.updateOAuthAccountModels(settingsTarget.value.id, { models })
-    await api.updateOAuthAccountChannels(settingsTarget.value.id, { channelIds: [...settingsForm.channelIds] })
+    if (!settingsChannelsManaged.value) {
+      await api.updateOAuthAccountChannels(settingsTarget.value.id, { channelIds: [...settingsForm.channelIds] })
+    }
     notify('账号设置已更新')
     showSettings.value = false
     await load()
@@ -575,7 +589,11 @@ onBeforeUnmount(() => {
           </small>
         </label>
 
-        <div class="field">
+        <div v-if="importChannelsManaged" class="field">
+          <span>上游端点</span>
+          <p class="muted small">订阅账号只服务官方端点，系统会自动创建并维护对应渠道，无需手工关联。</p>
+        </div>
+        <div v-else class="field">
           <span>关联渠道</span>
           <div class="oauth-channel-picker">
             <label v-for="channel in channelOptions" :key="channel.id" class="checkbox-row">
@@ -710,7 +728,11 @@ onBeforeUnmount(() => {
           <span>模型授权</span>
           <textarea v-model="settingsForm.models" rows="3" placeholder="留空表示继承所关联渠道的全部模型；多个模型用逗号或换行分隔"></textarea>
         </label>
-        <div class="field">
+        <div v-if="settingsChannelsManaged" class="field">
+          <span>上游端点</span>
+          <p class="muted small">该账号的端点渠道由系统维护，不能手工调整。</p>
+        </div>
+        <div v-else class="field">
           <span>关联渠道</span>
           <div class="oauth-channel-picker">
             <label v-for="channel in channelOptions" :key="channel.id" class="checkbox-row">
