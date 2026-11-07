@@ -141,6 +141,17 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy keeps inline text contiguous`() {
+        val splitAnswer = """<html><body><p>答案是 2<span>1</span> 颗。</p></body></html>"""
+        val embeddedAnswer = """<html><body><p>我取了 1<span>21</span> 颗。</p></body></html>"""
+        val blockBoundary = """<html><body><p>分为 2</p><p>1 颗。</p></body></html>"""
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, splitAnswer).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, embeddedAnswer).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, blockBoundary).verdict)
+    }
+
+    @Test
     fun `candy keeps aria hidden but visible text`() {
         val html = """
             <html><body><p aria-hidden="true">答案是 21 颗。</p></body></html>

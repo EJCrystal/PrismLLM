@@ -247,10 +247,15 @@ internal fun extractHtmlDocument(raw: String?): String? {
 internal fun extractVisibleText(raw: String): String {
     val html = extractHtmlDocument(raw) ?: return raw
     return removeHiddenHtml(html)
-        .replace(Regex("(?is)<script\\b[^>]*>.*?</script>"), " ")
-        .replace(Regex("(?is)<style\\b[^>]*>.*?</style>"), " ")
+        .replace(SCRIPT_BLOCK_PATTERN, " ")
+        .replace(STYLE_BLOCK_PATTERN, " ")
         .replace(Regex("(?is)<!--.*?-->"), " ")
-        .replace(Regex("(?is)<[^>]+>"), " ")
+        .replace(Regex("(?is)<![^>]*>|<\\?[^>]*\\?>"), " ")
+        // 只给块级元素补空格；span、tspan 等内联标签直接移除，
+        // 保证“2<span>1</span>”仍按页面实际显示的 21 参与判定。
+        .replace(HTML_TAG_PATTERN) { match ->
+            if (match.groupValues[2].lowercase() in BLOCK_LEVEL_TAGS) " " else ""
+        }
         .let(::decodeHtmlEntities)
         .replace(Regex("\\s+"), " ")
         .trim()
@@ -327,7 +332,15 @@ private val CANDY_CHINESE_ANSWER_PATTERN = Regex(
 )
 
 private val NUMERIC_CHARACTER_REFERENCE_PATTERN = Regex("&#(?:[xX]([0-9a-fA-F]+)|([0-9]+));?")
+private val SCRIPT_BLOCK_PATTERN = Regex("""(?is)<script\b[^>]*>.*?</script\s*>""")
 private val STYLE_BLOCK_PATTERN = Regex("(?is)<style\\b[^>]*>(.*?)</style\\s*>")
+private val HTML_TAG_PATTERN = Regex("""(?is)<(/?)([a-z][\w:.-]*)(?:"[^"]*"|'[^']*'|[^'">])*>""")
+private val BLOCK_LEVEL_TAGS = setOf(
+    "address", "article", "aside", "blockquote", "body", "br", "caption", "dd", "details", "dialog",
+    "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
+    "h5", "h6", "head", "header", "hgroup", "hr", "html", "li", "main", "nav", "ol", "p", "pre",
+    "section", "summary", "svg", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "ul",
+)
 private val CSS_RULE_PATTERN = Regex("(?is)([^{}]+)\\{([^{}]*)\\}")
 private val HIDDEN_DECLARATION_PATTERN = Regex("(?i)(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden)")
 private val CLASS_SELECTOR_PATTERN = Regex("^\\.[A-Za-z_][\\w-]*$")

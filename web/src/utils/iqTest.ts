@@ -34,12 +34,8 @@ export function withIqPreviewCsp(html: string): string {
       .replace(/<meta[^>]+http-equiv=["']?refresh["']?[^>]*>/gi, '')
       .replace(/<base[^>]*>/gi, ''),
   )
-  if (/<head(?:\s[^>]*)?>/i.test(sanitized)) {
-    return sanitized.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${meta}`)
-  }
-  if (/<html(?:\s[^>]*)?>/i.test(sanitized)) {
-    return sanitized.replace(/<html(?:\s[^>]*)?>/i, (tag) => `${tag}<head>${meta}</head>`)
-  }
+  // 始终把可信 CSP 放进文档最前面的 head，再拼接模型内容。
+  // 这样即使内容里的注释、title/style 文本伪造了 <head>，CSP 也不会被注入到那里。
   return `<!DOCTYPE html><html><head>${meta}</head><body>${sanitized}</body></html>`
 }
 

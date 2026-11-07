@@ -67,6 +67,31 @@ class SvgRenderSupportTest {
     }
 
     @Test
+    fun `does not synthesize blocked tags from removed attributes`() {
+        val payload = """
+            <svg xmlns="http://www.w3.org/2000/svg"><foreignObject>
+            <me href="http://x"ta http-equiv="refresh" content="0;url=http://127.0.0.1:8080/private">
+            </foreignObject></svg>
+        """.trimIndent()
+
+        val cleaned = SvgRenderSupport.sanitizeSvg(payload)
+
+        assertFalse(cleaned.contains(Regex("""<meta[\s/>]""", RegexOption.IGNORE_CASE)), cleaned)
+        assertFalse(cleaned.contains("http-equiv", ignoreCase = true))
+    }
+
+    @Test
+    fun `keeps fragment and image data references`() {
+        val cleaned = SvgRenderSupport.sanitizeSvg(
+            """<svg xmlns="http://www.w3.org/2000/svg"><use href="#wheel"/>""" +
+                """<image href="data:image/png;base64,AA=="/></svg>""",
+        )
+
+        assertTrue(cleaned.contains("href=\"#wheel\""))
+        assertTrue(cleaned.contains("data:image/png"))
+    }
+
+    @Test
     fun `strips css imports and external urls`() {
         val css = """
             @import url("file:///etc/passwd");

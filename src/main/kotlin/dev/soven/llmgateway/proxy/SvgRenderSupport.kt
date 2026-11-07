@@ -41,17 +41,11 @@ internal object SvgRenderSupport {
 
     private val scriptBlock = Regex("(?is)<script\\b[^>]*>.*?</script>|<script\\b[^>]*/>")
     private val framedBlock = Regex("(?is)<(?:iframe|object|embed)\\b[^>]*>.*?</(?:iframe|object|embed)>")
-    private val framedTag = Regex("(?is)<(?:iframe|object|embed|link|base|meta)\\b[^>]*/?>")
-    private val externalImageOrUse = Regex(
-        "(?is)<(?:image|use)\\b[^>]*\\b(?:xlink:)?href\\s*=\\s*[\"']\\s*$EXTERNAL_URL[^\"']*[\"'][^>]*/?>",
-    )
-    private val externalHref = Regex("(?is)\\s(?:xlink:)?href\\s*=\\s*[\"']\\s*$EXTERNAL_URL[^\"']*[\"']")
-    private val scriptHref = Regex("(?is)\\s(?:xlink:)?href\\s*=\\s*[\"']\\s*$SCRIPT_URL[^\"']*[\"']")
-    private val externalSrc = Regex("(?is)\\ssrc\\s*=\\s*[\"']\\s*(?:$EXTERNAL_URL|$SCRIPT_URL)[^\"']*[\"']")
+    private val tagToken = Regex("""(?is)<(/?)([a-z][\w:.-]*)((?:"[^"]*"|'[^']*'|[^'">])*?)(/?)>""")
+    private val attributeToken = Regex("""([^\s=/>]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]*))?""")
     private val cssImport = Regex("(?is)@import\\s+(?:url\\()?\\s*[\"']?[^;]+;")
     private val externalCssUrl = Regex("(?is)url\\(\\s*[\"']?\\s*$EXTERNAL_URL[^)]*\\)")
     private val scriptCssUrl = Regex("(?is)url\\(\\s*[\"']?\\s*$SCRIPT_URL[^)]*\\)")
-    private val eventAttribute = Regex("(?is)\\son[a-z]+\\s*=\\s*(?:\"[^\"]*\"|'[^']*')")
 
     fun sanitizeSvg(svg: String): String {
         var value = svg
@@ -59,22 +53,78 @@ internal object SvgRenderSupport {
             .replace(Regex("(?is)<!ENTITY[^>]*>"), "")
             .replace(scriptBlock, "")
             .replace(framedBlock, "")
-            .replace(framedTag, "")
-            // 引用外部地址的图片/复用元素整体移除，避免渲染器尝试加载远程或本地资源。
-            .replace(externalImageOrUse, "")
-            .replace(externalHref, "")
-            .replace(scriptHref, "")
-            .replace(externalSrc, "")
+            // 逐标签重建属性，避免“删除 href 后把两个属性拼成新标签名”的绕过。
+            .replace(tagToken, ::sanitizeTag)
             .replace(cssImport, "")
             .replace(externalCssUrl, "none")
             .replace(scriptCssUrl, "none")
-            // 浏览器会调度 onload；移除内联事件属性，避免触发脚本入口。
-            .replace(eventAttribute, "")
         if (!Regex("(?is)<svg\\b[^>]*\\bxmlns\\s*=").containsMatchIn(value)) {
             value = value.replaceFirst(Regex("(?is)<svg\\b"), "<svg xmlns=\"http://www.w3.org/2000/svg\"")
         }
         return value
     }
+
+    private fun sanitizeTag(match: MatchResult): String {
+        val closing = match.groupValues[1].isNotEmpty()
+        val name = match.groupValues[2]
+        val normalized = name.lowercase()
+        if (normalized in BLOCKED_TAGS) return ""
+        if (closing) return "</$name>"
+        var droppedResource = false
+        val kept = parseAttributes(match.groupValues[3]).filter { attribute ->
+            val attributeName = attribute.name.lowercase()
+            when {
+                // 浏览器会调度 onload；内联事件属性一律移除。
+                attributeName.startsWith("on") -> false
+                attributeName in UNSAFE_ATTRIBUTES -> false
+                attributeName in RESOURCE_ATTRIBUTES && !isSafeResource(attribute.value) -> {
+                    droppedResource = true
+                    false
+                }
+                else -> true
+            }
+        }
+        // 引用外部地址的图片/复用元素整体移除，避免渲染器尝试加载远程或本地资源。
+        if (droppedResource && normalized in EXTERNAL_REFERENCE_ELEMENTS) return ""
+        val attributes = kept.joinToString("") { renderAttribute(it) }
+        return if (match.groupValues[4].isNotEmpty()) "<$name$attributes/>" else "<$name$attributes>"
+    }
+
+    private fun parseAttributes(raw: String): List<TagAttribute> =
+        attributeToken.findAll(raw).mapNotNull { match ->
+            val name = match.groupValues[1]
+            if (name.isBlank() || name.startsWith("/")) {
+                null
+            } else {
+                TagAttribute(name, match.groups[2]?.value)
+            }
+        }.toList()
+
+    private fun renderAttribute(attribute: TagAttribute): String {
+        val raw = attribute.value ?: return " ${attribute.name}"
+        val value = when {
+            raw.length >= 2 && raw.first() == '"' && raw.last() == '"' -> raw.substring(1, raw.length - 1)
+            raw.length >= 2 && raw.first() == '\'' && raw.last() == '\'' -> raw.substring(1, raw.length - 1)
+            else -> raw
+        }
+        val safeValue = if (attribute.name.equals("style", ignoreCase = true)) sanitizeCss(value) else value
+        return " ${attribute.name}=\"${safeValue.replace("\"", "&quot;").replace("<", "&lt;")}\""
+    }
+
+    private fun isSafeResource(raw: String?): Boolean {
+        if (raw == null) return true
+        val value = raw.trim().trim('"', '\'').trim().lowercase()
+        // 只允许文档内引用和图片数据；相对地址也可能落到网关本机。
+        return value.isEmpty() || value.startsWith("#") || value.startsWith("data:image/")
+    }
+
+    private data class TagAttribute(val name: String, val value: String?)
+
+    private val BLOCKED_TAGS = setOf("script", "iframe", "object", "embed", "link", "base", "meta")
+    private val UNSAFE_ATTRIBUTES =
+        setOf("srcdoc", "http-equiv", "formaction", "action", "target", "ping", "srcset")
+    private val RESOURCE_ATTRIBUTES = setOf("href", "xlink:href", "src", "poster", "background")
+    private val EXTERNAL_REFERENCE_ELEMENTS = setOf("image", "use")
 
     fun sanitizeCss(css: String): String = css
         .replace(Regex("(?is)</style"), "")
