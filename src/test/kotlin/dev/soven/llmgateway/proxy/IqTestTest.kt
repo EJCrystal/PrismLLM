@@ -343,6 +343,29 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy treats display global values as visible`() {
+        val initial = """<html><body><p style="display:none;display:initial">答案是 21 颗。</p></body></html>"""
+        val unset = """<html><body><p style="display:none;display:unset">答案是 21 颗。</p></body></html>"""
+        val multiKeyword = """<html><body><p style="display:none;display:block flow">答案是 21 颗。</p></body></html>"""
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, initial).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, unset).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, multiKeyword).verdict)
+    }
+
+    @Test
+    fun `candy ignores collapsed details content`() {
+        val closed = """
+            <html><body><details><summary>推理过程</summary>21</details>
+            <p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+        val open = """<html><body><details open><summary>推理过程</summary>21</details></body></html>"""
+
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, closed).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, open).verdict)
+    }
+
+    @Test
     fun `candy ignores invalid visibility declarations`() {
         val invalidDisplay = """<html><body><p style="display:none;display:invalid">答案是 21 颗。</p></body></html>"""
         val invalidVisibility =

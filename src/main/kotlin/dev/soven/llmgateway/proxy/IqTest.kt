@@ -547,7 +547,13 @@ private fun visibleText(
                 val visibilityHidden = state.visibilityHidden ?: visibilityHiddenFromParent
                 val block = node.isBlock
                 if (block) builder.append(' ')
-                node.childNodes().forEach { child -> visit(child, visibilityHidden) }
+                if (node.normalName() == "details" && !node.hasAttr("open")) {
+                    // 未展开的 details 只渲染第一个 summary，其余内容处于折叠状态。
+                    node.children().firstOrNull { it.normalName() == "summary" }
+                        ?.let { visit(it, visibilityHidden) }
+                } else {
+                    node.childNodes().forEach { child -> visit(child, visibilityHidden) }
+                }
                 if (block) builder.append(' ')
             }
         }
@@ -790,9 +796,11 @@ private fun parseVisibilityDeclarations(block: String): List<VisibilityDeclarati
         val value = IMPORTANT_DECLARATION_PATTERN.replace(rawValue, "").trim().lowercase()
         val hidden = when (property) {
             // 浏览器会忽略无效的 display 值，不能让 `display:none;display:invalid` 覆盖前一条声明。
-            "display" -> when (value) {
-                "none" -> true
-                in DISPLAY_VISIBLE_VALUES -> false
+            "display" -> when {
+                value == "none" -> true
+                // initial/unset/revert/inherit 对普通元素都是可见的默认布局。
+                value in DISPLAY_DEFAULT_VALUES -> false
+                value.isNotEmpty() && value.split(Regex("\\s+")).all { it in DISPLAY_VISIBLE_VALUES } -> false
                 else -> return@mapNotNull null
             }
             else -> when (value) {
@@ -858,8 +866,9 @@ private val VISIBILITY_DECLARATION_PATTERN = Regex("(?i)(?:^|[;{])\\s*(?:display
 private val DYNAMIC_VISIBILITY_PATTERN =
     Regex("(?i)(?:^|[;{])\\s*(?:display|visibility)\\s*:[^;{}]*\\bvar\\s*\\(")
 private val MEDIA_LENGTH_PATTERN = Regex("^([0-9]*\\.?[0-9]+)(px|em|rem)?$")
+private val DISPLAY_DEFAULT_VALUES = setOf("initial", "unset", "revert", "revert-layer", "inherit")
 private val DISPLAY_VISIBLE_VALUES = setOf(
-    "block", "inline", "inline-block", "flow-root", "flex", "inline-flex", "grid", "inline-grid",
+    "block", "inline", "inline-block", "flow", "flow-root", "flex", "inline-flex", "grid", "inline-grid",
     "table", "inline-table", "table-row-group", "table-header-group", "table-footer-group",
     "table-row", "table-cell", "table-column-group", "table-column", "table-caption",
     "list-item", "contents", "run-in", "ruby", "ruby-base", "ruby-text",
