@@ -4,6 +4,9 @@ import dev.soven.llmgateway.spi.iq.IqJudgeResult
 import dev.soven.llmgateway.spi.iq.IqJudgeVerdict
 import dev.soven.llmgateway.spi.iq.IqStructureCheck
 import dev.soven.llmgateway.spi.iq.IqStructureSummary
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import java.text.Normalizer
 
 /**
@@ -246,71 +249,99 @@ internal fun extractHtmlDocument(raw: String?): String? {
  */
 internal fun extractVisibleText(raw: String): String {
     val html = extractHtmlDocument(raw) ?: return raw
-    return removeHiddenHtml(html)
-        .replace(SCRIPT_BLOCK_PATTERN, " ")
-        .replace(STYLE_BLOCK_PATTERN, " ")
-        .replace(Regex("(?is)<!--.*?-->"), " ")
-        .replace(Regex("(?is)<![^>]*>|<\\?[^>]*\\?>"), " ")
-        // 只给块级元素补空格；span、tspan 等内联标签直接移除，
-        // 保证“2<span>1</span>”仍按页面实际显示的 21 参与判定。
-        .replace(HTML_TAG_PATTERN) { match ->
-            if (match.groupValues[2].lowercase() in BLOCK_LEVEL_TAGS) " " else ""
-        }
-        .let(::decodeHtmlEntities)
-        .replace(Regex("\\s+"), " ")
-        .trim()
+    val document = Jsoup.parse(html)
+    val rules = parseVisibilityRules(document)
+    document.select("script, style, template").remove()
+    val body = document.body() ?: return ""
+    // 从最深层开始删除，jsoup 的 remove() 会带走整棵隐藏子树，嵌套同名标签不会漏掉。
+    body.getAllElements().asReversed().forEach { element ->
+        if (element !== body && isElementHidden(element, rules)) element.remove()
+    }
+    return body.text().trim()
 }
 
-/**
- * 删除 `hidden`、内联隐藏样式以及简单 CSS 规则命中的元素，避免隐藏文字参与答案判定。
- * 只识别单选择器规则；复杂选择器不在答案判定的安全边界内。
- */
-private fun removeHiddenHtml(html: String): String {
-    val selectorStates = mutableMapOf<String, CssVisibilityState>()
-    STYLE_BLOCK_PATTERN.findAll(html).forEach { style ->
-        CSS_RULE_PATTERN.findAll(style.groupValues[1]).forEach { rule ->
-            val declarations = parseVisibilityDeclarations(rule.groupValues[2])
+private fun parseVisibilityRules(document: Document): List<VisibilityRule> {
+    val rules = mutableListOf<VisibilityRule>()
+    var order = 0
+    document.select("style").forEach { style ->
+        CSS_RULE_PATTERN.findAll(style.data()).forEach { match ->
+            val declarations = parseVisibilityDeclarations(match.groupValues[2])
             if (declarations.isNotEmpty()) {
-                rule.groupValues[1].split(',').map(String::trim).forEach { selector ->
-                    val state = selectorStates.getOrPut(selector) { CssVisibilityState() }
-                    declarations.forEach(state::apply)
+                val ruleOrder = order++
+                splitCssSelectors(match.groupValues[1]).forEach { selector ->
+                    rules += VisibilityRule(selector, selectorSpecificity(selector), ruleOrder, declarations)
                 }
             }
         }
     }
-    val hiddenClasses = mutableSetOf<String>()
-    val hiddenIds = mutableSetOf<String>()
-    val hiddenTags = mutableSetOf<String>()
-    selectorStates.forEach { (selector, state) ->
-        if (state.hidden) {
-            when {
-                CLASS_SELECTOR_PATTERN.matches(selector) -> hiddenClasses += selector.drop(1)
-                ID_SELECTOR_PATTERN.matches(selector) -> hiddenIds += selector.drop(1)
-                TAG_SELECTOR_PATTERN.matches(selector) -> hiddenTags += selector.lowercase()
-            }
-        }
-    }
-    val patterns = buildList {
-        add(HIDDEN_ATTRIBUTE_ELEMENT_PATTERN)
-        hiddenClasses.forEach { add(classElementPattern(it)) }
-        hiddenIds.forEach { add(idElementPattern(it)) }
-        hiddenTags.forEach { add(tagElementPattern(it)) }
-    }
-    // 内联样式按声明顺序和 !important 计算最终可见性，后写的 display:block 可以覆盖 display:none。
-    var result = html.replace(STYLE_ATTRIBUTE_ELEMENT_PATTERN) { match ->
-        if (isInlineStyleHidden(match.groupValues[4])) " " else match.value
-    }
-    while (true) {
-        val before = result
-        patterns.forEach { pattern -> result = pattern.replace(result, " ") }
-        if (result == before) return result
-    }
+    return rules
 }
 
-private fun isInlineStyleHidden(style: String): Boolean {
-    val state = CssVisibilityState()
-    parseVisibilityDeclarations(style).forEach(state::apply)
-    return state.hidden
+private fun isElementHidden(element: Element, rules: List<VisibilityRule>): Boolean {
+    var display: CssVisibilityValue? = null
+    var visibility: CssVisibilityValue? = null
+    fun apply(declaration: VisibilityDeclaration, specificity: Int, order: Int) {
+        val value = CssVisibilityValue(declaration.hidden, declaration.important, specificity, order)
+        when (declaration.property) {
+            "display" -> if (value.beats(display)) display = value
+            "visibility" -> if (value.beats(visibility)) visibility = value
+        }
+    }
+    rules.forEach { rule ->
+        if (element.matchesSelector(rule.selector)) {
+            rule.declarations.forEach { apply(it, rule.specificity, rule.order) }
+        }
+    }
+    // 内联样式优先级高于样式表；!important 的比较在 CssVisibilityValue 内统一处理。
+    parseVisibilityDeclarations(element.attr("style")).forEach {
+        apply(it, INLINE_STYLE_SPECIFICITY, Int.MAX_VALUE)
+    }
+    if (display?.hidden == true || visibility?.hidden == true) return true
+    // hidden 属性等价于 UA 的 display:none，只有显式 display:block 等声明能覆盖它。
+    return element.hasAttr("hidden") && display?.hidden != false
+}
+
+private fun Element.matchesSelector(selector: String): Boolean =
+    try {
+        `is`(selector)
+    } catch (_: Exception) {
+        false
+    }
+
+private fun splitCssSelectors(selectorList: String): List<String> {
+    val selectors = mutableListOf<String>()
+    val current = StringBuilder()
+    var depth = 0
+    selectorList.forEach { char ->
+        when (char) {
+            '(', '[' -> {
+                depth += 1
+                current.append(char)
+            }
+            ')', ']' -> {
+                if (depth > 0) depth -= 1
+                current.append(char)
+            }
+            ',' -> if (depth == 0) {
+                current.toString().trim().takeIf(String::isNotEmpty)?.let(selectors::add)
+                current.clear()
+            } else {
+                current.append(char)
+            }
+            else -> current.append(char)
+        }
+    }
+    current.toString().trim().takeIf(String::isNotEmpty)?.let(selectors::add)
+    return selectors
+}
+
+/** 只用于 display/visibility 的层叠比较，按 ID、类、元素三档近似计算优先级。 */
+private fun selectorSpecificity(selector: String): Int {
+    val normalized = selector.replace(Regex("\"[^\"]*\"|'[^']*'"), "")
+    val ids = Regex("#[\\w-]+").findAll(normalized).count()
+    val classes = Regex("\\.[\\w-]+|\\[[^]]*]|:(?!:)[\\w-]+").findAll(normalized).count()
+    val elements = Regex("(?:^|[\\s>+~])([a-zA-Z][\\w-]*)").findAll(normalized).count()
+    return ids * 100 + classes * 10 + elements
 }
 
 private fun parseVisibilityDeclarations(block: String): List<VisibilityDeclaration> =
@@ -330,30 +361,12 @@ private fun parseVisibilityDeclarations(block: String): List<VisibilityDeclarati
         )
     }.toList()
 
-private class CssVisibilityState {
-    private var displayHidden: Boolean? = null
-    private var displayImportant = false
-    private var visibilityHidden: Boolean? = null
-    private var visibilityImportant = false
-
-    val hidden: Boolean
-        get() = displayHidden == true || visibilityHidden == true
-
-    fun apply(declaration: VisibilityDeclaration) {
-        when (declaration.property) {
-            "display" -> {
-                if (displayImportant && !declaration.important) return
-                displayHidden = declaration.hidden
-                displayImportant = declaration.important
-            }
-            "visibility" -> {
-                if (visibilityImportant && !declaration.important) return
-                visibilityHidden = declaration.hidden
-                visibilityImportant = declaration.important
-            }
-        }
-    }
-}
+private data class VisibilityRule(
+    val selector: String,
+    val specificity: Int,
+    val order: Int,
+    val declarations: List<VisibilityDeclaration>,
+)
 
 private data class VisibilityDeclaration(
     val property: String,
@@ -361,34 +374,21 @@ private data class VisibilityDeclaration(
     val important: Boolean,
 )
 
-/** 解码数字字符引用和常见命名实体，避免 `&#50;&#49;` 这类答案被漏判。 */
-private fun decodeHtmlEntities(text: String): String {
-    val numericDecoded = NUMERIC_CHARACTER_REFERENCE_PATTERN.replace(text) { match ->
-        val hex = match.groupValues[1]
-        val decimal = match.groupValues[2]
-        val codePoint = if (hex.isNotEmpty()) hex.toIntOrNull(16) else decimal.toIntOrNull()
-        if (codePoint == null || codePoint !in 1..0x10FFFF || codePoint in 0xD800..0xDFFF) {
-            match.value
-        } else {
-            String(Character.toChars(codePoint))
-        }
+private data class CssVisibilityValue(
+    val hidden: Boolean,
+    val important: Boolean,
+    val specificity: Int,
+    val order: Int,
+) {
+    fun beats(other: CssVisibilityValue?): Boolean {
+        if (other == null) return true
+        if (important != other.important) return important
+        if (specificity != other.specificity) return specificity > other.specificity
+        return order >= other.order
     }
-    return numericDecoded
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&#39;", "'")
-        .replace("&hellip;", "…")
-        .replace("&mdash;", "—")
-        .replace("&ndash;", "–")
-        .replace("&times;", "×")
-        .replace("&divide;", "÷")
-        .replace("&copy;", "©")
-        .replace("&reg;", "®")
-        .replace("&amp;", "&")
 }
+
+private const val INLINE_STYLE_SPECIFICITY = 1_000
 
 private const val CANDY_EXPECTED_ANSWER = 21
 private val CANDY_CHINESE_ANSWER_PATTERN = Regex(
@@ -396,42 +396,9 @@ private val CANDY_CHINESE_ANSWER_PATTERN = Regex(
         "(?![\\d〇零一二三四五六七八九十百千万亿两廿])",
 )
 
-private val NUMERIC_CHARACTER_REFERENCE_PATTERN = Regex("&#(?:[xX]([0-9a-fA-F]+)|([0-9]+));?")
-private val SCRIPT_BLOCK_PATTERN = Regex("""(?is)<script\b[^>]*>.*?</script\s*>""")
-private val STYLE_BLOCK_PATTERN = Regex("(?is)<style\\b[^>]*>(.*?)</style\\s*>")
-private val HTML_TAG_PATTERN = Regex("""(?is)<(/?)([a-z][\w:.-]*)(?:"[^"]*"|'[^']*'|[^'">])*>""")
-private val BLOCK_LEVEL_TAGS = setOf(
-    "address", "article", "aside", "blockquote", "body", "br", "caption", "dd", "details", "dialog",
-    "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
-    "h5", "h6", "head", "header", "hgroup", "hr", "html", "li", "main", "nav", "ol", "p", "pre",
-    "section", "summary", "svg", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "ul",
-)
 private val CSS_RULE_PATTERN = Regex("(?is)([^{}]+)\\{([^{}]*)\\}")
 private val CSS_DECLARATION_PATTERN = Regex("(?i)([a-z-]+)\\s*:\\s*([^;{}]+)")
 private val IMPORTANT_DECLARATION_PATTERN = Regex("(?i)!\\s*important")
-private val CLASS_SELECTOR_PATTERN = Regex("^\\.[A-Za-z_][\\w-]*$")
-private val ID_SELECTOR_PATTERN = Regex("^#[A-Za-z_][\\w-]*$")
-private val TAG_SELECTOR_PATTERN = Regex("^[A-Za-z][\\w-]*$")
-
-private val HIDDEN_ATTRIBUTE_ELEMENT_PATTERN = Regex(
-    "(?is)<([a-zA-Z][\\w:-]*)\\b[^>]*\\shidden(?:\\s*=\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s>]+))?[^>]*>" +
-        ".*?</\\1\\s*>",
-)
-private val STYLE_ATTRIBUTE_ELEMENT_PATTERN = Regex(
-    """(?is)<([a-z][\w:-]*)((?:"[^"]*"|'[^']*'|[^'">])*?\sstyle\s*=\s*(["'])(.*?)\3(?:"[^"]*"|'[^']*'|[^'">])*)>.*?</\1\s*>""",
-)
-
-private fun classElementPattern(name: String): Regex = Regex(
-    "(?is)<([a-zA-Z][\\w:-]*)\\b[^>]*\\sclass\\s*=\\s*([\"'])[^\"']*" +
-        "(?<![\\w-])${Regex.escape(name)}(?![\\w-])[^\"']*\\2[^>]*>.*?</\\1\\s*>",
-)
-
-private fun idElementPattern(name: String): Regex = Regex(
-    "(?is)<([a-zA-Z][\\w:-]*)\\b[^>]*\\sid\\s*=\\s*([\"'])${Regex.escape(name)}\\2[^>]*>" +
-        ".*?</\\1\\s*>",
-)
-
-private fun tagElementPattern(name: String): Regex = Regex("(?is)<$name\\b[^>]*>.*?</$name\\s*>")
 
 private const val HTML_CLOSE = "</html>"
 private const val BODY_CLOSE = "</body>"

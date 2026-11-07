@@ -164,6 +164,39 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy applies selector specificity and inline overrides`() {
+        val idWins = """
+            <html><head><style>p{display:none}#answer{display:block}</style></head>
+            <body><p id="answer">答案是 21 颗。</p></body></html>
+        """.trimIndent()
+        val inlineWins = """
+            <html><head><style>p{display:none}</style></head>
+            <body><p style="display:block">答案是 21 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, idWins).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, inlineWins).verdict)
+    }
+
+    @Test
+    fun `candy removes the whole nested hidden subtree`() {
+        val hiddenAttribute = """
+            <html><body><div hidden><div>说明</div>21</div><p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+        val inlineStyle = """
+            <html><body><div style="display:none"><div>说明</div>21</div><p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+        val styleRule = """
+            <html><head><style>.ghost{display:none}</style></head>
+            <body><div class="ghost"><div>说明</div>21</div><p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, hiddenAttribute).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inlineStyle).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, styleRule).verdict)
+    }
+
+    @Test
     fun `candy keeps inline text contiguous`() {
         val splitAnswer = """<html><body><p>答案是 2<span>1</span> 颗。</p></body></html>"""
         val embeddedAnswer = """<html><body><p>我取了 1<span>21</span> 颗。</p></body></html>"""

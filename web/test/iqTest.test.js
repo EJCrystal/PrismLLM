@@ -68,6 +68,23 @@ describe('iqTest: 智商检测展示', () => {
     assert.ok(result.includes('查看作品'))
   })
 
+  it('实体编码的 meta refresh 也会被移除', () => {
+    const html = '<meta http-equiv="&#114;efresh" content="0;url=https://evil.example/refresh">'
+    const result = withIqPreviewCsp(html)
+
+    assert.ok(!result.includes('evil.example'))
+    assert.ok(!result.includes('http-equiv="&#114;efresh"'))
+  })
+
+  it('SVG SMIL 不能给锚点动态补回外链', () => {
+    const html = '<svg><a id="link"><set attributeName="href" to="https://evil.example/collect?data=内容"/>' +
+      '<text>查看作品</text></a></svg>'
+    const result = withIqPreviewCsp(html)
+
+    assert.ok(!/<a[\s>]/i.test(result))
+    assert.ok(result.includes('查看作品'))
+  })
+
   it('移除链接和表单的导航目标', () => {
     const html = '<html><body><a href="https://evil.example/x" target="_top">点击</a>' +
       '<form action="https://evil.example/post" method="post"></form><svg></svg></body></html>'
