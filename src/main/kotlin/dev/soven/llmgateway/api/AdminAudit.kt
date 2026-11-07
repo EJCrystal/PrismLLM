@@ -156,6 +156,7 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "PUT" && path == "/admin/api/model-test-settings" -> "model_test_settings.update"
     method == "PUT" && path == "/admin/api/upstream-request-settings" -> "upstream_request_settings.update"
     method == "PUT" && path == "/admin/api/key-auto-disable-settings" -> "key_auto_disable_settings.update"
+    method == "PUT" && CHANNEL_KEY_DISABLE_POLICY_PATTERN.matches(path) -> "channel.key_disable_policy.update"
     else -> "admin.write"
 }
 
@@ -175,6 +176,7 @@ private val CHANNEL_PROBE_PATTERN = Regex("^/admin/api/channels/[^/]+/probe-prot
 private val CHANNEL_MODEL_TEST_PATTERN = Regex("^/admin/api/channels/[^/]+/model-test$")
 private val CHANNEL_COOLDOWN_CLEAR_PATTERN = Regex("^/admin/api/channels/[^/]+/cooldown/clear$")
 private val CHANNEL_ITEM_PATTERN = Regex("^/admin/api/channels/[^/]+$")
+private val CHANNEL_KEY_DISABLE_POLICY_PATTERN = Regex("^/admin/api/channels/[^/]+/key-disable-policy$")
 private val OAUTH_ACCOUNT_ITEM_PATTERN = Regex("^/admin/api/oauth-accounts/[^/]+$")
 private val OAUTH_ACCOUNT_SETTINGS_PATTERN = Regex("^/admin/api/oauth-accounts/[^/]+/(settings|channels|models)$")
 private val OAUTH_LOGIN_COMPLETE_PATTERN = Regex("^/admin/api/oauth-login/[^/]+/complete$")

@@ -16,6 +16,7 @@ import dev.soven.llmgateway.resilience.KeyDisablePolicy
 import dev.soven.llmgateway.resilience.KeyDisableRule
 import dev.soven.llmgateway.resilience.KeyHealthState
 import dev.soven.llmgateway.resilience.KeyRuleCounter
+import dev.soven.llmgateway.resilience.ResolvedKeyDisablePolicy
 import dev.soven.llmgateway.resilience.toKeyDisablePolicy
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.decodeFromString
@@ -54,6 +55,13 @@ data class KeyAutoDisableSettingsAuditContext(
 /** 后台清理恢复的密钥；调用方据此清理内存冷却。 */
 data class RecoveredKey(val channelId: String, val keyId: String)
 
+/** 渠道覆盖策略的写入结果；[override] 为 null 表示已恢复为继承全局。 */
+data class ChannelKeyDisablePolicyChange(
+    val before: ResolvedKeyDisablePolicy,
+    val after: ResolvedKeyDisablePolicy,
+    val override: KeyDisablePolicy?,
+)
+
 /** 事务已算出需要停用，但调用方尚未取得密钥写锁；回滚计数后由写锁路径重放。 */
 class KeyAutoDisablePendingException : RuntimeException(null, null, false, false)
 
@@ -68,6 +76,69 @@ class KeyAutoDisableRepository(
 ) {
     suspend fun loadSettings(): KeyAutoDisableSettingsRecord = suspendTransaction(database) {
         settingsInTransaction()
+    }
+
+    /**
+     * 解析渠道实际生效的策略：渠道配置了自己的策略就整表替换全局，否则继承全局。
+     * 返回的作用域与版本共同决定健康计数归属，切换来源后旧计数自动作废。
+     */
+    suspend fun resolvePolicy(channelId: String): ResolvedKeyDisablePolicy = suspendTransaction(database) {
+        resolvePolicyInTransaction(channelId)
+    }
+
+    /** 渠道覆盖策略的原始内容；null 表示继承全局，渠道不存在时抛出 [IllegalArgumentException]。 */
+    suspend fun loadChannelOverride(channelId: String): KeyDisablePolicy? = suspendTransaction(database) {
+        val stored = Channels.select(Channels.keyDisablePolicy)
+            .where { Channels.id eq channelId }
+            .singleOrNull() ?: throw IllegalArgumentException("渠道不存在: $channelId")
+        decodeChannelPolicy(stored[Channels.keyDisablePolicy])
+    }
+
+    /**
+     * 保存渠道覆盖策略；[override] 为 null 时恢复继承全局。
+     * 写入同时递增渠道策略版本，让该渠道下按旧策略累计的失败计数失效。
+     */
+    suspend fun saveChannelPolicy(
+        channelId: String,
+        override: KeyDisablePolicy?,
+        auditContext: KeyAutoDisableSettingsAuditContext? = null,
+    ): ChannelKeyDisablePolicyChange = suspendTransaction(database) {
+        val row = Channels.select(Channels.id, Channels.keyDisablePolicy, Channels.keyDisablePolicyRevision)
+            .where { Channels.id eq channelId }
+            .forUpdate()
+            .singleOrNull() ?: throw IllegalArgumentException("渠道不存在: $channelId")
+        val before = resolvePolicyInTransaction(channelId)
+        if (decodeChannelPolicy(row[Channels.keyDisablePolicy]) == override) {
+            // 覆盖内容未变化时不递增版本，保持计数有效。
+            return@suspendTransaction ChannelKeyDisablePolicyChange(before, before, override)
+        }
+        val revision = row[Channels.keyDisablePolicyRevision] + 1
+        Channels.update({ Channels.id eq channelId }) {
+            it[keyDisablePolicy] = override?.let { policy -> keyDisableJson.encodeToString(policy) }
+            it[keyDisablePolicyRevision] = revision
+        }
+        val after = override?.let {
+            ResolvedKeyDisablePolicy(ResolvedKeyDisablePolicy.channelScope(channelId), revision, it)
+        } ?: resolvePolicyInTransaction(channelId)
+        auditContext?.let { context ->
+            audit.recordInTransaction(
+                actor = context.actor,
+                action = "channel.key_disable_policy.update",
+                method = "PUT",
+                path = "/admin/api/channels/$channelId/key-disable-policy",
+                statusCode = 200,
+                requestId = context.requestId,
+                sourceIp = context.sourceIp,
+                errorCode = null,
+                details = buildJsonObject {
+                    put("channelId", channelId)
+                    put("scope", after.scope)
+                    put("before", keyDisablePolicyAuditJson(before))
+                    put("after", keyDisablePolicyAuditJson(after))
+                },
+            )
+        }
+        ChannelKeyDisablePolicyChange(before, after, override)
     }
 
     suspend fun saveSettings(
@@ -236,8 +307,8 @@ class KeyAutoDisableRepository(
                 (!probeLeaseActive || probeClaimed))
         if (!routable || row[ChannelKeys.stateVersion] != key.stateVersion) return@suspendTransaction null
 
-        val settings = settingsInTransaction()
-        if (!settings.policy.enabled) {
+        val resolved = resolvePolicyInTransaction(key.channelId)
+        if (!resolved.policy.enabled) {
             ChannelKeyHealth.deleteWhere { ChannelKeyHealth.keyId eq key.id }
             return@suspendTransaction null
         }
@@ -268,7 +339,7 @@ class KeyAutoDisableRepository(
         // 探测失败不等待常规阈值：命中哪条规则就按该规则的动作重新计时/永久停用。
         // 未命中规则的响应（如 400）视为探测不确定，只释放租约，让下一次请求再试。
         if (probeClaimed) {
-            val rule = settings.policy.rules.firstOrNull { it.match(signal) != null }
+            val rule = resolved.policy.rules.firstOrNull { it.match(signal) != null }
             if (rule == null) {
                 ChannelKeys.update({ ChannelKeys.id eq key.id }) { it[probeUntil] = null }
                 return@suspendTransaction null
@@ -304,16 +375,24 @@ class KeyAutoDisableRepository(
         }
 
         val stored = ChannelKeyHealth.selectAll().where { ChannelKeyHealth.keyId eq key.id }.singleOrNull()
-        val health = if (stored != null && stored[ChannelKeyHealth.policyRevision] == settings.revision) {
+        // 只有同一策略作用域、同一版本累计的计数才可继续使用。
+        val health = if (
+            stored != null &&
+            stored[ChannelKeyHealth.policyScope] == resolved.scope &&
+            stored[ChannelKeyHealth.policyRevision] == resolved.revision
+        ) {
             decodeHealth(stored[ChannelKeyHealth.ruleCounters])
-        } else KeyHealthState()
-        val result = settings.policy.record(health, signal, now)
+        } else {
+            KeyHealthState()
+        }
+        val result = resolved.policy.record(health, signal, now)
         val decision = result.decision
         if (decision == null) {
             if (stored == null && result.state.counters.isEmpty()) return@suspendTransaction null
             ChannelKeyHealth.upsert(ChannelKeyHealth.keyId) {
                 it[keyId] = key.id
-                it[policyRevision] = settings.revision
+                it[policyRevision] = resolved.revision
+                it[policyScope] = resolved.scope
                 it[authFailureStreak] = 0
                 it[recentFailures] = "[]"
                 it[ruleCounters] = keyDisableJson.encodeToString(result.state)
@@ -438,6 +517,41 @@ class KeyAutoDisableRepository(
             it[revision] = 0
             it[updatedAt] = nowMs()
         }
+    }
+
+    /**
+     * 渠道覆盖策略整表替换全局策略；渠道不存在或未配置覆盖时使用全局设置。
+     * 覆盖策略为空串（例如手工清空列）同样按继承处理，不让坏数据静默停用规则。
+     */
+    private fun resolvePolicyInTransaction(channelId: String): ResolvedKeyDisablePolicy {
+        val row = Channels.select(Channels.keyDisablePolicy, Channels.keyDisablePolicyRevision)
+            .where { Channels.id eq channelId }
+            .singleOrNull()
+        val override = row?.let { decodeChannelPolicy(it[Channels.keyDisablePolicy]) }
+        if (row != null && override != null) {
+            return ResolvedKeyDisablePolicy(
+                scope = ResolvedKeyDisablePolicy.channelScope(channelId),
+                revision = row[Channels.keyDisablePolicyRevision],
+                policy = override,
+            )
+        }
+        val settings = settingsInTransaction()
+        return ResolvedKeyDisablePolicy(
+            scope = ResolvedKeyDisablePolicy.GLOBAL_SCOPE,
+            revision = settings.revision,
+            policy = settings.policy,
+        )
+    }
+
+    private fun decodeChannelPolicy(value: String?): KeyDisablePolicy? = value
+        ?.takeIf { it.isNotBlank() }
+        ?.let { runCatching { keyDisableJson.decodeFromString<KeyDisablePolicy>(it) }.getOrNull() }
+
+    private fun keyDisablePolicyAuditJson(resolved: ResolvedKeyDisablePolicy) = buildJsonObject {
+        put("scope", resolved.scope)
+        put("revision", resolved.revision)
+        put("enabled", resolved.policy.enabled)
+        put("rules", keyDisableJson.encodeToJsonElement(ListSerializer(KeyDisableRule.serializer()), resolved.policy.rules))
     }
 
     private fun settingsInTransaction(): KeyAutoDisableSettingsRecord {

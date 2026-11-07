@@ -15,6 +15,8 @@ import type {
   ChannelModelTestRequest,
   ChannelModelTestResult,
   ChannelModelsResponse,
+  ChannelKeyDisablePolicyRequest,
+  ChannelKeyDisablePolicyResponse,
   ChannelRequest,
   CleanupResult,
   ClientKey,
@@ -243,6 +245,13 @@ export const api = {
   getKeyAutoDisableSettings: () => request<KeyAutoDisableSettingsResponse>('/key-auto-disable-settings'),
   updateKeyAutoDisableSettings: (payload: KeyAutoDisableSettingsRequest) =>
     request<KeyAutoDisableSettingsResponse>('/key-auto-disable-settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  getChannelKeyDisablePolicy: (channelId: string) =>
+    request<ChannelKeyDisablePolicyResponse>(`/channels/${encodeURIComponent(channelId)}/key-disable-policy`),
+  updateChannelKeyDisablePolicy: (channelId: string, payload: ChannelKeyDisablePolicyRequest) =>
+    request<ChannelKeyDisablePolicyResponse>(`/channels/${encodeURIComponent(channelId)}/key-disable-policy`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
 
   listClientKeys: () => requestList<ClientKey>('/client-keys'),
   createClientKey: (payload: ClientKeyRequest) =>

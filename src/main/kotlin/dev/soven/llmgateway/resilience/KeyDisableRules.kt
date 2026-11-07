@@ -157,6 +157,29 @@ data class KeyDisableRule(
 /** 命中的模式；规则只按状态码命中时为 null。 */
 internal data class KeyRuleMatch(val matchedPattern: String?)
 
+/**
+ * 一次记账实际生效的策略。全局设置与渠道覆盖是整表替换关系：渠道配置了策略就完全使用
+ * 渠道的规则列表，不再与全局规则合并或按 id 覆盖，避免“首条命中即停止”的语义被两套列表打乱。
+ *
+ * [scope] 与 [revision] 一起构成计数归属：作用域切换（继承 ↔ 覆盖）或策略版本变化都会让旧计数失效，
+ * 否则切换前累计的失败会被新规则误用。
+ *
+ * @author 文杰
+ * @since 2026-11-07
+ */
+data class ResolvedKeyDisablePolicy(
+    val scope: String,
+    val revision: Long,
+    val policy: KeyDisablePolicy,
+) {
+    companion object {
+        /** 全局设置对应的计数作用域。 */
+        const val GLOBAL_SCOPE: String = "global"
+
+        fun channelScope(channelId: String): String = "channel:$channelId".take(80)
+    }
+}
+
 /** 单条规则的失败时间戳。连续与窗口计数共用，差别只在成功是否清零。 */
 @Serializable
 data class KeyRuleCounter(val timestamps: List<Long> = emptyList())

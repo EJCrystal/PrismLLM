@@ -34,6 +34,7 @@ import dev.soven.llmgateway.report.UsageReport
 import dev.soven.llmgateway.report.UsageTotal
 import dev.soven.llmgateway.resilience.KeyAutoDisableSettingsRecord
 import dev.soven.llmgateway.resilience.ChannelKeyState
+import dev.soven.llmgateway.resilience.KeyDisablePolicy
 import dev.soven.llmgateway.resilience.KeyDisableRule
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -183,6 +184,8 @@ data class ChannelResponse(
     /** custom：用户自建；provider：系统按订阅 provider 置备。 */
     val kind: String = "custom",
     val provider: String? = null,
+    /** 是否配置了渠道级密钥自动禁用策略；false 表示继承全局设置。 */
+    val keyDisablePolicySet: Boolean = false,
 )
 
 @Serializable
@@ -266,6 +269,23 @@ fun KeyAutoDisableSettingsRecord.toResponse() = KeyAutoDisableSettingsResponse(
         ?: policy.rules.firstOrNull { !it.streak }?.windowMinutes ?: 5,
 )
 
+/**
+ * 渠道覆盖的自动禁用策略。`override` 为 null 表示继承全局设置；
+ * [effective] 是解析后的实际生效策略，方便管理台在继承状态下展示当前规则。
+ */
+@Serializable
+data class ChannelKeyDisablePolicyResponse(
+    val channelId: String,
+    val scope: String,
+    val revision: Long,
+    val override: KeyDisablePolicy? = null,
+    val effective: KeyDisablePolicy,
+)
+
+/** `override` 为 null 时恢复继承全局设置；[KeyDisablePolicy] 自带校验，非法规则在保存时失败。 */
+@Serializable
+data class ChannelKeyDisablePolicyRequest(val override: KeyDisablePolicy? = null)
+
 /** 手动解除冷却的范围：channel 清整个渠道，key 清密钥及其候选，candidate 只清单个候选。 */
 @Serializable
 data class ClearCooldownRequest(
@@ -306,6 +326,7 @@ fun ChannelRecord.toResponse() = ChannelResponse(
     quota = ChannelQuotaSettingsResponse(quota.providerId, quota.config, quota.credentialSource, quotaCredential != null),
     kind = kind.value,
     provider = provider?.value,
+    keyDisablePolicySet = keyDisablePolicySet,
 )
 
 @Serializable

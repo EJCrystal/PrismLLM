@@ -36,12 +36,14 @@ import dev.soven.llmgateway.proxy.HeaderProfileVersionSource
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.proxy.UpstreamHeaderProfiles
 import dev.soven.llmgateway.resilience.KeyAttemptOutcome
+import dev.soven.llmgateway.resilience.KeyAttemptSignal
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.resilience.FailureKind
 import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
 import dev.soven.llmgateway.resilience.KeyDisableAction
 import dev.soven.llmgateway.resilience.KeyDisablePolicy
 import dev.soven.llmgateway.resilience.KeyDisableRule
+import dev.soven.llmgateway.resilience.ResolvedKeyDisablePolicy
 import dev.soven.llmgateway.resilience.toKeyDisablePolicy
 import dev.soven.llmgateway.security.ClientKeyHasher
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
@@ -3165,6 +3167,131 @@ class GatewayIntegrationTest {
         val custom = settings.loadSettings()
         assertEquals(customRules, custom.policy.rules)
         assertEquals(migrated.revision, custom.revision)
+    }
+
+    @Test
+    fun channelKeyDisablePolicyOverridesGlobalForItsOwnChannelOnly() = runBlocking {
+        val grox = createChannelWithBaseUrl(name = "grox-like", baseUrl = "${fake.baseUrl}/key-health/v1")
+        val other = createChannelWithBaseUrl(name = "other", baseUrl = "${fake.baseUrl}/ok/v1")
+        val groxKey = grox.keys.single()
+        val otherKey = other.keys.single()
+        // 活动规则：命中即永久停用，用来验证渠道覆盖确实替换了全局规则。
+        val activityRule = KeyDisableRule(
+            id = "activity_disabled",
+            name = "活动已关闭或Key失效",
+            statusCodes = listOf(403),
+            bodyPatterns = listOf("DEEPSEEK_ACTIVITY_DISABLED"),
+            threshold = 1,
+            action = KeyDisableAction.PERMANENT,
+        )
+        val repository = app.keyAutoDisableRepository
+
+        // 全局没有这条规则时，两个渠道都不该停用。
+        val activity = KeyAttemptSignal.UpstreamResponse(403, """{"code":"DEEPSEEK_ACTIVITY_DISABLED"}""")
+        assertNull(repository.recordOutcome(groxKey, activity, "before-override"))
+        assertNull(repository.recordOutcome(otherKey, activity, "before-override-other"))
+        assertEquals(ChannelKeyState.ACTIVE, assertNotNull(app.channelRepository.find(grox.id)).keys.single().state)
+
+        val change = repository.saveChannelPolicy(grox.id, KeyDisablePolicy(rules = listOf(activityRule)))
+        assertEquals(ResolvedKeyDisablePolicy.channelScope(grox.id), change.after.scope)
+        assertEquals(ResolvedKeyDisablePolicy.GLOBAL_SCOPE, repository.resolvePolicy(other.id).scope)
+        assertEquals(KeyDisablePolicy(rules = listOf(activityRule)), repository.loadChannelOverride(grox.id))
+        assertNull(repository.loadChannelOverride(other.id))
+
+        // 只有配置了覆盖的渠道会命中；另一渠道继续走全局规则，不误伤。
+        assertEquals("activity_disabled", repository.recordOutcome(groxKey, activity, "override-hit"))
+        assertEquals(
+            ChannelKeyState.AUTO_PERMANENT,
+            assertNotNull(app.channelRepository.find(grox.id)).keys.single().state,
+        )
+        assertNull(repository.recordOutcome(otherKey, activity, "global-miss"))
+        assertEquals(ChannelKeyState.ACTIVE, assertNotNull(app.channelRepository.find(other.id)).keys.single().state)
+
+        // 渠道策略变更让该渠道已累计的计数失效，但不影响全局作用域下的计数。
+        val temporaryRule = activityRule.copy(action = KeyDisableAction.TEMPORARY, disableMinutes = 30, threshold = 2)
+        val temporary = createChannelWithBaseUrl(name = "temporary", baseUrl = "${fake.baseUrl}/ok/v1")
+        val temporaryKey = temporary.keys.single()
+        repository.saveChannelPolicy(temporary.id, KeyDisablePolicy(rules = listOf(temporaryRule)))
+        val signal = KeyAttemptSignal.UpstreamResponse(403, "DEEPSEEK_ACTIVITY_DISABLED")
+        assertNull(repository.recordOutcome(temporaryKey, signal, "count-1"))
+        repository.saveChannelPolicy(
+            temporary.id,
+            KeyDisablePolicy(rules = listOf(temporaryRule.copy(name = "活动规则收紧"))),
+        )
+        // 计数随版本失效，一次失败不足以触发，说明旧计数没有被复用。
+        assertNull(repository.recordOutcome(temporaryKey, signal, "count-after-change"))
+        assertEquals(ChannelKeyState.ACTIVE, assertNotNull(app.channelRepository.find(temporary.id)).keys.single().state)
+
+        // 恢复继承全局后，覆盖规则不再生效。
+        repository.saveChannelPolicy(temporary.id, null)
+        assertNull(repository.loadChannelOverride(temporary.id))
+        assertEquals(ResolvedKeyDisablePolicy.GLOBAL_SCOPE, repository.resolvePolicy(temporary.id).scope)
+    }
+
+    @Test
+    fun channelKeyDisablePolicyApiValidatesPersistsAndAudits() = runBlocking {
+        val channel = createChannelWithBaseUrl(name = "override-api", baseUrl = "${fake.baseUrl}/ok/v1")
+        testApplication {
+            application { app.install(this) }
+            val path = "/admin/api/channels/${channel.id}/key-disable-policy"
+            assertEquals(HttpStatusCode.Unauthorized, client.get(path).status)
+            val (cookie, csrf) = client.loginAdmin()
+            val initial = client.get(path) { header(HttpHeaders.Cookie, cookie) }
+            assertEquals(HttpStatusCode.OK, initial.status)
+            val initialJson = Json.parseToJsonElement(initial.bodyAsText()).jsonObject
+            assertEquals("global", initialJson["scope"]?.jsonPrimitive?.content)
+            assertNull(initialJson["override"])
+            assertNotNull(initialJson["effective"]?.jsonObject)
+
+            suspend fun put(body: String, csrfToken: String? = csrf) = client.put(path) {
+                header(HttpHeaders.Cookie, cookie)
+                csrfToken?.let { header("X-CSRF-Token", it) }
+                header("X-Request-Id", "channel-policy-change")
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            suspend fun update(body: String) = client.put(path) {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            val invalid = """{"override":{"enabled":true,"rules":[{"id":"bad-id","name":"x","statusCodes":[],"threshold":1,"action":"PERMANENT"}]}}"""
+            assertEquals(HttpStatusCode.Forbidden, put(invalid, csrfToken = null).status)
+            assertEquals(HttpStatusCode.BadRequest, update(invalid).status)
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                update("""{"override":{"enabled":true,"rules":[]}}""").status,
+            )
+
+            val override = """{"override":{"enabled":true,"rules":[{"id":"activity_disabled","name":"活动已关闭或Key失效","statusCodes":[403],"bodyPatterns":["DEEPSEEK_ACTIVITY_DISABLED"],"threshold":1,"action":"PERMANENT"}]}}"""
+            val saved = put(override)
+            assertEquals(HttpStatusCode.OK, saved.status, saved.bodyAsText())
+            val savedJson = Json.parseToJsonElement(saved.bodyAsText()).jsonObject
+            assertEquals(ResolvedKeyDisablePolicy.channelScope(channel.id), savedJson["scope"]?.jsonPrimitive?.content)
+            assertEquals(
+                "activity_disabled",
+                savedJson["override"]?.jsonObject?.get("rules")?.jsonArray?.single()?.jsonObject?.get("id")?.jsonPrimitive?.content,
+            )
+            // 写响应与随后的读响应一致，渠道列表也标记为已覆盖。
+            val reloaded = Json.parseToJsonElement(client.get(path) { header(HttpHeaders.Cookie, cookie) }.bodyAsText()).jsonObject
+            assertEquals(savedJson["revision"], reloaded["revision"])
+            val listing = client.get("/admin/api/channels") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+            val listed = Json.parseToJsonElement(listing).jsonArray.single { it.jsonObject["id"]?.jsonPrimitive?.content == channel.id }
+            assertEquals("true", listed.jsonObject["keyDisablePolicySet"]?.jsonPrimitive?.content)
+
+            val audit = app.adminAuditRepository.list(100)
+                .first { it.action == "channel.key_disable_policy.update" && it.result == "success" }
+            assertEquals("channel-policy-change", audit.requestId)
+            assertEquals(channel.id, audit.details?.get("channelId")?.jsonPrimitive?.content)
+            assertEquals("global", audit.details?.get("before")?.jsonObject?.get("scope")?.jsonPrimitive?.content)
+
+            // 恢复继承：scope 回到 global，覆盖内容清空。
+            val cleared = update("""{"override":null}""")
+            assertEquals(HttpStatusCode.OK, cleared.status, cleared.bodyAsText())
+            val clearedJson = Json.parseToJsonElement(cleared.bodyAsText()).jsonObject
+            assertEquals("global", clearedJson["scope"]?.jsonPrimitive?.content)
+        }
     }
 
     @Test
@@ -7032,7 +7159,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("55", result.getString(1))
+                        assertEquals("56", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
