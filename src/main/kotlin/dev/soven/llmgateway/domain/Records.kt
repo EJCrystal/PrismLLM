@@ -16,7 +16,14 @@ data class ChannelModelRecord(
     val upstreamModel: String,
     val canonicalModelId: String? = null,
     val mappingSource: String? = null,
-)
+) {
+    /**
+     * 对外暴露、也是数据面请求匹配的模型 ID。
+     *
+     * 映射只按 canonical ID 对外时，上游名不再是合法请求名；没有 canonical ID 时沿用上游名。
+     */
+    val publicModelId: String get() = canonicalModelId ?: upstreamModel
+}
 
 /**
  * 渠道密钥对应上游分组的主动限流规则。规则作用于该密钥支持的全部模型。

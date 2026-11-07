@@ -3024,6 +3024,48 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `canonical mapping keeps raw upstream name not found when credentials are unavailable`() = runBlocking {
+        app.channelRepository.create(
+            name = "canonical-disabled",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "manual",
+                    credential = app.credentialCipher.encrypt("key-manual"),
+                    state = ChannelKeyState.MANUAL_DISABLED,
+                    models = listOf("Qwen3.8-Flash"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = listOf(ChannelModelRecord("Qwen3.8-Flash", "qwen3.8-flash", "manual")),
+        )
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+
+            // 对外只暴露 canonical ID：凭据全部停用时它是 503，而不是「模型不存在」。
+            val canonical = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"qwen3.8-flash","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.ServiceUnavailable, canonical.status)
+            assertTrue(canonical.bodyAsText().contains("model_credentials_unavailable"))
+
+            // 上游名从未对外暴露，凭据是否可用都不该改变这一点，仍按 404 处理。
+            val rawUpstream = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"Qwen3.8-Flash","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.NotFound, rawUpstream.status)
+            assertTrue(rawUpstream.bodyAsText().contains("model_not_found"))
+        }
+    }
+
+    @Test
     fun keyAutoDisableSkipsAlreadyDisabledKeyInPreloadedModelCandidates() = runBlocking {
         app.keyAutoDisableRepository.saveSettings(KeyAutoDisablePolicy(authFailureThreshold = 1))
         val channel = app.channelRepository.create(
