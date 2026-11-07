@@ -26,6 +26,10 @@ object Channels : Table("channels") {
     /** custom: 用户自建；provider: 系统按订阅 provider 置备，端点由代码常量固定。 */
     val kind = varchar("kind", 16).default("custom")
     val provider = varchar("provider", 32).nullable()
+    /** 渠道覆盖的密钥自动禁用策略 JSON；为空表示继承全局设置。 */
+    val keyDisablePolicy = text("key_disable_policy").nullable()
+    /** 渠道策略版本；每次写入递增，用于让该渠道下的旧计数失效。 */
+    val keyDisablePolicyRevision = long("key_disable_policy_revision").default(0)
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
 
@@ -188,6 +192,9 @@ object ChannelKeyRateLimits : Table("channel_key_rate_limits") {
 object ChannelKeyHealth : Table("channel_key_health") {
     val keyId = varchar("key_id", 36).references(ChannelKeys.id, onDelete = ReferenceOption.CASCADE)
     val policyRevision = long("policy_revision")
+
+    /** 计数所属策略作用域：`global` 或 `channel:<channelId>`；作用域变化即丢弃旧计数。 */
+    val policyScope = varchar("policy_scope", 80).default("global")
     val authFailureStreak = integer("auth_failure_streak")
     val recentFailures = text("recent_failures")
 

@@ -1,4 +1,13 @@
-import type { KeyAutoDisableSettingsRequest, KeyAutoDisableSettingsResponse, KeyDisableRule } from '../types/api'
+import type {
+  ChannelKeyDisablePolicyRequest,
+  ChannelKeyDisablePolicyResponse,
+  KeyAutoDisableSettingsRequest,
+  KeyAutoDisableSettingsResponse,
+  KeyDisableRule,
+} from '../types/api'
+
+/** 全局设置与渠道覆盖共用的策略形状。 */
+export type ChannelKeyDisablePolicySettings = KeyAutoDisableSettingsRequest
 
 export interface KeyDisableRuleDraft extends Omit<KeyDisableRule, 'statusCodes' | 'bodyPatterns' | 'statusCodesText' | 'bodyPatternsText'> {
   statusCodesText: string
@@ -202,6 +211,11 @@ export function normalizeKeyAutoDisableSettings(value: Partial<KeyAutoDisableSet
 
 export function buildKeyAutoDisableSettingsPayload(form: { enabled: boolean, rules: KeyDisableRule[] }): KeyAutoDisableSettingsRequest {
   return normalizeKeyAutoDisableSettings({ enabled: form.enabled, rules: form.rules })
+}
+
+/** 渠道覆盖沿用同一套校验；`override` 为 null 表示恢复继承全局。 */
+export function buildChannelKeyDisablePolicyPayload(override: ChannelKeyDisablePolicySettings | null): ChannelKeyDisablePolicyRequest {
+  return { override: override ? buildKeyAutoDisableSettingsPayload(override) : null }
 }
 
 export function keyAutoDisableRuleLabel(settings: Partial<KeyAutoDisableSettingsResponse> | KeyAutoDisableSettingsRequest | LegacySettings | null | undefined): string {

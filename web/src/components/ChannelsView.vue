@@ -17,6 +17,7 @@ import PriceEditorModal from './PriceEditorModal.vue'
 import DefaultPriceModal from './DefaultPriceModal.vue'
 import ModelTestModal from './ModelTestModal.vue'
 import RequestOverridesEditor from './RequestOverridesEditor.vue'
+import ChannelKeyDisablePolicyModal from './ChannelKeyDisablePolicyModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import ChannelHealthModal from './ChannelHealthModal.vue'
@@ -258,6 +259,7 @@ const showDefaultPrices = ref(false)
 const testTarget = ref<ModelTestTarget | null>(null)
 const overrideEditor = ref<RequestOverridesEditorExpose | null>(null)
 const overrideRevision = ref(0)
+const keyDisablePolicyTarget = ref<Channel | null>(null)
 const rateLimitTarget = ref<RateLimitTarget | null>(null)
 const quotaTarget = ref<Channel | null>(null)
 const formSnapshot = ref('')
@@ -1224,8 +1226,20 @@ async function remove(channel: Channel): Promise<void> {
   }
 }
 
+function channelActionItems(channel: Channel) {
+  return [
+    { id: 'prices', label: '配置模型单价', icon: 'price' },
+    {
+      id: 'disable-policy',
+      label: channel.keyDisablePolicySet ? '密钥自动禁用（已自定义）' : '密钥自动禁用（继承全局）',
+      icon: 'shield',
+    },
+    { id: 'delete', label: '删除渠道', icon: 'trash', danger: true },
+  ]
+}
 function channelAction(id: string, channel: Channel) {
   if (id === 'prices') openPrice(channel)
+  if (id === 'disable-policy') keyDisablePolicyTarget.value = channel
   if (id === 'delete') remove(channel)
 }
 
@@ -1457,7 +1471,7 @@ onMounted(() => {
                   <button type="button" class="icon-button" title="编辑渠道" :aria-label="'编辑渠道 ' + channel.name" @click="openEdit(channel)">
                     <Icon name="edit" :size="16" />
                   </button>
-                  <ActionMenu :label="channel.name + '的更多操作'" compact :items="[{ id: 'prices', label: '配置模型单价', icon: 'price' }, { id: 'delete', label: '删除渠道', icon: 'trash', danger: true }]" @select="channelAction($event, channel)" />
+                  <ActionMenu :label="channel.name + '的更多操作'" compact :items="channelActionItems(channel)" @select="channelAction($event, channel)" />
                 </div>
               </td>
             </tr>
@@ -1541,7 +1555,7 @@ onMounted(() => {
             <button type="button" class="icon-button" title="编辑渠道" :aria-label="'编辑渠道 ' + channel.name" @click="openEdit(channel)">
               <Icon name="edit" :size="16" />
             </button>
-            <ActionMenu :label="channel.name + '的更多操作'" compact :items="[{ id: 'prices', label: '配置模型单价', icon: 'price' }, { id: 'delete', label: '删除渠道', icon: 'trash', danger: true }]" @select="channelAction($event, channel)" />
+            <ActionMenu :label="channel.name + '的更多操作'" compact :items="channelActionItems(channel)" @select="channelAction($event, channel)" />
             <button
               type="button"
               class="button ghost mini channel-mobile-details-toggle"
@@ -2054,6 +2068,13 @@ onMounted(() => {
       @saved="onDefaultPricesSaved"
     />
 
+    <ChannelKeyDisablePolicyModal
+      v-if="keyDisablePolicyTarget"
+      :channel-id="keyDisablePolicyTarget.id"
+      :channel-name="keyDisablePolicyTarget.name"
+      @close="keyDisablePolicyTarget = null"
+      @saved="load"
+    />
   </section>
 </template>
 

@@ -135,6 +135,8 @@ data class ChannelRecord(
     /** custom: 用户自建；provider: 系统按订阅 provider 置备。 */
     val kind: ChannelKind = ChannelKind.CUSTOM,
     val provider: OAuthProvider? = null,
+    /** 是否配置了渠道级密钥自动禁用策略；false 表示继承全局设置。 */
+    val keyDisablePolicySet: Boolean = false,
 ) {
     val isProviderChannel: Boolean get() = kind == ChannelKind.PROVIDER
     val models: List<String> get() = modelMappings.map { it.upstreamModel }

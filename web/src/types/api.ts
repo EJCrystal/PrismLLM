@@ -134,6 +134,8 @@ export interface Channel {
   quota: ChannelQuotaSettings
   kind: 'custom' | 'provider'
   provider?: string | null
+  /** 是否配置了渠道级密钥自动禁用策略；false 表示继承全局设置。 */
+  keyDisablePolicySet?: boolean
 }
 
 export interface ChannelQuotaSettings {
@@ -247,6 +249,19 @@ export interface KeyAutoDisableSettingsResponse {
 export interface KeyAutoDisableSettingsRequest {
   enabled: boolean
   rules: KeyDisableRule[]
+}
+
+/** 渠道覆盖的自动禁用策略；`override` 为 null 表示继承全局。 */
+export interface ChannelKeyDisablePolicyResponse {
+  channelId: string
+  scope: string
+  revision: number
+  override: KeyAutoDisableSettingsRequest | null
+  effective: KeyAutoDisableSettingsRequest
+}
+
+export interface ChannelKeyDisablePolicyRequest {
+  override: KeyAutoDisableSettingsRequest | null
 }
 
 export interface UpstreamHeaderProfile {

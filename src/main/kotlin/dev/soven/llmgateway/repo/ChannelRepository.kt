@@ -462,6 +462,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
         quotaCredential = row[Channels.quotaCredentialCiphertext].takeIf { it.isNotEmpty() }?.let {
             EncryptedCredential(it, row[Channels.quotaCredentialNonce], row[Channels.quotaCredentialKeyVersion])
         },
+        keyDisablePolicySet = row[Channels.keyDisablePolicy] != null,
     )
 
     private fun UpdateBuilder<*>.setQuotaCredential(credential: EncryptedCredential?, clear: Boolean) {

@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   DEFAULT_KEY_AUTO_DISABLE_SETTINGS,
+  buildChannelKeyDisablePolicyPayload,
   buildKeyAutoDisableSettingsPayload,
   fromKeyDisableRuleDraft,
   keyAutoDisableRuleLabel,
@@ -120,5 +121,18 @@ describe('密钥自动禁用规则', () => {
       keyAutoDisableRuleLabel({ enabled: false, rules: [customRule({ name: '仅冷却' })] }),
       '已关闭自动禁用（仅冷却）',
     )
+  })
+
+  it('渠道覆盖：null 表示继承全局', () => {
+    assert.deepEqual(buildChannelKeyDisablePolicyPayload(null), { override: null })
+  })
+
+  it('渠道覆盖：自定义规则沿用同一套校验', () => {
+    const payload = buildChannelKeyDisablePolicyPayload({ enabled: true, rules: [customRule()] })
+    assert.deepEqual(payload.override, { enabled: true, rules: [customRule()] })
+    assert.throws(() => buildChannelKeyDisablePolicyPayload({
+      enabled: true,
+      rules: [customRule({ action: 'PERMANENT' })],
+    }))
   })
 })

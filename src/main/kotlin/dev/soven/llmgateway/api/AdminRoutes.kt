@@ -436,6 +436,54 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(change.after.toResponse())
         }
 
+        get("/channels/{id}/key-disable-policy") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少渠道 id")
+            if (app.channelRepository.find(id) == null) throw notFound("channel_not_found", "渠道不存在")
+            val override = app.keyAutoDisableRepository.loadChannelOverride(id)
+            val effective = app.keyAutoDisableRepository.resolvePolicy(id)
+            call.respond(
+                ChannelKeyDisablePolicyResponse(
+                    channelId = id,
+                    scope = effective.scope,
+                    revision = effective.revision,
+                    override = override,
+                    effective = effective.policy,
+                ),
+            )
+        }
+
+        put("/channels/{id}/key-disable-policy") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少渠道 id")
+            if (app.channelRepository.find(id) == null) throw notFound("channel_not_found", "渠道不存在")
+            val request = call.receive<ChannelKeyDisablePolicyRequest>()
+            val change = try {
+                app.keyAutoDisableRepository.saveChannelPolicy(
+                    id,
+                    request.override,
+                    KeyAutoDisableSettingsAuditContext(
+                        actor = call.adminAuditActor()?.take(100),
+                        requestId = call.response.headers["X-Request-Id"]
+                            ?: call.request.headers["X-Request-Id"].orEmpty(),
+                        sourceIp = call.request.origin.remoteAddress.take(100),
+                    ),
+                )
+            } catch (cause: IllegalArgumentException) {
+                throw badRequest("invalid_key_disable_policy", cause.message ?: "渠道自动禁用规则无效")
+            }
+            call.markAdminAuditHandled()
+            call.respond(
+                ChannelKeyDisablePolicyResponse(
+                    channelId = id,
+                    scope = change.after.scope,
+                    revision = change.after.revision,
+                    override = change.override,
+                    effective = change.after.policy,
+                ),
+            )
+        }
+
         get("/channels/{id}/models") {
             call.requireAdmin(app)
             val id = call.requiredParam("id", "缺少渠道 id")
