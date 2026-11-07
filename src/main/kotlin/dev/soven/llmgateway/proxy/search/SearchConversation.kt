@@ -56,6 +56,8 @@ class SearchConversation(
     private val logger = LoggerFactory.getLogger(SearchConversation::class.java)
 
     /**
+     * @param followUpCall 第一轮之后的调用，调用方应把 `tool_choice=required` 降级为 auto，
+     *   避免每一轮都被强制调用合成搜索工具。
      * @param finalCall 达到轮数上限后的收尾调用，调用方应移除合成搜索工具，
      *   避免 `tool_choice=required` 再次强制模型调用搜索。
      * @param onUsage 每轮拿到用量时立即回调，便于上游中途失败时仍能记录已产生的用量。
@@ -63,6 +65,7 @@ class SearchConversation(
     suspend fun run(
         initialMessages: List<JsonObject>,
         call: ChatCaller,
+        followUpCall: ChatCaller = call,
         finalCall: ChatCaller = call,
         onUsage: (Usage) -> Unit = {},
     ): SearchConversationResult {
@@ -73,7 +76,7 @@ class SearchConversation(
         var round = 0
         while (true) {
             round += 1
-            val response = call.call(messages.toList())
+            val response = (if (round == 1) call else followUpCall).call(messages.toList())
             val roundUsage = UsageParser.fromJson(response)
             usage = addUsage(usage, roundUsage)
             roundUsage?.let(onUsage)

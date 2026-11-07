@@ -120,4 +120,57 @@ class WebSearchSettingsRepositoryTest {
         assertTrue(loaded.apiKeyUnreadable)
         assertEquals("tavily", loaded.provider)
     }
+
+    @Test
+    fun `saving other settings can keep an unreadable ciphertext`() = runBlocking {
+        repository.save(
+            WebSearchSettingsRecord(
+                enabled = true,
+                provider = "tavily",
+                apiKey = "tvly-secret",
+                baseUrl = null,
+                maxResults = 6,
+                timeoutMs = 15_000,
+                maxRounds = 6,
+                maxPageChars = 1_500,
+                updatedAt = 0,
+            ),
+        )
+
+        val rotated = WebSearchSettingsRepository(factory.database, CredentialCipher(ByteArray(32) { 9 }))
+        rotated.save(
+            WebSearchSettingsRecord(
+                enabled = false,
+                provider = "tavily",
+                apiKey = null,
+                baseUrl = null,
+                maxResults = 6,
+                timeoutMs = 15_000,
+                maxRounds = 6,
+                maxPageChars = 1_500,
+                updatedAt = 0,
+            ),
+            preserveApiKey = true,
+        )
+
+        val kept = assertNotNull(rotated.load())
+        assertFalse(kept.enabled)
+        assertTrue(kept.apiKeyUnreadable)
+
+        rotated.save(
+            WebSearchSettingsRecord(
+                enabled = false,
+                provider = "tavily",
+                apiKey = null,
+                baseUrl = null,
+                maxResults = 6,
+                timeoutMs = 15_000,
+                maxRounds = 6,
+                maxPageChars = 1_500,
+                updatedAt = 0,
+            ),
+        )
+
+        assertFalse(assertNotNull(rotated.load()).apiKeyUnreadable)
+    }
 }

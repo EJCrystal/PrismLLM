@@ -242,7 +242,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
             webSearchSettingsError(record.effective(app.config.webSearch))?.let {
                 throw badRequest("invalid_web_search_settings", it)
             }
-            app.webSearchSettingsRepository.save(record)
+            // 留空且未勾选清除时保留原密文：无法解密的密钥也要等管理员明确替换或清除才丢弃。
+            val preserveApiKey = !request.clearApiKey &&
+                request.apiKey.isNullOrBlank() &&
+                sameProvider &&
+                stored?.apiKeyUnreadable == true
+            app.webSearchSettingsRepository.save(record, preserveApiKey)
             call.response.headers.append("Cache-Control", "no-store")
             call.respond(webSearchSettingsResponse(app.webSearchSettingsRepository.load(), app.config.webSearch))
         }

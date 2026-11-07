@@ -9695,7 +9695,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table cooldown_state, admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table cooldown_state, admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users, web_search_settings restart identity cascade",
                 )
             }
         }

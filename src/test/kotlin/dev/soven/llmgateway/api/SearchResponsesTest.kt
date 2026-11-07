@@ -4,12 +4,15 @@ import dev.soven.llmgateway.proxy.Usage
 import dev.soven.llmgateway.proxy.search.ConversationPart
 import dev.soven.llmgateway.proxy.search.SearchConversationResult
 import dev.soven.llmgateway.proxy.search.SearchHit
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.long
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SearchResponsesTest {
@@ -38,6 +41,16 @@ class SearchResponsesTest {
             search["action"]!!.jsonObject["sources"]!!.jsonArray[0].jsonObject["url"]!!.toString().trim('"'),
         )
         assertEquals(70L, (json["usage"]!!.jsonObject["input_tokens"] as JsonPrimitive).long)
+    }
+
+    @Test
+    fun `follow-up rounds downgrade a required tool choice`() {
+        val required = Json.parseToJsonElement("""{"model":"m","tool_choice":"required"}""").jsonObject
+        assertEquals("auto", withAutoToolChoice(required)["tool_choice"]!!.jsonPrimitive.content)
+
+        val auto = Json.parseToJsonElement("""{"model":"m","tool_choice":"auto"}""").jsonObject
+        assertEquals("auto", withAutoToolChoice(auto)["tool_choice"]!!.jsonPrimitive.content)
+        assertNull(withAutoToolChoice(Json.parseToJsonElement("""{"model":"m"}""").jsonObject)["tool_choice"])
     }
 
     @Test

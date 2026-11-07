@@ -111,6 +111,37 @@ class WebSearchSettingsDtosTest {
     }
 
     @Test
+    fun `response reports where the base url comes from`() {
+        val stored = WebSearchSettingsRecord(
+            enabled = true,
+            provider = "tavily",
+            apiKey = "stored-key",
+            baseUrl = "https://search.example.com",
+            maxResults = 6,
+            timeoutMs = 15_000,
+            maxRounds = 6,
+            maxPageChars = 1_500,
+            updatedAt = 1,
+        )
+
+        assertEquals("settings", webSearchSettingsResponse(stored, defaults).baseUrlSource)
+        assertEquals(
+            "environment",
+            webSearchSettingsResponse(
+                stored.copy(baseUrl = null),
+                defaults.copy(baseUrl = "https://env.example.com"),
+            ).baseUrlSource,
+        )
+        assertEquals(
+            "none",
+            webSearchSettingsResponse(
+                stored.copy(baseUrl = null),
+                defaults.copy(provider = "brave", baseUrl = "https://env.example.com"),
+            ).baseUrlSource,
+        )
+    }
+
+    @Test
     fun `key bearing backends require https except loopback and searxng`() {
         assertNotNull(
             webSearchSettingsError(

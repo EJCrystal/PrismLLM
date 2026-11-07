@@ -59,7 +59,10 @@ class WebSearchSettingsRepository(
             }
     }
 
-    suspend fun save(settings: WebSearchSettingsRecord) {
+    /**
+     * @param preserveApiKey 为 true 时不更新密钥列，保留原密文（即使当前无法解密）。
+     */
+    suspend fun save(settings: WebSearchSettingsRecord, preserveApiKey: Boolean = false) {
         val encrypted = settings.apiKey?.takeIf { it.isNotBlank() }?.let(credentialCipher::encrypt)
         val updatedAt = nowMs()
         suspendTransaction(database) {
@@ -67,9 +70,11 @@ class WebSearchSettingsRepository(
                 it[id] = SINGLETON_ID
                 it[enabled] = settings.enabled
                 it[provider] = settings.provider
-                it[apiKeyCiphertext] = encrypted?.ciphertext.orEmpty()
-                it[apiKeyNonce] = encrypted?.nonce.orEmpty()
-                it[apiKeyKeyVersion] = encrypted?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
+                if (!preserveApiKey) {
+                    it[apiKeyCiphertext] = encrypted?.ciphertext.orEmpty()
+                    it[apiKeyNonce] = encrypted?.nonce.orEmpty()
+                    it[apiKeyKeyVersion] = encrypted?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
+                }
                 it[baseUrl] = settings.baseUrl
                 it[maxResults] = settings.maxResults
                 it[timeoutMs] = settings.timeoutMs

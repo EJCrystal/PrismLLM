@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpServer
 import dev.soven.llmgateway.config.WebSearchConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
@@ -63,6 +64,64 @@ class WebSearchTest {
     }
 
     @Test
+    fun `a timed out backend falls back to the next one`() = runBlocking {
+        val service = WebSearchService(
+            listOf(
+                FakeBackend("slow") {
+                    delay(5_000)
+                    SearchOutput("", emptyList())
+                },
+                FakeBackend("fast") {
+                    SearchOutput(
+                        summary = "1. Go — https://go.dev/dl/",
+                        hits = listOf(SearchHit("Go", "https://go.dev/dl/", "Go")),
+                    )
+                },
+            ),
+            timeoutMs = 50,
+        )
+
+        assertEquals("https://go.dev/dl/", service.search("latest go").hits.single().url)
+    }
+
+    @Test
+    fun `fromConfig rejects key bearing http endpoints at runtime`() {
+        val client = HttpClient(Java)
+        try {
+            assertFalse(
+                WebSearchService.fromConfig(
+                    WebSearchConfig(
+                        enabled = true,
+                        provider = "tavily",
+                        apiKey = "tvly-test",
+                        baseUrl = "http://search.example.com",
+                    ),
+                    client,
+                ).available,
+            )
+            assertTrue(
+                WebSearchService.fromConfig(
+                    WebSearchConfig(
+                        enabled = true,
+                        provider = "tavily",
+                        apiKey = "tvly-test",
+                        baseUrl = "http://127.0.0.1:8080",
+                    ),
+                    client,
+                ).available,
+            )
+            assertTrue(
+                WebSearchService.fromConfig(
+                    WebSearchConfig(enabled = true, provider = "searxng", baseUrl = "http://searx.internal"),
+                    client,
+                ).available,
+            )
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun `fromConfig stays unavailable when required settings are missing`() {
         val client = HttpClient(Java)
         try {
@@ -116,7 +175,7 @@ class WebSearchTest {
 
 private class FakeBackend(
     override val name: String,
-    private val answer: () -> SearchOutput,
+    private val answer: suspend () -> SearchOutput,
 ) : WebSearchBackend {
     override suspend fun search(query: String, limit: Int): SearchOutput = answer()
 }

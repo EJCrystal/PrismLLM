@@ -35,6 +35,8 @@ data class WebSearchSettingsResponse(
     /** 管理台保存过密钥但当前无法解密，需要重新填写。 */
     val apiKeyUnreadable: Boolean,
     val baseUrl: String?,
+    /** settings、environment 或 none，用于区分显式地址与继承的环境变量地址。 */
+    val baseUrlSource: String,
     val maxResults: Int,
     val timeoutMs: Long,
     val maxRounds: Int,
@@ -60,6 +62,11 @@ internal fun webSearchSettingsResponse(
         },
         apiKeyUnreadable = stored?.apiKeyUnreadable == true,
         baseUrl = effective.baseUrl,
+        baseUrlSource = when {
+            stored?.baseUrl != null -> "settings"
+            effective.baseUrl != null -> "environment"
+            else -> "none"
+        },
         maxResults = effective.maxResults,
         timeoutMs = effective.timeoutMs,
         maxRounds = effective.maxRounds,

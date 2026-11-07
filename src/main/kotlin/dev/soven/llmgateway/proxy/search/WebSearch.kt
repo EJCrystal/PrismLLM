@@ -2,11 +2,12 @@ package dev.soven.llmgateway.proxy.search
 
 import dev.soven.llmgateway.config.WEB_SEARCH_PROVIDERS
 import dev.soven.llmgateway.config.WebSearchConfig
+import dev.soven.llmgateway.config.webSearchBaseUrlError
 import io.ktor.client.HttpClient
-import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
-import io.ktor.client.request.post
+import io.ktor.client.request.prepareGet
+import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
@@ -17,6 +18,7 @@ import io.ktor.http.isSuccess
 import io.ktor.utils.io.cancel
 import io.ktor.utils.io.core.readBytes
 import io.ktor.utils.io.readRemaining
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -69,6 +71,9 @@ class WebSearchService(
                 val output = withTimeout(timeoutMs) { backend.search(trimmed, maxResults) }
                 if (output.hits.isNotEmpty()) return output
                 last = WebSearchException("${backend.name} found nothing")
+            } catch (e: TimeoutCancellationException) {
+                // 单个后端超时是普通失败，继续尝试下一个；外层取消仍会在下面的分支重新抛出。
+                last = e
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 last = e
@@ -90,6 +95,10 @@ class WebSearchService(
                     return WebSearchService(emptyList(), config.timeoutMs, config.maxResults)
                 }
             } else if (config.apiKey.isNullOrBlank()) {
+                return WebSearchService(emptyList(), config.timeoutMs, config.maxResults)
+            }
+            // 运行时再校验一次地址：设置可能来自数据库或启动后变化的环境变量，不能只依赖保存/启动校验。
+            if (webSearchBaseUrlError(provider, config.baseUrl, requireHttps = provider != "searxng") != null) {
                 return WebSearchService(emptyList(), config.timeoutMs, config.maxResults)
             }
             val backend = when (provider) {
@@ -178,7 +187,7 @@ private class TavilyBackend(
     private val base = (baseUrl ?: "https://api.tavily.com").trimEnd('/')
 
     override suspend fun search(query: String, limit: Int): SearchOutput {
-        val response = client.post("$base/search") {
+        val body = client.preparePost("$base/search") {
             header(HttpHeaders.Authorization, "Bearer $apiKey")
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
@@ -186,8 +195,8 @@ private class TavilyBackend(
                 put("max_results", limit)
                 put("search_depth", "basic")
             }.toString())
-        }
-        val json = Json.parseToJsonElement(ensureSuccess(response, name, apiKey)).jsonObject
+        }.execute { response -> ensureSuccess(response, name, apiKey) }
+        val json = Json.parseToJsonElement(body).jsonObject
         val results = (json["results"] as? JsonArray).orEmpty()
         val pages = results.mapNotNull { raw ->
             val item = raw as? JsonObject ?: return@mapNotNull null
@@ -211,12 +220,12 @@ private class BraveBackend(
     private val base = (baseUrl ?: "https://api.search.brave.com").trimEnd('/')
 
     override suspend fun search(query: String, limit: Int): SearchOutput {
-        val response = client.get("$base/res/v1/web/search") {
+        val body = client.prepareGet("$base/res/v1/web/search") {
             header("X-Subscription-Token", apiKey)
             parameter("q", query)
             parameter("count", limit)
-        }
-        val json = Json.parseToJsonElement(ensureSuccess(response, name, apiKey)).jsonObject
+        }.execute { response -> ensureSuccess(response, name, apiKey) }
+        val json = Json.parseToJsonElement(body).jsonObject
         val results = ((json["web"] as? JsonObject)?.get("results") as? JsonArray).orEmpty()
         val pages = results.mapNotNull { raw ->
             val item = raw as? JsonObject ?: return@mapNotNull null
@@ -240,7 +249,7 @@ private class ExaBackend(
     private val base = (baseUrl ?: "https://api.exa.ai").trimEnd('/')
 
     override suspend fun search(query: String, limit: Int): SearchOutput {
-        val response = client.post("$base/search") {
+        val body = client.preparePost("$base/search") {
             header("X-API-Key", apiKey)
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
@@ -250,8 +259,8 @@ private class ExaBackend(
                     put("text", buildJsonObject { put("maxCharacters", maxPageChars) })
                 })
             }.toString())
-        }
-        val json = Json.parseToJsonElement(ensureSuccess(response, name, apiKey)).jsonObject
+        }.execute { response -> ensureSuccess(response, name, apiKey) }
+        val json = Json.parseToJsonElement(body).jsonObject
         val results = (json["results"] as? JsonArray).orEmpty()
         val pages = results.mapNotNull { raw ->
             val item = raw as? JsonObject ?: return@mapNotNull null
@@ -275,11 +284,11 @@ private class SearxngBackend(
     private val base = baseUrl.trimEnd('/')
 
     override suspend fun search(query: String, limit: Int): SearchOutput {
-        val response = client.get("$base/search") {
+        val body = client.prepareGet("$base/search") {
             parameter("q", query)
             parameter("format", "json")
-        }
-        val json = Json.parseToJsonElement(ensureSuccess(response, name)).jsonObject
+        }.execute { response -> ensureSuccess(response, name) }
+        val json = Json.parseToJsonElement(body).jsonObject
         val results = (json["results"] as? JsonArray).orEmpty()
         val pages = results.mapNotNull { raw ->
             val item = raw as? JsonObject ?: return@mapNotNull null
@@ -304,15 +313,15 @@ private class DeepSeekBackend(
     private val base = (baseUrl ?: "https://api.deepseek.com").trimEnd('/')
 
     override suspend fun search(query: String, limit: Int): SearchOutput {
-        val response = client.post("$base/v1/tools/search") {
+        val body = client.preparePost("$base/v1/tools/search") {
             header(HttpHeaders.Authorization, "Bearer $apiKey")
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
                 put("query", query.take(128))
                 put("count", limit)
             }.toString())
-        }
-        val json = Json.parseToJsonElement(ensureSuccess(response, name, apiKey)).jsonObject
+        }.execute { response -> ensureSuccess(response, name, apiKey) }
+        val json = Json.parseToJsonElement(body).jsonObject
         val results = (json["results"] as? JsonArray).orEmpty()
         val pages = results.mapNotNull { raw ->
             val item = raw as? JsonObject ?: return@mapNotNull null

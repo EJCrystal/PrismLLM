@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import type { WebSearchSettings } from '../types/api'
+import { baseUrlAfterProviderChange, baseUrlForSave, isLoopbackUrl } from '../utils/webSearchSettings'
 import Modal from './Modal.vue'
 
 const emit = defineEmits<{
@@ -34,10 +35,11 @@ const loading = ref(true)
 const saving = ref(false)
 /** 打开弹窗时从服务端带出的地址；用户没改过时，切换后端不应把它保存为新后端的显式地址。 */
 const inheritedBaseUrl = ref('')
-const baseUrlTouched = ref(false)
 
 const isSearxng = computed(() => form.provider === 'searxng')
-const hasStoredKey = computed(() => current.value?.apiKeySource === 'settings')
+const hasStoredKey = computed(
+  () => current.value?.apiKeySource === 'settings' || current.value?.apiKeyUnreadable === true,
+)
 const providerChanged = computed(() => current.value != null && form.provider !== current.value.provider)
 const keyPlaceholder = computed(() => {
   if (current.value?.apiKeyUnreadable) return '已保存的密钥无法解密，请重新填写'
@@ -47,11 +49,8 @@ const keyPlaceholder = computed(() => {
 })
 
 function onProviderChange() {
-  if (!baseUrlTouched.value && form.baseUrl === inheritedBaseUrl.value) {
-    form.baseUrl = ''
-  }
+  form.baseUrl = baseUrlAfterProviderChange(form.baseUrl, inheritedBaseUrl.value)
   inheritedBaseUrl.value = ''
-  baseUrlTouched.value = false
 }
 
 function errorMessage(cause: unknown): string {
@@ -64,7 +63,6 @@ async function load() {
     const settings = await api.getWebSearchSettings()
     current.value = settings
     inheritedBaseUrl.value = settings.baseUrl ?? ''
-    baseUrlTouched.value = false
     Object.assign(form, {
       enabled: settings.enabled,
       provider: settings.provider,
@@ -83,18 +81,14 @@ async function load() {
   }
 }
 
-function isLoopbackUrl(value: string): boolean {
-  try {
-    const host = new URL(value).hostname.replace(/^\[|\]$/g, '').toLowerCase()
-    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
-  } catch {
-    return false
-  }
-}
-
 async function save() {
-  if (loading.value || saving.value) return
+  if (loading.value || saving.value || current.value == null) return
   const baseUrl = form.baseUrl.trim()
+  const baseUrlToSave = baseUrlForSave({
+    baseUrl,
+    inheritedBaseUrl: inheritedBaseUrl.value,
+    baseUrlSource: current.value?.baseUrlSource,
+  })
   const apiKey = form.apiKey.trim()
   if (form.enabled && isSearxng.value && !baseUrl) {
     notify('SearXNG 需要填写搜索地址', 'error')
@@ -154,7 +148,7 @@ async function save() {
       provider: form.provider,
       apiKey: apiKey || undefined,
       clearApiKey: form.clearApiKey,
-      baseUrl: baseUrl || null,
+      baseUrl: baseUrlToSave || null,
       maxResults: form.maxResults,
       timeoutMs: form.timeoutMs,
       maxRounds: form.maxRounds,
@@ -226,7 +220,6 @@ onMounted(load)
           v-model="form.baseUrl"
           :placeholder="isSearxng ? 'https://searx.example.com' : '留空沿用环境变量或供应商默认地址'"
           :disabled="saving"
-          @input="baseUrlTouched = true"
         />
         <small v-if="isSearxng">SearXNG 实例地址，不需要 API 密钥；留空时沿用环境变量中的地址。</small>
         <small v-else>携带 API 密钥的远程地址必须使用 HTTPS；本机回环地址可用 HTTP。</small>
@@ -253,7 +246,7 @@ onMounted(load)
     </form>
     <template #footer>
       <button type="button" class="button ghost" @click="$emit('close')">取消</button>
-      <button type="button" class="button primary" :disabled="loading || saving" @click="save">
+      <button type="button" class="button primary" :disabled="loading || saving || !current" @click="save">
         {{ saving ? '保存中…' : '保存设置' }}
       </button>
     </template>

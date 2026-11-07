@@ -635,6 +635,7 @@ export interface ModelTestSettings {
 }
 
 export type WebSearchApiKeySource = 'settings' | 'environment' | 'none'
+export type WebSearchBaseUrlSource = 'settings' | 'environment' | 'none'
 export type WebSearchSettingsSource = 'settings' | 'environment'
 
 export interface WebSearchSettings {
@@ -644,6 +645,7 @@ export interface WebSearchSettings {
   apiKeySource: WebSearchApiKeySource
   apiKeyUnreadable: boolean
   baseUrl: string | null
+  baseUrlSource: WebSearchBaseUrlSource
   maxResults: number
   timeoutMs: number
   maxRounds: number

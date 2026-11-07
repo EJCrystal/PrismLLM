@@ -251,9 +251,18 @@ private suspend fun handleProxy(
         streamMode = stream
         phase = FailureStage.ROUTING
         // 搜索设置每次请求读取一次：管理台保存后立即生效，未保存时沿用环境变量默认值。
+        // 读取失败只代表搜索不可用，不能影响本来可以透传的请求；也不回退环境变量，避免意外重新开启搜索。
         val webSearchRuntime = if (protocol == GatewayProtocol.RESPONSES && hasBuiltInWebSearch(requestJson)) {
-            val settings = app.webSearchSettingsRepository.load().effective(app.config.webSearch)
-            WebSearchRuntime(WebSearchService.fromConfig(settings, app.searchHttpClient), settings.maxRounds)
+            val settings = try {
+                app.webSearchSettingsRepository.load().effective(app.config.webSearch)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            settings?.let {
+                WebSearchRuntime(WebSearchService.fromConfig(it, app.searchHttpClient), it.maxRounds)
+            }
         } else {
             null
         }
@@ -398,6 +407,7 @@ private suspend fun handleProxy(
             channelKeyName = candidate.credential.name
             upstreamModel = candidate.upstreamModel
             // 内置 web_search 无法转成 Chat；有搜索后端时，统一走“合成函数工具 + 多轮搜索”的 Chat 代理。
+            // 同时支持原生 Responses 与 Chat 的渠道也走代理，保证配置搜索后端后内置 web_search 一定被执行。
             val searchRuntime = webSearchRuntime?.takeIf { it.available }
                 ?.takeIf { GatewayProtocol.CHAT_COMPLETIONS in candidate.channel.protocols }
             val webSearchProxy = searchRuntime != null
@@ -1254,21 +1264,25 @@ private suspend fun runSearchConversation(
     val caller = searchChatCaller(
         app, call, candidate, chatRequest, state, startedAt, traceparent, globalOverrides, headerProfiles,
     )
+    // 第一轮之后不再强制调用工具，避免 tool_choice=required 让每一轮都被迫搜索。
+    val followUpCaller = searchChatCaller(
+        app, call, candidate, withAutoToolChoice(chatRequest), state, startedAt, traceparent, globalOverrides, headerProfiles,
+    )
     val finalRequest = withoutSyntheticTool(chatRequest, toolName)
     val finalCaller = searchChatCaller(
         app, call, candidate, finalRequest, state, startedAt, traceparent, globalOverrides, headerProfiles,
     )
-    // 每次尝试从空用量开始，避免重试时把前一候选的用量按当前候选价格计费。
-    state.usage = null
+    // 重试时保留前一候选已产生的用量：token 已经消耗，不能因为换候选而丢失。
+    val previousUsage = state.usage
     var attemptUsage: Usage? = null
     try {
         return withTimeout(timeoutMs) {
             SearchConversation(toolName, webSearch.service, webSearch.maxRounds)
-                .run(messages, caller, finalCaller) { roundUsage ->
+                .run(messages, caller, followUpCaller, finalCaller) { roundUsage ->
                     attemptUsage = addUsage(attemptUsage, roundUsage)
-                    state.usage = attemptUsage
+                    state.usage = addUsage(previousUsage, attemptUsage)
                 }
-                .also { result -> state.usage = result.usage }
+                .also { result -> state.usage = addUsage(previousUsage, result.usage) }
         }
     } catch (e: TimeoutCancellationException) {
         throw GatewayException(
@@ -1291,6 +1305,17 @@ private suspend fun runSearchConversation(
             "web_search 代理失败: ${e.message ?: e::class.simpleName}", "api_error",
             retryable = false,
         )
+    }
+}
+
+/** 后续搜索轮次把 tool_choice=required 降级为 auto，让模型可以在已有结果上直接回答。 */
+internal fun withAutoToolChoice(request: JsonObject): JsonObject {
+    val choice = request["tool_choice"] as? JsonPrimitive
+    if (choice?.contentOrNull != "required") return request
+    return buildJsonObject {
+        request.forEach { (key, value) ->
+            if (key == "tool_choice") put(key, JsonPrimitive("auto")) else put(key, value)
+        }
     }
 }
 

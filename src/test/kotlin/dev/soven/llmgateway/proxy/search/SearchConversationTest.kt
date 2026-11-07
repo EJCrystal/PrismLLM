@@ -62,6 +62,33 @@ class SearchConversationTest {
     }
 
     @Test
+    fun `uses the follow-up caller after the first round`() = runBlocking {
+        var firstCalls = 0
+        var followUpCalls = 0
+        val result = SearchConversation("web_search", searchService).run(
+            listOf(obj("""{"role":"user","content":"What is the latest Go?"}""")),
+            call = {
+                firstCalls += 1
+                chat(
+                    content = "",
+                    finish = "tool_calls",
+                    input = 10,
+                    output = 2,
+                    calls = """[{"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"latest go\"}"}}]""",
+                )
+            },
+            followUpCall = {
+                followUpCalls += 1
+                chat(content = "Go 1.27.1 is out.", finish = "stop", input = 20, output = 3)
+            },
+        )
+
+        assertEquals(1, firstCalls)
+        assertEquals(1, followUpCalls)
+        assertEquals(ConversationPart.Text("Go 1.27.1 is out."), result.parts.last())
+    }
+
+    @Test
     fun `a client tool call ends the search loop`() = runBlocking {
         var calls = 0
         val result = SearchConversation("web_search", searchService).run(
