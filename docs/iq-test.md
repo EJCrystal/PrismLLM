@@ -42,7 +42,7 @@ iframe 不启用脚本执行。
 - `answer` 等于 21：`passed`；
 - `answer` 是其他整数：`incorrect`；
 - 返回内容无法解析为 JSON 对象，或 `answer` 缺失/不是整数：`failed`；
-- 允许 Markdown 代码围栏或 JSON 前后有少量说明，取第一个完整的 JSON 对象；
+- 允许 Markdown 代码围栏或 JSON 前后有少量说明；会依次尝试每个 `{` 起点，取第一个能解析为 JSON 对象的片段（说明文字里的花括号不会挡住答案，最多尝试 20 个起点）；
 - 只读取 `answer`，不评价 `reason` 的推理质量，也不调用任何 HTML 判分器；
 - 升级前生成的糖果记录保留当时的 HTML 判定和预览，不按新规则重新计算。
 

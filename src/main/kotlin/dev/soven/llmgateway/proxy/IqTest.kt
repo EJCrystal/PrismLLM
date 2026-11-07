@@ -255,21 +255,30 @@ private fun parseCandyPayload(raw: String): CandyPayload? {
     return CandyPayload(answer, reason)
 }
 
-/** 容忍代码围栏和前后说明；取第一个完整、括号配对的 JSON 对象。 */
+/**
+ * 容忍代码围栏和前后说明；依次尝试每个 `{` 起点，返回第一个能解析为 JSON 对象且括号配对的片段。
+ * 说明文字里出现花括号（例如“集合 {圆苹果, 星桃}”）时不会挡住后面的真正答案。
+ */
 private fun extractJsonObject(raw: String): JsonObject? {
     val text = raw.trim()
     val fenced = JSON_FENCE_PATTERN.find(text)?.groupValues?.get(1)?.trim()
     return listOfNotNull(fenced, text)
         .firstNotNullOfOrNull { candidate ->
-            firstJsonObject(candidate)?.let { json ->
+            jsonObjectCandidates(candidate).firstNotNullOfOrNull { json ->
                 runCatching { Json.parseToJsonElement(json) as? JsonObject }.getOrNull()
             }
         }
 }
 
-private fun firstJsonObject(source: String): String? {
-    val start = source.indexOf('{')
-    if (start < 0) return null
+/** 最多尝试 [MAX_JSON_CANDIDATES] 个起点，避免超长响应导致重复扫描。 */
+private fun jsonObjectCandidates(source: String): Sequence<String> =
+    generateSequence(source.indexOf('{').takeIf { it >= 0 }) { start ->
+        source.indexOf('{', start + 1).takeIf { it >= 0 }
+    }
+        .take(MAX_JSON_CANDIDATES)
+        .mapNotNull { start -> balancedJsonObject(source, start) }
+
+private fun balancedJsonObject(source: String, start: Int): String? {
     var depth = 0
     var inString = false
     var escaped = false
@@ -358,6 +367,7 @@ private const val PREVIEW_STYLE =
 
 private val HTML_FENCE_PATTERN = Regex("```(?:html)?\\s*([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
 private val JSON_FENCE_PATTERN = Regex("```(?:json)?\\s*([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
+private const val MAX_JSON_CANDIDATES = 20
 
 private val ANIMATION_PATTERN = Regex(
     "(?:<animate(?:Transform|Motion)?\\b|@keyframes\\b|animation\\s*:)",

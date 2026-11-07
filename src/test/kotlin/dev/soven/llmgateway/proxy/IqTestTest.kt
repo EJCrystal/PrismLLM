@@ -149,6 +149,38 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy skips unbracketed prose braces before the json answer`() {
+        val raw = """
+            目标集合 {圆苹果, 星桃} 与 {星苹果, 圆桃} 至少命中一个。
+            {"answer": 21, "reason": "取完所有干扰项后再取一颗。"}
+        """.trimIndent()
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, raw).verdict)
+    }
+
+    @Test
+    fun `candy skips unbalanced prose braces before the json answer`() {
+        val raw = """
+            记集合为 {圆苹果, 星桃 这样的写法。
+            {"answer": 21}
+        """.trimIndent()
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, raw).verdict)
+    }
+
+    @Test
+    fun `candy prefers fenced json over earlier prose braces`() {
+        val raw = """
+            先把 {A} 和 {B} 并列考虑：
+            ```json
+            {"answer": 21, "reason": "干扰项"}
+            ```
+        """.trimIndent()
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, raw).verdict)
+    }
+
+    @Test
     fun `candy fails when response is not json`() {
         for (raw in listOf("Hello!", "答案是 21 颗。", "<html><body>21</body></html>")) {
             val result = evaluateIqTest(IqBenchmark.CANDY, true, raw)
