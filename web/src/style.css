@@ -7644,6 +7644,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .health-status-icon[data-state='WARNING'], .health-status-icon[data-state='UNKNOWN'] { color: var(--warning); background: var(--warning-soft); }
 .health-status-icon[data-state='CRITICAL'] { color: var(--danger); background: var(--danger-soft); }
 .health-status-icon[data-state='DISABLED'] { color: var(--muted); background: var(--bg); }
+/* 渠道启用但凭据全部不可用：用告警色区分「运营者主动关掉」与「想跑但跑不了」。 */
+.health-status-icon[data-state='NO_CREDENTIALS'] { color: var(--danger); background: var(--danger-soft); }
 .channel-observation { display: flex; align-items: center; gap: 8px; border: 0; padding: 6px 0; margin-top: 4px; background: transparent; color: var(--ink); cursor: pointer; text-align: left; }
 .channel-observation > span:last-child { display: grid; gap: 2px; }
 .channel-observation strong { font-size: 13px; font-variant-numeric: tabular-nums; }

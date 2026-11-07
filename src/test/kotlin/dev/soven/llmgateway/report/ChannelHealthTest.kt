@@ -7,8 +7,8 @@ import kotlin.test.assertEquals
 class ChannelHealthTest {
     private val now = 1_800_000_000_000L
 
-    private fun state(metrics: HealthMetrics, enabled: Boolean = true) =
-        healthState(metrics, enabled, now, 2_000).first
+    private fun state(metrics: HealthMetrics, enabled: Boolean = true, routableCredentials: Int? = null) =
+        healthState(metrics, enabled, now, 2_000, routableCredentials).first
 
     @Test
     fun `unknown covers empty sparse and stale observations`() {
@@ -45,6 +45,19 @@ class ChannelHealthTest {
         assertEquals("WARNING", state(HealthMetrics(attempts = 20, failures = 1, lastObservedAt = now)))
         assertEquals("CRITICAL", state(HealthMetrics(attempts = 20, failures = 4, lastObservedAt = now)))
         assertEquals("DISABLED", state(HealthMetrics(), false))
+    }
+
+    @Test
+    fun `enabled channel without routable credentials reports no credentials`() {
+        // 运营者停用优先于凭据状态。
+        assertEquals("DISABLED", state(HealthMetrics(), enabled = false, routableCredentials = 0))
+        // 渠道启用但没有任何可路由凭据：接不到请求，不能显示成「暂无样本」。
+        assertEquals("NO_CREDENTIALS", state(HealthMetrics(), routableCredentials = 0))
+        assertEquals("NO_CREDENTIALS", state(HealthMetrics(attempts = 100, successes = 100, lastObservedAt = now), routableCredentials = 0))
+        // 只要还有一条凭据，就回到常规健康判定。
+        assertEquals("HEALTHY", state(HealthMetrics(attempts = 100, successes = 100, lastObservedAt = now), routableCredentials = 1))
+        // 未提供凭据信息时不参与判定，保持既有调用方行为。
+        assertEquals("UNKNOWN", state(HealthMetrics()))
     }
 
     @Test

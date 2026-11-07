@@ -271,7 +271,14 @@ private suspend fun handleProxy(
         }
         val allCandidates = app.modelCatalog.findCandidates(alias, null)
         if (allCandidates.isEmpty()) {
-            throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
+            // 模型已配置但凭据全部停用时，客户端重试或等自动恢复就能成功，不能用 404 通知其改配置。
+            val unavailable = app.modelCatalog.findUnavailableModel(alias)
+                ?: throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
+            throw serviceUnavailable(
+                "model_credentials_unavailable",
+                "模型 $alias 已配置，但当前没有可用的上游凭据",
+                unavailable.retryAt?.let { it - System.currentTimeMillis() }?.takeIf { it > 0 },
+            )
         }
         val nativeCandidates = allCandidates.filter { protocol in it.channel.protocols }
         val conversionCandidates = allCandidates.filter { candidate ->

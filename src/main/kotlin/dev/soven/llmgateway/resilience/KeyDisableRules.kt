@@ -56,6 +56,19 @@ enum class ChannelKeyState(val value: String) {
 
     val autoDisabled: Boolean get() = this == AUTO_TEMPORARY || this == AUTO_PERMANENT
 
+    /**
+     * 是否参与路由。临时停用到期即视为可用，不依赖后台清理任务；
+     * 人工停用与永久停用永不自动放行。
+     *
+     * 持久化层与健康概览都用这一份规则，避免两处判定漂移。
+     */
+    fun isRoutableAt(autoDisableUntil: Long?, probeUntil: Long?, now: Long): Boolean = when (this) {
+        ACTIVE -> true
+        AUTO_TEMPORARY -> autoDisableUntil != null && now >= autoDisableUntil &&
+            (probeUntil == null || now >= probeUntil)
+        MANUAL_DISABLED, AUTO_PERMANENT -> false
+    }
+
     fun toKind(): KeyDisableKind = when (this) {
         ACTIVE -> KeyDisableKind.NONE
         MANUAL_DISABLED -> KeyDisableKind.MANUAL

@@ -1537,6 +1537,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     channels.associate { it.id to it.enabled },
                     app.config.retention.retentionDays,
                     cooldowns = cooldowns,
+                    routableCredentials = channels.associate { it.id to it.routableCredentials },
                 ),
             )
         }
@@ -1546,8 +1547,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.response.headers.append("Cache-Control", "no-store")
             val window = call.request.queryParameters["window"] ?: "24h"
             if (window !in dev.soven.llmgateway.report.healthWindows) throw badRequest("invalid_health_window", "时间范围仅支持 24h、7d、15d、30d")
-            val channel = app.channelRepository.find(call.requiredParam("id", "缺少渠道 id"))
-                ?: throw notFound("channel_not_found", "渠道不存在")
+            val channel = channelWithCredentials(app, app.channelRepository.find(call.requiredParam("id", "缺少渠道 id"))
+                ?: throw notFound("channel_not_found", "渠道不存在"))
             val availability = channel.keys.flatMap { key ->
                 key.models.distinct().map { model ->
                     val cooldown = app.candidateCooldown.cooldownState(channel.id, key.id, model)
@@ -1579,6 +1580,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         channel.id,
                         channel.keys.map { it.id to it.models },
                     ),
+                    routableCredentials = channel.routableCredentialCount(),
                 ),
             )
         }

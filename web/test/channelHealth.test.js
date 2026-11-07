@@ -30,10 +30,13 @@ describe('channel health display', () => {
 
   it('provides symbols and labels independent of colour in all windows', () => {
     assert.deepEqual(HEALTH_WINDOWS.map(row => row.id), ['24h', '7d', '15d', '30d'])
-    for (const state of ['HEALTHY', 'WARNING', 'CRITICAL', 'UNKNOWN', 'DISABLED']) {
+    for (const state of ['HEALTHY', 'WARNING', 'CRITICAL', 'UNKNOWN', 'DISABLED', 'NO_CREDENTIALS']) {
       assert.ok(healthSymbol(state))
       assert.ok(HEALTH_LABELS[state])
     }
+    assert.equal(HEALTH_LABELS.NO_CREDENTIALS, '无可用凭据')
+    // 已停用与无可用凭据都必须与「健康」区分开，不能显示对勾。
+    assert.equal(healthSymbol('NO_CREDENTIALS'), '−')
   })
 
   it('keeps existing percentage during revalidation to avoid flickering', () => {

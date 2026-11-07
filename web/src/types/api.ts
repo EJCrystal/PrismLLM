@@ -1,7 +1,7 @@
 export type ProtocolId = 'chat_completions' | 'responses' | 'messages' | 'gemini'
 
 export type HealthWindow = '24h' | '7d' | '15d' | '30d'
-export type HealthState = 'HEALTHY' | 'WARNING' | 'CRITICAL' | 'UNKNOWN' | 'DISABLED'
+export type HealthState = 'HEALTHY' | 'WARNING' | 'CRITICAL' | 'UNKNOWN' | 'DISABLED' | 'NO_CREDENTIALS'
 export interface HealthMetrics {
   attempts: number; successes: number; failures: number; excluded: number; successRate: number | null
   firstTokenSamples: number; p50FirstTokenMs: number | null; p95FirstTokenMs: number | null

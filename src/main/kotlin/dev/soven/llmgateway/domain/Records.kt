@@ -102,12 +102,7 @@ data class ChannelKeyRecord(
      * 是否允许路由。临时停用到期即视为可用，不依赖后台清理任务；
      * 人工停用与永久停用永不自动放行。
      */
-    override fun isRoutable(now: Long): Boolean = when (state) {
-        ChannelKeyState.ACTIVE -> true
-        ChannelKeyState.AUTO_TEMPORARY -> autoDisableUntil != null && now >= autoDisableUntil &&
-            (probeUntil == null || now >= probeUntil)
-        ChannelKeyState.MANUAL_DISABLED, ChannelKeyState.AUTO_PERMANENT -> false
-    }
+    override fun isRoutable(now: Long): Boolean = state.isRoutableAt(autoDisableUntil, probeUntil, now)
 
     override fun supports(upstreamModel: String): Boolean = upstreamModel in models
 }
@@ -156,6 +151,19 @@ data class ChannelRecord(
             .filter { it.isRoutable(now) && it.supports(upstreamModel) }
             .sortedWith(compareBy({ it.priority }, { it.name }, { it.id }))
             .toList()
+
+    /**
+     * 当前可路由、且至少支持一个已授权模型的凭据数（静态密钥 + 订阅账号）。
+     *
+     * 渠道启用只表达运营意图：凭据全部不可路由时渠道接不到任何请求，健康度据此展示。
+     * [oauthAccounts] 未加载时只统计静态密钥，调用方需自行保证数据完整。
+     */
+    fun routableCredentialCount(now: Long = System.currentTimeMillis()): Int {
+        val authorized = models.toSet()
+        return (keys + oauthAccounts).count { credential ->
+            credential.isRoutable(now) && authorized.any(credential::supports)
+        }
+    }
 }
 
 /**

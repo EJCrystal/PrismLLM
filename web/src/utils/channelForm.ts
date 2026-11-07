@@ -146,6 +146,33 @@ export function isKeyRoutable(key: Pick<import('../types/api').ChannelKey, 'stat
   return false
 }
 
+export type ChannelRoutingStatus = 'DISABLED' | 'NO_ROUTABLE_KEYS' | 'ACTIVE'
+
+/**
+ * 渠道层面的选路状态，用于纠正「渠道启用但没有任何可路由密钥」时的误导展示。
+ *
+ * 渠道启用状态只表达运营意图：配置的密钥全部停用（人工或自动）后渠道已经接不到请求，
+ * 但 `enabled` 仍为 true。这里只做展示派生，不写回 `enabled`。
+ *
+ * 只看静态密钥：管理面渠道列表不加载订阅账号，避免把「账号仍可用」误报成渠道无凭据。
+ * 未配置密钥的新渠道返回 ACTIVE —— 订阅账号仍可能支撑它，界面不应据此断言不可用。
+ */
+export function channelRoutingStatus(channel: Pick<Channel, 'enabled' | 'keys'> | null | undefined, now = Date.now()): ChannelRoutingStatus {
+  if (!channel?.enabled) return 'DISABLED'
+  const keys = channel.keys ?? []
+  if (!keys.length) return 'ACTIVE'
+  return keys.some((key) => isKeyRoutable(key, now)) ? 'ACTIVE' : 'NO_ROUTABLE_KEYS'
+}
+
+/**
+ * 紧挨启用开关的提示徽章文案。
+ * 只陈述「已配置的密钥全部停用」这一可核实事实，不断言渠道完全不可用：
+ * 自定义渠道还可能通过订阅账号继续提供候选，而渠道列表不加载账号。
+ */
+export function channelRoutingHint(channel: Pick<Channel, 'enabled' | 'keys'> | null | undefined, now = Date.now()): string {
+  return channelRoutingStatus(channel, now) === 'NO_ROUTABLE_KEYS' ? '密钥全部停用' : ''
+}
+
 export function buildPriorityUpdatePayload(channel: Pick<Channel, 'name' | 'baseUrl' | 'authType' | 'protocolAuthTypes' | 'protocols' | 'enabled'>, priority: number): ChannelRequest {
   return {
     name: channel.name,

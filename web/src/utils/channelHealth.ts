@@ -4,9 +4,16 @@ import { usageCacheHitRate } from './usageReport'
 export const HEALTH_WINDOWS: { id: HealthWindow; label: string }[] = [
   { id: '24h', label: '24 小时' }, { id: '7d', label: '7 天' }, { id: '15d', label: '15 天' }, { id: '30d', label: '30 天' },
 ]
-export const HEALTH_LABELS: Record<HealthState, string> = { HEALTHY: '健康', WARNING: '需关注', CRITICAL: '异常', UNKNOWN: '未知', DISABLED: '已停用' }
+export const HEALTH_LABELS: Record<HealthState, string> = {
+  HEALTHY: '健康',
+  WARNING: '需关注',
+  CRITICAL: '异常',
+  UNKNOWN: '未知',
+  DISABLED: '已停用',
+  NO_CREDENTIALS: '无可用凭据',
+}
 export function healthSymbol(state: HealthState): string {
-  return state === 'HEALTHY' ? '✓' : state === 'WARNING' || state === 'CRITICAL' ? '!' : state === 'DISABLED' ? '−' : '?'
+  return state === 'HEALTHY' ? '✓' : state === 'WARNING' || state === 'CRITICAL' ? '!' : state === 'DISABLED' || state === 'NO_CREDENTIALS' ? '−' : '?'
 }
 export function healthPercent(rate: number | null | undefined): string {
   if (rate == null || !Number.isFinite(rate)) return '—'

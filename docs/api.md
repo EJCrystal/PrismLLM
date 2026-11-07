@@ -68,6 +68,18 @@ curl "http://localhost:8080/v1beta/models/gemini-2.5-flash:streamGenerateContent
 - `GET /v1/models`：以 OpenAI 标准格式返回当前已启用渠道所暴露的对外模型 ID，附带 `owned_by: "PrismLLM"`。
 - `GET /v1beta/models`：以 Gemini 格式返回模型列表。
 
+模型只有在**至少一条可路由凭据**（密钥或订阅账号）支持它时才会被列出并接受直连请求。渠道被停用、或该模型的密钥与账号全部停用后，模型会从列表中消失。
+
+请求一个未列出的模型时，按原因返回不同状态：
+
+| 场景 | 状态码 | 错误码 |
+| :--- | :--- | :--- |
+| 模型未配置在任何启用渠道中，或只以非对外 ID 的形式配置 | `404` | `model_not_found` |
+| 模型已配置，但支持它的凭据全部停用 | `503` | `model_credentials_unavailable` |
+| 模型存在，但当前协议没有可用候选（渠道不支持且无法转换） | `400` | `protocol_not_supported` |
+
+`model_credentials_unavailable` 表示请求本身有效，凭据恢复或密钥临时停用到期后重试即可。只有存在临时停用的密钥时才会返回 `Retry-After`，人工与永久停用不会给出重试提示。
+
 ---
 
 ## 二、管理面接口（Admin API）

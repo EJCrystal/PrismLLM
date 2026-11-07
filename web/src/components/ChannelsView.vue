@@ -39,7 +39,7 @@ import {
   channelModelFilterOptions,
 } from '../utils/channelDisplay'
 import type { ChannelFormDraft, OriginalModelMapping } from '../utils/channelForm'
-import { buildChannelPayload, buildPriorityUpdatePayload, canonicalModelSnapshot, isKeyRoutable, mergeProbedProtocols, removeProbeAddedProtocols } from '../utils/channelForm'
+import { buildChannelPayload, buildPriorityUpdatePayload, canonicalModelSnapshot, channelRoutingHint, isKeyRoutable, mergeProbedProtocols, removeProbeAddedProtocols } from '../utils/channelForm'
 import { channelKeyRateLimitSummary, normalizeChannelKeyRateLimit, validateChannelKeyRateLimit } from '../utils/channelKeyRateLimit'
 import {
   canProbeSavedChannel,
@@ -175,7 +175,12 @@ function channelCooldownTitle(channel: Channel): string {
   return `${channel.name}：${row.coolingCandidates}/${row.totalCandidates ?? 0} 个候选冷却${until}；点击查看详情`
 }
 function channelHealthState(channel: Channel): HealthState {
-  return !channel.enabled ? 'DISABLED' : healthByChannel.value.get(channel.id)?.state || 'UNKNOWN'
+  if (!channel.enabled) return 'DISABLED'
+  // 后端已按可路由凭据统计给出 NO_CREDENTIALS；健康度未读取时退回本地密钥判定，
+  // 避免列表上同时出现绿色开关和「0 个启用」却没有解释。
+  const reported = healthByChannel.value.get(channel.id)?.state
+  if (reported && reported !== 'DISABLED') return reported
+  return channelRoutingHint(channel) ? 'NO_CREDENTIALS' : reported || 'UNKNOWN'
 }
 function channelHealthTitle(channel: Channel): string {
   const row = healthByChannel.value.get(channel.id)
@@ -1448,6 +1453,11 @@ onMounted(() => {
                     <span class="channel-status-track" aria-hidden="true"><span></span></span>
                     <span class="channel-status-label">{{ channel.enabled ? '启用' : '停用' }}</span>
                   </button>
+                  <span
+                    v-if="channelRoutingHint(channel)"
+                    class="badge warning channel-status-hint"
+                    :title="`${channel.name}：${channelRoutingHint(channel)}，当前没有请求会路由到这些密钥`"
+                  >{{ channelRoutingHint(channel) }}</span>
                   <button type="button" class="channel-observation" :title="channelHealthTitle(channel)" :aria-label="channelHealthTitle(channel)" @click="healthTarget = channel">
                     <span class="health-status-icon" :data-state="channelHealthState(channel)" aria-hidden="true">{{ healthSymbol(channelHealthState(channel)) }}</span>
                     <span><strong>{{ channelSuccessRateText(channel) }}</strong><small>{{ healthByChannel.get(channel.id)?.metrics.attempts ?? 0 }} 次 · {{ HEALTH_LABELS[channelHealthState(channel)] }}</small></span>
@@ -1505,6 +1515,11 @@ onMounted(() => {
                 <template v-if="channel.keys?.length">· {{ channel.keys.filter((key) => isKeyRoutable(key)).length }} 个启用</template>
                 <template v-if="channelAutoDisabledCount(channel)">· {{ channelAutoDisabledCount(channel) }} 个自动禁用</template>
               </div>
+              <span
+                v-if="channelRoutingHint(channel)"
+                class="badge warning channel-status-hint"
+                :title="`${channel.name}：${channelRoutingHint(channel)}，当前没有请求会路由到这些密钥`"
+              >{{ channelRoutingHint(channel) }}</span>
             </div>
             <button
               type="button"
@@ -2119,6 +2134,9 @@ onMounted(() => {
 .channel-status-toggle.is-disabled .channel-status-label { color: var(--danger); }
 .channel-status-toggle:disabled { opacity: .55; cursor: wait; }
 .channel-status-toggle:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; border-radius: 4px; }
+/* 启用开关旁边的「密钥全部停用」提示：小一号，避免把状态列撑宽。 */
+.channel-status-hint { padding: 2px 6px; font-size: 10px; }
+.channel-mobile-keys .channel-status-hint { margin-top: 2px; justify-self: start; }
 .channel-health-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .channel-health-summary .badge { padding: 3px 6px; font-size: 10px; }
 .channel-health-failure { max-width: 190px; margin-top: 4px; overflow: hidden; color: var(--danger); text-overflow: ellipsis; white-space: nowrap; }
