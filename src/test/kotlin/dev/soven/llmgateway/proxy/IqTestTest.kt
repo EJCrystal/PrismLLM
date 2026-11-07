@@ -130,6 +130,17 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy decodes numeric character references`() {
+        val decimal = """<html><body><p>答案是 &#50;&#49; 颗。</p></body></html>"""
+        val hex = """<html><body><p>答案是 &#x32;&#x31; 颗。</p></body></html>"""
+        val chineseHex = """<html><body><p>答案是 &#x4E8C;&#x5341;&#x4E00; 颗。</p></body></html>"""
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, decimal).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, hex).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, chineseHex).verdict)
+    }
+
+    @Test
     fun `candy keeps aria hidden but visible text`() {
         val html = """
             <html><body><p aria-hidden="true">答案是 21 颗。</p></body></html>

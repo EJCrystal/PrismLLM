@@ -14,6 +14,21 @@ class SvgRenderSupportTest {
     }
 
     @Test
+    fun `extracts outer svg when inner svg is nested`() {
+        val html = """
+            <html><body>
+            <svg viewBox="0 0 10 10"><svg viewBox="0 0 2 2"><rect width="2" height="2"/></svg>
+            <g id="bike">自行车主体</g></svg>
+            </body></html>
+        """.trimIndent()
+
+        val svg = extractInlineSvg(html)
+
+        assertTrue(svg?.contains("id=\"bike\"") == true, svg)
+        assertTrue(svg?.endsWith("</svg>") == true, svg)
+    }
+
+    @Test
     fun `analyzes smil duration and css animation`() {
         val smil = analyzeSvgAnimation(
             "<svg><animateTransform attributeName=\"transform\" dur=\"3s\" repeatCount=\"indefinite\"/></svg>",

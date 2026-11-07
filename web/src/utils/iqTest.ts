@@ -29,9 +29,11 @@ export function iqVerdictTone(verdict: IqVerdict): 'success' | 'warning' | 'dang
  */
 export function withIqPreviewCsp(html: string): string {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">`
-  const sanitized = html
-    .replace(/<meta[^>]+http-equiv=["']?refresh["']?[^>]*>/gi, '')
-    .replace(/<base[^>]*>/gi, '')
+  const sanitized = stripPreviewNavigation(
+    html
+      .replace(/<meta[^>]+http-equiv=["']?refresh["']?[^>]*>/gi, '')
+      .replace(/<base[^>]*>/gi, ''),
+  )
   if (/<head(?:\s[^>]*)?>/i.test(sanitized)) {
     return sanitized.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${meta}`)
   }
@@ -39,6 +41,20 @@ export function withIqPreviewCsp(html: string): string {
     return sanitized.replace(/<html(?:\s[^>]*)?>/i, (tag) => `${tag}<head>${meta}</head>`)
   }
   return `<!DOCTYPE html><html><head>${meta}</head><body>${sanitized}</body></html>`
+}
+
+/**
+ * 去掉链接和表单的导航目标；脚本已被 sandbox 与 CSP 禁止，meta refresh、base 也已移除，
+ * 这样预览既不能自动跳转，也不会因用户点击把页面内容带到外部地址。
+ */
+function stripPreviewNavigation(html: string): string {
+  return html
+    .replace(/<(a|area)\b[^>]*>/gi, (tag) =>
+      tag.replace(/\s(?:href|xlink:href|target)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, ''),
+    )
+    .replace(/<form\b[^>]*>/gi, (tag) =>
+      tag.replace(/\s(?:action|method|target)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, ''),
+    )
 }
 
 export function formatIqLatency(ms: number): string {

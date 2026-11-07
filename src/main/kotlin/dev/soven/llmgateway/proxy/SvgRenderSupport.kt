@@ -109,14 +109,25 @@ internal object SvgRenderSupport {
     }
 }
 
-/** 从完整 HTML 中截取第一段内联 SVG；没有闭合标签时返回 null。 */
+/** 从完整 HTML 中截取第一段完整的内联 SVG；没有闭合标签时返回 null。 */
 internal fun extractInlineSvg(html: String?): String? {
     if (html.isNullOrBlank()) return null
-    val start = html.indexOf("<svg", ignoreCase = true)
-    if (start < 0) return null
-    val end = html.indexOf("</svg>", startIndex = start, ignoreCase = true)
-    if (end < 0) return null
-    return html.substring(start, end + "</svg>".length)
+    var depth = 0
+    var start = -1
+    for (match in SVG_TAG_PATTERN.findAll(html)) {
+        if (match.groupValues[1].isEmpty()) {
+            if (depth == 0) start = match.range.first
+            depth += 1
+            // 外层的自闭合 <svg/> 也要能正常返回。
+            if (match.value.trimEnd().endsWith("/>")) depth -= 1
+        } else if (depth > 0) {
+            depth -= 1
+        }
+        if (depth == 0 && start >= 0) {
+            return html.substring(start, match.range.last + 1)
+        }
+    }
+    return null
 }
 
 /**
@@ -163,6 +174,7 @@ private const val GOLDEN_RATIO_FRACTION = 0.381966f
 /** 多帧截图会一起发送给视觉模型，限制单帧宽度以控制请求体积。 */
 internal const val MULTI_FRAME_WIDTH = 640
 
+private val SVG_TAG_PATTERN = Regex("<(/?)(svg)(?=[\\s/>])[^>]*>", RegexOption.IGNORE_CASE)
 private val SMIL_ANIMATION_PATTERN = Regex("<animate(?:Transform|Motion|Color)?\\b", RegexOption.IGNORE_CASE)
 private val CSS_ANIMATION_PATTERN = Regex("@keyframes\\b|animation\\s*:", RegexOption.IGNORE_CASE)
 private val SMIL_DURATION_PATTERN = Regex(

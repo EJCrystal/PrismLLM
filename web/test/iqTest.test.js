@@ -46,6 +46,15 @@ describe('iqTest: 智商检测展示', () => {
     assert.ok(!result.includes('script-src'))
   })
 
+  it('移除链接和表单的导航目标', () => {
+    const html = '<html><body><a href="https://evil.example/x" target="_top">点击</a>' +
+      '<form action="https://evil.example/post" method="post"></form><svg></svg></body></html>'
+    const result = withIqPreviewCsp(html)
+
+    assert.ok(!result.includes('evil.example'))
+    assert.ok(result.includes('点击'))
+  })
+
   it('耗时按毫秒与秒展示', () => {
     assert.equal(formatIqLatency(800), '800 ms')
     assert.equal(formatIqLatency(12_340), '12.3 s')

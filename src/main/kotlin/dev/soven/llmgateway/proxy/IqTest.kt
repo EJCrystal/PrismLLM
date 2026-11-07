@@ -251,12 +251,7 @@ internal fun extractVisibleText(raw: String): String {
         .replace(Regex("(?is)<style\\b[^>]*>.*?</style>"), " ")
         .replace(Regex("(?is)<!--.*?-->"), " ")
         .replace(Regex("(?is)<[^>]+>"), " ")
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&")
+        .let(::decodeHtmlEntities)
         .replace(Regex("\\s+"), " ")
         .trim()
 }
@@ -296,12 +291,42 @@ private fun removeHiddenHtml(html: String): String {
     }
 }
 
+/** 解码数字字符引用和常见命名实体，避免 `&#50;&#49;` 这类答案被漏判。 */
+private fun decodeHtmlEntities(text: String): String {
+    val numericDecoded = NUMERIC_CHARACTER_REFERENCE_PATTERN.replace(text) { match ->
+        val hex = match.groupValues[1]
+        val decimal = match.groupValues[2]
+        val codePoint = if (hex.isNotEmpty()) hex.toIntOrNull(16) else decimal.toIntOrNull()
+        if (codePoint == null || codePoint !in 1..0x10FFFF || codePoint in 0xD800..0xDFFF) {
+            match.value
+        } else {
+            String(Character.toChars(codePoint))
+        }
+    }
+    return numericDecoded
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&hellip;", "…")
+        .replace("&mdash;", "—")
+        .replace("&ndash;", "–")
+        .replace("&times;", "×")
+        .replace("&divide;", "÷")
+        .replace("&copy;", "©")
+        .replace("&reg;", "®")
+        .replace("&amp;", "&")
+}
+
 private const val CANDY_EXPECTED_ANSWER = 21
 private val CANDY_CHINESE_ANSWER_PATTERN = Regex(
     "(?<![\\d〇零一二三四五六七八九十百千万亿两廿])(?:二十一|廿一)" +
         "(?![\\d〇零一二三四五六七八九十百千万亿两廿])",
 )
 
+private val NUMERIC_CHARACTER_REFERENCE_PATTERN = Regex("&#(?:[xX]([0-9a-fA-F]+)|([0-9]+));?")
 private val STYLE_BLOCK_PATTERN = Regex("(?is)<style\\b[^>]*>(.*?)</style\\s*>")
 private val CSS_RULE_PATTERN = Regex("(?is)([^{}]+)\\{([^{}]*)\\}")
 private val HIDDEN_DECLARATION_PATTERN = Regex("(?i)(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden)")
