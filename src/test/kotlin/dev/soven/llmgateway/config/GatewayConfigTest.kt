@@ -95,4 +95,28 @@ class GatewayConfigTest {
             )
         }
     }
+
+    @Test
+    fun keyBearingSearchBackendsRequireHttps() {
+        assertFailsWith<IllegalArgumentException> {
+            GatewayConfig.fromEnv(
+                requiredEnv + mapOf(
+                    "WEB_SEARCH_ENABLED" to "true",
+                    "WEB_SEARCH_PROVIDER" to "tavily",
+                    "WEB_SEARCH_API_KEY" to "tvly-test",
+                    "WEB_SEARCH_BASE_URL" to "http://search.example.com",
+                ),
+            )
+        }
+
+        val local = GatewayConfig.fromEnv(
+            requiredEnv + mapOf(
+                "WEB_SEARCH_ENABLED" to "true",
+                "WEB_SEARCH_PROVIDER" to "tavily",
+                "WEB_SEARCH_API_KEY" to "tvly-test",
+                "WEB_SEARCH_BASE_URL" to "http://127.0.0.1:8080",
+            ),
+        )
+        assertEquals("http://127.0.0.1:8080", local.webSearch.baseUrl)
+    }
 }

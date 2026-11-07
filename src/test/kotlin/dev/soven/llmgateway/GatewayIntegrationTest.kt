@@ -5543,6 +5543,28 @@ class GatewayIntegrationTest {
             assertEquals(1200, json["maxPageChars"]?.jsonPrimitive?.int)
             assertFalse(body.contains("tvly-secret"), "BODY=[$body]")
 
+            // 切换后端时不能沿用旧后端的密钥。
+            val switched = client.put("/admin/api/web-search-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"provider":"brave","baseUrl":null,"maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, switched.status)
+
+            // 地址长度在保存前校验，避免数据库列宽错误变成 500。
+            val tooLong = client.put("/admin/api/web-search-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"provider":"tavily","apiKey":"tvly-secret","baseUrl":"https://example.com/${"a".repeat(500)}","maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, tooLong.status)
+
             // 共享测试数据库：把开关恢复为关闭，避免影响其它用例。
             val disabled = client.put("/admin/api/web-search-settings") {
                 header(HttpHeaders.Cookie, sessionCookie)

@@ -1,5 +1,6 @@
 package dev.soven.llmgateway.proxy.search
 
+import dev.soven.llmgateway.config.WEB_SEARCH_PROVIDERS
 import dev.soven.llmgateway.config.WebSearchConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
@@ -8,11 +9,14 @@ import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
-import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import io.ktor.utils.io.cancel
+import io.ktor.utils.io.core.readBytes
+import io.ktor.utils.io.readRemaining
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -76,13 +80,24 @@ class WebSearchService(
     companion object {
         fun fromConfig(config: WebSearchConfig, httpClient: HttpClient): WebSearchService {
             if (!config.enabled) return WebSearchService(emptyList(), config.timeoutMs, config.maxResults)
-            val backend = when (config.provider.lowercase()) {
+            val provider = config.provider.lowercase()
+            // 必需配置缺失时不要创建后端：环境变量可能在保存设置后被移除，此时应回到原有转换路径。
+            if (provider !in WEB_SEARCH_PROVIDERS) {
+                return WebSearchService(emptyList(), config.timeoutMs, config.maxResults)
+            }
+            if (provider == "searxng") {
+                if (config.baseUrl.isNullOrBlank()) {
+                    return WebSearchService(emptyList(), config.timeoutMs, config.maxResults)
+                }
+            } else if (config.apiKey.isNullOrBlank()) {
+                return WebSearchService(emptyList(), config.timeoutMs, config.maxResults)
+            }
+            val backend = when (provider) {
                 "tavily" -> TavilyBackend(httpClient, config.apiKey.orEmpty(), config.baseUrl, config.maxPageChars)
                 "brave" -> BraveBackend(httpClient, config.apiKey.orEmpty(), config.baseUrl, config.maxPageChars)
                 "exa" -> ExaBackend(httpClient, config.apiKey.orEmpty(), config.baseUrl, config.maxPageChars)
                 "deepseek" -> DeepSeekBackend(httpClient, config.apiKey.orEmpty(), config.baseUrl, config.maxPageChars)
-                "searxng" -> SearxngBackend(httpClient, config.baseUrl.orEmpty(), config.maxPageChars)
-                else -> return WebSearchService(emptyList(), config.timeoutMs, config.maxResults)
+                else -> SearxngBackend(httpClient, config.baseUrl.orEmpty(), config.maxPageChars)
             }
             return WebSearchService(listOf(backend), config.timeoutMs, config.maxResults)
         }
@@ -133,9 +148,15 @@ private fun JsonObject.text(key: String): String? =
 
 private fun JsonObject.string(key: String): String? = text(key)
 
+/** 从响应通道按字节读取上限，避免先把超大响应完整读进内存。 */
 private suspend fun HttpResponse.readLimited(maxBytes: Int = 4 * 1024 * 1024): String {
-    val body = bodyAsText()
-    return if (body.length <= maxBytes) body else body.take(maxBytes)
+    val channel = bodyAsChannel()
+    val bytes = channel.readRemaining(maxBytes.toLong() + 1L).readBytes()
+    if (bytes.size > maxBytes) {
+        channel.cancel()
+        throw WebSearchException("搜索响应超过 ${maxBytes / 1024} KB 上限", status.value)
+    }
+    return bytes.toString(Charsets.UTF_8)
 }
 
 private suspend fun ensureSuccess(response: HttpResponse, name: String, secret: String? = null): String {

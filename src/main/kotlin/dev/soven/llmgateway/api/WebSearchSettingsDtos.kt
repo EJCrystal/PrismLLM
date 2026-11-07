@@ -1,6 +1,8 @@
 package dev.soven.llmgateway.api
 
+import dev.soven.llmgateway.config.WEB_SEARCH_PROVIDERS
 import dev.soven.llmgateway.config.WebSearchConfig
+import dev.soven.llmgateway.config.webSearchBaseUrlError
 import dev.soven.llmgateway.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.domain.effective
 import kotlinx.serialization.Serializable
@@ -30,6 +32,8 @@ data class WebSearchSettingsResponse(
     val apiKeySet: Boolean,
     /** settings、environment 或 none。 */
     val apiKeySource: String,
+    /** 管理台保存过密钥但当前无法解密，需要重新填写。 */
+    val apiKeyUnreadable: Boolean,
     val baseUrl: String?,
     val maxResults: Int,
     val timeoutMs: Long,
@@ -39,8 +43,6 @@ data class WebSearchSettingsResponse(
     val source: String,
     val updatedAt: Long,
 )
-
-internal val WEB_SEARCH_PROVIDERS = setOf("tavily", "brave", "exa", "deepseek", "searxng")
 
 internal fun webSearchSettingsResponse(
     stored: WebSearchSettingsRecord?,
@@ -52,10 +54,11 @@ internal fun webSearchSettingsResponse(
         provider = effective.provider,
         apiKeySet = effective.apiKey != null,
         apiKeySource = when {
+            effective.apiKey == null -> "none"
             stored?.apiKey != null -> "settings"
-            defaults.apiKey != null -> "environment"
-            else -> "none"
+            else -> "environment"
         },
+        apiKeyUnreadable = stored?.apiKeyUnreadable == true,
         baseUrl = effective.baseUrl,
         maxResults = effective.maxResults,
         timeoutMs = effective.timeoutMs,
@@ -67,16 +70,24 @@ internal fun webSearchSettingsResponse(
 }
 
 /** 返回校验错误；null 表示可以保存。 */
-internal fun webSearchSettingsError(config: WebSearchConfig): String? = when {
-    config.provider !in WEB_SEARCH_PROVIDERS ->
-        "搜索后端必须是 ${WEB_SEARCH_PROVIDERS.joinToString("、")} 之一"
-    config.maxResults !in 1..20 -> "每次搜索返回页面数必须在 1..20 之间"
-    config.timeoutMs !in 1_000..120_000 -> "单次搜索超时必须在 1000..120000 毫秒之间"
-    config.maxRounds !in 1..10 -> "搜索轮数必须在 1..10 之间"
-    config.maxPageChars !in 100..10_000 -> "单页字符上限必须在 100..10000 之间"
-    config.enabled && config.provider == "searxng" && config.baseUrl.isNullOrBlank() ->
-        "SearXNG 需要配置搜索地址"
-    config.enabled && config.provider != "searxng" && config.apiKey.isNullOrBlank() ->
-        "启用搜索代理需要配置 API 密钥"
-    else -> null
+internal fun webSearchSettingsError(config: WebSearchConfig): String? {
+    val baseUrlError = webSearchBaseUrlError(
+        config.provider,
+        config.baseUrl,
+        requireHttps = config.enabled && config.provider != "searxng",
+    )
+    return when {
+        config.provider !in WEB_SEARCH_PROVIDERS ->
+            "搜索后端必须是 ${WEB_SEARCH_PROVIDERS.joinToString("、")} 之一"
+        config.maxResults !in 1..20 -> "每次搜索返回页面数必须在 1..20 之间"
+        config.timeoutMs !in 1_000..120_000 -> "单次搜索超时必须在 1000..120000 毫秒之间"
+        config.maxRounds !in 1..10 -> "搜索轮数必须在 1..10 之间"
+        config.maxPageChars !in 100..10_000 -> "单页字符上限必须在 100..10000 之间"
+        baseUrlError != null -> baseUrlError
+        config.enabled && config.provider == "searxng" && config.baseUrl.isNullOrBlank() ->
+            "SearXNG 需要配置搜索地址"
+        config.enabled && config.provider != "searxng" && config.apiKey.isNullOrBlank() ->
+            "启用搜索代理需要配置 API 密钥"
+        else -> null
+    }
 }

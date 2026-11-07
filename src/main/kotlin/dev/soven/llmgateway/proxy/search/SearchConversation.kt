@@ -55,7 +55,17 @@ class SearchConversation(
 ) {
     private val logger = LoggerFactory.getLogger(SearchConversation::class.java)
 
-    suspend fun run(initialMessages: List<JsonObject>, call: ChatCaller): SearchConversationResult {
+    /**
+     * @param finalCall 达到轮数上限后的收尾调用，调用方应移除合成搜索工具，
+     *   避免 `tool_choice=required` 再次强制模型调用搜索。
+     * @param onUsage 每轮拿到用量时立即回调，便于上游中途失败时仍能记录已产生的用量。
+     */
+    suspend fun run(
+        initialMessages: List<JsonObject>,
+        call: ChatCaller,
+        finalCall: ChatCaller = call,
+        onUsage: (Usage) -> Unit = {},
+    ): SearchConversationResult {
         val messages = initialMessages.toMutableList()
         val parts = mutableListOf<ConversationPart>()
         var usage: Usage? = null
@@ -64,7 +74,9 @@ class SearchConversation(
         while (true) {
             round += 1
             val response = call.call(messages.toList())
-            usage = addUsage(usage, UsageParser.fromJson(response))
+            val roundUsage = UsageParser.fromJson(response)
+            usage = addUsage(usage, roundUsage)
+            roundUsage?.let(onUsage)
             val choice = (response["choices"] as? JsonArray)?.firstOrNull() as? JsonObject
                 ?: throw WebSearchException("上游没有返回 choices")
             val message = choice["message"] as? JsonObject
@@ -90,8 +102,10 @@ class SearchConversation(
                 messages += synthetic.map { tool ->
                     toolMessage(tool.id, "No more searches: answer with what was found.")
                 }
-                val final = call.call(messages.toList())
-                usage = addUsage(usage, UsageParser.fromJson(final))
+                val final = finalCall.call(messages.toList())
+                val finalUsage = UsageParser.fromJson(final)
+                usage = addUsage(usage, finalUsage)
+                finalUsage?.let(onUsage)
                 val finalChoice = (final["choices"] as? JsonArray)?.firstOrNull() as? JsonObject
                 val finalMessage = finalChoice?.get("message") as? JsonObject
                 val finalText = finalMessage?.let(::messageText).orEmpty()
@@ -104,8 +118,10 @@ class SearchConversation(
                 return SearchConversationResult(parts, usage, finishReason)
             }
 
+            // 单轮最多执行固定数量的搜索：模型一次返回大量调用时不能全部打到供应商。
+            val executed = synthetic.take(MAX_SEARCHES_PER_ROUND)
             val results = coroutineScope {
-                synthetic.map { call ->
+                executed.map { call ->
                     async {
                         val query = queryOf(call)
                         if (query.isBlank()) {
@@ -117,7 +133,12 @@ class SearchConversation(
                 }.awaitAll()
             }
             messages += assistantMessage(text, synthetic)
-            results.forEach { (call, result) ->
+            synthetic.forEachIndexed { index, tool ->
+                if (index >= executed.size) {
+                    messages += toolMessage(tool.id, "search skipped: too many searches in one round")
+                    return@forEachIndexed
+                }
+                val (call, result) = results[index]
                 val output = result.getOrNull()
                 if (output != null) {
                     parts += ConversationPart.Search(queryOf(call), output.hits)
@@ -193,7 +214,10 @@ private fun toolMessage(id: String, content: String): JsonObject = buildJsonObje
     put("content", content)
 }
 
-private fun addUsage(left: Usage?, right: Usage?): Usage? {
+/** 模型单轮最多触发的搜索次数，避免一次并行调用打爆搜索 API 或放大费用。 */
+private const val MAX_SEARCHES_PER_ROUND = 5
+
+internal fun addUsage(left: Usage?, right: Usage?): Usage? {
     if (left == null) return right
     if (right == null) return left
     fun sum(a: Long?, b: Long?): Long? = when {

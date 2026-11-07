@@ -8,6 +8,7 @@ import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.upsert
+import org.slf4j.LoggerFactory
 
 /**
  * 持久化管理台的 Web 搜索设置。搜索 API 密钥与渠道凭据一样使用
@@ -21,6 +22,8 @@ class WebSearchSettingsRepository(
     private val credentialCipher: CredentialCipher,
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
+    private val logger = LoggerFactory.getLogger(WebSearchSettingsRepository::class.java)
+
     /** 没有保存过设置时返回 null，调用方回退到环境变量默认值。 */
     suspend fun load(): WebSearchSettingsRecord? = suspendTransaction(database) {
         WebSearchSettings.selectAll()
@@ -28,18 +31,30 @@ class WebSearchSettingsRepository(
             .singleOrNull()
             ?.let { row ->
                 val ciphertext = row[WebSearchSettings.apiKeyCiphertext]
+                var unreadable = false
+                val apiKey = ciphertext.takeIf { it.isNotEmpty() }?.let {
+                    runCatching { credentialCipher.decrypt(it, row[WebSearchSettings.apiKeyNonce]) }
+                        .onFailure {
+                            // 主密钥轮换或密文损坏时不能让配置读取整体失败；管理员需要能进页面重填。
+                            unreadable = true
+                            logger.warn(
+                                "web search api key cannot be decrypted; re-enter it in the admin UI ({})",
+                                it::class.simpleName,
+                            )
+                        }
+                        .getOrNull()
+                }
                 WebSearchSettingsRecord(
                     enabled = row[WebSearchSettings.enabled],
                     provider = row[WebSearchSettings.provider],
-                    apiKey = ciphertext.takeIf { it.isNotEmpty() }?.let {
-                        credentialCipher.decrypt(it, row[WebSearchSettings.apiKeyNonce])
-                    },
+                    apiKey = apiKey,
                     baseUrl = row[WebSearchSettings.baseUrl],
                     maxResults = row[WebSearchSettings.maxResults],
                     timeoutMs = row[WebSearchSettings.timeoutMs],
                     maxRounds = row[WebSearchSettings.maxRounds],
                     maxPageChars = row[WebSearchSettings.maxPageChars],
                     updatedAt = row[WebSearchSettings.updatedAt],
+                    apiKeyUnreadable = unreadable,
                 )
             }
     }

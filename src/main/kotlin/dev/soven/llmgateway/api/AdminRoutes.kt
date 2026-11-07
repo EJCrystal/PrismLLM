@@ -221,13 +221,16 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val request = call.receive<WebSearchSettingsRequest>()
             val stored = app.webSearchSettingsRepository.load()
             val provider = request.provider.trim().lowercase()
+            // 切换后端时不能沿用旧后端的密钥，否则会把旧密钥发给新供应商。
+            val sameProvider = stored != null && stored.provider.equals(provider, ignoreCase = true)
             val record = WebSearchSettingsRecord(
                 enabled = request.enabled,
                 provider = provider,
                 apiKey = when {
                     request.clearApiKey -> null
                     !request.apiKey.isNullOrBlank() -> request.apiKey.trim()
-                    else -> stored?.apiKey
+                    sameProvider -> stored?.apiKey
+                    else -> null
                 },
                 baseUrl = request.baseUrl?.trim()?.takeIf { it.isNotEmpty() },
                 maxResults = request.maxResults,

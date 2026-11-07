@@ -4,6 +4,7 @@ import dev.soven.llmgateway.config.WebSearchConfig
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 
 class WebSearchSettingsTest {
     private val defaults = WebSearchConfig(
@@ -25,10 +26,10 @@ class WebSearchSettingsTest {
     }
 
     @Test
-    fun `stored settings override defaults and fall back for unset secrets`() {
+    fun `same provider falls back to environment secrets`() {
         val stored = WebSearchSettingsRecord(
             enabled = false,
-            provider = "tavily",
+            provider = "brave",
             apiKey = null,
             baseUrl = null,
             maxResults = 10,
@@ -41,13 +42,34 @@ class WebSearchSettingsTest {
         val effective = stored.effective(defaults)
 
         assertFalse(effective.enabled)
-        assertEquals("tavily", effective.provider)
+        assertEquals("brave", effective.provider)
         assertEquals("env-key", effective.apiKey)
         assertEquals("https://env.example.com", effective.baseUrl)
         assertEquals(10, effective.maxResults)
         assertEquals(20_000, effective.timeoutMs)
         assertEquals(4, effective.maxRounds)
         assertEquals(2_000, effective.maxPageChars)
+    }
+
+    @Test
+    fun `different provider does not inherit environment secrets`() {
+        val stored = WebSearchSettingsRecord(
+            enabled = true,
+            provider = "tavily",
+            apiKey = null,
+            baseUrl = null,
+            maxResults = 6,
+            timeoutMs = 15_000,
+            maxRounds = 6,
+            maxPageChars = 1_500,
+            updatedAt = 123,
+        )
+
+        val effective = stored.effective(defaults)
+
+        assertEquals("tavily", effective.provider)
+        assertNull(effective.apiKey)
+        assertNull(effective.baseUrl)
     }
 
     @Test

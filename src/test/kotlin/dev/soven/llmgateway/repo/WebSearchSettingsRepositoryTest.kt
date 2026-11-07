@@ -6,10 +6,12 @@ import dev.soven.llmgateway.db.WebSearchSettings
 import dev.soven.llmgateway.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.security.CredentialCipher
 import kotlinx.coroutines.runBlocking
+import org.jetbrains.exposed.v1.jdbc.deleteAll
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.TestInstance
 import org.testcontainers.containers.PostgreSQLContainer
 import java.util.Base64
@@ -18,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class WebSearchSettingsRepositoryTest {
@@ -45,6 +48,13 @@ class WebSearchSettingsRepositoryTest {
             CredentialCipher(ByteArray(32) { 7 }),
             nowMs = { 1_800_000_000_000 },
         )
+    }
+
+    @BeforeEach
+    fun reset() {
+        runBlocking {
+            suspendTransaction(factory.database) { WebSearchSettings.deleteAll() }
+        }
     }
 
     @AfterAll
@@ -85,5 +95,29 @@ class WebSearchSettingsRepositoryTest {
             WebSearchSettings.selectAll().single()[WebSearchSettings.apiKeyCiphertext]
         }
         assertFalse(ciphertext.contains("tvly-secret"))
+    }
+
+    @Test
+    fun `an unreadable ciphertext does not break loading`() = runBlocking {
+        repository.save(
+            WebSearchSettingsRecord(
+                enabled = true,
+                provider = "tavily",
+                apiKey = "tvly-secret",
+                baseUrl = null,
+                maxResults = 6,
+                timeoutMs = 15_000,
+                maxRounds = 6,
+                maxPageChars = 1_500,
+                updatedAt = 0,
+            ),
+        )
+
+        val rotated = WebSearchSettingsRepository(factory.database, CredentialCipher(ByteArray(32) { 9 }))
+        val loaded = assertNotNull(rotated.load())
+
+        assertNull(loaded.apiKey)
+        assertTrue(loaded.apiKeyUnreadable)
+        assertEquals("tavily", loaded.provider)
     }
 }

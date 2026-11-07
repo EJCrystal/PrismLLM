@@ -642,6 +642,7 @@ export interface WebSearchSettings {
   provider: string
   apiKeySet: boolean
   apiKeySource: WebSearchApiKeySource
+  apiKeyUnreadable: boolean
   baseUrl: string | null
   maxResults: number
   timeoutMs: number

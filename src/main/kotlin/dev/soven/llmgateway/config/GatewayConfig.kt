@@ -115,6 +115,11 @@ data class GatewayConfig(
                 } else {
                     require(webSearchApiKey != null) { "WEB_SEARCH_API_KEY 不能为空" }
                 }
+                webSearchBaseUrlError(
+                    webSearchProvider,
+                    webSearchBaseUrl,
+                    requireHttps = webSearchProvider != "searxng",
+                )?.let { throw IllegalArgumentException("WEB_SEARCH_BASE_URL: $it") }
             }
 
             return GatewayConfig(

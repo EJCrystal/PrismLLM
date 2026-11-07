@@ -8,6 +8,8 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class WebSearchTest {
@@ -56,6 +58,57 @@ class WebSearchTest {
             assertEquals("Go downloads", result.hits.single().title)
             assertTrue(result.summary.startsWith("1. Go downloads — https://go.dev/dl/"))
         } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `fromConfig stays unavailable when required settings are missing`() {
+        val client = HttpClient(Java)
+        try {
+            assertFalse(WebSearchService.fromConfig(WebSearchConfig(enabled = true, provider = "tavily"), client).available)
+            assertFalse(WebSearchService.fromConfig(WebSearchConfig(enabled = true, provider = "searxng"), client).available)
+            assertTrue(
+                WebSearchService.fromConfig(
+                    WebSearchConfig(enabled = true, provider = "tavily", apiKey = "tvly-test"),
+                    client,
+                ).available,
+            )
+            assertTrue(
+                WebSearchService.fromConfig(
+                    WebSearchConfig(enabled = true, provider = "searxng", baseUrl = "http://127.0.0.1:8080"),
+                    client,
+                ).available,
+            )
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `rejects search responses larger than the byte limit`() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/search") { exchange ->
+            val bytes = ByteArray(4 * 1024 * 1024 + 1) { 'x'.code.toByte() }
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        val client = HttpClient(Java)
+        try {
+            val service = WebSearchService.fromConfig(
+                WebSearchConfig(
+                    enabled = true,
+                    provider = "tavily",
+                    apiKey = "tvly-test",
+                    baseUrl = "http://127.0.0.1:${server.address.port}",
+                ),
+                client,
+            )
+            val error = assertFailsWith<WebSearchException> { service.search("big") }
+            assertTrue(error.message.orEmpty().contains("上限"), error.message)
+        } finally {
+            client.close()
             server.stop(0)
         }
     }

@@ -40,6 +40,7 @@ import dev.soven.llmgateway.proxy.protocol.responsesToChatRequest
 import dev.soven.llmgateway.proxy.search.ChatCaller
 import dev.soven.llmgateway.proxy.search.SearchConversation
 import dev.soven.llmgateway.proxy.search.WebSearchService
+import dev.soven.llmgateway.proxy.search.addUsage
 import dev.soven.llmgateway.proxy.search.hasBuiltInWebSearch
 import dev.soven.llmgateway.proxy.search.prepareResponsesSearchRequest
 import dev.soven.llmgateway.proxy.search.syntheticWebSearchName
@@ -465,10 +466,16 @@ private suspend fun handleProxy(
                                 app.config.totalTimeoutMs + 5_000,
                             )
                             // 请求转换在抢租约前完成，避免转换失败留下未释放的探测租约。
+                            // 搜索代理会先把内置 web_search 改写成普通函数工具，探测也必须用改写后的请求。
+                            val probeRequest = if (webSearchProxy) {
+                                prepareResponsesSearchRequest(requestJson, syntheticWebSearchName(requestJson))
+                            } else {
+                                requestJson
+                            }
                             ProtocolConversion.convertRequest(
                                 protocol,
                                 attemptProtocol ?: protocol,
-                                requestJson,
+                                probeRequest,
                                 candidate.upstreamModel,
                             )
                             probeClaimed = app.keyAutoDisableRepository.claimProbe(channelKey, leaseMs = leaseMs)
@@ -1247,10 +1254,20 @@ private suspend fun runSearchConversation(
     val caller = searchChatCaller(
         app, call, candidate, chatRequest, state, startedAt, traceparent, globalOverrides, headerProfiles,
     )
+    val finalRequest = withoutSyntheticTool(chatRequest, toolName)
+    val finalCaller = searchChatCaller(
+        app, call, candidate, finalRequest, state, startedAt, traceparent, globalOverrides, headerProfiles,
+    )
+    // 每次尝试从空用量开始，避免重试时把前一候选的用量按当前候选价格计费。
+    state.usage = null
+    var attemptUsage: Usage? = null
     try {
         return withTimeout(timeoutMs) {
             SearchConversation(toolName, webSearch.service, webSearch.maxRounds)
-                .run(messages, caller)
+                .run(messages, caller, finalCaller) { roundUsage ->
+                    attemptUsage = addUsage(attemptUsage, roundUsage)
+                    state.usage = attemptUsage
+                }
                 .also { result -> state.usage = result.usage }
         }
     } catch (e: TimeoutCancellationException) {
@@ -1274,6 +1291,31 @@ private suspend fun runSearchConversation(
             "web_search 代理失败: ${e.message ?: e::class.simpleName}", "api_error",
             retryable = false,
         )
+    }
+}
+
+/** 收尾调用不再向模型暴露合成搜索工具，并把强制调用该工具的 tool_choice 降级为 auto。 */
+private fun withoutSyntheticTool(request: JsonObject, toolName: String): JsonObject {
+    val tools = (request["tools"] as? JsonArray).orEmpty().filter { raw ->
+        val function = (raw as? JsonObject)?.get("function") as? JsonObject
+        (function?.get("name") as? JsonPrimitive)?.contentOrNull != toolName
+    }
+    val choice = request["tool_choice"]
+    val forcedSynthetic = choice is JsonObject &&
+        (((choice["function"] as? JsonObject)?.get("name") as? JsonPrimitive)?.contentOrNull == toolName)
+    val adjustedChoice = when {
+        forcedSynthetic -> JsonPrimitive("auto")
+        choice is JsonPrimitive && choice.contentOrNull == "required" && tools.isEmpty() -> JsonPrimitive("auto")
+        else -> choice
+    }
+    return buildJsonObject {
+        request.forEach { (key, value) ->
+            when (key) {
+                "tools" -> if (tools.isNotEmpty()) put("tools", JsonArray(tools))
+                "tool_choice" -> if (adjustedChoice != null) put("tool_choice", adjustedChoice)
+                else -> put(key, value)
+            }
+        }
     }
 }
 

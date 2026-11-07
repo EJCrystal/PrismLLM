@@ -28,20 +28,21 @@ class SearchConversationTest {
         val seen = mutableListOf<List<JsonObject>>()
         val result = SearchConversation("web_search", searchService).run(
             listOf(obj("""{"role":"user","content":"What is the latest Go?"}""")),
-        ) { messages ->
-            seen += messages
-            if (seen.size == 1) {
-                chat(
-                    content = "Let me check.",
-                    finish = "tool_calls",
-                    input = 30,
-                    output = 7,
-                    calls = """[{"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"latest go\"}"}}]""",
-                )
-            } else {
-                chat(content = "Go 1.27.1 is out.", finish = "stop", input = 40, output = 5)
-            }
-        }
+            call = { messages ->
+                seen += messages
+                if (seen.size == 1) {
+                    chat(
+                        content = "Let me check.",
+                        finish = "tool_calls",
+                        input = 30,
+                        output = 7,
+                        calls = """[{"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"latest go\"}"}}]""",
+                    )
+                } else {
+                    chat(content = "Go 1.27.1 is out.", finish = "stop", input = 40, output = 5)
+                }
+            },
+        )
 
         assertEquals(3, result.parts.size)
         assertEquals(ConversationPart.Text("Let me check."), result.parts[0])
@@ -65,19 +66,87 @@ class SearchConversationTest {
         var calls = 0
         val result = SearchConversation("web_search", searchService).run(
             listOf(obj("""{"role":"user","content":"Read the file"}""")),
-        ) {
-            calls += 1
-            chat(
-                content = "",
-                finish = "tool_calls",
-                input = 10,
-                output = 2,
-                calls = """[{"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}]""",
-            )
-        }
+            call = {
+                calls += 1
+                chat(
+                    content = "",
+                    finish = "tool_calls",
+                    input = 10,
+                    output = 2,
+                    calls = """[{"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}]""",
+                )
+            },
+        )
 
         assertEquals(1, calls)
         assertEquals(listOf(ConversationPart.ToolCall("call_read", "read_file", "{\"path\":\"README.md\"}")), result.parts)
+    }
+
+    @Test
+    fun `caps the number of searches executed in one round`() = runBlocking {
+        var searches = 0
+        val countingService = WebSearchService(listOf(
+            object : WebSearchBackend {
+                override val name = "counting"
+                override suspend fun search(query: String, limit: Int): SearchOutput {
+                    searches += 1
+                    return SearchOutput("result for $query", listOf(hit))
+                }
+            },
+        ))
+        val calls = (1..6).joinToString(prefix = "[", postfix = "]") { index ->
+            """{"id":"call_$index","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"q$index\"}"}}"""
+        }
+        val seen = mutableListOf<List<JsonObject>>()
+        val result = SearchConversation("web_search", countingService).run(
+            listOf(obj("""{"role":"user","content":"search many things"}""")),
+            call = { messages ->
+                seen += messages
+                if (seen.size == 1) {
+                    chat(content = "", finish = "tool_calls", input = 10, output = 2, calls = calls)
+                } else {
+                    chat(content = "done", finish = "stop", input = 10, output = 2)
+                }
+            },
+        )
+
+        assertEquals(5, searches)
+        assertEquals(5, result.parts.filterIsInstance<ConversationPart.Search>().size)
+        val toolMessages = seen[1].filter { it["role"]?.toString()?.contains("tool") == true }
+        assertEquals(6, toolMessages.size)
+        assertTrue(toolMessages.any { it["content"]!!.toString().contains("search skipped") })
+    }
+
+    @Test
+    fun `uses the final caller after the round limit and reports every round usage`() = runBlocking {
+        var calls = 0
+        var finalCalls = 0
+        val usages = mutableListOf<Long?>()
+        val result = SearchConversation("web_search", searchService, maxRounds = 0).run(
+            listOf(obj("""{"role":"user","content":"What is the latest Go?"}""")),
+            call = {
+                calls += 1
+                chat(
+                    content = "",
+                    finish = "tool_calls",
+                    input = 10,
+                    output = 2,
+                    calls = """[{"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"latest go\"}"}}]""",
+                )
+            },
+            finalCall = {
+                finalCalls += 1
+                chat(content = "Final answer.", finish = "stop", input = 20, output = 3)
+            },
+            onUsage = { usages += it.total },
+        )
+
+        assertEquals(1, calls)
+        assertEquals(1, finalCalls)
+        assertEquals(ConversationPart.Text("Final answer."), result.parts.last())
+        assertEquals(listOf<Long?>(12L, 23L), usages)
+        assertEquals(30L, result.usage?.input)
+        assertEquals(5L, result.usage?.output)
     }
 
     @Test

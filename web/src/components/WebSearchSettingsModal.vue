@@ -32,14 +32,27 @@ const form = reactive({
 const current = ref<WebSearchSettings | null>(null)
 const loading = ref(true)
 const saving = ref(false)
+/** 打开弹窗时从服务端带出的地址；用户没改过时，切换后端不应把它保存为新后端的显式地址。 */
+const inheritedBaseUrl = ref('')
+const baseUrlTouched = ref(false)
 
 const isSearxng = computed(() => form.provider === 'searxng')
 const hasStoredKey = computed(() => current.value?.apiKeySource === 'settings')
+const providerChanged = computed(() => current.value != null && form.provider !== current.value.provider)
 const keyPlaceholder = computed(() => {
+  if (current.value?.apiKeyUnreadable) return '已保存的密钥无法解密，请重新填写'
   if (current.value?.apiKeySource === 'settings') return '已保存密钥；留空保持不变'
   if (current.value?.apiKeySource === 'environment') return '已从环境变量读取；留空保持不变'
   return '例如 tvly-...'
 })
+
+function onProviderChange() {
+  if (!baseUrlTouched.value && form.baseUrl === inheritedBaseUrl.value) {
+    form.baseUrl = ''
+  }
+  inheritedBaseUrl.value = ''
+  baseUrlTouched.value = false
+}
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
@@ -50,12 +63,14 @@ async function load() {
   try {
     const settings = await api.getWebSearchSettings()
     current.value = settings
+    inheritedBaseUrl.value = settings.baseUrl ?? ''
+    baseUrlTouched.value = false
     Object.assign(form, {
       enabled: settings.enabled,
       provider: settings.provider,
       apiKey: '',
       clearApiKey: false,
-      baseUrl: settings.baseUrl ?? '',
+      baseUrl: inheritedBaseUrl.value,
       maxResults: settings.maxResults,
       timeoutMs: settings.timeoutMs,
       maxRounds: settings.maxRounds,
@@ -68,6 +83,15 @@ async function load() {
   }
 }
 
+function isLoopbackUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+  } catch {
+    return false
+  }
+}
+
 async function save() {
   if (loading.value || saving.value) return
   const baseUrl = form.baseUrl.trim()
@@ -76,9 +100,36 @@ async function save() {
     notify('SearXNG 需要填写搜索地址', 'error')
     return
   }
-  if (form.enabled && !isSearxng.value && !apiKey && !current.value?.apiKeySet) {
-    notify('启用搜索代理需要填写 API 密钥', 'error')
+  if (baseUrl.length > 500) {
+    notify('搜索地址不能超过 500 个字符', 'error')
     return
+  }
+  if (baseUrl) {
+    let parsed: URL
+    try {
+      parsed = new URL(baseUrl)
+    } catch {
+      notify('搜索地址格式无效', 'error')
+      return
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      notify('搜索地址只支持 http 或 https', 'error')
+      return
+    }
+    if (form.enabled && !isSearxng.value && parsed.protocol === 'http:' && !isLoopbackUrl(baseUrl)) {
+      notify('携带 API 密钥的搜索地址必须使用 HTTPS（本机回环地址除外）', 'error')
+      return
+    }
+  }
+  if (form.enabled && !isSearxng.value && !apiKey) {
+    if (!current.value?.apiKeySet) {
+      notify('启用搜索代理需要填写 API 密钥', 'error')
+      return
+    }
+    if (providerChanged.value && current.value?.apiKeySource === 'settings') {
+      notify('切换搜索后端后需要重新填写 API 密钥', 'error')
+      return
+    }
   }
   if (form.maxResults < 1 || form.maxResults > 20) {
     notify('每次搜索返回页面数必须在 1..20 之间', 'error')
@@ -141,7 +192,7 @@ onMounted(load)
 
       <label class="field">
         <span>搜索后端</span>
-        <select v-model="form.provider" :disabled="saving">
+        <select v-model="form.provider" :disabled="saving" @change="onProviderChange">
           <option v-for="provider in providers" :key="provider.value" :value="provider.value">
             {{ provider.label }}
           </option>
@@ -158,7 +209,10 @@ onMounted(load)
           :placeholder="keyPlaceholder"
           :disabled="saving || form.clearApiKey"
         />
-        <small v-if="current?.apiKeySource === 'environment'">当前密钥来自环境变量，保存后会优先使用管理台设置。</small>
+        <small v-if="current?.apiKeyUnreadable" class="text-danger">
+          管理台保存的密钥无法解密（主密钥可能已更换），请重新填写。
+        </small>
+        <small v-else-if="current?.apiKeySource === 'environment'">当前密钥来自环境变量，保存后会优先使用管理台设置。</small>
       </label>
 
       <label v-if="hasStoredKey && !isSearxng" class="check-row">
@@ -172,8 +226,10 @@ onMounted(load)
           v-model="form.baseUrl"
           :placeholder="isSearxng ? 'https://searx.example.com' : '留空沿用环境变量或供应商默认地址'"
           :disabled="saving"
+          @input="baseUrlTouched = true"
         />
         <small v-if="isSearxng">SearXNG 实例地址，不需要 API 密钥；留空时沿用环境变量中的地址。</small>
+        <small v-else>携带 API 密钥的远程地址必须使用 HTTPS；本机回环地址可用 HTTP。</small>
       </label>
 
       <div class="web-search-grid">
