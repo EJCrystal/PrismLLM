@@ -41,6 +41,7 @@ import { channelKeyRateLimitSummary, normalizeChannelKeyRateLimit, validateChann
 import {
   canProbeSavedChannel,
   createRequestTracker,
+  hasCredentialDraft,
   sameProtocolSelection,
   watchChannelRequestInputs,
 } from '../utils/channelRequestState'
@@ -507,7 +508,7 @@ const canProbeProtocols = computed(() => {
   }
   return canProbeSavedChannel(savedChannel, {
     baseUrl: form.baseUrl,
-    credential: channelKeys.value.some((key) => key.credential.trim()) ? 'draft' : '',
+    credential: hasCredentialDraft(channelKeys.value) ? 'draft' : '',
     authType: form.authType,
     protocolAuthTypes: form.protocolAuthTypes,
     requestOverrides,
@@ -1068,7 +1069,7 @@ async function probeProtocols(): Promise<void> {
   const savedChannel = channels.value.find((channel) => channel.id === channelId)
   if (!canProbeSavedChannel(savedChannel, {
     baseUrl: probeBaseUrl,
-    credential: probeCredential,
+    credential: hasCredentialDraft(channelKeys.value) ? 'draft' : '',
     authType: probeAuthType,
     protocolAuthTypes: probeProtocolAuthTypes,
   })) {
