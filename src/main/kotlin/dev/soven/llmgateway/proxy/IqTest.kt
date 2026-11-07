@@ -338,7 +338,7 @@ private fun parseVisibilityRules(document: Document): VisibilityAnalysis {
  * [ScreenCss.uncertain]，由调用方转人工确认，而不是猜测。
  */
 private fun screenApplicableCss(css: String): ScreenCss {
-    val source = css.replace(Regex("(?s)/\\*.*?\\*/"), "")
+    val source = CSS_COMMENT_PATTERN.replace(css, "")
     val out = StringBuilder(source.length)
     var uncertain = false
     var i = 0
@@ -782,7 +782,7 @@ private fun splitTopLevel(source: String): List<String> {
 }
 
 private fun parseVisibilityDeclarations(block: String): List<VisibilityDeclaration> =
-    CSS_DECLARATION_PATTERN.findAll(block).mapNotNull { match ->
+    CSS_DECLARATION_PATTERN.findAll(CSS_COMMENT_PATTERN.replace(block, "")).mapNotNull { match ->
         val property = match.groupValues[1].lowercase()
         if (property != "display" && property != "visibility") return@mapNotNull null
         val rawValue = match.groupValues[2]
@@ -850,6 +850,7 @@ private val CANDY_CHINESE_ANSWER_PATTERN = Regex(
         "(?![\\d〇零一二三四五六七八九十百千万亿两廿])",
 )
 
+private val CSS_COMMENT_PATTERN = Regex("(?s)/\\*.*?\\*/")
 private val CSS_RULE_PATTERN = Regex("(?is)([^{}]+)\\{([^{}]*)\\}")
 private val CSS_DECLARATION_PATTERN = Regex("(?i)([a-z-]+)\\s*:\\s*([^;{}]+)")
 private val IMPORTANT_DECLARATION_PATTERN = Regex("(?i)!\\s*important")

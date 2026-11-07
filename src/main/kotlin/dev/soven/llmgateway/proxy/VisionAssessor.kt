@@ -273,9 +273,8 @@ class OpenAiVisionAssessor(
     private fun parseAspectStatus(raw: String?): VisionAspectStatus {
         val value = raw?.trim()?.lowercase().orEmpty()
         return when {
-            // 必须先判断否定形式；中文“未通过”也包含“通过”两个字。
-            value.contains("fail") || value.contains("incorrect") ||
-                value.contains("未通过") || value.contains("不通过") -> VisionAspectStatus.FAILED
+            // 必须先判断否定形式："not passed" 也包含 "pass"，"未通过" 也包含 "通过"。
+            NEGATIVE_ASPECT_PATTERN.containsMatchIn(value) -> VisionAspectStatus.FAILED
             value.contains("pass") || value.contains("通过") -> VisionAspectStatus.PASSED
             else -> VisionAspectStatus.UNKNOWN
         }
@@ -296,5 +295,10 @@ class OpenAiVisionAssessor(
 
     private companion object {
         val ASPECT_KEYS = listOf("鹈鹕特征", "自行车结构", "骑行关系", "动画连贯性", "画面完成度")
+        val NEGATIVE_ASPECT_PATTERN = Regex(
+            "fail|incorrect|not\\s+(?:fully\\s+|yet\\s+)?pass(?:ed)?|" +
+                "(?:does|did|is|was|has|have|had)\\s+not\\s+pass(?:ed)?|" +
+                "never\\s+pass(?:ed)?|未通过|不通过|没通过|没有通过",
+        )
     }
 }

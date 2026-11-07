@@ -50,9 +50,11 @@ export function withIqPreviewCsp(html: string): string {
  * 使用浏览器的 HTML 解析器，未加引号的属性、注释和错误嵌套都按真实 DOM 处理，
  * 避免正则与浏览器解析边界不一致。锚点整体移除，防止 SVG SMIL 再通过
  * `<set attributeName="href">` 动态补回外链；脚本、meta、base 也一并移除。
+ * `template` 整体移除：`querySelectorAll` 不会遍历 `template.content`，声明式
+ * Shadow DOM 里的链接会绕过下面的清洗。
  */
 function stripPreviewNavigation(document: Document): void {
-  document.querySelectorAll('script, meta, base, link, area, iframe, object, embed')
+  document.querySelectorAll('script, meta, base, link, area, iframe, object, embed, template')
     .forEach((element) => element.remove())
   document.querySelectorAll('a').forEach((element) => {
     element.replaceWith(...Array.from(element.childNodes))

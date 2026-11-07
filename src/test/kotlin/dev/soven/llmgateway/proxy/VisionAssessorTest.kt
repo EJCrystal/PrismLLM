@@ -111,6 +111,25 @@ class VisionAssessorTest {
     }
 
     @Test
+    fun `negated english pass status is treated as failed`() {
+        val text = """
+            {"aspects":{
+              "鹈鹕特征":{"status":"passed","detail":"白色长颈鸟"},
+              "自行车结构":{"status":"not passed","detail":"缺少链条"},
+              "骑行关系":{"status":"passed","detail":"坐在车座上"},
+              "动画连贯性":{"status":"not passed","detail":"脚脱离踏板"},
+              "画面完成度":{"status":"passed","detail":"主体完整"}
+            },"verdict":"passed","score":80,"reason":"summary"}
+        """.trimIndent()
+
+        val result = assessor.parseAssessment(text)
+
+        assertEquals(VisionAspectStatus.FAILED, result.aspects[1].status)
+        assertEquals(VisionAspectStatus.FAILED, result.aspects[3].status)
+        assertEquals(IqJudgeVerdict.INCORRECT, result.verdict)
+    }
+
+    @Test
     fun `unknown aspect asks for review when nothing failed`() {
         val text = """
             {"aspects":{

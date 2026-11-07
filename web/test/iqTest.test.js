@@ -99,6 +99,15 @@ describe('iqTest: 智商检测展示', () => {
     assert.ok(result.includes('查看作品'))
   })
 
+  it('声明式 Shadow DOM 模板中的外链也会被移除', () => {
+    const html = '<html><body><div><template shadowrootmode="open">' +
+      '<a href="https://evil.example/collect">查看</a></template></div><svg></svg></body></html>'
+    const result = withIqPreviewCsp(html)
+
+    assert.ok(!/<template/i.test(result))
+    assert.ok(!result.includes('evil.example'))
+  })
+
   it('移除链接和表单的导航目标', () => {
     const html = '<html><body><a href="https://evil.example/x" target="_top">点击</a>' +
       '<form action="https://evil.example/post" method="post"></form><svg></svg></body></html>'

@@ -328,6 +328,21 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy ignores css comments in visibility declarations`() {
+        val inline = """
+            <html><body><span style="display:none /* comment */">21</span>
+            <p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+        val important = """
+            <html><body><span style="display:none /* comment */ !important">21</span>
+            <p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inline).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, important).verdict)
+    }
+
+    @Test
     fun `candy ignores invalid visibility declarations`() {
         val invalidDisplay = """<html><body><p style="display:none;display:invalid">答案是 21 颗。</p></body></html>"""
         val invalidVisibility =
