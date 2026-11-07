@@ -110,6 +110,39 @@ class SearchConversationTest {
     }
 
     @Test
+    fun `mixed search and client calls run the search before returning the client call`() = runBlocking {
+        var searches = 0
+        val countingService = WebSearchService(listOf(
+            object : WebSearchBackend {
+                override val name = "counting"
+                override suspend fun search(query: String, limit: Int, allowedDomains: List<String>): SearchOutput {
+                    searches += 1
+                    return SearchOutput("result for $query", listOf(hit))
+                }
+            },
+        ))
+        val result = SearchConversation("web_search", countingService).run(
+            listOf(obj("""{"role":"user","content":"search and read"}""")),
+            call = {
+                chat(
+                    content = "",
+                    finish = "tool_calls",
+                    input = 10,
+                    output = 2,
+                    calls = """[
+                        {"id":"call_search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"latest go\"}"}},
+                        {"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}
+                    ]""",
+                )
+            },
+        )
+
+        assertEquals(1, searches)
+        assertEquals(1, result.parts.filterIsInstance<ConversationPart.Search>().size)
+        assertEquals(ConversationPart.ToolCall("call_read", "read_file", "{\"path\":\"README.md\"}"), result.parts.last())
+    }
+
+    @Test
     fun `caps the number of searches executed in one round`() = runBlocking {
         var searches = 0
         val countingService = WebSearchService(listOf(

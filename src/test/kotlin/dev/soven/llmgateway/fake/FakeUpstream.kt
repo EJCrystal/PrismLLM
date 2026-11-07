@@ -334,6 +334,18 @@ class FakeUpstream {
                 }
                 return
             }
+            "oversized-search-response" -> {
+                call.respondText(oversizedPayload(9 * 1024 * 1024), ContentType.Application.Json)
+                return
+            }
+            "oversized-search-error" -> {
+                call.respondText(
+                    oversizedPayload(9 * 1024 * 1024),
+                    ContentType.Application.Json,
+                    HttpStatusCode.InternalServerError,
+                )
+                return
+            }
         }
         if (!stream) {
             call.respondText(
@@ -591,8 +603,8 @@ class FakeUpstream {
         }
     }
 
-    private fun oversizedPayload(): String = buildJsonObject {
-        put("payload", "private-upstream-payload-" + "x".repeat(1024 * 1024 + 32))
+    private fun oversizedPayload(bytes: Int = 1024 * 1024 + 32): String = buildJsonObject {
+        put("payload", "private-upstream-payload-" + "x".repeat(bytes))
     }.toString()
 
     private suspend fun handleMessages(call: ApplicationCall, scenario: String) {

@@ -4852,6 +4852,49 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `search proxy rejects an oversized model response`() = runBlocking {
+        assertOversizedSearchResponseRejected("oversized-search-response")
+    }
+
+    @Test
+    fun `search proxy rejects an oversized model error response`() = runBlocking {
+        assertOversizedSearchResponseRejected("oversized-search-error")
+    }
+
+    private suspend fun assertOversizedSearchResponseRejected(scenario: String) {
+        app.webSearchSettingsRepository.save(
+            WebSearchSettingsRecord(
+                enabled = true,
+                provider = "tavily",
+                apiKey = "tvly-test",
+                baseUrl = "http://127.0.0.1:1",
+                maxResults = 3,
+                timeoutMs = 2_000,
+                maxRounds = 2,
+                maxPageChars = 2_000,
+                updatedAt = 0,
+            ),
+        )
+        val channel = createChannel(scenario, scenario)
+        exposeAsModel(scenario, channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"$scenario","stream":false,"input":"hi","tools":[{"type":"web_search"}]}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.BadGateway, response.status, body)
+            assertTrue(body.contains("upstream_invalid_response"), "BODY=[$body]")
+            assertTrue(body.contains("上限"), "BODY=[$body]")
+        }
+    }
+
+    @Test
     fun `protocol authentication overrides apply per outbound protocol and legacy auth remains fallback`() = runBlocking {
         val channel = app.channelRepository.create(
             name = "protocol-auth-overrides",

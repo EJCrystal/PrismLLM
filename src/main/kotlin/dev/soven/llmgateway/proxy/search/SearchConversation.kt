@@ -105,7 +105,8 @@ class SearchConversation(
             }
             val synthetic = calls.filter { it.name == syntheticToolName }
             val clientCalls = calls.filter { it.name != syntheticToolName }
-            if (clientCalls.isNotEmpty()) {
+            // 纯客户端调用，或已超出搜索轮数时，直接交还调用，不再执行搜索。
+            if (clientCalls.isNotEmpty() && (synthetic.isEmpty() || round > maxRounds)) {
                 clientCalls.forEach { add(ConversationPart.ToolCall(it.id, it.name, it.arguments)) }
                 return SearchConversationResult(parts, usage, finishReason)
             }
@@ -162,6 +163,11 @@ class SearchConversation(
                     logger.warn("web search failed: {}", result.exceptionOrNull()?.message)
                     messages += toolMessage(call.id, "search failed: ${result.exceptionOrNull()?.message ?: "unknown error"}")
                 }
+            }
+            // 同一轮同时要求搜索和客户端工具时，搜索已经执行并保留结果，再把客户端调用交还。
+            if (clientCalls.isNotEmpty()) {
+                clientCalls.forEach { add(ConversationPart.ToolCall(it.id, it.name, it.arguments)) }
+                return SearchConversationResult(parts, usage, finishReason)
             }
         }
     }

@@ -99,6 +99,39 @@ class WebSearchTest {
     }
 
     @Test
+    fun `searxng filters allowed domains before limiting results`() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/search") { exchange ->
+            val response = """{"results":[
+                {"title":"Other 1","url":"https://other1.com/a","content":"A"},
+                {"title":"Other 2","url":"https://other2.com/b","content":"B"},
+                {"title":"Allowed","url":"https://docs.example.com/c","content":"C"}]}"""
+            val bytes = response.toByteArray()
+            exchange.responseHeaders.add("Content-Type", "application/json")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        val client = HttpClient(Java)
+        try {
+            val service = WebSearchService.fromConfig(
+                WebSearchConfig(
+                    enabled = true,
+                    provider = "searxng",
+                    baseUrl = "http://127.0.0.1:${server.address.port}",
+                    maxResults = 2,
+                ),
+                client,
+            )
+            val result = service.search("latest go", listOf("example.com"))
+            assertEquals(listOf("https://docs.example.com/c"), result.hits.map { it.url })
+        } finally {
+            client.close()
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `a timed out backend falls back to the next one`() = runBlocking {
         val service = WebSearchService(
             listOf(

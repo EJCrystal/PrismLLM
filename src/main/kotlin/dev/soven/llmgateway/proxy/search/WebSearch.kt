@@ -325,7 +325,8 @@ private class SearxngBackend(
                 text = item.string("content").orEmpty(),
                 age = item.string("publishedDate"),
             )
-        }.take(limit)
+        }
+        // 先按域名过滤再截断，避免域内结果排在 limit 之后被提前丢弃。
         return pagesOutput(pages, maxPageChars, limit, allowedDomains)
     }
 }

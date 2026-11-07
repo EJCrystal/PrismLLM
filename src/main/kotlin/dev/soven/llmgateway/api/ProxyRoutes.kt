@@ -57,6 +57,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
@@ -77,6 +78,7 @@ import io.ktor.server.routing.post
 import io.ktor.util.cio.ChannelWriteException
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.cancel
 import io.ktor.utils.io.charsets.TooLongLineException
 import io.ktor.utils.io.core.readBytes
 import io.ktor.utils.io.readRemaining
@@ -1367,6 +1369,25 @@ private fun withoutSyntheticTool(request: JsonObject, toolName: String): JsonObj
     }
 }
 
+/** 搜索代理单轮模型响应的字节上限；超出时取消读取，避免上游超大响应耗尽堆内存。 */
+private const val MAX_SEARCH_RESPONSE_BYTES = 8 * 1024 * 1024
+
+private suspend fun readSearchResponseBody(response: HttpResponse): String {
+    val channel = response.bodyAsChannel()
+    val bytes = channel.readRemaining(MAX_SEARCH_RESPONSE_BYTES.toLong() + 1L).readBytes()
+    if (bytes.size > MAX_SEARCH_RESPONSE_BYTES) {
+        channel.cancel()
+        throw GatewayException(
+            HttpStatusCode.BadGateway,
+            "upstream_invalid_response",
+            "上游响应超过 ${MAX_SEARCH_RESPONSE_BYTES / (1024 * 1024)} MB 上限",
+            "api_error",
+            retryable = false,
+        )
+    }
+    return bytes.toString(Charsets.UTF_8)
+}
+
 private suspend fun searchChatCaller(
     app: GatewayApplication,
     call: ApplicationCall,
@@ -1419,7 +1440,7 @@ private suspend fun searchChatCaller(
                 parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
             )
         }
-        val text = response.bodyAsText()
+        val text = readSearchResponseBody(response)
         if (!response.status.isSuccess()) {
             throw upstreamException(
                 response.status,
