@@ -134,14 +134,19 @@ export function removeProbeAddedProtocols(selected: string[], probeAdded: string
 }
 
 /**
- * 判断密钥是否可路由。
- * ACTIVE 为真；AUTO_TEMPORARY 且到期时间小于等于当前时间为真；其余为假。
+ * 判断密钥是否可路由，与后端 `ChannelKeyState.isRoutableAt` 保持同一口径。
+ * ACTIVE 为真；AUTO_TEMPORARY 需要停用到期且探测租约也已结束；其余为假。
  */
-export function isKeyRoutable(key: Pick<import('../types/api').ChannelKey, 'state' | 'autoDisableUntil'> | null | undefined, now = Date.now()): boolean {
+export function isKeyRoutable(
+  key: Pick<import('../types/api').ChannelKey, 'state' | 'autoDisableUntil' | 'probeUntil'> | null | undefined,
+  now = Date.now(),
+): boolean {
   if (!key) return false
   if (key.state === 'ACTIVE') return true
   if (key.state === 'AUTO_TEMPORARY') {
-    return Boolean(key.autoDisableUntil && now >= key.autoDisableUntil)
+    if (!key.autoDisableUntil || now < key.autoDisableUntil) return false
+    // 探测租约未结束时这条密钥只是"到期"，还没有重新参与路由。
+    return !key.probeUntil || now >= key.probeUntil
   }
   return false
 }

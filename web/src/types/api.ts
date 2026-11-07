@@ -86,6 +86,7 @@ export interface ChannelKey {
   rateLimit: ChannelKeyRateLimit
   stateVersion: number
   autoDisableUntil: number | null
+  probeUntil: number | null
   autoDisableReason: string | null
 }
 

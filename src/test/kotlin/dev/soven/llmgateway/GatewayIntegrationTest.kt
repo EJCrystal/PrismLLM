@@ -3070,6 +3070,52 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin channel payload exposes probe lease so console matches backend routing`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "probe-lease-visible",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "temporary",
+                    credential = app.credentialCipher.encrypt("key-lease"),
+                    state = ChannelKeyState.AUTO_TEMPORARY,
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+        )
+        val expired = System.currentTimeMillis() - 60_000
+        val leaseUntil = System.currentTimeMillis() + 90_000
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update channel_keys set auto_disable_until = ?, probe_until = ? where id = ?")
+                .use { statement ->
+                    statement.setLong(1, expired)
+                    statement.setLong(2, leaseUntil)
+                    statement.setString(3, channel.keys.single().id)
+                    statement.executeUpdate()
+                }
+        }
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.get("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val listed = Json.parseToJsonElement(response.bodyAsText()).jsonArray
+                .first { it.jsonObject["id"]!!.jsonPrimitive.content == channel.id }
+            val key = listed.jsonObject["keys"]!!.jsonArray.single().jsonObject
+            // 管理台要靠 probeUntil 复现后端 isRoutableAt：只看停用到期会把已被租约占用的密钥误判为可用。
+            assertEquals(leaseUntil, key["probeUntil"]!!.jsonPrimitive.long)
+            assertEquals(expired, key["autoDisableUntil"]!!.jsonPrimitive.long)
+        }
+    }
+
+    @Test
     fun `canonical mapping keeps raw upstream name not found when credentials are unavailable`() = runBlocking {
         app.channelRepository.create(
             name = "canonical-disabled",

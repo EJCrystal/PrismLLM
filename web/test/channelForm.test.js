@@ -301,6 +301,17 @@ describe('channelForm: 渠道保存请求体', () => {
     assert.equal(isKeyRoutable(null, now), false)
   })
 
+  it('isKeyRoutable 在探测租约未结束时仍视为不可路由', () => {
+    const now = 1000
+    // 停用已到期，但探测租约尚未结束：后端仍不会选择这条密钥。
+    assert.equal(isKeyRoutable({ state: 'AUTO_TEMPORARY', autoDisableUntil: 999, probeUntil: 1001 }, now), false)
+    assert.equal(isKeyRoutable({ state: 'AUTO_TEMPORARY', autoDisableUntil: 999, probeUntil: 1000 }, now), true)
+    assert.equal(isKeyRoutable({ state: 'AUTO_TEMPORARY', autoDisableUntil: 999, probeUntil: 999 }, now), true)
+    assert.equal(isKeyRoutable({ state: 'AUTO_TEMPORARY', autoDisableUntil: 999, probeUntil: null }, now), true)
+    // 停用尚未到期时租约不改变结论。
+    assert.equal(isKeyRoutable({ state: 'AUTO_TEMPORARY', autoDisableUntil: 1001, probeUntil: 1001 }, now), false)
+  })
+
   it('channelRoutingStatus 区分停用、密钥全部停用与正常启用', () => {
     const now = 1000
     assert.equal(channelRoutingStatus({ enabled: false, keys: [{ state: 'ACTIVE' }] }, now), 'DISABLED')
@@ -309,6 +320,8 @@ describe('channelForm: 渠道保存请求体', () => {
     assert.equal(channelRoutingStatus({ enabled: true, keys: [{ state: 'AUTO_TEMPORARY', autoDisableUntil: 1000 }] }, now), 'ACTIVE')
     assert.equal(channelRoutingStatus({ enabled: true, keys: [{ state: 'AUTO_TEMPORARY', autoDisableUntil: 1001 }] }, now), 'NO_ROUTABLE_KEYS')
     assert.equal(channelRoutingStatus({ enabled: true, keys: [{ state: 'AUTO_TEMPORARY', autoDisableUntil: 999 }] }, now), 'ACTIVE')
+    // 停用到期但探测租约未结束：后端不会路由，管理台也必须展示为无可用密钥。
+    assert.equal(channelRoutingStatus({ enabled: true, keys: [{ state: 'AUTO_TEMPORARY', autoDisableUntil: 999, probeUntil: 1001 }] }, now), 'NO_ROUTABLE_KEYS')
     // 订阅账号不随渠道列表返回：零密钥渠道可能由账号支撑，不能据此判为不可用。
     assert.equal(channelRoutingStatus({ enabled: true, keys: [] }, now), 'ACTIVE')
     assert.equal(channelRoutingStatus({ enabled: true }, now), 'ACTIVE')

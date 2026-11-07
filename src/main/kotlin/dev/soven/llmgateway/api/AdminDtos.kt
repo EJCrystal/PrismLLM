@@ -209,6 +209,8 @@ data class ChannelKeyResponse(
     val rateLimit: ChannelKeyRateLimitResponse = ChannelKeyRateLimitResponse(),
     val stateVersion: Long = 0,
     val autoDisableUntil: Long? = null,
+    /** 临时停用到期后的探测租约；未到期时这条密钥仍不参与路由，管理台据此与后端口径对齐。 */
+    val probeUntil: Long? = null,
     val autoDisableReason: String? = null,
     val quota: ChannelQuotaSettingsResponse? = null,
 )
@@ -223,6 +225,7 @@ fun ChannelKeyRecord.toResponse() = ChannelKeyResponse(
     rateLimit = rateLimit.toResponse(),
     stateVersion = stateVersion,
     autoDisableUntil = autoDisableUntil,
+    probeUntil = probeUntil,
     autoDisableReason = autoDisableReason,
     quota = quota?.let { ChannelQuotaSettingsResponse(it.providerId, it.config, it.credentialSource, quotaCredential != null) },
 )

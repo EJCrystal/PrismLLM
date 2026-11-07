@@ -65,7 +65,7 @@ interface RequestOverridesEditorExpose {
   getSnapshot: () => string
 }
 
-type NewKeyOverrides = Partial<Pick<ChannelKeyEditorDraft, 'id' | 'name' | 'state' | 'priority' | 'stateVersion' | 'autoDisableReason' | 'autoDisableUntil' | 'models'>> & {
+type NewKeyOverrides = Partial<Pick<ChannelKeyEditorDraft, 'id' | 'name' | 'state' | 'priority' | 'stateVersion' | 'autoDisableReason' | 'autoDisableUntil' | 'probeUntil' | 'models'>> & {
   enabled?: boolean
   rateLimit?: unknown
 }
@@ -614,6 +614,7 @@ function newKeyDraft(overrides: NewKeyOverrides = {}): ChannelKeyEditorDraft {
     stateVersion: overrides.stateVersion ?? null,
     autoDisableReason: overrides.autoDisableReason ?? null,
     autoDisableUntil: overrides.autoDisableUntil ?? null,
+    probeUntil: overrides.probeUntil ?? null,
     rateLimit: normalizeChannelKeyRateLimit(overrides.rateLimit),
     models: [...(overrides.models || [])],
     availableModels: [],

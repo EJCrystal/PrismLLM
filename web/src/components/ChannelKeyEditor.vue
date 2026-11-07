@@ -19,6 +19,12 @@ const emit = defineEmits<{
 }>()
 
 const modelsOpen = ref(props.channelKey.models.length === 0)
+
+// 停用到期后还有探测租约时仍然接不到请求，恢复时间要按两个时间的较晚者展示，
+// 与后端 isRoutableAt 的口径一致。
+const recoveryTimeText = computed(() => formatTime(
+  Math.max(props.channelKey.autoDisableUntil || 0, props.channelKey.probeUntil || 0),
+))
 const stateBadge = computed(() => keyStateBadge(props.channelKey.state))
 const stateTone = computed(() => keyStateTone(props.channelKey.state))
 const modelOptions = computed<KeyModelOption[]>(() => {
@@ -115,7 +121,7 @@ function addManualModels(): void {
     <div v-else-if="channelKey.originalState === 'AUTO_TEMPORARY'" class="callout" :class="channelKey.state === 'ACTIVE' ? 'info' : 'warning'">
       <strong>{{ channelKey.state === 'ACTIVE' ? '保存后提前启用' : '已自动临时停用' }}<template v-if="channelKey.autoDisableReason">：{{ channelKey.autoDisableReason }}</template></strong>
       <p>
-        <template v-if="channelKey.autoDisableUntil">恢复时间：{{ formatTime(channelKey.autoDisableUntil) }}（到期后自动可用）。</template>
+        <template v-if="channelKey.autoDisableUntil">恢复时间：{{ recoveryTimeText }}（到期后自动可用）。</template>
         {{ channelKey.state === 'ACTIVE' ? '提前启用无需更换凭据，保存后立即恢复为正常状态。' : '可等待到期自动恢复，或点击“启用”并在保存后提前恢复。' }}
       </p>
     </div>
