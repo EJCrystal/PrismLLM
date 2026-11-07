@@ -300,6 +300,16 @@ private fun parseVisibilityRules(document: Document): VisibilityAnalysis {
     var order = 0
     var uncertain = false
     document.select("style").forEach { style ->
+        // <style media="print"> 只对打印生效，不能当作屏幕样式参与判分。
+        val media = style.attr("media").trim()
+        when (if (media.isEmpty()) true else mediaApplies(media)) {
+            false -> return@forEach
+            null -> {
+                if (affectsVisibility(style.data())) uncertain = true
+                return@forEach
+            }
+            true -> Unit
+        }
         val screen = screenApplicableCss(style.data())
         uncertain = uncertain || screen.uncertain
         CSS_RULE_PATTERN.findAll(screen.css).forEach { match ->
@@ -360,11 +370,10 @@ private fun screenApplicableCss(css: String): ScreenCss {
                             null -> if (affectsVisibility(inner)) uncertain = true
                         }
                     }
-                    // @layer 不改变媒体环境，内部规则继续参与层叠。
+                    // 层叠层的优先级无法在离线判分时完整复现；影响可见性时转人工确认。
                     prelude == "@layer" || prelude.startsWith("@layer ") -> {
                         val nested = screenApplicableCss(inner)
-                        out.append(nested.css)
-                        uncertain = uncertain || nested.uncertain
+                        uncertain = uncertain || nested.uncertain || affectsVisibility(nested.css)
                     }
                     // @supports 的条件同样无法离线求值，会影响可见性时转人工确认。
                     prelude.startsWith("@supports") -> if (affectsVisibility(inner)) uncertain = true
@@ -585,11 +594,194 @@ private fun splitCssSelectors(selectorList: String): List<String> {
 
 /** 只用于 display/visibility 的层叠比较，按 ID、类、元素三档近似计算优先级。 */
 private fun selectorSpecificity(selector: String): Int {
-    val normalized = selector.replace(Regex("\"[^\"]*\"|'[^']*'"), "")
-    val ids = Regex("#[\\w-]+").findAll(normalized).count()
-    val classes = Regex("\\.[\\w-]+|\\[[^]]*]|:(?!:)[\\w-]+").findAll(normalized).count()
-    val elements = Regex("(?:^|[\\s>+~])([a-zA-Z][\\w-]*)").findAll(normalized).count()
-    return ids * 100 + classes * 10 + elements
+    val specificity = specificityOf(selector)
+    return specificity.ids * 100 + specificity.classes * 10 + specificity.elements
+}
+
+private data class Specificity(val ids: Int, val classes: Int, val elements: Int) {
+    fun plus(other: Specificity) = Specificity(
+        ids + other.ids,
+        classes + other.classes,
+        elements + other.elements,
+    )
+}
+
+/**
+ * 按选择器语法计算三档优先级。
+ *
+ * 函数式伪类不能只看名字：`:where()` 本身为 0，`:not()` / `:is()` / `:has()`
+ * 只取参数中最高的一项，其余伪类仍按类计算。直接数 `:not(` 会高估这类选择器，
+ * 让本该被后续规则覆盖的隐藏声明胜出。
+ */
+private fun specificityOf(selector: String): Specificity {
+    var ids = 0
+    var classes = 0
+    var elements = 0
+    var expectElement = true
+    var i = 0
+    while (i < selector.length) {
+        when (val char = selector[i]) {
+            '#' -> {
+                ids += 1
+                i = skipIdentifier(selector, i + 1)
+                expectElement = false
+            }
+            '.' -> {
+                classes += 1
+                i = skipIdentifier(selector, i + 1)
+                expectElement = false
+            }
+            '[' -> {
+                classes += 1
+                i = skipBracket(selector, i)
+                expectElement = false
+            }
+            ':' -> {
+                if (selector.getOrNull(i + 1) == ':') {
+                    elements += 1
+                    i = skipIdentifier(selector, i + 2)
+                    expectElement = false
+                } else {
+                    val nameEnd = skipIdentifier(selector, i + 1)
+                    val name = selector.substring(i + 1, nameEnd).lowercase()
+                    if (selector.getOrNull(nameEnd) == '(') {
+                        val close = matchingParen(selector, nameEnd)
+                        val args = selector.substring(nameEnd + 1, close)
+                        val argument = when (name) {
+                            "where" -> Specificity(0, 0, 0)
+                            "not", "is", "has" -> strongestSpecificity(args)
+                            else -> {
+                                classes += 1
+                                if (name == "nth-child" || name == "nth-last-child") {
+                                    val of = Regex("(?i)\\bof\\b").find(args)
+                                    if (of != null) {
+                                        strongestSpecificity(args.substring(of.range.last + 1))
+                                    } else {
+                                        Specificity(0, 0, 0)
+                                    }
+                                } else {
+                                    Specificity(0, 0, 0)
+                                }
+                            }
+                        }
+                        ids += argument.ids
+                        classes += argument.classes
+                        elements += argument.elements
+                        i = close + 1
+                        expectElement = false
+                    } else {
+                        classes += 1
+                        i = nameEnd
+                        expectElement = false
+                    }
+                }
+            }
+            in 'a'..'z', in 'A'..'Z', '_' -> {
+                if (expectElement) elements += 1
+                i = skipIdentifier(selector, i)
+                expectElement = false
+            }
+            '>', '+', '~', ',', ')' -> {
+                expectElement = true
+                i += 1
+            }
+            '*' -> {
+                expectElement = false
+                i += 1
+            }
+            else -> {
+                if (char.isWhitespace()) expectElement = true
+                i += 1
+            }
+        }
+    }
+    return Specificity(ids, classes, elements)
+}
+
+private fun strongestSpecificity(selectorList: String): Specificity =
+    splitTopLevel(selectorList)
+        .map { specificityOf(it.trim()) }
+        .maxWithOrNull(compareBy({ it.ids }, { it.classes }, { it.elements }))
+        ?: Specificity(0, 0, 0)
+
+private fun skipIdentifier(source: String, start: Int): Int {
+    var i = start
+    while (i < source.length && (source[i].isLetterOrDigit() || source[i] == '-' || source[i] == '_')) {
+        i += 1
+    }
+    return i
+}
+
+/** 跳过 `[...]` 属性选择器，引号内的 `]` 不算结束。 */
+private fun skipBracket(source: String, open: Int): Int {
+    var quote: Char? = null
+    var i = open + 1
+    while (i < source.length) {
+        val char = source[i]
+        when {
+            quote != null -> if (char == quote) quote = null
+            char == '"' || char == '\'' -> quote = char
+            char == ']' -> return i + 1
+        }
+        i += 1
+    }
+    return source.length
+}
+
+/** 跳过括号及其嵌套内容；用于 `:not(...)` 等函数式伪类。 */
+private fun matchingParen(source: String, open: Int): Int {
+    var depth = 1
+    var quote: Char? = null
+    var i = open + 1
+    while (i < source.length) {
+        val char = source[i]
+        when {
+            quote != null -> if (char == quote) quote = null
+            char == '"' || char == '\'' -> quote = char
+            char == '(' -> depth += 1
+            char == ')' -> {
+                depth -= 1
+                if (depth == 0) return i
+            }
+        }
+        i += 1
+    }
+    return source.length - 1
+}
+
+/** 按顶层逗号拆分，忽略括号和方括号内的逗号。 */
+private fun splitTopLevel(source: String): List<String> {
+    val parts = mutableListOf<String>()
+    val current = StringBuilder()
+    var depth = 0
+    var quote: Char? = null
+    source.forEach { char ->
+        when {
+            quote != null -> {
+                current.append(char)
+                if (char == quote) quote = null
+            }
+            char == '"' || char == '\'' -> {
+                quote = char
+                current.append(char)
+            }
+            char == '(' || char == '[' -> {
+                depth += 1
+                current.append(char)
+            }
+            char == ')' || char == ']' -> {
+                if (depth > 0) depth -= 1
+                current.append(char)
+            }
+            char == ',' && depth == 0 -> {
+                current.toString().trim().takeIf(String::isNotEmpty)?.let(parts::add)
+                current.clear()
+            }
+            else -> current.append(char)
+        }
+    }
+    current.toString().trim().takeIf(String::isNotEmpty)?.let(parts::add)
+    return parts
 }
 
 private fun parseVisibilityDeclarations(block: String): List<VisibilityDeclaration> =

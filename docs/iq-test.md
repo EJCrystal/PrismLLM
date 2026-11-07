@@ -40,8 +40,11 @@ iframe 不启用脚本执行。
 - 可见性按 DOM 层叠结果计算：支持内联样式、样式表优先级、`!important`、`visibility` 继承和
   html 根元素隐藏；无效的 CSS 取值按浏览器规则忽略。
 - `@media` 按管理台预览的 1024×768 桌面视口求值，支持 `screen`、宽度/高度（`min-`/`max-`）和
-  `orientation`；`@media print` 等不匹配的规则不参与判分。其他无法离线求值的媒体特性
-  若会影响 `display` / `visibility`，结果转为 `review` 等待人工确认，而不是猜测可见性。
+  `orientation`；`@media print` 等不匹配的规则不参与判分，`<style media="...">` 的属性同样参与判断。
+  其他无法离线求值的媒体特性若会影响 `display` / `visibility`，结果转为 `review` 等待人工确认，
+  而不是猜测可见性。
+- 选择器优先级支持 `:not()` / `:is()` / `:has()` 取参数最高优先级、`:where()` 为零；
+  `@layer` 的层叠层顺序无法离线复现，涉及可见性时同样转 `review`。
 - 选中的判分器仍会收到糖果题的 HTML，结果作为参考展示；最终通过/未通过仍由 21 规则决定。
 
 ### 修改提示词

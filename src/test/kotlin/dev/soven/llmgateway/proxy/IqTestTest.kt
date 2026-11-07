@@ -263,6 +263,46 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy honors the media attribute on style elements`() {
+        val printOnly = """
+            <html><head><style media="print">p{display:none}</style></head>
+            <body><p>答案是 21 颗。</p></body></html>
+        """.trimIndent()
+        val unknown = """
+            <html><head><style media="(prefers-color-scheme: dark)">p{display:none}</style></head>
+            <body><p>答案是 21 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, printOnly).verdict)
+        assertEquals(IqVerdict.REVIEW, evaluateIqTest(IqBenchmark.CANDY, true, unknown).verdict)
+    }
+
+    @Test
+    fun `candy asks for review when cascade layers affect visibility`() {
+        val layered = """
+            <html><head><style>.answer{display:none}@layer base{.answer{display:block}}</style></head>
+            <body><p class="answer">答案是 21 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.REVIEW, evaluateIqTest(IqBenchmark.CANDY, true, layered).verdict)
+    }
+
+    @Test
+    fun `candy computes functional pseudo class specificity`() {
+        val notArgument = """
+            <html><head><style>:not(#other){display:block}#answer{display:none}</style></head>
+            <body><p id="answer">答案是 21 颗。</p></body></html>
+        """.trimIndent()
+        val whereIsFree = """
+            <html><head><style>:where(p){display:none}p{display:block}</style></head>
+            <body><p>答案是 21 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, notArgument).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, whereIsFree).verdict)
+    }
+
+    @Test
     fun `candy ignores invalid visibility declarations`() {
         val invalidDisplay = """<html><body><p style="display:none;display:invalid">答案是 21 颗。</p></body></html>"""
         val invalidVisibility =
