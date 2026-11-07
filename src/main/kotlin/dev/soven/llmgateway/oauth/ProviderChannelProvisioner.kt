@@ -58,7 +58,8 @@ class ProviderChannelProvisioner(
      */
     suspend fun reconcile(): Int {
         var moved = 0
-        for (account in accounts.listPendingProviderChannel()) {
+        val servable = OAuthProvider.entries.filter { ProviderEndpoints.of(it).servable }
+        for (account in accounts.listPendingProviderChannel(servable)) {
             try {
                 val channelId = ensure(account.provider) ?: continue
                 if (account.channelIds != setOf(channelId)) {

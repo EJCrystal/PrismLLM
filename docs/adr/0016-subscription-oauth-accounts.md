@@ -87,7 +87,7 @@
 - 每个已实现上游协议的 provider 由 ProviderChannelProvisioner 置备一条 kind=provider 的系统渠道，账号导入或登录完成后自动关联；`oauth_account_channels.managed` 标出这条托管关联，每个账号最多一条，由部分唯一索引保证。
 - 系统渠道不可编辑、不可删除，也不出现在渠道列表；账号页只展示上游端点。
 - Antigravity 走 Google Code Assist 的信封协议（v1internal:streamGenerateContent），网关尚未实现，因此不置备渠道；它原有的手工渠道关联在 V54 中保留（`managed=false`），协议实现后由置备器收敛到系统渠道。
-- V54 给迁移时已存在的账号打上 `provider_channel_pending`，启动对账逐账号改挂并清除标记；中途失败只需重启，不必重放迁移。迁移之后新建的账号由导入/登录接口直接挂到系统渠道，不参与对账。
+- V54 给迁移时已存在的账号打上 `provider_channel_pending`，启动对账逐账号改挂并清除标记；中途失败只需重启，不必重放迁移。迁移之后新建的可服务账号同样先标记待关联，挂到系统渠道后再清除；导入或登录在挂载前中断也能由启动对账修复。
 
 ## Consequences
 

@@ -824,6 +824,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         channelIds = channelIds,
                         models = request.models,
                         priority = request.priority,
+                        providerChannelPending = dev.soven.llmgateway.domain.ProviderEndpoints.of(provider).servable,
                     ),
                 )
             } catch (cause: Throwable) {
@@ -2344,8 +2345,14 @@ private suspend fun attachProviderChannel(
     account: dev.soven.llmgateway.domain.OAuthAccountRecord,
 ): dev.soven.llmgateway.domain.OAuthAccountRecord {
     val channelId = app.providerChannelProvisioner.ensure(account.provider) ?: return account
-    if (account.channelIds == setOf(channelId)) return account
-    return app.oauthAccountRepository.setChannels(account.id, listOf(channelId)) ?: account
+    val attached = if (account.channelIds == setOf(channelId)) {
+        account
+    } else {
+        app.oauthAccountRepository.setChannels(account.id, listOf(channelId)) ?: account
+    }
+    // 关联成功后再清标记；若进程在此前退出，启动对账会重新搬迁。
+    app.oauthAccountRepository.markProviderChannelSettled(account.id)
+    return attached
 }
 
 private suspend fun clearOAuthAccountCooldown(

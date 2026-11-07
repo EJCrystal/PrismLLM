@@ -57,6 +57,8 @@ data class NewOAuthAccount(
     val models: Collection<String> = emptyList(),
     val priority: Int = 1,
     val enabled: Boolean = true,
+    /** 可服务的 provider 先标记待关联，挂到系统渠道后再清除；中途失败可由启动对账修复。 */
+    val providerChannelPending: Boolean = false,
 )
 
 /** 重新授权或导入已有账号时更新的字段；refreshToken 为空表示保留原凭据。 */
@@ -101,10 +103,20 @@ class OAuthAccountRepository(private val database: Database) {
         loadRelations(rows)
     }
 
-    /** V54 之前创建、还没改挂到系统渠道的账号；逐个搬迁，失败的下次启动继续。 */
-    suspend fun listPendingProviderChannel(limit: Int = 5_000): List<OAuthAccountRecord> = suspendTransaction(database) {
+    /**
+     * 指定 provider 下待改挂到系统渠道的账号。按 provider 过滤，避免协议未实现的
+     * 账号长期占满批次、把可服务账号饿死；逐个搬迁，失败的下次启动继续。
+     */
+    suspend fun listPendingProviderChannel(
+        providers: Collection<OAuthProvider>,
+        limit: Int = 5_000,
+    ): List<OAuthAccountRecord> = suspendTransaction(database) {
+        if (providers.isEmpty()) return@suspendTransaction emptyList()
         val rows = OAuthAccounts.selectAll()
-            .where { OAuthAccounts.providerChannelPending eq true }
+            .where {
+                (OAuthAccounts.providerChannelPending eq true) and
+                    (OAuthAccounts.provider inList providers.map { it.value })
+            }
             .orderBy(OAuthAccounts.createdAt to SortOrder.ASC)
             .limit(limit.coerceIn(1, 20_000))
             .toList()
@@ -198,6 +210,7 @@ class OAuthAccountRepository(private val database: Database) {
             it[authState] = OAuthAuthState.ACTIVE.value
             it[enabled] = input.enabled
             it[priority] = input.priority.coerceIn(1, 1_000)
+            it[providerChannelPending] = input.providerChannelPending
             it[refreshFailureCount] = 0
             it[lastRefreshError] = null
             it[lastRefreshedAt] = if (input.accessToken != null) now else null

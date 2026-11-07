@@ -2,7 +2,6 @@ package dev.soven.llmgateway.oauth
 
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.db.DatabaseFactory
-import dev.soven.llmgateway.db.OAuthAccounts
 import dev.soven.llmgateway.domain.ChannelKind
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.OAuthProvider
@@ -16,9 +15,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
-import org.jetbrains.exposed.v1.core.eq
-import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
-import org.jetbrains.exposed.v1.jdbc.update
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -127,15 +123,11 @@ class ProviderChannelProvisionerTest {
                 accountEmail = "provisioned-${UUID.randomUUID()}@example.com",
                 refreshToken = cipher.encrypt("refresh-token"),
                 channelIds = listOf(manual.id),
+                // 等价于 V54 给迁移时已存在的账号打上的待搬迁标记。
+                providerChannelPending = true,
             ),
         )
         assertEquals(setOf(manual.id), account.channelIds)
-        // V54 会给迁移时已存在的账号打上待搬迁标记。
-        suspendTransaction(factory.database) {
-            OAuthAccounts.update({ OAuthAccounts.id eq account.id }) {
-                it[providerChannelPending] = true
-            }
-        }
 
         assertEquals(1, provisioner.reconcile())
 
@@ -166,5 +158,39 @@ class ProviderChannelProvisionerTest {
 
         assertEquals(0, provisioner.reconcile())
         assertEquals(setOf(manual.id), accounts.findDetailed(account.id)!!.channelIds)
+    }
+
+    @Test
+    fun `reconcile skips unservable providers without starving servable accounts`() = runBlocking {
+        val unservable = accounts.create(
+            NewOAuthAccount(
+                name = "pending-antigravity",
+                provider = OAuthProvider.ANTIGRAVITY,
+                accountEmail = "pending-antigravity-${UUID.randomUUID()}@example.com",
+                refreshToken = cipher.encrypt("refresh-token"),
+                providerChannelPending = true,
+            ),
+        )
+        val servable = accounts.create(
+            NewOAuthAccount(
+                name = "pending-chatgpt",
+                provider = OAuthProvider.CHATGPT,
+                accountEmail = "pending-chatgpt-${UUID.randomUUID()}@example.com",
+                refreshToken = cipher.encrypt("refresh-token"),
+                providerChannelPending = true,
+            ),
+        )
+
+        assertEquals(1, provisioner.reconcile())
+
+        val providerChannel = channels.findProviderChannel(OAuthProvider.CHATGPT)!!
+        assertEquals(setOf(providerChannel.id), accounts.findDetailed(servable.id)!!.channelIds)
+        assertTrue(accounts.findDetailed(unservable.id)!!.channelIds.isEmpty())
+        // 未实现协议的账号保留待搬迁标记，但不进入可服务 provider 的搬迁批次。
+        assertEquals(
+            unservable.id,
+            accounts.listPendingProviderChannel(listOf(OAuthProvider.ANTIGRAVITY)).single().id,
+        )
+        assertTrue(accounts.listPendingProviderChannel(listOf(OAuthProvider.CHATGPT)).isEmpty())
     }
 }
