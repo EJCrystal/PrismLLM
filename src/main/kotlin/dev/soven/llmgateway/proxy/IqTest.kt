@@ -363,7 +363,13 @@ private const val BODY_CLOSE = "</body>"
 private const val SVG_CLOSE = "</svg>"
 
 private const val PREVIEW_STYLE =
-    "<style>html,body{margin:0;min-height:100%;display:grid;place-items:center;background:#fff}svg{max-width:100%;height:auto}</style>"
+    "<style>" +
+        "html,body{margin:0;min-height:100%;background:#fff}" +
+        "body{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh}" +
+        "body>svg{display:block;max-width:100%;max-height:100vh;height:auto}" +
+        // 只有 viewBox 没有 width 的 SVG 在弹性/网格布局里会退化成 0 尺寸，必须给一个确定的宽度。
+        "body>svg:not([width]){width:100%}" +
+        "</style>"
 
 private val HTML_FENCE_PATTERN = Regex("```(?:html)?\\s*([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
 private val JSON_FENCE_PATTERN = Regex("```(?:json)?\\s*([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
