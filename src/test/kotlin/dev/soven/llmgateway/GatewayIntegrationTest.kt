@@ -2934,11 +2934,292 @@ class GatewayIntegrationTest {
             val disabled = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
             assertEquals(ChannelKeyState.AUTO_PERMANENT, disabled.state)
             assertEquals("时间窗口内多次失败 5 次", disabled.autoDisableReason)
-            assertEquals(HttpStatusCode.NotFound, client.sendAutoDisableRequest(key).status)
+            // 唯一密钥被永久停用后模型仍然配置着，只是没有可用凭据：用 503 提醒客户端重试，而不是 404。
+            val unavailable = client.sendAutoDisableRequest(key)
+            assertEquals(HttpStatusCode.ServiceUnavailable, unavailable.status)
+            assertTrue(unavailable.bodyAsText().contains("model_credentials_unavailable"))
             assertEquals(6, fake.requests.size)
             val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_disable" }
             assertEquals("legacy_failure_window", audit.details?.get("ruleId")?.jsonPrimitive?.content)
             assertEquals("5", audit.details?.get("count")?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun `model with only disabled keys reports unavailable instead of not found`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "all-keys-disabled",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "manual",
+                    credential = app.credentialCipher.encrypt("key-manual"),
+                    state = ChannelKeyState.MANUAL_DISABLED,
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+        )
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+
+            val unavailable = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.ServiceUnavailable, unavailable.status)
+            val body = unavailable.bodyAsText()
+            assertTrue(body.contains("model_credentials_unavailable"), "BODY=[$body]")
+            // 人工停用不会自动恢复，不应给出 Retry-After 暗示客户端等待。
+            assertNull(unavailable.headers[HttpHeaders.RetryAfter])
+            assertEquals(0, fake.requests.size)
+
+            // 恢复密钥后同一请求立即可用，证明 503 只反映凭据状态。
+            app.channelRepository.update(
+                id = channel.id,
+                name = channel.name,
+                baseUrl = channel.baseUrl,
+                keys = channel.keys.map { existing ->
+                    ChannelKeyUpdate(
+                        id = existing.id,
+                        name = existing.name,
+                        state = ChannelKeyState.ACTIVE,
+                        priority = existing.priority,
+                        models = existing.models,
+                        stateVersion = existing.stateVersion,
+                    )
+                },
+                authType = channel.authType,
+                protocols = channel.protocols,
+                enabled = true,
+                modelMappings = channel.modelMappings,
+            )
+            val restored = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, restored.status)
+        }
+    }
+
+    @Test
+    fun `temporarily disabled key model reports retry after`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "temporary-only",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "temporary",
+                    credential = app.credentialCipher.encrypt("key-temporary"),
+                    state = ChannelKeyState.AUTO_TEMPORARY,
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+        )
+        val until = System.currentTimeMillis() + 120_000
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update channel_keys set auto_disable_until = ? where id = ?").use { statement ->
+                statement.setLong(1, until)
+                statement.setString(2, channel.keys.single().id)
+                statement.executeUpdate()
+            }
+        }
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.ServiceUnavailable, response.status)
+            assertTrue(response.bodyAsText().contains("model_credentials_unavailable"))
+            // 临时停用会自动恢复，Retry-After 应指向到期时间而不是固定值。
+            val retryAfter = assertNotNull(response.headers[HttpHeaders.RetryAfter])
+            assertTrue(retryAfter.toLong() in 1..180, "RETRY-AFTER=[$retryAfter]")
+        }
+    }
+
+    @Test
+    fun `temporary key blocked by probe lease reports the later recovery time`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "probe-lease-only",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "temporary",
+                    credential = app.credentialCipher.encrypt("key-temporary"),
+                    state = ChannelKeyState.AUTO_TEMPORARY,
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+        )
+        // 停用已到期，但探测租约仍在生效：密钥此刻不可路由，恢复时间取较晚的租约到期时间。
+        val expired = System.currentTimeMillis() - 60_000
+        val leaseUntil = System.currentTimeMillis() + 90_000
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update channel_keys set auto_disable_until = ?, probe_until = ? where id = ?")
+                .use { statement ->
+                    statement.setLong(1, expired)
+                    statement.setLong(2, leaseUntil)
+                    statement.setString(3, channel.keys.single().id)
+                    statement.executeUpdate()
+                }
+        }
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.ServiceUnavailable, response.status)
+            assertTrue(response.bodyAsText().contains("model_credentials_unavailable"))
+            // 只看停用到期时间会算出 -60 秒并被丢弃，从而错误地不给出重试提示。
+            val retryAfter = assertNotNull(response.headers[HttpHeaders.RetryAfter])
+            assertTrue(retryAfter.toLong() in 60..120, "RETRY-AFTER=[$retryAfter]")
+        }
+    }
+
+    @Test
+    fun `admin channel payload exposes probe lease so console matches backend routing`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "probe-lease-visible",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "temporary",
+                    credential = app.credentialCipher.encrypt("key-lease"),
+                    state = ChannelKeyState.AUTO_TEMPORARY,
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+        )
+        val expired = System.currentTimeMillis() - 60_000
+        val leaseUntil = System.currentTimeMillis() + 90_000
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update channel_keys set auto_disable_until = ?, probe_until = ? where id = ?")
+                .use { statement ->
+                    statement.setLong(1, expired)
+                    statement.setLong(2, leaseUntil)
+                    statement.setString(3, channel.keys.single().id)
+                    statement.executeUpdate()
+                }
+        }
+        val session = app.sessions.create("admin")
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.get("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val listed = Json.parseToJsonElement(response.bodyAsText()).jsonArray
+                .first { it.jsonObject["id"]!!.jsonPrimitive.content == channel.id }
+            val key = listed.jsonObject["keys"]!!.jsonArray.single().jsonObject
+            // 管理台要靠 probeUntil 复现后端 isRoutableAt：只看停用到期会把已被租约占用的密钥误判为可用。
+            assertEquals(leaseUntil, key["probeUntil"]!!.jsonPrimitive.long)
+            assertEquals(expired, key["autoDisableUntil"]!!.jsonPrimitive.long)
+        }
+    }
+
+    @Test
+    fun `canonical mapping keeps raw upstream name not found when credentials are unavailable`() = runBlocking {
+        app.channelRepository.create(
+            name = "canonical-disabled",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "manual",
+                    credential = app.credentialCipher.encrypt("key-manual"),
+                    state = ChannelKeyState.MANUAL_DISABLED,
+                    models = listOf("Qwen3.8-Flash"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = listOf(ChannelModelRecord("Qwen3.8-Flash", "qwen3.8-flash", "manual")),
+        )
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+
+            // 对外只暴露 canonical ID：凭据全部停用时它是 503，而不是「模型不存在」。
+            val canonical = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"qwen3.8-flash","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.ServiceUnavailable, canonical.status)
+            assertTrue(canonical.bodyAsText().contains("model_credentials_unavailable"))
+
+            // 上游名从未对外暴露，凭据是否可用都不该改变这一点，仍按 404 处理。
+            val rawUpstream = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"Qwen3.8-Flash","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.NotFound, rawUpstream.status)
+            assertTrue(rawUpstream.bodyAsText().contains("model_not_found"))
+        }
+    }
+
+    @Test
+    fun `recovered temporary key routes instead of reporting model missing`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "recovery-race",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "temporary",
+                    credential = app.credentialCipher.encrypt("key-race"),
+                    state = ChannelKeyState.AUTO_TEMPORARY,
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+        )
+        // 停用已到期且没有探测租约：密钥可路由，正常路由不会进入诊断分支。
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update channel_keys set auto_disable_until = ? where id = ?").use { statement ->
+                statement.setLong(1, System.currentTimeMillis() - 60_000)
+                statement.setString(2, channel.keys.single().id)
+                statement.executeUpdate()
+            }
+        }
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            // 恢复后的模型必须能正常路由，不能被误报成 404 或 503。
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
         }
     }
 

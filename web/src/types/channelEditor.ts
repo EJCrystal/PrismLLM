@@ -18,6 +18,8 @@ export interface ChannelKeyEditorDraft {
   stateVersion: number | null
   autoDisableReason: string | null
   autoDisableUntil: number | null
+  /** 探测租约到期时间；后端返回，编辑时原样带上，不参与提交。 */
+  probeUntil: number | null
   rateLimit: ChannelKeyRateLimitDraft & Record<string, unknown>
   models: string[]
   availableModels: KeyModelOption[]

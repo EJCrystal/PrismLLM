@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthBucketState, healthSymbol, channelHealthSuccessRateText, healthCacheHitText } from '../src/utils/channelHealth'
+import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthBucketState, healthSymbol, channelHealthSuccessRateText, healthCacheHitText, channelListHealthState } from '../src/utils/channelHealth'
 
 describe('channel health display', () => {
   it('shows unknown rather than zero for missing samples', () => {
@@ -30,10 +30,13 @@ describe('channel health display', () => {
 
   it('provides symbols and labels independent of colour in all windows', () => {
     assert.deepEqual(HEALTH_WINDOWS.map(row => row.id), ['24h', '7d', '15d', '30d'])
-    for (const state of ['HEALTHY', 'WARNING', 'CRITICAL', 'UNKNOWN', 'DISABLED']) {
+    for (const state of ['HEALTHY', 'WARNING', 'CRITICAL', 'UNKNOWN', 'DISABLED', 'NO_CREDENTIALS']) {
       assert.ok(healthSymbol(state))
       assert.ok(HEALTH_LABELS[state])
     }
+    assert.equal(HEALTH_LABELS.NO_CREDENTIALS, '无可用凭据')
+    // 已停用与无可用凭据都必须与「健康」区分开，不能显示对勾。
+    assert.equal(healthSymbol('NO_CREDENTIALS'), '−')
   })
 
   it('keeps existing percentage during revalidation to avoid flickering', () => {
@@ -65,5 +68,21 @@ describe('channel health display', () => {
     assert.equal(healthCacheHitText({ inputTokens: 100, cachedTokens: 120 }), '100.0%')
     // 刷新时保留旧值，避免数字闪烁
     assert.equal(healthCacheHitText({ inputTokens: 1000, cachedTokens: 250 }, true), '25.0%')
+  })
+
+  it('channelListHealthState 只信任后端报告，不用静态密钥冒充无凭据', () => {
+    // 后端报什么就显示什么：报告基于静态密钥 + 订阅账号的完整凭据集。
+    assert.equal(channelListHealthState({ enabled: true }, 'NO_CREDENTIALS'), 'NO_CREDENTIALS')
+    assert.equal(channelListHealthState({ enabled: true }, 'HEALTHY'), 'HEALTHY')
+    // 停用渠道优先显示已停用，不被报告覆盖。
+    assert.equal(channelListHealthState({ enabled: false }, 'HEALTHY'), 'DISABLED')
+    assert.equal(channelListHealthState({ enabled: false }, null), 'DISABLED')
+    // 报告未加载、读取失败或只报了 DISABLED：显示未知，不能断言无可用凭据——
+    // 渠道列表不加载订阅账号，密钥全停用的渠道仍可能由账号支撑。
+    assert.equal(channelListHealthState({ enabled: true }, null), 'UNKNOWN')
+    assert.equal(channelListHealthState({ enabled: true }, undefined), 'UNKNOWN')
+    assert.equal(channelListHealthState({ enabled: true }, 'DISABLED'), 'UNKNOWN')
+    assert.equal(channelListHealthState(null, 'HEALTHY'), 'DISABLED')
+    assert.equal(channelListHealthState(undefined, null), 'DISABLED')
   })
 })

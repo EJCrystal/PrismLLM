@@ -129,3 +129,9 @@ fun forbidden(message: String): GatewayException =
 
 fun notFound(code: String, message: String): GatewayException =
     GatewayException(HttpStatusCode.NotFound, code, message, "not_found_error")
+
+/**
+ * 上游暂时不可用但请求本身有效；[retryAfterMs] 非空时由统一错误渲染写出 Retry-After。
+ */
+fun serviceUnavailable(code: String, message: String, retryAfterMs: Long? = null): GatewayException =
+    GatewayException(HttpStatusCode.ServiceUnavailable, code, message, "api_error", retryAfterMs = retryAfterMs)

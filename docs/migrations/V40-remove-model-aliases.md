@@ -9,3 +9,5 @@ V40 会删除 `model_aliases` 和 `alias_candidates`，不会把历史别名自�
 3. 发布后检查 `/v1/models`，确认需要的对外模型仍存在。
 
 迁移完成后，继续使用已删除别名的请求会返回 `model_not_found`（HTTP 404）。
+
+> 补充（后续版本）：`404 model_not_found` 只表示模型未配置在任何启用渠道中。若模型已配置、但支持它的凭据全部停用，现在返回 `503 model_credentials_unavailable`，客户端应按暂时不可用重试，而不是当成配置错误。

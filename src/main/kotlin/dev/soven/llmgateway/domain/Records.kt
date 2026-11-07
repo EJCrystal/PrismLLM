@@ -16,7 +16,14 @@ data class ChannelModelRecord(
     val upstreamModel: String,
     val canonicalModelId: String? = null,
     val mappingSource: String? = null,
-)
+) {
+    /**
+     * 对外暴露、也是数据面请求匹配的模型 ID。
+     *
+     * 映射只按 canonical ID 对外时，上游名不再是合法请求名；没有 canonical ID 时沿用上游名。
+     */
+    val publicModelId: String get() = canonicalModelId ?: upstreamModel
+}
 
 /**
  * 渠道密钥对应上游分组的主动限流规则。规则作用于该密钥支持的全部模型。
@@ -102,11 +109,20 @@ data class ChannelKeyRecord(
      * 是否允许路由。临时停用到期即视为可用，不依赖后台清理任务；
      * 人工停用与永久停用永不自动放行。
      */
-    override fun isRoutable(now: Long): Boolean = when (state) {
-        ChannelKeyState.ACTIVE -> true
-        ChannelKeyState.AUTO_TEMPORARY -> autoDisableUntil != null && now >= autoDisableUntil &&
-            (probeUntil == null || now >= probeUntil)
-        ChannelKeyState.MANUAL_DISABLED, ChannelKeyState.AUTO_PERMANENT -> false
+    override fun isRoutable(now: Long): Boolean = state.isRoutableAt(autoDisableUntil, probeUntil, now)
+
+    /**
+     * 临时停用密钥在 [now] 之后变得可路由的时间点，条件是 [isRoutable] 里两个时间都要满足：
+     * 停用到期时间与仍在生效的探测租约，取较晚者。
+     *
+     * 返回 null 表示这条密钥不会自行恢复（人工/永久停用、缺少到期时间，或 [now] 时已可路由），
+     * 调用方据此决定是否给出重试提示。
+     */
+    fun recoveryAt(now: Long): Long? {
+        if (state != ChannelKeyState.AUTO_TEMPORARY) return null
+        if (isRoutable(now)) return null
+        val until = autoDisableUntil ?: return null
+        return maxOf(until, probeUntil ?: until)
     }
 
     override fun supports(upstreamModel: String): Boolean = upstreamModel in models
@@ -158,6 +174,19 @@ data class ChannelRecord(
             .filter { it.isRoutable(now) && it.supports(upstreamModel) }
             .sortedWith(compareBy({ it.priority }, { it.name }, { it.id }))
             .toList()
+
+    /**
+     * 当前可路由、且至少支持一个已授权模型的凭据数（静态密钥 + 订阅账号）。
+     *
+     * 渠道启用只表达运营意图：凭据全部不可路由时渠道接不到任何请求，健康度据此展示。
+     * [oauthAccounts] 未加载时只统计静态密钥，调用方需自行保证数据完整。
+     */
+    fun routableCredentialCount(now: Long = System.currentTimeMillis()): Int {
+        val authorized = models.toSet()
+        return (keys + oauthAccounts).count { credential ->
+            credential.isRoutable(now) && authorized.any(credential::supports)
+        }
+    }
 }
 
 /**

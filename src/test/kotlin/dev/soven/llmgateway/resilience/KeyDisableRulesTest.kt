@@ -391,6 +391,38 @@ class KeyDisableRulesTest {
     }
 
     @Test
+    fun `ChannelKeyRecord recoveryAt reports when a temporary key becomes routable again`() {
+        assertNull(testKey(state = ChannelKeyState.ACTIVE).recoveryAt(now), "正常密钥没有等待恢复一说")
+        assertNull(testKey(state = ChannelKeyState.MANUAL_DISABLED).recoveryAt(now), "人工停用不会自行恢复")
+        assertNull(testKey(state = ChannelKeyState.AUTO_PERMANENT).recoveryAt(now), "永久停用不会自行恢复")
+        assertNull(
+            testKey(state = ChannelKeyState.AUTO_TEMPORARY, autoDisableUntil = null).recoveryAt(now),
+            "缺少到期时间时无法给出恢复时间",
+        )
+
+        val temporary = testKey(state = ChannelKeyState.AUTO_TEMPORARY, autoDisableUntil = now + 100)
+        assertEquals(now + 100, temporary.recoveryAt(now))
+        assertEquals(now + 100, temporary.recoveryAt(now + 99))
+        assertNull(temporary.recoveryAt(now + 100), "已到期即视为可路由，不再是等待恢复")
+
+        // 租约比停用到期更晚时，恢复时间必须取较晚者，否则 Retry-After 会早于真实可用时间。
+        val leased = testKey(
+            state = ChannelKeyState.AUTO_TEMPORARY,
+            autoDisableUntil = now + 10,
+            probeUntil = now + 50,
+        )
+        assertEquals(now + 50, leased.recoveryAt(now))
+        // 停用已到期、租约未到期：仍要给出重试提示，而不是当作已恢复。
+        val leaseOnly = testKey(
+            state = ChannelKeyState.AUTO_TEMPORARY,
+            autoDisableUntil = now - 60,
+            probeUntil = now + 40,
+        )
+        assertEquals(now + 40, leaseOnly.recoveryAt(now))
+        assertNull(leaseOnly.recoveryAt(now + 40))
+    }
+
+    @Test
     fun `ChannelRecord keysFor filters unroutable keys and sorts by priority name id`() {
         val k1 = testKey(id = "1", name = "z", priority = 2, state = ChannelKeyState.ACTIVE, models = listOf("m1"))
         val k2 = testKey(id = "2", name = "b", priority = 1, state = ChannelKeyState.ACTIVE, models = listOf("m1"))

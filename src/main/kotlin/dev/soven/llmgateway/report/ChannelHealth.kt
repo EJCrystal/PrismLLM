@@ -114,8 +114,22 @@ data class ChannelHealthDetail(
     val availability: List<HealthAvailability>,
 )
 
-fun healthState(metrics: HealthMetrics, enabled: Boolean, now: Long, slowFirstTokenMs: Long): Pair<String, String> = when {
+/**
+ * 渠道健康状态的判定顺序：停用 → 无可用凭据 → 样本不足 → 成功率与延迟。
+ *
+ * `DISABLED` 是运营者主动停用；`NO_CREDENTIALS` 是渠道仍启用、但支持它的凭据全部不可路由
+ * （人工停用、永久停用或尚未到期的临时停用），此时渠道接不到任何请求。
+ * [routableCredentials] 为 null 表示调用方没有提供凭据信息，不参与判定。
+ */
+fun healthState(
+    metrics: HealthMetrics,
+    enabled: Boolean,
+    now: Long,
+    slowFirstTokenMs: Long,
+    routableCredentials: Int? = null,
+): Pair<String, String> = when {
     !enabled -> "DISABLED" to "渠道已停用"
+    routableCredentials == 0 -> "NO_CREDENTIALS" to "没有可用的上游凭据"
     metrics.attempts == 0L -> "UNKNOWN" to "暂无有效样本"
     metrics.lastObservedAt == null || now - metrics.lastObservedAt > ChannelHealthThresholds.STALE_AFTER_MS -> "UNKNOWN" to "最近一小时无有效样本"
     metrics.attempts < ChannelHealthThresholds.MINIMUM_SAMPLES -> "UNKNOWN" to "样本不足（至少 ${ChannelHealthThresholds.MINIMUM_SAMPLES} 次）"

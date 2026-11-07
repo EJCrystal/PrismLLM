@@ -2,12 +2,14 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.db.DatabaseFactory
+import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.FailureStage
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.report.HealthMetrics
+import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.security.CredentialCipher
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
@@ -23,6 +25,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -69,13 +72,15 @@ class ChannelHealthRepositoryTest {
         val channels = ChannelRepository(factory.database, cipher)
         val active = channels.create(
             name = "enabled", baseUrl = "https://example.invalid/v1",
-            keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"))),
+            keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"), models = listOf("m1"))),
             authType = "bearer", enabled = true,
+            modelMappings = listOf(ChannelModelRecord("m1")),
         )
         val disabled = channels.create(
             name = "disabled", baseUrl = "https://example.invalid/v1",
-            keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"))),
+            keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"), models = listOf("m1"))),
             authType = "bearer", enabled = false,
+            modelMappings = listOf(ChannelModelRecord("m1")),
         )
         // Full channel loading rejects this JSON; the overview only needs identity and enabled state.
         sql("update channels set request_overrides = 'invalid-json'")
@@ -90,9 +95,77 @@ class ChannelHealthRepositoryTest {
         val overviews = channels.listHealthChannelOverviews()
         assertEquals(setOf(active.id, disabled.id), overviews.map { it.id }.toSet())
         assertEquals(1, overviews.first { it.id == active.id }.keys.size)
-        val report = health.report("24h", identities, 30, now)
+        // 两个渠道的密钥都是 ACTIVE，但只有一个渠道启用；可路由凭据数与会话状态无关。
+        assertEquals(1, overviews.first { it.id == active.id }.routableCredentials)
+        val report = health.report(
+            "24h", identities, 30, now,
+            routableCredentials = overviews.associate { it.id to it.routableCredentials },
+        )
         assertEquals("DISABLED", report.channels.first { it.channelId == disabled.id }.state)
         assertEquals("UNKNOWN", report.channels.first { it.channelId == active.id }.state)
+    }
+
+    @Test
+    fun overviewMarksKeysWithoutAuthorizedModelsAndDisabledStatesAsUnroutable() = runBlocking {
+        val cipher = CredentialCipher(ByteArray(32) { 7 })
+        val channels = ChannelRepository(factory.database, cipher)
+        val routable = channels.create(
+            name = "routable", baseUrl = "https://example.invalid/v1",
+            keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"), models = listOf("m1"))),
+            authType = "bearer", enabled = true, modelMappings = listOf(ChannelModelRecord("m1")),
+        )
+        val suspended = channels.create(
+            name = "suspended", baseUrl = "https://example.invalid/v1",
+            keys = listOf(
+                NewChannelKey(
+                    "manual", cipher.encrypt("test-secret"),
+                    state = ChannelKeyState.MANUAL_DISABLED, models = listOf("m1"),
+                ),
+            ),
+            authType = "bearer", enabled = true, modelMappings = listOf(ChannelModelRecord("m1")),
+        )
+        val overviews = channels.listHealthChannelOverviews().associateBy { it.id }
+        assertEquals(1, overviews.getValue(routable.id).routableCredentials)
+        assertEquals(0, overviews.getValue(suspended.id).routableCredentials)
+        assertTrue(overviews.getValue(routable.id).keys.single().routable)
+        assertFalse(overviews.getValue(suspended.id).keys.single().routable)
+
+        val report = health.report(
+            "24h", mapOf(routable.id to true, suspended.id to true), 30, now,
+            routableCredentials = overviews.mapValues { it.value.routableCredentials },
+        )
+        assertEquals("NO_CREDENTIALS", report.channels.first { it.channelId == suspended.id }.state)
+        assertEquals("没有可用的上游凭据", report.channels.first { it.channelId == suspended.id }.reason)
+        assertEquals("UNKNOWN", report.channels.first { it.channelId == routable.id }.state)
+    }
+
+    @Test
+    fun overviewRequiresKeysToSupportTheCurrentChannelCatalog() = runBlocking {
+        val cipher = CredentialCipher(ByteArray(32) { 7 })
+        val channels = ChannelRepository(factory.database, cipher)
+        val stale = channels.create(
+            name = "stale-key-models", baseUrl = "https://example.invalid/v1",
+            keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"), models = listOf("m1"))),
+            authType = "bearer", enabled = true, modelMappings = listOf(ChannelModelRecord("m1")),
+        )
+        // 模拟历史遗留数据：渠道目录已收缩到 m2，密钥仍保留指向 m1 的旧授权。
+        assertTrue(channels.replaceModels(stale.id, listOf(ChannelModelRecord("m2"))))
+        sql(
+            "insert into channel_key_models (key_id, upstream_model, created_at) " +
+                "values ('${stale.keys.single().id}', 'm1', 0)",
+        )
+
+        // 概览与详情必须同口径：授权模型与渠道目录无交集时都算 0。
+        val overviews = channels.listHealthChannelOverviews().associateBy { it.id }
+        assertEquals(0, overviews.getValue(stale.id).routableCredentials)
+        assertFalse(overviews.getValue(stale.id).keys.single().routable)
+        assertEquals(0, assertNotNull(channels.find(stale.id)).routableCredentialCount())
+
+        val report = health.report(
+            "24h", mapOf(stale.id to true), 30, now,
+            routableCredentials = overviews.mapValues { it.value.routableCredentials },
+        )
+        assertEquals("NO_CREDENTIALS", report.channels.single().state)
     }
 
     @Test
