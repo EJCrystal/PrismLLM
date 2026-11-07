@@ -179,6 +179,21 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy keeps visible children inside visibility hidden parents`() {
+        val visibleChild = """
+            <html><body><div style="visibility:hidden">
+            <span style="visibility:visible">答案是 21 颗。</span></div></body></html>
+        """.trimIndent()
+        val inheritedHidden = """
+            <html><body><div style="visibility:hidden">21<span>颗</span></div>
+            <p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, visibleChild).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inheritedHidden).verdict)
+    }
+
+    @Test
     fun `candy removes the whole nested hidden subtree`() {
         val hiddenAttribute = """
             <html><body><div hidden><div>说明</div>21</div><p>答案是 20 颗。</p></body></html>

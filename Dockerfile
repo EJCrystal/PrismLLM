@@ -18,8 +18,9 @@ WORKDIR /app
 # 智商检测的视觉判分器需要无头浏览器才能逐帧推进 CSS @keyframes。
 # 固定 Ubuntu 22.04 以匹配 Chrome 的 deb 依赖；x86_64 镜像预装 Chrome，
 # 其他架构或下载失败时镜像不含浏览器，视觉判分会返回“需人工查看”。
+# util-linux 提供 setpriv：容器以 root 运行时用它把浏览器降到 nobody。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl fonts-noto-cjk \
+    && apt-get install -y --no-install-recommends ca-certificates curl fonts-noto-cjk util-linux \
     && if [ "$(uname -m)" = "x86_64" ]; then \
          if curl -fL --retry 3 --retry-delay 2 --max-time 300 \
               https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \

@@ -7,6 +7,8 @@ import dev.soven.llmgateway.spi.iq.IqStructureSummary
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.Node
+import org.jsoup.nodes.TextNode
 import java.text.Normalizer
 
 /**
@@ -253,11 +255,9 @@ internal fun extractVisibleText(raw: String): String {
     val rules = parseVisibilityRules(document)
     document.select("script, style, template").remove()
     val body = document.body() ?: return ""
-    // 从最深层开始删除，jsoup 的 remove() 会带走整棵隐藏子树，嵌套同名标签不会漏掉。
-    body.getAllElements().asReversed().forEach { element ->
-        if (element !== body && isElementHidden(element, rules)) element.remove()
-    }
-    return body.text().trim()
+    val states = HashMap<Element, ElementVisibility>()
+    body.getAllElements().forEach { element -> states[element] = evaluateVisibility(element, rules) }
+    return visibleText(body, states)
 }
 
 private fun parseVisibilityRules(document: Document): List<VisibilityRule> {
@@ -277,7 +277,7 @@ private fun parseVisibilityRules(document: Document): List<VisibilityRule> {
     return rules
 }
 
-private fun isElementHidden(element: Element, rules: List<VisibilityRule>): Boolean {
+private fun evaluateVisibility(element: Element, rules: List<VisibilityRule>): ElementVisibility {
     var display: CssVisibilityValue? = null
     var visibility: CssVisibilityValue? = null
     fun apply(declaration: VisibilityDeclaration, specificity: Int, order: Int) {
@@ -296,10 +296,45 @@ private fun isElementHidden(element: Element, rules: List<VisibilityRule>): Bool
     parseVisibilityDeclarations(element.attr("style")).forEach {
         apply(it, INLINE_STYLE_SPECIFICITY, Int.MAX_VALUE)
     }
-    if (display?.hidden == true || visibility?.hidden == true) return true
     // hidden 属性等价于 UA 的 display:none，只有显式 display:block 等声明能覆盖它。
-    return element.hasAttr("hidden") && display?.hidden != false
+    val displayHidden = display?.hidden == true ||
+        (element.hasAttr("hidden") && display?.hidden != false)
+    return ElementVisibility(displayHidden, visibility?.hidden)
 }
+
+/**
+ * 遍历 DOM 取可见文字。display:none 会隐藏整棵子树；visibility 可被后代显式覆盖，
+ * 因此只跳过继承到 hidden 的文本节点，保留 `visibility:visible` 的子元素。
+ */
+private fun visibleText(root: Element, states: Map<Element, ElementVisibility>): String {
+    val builder = StringBuilder()
+    fun visit(node: Node, inheritedVisibilityHidden: Boolean) {
+        when (node) {
+            is TextNode -> if (!inheritedVisibilityHidden) builder.append(node.wholeText)
+            is Element -> {
+                val state = states[node] ?: ElementVisibility(false, null)
+                if (state.displayHidden) return
+                if (node.normalName() == "br") {
+                    builder.append(' ')
+                    return
+                }
+                val visibilityHidden = state.visibilityHidden ?: inheritedVisibilityHidden
+                val block = node.isBlock
+                if (block) builder.append(' ')
+                node.childNodes().forEach { child -> visit(child, visibilityHidden) }
+                if (block) builder.append(' ')
+            }
+        }
+    }
+    visit(root, false)
+    return builder.toString().replace(Regex("\\s+"), " ").trim()
+}
+
+private data class ElementVisibility(
+    val displayHidden: Boolean,
+    /** null 表示没有显式 visibility 声明，继承父元素。 */
+    val visibilityHidden: Boolean?,
+)
 
 private fun Element.matchesSelector(selector: String): Boolean =
     try {

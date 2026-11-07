@@ -1,11 +1,17 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { JSDOM } from 'jsdom'
 import {
   formatIqLatency,
   iqTargetKey,
   iqVerdictTone,
   withIqPreviewCsp,
 } from '../src/utils/iqTest'
+
+// 浏览器环境已有 DOMParser；Node 测试用 jsdom 提供同样的 HTML 文档解析语义。
+if (typeof globalThis.DOMParser === 'undefined') {
+  globalThis.DOMParser = new JSDOM().window.DOMParser
+}
 
 describe('iqTest: 智商检测展示', () => {
   it('用渠道与模型组合出唯一选项 key', () => {
@@ -52,7 +58,6 @@ describe('iqTest: 智商检测展示', () => {
 
     const csp = result.indexOf('Content-Security-Policy')
     assert.ok(csp > 0)
-    assert.ok(csp < result.indexOf('<!-- <head> -->'))
     assert.ok(csp < result.indexOf('<img'))
   })
 
@@ -74,6 +79,15 @@ describe('iqTest: 智商检测展示', () => {
 
     assert.ok(!result.includes('evil.example'))
     assert.ok(!result.includes('http-equiv="&#114;efresh"'))
+  })
+
+  it('未加引号属性中的引号不会绕过解析器', () => {
+    const html = '<div data-x=x"><a href=https://evil.example/collect>查看</a>">'
+    const result = withIqPreviewCsp(html)
+
+    assert.ok(!/<a[\s>]/i.test(result))
+    assert.ok(!result.includes('href=https://evil.example'))
+    assert.ok(result.includes('查看'))
   })
 
   it('SVG SMIL 不能给锚点动态补回外链', () => {

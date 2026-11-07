@@ -27,38 +27,39 @@ export function iqVerdictTone(verdict: IqVerdict): 'success' | 'warning' | 'dang
  * 注入只允许内联资源的 CSP，避免模型生成的 HTML 访问外网或执行脚本。
  * 预览 iframe 仍然使用不带 `allow-scripts` 的 sandbox，CSP 只是第二道防线。
  */
-const START_TAG_PATTERN = /<([a-zA-Z][\w:-]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/g
-const FORM_ATTRIBUTE_PATTERN =
-  /\s(?:action|method|target|formaction)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi
-
 export function withIqPreviewCsp(html: string): string {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">`
-  const sanitized = stripPreviewNavigation(html)
-  // 始终把可信 CSP 放进文档最前面的 head，再拼接模型内容。
-  // 这样即使内容里的注释、title/style 文本伪造了 <head>，CSP 也不会被注入到那里。
-  return `<!DOCTYPE html><html><head>${meta}</head><body>${sanitized}</body></html>`
+  if (typeof DOMParser === 'undefined') {
+    // 非浏览器环境没有 HTML 解析器；宁可返回空预览，也不把未清洗内容交给 iframe。
+    return `<!DOCTYPE html><html><head>${meta}</head><body></body></html>`
+  }
+  const document = new DOMParser().parseFromString(html, 'text/html')
+  stripPreviewNavigation(document)
+  const csp = document.createElement('meta')
+  csp.setAttribute('http-equiv', 'Content-Security-Policy')
+  csp.setAttribute('content', PREVIEW_CSP)
+  document.head.prepend(csp)
+  return `<!DOCTYPE html>${document.documentElement.outerHTML}`
 }
 
 /**
  * 去掉链接、表单和自动刷新等导航入口。
  *
- * 标签和属性都按引号边界解析，属性值里的 `>` 不会让后面的 href 逃逸清洗。
- * 锚点整体移除，避免 SVG SMIL 再通过 `<set attributeName="href">` 动态补回外链。
- * 脚本已被 sandbox 与 CSP 禁止，这样预览既不能自动跳转，
- * 也不会因用户点击把页面内容带到外部地址。
+ * 使用浏览器的 HTML 解析器，未加引号的属性、注释和错误嵌套都按真实 DOM 处理，
+ * 避免正则与浏览器解析边界不一致。锚点整体移除，防止 SVG SMIL 再通过
+ * `<set attributeName="href">` 动态补回外链；脚本、meta、base 也一并移除。
  */
-function stripPreviewNavigation(html: string): string {
-  return html
-    .replace(START_TAG_PATTERN, (tag, rawName: string, attrs: string) => {
-      const name = rawName.toLowerCase()
-      // 模型内容不需要 meta；整体移除比识别 refresh 更可靠，也避免实体编码绕过。
-      if (name === 'meta' || name === 'base' || name === 'a' || name === 'area') return ''
-      if (name === 'form' || name === 'button' || name === 'input') {
-        return `<${rawName}${attrs.replace(FORM_ATTRIBUTE_PATTERN, '')}>`
-      }
-      return tag
-    })
-    .replace(/<\/(?:a|area)\s*>/gi, '')
+function stripPreviewNavigation(document: Document): void {
+  document.querySelectorAll('script, meta, base, link, area, iframe, object, embed')
+    .forEach((element) => element.remove())
+  document.querySelectorAll('a').forEach((element) => {
+    element.replaceWith(...Array.from(element.childNodes))
+  })
+  document.querySelectorAll('form, button, input').forEach((element) => {
+    for (const attribute of ['action', 'method', 'target', 'formaction', 'ping']) {
+      element.removeAttribute(attribute)
+    }
+  })
 }
 
 export function formatIqLatency(ms: number): string {

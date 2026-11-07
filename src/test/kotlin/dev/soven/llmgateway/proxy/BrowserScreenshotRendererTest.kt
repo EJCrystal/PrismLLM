@@ -1,10 +1,12 @@
 package dev.soven.llmgateway.proxy
 
 import org.junit.jupiter.api.Assumptions.assumeTrue
+import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class BrowserScreenshotRendererTest {
@@ -99,6 +101,70 @@ class BrowserScreenshotRendererTest {
         val result = assertIs<SvgRenderResult.Success>(renderer().render(html))
 
         assertTrue(result.png.isNotEmpty())
+    }
+
+    @Test
+    fun `keeps the chrome sandbox when the gateway is unprivileged`() {
+        val renderer = BrowserScreenshotRenderer(
+            executable = Path.of("/usr/bin/chromium"),
+            isolation = BrowserIsolation(emptyList(), disableSandbox = false),
+        )
+
+        val command = renderer.browserCommand(
+            Path.of("/tmp/frame.png"),
+            Path.of("/tmp/profile"),
+            320,
+            200,
+            Path.of("/tmp/frame.html"),
+        )
+
+        assertEquals("/usr/bin/chromium", command.first())
+        assertFalse(command.contains("--no-sandbox"))
+    }
+
+    @Test
+    fun `drops root browsers to nobody before disabling the sandbox`() {
+        val isolation = resolveBrowserIsolation(uid = 0, setpriv = Path.of("/usr/bin/setpriv"))
+        val renderer = BrowserScreenshotRenderer(
+            executable = Path.of("/usr/bin/chromium"),
+            isolation = isolation,
+        )
+
+        val command = renderer.browserCommand(
+            Path.of("/tmp/frame.png"),
+            Path.of("/tmp/profile"),
+            320,
+            200,
+            Path.of("/tmp/frame.html"),
+        )
+
+        assertEquals(
+            listOf(
+                "/usr/bin/setpriv",
+                "--reuid=65534",
+                "--regid=65534",
+                "--clear-groups",
+                "--",
+                "/usr/bin/chromium",
+            ),
+            command.take(6),
+        )
+        assertTrue(command.contains("--no-sandbox"))
+    }
+
+    @Test
+    fun `refuses to render as root without a privilege drop`() {
+        val isolation = resolveBrowserIsolation(uid = 0, setpriv = null)
+        assertNotNull(isolation.unavailableReason)
+
+        val renderer = BrowserScreenshotRenderer(
+            executable = Path.of("/usr/bin/chromium"),
+            isolation = isolation,
+        )
+        val result = renderer.render("<svg><rect width=\"10\" height=\"10\"/></svg>")
+
+        assertIs<SvgRenderResult.Failure>(result)
+        assertTrue(result.reason.contains("root"))
     }
 
     @Test
