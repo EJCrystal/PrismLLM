@@ -572,14 +572,14 @@ onBeforeUnmount(stopTimer)
                 <button type="button" :class="{ active: previewMode === 'preview' }" @click="previewMode = 'preview'">预览</button>
                 <button type="button" :class="{ active: previewMode === 'source' }" @click="previewMode = 'source'">HTML</button>
               </div>
-              <span class="muted small">{{ detail.html.length.toLocaleString() }} 字符 · 已阻止外部资源</span>
+              <span class="muted small">{{ detail.html.length.toLocaleString() }} 字符 · 已阻止外部资源和脚本</span>
               <CopyButton :text="sourceText" title="复制 HTML" variant="subtle" />
             </div>
             <iframe
               v-if="previewMode === 'preview'"
               class="iq-frame"
               :srcdoc="previewHtml"
-              sandbox="allow-scripts"
+              sandbox=""
               referrerpolicy="no-referrer"
               title="模型作品预览"
             ></iframe>

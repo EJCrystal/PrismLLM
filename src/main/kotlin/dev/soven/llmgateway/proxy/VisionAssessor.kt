@@ -89,69 +89,72 @@ class OpenAiVisionAssessor(
 ) : VisionAssessor {
     private val baseUrl = baseUrl.trimEnd('/')
 
-    override suspend fun assess(request: VisionRequest): VisionAssessment = try {
+    override suspend fun assess(request: VisionRequest): VisionAssessment {
         if (request.frames.isEmpty()) {
             return failure("没有可发送的截图")
         }
-        withTimeout(timeoutMs) {
-            val response = httpClient.post("$baseUrl/chat/completions") {
-                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-                apiKey?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }
-                setBody(
-                    TextContent(
-                        buildJsonObject {
-                            put("model", model)
-                            put("temperature", 0)
-                            put("max_tokens", 3_000)
-                            putJsonArray("messages") {
-                                addJsonObject {
-                                    put("role", "system")
-                                    put("content", "你是图形作品评审，只输出一个 JSON 对象，不要 Markdown。")
-                                }
-                                addJsonObject {
-                                    put("role", "user")
-                                    putJsonArray("content") {
-                                        addJsonObject {
-                                            put("type", "text")
-                                            put("text", prompt(request))
-                                        }
-                                        request.frames.forEachIndexed { index, frame ->
+        return try {
+            withTimeout(timeoutMs) {
+                val response = httpClient.post("$baseUrl/chat/completions") {
+                    header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                    apiKey?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+                    setBody(
+                        TextContent(
+                            buildJsonObject {
+                                put("model", model)
+                                put("temperature", 0)
+                                put("max_tokens", 3_000)
+                                putJsonArray("messages") {
+                                    addJsonObject {
+                                        put("role", "system")
+                                        put("content", "你是图形作品评审，只输出一个 JSON 对象，不要 Markdown。")
+                                    }
+                                    addJsonObject {
+                                        put("role", "user")
+                                        putJsonArray("content") {
                                             addJsonObject {
                                                 put("type", "text")
-                                                put("text", "第 ${index + 1} 帧（t=${frame.timeSeconds}s）")
+                                                put("text", prompt(request))
                                             }
-                                            addJsonObject {
-                                                put("type", "image_url")
-                                                putJsonObject("image_url") {
-                                                    put(
-                                                        "url",
-                                                        "data:image/png;base64,${Base64.getEncoder().encodeToString(frame.png)}",
-                                                    )
+                                            request.frames.forEachIndexed { index, frame ->
+                                                addJsonObject {
+                                                    put("type", "text")
+                                                    put("text", "第 ${index + 1} 帧（t=${frame.timeSeconds}s）")
+                                                }
+                                                addJsonObject {
+                                                    put("type", "image_url")
+                                                    putJsonObject("image_url") {
+                                                        put(
+                                                            "url",
+                                                            "data:image/png;base64," +
+                                                                Base64.getEncoder().encodeToString(frame.png),
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
-                            }
-                        }.toString(),
-                        ContentType.Application.Json,
-                    ),
-                )
+                            }.toString(),
+                            ContentType.Application.Json,
+                        ),
+                    )
+                }
+                val body = response.bodyAsText()
+                if (response.status.value !in 200..299) {
+                    return@withTimeout failure("视觉模型返回 HTTP ${response.status.value}：${body.take(300)}")
+                }
+                val text = extractContent(body)
+                    ?: return@withTimeout failure("视觉模型返回了无法解析的响应")
+                parseAssessment(text)
             }
-            val body = response.bodyAsText()
-            if (response.status.value !in 200..299) {
-                return@withTimeout failure("视觉模型返回 HTTP ${response.status.value}：${body.take(300)}")
-            }
-            val text = extractContent(body)
-                ?: return@withTimeout failure("视觉模型返回了无法解析的响应")
-            parseAssessment(text)
+        } catch (cause: TimeoutCancellationException) {
+            failure("视觉模型调用超时（${timeoutMs / 1000} 秒）")
+        } catch (cause: CancellationException) {
+            throw cause
+        } catch (cause: Throwable) {
+            failure("无法连接视觉模型：${cause.message?.take(200) ?: cause::class.simpleName}")
         }
-    } catch (cause: TimeoutCancellationException) {
-        failure("视觉模型调用超时（${timeoutMs / 1000} 秒）")
-    } catch (cause: CancellationException) {
-        throw cause
-    } catch (cause: Throwable) {
-        failure("无法连接视觉模型：${cause.message?.take(200) ?: cause::class.simpleName}")
     }
 
     private fun prompt(request: VisionRequest): String = buildString {

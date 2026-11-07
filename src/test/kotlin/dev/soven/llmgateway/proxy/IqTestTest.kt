@@ -101,6 +101,44 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy rejects larger chinese numbers containing the answer substring`() {
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, "答案是一百二十一颗。").verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, "答案是二十一万颗。").verdict)
+    }
+
+    @Test
+    fun `candy accepts standalone chinese answer with punctuation`() {
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, "最终答案是廿一颗。").verdict)
+    }
+
+    @Test
+    fun `candy ignores hidden answers`() {
+        val hiddenAttribute = """
+            <html><body><span hidden>21</span><p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+        val inlineStyle = """
+            <html><body><span style="display: none">21</span><p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+        val styleClass = """
+            <html><head><style>.ghost { visibility: hidden; }</style></head>
+            <body><span class="ghost">21</span><p>答案是 20 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, hiddenAttribute).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inlineStyle).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, styleClass).verdict)
+    }
+
+    @Test
+    fun `candy keeps aria hidden but visible text`() {
+        val html = """
+            <html><body><p aria-hidden="true">答案是 21 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, html).verdict)
+    }
+
+    @Test
     fun `candy reads visible text from html and ignores css numbers`() {
         val html = """
             <!DOCTYPE html>

@@ -139,7 +139,11 @@ internal fun analyzeSvgAnimation(html: String?): SvgAnimationInfo {
 /** 在一个动画周期内均匀取 count 个时间点，第一帧从 0 秒开始。 */
 internal fun samplingTimes(info: SvgAnimationInfo, count: Int): List<Float> {
     val frames = count.coerceAtLeast(1)
-    return (0 until frames).map { it * info.durationSeconds / frames }
+    if (frames == 1) return listOf(0f)
+    val step = info.durationSeconds / frames
+    // 与常见整数周期错开，避免短周期动画在每个采样点都落在同一相位。
+    val jitter = step * GOLDEN_RATIO_FRACTION / frames
+    return (0 until frames).map { it * (step + jitter) }
 }
 
 private fun animationDurations(raw: String): List<Float> = buildList {
@@ -154,6 +158,7 @@ private fun MutableList<Float>.addDuration(match: MatchResult) {
 }
 
 private const val DEFAULT_ANIMATION_SECONDS = 2f
+private const val GOLDEN_RATIO_FRACTION = 0.381966f
 
 /** 多帧截图会一起发送给视觉模型，限制单帧宽度以控制请求体积。 */
 internal const val MULTI_FRAME_WIDTH = 640

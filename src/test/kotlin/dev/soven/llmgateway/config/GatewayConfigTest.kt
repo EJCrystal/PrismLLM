@@ -62,10 +62,39 @@ class GatewayConfigTest {
         val config = GatewayConfig.fromEnv(requiredEnv)
 
         assertFalse(config.iqVisionEnabled)
+        assertEquals(60_000L, config.iqJudgeTimeoutMs)
         assertEquals(1_024, config.iqVisionRenderWidth)
         assertEquals(4_000_000, config.iqVisionMaxImageBytes)
         assertEquals("", config.iqVisionBrowserPath)
         assertEquals(15_000L, config.iqVisionBrowserTimeoutMs)
+    }
+
+    @Test
+    fun visionJudgeRaisesDefaultJudgeTimeoutToCoverRenderingBudget() {
+        val config = GatewayConfig.fromEnv(
+            requiredEnv + mapOf(
+                "IQ_VISION_ENABLED" to "true",
+                "IQ_VISION_BASE_URL" to "http://localhost:8080/v1",
+                "IQ_VISION_MODEL" to "vision-model",
+            ),
+        )
+
+        // 6 帧 × 15 秒浏览器超时 + 60 秒视觉模型超时。
+        assertEquals(150_000L, config.iqJudgeTimeoutMs)
+    }
+
+    @Test
+    fun visionJudgeKeepsExplicitJudgeTimeout() {
+        val config = GatewayConfig.fromEnv(
+            requiredEnv + mapOf(
+                "IQ_VISION_ENABLED" to "true",
+                "IQ_VISION_BASE_URL" to "http://localhost:8080/v1",
+                "IQ_VISION_MODEL" to "vision-model",
+                "IQ_JUDGE_TIMEOUT_MS" to "60000",
+            ),
+        )
+
+        assertEquals(60_000L, config.iqJudgeTimeoutMs)
     }
 
     @Test

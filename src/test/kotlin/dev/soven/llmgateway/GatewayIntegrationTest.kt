@@ -5830,6 +5830,29 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin failed iq test omits fabricated judge result`() = runBlocking {
+        val channel = createChannel("iq-fail", "500")
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            val response = client.post("/admin/api/iq-tests") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","judgeId":"local"}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("failed", body["verdict"]?.jsonPrimitive?.content)
+            val judgeResult = body["judgeResult"]
+            assertTrue(judgeResult == null || judgeResult is JsonNull, response.bodyAsText())
+        }
+    }
+
+    @Test
     fun `admin classifies locally generated html with manxue`() = runBlocking {
         val channel = createChannelWithBaseUrl("iq-html", "${fake.baseUrl}/iq-html/v1")
 

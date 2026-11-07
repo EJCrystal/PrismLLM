@@ -1,5 +1,6 @@
 package dev.soven.llmgateway.proxy
 
+import kotlin.math.roundToInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -68,5 +69,19 @@ class SvgRenderSupportTest {
     @Test
     fun `computes size from viewbox and caps width`() {
         assertEquals(512 to 256, SvgRenderSupport.svgSize("<svg viewBox=\"0 0 200 100\">", 512))
+    }
+
+    @Test
+    fun `sampling avoids alignment with shorter animation periods`() {
+        val info = analyzeSvgAnimation(
+            "<svg><animateTransform attributeName=\"transform\" dur=\"1s\"/>" +
+                "<animate attributeName=\"opacity\" dur=\"6s\"/></svg>",
+        )
+
+        assertEquals(6f, info.durationSeconds)
+        val times = samplingTimes(info, 6)
+        assertEquals(0f, times.first())
+        val phases = times.map { ((it % 1f) * 1000).roundToInt() }.toSet()
+        assertTrue(phases.size >= 3, "短周期动画的采样相位应错开，实际=$phases")
     }
 }

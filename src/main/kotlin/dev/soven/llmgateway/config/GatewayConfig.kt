@@ -92,7 +92,7 @@ data class GatewayConfig(
             val keyAutoRecoveryIntervalMs = longValue("KEY_AUTO_RECOVERY_INTERVAL_MS", 30_000)
             val upstreamHeaderRefreshIntervalMs = longValue("UPSTREAM_HEADER_REFRESH_INTERVAL_MS", 3_600_000)
             val manxueTimeoutMs = longValue("MANXUE_TIMEOUT_MS", 60_000)
-            val iqJudgeTimeoutMs = longValue("IQ_JUDGE_TIMEOUT_MS", 60_000)
+            var iqJudgeTimeoutMs = longValue("IQ_JUDGE_TIMEOUT_MS", 60_000)
             require(iqJudgeTimeoutMs in 1_000..300_000) { "IQ_JUDGE_TIMEOUT_MS 必须在 1000..300000 之间" }
             val iqDefaultJudge = value("IQ_DEFAULT_JUDGE", "local")
             require(Regex(IqJudge.ID_PATTERN).matches(iqDefaultJudge)) {
@@ -122,6 +122,11 @@ data class GatewayConfig(
             val iqVisionBrowserTimeoutMs = longValue("IQ_VISION_BROWSER_TIMEOUT_MS", 15_000)
             require(iqVisionBrowserTimeoutMs in 1_000..60_000) {
                 "IQ_VISION_BROWSER_TIMEOUT_MS 必须在 1000..60000 之间"
+            }
+            if (iqVisionEnabled && env["IQ_JUDGE_TIMEOUT_MS"].isNullOrBlank()) {
+                // 6 帧浏览器渲染和一次视觉模型调用共享同一次判分超时。
+                val visionBudgetMs = 6 * iqVisionBrowserTimeoutMs + iqVisionTimeoutMs
+                iqJudgeTimeoutMs = minOf(300_000, maxOf(iqJudgeTimeoutMs, visionBudgetMs))
             }
             require(cooldownTransientBaseMs in 1_000..3_600_000) { "COOLDOWN_TRANSIENT_BASE_MS 必须在 1000..3600000 之间" }
             require(cooldownTransientMaxMs in cooldownTransientBaseMs..86_400_000) {

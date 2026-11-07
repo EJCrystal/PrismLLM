@@ -38,6 +38,14 @@ describe('iqTest: 智商检测展示', () => {
     assert.ok(fragment.includes('<body><svg></svg></body>'))
   })
 
+  it('不会把 header 当成 head，也不会放行内联脚本', () => {
+    const html = '<html><header>标题</header><body><svg></svg></body></html>'
+    const result = withIqPreviewCsp(html)
+
+    assert.ok(result.indexOf('Content-Security-Policy') < result.indexOf('<header>'))
+    assert.ok(!result.includes('script-src'))
+  })
+
   it('耗时按毫秒与秒展示', () => {
     assert.equal(formatIqLatency(800), '800 ms')
     assert.equal(formatIqLatency(12_340), '12.3 s')

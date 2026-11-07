@@ -359,6 +359,15 @@ class GatewayApplication(
     )
 
     private fun createVisionRenderer(): HtmlImageRenderer {
+        val visionBudgetMs = 6 * config.iqVisionBrowserTimeoutMs + config.iqVisionTimeoutMs
+        if (config.iqJudgeTimeoutMs < visionBudgetMs) {
+            logger.warn(
+                "IQ_JUDGE_TIMEOUT_MS={}ms 小于视觉判分最坏预算 {}ms（6 帧渲染 + 视觉模型），" +
+                    "判分可能提前超时并转为需人工查看",
+                config.iqJudgeTimeoutMs,
+                visionBudgetMs,
+            )
+        }
         val executable = BrowserScreenshotRenderer.resolveExecutable(config.iqVisionBrowserPath)
         if (executable == null) {
             if (config.iqVisionBrowserPath.isNotBlank()) {

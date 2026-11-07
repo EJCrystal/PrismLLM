@@ -1506,12 +1506,14 @@ private fun IqTestRunRecord.toJudgeResult(): IqJudgeResult? {
     )
 }
 
-private fun IqTestRunRecord.toJudgeResponse(): IqJudgeResultResponse? = judgeId?.let { id ->
-    IqJudgeResultResponse(
+private fun IqTestRunRecord.toJudgeResponse(): IqJudgeResultResponse? {
+    val id = judgeId ?: return null
+    val resultVerdict = judgeVerdict ?: return null
+    return IqJudgeResultResponse(
         judgeId = id,
         judgeLabel = judgeLabel ?: id,
-        verdict = judgeVerdict ?: "review",
-        label = judgeResultLabel ?: judgeVerdict ?: "无法判定",
+        verdict = resultVerdict,
+        label = judgeResultLabel ?: resultVerdict,
         reason = judgeReason,
         score = judgeScore,
         details = parseJudgeDetails(judgeDetails),

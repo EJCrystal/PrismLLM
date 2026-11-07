@@ -4,7 +4,6 @@ const PREVIEW_CSP = [
   "default-src 'none'",
   "img-src data: blob:",
   "style-src 'unsafe-inline'",
-  "script-src 'unsafe-inline'",
   "font-src data:",
   "media-src data: blob:",
   "connect-src 'none'",
@@ -25,19 +24,19 @@ export function iqVerdictTone(verdict: IqVerdict): 'success' | 'warning' | 'dang
 }
 
 /**
- * 注入只允许内联资源与内联脚本的 CSP，避免模型生成的 HTML 访问外网。
- * 预览 iframe 仍然使用 sandbox，CSP 只是第二道防线。
+ * 注入只允许内联资源的 CSP，避免模型生成的 HTML 访问外网或执行脚本。
+ * 预览 iframe 仍然使用不带 `allow-scripts` 的 sandbox，CSP 只是第二道防线。
  */
 export function withIqPreviewCsp(html: string): string {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">`
   const sanitized = html
     .replace(/<meta[^>]+http-equiv=["']?refresh["']?[^>]*>/gi, '')
     .replace(/<base[^>]*>/gi, '')
-  if (/<head[^>]*>/i.test(sanitized)) {
-    return sanitized.replace(/<head[^>]*>/i, (head) => `${head}${meta}`)
+  if (/<head(?:\s[^>]*)?>/i.test(sanitized)) {
+    return sanitized.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${meta}`)
   }
-  if (/<html[^>]*>/i.test(sanitized)) {
-    return sanitized.replace(/<html[^>]*>/i, (tag) => `${tag}<head>${meta}</head>`)
+  if (/<html(?:\s[^>]*)?>/i.test(sanitized)) {
+    return sanitized.replace(/<html(?:\s[^>]*)?>/i, (tag) => `${tag}<head>${meta}</head>`)
   }
   return `<!DOCTYPE html><html><head>${meta}</head><body>${sanitized}</body></html>`
 }

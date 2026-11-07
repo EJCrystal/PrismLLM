@@ -164,7 +164,7 @@ private fun evaluateCandy(text: String): IqTestEvaluation {
     val visibleText = extractVisibleText(text)
     val normalized = Normalizer.normalize(visibleText, Normalizer.Form.NFKC)
     val matched = containsStandaloneNumber(normalized, CANDY_EXPECTED_ANSWER) ||
-        CANDY_CHINESE_ANSWERS.any(normalized::contains)
+        CANDY_CHINESE_ANSWER_PATTERN.containsMatchIn(normalized)
     val checks = listOf(
         IqStructureCheck(
             id = "answer",
@@ -246,7 +246,7 @@ internal fun extractHtmlDocument(raw: String?): String? {
  */
 internal fun extractVisibleText(raw: String): String {
     val html = extractHtmlDocument(raw) ?: return raw
-    return html
+    return removeHiddenHtml(html)
         .replace(Regex("(?is)<script\\b[^>]*>.*?</script>"), " ")
         .replace(Regex("(?is)<style\\b[^>]*>.*?</style>"), " ")
         .replace(Regex("(?is)<!--.*?-->"), " ")
@@ -261,8 +261,74 @@ internal fun extractVisibleText(raw: String): String {
         .trim()
 }
 
+/**
+ * 删除 `hidden`、内联隐藏样式以及简单 CSS 规则命中的元素，避免隐藏文字参与答案判定。
+ * 只识别单选择器规则；复杂选择器不在答案判定的安全边界内。
+ */
+private fun removeHiddenHtml(html: String): String {
+    val hiddenClasses = mutableSetOf<String>()
+    val hiddenIds = mutableSetOf<String>()
+    val hiddenTags = mutableSetOf<String>()
+    STYLE_BLOCK_PATTERN.findAll(html).forEach { style ->
+        CSS_RULE_PATTERN.findAll(style.groupValues[1]).forEach ruleLoop@ { rule ->
+            if (!HIDDEN_DECLARATION_PATTERN.containsMatchIn(rule.groupValues[2])) return@ruleLoop
+            rule.groupValues[1].split(',').map(String::trim).forEach { selector ->
+                when {
+                    CLASS_SELECTOR_PATTERN.matches(selector) -> hiddenClasses += selector.drop(1)
+                    ID_SELECTOR_PATTERN.matches(selector) -> hiddenIds += selector.drop(1)
+                    TAG_SELECTOR_PATTERN.matches(selector) -> hiddenTags += selector.lowercase()
+                }
+            }
+        }
+    }
+    val patterns = buildList {
+        add(HIDDEN_ATTRIBUTE_ELEMENT_PATTERN)
+        add(HIDDEN_STYLE_ELEMENT_PATTERN)
+        hiddenClasses.forEach { add(classElementPattern(it)) }
+        hiddenIds.forEach { add(idElementPattern(it)) }
+        hiddenTags.forEach { add(tagElementPattern(it)) }
+    }
+    var result = html
+    while (true) {
+        val before = result
+        patterns.forEach { pattern -> result = pattern.replace(result, " ") }
+        if (result == before) return result
+    }
+}
+
 private const val CANDY_EXPECTED_ANSWER = 21
-private val CANDY_CHINESE_ANSWERS = listOf("二十一", "廿一")
+private val CANDY_CHINESE_ANSWER_PATTERN = Regex(
+    "(?<![\\d〇零一二三四五六七八九十百千万亿两廿])(?:二十一|廿一)" +
+        "(?![\\d〇零一二三四五六七八九十百千万亿两廿])",
+)
+
+private val STYLE_BLOCK_PATTERN = Regex("(?is)<style\\b[^>]*>(.*?)</style\\s*>")
+private val CSS_RULE_PATTERN = Regex("(?is)([^{}]+)\\{([^{}]*)\\}")
+private val HIDDEN_DECLARATION_PATTERN = Regex("(?i)(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden)")
+private val CLASS_SELECTOR_PATTERN = Regex("^\\.[A-Za-z_][\\w-]*$")
+private val ID_SELECTOR_PATTERN = Regex("^#[A-Za-z_][\\w-]*$")
+private val TAG_SELECTOR_PATTERN = Regex("^[A-Za-z][\\w-]*$")
+
+private val HIDDEN_ATTRIBUTE_ELEMENT_PATTERN = Regex(
+    "(?is)<([a-zA-Z][\\w:-]*)\\b[^>]*\\shidden(?:\\s*=\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s>]+))?[^>]*>" +
+        ".*?</\\1\\s*>",
+)
+private val HIDDEN_STYLE_ELEMENT_PATTERN = Regex(
+    "(?is)<([a-zA-Z][\\w:-]*)\\b[^>]*\\sstyle\\s*=\\s*([\"'])[^\"']*?" +
+        "(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden)[^\"']*?\\2[^>]*>.*?</\\1\\s*>",
+)
+
+private fun classElementPattern(name: String): Regex = Regex(
+    "(?is)<([a-zA-Z][\\w:-]*)\\b[^>]*\\sclass\\s*=\\s*([\"'])[^\"']*" +
+        "(?<![\\w-])${Regex.escape(name)}(?![\\w-])[^\"']*\\2[^>]*>.*?</\\1\\s*>",
+)
+
+private fun idElementPattern(name: String): Regex = Regex(
+    "(?is)<([a-zA-Z][\\w:-]*)\\b[^>]*\\sid\\s*=\\s*([\"'])${Regex.escape(name)}\\2[^>]*>" +
+        ".*?</\\1\\s*>",
+)
+
+private fun tagElementPattern(name: String): Regex = Regex("(?is)<$name\\b[^>]*>.*?</$name\\s*>")
 
 private const val HTML_CLOSE = "</html>"
 private const val BODY_CLOSE = "</body>"

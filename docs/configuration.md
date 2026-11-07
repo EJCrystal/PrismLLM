@@ -67,7 +67,7 @@ openssl rand -base64 32
 | 变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `IQ_DEFAULT_JUDGE` | `local` | 默认判分器 ID；不存在时退回 `local`，再退回第一个可用判分器 |
-| `IQ_JUDGE_TIMEOUT_MS` | `60000` | 单次判分的总超时（毫秒，1000–300000） |
+| `IQ_JUDGE_TIMEOUT_MS` | `60000` | 单次判分的总超时（毫秒，1000–300000）；启用 `vision` 且未显式配置时自动提高到 6×浏览器单帧超时+视觉超时（最多 300000） |
 | `IQ_JUDGE_PLUGIN_DIR` | `plugins/iq-judges` | 外部判分器 JAR 所在目录；目录不存在时不加载扩展 |
 | `MANXUE_ENABLED` | `true` | 是否注册满血AI HTML 分类判分器 |
 | `MANXUE_API_BASE_URL` | `https://manxue.ai` | 满血 API 基础地址 |
