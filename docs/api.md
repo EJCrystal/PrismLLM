@@ -78,7 +78,7 @@ curl "http://localhost:8080/v1beta/models/gemini-2.5-flash:streamGenerateContent
 | 模型已配置，但支持它的凭据全部停用 | `503` | `model_credentials_unavailable` |
 | 模型存在，但当前协议没有可用候选（渠道不支持且无法转换） | `400` | `protocol_not_supported` |
 
-`model_credentials_unavailable` 表示请求本身有效，凭据恢复或密钥临时停用到期后重试即可。只有存在临时停用的密钥时才会返回 `Retry-After`，人工与永久停用不会给出重试提示。
+`model_credentials_unavailable` 表示请求本身有效，凭据恢复或密钥临时停用到期后重试即可。只有存在临时停用的密钥时才会返回 `Retry-After`，取这些密钥中最早的可路由时间；密钥被探测租约占用时，重试提示同样等到租约结束。人工与永久停用不会自行恢复，因此不给出重试提示。
 
 ---
 

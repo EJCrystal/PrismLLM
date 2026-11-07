@@ -111,6 +111,20 @@ data class ChannelKeyRecord(
      */
     override fun isRoutable(now: Long): Boolean = state.isRoutableAt(autoDisableUntil, probeUntil, now)
 
+    /**
+     * 临时停用密钥在 [now] 之后变得可路由的时间点，条件是 [isRoutable] 里两个时间都要满足：
+     * 停用到期时间与仍在生效的探测租约，取较晚者。
+     *
+     * 返回 null 表示这条密钥不会自行恢复（人工/永久停用、缺少到期时间，或 [now] 时已可路由），
+     * 调用方据此决定是否给出重试提示。
+     */
+    fun recoveryAt(now: Long): Long? {
+        if (state != ChannelKeyState.AUTO_TEMPORARY) return null
+        if (isRoutable(now)) return null
+        val until = autoDisableUntil ?: return null
+        return maxOf(until, probeUntil ?: until)
+    }
+
     override fun supports(upstreamModel: String): Boolean = upstreamModel in models
 }
 

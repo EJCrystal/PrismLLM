@@ -25,6 +25,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -136,6 +137,35 @@ class ChannelHealthRepositoryTest {
         assertEquals("NO_CREDENTIALS", report.channels.first { it.channelId == suspended.id }.state)
         assertEquals("没有可用的上游凭据", report.channels.first { it.channelId == suspended.id }.reason)
         assertEquals("UNKNOWN", report.channels.first { it.channelId == routable.id }.state)
+    }
+
+    @Test
+    fun overviewRequiresKeysToSupportTheCurrentChannelCatalog() = runBlocking {
+        val cipher = CredentialCipher(ByteArray(32) { 7 })
+        val channels = ChannelRepository(factory.database, cipher)
+        val stale = channels.create(
+            name = "stale-key-models", baseUrl = "https://example.invalid/v1",
+            keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"), models = listOf("m1"))),
+            authType = "bearer", enabled = true, modelMappings = listOf(ChannelModelRecord("m1")),
+        )
+        // 模拟历史遗留数据：渠道目录已收缩到 m2，密钥仍保留指向 m1 的旧授权。
+        assertTrue(channels.replaceModels(stale.id, listOf(ChannelModelRecord("m2"))))
+        sql(
+            "insert into channel_key_models (key_id, upstream_model, created_at) " +
+                "values ('${stale.keys.single().id}', 'm1', 0)",
+        )
+
+        // 概览与详情必须同口径：授权模型与渠道目录无交集时都算 0。
+        val overviews = channels.listHealthChannelOverviews().associateBy { it.id }
+        assertEquals(0, overviews.getValue(stale.id).routableCredentials)
+        assertFalse(overviews.getValue(stale.id).keys.single().routable)
+        assertEquals(0, assertNotNull(channels.find(stale.id)).routableCredentialCount())
+
+        val report = health.report(
+            "24h", mapOf(stale.id to true), 30, now,
+            routableCredentials = overviews.mapValues { it.value.routableCredentials },
+        )
+        assertEquals("NO_CREDENTIALS", report.channels.single().state)
     }
 
     @Test

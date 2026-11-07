@@ -118,21 +118,24 @@ class ChannelRepository(private val database: Database, private val credentialCi
                     .groupBy { it[ChannelKeyModels.keyId] }
                     .mapValues { (_, models) -> models.map { it[ChannelKeyModels.upstreamModel] }.sorted() }
             }
-            val keysByChannel = keyRows.groupBy { it[ChannelKeys.channelId] }.mapValues { (_, keys) ->
-                keys.map { key ->
-                    val models = modelsByKey[key[ChannelKeys.id]].orEmpty()
-                    // 没有授权任何模型的密钥支持不了任何请求，不参与「渠道是否可用」的判定。
-                    val routable = models.isNotEmpty() && ChannelKeyState.fromValue(key[ChannelKeys.state])
-                        ?.isRoutableAt(key[ChannelKeys.autoDisableUntil], key[ChannelKeys.probeUntil], now) == true
-                    HealthChannelKey(key[ChannelKeys.id], models, routable)
-                }
-            }
             // 渠道模型目录：订阅账号没有显式模型时继承这里，有显式模型时必须与它相交。
             val modelsByChannel = ChannelModels
                 .select(ChannelModels.channelId, ChannelModels.upstreamModel)
                 .where { ChannelModels.channelId inList channelIds }
                 .groupBy { it[ChannelModels.channelId] }
                 .mapValues { (_, models) -> models.map { it[ChannelModels.upstreamModel] }.toSet() }
+            val keysByChannel = keyRows.groupBy { it[ChannelKeys.channelId] }.mapValues { (channelId, keys) ->
+                val channelModels = modelsByChannel[channelId].orEmpty()
+                keys.map { key ->
+                    val models = modelsByKey[key[ChannelKeys.id]].orEmpty()
+                    // 与详情页 routableCredentialCount 同口径：密钥必须支持渠道目录中的模型，
+                    // 只有历史授权、渠道目录已移除这些模型时它接不到任何请求。
+                    val authorized = models.any { it in channelModels }
+                    val routable = authorized && ChannelKeyState.fromValue(key[ChannelKeys.state])
+                        ?.isRoutableAt(key[ChannelKeys.autoDisableUntil], key[ChannelKeys.probeUntil], now) == true
+                    HealthChannelKey(key[ChannelKeys.id], models, routable)
+                }
+            }
             // 订阅账号同样参与候选路由。账号可路由只取决于 enabled，
             // 等待重新授权的账号仍保留为候选，不能据此判定渠道不可用。
             val routableAccountsByChannel = routableAccountCounts(channelIds, modelsByChannel)

@@ -3024,6 +3024,52 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `temporary key blocked by probe lease reports the later recovery time`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "probe-lease-only",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "temporary",
+                    credential = app.credentialCipher.encrypt("key-temporary"),
+                    state = ChannelKeyState.AUTO_TEMPORARY,
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+        )
+        // 停用已到期，但探测租约仍在生效：密钥此刻不可路由，恢复时间取较晚的租约到期时间。
+        val expired = System.currentTimeMillis() - 60_000
+        val leaseUntil = System.currentTimeMillis() + 90_000
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update channel_keys set auto_disable_until = ?, probe_until = ? where id = ?")
+                .use { statement ->
+                    statement.setLong(1, expired)
+                    statement.setLong(2, leaseUntil)
+                    statement.setString(3, channel.keys.single().id)
+                    statement.executeUpdate()
+                }
+        }
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.ServiceUnavailable, response.status)
+            assertTrue(response.bodyAsText().contains("model_credentials_unavailable"))
+            // 只看停用到期时间会算出 -60 秒并被丢弃，从而错误地不给出重试提示。
+            val retryAfter = assertNotNull(response.headers[HttpHeaders.RetryAfter])
+            assertTrue(retryAfter.toLong() in 60..120, "RETRY-AFTER=[$retryAfter]")
+        }
+    }
+
+    @Test
     fun `canonical mapping keeps raw upstream name not found when credentials are unavailable`() = runBlocking {
         app.channelRepository.create(
             name = "canonical-disabled",

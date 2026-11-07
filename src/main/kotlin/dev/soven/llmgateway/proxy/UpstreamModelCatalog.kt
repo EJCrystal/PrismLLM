@@ -90,15 +90,15 @@ class UpstreamModelCatalog(
         val configured = configuredModels(model)
         if (configured.isEmpty()) return null
         if (configured.any { it.channel.credentialsFor(it.mapping.upstreamModel, now).isNotEmpty() }) return null
-        // 临时停用到期的密钥会自行恢复，用最早的到期时间告诉调用方何时重试；
-        // 人工或永久停用不会自动恢复，不产生重试提示。
+        // 临时停用到期的密钥会自行恢复，用最早的恢复时间告诉调用方何时重试；
+        // 人工或永久停用不会自动恢复，不参与重试提示。
         val retryAt = configured.asSequence()
             .flatMap { (channel, mapping) ->
                 channel.keys.asSequence().filter { key ->
                     key.state == ChannelKeyState.AUTO_TEMPORARY && key.supports(mapping.upstreamModel)
                 }
             }
-            .mapNotNull { key -> key.autoDisableUntil?.takeIf { it > now } }
+            .mapNotNull { key -> key.recoveryAt(now) }
             .minOrNull()
         return UnavailableModel(retryAt)
     }
