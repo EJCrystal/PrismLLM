@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthBucketState, healthSymbol, channelHealthSuccessRateText, healthCacheHitText, channelListHealthState } from '../src/utils/channelHealth'
+import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthBucketState, healthSymbol, channelHealthSuccessRateText, healthCacheHitText, healthCacheRows, channelListHealthState } from '../src/utils/channelHealth'
 
 describe('channel health display', () => {
   it('shows unknown rather than zero for missing samples', () => {
@@ -68,6 +68,30 @@ describe('channel health display', () => {
     assert.equal(healthCacheHitText({ inputTokens: 100, cachedTokens: 120 }), '100.0%')
     // 刷新时保留旧值，避免数字闪烁
     assert.equal(healthCacheHitText({ inputTokens: 1000, cachedTokens: 250 }, true), '25.0%')
+  })
+
+  it('splits cache usage by upstream model with per-model rates', () => {
+    const rows = healthCacheRows([
+      { id: 'glm-5.3', name: 'glm-5.3', inputTokens: 100, cachedTokens: 10, cachedWriteTokens: 0 },
+      { id: 'deepseek-v4.1-flash', name: 'deepseek-v4.1-flash', inputTokens: 900, cachedTokens: 450, cachedWriteTokens: 30 },
+      { id: '__unresolved_model__', name: '__unresolved_model__', inputTokens: 0, cachedTokens: 0, cachedWriteTokens: 0 },
+    ])
+    // 输入 token 从多到少：流量大的模型更能解释整体命中率。
+    assert.deepEqual(rows.map((row) => row.id), ['deepseek-v4.1-flash', 'glm-5.3', '__unresolved_model__'])
+    // 每行独立计算，不被其他模型的流量摊平。
+    assert.equal(rows[0].rate, '50.0%')
+    assert.equal(rows[1].rate, '10.0%')
+    // 没有输入 token 的模型显示未知，不臆造 0%。
+    assert.equal(rows[2].rate, '—')
+    // 哨兵 ID 翻译成可读名称。
+    assert.equal(rows[2].name, '未解析模型')
+    assert.equal(rows[0].name, 'deepseek-v4.1-flash')
+  })
+
+  it('returns no cache rows without usage data', () => {
+    assert.deepEqual(healthCacheRows(null), [])
+    assert.deepEqual(healthCacheRows(undefined), [])
+    assert.deepEqual(healthCacheRows([]), [])
   })
 
   it('channelListHealthState 只信任后端报告，不用静态密钥冒充无凭据', () => {

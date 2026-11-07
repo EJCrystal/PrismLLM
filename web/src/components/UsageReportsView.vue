@@ -25,6 +25,7 @@ import {
   usageModelOptions,
   usagePercent,
   usageCacheHitRate,
+  usageGroupLabel,
   usageGranularityLabel,
   usageReportCsv,
 } from '../utils/usageReport'
@@ -289,15 +290,8 @@ function formatCacheHit(row: Pick<UsageTrend, 'inputTokens' | 'cachedTokens'>): 
 }
 
 function displayName(row: UsageGroup): string {
-  const fallback: Record<string, string> = {
-    __unassigned_key__: '未关联调用方密钥',
-    __unrouted__: '未完成路由',
-    __unresolved_model__: '未解析模型',
-    __unassigned_channel_key__: '未使用渠道密钥',
-    __unknown_protocol__: '未知协议',
-  }
   if (dimension.value === 'protocol') return protocolLabel(row.id)
-  return fallback[row.id] || row.name || row.id
+  return usageGroupLabel(row)
 }
 
 function protocolLabel(value: string): string {

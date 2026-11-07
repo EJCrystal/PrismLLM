@@ -1,5 +1,5 @@
-import type { HealthMetrics, HealthState, HealthWindow } from '../types/api'
-import { usageCacheHitRate } from './usageReport'
+import type { HealthMetrics, HealthState, HealthWindow, UsageGroup } from '../types/api'
+import { usageCacheHitRate, usageGroupLabel } from './usageReport'
 
 export const HEALTH_WINDOWS: { id: HealthWindow; label: string }[] = [
   { id: '24h', label: '24 小时' }, { id: '7d', label: '7 天' }, { id: '15d', label: '15 天' }, { id: '30d', label: '30 天' },
@@ -32,6 +32,33 @@ export function healthCacheHitText(
 ): string {
   if (usage) return healthPercent(usageCacheHitRate(usage.inputTokens, usage.cachedTokens))
   return loading ? '汇总中…' : '—'
+}
+
+/**
+ * 缓存用量按模型拆分的展示行，只作诊断展示，不参与健康度判定。
+ * 每行来自用量报表的 byModel，每行自行计算命中率，输入 token 为 0 的模型显示“—”。
+ */
+export function healthCacheRows(usage: UsageGroup[] | null | undefined): Array<{
+  /** 后端分组 ID，直接用作列表 key。 */
+  id: string
+  name: string
+  rate: string
+  cachedTokens: number
+  inputTokens: number
+  cachedWriteTokens: number
+}> {
+  if (!usage?.length) return []
+  return usage
+    .slice()
+    .sort((a, b) => b.inputTokens - a.inputTokens)
+    .map((row) => ({
+      id: row.id,
+      name: usageGroupLabel(row),
+      rate: healthPercent(usageCacheHitRate(row.inputTokens, row.cachedTokens)),
+      cachedTokens: row.cachedTokens,
+      inputTokens: row.inputTokens,
+      cachedWriteTokens: row.cachedWriteTokens,
+    }))
 }
 
 export function channelHealthSuccessRateText(
