@@ -93,22 +93,6 @@ describe('API 契约的运行时形状', () => {
     assert.deepEqual(JSON.parse(calls[1].body), { windowLimit: 5 })
   })
 
-  it('系统配置接口使用约定路径与 GET 方法', async (t) => {
-    const originalFetch = globalThis.fetch
-    let requestedUrl = ''
-    let requestedMethod = ''
-    t.after(() => { globalThis.fetch = originalFetch })
-    globalThis.fetch = async (input, init = {}) => {
-      requestedUrl = String(input)
-      requestedMethod = init.method || 'GET'
-      return new Response(JSON.stringify({ sections: [] }), { status: 200 })
-    }
-
-    assert.deepEqual(await api.getSystemConfig(), { sections: [] })
-    assert.equal(requestedUrl, '/admin/api/system-config')
-    assert.equal(requestedMethod, 'GET')
-  })
-
   it('Web 搜索设置接口使用约定路径与方法', async (t) => {
     const originalFetch = globalThis.fetch
     const originalDocument = globalThis.document

@@ -41,6 +41,8 @@ where c.name = 'Grox'
         and s.rules::jsonb @> '[{"id":"activity_disabled"}]'::jsonb
   );
 
+-- 只有确认 Grox 覆盖策略已接管这条规则后才从全局删除，否则规则会两边都没有。
+-- 第一步被跳过的两种情形（库里没有 Grox 渠道、Grox 已有覆盖策略）都必须保留全局规则。
 update key_auto_disable_settings
 set rules = (
         select coalesce(jsonb_agg(elem order by ord), '[]'::jsonb)::text
@@ -51,4 +53,12 @@ set rules = (
 where id = 1
   and rules is not null
   and jsonb_typeof(rules::jsonb) = 'array'
-  and rules::jsonb @> '[{"id":"activity_disabled"}]'::jsonb;
+  and rules::jsonb @> '[{"id":"activity_disabled"}]'::jsonb
+  and exists (
+      select 1
+      from channels c
+      where c.name = 'Grox'
+        and c.key_disable_policy is not null
+        and jsonb_typeof(c.key_disable_policy::jsonb -> 'rules') = 'array'
+        and (c.key_disable_policy::jsonb -> 'rules') @> '[{"id":"activity_disabled"}]'::jsonb
+  );

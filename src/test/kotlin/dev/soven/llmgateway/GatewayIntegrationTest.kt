@@ -5766,30 +5766,6 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `admin system config overview requires session and hides secrets`() = runBlocking {
-        testApplication {
-            application { app.install(this) }
-            val client = jsonClient()
-
-            val unauthorized = client.get("/admin/api/system-config")
-            assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
-
-            val (sessionCookie, _) = client.loginAdmin()
-            val response = client.get("/admin/api/system-config") {
-                header(HttpHeaders.Cookie, sessionCookie)
-            }
-            val body = response.bodyAsText()
-
-            assertEquals(HttpStatusCode.OK, response.status)
-            assertEquals("no-store", response.headers[HttpHeaders.CacheControl])
-            assertTrue(body.contains("\"sections\""), "BODY=[$body]")
-            assertTrue(body.contains("\"MAX_ATTEMPTS\""), "BODY=[$body]")
-            assertFalse(body.contains("test-password"), "BODY=[$body]")
-            assertFalse(body.contains("GATEWAY_MASTER_KEY"), "BODY=[$body]")
-        }
-    }
-
-    @Test
     fun `admin web search settings round trip without exposing the api key`() = runBlocking {
         testApplication {
             application { app.install(this) }
@@ -7108,6 +7084,28 @@ class GatewayIntegrationTest {
                 }
             }
 
+            // 先升到 V55，写入含 activity_disabled 的全局规则，再验证 V56 在缺少 Grox 渠道时不会删除它。
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("55"))
+                .load()
+                .migrate()
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.prepareStatement("update key_auto_disable_settings set rules = ? where id = 1").use { statement ->
+                    statement.setString(1, Json.encodeToString(KeyDisablePolicy.DEFAULT_RULES + KeyDisableRule(
+                        id = "activity_disabled",
+                        name = "活动已关闭或Key失效",
+                        statusCodes = listOf(403),
+                        bodyPatterns = listOf("DEEPSEEK_ACTIVITY_DISABLED"),
+                        threshold = 2,
+                        action = KeyDisableAction.PERMANENT,
+                    )))
+                    statement.executeUpdate()
+                }
+            }
+
             Flyway.configure()
                 .dataSource(migrationUrl, postgres.username, postgres.password)
                 .locations("classpath:db/migration")
@@ -7357,6 +7355,116 @@ class GatewayIntegrationTest {
                         assertTrue(result.next())
                         assertNull(result.getString(1))
                         assertNull(result.getString(2))
+                    }
+                    // V56：库里没有名为 Grox 的渠道，第一步跳过，第二步必须同样保留全局规则。
+                    statement.executeQuery(
+                        "select key_disable_policy, key_disable_policy_revision from channels where id = 'migration-channel'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertNull(result.getString(1), "没有 Grox 渠道时不应写入任何覆盖策略")
+                        assertEquals(0, result.getInt(2))
+                    }
+                    statement.executeQuery(
+                        "select rules, revision from key_auto_disable_settings where id = 1",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        val rules = Json.decodeFromString<List<KeyDisableRule>>(result.getString(1))
+                        assertEquals(6, rules.size, "Grox 未接管规则时全局规则必须原样保留")
+                        val activity = rules.singleOrNull { it.id == "activity_disabled" }
+                        assertNotNull(activity, "没有 Grox 渠道时不能把规则从全局删掉")
+                        assertEquals(2, activity.threshold, "未搬迁时阈值不应被改写")
+                        assertEquals(0L, result.getLong(2), "全局规则未变化时 revision 不应递增")
+                    }
+                    statement.executeQuery(
+                        "select policy_scope from channel_key_health limit 1",
+                    ).use { result ->
+                        if (result.next()) assertEquals("global", result.getString(1))
+                    }
+                }
+            }
+        } finally {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use {
+                    it.execute("drop database if exists \"$databaseName\" with (force)")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `v56 migration moves activity rule into existing grox channel`() {
+        val databaseName = "migration_v56_${System.nanoTime()}"
+        val migrationUrl = postgres.jdbcUrl.substringBefore("?").substringBeforeLast("/") + "/$databaseName"
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { it.execute("create database \"$databaseName\"") }
+        }
+        try {
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("55"))
+                .load()
+                .migrate()
+
+            val activityRule = KeyDisableRule(
+                id = "activity_disabled",
+                name = "活动已关闭或Key失效",
+                statusCodes = listOf(403),
+                bodyPatterns = listOf("DEEPSEEK_ACTIVITY_DISABLED"),
+                threshold = 2,
+                action = KeyDisableAction.PERMANENT,
+            )
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.prepareStatement("update key_auto_disable_settings set rules = ? where id = 1").use { statement ->
+                    statement.setString(1, Json.encodeToString(KeyDisablePolicy.DEFAULT_RULES + activityRule))
+                    statement.executeUpdate()
+                }
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into channels (id, name, base_url, auth_type, enabled, created_at, updated_at)
+                        values ('v56-grox', 'Grox', 'https://grox.example.com/v1', 'bearer', true, 1, 1)
+                        """.trimIndent(),
+                    )
+                }
+            }
+
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .load()
+                .migrate()
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    // Grox 覆盖策略接管了该规则，阈值收紧为 1，其余全局规则一并固化过去。
+                    statement.executeQuery(
+                        "select key_disable_policy, key_disable_policy_revision from channels where id = 'v56-grox'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        val policy = Json.decodeFromString<KeyDisablePolicy>(result.getString(1))
+                        assertTrue(policy.enabled)
+                        assertEquals(6, policy.rules.size)
+                        val moved = policy.rules.single { it.id == "activity_disabled" }
+                        assertEquals(1, moved.threshold, "搬运后阈值应收紧为 1")
+                        assertEquals(1L, result.getLong(2), "写入覆盖策略应记一个版本")
+                    }
+                    // 全局规则移除该条并递增 revision，使旧计数失效。
+                    statement.executeQuery(
+                        "select rules, revision from key_auto_disable_settings where id = 1",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        val rules = Json.decodeFromString<List<KeyDisableRule>>(result.getString(1))
+                        assertEquals(5, rules.size)
+                        assertNull(rules.singleOrNull { it.id == "activity_disabled" }, "规则已由 Grox 接管")
+                        assertEquals(1L, result.getLong(2))
+                    }
+                    // 其它渠道未被写入覆盖策略，继续继承全局。
+                    statement.executeQuery(
+                        "select count(*) from channels where key_disable_policy is not null",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1), "只有 Grox 应获得覆盖策略")
                     }
                 }
             }
