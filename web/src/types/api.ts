@@ -636,6 +636,38 @@ export interface ModelTestSettings {
   updatedAt: number
 }
 
+export type WebSearchApiKeySource = 'settings' | 'environment' | 'none'
+export type WebSearchBaseUrlSource = 'settings' | 'environment' | 'none'
+export type WebSearchSettingsSource = 'settings' | 'environment'
+
+export interface WebSearchSettings {
+  enabled: boolean
+  provider: string
+  apiKeySet: boolean
+  apiKeySource: WebSearchApiKeySource
+  apiKeyUnreadable: boolean
+  baseUrl: string | null
+  baseUrlSource: WebSearchBaseUrlSource
+  maxResults: number
+  timeoutMs: number
+  maxRounds: number
+  maxPageChars: number
+  source: WebSearchSettingsSource
+  updatedAt: number
+}
+
+export interface WebSearchSettingsRequest {
+  enabled: boolean
+  provider: string
+  apiKey?: string
+  clearApiKey?: boolean
+  baseUrl?: string | null
+  maxResults: number
+  timeoutMs: number
+  maxRounds: number
+  maxPageChars: number
+}
+
 export interface ChannelModelTestRequest {
   model: string
   protocol: string

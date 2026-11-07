@@ -114,6 +114,28 @@ internal fun buildSystemConfigResponse(config: GatewayConfig): SystemConfigRespo
         ),
     )
 
+    val webSearch = SystemConfigSection(
+        id = "web-search",
+        title = "Web 搜索代理",
+        description = "环境变量默认值；管理台「Web 搜索」设置保存后会覆盖这里的值。",
+        items = listOf(
+            item("WEB_SEARCH_ENABLED", "搜索代理默认开关", config.webSearch.enabled, "boolean"),
+            item("WEB_SEARCH_PROVIDER", "默认搜索后端", config.webSearch.provider, "text"),
+            item(
+                "WEB_SEARCH_API_KEY",
+                "默认搜索 API 密钥",
+                if (config.webSearch.apiKey != null) "已配置" else "未配置",
+                "text",
+                description = "仅展示是否已配置，不展示密钥内容。",
+            ),
+            item("WEB_SEARCH_BASE_URL", "默认搜索 API 地址", redactUrl(config.webSearch.baseUrl), "text"),
+            item("WEB_SEARCH_MAX_RESULTS", "每次搜索返回页面数", config.webSearch.maxResults, "number"),
+            item("WEB_SEARCH_TIMEOUT_MS", "单次搜索超时", config.webSearch.timeoutMs, "duration"),
+            item("WEB_SEARCH_MAX_ROUNDS", "单次请求最多搜索轮数", config.webSearch.maxRounds, "number"),
+            item("WEB_SEARCH_MAX_PAGE_CHARS", "单页喂给模型字符上限", config.webSearch.maxPageChars, "number"),
+        ),
+    )
+
     val oauth = SystemConfigSection(
         id = "oauth",
         title = "订阅账号 OAuth",
@@ -152,7 +174,7 @@ internal fun buildSystemConfigResponse(config: GatewayConfig): SystemConfigRespo
     )
 
     return SystemConfigResponse(
-        sections = listOf(runtime, timeouts, cooldown, upstream, oauth),
+        sections = listOf(runtime, timeouts, cooldown, upstream, webSearch, oauth),
     )
 }
 

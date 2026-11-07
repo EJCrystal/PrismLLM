@@ -9,6 +9,7 @@ import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.authTypeFor
+import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.oauth.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
 import dev.soven.llmgateway.oauth.OAuthAccountLease
@@ -35,6 +36,15 @@ import dev.soven.llmgateway.proxy.protocol.MAX_PROTOCOL_EVENT_BYTES
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversion
 import dev.soven.llmgateway.proxy.protocol.ProtocolConversionException
 import dev.soven.llmgateway.proxy.protocol.asChatUpstream
+import dev.soven.llmgateway.proxy.protocol.responsesToChatRequest
+import dev.soven.llmgateway.proxy.search.ChatCaller
+import dev.soven.llmgateway.proxy.search.SearchConversation
+import dev.soven.llmgateway.proxy.search.WebSearchService
+import dev.soven.llmgateway.proxy.search.addUsage
+import dev.soven.llmgateway.proxy.search.hasBuiltInWebSearch
+import dev.soven.llmgateway.proxy.search.prepareResponsesSearchRequest
+import dev.soven.llmgateway.proxy.search.syntheticWebSearchName
+import dev.soven.llmgateway.proxy.search.webSearchAllowedDomains
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.KeyAutoDisablePendingException
 import dev.soven.llmgateway.resilience.CandidateCooldown
@@ -47,6 +57,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
@@ -67,6 +78,7 @@ import io.ktor.server.routing.post
 import io.ktor.util.cio.ChannelWriteException
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.cancel
 import io.ktor.utils.io.charsets.TooLongLineException
 import io.ktor.utils.io.core.readBytes
 import io.ktor.utils.io.readRemaining
@@ -241,6 +253,22 @@ private suspend fun handleProxy(
         }
         streamMode = stream
         phase = FailureStage.ROUTING
+        // 搜索设置每次请求读取一次：管理台保存后立即生效，未保存时沿用环境变量默认值。
+        // 读取失败只代表搜索不可用，不能影响本来可以透传的请求；也不回退环境变量，避免意外重新开启搜索。
+        val webSearchRuntime = if (protocol == GatewayProtocol.RESPONSES && hasBuiltInWebSearch(requestJson)) {
+            val settings = try {
+                app.webSearchSettingsRepository.load().effective(app.config.webSearch)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            settings?.let {
+                WebSearchRuntime(WebSearchService.fromConfig(it, app.searchHttpClient), it.maxRounds)
+            }
+        } else {
+            null
+        }
         val allCandidates = app.modelCatalog.findCandidates(alias, null)
         if (allCandidates.isEmpty()) {
             throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
@@ -381,7 +409,14 @@ private suspend fun handleProxy(
             channelKeyId = candidate.credential.id
             channelKeyName = candidate.credential.name
             upstreamModel = candidate.upstreamModel
-            val attemptProtocol = if (protocol in candidate.channel.protocols) {
+            // 内置 web_search 无法转成 Chat；有搜索后端时，统一走“合成函数工具 + 多轮搜索”的 Chat 代理。
+            // 同时支持原生 Responses 与 Chat 的渠道也走代理，保证配置搜索后端后内置 web_search 一定被执行。
+            val searchRuntime = webSearchRuntime?.takeIf { it.available }
+                ?.takeIf { GatewayProtocol.CHAT_COMPLETIONS in candidate.channel.protocols }
+            val webSearchProxy = searchRuntime != null
+            val attemptProtocol = if (webSearchProxy) {
+                GatewayProtocol.CHAT_COMPLETIONS
+            } else if (protocol in candidate.channel.protocols) {
                 protocol
             } else {
                 candidate.channel.protocols.firstOrNull { ProtocolConversion.supports(protocol, it) }
@@ -444,17 +479,35 @@ private suspend fun handleProxy(
                                 app.config.totalTimeoutMs + 5_000,
                             )
                             // 请求转换在抢租约前完成，避免转换失败留下未释放的探测租约。
+                            // 搜索代理会先把内置 web_search 改写成普通函数工具，探测也必须用改写后的请求。
+                            val probeRequest = if (webSearchProxy) {
+                                prepareResponsesSearchRequest(requestJson, syntheticWebSearchName(requestJson))
+                            } else {
+                                requestJson
+                            }
                             ProtocolConversion.convertRequest(
                                 protocol,
                                 attemptProtocol ?: protocol,
-                                requestJson,
+                                probeRequest,
                                 candidate.upstreamModel,
                             )
                             probeClaimed = app.keyAutoDisableRepository.claimProbe(channelKey, leaseMs = leaseMs)
                             if (!probeClaimed) throw CandidateUnavailableException()
                         }
                     }
-                    if (stream) {
+                    if (searchRuntime != null) {
+                        if (stream) {
+                            proxySearchStream(
+                                app, call, requestJson, candidate, alias, remainingMs, state,
+                                traceContext.traceparent, globalOverrides, headerProfiles, searchRuntime,
+                            )
+                        } else {
+                            proxySearchJson(
+                                app, call, requestJson, candidate, alias, remainingMs, state,
+                                traceContext.traceparent, globalOverrides, headerProfiles, searchRuntime,
+                            )
+                        }
+                    } else if (stream) {
                         proxyStream(
                             app,
                             call,
@@ -1119,6 +1172,292 @@ private suspend fun ApplicationCall.receiveLimitedJson(limit: Long): JsonObject 
     }
     val element = runCatching { Json.parseToJsonElement(bytes.toString(Charsets.UTF_8)) }.getOrNull()
     return element as? JsonObject ?: throw badRequest("invalid_json", "请求体必须是 JSON 对象")
+}
+
+/** 单次请求使用的搜索运行时：设置已合并管理台值与环境变量默认值。 */
+private data class WebSearchRuntime(
+    val service: WebSearchService,
+    val maxRounds: Int,
+) {
+    val available: Boolean get() = service.available
+}
+
+/**
+ * Responses 内置 web_search 的代理路径：把请求转成 Chat，注入普通 web_search
+ * 函数工具，由网关代跑搜索并多轮续写，最后再编码回 Responses。
+ */
+private suspend fun proxySearchStream(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    requestJson: JsonObject,
+    candidate: RouteCandidate,
+    alias: String,
+    timeoutMs: Long,
+    state: ProxyState,
+    traceparent: String,
+    globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
+    webSearch: WebSearchRuntime,
+) {
+    val responseId = "resp_" + UUID.randomUUID().toString().replace("-", "").take(24)
+    val createdAt = System.currentTimeMillis() / 1000
+    val emitter = SearchSseEmitter(alias, responseId, createdAt)
+    state.committed = true
+    state.statusCode = HttpStatusCode.OK.value
+    try {
+        call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
+            // 先发 response.created，客户端立即拿到首个事件；搜索与文本产出时再增量发送。
+            emitter.created().forEach { writeSseLine(it) }
+            val result = try {
+                runSearchConversation(
+                    app, call, requestJson, candidate, timeoutMs, state, traceparent, globalOverrides,
+                    headerProfiles, webSearch,
+                ) { part -> emitter.part(part).forEach { writeSseLine(it) } }
+            } catch (e: GatewayException) {
+                state.errorCode = e.code
+                emitter.failed(e).forEach { writeSseLine(it) }
+                return@respondBytesWriter
+            }
+            emitter.completed(result).forEach { writeSseLine(it) }
+        }
+    } catch (e: ChannelWriteException) {
+        throw clientDisconnected()
+    }
+}
+
+private suspend fun proxySearchJson(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    requestJson: JsonObject,
+    candidate: RouteCandidate,
+    alias: String,
+    timeoutMs: Long,
+    state: ProxyState,
+    traceparent: String,
+    globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
+    webSearch: WebSearchRuntime,
+) {
+    val result = runSearchConversation(
+        app, call, requestJson, candidate, timeoutMs, state, traceparent, globalOverrides, headerProfiles, webSearch,
+    )
+    val responseId = "resp_" + UUID.randomUUID().toString().replace("-", "").take(24)
+    val createdAt = System.currentTimeMillis() / 1000
+    state.committed = true
+    state.statusCode = HttpStatusCode.OK.value
+    try {
+        call.respondText(
+            renderSearchResponse(result, alias, responseId, createdAt).toString(),
+            ContentType.Application.Json,
+            HttpStatusCode.OK,
+        )
+    } catch (e: ChannelWriteException) {
+        throw clientDisconnected()
+    }
+}
+
+private suspend fun runSearchConversation(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    requestJson: JsonObject,
+    candidate: RouteCandidate,
+    timeoutMs: Long,
+    state: ProxyState,
+    traceparent: String,
+    globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
+    webSearch: WebSearchRuntime,
+    onPart: suspend (dev.soven.llmgateway.proxy.search.ConversationPart) -> Unit = {},
+): dev.soven.llmgateway.proxy.search.SearchConversationResult {
+    val toolName = syntheticWebSearchName(requestJson)
+    val prepared = prepareResponsesSearchRequest(requestJson, toolName)
+    val chatRequest = responsesToChatRequest(prepared).asChatUpstream(candidate.upstreamModel)
+    val messages = (chatRequest["messages"] as? JsonArray).orEmpty()
+        .mapNotNull { it as? JsonObject }
+    val startedAt = System.nanoTime()
+    val caller = searchChatCaller(
+        app, call, candidate, chatRequest, state, startedAt, traceparent, globalOverrides, headerProfiles,
+    )
+    // 第一轮之后不再强制调用工具，避免 tool_choice=required 让每一轮都被迫搜索。
+    val followUpCaller = searchChatCaller(
+        app, call, candidate, withAutoToolChoice(chatRequest, toolName), state, startedAt, traceparent, globalOverrides, headerProfiles,
+    )
+    val finalRequest = withoutSyntheticTool(chatRequest, toolName)
+    val finalCaller = searchChatCaller(
+        app, call, candidate, finalRequest, state, startedAt, traceparent, globalOverrides, headerProfiles,
+    )
+    // 重试时保留前一候选已产生的用量：token 已经消耗，不能因为换候选而丢失。
+    val previousUsage = state.usage
+    var attemptUsage: Usage? = null
+    try {
+        return withTimeout(timeoutMs) {
+            SearchConversation(
+                toolName,
+                webSearch.service,
+                webSearch.maxRounds,
+                webSearchAllowedDomains(requestJson),
+            )
+                .run(messages, caller, followUpCaller, finalCaller, onPart) { roundUsage ->
+                    attemptUsage = addUsage(attemptUsage, roundUsage)
+                    state.usage = addUsage(previousUsage, attemptUsage)
+                }
+                .also { result -> state.usage = addUsage(previousUsage, result.usage) }
+        }
+    } catch (e: TimeoutCancellationException) {
+        throw GatewayException(
+            HttpStatusCode.GatewayTimeout, "upstream_timeout", "上游响应超时", "timeout_error",
+            retryable = true,
+        )
+    } catch (e: GatewayException) {
+        throw e
+    } catch (e: dev.soven.llmgateway.proxy.search.WebSearchException) {
+        throw GatewayException(
+            HttpStatusCode.BadGateway, "upstream_invalid_response",
+            e.message ?: "上游返回了无效响应", "api_error",
+            retryable = true,
+        )
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        throw GatewayException(
+            HttpStatusCode.BadGateway, "web_search_failed",
+            "web_search 代理失败: ${e.message ?: e::class.simpleName}", "api_error",
+            retryable = false,
+        )
+    }
+}
+
+/**
+ * 后续搜索轮次把强制调用降级为 auto，让模型可以在已有结果上直接回答。
+ * 只降级 `required` 和强制合成搜索函数；客户端强制调用自己的函数时保持原样。
+ */
+internal fun withAutoToolChoice(request: JsonObject, syntheticName: String): JsonObject {
+    val choice = request["tool_choice"]
+    val forcedSynthetic = choice is JsonObject &&
+        (((choice["function"] as? JsonObject)?.get("name") as? JsonPrimitive)?.contentOrNull == syntheticName)
+    val required = (choice as? JsonPrimitive)?.contentOrNull == "required"
+    if (!forcedSynthetic && !required) return request
+    return buildJsonObject {
+        request.forEach { (key, value) ->
+            if (key == "tool_choice") put(key, JsonPrimitive("auto")) else put(key, value)
+        }
+    }
+}
+
+/** 收尾调用不再向模型暴露合成搜索工具，并把强制调用该工具的 tool_choice 降级为 auto。 */
+private fun withoutSyntheticTool(request: JsonObject, toolName: String): JsonObject {
+    val tools = (request["tools"] as? JsonArray).orEmpty().filter { raw ->
+        val function = (raw as? JsonObject)?.get("function") as? JsonObject
+        (function?.get("name") as? JsonPrimitive)?.contentOrNull != toolName
+    }
+    val choice = request["tool_choice"]
+    val forcedSynthetic = choice is JsonObject &&
+        (((choice["function"] as? JsonObject)?.get("name") as? JsonPrimitive)?.contentOrNull == toolName)
+    val adjustedChoice = when {
+        forcedSynthetic -> JsonPrimitive("auto")
+        choice is JsonPrimitive && choice.contentOrNull == "required" && tools.isEmpty() -> JsonPrimitive("auto")
+        else -> choice
+    }
+    return buildJsonObject {
+        request.forEach { (key, value) ->
+            when (key) {
+                "tools" -> if (tools.isNotEmpty()) put("tools", JsonArray(tools))
+                "tool_choice" -> if (adjustedChoice != null) put("tool_choice", adjustedChoice)
+                else -> put(key, value)
+            }
+        }
+    }
+}
+
+/** 搜索代理单轮模型响应的字节上限；超出时取消读取，避免上游超大响应耗尽堆内存。 */
+private const val MAX_SEARCH_RESPONSE_BYTES = 8 * 1024 * 1024
+
+private suspend fun readSearchResponseBody(response: HttpResponse): String {
+    val channel = response.bodyAsChannel()
+    val bytes = channel.readRemaining(MAX_SEARCH_RESPONSE_BYTES.toLong() + 1L).readBytes()
+    if (bytes.size > MAX_SEARCH_RESPONSE_BYTES) {
+        channel.cancel()
+        throw GatewayException(
+            HttpStatusCode.BadGateway,
+            "upstream_invalid_response",
+            "上游响应超过 ${MAX_SEARCH_RESPONSE_BYTES / (1024 * 1024)} MB 上限",
+            "api_error",
+            retryable = false,
+        )
+    }
+    return bytes.toString(Charsets.UTF_8)
+}
+
+private suspend fun searchChatCaller(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    candidate: RouteCandidate,
+    baseRequest: JsonObject,
+    state: ProxyState,
+    startedAt: Long,
+    traceparent: String,
+    globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
+): ChatCaller {
+    val upstreamProtocol = GatewayProtocol.CHAT_COMPLETIONS
+    val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel)
+    val credential = decryptCredential(app, candidate)
+    val authType = candidate.channel.authTypeFor(upstreamProtocol)
+    val policy = UpstreamRequestPolicy(
+        globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType, headerProfiles,
+    )
+    return ChatCaller { messages ->
+        val body = buildJsonObject {
+            baseRequest.forEach { (key, value) ->
+                if (key !in setOf("messages", "stream", "stream_options")) put(key, value)
+            }
+            put("messages", JsonArray(messages))
+            put("stream", false)
+        }
+        val requestBody = policy.body(body, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+        state.upstreamCallStarted = true
+        val response = app.httpClient.post(upstreamUrl) {
+            applyUpstreamAuthentication(
+                credential = credential,
+                authType = authType,
+                protocol = upstreamProtocol,
+                anthropicVersion = call.request.headers["anthropic-version"],
+                anthropicBeta = call.request.headers["anthropic-beta"],
+            )
+            header("traceparent", traceparent)
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            policy.applyHeaders(this)
+            setBody(TextContent(requestBody, ContentType.Application.Json))
+        }
+        state.upstreamStatus = response.status.value
+        if (state.attemptFirstTokenMs == null) {
+            state.attemptFirstTokenMs = (System.nanoTime() - startedAt) / 1_000_000
+            state.firstTokenMs = state.attemptFirstTokenMs
+        }
+        candidate.oauthAccount?.let { account ->
+            app.oauthAccountScheduler.noteQuotaHeaders(
+                account,
+                parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
+            )
+        }
+        val text = readSearchResponseBody(response)
+        if (!response.status.isSuccess()) {
+            throw upstreamException(
+                response.status,
+                text,
+                retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
+                upstreamProtocol,
+                allowNativeMessagesError = false,
+            )
+        }
+        val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+            ?: throw GatewayException(
+                HttpStatusCode.BadGateway, "upstream_invalid_response", "上游返回了无效 JSON", "api_error",
+                retryable = true,
+            )
+        state.upstreamReportedModel = extractReportedModel(upstreamProtocol, json)
+        json
+    }
 }
 
 private suspend fun proxyStream(

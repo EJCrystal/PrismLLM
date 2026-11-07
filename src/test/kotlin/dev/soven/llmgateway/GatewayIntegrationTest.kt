@@ -3,6 +3,7 @@ package dev.soven.llmgateway
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.ThrowableProxyUtil
 import ch.qos.logback.core.AppenderBase
+import com.sun.net.httpserver.HttpServer
 import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.config.OAuthConfig
@@ -21,6 +22,7 @@ import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
+import dev.soven.llmgateway.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.oauth.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
@@ -47,6 +49,7 @@ import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
 import dev.soven.llmgateway.report.RetentionPolicy
 import dev.soven.llmgateway.resilience.CooldownPolicy
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
 import io.ktor.client.request.delete
@@ -54,7 +57,9 @@ import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.options
+import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -64,9 +69,12 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.hooks.ResponseBodyReadyForSend
 import io.ktor.server.application.install
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import io.ktor.util.cio.ChannelWriteException
+import io.ktor.utils.io.readUTF8Line
 import org.flywaydb.core.Flyway
 import org.flywaydb.core.api.MigrationVersion
 import kotlinx.coroutines.delay
@@ -100,6 +108,7 @@ import org.slf4j.LoggerFactory
 import org.testcontainers.containers.PostgreSQLContainer
 import java.io.IOException
 import java.math.BigDecimal
+import java.net.InetSocketAddress
 import java.nio.file.Path
 import java.sql.DriverManager
 import java.util.concurrent.atomic.AtomicBoolean
@@ -4767,6 +4776,125 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `responses web search streams search events before the final answer`() = runBlocking {
+        val searchServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        searchServer.createContext("/search") { exchange ->
+            val response =
+                """{"results":[{"title":"Go downloads","url":"https://go.dev/dl/","content":"Go 1.27.1 is the latest release."}]}"""
+            val bytes = response.toByteArray()
+            exchange.responseHeaders.add("Content-Type", "application/json")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        searchServer.start()
+        // 测试宿主会缓冲整个响应体，无法观察增量到达；这里用真实 Netty 宿主和流式客户端验证首事件时间。
+        val server = embeddedServer(Netty, port = 0, host = "127.0.0.1") { app.install(this) }
+        server.start(wait = false)
+        val http = HttpClient(CIO)
+        try {
+            val channel = createChannel("web-search", "web-search")
+            exposeAsModel("fast-chat", channel to "gpt-4o-mini")
+            val key = createClientKey()
+            app.webSearchSettingsRepository.save(
+                WebSearchSettingsRecord(
+                    enabled = true,
+                    provider = "tavily",
+                    apiKey = "tvly-test",
+                    baseUrl = "http://127.0.0.1:${searchServer.address.port}",
+                    maxResults = 3,
+                    timeoutMs = 2_000,
+                    maxRounds = 2,
+                    maxPageChars = 2_000,
+                    updatedAt = 0,
+                ),
+            )
+            val port = server.engine.resolvedConnectors().first().port
+
+            http.preparePost("http://127.0.0.1:$port/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"model":"fast-chat","stream":true,"input":"latest go?","tools":[{"type":"web_search"}]}""",
+                )
+            }.execute { response ->
+                assertEquals(HttpStatusCode.OK, response.status)
+                val body = response.bodyAsChannel()
+                val events = mutableListOf<String>()
+                val raw = mutableListOf<String>()
+                val started = System.currentTimeMillis()
+                var searchAt = -1L
+                var textAt = -1L
+                while (true) {
+                    val line = body.readUTF8Line() ?: break
+                    raw += line
+                    if (!line.startsWith("event: ")) continue
+                    val event = line.removePrefix("event: ")
+                    val elapsed = System.currentTimeMillis() - started
+                    when (event) {
+                        "response.web_search_call.completed" -> searchAt = elapsed
+                        "response.output_text.delta" -> if (textAt < 0) textAt = elapsed
+                    }
+                    events += event
+                }
+
+                assertEquals("response.created", events.first())
+                assertTrue(events.contains("response.web_search_call.completed"), "RAW=${raw.joinToString("\n")}")
+                assertTrue(events.contains("response.completed"), "RAW=${raw.joinToString("\n")}")
+                // 最终回答延迟 1 秒返回：搜索事件必须在那之前到达，而不是等回答完成后一起回放。
+                assertTrue(searchAt >= 0, "searchAt=${searchAt}ms")
+                assertTrue(textAt - searchAt >= 500, "searchAt=${searchAt}ms textAt=${textAt}ms")
+            }
+        } finally {
+            http.close()
+            server.stop(0, 1_000)
+            searchServer.stop(0)
+        }
+    }
+
+    @Test
+    fun `search proxy rejects an oversized model response`() = runBlocking {
+        assertOversizedSearchResponseRejected("oversized-search-response")
+    }
+
+    @Test
+    fun `search proxy rejects an oversized model error response`() = runBlocking {
+        assertOversizedSearchResponseRejected("oversized-search-error")
+    }
+
+    private suspend fun assertOversizedSearchResponseRejected(scenario: String) {
+        app.webSearchSettingsRepository.save(
+            WebSearchSettingsRecord(
+                enabled = true,
+                provider = "tavily",
+                apiKey = "tvly-test",
+                baseUrl = "http://127.0.0.1:1",
+                maxResults = 3,
+                timeoutMs = 2_000,
+                maxRounds = 2,
+                maxPageChars = 2_000,
+                updatedAt = 0,
+            ),
+        )
+        val channel = createChannel(scenario, scenario)
+        exposeAsModel(scenario, channel to "gpt-4o-mini")
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"$scenario","stream":false,"input":"hi","tools":[{"type":"web_search"}]}""")
+            }
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.BadGateway, response.status, body)
+            assertTrue(body.contains("upstream_invalid_response"), "BODY=[$body]")
+            assertTrue(body.contains("上限"), "BODY=[$body]")
+        }
+    }
+
+    @Test
     fun `protocol authentication overrides apply per outbound protocol and legacy auth remains fallback`() = runBlocking {
         val channel = app.channelRepository.create(
             name = "protocol-auth-overrides",
@@ -5531,6 +5659,79 @@ class GatewayIntegrationTest {
             assertTrue(body.contains("\"MAX_ATTEMPTS\""), "BODY=[$body]")
             assertFalse(body.contains("test-password"), "BODY=[$body]")
             assertFalse(body.contains("GATEWAY_MASTER_KEY"), "BODY=[$body]")
+        }
+    }
+
+    @Test
+    fun `admin web search settings round trip without exposing the api key`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+
+            val unauthorized = client.get("/admin/api/web-search-settings")
+            assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
+
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val initial = client.get("/admin/api/web-search-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, initial.status)
+            assertEquals(
+                "environment",
+                Json.parseToJsonElement(initial.bodyAsText()).jsonObject["source"]?.jsonPrimitive?.content,
+            )
+
+            val updated = client.put("/admin/api/web-search-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"provider":"tavily","apiKey":"tvly-secret","baseUrl":null,"maxResults":8,"timeoutMs":10000,"maxRounds":4,"maxPageChars":1200}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, updated.status)
+            val body = updated.bodyAsText()
+            val json = Json.parseToJsonElement(body).jsonObject
+            assertEquals(true, json["enabled"]?.jsonPrimitive?.boolean)
+            assertEquals("settings", json["source"]?.jsonPrimitive?.content)
+            assertEquals("settings", json["apiKeySource"]?.jsonPrimitive?.content)
+            assertEquals(true, json["apiKeySet"]?.jsonPrimitive?.boolean)
+            assertEquals(8, json["maxResults"]?.jsonPrimitive?.int)
+            assertEquals(1200, json["maxPageChars"]?.jsonPrimitive?.int)
+            assertFalse(body.contains("tvly-secret"), "BODY=[$body]")
+
+            // 切换后端时不能沿用旧后端的密钥。
+            val switched = client.put("/admin/api/web-search-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"provider":"brave","baseUrl":null,"maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, switched.status)
+
+            // 地址长度在保存前校验，避免数据库列宽错误变成 500。
+            val tooLong = client.put("/admin/api/web-search-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"provider":"tavily","apiKey":"tvly-secret","baseUrl":"https://example.com/${"a".repeat(500)}","maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, tooLong.status)
+
+            // 共享测试数据库：把开关恢复为关闭，避免影响其它用例。
+            val disabled = client.put("/admin/api/web-search-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":false,"provider":"tavily","baseUrl":null,"maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, disabled.status)
         }
     }
 
@@ -6831,7 +7032,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("54", result.getString(1))
+                        assertEquals("55", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -9694,7 +9895,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table cooldown_state, admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users restart identity cascade",
+                    "truncate table cooldown_state, admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users, web_search_settings restart identity cascade",
                 )
             }
         }

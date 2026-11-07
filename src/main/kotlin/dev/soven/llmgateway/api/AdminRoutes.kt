@@ -11,6 +11,8 @@ import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
 import dev.soven.llmgateway.domain.effectiveAuthType
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.domain.WebSearchSettingsRecord
+import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.proxy.validateUpstreamRequestOverrides
 import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
@@ -206,6 +208,48 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             call.response.headers.append("Cache-Control", "no-store")
             call.respond(buildSystemConfigResponse(app.config))
+        }
+
+        get("/web-search-settings") {
+            call.requireAdmin(app)
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(webSearchSettingsResponse(app.webSearchSettingsRepository.load(), app.config.webSearch))
+        }
+
+        put("/web-search-settings") {
+            call.requireAdmin(app)
+            val request = call.receive<WebSearchSettingsRequest>()
+            val stored = app.webSearchSettingsRepository.load()
+            val provider = request.provider.trim().lowercase()
+            // 切换后端时不能沿用旧后端的密钥，否则会把旧密钥发给新供应商。
+            val sameProvider = stored != null && stored.provider.equals(provider, ignoreCase = true)
+            val record = WebSearchSettingsRecord(
+                enabled = request.enabled,
+                provider = provider,
+                apiKey = when {
+                    request.clearApiKey -> null
+                    !request.apiKey.isNullOrBlank() -> request.apiKey.trim()
+                    sameProvider -> stored?.apiKey
+                    else -> null
+                },
+                baseUrl = request.baseUrl?.trim()?.takeIf { it.isNotEmpty() },
+                maxResults = request.maxResults,
+                timeoutMs = request.timeoutMs,
+                maxRounds = request.maxRounds,
+                maxPageChars = request.maxPageChars,
+                updatedAt = 0,
+            )
+            webSearchSettingsError(record.effective(app.config.webSearch))?.let {
+                throw badRequest("invalid_web_search_settings", it)
+            }
+            // 留空且未勾选清除时保留原密文：无法解密的密钥也要等管理员明确替换或清除才丢弃。
+            val preserveApiKey = !request.clearApiKey &&
+                request.apiKey.isNullOrBlank() &&
+                sameProvider &&
+                stored?.apiKeyUnreadable == true
+            app.webSearchSettingsRepository.save(record, preserveApiKey)
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(webSearchSettingsResponse(app.webSearchSettingsRepository.load(), app.config.webSearch))
         }
 
         post("/model-suggestions") {
