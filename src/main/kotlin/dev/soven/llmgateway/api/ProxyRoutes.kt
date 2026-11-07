@@ -1266,7 +1266,7 @@ private suspend fun runSearchConversation(
     )
     // 第一轮之后不再强制调用工具，避免 tool_choice=required 让每一轮都被迫搜索。
     val followUpCaller = searchChatCaller(
-        app, call, candidate, withAutoToolChoice(chatRequest), state, startedAt, traceparent, globalOverrides, headerProfiles,
+        app, call, candidate, withAutoToolChoice(chatRequest, toolName), state, startedAt, traceparent, globalOverrides, headerProfiles,
     )
     val finalRequest = withoutSyntheticTool(chatRequest, toolName)
     val finalCaller = searchChatCaller(
@@ -1308,10 +1308,16 @@ private suspend fun runSearchConversation(
     }
 }
 
-/** 后续搜索轮次把 tool_choice=required 降级为 auto，让模型可以在已有结果上直接回答。 */
-internal fun withAutoToolChoice(request: JsonObject): JsonObject {
-    val choice = request["tool_choice"] as? JsonPrimitive
-    if (choice?.contentOrNull != "required") return request
+/**
+ * 后续搜索轮次把强制调用降级为 auto，让模型可以在已有结果上直接回答。
+ * 只降级 `required` 和强制合成搜索函数；客户端强制调用自己的函数时保持原样。
+ */
+internal fun withAutoToolChoice(request: JsonObject, syntheticName: String): JsonObject {
+    val choice = request["tool_choice"]
+    val forcedSynthetic = choice is JsonObject &&
+        (((choice["function"] as? JsonObject)?.get("name") as? JsonPrimitive)?.contentOrNull == syntheticName)
+    val required = (choice as? JsonPrimitive)?.contentOrNull == "required"
+    if (!forcedSynthetic && !required) return request
     return buildJsonObject {
         request.forEach { (key, value) ->
             if (key == "tool_choice") put(key, JsonPrimitive("auto")) else put(key, value)

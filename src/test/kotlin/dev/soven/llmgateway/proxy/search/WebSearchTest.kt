@@ -4,8 +4,10 @@ import com.sun.net.httpserver.HttpServer
 import dev.soven.llmgateway.config.WebSearchConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
 import kotlin.test.assertEquals
@@ -82,6 +84,27 @@ class WebSearchTest {
         )
 
         assertEquals("https://go.dev/dl/", service.search("latest go").hits.single().url)
+    }
+
+    @Test
+    fun `outer cancellation is not turned into a backend failure`() = runBlocking {
+        val service = WebSearchService(
+            listOf(
+                FakeBackend("slow") {
+                    delay(5_000)
+                    SearchOutput("", emptyList())
+                },
+                FakeBackend("fast") {
+                    SearchOutput("", listOf(SearchHit("Go", "https://go.dev/dl/", "Go")))
+                },
+            ),
+            timeoutMs = 10_000,
+        )
+
+        assertFailsWith<TimeoutCancellationException> {
+            withTimeout(100) { service.search("latest go") }
+        }
+        Unit
     }
 
     @Test

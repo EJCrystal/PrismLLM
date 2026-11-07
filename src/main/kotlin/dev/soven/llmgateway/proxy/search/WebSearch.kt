@@ -18,8 +18,8 @@ import io.ktor.http.isSuccess
 import io.ktor.utils.io.cancel
 import io.ktor.utils.io.core.readBytes
 import io.ktor.utils.io.readRemaining
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -67,17 +67,22 @@ class WebSearchService(
         require(trimmed.isNotEmpty()) { "搜索词不能为空" }
         var last: Throwable? = null
         for (backend in backends) {
-            try {
-                val output = withTimeout(timeoutMs) { backend.search(trimmed, maxResults) }
-                if (output.hits.isNotEmpty()) return output
-                last = WebSearchException("${backend.name} found nothing")
-            } catch (e: TimeoutCancellationException) {
-                // 单个后端超时是普通失败，继续尝试下一个；外层取消仍会在下面的分支重新抛出。
-                last = e
+            // withTimeoutOrNull 只在自身超时返回 null；外层请求的总超时取消会继续抛出，
+            // 不能被当成后端失败吞掉，否则超时会变成 502 而不是 504。
+            val output = try {
+                withTimeoutOrNull(timeoutMs) { backend.search(trimmed, maxResults) }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
                 last = e
+                continue
             }
+            if (output == null) {
+                last = WebSearchException("${backend.name} timed out")
+                continue
+            }
+            if (output.hits.isNotEmpty()) return output
+            last = WebSearchException("${backend.name} found nothing")
         }
         throw WebSearchException("web search failed: ${last?.message ?: "no search backend"}")
     }

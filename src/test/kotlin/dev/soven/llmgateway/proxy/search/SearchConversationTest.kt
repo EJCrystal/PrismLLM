@@ -193,6 +193,31 @@ class SearchConversationTest {
     }
 
     @Test
+    fun `forced built-in web search becomes a forced synthetic function call`() {
+        val request = obj(
+            """{"model":"m","input":[{"type":"message","role":"user","content":"hi"}],"tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search_preview"}}""",
+        )
+
+        val prepared = prepareResponsesSearchRequest(request, "web_search")
+        val choice = prepared["tool_choice"]!!.jsonObject
+        assertEquals("function", choice["type"]!!.toString().trim('"'))
+        assertEquals("web_search", choice["name"]!!.toString().trim('"'))
+
+        val chat = responsesToChatRequest(prepared)
+        val chatChoice = chat["tool_choice"]!!.jsonObject
+        assertEquals("web_search", chatChoice["function"]!!.jsonObject["name"]!!.toString().trim('"'))
+    }
+
+    @Test
+    fun `absent tool choice stays absent so the model decides when to search`() {
+        val request = obj(
+            """{"model":"m","input":[{"type":"message","role":"user","content":"hi"}],"tools":[{"type":"web_search"}]}""",
+        )
+
+        assertEquals(null, prepareResponsesSearchRequest(request, "web_search")["tool_choice"])
+    }
+
+    @Test
     fun `renames the synthetic tool when the client already uses the name`() {
         val request = obj(
             """{"model":"m","tools":[{"type":"function","name":"web_search","parameters":{"type":"object"}}]}""",

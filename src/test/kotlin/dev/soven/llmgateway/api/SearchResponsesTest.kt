@@ -46,11 +46,25 @@ class SearchResponsesTest {
     @Test
     fun `follow-up rounds downgrade a required tool choice`() {
         val required = Json.parseToJsonElement("""{"model":"m","tool_choice":"required"}""").jsonObject
-        assertEquals("auto", withAutoToolChoice(required)["tool_choice"]!!.jsonPrimitive.content)
+        assertEquals("auto", withAutoToolChoice(required, "web_search")["tool_choice"]!!.jsonPrimitive.content)
 
         val auto = Json.parseToJsonElement("""{"model":"m","tool_choice":"auto"}""").jsonObject
-        assertEquals("auto", withAutoToolChoice(auto)["tool_choice"]!!.jsonPrimitive.content)
-        assertNull(withAutoToolChoice(Json.parseToJsonElement("""{"model":"m"}""").jsonObject)["tool_choice"])
+        assertEquals("auto", withAutoToolChoice(auto, "web_search")["tool_choice"]!!.jsonPrimitive.content)
+        assertNull(withAutoToolChoice(Json.parseToJsonElement("""{"model":"m"}""").jsonObject, "web_search")["tool_choice"])
+    }
+
+    @Test
+    fun `follow-up rounds only downgrade the forced synthetic search tool`() {
+        val forcedSearch = Json.parseToJsonElement(
+            """{"model":"m","tool_choice":{"type":"function","function":{"name":"web_search"}}}""",
+        ).jsonObject
+        assertEquals("auto", withAutoToolChoice(forcedSearch, "web_search")["tool_choice"]!!.jsonPrimitive.content)
+
+        val forcedClientTool = Json.parseToJsonElement(
+            """{"model":"m","tool_choice":{"type":"function","function":{"name":"read_file"}}}""",
+        ).jsonObject
+        val kept = withAutoToolChoice(forcedClientTool, "web_search")["tool_choice"]!!.jsonObject
+        assertEquals("read_file", kept["function"]!!.jsonObject["name"]!!.jsonPrimitive.content)
     }
 
     @Test
