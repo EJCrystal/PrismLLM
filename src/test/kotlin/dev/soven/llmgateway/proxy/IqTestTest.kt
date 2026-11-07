@@ -130,6 +130,29 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy honors later visibility declarations`() {
+        val inlineVisible = """<html><body><p style="display:none;display:block">答案是 21 颗。</p></body></html>"""
+        val inlineHiddenImportant =
+            """<html><body><p style="display:none!important;display:block">答案是 21 颗。</p></body></html>"""
+        val inlineVisibleImportant =
+            """<html><body><p style="display:none;display:block!important">答案是 21 颗。</p></body></html>"""
+        val ruleVisible = """
+            <html><head><style>.ghost{display:none}.ghost{display:block}</style></head>
+            <body><p class="ghost">答案是 21 颗。</p></body></html>
+        """.trimIndent()
+        val ruleHiddenImportant = """
+            <html><head><style>.ghost{display:none!important}.ghost{display:block}</style></head>
+            <body><p class="ghost">答案是 21 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, inlineVisible).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inlineHiddenImportant).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, inlineVisibleImportant).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, ruleVisible).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, ruleHiddenImportant).verdict)
+    }
+
+    @Test
     fun `candy decodes numeric character references`() {
         val decimal = """<html><body><p>答案是 &#50;&#49; 颗。</p></body></html>"""
         val hex = """<html><body><p>答案是 &#x32;&#x31; 颗。</p></body></html>"""

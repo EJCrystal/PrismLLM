@@ -127,7 +127,8 @@ internal object SvgRenderSupport {
     private val EXTERNAL_REFERENCE_ELEMENTS = setOf("image", "use")
 
     fun sanitizeCss(css: String): String = css
-        .replace(Regex("(?is)</style"), "")
+        // CSS 转义后的 `<` 仍然表示字符本身，但不可能再拼出 </style> 逃逸样式元素。
+        .replace("<", "\\3C ")
         .replace(cssImport, "")
         .replace(externalCssUrl, "none")
         .replace(scriptCssUrl, "none")

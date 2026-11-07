@@ -92,6 +92,16 @@ class SvgRenderSupportTest {
     }
 
     @Test
+    fun `css cannot close the style element`() {
+        val css = "</sty</stylele><meta http-equiv=\"refresh\" content=\"0;url=http://127.0.0.1:8080/private\">"
+
+        val cleaned = SvgRenderSupport.sanitizeCss(css)
+
+        assertFalse(cleaned.contains("</style", ignoreCase = true), cleaned)
+        assertFalse(cleaned.contains("<meta", ignoreCase = true), cleaned)
+    }
+
+    @Test
     fun `strips css imports and external urls`() {
         val css = """
             @import url("file:///etc/passwd");
