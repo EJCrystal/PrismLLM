@@ -4,6 +4,9 @@ import com.google.re2j.Pattern
 import com.google.re2j.PatternSyntaxException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.security.MessageDigest
 
 /**
  * 一次实际上游尝试的结果。只携带规则匹配需要的原始信号，不含请求正文或凭据。
@@ -170,12 +173,56 @@ data class KeyDisableRule(
 /** 命中的模式；规则只按状态码命中时为 null。 */
 internal data class KeyRuleMatch(val matchedPattern: String?)
 
+/** 渠道自动禁用策略的三种形态，对应管理台的三选一。 */
+enum class ChannelKeyDisableMode(val value: String) {
+    /** 未配置覆盖：完全使用全局设置。 */
+    INHERIT("inherit"),
+
+    /** 渠道自带规则在前，未命中时回落到全局规则。 */
+    CUSTOM("custom"),
+
+    /** 本渠道不执行任何自动禁用，渠道规则和全局规则都不生效。 */
+    DISABLED("disabled"),
+    ;
+
+    companion object {
+        fun of(override: KeyDisablePolicy?): ChannelKeyDisableMode = when {
+            override == null -> INHERIT
+            override.enabled -> CUSTOM
+            else -> DISABLED
+        }
+    }
+}
+
 /**
- * 一次记账实际生效的策略。全局设置与渠道覆盖是整表替换关系：渠道配置了策略就完全使用
- * 渠道的规则列表，不再与全局规则合并或按 id 覆盖，避免“首条命中即停止”的语义被两套列表打乱。
+ * 渠道覆盖与全局设置的组合方式：
  *
- * [scope] 与 [revision] 一起构成计数归属：作用域切换（继承 ↔ 覆盖）或策略版本变化都会让旧计数失效，
- * 否则切换前累计的失败会被新规则误用。
+ * - 没有覆盖时完全继承全局；
+ * - 覆盖关闭自动禁用时，本渠道的渠道规则和全局规则都不执行；
+ * - 覆盖启用时，渠道规则排在前面、全局规则排在后面，仍是「首条命中即止」：
+ *   渠道规则命中就只按它计数，即使尚未达到阈值也不会再落到全局规则，否则一次失败会被两套规则各记一次。
+ *
+ * 与渠道规则同 id 的全局规则不再参与兜底，等价于「渠道版本覆盖全局版本」：管理员可以在渠道里
+ * 收紧某条全局规则的阈值而不必另起名字，V57 搬迁过来的整份规则副本也照常可用。
+ * 代价是渠道里一条更宽的规则可能遮蔽全局里更精确的规则，这一点需要在管理台提示。
+ * 全局自动禁用已关闭时不再兜底它的规则，否则「关掉全局」对渠道仍然生效，与直觉相反。
+ */
+fun KeyDisablePolicy.fallbackTo(global: KeyDisablePolicy): KeyDisablePolicy {
+    if (!enabled || !global.enabled) return this
+    val ownIds = rules.mapTo(HashSet(rules.size)) { it.id }
+    return KeyDisablePolicy(
+        enabled = true,
+        rules = rules + global.rules.filterNot { it.id in ownIds },
+    )
+}
+
+/**
+ * 一次记账实际生效的策略。[policy] 已经是合并后的结果：渠道覆盖只提供自己的规则，
+ * 全局规则作为未命中时的兜底。
+ *
+ * 计数归属使用 [fingerprint] 而不是 [revision]：渠道覆盖叠加全局兜底后，有效策略可能因为
+ * 全局设置变化而改变，单看渠道版本号会漏掉这种情况，导致用旧规则累计的失败去触发新规则。
+ * 指纹覆盖作用域与完整规则内容，任一构成变化都会让旧计数失效。
  *
  * @author 文杰
  * @since 2026-11-07
@@ -185,6 +232,9 @@ data class ResolvedKeyDisablePolicy(
     val revision: Long,
     val policy: KeyDisablePolicy,
 ) {
+    /** 有效策略的稳定摘要；只有内容完全一致时才能继续沿用已累计的失败计数。 */
+    val fingerprint: Long by lazy { policyFingerprint(scope, policy) }
+
     companion object {
         /** 全局设置对应的计数作用域。 */
         const val GLOBAL_SCOPE: String = "global"
@@ -193,6 +243,20 @@ data class ResolvedKeyDisablePolicy(
     }
 }
 
+/**
+ * 计算计数归属指纹。SHA-256 截断到 63 位，避免落到负数；随机化哈希（如 String.hashCode 之外的
+ * 实现）不可用，这个值直接写库，必须跨进程稳定。
+ */
+private fun policyFingerprint(scope: String, policy: KeyDisablePolicy): Long {
+    val digest = MessageDigest.getInstance("SHA-256")
+        .digest("$scope\u0000${keyDisableFingerprintJson.encodeToString(policy)}".toByteArray(Charsets.UTF_8))
+    var value = 0L
+    for (index in 0 until 8) value = (value shl 8) or (digest[index].toLong() and 0xFF)
+    return value and Long.MAX_VALUE
+}
+
+private val keyDisableFingerprintJson = Json { encodeDefaults = true }
+
 /** 单条规则的失败时间戳。连续与窗口计数共用，差别只在成功是否清零。 */
 @Serializable
 data class KeyRuleCounter(val timestamps: List<Long> = emptyList())
@@ -200,6 +264,18 @@ data class KeyRuleCounter(val timestamps: List<Long> = emptyList())
 /** 按规则 id 保存的失败计数；规则删除或修改后对应计数会被丢弃。 */
 @Serializable
 data class KeyHealthState(val counters: Map<String, KeyRuleCounter> = emptyMap())
+
+/** 渠道覆盖策略的持久化编码；渠道列表与自动禁用仓库共用同一份规则格式。 */
+object ChannelKeyDisablePolicyCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(policy: KeyDisablePolicy): String = json.encodeToString(policy)
+
+    /** 空串或无法解析的内容按「未配置覆盖」处理，坏数据不能让渠道静默停用密钥。 */
+    fun decode(value: String?): KeyDisablePolicy? = value
+        ?.takeIf { it.isNotBlank() }
+        ?.let { runCatching { json.decodeFromString<KeyDisablePolicy>(it) }.getOrNull() }
+}
 
 /** 达到阈值时返回的停用决定。 */
 data class KeyDisableDecision(
@@ -268,7 +344,8 @@ data class KeyDisablePolicy(
     val rules: List<KeyDisableRule> = DEFAULT_RULES,
 ) {
     init {
-        require(rules.isNotEmpty()) { "至少需要一条自动禁用规则" }
+        // 关闭自动禁用时不需要规则：渠道可以只表达「本渠道不执行自动禁用」，不必留一条无意义的占位规则。
+        require(rules.isNotEmpty() || !enabled) { "启用自动禁用时至少需要一条规则" }
         require(rules.size <= MAX_RULES) { "最多配置 $MAX_RULES 条自动禁用规则" }
         require(rules.map { it.id }.toSet().size == rules.size) { "规则 id 不能重复" }
     }

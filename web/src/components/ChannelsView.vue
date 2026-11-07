@@ -1229,11 +1229,16 @@ async function remove(channel: Channel): Promise<void> {
 }
 
 function channelActionItems(channel: Channel) {
+  const disableMode = channel.keyDisableMode ?? (channel.keyDisablePolicySet ? 'custom' : 'inherit')
   return [
     { id: 'prices', label: '配置模型单价', icon: 'price' },
     {
       id: 'disable-policy',
-      label: channel.keyDisablePolicySet ? '密钥自动禁用（已自定义）' : '密钥自动禁用（继承全局）',
+      label: {
+        inherit: '密钥自动禁用（继承全局）',
+        custom: '密钥自动禁用（已自定义，未命中回落全局）',
+        disabled: '密钥自动禁用（已关闭）',
+      }[disableMode],
       icon: 'shield',
     },
     { id: 'delete', label: '删除渠道', icon: 'trash', danger: true },

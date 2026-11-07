@@ -45,6 +45,7 @@ import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.OAuthAccountCredentialUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableSettingsAuditContext
+import dev.soven.llmgateway.resilience.ChannelKeyDisableMode
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.resilience.KeyDisablePolicy
 import dev.soven.llmgateway.resilience.toKeyDisablePolicy
@@ -445,9 +446,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(
                 ChannelKeyDisablePolicyResponse(
                     channelId = id,
-                    scope = effective.scope,
-                    revision = effective.revision,
+                    mode = ChannelKeyDisableMode.of(override).value,
                     override = override,
+                    globalPolicy = app.keyAutoDisableRepository.loadSettings().policy,
                     effective = effective.policy,
                 ),
             )
@@ -476,9 +477,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(
                 ChannelKeyDisablePolicyResponse(
                     channelId = id,
-                    scope = change.after.scope,
-                    revision = change.after.revision,
+                    mode = ChannelKeyDisableMode.of(change.override).value,
                     override = change.override,
+                    globalPolicy = app.keyAutoDisableRepository.loadSettings().policy,
                     effective = change.after.policy,
                 ),
             )

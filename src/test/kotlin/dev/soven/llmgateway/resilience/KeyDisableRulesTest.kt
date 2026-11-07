@@ -217,6 +217,141 @@ class KeyDisableRulesTest {
     }
 
     @Test
+    fun `disabled policy needs no rules because nothing runs`() {
+        val policy = KeyDisablePolicy(enabled = false, rules = emptyList())
+        assertNull(policy.record(KeyHealthState(), response(401), now).decision)
+        // 只有关闭时允许空规则；启用状态空规则等于静默失效，构造时就拒绝。
+        assertFailsWith<IllegalArgumentException> { KeyDisablePolicy(enabled = true, rules = emptyList()) }
+    }
+
+    @Test
+    fun `channel rules run first and fall back to global rules on a miss`() {
+        val channelRule = rule(id = "activity_disabled", statusCodes = listOf(403), bodyPatterns = listOf("ACTIVITY_DISABLED"), threshold = 1)
+        val globalRule = rule(id = "credential_invalid", statusCodes = listOf(401), threshold = 1)
+        val merged = KeyDisablePolicy(rules = listOf(channelRule)).fallbackTo(KeyDisablePolicy(rules = listOf(globalRule)))
+
+        assertEquals(listOf("activity_disabled", "credential_invalid"), merged.rules.map { it.id })
+        assertEquals(
+            "activity_disabled",
+            assertNotNull(merged.record(KeyHealthState(), response(403, "ACTIVITY_DISABLED"), now).decision).ruleId,
+        )
+        // 渠道规则未命中（状态码不匹配）时回落全局规则。
+        assertEquals(
+            "credential_invalid",
+            assertNotNull(merged.record(KeyHealthState(), response(401, ""), now).decision).ruleId,
+        )
+    }
+
+    @Test
+    fun `a channel rule that matches consumes the signal even below its threshold`() {
+        // 合并后仍是首条命中即止：渠道规则命中但未达阈值时不能继续落到全局规则，
+        // 否则同一次失败会被两套规则各记一次。
+        val channelRule = rule(id = "channel_soft", statusCodes = listOf(401), threshold = 5)
+        val globalRule = rule(id = "global_hard", statusCodes = listOf(401), threshold = 1)
+        val merged = KeyDisablePolicy(rules = listOf(channelRule)).fallbackTo(KeyDisablePolicy(rules = listOf(globalRule)))
+
+        val update = merged.record(KeyHealthState(), response(401), now)
+        assertNull(update.decision)
+        assertEquals(setOf("channel_soft"), update.state.counters.keys)
+    }
+
+    @Test
+    fun `same id global rules are replaced by the channel version`() {
+        val channelRule = rule(id = "shared", statusCodes = listOf(403), threshold = 2)
+        val globalRule = rule(id = "shared", statusCodes = listOf(401), threshold = 1)
+        val merged = KeyDisablePolicy(rules = listOf(channelRule)).fallbackTo(KeyDisablePolicy(rules = listOf(globalRule)))
+        assertEquals(listOf("shared"), merged.rules.map { it.id })
+        // 只保留渠道版本：401 不再匹配，403 按渠道阈值 2 计数。
+        assertNull(merged.record(KeyHealthState(), response(401), now).decision)
+        val first = merged.record(KeyHealthState(), response(403), now)
+        assertNull(first.decision)
+        assertNotNull(merged.record(first.state, response(403), now + 1).decision)
+    }
+
+    @Test
+    fun `a disabled channel override suppresses the global rules too`() {
+        val disabled = KeyDisablePolicy(enabled = false, rules = emptyList())
+        val merged = disabled.fallbackTo(KeyDisablePolicy(rules = listOf(rule(id = "global", threshold = 1))))
+        assertFalse(merged.enabled)
+        assertTrue(merged.rules.isEmpty())
+        assertNull(merged.record(KeyHealthState(), response(401), now).decision)
+    }
+
+    @Test
+    fun `a channel override does not resurrect rules when global auto disable is off`() {
+        val channel = KeyDisablePolicy(rules = listOf(rule(id = "channel", threshold = 1)))
+        val merged = channel.fallbackTo(KeyDisablePolicy(enabled = false, rules = listOf(rule(id = "global", threshold = 1))))
+        assertEquals(listOf("channel"), merged.rules.map { it.id })
+    }
+
+    @Test
+    fun `channel mode maps the three persisted shapes`() {
+        assertEquals(ChannelKeyDisableMode.INHERIT, ChannelKeyDisableMode.of(null))
+        assertEquals(ChannelKeyDisableMode.CUSTOM, ChannelKeyDisableMode.of(KeyDisablePolicy(rules = listOf(rule()))))
+        assertEquals(
+            ChannelKeyDisableMode.DISABLED,
+            ChannelKeyDisableMode.of(KeyDisablePolicy(enabled = false, rules = emptyList())),
+        )
+        assertEquals("inherit", ChannelKeyDisableMode.INHERIT.value)
+        assertEquals("custom", ChannelKeyDisableMode.CUSTOM.value)
+        assertEquals("disabled", ChannelKeyDisableMode.DISABLED.value)
+    }
+
+    @Test
+    fun `fingerprint changes with scope or effective rules and is stable otherwise`() {
+        val ruleA = rule(id = "a", threshold = 1)
+        val base = ResolvedKeyDisablePolicy("global", 1, KeyDisablePolicy(rules = listOf(ruleA)))
+        val same = ResolvedKeyDisablePolicy("global", 7, KeyDisablePolicy(rules = listOf(ruleA)))
+        val otherScope = ResolvedKeyDisablePolicy("channel:c1", 1, KeyDisablePolicy(rules = listOf(ruleA)))
+        val otherRule = ResolvedKeyDisablePolicy("global", 1, KeyDisablePolicy(rules = listOf(ruleA.copy(name = "改名"))))
+
+        // 版本号变化但内容相同：计数仍然有效。
+        assertEquals(base.fingerprint, same.fingerprint)
+        // 作用域或内容变化必须换指纹，否则旧计数会触发新规则。
+        assertTrue(base.fingerprint != otherScope.fingerprint)
+        assertTrue(base.fingerprint != otherRule.fingerprint)
+        assertTrue(base.fingerprint >= 0)
+    }
+
+    @Test
+    fun `channel override codec round trips and treats garbage as no override`() {
+        val policy = KeyDisablePolicy(rules = listOf(rule(id = "activity_disabled", statusCodes = listOf(403), threshold = 1)))
+        assertEquals(policy, ChannelKeyDisablePolicyCodec.decode(ChannelKeyDisablePolicyCodec.encode(policy)))
+        assertNull(ChannelKeyDisablePolicyCodec.decode(null))
+        assertNull(ChannelKeyDisablePolicyCodec.decode(""))
+        assertNull(ChannelKeyDisablePolicyCodec.decode("  "))
+        assertNull(ChannelKeyDisablePolicyCodec.decode("{not json"))
+        // 关闭形态的空规则列表必须能重新读出来，否则重启就变成继承全局。
+        val disabled = KeyDisablePolicy(enabled = false, rules = emptyList())
+        assertEquals(disabled, ChannelKeyDisablePolicyCodec.decode(ChannelKeyDisablePolicyCodec.encode(disabled)))
+    }
+
+    @Test
+    fun `default rules keep ADR 0012 neutral status codes and permanent balance`() {
+        val policy = KeyDisablePolicy()
+        // 400/404/422 是调用方请求问题：不计入任何规则，也不打断连续计数。
+        // credential_invalid 是连续计数、阈值 2：一次 401 后未被中性响应打断，才该在第二次 401 触发。
+        var state = policy.record(KeyHealthState(), response(401, "invalid_api_key"), now).state
+        assertEquals(1, state.counters.getValue("credential_invalid").timestamps.size)
+        for (code in listOf(400, 404, 422)) {
+            val update = policy.record(state, response(code, "invalid_api_key"), now + code)
+            assertEquals(1, update.state.counters.getValue("credential_invalid").timestamps.size, "HTTP $code 不应清掉连续计数")
+            assertNull(update.decision)
+            state = update.state
+        }
+        assertEquals(
+            "credential_invalid",
+            assertNotNull(policy.record(state, response(401, "invalid_api_key"), now + 1_000).decision).ruleId,
+        )
+        // 余额不足是终态：第一次命中就永久停用，不能配成临时停用。
+        val balance = assertNotNull(
+            policy.record(KeyHealthState(), response(402, "INSUFFICIENT_BALANCE"), now).decision,
+        )
+        assertEquals("insufficient_balance", balance.ruleId)
+        assertEquals(KeyDisableAction.PERMANENT, balance.action)
+    }
+
+    @Test
     fun `removed rules drop their counters`() {
         // 窗口规则的成功不清零，因此这里只剩「已下线规则的计数被丢弃」这一个变量。
         val policy = KeyDisablePolicy(rules = listOf(rule(id = "current", threshold = 5, streak = false)))

@@ -10,10 +10,12 @@ const props = defineProps<{
   rules: KeyDisableRuleDraft[]
   enabled: boolean
   saving: boolean
+  /** 自动生成的 id 需要避开的规则 id（渠道编辑器传入全局规则 id）。 */
+  reservedIds?: string[]
 }>()
 
 function addRule() {
-  props.rules.push(newKeyDisableRule(props.rules))
+  props.rules.push(newKeyDisableRule(props.rules, props.reservedIds))
 }
 
 function removeRule(index: number) {

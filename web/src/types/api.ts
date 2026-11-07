@@ -137,6 +137,8 @@ export interface Channel {
   provider?: string | null
   /** 是否配置了渠道级密钥自动禁用策略；false 表示继承全局设置。 */
   keyDisablePolicySet?: boolean
+  /** 渠道策略形态：inherit（继承）、custom（自定义，未命中回落全局）、disabled（关闭）。 */
+  keyDisableMode?: ChannelKeyDisableMode
 }
 
 export interface ChannelQuotaSettings {
@@ -252,12 +254,21 @@ export interface KeyAutoDisableSettingsRequest {
   rules: KeyDisableRule[]
 }
 
+/**
+ * 渠道策略形态：
+ * - inherit：未配置覆盖，完全使用全局规则；
+ * - custom：渠道规则在前，未命中时回落全局规则；
+ * - disabled：本渠道不执行任何自动禁用（渠道规则和全局规则都不执行）。
+ */
+export type ChannelKeyDisableMode = 'inherit' | 'custom' | 'disabled'
+
 /** 渠道覆盖的自动禁用策略；`override` 为 null 表示继承全局。 */
 export interface ChannelKeyDisablePolicyResponse {
   channelId: string
-  scope: string
-  revision: number
+  mode: ChannelKeyDisableMode
   override: KeyAutoDisableSettingsRequest | null
+  globalPolicy: KeyAutoDisableSettingsRequest
+  /** 合并渠道规则与全局兜底后的实际策略。 */
   effective: KeyAutoDisableSettingsRequest
 }
 
