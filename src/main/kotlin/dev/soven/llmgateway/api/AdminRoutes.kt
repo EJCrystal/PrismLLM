@@ -743,10 +743,15 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (protocol !in channel.protocols) {
                 throw badRequest("iq_test_protocol_unsupported", "渠道未启用协议 ${protocol.value}")
             }
-            val judgeId = request.judgeId?.trim()?.takeIf { it.isNotEmpty() }
-                ?: app.effectiveIqDefaultJudge()
-            val judge = app.iqJudgeRegistry.find(judgeId)
-                ?: throw badRequest("iq_judge_not_found", "判分器「$judgeId」不存在")
+            // 糖果题只读取 JSON 答案，不调用 HTML 判分器。
+            val judge = if (benchmark == IqBenchmark.PELICAN) {
+                val judgeId = request.judgeId?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: app.effectiveIqDefaultJudge()
+                app.iqJudgeRegistry.find(judgeId)
+                    ?: throw badRequest("iq_judge_not_found", "判分器「$judgeId」不存在")
+            } else {
+                null
+            }
             val result = testChannelModelConnectivity(
                 channel = channel,
                 credentialRef = credential,
@@ -761,10 +766,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
                 headerProfiles = app.upstreamHeaderCatalogService.profiles(),
             )
-            val html = extractHtmlDocument(result.responseText)
-            val structure = analyzePelicanStructure(result.responseText)
+            val html = if (benchmark == IqBenchmark.PELICAN) extractHtmlDocument(result.responseText) else null
+            val structure = if (benchmark == IqBenchmark.PELICAN) {
+                analyzePelicanStructure(result.responseText)
+            } else {
+                null
+            }
             val judgeResult = when {
-                !result.success -> null
+                judge == null || !result.success -> null
                 html == null -> IqJudgeResult(
                     verdict = IqJudgeVerdict.FAILED,
                     label = "无法判定",
@@ -776,7 +785,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         benchmark = benchmark.value,
                         html = html,
                         model = model,
-                        structure = structure,
+                        structure = checkNotNull(structure),
                     ),
                 )
             }
@@ -809,8 +818,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     errorMessage = result.errorMessage,
                     usage = result.usage,
                     upstreamReportedModel = result.upstreamReportedModel?.take(200),
-                    judgeId = judge.id,
-                    judgeLabel = judge.displayName.take(120),
+                    judgeId = judge?.id,
+                    judgeLabel = judge?.displayName?.take(120),
                     judgeVerdict = judgeResult?.verdict?.value,
                     judgeResultLabel = judgeResult?.label?.take(120),
                     judgeReason = judgeResult?.reason,
@@ -828,7 +837,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     put("benchmark", benchmark.value)
                     put("keyId", credential.id)
                     put("protocol", protocol.value)
-                    put("judgeId", judge.id)
+                    put("judgeId", judge?.id ?: "none")
                     put("judgeVerdict", judgeResult?.verdict?.value ?: "none")
                 },
             )

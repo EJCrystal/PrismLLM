@@ -38,14 +38,6 @@ class VisionIqJudge(
             "鹈鹕特征、自行车结构、骑行关系、动画连贯性和画面完成度；不发送渠道密钥。"
 
     override fun judge(request: IqJudgeRequest): IqJudgeResult {
-        if (request.benchmark == "candy") {
-            return IqJudgeResult(
-                verdict = IqJudgeVerdict.REVIEW,
-                label = "由 21 规则判定",
-                reason = "糖果题不参与视觉判分，最终结果以可见文字中的独立 21 为准。",
-                details = mapOf("mode" to "rule"),
-            )
-        }
         if (!renderer.available) {
             return IqJudgeResult(
                 verdict = IqJudgeVerdict.REVIEW,

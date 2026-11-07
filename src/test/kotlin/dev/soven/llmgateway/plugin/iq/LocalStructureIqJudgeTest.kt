@@ -38,14 +38,6 @@ class LocalStructureIqJudgeTest {
         assertEquals("结构未通过", result.label)
     }
 
-    @Test
-    fun `leaves candy to the 21 rule`() {
-        val html = "<html><body><p>答案是 21</p></body></html>"
-        val result = judge.judge(request("candy", html))
-        assertEquals(IqJudgeVerdict.REVIEW, result.verdict)
-        assertEquals("由 21 规则判定", result.label)
-    }
-
     private fun request(benchmark: String, html: String) = IqJudgeRequest(
         benchmark = benchmark,
         html = html,

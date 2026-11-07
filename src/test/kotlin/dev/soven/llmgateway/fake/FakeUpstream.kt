@@ -276,6 +276,14 @@ class FakeUpstream {
                 )
                 return
             }
+            "iq-json" -> {
+                val content = """{"answer":21,"reason":"先取完圆形苹果 7 颗、圆形桃子 9 颗、圆形西瓜 8 颗和五角星形西瓜 4 颗，再取一颗。"}"""
+                call.respondText(
+                    """{"id":"chatcmpl-iq-json","object":"chat.completion","model":${Json.encodeToString(model ?: "iq-json")},"choices":[{"index":0,"message":{"role":"assistant","content":${Json.encodeToString(content)}},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}""",
+                    ContentType.Application.Json,
+                )
+                return
+            }
             "key-route" -> {
                 if (call.request.headers[HttpHeaders.Authorization] == "Bearer key-primary") {
                     call.respondText(ERROR_401, ContentType.Application.Json, HttpStatusCode.Unauthorized)

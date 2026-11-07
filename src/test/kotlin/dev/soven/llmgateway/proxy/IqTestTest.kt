@@ -85,380 +85,153 @@ class IqTestTest {
     }
 
     @Test
-    fun `candy accepts standalone answer`() {
-        val result = evaluateIqTest(IqBenchmark.CANDY, true, "最少需要取出 **21** 颗糖果。")
+    fun `candy prompt only asks for json`() {
+        val prompt = IqBenchmark.CANDY.prompt
+
+        assertTrue(prompt.contains("""{"answer": <整数>, "reason": "<简要推导过程>"}"""), prompt)
+        assertTrue(prompt.contains("不要输出 HTML"), prompt)
+        assertFalse(prompt.contains("单文件 HTML"), prompt)
+    }
+
+    @Test
+    fun `candy accepts expected json answer`() {
+        val result = evaluateIqTest(
+            IqBenchmark.CANDY,
+            true,
+            """{"answer":21,"reason":"先排除一种形状，再取完另一种形状的所有糖果，最后加一。"}""",
+        )
 
         assertEquals(IqVerdict.PASSED, result.verdict)
         assertEquals(21, result.expectedAnswer)
         assertEquals(21, result.matchedAnswer)
+        assertNull(result.html)
+        assertEquals(2, result.checks.size)
+        assertTrue(result.checks.all { it.passed })
+        assertTrue(result.checks.last().detail?.contains("推理") == true)
     }
 
     @Test
-    fun `candy accepts chinese answer`() {
-        val result = evaluateIqTest(IqBenchmark.CANDY, true, "所以答案是二十一颗。")
+    fun `candy rejects other integer as incorrect`() {
+        val result = evaluateIqTest(IqBenchmark.CANDY, true, """{"answer":29,"reason":"组合推理得到 29。"}""")
 
-        assertEquals(IqVerdict.PASSED, result.verdict)
+        assertEquals(IqVerdict.INCORRECT, result.verdict)
+        assertEquals(21, result.expectedAnswer)
+        assertNull(result.matchedAnswer)
+        val answerCheck = result.checks.first { it.id == "answer" }
+        assertFalse(answerCheck.passed)
+        assertTrue(answerCheck.detail?.contains("answer 为 29") == true, answerCheck.detail)
     }
 
     @Test
-    fun `candy rejects larger chinese numbers containing the answer substring`() {
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, "答案是一百二十一颗。").verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, "答案是二十一万颗。").verdict)
+    fun `candy accepts json inside markdown fence and surrounding prose`() {
+        val raw = """
+            推导如下：
+            ```json
+            {"answer": 21, "reason": "取完所有干扰项后再取一颗。"}
+            ```
+            以上。
+        """.trimIndent()
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, raw).verdict)
     }
 
     @Test
-    fun `candy accepts standalone chinese answer with punctuation`() {
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, "最终答案是廿一颗。").verdict)
+    fun `candy accepts string and integral decimal answers`() {
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, """{"answer":"21"}""").verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, """{"answer":21.0}""").verdict)
     }
 
     @Test
-    fun `candy ignores hidden answers`() {
-        val hiddenAttribute = """
-            <html><body><span hidden>21</span><p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
-        val inlineStyle = """
-            <html><body><span style="display: none">21</span><p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
-        val styleClass = """
-            <html><head><style>.ghost { visibility: hidden; }</style></head>
-            <body><span class="ghost">21</span><p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
+    fun `candy handles braces and quotes inside reason`() {
+        val raw = """{"answer":21,"reason":"用集合 {圆苹果, 星桃} 和 {星苹果, 圆桃} 表示目标，答案是 \"21\"。"}"""
 
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, hiddenAttribute).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inlineStyle).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, styleClass).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, raw).verdict)
     }
 
     @Test
-    fun `candy honors later visibility declarations`() {
-        val inlineVisible = """<html><body><p style="display:none;display:block">答案是 21 颗。</p></body></html>"""
-        val inlineHiddenImportant =
-            """<html><body><p style="display:none!important;display:block">答案是 21 颗。</p></body></html>"""
-        val inlineVisibleImportant =
-            """<html><body><p style="display:none;display:block!important">答案是 21 颗。</p></body></html>"""
-        val ruleVisible = """
-            <html><head><style>.ghost{display:none}.ghost{display:block}</style></head>
-            <body><p class="ghost">答案是 21 颗。</p></body></html>
-        """.trimIndent()
-        val ruleHiddenImportant = """
-            <html><head><style>.ghost{display:none!important}.ghost{display:block}</style></head>
-            <body><p class="ghost">答案是 21 颗。</p></body></html>
+    fun `candy skips unbracketed prose braces before the json answer`() {
+        val raw = """
+            目标集合 {圆苹果, 星桃} 与 {星苹果, 圆桃} 至少命中一个。
+            {"answer": 21, "reason": "取完所有干扰项后再取一颗。"}
         """.trimIndent()
 
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, inlineVisible).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inlineHiddenImportant).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, inlineVisibleImportant).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, ruleVisible).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, ruleHiddenImportant).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, raw).verdict)
     }
 
     @Test
-    fun `candy decodes numeric character references`() {
-        val decimal = """<html><body><p>答案是 &#50;&#49; 颗。</p></body></html>"""
-        val hex = """<html><body><p>答案是 &#x32;&#x31; 颗。</p></body></html>"""
-        val chineseHex = """<html><body><p>答案是 &#x4E8C;&#x5341;&#x4E00; 颗。</p></body></html>"""
+    fun `candy skips unbalanced prose braces before the json answer`() {
+        val raw = """
+            记集合为 {圆苹果, 星桃 这样的写法。
+            {"answer": 21}
+        """.trimIndent()
 
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, decimal).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, hex).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, chineseHex).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, raw).verdict)
     }
 
     @Test
-    fun `candy applies selector specificity and inline overrides`() {
-        val idWins = """
-            <html><head><style>p{display:none}#answer{display:block}</style></head>
-            <body><p id="answer">答案是 21 颗。</p></body></html>
-        """.trimIndent()
-        val inlineWins = """
-            <html><head><style>p{display:none}</style></head>
-            <body><p style="display:block">答案是 21 颗。</p></body></html>
+    fun `candy prefers fenced json over earlier prose braces`() {
+        val raw = """
+            先把 {A} 和 {B} 并列考虑：
+            ```json
+            {"answer": 21, "reason": "干扰项"}
+            ```
         """.trimIndent()
 
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, idWins).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, inlineWins).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, raw).verdict)
     }
 
     @Test
-    fun `candy keeps visible children inside visibility hidden parents`() {
-        val visibleChild = """
-            <html><body><div style="visibility:hidden">
-            <span style="visibility:visible">答案是 21 颗。</span></div></body></html>
-        """.trimIndent()
-        val inheritedHidden = """
-            <html><body><div style="visibility:hidden">21<span>颗</span></div>
-            <p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
+    fun `candy fails when response is not json`() {
+        for (raw in listOf("Hello!", "答案是 21 颗。", "<html><body>21</body></html>")) {
+            val result = evaluateIqTest(IqBenchmark.CANDY, true, raw)
 
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, visibleChild).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inheritedHidden).verdict)
+            assertEquals(IqVerdict.FAILED, result.verdict, raw)
+            assertEquals(1, result.checks.size)
+            assertFalse(result.checks.single().passed)
+            assertNull(result.html)
+        }
     }
 
     @Test
-    fun `candy honors root element visibility`() {
-        val displayHidden = """<html style="display:none"><body><p>答案是 21 颗。</p></body></html>"""
-        val visibilityHidden = """<html style="visibility:hidden"><body><p>答案是 21 颗。</p></body></html>"""
-        val overridden = """
-            <html style="visibility:hidden"><body>
-            <p style="visibility:visible">答案是 21 颗。</p></body></html>
-        """.trimIndent()
+    fun `candy fails when answer is missing or not an integer`() {
+        for (raw in listOf("""{"reason":"只有推理"}""", """{"answer":"二十一","reason":"中文数字"}""")) {
+            val result = evaluateIqTest(IqBenchmark.CANDY, true, raw)
 
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, displayHidden).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, visibilityHidden).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, overridden).verdict)
+            assertEquals(IqVerdict.FAILED, result.verdict, raw)
+            assertEquals(2, result.checks.size)
+            assertTrue(result.checks.first().passed)
+            assertFalse(result.checks.last().passed)
+        }
     }
 
     @Test
-    fun `candy ignores print only media rules`() {
-        val printHidden = """
-            <html><head><style>@media print{p{display:none}}</style></head>
-            <body><p>答案是 21 颗。</p></body></html>
-        """.trimIndent()
-        val screenHidden = """
-            <html><head><style>@media screen{p{display:none}}</style></head>
-            <body><p>答案是 21 颗。</p></body></html>
-        """.trimIndent()
-        val featureHidden = """
-            <html><head><style>@media (max-width: 600px){p{display:none}}</style></head>
-            <body><p>答案是 21 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, printHidden).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, screenHidden).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, featureHidden).verdict)
-    }
-
-    @Test
-    fun `candy evaluates media features against the preview viewport`() {
-        val applies = """
-            <html><head><style>@media (min-width: 0px){p{display:none}}</style></head>
-            <body><p>答案是 21 颗。</p></body></html>
-        """.trimIndent()
-        val exceeds = """
-            <html><head><style>@media (min-width: 2000px){p{display:none}}</style></head>
-            <body><p>答案是 21 颗。</p></body></html>
-        """.trimIndent()
-        val landscape = """
-            <html><head><style>@media screen and (orientation: landscape){p{visibility:hidden}}</style></head>
-            <body><p>答案是 21 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, applies).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, exceeds).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, landscape).verdict)
-    }
-
-    @Test
-    fun `candy asks for review when a media feature cannot be evaluated`() {
-        val unknownFeature = """
-            <html><head><style>@media (prefers-color-scheme: dark){p{display:none}}</style></head>
-            <body><p>答案是 21 颗。</p></body></html>
-        """.trimIndent()
-        val unknownWithoutVisibility = """
-            <html><head><style>@media (prefers-color-scheme: dark){p{color:red}}</style></head>
-            <body><p>答案是 21 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.REVIEW, evaluateIqTest(IqBenchmark.CANDY, true, unknownFeature).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, unknownWithoutVisibility).verdict)
-    }
-
-    @Test
-    fun `candy honors the media attribute on style elements`() {
-        val printOnly = """
-            <html><head><style media="print">p{display:none}</style></head>
-            <body><p>答案是 21 颗。</p></body></html>
-        """.trimIndent()
-        val unknown = """
-            <html><head><style media="(prefers-color-scheme: dark)">p{display:none}</style></head>
-            <body><p>答案是 21 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, printOnly).verdict)
-        assertEquals(IqVerdict.REVIEW, evaluateIqTest(IqBenchmark.CANDY, true, unknown).verdict)
-    }
-
-    @Test
-    fun `candy asks for review when cascade layers affect visibility`() {
-        val layered = """
-            <html><head><style>.answer{display:none}@layer base{.answer{display:block}}</style></head>
-            <body><p class="answer">答案是 21 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.REVIEW, evaluateIqTest(IqBenchmark.CANDY, true, layered).verdict)
-    }
-
-    @Test
-    fun `candy computes functional pseudo class specificity`() {
-        val notArgument = """
-            <html><head><style>:not(#other){display:block}#answer{display:none}</style></head>
-            <body><p id="answer">答案是 21 颗。</p></body></html>
-        """.trimIndent()
-        val whereIsFree = """
-            <html><head><style>:where(p){display:none}p{display:block}</style></head>
-            <body><p>答案是 21 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, notArgument).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, whereIsFree).verdict)
-    }
-
-    @Test
-    fun `candy compares specificity by component`() {
-        val manyClasses = """
-            <html><head><style>.a.a.a.a.a.a.a.a.a.a.a{display:block}#answer{display:none}</style></head>
-            <body><p id="answer" class="a">答案是 21 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, manyClasses).verdict)
-    }
-
-    @Test
-    fun `candy asks for review when visibility depends on css variables`() {
-        val inline = """
-            <html><body><span style="--state:none;display:var(--state)">21</span>
-            <p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
-        val stylesheet = """
-            <html><head><style>.ghost{display:var(--state)}</style></head>
-            <body><span class="ghost">21</span><p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.REVIEW, evaluateIqTest(IqBenchmark.CANDY, true, inline).verdict)
-        assertEquals(IqVerdict.REVIEW, evaluateIqTest(IqBenchmark.CANDY, true, stylesheet).verdict)
-    }
-
-    @Test
-    fun `candy ignores css comments in visibility declarations`() {
-        val inline = """
-            <html><body><span style="display:none /* comment */">21</span>
-            <p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
-        val important = """
-            <html><body><span style="display:none /* comment */ !important">21</span>
-            <p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inline).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, important).verdict)
-    }
-
-    @Test
-    fun `candy treats display global values as visible`() {
-        val initial = """<html><body><p style="display:none;display:initial">答案是 21 颗。</p></body></html>"""
-        val unset = """<html><body><p style="display:none;display:unset">答案是 21 颗。</p></body></html>"""
-        val multiKeyword = """<html><body><p style="display:none;display:block flow">答案是 21 颗。</p></body></html>"""
-
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, initial).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, unset).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, multiKeyword).verdict)
-    }
-
-    @Test
-    fun `candy ignores collapsed details content`() {
-        val closed = """
-            <html><body><details><summary>推理过程</summary>21</details>
-            <p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
-        val open = """<html><body><details open><summary>推理过程</summary>21</details></body></html>"""
-
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, closed).verdict)
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, open).verdict)
-    }
-
-    @Test
-    fun `candy ignores invalid visibility declarations`() {
-        val invalidDisplay = """<html><body><p style="display:none;display:invalid">答案是 21 颗。</p></body></html>"""
-        val invalidVisibility =
-            """<html><body><p style="visibility:hidden;visibility:invisible">答案是 21 颗。</p></body></html>"""
-        val inheritVisibility = """
-            <html><body><div style="visibility:hidden">
-            <p style="visibility:inherit">答案是 21 颗。</p></div></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, invalidDisplay).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, invalidVisibility).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inheritVisibility).verdict)
-    }
-
-    @Test
-    fun `candy removes the whole nested hidden subtree`() {
-        val hiddenAttribute = """
-            <html><body><div hidden><div>说明</div>21</div><p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
-        val inlineStyle = """
-            <html><body><div style="display:none"><div>说明</div>21</div><p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
-        val styleRule = """
-            <html><head><style>.ghost{display:none}</style></head>
-            <body><div class="ghost"><div>说明</div>21</div><p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, hiddenAttribute).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inlineStyle).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, styleRule).verdict)
-    }
-
-    @Test
-    fun `candy keeps inline text contiguous`() {
-        val splitAnswer = """<html><body><p>答案是 2<span>1</span> 颗。</p></body></html>"""
-        val embeddedAnswer = """<html><body><p>我取了 1<span>21</span> 颗。</p></body></html>"""
-        val blockBoundary = """<html><body><p>分为 2</p><p>1 颗。</p></body></html>"""
-
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, splitAnswer).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, embeddedAnswer).verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, blockBoundary).verdict)
-    }
-
-    @Test
-    fun `candy keeps aria hidden but visible text`() {
-        val html = """
-            <html><body><p aria-hidden="true">答案是 21 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, html).verdict)
-    }
-
-    @Test
-    fun `candy reads visible text from html and ignores css numbers`() {
-        val html = """
-            <!DOCTYPE html>
-            <html><head><style>.box{width:21px;color:#211111}</style></head>
-            <body><p>最少需要取出 21 颗糖果。</p></body></html>
-        """.trimIndent()
-
-        val result = evaluateIqTest(IqBenchmark.CANDY, true, html)
-
-        assertEquals(IqVerdict.PASSED, result.verdict)
-    }
-
-    @Test
-    fun `candy does not treat css values as answers`() {
-        val html = """
-            <!DOCTYPE html>
-            <html><head><style>.box{width:21px;color:#211111}</style></head>
-            <body><p>答案是 20 颗。</p></body></html>
-        """.trimIndent()
-
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, html).verdict)
-    }
-
-    @Test
-    fun `candy rejects wrong or embedded number`() {
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, "答案是 29 颗。").verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, "我取了 121 颗。").verdict)
-        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, "再取出 210 颗。").verdict)
-    }
-
-    @Test
-    fun `candy ignores judge verdict`() {
+    fun `candy ignores judge verdict and html`() {
         val result = evaluateIqTest(
             benchmark = IqBenchmark.CANDY,
             success = true,
-            responseText = "答案是 21 颗。",
+            responseText = """{"answer":21,"reason":"21 颗。"}""",
+            structure = analyzePelicanStructure("<html><body><svg></svg></body></html>"),
             judgeResult = IqJudgeResult(IqJudgeVerdict.INCORRECT, "未通过"),
         )
 
         assertEquals(IqVerdict.PASSED, result.verdict)
+        assertNull(result.html)
+    }
+
+    @Test
+    fun `legacy candy record keeps stored verdict and html`() {
+        val result = evaluateLegacyCandy(
+            responseText = "<html><body><p>答案是 21 颗。</p></body></html>",
+            verdict = "passed",
+            expectedAnswer = 21,
+            matchedAnswer = 21,
+        )
+
+        assertEquals(IqVerdict.PASSED, result.verdict)
+        assertEquals(21, result.expectedAnswer)
+        assertEquals(21, result.matchedAnswer)
+        assertNotNull(result.html)
+        assertEquals("answer", result.checks.single().id)
     }
 
     @Test
