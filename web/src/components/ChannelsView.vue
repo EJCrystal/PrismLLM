@@ -24,7 +24,7 @@ import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import ChannelHealthModal from './ChannelHealthModal.vue'
 import ChannelKeyEditor from './ChannelKeyEditor.vue'
-import { HEALTH_LABELS, healthSymbol, channelHealthSuccessRateText } from '../utils/channelHealth'
+import { HEALTH_LABELS, healthSymbol, channelHealthSuccessRateText, channelListHealthState } from '../utils/channelHealth'
 import { cooldownSummaryText } from '../utils/cooldown'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
@@ -175,12 +175,8 @@ function channelCooldownTitle(channel: Channel): string {
   return `${channel.name}：${row.coolingCandidates}/${row.totalCandidates ?? 0} 个候选冷却${until}；点击查看详情`
 }
 function channelHealthState(channel: Channel): HealthState {
-  if (!channel.enabled) return 'DISABLED'
-  // 后端已按可路由凭据统计给出 NO_CREDENTIALS；健康度未读取时退回本地密钥判定，
-  // 避免列表上同时出现绿色开关和「0 个启用」却没有解释。
-  const reported = healthByChannel.value.get(channel.id)?.state
-  if (reported && reported !== 'DISABLED') return reported
-  return channelRoutingHint(channel) ? 'NO_CREDENTIALS' : reported || 'UNKNOWN'
+  // NO_CREDENTIALS 一律以后端报告为准：列表不加载订阅账号，本地密钥判定无法覆盖账号仍可用的渠道。
+  return channelListHealthState(channel, healthByChannel.value.get(channel.id)?.state)
 }
 function channelHealthTitle(channel: Channel): string {
   const row = healthByChannel.value.get(channel.id)

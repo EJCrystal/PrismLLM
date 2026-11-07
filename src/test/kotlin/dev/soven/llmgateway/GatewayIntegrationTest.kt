@@ -3158,6 +3158,45 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `recovered temporary key routes instead of reporting model missing`() = runBlocking {
+        val channel = app.channelRepository.create(
+            name = "recovery-race",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "temporary",
+                    credential = app.credentialCipher.encrypt("key-race"),
+                    state = ChannelKeyState.AUTO_TEMPORARY,
+                    models = listOf("gpt-4o-mini"),
+                ),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("gpt-4o-mini"),
+        )
+        // 停用已到期且没有探测租约：密钥可路由，正常路由不会进入诊断分支。
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update channel_keys set auto_disable_until = ? where id = ?").use { statement ->
+                statement.setLong(1, System.currentTimeMillis() - 60_000)
+                statement.setString(2, channel.keys.single().id)
+                statement.executeUpdate()
+            }
+        }
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            // 恢复后的模型必须能正常路由，不能被误报成 404 或 503。
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4o-mini","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+        }
+    }
+
+    @Test
     fun keyAutoDisableSkipsAlreadyDisabledKeyInPreloadedModelCandidates() = runBlocking {
         app.keyAutoDisableRepository.saveSettings(KeyAutoDisablePolicy(authFailureThreshold = 1))
         val channel = app.channelRepository.create(

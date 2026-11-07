@@ -269,24 +269,24 @@ private suspend fun handleProxy(
         } else {
             null
         }
-        val allCandidates = app.modelCatalog.findCandidates(alias, null)
-        if (allCandidates.isEmpty()) {
+        // 路由与「为什么不可用」的判定共用一次目录快照：分开查询会在凭据恢复的瞬间
+        // 得出「无候选却又查不出原因」的自相矛盾结论，进而把已配置的模型误报成 404。
+        val availability = app.modelCatalog.resolve(alias, protocol)
+        val candidates = availability.candidates
+        if (candidates.isEmpty()) {
+            // 当前协议本来就没有路可走（渠道既不原生支持也无法转换）时优先报协议错误，
+            // 否则会把「换个协议就能用」误导成「凭据暂时不可用」。
+            if (!availability.protocolReachable) {
+                if (!availability.configured) throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
+                throw protocolNotSupported(alias, protocol)
+            }
             // 模型已配置但凭据全部停用时，客户端重试或等自动恢复就能成功，不能用 404 通知其改配置。
-            val unavailable = app.modelCatalog.findUnavailableModel(alias)
-                ?: throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
             throw serviceUnavailable(
                 "model_credentials_unavailable",
                 "模型 $alias 已配置，但当前没有可用的上游凭据",
-                unavailable.retryAt?.let { it - System.currentTimeMillis() }?.takeIf { it > 0 },
+                availability.retryAt?.let { it - System.currentTimeMillis() }?.takeIf { it > 0 },
             )
         }
-        val nativeCandidates = allCandidates.filter { protocol in it.channel.protocols }
-        val conversionCandidates = allCandidates.filter { candidate ->
-            protocol !in candidate.channel.protocols &&
-                candidate.channel.protocols.any { ProtocolConversion.supports(protocol, it) }
-        }
-        val candidates = nativeCandidates + conversionCandidates
-        if (candidates.isEmpty()) throw protocolNotSupported(alias, protocol)
         val globalOverrides = app.upstreamRequestSettingsRepository.load().overrides
         val headerProfiles = app.upstreamHeaderCatalogService.profiles()
 
