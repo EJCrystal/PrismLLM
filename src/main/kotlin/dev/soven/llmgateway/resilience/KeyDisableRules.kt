@@ -206,6 +206,9 @@ enum class ChannelKeyDisableMode(val value: String) {
  * 收紧某条全局规则的阈值而不必另起名字，V57 搬迁过来的整份规则副本也照常可用。
  * 代价是渠道里一条更宽的规则可能遮蔽全局里更精确的规则，这一点需要在管理台提示。
  * 全局自动禁用已关闭时不再兜底它的规则，否则「关掉全局」对渠道仍然生效，与直觉相反。
+ *
+ * 合并结果最多 [MAX_EFFECTIVE_RULES] 条：两份策略各自合法时，加在一起也不该让解析失败。
+ * 单份策略仍受 [MAX_RULES] 限制，由保存入口校验，避免有人把两倍上限当成单份上限。
  */
 fun KeyDisablePolicy.fallbackTo(global: KeyDisablePolicy): KeyDisablePolicy {
     if (!enabled || !global.enabled) return this
@@ -214,6 +217,12 @@ fun KeyDisablePolicy.fallbackTo(global: KeyDisablePolicy): KeyDisablePolicy {
         enabled = true,
         rules = rules + global.rules.filterNot { it.id in ownIds },
     )
+}
+
+/** 渠道覆盖的大小上限；合并进全局兜底之前，单份策略不能超过 [KeyDisablePolicy.MAX_RULES]。 */
+fun KeyDisablePolicy.requireSavable(): KeyDisablePolicy {
+    require(rules.size <= KeyDisablePolicy.MAX_RULES) { "最多配置 ${KeyDisablePolicy.MAX_RULES} 条自动禁用规则" }
+    return this
 }
 
 /**
@@ -346,7 +355,9 @@ data class KeyDisablePolicy(
     init {
         // 关闭自动禁用时不需要规则：渠道可以只表达「本渠道不执行自动禁用」，不必留一条无意义的占位规则。
         require(rules.isNotEmpty() || !enabled) { "启用自动禁用时至少需要一条规则" }
-        require(rules.size <= MAX_RULES) { "最多配置 $MAX_RULES 条自动禁用规则" }
+        // 构造同时服务于「保存的单份策略」和「渠道覆盖 + 全局兜底合并后的有效策略」，
+        // 因此这里放的是合并上限；单份策略的上限在保存入口用 requireSavable() 校验。
+        require(rules.size <= MAX_EFFECTIVE_RULES) { "最多 $MAX_EFFECTIVE_RULES 条生效规则，请减少规则数量" }
         require(rules.map { it.id }.toSet().size == rules.size) { "规则 id 不能重复" }
     }
 
@@ -406,7 +417,11 @@ data class KeyDisablePolicy(
     }
 
     companion object {
+        /** 单份策略（全局设置或一条渠道覆盖）的规则上限。 */
         const val MAX_RULES = 50
+
+        /** 合并后的有效策略上限：渠道规则 + 未命中的全局兜底，最多是单份上限的两倍。 */
+        const val MAX_EFFECTIVE_RULES = MAX_RULES * 2
 
         internal val LEGACY_DEFAULT_RULES: List<KeyDisableRule> = listOf(
             KeyDisableRule(

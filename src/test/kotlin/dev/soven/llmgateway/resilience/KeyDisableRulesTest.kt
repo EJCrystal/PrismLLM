@@ -285,6 +285,31 @@ class KeyDisableRulesTest {
     }
 
     @Test
+    fun `merging two full sized policies stays constructible`() {
+        // 两份策略各自合法并不代表合并后仍能构造：合并上限必须大于单份上限，
+        // 否则解析渠道策略时抛异常，渠道下的记账与管理接口一起失败。
+        val channelRules = (1..KeyDisablePolicy.MAX_RULES).map { rule(id = "channel_$it", threshold = 1) }
+        val globalRules = (1..KeyDisablePolicy.MAX_RULES).map { rule(id = "global_$it", threshold = 1) }
+        val merged = KeyDisablePolicy(rules = channelRules).fallbackTo(KeyDisablePolicy(rules = globalRules))
+
+        assertEquals(KeyDisablePolicy.MAX_EFFECTIVE_RULES, merged.rules.size)
+        assertEquals(KeyDisablePolicy.MAX_EFFECTIVE_RULES, merged.rules.map { it.id }.toSet().size)
+        // 渠道规则仍排在前面，首条命中即止的语义不受条数影响。
+        assertEquals("channel_1", merged.rules.first().id)
+        assertEquals("global_1", merged.rules[KeyDisablePolicy.MAX_RULES].id)
+    }
+
+    @Test
+    fun `a single saved policy is still capped at MAX_RULES`() {
+        val tooMany = KeyDisablePolicy(rules = (1..KeyDisablePolicy.MAX_RULES + 1).map { rule(id = "r_$it", threshold = 1) })
+        // 合并上限允许两倍，但保存入口必须挡住单份超限，否则单份就能占满合并额度。
+        assertFailsWith<IllegalArgumentException> { tooMany.requireSavable() }
+        assertFailsWith<IllegalArgumentException> {
+            KeyDisablePolicy(rules = (1..KeyDisablePolicy.MAX_EFFECTIVE_RULES + 1).map { rule(id = "r_$it", threshold = 1) })
+        }
+    }
+
+    @Test
     fun `channel mode maps the three persisted shapes`() {
         assertEquals(ChannelKeyDisableMode.INHERIT, ChannelKeyDisableMode.of(null))
         assertEquals(ChannelKeyDisableMode.CUSTOM, ChannelKeyDisableMode.of(KeyDisablePolicy(rules = listOf(rule()))))
@@ -406,8 +431,12 @@ class KeyDisableRulesTest {
         assertFailsWith<IllegalArgumentException> {
             KeyDisablePolicy(rules = listOf(rule(id = "dup"), rule(id = "dup")))
         }
+        // 单份策略上限在保存入口校验：构造放行合并上限，避免两份合法策略合并后解析失败。
         assertFailsWith<IllegalArgumentException> {
-            KeyDisablePolicy(rules = (1..51).map { rule(id = "r$it") })
+            KeyDisablePolicy(rules = (1..51).map { rule(id = "r$it") }).requireSavable()
+        }
+        assertFailsWith<IllegalArgumentException> {
+            KeyDisablePolicy(rules = (1..KeyDisablePolicy.MAX_EFFECTIVE_RULES + 1).map { rule(id = "r$it") })
         }
     }
 

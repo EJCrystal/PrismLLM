@@ -3703,6 +3703,14 @@ class GatewayIntegrationTest {
                 HttpStatusCode.BadRequest,
                 update("""{"override":{"enabled":true,"rules":[]}}""").status,
             )
+            // 单份策略仍限 50 条：超限是 400，不是合并上限放宽后的 500。
+            val tooManyRules = (1..KeyDisablePolicy.MAX_RULES + 1).joinToString(",") { index ->
+                """{"id":"bulk_$index","name":"批量规则 $index","statusCodes":[401],"threshold":1,"action":"PERMANENT"}"""
+            }
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                update("""{"override":{"enabled":true,"rules":[$tooManyRules]}}""").status,
+            )
 
             val override = """{"override":{"enabled":true,"rules":[{"id":"activity_disabled","name":"活动已关闭或Key失效","statusCodes":[403],"bodyPatterns":["DEEPSEEK_ACTIVITY_DISABLED"],"threshold":1,"action":"PERMANENT"}]}}"""
             val saved = put(override)

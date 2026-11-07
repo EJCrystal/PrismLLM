@@ -20,6 +20,7 @@ import dev.soven.llmgateway.resilience.KeyHealthState
 import dev.soven.llmgateway.resilience.KeyRuleCounter
 import dev.soven.llmgateway.resilience.ResolvedKeyDisablePolicy
 import dev.soven.llmgateway.resilience.fallbackTo
+import dev.soven.llmgateway.resilience.requireSavable
 import dev.soven.llmgateway.resilience.toKeyDisablePolicy
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.decodeFromString
@@ -110,6 +111,8 @@ class KeyAutoDisableRepository(
         override: KeyDisablePolicy?,
         auditContext: KeyAutoDisableSettingsAuditContext? = null,
     ): ChannelKeyDisablePolicyChange = suspendTransaction(database) {
+        // 单份策略的上限在这里校验：合并后的有效策略可以到两倍，但保存进来的一份不能超。
+        override?.requireSavable()
         val row = Channels.select(Channels.id, Channels.keyDisablePolicy, Channels.keyDisablePolicyRevision)
             .where { Channels.id eq channelId }
             .forUpdate()
@@ -150,6 +153,7 @@ class KeyAutoDisableRepository(
         policy: KeyDisablePolicy,
         auditContext: KeyAutoDisableSettingsAuditContext? = null,
     ): KeyAutoDisableSettingsChange = suspendTransaction(database) {
+        policy.requireSavable()
         ensureSettingsRow()
         val row = KeyAutoDisableSettings.selectAll()
             .where { KeyAutoDisableSettings.id eq SINGLETON_ID }.forUpdate().single()
