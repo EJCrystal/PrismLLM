@@ -81,6 +81,38 @@ class SvgRenderSupportTest {
     }
 
     @Test
+    fun `sanitizes malformed tags that browsers still parse`() {
+        val payload = """
+            <svg xmlns="http://www.w3.org/2000/svg"><foreignObject>
+            <meta http-equiv="refresh" content="0;url=http://127.0.0.1:8080/private" data-x=x">
+            </foreignObject><rect width="10" height="10"/></svg>
+        """.trimIndent()
+
+        val cleaned = SvgRenderSupport.sanitizeSvg(payload)
+
+        assertFalse(cleaned.contains("<meta", ignoreCase = true), cleaned)
+        assertFalse(cleaned.contains("http-equiv", ignoreCase = true), cleaned)
+        assertTrue(cleaned.contains("<rect"), cleaned)
+    }
+
+    @Test
+    fun `sanitizes style blocks inside svg`() {
+        val payload = """
+            <svg xmlns="http://www.w3.org/2000/svg"><style>
+            </sty</stylele><meta http-equiv="refresh" content="0;url=http://127.0.0.1:8080/private">
+            </style><rect width="10" height="10"/></svg>
+        """.trimIndent()
+
+        val cleaned = SvgRenderSupport.sanitizeSvg(payload)
+
+        assertFalse(cleaned.contains("<meta", ignoreCase = true), cleaned)
+        assertFalse(cleaned.contains("http-equiv", ignoreCase = true), cleaned)
+        // 只剩原本那个 style 的闭合标签，清洗不能拼出第二个 </style>。
+        assertEquals(1, Regex("</style", RegexOption.IGNORE_CASE).findAll(cleaned).count(), cleaned)
+        assertTrue(cleaned.contains("<rect"), cleaned)
+    }
+
+    @Test
     fun `keeps fragment and image data references`() {
         val cleaned = SvgRenderSupport.sanitizeSvg(
             """<svg xmlns="http://www.w3.org/2000/svg"><use href="#wheel"/>""" +

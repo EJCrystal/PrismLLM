@@ -33,6 +33,8 @@ export function withIqPreviewCsp(html: string): string {
     // 非浏览器环境没有 HTML 解析器；宁可返回空预览，也不把未清洗内容交给 iframe。
     return `<!DOCTYPE html><html><head>${meta}</head><body></body></html>`
   }
+  // DOMParser 返回惰性文档：解析阶段不执行脚本，也不加载图片/iframe 等资源，
+  // 只有清洗后的结果才会写进 sandbox iframe。
   const document = new DOMParser().parseFromString(html, 'text/html')
   stripPreviewNavigation(document)
   const csp = document.createElement('meta')

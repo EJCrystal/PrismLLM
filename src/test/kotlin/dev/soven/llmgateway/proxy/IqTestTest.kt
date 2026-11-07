@@ -194,6 +194,40 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy honors root element visibility`() {
+        val displayHidden = """<html style="display:none"><body><p>答案是 21 颗。</p></body></html>"""
+        val visibilityHidden = """<html style="visibility:hidden"><body><p>答案是 21 颗。</p></body></html>"""
+        val overridden = """
+            <html style="visibility:hidden"><body>
+            <p style="visibility:visible">答案是 21 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, displayHidden).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, visibilityHidden).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, overridden).verdict)
+    }
+
+    @Test
+    fun `candy ignores print only media rules`() {
+        val printHidden = """
+            <html><head><style>@media print{p{display:none}}</style></head>
+            <body><p>答案是 21 颗。</p></body></html>
+        """.trimIndent()
+        val screenHidden = """
+            <html><head><style>@media screen{p{display:none}}</style></head>
+            <body><p>答案是 21 颗。</p></body></html>
+        """.trimIndent()
+        val featureHidden = """
+            <html><head><style>@media (max-width: 600px){p{display:none}}</style></head>
+            <body><p>答案是 21 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, printHidden).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, screenHidden).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, featureHidden).verdict)
+    }
+
+    @Test
     fun `candy removes the whole nested hidden subtree`() {
         val hiddenAttribute = """
             <html><body><div hidden><div>说明</div>21</div><p>答案是 20 颗。</p></body></html>

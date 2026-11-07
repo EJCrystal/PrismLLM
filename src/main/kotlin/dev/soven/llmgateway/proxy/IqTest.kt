@@ -256,15 +256,19 @@ internal fun extractVisibleText(raw: String): String {
     document.select("script, style, template").remove()
     val body = document.body() ?: return ""
     val states = HashMap<Element, ElementVisibility>()
-    body.getAllElements().forEach { element -> states[element] = evaluateVisibility(element, rules) }
-    return visibleText(body, states)
+    document.getAllElements().forEach { element -> states[element] = evaluateVisibility(element, rules) }
+    // html 根元素上的 display/visibility 同样会隐藏整个页面，需要参与继承。
+    val root = document.selectFirst("html") ?: body
+    val rootState = states[root] ?: ElementVisibility(false, null)
+    if (rootState.displayHidden) return ""
+    return visibleText(body, states, rootState.visibilityHidden ?: false)
 }
 
 private fun parseVisibilityRules(document: Document): List<VisibilityRule> {
     val rules = mutableListOf<VisibilityRule>()
     var order = 0
     document.select("style").forEach { style ->
-        CSS_RULE_PATTERN.findAll(style.data()).forEach { match ->
+        CSS_RULE_PATTERN.findAll(stripNonScreenAtRules(style.data())).forEach { match ->
             val declarations = parseVisibilityDeclarations(match.groupValues[2])
             if (declarations.isNotEmpty()) {
                 val ruleOrder = order++
@@ -276,6 +280,79 @@ private fun parseVisibilityRules(document: Document): List<VisibilityRule> {
     }
     return rules
 }
+
+/**
+ * 去掉当前预览环境不生效的 at-rule 块。
+ *
+ * 直接对整段 CSS 做正则会把 `@media print{p{display:none}}` 里的声明当成屏幕样式。
+ * 这里按大括号配对提取 at-rule：`@media screen` / `all` 的规则提升到顶层参与层叠；
+ * print、带宽度等媒体特性的查询以及其他 at-rule 整块忽略，而不是无条件应用。
+ */
+private fun stripNonScreenAtRules(css: String): String {
+    val source = css.replace(Regex("(?s)/\\*.*?\\*/"), "")
+    val out = StringBuilder(source.length)
+    var i = 0
+    while (i < source.length) {
+        when (source[i]) {
+            // 顶层普通规则整块复制，块内的 @ 字符（如 content 字符串）不参与判断。
+            '{' -> {
+                val end = matchingBrace(source, i)
+                out.append(source, i, end + 1)
+                i = end + 1
+            }
+            '@' -> {
+                val semicolon = source.indexOf(';', i)
+                val brace = source.indexOf('{', i)
+                if (brace < 0 || (semicolon in 0 until brace)) {
+                    // @import / @charset 等语句型规则整条丢弃。
+                    i = if (semicolon >= 0) semicolon + 1 else source.length
+                    continue
+                }
+                val end = matchingBrace(source, brace)
+                val prelude = source.substring(i, brace).trim().lowercase()
+                if (prelude == "@media" || prelude.startsWith("@media ")) {
+                    if (appliesToScreen(prelude.removePrefix("@media").trim())) {
+                        out.append(stripNonScreenAtRules(source.substring(brace + 1, end)))
+                    }
+                }
+                i = end + 1
+            }
+            else -> {
+                out.append(source[i])
+                i += 1
+            }
+        }
+    }
+    return out.toString()
+}
+
+/** 返回与 `{` 配对的 `}` 下标；配对失败时返回字符串末尾。 */
+private fun matchingBrace(source: String, open: Int): Int {
+    var depth = 1
+    var quote: Char? = null
+    var i = open + 1
+    while (i < source.length) {
+        val char = source[i]
+        when {
+            quote != null -> if (char == quote) quote = null
+            char == '"' || char == '\'' -> quote = char
+            char == '{' -> depth += 1
+            char == '}' -> {
+                depth -= 1
+                if (depth == 0) return i
+            }
+        }
+        i += 1
+    }
+    return source.length - 1
+}
+
+/** 只接受明确的屏幕媒体类型；带宽度等特性的查询无法在离线判分时求值。 */
+private fun appliesToScreen(query: String): Boolean =
+    query.split(',').any { part ->
+        val media = part.trim()
+        media == "screen" || media == "all"
+    }
 
 private fun evaluateVisibility(element: Element, rules: List<VisibilityRule>): ElementVisibility {
     var display: CssVisibilityValue? = null
@@ -306,11 +383,15 @@ private fun evaluateVisibility(element: Element, rules: List<VisibilityRule>): E
  * 遍历 DOM 取可见文字。display:none 会隐藏整棵子树；visibility 可被后代显式覆盖，
  * 因此只跳过继承到 hidden 的文本节点，保留 `visibility:visible` 的子元素。
  */
-private fun visibleText(root: Element, states: Map<Element, ElementVisibility>): String {
+private fun visibleText(
+    root: Element,
+    states: Map<Element, ElementVisibility>,
+    inheritedVisibilityHidden: Boolean,
+): String {
     val builder = StringBuilder()
-    fun visit(node: Node, inheritedVisibilityHidden: Boolean) {
+    fun visit(node: Node, visibilityHiddenFromParent: Boolean) {
         when (node) {
-            is TextNode -> if (!inheritedVisibilityHidden) builder.append(node.wholeText)
+            is TextNode -> if (!visibilityHiddenFromParent) builder.append(node.wholeText)
             is Element -> {
                 val state = states[node] ?: ElementVisibility(false, null)
                 if (state.displayHidden) return
@@ -318,7 +399,7 @@ private fun visibleText(root: Element, states: Map<Element, ElementVisibility>):
                     builder.append(' ')
                     return
                 }
-                val visibilityHidden = state.visibilityHidden ?: inheritedVisibilityHidden
+                val visibilityHidden = state.visibilityHidden ?: visibilityHiddenFromParent
                 val block = node.isBlock
                 if (block) builder.append(' ')
                 node.childNodes().forEach { child -> visit(child, visibilityHidden) }
@@ -326,7 +407,7 @@ private fun visibleText(root: Element, states: Map<Element, ElementVisibility>):
             }
         }
     }
-    visit(root, false)
+    visit(root, inheritedVisibilityHidden)
     return builder.toString().replace(Regex("\\s+"), " ").trim()
 }
 
@@ -425,6 +506,7 @@ private data class CssVisibilityValue(
 
 private const val INLINE_STYLE_SPECIFICITY = 1_000
 
+// 满血官方判分规则使用 21（见 docs/iq-test.md）；按组合推理算出的 29 不参与判分，不自行改题。
 private const val CANDY_EXPECTED_ANSWER = 21
 private val CANDY_CHINESE_ANSWER_PATTERN = Regex(
     "(?<![\\d〇零一二三四五六七八九十百千万亿两廿])(?:二十一|廿一)" +

@@ -243,13 +243,11 @@ class OpenAiVisionAssessor(
         val verdict = when {
             hasFailed -> IqJudgeVerdict.INCORRECT
             explicit == IqJudgeVerdict.INCORRECT -> IqJudgeVerdict.INCORRECT
+            // 五项必检维度缺失时，不能只凭模型自报 passed 或分数自动通过。
+            aspects.isEmpty() -> IqJudgeVerdict.REVIEW
             hasUnknown -> IqJudgeVerdict.REVIEW
             explicit != null -> explicit
-            aspects.isNotEmpty() -> IqJudgeVerdict.PASSED
-            score == null -> IqJudgeVerdict.REVIEW
-            score >= 70.0 -> IqJudgeVerdict.PASSED
-            score >= 40.0 -> IqJudgeVerdict.REVIEW
-            else -> IqJudgeVerdict.INCORRECT
+            else -> IqJudgeVerdict.PASSED
         }
         return VisionAssessment(verdict, score, reason, aspects)
     }

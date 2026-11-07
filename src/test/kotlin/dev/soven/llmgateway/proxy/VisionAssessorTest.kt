@@ -17,12 +17,28 @@ class VisionAssessorTest {
     }
 
     @Test
-    fun `parses explicit verdict and score`() {
+    fun `parses score and reason but requires aspects for a pass`() {
         val result = assessor.parseAssessment("""{"verdict":"passed","score":86,"reason":"鹈鹕和自行车清晰"}""")
 
-        assertEquals(IqJudgeVerdict.PASSED, result.verdict)
+        // 五项必检维度缺失时，模型自报 passed 不能直接通过。
+        assertEquals(IqJudgeVerdict.REVIEW, result.verdict)
         assertEquals(86.0, result.score)
         assertEquals("鹈鹕和自行车清晰", result.reason)
+    }
+
+    @Test
+    fun `all five aspects passed yields passed`() {
+        val text = """
+            {"aspects":{
+              "鹈鹕特征":{"status":"passed","detail":"白色长颈鸟"},
+              "自行车结构":{"status":"passed","detail":"结构完整"},
+              "骑行关系":{"status":"passed","detail":"坐在车座上"},
+              "动画连贯性":{"status":"passed","detail":"逐帧有连续运动"},
+              "画面完成度":{"status":"passed","detail":"主体完整"}
+            },"verdict":"passed","score":90,"reason":"五项通过"}
+        """.trimIndent()
+
+        assertEquals(IqJudgeVerdict.PASSED, assessor.parseAssessment(text).verdict)
     }
 
     @Test
@@ -36,10 +52,10 @@ class VisionAssessorTest {
     }
 
     @Test
-    fun `infers verdict from score when verdict missing`() {
-        assertEquals(IqJudgeVerdict.PASSED, assessor.parseAssessment("""{"score":75}""").verdict)
+    fun `score alone is not enough to pass without aspects`() {
+        assertEquals(IqJudgeVerdict.REVIEW, assessor.parseAssessment("""{"score":75}""").verdict)
         assertEquals(IqJudgeVerdict.REVIEW, assessor.parseAssessment("""{"score":55}""").verdict)
-        assertEquals(IqJudgeVerdict.INCORRECT, assessor.parseAssessment("""{"score":20}""").verdict)
+        assertEquals(IqJudgeVerdict.REVIEW, assessor.parseAssessment("""{"score":20}""").verdict)
     }
 
     @Test
@@ -48,10 +64,10 @@ class VisionAssessorTest {
     }
 
     @Test
-    fun `unknown verdict falls back to score`() {
+    fun `unknown verdict without aspects asks for review`() {
         val result = assessor.parseAssessment("""{"verdict":"maybe","score":72}""")
 
-        assertEquals(IqJudgeVerdict.PASSED, result.verdict)
+        assertEquals(IqJudgeVerdict.REVIEW, result.verdict)
     }
 
     @Test
