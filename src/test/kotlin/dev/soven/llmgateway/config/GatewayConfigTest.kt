@@ -45,6 +45,109 @@ class GatewayConfigTest {
     }
 
     @Test
+    fun visionJudgeIsDisabledByDefault() {
+        val config = GatewayConfig.fromEnv(requiredEnv)
+
+        assertFalse(config.iqVisionEnabled)
+        assertEquals(60_000L, config.iqJudgeTimeoutMs)
+        assertEquals(1_024, config.iqVisionRenderWidth)
+        assertEquals(4_000_000, config.iqVisionMaxImageBytes)
+        assertEquals("", config.iqVisionBrowserPath)
+        assertEquals(15_000L, config.iqVisionBrowserTimeoutMs)
+    }
+
+    @Test
+    fun visionJudgeRaisesDefaultJudgeTimeoutToCoverRenderingBudget() {
+        val config = GatewayConfig.fromEnv(
+            requiredEnv + mapOf(
+                "IQ_VISION_ENABLED" to "true",
+                "IQ_VISION_BASE_URL" to "http://localhost:8080/v1",
+                "IQ_VISION_MODEL" to "vision-model",
+            ),
+        )
+
+        // 6 帧 × 15 秒浏览器超时 + 60 秒视觉模型超时。
+        assertEquals(150_000L, config.iqJudgeTimeoutMs)
+    }
+
+    @Test
+    fun visionJudgeKeepsExplicitJudgeTimeout() {
+        val config = GatewayConfig.fromEnv(
+            requiredEnv + mapOf(
+                "IQ_VISION_ENABLED" to "true",
+                "IQ_VISION_BASE_URL" to "http://localhost:8080/v1",
+                "IQ_VISION_MODEL" to "vision-model",
+                "IQ_JUDGE_TIMEOUT_MS" to "60000",
+            ),
+        )
+
+        assertEquals(60_000L, config.iqJudgeTimeoutMs)
+    }
+
+    @Test
+    fun visionJudgeRequiresEndpointAndModelWhenEnabled() {
+        assertFailsWith<IllegalArgumentException> {
+            GatewayConfig.fromEnv(requiredEnv + ("IQ_VISION_ENABLED" to "true"))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            GatewayConfig.fromEnv(
+                requiredEnv + mapOf(
+                    "IQ_VISION_ENABLED" to "true",
+                    "IQ_VISION_BASE_URL" to "http://localhost:8080/v1",
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun visionJudgeReadsEndpointModelAndLimits() {
+        val config = GatewayConfig.fromEnv(
+            requiredEnv + mapOf(
+                "IQ_VISION_ENABLED" to "true",
+                "IQ_VISION_BASE_URL" to "http://localhost:8080/v1",
+                "IQ_VISION_API_KEY" to "vision-key",
+                "IQ_VISION_MODEL" to "vision-model",
+                "IQ_VISION_TIMEOUT_MS" to "90000",
+                "IQ_VISION_RENDER_WIDTH" to "640",
+                "IQ_VISION_MAX_IMAGE_BYTES" to "500000",
+                "IQ_VISION_BROWSER_PATH" to "/usr/bin/google-chrome-stable",
+                "IQ_VISION_BROWSER_TIMEOUT_MS" to "20000",
+            ),
+        )
+
+        assertTrue(config.iqVisionEnabled)
+        assertEquals("http://localhost:8080/v1", config.iqVisionBaseUrl)
+        assertEquals("vision-key", config.iqVisionApiKey)
+        assertEquals("vision-model", config.iqVisionModel)
+        assertEquals(90_000L, config.iqVisionTimeoutMs)
+        assertEquals(640, config.iqVisionRenderWidth)
+        assertEquals(500_000, config.iqVisionMaxImageBytes)
+        assertEquals("/usr/bin/google-chrome-stable", config.iqVisionBrowserPath)
+        assertEquals(20_000L, config.iqVisionBrowserTimeoutMs)
+    }
+
+    @Test
+    fun visionJudgeRejectsOutOfRangeBrowserTimeout() {
+        assertFailsWith<IllegalArgumentException> {
+            GatewayConfig.fromEnv(requiredEnv + ("IQ_VISION_BROWSER_TIMEOUT_MS" to "500"))
+        }
+    }
+
+    @Test
+    fun visionJudgeRejectsOutOfRangeRenderWidth() {
+        assertFailsWith<IllegalArgumentException> {
+            GatewayConfig.fromEnv(
+                requiredEnv + mapOf(
+                    "IQ_VISION_ENABLED" to "true",
+                    "IQ_VISION_BASE_URL" to "http://localhost:8080/v1",
+                    "IQ_VISION_MODEL" to "vision-model",
+                    "IQ_VISION_RENDER_WIDTH" to "128",
+                ),
+            )
+        }
+    }
+
+    @Test
     fun trustedProxyNetworkNormalizesIpv4MappedIpv6Prefixes() {
         val config = GatewayConfig.fromEnv(
             requiredEnv + ("TRUSTED_PROXY_CIDRS" to "::ffff:192.0.2.0/120"),

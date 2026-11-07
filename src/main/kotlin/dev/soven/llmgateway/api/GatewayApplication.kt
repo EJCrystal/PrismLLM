@@ -3,7 +3,10 @@ package dev.soven.llmgateway.api
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.config.TrustedProxyNetwork
 import dev.soven.llmgateway.db.DatabaseFactory
+import dev.soven.llmgateway.proxy.BrowserScreenshotRenderer
 import dev.soven.llmgateway.proxy.GatewayMetrics
+import dev.soven.llmgateway.proxy.HtmlImageRenderer
+import dev.soven.llmgateway.proxy.UnavailableBrowserRenderer
 import dev.soven.llmgateway.proxy.isGeminiRequestPath
 import dev.soven.llmgateway.proxy.RequestLogWriter
 import dev.soven.llmgateway.proxy.UpstreamOccupancy
@@ -253,7 +256,11 @@ private fun escapeLogValue(value: String, maxLength: Int): String {
  * @author 文杰
  * @since 2026-10-21
  */
-class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
+class GatewayApplication(
+    val config: GatewayConfig,
+    /** 测试可注入渲染器；生产环境留空，自动使用无头浏览器。 */
+    private val visionRendererOverride: HtmlImageRenderer? = null,
+) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(GatewayApplication::class.java)
     private val closed = AtomicBoolean(false)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -278,6 +285,7 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
+    val iqTestRunRepository = dev.soven.llmgateway.repo.IqTestRunRepository(databaseFactory.database)
     val upstreamRequestSettingsRepository = UpstreamRequestSettingsRepository(databaseFactory.database)
     val upstreamHeaderCatalogRepository = UpstreamHeaderCatalogRepository(databaseFactory.database)
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
@@ -314,6 +322,70 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
             requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
             socketTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
         }
+    }
+
+    val manxueHtmlClassifier = dev.soven.llmgateway.proxy.ManxueHtmlClassifier(
+        httpClient = httpClient,
+        baseUrl = config.manxueApiBaseUrl,
+        timeoutMs = config.manxueTimeoutMs,
+    )
+    val iqJudgeRegistry = dev.soven.llmgateway.plugin.iq.IqJudgeRegistry(
+        pluginDirectory = config.iqJudgePluginDir,
+        builtIns = buildList {
+            add(dev.soven.llmgateway.plugin.iq.LocalStructureIqJudge())
+            if (config.manxueEnabled) {
+                add(dev.soven.llmgateway.plugin.iq.ManxueIqJudge(manxueHtmlClassifier))
+            }
+            if (config.iqVisionEnabled) {
+                add(
+                    dev.soven.llmgateway.plugin.iq.VisionIqJudge(
+                        renderer = visionRendererOverride ?: createVisionRenderer(),
+                        assessor = dev.soven.llmgateway.proxy.OpenAiVisionAssessor(
+                            httpClient = httpClient,
+                            baseUrl = config.iqVisionBaseUrl,
+                            apiKey = config.iqVisionApiKey.takeIf { it.isNotBlank() },
+                            model = config.iqVisionModel,
+                            timeoutMs = config.iqVisionTimeoutMs,
+                        ),
+                        model = config.iqVisionModel,
+                    ),
+                )
+            }
+        },
+    )
+    val iqJudgeService = dev.soven.llmgateway.plugin.iq.IqJudgeService(
+        registry = iqJudgeRegistry,
+        timeoutMs = config.iqJudgeTimeoutMs,
+    )
+
+    private fun createVisionRenderer(): HtmlImageRenderer {
+        val visionBudgetMs = 6 * config.iqVisionBrowserTimeoutMs + config.iqVisionTimeoutMs
+        if (config.iqJudgeTimeoutMs < visionBudgetMs) {
+            logger.warn(
+                "IQ_JUDGE_TIMEOUT_MS={}ms 小于视觉判分最坏预算 {}ms（6 帧渲染 + 视觉模型），" +
+                    "判分可能提前超时并转为需人工查看",
+                config.iqJudgeTimeoutMs,
+                visionBudgetMs,
+            )
+        }
+        val executable = BrowserScreenshotRenderer.resolveExecutable(config.iqVisionBrowserPath)
+        if (executable == null) {
+            if (config.iqVisionBrowserPath.isNotBlank()) {
+                logger.warn("IQ_VISION_BROWSER_PATH 指向的浏览器不可执行：{}", config.iqVisionBrowserPath)
+            }
+            logger.warn(
+                "未找到无头浏览器，IQ 视觉判分将返回需人工查看；" +
+                    "请安装 Chrome/Chromium 或设置 IQ_VISION_BROWSER_PATH。",
+            )
+            return UnavailableBrowserRenderer
+        }
+        logger.info("IQ 视觉判分使用无头浏览器：{}", executable)
+        return BrowserScreenshotRenderer(
+            executable = executable,
+            maxWidth = config.iqVisionRenderWidth,
+            maxImageBytes = config.iqVisionMaxImageBytes,
+            timeoutMs = config.iqVisionBrowserTimeoutMs,
+        )
     }
 
     val modelPriceReferenceService = ModelPriceReferenceService(httpClient)
@@ -627,6 +699,8 @@ class GatewayApplication(val config: GatewayConfig) : AutoCloseable {
         oauthQuotaService.close()
         oauthTokenService.close()
         scope.cancel()
+        iqJudgeService.close()
+        iqJudgeRegistry.close()
         httpClient.close()
         searchHttpClient.close()
         channelQuotaService.close()

@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.NewIqTestRun
 import dev.soven.llmgateway.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider
 import dev.soven.llmgateway.domain.ChannelKeyRecord
@@ -26,6 +27,14 @@ import dev.soven.llmgateway.oauth.OAuthRefreshResult
 import dev.soven.llmgateway.oauth.OAuthUnavailableReason
 import dev.soven.llmgateway.oauth.proxyAddress
 import dev.soven.llmgateway.proxy.CatalogModel
+import dev.soven.llmgateway.proxy.IqBenchmark
+import dev.soven.llmgateway.proxy.IqVerdict
+import dev.soven.llmgateway.proxy.analyzePelicanStructure
+import dev.soven.llmgateway.proxy.evaluateIqTest
+import dev.soven.llmgateway.proxy.extractHtmlDocument
+import dev.soven.llmgateway.spi.iq.IqJudgeRequest
+import dev.soven.llmgateway.spi.iq.IqJudgeResult
+import dev.soven.llmgateway.spi.iq.IqJudgeVerdict
 import dev.soven.llmgateway.proxy.fetchUpstreamModels
 import dev.soven.llmgateway.proxy.modelListProtocol
 import dev.soven.llmgateway.proxy.probeUpstreamProtocols
@@ -600,6 +609,219 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 headerProfiles = app.upstreamHeaderCatalogService.profiles(),
             )
             call.respond(result.toResponse(model, protocol, credential.id, credential.name, prompt))
+        }
+
+        get("/iq-tests/benchmarks") {
+            call.requireAdmin(app)
+            call.respond(IqBenchmark.entries.map { it.toDefinitionResponse() })
+        }
+
+        get("/iq-tests/judges") {
+            call.requireAdmin(app)
+            call.respond(
+                IqJudgesResponse(
+                    judges = app.iqJudgeRegistry.judgeInfos.map { it.toResponse() },
+                    failures = app.iqJudgeRegistry.loadFailures.map { it.toResponse() },
+                    defaultJudgeId = app.effectiveIqDefaultJudge(),
+                ),
+            )
+        }
+
+        get("/iq-tests/targets") {
+            call.requireAdmin(app)
+            val accountsByChannel = app.oauthAccountRepository.listByChannel()
+            val targets = app.channelRepository.list().flatMap { channel ->
+                val hydrated = channel.copy(oauthAccounts = accountsByChannel[channel.id].orEmpty())
+                hydrated.models.mapNotNull { model ->
+                    val credentials = hydrated.credentialsFor(model)
+                    if (credentials.isEmpty()) {
+                        null
+                    } else {
+                        IqTestTargetResponse(
+                            channelId = channel.id,
+                            channelName = channel.name,
+                            channelEnabled = channel.enabled,
+                            model = model,
+                            protocols = channel.protocols.map { it.value },
+                            credentials = credentials.map {
+                                IqTestTargetCredentialResponse(it.id, it.name, it.priority)
+                            },
+                        )
+                    }
+                }
+            }
+            call.respond(targets)
+        }
+
+        get("/iq-tests") {
+            call.requireAdmin(app)
+            val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 50
+            call.respond(app.iqTestRunRepository.list(limit).map { it.toResponse(includeDetail = false) })
+        }
+
+        get("/iq-tests/{id}") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少检测记录 id").toLongOrNull()
+                ?: throw badRequest("invalid_iq_test", "检测记录 id 无效")
+            val record = app.iqTestRunRepository.find(id)
+                ?: throw notFound("iq_test_not_found", "检测记录不存在")
+            call.respond(record.toResponse(includeDetail = true))
+        }
+
+        post("/iq-tests") {
+            call.requireAdmin(app)
+            val request = call.receive<IqTestRunRequest>()
+            val benchmark = IqBenchmark.fromValue(request.benchmark)
+                ?: throw badRequest("invalid_iq_benchmark", "智商检测题目无效")
+            val channelId = request.channelId.trim()
+            if (channelId.isEmpty()) throw badRequest("invalid_iq_test", "缺少渠道 id")
+            val channel = app.channelRepository.find(channelId)?.let { channelWithCredentials(app, it) }
+                ?: throw notFound("channel_not_found", "渠道不存在")
+            val model = request.model.trim()
+            if (model.isEmpty() || model.length > 200) {
+                throw badRequest("invalid_iq_test", "模型名长度必须在 1..200 之间")
+            }
+            val prompt = request.prompt?.trim()?.takeIf { it.isNotEmpty() } ?: benchmark.prompt
+            if (prompt.length > IQ_TEST_MAX_PROMPT_CHARS) {
+                throw badRequest("invalid_iq_test", "提示词长度不能超过 $IQ_TEST_MAX_PROMPT_CHARS 个字符")
+            }
+            if (model !in channel.models) {
+                throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
+            }
+            val credential = resolveChannelCredentialForModel(channel, model, request.keyId)
+            val protocol = request.protocol?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                GatewayProtocol.fromValue(it) ?: throw badRequest("invalid_iq_test_protocol", "检测协议无效")
+            } ?: preferredIqTestProtocol(channel)
+            if (protocol !in channel.protocols) {
+                throw badRequest("iq_test_protocol_unsupported", "渠道未启用协议 ${protocol.value}")
+            }
+            val judgeId = request.judgeId?.trim()?.takeIf { it.isNotEmpty() }
+                ?: app.effectiveIqDefaultJudge()
+            val judge = app.iqJudgeRegistry.find(judgeId)
+                ?: throw badRequest("iq_judge_not_found", "判分器「$judgeId」不存在")
+            val result = testChannelModelConnectivity(
+                channel = channel,
+                credentialRef = credential,
+                model = model,
+                protocol = protocol,
+                prompt = prompt,
+                credentials = app.oauthTokenService,
+                httpClient = app.httpClient,
+                timeoutMs = benchmark.timeoutMs,
+                maxOutputTokens = benchmark.maxOutputTokens,
+                maxResponseChars = IQ_TEST_MAX_RESPONSE_CHARS,
+                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+            )
+            val html = extractHtmlDocument(result.responseText)
+            val structure = analyzePelicanStructure(result.responseText)
+            val judgeResult = when {
+                !result.success -> null
+                html == null -> IqJudgeResult(
+                    verdict = IqJudgeVerdict.FAILED,
+                    label = "无法判定",
+                    reason = "模型未返回可识别的 HTML",
+                )
+                else -> app.iqJudgeService.judge(
+                    judgeId = judge.id,
+                    request = IqJudgeRequest(
+                        benchmark = benchmark.value,
+                        html = html,
+                        model = model,
+                        structure = structure,
+                    ),
+                )
+            }
+            val evaluation = evaluateIqTest(
+                benchmark = benchmark,
+                success = result.success,
+                responseText = result.responseText,
+                errorMessage = result.errorMessage,
+                structure = structure,
+                judgeResult = judgeResult,
+            )
+            val record = app.iqTestRunRepository.insert(
+                NewIqTestRun(
+                    benchmark = benchmark.value,
+                    channelId = channel.id,
+                    channelName = channel.name.take(100),
+                    channelKeyId = credential.id,
+                    channelKeyName = credential.name.take(100),
+                    model = model,
+                    upstreamModel = model,
+                    protocol = protocol.value,
+                    success = result.success,
+                    statusCode = result.statusCode,
+                    latencyMs = result.latencyMs,
+                    verdict = evaluation.verdict.value,
+                    prompt = prompt,
+                    responseText = result.responseText,
+                    expectedAnswer = evaluation.expectedAnswer,
+                    matchedAnswer = evaluation.matchedAnswer,
+                    errorMessage = result.errorMessage,
+                    usage = result.usage,
+                    upstreamReportedModel = result.upstreamReportedModel?.take(200),
+                    judgeId = judge.id,
+                    judgeLabel = judge.displayName.take(120),
+                    judgeVerdict = judgeResult?.verdict?.value,
+                    judgeResultLabel = judgeResult?.label?.take(120),
+                    judgeReason = judgeResult?.reason,
+                    judgeScore = judgeResult?.score,
+                    judgeDetails = judgeResult?.details?.takeIf { it.isNotEmpty() }?.let { details ->
+                        buildJsonObject { details.forEach { (key, value) -> put(key, value) } }.toString()
+                    },
+                    judgeCheckedAt = judgeResult?.let { System.currentTimeMillis() },
+                ),
+            )
+            call.markAdminAuditDetails(
+                buildJsonObject {
+                    put("channelId", channel.id)
+                    put("model", model)
+                    put("benchmark", benchmark.value)
+                    put("keyId", credential.id)
+                    put("protocol", protocol.value)
+                    put("judgeId", judge.id)
+                    put("judgeVerdict", judgeResult?.verdict?.value ?: "none")
+                },
+            )
+            call.respond(record.toResponse(includeDetail = true))
+        }
+
+        put("/iq-tests/{id}/manual-verdict") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少检测记录 id").toLongOrNull()
+                ?: throw badRequest("invalid_iq_test", "检测记录 id 无效")
+            val request = call.receive<IqTestManualVerdictRequest>()
+            val verdict = request.verdict.trim().lowercase()
+            if (verdict != IqVerdict.PASSED.value && verdict != IqVerdict.INCORRECT.value) {
+                throw badRequest("invalid_iq_manual_verdict", "人工判定必须是 passed 或 incorrect")
+            }
+            val score = request.score
+            if (score != null && score !in 1..5) {
+                throw badRequest("invalid_iq_manual_score", "人工评分必须在 1..5 之间")
+            }
+            val note = request.note?.trim()?.takeIf { it.isNotEmpty() }
+            if (note != null && note.length > 500) {
+                throw badRequest("invalid_iq_manual_note", "人工备注不能超过 500 个字符")
+            }
+            val existing = app.iqTestRunRepository.find(id)
+                ?: throw notFound("iq_test_not_found", "检测记录不存在")
+            if (existing.benchmark != IqBenchmark.PELICAN.value) {
+                throw badRequest("iq_manual_verdict_unsupported", "只有鹈鹕骑行支持人工判定")
+            }
+            if (extractHtmlDocument(existing.responseText) == null) {
+                throw badRequest("iq_manual_verdict_no_html", "该记录没有可人工判定的 HTML 作品")
+            }
+            val updated = app.iqTestRunRepository.updateManualVerdict(id, verdict, score, note)
+                ?: throw notFound("iq_test_not_found", "检测记录不存在")
+            call.markAdminAuditDetails(
+                buildJsonObject {
+                    put("id", id)
+                    put("verdict", verdict)
+                    score?.let { put("score", it) }
+                },
+            )
+            call.respond(updated.toResponse(includeDetail = true))
         }
 
         post("/channels") {
@@ -1808,6 +2030,21 @@ private fun resolveChannelCredential(channel: ChannelRecord, credentialId: Strin
         ?: throw badRequest("channel_key_unavailable", "渠道没有可用的上游凭据")
 }
 
+/** 配置的默认判分器不存在时回退到 local，再回退到第一个可用判分器。 */
+private fun GatewayApplication.effectiveIqDefaultJudge(): String {
+    val configured = config.iqDefaultJudge
+    if (iqJudgeRegistry.find(configured) != null) return configured
+    if (iqJudgeRegistry.find("local") != null) return "local"
+    return iqJudgeRegistry.judgeInfos.firstOrNull()?.id ?: "local"
+}
+
+/** 优先用 Responses，其次 Chat Completions；都不可用时回退到渠道的第一个协议。 */
+private fun preferredIqTestProtocol(channel: ChannelRecord): GatewayProtocol =
+    channel.protocols.firstOrNull { it == GatewayProtocol.RESPONSES }
+        ?: channel.protocols.firstOrNull { it == GatewayProtocol.CHAT_COMPLETIONS }
+        ?: channel.protocols.firstOrNull { it == GatewayProtocol.MESSAGES }
+        ?: channel.protocols.first()
+
 /** 为指定模型选择上游凭据；显式 id 必须支持该模型。 */
 private fun resolveChannelCredentialForModel(
     channel: ChannelRecord,
@@ -2323,6 +2560,8 @@ private fun isUniqueViolation(cause: Throwable): Boolean =
         .any { (it as? java.sql.SQLException)?.sqlState == "23505" }
 
 private const val MODEL_TEST_PROMPT_MAX = 4_000
+private const val IQ_TEST_MAX_RESPONSE_CHARS = 200_000
+private const val IQ_TEST_MAX_PROMPT_CHARS = 20_000
 
 private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLimits {
     if (request.dailyTokenLimit != null && request.dailyTokenLimit < 0) {

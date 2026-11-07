@@ -125,6 +125,8 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "POST" && path == "/admin/api/channels/model-discovery" -> "channel.discover_models"
     method == "POST" && CHANNEL_PROBE_PATTERN.matches(path) -> "channel.probe_protocols"
     method == "POST" && CHANNEL_MODEL_TEST_PATTERN.matches(path) -> "channel.model_test"
+    method == "POST" && path == "/admin/api/iq-tests" -> "iq_test.run"
+    method == "PUT" && IQ_TEST_MANUAL_VERDICT_PATTERN.matches(path) -> "iq_test.manual_verdict"
     method == "POST" && CHANNEL_COOLDOWN_CLEAR_PATTERN.matches(path) -> "channel.cooldown.clear"
     method == "POST" && path == "/admin/api/oauth-login/start" -> "oauth_account.login.start"
     method == "POST" && OAUTH_LOGIN_COMPLETE_PATTERN.matches(path) -> "oauth_account.login"
@@ -173,6 +175,7 @@ private fun sanitizeRequestId(value: String?): String {
 
 private val CHANNEL_PROBE_PATTERN = Regex("^/admin/api/channels/[^/]+/probe-protocols$")
 private val CHANNEL_MODEL_TEST_PATTERN = Regex("^/admin/api/channels/[^/]+/model-test$")
+private val IQ_TEST_MANUAL_VERDICT_PATTERN = Regex("^/admin/api/iq-tests/[^/]+/manual-verdict$")
 private val CHANNEL_COOLDOWN_CLEAR_PATTERN = Regex("^/admin/api/channels/[^/]+/cooldown/clear$")
 private val CHANNEL_ITEM_PATTERN = Regex("^/admin/api/channels/[^/]+$")
 private val OAUTH_ACCOUNT_ITEM_PATTERN = Regex("^/admin/api/oauth-accounts/[^/]+$")

@@ -62,6 +62,26 @@ openssl rand -base64 32
 | `UPSTREAM_HEADER_CATALOG_URL` | 空 | 可选的 HTTPS Manifest 链接，用于自定义覆盖全局请求头模板 |
 | `QUOTA_PLUGIN_DIR` | `plugins` | 渠道额度插件 JAR 所在目录；目录不存在时不加载扩展 |
 
+### 智商检测
+
+| 变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `IQ_DEFAULT_JUDGE` | `local` | 默认判分器 ID；不存在时退回 `local`，再退回第一个可用判分器 |
+| `IQ_JUDGE_TIMEOUT_MS` | `60000` | 单次判分的总超时（毫秒，1000–300000）；启用 `vision` 且未显式配置时自动提高到 6×浏览器单帧超时+视觉超时（最多 300000） |
+| `IQ_JUDGE_PLUGIN_DIR` | `plugins/iq-judges` | 外部判分器 JAR 所在目录；目录不存在时不加载扩展 |
+| `MANXUE_ENABLED` | `true` | 是否注册满血AI HTML 分类判分器 |
+| `MANXUE_API_BASE_URL` | `https://manxue.ai` | 满血 API 基础地址 |
+| `MANXUE_TIMEOUT_MS` | `60000` | 满血 POST + 轮询的总超时（毫秒） |
+| `IQ_VISION_ENABLED` | `false` | 是否注册内置视觉判分器（无头浏览器截图 + 多模态模型） |
+| `IQ_VISION_BASE_URL` | 空 | OpenAI 兼容端点基础地址；启用时必填 |
+| `IQ_VISION_API_KEY` | 空 | 可选的端点 Bearer 令牌，仅保存在进程内 |
+| `IQ_VISION_MODEL` | 空 | 多模态模型名；启用时必填 |
+| `IQ_VISION_TIMEOUT_MS` | `60000` | 单次视觉评分超时（毫秒，1000–300000） |
+| `IQ_VISION_RENDER_WIDTH` | `1024` | 单帧 SVG 截图宽度上限（256–2048）；多帧判分时单帧最大 640 |
+| `IQ_VISION_MAX_IMAGE_BYTES` | `4000000` | 单帧截图大小上限（100000–20000000 字节） |
+| `IQ_VISION_BROWSER_PATH` | 空 | Chrome/Chromium 可执行文件或 PATH 中的命令名；为空时自动探测常见路径 |
+| `IQ_VISION_BROWSER_TIMEOUT_MS` | `15000` | 单帧无头浏览器渲染超时（毫秒，1000–60000） |
+
 ### Web 搜索代理
 
 启用后，网关会把 Responses 请求里的内置 `web_search` 改写成普通 `web_search` 函数工具，由网关调用搜索 API 代跑搜索，再以 `web_search_call` 返回给调用方。同时支持原生 Responses 与 Chat 的渠道也会改走该代理，保证配置搜索后端后内置 `web_search` 一定被执行；只支持 Responses 的渠道保持透传。`filters.allowed_domains` 会传给搜索后端并再次过滤结果；上游的 `refusal` 会保留为 Responses 拒绝内容项；流式请求在搜索和文本产出时增量发送事件。未启用时保留原有协议转换行为。
