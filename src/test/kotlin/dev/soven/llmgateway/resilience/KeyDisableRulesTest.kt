@@ -310,6 +310,21 @@ class KeyDisableRulesTest {
     }
 
     @Test
+    fun `merging oversized stored policies truncates instead of throwing`() {
+        // 库里可能有超出单份上限的历史数据（例如手工改库）。解析时宁可截断也不能抛：
+        // 抛出去会让该渠道所有记账与管理接口一起失败。渠道规则优先保留。
+        val channelRules = (1..KeyDisablePolicy.MAX_RULES).map { rule(id = "channel_$it", threshold = 1) }
+        val oversizedGlobal = (1..KeyDisablePolicy.MAX_EFFECTIVE_RULES).map { rule(id = "global_$it", threshold = 1) }
+        val merged = KeyDisablePolicy(rules = channelRules).fallbackTo(KeyDisablePolicy(rules = oversizedGlobal))
+
+        assertEquals(KeyDisablePolicy.MAX_EFFECTIVE_RULES, merged.rules.size)
+        assertTrue(merged.rules.take(KeyDisablePolicy.MAX_RULES).all { it.id.startsWith("channel_") })
+        assertTrue(merged.rules.drop(KeyDisablePolicy.MAX_RULES).all { it.id.startsWith("global_") })
+        // 只保留能容纳的全局兜底：超出的部分被丢弃，而不是让整份策略失效。
+        assertEquals("global_${KeyDisablePolicy.MAX_RULES}", merged.rules.last().id)
+    }
+
+    @Test
     fun `channel mode maps the three persisted shapes`() {
         assertEquals(ChannelKeyDisableMode.INHERIT, ChannelKeyDisableMode.of(null))
         assertEquals(ChannelKeyDisableMode.CUSTOM, ChannelKeyDisableMode.of(KeyDisablePolicy(rules = listOf(rule()))))

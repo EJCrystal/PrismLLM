@@ -209,13 +209,20 @@ enum class ChannelKeyDisableMode(val value: String) {
  *
  * 合并结果最多 [MAX_EFFECTIVE_RULES] 条：两份策略各自合法时，加在一起也不该让解析失败。
  * 单份策略仍受 [MAX_RULES] 限制，由保存入口校验，避免有人把两倍上限当成单份上限。
+ * 万一库里已有超出单份上限的历史数据，合并按渠道规则优先截断，宁可少兜底也不让解析抛异常——
+ * 解析失败会让该渠道的记账与管理接口一起 500，比丢几条兜底规则严重得多。
  */
 fun KeyDisablePolicy.fallbackTo(global: KeyDisablePolicy): KeyDisablePolicy {
     if (!enabled || !global.enabled) return this
     val ownIds = rules.mapTo(HashSet(rules.size)) { it.id }
+    val merged = rules + global.rules.filterNot { it.id in ownIds }
     return KeyDisablePolicy(
         enabled = true,
-        rules = rules + global.rules.filterNot { it.id in ownIds },
+        rules = if (merged.size <= KeyDisablePolicy.MAX_EFFECTIVE_RULES) {
+            merged
+        } else {
+            merged.take(KeyDisablePolicy.MAX_EFFECTIVE_RULES)
+        },
     )
 }
 
