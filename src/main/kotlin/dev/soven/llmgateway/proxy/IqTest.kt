@@ -166,8 +166,24 @@ private fun evaluatePelican(
 }
 
 private fun evaluateCandy(text: String): IqTestEvaluation {
-    val visibleText = extractVisibleText(text)
-    val normalized = Normalizer.normalize(visibleText, Normalizer.Form.NFKC)
+    val visible = extractVisibleTextResult(text)
+    if (visible.uncertain) {
+        // 媒体条件无法在离线判分时求值，答案是否可见交给人工确认。
+        return IqTestEvaluation(
+            verdict = IqVerdict.REVIEW,
+            checks = listOf(
+                IqStructureCheck(
+                    id = "answer",
+                    label = "最终答案包含 $CANDY_EXPECTED_ANSWER",
+                    passed = false,
+                    detail = "页面包含无法在离线判分时求值的媒体条件，请人工确认答案是否可见",
+                ),
+            ),
+            html = extractHtmlDocument(text),
+            expectedAnswer = CANDY_EXPECTED_ANSWER,
+        )
+    }
+    val normalized = Normalizer.normalize(visible.text, Normalizer.Form.NFKC)
     val matched = containsStandaloneNumber(normalized, CANDY_EXPECTED_ANSWER) ||
         CANDY_CHINESE_ANSWER_PATTERN.containsMatchIn(normalized)
     val checks = listOf(
@@ -249,26 +265,44 @@ internal fun extractHtmlDocument(raw: String?): String? {
  * 提取 HTML 的可见文字，避免把 CSS 里的 `21px` 或颜色值当成糖果答案。
  * 纯文本响应按原样返回。
  */
-internal fun extractVisibleText(raw: String): String {
-    val html = extractHtmlDocument(raw) ?: return raw
+internal fun extractVisibleText(raw: String): String = extractVisibleTextResult(raw).text
+
+private fun extractVisibleTextResult(raw: String): VisibleText {
+    val html = extractHtmlDocument(raw) ?: return VisibleText(raw)
     val document = Jsoup.parse(html)
-    val rules = parseVisibilityRules(document)
+    val analysis = parseVisibilityRules(document)
     document.select("script, style, template").remove()
-    val body = document.body() ?: return ""
+    val body = document.body() ?: return VisibleText("", analysis.uncertain)
     val states = HashMap<Element, ElementVisibility>()
-    document.getAllElements().forEach { element -> states[element] = evaluateVisibility(element, rules) }
+    document.getAllElements().forEach { element ->
+        states[element] = evaluateVisibility(element, analysis.rules)
+    }
     // html 根元素上的 display/visibility 同样会隐藏整个页面，需要参与继承。
     val root = document.selectFirst("html") ?: body
     val rootState = states[root] ?: ElementVisibility(false, null)
-    if (rootState.displayHidden) return ""
-    return visibleText(body, states, rootState.visibilityHidden ?: false)
+    if (rootState.displayHidden) return VisibleText("", analysis.uncertain)
+    return VisibleText(
+        visibleText(body, states, rootState.visibilityHidden ?: false),
+        analysis.uncertain,
+    )
 }
 
-private fun parseVisibilityRules(document: Document): List<VisibilityRule> {
+/** 可见文字，以及是否需要人工确认（页面包含离线判分无法求值的媒体条件）。 */
+private data class VisibleText(val text: String, val uncertain: Boolean = false)
+
+private data class VisibilityAnalysis(
+    val rules: List<VisibilityRule>,
+    val uncertain: Boolean,
+)
+
+private fun parseVisibilityRules(document: Document): VisibilityAnalysis {
     val rules = mutableListOf<VisibilityRule>()
     var order = 0
+    var uncertain = false
     document.select("style").forEach { style ->
-        CSS_RULE_PATTERN.findAll(stripNonScreenAtRules(style.data())).forEach { match ->
+        val screen = screenApplicableCss(style.data())
+        uncertain = uncertain || screen.uncertain
+        CSS_RULE_PATTERN.findAll(screen.css).forEach { match ->
             val declarations = parseVisibilityDeclarations(match.groupValues[2])
             if (declarations.isNotEmpty()) {
                 val ruleOrder = order++
@@ -278,19 +312,21 @@ private fun parseVisibilityRules(document: Document): List<VisibilityRule> {
             }
         }
     }
-    return rules
+    return VisibilityAnalysis(rules, uncertain)
 }
 
 /**
- * 去掉当前预览环境不生效的 at-rule 块。
+ * 去掉当前预览环境不生效的 at-rule 块，并按 1024×768 的桌面预览求值媒体查询。
  *
  * 直接对整段 CSS 做正则会把 `@media print{p{display:none}}` 里的声明当成屏幕样式。
- * 这里按大括号配对提取 at-rule：`@media screen` / `all` 的规则提升到顶层参与层叠；
- * print、带宽度等媒体特性的查询以及其他 at-rule 整块忽略，而不是无条件应用。
+ * 这里按大括号配对提取 at-rule：媒体查询为真时把内部规则提升到顶层参与层叠；
+ * 为假时整块忽略；包含无法离线求值的媒体特性且会影响可见性时标记
+ * [ScreenCss.uncertain]，由调用方转人工确认，而不是猜测。
  */
-private fun stripNonScreenAtRules(css: String): String {
+private fun screenApplicableCss(css: String): ScreenCss {
     val source = css.replace(Regex("(?s)/\\*.*?\\*/"), "")
     val out = StringBuilder(source.length)
+    var uncertain = false
     var i = 0
     while (i < source.length) {
         when (source[i]) {
@@ -310,10 +346,29 @@ private fun stripNonScreenAtRules(css: String): String {
                 }
                 val end = matchingBrace(source, brace)
                 val prelude = source.substring(i, brace).trim().lowercase()
-                if (prelude == "@media" || prelude.startsWith("@media ")) {
-                    if (appliesToScreen(prelude.removePrefix("@media").trim())) {
-                        out.append(stripNonScreenAtRules(source.substring(brace + 1, end)))
+                val inner = source.substring(brace + 1, end)
+                when {
+                    prelude == "@media" || prelude.startsWith("@media ") -> {
+                        when (mediaApplies(prelude.removePrefix("@media").trim())) {
+                            true -> {
+                                val nested = screenApplicableCss(inner)
+                                out.append(nested.css)
+                                uncertain = uncertain || nested.uncertain
+                            }
+                            false -> Unit
+                            // 无法求值的条件只有在会影响 display/visibility 时才需要人工确认。
+                            null -> if (affectsVisibility(inner)) uncertain = true
+                        }
                     }
+                    // @layer 不改变媒体环境，内部规则继续参与层叠。
+                    prelude == "@layer" || prelude.startsWith("@layer ") -> {
+                        val nested = screenApplicableCss(inner)
+                        out.append(nested.css)
+                        uncertain = uncertain || nested.uncertain
+                    }
+                    // @supports 的条件同样无法离线求值，会影响可见性时转人工确认。
+                    prelude.startsWith("@supports") -> if (affectsVisibility(inner)) uncertain = true
+                    else -> Unit
                 }
                 i = end + 1
             }
@@ -323,7 +378,91 @@ private fun stripNonScreenAtRules(css: String): String {
             }
         }
     }
-    return out.toString()
+    return ScreenCss(out.toString(), uncertain)
+}
+
+private data class ScreenCss(val css: String, val uncertain: Boolean)
+
+private fun affectsVisibility(css: String): Boolean =
+    VISIBILITY_DECLARATION_PATTERN.containsMatchIn(css)
+
+/** 返回 null 表示该媒体查询无法在离线判分时求值。 */
+private fun mediaApplies(query: String): Boolean? {
+    var unknown = false
+    for (part in query.split(',')) {
+        when (singleMediaApplies(part.trim())) {
+            true -> return true
+            null -> unknown = true
+            false -> Unit
+        }
+    }
+    return if (unknown) null else false
+}
+
+private fun singleMediaApplies(query: String): Boolean? {
+    if (query.isEmpty()) return true
+    var text = query
+    var negated = false
+    when {
+        text.startsWith("not ", ignoreCase = true) -> {
+            negated = true
+            text = text.substring(4).trim()
+        }
+        text.startsWith("only ", ignoreCase = true) -> text = text.substring(5).trim()
+    }
+    var result: Boolean? = true
+    for (part in text.split(Regex("(?i)\\s+and\\s+"))) {
+        val value = mediaPartApplies(part.trim().lowercase())
+        result = when {
+            result == false || value == false -> false
+            result == null || value == null -> null
+            else -> true
+        }
+        if (result == false) break
+    }
+    return if (negated) result?.not() else result
+}
+
+/** 已知媒体类型按预览环境（屏幕）判定；其他类型和未知特性返回 null。 */
+private fun mediaPartApplies(part: String): Boolean? = when {
+    part == "screen" || part == "all" -> true
+    part in OTHER_MEDIA_TYPES -> false
+    part.startsWith("(") -> mediaFeatureApplies(part)
+    else -> null
+}
+
+/** 按固定预览视口求值宽度、高度和方向特性；其余特性交给人工确认。 */
+private fun mediaFeatureApplies(raw: String): Boolean? {
+    val feature = raw.trim().removePrefix("(").removeSuffix(")").trim()
+    val separator = feature.indexOf(':')
+    val name = if (separator >= 0) feature.substring(0, separator).trim() else feature
+    val value = if (separator >= 0) feature.substring(separator + 1).trim() else null
+    return when (name) {
+        "width" -> mediaLengthPx(value)?.let { PREVIEW_VIEWPORT_WIDTH.toFloat() == it }
+        "min-width" -> mediaLengthPx(value)?.let { PREVIEW_VIEWPORT_WIDTH >= it }
+        "max-width" -> mediaLengthPx(value)?.let { PREVIEW_VIEWPORT_WIDTH <= it }
+        "height" -> mediaLengthPx(value)?.let { PREVIEW_VIEWPORT_HEIGHT.toFloat() == it }
+        "min-height" -> mediaLengthPx(value)?.let { PREVIEW_VIEWPORT_HEIGHT >= it }
+        "max-height" -> mediaLengthPx(value)?.let { PREVIEW_VIEWPORT_HEIGHT <= it }
+        "orientation" -> when (value) {
+            "landscape" -> true
+            "portrait" -> false
+            else -> null
+        }
+        else -> null
+    }
+}
+
+/** 解析媒体特性里的长度；只支持与像素可换算的单位，其他单位交给人工确认。 */
+private fun mediaLengthPx(value: String?): Float? {
+    if (value == null) return null
+    val match = MEDIA_LENGTH_PATTERN.find(value) ?: return null
+    val number = match.groupValues[1].toFloatOrNull() ?: return null
+    return when (match.groupValues[2]) {
+        "", "px" -> number
+        "em", "rem" -> number * 16f
+        else -> null
+    }
 }
 
 /** 返回与 `{` 配对的 `}` 下标；配对失败时返回字符串末尾。 */
@@ -346,13 +485,6 @@ private fun matchingBrace(source: String, open: Int): Int {
     }
     return source.length - 1
 }
-
-/** 只接受明确的屏幕媒体类型；带宽度等特性的查询无法在离线判分时求值。 */
-private fun appliesToScreen(query: String): Boolean =
-    query.split(',').any { part ->
-        val media = part.trim()
-        media == "screen" || media == "all"
-    }
 
 private fun evaluateVisibility(element: Element, rules: List<VisibilityRule>): ElementVisibility {
     var display: CssVisibilityValue? = null
@@ -467,14 +599,22 @@ private fun parseVisibilityDeclarations(block: String): List<VisibilityDeclarati
         val rawValue = match.groupValues[2]
         val important = IMPORTANT_DECLARATION_PATTERN.containsMatchIn(rawValue)
         val value = IMPORTANT_DECLARATION_PATTERN.replace(rawValue, "").trim().lowercase()
-        VisibilityDeclaration(
-            property = property,
-            hidden = when (property) {
-                "display" -> value == "none"
-                else -> value == "hidden" || value == "collapse"
-            },
-            important = important,
-        )
+        val hidden = when (property) {
+            // 浏览器会忽略无效的 display 值，不能让 `display:none;display:invalid` 覆盖前一条声明。
+            "display" -> when (value) {
+                "none" -> true
+                in DISPLAY_VISIBLE_VALUES -> false
+                else -> return@mapNotNull null
+            }
+            else -> when (value) {
+                "hidden", "collapse" -> true
+                "visible", "initial", "revert", "revert-layer" -> false
+                // visibility 是继承属性；inherit/unset 表示跟随父元素。
+                "inherit", "unset" -> null
+                else -> return@mapNotNull null
+            }
+        }
+        VisibilityDeclaration(property, hidden, important)
     }.toList()
 
 private data class VisibilityRule(
@@ -486,12 +626,13 @@ private data class VisibilityRule(
 
 private data class VisibilityDeclaration(
     val property: String,
-    val hidden: Boolean,
+    /** null 表示 inherit/unset，跟随父元素。 */
+    val hidden: Boolean?,
     val important: Boolean,
 )
 
 private data class CssVisibilityValue(
-    val hidden: Boolean,
+    val hidden: Boolean?,
     val important: Boolean,
     val specificity: Int,
     val order: Int,
@@ -506,6 +647,10 @@ private data class CssVisibilityValue(
 
 private const val INLINE_STYLE_SPECIFICITY = 1_000
 
+/** 离线判分按管理台预览的桌面视口求值媒体查询。 */
+private const val PREVIEW_VIEWPORT_WIDTH = 1024
+private const val PREVIEW_VIEWPORT_HEIGHT = 768
+
 // 满血官方判分规则使用 21（见 docs/iq-test.md）；按组合推理算出的 29 不参与判分，不自行改题。
 private const val CANDY_EXPECTED_ANSWER = 21
 private val CANDY_CHINESE_ANSWER_PATTERN = Regex(
@@ -516,6 +661,18 @@ private val CANDY_CHINESE_ANSWER_PATTERN = Regex(
 private val CSS_RULE_PATTERN = Regex("(?is)([^{}]+)\\{([^{}]*)\\}")
 private val CSS_DECLARATION_PATTERN = Regex("(?i)([a-z-]+)\\s*:\\s*([^;{}]+)")
 private val IMPORTANT_DECLARATION_PATTERN = Regex("(?i)!\\s*important")
+private val VISIBILITY_DECLARATION_PATTERN = Regex("(?i)(?:^|[;{])\\s*(?:display|visibility)\\s*:")
+private val MEDIA_LENGTH_PATTERN = Regex("^([0-9]*\\.?[0-9]+)(px|em|rem)?$")
+private val DISPLAY_VISIBLE_VALUES = setOf(
+    "block", "inline", "inline-block", "flow-root", "flex", "inline-flex", "grid", "inline-grid",
+    "table", "inline-table", "table-row-group", "table-header-group", "table-footer-group",
+    "table-row", "table-cell", "table-column-group", "table-column", "table-caption",
+    "list-item", "contents", "run-in", "ruby", "ruby-base", "ruby-text",
+    "ruby-base-container", "ruby-text-container", "math",
+)
+private val OTHER_MEDIA_TYPES = setOf(
+    "print", "speech", "tty", "tv", "projection", "handheld", "braille", "embossed", "aural",
+)
 
 private const val HTML_CLOSE = "</html>"
 private const val BODY_CLOSE = "</body>"

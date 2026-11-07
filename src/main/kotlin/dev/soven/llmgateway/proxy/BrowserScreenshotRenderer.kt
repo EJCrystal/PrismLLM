@@ -2,7 +2,9 @@ package dev.soven.llmgateway.proxy
 
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -46,9 +48,11 @@ class BrowserScreenshotRenderer(
         val width = size.first.coerceIn(160, minOf(maxWidth, MULTI_FRAME_WIDTH))
         val height = size.second
         val directory = Files.createTempDirectory("iq-vision-browser-")
-        // 降权后的浏览器需要在该目录创建 profile 和截图。
-        if (isolation.privilegeDrop.isNotEmpty()) makeWorldWritable(directory)
         return try {
+            // 根目录保持 root 所有且不可被其他用户写入，避免低权限进程预置符号链接。
+            if (isolation.privilegeDrop.isNotEmpty() && !prepareBrowserRoot(directory)) {
+                return times.map { SvgRenderResult.Failure("无法为无头浏览器准备隔离的临时目录") }
+            }
             times.mapIndexed { index, time ->
                 renderFrame(directory, index, sanitizedSvg, styles, width, height, time)
             }
@@ -67,18 +71,32 @@ class BrowserScreenshotRenderer(
         timeSeconds: Float,
     ): SvgRenderResult {
         val htmlFile = directory.resolve("frame-$index.html")
-        val pngFile = directory.resolve("frame-$index.png")
+        val outputDirectory = directory.resolve("output-$index")
         val profileDirectory = directory.resolve("profile-$index")
+        val pngFile = outputDirectory.resolve("frame-$index.png")
         var process: Process? = null
         return try {
+            Files.createDirectories(outputDirectory)
             Files.createDirectories(profileDirectory)
-            if (isolation.privilegeDrop.isNotEmpty()) makeWorldWritable(profileDirectory)
+            if (isolation.privilegeDrop.isNotEmpty() &&
+                (!prepareBrowserWritable(outputDirectory) || !prepareBrowserWritable(profileDirectory))
+            ) {
+                return SvgRenderResult.Failure("无法为无头浏览器准备隔离的输出目录")
+            }
             val nonce = "iq-vision-" + UUID.randomUUID().toString().replace("-", "")
+            // CREATE_NEW 不允许覆盖已有路径，避免写入时跟随他人预置的符号链接。
             Files.writeString(
                 htmlFile,
                 buildDocument(svg, styles, width, height, timeSeconds, nonce),
                 Charsets.UTF_8,
+                StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE,
             )
+            if (isolation.privilegeDrop.isNotEmpty()) {
+                runCatching {
+                    Files.setPosixFilePermissions(htmlFile, PosixFilePermissions.fromString("rw-r--r--"))
+                }
+            }
             val builder = ProcessBuilder(
                 browserCommand(pngFile, profileDirectory, width, height, htmlFile),
             )
@@ -101,7 +119,7 @@ class BrowserScreenshotRenderer(
             if (started.exitValue() != 0) {
                 return SvgRenderResult.Failure("无头浏览器退出码 ${started.exitValue()}")
             }
-            if (!Files.isRegularFile(pngFile)) {
+            if (!Files.isRegularFile(pngFile, LinkOption.NOFOLLOW_LINKS)) {
                 return SvgRenderResult.Failure("无头浏览器没有生成截图")
             }
             val png = Files.readAllBytes(pngFile)
@@ -160,11 +178,20 @@ class BrowserScreenshotRenderer(
         add(htmlFile.toUri().toString())
     }
 
-    private fun makeWorldWritable(directory: Path) {
-        runCatching {
-            Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwxrwxrwx"))
-        }
-    }
+    /**
+     * 临时根目录保持 root 所有，只给其他用户穿越权限（0711），不能在其中创建文件。
+     * 这样降权后的浏览器仍能读取 root 写入的 HTML，其他本机进程却无法预置符号链接。
+     */
+    internal fun prepareBrowserRoot(directory: Path): Boolean = runCatching {
+        Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx--x--x"))
+    }.isSuccess
+
+    /** 输出与 profile 目录交给降权用户独占，其他本机用户无法写入。 */
+    private fun prepareBrowserWritable(directory: Path): Boolean = runCatching {
+        Files.setAttribute(directory, "unix:uid", UNPRIVILEGED_UID)
+        Files.setAttribute(directory, "unix:gid", UNPRIVILEGED_GID)
+        Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx------"))
+    }.isSuccess
 
     private fun buildDocument(
         svg: String,

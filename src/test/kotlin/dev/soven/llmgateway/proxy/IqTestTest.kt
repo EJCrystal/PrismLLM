@@ -228,6 +228,56 @@ class IqTestTest {
     }
 
     @Test
+    fun `candy evaluates media features against the preview viewport`() {
+        val applies = """
+            <html><head><style>@media (min-width: 0px){p{display:none}}</style></head>
+            <body><p>答案是 21 颗。</p></body></html>
+        """.trimIndent()
+        val exceeds = """
+            <html><head><style>@media (min-width: 2000px){p{display:none}}</style></head>
+            <body><p>答案是 21 颗。</p></body></html>
+        """.trimIndent()
+        val landscape = """
+            <html><head><style>@media screen and (orientation: landscape){p{visibility:hidden}}</style></head>
+            <body><p>答案是 21 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, applies).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, exceeds).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, landscape).verdict)
+    }
+
+    @Test
+    fun `candy asks for review when a media feature cannot be evaluated`() {
+        val unknownFeature = """
+            <html><head><style>@media (prefers-color-scheme: dark){p{display:none}}</style></head>
+            <body><p>答案是 21 颗。</p></body></html>
+        """.trimIndent()
+        val unknownWithoutVisibility = """
+            <html><head><style>@media (prefers-color-scheme: dark){p{color:red}}</style></head>
+            <body><p>答案是 21 颗。</p></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.REVIEW, evaluateIqTest(IqBenchmark.CANDY, true, unknownFeature).verdict)
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, true, unknownWithoutVisibility).verdict)
+    }
+
+    @Test
+    fun `candy ignores invalid visibility declarations`() {
+        val invalidDisplay = """<html><body><p style="display:none;display:invalid">答案是 21 颗。</p></body></html>"""
+        val invalidVisibility =
+            """<html><body><p style="visibility:hidden;visibility:invisible">答案是 21 颗。</p></body></html>"""
+        val inheritVisibility = """
+            <html><body><div style="visibility:hidden">
+            <p style="visibility:inherit">答案是 21 颗。</p></div></body></html>
+        """.trimIndent()
+
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, invalidDisplay).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, invalidVisibility).verdict)
+        assertEquals(IqVerdict.INCORRECT, evaluateIqTest(IqBenchmark.CANDY, true, inheritVisibility).verdict)
+    }
+
+    @Test
     fun `candy removes the whole nested hidden subtree`() {
         val hiddenAttribute = """
             <html><body><div hidden><div>说明</div>21</div><p>答案是 20 颗。</p></body></html>

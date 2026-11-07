@@ -1,7 +1,9 @@
 package dev.soven.llmgateway.proxy
 
 import org.junit.jupiter.api.Assumptions.assumeTrue
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -150,6 +152,23 @@ class BrowserScreenshotRendererTest {
             command.take(6),
         )
         assertTrue(command.contains("--no-sandbox"))
+    }
+
+    @Test
+    fun `browser root is traversable but not writable by other users`() {
+        assumeTrue(System.getProperty("os.name").orEmpty().lowercase().contains("linux"))
+        val directory = Files.createTempDirectory("iq-vision-browser-test-")
+        try {
+            val renderer = BrowserScreenshotRenderer(Path.of("/usr/bin/chromium"))
+
+            assertTrue(renderer.prepareBrowserRoot(directory))
+            assertEquals(
+                "rwx--x--x",
+                PosixFilePermissions.toString(Files.getPosixFilePermissions(directory)),
+            )
+        } finally {
+            Files.deleteIfExists(directory)
+        }
     }
 
     @Test
