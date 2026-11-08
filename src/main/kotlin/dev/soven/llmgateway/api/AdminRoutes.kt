@@ -22,6 +22,8 @@ import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.PricingMode
+import dev.soven.llmgateway.domain.UpstreamEnvelope
+import dev.soven.llmgateway.domain.upstreamEnvelope
 import dev.soven.llmgateway.oauth.OAuthLoginResult
 import dev.soven.llmgateway.oauth.OAuthLoginStartResult
 import dev.soven.llmgateway.oauth.OAuthQuotaResult
@@ -83,10 +85,12 @@ import java.math.RoundingMode
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Base64
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
@@ -1124,7 +1128,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         configured = provider in configured,
                         loginSupported = when (provider) {
                             OAuthProvider.CHATGPT -> app.config.oauth.chatGpt.supportsLogin
-                            OAuthProvider.ANTIGRAVITY -> app.config.oauth.antigravity?.supportsLogin == true
+                            OAuthProvider.ANTIGRAVITY -> app.config.oauth.antigravity.supportsLogin
                         },
                         managedChannel = dev.soven.llmgateway.domain.ProviderEndpoints.of(provider).servable,
                     )
@@ -1156,6 +1160,93 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(HttpStatusCode.NoContent)
         }
 
+        post("/oauth-providers/{provider}/models/refresh") {
+            call.requireAdmin(app)
+            val provider = OAuthProvider.fromValue(
+                call.requiredParam("provider", "缺少 provider").trim().lowercase(),
+            ) ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
+            val channelId = app.providerChannelProvisioner.ensure(provider)
+                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
+            // 模型目录只由 Code Assist 的 fetchAvailableModels 提供，目前仅 Antigravity 具备；
+            // ChatGPT 的目录沿用系统渠道种子模型，走 PUT 接口维护。
+            if (app.channelRepository.find(channelId)?.upstreamEnvelope != UpstreamEnvelope.CODE_ASSIST) {
+                throw badRequest(
+                    "model_catalog_not_supported",
+                    "该提供方不支持从上游刷新模型目录: " + provider.value,
+                )
+            }
+            // 账号必须属于本 provider，否则会拿别的提供方凭据去调 Code Assist；
+            // 只取启用且 ACTIVE 的账号，避免待重新授权的账号把刷新卡死。
+            val account = app.oauthAccountRepository.listUsableForProvider(provider).firstOrNull()
+                ?: throw badRequest("oauth_account_missing", "该提供方没有可用的订阅账号，无法读取模型目录")
+            val token = try {
+                app.oauthTokenService.accessToken(account.id)
+            } catch (cause: CancellationException) {
+                // 请求被取消时不能伪装成凭据错误：取消要原样传播到调用链上。
+                throw cause
+            } catch (cause: Throwable) {
+                throw GatewayException(
+                    HttpStatusCode.BadGateway,
+                    "oauth_credential_unavailable",
+                    "读取账号凭据失败: " + (cause.message ?: cause::class.simpleName),
+                    "upstream_error",
+                    retryable = true,
+                )
+            } ?: throw badRequest("oauth_credential_unavailable", "账号还没有可用的 access token")
+            val proxy = try {
+                proxyAddress(account.proxyUrl, app.config.oauth.proxyAllowedHosts)
+            } catch (cause: OAuthRefreshException) {
+                throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
+            }
+            // probe 可能包含一次开通轮询，整体限时，避免上游迟缓时管理请求一直挂着。
+            val catalog = withTimeoutOrNull(MODEL_REFRESH_TIMEOUT_MS) {
+                val probe = app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
+                app.codeAssistModelCatalog.fetchFor(
+                    token.accessToken,
+                    probe.project.orEmpty(),
+                    probe.tiers(),
+                    proxy,
+                )
+            } ?: throw GatewayException(
+                HttpStatusCode.GatewayTimeout,
+                "model_catalog_timeout",
+                "读取上游模型目录超时",
+                "timeout_error",
+                retryable = true,
+            )
+            val models = catalog.models
+            if (models.isEmpty()) {
+                throw GatewayException(
+                    HttpStatusCode.BadGateway,
+                    "model_catalog_unavailable",
+                    "上游没有返回可用模型",
+                    "upstream_error",
+                    retryable = true,
+                )
+            }
+            // 目录里家族 id 不一定可调用：渠道登记家族对应的默认变体，对外仍只暴露家族 id。
+            // 这样数据面目录补拉失败或超时时，请求发出的也是上游真实存在的模型。
+            app.channelRepository.replaceModels(
+                channelId,
+                models.map { model ->
+                    val upstream = catalog.upstreamId(model)
+                    ChannelModelRecord(
+                        upstreamModel = upstream,
+                        canonicalModelId = model.id.takeIf { it != upstream },
+                    )
+                },
+            )
+            call.markAdminAuditDetails(buildJsonObject {
+                put("provider", provider.value)
+                put("models", models.joinToString(",") { it.id })
+            })
+            call.respond(
+                OAuthProviderModelsResponse(
+                    models = models.map { OAuthProviderModelResponse(it.id, it.name) },
+                ),
+            )
+        }
+
         get("/oauth-accounts") {
             call.requireAdmin(app)
             call.response.headers.append("Cache-Control", "no-store")
@@ -1178,7 +1269,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
                 ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
             if (app.oauthTokenProviders.find(provider) == null) {
-                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未配置，请先设置客户端参数")
+                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未在网关内启用")
             }
             val refreshToken = request.refreshToken.trim()
             if (refreshToken.length > MAX_OAUTH_CREDENTIAL_CHARS) {
@@ -1270,7 +1361,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
                 ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
             if (app.oauthTokenProviders.find(provider) == null) {
-                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未配置，请先设置客户端参数")
+                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未在网关内启用")
             }
             if (existing.provider != provider) {
                 throw badRequest("invalid_oauth_provider", "重新授权不能修改账号的提供方")
@@ -1407,7 +1498,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
                 ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
             if (app.oauthTokenProviders.find(provider) == null) {
-                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未配置，请先设置客户端参数")
+                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未在网关内启用")
             }
             val target = request.accountId?.trim()?.takeIf { it.isNotEmpty() }?.let { accountId ->
                 app.oauthAccountRepository.findDetailed(accountId)
@@ -2455,6 +2546,9 @@ private fun normalizeChannelKeyRateLimit(
 }
 
 private const val DEFAULT_CHANNEL_KEY_NAME = "默认密钥"
+
+/** 管理面刷新模型目录的总上限：覆盖 project 探测、开通轮询与目录请求。 */
+private const val MODEL_REFRESH_TIMEOUT_MS = 60_000L
 
 private fun normalizeModelMappings(request: ChannelRequest): List<ChannelModelRecord>? {
     val raw = when {

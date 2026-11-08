@@ -102,7 +102,7 @@ class OAuthLoginService(
         proxyUrl: String?,
         credentialFingerprint: String?,
     ): OAuthLoginStartResult {
-        val providerConfig = providerConfig(provider)?.takeIf { it.supportsLogin }
+        val providerConfig = providerConfig(provider).takeIf { it.supportsLogin }
             ?: return OAuthLoginStartResult.UnsupportedProvider
         prune()
         if (pending.size >= MAX_PENDING_LOGINS) {
@@ -133,11 +133,19 @@ class OAuthLoginService(
             add("code_challenge" to challenge(verifier))
             add("code_challenge_method" to "S256")
             add("state" to state)
-            if (provider == OAuthProvider.CHATGPT) {
-                // 与 Codex CLI 的登录请求保持一致，否则 OpenAI 会拒绝这个客户端。
-                add("id_token_add_organizations" to "true")
-                add("codex_cli_simplified_flow" to "true")
-                add("originator" to ORIGINATOR)
+            when (provider) {
+                OAuthProvider.CHATGPT -> {
+                    // 与 Codex CLI 的登录请求保持一致，否则 OpenAI 会拒绝这个客户端。
+                    add("id_token_add_organizations" to "true")
+                    add("codex_cli_simplified_flow" to "true")
+                    add("originator" to ORIGINATOR)
+                }
+                OAuthProvider.ANTIGRAVITY -> {
+                    // Google 默认不返回 refresh_token，必须显式要求离线访问并重新征得同意。
+                    add("access_type" to "offline")
+                    add("prompt" to "consent")
+                    add("include_granted_scopes" to "true")
+                }
             }
         }
         val authorizeUrl = providerConfig.authorizeUrl!! + "?" + query.joinToString("&") { (name, value) ->
@@ -178,7 +186,7 @@ class OAuthLoginService(
         val tokens = session.tokens ?: run {
             if (!session.claimed.compareAndSet(false, true)) return OAuthLoginResult.Expired
             val providerConfig = providerConfig(session.provider)
-            if (providerConfig == null) {
+            if (!providerConfig.supportsLogin) {
                 pending.remove(loginId)
                 return OAuthLoginResult.UnsupportedProvider
             }
@@ -273,13 +281,15 @@ class OAuthLoginService(
         session: PendingLogin,
         code: String,
     ): LoginTokens {
-        val form = listOf(
-            "grant_type" to "authorization_code",
-            "code" to code,
-            "redirect_uri" to session.redirectUri,
-            "client_id" to providerConfig.clientId,
-            "code_verifier" to session.verifier,
-        ).joinToString("&") { (name, value) -> encode(name) + "=" + encode(value) }
+        val form = buildList {
+            add("grant_type" to "authorization_code")
+            add("code" to code)
+            add("redirect_uri" to session.redirectUri)
+            add("client_id" to providerConfig.clientId)
+            // Google 的安装型客户端在换取授权码时仍要求 client_secret；ChatGPT 没有 secret。
+            providerConfig.clientSecret?.takeIf { it.isNotBlank() }?.let { add("client_secret" to it) }
+            add("code_verifier" to session.verifier)
+        }.joinToString("&") { (name, value) -> encode(name) + "=" + encode(value) }
         val headers = if (session.provider == OAuthProvider.CHATGPT) {
             mapOf("originator" to ORIGINATOR, "User-Agent" to USER_AGENT)
         } else {
@@ -302,7 +312,7 @@ class OAuthLoginService(
         pending.entries.removeIf { it.value.expiresAt <= nowMs }
     }
 
-    private fun providerConfig(provider: OAuthProvider): OAuthProviderConfig? = when (provider) {
+    private fun providerConfig(provider: OAuthProvider): OAuthProviderConfig = when (provider) {
         OAuthProvider.CHATGPT -> config.chatGpt
         OAuthProvider.ANTIGRAVITY -> config.antigravity
     }

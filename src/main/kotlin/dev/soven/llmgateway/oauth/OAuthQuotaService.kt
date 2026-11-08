@@ -7,6 +7,8 @@ import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.domain.saturatedAdd
 import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistProjectResolver
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistQuotaClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -18,6 +20,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -65,6 +68,8 @@ class OAuthQuotaService(
     private val repository: OAuthAccountRepository,
     private val tokenService: OAuthTokenService,
     private val config: OAuthConfig,
+    private val projectResolver: CodeAssistProjectResolver,
+    private val antigravityQuota: CodeAssistQuotaClient,
     private val onQuota: suspend (String, OAuthQuotaSnapshot) -> Unit = { _, _ -> },
     private val now: () -> Long = System::currentTimeMillis,
 ) : AutoCloseable {
@@ -99,6 +104,7 @@ class OAuthQuotaService(
     }
 
     private suspend fun refreshAccount(account: OAuthAccountRecord): OAuthQuotaResult {
+        if (account.provider == OAuthProvider.ANTIGRAVITY) return refreshAntigravity(account)
         if (account.provider != OAuthProvider.CHATGPT) return OAuthQuotaResult.NotSupported
         val usageUrl = config.chatGpt.usageUrl ?: return OAuthQuotaResult.NotSupported
         val token = try {
@@ -151,6 +157,34 @@ class OAuthQuotaService(
         )
         return OAuthQuotaResult.Refreshed(repository.findDetailed(account.id) ?: account)
     }
+
+    /** Antigravity 的额度来自 Code Assist 的 retrieveUserQuotaSummary。 */
+    private suspend fun refreshAntigravity(account: OAuthAccountRecord): OAuthQuotaResult {
+        val token = try {
+            tokenService.accessToken(account.id)
+        } catch (cause: OAuthTokenUnavailableException) {
+            return failed(account.id, cause.errorCode ?: "credential_unavailable")
+        } ?: return OAuthQuotaResult.NotFound
+        val proxy = try {
+            proxyAddress(account.proxyUrl, config.proxyAllowedHosts)
+        } catch (cause: OAuthRefreshException) {
+            return failed(account.id, cause.errorCode)
+        }
+        // 后台扫描没有上层超时；发现与读额度都要限时，避免上游不响应时挂住整轮扫描。
+        val context = withTimeoutOrNull(readTimeoutMs) {
+            projectResolver.context(account, token.accessToken, proxy)
+        } ?: return failed(account.id, "quota_read_timeout")
+        val project = context.project ?: return failed(account.id, "project_missing")
+        val snapshot = withTimeoutOrNull(readTimeoutMs) {
+            antigravityQuota.read(token.accessToken, project, proxy)
+        } ?: return failed(account.id, "quota_read_timeout")
+        repository.saveQuota(account.id, snapshot)
+        onQuota(account.id, snapshot)
+        return OAuthQuotaResult.Refreshed(repository.findDetailed(account.id) ?: account)
+    }
+
+    private val readTimeoutMs: Long
+        get() = config.requestTimeoutMs.coerceAtMost(QUOTA_READ_TIMEOUT_MS)
 
     private suspend fun failed(accountId: String, errorCode: String): OAuthQuotaResult {
         repository.saveQuotaError(accountId, errorCode, now())
@@ -243,6 +277,8 @@ class OAuthQuotaService(
 
     private companion object {
         const val MAX_CONCURRENT_QUOTA_READS = 4
+        /** 单次发现/读额度的上限；不会超过 OAuth 请求超时配置。 */
+        const val QUOTA_READ_TIMEOUT_MS = 30_000L
         const val ORIGINATOR = "codex_cli_rs"
         const val USER_AGENT = "codex_cli_rs/0.162.0 (Linux; x86_64) xterm-256color"
     }

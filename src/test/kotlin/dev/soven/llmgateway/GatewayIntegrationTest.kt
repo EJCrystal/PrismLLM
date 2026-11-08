@@ -1248,12 +1248,20 @@ class GatewayIntegrationTest {
             assertEquals(HttpStatusCode.OK, providers.status)
             val byProvider = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
                 .associate { it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["configured"]!!.jsonPrimitive.boolean }
-            assertEquals(mapOf("chatgpt" to true, "antigravity" to false), byProvider)
+            // Antigravity 与 ChatGPT 一样内置公开客户端参数，不需要部署方预先配置。
+            assertEquals(mapOf("chatgpt" to true, "antigravity" to true), byProvider)
             val managed = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
                 .associate {
                     it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["managedChannel"]!!.jsonPrimitive.boolean
                 }
-            assertEquals(mapOf("chatgpt" to true, "antigravity" to false), managed)
+            // Antigravity 走 Code Assist 信封协议，账号同样挂到系统置备渠道。
+            assertEquals(mapOf("chatgpt" to true, "antigravity" to true), managed)
+            val loginSupported = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
+                .associate {
+                    it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["loginSupported"]!!.jsonPrimitive.boolean
+                }
+            // 两个提供方都内置了授权地址与回调地址，可以直接发起浏览器登录。
+            assertEquals(mapOf("chatgpt" to true, "antigravity" to true), loginSupported)
 
             val stored = assertNotNull(app.oauthAccountRepository.find(accountId))
             assertNotEquals("refresh-token-value", stored.refreshTokenCiphertext)
@@ -1267,7 +1275,7 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    fun `admin oauth import rejects unconfigured providers and invalid input`() = runBlocking {
+    fun `admin oauth import accepts antigravity and rejects invalid input`() = runBlocking {
         val channel = createChannel("openai", "ok")
 
         testApplication {
@@ -1280,9 +1288,13 @@ class GatewayIntegrationTest {
                 setBody(body)
             }
 
-            val unconfigured = import("""{"provider":"antigravity","refreshToken":"rt"}""")
-            assertEquals(HttpStatusCode.BadRequest, unconfigured.status)
-            assertTrue(unconfigured.bodyAsText().contains("oauth_provider_not_configured"))
+            // Antigravity 内置公开客户端参数，未做任何部署配置也能导入账号。
+            val antigravity = import("""{"provider":"antigravity","refreshToken":"rt"}""")
+            assertEquals(HttpStatusCode.OK, antigravity.status)
+            assertEquals(
+                "antigravity",
+                Json.parseToJsonElement(antigravity.bodyAsText()).jsonObject["provider"]!!.jsonPrimitive.content,
+            )
 
             val unknownProvider = import("""{"provider":"gemini","refreshToken":"rt"}""")
             assertEquals(HttpStatusCode.BadRequest, unknownProvider.status)
@@ -1650,6 +1662,51 @@ class GatewayIntegrationTest {
                     it["details"]?.jsonObject?.get("result")?.jsonPrimitive?.content == "success"
                 },
             )
+        }
+    }
+
+    @Test
+    fun `admin oauth interactive login supports antigravity through google oauth`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            val started = client.post("/admin/api/oauth-login/start") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"provider":"antigravity"}""")
+            }
+            assertEquals(HttpStatusCode.OK, started.status)
+            val startedBody = Json.parseToJsonElement(started.bodyAsText()).jsonObject
+            val loginId = startedBody["loginId"]!!.jsonPrimitive.content
+            val authorizeUrl = startedBody["authorizeUrl"]!!.jsonPrimitive.content
+            assertTrue(authorizeUrl.startsWith("https://accounts.google.com/o/oauth2/v2/auth?"))
+            assertTrue(authorizeUrl.contains("client_id=${OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_ID}"))
+            assertTrue(authorizeUrl.contains("redirect_uri=http%3A%2F%2Flocalhost%3A8085%2Fcallback"))
+            assertTrue(authorizeUrl.contains("access_type=offline"))
+            assertTrue(authorizeUrl.contains("prompt=consent"))
+            assertTrue(authorizeUrl.contains("code_challenge_method=S256"))
+            assertTrue(authorizeUrl.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform"))
+            val state = authorizeUrl.substringAfter("state=").substringBefore("&")
+
+            val completed = client.post("/admin/api/oauth-login/$loginId/complete") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"callbackUrl":"http://localhost:8085/callback?code=google-code&state=$state"}""")
+            }
+            assertEquals(HttpStatusCode.OK, completed.status)
+            val account = Json.parseToJsonElement(completed.bodyAsText()).jsonObject
+            assertEquals("antigravity", account["provider"]!!.jsonPrimitive.content)
+            assertEquals("ACTIVE", account["authState"]!!.jsonPrimitive.content)
+
+            // Google 的授权码交换同样带 client_secret，且不带 Codex 的身份头。
+            val tokenRequest = fake.tokenRequests.single()
+            assertTrue(tokenRequest.body.contains("grant_type=authorization_code"))
+            assertTrue(tokenRequest.body.contains("code=google-code"))
+            assertTrue(tokenRequest.body.contains("client_id=${OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_ID}"))
+            assertTrue(tokenRequest.body.contains("client_secret=${OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_SECRET}"))
+            assertNull(tokenRequest.requestHeaders["originator"])
         }
     }
 
@@ -8173,7 +8230,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("59", result.getString(1))
+                        assertEquals("60", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -9833,6 +9890,9 @@ class GatewayIntegrationTest {
             chatGpt = OAuthConfig().chatGpt.copy(
                 tokenEndpoint = fake.baseUrl + "/oauth/token",
                 usageUrl = fake.baseUrl + "/oauth/usage",
+            ),
+            antigravity = OAuthConfig().antigravity.copy(
+                tokenEndpoint = fake.baseUrl + "/oauth/token",
             ),
         ),
     )

@@ -2,11 +2,22 @@ package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.GatewayProtocol
+import dev.soven.llmgateway.domain.UpstreamEnvelope
 import io.ktor.http.encodeURLPathPart
 
 /** Gemini places the model and streaming action in the URL; the other protocols use JSON model/stream. */
-fun upstreamRequestUrl(baseUrl: String, protocol: GatewayProtocol, model: String, stream: Boolean = false): String {
+fun upstreamRequestUrl(
+    baseUrl: String,
+    protocol: GatewayProtocol,
+    model: String,
+    stream: Boolean = false,
+    envelope: UpstreamEnvelope = UpstreamEnvelope.NONE,
+): String {
     val base = baseUrl.trimEnd('/')
+    if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        val action = if (stream) "streamGenerateContent" else "generateContent"
+        return base + "/v1internal:" + action + if (stream) "?alt=sse" else ""
+    }
     if (protocol != GatewayProtocol.GEMINI) return base + requireNotNull(protocol.endpointPath)
     val action = if (stream) "streamGenerateContent" else "generateContent"
     val modelPath = model.removePrefix("models/").encodeURLPathPart()

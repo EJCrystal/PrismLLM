@@ -81,7 +81,7 @@ data class OAuthAccountCredentialUpdate(
  * @author 文杰
  * @since 2026-11-06
  */
-class OAuthAccountRepository(private val database: Database) {
+open class OAuthAccountRepository(private val database: Database) {
     /** 数据面快速路径：只读账号本体，不加载模型与渠道关联。 */
     suspend fun find(id: String): OAuthAccountRecord? = suspendTransaction(database) {
         OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }.singleOrNull()
@@ -180,6 +180,24 @@ class OAuthAccountRepository(private val database: Database) {
                             )
                 }
                 .orderBy(OAuthAccounts.quotaAttemptedAt to SortOrder.ASC_NULLS_FIRST)
+                .limit(limit.coerceIn(1, 1_000))
+                .map { toRecord(it, emptyList(), emptySet()) }
+        }
+
+    /**
+     * 指定 provider 下可用于读取模型目录的账号：只取启用且仍是 ACTIVE 的账号，
+     * 健康账号排在前面，避免一个待重新授权的账号把管理面操作卡死。
+     */
+    suspend fun listUsableForProvider(provider: OAuthProvider, limit: Int = 100): List<OAuthAccountRecord> =
+        suspendTransaction(database) {
+            OAuthAccounts.selectAll()
+                .where {
+                    (OAuthAccounts.provider eq provider.value) and
+                        (OAuthAccounts.enabled eq true) and
+                        (OAuthAccounts.authState eq OAuthAuthState.ACTIVE.value)
+                }
+                // 状态条件必须在 limit 之前生效，否则前面的不可用账号会把后面的健康账号挤掉。
+                .orderBy(OAuthAccounts.updatedAt to SortOrder.DESC)
                 .limit(limit.coerceIn(1, 1_000))
                 .map { toRecord(it, emptyList(), emptySet()) }
         }
@@ -439,6 +457,53 @@ class OAuthAccountRepository(private val database: Database) {
                 (OAuthAccounts.chatgptAccountId.isNull() or (OAuthAccounts.chatgptAccountId neq chatgptAccountId))
         }) {
             it[OAuthAccounts.chatgptAccountId] = chatgptAccountId.take(128)
+        } > 0
+    }
+
+    /** Code Assist 的上游上下文：cloud project 与当前 tier。 */
+    data class UpstreamContext(
+        val project: String?,
+        val tier: String?,
+        val checkedAt: Long?,
+    )
+
+    open suspend fun upstreamContext(accountId: String): UpstreamContext? = loadUpstreamContext(accountId)
+
+    open suspend fun saveUpstreamContext(
+        accountId: String,
+        project: String?,
+        tier: String?,
+        checkedAt: Long,
+    ): Boolean = persistUpstreamContext(accountId, project, tier, checkedAt)
+
+    open suspend fun loadUpstreamContext(accountId: String): UpstreamContext? = suspendTransaction(database) {
+        OAuthAccounts.selectAll()
+            .where { OAuthAccounts.id eq accountId }
+            .singleOrNull()
+            ?.let { row ->
+            UpstreamContext(
+                project = row[OAuthAccounts.upstreamProject],
+                tier = row[OAuthAccounts.upstreamTier],
+                checkedAt = row[OAuthAccounts.upstreamTierCheckedAt],
+            )
+        }
+    }
+
+    /**
+     * 写入一次协商结果。`tier` 为 null 表示上游这次没给出套餐信息，此时显式清空旧值，
+     * 而不是留下上一次的 tier：内存中的协商状态与数据库必须一致，否则进程重启后会读到
+     * 一个本次请求并不认可的 tier（及其对应的模型目录映射）。
+     */
+    open suspend fun persistUpstreamContext(
+        accountId: String,
+        project: String?,
+        tier: String?,
+        checkedAt: Long,
+    ): Boolean = suspendTransaction(database) {
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+            if (project != null) it[OAuthAccounts.upstreamProject] = project.take(128)
+            it[OAuthAccounts.upstreamTier] = tier?.take(64)
+            it[OAuthAccounts.upstreamTierCheckedAt] = checkedAt
         } > 0
     }
 

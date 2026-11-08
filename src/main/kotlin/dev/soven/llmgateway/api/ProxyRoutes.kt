@@ -8,15 +8,24 @@ import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.domain.UpstreamEnvelope
+import dev.soven.llmgateway.domain.upstreamEnvelope
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistEnvelope
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistCloak
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistSuspension
 import dev.soven.llmgateway.domain.authTypeFor
 import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.oauth.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
 import dev.soven.llmgateway.oauth.OAuthAccountLease
 import dev.soven.llmgateway.oauth.OAuthTokenUnavailableException
+import dev.soven.llmgateway.oauth.OAuthRefreshException
 import dev.soven.llmgateway.oauth.OAuthUnavailableReason
 import dev.soven.llmgateway.oauth.parseCodexQuotaHeaders
 import dev.soven.llmgateway.oauth.parseRateLimitResetMs
+import dev.soven.llmgateway.oauth.proxyAddress
+import java.net.InetSocketAddress
+import java.net.ProxySelector
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
 import dev.soven.llmgateway.proxy.upstreamRequestUrl
 import dev.soven.llmgateway.proxy.BillingCalculator
@@ -53,6 +62,10 @@ import dev.soven.llmgateway.resilience.CooldownPermit
 import dev.soven.llmgateway.resilience.FailureKind
 import dev.soven.llmgateway.resilience.KeyAttemptSignal
 import dev.soven.llmgateway.security.ClientKeyHasher
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.java.Java
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.HttpTimeoutConfig
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.preparePost
@@ -91,6 +104,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -532,11 +546,13 @@ private suspend fun handleProxy(
                             allowUpstreamErrorFailover = upstreamAttempts < app.config.maxAttempts && upstreamAttempts < candidates.size,
                             globalOverrides = globalOverrides,
                             headerProfiles = headerProfiles,
+                            clientKeyId = clientKey?.id,
                         )
                     } else {
                         proxyJson(
                             app, call, requestJson, alias, candidate, remainingMs, state, protocol,
                             attemptProtocol ?: protocol, traceContext.traceparent, globalOverrides, headerProfiles,
+                            clientKey?.id,
                         )
                     }
                 }
@@ -585,6 +601,12 @@ private suspend fun handleProxy(
                         oauthAccount,
                         e.retryAfterMs ?: parseRateLimitResetMs(e.upstreamErrorBody),
                     )
+                }
+                if (e.upstreamStatus == 403 && oauthAccount != null &&
+                    CodeAssistSuspension.isSuspended(e.upstreamErrorBody)
+                ) {
+                    // Antigravity 封禁账号：不是鉴权故障，按两小时账号级冷却处理并继续换候选。
+                    app.oauthAccountScheduler.recordRateLimited(oauthAccount, CodeAssistSuspension.REST_MS)
                 }
                 val kind = classifyFailure(e)
                 if (kind == null) {
@@ -1485,8 +1507,16 @@ private suspend fun proxyStream(
     allowUpstreamErrorFailover: Boolean,
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
+    clientKeyId: String? = null,
 ) {
-    val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel, stream = true)
+    val envelope = candidate.channel.upstreamEnvelope
+    val upstreamUrl = upstreamRequestUrl(
+        candidate.channel.baseUrl,
+        upstreamProtocol,
+        candidate.upstreamModel,
+        stream = true,
+        envelope = envelope,
+    )
     val credential = decryptCredential(app, candidate)
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
@@ -1504,13 +1534,67 @@ private suspend fun proxyStream(
     } else {
         streamRequest
     }
-    val body = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+    val bodyJson = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
+    // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
+    val egressProxy = accountEgressProxy(app, candidate)
+    // 准备阶段（project 发现、目录补拉）与对话请求共用同一份剩余预算：
+    // 发现 + 目录合计最多花掉 min(剩余预算, 20s)，对话阶段只拿剩下的部分。
+    val callDeadlineNanos = System.nanoTime() + timeoutMs * 1_000_000
+    val preparationDeadlineNanos =
+        System.nanoTime() + preparationTimeoutMs(timeoutMs) * 1_000_000
+    val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
+            app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
+        }
+    } else {
+        null
+    }
+    val codeAssistProject = codeAssistContext?.project
+    // 进程启动后第一次请求时补一次模型目录，避免重启后家族 id 失去变体映射。
+    // 目录按 project 缓存，不会跨账号串用。
+    val codeAssistCatalog = if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null) {
+        val cached = app.codeAssistModelCatalog.cached(codeAssistProject, codeAssistContext?.tier)
+        cached ?: withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
+            catalogOrNull {
+                app.codeAssistModelCatalog.fetchFor(
+                    credential,
+                    codeAssistProject,
+                    listOfNotNull(codeAssistContext?.tier),
+                    egressProxy,
+                )
+            }
+        }
+    } else {
+        null
+    }
+    val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        val sentModel = codeAssistCatalog?.sentId(
+            candidate.upstreamModel,
+            ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
+        ) ?: candidate.upstreamModel
+        val request = CodeAssistCloak.apply(bodyJson)
+        // 会话 id 绑定客户端凭据、渠道、模型别名与调用方会话标识；不再用请求正文派生，
+        // 否则不同客户端只要首条用户文本相同就会共用一个上游会话。
+        CodeAssistEnvelope.wrap(
+            request,
+            sentModel,
+            codeAssistProject,
+            CodeAssistEnvelope.sessionScope(
+                alias,
+                candidate.channel.id,
+                clientKeyId,
+                clientSessionId(call),
+            ),
+        ).toString()
+    } else {
+        bodyJson.toString()
+    }
     val converter = ProtocolConversion.streamConverter(protocol, upstreamProtocol, alias)
 
     try {
-        withTimeout(timeoutMs) {
+        withTimeout(remainingMs(callDeadlineNanos)) {
             state.upstreamCallStarted = true
-            app.httpClient.preparePost(upstreamUrl) {
+            upstreamClient(app, egressProxy).preparePost(upstreamUrl) {
                 applyUpstreamAuthentication(
                     credential = credential,
                     authType = authType,
@@ -1522,6 +1606,10 @@ private suspend fun proxyStream(
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 header(HttpHeaders.Accept, ContentType.Text.EventStream.toString())
                 policy.applyHeaders(this)
+                if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                    header(HttpHeaders.UserAgent, "antigravity/1.0.0")
+                    header("X-Goog-Api-Client", "gl-node/22.21.1")
+                }
                 setBody(TextContent(body, ContentType.Application.Json))
             }.execute { response ->
                 state.upstreamStatus = response.status.value
@@ -1532,9 +1620,11 @@ private suspend fun proxyStream(
                     )
                 }
                 if (!response.status.isSuccess()) {
+                    val errorText = response.bodyAsText()
                     throw upstreamException(
                         response.status,
-                        response.bodyAsText(),
+                        // Code Assist 的错误同样是 {"error": ...} 信封，解包后才能按 Gemini 错误识别。
+                        if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(errorText) else errorText,
                         retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
                         upstreamProtocol,
                         allowNativeMessagesError = protocol == upstreamProtocol,
@@ -1547,7 +1637,7 @@ private suspend fun proxyStream(
                     withTimeout(app.config.firstTokenTimeoutMs) {
                         var found: String? = null
                         while (found == null) {
-                            val next = readProtocolLine(upstream, maxLineBytes) ?: break
+                            val next = readProtocolLine(upstream, maxLineBytes, envelope) ?: break
                             prefixLines.add(next)
                             recordReportedModel(next, state, upstreamProtocol)
                             if (
@@ -1616,7 +1706,9 @@ private suspend fun proxyStream(
                             if (converter?.failed != true && (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI)) {
                                 while (true) {
                                     val line = try {
-                                        withTimeout(app.config.idleTimeoutMs) { readProtocolLine(upstream, maxLineBytes) }
+                                        withTimeout(app.config.idleTimeoutMs) {
+                                            readProtocolLine(upstream, maxLineBytes, envelope)
+                                        }
                                     } catch (e: TimeoutCancellationException) {
                                         throw GatewayException(
                                             HttpStatusCode.GatewayTimeout,
@@ -1692,8 +1784,14 @@ private suspend fun proxyStream(
     }
 }
 
-internal suspend fun readProtocolLine(upstream: ByteReadChannel, maxLineBytes: Int): String? = try {
-    upstream.readUTF8Line(max = maxLineBytes)
+internal suspend fun readProtocolLine(
+    upstream: ByteReadChannel,
+    maxLineBytes: Int,
+    envelope: UpstreamEnvelope = UpstreamEnvelope.NONE,
+): String? = try {
+    upstream.readUTF8Line(max = maxLineBytes)?.let { line ->
+        if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.unwrapSseLine(line) else line
+    }
 } catch (_: TooLongLineException) {
     throw GatewayException(
         HttpStatusCode.BadGateway,
@@ -1717,8 +1815,15 @@ private suspend fun proxyJson(
     traceparent: String,
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
+    clientKeyId: String? = null,
 ) {
-    val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel)
+    val envelope = candidate.channel.upstreamEnvelope
+    val upstreamUrl = upstreamRequestUrl(
+        candidate.channel.baseUrl,
+        upstreamProtocol,
+        candidate.upstreamModel,
+        envelope = envelope,
+    )
     val credential = decryptCredential(app, candidate)
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
@@ -1731,11 +1836,65 @@ private suspend fun proxyJson(
         ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel)
     }
     val nonStreamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = false)
-    val body = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+    val bodyJson = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
+    // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
+    val egressProxy = accountEgressProxy(app, candidate)
+    // 准备阶段（project 发现、目录补拉）与对话请求共用同一份剩余预算：
+    // 发现 + 目录合计最多花掉 min(剩余预算, 20s)，对话阶段只拿剩下的部分。
+    val callDeadlineNanos = System.nanoTime() + timeoutMs * 1_000_000
+    val preparationDeadlineNanos =
+        System.nanoTime() + preparationTimeoutMs(timeoutMs) * 1_000_000
+    val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
+            app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
+        }
+    } else {
+        null
+    }
+    val codeAssistProject = codeAssistContext?.project
+    // 进程启动后第一次请求时补一次模型目录，避免重启后家族 id 失去变体映射。
+    // 目录按 project 缓存，不会跨账号串用。
+    val codeAssistCatalog = if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null) {
+        val cached = app.codeAssistModelCatalog.cached(codeAssistProject, codeAssistContext?.tier)
+        cached ?: withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
+            catalogOrNull {
+                app.codeAssistModelCatalog.fetchFor(
+                    credential,
+                    codeAssistProject,
+                    listOfNotNull(codeAssistContext?.tier),
+                    egressProxy,
+                )
+            }
+        }
+    } else {
+        null
+    }
+    val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        val sentModel = codeAssistCatalog?.sentId(
+            candidate.upstreamModel,
+            ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
+        ) ?: candidate.upstreamModel
+        val request = CodeAssistCloak.apply(bodyJson)
+        // 会话 id 绑定客户端凭据、渠道、模型别名与调用方会话标识；不再用请求正文派生，
+        // 否则不同客户端只要首条用户文本相同就会共用一个上游会话。
+        CodeAssistEnvelope.wrap(
+            request,
+            sentModel,
+            codeAssistProject,
+            CodeAssistEnvelope.sessionScope(
+                alias,
+                candidate.channel.id,
+                clientKeyId,
+                clientSessionId(call),
+            ),
+        ).toString()
+    } else {
+        bodyJson.toString()
+    }
     try {
-        withTimeout(timeoutMs) {
+        withTimeout(remainingMs(callDeadlineNanos)) {
             state.upstreamCallStarted = true
-            val response = app.httpClient.post(upstreamUrl) {
+            val response = upstreamClient(app, egressProxy).post(upstreamUrl) {
                 applyUpstreamAuthentication(
                     credential = credential,
                     authType = authType,
@@ -1746,6 +1905,10 @@ private suspend fun proxyJson(
                 header("traceparent", traceparent)
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 policy.applyHeaders(this)
+                if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                    header(HttpHeaders.UserAgent, "antigravity/1.0.0")
+                    header("X-Goog-Api-Client", "gl-node/22.21.1")
+                }
                 setBody(TextContent(body, ContentType.Application.Json))
             }
             state.upstreamStatus = response.status.value
@@ -1759,13 +1922,19 @@ private suspend fun proxyJson(
             if (!response.status.isSuccess()) {
                 throw upstreamException(
                     response.status,
-                    text,
+                    // Code Assist 的错误同样是 {"error": ...} 信封，解包后才能按 Gemini 错误识别。
+                    if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(text) else text,
                     retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
                     upstreamProtocol,
                     allowNativeMessagesError = protocol == upstreamProtocol,
                 )
             }
-            val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+            val rawJson = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+            val json = if (envelope == UpstreamEnvelope.CODE_ASSIST && rawJson != null) {
+                CodeAssistEnvelope.unwrap(rawJson)
+            } else {
+                rawJson
+            }
             state.upstreamReportedModel = extractReportedModel(upstreamProtocol, json)
             state.usage = runCatching {
                 json ?: return@runCatching null
@@ -1777,7 +1946,11 @@ private suspend fun proxyJson(
                 }
             }.getOrNull()
             val clientBody = if (protocol == upstreamProtocol) {
-                text
+                if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                    (json ?: throw transportFailure(false)).toString()
+                } else {
+                    text
+                }
             } else {
                 val parsed = json ?: throw transportFailure(false)
                 ProtocolConversion.convertResponse(protocol, upstreamProtocol, parsed, model = alias).toString()
@@ -1819,6 +1992,76 @@ private fun protocolNotSupported(alias: String, protocol: GatewayProtocol): Gate
  * 数据面凭据解析：OAuth 账号取 access token，普通密钥解密静态凭据。
  * 账号不可用按可切换错误处理，让路由继续尝试其他候选，绝不回退到 refresh token。
  */
+/**
+ * 账号出口：project 发现、模型目录与对话请求都要与 token 刷新走同一个代理。
+ * 配置了 proxy_url 时改用按该代理创建的客户端，没有解析结果时沿用应用共享客户端。
+ */
+private fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?): HttpClient =
+    proxy?.let { address ->
+        app.accountEgressClients.computeIfAbsent(address.hostString + ":" + address.port) { _ ->
+            HttpClient(Java) {
+                engine {
+                    config { proxy(ProxySelector.of(address)) }
+                }
+                // 与共享客户端保持一致：整次请求由调用方的 withTimeout 控制。
+                install(HttpTimeout) {
+                    connectTimeoutMillis = app.config.connectTimeoutMs
+                    requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+                    socketTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+                }
+            }
+        }
+    } ?: app.httpClient
+
+/**
+ * 调用方显式声明的会话标识。不能用 x-request-id / traceparent 这类每次请求都变的
+ * 标识，否则多轮对话每轮都会换上游会话。
+ */
+private fun clientSessionId(call: ApplicationCall): String? =
+    listOf("x-session-id", "x-conversation-id", "conversation-id", "session-id")
+        .firstNotNullOfOrNull { call.request.headers[it]?.trim()?.takeIf(String::isNotEmpty) }
+
+/**
+ * 目录补拉失败只降级为 null（请求照常发出），但协程取消必须原样抛出，
+ * 否则已取消的请求还会继续占用连接与上游资源。
+ */
+private suspend fun <T> catalogOrNull(block: suspend () -> T): T? = try {
+    block()
+} catch (cause: CancellationException) {
+    throw cause
+} catch (cause: Throwable) {
+    proxyLogger.warn("code assist model catalog fetch failed, error={}", cause::class.simpleName)
+    null
+}
+
+/** 对话阶段可用的剩余预算；准备阶段耗尽时立即按超时处理。 */
+private fun remainingMs(deadlineNanos: Long): Long =
+    ((deadlineNanos - System.nanoTime()) / 1_000_000).coerceAtLeast(0)
+
+/** 准备阶段（project 发现、目录补拉）的上限：不超过对话请求本身的超时。 */
+private fun preparationTimeoutMs(timeoutMs: Long): Long = minOf(timeoutMs, PREPARATION_TIMEOUT_MS)
+
+private const val PREPARATION_TIMEOUT_MS = 20_000L
+
+/**
+ * 账号代理配置无效时拒绝请求，绝不静默回落直连：那会绕过账号指定出口并暴露网关源 IP。
+ * 按渠道配置错误处理，不切换到其他候选。
+ */
+private fun accountEgressProxy(app: GatewayApplication, candidate: RouteCandidate): InetSocketAddress? {
+    val proxyUrl = candidate.oauthAccount?.proxyUrl?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    return try {
+        proxyAddress(proxyUrl, app.config.oauth.proxyAllowedHosts)
+    } catch (cause: OAuthRefreshException) {
+        proxyLogger.warn("invalid account proxy, channelId={}, errorCode={}", candidate.channel.id, cause.errorCode)
+        throw GatewayException(
+            HttpStatusCode.BadRequest,
+            "invalid_oauth_proxy",
+            "订阅账号代理配置无效: " + (cause.message ?: "账号代理地址无效"),
+            "invalid_request_error",
+        )
+    }
+}
+
 private suspend fun decryptCredential(app: GatewayApplication, candidate: RouteCandidate): String = try {
     app.oauthTokenService.resolveCredential(candidate.credential)
 } catch (cause: CancellationException) {

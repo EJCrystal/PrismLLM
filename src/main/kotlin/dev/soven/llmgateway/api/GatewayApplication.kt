@@ -32,6 +32,9 @@ import dev.soven.llmgateway.oauth.OAuthQuotaService
 import dev.soven.llmgateway.oauth.OAuthTokenProviderRegistry
 import dev.soven.llmgateway.oauth.OAuthTokenService
 import dev.soven.llmgateway.oauth.ProviderChannelProvisioner
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistProjectResolver
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistModelCatalog
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistQuotaClient
 import dev.soven.llmgateway.oauth.OAuthWindowStateWriter
 import dev.soven.llmgateway.oauth.buildOAuthTokenProviders
 import dev.soven.llmgateway.repo.ModelTestSettingsRepository
@@ -314,6 +317,12 @@ class GatewayApplication(
         }
     }
 
+    /**
+     * 按账号出口创建的数据面客户端。账号配置了 proxy_url 时，对话请求与刷新 token
+     * 必须走同一个代理，因此按代理地址复用一条客户端（含连接池），关闭网关时统一关闭。
+     */
+    val accountEgressClients = java.util.concurrent.ConcurrentHashMap<String, HttpClient>()
+
     /** 搜索后端不跟随跳转，避免把 API Key 带到别的站点。 */
     val searchHttpClient = HttpClient(Java) {
         followRedirects = false
@@ -423,6 +432,22 @@ class GatewayApplication(
     val oauthAccountRepository = OAuthAccountRepository(databaseFactory.database)
     /** 订阅账号的官方端点渠道：按 provider 置备，账号导入时自动挂上。 */
     val providerChannelProvisioner = ProviderChannelProvisioner(channelRepository, oauthAccountRepository)
+    /**
+     * Code Assist 的账号出口连接池：project 发现、目录与额度共用，
+     * 由应用统一关闭，避免关闭网关后遗留代理客户端。
+     */
+    private val codeAssistClients = dev.soven.llmgateway.proxy.codeassist.CodeAssistClientPool(httpClient)
+    /** Antigravity 的 Code Assist project/tier 发现与缓存。 */
+    val codeAssistProjectResolver = CodeAssistProjectResolver(
+        oauthAccountRepository,
+        httpClient,
+        proxyAllowedHosts = config.oauth.proxyAllowedHosts,
+        clients = codeAssistClients,
+    )
+    /** Antigravity 的模型目录与家族/变体映射。 */
+    val codeAssistModelCatalog = CodeAssistModelCatalog(httpClient, clients = codeAssistClients)
+    /** Antigravity 的额度读取。 */
+    val codeAssistQuotaClient = CodeAssistQuotaClient(httpClient, clients = codeAssistClients)
     val modelCatalog = UpstreamModelCatalog(channelRepository, oauthAccountRepository)
     val oauthTokenProviders = OAuthTokenProviderRegistry(buildOAuthTokenProviders(config.oauth))
     val oauthTokenService = OAuthTokenService(oauthAccountRepository, credentialCipher, oauthTokenProviders, config.oauth)
@@ -454,6 +479,8 @@ class GatewayApplication(
         repository = oauthAccountRepository,
         tokenService = oauthTokenService,
         config = config.oauth,
+        projectResolver = codeAssistProjectResolver,
+        antigravityQuota = codeAssistQuotaClient,
         onQuota = oauthAccountScheduler::noteQuota,
     )
 
@@ -723,6 +750,9 @@ class GatewayApplication(
         scope.cancel()
         iqJudgeService.close()
         iqJudgeRegistry.close()
+        accountEgressClients.values.forEach { runCatching { it.close() } }
+        accountEgressClients.clear()
+        codeAssistClients.close()
         httpClient.close()
         searchHttpClient.close()
         channelQuotaService.close()

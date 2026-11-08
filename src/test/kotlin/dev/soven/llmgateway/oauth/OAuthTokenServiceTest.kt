@@ -209,7 +209,14 @@ class OAuthTokenServiceTest {
     }
 
     @Test
-    fun unconfiguredProviderIsReportedWithoutCallingUpstream() = runBlocking {
+    fun `built-in client credentials register both providers`() {
+        val registry = OAuthTokenProviderRegistry(buildOAuthTokenProviders(OAuthConfig()))
+        assertEquals(setOf(OAuthProvider.CHATGPT, OAuthProvider.ANTIGRAVITY), registry.available())
+    }
+
+    @Test
+    fun unregisteredProviderIsReportedWithoutCallingUpstream() = runBlocking {
+        // 该服务只装配了 ChatGPT provider，未注册的提供方不应尝试刷新。
         val keyId = createAccount("rt-1", provider = OAuthProvider.ANTIGRAVITY, accountEmail = email("antigravity"))
         val service = service()
 

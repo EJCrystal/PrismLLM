@@ -44,15 +44,16 @@ object ProviderEndpoints {
     )
 
     /**
-     * Antigravity 走 Google Code Assist 的信封协议（v1internal:streamGenerateContent），
-     * 网关目前没有实现该协议，所以不置备渠道，账号仍按原有方式手工关联渠道。
+     * Antigravity 走 Google Code Assist：Gemini 请求包一层信封，project 与 tier 按账号
+     * 由 loadCodeAssist 发现。模型列表留空，由管理员通过
+     * PUT /admin/api/oauth-providers/antigravity/models 配置。
      */
     val antigravity = ProviderEndpoint(
         provider = OAuthProvider.ANTIGRAVITY,
         channelName = "Google Antigravity（系统）",
         baseUrl = "https://daily-cloudcode-pa.googleapis.com",
         authType = "bearer",
-        protocols = emptyList(),
+        protocols = listOf(GatewayProtocol.GEMINI),
     )
 
     private val all: List<ProviderEndpoint> = listOf(chatGpt, antigravity)

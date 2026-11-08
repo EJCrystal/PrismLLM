@@ -4,7 +4,6 @@ import dev.soven.llmgateway.domain.OAuthRoutingStrategy
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class OAuthConfigTest {
@@ -91,8 +90,37 @@ class OAuthConfigTest {
     }
 
     @Test
-    fun `antigravity stays import only unless login parameters are added`() {
-        val antigravity = OAuthConfig.fromEnv(mapOf("OAUTH_ANTIGRAVITY_CLIENT_ID" to "client")).antigravity!!
-        assertFalse(antigravity.supportsLogin)
+    fun `antigravity ships public client credentials and needs no configuration`() {
+        val antigravity = OAuthConfig.fromEnv(emptyMap()).antigravity
+        assertEquals(OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_ID, antigravity.clientId)
+        assertEquals(OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_SECRET, antigravity.clientSecret)
+        assertEquals("https://oauth2.googleapis.com/token", antigravity.tokenEndpoint)
+        assertEquals("https://accounts.google.com/o/oauth2/v2/auth", antigravity.authorizeUrl)
+        assertEquals("http://localhost:8085/callback", antigravity.redirectUri)
+        assertTrue(antigravity.supportsLogin)
+        assertTrue(antigravity.loginScopes!!.contains("cloud-platform"))
+    }
+
+    @Test
+    fun `antigravity client credentials can be overridden by environment`() {
+        val antigravity = OAuthConfig.fromEnv(
+            mapOf(
+                "OAUTH_ANTIGRAVITY_CLIENT_ID" to "custom-client",
+                "OAUTH_ANTIGRAVITY_CLIENT_SECRET" to "custom-secret",
+                "OAUTH_ANTIGRAVITY_TOKEN_ENDPOINT" to "https://token.example.com/token",
+            ),
+        ).antigravity
+        assertEquals("custom-client", antigravity.clientId)
+        assertEquals("custom-secret", antigravity.clientSecret)
+        assertEquals("https://token.example.com/token", antigravity.tokenEndpoint)
+    }
+
+    @Test
+    fun `blank antigravity overrides fall back to the built-in client`() {
+        val antigravity = OAuthConfig.fromEnv(
+            mapOf("OAUTH_ANTIGRAVITY_CLIENT_ID" to " ", "OAUTH_ANTIGRAVITY_CLIENT_SECRET" to ""),
+        ).antigravity
+        assertEquals(OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_ID, antigravity.clientId)
+        assertEquals(OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_SECRET, antigravity.clientSecret)
     }
 }
