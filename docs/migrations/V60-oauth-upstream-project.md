@@ -1,6 +1,6 @@
-# V59 Antigravity 上游上下文
+# V60 Antigravity 上游上下文
 
-V59 只做一件事：给 `oauth_accounts` 增加三列，保存 Code Assist 需要的账号级上下文。
+V60 只做一件事：给 `oauth_accounts` 增加三列，保存 Code Assist 需要的账号级上下文。
 
 | 列 | 用途 |
 | --- | --- |
