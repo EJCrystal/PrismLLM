@@ -52,6 +52,7 @@ KeyDisableRule {
 - **同 id 时渠道版本接管**：渠道规则与全局规则同 id 不会报错，而是让全局那条不再参与兜底，等价于「在渠道里收紧某条全局规则」。计数桶本来就按密钥和规则 id 隔离，不存在两套规则共用计数的问题；V57 搬迁到 Grox 的整份规则副本也因此照常可编辑。代价是渠道里一条更宽的规则可能遮蔽全局更精确的规则，管理台对此有显式提示。
 - **关闭形态不需要规则**：`enabled = false` 时允许空规则列表，渠道只表达「本渠道不执行自动禁用」。`recordOutcome` 在策略关闭时直接清空该密钥的健康计数并返回。
 - **上限分成两个**：单份策略（全局设置或一条渠道覆盖）最多 50 条，在保存入口校验；合并后的有效策略最多 100 条，由 `KeyDisablePolicy` 构造校验。只有一个上限会让「两份各 50 条的合法策略」在合并时抛异常，害得解析失败的渠道连记账都做不了。
+- **读取时容忍超限数据**：`key_auto_disable_settings.rules` 里出现超过 50 条（只可能来自人工改库或手工改过的备份）时，按顺序保留前 50 条并记一条 warn 日志，而不是让构造抛异常。规则是「首条命中即止」，丢掉的都是优先级最低的兜底规则；抛出去会让 `GET /admin/api/key-auto-disable-settings` 等接口直接 500，连配置都读不出来。渠道覆盖侧的坏数据本来就走 `ChannelKeyDisablePolicyCodec.decode`，解析失败按「继承全局」处理。
 - `channels.key_disable_policy_revision` 每次保存覆盖策略自增；全局设置沿用 `key_auto_disable_settings.revision`。计数归属由**有效策略指纹**判定，存在 `channel_key_health.policy_revision`：指纹是 `作用域 + 合并后策略 JSON` 的 SHA-256 截断（63 位非负）。只比渠道版本号会漏掉「全局规则改了、渠道有效策略跟着变」的情况，用旧规则累计的失败会误触发新规则。
 - 渠道策略的保存、清除与审计在同一事务提交；`PUT /admin/api/channels/{id}/key-disable-policy` 传 `{"override": null}` 恢复继承，传 `{"override":{"enabled":false,"rules":[]}}` 关闭。响应返回 `mode`、`override`、`globalPolicy` 与合并后的 `effective`。
 - 管理台在渠道操作菜单提供「密钥自动禁用（继承全局 / 已自定义，未命中回落全局 / 已关闭）」入口。切到自定义时优先沿用已保存的渠道规则，没有则新建一条草稿规则——不拿全局规则当初始值，否则等于把全局规则整份复制成渠道版本，全局后续更新不再自动生效。
