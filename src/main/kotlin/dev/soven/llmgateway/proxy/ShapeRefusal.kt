@@ -39,7 +39,9 @@ object ShapeRefusal {
             // 这里只认已观察到的写法：别的字段缺失、只是顺带提到 reasoning_content 的 400 不能算形状拒绝，
             // 否则会和「缺失必填字段不在词表内」的约定冲突。
             """`?(?:content\[\]\.thinking|reasoning_content)`? in the thinking mode must be passed back|""" +
-            """\breasoning_content\b[^"]{0,40}\b(?:is (?:missing|required)|must be (?:passed|provided|included))|""" +
+            // 谓语必须紧跟在字段名后面（只允许引号与空白）：否则 "reasoning_content is optional;
+            // messages is missing" 这种「别的字段缺失」的 400 会因为 40 字符窗口内出现 is missing 而误判。
+            """\breasoning_content\b[\s'"`]{0,4}(?:is (?:missing|required)|must be (?:passed|provided|included))|""" +
             """\b(?:missing|required) (?:parameter|field)\b:?\s*['"`\\]*reasoning_content\b|""" +
             // developer 角色不被接受：只认 system/assistant/user/tool 的上游会这样报。
             """\bdeveloper\b[^"]{0,60}\bis not one of\b""",

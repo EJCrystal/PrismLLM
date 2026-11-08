@@ -132,6 +132,13 @@ class ShapeRefusalTest {
                 """{"error":{"message":"Required field messages is missing while reasoning_content was supplied"}}""",
             ),
         )
+        // 字段名在前、但谓语说的是「可选」：不能被 40 字符窗口里的 is missing 带走。
+        assertFalse(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"reasoning_content is optional; messages is missing"}}""",
+            ),
+        )
     }
 
     @Test
