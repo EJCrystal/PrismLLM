@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.domain.IqVisionSettingsRecord
 import dev.soven.llmgateway.domain.NewIqTestRun
 import dev.soven.llmgateway.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider
@@ -667,6 +668,20 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(IqBenchmark.entries.map { it.toDefinitionResponse() })
         }
 
+        get("/iq-vision-settings") {
+            call.requireAdmin(app)
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(
+                iqVisionSettingsResponse(
+                    stored = app.iqVisionSettingsRepository.load(),
+                    defaults = app.iqVisionDefaults,
+                    browserAvailable = app.iqVisionBrowserAvailable,
+                    browserTimeoutMs = app.config.iqVisionBrowserTimeoutMs,
+                    judgeTimeoutMs = app.config.iqJudgeTimeoutMs,
+                ),
+            )
+        }
+
         get("/iq-tests/judges") {
             call.requireAdmin(app)
             call.respond(
@@ -674,6 +689,64 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     judges = app.iqJudgeRegistry.judgeInfos.map { it.toResponse() },
                     failures = app.iqJudgeRegistry.loadFailures.map { it.toResponse() },
                     defaultJudgeId = app.effectiveIqDefaultJudge(),
+                ),
+            )
+        }
+
+        put("/iq-vision-settings") {
+            call.requireAdmin(app)
+            val request = call.receive<IqVisionSettingsRequest>()
+            val stored = app.iqVisionSettingsRepository.load()
+            val baseUrl = request.baseUrl.trim().trimEnd('/')
+            val model = request.model.trim()
+            // 端点变化时不能沿用旧密钥，否则会把旧服务的凭据发给新服务。
+            // 比较的是合并默认值之后实际生效的端点：库里存空串表示继承环境变量，
+            // 管理员把同一个地址显式写进来不算换端点。
+            val previous = stored.effective(app.iqVisionDefaults)
+            val effectiveBaseUrl = baseUrl.ifBlank { app.iqVisionDefaults.baseUrl }.trimEnd('/')
+            val sameBaseUrl = stored != null &&
+                previous.baseUrl.trimEnd('/').equals(effectiveBaseUrl, ignoreCase = true)
+            val hasStoredKey = stored != null && (stored.apiKey != null || stored.apiKeyUnreadable)
+            if (
+                stored != null && !sameBaseUrl && hasStoredKey &&
+                !request.clearApiKey && request.apiKey.isNullOrBlank()
+            ) {
+                // 直接保存会静默丢掉已保存的密钥，改为要求管理员明确选择填新密钥或清除。
+                throw badRequest(
+                    "invalid_iq_vision_settings",
+                    "更换模型端点后需要重新填写 API 密钥，或勾选清除已保存的密钥",
+                )
+            }
+            val record = IqVisionSettingsRecord(
+                enabled = request.enabled,
+                baseUrl = baseUrl,
+                model = model,
+                apiKey = when {
+                    request.clearApiKey -> null
+                    !request.apiKey.isNullOrBlank() -> request.apiKey.trim()
+                    sameBaseUrl -> stored?.apiKey
+                    else -> null
+                },
+                timeoutMs = request.timeoutMs,
+                updatedAt = 0,
+            )
+            iqVisionSettingsError(record.effective(app.iqVisionDefaults))?.let {
+                throw badRequest("invalid_iq_vision_settings", it)
+            }
+            // 留空且未勾选清除时保留原密文：无法解密的密钥也要等管理员明确替换或清除才丢弃。
+            val preserveApiKey = !request.clearApiKey &&
+                request.apiKey.isNullOrBlank() &&
+                sameBaseUrl &&
+                stored?.apiKeyUnreadable == true
+            app.iqVisionSettingsRepository.save(record, preserveApiKey)
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(
+                iqVisionSettingsResponse(
+                    stored = app.iqVisionSettingsRepository.load(),
+                    defaults = app.iqVisionDefaults,
+                    browserAvailable = app.iqVisionBrowserAvailable,
+                    browserTimeoutMs = app.config.iqVisionBrowserTimeoutMs,
+                    judgeTimeoutMs = app.config.iqJudgeTimeoutMs,
                 ),
             )
         }

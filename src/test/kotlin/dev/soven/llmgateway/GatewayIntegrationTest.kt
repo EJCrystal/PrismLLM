@@ -6355,6 +6355,116 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin iq vision settings round trip without exposing the api key`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+
+            val unauthorized = client.get("/admin/api/iq-vision-settings")
+            assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
+
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val initial = client.get("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, initial.status)
+            val initialJson = Json.parseToJsonElement(initial.bodyAsText()).jsonObject
+            // 未保存过配置时沿用环境变量默认值，测试环境没有配置，因此是 environment 来源。
+            assertEquals("environment", initialJson["source"]?.jsonPrimitive?.content)
+            // 视觉判分器必须始终出现在列表里，启用与否由配置决定。
+            val judges = client.get("/admin/api/iq-tests/judges") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val judgeIds = Json.parseToJsonElement(judges.bodyAsText()).jsonObject["judges"]!!.jsonArray
+                .map { it.jsonObject["id"]!!.jsonPrimitive.content }
+            assertTrue("vision" in judgeIds, "JUDGES=$judgeIds")
+
+            val updated = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"baseUrl":"http://127.0.0.1:8080/v1/","model":"gpt-vision","apiKey":"vision-secret","timeoutMs":90000}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, updated.status)
+            val body = updated.bodyAsText()
+            val json = Json.parseToJsonElement(body).jsonObject
+            assertEquals(true, json["enabled"]?.jsonPrimitive?.boolean)
+            assertEquals("settings", json["source"]?.jsonPrimitive?.content)
+            assertEquals("settings", json["apiKeySource"]?.jsonPrimitive?.content)
+            assertEquals(true, json["apiKeySet"]?.jsonPrimitive?.boolean)
+            assertEquals("gpt-vision", json["model"]?.jsonPrimitive?.content)
+            // 末尾斜杠统一去掉，避免拼出 //chat/completions。
+            assertEquals("http://127.0.0.1:8080/v1", json["baseUrl"]?.jsonPrimitive?.content)
+            assertEquals(90_000, json["timeoutMs"]?.jsonPrimitive?.long)
+            assertFalse(body.contains("vision-secret"), "BODY=[$body]")
+
+            // 端点变更后不能沿用旧密钥，必须显式提供新密钥。
+            val switched = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"baseUrl":"https://vision.example.com/v1","model":"gpt-vision","timeoutMs":60000}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, switched.status)
+            // 被拒绝的请求不能改动已保存的配置。
+            val afterRejected = client.get("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val afterRejectedJson = Json.parseToJsonElement(afterRejected.bodyAsText()).jsonObject
+            assertEquals("http://127.0.0.1:8080/v1", afterRejectedJson["baseUrl"]?.jsonPrimitive?.content)
+            assertEquals(true, afterRejectedJson["apiKeySet"]?.jsonPrimitive?.boolean)
+
+            // 明确勾选清除时可以换端点，结果是端点生效、密钥为空。
+            val switchedCleared = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"baseUrl":"https://vision.example.com/v1","model":"gpt-vision","clearApiKey":true,"timeoutMs":60000}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, switchedCleared.status)
+            val switchedClearedJson = Json.parseToJsonElement(switchedCleared.bodyAsText()).jsonObject
+            assertEquals("https://vision.example.com/v1", switchedClearedJson["baseUrl"]?.jsonPrimitive?.content)
+            assertEquals(false, switchedClearedJson["apiKeySet"]?.jsonPrimitive?.boolean)
+            assertEquals("none", switchedClearedJson["apiKeySource"]?.jsonPrimitive?.content)
+
+            // 启用时超时必须落在合法区间，且在保存前完成校验。
+            val invalidTimeout = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"baseUrl":"https://vision.example.com/v1","model":"gpt-vision","apiKey":"vision-secret","timeoutMs":100}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, invalidTimeout.status)
+
+            val invalidScheme = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"baseUrl":"ftp://example.com","model":"gpt-vision","apiKey":"vision-secret","timeoutMs":60000}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, invalidScheme.status)
+
+            // 保存后立即生效：重新读取必须反映新值，不需要重启。
+            val reloaded = client.get("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val reloadedJson = Json.parseToJsonElement(reloaded.bodyAsText()).jsonObject
+            assertEquals("gpt-vision", reloadedJson["model"]?.jsonPrimitive?.content)
+            assertEquals(true, reloadedJson["enabled"]?.jsonPrimitive?.boolean)
+        }
+    }
+
+    @Test
     fun `admin runs candy iq test and reads history`() = runBlocking {
         val channel = createChannel("iq-test", "iq-json")
         val candyResponse =
@@ -7992,7 +8102,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("57", result.getString(1))
+                        assertEquals("59", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -10976,7 +11086,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table cooldown_state, admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users, web_search_settings, iq_test_runs restart identity cascade",
+                    "truncate table cooldown_state, admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users, web_search_settings, iq_vision_settings, iq_test_runs restart identity cascade",
                 )
             }
         }

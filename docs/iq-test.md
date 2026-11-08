@@ -111,9 +111,13 @@ iframe 不启用脚本执行。
 - Docker x86_64 镜像已经预装 Chrome；其他架构或本机运行时可通过 `IQ_VISION_BROWSER_PATH` 指定浏览器；
 - 只渲染第一段内联 SVG；完全用 HTML/CSS 绘制、没有内联 SVG 的输出仍会返回 `review`。
 
-启用 `vision` 需要设置 `IQ_VISION_ENABLED=true`，并配置 `IQ_VISION_BASE_URL` 与 `IQ_VISION_MODEL`。
+`vision` 判分器始终注册，是否真正调用模型由「系统配置 → 智商检测视觉判分」里的开关决定；
+未保存过页面配置时使用 `IQ_VISION_ENABLED` / `IQ_VISION_BASE_URL` / `IQ_VISION_MODEL` 等环境变量默认值。
 端点使用 OpenAI 兼容的 `/chat/completions` 协议；`IQ_VISION_BASE_URL` 可以直接指向本机 PrismLLM 网关，
 这样截图不会离开自己的部署。
+
+页面配置保存后立即生效，不需要重启网关。可热切换的是启用开关、模型端点、模型名、API 密钥和视觉模型超时；
+渲染宽度、单帧浏览器超时、浏览器路径属于进程级绑定，仍需通过环境变量调整并重启。
 
 ### 外部 JAR 判分器
 
@@ -129,11 +133,14 @@ iframe 不启用脚本执行。
 - `local` 判分不出本机。
 - 选择 `manxue` 时，鹈鹕题生成的 HTML 会发送到 `manxue.ai`；糖果题不调用判分器，不会发送任何输出。
   渠道地址、渠道密钥和调用方密钥不会发送。
-- 选择 `vision` 时，只会把渲染出的 6 帧 PNG 截图发送到 `IQ_VISION_BASE_URL`，不发送原始 HTML 或渠道信息。
-  `IQ_VISION_API_KEY` 只保存在网关进程内，不写入数据库，也不会回显到管理台。端点指向本机网关时截图不出部署。
+- 选择 `vision` 时，只会把渲染出的 6 帧 PNG 截图发送到当前生效的视觉模型端点，不发送原始 HTML 或渠道信息。
+  端点指向本机网关时截图不出部署。
+- 视觉模型 API 密钥不会回显到管理台。页面保存的密钥与渠道凭据一样加密存储；环境变量里的
+  `IQ_VISION_API_KEY` 只存在于网关进程内。密钥与端点绑定：页面端点与环境变量端点一致时留空会沿用环境变量密钥，
+  端点被改成别的服务后必须重新填写或明确清除，否则保存会被拒绝。
 - 外部 JAR 判分器属于受信代码，会收到 HTML 与本地结构摘要；部署前应自行审查插件内容。
 - 如果部署环境不允许访问第三方服务，设置 `MANXUE_ENABLED=false`，`manxue` 就不会出现在判分器列表中；
-  `vision` 默认关闭，不配置 `IQ_VISION_ENABLED=true` 就不会注册。
+  `vision` 判分器始终在列表里，关闭页面配置里的开关（或保持环境变量 `IQ_VISION_ENABLED=false`）即可不调用任何外部模型。
 
 ## 满血 API 接入
 
@@ -170,9 +177,9 @@ curl https://manxue.ai/api/v1/tests/<id>
 | `MANXUE_ENABLED` | `true` | 是否注册 `manxue` 判分器。 |
 | `MANXUE_API_BASE_URL` | `https://manxue.ai` | 满血 API 基础地址。 |
 | `MANXUE_TIMEOUT_MS` | `60000` | POST + 轮询的总超时。 |
-| `IQ_VISION_ENABLED` | `false` | 是否注册内置 `vision` 判分器。 |
+| `IQ_VISION_ENABLED` | `false` | 未保存页面配置时，视觉判分是否启用。 |
 | `IQ_VISION_BASE_URL` | 空 | OpenAI 兼容端点的基础地址；启用时必填，需以 `http://` 或 `https://` 开头。 |
-| `IQ_VISION_API_KEY` | 空 | 可选的 Bearer 令牌，只保存在网关进程内。 |
+| `IQ_VISION_API_KEY` | 空 | 可选的 Bearer 令牌，只存在于网关进程内；端点与之一致时供页面配置回退使用。 |
 | `IQ_VISION_MODEL` | 空 | 多模态模型名；启用时必填。 |
 | `IQ_VISION_TIMEOUT_MS` | `60000` | 单次视觉评分超时，1000–300000。 |
 | `IQ_VISION_RENDER_WIDTH` | `1024` | 单帧截图宽度上限，256–2048；多帧判分时单帧最大 640。 |
@@ -208,6 +215,26 @@ curl -b cookies.txt http://localhost:8080/admin/api/iq-tests/targets
 ```
 
 按「渠道 × 已授权模型」返回可用凭据与协议。没有可路由凭据的组合不会出现。
+
+### 视觉判分配置
+
+```bash
+curl -b cookies.txt http://localhost:8080/admin/api/iq-vision-settings
+```
+
+返回当前生效的 `enabled`、`baseUrl`、`model`、`timeoutMs`，以及 `apiKeySet` / `apiKeySource`
+（`settings`、`environment`、`none`）、`source`（配置来自页面还是环境变量）、`browserAvailable`。
+另外附带 `browserTimeoutMs` 与 `judgeTimeoutMs`，用于判断「6×单帧渲染 + 视觉调用」是否超过判分总超时
+（`worstCaseBudgetMs`）。响应从不包含密钥明文。
+
+```bash
+curl -b cookies.txt -X PUT http://localhost:8080/admin/api/iq-vision-settings \
+  -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
+  -d '{"enabled":true,"baseUrl":"http://127.0.0.1:8080/v1","model":"gpt-6.1-sol","apiKey":"...","timeoutMs":60000}'
+```
+
+`apiKey` 留空表示沿用已保存的密钥；`clearApiKey=true` 表示显式清除。端点变化时如果不填新密钥也不勾选清除，
+接口返回 `400`，避免把旧服务的凭据发给新端点。保存后立即生效。
 
 ### 运行检测
 
