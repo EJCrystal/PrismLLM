@@ -1537,8 +1537,9 @@ private suspend fun proxyStream(
     val bodyJson = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
     // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
     val egressProxy = accountEgressProxy(app, candidate)
-    // 准备阶段（project 发现、目录补拉）在对话请求的 withTimeout 之外，单独限时，
-    // 避免上游接受连接后不响应时无限等待；超时后按没有目录处理，请求照常发出。
+    // 准备阶段（project 发现、目录补拉）与对话请求共用同一份剩余预算：
+    // 准备阶段最多花掉 min(剩余预算, 20s)，对话阶段只拿剩下的部分。
+    val callDeadlineNanos = System.nanoTime() + timeoutMs * 1_000_000
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
         withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
             app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
@@ -1588,7 +1589,7 @@ private suspend fun proxyStream(
     val converter = ProtocolConversion.streamConverter(protocol, upstreamProtocol, alias)
 
     try {
-        withTimeout(timeoutMs) {
+        withTimeout(remainingMs(callDeadlineNanos)) {
             state.upstreamCallStarted = true
             upstreamClient(app, egressProxy).preparePost(upstreamUrl) {
                 applyUpstreamAuthentication(
@@ -1835,8 +1836,9 @@ private suspend fun proxyJson(
     val bodyJson = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
     // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
     val egressProxy = accountEgressProxy(app, candidate)
-    // 准备阶段（project 发现、目录补拉）在对话请求的 withTimeout 之外，单独限时，
-    // 避免上游接受连接后不响应时无限等待；超时后按没有目录处理，请求照常发出。
+    // 准备阶段（project 发现、目录补拉）与对话请求共用同一份剩余预算：
+    // 准备阶段最多花掉 min(剩余预算, 20s)，对话阶段只拿剩下的部分。
+    val callDeadlineNanos = System.nanoTime() + timeoutMs * 1_000_000
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
         withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
             app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
@@ -1884,7 +1886,7 @@ private suspend fun proxyJson(
         bodyJson.toString()
     }
     try {
-        withTimeout(timeoutMs) {
+        withTimeout(remainingMs(callDeadlineNanos)) {
             state.upstreamCallStarted = true
             val response = upstreamClient(app, egressProxy).post(upstreamUrl) {
                 applyUpstreamAuthentication(
@@ -2025,6 +2027,10 @@ private suspend fun <T> catalogOrNull(block: suspend () -> T): T? = try {
     proxyLogger.warn("code assist model catalog fetch failed, error={}", cause::class.simpleName)
     null
 }
+
+/** 对话阶段可用的剩余预算；准备阶段耗尽时立即按超时处理。 */
+private fun remainingMs(deadlineNanos: Long): Long =
+    ((deadlineNanos - System.nanoTime()) / 1_000_000).coerceAtLeast(0)
 
 /** 准备阶段（project 发现、目录补拉）的上限：不超过对话请求本身的超时。 */
 private fun preparationTimeoutMs(timeoutMs: Long): Long = minOf(timeoutMs, PREPARATION_TIMEOUT_MS)

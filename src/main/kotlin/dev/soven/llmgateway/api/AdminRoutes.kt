@@ -86,11 +86,10 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Base64
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
@@ -1196,25 +1195,21 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
             }
             // probe 可能包含一次开通轮询，整体限时，避免上游迟缓时管理请求一直挂着。
-            val catalog = try {
-                withTimeout(MODEL_REFRESH_TIMEOUT_MS) {
-                    val probe = app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
-                    app.codeAssistModelCatalog.fetchFor(
-                        token.accessToken,
-                        probe.project.orEmpty(),
-                        probe.tiers(),
-                        proxy,
-                    )
-                }
-            } catch (cause: TimeoutCancellationException) {
-                throw GatewayException(
-                    HttpStatusCode.GatewayTimeout,
-                    "model_catalog_timeout",
-                    "读取上游模型目录超时",
-                    "timeout_error",
-                    retryable = true,
+            val catalog = withTimeoutOrNull(MODEL_REFRESH_TIMEOUT_MS) {
+                val probe = app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
+                app.codeAssistModelCatalog.fetchFor(
+                    token.accessToken,
+                    probe.project.orEmpty(),
+                    probe.tiers(),
+                    proxy,
                 )
-            }
+            } ?: throw GatewayException(
+                HttpStatusCode.GatewayTimeout,
+                "model_catalog_timeout",
+                "读取上游模型目录超时",
+                "timeout_error",
+                retryable = true,
+            )
             val models = catalog.models
             if (models.isEmpty()) {
                 throw GatewayException(

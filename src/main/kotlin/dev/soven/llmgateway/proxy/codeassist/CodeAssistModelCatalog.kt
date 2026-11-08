@@ -8,6 +8,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -76,9 +77,14 @@ class CodeAssistModelCatalog(
         val candidates = (tiers.filter { it.isNotBlank() }.distinct() + listOf(""))
             .filter { tier -> tier.isEmpty() || !isRefused(project, tier) }
         for (tier in candidates) {
-            val response = runCatching { requestModels(accessToken, project, tier, proxy) }.getOrElse { cause ->
+            val response = try {
+                requestModels(accessToken, project, tier, proxy)
+            } catch (cause: CancellationException) {
+                // 取消必须原样抛出，不能当成失败继续尝试下一个 tier。
+                throw cause
+            } catch (cause: Throwable) {
                 logger.warn("fetchAvailableModels failed, tier={}, error={}", tier, cause::class.simpleName)
-                return@getOrElse null
+                null
             }
             when {
                 response == null -> continue
