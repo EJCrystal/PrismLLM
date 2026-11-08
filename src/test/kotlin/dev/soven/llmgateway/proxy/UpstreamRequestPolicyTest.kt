@@ -243,95 +243,36 @@ class UpstreamRequestPolicyTest {
     }
 
     @Test
-    fun `chat completion body automatically normalizes reasoning_content in assistant messages`() {
+    fun `chat completion body fills reasoning_content on tool turns only`() {
         val request = json("""
             {
                 "model": "deepseek-flash",
-                "reasoning_effort": "max",
                 "messages": [
                     {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi"}
+                    {"role": "assistant", "content": "hi"},
+                    {"role": "assistant", "content": null, "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+                    {"role": "assistant", "content": "the file says hi"}
                 ]
             }
         """.trimIndent())
 
         val policy = UpstreamRequestPolicy(
             UpstreamRequestOverrides(), UpstreamRequestOverrides(), GatewayProtocol.CHAT_COMPLETIONS, "bearer",
+            baseUrl = "https://api.deepseek.com/v1",
         )
-        val body = policy.body(request, "deepseek-flash")
-        val messages = body["messages"] as kotlinx.serialization.json.JsonArray
-        val assistant = messages[1].jsonObject
-        assertEquals("", assistant["reasoning_content"]?.jsonPrimitive?.content)
+        val messages = policy.body(request, "deepseek-flash")["messages"] as kotlinx.serialization.json.JsonArray
+
+        // 普通问答轮不注入；工具调用轮与工具结果之后的作答补单个空格。
+        assertNull(messages[1].jsonObject["reasoning_content"])
+        assertEquals(" ", messages[2].jsonObject["reasoning_content"]?.jsonPrimitive?.content)
+        assertEquals(" ", messages[4].jsonObject["reasoning_content"]?.jsonPrimitive?.content)
     }
 
     @Test
-    fun `channel reasoning content policy overrides the global default and honors opt out`() {
-        val request = json("""
-            {
-                "model": "ds-proxy",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi"}
-                ]
-            }
-        """.trimIndent())
-
-        fun assistantReasoning(global: UpstreamRequestOverrides, channel: UpstreamRequestOverrides): String? =
-            UpstreamRequestPolicy(global, channel, GatewayProtocol.CHAT_COMPLETIONS, "bearer")
-                .body(request, "ds-proxy")["messages"]
-                .let { it as kotlinx.serialization.json.JsonArray }[1]
-                .jsonObject["reasoning_content"]?.jsonPrimitive?.content
-
-        // 默认 auto：自定义模型名不触发
-        assertNull(assistantReasoning(UpstreamRequestOverrides(), UpstreamRequestOverrides()))
-        // 全局 always 生效
-        assertEquals("", assistantReasoning(UpstreamRequestOverrides(reasoningContentPolicy = "always"), UpstreamRequestOverrides()))
-        // 渠道 never 覆盖全局 always
-        assertNull(assistantReasoning(
-            UpstreamRequestOverrides(reasoningContentPolicy = "always"),
-            UpstreamRequestOverrides(reasoningContentPolicy = "never"),
-        ))
-        // 渠道不继承全局时，全局 always 不生效
-        assertNull(assistantReasoning(
-            UpstreamRequestOverrides(reasoningContentPolicy = "always"),
-            UpstreamRequestOverrides(inheritGlobal = false),
-        ))
-    }
-
-    @Test
-    fun `rejects unknown reasoning content policy at save time`() {
-        val error = assertFailsWith<GatewayException> {
-            validateUpstreamRequestOverrides(UpstreamRequestOverrides(reasoningContentPolicy = "sometimes"))
-        }
-        assertEquals("invalid_request_overrides", error.code)
-    }
-
-    @Test
-    fun `keeps developer role for responses by default and rewrites it when always`() {
-        val request = json("""
-            {
-                "model": "m",
-                "input": [
-                    {"type": "message", "role": "developer", "content": "policy"},
-                    {"type": "message", "role": "user", "content": "hello"}
-                ]
-            }
-        """.trimIndent())
-
-        fun roles(overrides: UpstreamRequestOverrides): List<String?> =
-            UpstreamRequestPolicy(UpstreamRequestOverrides(), overrides, GatewayProtocol.RESPONSES, "bearer")
-                .body(request, "m")["input"]!!.jsonArray.map { it.jsonObject["role"]?.jsonPrimitive?.content }
-
-        // 默认 auto：Responses 保留 developer，兼容依赖该角色的 Codex 中转
-        assertEquals(listOf("developer", "user"), roles(UpstreamRequestOverrides()))
-        // always：拒绝 developer 的 Responses 上游归一化为 system
-        assertEquals(listOf("system", "user"), roles(UpstreamRequestOverrides(developerRolePolicy = "always")))
-        // never：完全不改写
-        assertEquals(listOf("developer", "user"), roles(UpstreamRequestOverrides(developerRolePolicy = "never")))
-    }
-
-    @Test
-    fun `rewrites developer messages for chat completions and honors channel inheritance`() {
+    fun `chat completion body rewrites developer messages unconditionally`() {
         val request = json("""
             {
                 "model": "m",
@@ -342,40 +283,29 @@ class UpstreamRequestPolicyTest {
             }
         """.trimIndent())
 
-        fun roles(global: UpstreamRequestOverrides, channel: UpstreamRequestOverrides): List<String?> =
-            UpstreamRequestPolicy(global, channel, GatewayProtocol.CHAT_COMPLETIONS, "bearer")
-                .body(request, "m")["messages"]!!.jsonArray.map { it.jsonObject["role"]?.jsonPrimitive?.content }
+        val roles = UpstreamRequestPolicy(
+            UpstreamRequestOverrides(), UpstreamRequestOverrides(), GatewayProtocol.CHAT_COMPLETIONS, "bearer",
+        ).body(request, "m")["messages"]!!.jsonArray.map { it.jsonObject["role"]?.jsonPrimitive?.content }
 
-        // 默认 auto：Chat Completions 上游始终归一化
-        assertEquals(listOf("system", "user"), roles(UpstreamRequestOverrides(), UpstreamRequestOverrides()))
-        // 全局 never 生效
-        assertEquals(
-            listOf("developer", "user"),
-            roles(UpstreamRequestOverrides(developerRolePolicy = "never"), UpstreamRequestOverrides()),
-        )
-        // 渠道 always 覆盖全局 never
-        assertEquals(
-            listOf("system", "user"),
-            roles(
-                UpstreamRequestOverrides(developerRolePolicy = "never"),
-                UpstreamRequestOverrides(developerRolePolicy = "always"),
-            ),
-        )
-        // 渠道不继承全局时，全局 never 不生效
-        assertEquals(
-            listOf("system", "user"),
-            roles(
-                UpstreamRequestOverrides(developerRolePolicy = "never"),
-                UpstreamRequestOverrides(inheritGlobal = false),
-            ),
-        )
+        assertEquals(listOf("system", "user"), roles)
     }
 
     @Test
-    fun `rejects unknown developer role policy at save time`() {
-        val error = assertFailsWith<GatewayException> {
-            validateUpstreamRequestOverrides(UpstreamRequestOverrides(developerRolePolicy = "sometimes"))
-        }
-        assertEquals("invalid_request_overrides", error.code)
+    fun `responses keeps the developer role`() {
+        val request = json("""
+            {
+                "model": "m",
+                "input": [
+                    {"type": "message", "role": "developer", "content": "policy"},
+                    {"type": "message", "role": "user", "content": "hello"}
+                ]
+            }
+        """.trimIndent())
+
+        val roles = UpstreamRequestPolicy(
+            UpstreamRequestOverrides(), UpstreamRequestOverrides(), GatewayProtocol.RESPONSES, "bearer",
+        ).body(request, "m")["input"]!!.jsonArray.map { it.jsonObject["role"]?.jsonPrimitive?.content }
+
+        assertEquals(listOf("developer", "user"), roles)
     }
 }

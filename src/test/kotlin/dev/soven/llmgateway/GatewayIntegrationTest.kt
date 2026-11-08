@@ -8494,6 +8494,89 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `v58 migration drops the retired reasoning and developer policy keys`() {
+        val databaseName = "migration_v58_${System.nanoTime()}"
+        val migrationUrl = postgres.jdbcUrl.substringBefore("?").substringBeforeLast("/") + "/$databaseName"
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { it.execute("create database \"$databaseName\"") }
+        }
+        try {
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("57"))
+                .load()
+                .migrate()
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    // 一个带两个已删除键的渠道、一个不带任何键的渠道，以及全局设置。
+                    statement.execute(
+                        """
+                        insert into channels (id, name, base_url, auth_type, enabled, created_at, updated_at, request_overrides)
+                        values ('v58-dirty', 'dirty', 'https://dirty.example.com/v1', 'bearer', true, 1, 1,
+                                '{"reasoningContentPolicy":"always","developerRolePolicy":"never","headerProfile":"auto"}'),
+                               ('v58-clean', 'clean', 'https://clean.example.com/v1', 'bearer', true, 1, 1,
+                                '{"headerProfile":"codex"}')
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into upstream_request_settings (id, overrides, updated_at)
+                        values (1, '{"developerRolePolicy":"always","body":{"temperature":0.2}}', 1)
+                        on conflict (id) do update set overrides = excluded.overrides
+                        """.trimIndent(),
+                    )
+                }
+            }
+
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .load()
+                .migrate()
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery(
+                        "select request_overrides from channels where id = 'v58-dirty'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        val overrides = Json.parseToJsonElement(result.getString(1)).jsonObject
+                        assertFalse(overrides.containsKey("reasoningContentPolicy"), "已删除的策略键应被清理")
+                        assertFalse(overrides.containsKey("developerRolePolicy"))
+                        assertEquals("auto", overrides["headerProfile"]?.jsonPrimitive?.content, "其余配置必须保留")
+                    }
+                    // 不含这两个键的行不应被重写。
+                    statement.executeQuery(
+                        "select request_overrides from channels where id = 'v58-clean'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals("""{"headerProfile":"codex"}""", result.getString(1))
+                    }
+                    statement.executeQuery(
+                        "select overrides from upstream_request_settings",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        val overrides = Json.parseToJsonElement(result.getString(1)).jsonObject
+                        assertFalse(overrides.containsKey("developerRolePolicy"))
+                        assertEquals(
+                            "0.2",
+                            overrides["body"]?.jsonObject?.get("temperature")?.jsonPrimitive?.content,
+                        )
+                    }
+                }
+            }
+        } finally {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use {
+                    it.execute("drop database if exists \"$databaseName\" with (force)")
+                }
+            }
+        }
+    }
+
+    @Test
     fun `admin can update and clear avatar`() = runBlocking {
         testApplication {
             application { app.install(this) }

@@ -165,29 +165,20 @@ UA 删除有特殊处理：`userAgent:""` 或 `headers:{"User-Agent":null}` 都�
 
 管理面 UA 输入框留空表示本层不覆盖，不表示删除。通用请求体补丁会作用于全部协议；`reasoning`、`max_tokens`、`generationConfig` 等协议专用字段应放在相应的 `protocols` 规则中，以免其他协议拒绝参数。
 
-## reasoning_content 处理策略
+## reasoning_content 与 developer 角色（自动处理，无配置项）
 
-DeepSeek 等思考模型要求多轮对话回传 assistant 消息的 `reasoning_content`，缺失时上游直接返回 400。网关在发往 Chat Completions 上游前会按 `reasoningContentPolicy` 规范化该字段：
+这两项曾经是可选的渠道级策略，现在与 magpie 一致，由网关按上游自动判断，不再出现在请求覆盖配置里。
 
-| 取值 | 行为 |
-| --- | --- |
-| 省略 / `auto` | 仅当上游模型名匹配思考模型（`deepseek`、`reasoner`、`r1`、`thinking`、`qwq`），或历史消息中已出现思考内容时补齐；**不因 `reasoning_effort` 单独触发** |
-| `always` | 始终补齐，适用于自定义模型名但实际由思考模型提供服务的上游 |
-| `never` | 完全不改写，适用于 Groq 等接受 `reasoning_effort` 却拒绝历史中 `reasoning_content` 的上游 |
+**reasoning_content**：DeepSeek 等思考模型要求工具调用轮回传 assistant 的 `reasoning_content`，缺失时上游直接返回 400。网关在发往 Chat Completions 上游前处理：
 
-该字段位于 `overrides` / `requestOverrides` 顶层（与 `inheritGlobal` 同级），不区分协议，也不受「配置范围」影响。渠道未配置时继承全局；`inheritGlobal:false` 时忽略全局设置。补齐内容来源依次为已有 `reasoning_content`、`reasoning` / `thought` 别名字段、`content` 中的 `<think>` 标签，最后回退为空字符串。
+- 触发条件：上游 host 含 `deepseek`，或模型名含 `deepseek`、`reasoner`、`r1`、`qwq`、`thinking`；host 指向 Mistral 时完全不处理（它会以 `extra_forbidden` 拒绝该字段）。
+- 作用范围：只有工具轮——assistant 消息带非空 `tool_calls`，或紧跟在 `tool` 消息之后的那一条回答。普通问答轮不改写，DeepSeek 并不要求它们的思考内容。
+- 取值优先级：已有 `reasoning_content` → `reasoning` → `reasoning_details[].text` / `summary` → `content` 中的 `<think>` 标签 → 回退为单个空格 `" "`（空串会被中转丢弃）。
+- 从 `reasoning` 搬移时删除 `reasoning` 字段：把它和 `reasoning_content` 当同一个读的自建 DeepSeek 会以 `duplicate field reasoning` 拒绝。
 
-## developer 角色处理策略
+**developer 角色**：`developer` 是 OpenAI 替代 `system` 的新角色，部分 OpenAI 兼容上游只接受 `system`、`user`、`assistant`、`tool`。网关对 Chat Completions 上游无条件把 `messages[].role=developer` 改写为 `system`；Responses 保持原样，因为 Codex 客户端与中转依赖这个形状。
 
-`developer` 是 OpenAI 在 Responses / Chat Completions 中替代 `system` 的新角色，但部分 OpenAI 兼容上游只接受 `system`、`user`、`assistant`、`tool`，收到 `developer` 会直接返回 400/422。网关在发往上游前按 `developerRolePolicy` 归一化：
-
-| 取值 | 行为 |
-| --- | --- |
-| 省略 / `auto` | 仅对 Chat Completions 上游把 `messages[].role=developer` 改写为 `system`；Responses 保留 `developer`，兼容依赖该角色的 Codex 中转 |
-| `always` | Chat Completions 与 Responses 上游都改写，适用于拒绝 `developer` 的自建 Responses 中转；同时处理 `messages[]` 与 `input[]` |
-| `never` | 完全不改写 |
-
-改写只替换角色名，消息内容、字段顺序和其他角色保持不变；Responses 的 `input` 为字符串时不做处理。与 `reasoningContentPolicy` 一样，该字段位于 `overrides` / `requestOverrides` 顶层，渠道未配置时继承全局，`inheritGlobal:false` 时忽略全局设置。
+两类的拒绝（思考内容未回传、`developer is not one of …`）都计入[形状拒绝](routing-and-resilience.md#四候选故障转移与冷却机制candidate-cooldown)：请求会故障转移到下一个候选渠道，但不会让当前渠道进入冷却。
 
 ## 示例 1：全局保留自动预设，只覆盖 Responses 参数
 
