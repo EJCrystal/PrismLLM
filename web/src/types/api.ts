@@ -670,6 +670,37 @@ export interface WebSearchSettingsRequest {
   maxPageChars: number
 }
 
+export type IqVisionApiKeySource = 'settings' | 'environment' | 'none'
+export type IqVisionSettingsSource = 'settings' | 'environment'
+
+export interface IqVisionSettings {
+  enabled: boolean
+  baseUrl: string
+  model: string
+  apiKeySet: boolean
+  apiKeySource: IqVisionApiKeySource
+  apiKeyUnreadable: boolean
+  timeoutMs: number
+  /** 单帧浏览器渲染超时，来自部署环境变量，不能在管理台修改。 */
+  browserTimeoutMs: number
+  /** 6 帧渲染加一次视觉调用的最坏耗时。 */
+  worstCaseBudgetMs: number
+  /** 判分总超时，来自 IQ_JUDGE_TIMEOUT_MS。 */
+  judgeTimeoutMs: number
+  source: IqVisionSettingsSource
+  updatedAt: number
+  browserAvailable: boolean
+}
+
+export interface IqVisionSettingsRequest {
+  enabled: boolean
+  baseUrl: string
+  model: string
+  apiKey?: string
+  clearApiKey?: boolean
+  timeoutMs: number
+}
+
 export interface ChannelModelTestRequest {
   model: string
   protocol: string
