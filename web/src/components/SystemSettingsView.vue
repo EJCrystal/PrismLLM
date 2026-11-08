@@ -245,8 +245,13 @@ const settingRows = computed<SettingRow[]>(() => {
               : '使用环境变量默认值',
           ].join(' · ')
         : '',
-      alert: iqVision.data && !iqVision.data.browserAvailable
-        ? '未找到无头浏览器，视觉判分只会返回需人工查看'
+      alert: iqVision.data
+        ? [
+            iqVision.data.apiKeyUnreadable
+              ? '已保存的密钥无法解密（主密钥可能已更换），请进入设置重新填写'
+              : '',
+            iqVision.data.browserAvailable ? '' : '未找到无头浏览器，视觉判分只会返回需人工查看',
+          ].filter(Boolean).join('；')
         : '',
       onAction: () => { showIqVision.value = true },
       onRetry: loadIqVision,

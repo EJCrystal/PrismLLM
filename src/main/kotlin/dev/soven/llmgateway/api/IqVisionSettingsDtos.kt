@@ -73,17 +73,22 @@ internal fun iqVisionSettingsResponse(
     )
 }
 
-/** 校验一组视觉判分配置；通过时返回 null。 */
+/**
+ * 校验一组视觉判分配置；通过时返回 null。
+ *
+ * 列宽校验放在启用判断之前：关闭状态下也会写库，超长值会撞上 varchar 上限变成 500。
+ */
 internal fun iqVisionSettingsError(config: IqVisionConfig): String? {
     val baseUrl = config.baseUrl.trim()
     return when {
         config.timeoutMs !in 1_000..300_000 -> "视觉模型超时必须在 1000..300000 毫秒之间"
+        baseUrl.length > 500 -> "模型端点长度不能超过 500 个字符"
+        config.model.length > 200 -> "模型名长度不能超过 200 个字符"
         !config.enabled -> null
         baseUrl.isEmpty() -> "启用视觉判分需要配置模型端点"
         !baseUrl.startsWith("http://") && !baseUrl.startsWith("https://") ->
             "模型端点必须以 http:// 或 https:// 开头"
         config.model.isBlank() -> "启用视觉判分需要配置模型名"
-        config.model.length > 200 -> "模型名长度不能超过 200 个字符"
         else -> null
     }
 }

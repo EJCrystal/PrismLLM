@@ -6444,6 +6444,18 @@ class GatewayIntegrationTest {
             }
             assertEquals(HttpStatusCode.BadRequest, invalidTimeout.status)
 
+            // 关闭状态下也会写库，列宽校验不能只在启用时生效，否则超长值会撞上 varchar 变成 500。
+            val longModel = "m".repeat(201)
+            val oversizedModel = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":false,"baseUrl":"https://vision.example.com/v1","model":"$longModel","timeoutMs":60000}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, oversizedModel.status)
+
             val invalidScheme = client.put("/admin/api/iq-vision-settings") {
                 header(HttpHeaders.Cookie, sessionCookie)
                 header("X-CSRF-Token", csrf)
