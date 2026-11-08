@@ -16,6 +16,9 @@ import org.jetbrains.exposed.v1.jdbc.upsert
 
 /** Global settings are cached per process; a committed save publishes the next request's snapshot. */
 class UpstreamRequestSettingsRepository(private val database: Database) {
+    /** 同 ChannelRepository：请求覆盖配置允许出现已删除的键，读取时忽略。 */
+    private val json = Json { ignoreUnknownKeys = true }
+
     @Volatile
     private var cached: UpstreamRequestSettingsRecord? = null
     private val updateMutex = Mutex()
@@ -26,7 +29,7 @@ class UpstreamRequestSettingsRepository(private val database: Database) {
             cached ?: suspendTransaction(database) {
                 UpstreamRequestSettings.selectAll().where { UpstreamRequestSettings.id eq 1 }.singleOrNull()?.let {
                     UpstreamRequestSettingsRecord(
-                        Json.decodeFromString<UpstreamRequestOverrides>(it[UpstreamRequestSettings.overrides]),
+                        json.decodeFromString<UpstreamRequestOverrides>(it[UpstreamRequestSettings.overrides]),
                         it[UpstreamRequestSettings.updatedAt],
                     )
                 } ?: UpstreamRequestSettingsRecord()
@@ -37,7 +40,7 @@ class UpstreamRequestSettingsRepository(private val database: Database) {
     suspend fun save(overrides: UpstreamRequestOverrides): UpstreamRequestSettingsRecord = updateMutex.withLock {
         // Once a save starts, commit and publish together even if the HTTP client disconnects.
         withContext(NonCancellable) {
-            val encoded = Json.encodeToString(overrides)
+            val encoded = json.encodeToString(overrides)
             val record = suspendTransaction(database) {
                 val now = System.currentTimeMillis()
                 UpstreamRequestSettings.upsert(UpstreamRequestSettings.id) {
@@ -45,7 +48,7 @@ class UpstreamRequestSettingsRepository(private val database: Database) {
                     it[UpstreamRequestSettings.overrides] = encoded
                     it[updatedAt] = now
                 }
-                UpstreamRequestSettingsRecord(Json.decodeFromString<UpstreamRequestOverrides>(encoded), now)
+                UpstreamRequestSettingsRecord(json.decodeFromString<UpstreamRequestOverrides>(encoded), now)
             }
             cached = record
             record

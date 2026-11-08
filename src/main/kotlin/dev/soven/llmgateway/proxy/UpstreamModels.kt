@@ -71,7 +71,7 @@ suspend fun fetchUpstreamModels(
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): List<UpstreamModel> {
     val url = baseUrl.trimEnd('/') + "/models"
-    val policy = UpstreamRequestPolicy(globalOverrides, channelOverrides, protocol, authType, headerProfiles)
+    val policy = UpstreamRequestPolicy(globalOverrides, channelOverrides, protocol, authType, headerProfiles, baseUrl)
     try {
         return withTimeout(MODEL_LIST_TIMEOUT_MS) {
             val models = mutableListOf<UpstreamModel>()

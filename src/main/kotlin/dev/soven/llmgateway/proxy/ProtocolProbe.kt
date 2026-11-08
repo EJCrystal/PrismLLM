@@ -58,7 +58,7 @@ suspend fun probeUpstreamProtocols(
             withTimeout(timeoutMs) {
                 val authType = channel.authTypeFor(protocol)
                 val policy = UpstreamRequestPolicy(
-                    globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles,
+                    globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles, channel.baseUrl,
                 )
                 val body = policy.body(
                     kotlinx.serialization.json.Json.parseToJsonElement(probeBody(protocol, model)) as kotlinx.serialization.json.JsonObject,

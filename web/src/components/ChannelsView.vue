@@ -288,8 +288,6 @@ function channelFormSnapshot(useEditor = true): string {
         : requestOverrideDraftSnapshot(
             createRequestOverrideDrafts(form.requestOverrides),
             form.requestOverrides.inheritGlobal !== false,
-            form.requestOverrides.reasoningContentPolicy ?? null,
-            form.requestOverrides.developerRolePolicy ?? null,
           ),
     },
     keys: channelKeys.value.map((key) => ({
