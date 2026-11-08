@@ -120,6 +120,73 @@ class ChatReasoningContentNormalizerTest {
     }
 
     @Test
+    fun `drops reasoning when the message already carries reasoning_content`() {
+        // pi 会把思考内容同时放进 reasoning_content 与 reasoning；自建 DeepSeek 读成一个字段，
+        // 会以 "duplicate field reasoning" 拒绝整条请求。
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "assistant", "content": null, "reasoning_content": "keep me",
+                     "reasoning": "keep me", "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash", "https://api.deepseek.com")
+        val message = normalized["messages"]!!.jsonArray[0].jsonObject
+
+        assertEquals("keep me", message["reasoning_content"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `an empty reasoning_content also drops the reasoning alias`() {
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "assistant", "content": null, "reasoning_content": "", "reasoning": "x",
+                     "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash", "https://api.deepseek.com")
+        val message = normalized["messages"]!!.jsonArray[0].jsonObject
+
+        assertEquals("", message["reasoning_content"]!!.jsonPrimitive.content)
+        assertFalse(message.containsKey("reasoning"))
+    }
+
+    @Test
+    fun `a plain model name r1 triggers on a relay host`() {
+        val input = json(
+            """
+            {
+                "model": "r1",
+                "messages": [
+                    {"role": "assistant", "content": null, "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "r1", "https://api.bblabu.ai/v1")
+
+        assertEquals(
+            " ",
+            normalized["messages"]!!.jsonArray[0].jsonObject["reasoning_content"]!!.jsonPrimitive.content,
+        )
+    }
+
+    @Test
     fun `deepseek host triggers even when the model name says nothing`() {
         val input = json(
             """

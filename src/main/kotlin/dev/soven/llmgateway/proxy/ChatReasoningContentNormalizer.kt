@@ -3,6 +3,7 @@ package dev.soven.llmgateway.proxy
 import dev.soven.llmgateway.proxy.protocol.string
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -34,7 +35,8 @@ import kotlinx.serialization.json.put
  *    - 最后回退为单个空格 " "。不能用空串：中转可能丢弃空字段，DeepSeek 的 Responses 侧也会拒绝空
  *      reasoning_text。
  * 4. 从 reasoning 搬移思考内容时删除 reasoning 字段：把两个字段当同一个读的自建 DeepSeek 会以
- *    "duplicate field reasoning" 拒绝整条请求。reasoning_details 是结构化列表，保留原样。
+ *    "duplicate field reasoning" 拒绝整条请求。已有 reasoning_content 的消息若同时带 reasoning，
+ *    也删掉 reasoning 并保留原值。reasoning_details 是结构化列表，保留原样。
  *
  * @author 文杰
  * @since 2026-11-06
@@ -43,7 +45,7 @@ object ChatReasoningContentNormalizer {
     private val THINK_TAG_REGEX = Regex("<think>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
 
     /** 中转常把思考模型改名，这些词根仍能识别；`deepseek` 单独判断，因为 host 也要看。 */
-    private val REASONING_MODEL_MARKERS = listOf("reasoner", "-r1", "r1-", "_r1", "qwq", "thinking")
+    private val REASONING_MODEL_MARKERS = listOf("reasoner", "r1", "qwq", "thinking")
 
     /** magpie 的 noReasoning：空串会被中转丢掉，DeepSeek 的 Responses 侧也拒绝空 reasoning_text。 */
     private const val NO_REASONING = " "
@@ -113,18 +115,16 @@ object ChatReasoningContentNormalizer {
     private fun normalizeAssistantMessage(msg: JsonObject): JsonObject {
         // 1. 已有 reasoning_content 字符串（含空串）时保留；null 视为缺失，按后续规则补齐。
         val own = (msg["reasoning_content"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-        if (own != null) return msg
+        if (own != null) {
+            // 已有思考内容时值不变，但 reasoning 仍要删：两个字段并存的自建 DeepSeek 会以
+            // "duplicate field reasoning" 拒绝整条请求。
+            return if (msg.containsKey("reasoning")) rebuild(msg) {} else msg
+        }
 
         // 2. reasoning / thought / reasoning_details 里带回的思考内容。
         val alias = aliasReasoning(msg)
         if (alias != null) {
-            return buildJsonObject {
-                msg.forEach { (k, v) ->
-                    // reasoning 与 reasoning_content 是同一个字段的两种拼写，只留一个。
-                    if (k != "reasoning_content" && k != "reasoning") put(k, v)
-                }
-                put("reasoning_content", alias)
-            }
+            return rebuild(msg) { put("reasoning_content", alias) }
         }
 
         // 3. content 中的 <think>...</think>。
@@ -132,13 +132,19 @@ object ChatReasoningContentNormalizer {
         if (extracted != null) return extracted
 
         // 4. 回退为单个空格。
-        return buildJsonObject {
-            msg.forEach { (k, v) ->
-                if (k != "reasoning_content") put(k, v)
-            }
+        return rebuild(msg) {
             put("reasoning_content", NO_REASONING)
         }
     }
+
+    /** 重建消息并去掉 reasoning（reasoning 与 reasoning_content 是同一个字段的两种拼写），再用 [extra] 追加改写后的字段。 */
+    private inline fun rebuild(msg: JsonObject, extra: JsonObjectBuilder.() -> Unit): JsonObject =
+        buildJsonObject {
+            msg.forEach { (k, v) ->
+                if (k != "reasoning") put(k, v)
+            }
+            extra()
+        }
 
     private fun aliasReasoning(msg: JsonObject): String? {
         (msg["reasoning"] as? JsonPrimitive)?.takeIf { it.isString }?.content
