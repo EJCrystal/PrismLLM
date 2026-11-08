@@ -546,11 +546,13 @@ private suspend fun handleProxy(
                             allowUpstreamErrorFailover = upstreamAttempts < app.config.maxAttempts && upstreamAttempts < candidates.size,
                             globalOverrides = globalOverrides,
                             headerProfiles = headerProfiles,
+                            clientKeyId = clientKey?.id,
                         )
                     } else {
                         proxyJson(
                             app, call, requestJson, alias, candidate, remainingMs, state, protocol,
                             attemptProtocol ?: protocol, traceContext.traceparent, globalOverrides, headerProfiles,
+                            clientKey?.id,
                         )
                     }
                 }
@@ -1505,6 +1507,7 @@ private suspend fun proxyStream(
     allowUpstreamErrorFailover: Boolean,
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
+    clientKeyId: String? = null,
 ) {
     val envelope = candidate.channel.upstreamEnvelope
     val upstreamUrl = upstreamRequestUrl(
@@ -1572,7 +1575,12 @@ private suspend fun proxyStream(
             request,
             sentModel,
             codeAssistProject,
-            CodeAssistEnvelope.sessionScope(alias, candidate.channel.id, inboundRequestId(call), request),
+            CodeAssistEnvelope.sessionScope(
+                alias,
+                candidate.channel.id,
+                clientKeyId,
+                clientSessionId(call),
+            ),
         ).toString()
     } else {
         bodyJson.toString()
@@ -1803,6 +1811,7 @@ private suspend fun proxyJson(
     traceparent: String,
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
+    clientKeyId: String? = null,
 ) {
     val envelope = candidate.channel.upstreamEnvelope
     val upstreamUrl = upstreamRequestUrl(
@@ -1864,7 +1873,12 @@ private suspend fun proxyJson(
             request,
             sentModel,
             codeAssistProject,
-            CodeAssistEnvelope.sessionScope(alias, candidate.channel.id, inboundRequestId(call), request),
+            CodeAssistEnvelope.sessionScope(
+                alias,
+                candidate.channel.id,
+                clientKeyId,
+                clientSessionId(call),
+            ),
         ).toString()
     } else {
         bodyJson.toString()
@@ -1992,13 +2006,12 @@ private fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?): 
     } ?: app.httpClient
 
 /**
- * 调用方自带的请求标识（不记录到日志）。同一个客户端会话里请求标识逐次不同，
- * 用于把不同客户端线程的首条消息相同时区分开；取不到时为空。
+ * 调用方显式声明的会话标识。不能用 x-request-id / traceparent 这类每次请求都变的
+ * 标识，否则多轮对话每轮都会换上游会话。
  */
-private fun inboundRequestId(call: ApplicationCall): String =
-    listOf("x-request-id", "x-client-request-id", "request-id", "idempotency-key")
+private fun clientSessionId(call: ApplicationCall): String? =
+    listOf("x-session-id", "x-conversation-id", "conversation-id", "session-id")
         .firstNotNullOfOrNull { call.request.headers[it]?.trim()?.takeIf(String::isNotEmpty) }
-        ?: (call.request.headers["traceparent"]?.substringAfterLast('-')?.takeIf { it.isNotBlank() } ?: "")
 
 /** 准备阶段（project 发现、目录补拉）的上限：不超过对话请求本身的超时。 */
 private fun preparationTimeoutMs(timeoutMs: Long): Long = minOf(timeoutMs, PREPARATION_TIMEOUT_MS)

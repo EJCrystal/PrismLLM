@@ -51,24 +51,24 @@ class CodeAssistEnvelopeTest {
         ).jsonObject
         val left = CodeAssistEnvelope.sessionId(
             request,
-            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "req-1", request),
+            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "key-1", null),
         )
         val otherAlias = CodeAssistEnvelope.sessionId(
             request,
-            CodeAssistEnvelope.sessionScope("alias-b", "channel-1", "req-1", request),
+            CodeAssistEnvelope.sessionScope("alias-b", "channel-1", "key-1", null),
         )
         val otherChannel = CodeAssistEnvelope.sessionId(
             request,
-            CodeAssistEnvelope.sessionScope("alias-a", "channel-2", "req-1", request),
+            CodeAssistEnvelope.sessionScope("alias-a", "channel-2", "key-1", null),
         )
         val otherRequest = CodeAssistEnvelope.sessionId(
             request,
-            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "req-2", request),
+            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "key-2", null),
         )
-        // 同一个会话内请求标识逐次不同：相同首条消息的不同再次请求也不能落到同一个上游会话。
+        // 同一会话（同客户端、同渠道、同会话标识）多轮之间保持稳定。
         assertEquals(
             left,
-            CodeAssistEnvelope.sessionId(request, CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "req-1", request)),
+            CodeAssistEnvelope.sessionId(request, CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "key-1", null)),
         )
         assertTrue(left != otherAlias)
         assertTrue(left != otherChannel)

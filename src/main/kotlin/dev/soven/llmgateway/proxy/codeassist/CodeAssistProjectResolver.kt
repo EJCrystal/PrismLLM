@@ -83,23 +83,17 @@ class CodeAssistProjectResolver(
         val export = negotiated[account.id]
         val cached = accounts.upstreamContext(account.id)
         // 缓存是按某个出口协商出来的：出口一变就必须重新发现，而不是等 TTL 过期。
-        val sameEgress = proxyKey == (export?.egress ?: proxyKey)
+        // 进程刚启动、还没有协商记录时也按未知出口处理：持久化的上下文可能来自别的出口。
+        val sameEgress = export?.egress == proxyKey
         val fresh = cached?.project != null && cached.checkedAt != null && now() - cached.checkedAt < TIER_TTL_MS
         if (sameEgress && fresh) return Context(cached!!.project, cached.tier)
         val loaded = runCatching { loadCodeAssist(account.id, accessToken, proxy) }.getOrElse { cause ->
             logger.warn("loadCodeAssist failed, accountId={}, error={}", account.id, cause::class.simpleName)
             null
         } ?: return Context(
-            when {
-                sameEgress -> cached?.project
-                export?.egress == proxyKey -> export.project
-                else -> null
-            },
-            when {
-                sameEgress -> cached?.tier
-                export?.egress == proxyKey -> export.tier
-                else -> null
-            },
+            // 发现失败时只复用同一出口协商出来的上下文，绝不把旧出口的 project 带过来。
+            if (sameEgress) export?.project else null,
+            if (sameEgress) export?.tier else null,
         )
         val project = loaded.project ?: runCatching {
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
@@ -137,6 +131,8 @@ class CodeAssistProjectResolver(
             null
         } ?: return Probe(accounts.upstreamContext(account.id)?.project, loaded.tier, loaded.allowedTiers)
         accounts.saveUpstreamContext(account.id, project, loaded.tier, now())
+        // 管理面探测同样确定了该出口下的上下文，数据面可以直接复用。
+        negotiated[account.id] = Export(egressKey(account, proxy), project, loaded.tier)
         return Probe(project, loaded.tier, loaded.allowedTiers)
     }
 

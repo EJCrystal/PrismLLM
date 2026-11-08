@@ -65,10 +65,7 @@ class CodeAssistModelCatalog(
         project: String,
         tiers: List<String>,
         proxy: InetSocketAddress? = null,
-    ): List<AntigravityModels.Model> {
-        val catalog = fetchFor(accessToken, project, tiers, proxy)
-        return AntigravityModels.collapse(catalog.raw)
-    }
+    ): List<AntigravityModels.Model> = fetchFor(accessToken, project, tiers, proxy).models
 
     private suspend fun load(
         accessToken: String,
@@ -110,6 +107,13 @@ class CodeAssistModelCatalog(
 
         fun sentId(model: String, effort: String?): String =
             if (raw.isEmpty()) model else AntigravityModels.sentId(model, effort, raw)
+
+        /**
+         * 对外发布模型对应的可调用 id：家族的对外 id 不一定是真实变体，
+         * 登记渠道时要用默认变体，目录缺失时请求也不会发出不存在的 id。
+         */
+        fun upstreamId(model: AntigravityModels.Model): String =
+            if (raw.isEmpty()) model.id else AntigravityModels.defaultVariant(model.id, raw)
     }
 
     /** 已缓存的目录；没有缓存时返回 null，调用方决定是否补拉。 */

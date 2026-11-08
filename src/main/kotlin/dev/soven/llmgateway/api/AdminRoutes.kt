@@ -1194,12 +1194,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
             }
             val probe = app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
-            val models = app.codeAssistModelCatalog.fetch(
+            val catalog = app.codeAssistModelCatalog.fetchFor(
                 token.accessToken,
                 probe.project.orEmpty(),
                 probe.tiers(),
                 proxy,
             )
+            val models = catalog.models
             if (models.isEmpty()) {
                 throw GatewayException(
                     HttpStatusCode.BadGateway,
@@ -1209,9 +1210,17 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     retryable = true,
                 )
             }
+            // 目录里家族 id 不一定可调用：渠道登记家族对应的默认变体，对外仍只暴露家族 id。
+            // 这样数据面目录补拉失败或超时时，请求发出的也是上游真实存在的模型。
             app.channelRepository.replaceModels(
                 channelId,
-                models.map { ChannelModelRecord(upstreamModel = it.id) },
+                models.map { model ->
+                    val upstream = catalog.upstreamId(model)
+                    ChannelModelRecord(
+                        upstreamModel = upstream,
+                        canonicalModelId = model.id.takeIf { it != upstream },
+                    )
+                },
             )
             call.markAdminAuditDetails(buildJsonObject {
                 put("provider", provider.value)

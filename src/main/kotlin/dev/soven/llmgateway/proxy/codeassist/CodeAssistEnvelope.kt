@@ -58,18 +58,21 @@ object CodeAssistEnvelope {
         val payload = trimmed.removePrefix("data:").trim()
         if (payload.isEmpty() || payload == "[DONE]") return line
         val parsed = runCatching { json.parseToJsonElement(payload) as? JsonObject }.getOrNull() ?: return line
-        val inner = parsed["response"] as? JsonObject ?: return line
-        return "data: " + inner
+        val inner = parsed["response"] as? JsonObject
+        if (inner != null) return "data: " + inner
+        // 错误事件：信封可能是 {"error": ...} 或 {"response": null, "error": ...}。
+        val error = parsed["error"] ?: return line
+        return "data: " + buildJsonObject { put("error", error) }
     }
 
     /**
-     * 会话归属：客户端模型别名、渠道、整段请求与调用方的 [requestId]。与首条用户文本
-     * 一起构成 sessionId：同一会话内对话历史只增长，首条文本不变；不同客户端线程的
-     * 首条消息即使相同，请求标识也不同，不会落到同一个上游会话。
+     * 会话归属：客户端模型别名、渠道、调用方凭据与（可选的）调用方会话标识。
+     * 这些在多轮对话里都不变，配合首条用户文本构成稳定的 sessionId；
+     * 不同客户端即使首条消息相同，凭据或会话标识不同也不会落到同一个上游会话。
+     * 注意不要放入整段请求或每次请求都变的 request-id，那会让每一轮都换会话。
      */
-    fun sessionScope(alias: String, channelId: String, requestId: String, request: JsonObject): String =
-        alias + "\u0000" + channelId + "\u0000" + requestId + "\u0000" +
-            json.encodeToString(JsonObject.serializer(), request)
+    fun sessionScope(alias: String, channelId: String, clientKeyId: String?, sessionId: String?): String =
+        alias + "\u0000" + channelId + "\u0000" + clientKeyId.orEmpty() + "\u0000" + sessionId.orEmpty()
 
     /** [scope] 与首条用户文本的哈希，作为稳定的 sessionId；没有文本时随机。 */
     fun sessionId(request: JsonObject, scope: String? = null): String {

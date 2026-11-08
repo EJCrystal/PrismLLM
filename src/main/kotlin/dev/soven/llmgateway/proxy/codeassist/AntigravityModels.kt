@@ -108,6 +108,12 @@ object AntigravityModels {
         )
     }
 
+    /** 对外发布的模型 id 对应的可调用变体；不是家族时原样返回。 */
+    fun defaultVariant(model: String, raw: List<Model>): String {
+        val family = families(raw).firstOrNull { it.id == model } ?: return model
+        return byEffort(family)[""] ?: model
+    }
+
     /** 把请求里的模型和等级落到具体变体 id。 */
     fun sentId(model: String, effort: String?, raw: List<Model>): String {
         val familyId = splitId(model).first
