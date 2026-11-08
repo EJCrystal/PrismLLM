@@ -360,7 +360,7 @@ class GatewayApplication(
             add(
                 dev.soven.llmgateway.plugin.iq.VisionIqJudge(
                     renderer = visionRenderer,
-                    // 每次判分重新读取，管理台保存后立即生效。
+                    // 每次判分重新读取，管理台保存后立即生效；读库失败时返回不可用而不是回退到环境变量。
                     settings = { iqVisionSettingsRepository.loadBlocking(iqVisionDefaults) },
                     assessorFactory = { resolved ->
                         dev.soven.llmgateway.proxy.OpenAiVisionAssessor(

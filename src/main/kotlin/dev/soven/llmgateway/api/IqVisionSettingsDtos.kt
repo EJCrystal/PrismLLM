@@ -86,8 +86,8 @@ internal fun iqVisionSettingsError(config: IqVisionConfig): String? {
         config.model.length > 200 -> "模型名长度不能超过 200 个字符"
         !config.enabled -> null
         baseUrl.isEmpty() -> "启用视觉判分需要配置模型端点"
-        !baseUrl.startsWith("http://") && !baseUrl.startsWith("https://") ->
-            "模型端点必须以 http:// 或 https:// 开头"
+        !config.usable ->
+            "模型端点必须是带主机名的 http:// 或 https:// 地址，端口需在 1..65535 之间"
         config.model.isBlank() -> "启用视觉判分需要配置模型名"
         else -> null
     }

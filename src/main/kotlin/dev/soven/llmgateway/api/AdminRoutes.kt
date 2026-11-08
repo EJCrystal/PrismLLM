@@ -673,9 +673,17 @@ fun Route.adminRoutes(app: GatewayApplication) {
         get("/iq-vision-settings") {
             call.requireAdmin(app)
             call.response.headers.append("Cache-Control", "no-store")
+            // 读库失败时不能当成「没保存过配置」展示环境变量：管理员会据此以为配置没生效，
+            // 甚至重新保存一遍把真正的原因盖掉。
+            val stored = runCatching { app.iqVisionSettingsRepository.load() }.getOrElse {
+                throw serviceUnavailable(
+                    "iq_vision_settings_unavailable",
+                    "读取视觉判分配置失败，请稍后重试",
+                )
+            }
             call.respond(
                 iqVisionSettingsResponse(
-                    stored = app.iqVisionSettingsRepository.load(),
+                    stored = stored,
                     defaults = app.iqVisionDefaults,
                     browserAvailable = app.iqVisionBrowserAvailable,
                     browserTimeoutMs = app.config.iqVisionBrowserTimeoutMs,

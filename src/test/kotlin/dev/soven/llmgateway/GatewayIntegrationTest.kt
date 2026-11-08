@@ -6512,6 +6512,19 @@ class GatewayIntegrationTest {
             }
             assertEquals(HttpStatusCode.BadRequest, invalidScheme.status)
 
+            // 只检查前缀会放行这类地址：保存成功，但请求阶段才失败。直接调用接口也必须被拒绝。
+            listOf("https://example.com:abc/v1", "https://example com/v1", "https://example.com:70000/v1").forEach { bad ->
+                val invalidHost = client.put("/admin/api/iq-vision-settings") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        """{"enabled":true,"baseUrl":"$bad","model":"gpt-vision","apiKey":"vision-secret","timeoutMs":60000}""",
+                    )
+                }
+                assertEquals(HttpStatusCode.BadRequest, invalidHost.status, "BASE_URL=$bad")
+            }
+
             // 保存后立即生效：重新读取必须反映新值，不需要重启。
             val reloaded = client.get("/admin/api/iq-vision-settings") {
                 header(HttpHeaders.Cookie, sessionCookie)

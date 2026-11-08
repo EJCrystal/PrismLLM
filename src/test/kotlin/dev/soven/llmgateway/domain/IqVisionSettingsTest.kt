@@ -111,6 +111,19 @@ class IqVisionSettingsTest {
     }
 
     @Test
+    fun `invalid hosts and ports are not usable`() {
+        // 只看前缀会把这类地址放行，保存成功但请求阶段才失败。
+        assertFalse(defaults.copy(baseUrl = "https://example.com:abc/v1").usable)
+        assertFalse(defaults.copy(baseUrl = "https://example com/v1").usable)
+        assertFalse(defaults.copy(baseUrl = "https://example.com:70000/v1").usable)
+        assertFalse(defaults.copy(baseUrl = "https:///v1").usable)
+        assertFalse(defaults.copy(baseUrl = "http://").usable)
+        // 合法端口与默认端口都要通过。
+        assertTrue(defaults.copy(baseUrl = "http://127.0.0.1:8080/v1").usable)
+        assertTrue(defaults.copy(baseUrl = "https://example.com").usable)
+    }
+
+    @Test
     fun `unreadable ciphertext surfaces without dropping the row`() {
         val stored = IqVisionSettingsRecord(
             enabled = true,

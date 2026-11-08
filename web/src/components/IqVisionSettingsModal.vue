@@ -85,6 +85,15 @@ async function save() {
         notify('模型端点只支持 http 或 https', 'error')
         return
       }
+      // 与后端一致：端口必须是 1..65535 的数字，主机名不能带空格。
+      if (parsed.port && (Number(parsed.port) < 1 || Number(parsed.port) > 65535)) {
+        notify('模型端点端口必须在 1..65535 之间', 'error')
+        return
+      }
+      if (!parsed.hostname || /\s/.test(parsed.hostname)) {
+        notify('模型端点格式无效', 'error')
+        return
+      }
     } catch {
       notify('模型端点格式无效', 'error')
       return

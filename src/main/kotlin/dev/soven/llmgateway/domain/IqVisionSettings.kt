@@ -1,5 +1,7 @@
 package dev.soven.llmgateway.domain
 
+import java.net.URI
+
 /**
  * 管理台保存的 IQ 视觉判分配置。apiKey 为解密后的明文，只在服务端内存中流转，
  * 不会返回管理台。没有保存过配置时沿用环境变量默认值。
@@ -26,9 +28,9 @@ data class IqVisionConfig(
     val apiKey: String?,
     val timeoutMs: Long,
 ) {
-    /** 端点与模型都齐备时才可能调用成功。 */
+    /** 端点可解析为 http(s) 地址且带主机名时才可能调用成功。 */
     val usable: Boolean
-        get() = baseUrl.startsWith("http://") || baseUrl.startsWith("https://")
+        get() = parseVisionEndpoint(baseUrl) != null
 }
 
 /**
@@ -39,25 +41,39 @@ data class IqVisionConfig(
  * 整体忽略大小写会把后者当成前者，把前者的密钥发给后者。
  */
 fun sameVisionEndpoint(left: String, right: String): Boolean {
-    val a = parseEndpoint(left) ?: return false
-    val b = parseEndpoint(right) ?: return false
+    val a = parseVisionEndpoint(left) ?: return false
+    val b = parseVisionEndpoint(right) ?: return false
     return a == b
 }
 
+/** 校验规则与判分时的可用性判断共用这一份解析，避免「保存放行、运行时静默失败」。 */
 private data class EndpointParts(val scheme: String, val authority: String, val path: String)
 
-private fun parseEndpoint(raw: String): EndpointParts? {
+/**
+ * 解析 http(s) 端点；非法地址返回 null。
+ *
+ * 只接受 http/https、必须带主机名，显式端口必须是 1..65535 的数字。
+ * 用 [URI] 解析，主机统一小写，同时保留路径原样（路径大小写敏感）。
+ */
+private fun parseVisionEndpoint(raw: String): EndpointParts? {
     val trimmed = raw.trim()
     if (trimmed.isEmpty()) return null
-    val schemeEnd = trimmed.indexOf("://")
-    if (schemeEnd <= 0) return null
-    val scheme = trimmed.substring(0, schemeEnd).lowercase()
-    val rest = trimmed.substring(schemeEnd + 3)
-    val pathStart = rest.indexOf('/')
-    val authority = (if (pathStart < 0) rest else rest.substring(0, pathStart)).lowercase()
-    val path = if (pathStart < 0) "" else rest.substring(pathStart).trimEnd('/')
-    if (authority.isEmpty()) return null
-    return EndpointParts(scheme, authority, path)
+    return runCatching {
+        val uri = URI(trimmed)
+        val scheme = uri.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") return null
+        val host = uri.host
+        if (host.isNullOrBlank()) return null
+        // URI 对空格、控制字符这类非法输入会抛出异常；这里再兜一次，避免无法发起请求的地址被当成有效端点。
+        if (host.any { it.isWhitespace() || it.isISOControl() }) return null
+        val port = uri.port
+        if (port != -1 && port !in 1..65535) return null
+        val rawAuthority = trimmed.substringAfter("://", "").substringBefore('/')
+        if (rawAuthority.any { it.isWhitespace() || it.isISOControl() }) return null
+        val authority = (if (port == -1) host else "$host:$port").lowercase()
+        val path = uri.rawPath.orEmpty().replace(Regex("/{2,}"), "/").trimEnd('/')
+        EndpointParts(scheme, authority, path)
+    }.getOrNull()
 }
 
 /**

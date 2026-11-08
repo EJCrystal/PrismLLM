@@ -1,6 +1,8 @@
 package dev.soven.llmgateway.plugin.iq
 
 import dev.soven.llmgateway.domain.IqVisionConfig
+import dev.soven.llmgateway.repo.IqVisionSettingsSnapshot
+import dev.soven.llmgateway.repo.IqVisionSettingsStatus
 import dev.soven.llmgateway.proxy.HtmlImageRenderer
 import dev.soven.llmgateway.proxy.SvgRenderResult
 import dev.soven.llmgateway.proxy.VisionAnimationInfo
@@ -50,17 +52,20 @@ class VisionIqJudge private constructor(
     /**
      * 动态配置：每次判分读取一次设置，管理台保存后无需重启。
      *
-     * @param settings 读取当前生效配置，读取失败时应回退到部署默认值而不是抛错。
+     * @param settings 读取当前生效配置；读库失败时应返回不可用而不是回退到部署默认值。
      * @param assessorFactory 用给定配置构造调用器；端点或密钥变化时自然换新。
      */
     constructor(
         renderer: HtmlImageRenderer,
-        settings: () -> IqVisionConfig,
+        settings: () -> IqVisionSettingsSnapshot,
         assessorFactory: (IqVisionConfig) -> VisionAssessor,
         frameCount: Int = VISION_FRAME_COUNT,
     ) : this(renderer, frameCount, {
-        val config = settings()
+        val snapshot = settings()
+        val config = snapshot.config
         when {
+            snapshot.status == IqVisionSettingsStatus.UNREADABLE ->
+                ActiveVisionModel.Unavailable("读取视觉判分配置失败，本次跳过视觉判分，请稍后重试。")
             !config.enabled -> ActiveVisionModel.Unavailable("视觉判分已在系统配置中关闭。")
             !config.usable -> ActiveVisionModel.Unavailable("视觉判分端点未配置有效的 http(s) 地址。")
             config.model.isBlank() -> ActiveVisionModel.Unavailable("视觉判分未配置模型名。")

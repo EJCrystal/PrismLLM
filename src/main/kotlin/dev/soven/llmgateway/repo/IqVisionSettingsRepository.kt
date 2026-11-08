@@ -19,6 +19,16 @@ data class IqVisionSettingsUpdate(
     val preserveApiKey: Boolean = false,
 )
 
+/** [NONE] 表示从未保存过配置；[UNREADABLE] 表示读了但没读成，两者不能当成同一件事。 */
+enum class IqVisionSettingsStatus { NONE, SETTINGS, UNREADABLE }
+
+/** 读取结果。管理台接口需要区分状态，判分器只需要 [config]。 */
+data class IqVisionSettingsSnapshot(
+    val status: IqVisionSettingsStatus,
+    val record: IqVisionSettingsRecord?,
+    val config: IqVisionConfig,
+)
+
 /**
  * 持久化管理台的 IQ 视觉判分配置。视觉模型 API 密钥与渠道凭据一样使用
  * AES-256-GCM 加密，读取时在服务端解密。
@@ -42,20 +52,38 @@ class IqVisionSettingsRepository(
     /**
      * 阻塞式读取，供判分器所在的阻塞线程池直接调用。
      *
-     * @param defaults 环境变量默认值；读取失败时返回它，避免判分整体失败。
+     * @param defaults 环境变量默认值；从未保存过配置时使用它。
      */
-    fun loadBlocking(defaults: IqVisionConfig): IqVisionConfig {
+    fun loadBlocking(defaults: IqVisionConfig): IqVisionSettingsSnapshot {
         val stored = runCatching { transaction(database) { read(lock = false) } }
             .onFailure {
-                // 读取失败时回退到部署默认值，不让一次数据库抖动把判分整体打挂。
                 logger.warn(
-                    "iq vision settings unavailable, falling back to environment defaults ({})",
+                    "iq vision settings unavailable, refusing to fall back to environment defaults ({})",
                     it::class.simpleName,
                 )
             }
-            .getOrNull()
-        return stored.effective(defaults)
+            .getOrElse { return unavailable(defaults) }
+        return IqVisionSettingsSnapshot(
+            status = if (stored == null) IqVisionSettingsStatus.NONE else IqVisionSettingsStatus.SETTINGS,
+            record = stored,
+            config = stored.effective(defaults),
+        )
     }
+
+    /**
+     * 数据库读取失败时的处置。
+     *
+     * 不能回退到环境变量默认值：管理员可能已经在页面关闭视觉判分，或者把端点从外部服务
+     * 换成了本机网关，一次读库失败就让判分重新使用环境变量里的外部端点和启用状态，
+     * 等于在管理员明确禁止外发的情况下把截图发给了旧服务。这里返回关闭状态，
+     * 由调用方转人工确认。
+     */
+    private fun unavailable(defaults: IqVisionConfig) = IqVisionSettingsSnapshot(
+        status = IqVisionSettingsStatus.UNREADABLE,
+        record = null,
+        // enabled=false 让判分走「已在系统配置中关闭」的不可用分支，不发任何外部请求。
+        config = defaults.copy(enabled = false),
+    )
 
     /**
      * 在同一个事务里读取当前值、由 [apply] 计算新值并写回，返回保存后的值。
