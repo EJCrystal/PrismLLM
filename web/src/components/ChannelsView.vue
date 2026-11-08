@@ -290,14 +290,19 @@ function channelFormSnapshot(useEditor = true): string {
             form.requestOverrides.inheritGlobal !== false,
           ),
     },
-    keys: channelKeys.value.map((key) => ({
-      id: key.id, name: key.name, credential: key.credential, state: key.state, priority: key.priority,
-      stateVersion: key.stateVersion, models: key.models, rateLimit: key.rateLimit,
-      // 换过凭据后旧密钥的手动记录不再代表当前上游，不计入未保存修改
-      ...(key.id && key.credential.trim() ? { manualModels: key.manualModels } : {}),
-    })),
+    keys: channelKeys.value.map(keyDirtySnapshot),
     canonicalModels: canonicalModelSnapshot(canonicalModels),
   })
+}
+
+// 换过凭据后旧密钥的手动记录不再代表当前上游，不计入未保存修改；
+// 没换凭据的密钥保留该字段，修改手动记录仍会提示未保存。
+function keyDirtySnapshot(key: ChannelKeyEditorDraft) {
+  return {
+    id: key.id, name: key.name, credential: key.credential, state: key.state, priority: key.priority,
+    stateVersion: key.stateVersion, models: key.models, rateLimit: key.rateLimit,
+    ...(key.id && key.credential.trim() ? {} : { manualModels: key.manualModels }),
+  }
 }
 
 function recentProbe(channel: Channel): AdminAuditLog | null {
