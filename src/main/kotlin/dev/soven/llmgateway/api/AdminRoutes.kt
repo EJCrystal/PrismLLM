@@ -86,9 +86,11 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Base64
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
@@ -1193,13 +1195,27 @@ fun Route.adminRoutes(app: GatewayApplication) {
             } catch (cause: OAuthRefreshException) {
                 throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
             }
-            val probe = app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
-            val catalog = app.codeAssistModelCatalog.fetchFor(
-                token.accessToken,
-                probe.project.orEmpty(),
-                probe.tiers(),
-                proxy,
-            )
+            // probe 可能包含一次开通轮询，整体限时，避免上游迟缓时管理请求一直挂着。
+            val catalog = runCatching {
+                withTimeout(MODEL_REFRESH_TIMEOUT_MS) {
+                    val probe = app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
+                    app.codeAssistModelCatalog.fetchFor(
+                        token.accessToken,
+                        probe.project.orEmpty(),
+                        probe.tiers(),
+                        proxy,
+                    )
+                }
+            }.getOrElse { cause ->
+                if (cause is CancellationException) throw cause
+                throw GatewayException(
+                    HttpStatusCode.GatewayTimeout,
+                    "model_catalog_timeout",
+                    "读取上游模型目录超时",
+                    "timeout_error",
+                    retryable = true,
+                )
+            }
             val models = catalog.models
             if (models.isEmpty()) {
                 throw GatewayException(
@@ -2532,6 +2548,9 @@ private fun normalizeChannelKeyRateLimit(
 }
 
 private const val DEFAULT_CHANNEL_KEY_NAME = "默认密钥"
+
+/** 管理面刷新模型目录的总上限：覆盖 project 探测、开通轮询与目录请求。 */
+private const val MODEL_REFRESH_TIMEOUT_MS = 60_000L
 
 private fun normalizeModelMappings(request: ChannelRequest): List<ChannelModelRecord>? {
     val raw = when {

@@ -7,7 +7,9 @@ import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -19,6 +21,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * loadCodeAssist / onboardUser 的请求体：tier 传给上游前必须经过 JSON 序列化，
@@ -210,6 +213,71 @@ class CodeAssistProjectResolverTest {
             assertEquals(1, calls.get())
         } finally {
             proxy.stop(0)
+        }
+    }
+
+    @Test
+    fun `failed onboarding does not refresh the negotiated state`() = runBlocking {
+        val calls = AtomicReference(0)
+        val project = AtomicReference<String?>("proj-1")
+        val clock = AtomicReference(0L)
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1internal:loadCodeAssist") { exchange ->
+            val current = project.get()
+            reply(exchange, 200, if (current == null) """{"allowedTiers":[{"id":"free-tier"}]}""" else """{"cloudaicompanionProject":"$current"}""")
+        }
+        server.createContext("/v1internal:onboardUser") { exchange ->
+            calls.updateAndGet { it + 1 }
+            reply(exchange, 503, """{"error":{"code":503}}""")
+        }
+        server.start()
+        val base = "http://127.0.0.1:${server.address.port}"
+        try {
+            val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+            val resolver = CodeAssistProjectResolver(
+                FakeAccounts(saved), HttpClient(Java), baseUrl = base, loadBaseUrl = base, now = { clock.get() },
+            )
+            val account = account()
+
+            assertEquals("proj-1", resolver.context(account, "token").project)
+            // 缓存过期后上游不再提供 project，开通也失败：本轮沿用已协商的上下文……
+            clock.set(2 * 60 * 60 * 1000L)
+            project.set(null)
+            assertEquals("proj-1", resolver.context(account, "token").project)
+            assertEquals(1, calls.get())
+            // ……但不能把失败当成刚协商过，下次请求仍要重新尝试开通。
+            assertEquals("proj-1", resolver.context(account, "token").project)
+            assertEquals(2, calls.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `cancellation during discovery propagates`() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1internal:loadCodeAssist") { exchange ->
+            Thread.sleep(2_000)
+            runCatching { reply(exchange, 200, """{"cloudaicompanionProject":"proj-1"}""") }
+        }
+        server.start()
+        val base = "http://127.0.0.1:${server.address.port}"
+        try {
+            val resolver = CodeAssistProjectResolver(
+                FakeAccounts(AtomicReference()),
+                HttpClient(Java),
+                baseUrl = base,
+                loadBaseUrl = base,
+            )
+            val started = System.currentTimeMillis()
+            val result = runCatching {
+                withTimeout(150) { resolver.context(account(), "token") }
+            }
+
+            assertTrue(result.exceptionOrNull() is TimeoutCancellationException)
+            assertTrue(System.currentTimeMillis() - started < 1_500, "cancellation must not wait for the upstream")
+        } finally {
+            server.stop(0)
         }
     }
 

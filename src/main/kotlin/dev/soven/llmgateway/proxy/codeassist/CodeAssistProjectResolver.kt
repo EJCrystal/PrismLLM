@@ -11,6 +11,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.ContentType
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -87,33 +88,44 @@ class CodeAssistProjectResolver(
         val sameEgress = export?.egress == proxyKey
         val fresh = cached?.project != null && cached.checkedAt != null && now() - cached.checkedAt < TIER_TTL_MS
         if (sameEgress && fresh) return Context(cached!!.project, cached.tier)
-        val loaded = runCatching { loadCodeAssist(account.id, accessToken, proxy) }.getOrElse { cause ->
-            logger.warn("loadCodeAssist failed, accountId={}, error={}", account.id, cause::class.simpleName)
-            null
-        } ?: return Context(
-            // 发现失败时只复用同一出口协商出来的上下文，绝不把旧出口的 project 带过来。
-            if (sameEgress) export?.project else null,
-            if (sameEgress) export?.tier else null,
-        )
-        val project = loaded.project ?: runCatching {
+        val loaded = attempt(account.id, "loadCodeAssist") { loadCodeAssist(account.id, accessToken, proxy) }
+            ?: return Context(
+                // 发现失败时只复用同一出口协商出来的上下文，绝不把旧出口的 project 带过来。
+                if (sameEgress) export?.project else null,
+                if (sameEgress) export?.tier else null,
+            )
+        val project = loaded.project ?: attempt(account.id, "onboardUser") {
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
-        }.getOrElse { cause ->
-            logger.warn("onboardUser failed, accountId={}, error={}", account.id, cause::class.simpleName)
-            null
         }
-        val resolved = if (project != null) {
-            accounts.saveUpstreamContext(account.id, project, loaded.tier, now())
-            Context(project, loaded.tier)
-        } else {
-            // 没有开通出 project：只有同一出口下的已存上下文才可沿用。
-            Context(cached?.project.takeIf { sameEgress }, cached?.tier.takeIf { sameEgress })
+        if (project == null) {
+            // 发现和开通都没拿到 project：沿用本出口已成功的上下文，但不刷新协商状态，
+            // 下一轮请求会再次尝试开通，而不是把失败的结果当成刚协商过。
+            return if (sameEgress) {
+                Context(export?.project, export?.tier)
+            } else {
+                Context(null, null)
+            }
         }
+        accounts.saveUpstreamContext(account.id, project, loaded.tier, now())
         if (!sameEgress) {
             logger.info("account proxy changed, renegotiated code assist context, accountId={}", account.id)
         }
-        // 记录本次出口实际得到的上下文；下次换出口时只认这条。
-        negotiated[account.id] = Export(proxyKey, resolved.project, resolved.tier)
-        return resolved
+        // 只有成功解析出 project 才更新协商状态；下次换出口时只认这条。
+        negotiated[account.id] = Export(proxyKey, project, loaded.tier)
+        return Context(project, loaded.tier)
+    }
+
+    /**
+     * 上游调用失败只降级为 null，但协程取消必须原样抛出：吞掉取消会让被放弃的请求
+     * 继续发起后续的上游调用。
+     */
+    private suspend fun <T> attempt(accountId: String, action: String, block: suspend () -> T): T? = try {
+        block()
+    } catch (cause: CancellationException) {
+        throw cause
+    } catch (cause: Throwable) {
+        logger.warn("{} failed, accountId={}, error={}", action, accountId, cause::class.simpleName)
+        null
     }
 
     private fun normalizeProxy(proxyUrl: String?): String? = proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
@@ -124,11 +136,8 @@ class CodeAssistProjectResolver(
      */
     suspend fun probe(account: OAuthAccountRecord, accessToken: String, proxy: InetSocketAddress? = null): Probe {
         val loaded = loadCodeAssist(account.id, accessToken, proxy)
-        val project = loaded.project ?: runCatching {
+        val project = loaded.project ?: attempt(account.id, "onboardUser") {
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
-        }.getOrElse { cause ->
-            logger.warn("onboardUser failed, accountId={}, error={}", account.id, cause::class.simpleName)
-            null
         } ?: return Probe(accounts.upstreamContext(account.id)?.project, loaded.tier, loaded.allowedTiers)
         accounts.saveUpstreamContext(account.id, project, loaded.tier, now())
         // 管理面探测同样确定了该出口下的上下文，数据面可以直接复用。
