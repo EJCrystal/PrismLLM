@@ -71,7 +71,9 @@ private fun parseVisionEndpoint(raw: String): EndpointParts? {
         val rawAuthority = trimmed.substringAfter("://", "").substringBefore('/')
         if (rawAuthority.any { it.isWhitespace() || it.isISOControl() }) return null
         val authority = (if (port == -1) host else "$host:$port").lowercase()
-        val path = uri.rawPath.orEmpty().replace(Regex("/{2,}"), "/").trimEnd('/')
+        // 只去掉末尾斜杠：连内部斜杠一起折叠会把 /tenant//v1 和 /tenant/v1 当成同一端点，
+        // 而实际请求用的仍是原样的 baseUrl，服务端完全可能把它们路由到不同服务。
+        val path = uri.rawPath.orEmpty().trimEnd('/')
         EndpointParts(scheme, authority, path)
     }.getOrNull()
 }

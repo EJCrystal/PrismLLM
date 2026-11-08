@@ -81,6 +81,8 @@ class IqVisionSettingsTest {
         assertTrue(sameVisionEndpoint("https://API.Example.com/v1", "https://api.example.com/v1"))
         // 路径大小写不同可能是不同租户，不能当成同一端点。
         assertFalse(sameVisionEndpoint("https://api.example.com/TenantA/v1", "https://api.example.com/tenanta/v1"))
+        // 连续斜杠同理：服务端可能把它们路由到不同服务。
+        assertFalse(sameVisionEndpoint("https://api.example.com/tenant//v1", "https://api.example.com/tenant/v1"))
         assertFalse(sameVisionEndpoint("http://127.0.0.1:8080/v1", "http://127.0.0.1:9090/v1"))
         assertFalse(sameVisionEndpoint("", "http://127.0.0.1:8080/v1"))
         assertFalse(sameVisionEndpoint("not-a-url", "not-a-url"))
