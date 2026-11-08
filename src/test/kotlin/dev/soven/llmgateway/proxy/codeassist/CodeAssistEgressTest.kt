@@ -8,6 +8,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 /**
  * 账号配置了代理时，Code Assist 的目录、额度与 project 请求都要经该代理发出，
@@ -87,6 +89,45 @@ class CodeAssistEgressTest {
         assertEquals("gemini-3.7-flash", catalog.cached("project-c")?.sentId("gemini-3.7-flash", null) ?: "gemini-3.7-flash")
         assertEquals(1, catalog.snapshot("project-a").size)
         assertEquals(1, catalog.snapshot("project-b").size)
+    }
+
+    @Test
+    fun `catalog expires and is refetched`() = runBlocking {
+        val calls = java.util.concurrent.atomic.AtomicInteger(0)
+        val upstream = server { exchange ->
+            val call = calls.incrementAndGet()
+            reply(exchange, """{"models":{"gemini-3.7-flash-high":{"displayName":"Gemini 3.7 Flash (High) $call"}}}""")
+        }
+        val clock = java.util.concurrent.atomic.AtomicLong(0)
+        val catalog = CodeAssistModelCatalog(HttpClient(), baseUrl = target(upstream), now = { clock.get() })
+
+        assertEquals(1, catalog.fetchFor("token", "project", emptyList()).models.size)
+        // 有效期内命中缓存，不再请求上游。
+        assertEquals(1, clock.get().let { catalog.snapshot("project") }.size)
+        assertEquals(1, calls.get())
+        // 超过有效期后自动失效，下一次请求补拉并换到新目录。
+        clock.set(7 * 60 * 60 * 1000L)
+        assertEquals(0, catalog.snapshot("project").size)
+        assertEquals(1, catalog.fetchFor("token", "project", emptyList()).models.size)
+        assertEquals(2, calls.get())
+    }
+
+    @Test
+    fun `catalog is refetched when the negotiated tier changes`() = runBlocking {
+        val calls = java.util.concurrent.atomic.AtomicInteger(0)
+        val upstream = server { exchange ->
+            calls.incrementAndGet()
+            reply(exchange, """{"models":{"gemini-3.7-flash-high":{"displayName":"Gemini 3.7 Flash (High)"}}}""")
+        }
+        val catalog = CodeAssistModelCatalog(HttpClient(), baseUrl = target(upstream))
+
+        assertNotNull(catalog.fetchFor("token", "project", listOf("free-tier")).models.firstOrNull())
+        // 同 tier 命中缓存。
+        assertNotNull(catalog.cached("project", "free-tier"))
+        // 套餐切换：旧目录不再可信。
+        assertNull(catalog.cached("project", "standard-tier"))
+        // 无 entitlement 的兜底目录对任何套餐都成立。
+        assertNotNull(catalog.cached("project", null))
     }
 
     /** 上游地址指向本地主机；经代理时要让代理按 Host 头转发，因此这里用绝对 URI。 */

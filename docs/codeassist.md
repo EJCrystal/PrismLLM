@@ -29,7 +29,8 @@ Antigravity 的订阅凭据不能直接调用 Gemini API：官方客户端走的
 不会静默回落直连。
 
 Code Assist 的发现、目录与额度请求都有 30 秒上限（直连请求用带超时的派生客户端），
-数据面的准备阶段另有 `min(请求超时, 20s)` 的整体上限。上游错误同样是
+数据面的准备阶段（发现 + 目录合计）另有 `min(请求超时, 20s)` 的整体上限，
+随后对话请求只使用这份预算剩下的时间。上游错误同样是
 `{"error": ...}` 信封，网关先解包再交给 Gemini 错误识别。
 
 会话 id 由客户端别名、渠道、调用方 API Key 与可选的会话标识（`x-session-id` /
@@ -79,7 +80,9 @@ SHA-256 派生，让同一段对话落在同一个会话上，取不到文本时
 
 返回的 `models` 里会过滤掉 `disabled`、`chat_` / `tab_` 前缀与若干非对话模型。
 目录按 cloud project 缓存（`CodeAssistModelCatalog.fetchFor` 返回与该 project 绑定的
-`Catalog`），不同账号的目录互不串用。
+`Catalog`），不同账号的目录互不串用；条目有 6 小时有效期，同 project 协商到的 tier
+变化（套餐切换）也立即失效并要求重新拉取。无 entitlement 的兜底目录对任何套餐都成立，
+不因 tier 变化失效。
 Antigravity 把一个模型按思考等级拆成多个 id（`gemini-3.7-flash-low` /
 `-medium` / `-high`），网关把它们收成一个"家族"模型对外暴露，请求时再按
 `thinkingLevel`（或由 `thinkingBudget` 换算的等级）选最近的一档；

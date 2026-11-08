@@ -42,7 +42,10 @@ class CodeAssistModelCatalog(
     private val json = Json { ignoreUnknownKeys = true }
     private val refused = ConcurrentHashMap<String, Long>()
 
-    /** 按 project 缓存：不同账号对应不同的 cloud project，模型目录不能互相串用。 */
+    /**
+     * 按 project 缓存：不同账号对应不同的 cloud project，模型目录不能互相串用。
+     * 条目带拉取时间与生效 tier 并设有效期：套餐或上游目录变化后不会一直用旧映射。
+     */
     private val snapshots = ConcurrentHashMap<String, Snapshot>()
 
     /**
@@ -55,9 +58,11 @@ class CodeAssistModelCatalog(
         tiers: List<String>,
         proxy: InetSocketAddress? = null,
     ): Catalog {
-        val raw = load(accessToken, project, tiers, proxy)
-        if (raw.isNotEmpty()) snapshots[project] = Snapshot(raw)
-        return Catalog(snapshots[project]?.models ?: raw)
+        val loaded = load(accessToken, project, tiers, proxy)
+        if (loaded != null) {
+            snapshots[project] = Snapshot(loaded.models, loaded.tier, now())
+        }
+        return Catalog(current(project)?.models ?: loaded?.models.orEmpty())
     }
 
     /** 只要家族模型列表；全部 tier 都失败时返回空列表。 */
@@ -68,12 +73,15 @@ class CodeAssistModelCatalog(
         proxy: InetSocketAddress? = null,
     ): List<AntigravityModels.Model> = fetchFor(accessToken, project, tiers, proxy).models
 
+    /** 一次成功的目录拉取：命中它的 tier 与原始模型列表。 */
+    private class Loaded(val tier: String, val models: List<AntigravityModels.Model>)
+
     private suspend fun load(
         accessToken: String,
         project: String,
         tiers: List<String>,
         proxy: InetSocketAddress?,
-    ): List<AntigravityModels.Model> {
+    ): Loaded? {
         val candidates = (tiers.filter { it.isNotBlank() }.distinct() + listOf(""))
             .filter { tier -> tier.isEmpty() || !isRefused(project, tier) }
         for (tier in candidates) {
@@ -95,10 +103,10 @@ class CodeAssistModelCatalog(
                 response.status !in 200..299 -> {
                     logger.warn("fetchAvailableModels status {}", response.status)
                 }
-                else -> return parseModels(response.body)
+                else -> return Loaded(tier, parseModels(response.body))
             }
         }
-        return emptyList()
+        return null
     }
 
     /**
@@ -122,20 +130,47 @@ class CodeAssistModelCatalog(
             if (raw.isEmpty()) model.id else AntigravityModels.defaultVariant(model.id, raw)
     }
 
-    /** 已缓存的目录；没有缓存时返回 null，调用方决定是否补拉。 */
-    fun cached(project: String): Catalog? = snapshots[project]?.let { Catalog(it.models) }
+    /**
+     * 仍在有效期内的目录；过期或 tier 变化（套餐切换）时返回 null，由调用方补拉。
+     * [tier] 为空表示不校验 tier。
+     */
+    fun cached(project: String, tier: String? = null): Catalog? =
+        current(project, tier)?.let { Catalog(it.models) }
 
-    private class Snapshot(val models: List<AntigravityModels.Model>)
+    /**
+     * 取当前有效的快照；过期条目顺便清掉，避免长期占用内存。
+     * tier 变了说明套餐切换，旧的家族/变体映射不再可信，必须重新拉取。
+     */
+    private fun current(project: String, tier: String? = null): Snapshot? {
+        val snapshot = snapshots[project] ?: return null
+        if (now() - snapshot.fetchedAt >= CATALOG_TTL_MS) {
+            snapshots.remove(project, snapshot)
+            logger.info("model catalog expired, project={}, refreshing", project)
+            return null
+        }
+        // 无 entitlement 的兜底拉取（tier 为空）对任何套餐都成立，不因 tier 变化失效。
+        if (tier != null && snapshot.tier.isNotEmpty() && snapshot.tier != tier) {
+            logger.info("model catalog tier changed, project={}, {} -> {}", project, snapshot.tier, tier)
+            return null
+        }
+        return snapshot
+    }
 
-    /** 请求时把家族模型落到当前等级的具体变体；没有缓存时原样返回。 */
+    private class Snapshot(
+        val models: List<AntigravityModels.Model>,
+        val tier: String,
+        val fetchedAt: Long,
+    )
+
+    /** 请求时把家族模型落到当前等级的具体变体；没有有效缓存时原样返回。 */
     fun sentId(project: String?, model: String, effort: String?): String {
-        val raw = project?.let { snapshots[it]?.models } ?: return model
+        val raw = project?.let { current(it)?.models } ?: return model
         return AntigravityModels.sentId(model, effort, raw)
     }
 
-    /** 仅供测试与诊断：某个 project 缓存的原始模型目录。 */
+    /** 仅供测试与诊断：某个 project 缓存且仍在有效期内的原始模型目录。 */
     fun snapshot(project: String? = null): List<AntigravityModels.Model> =
-        (project?.let { snapshots[it] } ?: snapshots.values.maxByOrNull { it.models.size })?.models ?: emptyList()
+        (project?.let { current(it) } ?: snapshots.values.maxByOrNull { it.models.size })?.models ?: emptyList()
 
     private suspend fun requestModels(
         accessToken: String,
@@ -191,6 +226,8 @@ class CodeAssistModelCatalog(
 
     private companion object {
         const val TIER_REFUSED_MS = 24 * 60 * 60 * 1000L
+        /** 目录有效期：上游调整模型或账号套餐变化后，最多 6 小时就换到新映射。 */
+        const val CATALOG_TTL_MS = 6 * 60 * 60 * 1000L
         /** Antigravity 列出但不用于对话的模型。 */
         val HIDDEN = setOf(
             "chat_20706",

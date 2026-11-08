@@ -1538,10 +1538,12 @@ private suspend fun proxyStream(
     // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
     val egressProxy = accountEgressProxy(app, candidate)
     // 准备阶段（project 发现、目录补拉）与对话请求共用同一份剩余预算：
-    // 准备阶段最多花掉 min(剩余预算, 20s)，对话阶段只拿剩下的部分。
+    // 发现 + 目录合计最多花掉 min(剩余预算, 20s)，对话阶段只拿剩下的部分。
     val callDeadlineNanos = System.nanoTime() + timeoutMs * 1_000_000
+    val preparationDeadlineNanos =
+        System.nanoTime() + preparationTimeoutMs(timeoutMs) * 1_000_000
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
+        withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
             app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
         }
     } else {
@@ -1551,8 +1553,8 @@ private suspend fun proxyStream(
     // 进程启动后第一次请求时补一次模型目录，避免重启后家族 id 失去变体映射。
     // 目录按 project 缓存，不会跨账号串用。
     val codeAssistCatalog = if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null) {
-        val cached = app.codeAssistModelCatalog.cached(codeAssistProject)
-        cached ?: withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
+        val cached = app.codeAssistModelCatalog.cached(codeAssistProject, codeAssistContext?.tier)
+        cached ?: withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
             catalogOrNull {
                 app.codeAssistModelCatalog.fetchFor(
                     credential,
@@ -1837,10 +1839,12 @@ private suspend fun proxyJson(
     // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
     val egressProxy = accountEgressProxy(app, candidate)
     // 准备阶段（project 发现、目录补拉）与对话请求共用同一份剩余预算：
-    // 准备阶段最多花掉 min(剩余预算, 20s)，对话阶段只拿剩下的部分。
+    // 发现 + 目录合计最多花掉 min(剩余预算, 20s)，对话阶段只拿剩下的部分。
     val callDeadlineNanos = System.nanoTime() + timeoutMs * 1_000_000
+    val preparationDeadlineNanos =
+        System.nanoTime() + preparationTimeoutMs(timeoutMs) * 1_000_000
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
+        withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
             app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
         }
     } else {
@@ -1850,8 +1854,8 @@ private suspend fun proxyJson(
     // 进程启动后第一次请求时补一次模型目录，避免重启后家族 id 失去变体映射。
     // 目录按 project 缓存，不会跨账号串用。
     val codeAssistCatalog = if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null) {
-        val cached = app.codeAssistModelCatalog.cached(codeAssistProject)
-        cached ?: withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
+        val cached = app.codeAssistModelCatalog.cached(codeAssistProject, codeAssistContext?.tier)
+        cached ?: withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
             catalogOrNull {
                 app.codeAssistModelCatalog.fetchFor(
                     credential,
