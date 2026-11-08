@@ -1,0 +1,92 @@
+package dev.soven.llmgateway.proxy.codeassist
+
+import com.sun.net.httpserver.HttpServer
+import io.ktor.client.HttpClient
+import kotlinx.coroutines.runBlocking
+import java.net.InetSocketAddress
+import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+/**
+ * 账号配置了代理时，Code Assist 的目录、额度与 project 请求都要经该代理发出，
+ * 不能落到网关的直连出口。
+ */
+class CodeAssistEgressTest {
+    private val servers = mutableListOf<HttpServer>()
+
+    @AfterTest
+    fun stop() {
+        servers.forEach { it.stop(0) }
+    }
+
+    @Test
+    fun `model catalog and quota go through the account proxy`() = runBlocking {
+        val seen = CopyOnWriteArrayList<String>()
+        // 一个极简正向代理：记录请求行后直接返回固定响应，不真正回源。
+        val upstream = server { exchange ->
+            seen += exchange.requestHeaders.getFirst("Host") ?: ""
+            reply(exchange, """{"models":{"gemini-3.7-flash-high":{"displayName":"Gemini 3.7 Flash (High)"}}}""")
+        }
+        val proxy = server { exchange ->
+            seen += "proxy " + exchange.requestURI.rawPath
+            val path = exchange.requestURI.rawPath
+            val body = if (path.endsWith("retrieveUserQuotaSummary")) {
+                """{"groups":[{"buckets":[{"window":"5h","remainingFraction":0.5}]}]}"""
+            } else {
+                """{"models":{"gemini-3.7-flash-high":{"displayName":"Gemini 3.7 Flash (High)"}}}"""
+            }
+            reply(exchange, body)
+        }
+        val proxyAddress = InetSocketAddress("127.0.0.1", proxy.address.port)
+        val pool = CodeAssistClientPool(HttpClient())
+
+        val catalog = CodeAssistModelCatalog(HttpClient(), baseUrl = target(upstream), clients = pool)
+        val models = catalog.fetch("token", "project", listOf("free-tier"), proxyAddress)
+        val quota = CodeAssistQuotaClient(HttpClient(), baseUrl = target(upstream), clients = pool)
+            .read("token", "project", proxyAddress)
+
+        assertEquals(listOf("gemini-3.7-flash"), models.map { it.id })
+        assertEquals(50.0, quota!!.primary!!.usedPercent)
+        // 两个请求都只打到代理，没有直接连上游。
+        assertEquals(2, seen.count { it.startsWith("proxy ") }, "requests: $seen")
+        assertEquals(0, seen.count { it.isNotEmpty() && !it.startsWith("proxy ") }, "requests: $seen")
+    }
+
+    @Test
+    fun `without an account proxy requests keep using the shared client`() = runBlocking {
+        val seen = CopyOnWriteArrayList<String>()
+        val upstream = server { exchange ->
+            seen += "upstream " + exchange.requestURI.rawPath
+            reply(exchange, """{"groups":[{"buckets":[{"window":"5h","remainingFraction":0.5}]}]}""")
+        }
+        val pool = CodeAssistClientPool(HttpClient())
+
+        val quota = CodeAssistQuotaClient(HttpClient(), baseUrl = target(upstream), clients = pool)
+            .read("token", "project", null)
+
+        assertEquals(50.0, quota!!.primary!!.usedPercent)
+        assertEquals(listOf("upstream /v1internal:retrieveUserQuotaSummary"), seen)
+    }
+
+    /** 上游地址指向本地主机；经代理时要让代理按 Host 头转发，因此这里用绝对 URI。 */
+    private fun target(server: HttpServer): String = "http://127.0.0.1:${server.address.port}"
+
+    private fun server(handler: (com.sun.net.httpserver.HttpExchange) -> Unit): HttpServer {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { exchange ->
+            runCatching { handler(exchange) }
+        }
+        server.start()
+        servers += server
+        return server
+    }
+
+    private fun reply(exchange: com.sun.net.httpserver.HttpExchange, body: String) {
+        val bytes = body.toByteArray()
+        exchange.responseHeaders.add("Content-Type", "application/json")
+        exchange.sendResponseHeaders(200, bytes.size.toLong())
+        exchange.responseBody.use { it.write(bytes) }
+    }
+}

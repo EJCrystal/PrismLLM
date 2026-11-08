@@ -164,9 +164,14 @@ class OAuthQuotaService(
         } catch (cause: OAuthTokenUnavailableException) {
             return failed(account.id, cause.errorCode ?: "credential_unavailable")
         } ?: return OAuthQuotaResult.NotFound
-        val project = projectResolver.context(account, token.accessToken).project
+        val proxy = try {
+            proxyAddress(account.proxyUrl, config.proxyAllowedHosts)
+        } catch (cause: OAuthRefreshException) {
+            return failed(account.id, cause.errorCode)
+        }
+        val project = projectResolver.context(account, token.accessToken, proxy).project
             ?: return failed(account.id, "project_missing")
-        val snapshot = antigravityQuota.read(token.accessToken, project)
+        val snapshot = antigravityQuota.read(token.accessToken, project, proxy)
             ?: return failed(account.id, "quota_read_failed")
         repository.saveQuota(account.id, snapshot)
         onQuota(account.id, snapshot)

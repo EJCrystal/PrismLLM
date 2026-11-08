@@ -19,6 +19,7 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
+import java.net.InetSocketAddress
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -33,6 +34,8 @@ class CodeAssistModelCatalog(
     private val httpClient: HttpClient,
     private val baseUrl: String = "https://daily-cloudcode-pa.googleapis.com",
     private val now: () -> Long = System::currentTimeMillis,
+    /** 账号代理：目录请求与 token 刷新走同一个出口。 */
+    private val clients: CodeAssistClientPool = CodeAssistClientPool(httpClient),
 ) {
     private val logger = LoggerFactory.getLogger(CodeAssistModelCatalog::class.java)
     private val json = Json { ignoreUnknownKeys = true }
@@ -42,11 +45,16 @@ class CodeAssistModelCatalog(
     private var snapshot: List<AntigravityModels.Model> = emptyList()
 
     /** 拉取并收成家族模型；全部 tier 都失败时返回空列表。 */
-    suspend fun fetch(accessToken: String, project: String, tiers: List<String>): List<AntigravityModels.Model> {
+    suspend fun fetch(
+        accessToken: String,
+        project: String,
+        tiers: List<String>,
+        proxy: InetSocketAddress? = null,
+    ): List<AntigravityModels.Model> {
         val candidates = (tiers.filter { it.isNotBlank() }.distinct() + listOf(""))
             .filter { tier -> tier.isEmpty() || !isRefused(project, tier) }
         for (tier in candidates) {
-            val response = runCatching { requestModels(accessToken, project, tier) }.getOrElse { cause ->
+            val response = runCatching { requestModels(accessToken, project, tier, proxy) }.getOrElse { cause ->
                 logger.warn("fetchAvailableModels failed, tier={}, error={}", tier, cause::class.simpleName)
                 return@getOrElse null
             }
@@ -76,14 +84,19 @@ class CodeAssistModelCatalog(
     /** 仅供测试与诊断。 */
     fun snapshot(): List<AntigravityModels.Model> = snapshot
 
-    private suspend fun requestModels(accessToken: String, project: String, tier: String): HttpResult {
+    private suspend fun requestModels(
+        accessToken: String,
+        project: String,
+        tier: String,
+        proxy: InetSocketAddress?,
+    ): HttpResult {
         val body = buildJsonObject {
             put("project", project)
             if (tier.isNotEmpty()) {
                 putJsonObject("entitlement") { put("userTier", tier) }
             }
         }
-        val response = httpClient.post(baseUrl + "/v1internal:fetchAvailableModels") {
+        val response = clients.client(proxy).post(baseUrl + "/v1internal:fetchAvailableModels") {
             header(HttpHeaders.Authorization, "Bearer " + accessToken)
             header("X-Goog-Api-Client", "gl-node/22.21.1")
             contentType(ContentType.Application.Json)

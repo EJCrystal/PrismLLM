@@ -191,11 +191,15 @@ open class OAuthAccountRepository(private val database: Database) {
     suspend fun listUsableForProvider(provider: OAuthProvider, limit: Int = 100): List<OAuthAccountRecord> =
         suspendTransaction(database) {
             OAuthAccounts.selectAll()
-                .where { (OAuthAccounts.provider eq provider.value) and (OAuthAccounts.enabled eq true) }
+                .where {
+                    (OAuthAccounts.provider eq provider.value) and
+                        (OAuthAccounts.enabled eq true) and
+                        (OAuthAccounts.authState eq OAuthAuthState.ACTIVE.value)
+                }
+                // 状态条件必须在 limit 之前生效，否则前面的不可用账号会把后面的健康账号挤掉。
                 .orderBy(OAuthAccounts.updatedAt to SortOrder.DESC)
                 .limit(limit.coerceIn(1, 1_000))
                 .map { toRecord(it, emptyList(), emptySet()) }
-                .filter { it.authState == OAuthAuthState.ACTIVE }
         }
 
     suspend fun create(

@@ -22,6 +22,8 @@ import dev.soven.llmgateway.oauth.OAuthTokenUnavailableException
 import dev.soven.llmgateway.oauth.OAuthUnavailableReason
 import dev.soven.llmgateway.oauth.parseCodexQuotaHeaders
 import dev.soven.llmgateway.oauth.parseRateLimitResetMs
+import dev.soven.llmgateway.oauth.proxyAddress
+import java.net.InetSocketAddress
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
 import dev.soven.llmgateway.proxy.upstreamRequestUrl
 import dev.soven.llmgateway.proxy.BillingCalculator
@@ -1522,8 +1524,9 @@ private suspend fun proxyStream(
         streamRequest
     }
     val bodyJson = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
+    val egressProxy = if (envelope == UpstreamEnvelope.CODE_ASSIST) codeAssistProxy(app, candidate) else null
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential)
+        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
     } else {
         null
     }
@@ -1537,6 +1540,7 @@ private suspend fun proxyStream(
                 credential,
                 codeAssistProject,
                 listOfNotNull(codeAssistContext?.tier),
+                egressProxy,
             )
         }
     }
@@ -1794,8 +1798,9 @@ private suspend fun proxyJson(
     }
     val nonStreamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = false)
     val bodyJson = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
+    val egressProxy = if (envelope == UpstreamEnvelope.CODE_ASSIST) codeAssistProxy(app, candidate) else null
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential)
+        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
     } else {
         null
     }
@@ -1809,6 +1814,7 @@ private suspend fun proxyJson(
                 credential,
                 codeAssistProject,
                 listOfNotNull(codeAssistContext?.tier),
+                egressProxy,
             )
         }
     }
@@ -1921,6 +1927,15 @@ private fun protocolNotSupported(alias: String, protocol: GatewayProtocol): Gate
  * 数据面凭据解析：OAuth 账号取 access token，普通密钥解密静态凭据。
  * 账号不可用按可切换错误处理，让路由继续尝试其他候选，绝不回退到 refresh token。
  */
+/**
+ * Code Assist 的 project 发现与模型目录必须与 token 刷新走同一个账号出口。
+ * 代理地址已经过管理面校验，这里解析失败时按直连处理，不阻断请求。
+ */
+private fun codeAssistProxy(app: GatewayApplication, candidate: RouteCandidate): InetSocketAddress? {
+    val proxyUrl = candidate.oauthAccount?.proxyUrl ?: return null
+    return runCatching { proxyAddress(proxyUrl, app.config.oauth.proxyAllowedHosts) }.getOrNull()
+}
+
 private suspend fun decryptCredential(app: GatewayApplication, candidate: RouteCandidate): String = try {
     app.oauthTokenService.resolveCredential(candidate.credential)
 } catch (cause: CancellationException) {

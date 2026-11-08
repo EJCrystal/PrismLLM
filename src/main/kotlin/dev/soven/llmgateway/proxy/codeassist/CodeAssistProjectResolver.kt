@@ -21,6 +21,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
+import java.net.InetSocketAddress
 
 /**
  * Antigravity 的 Code Assist 需要每个账号自己的 cloud project 与 tier：
@@ -37,6 +38,8 @@ class CodeAssistProjectResolver(
     private val loadBaseUrl: String = "https://cloudcode-pa.googleapis.com",
     private val ideVersion: String = "1.0.0",
     private val now: () -> Long = System::currentTimeMillis,
+    /** 账号代理：project 发现与开通必须与 token 刷新走同一个出口。 */
+    private val clients: CodeAssistClientPool = CodeAssistClientPool(httpClient),
 ) {
     private val logger = LoggerFactory.getLogger(CodeAssistProjectResolver::class.java)
     private val json = Json { ignoreUnknownKeys = true }
@@ -48,17 +51,20 @@ class CodeAssistProjectResolver(
         fun tiers(): List<String> = (listOfNotNull(tier).filter { it.isNotBlank() } + allowedTiers).distinct()
     }
 
-    suspend fun context(account: OAuthAccountRecord, accessToken: String): Context {
+    /**
+     * @param proxy 账号出口代理；与刷新 access token 使用同一个，避免两套 IP。
+     */
+    suspend fun context(account: OAuthAccountRecord, accessToken: String, proxy: InetSocketAddress? = null): Context {
         val cached = accounts.upstreamContext(account.id)
         if (cached?.project != null && cached.checkedAt != null && now() - cached.checkedAt < TIER_TTL_MS) {
             return Context(cached.project, cached.tier)
         }
-        val loaded = runCatching { loadCodeAssist(account.id, accessToken) }.getOrElse { cause ->
+        val loaded = runCatching { loadCodeAssist(account.id, accessToken, proxy) }.getOrElse { cause ->
             logger.warn("loadCodeAssist failed, accountId={}, error={}", account.id, cause::class.simpleName)
             null
         } ?: return Context(cached?.project, cached?.tier)
         val project = loaded.project ?: runCatching {
-            onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull())
+            onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
         }.getOrElse { cause ->
             logger.warn("onboardUser failed, accountId={}, error={}", account.id, cause::class.simpleName)
             null
@@ -73,10 +79,10 @@ class CodeAssistProjectResolver(
      * 公开的目录探测：拿到账号的 project、tier 与允许拉取目录的 tier 列表。
      * 管理面刷新模型依赖这三项，不应自己访问 oauth_accounts 表拼装。
      */
-    suspend fun probe(account: OAuthAccountRecord, accessToken: String): Probe {
-        val loaded = loadCodeAssist(account.id, accessToken)
+    suspend fun probe(account: OAuthAccountRecord, accessToken: String, proxy: InetSocketAddress? = null): Probe {
+        val loaded = loadCodeAssist(account.id, accessToken, proxy)
         val project = loaded.project ?: runCatching {
-            onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull())
+            onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
         }.getOrElse { cause ->
             logger.warn("onboardUser failed, accountId={}, error={}", account.id, cause::class.simpleName)
             null
@@ -85,8 +91,8 @@ class CodeAssistProjectResolver(
         return Probe(project, loaded.tier, loaded.allowedTiers)
     }
 
-    private suspend fun loadCodeAssist(accountId: String, accessToken: String): Loaded {
-        val text = call(loadBaseUrl + "/v1internal:loadCodeAssist", accessToken, LOAD_BODY)
+    private suspend fun loadCodeAssist(accountId: String, accessToken: String, proxy: InetSocketAddress?): Loaded {
+        val text = call(loadBaseUrl + "/v1internal:loadCodeAssist", accessToken, LOAD_BODY, proxy)
         val root = json.parseToJsonElement(text) as? JsonObject
             ?: throw IllegalStateException("loadCodeAssist 返回的不是 JSON 对象")
         val project = (root["cloudaicompanionProject"] as? JsonPrimitive)?.contentOrNull
@@ -102,7 +108,7 @@ class CodeAssistProjectResolver(
         return Loaded(project, tier, allowed)
     }
 
-    private suspend fun onboard(accessToken: String, tier: String?): String? {
+    private suspend fun onboard(accessToken: String, tier: String?, proxy: InetSocketAddress?): String? {
         // tier 来自上游响应，必须序列化而不是拼接，避免引号或反斜杠把请求体拼坏。
         val body = buildJsonObject {
             if (!tier.isNullOrBlank()) put("tier_id", tier)
@@ -113,7 +119,7 @@ class CodeAssistProjectResolver(
             }
         }.toString()
         repeat(ONBOARD_ATTEMPTS) {
-            val text = call(baseUrl + "/v1internal:onboardUser", accessToken, body)
+            val text = call(baseUrl + "/v1internal:onboardUser", accessToken, body, proxy)
             val root = json.parseToJsonElement(text) as? JsonObject ?: return null
             if ((root["done"] as? JsonPrimitive)?.booleanOrNull == true) {
                 val response = root["response"] as? JsonObject ?: return null
@@ -125,8 +131,13 @@ class CodeAssistProjectResolver(
         return null
     }
 
-    private suspend fun call(url: String, accessToken: String, body: String): String {
-        val response = httpClient.post(url) {
+    private suspend fun call(
+        url: String,
+        accessToken: String,
+        body: String,
+        proxy: InetSocketAddress?,
+    ): String {
+        val response = clients.client(proxy).post(url) {
             header(HttpHeaders.Authorization, "Bearer " + accessToken)
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
             header("X-Goog-Api-Client", "gl-node/22.21.1")

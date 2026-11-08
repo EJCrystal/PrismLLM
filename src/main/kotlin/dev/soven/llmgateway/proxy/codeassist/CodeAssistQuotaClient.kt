@@ -19,6 +19,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.put
+import java.net.InetSocketAddress
 import java.time.Instant
 
 /**
@@ -32,12 +33,14 @@ import java.time.Instant
 class CodeAssistQuotaClient(
     private val httpClient: HttpClient,
     private val baseUrl: String = "https://daily-cloudcode-pa.googleapis.com",
+    /** 账号代理：额度读取与 token 刷新走同一个出口。 */
+    private val clients: CodeAssistClientPool = CodeAssistClientPool(httpClient),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun read(accessToken: String, project: String): OAuthQuotaSnapshot? {
+    suspend fun read(accessToken: String, project: String, proxy: InetSocketAddress? = null): OAuthQuotaSnapshot? {
         val body = buildJsonObject { put("project", project) }
-        val response = httpClient.post(baseUrl + "/v1internal:retrieveUserQuotaSummary") {
+        val response = clients.client(proxy).post(baseUrl + "/v1internal:retrieveUserQuotaSummary") {
             header(HttpHeaders.Authorization, "Bearer " + accessToken)
             header("X-Goog-Api-Client", "gl-node/22.21.1")
             contentType(ContentType.Application.Json)

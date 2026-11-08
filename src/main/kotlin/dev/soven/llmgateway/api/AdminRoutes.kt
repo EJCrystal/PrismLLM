@@ -1104,11 +1104,17 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     retryable = true,
                 )
             } ?: throw badRequest("oauth_credential_unavailable", "账号还没有可用的 access token")
-            val probe = app.codeAssistProjectResolver.probe(account, token.accessToken)
+            val proxy = try {
+                proxyAddress(account.proxyUrl, app.config.oauth.proxyAllowedHosts)
+            } catch (cause: OAuthRefreshException) {
+                throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
+            }
+            val probe = app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
             val models = app.codeAssistModelCatalog.fetch(
                 token.accessToken,
                 probe.project.orEmpty(),
                 probe.tiers(),
+                proxy,
             )
             if (models.isEmpty()) {
                 throw GatewayException(

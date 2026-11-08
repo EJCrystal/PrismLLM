@@ -235,7 +235,7 @@ SVG/HTML，再由 `judgeId` 指定的判分器判分；省略时使用 `IQ_DEFAU
 
 - 查看可用的 OAuth 提供方：`GET /admin/api/oauth-providers`，返回 `id`、`label`、`configured`、`loginSupported` 与 `managedChannel`。`configured` 表示网关已注册该提供方的 token 刷新器；`chatgpt` 与 `antigravity` 都内置公开客户端参数，默认即为 `true`，不需要部署方预先申请。两者也都内置授权端点与回调地址，可以直接发起浏览器登录；`managedChannel=true` 表示账号的端点渠道由系统维护。
 - 维护官方模型列表：`PUT /admin/api/oauth-providers/{provider}/models`，请求体 `{"models":["..."]}`；整体替换系统端点渠道的模型映射，用于官方模型变更。
-- 从上游刷新模型目录：`POST /admin/api/oauth-providers/{provider}/models/refresh`；仅 Code Assist 类提供方（目前是 Antigravity）支持，其他提供方返回 `model_catalog_not_supported`。使用时从该提供方**已启用且仍为 ACTIVE** 的账号中取最近更新的一个，读取官方模型列表（Code Assist 的 fetchAvailableModels，按当前 tier 与 `allowedTiers` 逐个尝试），写回系统渠道并返回 `{"models":[{"id","name"}]}`。没有可用账号时返回 `oauth_account_missing`。
+- 从上游刷新模型目录：`POST /admin/api/oauth-providers/{provider}/models/refresh`；仅 Code Assist 类提供方（目前是 Antigravity）支持，其他提供方返回 `model_catalog_not_supported`。使用时从该提供方**已启用且仍为 ACTIVE** 的账号中取最近更新的一个，读取官方模型列表（Code Assist 的 fetchAvailableModels，按当前 tier 与 `allowedTiers` 逐个尝试），写回系统渠道并返回 `{"models":[{"id","name"}]}`。项目发现、模型目录与额度查询都经该账号的出口代理发出；账号代理无效时返回 `invalid_oauth_proxy`。没有可用账号时返回 `oauth_account_missing`。
 - 账号看板：`GET /admin/api/oauth-accounts`，返回账号 `id` / `name`、provider、授权状态、是否启用、优先级、授权模型、关联渠道（`channelIds` 与 `channels[{id,name}]`）、token 到期时间、上游额度读数、调度策略与实时状态。响应不包含任何 token，且禁止缓存。
   - `models` 为空表示继承所关联渠道的全部模型。
   - `authState=REAUTH_REQUIRED` 的账号仍保留为候选，但凭据解析会返回 `subscription_account_unavailable` 并继续尝试其他候选；不会把 refresh token 发给上游。
