@@ -189,7 +189,7 @@ internal object PelicanStructureChecks {
     private val NEAR_PATTERN = sidePattern("near|front")
 
     private fun sidePattern(side: String): Regex =
-        Regex("(?<=^|-)(?:$side)(?=-|$).*(?:^|-)$LEG_WORDS(?=-|$)")
+        Regex("(?<=^|-)(?:$side)(?=-|$).*(?:^|-)(?:$LEG_WORDS)(?=-|$)")
 
     private const val LEG_WORDS = "leg|legs|thigh|foot|feet|ankle|shin|limb"
 

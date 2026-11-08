@@ -203,6 +203,29 @@ class PelicanStructureChecksTest {
     }
 
     @Test
+    fun `both sides in one scene only match their own side`() {
+        val far = check(
+            analyze(
+                "<svg><g class=\"far-leg\"></g><g class=\"bike-frame\"></g>" +
+                    "<g class=\"pelican-body\"></g><g class=\"near-foot\"></g></svg>",
+            ),
+            "far-layer-order",
+        )
+        assertTrue(far.passed, far.detail)
+        assertTrue(far.decisive)
+
+        val near = check(
+            analyze(
+                "<svg><g class=\"far-leg\"></g><g class=\"bike-frame\"></g>" +
+                    "<g class=\"pelican-body\"></g><g class=\"near-foot\"></g></svg>",
+            ),
+            "near-layer-order",
+        )
+        assertTrue(near.passed, near.detail)
+        assertTrue(near.decisive)
+    }
+
+    @Test
     fun `reversed layers need review instead of passing`() {
         val html = """
             <!DOCTYPE html>
