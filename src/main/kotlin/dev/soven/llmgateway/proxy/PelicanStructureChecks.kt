@@ -82,19 +82,26 @@ internal object PelicanStructureChecks {
         missingOther: String,
         reversed: String,
     ): IqStructureCheck {
+        // 只比直接绘制的图元：<defs>/<symbol> 里的定义和 <use> 实例的位置不代表实际绘制顺序。
         val elements = parse(html).getAllElements()
-        // 某一侧可能由多个图元组成，按整体比较：own 全部画完、other 才开始画，才算排对。
-        val lastOwn = elements.indexOfLast { element -> matchesLayer(element, matchesOwn) }
-        val firstOther = elements.indexOfFirst { element -> matchesLayer(element, matchesOther) }
-        if (lastOwn < 0) return advisory(id, label, missingOwn)
-        if (firstOther < 0) return advisory(id, label, missingOther)
-        val other = elements[firstOther]
-        // 两侧互为祖孙容器时（例如「bicycle > far-leg」），比较的是容器自身，不代表子图元的绘制顺序。
-        if (isNested(elements[lastOwn], other)) {
+            .filterNot { element -> element.parents().any { parent -> parent.tagName() in NON_RENDERED_TAGS } }
+        val ownIndexes = elements.indices.filter { index -> matchesLayer(elements[index], matchesOwn) }
+        val otherIndexes = elements.indices.filter { index -> matchesLayer(elements[index], matchesOther) }
+        if (ownIndexes.isEmpty()) return advisory(id, label, missingOwn)
+        if (otherIndexes.isEmpty()) return advisory(id, label, missingOther)
+        // 两侧只要有一个图元与对面互为祖孙容器（例如「bicycle > far-leg」），比较的是容器自身，无法判断顺序。
+        if (ownIndexes.any { own -> otherIndexes.any { other -> isNested(elements[own], elements[other]) } }) {
             return advisory(id, label, "两侧图元互相嵌套，无法比较绘制顺序，需结合画面确认跨骑透视")
         }
-        // 文档顺序就是绘制顺序，靠后的图元盖住靠前的：[ownFirst] 为真表示 own 应整体画在 other 之前。
-        val passed = (lastOwn < firstOther) == ownFirst
+        // 文档顺序就是绘制顺序，靠后的图元盖住靠前的。
+        // 远侧要求整体画在自行车之前；近侧要求整体画在鹈鹕之后，所以看的是最靠前的近侧图元与最靠后的鹈鹕图元。
+        val boundary = if (ownFirst) {
+            ownIndexes.last() to otherIndexes.first()
+        } else {
+            ownIndexes.first() to otherIndexes.last()
+        }
+        val passed = (boundary.first < boundary.second) == ownFirst
+        val other = elements[boundary.second]
         return IqStructureCheck(
             id = id,
             label = label,
@@ -145,6 +152,9 @@ internal object PelicanStructureChecks {
         value.replace("_", "-").replace(Regex("([a-z0-9])([A-Z])"), "$1-$2").lowercase()
 
     private val IGNORED_TAGS = setOf("#root", "html", "head", "body")
+
+    /** 只存放定义、不直接绘制内容的容器。 */
+    private val NON_RENDERED_TAGS = setOf("defs", "symbol", "clipPath", "mask", "pattern", "marker")
 
     /** 常见分层属性：`data-layer="far-leg"`、`data-part="near-foot"` 都算显式标记。 */
     private val LAYER_ATTRS = listOf("data-layer", "data-part", "data-name")

@@ -137,6 +137,33 @@ class PelicanStructureChecksTest {
     }
 
     @Test
+    fun `scattered near parts still decide against the whole rider`() {
+        val check = check(
+            // 大腿画在躯干之前，脚画在躯干之后：近侧应整体在鹈鹕之后，这里仍算排反。
+            analyze("<svg><g id=\"near-thigh\"></g><g id=\"pelican-body\"></g><g id=\"near-foot\"></g></svg>"),
+            "near-layer-order",
+        )
+
+        assertFalse(check.passed)
+        assertTrue(check.decisive)
+    }
+
+    @Test
+    fun `definitions do not count as drawing order`() {
+        val check = check(
+            analyze(
+                "<svg><defs><g id=\"bike-frame\"></g><g id=\"far-leg\"></g></defs>" +
+                    "<use href=\"#far-leg\"/><use href=\"#bike-frame\"/></svg>",
+            ),
+            "far-layer-order",
+        )
+
+        // 定义顺序（bike 在前）不代表绘制顺序，应降为提示而不是判失败。
+        assertTrue(check.passed)
+        assertFalse(check.decisive)
+    }
+
+    @Test
     fun `reversed layers need review instead of passing`() {
         val html = """
             <!DOCTYPE html>
