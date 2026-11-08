@@ -1705,6 +1705,17 @@ data class OAuthProviderModelsRequest(
 )
 
 @Serializable
+data class OAuthProviderModelResponse(
+    val id: String,
+    val name: String,
+)
+
+@Serializable
+data class OAuthProviderModelsResponse(
+    val models: List<OAuthProviderModelResponse> = emptyList(),
+)
+
+@Serializable
 data class OAuthProviderResponse(
     val id: String,
     val label: String,

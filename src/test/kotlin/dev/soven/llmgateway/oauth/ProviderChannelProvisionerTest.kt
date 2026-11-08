@@ -4,6 +4,7 @@ import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.domain.ChannelKind
 import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.ProviderEndpoints
 import dev.soven.llmgateway.repo.ChannelRepository
@@ -23,6 +24,7 @@ import java.util.Base64
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -102,9 +104,13 @@ class ProviderChannelProvisionerTest {
     }
 
     @Test
-    fun `provider without a supported protocol is not provisioned`() = runBlocking {
-        assertTrue(provisioner.ensure(OAuthProvider.ANTIGRAVITY) == null)
-        assertTrue(channels.findProviderChannel(OAuthProvider.ANTIGRAVITY) == null)
+    fun `antigravity is provisioned through code assist`() = runBlocking {
+        val channelId = provisioner.ensure(OAuthProvider.ANTIGRAVITY)
+        assertNotNull(channelId)
+        val channel = channels.find(channelId)!!
+        assertEquals(ChannelKind.PROVIDER, channel.kind)
+        assertEquals("https://daily-cloudcode-pa.googleapis.com", channel.baseUrl)
+        assertEquals(listOf(GatewayProtocol.GEMINI), channel.protocols)
     }
 
     @Test
@@ -161,8 +167,8 @@ class ProviderChannelProvisionerTest {
     }
 
     @Test
-    fun `reconcile skips unservable providers without starving servable accounts`() = runBlocking {
-        val unservable = accounts.create(
+    fun `reconcile moves accounts of every servable provider`() = runBlocking {
+        val antigravity = accounts.create(
             NewOAuthAccount(
                 name = "pending-antigravity",
                 provider = OAuthProvider.ANTIGRAVITY,
@@ -171,7 +177,7 @@ class ProviderChannelProvisionerTest {
                 providerChannelPending = true,
             ),
         )
-        val servable = accounts.create(
+        val chatgpt = accounts.create(
             NewOAuthAccount(
                 name = "pending-chatgpt",
                 provider = OAuthProvider.CHATGPT,
@@ -181,16 +187,13 @@ class ProviderChannelProvisionerTest {
             ),
         )
 
-        assertEquals(1, provisioner.reconcile())
+        // 两个 provider 现在都能置备，一次对账把两个账号各自挂到自己的系统渠道。
+        assertEquals(2, provisioner.reconcile())
 
-        val providerChannel = channels.findProviderChannel(OAuthProvider.CHATGPT)!!
-        assertEquals(setOf(providerChannel.id), accounts.findDetailed(servable.id)!!.channelIds)
-        assertTrue(accounts.findDetailed(unservable.id)!!.channelIds.isEmpty())
-        // 未实现协议的账号保留待搬迁标记，但不进入可服务 provider 的搬迁批次。
-        assertEquals(
-            unservable.id,
-            accounts.listPendingProviderChannel(listOf(OAuthProvider.ANTIGRAVITY)).single().id,
-        )
-        assertTrue(accounts.listPendingProviderChannel(listOf(OAuthProvider.CHATGPT)).isEmpty())
+        val chatGptChannel = channels.findProviderChannel(OAuthProvider.CHATGPT)!!
+        val antigravityChannel = channels.findProviderChannel(OAuthProvider.ANTIGRAVITY)!!
+        assertEquals(setOf(chatGptChannel.id), accounts.findDetailed(chatgpt.id)!!.channelIds)
+        assertEquals(setOf(antigravityChannel.id), accounts.findDetailed(antigravity.id)!!.channelIds)
+        assertTrue(accounts.listPendingProviderChannel(OAuthProvider.entries).isEmpty())
     }
 }

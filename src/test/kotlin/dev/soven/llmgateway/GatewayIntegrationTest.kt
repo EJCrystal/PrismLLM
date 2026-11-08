@@ -1250,8 +1250,8 @@ class GatewayIntegrationTest {
                 .associate {
                     it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["managedChannel"]!!.jsonPrimitive.boolean
                 }
-            // 上游协议尚未实现，因此 Antigravity 不置备系统端点渠道。
-            assertEquals(mapOf("chatgpt" to true, "antigravity" to false), managed)
+            // Antigravity 走 Code Assist 信封协议，账号同样挂到系统置备渠道。
+            assertEquals(mapOf("chatgpt" to true, "antigravity" to true), managed)
             val loginSupported = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
                 .associate {
                     it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["loginSupported"]!!.jsonPrimitive.boolean
@@ -7841,7 +7841,7 @@ class GatewayIntegrationTest {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("57", result.getString(1))
+                        assertEquals("58", result.getString(1))
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())

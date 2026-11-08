@@ -442,6 +442,39 @@ class OAuthAccountRepository(private val database: Database) {
         } > 0
     }
 
+    /** Code Assist 的上游上下文：cloud project 与当前 tier。 */
+    data class UpstreamContext(
+        val project: String?,
+        val tier: String?,
+        val checkedAt: Long?,
+    )
+
+    suspend fun upstreamContext(accountId: String): UpstreamContext? = suspendTransaction(database) {
+        OAuthAccounts.selectAll()
+            .where { OAuthAccounts.id eq accountId }
+            .singleOrNull()
+            ?.let { row ->
+            UpstreamContext(
+                project = row[OAuthAccounts.upstreamProject],
+                tier = row[OAuthAccounts.upstreamTier],
+                checkedAt = row[OAuthAccounts.upstreamTierCheckedAt],
+            )
+        }
+    }
+
+    suspend fun saveUpstreamContext(
+        accountId: String,
+        project: String?,
+        tier: String?,
+        checkedAt: Long,
+    ): Boolean = suspendTransaction(database) {
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+            if (project != null) it[OAuthAccounts.upstreamProject] = project.take(128)
+            if (tier != null) it[OAuthAccounts.upstreamTier] = tier.take(64)
+            it[OAuthAccounts.upstreamTierCheckedAt] = checkedAt
+        } > 0
+    }
+
     /** 保存一次成功的额度读数；`accountPlan` 非空时同步上游给出的套餐名。 */
     suspend fun saveQuota(
         accountId: String,

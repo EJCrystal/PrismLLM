@@ -90,6 +90,24 @@
 - Antigravity 走 Google Code Assist 的信封协议（v1internal:streamGenerateContent），网关尚未实现，因此不置备渠道；它原有的手工渠道关联在 V54 中保留（`managed=false`），协议实现后由置备器收敛到系统渠道。
 - V54 给迁移时已存在的账号打上 `provider_channel_pending`，启动对账逐账号改挂并清除标记；中途失败只需重启，不必重放迁移。迁移之后新建的可服务账号同样先标记待关联，挂到系统渠道后再清除；导入或登录在挂载前中断也能由启动对账修复。
 
+### 端点渠道
+
+- 订阅凭据只能用于提供方自己的官方端点，因此端点写成代码常量（ProviderEndpoints），不随渠道配置变化。
+- 每个已实现上游协议的 provider 由 ProviderChannelProvisioner 置备一条 kind=provider 的系统渠道，账号导入或登录完成后自动关联；账号与渠道的一对一关系由唯一索引保证。
+- 系统渠道不可编辑、不可删除，也不出现在渠道列表；账号页只展示上游端点。
+- Antigravity 同样由置备器建渠道；它的上游协议由 Code Assist 信封承载，账号导入后同样自动关联，见下节。
+
+### Antigravity 与 Code Assist
+
+- Antigravity 的订阅通道是 Google Code Assist，不是 Gemini API：请求与响应都多一层信封，
+  认证用 `Authorization: Bearer`，project 与 tier 按账号发现。
+- 网关在 HTTP 边界包装/解包信封，内部仍按 Gemini 处理，协议转换、用量统计与日志不受影响。
+- 模型目录按 tier 试错拉取，变体 id 收成家族后按思考等级选择；系统提示中的少数拒绝行
+  用零宽空格规避；403 封禁按两小时账号级冷却处理。
+- 细节与来源（magpie 的 `google.go` / `codeassist.go`）见
+  [Google Code Assist](../codeassist.md)，升级说明见
+  [V58](../migrations/V58-oauth-upstream-project.md)。
+
 ## Consequences
 
 - 订阅账号可以跨渠道复用，删除渠道不再删除账号；账号池调度、额度与代理都按账号聚合。

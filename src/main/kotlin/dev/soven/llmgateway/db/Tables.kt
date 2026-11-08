@@ -128,6 +128,10 @@ object OAuthAccounts : Table("oauth_accounts") {
     /** 最近一次额度读取尝试（成功或失败），只用于后台扫描排序，不代表读数新鲜度。 */
     val quotaAttemptedAt = long("quota_attempted_at").nullable()
     val quotaError = varchar("quota_error", 200).nullable()
+    /** Antigravity 的 Code Assist cloud project 与 tier；由 loadCodeAssist 发现并缓存。 */
+    val upstreamProject = varchar("upstream_project", 128).nullable()
+    val upstreamTier = varchar("upstream_tier", 64).nullable()
+    val upstreamTierCheckedAt = long("upstream_tier_checked_at").nullable()
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
 

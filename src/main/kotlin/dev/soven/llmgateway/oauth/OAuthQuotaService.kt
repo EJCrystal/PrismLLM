@@ -7,6 +7,8 @@ import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.domain.saturatedAdd
 import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistProjectResolver
+import dev.soven.llmgateway.proxy.codeassist.CodeAssistQuotaClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -65,6 +67,8 @@ class OAuthQuotaService(
     private val repository: OAuthAccountRepository,
     private val tokenService: OAuthTokenService,
     private val config: OAuthConfig,
+    private val projectResolver: CodeAssistProjectResolver,
+    private val antigravityQuota: CodeAssistQuotaClient,
     private val onQuota: suspend (String, OAuthQuotaSnapshot) -> Unit = { _, _ -> },
     private val now: () -> Long = System::currentTimeMillis,
 ) : AutoCloseable {
@@ -99,6 +103,7 @@ class OAuthQuotaService(
     }
 
     private suspend fun refreshAccount(account: OAuthAccountRecord): OAuthQuotaResult {
+        if (account.provider == OAuthProvider.ANTIGRAVITY) return refreshAntigravity(account)
         if (account.provider != OAuthProvider.CHATGPT) return OAuthQuotaResult.NotSupported
         val usageUrl = config.chatGpt.usageUrl ?: return OAuthQuotaResult.NotSupported
         val token = try {
@@ -149,6 +154,22 @@ class OAuthQuotaService(
             usage.secondary?.usedPercent,
             usage.allowed,
         )
+        return OAuthQuotaResult.Refreshed(repository.findDetailed(account.id) ?: account)
+    }
+
+    /** Antigravity 的额度来自 Code Assist 的 retrieveUserQuotaSummary。 */
+    private suspend fun refreshAntigravity(account: OAuthAccountRecord): OAuthQuotaResult {
+        val token = try {
+            tokenService.accessToken(account.id)
+        } catch (cause: OAuthTokenUnavailableException) {
+            return failed(account.id, cause.errorCode ?: "credential_unavailable")
+        } ?: return OAuthQuotaResult.NotFound
+        val project = projectResolver.context(account, token.accessToken).project
+            ?: return failed(account.id, "project_missing")
+        val snapshot = antigravityQuota.read(token.accessToken, project)
+            ?: return failed(account.id, "quota_read_failed")
+        repository.saveQuota(account.id, snapshot)
+        onQuota(account.id, snapshot)
         return OAuthQuotaResult.Refreshed(repository.findDetailed(account.id) ?: account)
     }
 
