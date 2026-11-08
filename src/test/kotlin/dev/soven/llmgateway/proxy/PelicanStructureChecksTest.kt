@@ -172,6 +172,17 @@ class PelicanStructureChecksTest {
 
         assertTrue(check.passed, check.detail)
         assertTrue(check.decisive)
+
+        // 同一个容器自己画了背景，背景就落在 SVG 坐标系之外。
+        val painted = check(
+            analyze(
+                "<!DOCTYPE html><html><body>" +
+                    "<div class=\"sky\" style=\"background: linear-gradient(#fff, #9cf)\"><svg id=\"a\"></svg></div>" +
+                    "</body></html>",
+            ),
+            "single-scene",
+        )
+        assertFalse(painted.passed)
     }
 
     @Test

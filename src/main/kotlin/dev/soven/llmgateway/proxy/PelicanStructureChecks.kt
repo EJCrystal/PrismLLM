@@ -120,9 +120,10 @@ internal object PelicanStructureChecks {
     private fun advisory(id: String, label: String, detail: String) =
         IqStructureCheck(id = id, label = label, passed = true, detail = detail, decisive = false)
 
-    /** 块里是否有 SVG 之外的可见内容：文字、图片或靠 CSS 画背景的空块。只包着子 SVG 时是纯布局包装。 */
+    /** 块里是否有 SVG 之外的可见内容：文字、图片、自带背景的块，或没有子 SVG 的块（可能靠 CSS 画背景）。 */
     private fun drawsContent(block: Element): Boolean {
         if (block.ownText().isNotBlank() || block.select("img, video, canvas, picture").isNotEmpty()) return true
+        if (block.hasAttr("style") && BACKGROUND_STYLE_PATTERN.containsMatchIn(block.attr("style"))) return true
         return block.children().none { child -> child.tagName() == "svg" || child.select("svg").isNotEmpty() }
     }
 
@@ -172,6 +173,9 @@ internal object PelicanStructureChecks {
 
     /** 只有这些块级容器承载的图形才会落在 SVG 坐标系之外。 */
     private const val BACKGROUND_BLOCK_TAGS = "div, section, main, header"
+
+    /** 内联样式里的背景声明；有背景铺满整个块时，块本身就在绘制背景。 */
+    private val BACKGROUND_STYLE_PATTERN = Regex("(?i)\\bbackground(?:-color|-image)?\\s*:")
 
     /** 按单词匹配：`cloudy` 命中，`mushroom` 这类只有子串相同的命名不会误判。 */
     private val BACKGROUND_NAMES_PATTERN =
