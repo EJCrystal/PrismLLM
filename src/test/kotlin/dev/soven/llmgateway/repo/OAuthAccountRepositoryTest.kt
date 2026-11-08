@@ -82,6 +82,23 @@ class OAuthAccountRepositoryTest {
         assertEquals(listOf(chatgpt.id), repository.listUsableForProvider(OAuthProvider.CHATGPT).map { it.id })
     }
 
+    @Test
+    fun `upstream context clears the stored tier when the upstream omits it`() = runBlocking {
+        val account = create("context", enabled = true)
+
+        repository.persistUpstreamContext(account.id, "proj-1", "standard-tier", 1_000)
+        assertEquals(
+            OAuthAccountRepository.UpstreamContext("proj-1", "standard-tier", 1_000),
+            repository.upstreamContext(account.id),
+        )
+        // 上游这次没给 tier：数据库里不能留着上一次的值，否则重启后会被当成新鲜缓存。
+        repository.persistUpstreamContext(account.id, "proj-1", null, 2_000)
+        assertEquals(
+            OAuthAccountRepository.UpstreamContext("proj-1", null, 2_000),
+            repository.upstreamContext(account.id),
+        )
+    }
+
     private suspend fun create(name: String, enabled: Boolean): OAuthAccountRecord =
         repository.create(
             NewOAuthAccount(

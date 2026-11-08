@@ -106,13 +106,25 @@ class CodeAssistProjectResolver(
                 Context(null, null)
             }
         }
-        accounts.saveUpstreamContext(account.id, project, loaded.tier, now())
         if (!sameEgress) {
             logger.info("account proxy changed, renegotiated code assist context, accountId={}", account.id)
         }
         // 只有成功解析出 project 才更新协商状态；下次换出口时只认这条。
-        negotiated[account.id] = Export(proxyKey, project, loaded.tier)
-        return Context(project, loaded.tier)
+        // 内存与数据库写同一份合并结果，避免重启后读到与本次请求不同的 tier。
+        return recordContext(account.id, proxyKey, project, loaded.tier)
+    }
+
+    /**
+     * 记录一次成功的上下文协商。上游这次没给 tier 时沿用本出口已协商的 tier，并把合并后的
+     * 结果同时写进数据库与内存：只写一个会让重启前后的行为不一致（数据库留着旧 tier，
+     * 进程内却是 null，或反过来）。
+     */
+    private suspend fun recordContext(accountId: String, egress: String, project: String, tier: String?): Context {
+        val previous = negotiated[accountId]
+        val merged = tier ?: previous?.takeIf { it.egress == egress }?.tier
+        accounts.saveUpstreamContext(accountId, project, merged, now())
+        negotiated[accountId] = Export(egress, project, merged)
+        return Context(project, merged)
     }
 
     /**
@@ -139,10 +151,9 @@ class CodeAssistProjectResolver(
         val project = loaded.project ?: attempt(account.id, "onboardUser") {
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
         } ?: return Probe(accounts.upstreamContext(account.id)?.project, loaded.tier, loaded.allowedTiers)
-        accounts.saveUpstreamContext(account.id, project, loaded.tier, now())
         // 管理面探测同样确定了该出口下的上下文，数据面可以直接复用。
-        negotiated[account.id] = Export(egressKey(account, proxy), project, loaded.tier)
-        return Probe(project, loaded.tier, loaded.allowedTiers)
+        val context = recordContext(account.id, egressKey(account, proxy), project, loaded.tier)
+        return Probe(context.project, context.tier, loaded.allowedTiers)
     }
 
     private suspend fun loadCodeAssist(accountId: String, accessToken: String, proxy: InetSocketAddress?): Loaded {

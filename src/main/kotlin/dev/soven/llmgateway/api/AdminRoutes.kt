@@ -85,6 +85,7 @@ import java.math.RoundingMode
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Base64
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -1180,6 +1181,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 ?: throw badRequest("oauth_account_missing", "该提供方没有可用的订阅账号，无法读取模型目录")
             val token = try {
                 app.oauthTokenService.accessToken(account.id)
+            } catch (cause: CancellationException) {
+                // 请求被取消时不能伪装成凭据错误：取消要原样传播到调用链上。
+                throw cause
             } catch (cause: Throwable) {
                 throw GatewayException(
                     HttpStatusCode.BadGateway,

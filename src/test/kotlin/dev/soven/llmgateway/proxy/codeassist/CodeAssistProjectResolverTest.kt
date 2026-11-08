@@ -254,6 +254,41 @@ class CodeAssistProjectResolverTest {
     }
 
     @Test
+    fun `context keeps the in-memory and persisted tier in sync`() = runBlocking {
+        val clock = AtomicReference(0L)
+        val tier = AtomicReference<String?>("standard-tier")
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1internal:loadCodeAssist") { exchange ->
+            val current = tier.get()
+            reply(
+                exchange,
+                200,
+                if (current == null) """{"cloudaicompanionProject":"proj-1"}""" else """{"cloudaicompanionProject":"proj-1","currentTier":{"id":"$current"}}""",
+            )
+        }
+        server.start()
+        val base = "http://127.0.0.1:${server.address.port}"
+        try {
+            val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+            val resolver = CodeAssistProjectResolver(
+                FakeAccounts(saved), HttpClient(Java), baseUrl = base, loadBaseUrl = base, now = { clock.get() },
+            )
+            val account = account()
+
+            assertEquals("standard-tier", resolver.context(account, "token").tier)
+            assertEquals("standard-tier", saved.get()?.tier)
+            // 上游这次不再报告 tier：本次请求沿用已协商的 tier，数据库也必须写出同一个值，
+            // 否则重启后读到的 tier 与进程内不一致。
+            tier.set(null)
+            clock.set(2 * 60 * 60 * 1000L)
+            assertEquals("standard-tier", resolver.context(account, "token").tier)
+            assertEquals("standard-tier", saved.get()?.tier)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `cancellation during discovery propagates`() = runBlocking {
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/v1internal:loadCodeAssist") { exchange ->

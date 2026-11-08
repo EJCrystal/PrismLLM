@@ -489,6 +489,11 @@ open class OAuthAccountRepository(private val database: Database) {
         }
     }
 
+    /**
+     * 写入一次协商结果。`tier` 为 null 表示上游这次没给出套餐信息，此时显式清空旧值，
+     * 而不是留下上一次的 tier：内存中的协商状态与数据库必须一致，否则进程重启后会读到
+     * 一个本次请求并不认可的 tier（及其对应的模型目录映射）。
+     */
     open suspend fun persistUpstreamContext(
         accountId: String,
         project: String?,
@@ -497,7 +502,7 @@ open class OAuthAccountRepository(private val database: Database) {
     ): Boolean = suspendTransaction(database) {
         OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
             if (project != null) it[OAuthAccounts.upstreamProject] = project.take(128)
-            if (tier != null) it[OAuthAccounts.upstreamTier] = tier.take(64)
+            it[OAuthAccounts.upstreamTier] = tier?.take(64)
             it[OAuthAccounts.upstreamTierCheckedAt] = checkedAt
         } > 0
     }
