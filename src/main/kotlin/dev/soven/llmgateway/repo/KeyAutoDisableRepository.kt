@@ -5,6 +5,8 @@ import dev.soven.llmgateway.db.ChannelKeys
 import dev.soven.llmgateway.db.Channels
 import dev.soven.llmgateway.db.KeyAutoDisableSettings
 import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.resilience.ChannelKeyDisableMode
+import dev.soven.llmgateway.resilience.ChannelKeyDisablePolicyCodec
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.resilience.KeyAttemptOutcome
 import dev.soven.llmgateway.resilience.KeyAttemptSignal
@@ -17,6 +19,8 @@ import dev.soven.llmgateway.resilience.KeyDisableRule
 import dev.soven.llmgateway.resilience.KeyHealthState
 import dev.soven.llmgateway.resilience.KeyRuleCounter
 import dev.soven.llmgateway.resilience.ResolvedKeyDisablePolicy
+import dev.soven.llmgateway.resilience.fallbackTo
+import dev.soven.llmgateway.resilience.requireSavable
 import dev.soven.llmgateway.resilience.toKeyDisablePolicy
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.decodeFromString
@@ -38,6 +42,7 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
 import org.jetbrains.exposed.v1.jdbc.upsert
+import org.slf4j.LoggerFactory
 
 private val keyDisableJson = Json { ignoreUnknownKeys = true }
 
@@ -74,13 +79,16 @@ class KeyAutoDisableRepository(
     private val audit: AdminAuditRepository,
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
+    private val logger = LoggerFactory.getLogger(KeyAutoDisableRepository::class.java)
+
     suspend fun loadSettings(): KeyAutoDisableSettingsRecord = suspendTransaction(database) {
         settingsInTransaction()
     }
 
     /**
-     * 解析渠道实际生效的策略：渠道配置了自己的策略就整表替换全局，否则继承全局。
-     * 返回的作用域与版本共同决定健康计数归属，切换来源后旧计数自动作废。
+     * 解析渠道实际生效的策略。渠道覆盖只提供自己的规则，全局规则作为未命中时的兜底；
+     * 覆盖关闭自动禁用时，本渠道的渠道规则与全局规则都不执行。
+     * 返回的指纹决定健康计数归属，有效策略内容变化后旧计数自动作废。
      */
     suspend fun resolvePolicy(channelId: String): ResolvedKeyDisablePolicy = suspendTransaction(database) {
         resolvePolicyInTransaction(channelId)
@@ -97,12 +105,17 @@ class KeyAutoDisableRepository(
     /**
      * 保存渠道覆盖策略；[override] 为 null 时恢复继承全局。
      * 写入同时递增渠道策略版本，让该渠道下按旧策略累计的失败计数失效。
+     *
+     * 与全局规则同 id 是允许的：渠道版本接管这一条，全局版本不再参与兜底。
+     * 这样管理员能在渠道里收紧全局规则的阈值，也不必给 V57 搬迁来的规则副本改名。
      */
     suspend fun saveChannelPolicy(
         channelId: String,
         override: KeyDisablePolicy?,
         auditContext: KeyAutoDisableSettingsAuditContext? = null,
     ): ChannelKeyDisablePolicyChange = suspendTransaction(database) {
+        // 单份策略的上限在这里校验：合并后的有效策略可以到两倍，但保存进来的一份不能超。
+        override?.requireSavable()
         val row = Channels.select(Channels.id, Channels.keyDisablePolicy, Channels.keyDisablePolicyRevision)
             .where { Channels.id eq channelId }
             .forUpdate()
@@ -114,12 +127,10 @@ class KeyAutoDisableRepository(
         }
         val revision = row[Channels.keyDisablePolicyRevision] + 1
         Channels.update({ Channels.id eq channelId }) {
-            it[keyDisablePolicy] = override?.let { policy -> keyDisableJson.encodeToString(policy) }
+            it[keyDisablePolicy] = override?.let(ChannelKeyDisablePolicyCodec::encode)
             it[keyDisablePolicyRevision] = revision
         }
-        val after = override?.let {
-            ResolvedKeyDisablePolicy(ResolvedKeyDisablePolicy.channelScope(channelId), revision, it)
-        } ?: resolvePolicyInTransaction(channelId)
+        val after = resolvePolicyInTransaction(channelId)
         auditContext?.let { context ->
             audit.recordInTransaction(
                 actor = context.actor,
@@ -132,7 +143,7 @@ class KeyAutoDisableRepository(
                 errorCode = null,
                 details = buildJsonObject {
                     put("channelId", channelId)
-                    put("scope", after.scope)
+                    put("mode", ChannelKeyDisableMode.of(override).value)
                     put("before", keyDisablePolicyAuditJson(before))
                     put("after", keyDisablePolicyAuditJson(after))
                 },
@@ -145,6 +156,7 @@ class KeyAutoDisableRepository(
         policy: KeyDisablePolicy,
         auditContext: KeyAutoDisableSettingsAuditContext? = null,
     ): KeyAutoDisableSettingsChange = suspendTransaction(database) {
+        policy.requireSavable()
         ensureSettingsRow()
         val row = KeyAutoDisableSettings.selectAll()
             .where { KeyAutoDisableSettings.id eq SINGLETON_ID }.forUpdate().single()
@@ -375,11 +387,12 @@ class KeyAutoDisableRepository(
         }
 
         val stored = ChannelKeyHealth.selectAll().where { ChannelKeyHealth.keyId eq key.id }.singleOrNull()
-        // 只有同一策略作用域、同一版本累计的计数才可继续使用。
+        // 只有同一作用域、同一份有效策略累计的计数才可继续使用。渠道覆盖会叠加全局兜底，
+        // 单比渠道版本号会漏掉「全局规则改了」的情况，所以这里存的是有效策略指纹。
         val health = if (
             stored != null &&
             stored[ChannelKeyHealth.policyScope] == resolved.scope &&
-            stored[ChannelKeyHealth.policyRevision] == resolved.revision
+            stored[ChannelKeyHealth.policyRevision] == resolved.fingerprint
         ) {
             decodeHealth(stored[ChannelKeyHealth.ruleCounters])
         } else {
@@ -391,7 +404,7 @@ class KeyAutoDisableRepository(
             if (stored == null && result.state.counters.isEmpty()) return@suspendTransaction null
             ChannelKeyHealth.upsert(ChannelKeyHealth.keyId) {
                 it[keyId] = key.id
-                it[policyRevision] = resolved.revision
+                it[policyRevision] = resolved.fingerprint
                 it[policyScope] = resolved.scope
                 it[authFailureStreak] = 0
                 it[recentFailures] = "[]"
@@ -520,7 +533,9 @@ class KeyAutoDisableRepository(
     }
 
     /**
-     * 渠道覆盖策略整表替换全局策略；渠道不存在或未配置覆盖时使用全局设置。
+     * 渠道覆盖优先、全局兜底：渠道规则排在前面，未命中时继续匹配全局规则；
+     * 覆盖显式关闭自动禁用时，渠道规则与全局规则都不执行。
+     * 渠道不存在或未配置覆盖时完全使用全局设置；
      * 覆盖策略为空串（例如手工清空列）同样按继承处理，不让坏数据静默停用规则。
      */
     private fun resolvePolicyInTransaction(channelId: String): ResolvedKeyDisablePolicy {
@@ -528,14 +543,14 @@ class KeyAutoDisableRepository(
             .where { Channels.id eq channelId }
             .singleOrNull()
         val override = row?.let { decodeChannelPolicy(it[Channels.keyDisablePolicy]) }
+        val settings = settingsInTransaction()
         if (row != null && override != null) {
             return ResolvedKeyDisablePolicy(
                 scope = ResolvedKeyDisablePolicy.channelScope(channelId),
                 revision = row[Channels.keyDisablePolicyRevision],
-                policy = override,
+                policy = override.fallbackTo(settings.policy),
             )
         }
-        val settings = settingsInTransaction()
         return ResolvedKeyDisablePolicy(
             scope = ResolvedKeyDisablePolicy.GLOBAL_SCOPE,
             revision = settings.revision,
@@ -543,13 +558,12 @@ class KeyAutoDisableRepository(
         )
     }
 
-    private fun decodeChannelPolicy(value: String?): KeyDisablePolicy? = value
-        ?.takeIf { it.isNotBlank() }
-        ?.let { runCatching { keyDisableJson.decodeFromString<KeyDisablePolicy>(it) }.getOrNull() }
+    private fun decodeChannelPolicy(value: String?): KeyDisablePolicy? = ChannelKeyDisablePolicyCodec.decode(value)
 
     private fun keyDisablePolicyAuditJson(resolved: ResolvedKeyDisablePolicy) = buildJsonObject {
         put("scope", resolved.scope)
         put("revision", resolved.revision)
+        put("fingerprint", resolved.fingerprint)
         put("enabled", resolved.policy.enabled)
         put("rules", keyDisableJson.encodeToJsonElement(ListSerializer(KeyDisableRule.serializer()), resolved.policy.rules))
     }
@@ -598,13 +612,29 @@ class KeyAutoDisableRepository(
     ) = KeyAutoDisableSettingsRecord(
         policy = KeyDisablePolicy(
             enabled = row[KeyAutoDisableSettings.enabled],
-            rules = storedRules?.takeIf { it.isNotEmpty() }
-                ?.let { if (it == KeyDisablePolicy.LEGACY_DEFAULT_RULES) KeyDisablePolicy.DEFAULT_RULES else it }
-                ?: KeyDisablePolicy.DEFAULT_RULES,
+            rules = savableOrDefault(storedRules),
         ),
         revision = row[KeyAutoDisableSettings.revision],
         updatedAt = row[KeyAutoDisableSettings.updatedAt],
     )
+
+    /**
+     * 库里读出的规则转成可直接构造的列表。超长只可能来自人工改库或手工改过的备份，
+     * 正常保存路径写不出超过 [KeyDisablePolicy.MAX_RULES] 的列表。
+     * 这里按顺序保留前 [KeyDisablePolicy.MAX_RULES] 条而不是抛异常：规则是「首条命中即止」，
+     * 被丢掉的都是优先级最低的兜底规则；抛出去会让管理接口直接 500，连读都读不出来。
+     */
+    private fun savableOrDefault(storedRules: List<KeyDisableRule>?): List<KeyDisableRule> {
+        val rules = storedRules?.takeIf { it.isNotEmpty() } ?: return KeyDisablePolicy.DEFAULT_RULES
+        // 旧版默认规则要换成新默认：余额规则必须排在凭据规则之前，顺序不能沿用它。
+        if (rules == KeyDisablePolicy.LEGACY_DEFAULT_RULES) return KeyDisablePolicy.DEFAULT_RULES
+        if (rules.size <= KeyDisablePolicy.MAX_RULES) return rules
+        logger.warn(
+            "key_auto_disable_settings 保存了 {} 条规则，超过上限 {}，按顺序保留前 {} 条",
+            rules.size, KeyDisablePolicy.MAX_RULES, KeyDisablePolicy.MAX_RULES,
+        )
+        return rules.take(KeyDisablePolicy.MAX_RULES)
+    }
 
     private fun settingsAuditJson(settings: KeyAutoDisableSettingsRecord) = buildJsonObject {
         put("enabled", settings.policy.enabled)

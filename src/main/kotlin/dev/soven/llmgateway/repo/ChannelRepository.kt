@@ -20,6 +20,8 @@ import dev.soven.llmgateway.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
 import kotlinx.serialization.json.Json
+import dev.soven.llmgateway.resilience.ChannelKeyDisableMode
+import dev.soven.llmgateway.resilience.ChannelKeyDisablePolicyCodec
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.security.CredentialCipher
 import dev.soven.llmgateway.security.EncryptedCredential
@@ -532,7 +534,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
         quotaCredential = row[Channels.quotaCredentialCiphertext].takeIf { it.isNotEmpty() }?.let {
             EncryptedCredential(it, row[Channels.quotaCredentialNonce], row[Channels.quotaCredentialKeyVersion])
         },
-        keyDisablePolicySet = row[Channels.keyDisablePolicy] != null,
+        keyDisableMode = ChannelKeyDisableMode.of(ChannelKeyDisablePolicyCodec.decode(row[Channels.keyDisablePolicy])),
     )
 
     private fun UpdateBuilder<*>.setQuotaCredential(credential: EncryptedCredential?, clear: Boolean) {

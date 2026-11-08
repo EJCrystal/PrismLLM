@@ -45,8 +45,10 @@ import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.OAuthAccountCredentialUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableSettingsAuditContext
+import dev.soven.llmgateway.resilience.ChannelKeyDisableMode
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.resilience.KeyDisablePolicy
+import dev.soven.llmgateway.resilience.requireSavable
 import dev.soven.llmgateway.resilience.toKeyDisablePolicy
 import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
@@ -413,11 +415,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val request = call.receive<KeyAutoDisableSettingsRequest>()
             val policy = try {
                 when {
-                    request.rules != null -> KeyDisablePolicy(request.enabled, request.rules)
+                    // 构造允许合并上限，单份策略上限在保存前显式校验，超限回到 400 而不是 500。
+                    request.rules != null -> KeyDisablePolicy(request.enabled, request.rules).requireSavable()
                     request.authFailureThreshold != null && request.failureThreshold != null &&
                         request.failureWindowMinutes != null -> KeyAutoDisablePolicy(
                         request.enabled, request.authFailureThreshold, request.failureThreshold, request.failureWindowMinutes,
-                    ).toKeyDisablePolicy()
+                    ).toKeyDisablePolicy().requireSavable()
                     else -> throw IllegalArgumentException("必须提供 rules 或完整的旧版阈值")
                 }
             } catch (cause: IllegalArgumentException) {
@@ -445,9 +448,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(
                 ChannelKeyDisablePolicyResponse(
                     channelId = id,
-                    scope = effective.scope,
-                    revision = effective.revision,
+                    mode = ChannelKeyDisableMode.of(override).value,
                     override = override,
+                    globalPolicy = app.keyAutoDisableRepository.loadSettings().policy,
                     effective = effective.policy,
                 ),
             )
@@ -476,9 +479,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(
                 ChannelKeyDisablePolicyResponse(
                     channelId = id,
-                    scope = change.after.scope,
-                    revision = change.after.revision,
+                    mode = ChannelKeyDisableMode.of(change.override).value,
                     override = change.override,
+                    globalPolicy = app.keyAutoDisableRepository.loadSettings().policy,
                     effective = change.after.policy,
                 ),
             )

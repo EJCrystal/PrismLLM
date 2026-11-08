@@ -2,6 +2,7 @@ package dev.soven.llmgateway.domain
 
 import java.math.BigDecimal
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
+import dev.soven.llmgateway.resilience.ChannelKeyDisableMode
 import dev.soven.llmgateway.resilience.ChannelKeyState
 import dev.soven.llmgateway.security.EncryptedCredential
 import kotlinx.serialization.json.JsonObject
@@ -151,9 +152,12 @@ data class ChannelRecord(
     /** custom: 用户自建；provider: 系统按订阅 provider 置备。 */
     val kind: ChannelKind = ChannelKind.CUSTOM,
     val provider: OAuthProvider? = null,
-    /** 是否配置了渠道级密钥自动禁用策略；false 表示继承全局设置。 */
-    val keyDisablePolicySet: Boolean = false,
+    /** 渠道级密钥自动禁用策略的形态：继承全局、自定义（未命中回落全局）或关闭。 */
+    val keyDisableMode: ChannelKeyDisableMode = ChannelKeyDisableMode.INHERIT,
 ) {
+    /** 是否配置了渠道级策略；只有继承全局时为 false。 */
+    val keyDisablePolicySet: Boolean get() = keyDisableMode != ChannelKeyDisableMode.INHERIT
+
     val isProviderChannel: Boolean get() = kind == ChannelKind.PROVIDER
     val models: List<String> get() = modelMappings.map { it.upstreamModel }
 

@@ -198,8 +198,10 @@ export function normalizeKeyAutoDisableSettings(value: Partial<KeyAutoDisableSet
     : (isLegacySettings(value)
       ? legacyRules(value)
       : null)
-  if (!rawRules?.length) throw new Error('自动禁用设置缺少规则列表，请重新加载')
-  const rules = rawRules.map(normalizeRule)
+  // 关闭自动禁用时不需要规则；启用时缺规则说明响应不完整，不能拿默认值覆盖线上配置。
+  if (!rawRules && value.enabled) throw new Error('自动禁用设置缺少规则列表，请重新加载')
+  const rules = (rawRules ?? []).map(normalizeRule)
+  if (value.enabled && !rules.length) throw new Error('启用自动禁用时至少需要一条规则')
   const ids = new Set<string>()
   for (const rule of rules) {
     if (ids.has(rule.id)) throw new Error(`规则 id 不能重复：${rule.id}`)
@@ -228,9 +230,16 @@ export function keyAutoDisableRuleLabel(settings: Partial<KeyAutoDisableSettings
   return settings.enabled === false ? `已关闭自动禁用（${summary}）` : summary
 }
 
-/** 新建规则草稿；id 只用于前端展示与后端计数键。 */
-export function newKeyDisableRule(rules: Array<Pick<KeyDisableRule, 'id'>> = []): KeyDisableRuleDraft {
-  const used = new Set(rules.map((rule) => rule.id))
+/**
+ * 新建规则草稿；id 只用于前端展示与后端计数键。
+ * [reservedIds] 是当前列表之外必须避开的 id（渠道编辑器传入全局规则 id）：
+ * 同 id 会让渠道规则接管同名全局规则，自动生成的 id 不该制造这种巧合。
+ */
+export function newKeyDisableRule(
+  rules: Array<Pick<KeyDisableRule, 'id'>> = [],
+  reservedIds: string[] = [],
+): KeyDisableRuleDraft {
+  const used = new Set([...rules.map((rule) => rule.id), ...reservedIds])
   let index = 1
   while (used.has(`custom_${index}`)) index += 1
   return {
