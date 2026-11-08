@@ -131,27 +131,23 @@ internal object PelicanStructureChecks {
      */
     private fun drawsContent(block: Element, stylesheets: List<String>): Boolean {
         if (block.ownText().isNotBlank() || block.select("img, video, canvas, picture").isNotEmpty()) return true
-        if (block.hasAttr("style") && BACKGROUND_STYLE_PATTERN.containsMatchIn(block.attr("style"))) return true
-        if (block.classNames().any { className -> stylesheets.any { sheet -> paintsBackground(sheet, className) } }) return true
+        if (block.hasAttr("style") && paintsBackground(block.attr("style"))) return true
+        if (stylesheets.any { sheet -> paintsBackgroundFor(sheet, block) }) return true
         return block.children().none { child -> child.tagName() == "svg" || child.select("svg").isNotEmpty() }
     }
 
-    /**
-     * 样式表里是否有直接选中该类名、并声明了背景的规则。
-     * 只认选择器里单独的类选择器（`.sky`、`div.sky`），`.skyline`、`.sky .cloud` 这类不算——
-     * 后者命中的是别的元素，不能据此说这个块自己画了背景。
-     */
-    private fun paintsBackground(sheet: String, className: String): Boolean =
-        RULE_PATTERN.findAll(sheet).any { rule ->
-            rule.groupValues[1].split(",").any { selector -> selectsClass(selector, className) } &&
-                BACKGROUND_STYLE_PATTERN.containsMatchIn(rule.groupValues[2])
+    /** 声明块里是否有会真正画出背景的 `background`；`none`、`transparent` 这类清除声明不算。 */
+    private fun paintsBackground(declarations: String): Boolean =
+        BACKGROUND_DECLARATION_PATTERN.findAll(declarations).any { match ->
+            match.groupValues[1].trim().lowercase() !in EMPTY_BACKGROUND_VALUES
         }
 
-    /** 只看选择器最后一级（真正被选中的那个元素）：`.sky .cloud` 选的是 `.cloud`，不是 `.sky`。 */
-    private fun selectsClass(selector: String, className: String): Boolean {
-        val subject = selector.split(*COMBINATORS).lastOrNull { it.isNotBlank() }.orEmpty()
-        return CLASS_SELECTOR_PATTERN.findAll(subject).any { match -> match.groupValues[1] == className }
-    }
+    /** 样式表里是否有真正选中该元素、并声明了背景的规则。选择器交给 jsoup 匹配，祖先和同级限定一并生效。 */
+    private fun paintsBackgroundFor(sheet: String, block: Element): Boolean =
+        RULE_PATTERN.findAll(sheet).any { rule ->
+            paintsBackground(rule.groupValues[2]) &&
+                rule.groupValues[1].split(",").any { selector -> block.`is`(selector.trim()) }
+        }
 
     /** 两个元素是否互为祖孙：嵌套时比较的是容器自身，不能代表子图元的绘制顺序。 */
     private fun isNested(one: Element, other: Element): Boolean =
@@ -200,17 +196,15 @@ internal object PelicanStructureChecks {
     /** 只有这些块级容器承载的图形才会落在 SVG 坐标系之外。 */
     private const val BACKGROUND_BLOCK_TAGS = "div, section, main, header"
 
-    /** 内联样式里的背景声明；有背景铺满整个块时，块本身就在绘制背景。 */
-    private val BACKGROUND_STYLE_PATTERN = Regex("(?i)\\bbackground(?:-color|-image)?\\s*:")
+    /** 背景声明及其取值；`background-color: transparent`、`background: none` 之类不会画出背景。 */
+    private val BACKGROUND_DECLARATION_PATTERN = Regex("(?i)\\bbackground(?:-color|-image)?\\s*:\\s*([^;}]*)")
+
+    /** 明确不绘制背景的取值。 */
+    private val EMPTY_BACKGROUND_VALUES = setOf("none", "transparent", "initial", "unset", "inherit")
 
     /** 粗切样式表规则：选择器与声明块。 */
     private val RULE_PATTERN = Regex("([^{}]+)\\{([^{}]*)\\}")
 
-    /** 选择器里的类名：`div.sky` 命中 `sky`，`.skyline` 不会命中 `sky`。 */
-    private val CLASS_SELECTOR_PATTERN = Regex("\\.(-?[A-Za-z_][\\w-]*)")
-
-    /** 选择器组合符：后代、子、相邻与兄弟。 */
-    private val COMBINATORS = arrayOf(" ", ">", "+", "~")
 
     /** 按单词匹配：`cloudy` 命中，`mushroom` 这类只有子串相同的命名不会误判。 */
     private val BACKGROUND_NAMES_PATTERN =

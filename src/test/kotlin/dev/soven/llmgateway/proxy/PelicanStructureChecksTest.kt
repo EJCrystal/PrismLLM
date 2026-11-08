@@ -220,6 +220,36 @@ class PelicanStructureChecksTest {
     }
 
     @Test
+    fun `selectors with unmet ancestors and empty backgrounds do not count`() {
+        val unmet = check(
+            analyze(
+                "<!DOCTYPE html><html><head><style>.dark .sky{background:blue}</style></head>" +
+                    "<body><div class=\"sky\"><svg id=\"a\"></svg></div></body></html>",
+            ),
+            "single-scene",
+        )
+        assertTrue(unmet.passed, unmet.detail)
+
+        val matched = check(
+            analyze(
+                "<!DOCTYPE html><html><head><style>.sky{background:blue}</style></head>" +
+                    "<body><div class=\"sky\"><svg id=\"a\"></svg></div></body></html>",
+            ),
+            "single-scene",
+        )
+        assertFalse(matched.passed)
+
+        val empty = check(
+            analyze(
+                "<!DOCTYPE html><html><body>" +
+                    "<div class=\"sky\" style=\"background: none\"><svg id=\"a\"></svg></div></body></html>",
+            ),
+            "single-scene",
+        )
+        assertTrue(empty.passed, empty.detail)
+    }
+
+    @Test
     fun `non-rendered containers are excluded from layer comparison`() {
         val check = check(
             analyze(
