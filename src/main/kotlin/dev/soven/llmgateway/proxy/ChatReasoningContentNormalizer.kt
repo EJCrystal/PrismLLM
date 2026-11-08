@@ -22,8 +22,10 @@ import kotlinx.serialization.json.put
  *    - host 含 `deepseek`，或上游模型名含 `deepseek`，或模型名命中 `reasoner`、`r1`、`qwq`、`thinking`
  *      等中转常见命名时处理；
  *    - host 指向 Mistral 时完全不处理：它会以 extra_forbidden 拒绝 reasoning_content。
- * 2. 只处理工具轮：assistant 消息带非空 tool_calls，或紧跟在 role=tool 的消息之后；
- *    其余 assistant 消息（普通问答）原样保留，DeepSeek 并不要求它们的思考内容。
+ * 2. 只处理工具轮：assistant 消息带非空 tool_calls，或紧跟在 role=tool 的消息之后的那一条，
+ *    工具轮处理完即结束（`afterTool` 清零）。其余 assistant 消息（普通问答）原样保留，
+ *    DeepSeek 并不要求它们的思考内容。magpie 把 `afterTool` 保持到下一个 user 消息才清零，
+ *    这里只在工具结果后的第一条 assistant 上补值，避免给后续无关轮次也塞字段。
  * 3. 取值优先级：
  *    - 已有 reasoning_content 字符串（含空串）时保留；
  *    - reasoning 字段；
@@ -83,7 +85,10 @@ object ChatReasoningContentNormalizer {
                 }
                 val toolCalls = msg["tool_calls"] as? JsonArray
                 val isToolTurn = !toolCalls.isNullOrEmpty() || afterTool
-                // 与 magpie 一致：afterTool 只由 user 消息清零，连续 assistant 消息都算同一条工具链。
+                // 工具轮在第一条 assistant 消息后就结束：它是 tool 结果的那条回答。magpie 把
+                // afterTool 一直保持到 user，会让之后所有不带 tool_calls 的 assistant 都被补字段，
+                // 扩大注入面；这里只认「紧跟 tool」的那一条。
+                afterTool = false
                 if (!isToolTurn) {
                     add(element)
                     return@forEach

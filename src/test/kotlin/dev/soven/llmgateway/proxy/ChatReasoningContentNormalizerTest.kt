@@ -96,6 +96,30 @@ class ChatReasoningContentNormalizerTest {
     }
 
     @Test
+    fun `the tool turn ends after the answer that follows a tool result`() {
+        // 工具结果之后的第一条 assistant 才是那一轮的回答；再往后的普通轮次不该被补字段。
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+                    {"role": "assistant", "content": "the file says hi"},
+                    {"role": "assistant", "content": "one more thing"}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(
+            input, "deepseek-flash", "https://api.deepseek.com/v1",
+        )
+        val messages = normalized["messages"]!!.jsonArray
+
+        assertEquals(" ", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
+        assertFalse(messages[2].jsonObject.containsKey("reasoning_content"))
+    }
+
+    @Test
     fun `deepseek host triggers even when the model name says nothing`() {
         val input = json(
             """

@@ -172,7 +172,7 @@ UA 删除有特殊处理：`userAgent:""` 或 `headers:{"User-Agent":null}` 都�
 **reasoning_content**：DeepSeek 等思考模型要求工具调用轮回传 assistant 的 `reasoning_content`，缺失时上游直接返回 400。网关在发往 Chat Completions 上游前处理：
 
 - 触发条件：上游 host 含 `deepseek`，或模型名含 `deepseek`、`reasoner`、`r1`、`qwq`、`thinking`；host 指向 Mistral 时完全不处理（它会以 `extra_forbidden` 拒绝该字段）。
-- 作用范围：只有工具轮——assistant 消息带非空 `tool_calls`，或紧跟在 `tool` 消息之后。普通问答轮不改写，DeepSeek 并不要求它们的思考内容。
+- 作用范围：只有工具轮——assistant 消息带非空 `tool_calls`，或紧跟在 `tool` 消息之后的那一条回答。普通问答轮不改写，DeepSeek 并不要求它们的思考内容。
 - 取值优先级：已有 `reasoning_content` → `reasoning` → `reasoning_details[].text` / `summary` → `content` 中的 `<think>` 标签 → 回退为单个空格 `" "`（空串会被中转丢弃）。
 - 从 `reasoning` 搬移时删除 `reasoning` 字段：把它和 `reasoning_content` 当同一个读的自建 DeepSeek 会以 `duplicate field reasoning` 拒绝。
 
