@@ -161,10 +161,14 @@ class OpenAiVisionAssessor(
         val animation = request.animation
         appendLine("题目：用 SVG 创作一段鹈鹕骑自行车的动画，必须有真实、连续、肉眼可见的动态效果。")
         appendLine("你会收到 ${request.frames.size} 张按时间顺序采样的静态帧，请逐帧比较。")
-        appendLine(
-            "本地结构检查：HTML=${request.structure.htmlPresent}，SVG=${request.structure.svgPresent}，" +
-                "动画声明=${request.structure.animationPresent}，无外部资源=${request.structure.selfContained}。",
-        )
+        // 只列结构上没通过的项；通过的项不占提示词，避免把模型的注意力引向无关细节。
+        val structureIssues = request.structure.checks.filter { !it.passed }
+        if (structureIssues.isNotEmpty()) {
+            appendLine(
+                "本地结构检查未通过的项：" +
+                    structureIssues.joinToString("；") { check -> check.label + (check.detail?.let { "（$it）" } ?: "") } + "。",
+            )
+        }
         appendLine(
             "动画采样：周期约 ${animation.durationSeconds} 秒，共 ${animation.frameCount} 帧；" +
                 "检测到 SMIL=${animation.hasSmil}，CSS 动画=${animation.hasCss}，各帧截图完全相同=${animation.framesIdentical}。",
@@ -190,21 +194,26 @@ class OpenAiVisionAssessor(
         )
         appendLine(
             "3. 骑行关系：鹈鹕下腹部是否与车座相接并覆盖座面；两条腿是否从躯干下缘连续伸出到脚；" +
-                "脚是否落在对应踏板；伸向前方的翅膀末端是否接触车把握把。",
+                "脚是否落在对应踏板；伸向前方的翅膀末端是否接触车把握把；" +
+                "踏板面是否始终水平、没有跟着曲柄翻转。",
         )
         appendLine(
             "4. 动画连贯性：逐帧比较轮辐/反光片方位、腿脚与曲柄/踏板的位置，说明是否显示连续运动，" +
-                "是否存在同一只脚明显脱离踏板。",
+                "是否存在同一只脚明显脱离踏板、脚踏点明显偏离曲柄圆周，或身体起伏时大腿根部与躯干脱节。",
         )
         appendLine(
             "5. 画面完成度：主体是否完整置于画面中央；鹈鹕、车架和两轮轮廓是否清楚；" +
                 "是否有裁切、漂浮、错误重叠、缺失、错位或明显结构碰撞。",
         )
         appendLine(
-            "判定规则：五项全部通过才是 passed。出现以下任一情况判为 incorrect（疑似降智）：" +
+            "判定规则：五项全部通过才是 passed，只判画面呈现的结果，不要求某种具体写法。" +
+                "出现以下任一情况判为 incorrect（疑似降智）：" +
                 "部件漂浮、错误重叠、缺失、错位、画面截断；鹈鹕没有坐在车座上；脚没有在踏板上；" +
-                "翅膀没有握住车把；自行车结构不合理；缺少两个轮子、车架、车把、踏板或链条。" +
-                "动画连贯性只能标记 passed 或 failed，不得标记 unknown；其他项目无法判断时可标记 unknown；" +
+                "翅膀没有握住车把；自行车结构不合理；缺少两个轮子、车架、车把、踏板或链条；" +
+                "远侧肢体盖住车架或被车架盖住导致透视错乱；近侧大腿根部被躯干遮住。",
+        )
+        appendLine(
+            "动画连贯性只能标记 passed 或 failed，不得标记 unknown；其他项目无法判断时可标记 unknown；" +
                 "没有明确失败时 verdict 为 review。",
         )
         appendLine("只返回一个 JSON 对象，不要 Markdown。格式：")

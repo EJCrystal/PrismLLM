@@ -775,6 +775,8 @@ export interface IqTestCheck {
   label: string
   passed: boolean
   detail: string | null
+  /** 为 false 时只是提示，不参与自动判定。 */
+  decisive?: boolean
 }
 
 export interface IqJudgeResult {

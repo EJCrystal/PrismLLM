@@ -658,10 +658,11 @@ onBeforeUnmount(stopTimer)
                   <Icon :name="check.passed ? 'check' : 'close'" :size="14" />
                   <span>{{ check.label }}</span>
                   <small v-if="check.detail">{{ check.detail }}</small>
+                  <em v-if="check.decisive === false" class="iq-check-optional">提示</em>
                 </li>
               </ul>
               <p class="iq-caveat">
-                {{ detail.judgeResult ? `本次由「${detail.judgeResult.judgeLabel}」判分；` : '' }}本地检查只判断 HTML、SVG、动画和资源依赖，不判断画得像不像。
+                {{ detail.judgeResult ? `本次由「${detail.judgeResult.judgeLabel}」判分；` : '' }}本地检查只看 HTML、SVG、动画、资源依赖和能离线确认的图层顺序，需要看画面的比例与美感交给判分器或人工。标「提示」的项不参与判定。
               </p>
             </div>
           </template>
@@ -1261,6 +1262,16 @@ onBeforeUnmount(stopTimer)
   border-radius: 8px;
   color: var(--danger);
   font-size: 12.5px;
+}
+
+.iq-check-optional {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
 }
 
 .iq-checks li.passed {
