@@ -86,7 +86,7 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Base64
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -1196,7 +1196,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
             }
             // probe 可能包含一次开通轮询，整体限时，避免上游迟缓时管理请求一直挂着。
-            val catalog = runCatching {
+            val catalog = try {
                 withTimeout(MODEL_REFRESH_TIMEOUT_MS) {
                     val probe = app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
                     app.codeAssistModelCatalog.fetchFor(
@@ -1206,8 +1206,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         proxy,
                     )
                 }
-            }.getOrElse { cause ->
-                if (cause is CancellationException) throw cause
+            } catch (cause: TimeoutCancellationException) {
                 throw GatewayException(
                     HttpStatusCode.GatewayTimeout,
                     "model_catalog_timeout",

@@ -1552,14 +1552,14 @@ private suspend fun proxyStream(
     val codeAssistCatalog = if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null) {
         val cached = app.codeAssistModelCatalog.cached(codeAssistProject)
         cached ?: withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
-            runCatching {
+            catalogOrNull {
                 app.codeAssistModelCatalog.fetchFor(
                     credential,
                     codeAssistProject,
                     listOfNotNull(codeAssistContext?.tier),
                     egressProxy,
                 )
-            }.getOrNull()
+            }
         }
     } else {
         null
@@ -1850,14 +1850,14 @@ private suspend fun proxyJson(
     val codeAssistCatalog = if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null) {
         val cached = app.codeAssistModelCatalog.cached(codeAssistProject)
         cached ?: withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
-            runCatching {
+            catalogOrNull {
                 app.codeAssistModelCatalog.fetchFor(
                     credential,
                     codeAssistProject,
                     listOfNotNull(codeAssistContext?.tier),
                     egressProxy,
                 )
-            }.getOrNull()
+            }
         }
     } else {
         null
@@ -2012,6 +2012,19 @@ private fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?): 
 private fun clientSessionId(call: ApplicationCall): String? =
     listOf("x-session-id", "x-conversation-id", "conversation-id", "session-id")
         .firstNotNullOfOrNull { call.request.headers[it]?.trim()?.takeIf(String::isNotEmpty) }
+
+/**
+ * 目录补拉失败只降级为 null（请求照常发出），但协程取消必须原样抛出，
+ * 否则已取消的请求还会继续占用连接与上游资源。
+ */
+private suspend fun <T> catalogOrNull(block: suspend () -> T): T? = try {
+    block()
+} catch (cause: CancellationException) {
+    throw cause
+} catch (cause: Throwable) {
+    proxyLogger.warn("code assist model catalog fetch failed, error={}", cause::class.simpleName)
+    null
+}
 
 /** 准备阶段（project 发现、目录补拉）的上限：不超过对话请求本身的超时。 */
 private fun preparationTimeoutMs(timeoutMs: Long): Long = minOf(timeoutMs, PREPARATION_TIMEOUT_MS)
