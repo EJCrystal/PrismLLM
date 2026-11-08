@@ -81,7 +81,7 @@ data class OAuthAccountCredentialUpdate(
  * @author 文杰
  * @since 2026-11-06
  */
-class OAuthAccountRepository(private val database: Database) {
+open class OAuthAccountRepository(private val database: Database) {
     /** 数据面快速路径：只读账号本体，不加载模型与渠道关联。 */
     suspend fun find(id: String): OAuthAccountRecord? = suspendTransaction(database) {
         OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }.singleOrNull()
@@ -182,6 +182,20 @@ class OAuthAccountRepository(private val database: Database) {
                 .orderBy(OAuthAccounts.quotaAttemptedAt to SortOrder.ASC_NULLS_FIRST)
                 .limit(limit.coerceIn(1, 1_000))
                 .map { toRecord(it, emptyList(), emptySet()) }
+        }
+
+    /**
+     * 指定 provider 下可用于读取模型目录的账号：只取启用且仍是 ACTIVE 的账号，
+     * 健康账号排在前面，避免一个待重新授权的账号把管理面操作卡死。
+     */
+    suspend fun listUsableForProvider(provider: OAuthProvider, limit: Int = 100): List<OAuthAccountRecord> =
+        suspendTransaction(database) {
+            OAuthAccounts.selectAll()
+                .where { (OAuthAccounts.provider eq provider.value) and (OAuthAccounts.enabled eq true) }
+                .orderBy(OAuthAccounts.updatedAt to SortOrder.DESC)
+                .limit(limit.coerceIn(1, 1_000))
+                .map { toRecord(it, emptyList(), emptySet()) }
+                .filter { it.authState == OAuthAuthState.ACTIVE }
         }
 
     suspend fun create(
@@ -449,7 +463,16 @@ class OAuthAccountRepository(private val database: Database) {
         val checkedAt: Long?,
     )
 
-    suspend fun upstreamContext(accountId: String): UpstreamContext? = suspendTransaction(database) {
+    open suspend fun upstreamContext(accountId: String): UpstreamContext? = loadUpstreamContext(accountId)
+
+    open suspend fun saveUpstreamContext(
+        accountId: String,
+        project: String?,
+        tier: String?,
+        checkedAt: Long,
+    ): Boolean = persistUpstreamContext(accountId, project, tier, checkedAt)
+
+    open suspend fun loadUpstreamContext(accountId: String): UpstreamContext? = suspendTransaction(database) {
         OAuthAccounts.selectAll()
             .where { OAuthAccounts.id eq accountId }
             .singleOrNull()
@@ -462,7 +485,7 @@ class OAuthAccountRepository(private val database: Database) {
         }
     }
 
-    suspend fun saveUpstreamContext(
+    open suspend fun persistUpstreamContext(
         accountId: String,
         project: String?,
         tier: String?,

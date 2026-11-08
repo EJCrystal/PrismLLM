@@ -19,6 +19,8 @@ import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthProvider
 import dev.soven.llmgateway.domain.PricingMode
+import dev.soven.llmgateway.domain.UpstreamEnvelope
+import dev.soven.llmgateway.domain.upstreamEnvelope
 import dev.soven.llmgateway.oauth.OAuthLoginResult
 import dev.soven.llmgateway.oauth.OAuthLoginStartResult
 import dev.soven.llmgateway.oauth.OAuthQuotaResult
@@ -1079,8 +1081,18 @@ fun Route.adminRoutes(app: GatewayApplication) {
             ) ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
             val channelId = app.providerChannelProvisioner.ensure(provider)
                 ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
-            val account = app.oauthAccountRepository.listAll().firstOrNull { it.provider == provider }
-                ?: throw badRequest("oauth_account_missing", "该提供方还没有订阅账号，无法读取模型目录")
+            // 模型目录只由 Code Assist 的 fetchAvailableModels 提供，目前仅 Antigravity 具备；
+            // ChatGPT 的目录沿用系统渠道种子模型，走 PUT 接口维护。
+            if (app.channelRepository.find(channelId)?.upstreamEnvelope != UpstreamEnvelope.CODE_ASSIST) {
+                throw badRequest(
+                    "model_catalog_not_supported",
+                    "该提供方不支持从上游刷新模型目录: " + provider.value,
+                )
+            }
+            // 账号必须属于本 provider，否则会拿别的提供方凭据去调 Code Assist；
+            // 只取启用且 ACTIVE 的账号，避免待重新授权的账号把刷新卡死。
+            val account = app.oauthAccountRepository.listUsableForProvider(provider).firstOrNull()
+                ?: throw badRequest("oauth_account_missing", "该提供方没有可用的订阅账号，无法读取模型目录")
             val token = try {
                 app.oauthTokenService.accessToken(account.id)
             } catch (cause: Throwable) {
@@ -1092,11 +1104,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     retryable = true,
                 )
             } ?: throw badRequest("oauth_credential_unavailable", "账号还没有可用的 access token")
-            val context = app.codeAssistProjectResolver.context(account, token.accessToken)
+            val probe = app.codeAssistProjectResolver.probe(account, token.accessToken)
             val models = app.codeAssistModelCatalog.fetch(
                 token.accessToken,
-                context.project.orEmpty(),
-                listOfNotNull(context.tier),
+                probe.project.orEmpty(),
+                probe.tiers(),
             )
             if (models.isEmpty()) {
                 throw GatewayException(
