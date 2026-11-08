@@ -49,11 +49,14 @@ internal object PelicanStructureChecks {
         val document = parse(html)
         // 嵌套 <svg> 仍在同一坐标系里，只统计顶层 SVG。
         val roots = document.select("svg").filter { svg -> svg.parents().none { parent -> parent.tagName() == "svg" } }
-        // 带背景命名的块只有在真的画出内容时才算背景；`<div class="sky"><svg>…</svg></div>` 这类纯布局包装放行。
-        val backgroundBlocks = document.select(BACKGROUND_BLOCK_TAGS).filter { element ->
-            element.classNames().any { className -> BACKGROUND_NAMES_PATTERN.containsMatchIn(className) } &&
-                drawsContent(element)
-        }
+        // 只查 SVG 之外的 HTML 块：<foreignObject> 里的内容仍在 SVG 坐标系内。
+        val stylesheets = document.select("style").map { it.data() }
+        val backgroundBlocks = document.select(BACKGROUND_BLOCK_TAGS)
+            .filter { element -> element.parents().none { parent -> parent.tagName() == "svg" } }
+            .filter { element ->
+                element.classNames().any { className -> BACKGROUND_NAMES_PATTERN.containsMatchIn(className) } &&
+                    drawsContent(element, stylesheets)
+            }
         return IqStructureCheck(
             id = "single-scene",
             label = "场景绘制在同一 SVG 内",
@@ -120,12 +123,22 @@ internal object PelicanStructureChecks {
     private fun advisory(id: String, label: String, detail: String) =
         IqStructureCheck(id = id, label = label, passed = true, detail = detail, decisive = false)
 
-    /** 块里是否有 SVG 之外的可见内容：文字、图片、自带背景的块，或没有子 SVG 的块（可能靠 CSS 画背景）。 */
-    private fun drawsContent(block: Element): Boolean {
+    /**
+     * 块里是否有 SVG 之外的可见内容：文字、图片、自带背景的块，或没有子 SVG 的块（可能靠 CSS 画背景）。
+     * 背景可能来自内联 `style`，也可能来自文档里的 `<style>` 规则，两种都算。
+     */
+    private fun drawsContent(block: Element, stylesheets: List<String>): Boolean {
         if (block.ownText().isNotBlank() || block.select("img, video, canvas, picture").isNotEmpty()) return true
         if (block.hasAttr("style") && BACKGROUND_STYLE_PATTERN.containsMatchIn(block.attr("style"))) return true
+        if (block.classNames().any { className -> stylesheets.any { sheet -> paintsBackground(sheet, className) } }) return true
         return block.children().none { child -> child.tagName() == "svg" || child.select("svg").isNotEmpty() }
     }
+
+    /** 样式表里是否有选中该类名、并声明了背景的规则；不解析层叠关系，只做保守命中。 */
+    private fun paintsBackground(sheet: String, className: String): Boolean =
+        RULE_PATTERN.findAll(sheet).any { rule ->
+            rule.groupValues[1].contains(".$className") && BACKGROUND_STYLE_PATTERN.containsMatchIn(rule.groupValues[2])
+        }
 
     /** 两个元素是否互为祖孙：嵌套时比较的是容器自身，不能代表子图元的绘制顺序。 */
     private fun isNested(one: Element, other: Element): Boolean =
@@ -176,6 +189,9 @@ internal object PelicanStructureChecks {
 
     /** 内联样式里的背景声明；有背景铺满整个块时，块本身就在绘制背景。 */
     private val BACKGROUND_STYLE_PATTERN = Regex("(?i)\\bbackground(?:-color|-image)?\\s*:")
+
+    /** 粗切样式表规则：选择器与声明块。 */
+    private val RULE_PATTERN = Regex("([^{}]+)\\{([^{}]*)\\}")
 
     /** 按单词匹配：`cloudy` 命中，`mushroom` 这类只有子串相同的命名不会误判。 */
     private val BACKGROUND_NAMES_PATTERN =

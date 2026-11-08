@@ -186,6 +186,32 @@ class PelicanStructureChecksTest {
     }
 
     @Test
+    fun `background painted from stylesheet still fails single scene`() {
+        val check = check(
+            analyze(
+                "<!DOCTYPE html><html><head><style>.sky{background:linear-gradient(#fff,#9cf)}</style></head>" +
+                    "<body><div class=\"sky\"><svg id=\"a\"></svg></div></body></html>",
+            ),
+            "single-scene",
+        )
+
+        assertFalse(check.passed)
+    }
+
+    @Test
+    fun `foreignObject background stays inside the scene`() {
+        val check = check(
+            analyze(
+                "<svg><foreignObject><div class=\"sky\" style=\"background:blue\"></div></foreignObject></svg>",
+            ),
+            "single-scene",
+        )
+
+        assertTrue(check.passed, check.detail)
+        assertTrue(check.decisive)
+    }
+
+    @Test
     fun `side words on bike parts are not legs`() {
         val far = check(
             analyze("<svg><g class=\"far-leg\"></g><g class=\"back-wheel\"></g><g class=\"frame\"></g></svg>"),
