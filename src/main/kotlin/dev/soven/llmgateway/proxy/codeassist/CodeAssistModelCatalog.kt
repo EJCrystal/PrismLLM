@@ -41,15 +41,40 @@ class CodeAssistModelCatalog(
     private val json = Json { ignoreUnknownKeys = true }
     private val refused = ConcurrentHashMap<String, Long>()
 
-    @Volatile
-    private var snapshot: List<AntigravityModels.Model> = emptyList()
+    /** 按 project 缓存：不同账号对应不同的 cloud project，模型目录不能互相串用。 */
+    private val snapshots = ConcurrentHashMap<String, Snapshot>()
 
-    /** 拉取并收成家族模型；全部 tier 都失败时返回空列表。 */
+    /**
+     * 拉取并收成家族模型；全部 tier 都失败时返回空列表（不动已有缓存）。
+     * 返回的目录与 project 绑定，请求时用 [Catalog.sentId] 选变体。
+     */
+    suspend fun fetchFor(
+        accessToken: String,
+        project: String,
+        tiers: List<String>,
+        proxy: InetSocketAddress? = null,
+    ): Catalog {
+        val raw = load(accessToken, project, tiers, proxy)
+        if (raw.isNotEmpty()) snapshots[project] = Snapshot(raw)
+        return Catalog(snapshots[project]?.models ?: raw)
+    }
+
+    /** 只要家族模型列表；全部 tier 都失败时返回空列表。 */
     suspend fun fetch(
         accessToken: String,
         project: String,
         tiers: List<String>,
         proxy: InetSocketAddress? = null,
+    ): List<AntigravityModels.Model> {
+        val catalog = fetchFor(accessToken, project, tiers, proxy)
+        return AntigravityModels.collapse(catalog.raw)
+    }
+
+    private suspend fun load(
+        accessToken: String,
+        project: String,
+        tiers: List<String>,
+        proxy: InetSocketAddress?,
     ): List<AntigravityModels.Model> {
         val candidates = (tiers.filter { it.isNotBlank() }.distinct() + listOf(""))
             .filter { tier -> tier.isEmpty() || !isRefused(project, tier) }
@@ -67,22 +92,40 @@ class CodeAssistModelCatalog(
                 response.status !in 200..299 -> {
                     logger.warn("fetchAvailableModels status {}", response.status)
                 }
-                else -> {
-                    val raw = parseModels(response.body)
-                    snapshot = raw
-                    return AntigravityModels.collapse(raw)
-                }
+                else -> return parseModels(response.body)
             }
         }
         return emptyList()
     }
 
-    /** 请求时把家族模型落到当前等级的具体变体。 */
-    fun sentId(model: String, effort: String?): String =
-        if (snapshot.isEmpty()) model else AntigravityModels.sentId(model, effort, snapshot)
+    /**
+     * 一个 project 下的模型目录。请求时把家族模型落到当前等级的具体变体；
+     * 还没有目录时原样返回模型 id。
+     */
+    class Catalog internal constructor(
+        /** 上游原始模型 id 列表，用于家族与变体选择。 */
+        val raw: List<AntigravityModels.Model>,
+    ) {
+        val models: List<AntigravityModels.Model> = AntigravityModels.collapse(raw)
 
-    /** 仅供测试与诊断。 */
-    fun snapshot(): List<AntigravityModels.Model> = snapshot
+        fun sentId(model: String, effort: String?): String =
+            if (raw.isEmpty()) model else AntigravityModels.sentId(model, effort, raw)
+    }
+
+    /** 已缓存的目录；没有缓存时返回 null，调用方决定是否补拉。 */
+    fun cached(project: String): Catalog? = snapshots[project]?.let { Catalog(it.models) }
+
+    private class Snapshot(val models: List<AntigravityModels.Model>)
+
+    /** 请求时把家族模型落到当前等级的具体变体；没有缓存时原样返回。 */
+    fun sentId(project: String?, model: String, effort: String?): String {
+        val raw = project?.let { snapshots[it]?.models } ?: return model
+        return AntigravityModels.sentId(model, effort, raw)
+    }
+
+    /** 仅供测试与诊断：某个 project 缓存的原始模型目录。 */
+    fun snapshot(project: String? = null): List<AntigravityModels.Model> =
+        (project?.let { snapshots[it] } ?: snapshots.values.maxByOrNull { it.models.size })?.models ?: emptyList()
 
     private suspend fun requestModels(
         accessToken: String,

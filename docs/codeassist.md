@@ -24,6 +24,8 @@ Antigravity 的订阅凭据不能直接调用 Gemini API：官方客户端走的
 账号配置了 `proxy_url` 时，`loadCodeAssist` / `onboardUser` / `fetchAvailableModels` /
 `retrieveUserQuotaSummary` 与对话请求一样经该代理发出，与 token 刷新共用同一个出口
 （`CodeAssistClientPool` 按代理地址复用连接池，未配置代理时沿用应用共享客户端）。
+数据面的对话请求由 `GatewayApplication.accountEgressClients` 按代理地址复用客户端，
+网关关闭时一并关闭。
 project/tier 缓存也按出口校验：账号代理一变就重新协商，不等缓存过期。
 
 ## 请求信封
@@ -66,6 +68,8 @@ SHA-256 派生，让同一段对话落在同一个会话上，取不到文本时
 拒绝后记 24 小时不再尝试，最后再用不带 entitlement 的请求兜底。
 
 返回的 `models` 里会过滤掉 `disabled`、`chat_` / `tab_` 前缀与若干非对话模型。
+目录按 cloud project 缓存（`CodeAssistModelCatalog.fetchFor` 返回与该 project 绑定的
+`Catalog`），不同账号的目录互不串用。
 Antigravity 把一个模型按思考等级拆成多个 id（`gemini-3.7-flash-low` /
 `-medium` / `-high`），网关把它们收成一个"家族"模型对外暴露，请求时再按
 `thinkingLevel`（或由 `thinkingBudget` 换算的等级）选最近的一档；

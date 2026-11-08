@@ -71,6 +71,24 @@ class CodeAssistEgressTest {
         assertEquals(listOf("upstream /v1internal:retrieveUserQuotaSummary"), seen)
     }
 
+    @Test
+    fun `catalogs of different projects do not share snapshots`() = runBlocking {
+        val upstream = server { exchange ->
+            reply(exchange, """{"models":{"gemini-3.7-flash-high":{"displayName":"Gemini 3.7 Flash (High)"}}}""")
+        }
+        val catalog = CodeAssistModelCatalog(HttpClient(), baseUrl = target(upstream))
+
+        val first = catalog.fetchFor("token", "project-a", emptyList())
+        val second = catalog.fetchFor("token", "project-b", emptyList())
+
+        // 每个 project 各自持有一份目录，请求时按自己那份选变体。
+        assertEquals("gemini-3.7-flash-high", first.sentId("gemini-3.7-flash", null))
+        assertEquals("gemini-3.7-flash-high", second.sentId("gemini-3.7-flash", null))
+        assertEquals("gemini-3.7-flash", catalog.cached("project-c")?.sentId("gemini-3.7-flash", null) ?: "gemini-3.7-flash")
+        assertEquals(1, catalog.snapshot("project-a").size)
+        assertEquals(1, catalog.snapshot("project-b").size)
+    }
+
     /** 上游地址指向本地主机；经代理时要让代理按 Host 头转发，因此这里用绝对 URI。 */
     private fun target(server: HttpServer): String = "http://127.0.0.1:${server.address.port}"
 

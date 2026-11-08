@@ -24,6 +24,7 @@ import dev.soven.llmgateway.oauth.parseCodexQuotaHeaders
 import dev.soven.llmgateway.oauth.parseRateLimitResetMs
 import dev.soven.llmgateway.oauth.proxyAddress
 import java.net.InetSocketAddress
+import java.net.ProxySelector
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
 import dev.soven.llmgateway.proxy.upstreamRequestUrl
 import dev.soven.llmgateway.proxy.BillingCalculator
@@ -60,6 +61,10 @@ import dev.soven.llmgateway.resilience.CooldownPermit
 import dev.soven.llmgateway.resilience.FailureKind
 import dev.soven.llmgateway.resilience.KeyAttemptSignal
 import dev.soven.llmgateway.security.ClientKeyHasher
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.java.Java
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.HttpTimeoutConfig
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.preparePost
@@ -1525,7 +1530,8 @@ private suspend fun proxyStream(
         streamRequest
     }
     val bodyJson = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
-    val egressProxy = if (envelope == UpstreamEnvelope.CODE_ASSIST) codeAssistProxy(app, candidate) else null
+    // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
+    val egressProxy = accountEgressProxy(app, candidate)
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
         app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
     } else {
@@ -1533,23 +1539,25 @@ private suspend fun proxyStream(
     }
     val codeAssistProject = codeAssistContext?.project
     // 进程启动后第一次请求时补一次模型目录，避免重启后家族 id 失去变体映射。
-    if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null &&
-        app.codeAssistModelCatalog.snapshot().isEmpty()
-    ) {
-        runCatching {
-            app.codeAssistModelCatalog.fetch(
+    // 目录按 project 缓存，不会跨账号串用。
+    val codeAssistCatalog = if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null) {
+        val cached = app.codeAssistModelCatalog.cached(codeAssistProject)
+        cached ?: runCatching {
+            app.codeAssistModelCatalog.fetchFor(
                 credential,
                 codeAssistProject,
                 listOfNotNull(codeAssistContext?.tier),
                 egressProxy,
             )
-        }
+        }.getOrNull()
+    } else {
+        null
     }
     val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        val sentModel = app.codeAssistModelCatalog.sentId(
+        val sentModel = codeAssistCatalog?.sentId(
             candidate.upstreamModel,
             ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
-        )
+        ) ?: candidate.upstreamModel
         CodeAssistEnvelope.wrap(CodeAssistCloak.apply(bodyJson), sentModel, codeAssistProject).toString()
     } else {
         bodyJson.toString()
@@ -1559,7 +1567,7 @@ private suspend fun proxyStream(
     try {
         withTimeout(timeoutMs) {
             state.upstreamCallStarted = true
-            app.httpClient.preparePost(upstreamUrl) {
+            upstreamClient(app, egressProxy).preparePost(upstreamUrl) {
                 applyUpstreamAuthentication(
                     credential = credential,
                     authType = authType,
@@ -1799,7 +1807,8 @@ private suspend fun proxyJson(
     }
     val nonStreamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = false)
     val bodyJson = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
-    val egressProxy = if (envelope == UpstreamEnvelope.CODE_ASSIST) codeAssistProxy(app, candidate) else null
+    // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
+    val egressProxy = accountEgressProxy(app, candidate)
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
         app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
     } else {
@@ -1807,23 +1816,25 @@ private suspend fun proxyJson(
     }
     val codeAssistProject = codeAssistContext?.project
     // 进程启动后第一次请求时补一次模型目录，避免重启后家族 id 失去变体映射。
-    if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null &&
-        app.codeAssistModelCatalog.snapshot().isEmpty()
-    ) {
-        runCatching {
-            app.codeAssistModelCatalog.fetch(
+    // 目录按 project 缓存，不会跨账号串用。
+    val codeAssistCatalog = if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null) {
+        val cached = app.codeAssistModelCatalog.cached(codeAssistProject)
+        cached ?: runCatching {
+            app.codeAssistModelCatalog.fetchFor(
                 credential,
                 codeAssistProject,
                 listOfNotNull(codeAssistContext?.tier),
                 egressProxy,
             )
-        }
+        }.getOrNull()
+    } else {
+        null
     }
     val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        val sentModel = app.codeAssistModelCatalog.sentId(
+        val sentModel = codeAssistCatalog?.sentId(
             candidate.upstreamModel,
             ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
-        )
+        ) ?: candidate.upstreamModel
         CodeAssistEnvelope.wrap(CodeAssistCloak.apply(bodyJson), sentModel, codeAssistProject).toString()
     } else {
         bodyJson.toString()
@@ -1831,7 +1842,7 @@ private suspend fun proxyJson(
     try {
         withTimeout(timeoutMs) {
             state.upstreamCallStarted = true
-            val response = app.httpClient.post(upstreamUrl) {
+            val response = upstreamClient(app, egressProxy).post(upstreamUrl) {
                 applyUpstreamAuthentication(
                     credential = credential,
                     authType = authType,
@@ -1929,10 +1940,28 @@ private fun protocolNotSupported(alias: String, protocol: GatewayProtocol): Gate
  * 账号不可用按可切换错误处理，让路由继续尝试其他候选，绝不回退到 refresh token。
  */
 /**
- * Code Assist 的 project 发现与模型目录必须与 token 刷新走同一个账号出口。
- * 代理地址已经过管理面校验，这里解析失败时按直连处理，不阻断请求。
+ * 账号出口：project 发现、模型目录与对话请求都要与 token 刷新走同一个代理。
+ * 配置了 proxy_url 时改用按该代理创建的客户端，没有解析结果时沿用应用共享客户端。
  */
-private fun codeAssistProxy(app: GatewayApplication, candidate: RouteCandidate): InetSocketAddress? {
+private fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?): HttpClient =
+    proxy?.let { address ->
+        app.accountEgressClients.computeIfAbsent(address.hostString + ":" + address.port) { _ ->
+            HttpClient(Java) {
+                engine {
+                    config { proxy(ProxySelector.of(address)) }
+                }
+                // 与共享客户端保持一致：整次请求由调用方的 withTimeout 控制。
+                install(HttpTimeout) {
+                    connectTimeoutMillis = app.config.connectTimeoutMs
+                    requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+                    socketTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+                }
+            }
+        }
+    } ?: app.httpClient
+
+/** 代理地址已经过管理面校验，这里解析失败时按直连处理，不阻断请求。 */
+private fun accountEgressProxy(app: GatewayApplication, candidate: RouteCandidate): InetSocketAddress? {
     val proxyUrl = candidate.oauthAccount?.proxyUrl ?: return null
     return runCatching { proxyAddress(proxyUrl, app.config.oauth.proxyAllowedHosts) }.getOrNull()
 }

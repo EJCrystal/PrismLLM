@@ -317,6 +317,12 @@ class GatewayApplication(
         }
     }
 
+    /**
+     * 按账号出口创建的数据面客户端。账号配置了 proxy_url 时，对话请求与刷新 token
+     * 必须走同一个代理，因此按代理地址复用一条客户端（含连接池），关闭网关时统一关闭。
+     */
+    val accountEgressClients = java.util.concurrent.ConcurrentHashMap<String, HttpClient>()
+
     /** 搜索后端不跟随跳转，避免把 API Key 带到别的站点。 */
     val searchHttpClient = HttpClient(Java) {
         followRedirects = false
@@ -734,6 +740,8 @@ class GatewayApplication(
         scope.cancel()
         iqJudgeService.close()
         iqJudgeRegistry.close()
+        accountEgressClients.values.forEach { runCatching { it.close() } }
+        accountEgressClients.clear()
         httpClient.close()
         searchHttpClient.close()
         channelQuotaService.close()
