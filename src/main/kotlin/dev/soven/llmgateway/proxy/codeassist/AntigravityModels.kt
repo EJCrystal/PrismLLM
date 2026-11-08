@@ -71,14 +71,14 @@ object AntigravityModels {
         }
         return order.map { family ->
             val variants = grouped.getValue(family)
-            // 名称都带等级、且两两不同时以名称为准；否则看 id 后缀。
-            val named = variants.mapNotNull { (_, level) -> level.takeIf { it.isNotEmpty() } }
-            val useNames = named.size == variants.size && named.toSet().size == variants.size
+            // 名称里的等级都要解析得出来、且两两不同时以名称为准；否则看 id 后缀。
+            val namedLevels = variants.map { nameLevel(it.name).second }
+            val useNames = namedLevels.all { it.isNotEmpty() } && namedLevels.distinct().size == variants.size
             Family(
                 id = family,
                 variants = variants,
-                efforts = variants.map { model ->
-                    if (useNames) nameLevel(model.name).second else splitId(model.id).second
+                efforts = variants.mapIndexed { index, model ->
+                    if (useNames) namedLevels[index] else splitId(model.id).second
                 },
             )
         }
@@ -98,6 +98,8 @@ object AntigravityModels {
 
     /** 收成家族后的模型列表：id 是家族、名称去掉等级。 */
     fun collapse(raw: List<Model>): List<Model> = families(raw).map { family ->
+        // 单变体家族没有可切换的档位，发布原始 id，避免客户端拿到目录里不存在的家族 id。
+        if (family.variants.size == 1) return@map family.variants.single()
         val default = byEffort(family)[""] ?: family.id
         val base = family.variants.firstOrNull { it.id == default } ?: family.variants.first()
         base.copy(
@@ -109,10 +111,14 @@ object AntigravityModels {
     /** 把请求里的模型和等级落到具体变体 id。 */
     fun sentId(model: String, effort: String?, raw: List<Model>): String {
         val familyId = splitId(model).first
-        val family = families(raw).firstOrNull { it.id == familyId && it.variants.size > 1 } ?: return model
+        // 不指定等级、又直接用了可识别为变体的 id：保持客户端的选择。
+        if (effort.isNullOrBlank() && familyId != model) return model
+        val family = families(raw).firstOrNull { it.id == familyId } ?: return model
         val variants = byEffort(family)
         if (effort.isNullOrBlank()) {
-            return if (model != familyId) model else variants[""] ?: model
+            // 请求里的 id 本身就在目录中（单变体家族发布的就是原始 id）时原样发出。
+            if (model == familyId && family.variants.any { it.id == familyId }) return model
+            return variants[""] ?: model
         }
         // 只在家族真实拥有的等级里取最近的一级，避免落到不存在的档位。
         val wanted = levelRank.indexOf(normalize(effort)).takeIf { it >= 0 } ?: levelRank.indexOf("high")

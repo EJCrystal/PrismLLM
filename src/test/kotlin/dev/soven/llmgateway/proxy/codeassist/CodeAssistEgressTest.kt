@@ -47,7 +47,8 @@ class CodeAssistEgressTest {
         val quota = CodeAssistQuotaClient(HttpClient(), baseUrl = target(upstream), clients = pool)
             .read("token", "project", proxyAddress)
 
-        assertEquals(listOf("gemini-3.7-flash"), models.map { it.id })
+        // 单个变体按原始 id 发布，客户端拿到的就是目录里真实存在的模型。
+        assertEquals(listOf("gemini-3.7-flash-high"), models.map { it.id })
         assertEquals(50.0, quota!!.primary!!.usedPercent)
         // 两个请求都只打到代理，没有直接连上游。
         assertEquals(2, seen.count { it.startsWith("proxy ") }, "requests: $seen")
