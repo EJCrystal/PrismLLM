@@ -158,7 +158,9 @@ object ChatReasoningContentNormalizer {
             val contentText = contentElement.content
             val matches = THINK_TAG_REGEX.findAll(contentText).toList()
             if (matches.isEmpty()) return null
-            val extracted = matches.joinToString("\n") { it.groupValues[1].trim() }
+            // Qwen3 非思考模式会输出空的 <think></think>：标签照常剔除，但思考内容为空时
+            // 必须回退为 NO_REASONING，否则又写出空串，中转会把它丢掉。
+            val extracted = matches.joinToString("\n") { it.groupValues[1].trim() }.ifBlank { NO_REASONING }
             val cleaned = THINK_TAG_REGEX.replace(contentText, "").trim()
             return buildJsonObject {
                 msg.forEach { (k, v) ->
@@ -189,13 +191,14 @@ object ChatReasoningContentNormalizer {
                 }
             }
         }
-        if (extracted.isEmpty()) return null
+        // 与字符串分支一致：以「标签是否出现」决定是否改写，思考内容为空时回退为 NO_REASONING。
+        if (!contentModified) return null
         return buildJsonObject {
             msg.forEach { (k, v) ->
                 if (k != "reasoning_content" && k != "reasoning" && k != "content") put(k, v)
             }
-            put("reasoning_content", extracted)
-            put("content", if (contentModified) newParts else contentArray)
+            put("reasoning_content", extracted.ifBlank { NO_REASONING })
+            put("content", newParts)
         }
     }
 }

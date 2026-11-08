@@ -35,10 +35,12 @@ object ShapeRefusal {
             """schema[^"]{0,60}\bnesting depth\b|function_declarations\[\d+\]\.parameters\b|""" +
             """schema specified other fields alongside any_?of|upstream request failed|""" +
             // 思考内容未回传：DeepSeek 的 "The reasoning_content in the thinking mode must be passed back"，
-            // 以及各种把 reasoning_content 说成缺失/必填的转述（Beam 的 "Missing required parameter"）。
+            // 以及把 reasoning_content 本身说成缺失/必填的转述（Beam 的 "Missing required parameter"）。
+            // 这里只认已观察到的写法：别的字段缺失、只是顺带提到 reasoning_content 的 400 不能算形状拒绝，
+            // 否则会和「缺失必填字段不在词表内」的约定冲突。
             """`?(?:content\[\]\.thinking|reasoning_content)`? in the thinking mode must be passed back|""" +
             """\breasoning_content\b[^"]{0,40}\b(?:is (?:missing|required)|must be (?:passed|provided|included))|""" +
-            """\b(?:missing|required)\b[^"]{0,80}\breasoning_content\b|""" +
+            """\b(?:missing|required) (?:parameter|field)\b:?\s*['"`\\]*reasoning_content\b|""" +
             // developer 角色不被接受：只认 system/assistant/user/tool 的上游会这样报。
             """\bdeveloper\b[^"]{0,60}\bis not one of\b""",
         RegexOption.IGNORE_CASE,

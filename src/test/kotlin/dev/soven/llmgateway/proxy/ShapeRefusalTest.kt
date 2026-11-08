@@ -112,6 +112,29 @@ class ShapeRefusalTest {
     }
 
     @Test
+    fun `400 naming another missing field beside reasoning_content is not a shape refusal`() {
+        // 缺字段是所有上游都会拒绝的请求错误，顺带提到 reasoning_content 也不算形状不兼容。
+        assertFalse(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Missing required parameter: messages. reasoning_content is optional"}}""",
+            ),
+        )
+        assertFalse(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Missing required parameter: model"}}""",
+            ),
+        )
+        assertFalse(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Required field messages is missing while reasoning_content was supplied"}}""",
+            ),
+        )
+    }
+
+    @Test
     fun `other statuses never match`() {
         assertFalse(ShapeRefusal.matches(500, "unknown variant developer"))
         assertFalse(ShapeRefusal.matches(404, "failed to deserialize"))

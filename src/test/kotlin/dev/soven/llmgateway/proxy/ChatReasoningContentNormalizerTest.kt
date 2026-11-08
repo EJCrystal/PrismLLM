@@ -306,6 +306,80 @@ class ChatReasoningContentNormalizerTest {
     }
 
     @Test
+    fun `an empty think tag still falls back to a single space`() {
+        // Qwen3 非思考模式会输出 <think></think>；标签要剔除，但不能写出空串。
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "assistant", "content": "<think>\n\n</think>the answer", "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash", "https://api.deepseek.com")
+        val message = normalized["messages"]!!.jsonArray[0].jsonObject
+
+        assertEquals(" ", message["reasoning_content"]!!.jsonPrimitive.content)
+        assertEquals("the answer", message["content"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `an empty think tag in content parts is stripped and filled with a single space`() {
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "assistant", "content": [
+                        {"type": "text", "text": "<think></think>the answer"}
+                    ], "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash", "https://api.deepseek.com")
+        val message = normalized["messages"]!!.jsonArray[0].jsonObject
+
+        assertEquals(" ", message["reasoning_content"]!!.jsonPrimitive.content)
+        assertEquals(
+            "the answer",
+            message["content"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `content parts without think tags are left untouched`() {
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "assistant", "content": [
+                        {"type": "text", "text": "plain answer"}
+                    ], "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash", "https://api.deepseek.com")
+        val message = normalized["messages"]!!.jsonArray[0].jsonObject
+
+        assertEquals(" ", message["reasoning_content"]!!.jsonPrimitive.content)
+        assertEquals(
+            "plain answer",
+            message["content"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content,
+        )
+    }
+
+    @Test
     fun `extracts think tags out of content parts`() {
         val input = json(
             """
