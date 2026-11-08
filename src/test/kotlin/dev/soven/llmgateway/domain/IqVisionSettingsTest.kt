@@ -83,6 +83,10 @@ class IqVisionSettingsTest {
         assertFalse(sameVisionEndpoint("https://api.example.com/TenantA/v1", "https://api.example.com/tenanta/v1"))
         // 连续斜杠同理：服务端可能把它们路由到不同服务。
         assertFalse(sameVisionEndpoint("https://api.example.com/tenant//v1", "https://api.example.com/tenant/v1"))
+        // 查询参数参与路由时（多租户代理），参数不同就是不同端点。
+        assertFalse(sameVisionEndpoint("https://proxy.example/v1?tenant=a", "https://proxy.example/v1?tenant=b"))
+        assertFalse(sameVisionEndpoint("https://proxy.example/v1", "https://proxy.example/v1?tenant=a"))
+        assertTrue(sameVisionEndpoint("https://proxy.example/v1?tenant=a", "https://proxy.example/v1?tenant=a"))
         assertFalse(sameVisionEndpoint("http://127.0.0.1:8080/v1", "http://127.0.0.1:9090/v1"))
         assertFalse(sameVisionEndpoint("", "http://127.0.0.1:8080/v1"))
         assertFalse(sameVisionEndpoint("not-a-url", "not-a-url"))
@@ -105,6 +109,21 @@ class IqVisionSettingsTest {
     }
 
     @Test
+    fun `query parameter change does not inherit the environment key`() {
+        val stored = IqVisionSettingsRecord(
+            enabled = true,
+            baseUrl = "https://proxy.example/v1?tenant=a",
+            model = "vision-model",
+            apiKey = null,
+            timeoutMs = 60_000,
+            updatedAt = 123,
+        )
+        val envDefaults = defaults.copy(baseUrl = "https://proxy.example/v1?tenant=b", apiKey = "env-key")
+
+        assertEquals(null, stored.effective(envDefaults).apiKey)
+    }
+
+    @Test
     fun `config is usable only for http endpoints`() {
         assertTrue(defaults.usable)
         assertFalse(defaults.copy(baseUrl = "").usable)
@@ -118,6 +137,10 @@ class IqVisionSettingsTest {
         assertFalse(defaults.copy(baseUrl = "https://example.com:abc/v1").usable)
         assertFalse(defaults.copy(baseUrl = "https://example com/v1").usable)
         assertFalse(defaults.copy(baseUrl = "https://example.com:70000/v1").usable)
+        // 用户信息会随请求发出却不属于端点身份，一律拒绝。
+        assertFalse(defaults.copy(baseUrl = "https://user:pass@example.com/v1").usable)
+        // 查询参数合法且参与端点比较，不能因此判定不可用。
+        assertTrue(defaults.copy(baseUrl = "https://proxy.example/v1?tenant=a").usable)
         assertFalse(defaults.copy(baseUrl = "https:///v1").usable)
         assertFalse(defaults.copy(baseUrl = "http://").usable)
         // 合法端口与默认端口都要通过。
