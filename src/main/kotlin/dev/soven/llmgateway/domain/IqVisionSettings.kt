@@ -32,6 +32,35 @@ data class IqVisionConfig(
 }
 
 /**
+ * 判断两个端点是否指向同一服务。
+ *
+ * 协议与主机名大小写不敏感（`HTTP://Example.COM` 与 `http://example.com` 等价），
+ * 但路径大小写敏感：同一主机下的 `/TenantA/v1` 与 `/tenanta/v1` 可能是不同租户，
+ * 整体忽略大小写会把后者当成前者，把前者的密钥发给后者。
+ */
+fun sameVisionEndpoint(left: String, right: String): Boolean {
+    val a = parseEndpoint(left) ?: return false
+    val b = parseEndpoint(right) ?: return false
+    return a == b
+}
+
+private data class EndpointParts(val scheme: String, val authority: String, val path: String)
+
+private fun parseEndpoint(raw: String): EndpointParts? {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return null
+    val schemeEnd = trimmed.indexOf("://")
+    if (schemeEnd <= 0) return null
+    val scheme = trimmed.substring(0, schemeEnd).lowercase()
+    val rest = trimmed.substring(schemeEnd + 3)
+    val pathStart = rest.indexOf('/')
+    val authority = (if (pathStart < 0) rest else rest.substring(0, pathStart)).lowercase()
+    val path = if (pathStart < 0) "" else rest.substring(pathStart).trimEnd('/')
+    if (authority.isEmpty()) return null
+    return EndpointParts(scheme, authority, path)
+}
+
+/**
  * 合并管理台设置与环境变量默认值。
  *
  * 密钥与端点绑定：只有管理台端点与环境变量端点一致时才回退到环境变量里的密钥。
@@ -42,7 +71,7 @@ data class IqVisionConfig(
  */
 fun IqVisionSettingsRecord?.effective(defaults: IqVisionConfig): IqVisionConfig = this?.let { stored ->
     val baseUrl = stored.baseUrl.ifBlank { defaults.baseUrl }
-    val sameBaseUrl = baseUrl.trimEnd('/').equals(defaults.baseUrl.trimEnd('/'), ignoreCase = true)
+    val sameBaseUrl = sameVisionEndpoint(baseUrl, defaults.baseUrl)
     IqVisionConfig(
         enabled = stored.enabled,
         baseUrl = baseUrl,

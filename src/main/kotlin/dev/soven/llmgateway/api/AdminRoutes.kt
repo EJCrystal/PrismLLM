@@ -3,6 +3,8 @@ package dev.soven.llmgateway.api
 import dev.soven.llmgateway.domain.ChannelRecord
 import dev.soven.llmgateway.domain.IqVisionSettingsRecord
 import dev.soven.llmgateway.domain.NewIqTestRun
+import dev.soven.llmgateway.repo.IqVisionSettingsUpdate
+import dev.soven.llmgateway.domain.sameVisionEndpoint
 import dev.soven.llmgateway.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider
 import dev.soven.llmgateway.domain.ChannelKeyRecord
@@ -696,53 +698,54 @@ fun Route.adminRoutes(app: GatewayApplication) {
         put("/iq-vision-settings") {
             call.requireAdmin(app)
             val request = call.receive<IqVisionSettingsRequest>()
-            val stored = app.iqVisionSettingsRepository.load()
             val baseUrl = request.baseUrl.trim().trimEnd('/')
             val model = request.model.trim()
-            // 端点变化时不能沿用旧密钥，否则会把旧服务的凭据发给新服务。
-            // 比较的是合并默认值之后实际生效的端点：库里存空串表示继承环境变量，
-            // 管理员把同一个地址显式写进来不算换端点。
-            val previous = stored.effective(app.iqVisionDefaults)
-            val effectiveBaseUrl = baseUrl.ifBlank { app.iqVisionDefaults.baseUrl }.trimEnd('/')
-            val sameBaseUrl = stored != null &&
-                previous.baseUrl.trimEnd('/').equals(effectiveBaseUrl, ignoreCase = true)
-            val hasStoredKey = stored != null && (stored.apiKey != null || stored.apiKeyUnreadable)
-            if (
-                stored != null && !sameBaseUrl && hasStoredKey &&
-                !request.clearApiKey && request.apiKey.isNullOrBlank()
-            ) {
-                // 直接保存会静默丢掉已保存的密钥，改为要求管理员明确选择填新密钥或清除。
-                throw badRequest(
-                    "invalid_iq_vision_settings",
-                    "更换模型端点后需要重新填写 API 密钥，或勾选清除已保存的密钥",
+            // 校验依赖「旧值」的判断，必须和写入在同一个事务里完成：否则并发的两个 PUT
+            // 会各自基于旧快照决定密钥去留，把另一请求刚写入的密钥带到自己的端点上。
+            val saved = app.iqVisionSettingsRepository.update { stored ->
+                val previous = stored.effective(app.iqVisionDefaults)
+                // 比较的是合并默认值之后实际生效的端点：库里存空串表示继承环境变量，
+                // 管理员把同一个地址显式写进来不算换端点。
+                val effectiveBaseUrl = baseUrl.ifBlank { app.iqVisionDefaults.baseUrl }
+                val sameBaseUrl = stored != null && sameVisionEndpoint(previous.baseUrl, effectiveBaseUrl)
+                val hasStoredKey = stored != null && (stored.apiKey != null || stored.apiKeyUnreadable)
+                if (
+                    stored != null && !sameBaseUrl && hasStoredKey &&
+                    !request.clearApiKey && request.apiKey.isNullOrBlank()
+                ) {
+                    // 直接保存会静默丢掉已保存的密钥，改为要求管理员明确选择填新密钥或清除。
+                    throw badRequest(
+                        "invalid_iq_vision_settings",
+                        "更换模型端点后需要重新填写 API 密钥，或勾选清除已保存的密钥",
+                    )
+                }
+                val record = IqVisionSettingsRecord(
+                    enabled = request.enabled,
+                    baseUrl = baseUrl,
+                    model = model,
+                    apiKey = when {
+                        request.clearApiKey -> null
+                        !request.apiKey.isNullOrBlank() -> request.apiKey.trim()
+                        sameBaseUrl -> stored?.apiKey
+                        else -> null
+                    },
+                    timeoutMs = request.timeoutMs,
+                    updatedAt = 0,
                 )
+                iqVisionSettingsError(record.effective(app.iqVisionDefaults))?.let {
+                    throw badRequest("invalid_iq_vision_settings", it)
+                }
+                // 留空且未勾选清除时保留原密文：无法解密的密钥也要等管理员明确替换或清除才丢弃。
+                val preserveApiKey = !request.clearApiKey &&
+                    request.apiKey.isNullOrBlank() &&
+                    sameBaseUrl &&
+                    stored?.apiKeyUnreadable == true
+                IqVisionSettingsUpdate(record, preserveApiKey)
             }
-            val record = IqVisionSettingsRecord(
-                enabled = request.enabled,
-                baseUrl = baseUrl,
-                model = model,
-                apiKey = when {
-                    request.clearApiKey -> null
-                    !request.apiKey.isNullOrBlank() -> request.apiKey.trim()
-                    sameBaseUrl -> stored?.apiKey
-                    else -> null
-                },
-                timeoutMs = request.timeoutMs,
-                updatedAt = 0,
-            )
-            iqVisionSettingsError(record.effective(app.iqVisionDefaults))?.let {
-                throw badRequest("invalid_iq_vision_settings", it)
-            }
-            // 留空且未勾选清除时保留原密文：无法解密的密钥也要等管理员明确替换或清除才丢弃。
-            val preserveApiKey = !request.clearApiKey &&
-                request.apiKey.isNullOrBlank() &&
-                sameBaseUrl &&
-                stored?.apiKeyUnreadable == true
-            app.iqVisionSettingsRepository.save(record, preserveApiKey)
             call.response.headers.append("Cache-Control", "no-store")
             call.respond(
                 iqVisionSettingsResponse(
-                    stored = app.iqVisionSettingsRepository.load(),
+                    stored = saved,
                     defaults = app.iqVisionDefaults,
                     browserAvailable = app.iqVisionBrowserAvailable,
                     browserTimeoutMs = app.config.iqVisionBrowserTimeoutMs,

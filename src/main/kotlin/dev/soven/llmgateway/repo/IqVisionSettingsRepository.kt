@@ -13,6 +13,12 @@ import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.jdbc.upsert
 import org.slf4j.LoggerFactory
 
+/** 一次待写入的配置；[preserveApiKey] 为 true 时保留库中现有密文不动。 */
+data class IqVisionSettingsUpdate(
+    val settings: IqVisionSettingsRecord,
+    val preserveApiKey: Boolean = false,
+)
+
 /**
  * 持久化管理台的 IQ 视觉判分配置。视觉模型 API 密钥与渠道凭据一样使用
  * AES-256-GCM 加密，读取时在服务端解密。
@@ -31,7 +37,7 @@ class IqVisionSettingsRepository(
     private val logger = LoggerFactory.getLogger(IqVisionSettingsRepository::class.java)
 
     /** 没有保存过设置时返回 null，调用方回退到环境变量默认值。 */
-    suspend fun load(): IqVisionSettingsRecord? = suspendTransaction(database) { read() }
+    suspend fun load(): IqVisionSettingsRecord? = suspendTransaction(database) { read(lock = false) }
 
     /**
      * 阻塞式读取，供判分器所在的阻塞线程池直接调用。
@@ -39,7 +45,7 @@ class IqVisionSettingsRepository(
      * @param defaults 环境变量默认值；读取失败时返回它，避免判分整体失败。
      */
     fun loadBlocking(defaults: IqVisionConfig): IqVisionConfig {
-        val stored = runCatching { transaction(database) { read() } }
+        val stored = runCatching { transaction(database) { read(lock = false) } }
             .onFailure {
                 // 读取失败时回退到部署默认值，不让一次数据库抖动把判分整体打挂。
                 logger.warn(
@@ -51,30 +57,50 @@ class IqVisionSettingsRepository(
         return stored.effective(defaults)
     }
 
-    suspend fun save(settings: IqVisionSettingsRecord, preserveApiKey: Boolean = false) {
+    /**
+     * 在同一个事务里读取当前值、由 [apply] 计算新值并写回，返回保存后的值。
+     *
+     * 读和写必须原子：否则两个并发 PUT 会各自基于旧快照计算，后到的请求把端点改回自己
+     * 看到的那一个，却带着另一个请求刚写入的密钥，下一次判分就把 A 的密钥发给了 B。
+     * 单行表用行锁串行化，和 `KeyAutoDisableRepository.saveSettings` 的做法一致。
+     *
+     * [apply] 返回 null 表示放弃本次保存（校验失败），此时不写库。
+     */
+    suspend fun update(apply: (IqVisionSettingsRecord?) -> IqVisionSettingsUpdate?): IqVisionSettingsRecord? =
+        suspendTransaction(database) {
+            val current = read(lock = true)
+            val update = apply(current) ?: return@suspendTransaction null
+            write(update)
+            read(lock = false)
+        }
+
+    private fun write(update: IqVisionSettingsUpdate) {
+        val settings = update.settings
         val encrypted = settings.apiKey?.takeIf { it.isNotBlank() }?.let(credentialCipher::encrypt)
         val updatedAt = nowMs()
-        suspendTransaction(database) {
-            IqVisionSettings.upsert(IqVisionSettings.id) {
-                it[IqVisionSettings.id] = SINGLETON_ID
-                it[enabled] = settings.enabled
-                it[baseUrl] = settings.baseUrl
-                it[model] = settings.model
-                if (!preserveApiKey) {
-                    it[apiKeyCiphertext] = encrypted?.ciphertext.orEmpty()
-                    it[apiKeyNonce] = encrypted?.nonce.orEmpty()
-                    it[apiKeyKeyVersion] = encrypted?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
-                }
-                it[IqVisionSettings.visionTimeoutMs] = settings.timeoutMs
-                it[IqVisionSettings.updatedAt] = updatedAt
+        IqVisionSettings.upsert(IqVisionSettings.id) {
+            it[IqVisionSettings.id] = SINGLETON_ID
+            it[enabled] = settings.enabled
+            it[baseUrl] = settings.baseUrl
+            it[model] = settings.model
+            if (!update.preserveApiKey) {
+                it[apiKeyCiphertext] = encrypted?.ciphertext.orEmpty()
+                it[apiKeyNonce] = encrypted?.nonce.orEmpty()
+                it[apiKeyKeyVersion] = encrypted?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
             }
+            it[IqVisionSettings.visionTimeoutMs] = settings.timeoutMs
+            it[IqVisionSettings.updatedAt] = updatedAt
         }
     }
 
-    private fun read(): IqVisionSettingsRecord? = IqVisionSettings.selectAll()
-        .where { IqVisionSettings.id eq SINGLETON_ID }
-        .singleOrNull()
-        ?.let { row ->
+    /**
+     * @param lock 为 true 时对单行加 `for update`，把同一行的并发读改写串行化。
+     *   行不存在时加不到锁，但那时也没有可被覆盖的密钥，两个并发插入各自 upsert 仍然安全。
+     */
+    private fun read(lock: Boolean): IqVisionSettingsRecord? {
+        val query = IqVisionSettings.selectAll().where { IqVisionSettings.id eq SINGLETON_ID }
+        if (lock) query.forUpdate()
+        return query.singleOrNull()?.let { row ->
             val ciphertext = row[IqVisionSettings.apiKeyCiphertext]
             var unreadable = false
             val apiKey = ciphertext.takeIf { it.isNotEmpty() }?.let {
@@ -99,6 +125,7 @@ class IqVisionSettingsRepository(
                 apiKeyUnreadable = unreadable,
             )
         }
+    }
 
     private companion object {
         const val SINGLETON_ID = 1

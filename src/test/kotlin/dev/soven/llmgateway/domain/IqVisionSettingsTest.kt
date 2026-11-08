@@ -76,6 +76,33 @@ class IqVisionSettingsTest {
     }
 
     @Test
+    fun `endpoint comparison ignores case in scheme and host but not in path`() {
+        assertTrue(sameVisionEndpoint("http://127.0.0.1:8080/v1", "HTTP://127.0.0.1:8080/v1/"))
+        assertTrue(sameVisionEndpoint("https://API.Example.com/v1", "https://api.example.com/v1"))
+        // 路径大小写不同可能是不同租户，不能当成同一端点。
+        assertFalse(sameVisionEndpoint("https://api.example.com/TenantA/v1", "https://api.example.com/tenanta/v1"))
+        assertFalse(sameVisionEndpoint("http://127.0.0.1:8080/v1", "http://127.0.0.1:9090/v1"))
+        assertFalse(sameVisionEndpoint("", "http://127.0.0.1:8080/v1"))
+        assertFalse(sameVisionEndpoint("not-a-url", "not-a-url"))
+    }
+
+    @Test
+    fun `path case change does not inherit the environment key`() {
+        val stored = IqVisionSettingsRecord(
+            enabled = true,
+            baseUrl = "https://api.example.com/TenantA/v1",
+            model = "vision-model",
+            apiKey = null,
+            timeoutMs = 60_000,
+            updatedAt = 123,
+        )
+        val envDefaults = defaults.copy(baseUrl = "https://api.example.com/tenanta/v1", apiKey = "env-key")
+
+        // 主机相同但路径大小写不同，仍属于不同端点，不能把环境变量密钥发过去。
+        assertEquals(null, stored.effective(envDefaults).apiKey)
+    }
+
+    @Test
     fun `config is usable only for http endpoints`() {
         assertTrue(defaults.usable)
         assertFalse(defaults.copy(baseUrl = "").usable)

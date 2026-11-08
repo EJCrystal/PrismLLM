@@ -30,6 +30,9 @@ import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
 import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
+import dev.soven.llmgateway.domain.IqVisionSettingsRecord
+import dev.soven.llmgateway.domain.effective
+import dev.soven.llmgateway.repo.IqVisionSettingsUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
@@ -3422,6 +3425,49 @@ class GatewayIntegrationTest {
         val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_disable" }
         assertEquals("auth_rejected", audit.details?.get("ruleId")?.jsonPrimitive?.content)
         assertEquals("3", audit.details?.get("count")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `iq vision settings concurrent endpoint switch does not pair key with the wrong endpoint`() = runBlocking {
+        val repository = app.iqVisionSettingsRepository
+        val defaults = app.iqVisionDefaults
+        // 先写入一个端点固定、带密钥的配置，模拟「端点 A 上有一把已保存的密钥」。
+        repository.update {
+            IqVisionSettingsUpdate(
+                IqVisionSettingsRecord(
+                    enabled = true,
+                    baseUrl = "https://a.example.com/v1",
+                    model = "vision-a",
+                    apiKey = "key-a",
+                    timeoutMs = 60_000,
+                    updatedAt = 0,
+                ),
+            )
+        }
+
+        // 两个请求并发把端点换成各自的地址，都不重新填密钥：都应被拒绝，
+        // 因为换端点且不显式清除时不能沿用旧密钥。
+        val rejections = coroutineScope {
+            listOf("https://b.example.com/v1", "https://c.example.com/v1").map { endpoint ->
+                async(Dispatchers.IO) {
+                    runCatching {
+                        repository.update { stored ->
+                            val previous = stored.effective(defaults)
+                            if (previous.baseUrl != endpoint) {
+                                throw IllegalStateException("endpoint changed without a new key")
+                            }
+                            null
+                        }
+                    }.isFailure
+                }
+            }.awaitAll()
+        }
+        assertTrue(rejections.all { it }, "REJECTIONS=$rejections")
+
+        // 配置必须保持原样：端点仍是 A，密钥仍是 A 的。
+        val after = assertNotNull(repository.load())
+        assertEquals("https://a.example.com/v1", after.baseUrl)
+        assertEquals("key-a", after.apiKey)
     }
 
     @Test
