@@ -106,7 +106,7 @@
   用零宽空格规避；403 封禁按两小时账号级冷却处理。
 - 细节与来源（magpie 的 `google.go` / `codeassist.go`）见
   [Google Code Assist](../codeassist.md)，升级说明见
-  [V58](../migrations/V58-oauth-upstream-project.md)。
+  [V59](../migrations/V59-oauth-upstream-project.md)。
 
 ## Consequences
 
