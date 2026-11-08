@@ -88,6 +88,11 @@ internal object PelicanStructureChecks {
         val firstOther = elements.indexOfFirst { element -> matchesLayer(element, matchesOther) }
         if (lastOwn < 0) return advisory(id, label, missingOwn)
         if (firstOther < 0) return advisory(id, label, missingOther)
+        val other = elements[firstOther]
+        // 两侧互为祖孙容器时（例如「bicycle > far-leg」），比较的是容器自身，不代表子图元的绘制顺序。
+        if (isNested(elements[lastOwn], other)) {
+            return advisory(id, label, "两侧图元互相嵌套，无法比较绘制顺序，需结合画面确认跨骑透视")
+        }
         // 文档顺序就是绘制顺序，靠后的图元盖住靠前的：[ownFirst] 为真表示 own 应整体画在 other 之前。
         val passed = (lastOwn < firstOther) == ownFirst
         return IqStructureCheck(
@@ -96,8 +101,8 @@ internal object PelicanStructureChecks {
             passed = passed,
             detail = when {
                 !passed -> reversed
-                ownFirst -> "已排在「${describe(elements[firstOther])}」之前"
-                else -> "已排在「${describe(elements[firstOther])}」之后"
+                ownFirst -> "已排在「${describe(other)}」之前"
+                else -> "已排在「${describe(other)}」之后"
             },
         )
     }
@@ -105,6 +110,10 @@ internal object PelicanStructureChecks {
     /** 无法离线确认的项：参与展示但不否决。 */
     private fun advisory(id: String, label: String, detail: String) =
         IqStructureCheck(id = id, label = label, passed = true, detail = detail, decisive = false)
+
+    /** 两个元素是否互为祖孙：嵌套时比较的是容器自身，不能代表子图元的绘制顺序。 */
+    private fun isNested(one: Element, other: Element): Boolean =
+        one.parents().any { it === other } || other.parents().any { it === one }
 
     /** 元素自身的名字（标注属性、id、class）是否命中某一层的写法。 */
     private fun matchesLayer(element: Element, matches: (String) -> Boolean): Boolean =

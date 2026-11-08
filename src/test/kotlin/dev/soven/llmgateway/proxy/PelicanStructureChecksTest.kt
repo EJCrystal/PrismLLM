@@ -111,6 +111,32 @@ class PelicanStructureChecksTest {
     }
 
     @Test
+    fun `nested groups are advisory instead of failing`() {
+        val checks = analyze(
+            "<svg><g id=\"bicycle\"><g id=\"far-leg\"></g><g id=\"wheel\"></g></g></svg>",
+        )
+
+        val far = check(checks, "far-layer-order")
+        assertTrue(far.passed)
+        assertFalse(far.decisive)
+        assertNotNull(far.detail)
+    }
+
+    @Test
+    fun `nested rider group does not decide near order`() {
+        val html = """
+            <!DOCTYPE html>
+            <html><head><style>@keyframes spin{to{transform:rotate(360deg)}}</style></head>
+            <body><svg><g id="pelican"><g id="near-leg"></g></g></svg></body></html>
+        """.trimIndent()
+
+        val result = evaluateIqTest(IqBenchmark.PELICAN, true, html)
+
+        assertEquals(IqVerdict.PASSED, result.verdict)
+        assertFalse(result.checks.first { it.id == "near-layer-order" }.decisive)
+    }
+
+    @Test
     fun `reversed layers need review instead of passing`() {
         val html = """
             <!DOCTYPE html>
