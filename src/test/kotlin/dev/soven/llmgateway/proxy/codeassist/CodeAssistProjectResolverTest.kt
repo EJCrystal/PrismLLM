@@ -116,6 +116,34 @@ class CodeAssistProjectResolverTest {
         }
     }
 
+    @Test
+    fun `changing the account proxy renegotiates the cached project`() = runBlocking {
+        val loads = AtomicReference(0)
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1internal:loadCodeAssist") { exchange ->
+            val call = loads.updateAndGet { it + 1 }
+            reply(exchange, 200, """{"cloudaicompanionProject":"proj-$call"}""")
+        }
+        server.start()
+        val base = "http://127.0.0.1:${server.address.port}"
+        try {
+            val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+            val resolver = CodeAssistProjectResolver(FakeAccounts(saved), HttpClient(Java), baseUrl = base, loadBaseUrl = base)
+            val account = account()
+
+            assertEquals("proj-1", resolver.context(account, "token").project)
+            // 同一出口：直接命中缓存，不再请求上游。
+            assertEquals("proj-1", resolver.context(account, "token").project)
+            assertEquals(1, loads.get())
+            // 出口变了：重新发现，避免沿用旧出口下协商的 project。
+            val moved = account.copy(proxyUrl = "http://127.0.0.1:7890")
+            assertEquals("proj-2", resolver.context(moved, "token").project)
+            assertEquals(2, loads.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
     private fun account(): OAuthAccountRecord = OAuthAccountRecord(
         id = "account-1",
         name = "antigravity",

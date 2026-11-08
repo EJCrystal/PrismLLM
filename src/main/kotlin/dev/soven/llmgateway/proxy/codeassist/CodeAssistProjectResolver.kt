@@ -22,6 +22,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
 import java.net.InetSocketAddress
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Antigravity 的 Code Assist 需要每个账号自己的 cloud project 与 tier：
@@ -51,12 +52,22 @@ class CodeAssistProjectResolver(
         fun tiers(): List<String> = (listOfNotNull(tier).filter { it.isNotBlank() } + allowedTiers).distinct()
     }
 
+    /** 上一次成功协商 project 时的出口；用于在代理变化时作废缓存。 */
+    private val negotiatedProxy = ConcurrentHashMap<String, String>()
+
+    private fun egressKey(proxyUrl: String?): String = normalizeProxy(proxyUrl) ?: DIRECT
+
     /**
      * @param proxy 账号出口代理；与刷新 access token 使用同一个，避免两套 IP。
      */
     suspend fun context(account: OAuthAccountRecord, accessToken: String, proxy: InetSocketAddress? = null): Context {
+        val proxyKey = egressKey(account.proxyUrl)
         val cached = accounts.upstreamContext(account.id)
-        if (cached?.project != null && cached.checkedAt != null && now() - cached.checkedAt < TIER_TTL_MS) {
+        // 缓存是按某个出口协商出来的：出口一变就必须重新发现，而不是等 TTL 过期。
+        val sameEgress = proxyKey == (negotiatedProxy[account.id] ?: proxyKey)
+        if (sameEgress && cached?.project != null && cached.checkedAt != null &&
+            now() - cached.checkedAt < TIER_TTL_MS
+        ) {
             return Context(cached.project, cached.tier)
         }
         val loaded = runCatching { loadCodeAssist(account.id, accessToken, proxy) }.getOrElse { cause ->
@@ -72,8 +83,14 @@ class CodeAssistProjectResolver(
         if (project != null) {
             accounts.saveUpstreamContext(account.id, project, loaded.tier, now())
         }
+        if (!sameEgress) {
+            logger.info("account proxy changed, renegotiated code assist context, accountId={}", account.id)
+        }
+        negotiatedProxy[account.id] = proxyKey
         return Context(project ?: cached?.project, loaded.tier ?: cached?.tier)
     }
+
+    private fun normalizeProxy(proxyUrl: String?): String? = proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
 
     /**
      * 公开的目录探测：拿到账号的 project、tier 与允许拉取目录的 tier 列表。
@@ -160,5 +177,7 @@ class CodeAssistProjectResolver(
         const val ONBOARD_ATTEMPTS = 5
         const val ONBOARD_POLL_MS = 1_000L
         const val LOAD_BODY = "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"}}"
+        /** 直连出口在缓存键里的占位值，ConcurrentHashMap 不接受 null。 */
+        const val DIRECT = "\u0000direct"
     }
 }

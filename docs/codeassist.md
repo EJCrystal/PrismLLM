@@ -24,6 +24,7 @@ Antigravity 的订阅凭据不能直接调用 Gemini API：官方客户端走的
 账号配置了 `proxy_url` 时，`loadCodeAssist` / `onboardUser` / `fetchAvailableModels` /
 `retrieveUserQuotaSummary` 与对话请求一样经该代理发出，与 token 刷新共用同一个出口
 （`CodeAssistClientPool` 按代理地址复用连接池，未配置代理时沿用应用共享客户端）。
+project/tier 缓存也按出口校验：账号代理一变就重新协商，不等缓存过期。
 
 ## 请求信封
 
