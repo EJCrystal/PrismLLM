@@ -51,20 +51,41 @@ class CodeAssistEnvelopeTest {
         ).jsonObject
         val left = CodeAssistEnvelope.sessionId(
             request,
-            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", request),
+            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "req-1", request),
         )
         val otherAlias = CodeAssistEnvelope.sessionId(
             request,
-            CodeAssistEnvelope.sessionScope("alias-b", "channel-1", request),
+            CodeAssistEnvelope.sessionScope("alias-b", "channel-1", "req-1", request),
         )
         val otherChannel = CodeAssistEnvelope.sessionId(
             request,
-            CodeAssistEnvelope.sessionScope("alias-a", "channel-2", request),
+            CodeAssistEnvelope.sessionScope("alias-a", "channel-2", "req-1", request),
         )
-        // 同一会话（同客户端、同渠道）稳定；不同客户端或渠道即使首条消息相同也不碰撞。
-        assertEquals(left, CodeAssistEnvelope.sessionId(request, CodeAssistEnvelope.sessionScope("alias-a", "channel-1", request)))
+        val otherRequest = CodeAssistEnvelope.sessionId(
+            request,
+            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "req-2", request),
+        )
+        // 同一个会话内请求标识逐次不同：相同首条消息的不同再次请求也不能落到同一个上游会话。
+        assertEquals(
+            left,
+            CodeAssistEnvelope.sessionId(request, CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "req-1", request)),
+        )
         assertTrue(left != otherAlias)
         assertTrue(left != otherChannel)
+        assertTrue(left != otherRequest)
+    }
+
+    @Test
+    fun errorBodyKeepsOnlyTheInnerError() {
+        assertEquals(
+            """{"error":{"code":429,"message":"Resource has been exhausted"}}""",
+            CodeAssistEnvelope.errorBody("""{"error":{"code":429,"message":"Resource has been exhausted"}}"""),
+        )
+        // 信封里带 response 占位时也只取 error。
+        assertEquals("""{"error":{"code":503}}""", CodeAssistEnvelope.errorBody("""{"response":null,"error":{"code":503}}"""))
+        // 不是 JSON 或没有 error 字段时原样返回，交给下游按原格式处理。
+        assertEquals("<html>bad gateway</html>", CodeAssistEnvelope.errorBody("<html>bad gateway</html>"))
+        assertEquals("""{"message":"plain"}""", CodeAssistEnvelope.errorBody("""{"message":"plain"}"""))
     }
 
     @Test

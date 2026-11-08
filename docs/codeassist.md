@@ -25,7 +25,16 @@ Antigravity 的订阅凭据不能直接调用 Gemini API：官方客户端走的
 `retrieveUserQuotaSummary` 与对话请求一样经该代理发出，与 token 刷新共用同一个出口
 （`CodeAssistClientPool` 按代理地址复用连接池，未配置代理时沿用应用共享客户端）。
 数据面的对话请求由 `GatewayApplication.accountEgressClients` 按代理地址复用客户端，
-网关关闭时一并关闭。
+网关关闭时一并关闭。账号代理配置无效时数据面直接返回 `400 invalid_oauth_proxy`，
+不会静默回落直连。
+
+Code Assist 的发现、目录与额度请求都有 30 秒上限（直连请求用带超时的派生客户端），
+数据面的准备阶段另有 `min(请求超时, 20s)` 的整体上限。上游错误同样是
+`{"error": ...}` 信封，网关先解包再交给 Gemini 错误识别。
+
+会话 id 由客户端别名、渠道、调用方的请求标识（`x-request-id` 等，取不到时为
+traceparent 的 span id）与整段请求派生，最后与首条用户文本一起哈希；
+同一会话内请求只会增长历史，因此 id 稳定，不同客户端的相同首条消息不会碰撞。
 project/tier 缓存也按出口校验：账号代理一变就重新协商，不等缓存过期。
 
 ## 请求信封

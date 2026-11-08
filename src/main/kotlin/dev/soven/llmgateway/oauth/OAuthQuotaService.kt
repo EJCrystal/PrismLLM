@@ -20,6 +20,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -169,14 +170,21 @@ class OAuthQuotaService(
         } catch (cause: OAuthRefreshException) {
             return failed(account.id, cause.errorCode)
         }
-        val project = projectResolver.context(account, token.accessToken, proxy).project
-            ?: return failed(account.id, "project_missing")
-        val snapshot = antigravityQuota.read(token.accessToken, project, proxy)
-            ?: return failed(account.id, "quota_read_failed")
+        // 后台扫描没有上层超时；发现与读额度都要限时，避免上游不响应时挂住整轮扫描。
+        val context = withTimeoutOrNull(readTimeoutMs) {
+            projectResolver.context(account, token.accessToken, proxy)
+        } ?: return failed(account.id, "quota_read_timeout")
+        val project = context.project ?: return failed(account.id, "project_missing")
+        val snapshot = withTimeoutOrNull(readTimeoutMs) {
+            antigravityQuota.read(token.accessToken, project, proxy)
+        } ?: return failed(account.id, "quota_read_timeout")
         repository.saveQuota(account.id, snapshot)
         onQuota(account.id, snapshot)
         return OAuthQuotaResult.Refreshed(repository.findDetailed(account.id) ?: account)
     }
+
+    private val readTimeoutMs: Long
+        get() = config.requestTimeoutMs.coerceAtMost(QUOTA_READ_TIMEOUT_MS)
 
     private suspend fun failed(accountId: String, errorCode: String): OAuthQuotaResult {
         repository.saveQuotaError(accountId, errorCode, now())
@@ -269,6 +277,8 @@ class OAuthQuotaService(
 
     private companion object {
         const val MAX_CONCURRENT_QUOTA_READS = 4
+        /** 单次发现/读额度的上限；不会超过 OAuth 请求超时配置。 */
+        const val QUOTA_READ_TIMEOUT_MS = 30_000L
         const val ORIGINATOR = "codex_cli_rs"
         const val USER_AGENT = "codex_cli_rs/0.162.0 (Linux; x86_64) xterm-256color"
     }

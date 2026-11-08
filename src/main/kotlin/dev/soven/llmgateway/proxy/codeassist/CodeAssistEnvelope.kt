@@ -4,6 +4,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.security.MessageDigest
 import java.util.UUID
 
@@ -16,6 +18,16 @@ import java.util.UUID
  */
 object CodeAssistEnvelope {
     private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * 错误信封：网关自己有探测/目录/对话三种非密封调用，上游 4xx/5xx 的正文可能是
+     * `{"error": {...}}` 或 `{"response": null, "error": {...}}`，统一取 error 交给下游识别。
+     */
+    fun errorBody(text: String): String {
+        val parsed = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return text
+        val error = parsed["error"] ?: return text
+        return buildJsonObject { put("error", error) }.toString()
+    }
 
     /**
      * 把发往 Gemini 的请求体包成 Code Assist 信封。会话 id 由 [scope] 加首条用户文本派生，
@@ -51,11 +63,13 @@ object CodeAssistEnvelope {
     }
 
     /**
-     * 会话归属：客户端模型别名与渠道。与首条用户文本一起构成 sessionId，
-     * 避免不同 API Key / 不同渠道下首条消息相同的两个会话落到同一个上游会话。
+     * 会话归属：客户端模型别名、渠道、整段请求与调用方的 [requestId]。与首条用户文本
+     * 一起构成 sessionId：同一会话内对话历史只增长，首条文本不变；不同客户端线程的
+     * 首条消息即使相同，请求标识也不同，不会落到同一个上游会话。
      */
-    fun sessionScope(alias: String, channelId: String, request: JsonObject): String =
-        alias + "\u0000" + channelId + "\u0000" + json.encodeToString(JsonObject.serializer(), request)
+    fun sessionScope(alias: String, channelId: String, requestId: String, request: JsonObject): String =
+        alias + "\u0000" + channelId + "\u0000" + requestId + "\u0000" +
+            json.encodeToString(JsonObject.serializer(), request)
 
     /** [scope] 与首条用户文本的哈希，作为稳定的 sessionId；没有文本时随机。 */
     fun sessionId(request: JsonObject, scope: String? = null): String {

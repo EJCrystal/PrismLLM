@@ -1572,7 +1572,7 @@ private suspend fun proxyStream(
             request,
             sentModel,
             codeAssistProject,
-            CodeAssistEnvelope.sessionScope(alias, candidate.channel.id, request),
+            CodeAssistEnvelope.sessionScope(alias, candidate.channel.id, inboundRequestId(call), request),
         ).toString()
     } else {
         bodyJson.toString()
@@ -1608,9 +1608,11 @@ private suspend fun proxyStream(
                     )
                 }
                 if (!response.status.isSuccess()) {
+                    val errorText = response.bodyAsText()
                     throw upstreamException(
                         response.status,
-                        response.bodyAsText(),
+                        // Code Assist 的错误同样是 {"error": ...} 信封，解包后才能按 Gemini 错误识别。
+                        if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(errorText) else errorText,
                         retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
                         upstreamProtocol,
                         allowNativeMessagesError = protocol == upstreamProtocol,
@@ -1862,7 +1864,7 @@ private suspend fun proxyJson(
             request,
             sentModel,
             codeAssistProject,
-            CodeAssistEnvelope.sessionScope(alias, candidate.channel.id, request),
+            CodeAssistEnvelope.sessionScope(alias, candidate.channel.id, inboundRequestId(call), request),
         ).toString()
     } else {
         bodyJson.toString()
@@ -1898,7 +1900,8 @@ private suspend fun proxyJson(
             if (!response.status.isSuccess()) {
                 throw upstreamException(
                     response.status,
-                    text,
+                    // Code Assist 的错误同样是 {"error": ...} 信封，解包后才能按 Gemini 错误识别。
+                    if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(text) else text,
                     retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
                     upstreamProtocol,
                     allowNativeMessagesError = protocol == upstreamProtocol,
@@ -1987,6 +1990,15 @@ private fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?): 
             }
         }
     } ?: app.httpClient
+
+/**
+ * 调用方自带的请求标识（不记录到日志）。同一个客户端会话里请求标识逐次不同，
+ * 用于把不同客户端线程的首条消息相同时区分开；取不到时为空。
+ */
+private fun inboundRequestId(call: ApplicationCall): String =
+    listOf("x-request-id", "x-client-request-id", "request-id", "idempotency-key")
+        .firstNotNullOfOrNull { call.request.headers[it]?.trim()?.takeIf(String::isNotEmpty) }
+        ?: (call.request.headers["traceparent"]?.substringAfterLast('-')?.takeIf { it.isNotBlank() } ?: "")
 
 /** 准备阶段（project 发现、目录补拉）的上限：不超过对话请求本身的超时。 */
 private fun preparationTimeoutMs(timeoutMs: Long): Long = minOf(timeoutMs, PREPARATION_TIMEOUT_MS)

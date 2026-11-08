@@ -26,16 +26,41 @@ class CodeAssistClientPool(
 ) : AutoCloseable {
     private val proxied = ConcurrentHashMap<String, HttpClient>()
 
-    /** 无代理时共用应用客户端；有代理时每个出口一条连接池，避免每次请求重建。 */
+    /** 直连请求用带超时的派生客户端；共享客户端在别处仍保持无限超时。 */
+    @Volatile
+    private var bounded: HttpClient? = null
+
+    /**
+     * 无代理时共用应用客户端；有代理时每个出口一条连接池，避免每次请求重建。
+     * 共享客户端的请求超时是无限的，直连请求沿用这里的 [timeoutMs]，
+     * 避免上游接受连接后不响应时无限挂起。
+     */
     fun client(proxy: InetSocketAddress?): HttpClient =
         proxy?.let { address ->
             proxied.computeIfAbsent(address.hostString + ":" + address.port) { create(address) }
-        } ?: direct
+        } ?: directWithTimeout().getOrElse { direct }
 
     override fun close() {
         proxied.values.forEach { runCatching { it.close() } }
+        bounded?.let { runCatching { it.close() } }
         proxied.clear()
     }
+
+    private fun directWithTimeout(): Result<HttpClient> = try {
+        val bounded = synchronized(this) {
+            bounded ?: direct.config {
+                install(HttpTimeout) {
+                    requestTimeoutMillis = timeoutMs
+                    socketTimeoutMillis = timeoutMs
+                }
+            }.also { bounded = it }
+        }
+        Result.success(bounded)
+    } catch (cause: IllegalStateException) {
+        // 客户端已关闭（测试或关停中）：退回原客户端，由调用方自己的超时兜底。
+        Result.failure(cause)
+    }
+
 
     companion object {
         /** 账号代理只支持无认证 HTTP 正向代理，与 OAuth 刷新保持一致。 */
