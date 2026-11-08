@@ -164,6 +164,34 @@ class PelicanStructureChecksTest {
     }
 
     @Test
+    fun `background named layout wrapper is not a background`() {
+        val check = check(
+            analyze("<!DOCTYPE html><html><body><div class=\"sky\"><svg id=\"a\"></svg></div></body></html>"),
+            "single-scene",
+        )
+
+        assertTrue(check.passed, check.detail)
+        assertTrue(check.decisive)
+    }
+
+    @Test
+    fun `side words on bike parts are not legs`() {
+        val far = check(
+            analyze("<svg><g class=\"far-leg\"></g><g class=\"back-wheel\"></g><g class=\"frame\"></g></svg>"),
+            "far-layer-order",
+        )
+        assertTrue(far.passed, far.detail)
+        assertTrue(far.decisive)
+
+        val near = check(
+            analyze("<svg><g class=\"pelican-body\"></g><g class=\"front-wheel\"></g><g class=\"near-foot\"></g></svg>"),
+            "near-layer-order",
+        )
+        assertTrue(near.passed, near.detail)
+        assertTrue(near.decisive)
+    }
+
+    @Test
     fun `reversed layers need review instead of passing`() {
         val html = """
             <!DOCTYPE html>

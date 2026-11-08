@@ -49,8 +49,10 @@ internal object PelicanStructureChecks {
         val document = parse(html)
         // 嵌套 <svg> 仍在同一坐标系里，只统计顶层 SVG。
         val roots = document.select("svg").filter { svg -> svg.parents().none { parent -> parent.tagName() == "svg" } }
+        // 带背景命名的块只有在真的画出内容时才算背景；`<div class="sky"><svg>…</svg></div>` 这类纯布局包装放行。
         val backgroundBlocks = document.select(BACKGROUND_BLOCK_TAGS).filter { element ->
-            element.classNames().any { className -> BACKGROUND_NAMES_PATTERN.containsMatchIn(className) }
+            element.classNames().any { className -> BACKGROUND_NAMES_PATTERN.containsMatchIn(className) } &&
+                drawsContent(element)
         }
         return IqStructureCheck(
             id = "single-scene",
@@ -118,6 +120,12 @@ internal object PelicanStructureChecks {
     private fun advisory(id: String, label: String, detail: String) =
         IqStructureCheck(id = id, label = label, passed = true, detail = detail, decisive = false)
 
+    /** 块里是否有 SVG 之外的可见内容：文字、图片或靠 CSS 画背景的空块。只包着子 SVG 时是纯布局包装。 */
+    private fun drawsContent(block: Element): Boolean {
+        if (block.ownText().isNotBlank() || block.select("img, video, canvas, picture").isNotEmpty()) return true
+        return block.children().none { child -> child.tagName() == "svg" || child.select("svg").isNotEmpty() }
+    }
+
     /** 两个元素是否互为祖孙：嵌套时比较的是容器自身，不能代表子图元的绘制顺序。 */
     private fun isNested(one: Element, other: Element): Boolean =
         one.parents().any { it === other } || other.parents().any { it === one }
@@ -170,11 +178,16 @@ internal object PelicanStructureChecks {
         Regex("(?:^|-)(?:$BACKGROUND_NAMES)-?\\d*(?:-|$)", RegexOption.IGNORE_CASE)
 
     /**
-     * 远侧/近侧的写法很多，先归一化成 `far-leg` / `near-leg`，再按整词匹配：
-     * `farLeg`、`back-foot` 命中，`farm`、`dwarf` 这类只是包含子串的命名不会误判。
+     * 远侧/近侧的写法很多，先归一化成 `far-leg` / `near-leg` 再匹配，避免 `farm` 这类只是包含子串的命名误判。
+     * 必须同时带方位词和腿脚部件词：`back-wheel`、`front-fork` 是自行车部件，不能当成腿。
      */
-    private val FAR_PATTERN = Regex("(?<=^|-)(?:far|back)(?=-|$)")
-    private val NEAR_PATTERN = Regex("(?<=^|-)(?:near|front)(?=-|$)")
+    private val FAR_PATTERN = sidePattern("far|back")
+    private val NEAR_PATTERN = sidePattern("near|front")
+
+    private fun sidePattern(side: String): Regex =
+        Regex("(?<=^|-)(?:$side)(?=-|$).*(?:^|-)$LEG_WORDS(?=-|$)")
+
+    private const val LEG_WORDS = "leg|legs|thigh|foot|feet|ankle|shin|limb"
 
     private val BIKE_HINTS = listOf("bicycle", "bike", "frame", "wheel", "crank", "chain")
     private val RIDER_HINTS = listOf("bird", "rider", "pelican", "torso")
