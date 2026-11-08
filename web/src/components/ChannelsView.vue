@@ -1169,10 +1169,16 @@ async function save(): Promise<void> {
       notify(`密钥「${name}」至少需要授权一个模型`, 'error')
       return
     }
-    // 读取模型失败时列表可能来自旧密钥或手动填写，保存后该密钥路由不到任何模型
-    if (key.modelsError) {
+    // 读取失败或读取中时列表可能来自旧密钥或手动填写，保存后该密钥路由不到任何模型。
+    // 手动添加并选中会清掉 modelsError，用户确认沿用旧列表后重新读取失败会再次置位。
+    if (key.modelsLoading || key.modelsError) {
       focusChannelKeyInForm(key)
-      notify(`密钥「${name}」模型列表读取失败，请重新读取模型（或确认手动添加的模型 ID）后再保存`, 'error')
+      notify(
+        key.modelsLoading
+          ? `密钥「${name}」正在读取模型，请等待读取完成后再保存`
+          : `密钥「${name}」模型列表读取失败，请重新读取模型或手动添加后保存`,
+        'error',
+      )
       return
     }
     try {

@@ -76,6 +76,8 @@ function addManualModels(): void {
     const models = parseManualModelIds(props.channelKey.manualModelsText)
     props.channelKey.manualModels = [...new Set([...props.channelKey.manualModels, ...models])]
     props.channelKey.models = [...new Set([...props.channelKey.models, ...models])].sort()
+    // 用户确认使用这些手动模型后，不再阻止保存；之后重新读取失败会再次置位
+    props.channelKey.modelsError = ''
     closeManualModels()
   } catch (cause) {
     props.channelKey.manualModelsError = errorMessage(cause)
@@ -211,7 +213,7 @@ function addManualModels(): void {
 
         <div v-if="channelKey.modelsError" class="callout danger" role="alert">
           {{ channelKey.modelsError }}
-          <p>可点击“手动添加”填写上游模型 ID，然后保存渠道。</p>
+          <p>可点击“手动添加”填写上游模型 ID，添加并选中后即可保存。</p>
         </div>
 
         <div v-if="modelOptions.length" class="channel-model-auth-body">
