@@ -18,8 +18,6 @@ export function countUpstreamOverrides(overrides: UpstreamRequestOverrides): num
     (overrides.userAgent ? 1 : 0) +
     Object.keys(overrides.headers ?? {}).length +
     Object.keys(overrides.body ?? {}).length +
-    (overrides.reasoningContentPolicy ? 1 : 0) +
-    (overrides.developerRolePolicy ? 1 : 0) +
     protocols.reduce((total, protocol) => total + countProtocolOverrides(protocol), 0)
   )
 }

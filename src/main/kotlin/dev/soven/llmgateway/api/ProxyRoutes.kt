@@ -1412,6 +1412,7 @@ private suspend fun searchChatCaller(
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType, headerProfiles,
+        candidate.channel.baseUrl,
     )
     return ChatCaller { messages ->
         val body = buildJsonObject {
@@ -1490,7 +1491,7 @@ private suspend fun proxyStream(
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType,
-        headerProfiles,
+        headerProfiles, candidate.channel.baseUrl,
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson
@@ -1722,7 +1723,7 @@ private suspend fun proxyJson(
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType,
-        headerProfiles,
+        headerProfiles, candidate.channel.baseUrl,
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson

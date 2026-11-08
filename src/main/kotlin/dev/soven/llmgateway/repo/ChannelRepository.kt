@@ -42,6 +42,12 @@ import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
 import java.util.UUID
 
+/**
+ * 请求覆盖配置会随版本增删字段，读取时忽略不认识的键：
+ * 滚动升级期间旧实例可能把已删除的键写回，不能因此让渠道读不出来。
+ */
+private val requestOverridesJson = Json { ignoreUnknownKeys = true }
+
 /** 新建渠道密钥的输入。凭据已加密。 */
 data class NewChannelKey(
     val name: String,
@@ -529,7 +535,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
         provider = row[Channels.provider]?.let(OAuthProvider::fromValue),
         createdAt = row[Channels.createdAt],
         updatedAt = row[Channels.updatedAt],
-        requestOverrides = Json.decodeFromString<UpstreamRequestOverrides>(row[Channels.requestOverrides]),
+        requestOverrides = requestOverridesJson.decodeFromString<UpstreamRequestOverrides>(row[Channels.requestOverrides]),
         quota = Json.decodeFromString<ChannelQuotaSettings>(row[Channels.quotaSettings]),
         quotaCredential = row[Channels.quotaCredentialCiphertext].takeIf { it.isNotEmpty() }?.let {
             EncryptedCredential(it, row[Channels.quotaCredentialNonce], row[Channels.quotaCredentialKeyVersion])

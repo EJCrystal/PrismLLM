@@ -14,8 +14,14 @@ package dev.soven.llmgateway.proxy
  *   其中 `upstream request failed` 是 relay 自己报告“后面的上游拒绝了请求”，换候选渠道可能成功；
  * - 其他状态（含 5xx）即使包含相同文本也不参与判定。
  *
- * 词表来自 magpie 的 shapeWords，覆盖 xAI 的 "Failed to deserialize … unknown variant"、
- * OpenAI 的 "Unknown parameter" 以及 JSON Schema 嵌套深度等常见拒绝话术；
+ * 词表来自 magpie 的 shapeWords 与 thinking_back.go，覆盖 xAI 的 "Failed to deserialize … unknown variant"、
+ * OpenAI 的 "Unknown parameter"、JSON Schema 嵌套深度等常见拒绝话术，以及两类"这个上游读不懂本请求"的错误：
+ *
+ * - 思考内容未回传。DeepSeek 等要求历史 assistant 消息带回 reasoning_content，缺失时报
+ *   "The `reasoning_content` in the thinking mode must be passed back to the API"；
+ *   换一个不需要该字段的候选渠道就能服务，因此同样属于形状不兼容。
+ * - developer 角色不被接受。部分 OpenAI 兼容上游只认 system/assistant/user/tool。
+ *
  * "field required" 这类所有上游都会拒绝的缺失字段不在词表内。
  *
  * @author 文杰
@@ -27,7 +33,14 @@ object ShapeRefusal {
             """unrecognized (request argument|field|parameter)|extra (inputs|fields) are not permitted|""" +
             """additional properties are not allowed|schema exceeds the maximum (nesting )?depth|""" +
             """schema[^"]{0,60}\bnesting depth\b|function_declarations\[\d+\]\.parameters\b|""" +
-            """schema specified other fields alongside any_?of|upstream request failed""",
+            """schema specified other fields alongside any_?of|upstream request failed|""" +
+            // 思考内容未回传：DeepSeek 的 "The reasoning_content in the thinking mode must be passed back"，
+            // 以及各种把 reasoning_content 说成缺失/必填的转述（Beam 的 "Missing required parameter"）。
+            """`?(?:content\[\]\.thinking|reasoning_content)`? in the thinking mode must be passed back|""" +
+            """\breasoning_content\b[^"]{0,40}\b(?:is (?:missing|required)|must be (?:passed|provided|included))|""" +
+            """\b(?:missing|required)\b[^"]{0,80}\breasoning_content\b|""" +
+            // developer 角色不被接受：只认 system/assistant/user/tool 的上游会这样报。
+            """\bdeveloper\b[^"]{0,60}\bis not one of\b""",
         RegexOption.IGNORE_CASE,
     )
 

@@ -112,8 +112,6 @@ export interface UpstreamProtocolOverrides {
 export interface UpstreamRequestOverrides extends UpstreamProtocolOverrides {
   inheritGlobal: boolean
   protocols: Partial<Record<ProtocolId, UpstreamProtocolOverrides>>
-  reasoningContentPolicy: string | null
-  developerRolePolicy: string | null
 }
 
 export interface Channel {

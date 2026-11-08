@@ -68,7 +68,7 @@ suspend fun testChannelModelConnectivity(
         withTimeout(timeoutMs) {
             val authType = channel.authTypeFor(protocol)
             val policy = UpstreamRequestPolicy(
-                globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles,
+                globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles, channel.baseUrl,
             )
             val requestBody = policy.body(
                 Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject, model,

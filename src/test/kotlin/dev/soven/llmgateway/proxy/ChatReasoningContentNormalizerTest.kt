@@ -1,379 +1,345 @@
 package dev.soven.llmgateway.proxy
 
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ChatReasoningContentNormalizerTest {
     private fun json(raw: String): JsonObject = Json.parseToJsonElement(raw).jsonObject
 
+    private fun toolTurnBody(model: String = "deepseek-flash") = json(
+        """
+        {
+            "model": "$model",
+            "messages": [
+                {"role": "user", "content": "read the file"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+                {"role": "assistant", "content": "the file says hi"}
+            ]
+        }
+        """.trimIndent(),
+    )
+
     @Test
-    fun `auto fills empty reasoning_content when reasoning_effort is enabled`() {
-        val input = json("""
+    fun `fills a single space on a tool call turn`() {
+        val normalized = ChatReasoningContentNormalizer.normalize(
+            toolTurnBody(), "deepseek-flash", "https://api.deepseek.com/v1",
+        )
+        val messages = normalized["messages"]!!.jsonArray
+
+        assertEquals(" ", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
+        assertFalse(messages[0].jsonObject.containsKey("reasoning_content"))
+    }
+
+    @Test
+    fun `fills the answer that follows a tool result`() {
+        val normalized = ChatReasoningContentNormalizer.normalize(
+            toolTurnBody(), "deepseek-flash", "https://api.deepseek.com/v1",
+        )
+        val messages = normalized["messages"]!!.jsonArray
+
+        assertEquals(" ", messages[3].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
+        assertEquals("the file says hi", messages[3].jsonObject["content"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `leaves plain assistant turns untouched`() {
+        val input = json(
+            """
             {
                 "model": "deepseek-flash",
-                "reasoning_effort": "max",
                 "messages": [
                     {"role": "user", "content": "hello"},
                     {"role": "assistant", "content": "hi there"},
-                    {"role": "user", "content": "continue"}
+                    {"role": "user", "content": "continue"},
+                    {"role": "assistant", "content": "and more"}
                 ]
             }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("hello", messages[0].jsonObject["content"]!!.jsonPrimitive.content)
-        assertFalse(messages[0].jsonObject.containsKey("reasoning_content"))
-
-        assertEquals("hi there", messages[1].jsonObject["content"]!!.jsonPrimitive.content)
-        assertEquals("", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-
-        assertEquals("continue", messages[2].jsonObject["content"]!!.jsonPrimitive.content)
-        assertFalse(messages[2].jsonObject.containsKey("reasoning_content"))
-    }
-
-    @Test
-    fun `auto fills empty reasoning_content for deepseek model even without explicit reasoning_effort`() {
-        val input = json("""
-            {
-                "model": "deepseek-v3",
-                "messages": [
-                    {"role": "user", "content": "test"},
-                    {"role": "assistant", "content": "response"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-v3")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `auto fills empty reasoning_content for reasoner model`() {
-        val input = json("""
-            {
-                "model": "custom-reasoner",
-                "messages": [
-                    {"role": "user", "content": "solve math"},
-                    {"role": "assistant", "content": "answer"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "custom-reasoner")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `preserves existing valid reasoning_content`() {
-        val input = json("""
-            {
-                "model": "deepseek-r1",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi", "reasoning_content": "my original thoughts"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-r1")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("my original thoughts", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-        assertEquals("hi", messages[1].jsonObject["content"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `replaces null reasoning_content with empty string`() {
-        val input = json("""
-            {
-                "model": "deepseek-flash",
-                "reasoning_effort": "high",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi", "reasoning_content": null}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `migrates reasoning alias field to reasoning_content`() {
-        val input = json("""
-            {
-                "model": "deepseek-flash",
-                "reasoning_effort": "medium",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi", "reasoning": "step by step thoughts"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("step by step thoughts", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-        assertEquals("hi", messages[1].jsonObject["content"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `migrates thought alias field to reasoning_content`() {
-        val input = json("""
-            {
-                "model": "deepseek-flash",
-                "reasoning_effort": "low",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi", "thought": "internal thoughts"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("internal thoughts", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `extracts thinking from think tag in content and cleans content`() {
-        val input = json("""
-            {
-                "model": "deepseek-flash",
-                "reasoning_effort": "max",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "<think>\nThinking step by step\n</think>\nFinal answer"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("Thinking step by step", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-        assertEquals("Final answer", messages[1].jsonObject["content"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `extracts thinking from think tag when content only contains think tag`() {
-        val input = json("""
-            {
-                "model": "deepseek-flash",
-                "reasoning_effort": "max",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "<think>Pure thought</think>"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("Pure thought", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-        assertEquals("", messages[1].jsonObject["content"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `extracts thinking from multipart array content`() {
-        val input = json("""
-            {
-                "model": "deepseek-flash",
-                "reasoning_effort": "max",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {
-                        "role": "assistant",
-                        "content": [
-                            {"type": "text", "text": "<think>Plan steps</think>Result text"}
-                        ]
-                    }
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("Plan steps", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-        val parts = messages[1].jsonObject["content"]!!.jsonArray
-        assertEquals("Result text", parts[0].jsonObject["text"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `handles assistant message with tool_calls and null content`() {
-        val input = json("""
-            {
-                "model": "deepseek-flash",
-                "reasoning_effort": "max",
-                "messages": [
-                    {"role": "user", "content": "call a tool"},
-                    {"role": "assistant", "content": null, "tool_calls": [{"id": "call_1", "type": "function"}]}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-        assertTrue(messages[1].jsonObject.containsKey("tool_calls"))
-    }
-
-    @Test
-    fun `does not modify ordinary non-thinking non-deepseek models`() {
-        val input = json("""
-            {
-                "model": "gpt-4o",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "gpt-4o")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertFalse(messages[1].jsonObject.containsKey("reasoning_content"))
-        assertEquals(input, normalized)
-    }
-
-    @Test
-    fun `does not modify when reasoning_effort is explicitly set to none for non-reasoner model`() {
-        val input = json("""
-            {
-                "model": "deepseek-chat",
-                "reasoning_effort": "none",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-chat")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertFalse(messages[1].jsonObject.containsKey("reasoning_content"))
-    }
-
-    @Test
-    fun `normalizes when reasoning_effort is none but model is deepseek-reasoner`() {
-        val input = json("""
-            {
-                "model": "deepseek-reasoner",
-                "reasoning_effort": "none",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-reasoner")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `normalizes non-deepseek model when history contains reasoning_content`() {
-        val input = json("""
-            {
-                "model": "my-proxy-model",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "first", "reasoning_content": "thought"},
-                    {"role": "user", "content": "next"},
-                    {"role": "assistant", "content": "second"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "my-proxy-model")
-        val messages = normalized["messages"]!!.jsonArray
-
-        assertEquals("thought", messages[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-        assertEquals("", messages[3].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `does not inject reasoning_content for reasoning_effort alone on a non-thinking model`() {
-        // Groq 等上游接受 reasoning_effort，却会拒绝历史消息中的 reasoning_content。
-        val input = json("""
-            {
-                "model": "openai/gpt-oss-120b",
-                "reasoning_effort": "high",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi"}
-                ]
-            }
-        """.trimIndent())
-
-        val normalized = ChatReasoningContentNormalizer.normalize(input, "openai/gpt-oss-120b")
-
-        assertEquals(input, normalized)
-        assertFalse(normalized["messages"]!!.jsonArray[1].jsonObject.containsKey("reasoning_content"))
-    }
-
-    @Test
-    fun `never policy leaves thinking model requests untouched`() {
-        val input = json("""
-            {
-                "model": "deepseek-flash",
-                "reasoning_effort": "max",
-                "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi"}
-                ]
-            }
-        """.trimIndent())
-
+            """.trimIndent(),
+        )
         val normalized = ChatReasoningContentNormalizer.normalize(
-            input, "deepseek-flash", ReasoningContentPolicy.NEVER,
+            input, "deepseek-flash", "https://api.deepseek.com/v1",
         )
 
         assertEquals(input, normalized)
     }
 
     @Test
-    fun `always policy injects for custom-named thinking proxies`() {
-        val input = json("""
+    fun `a user turn ends the tool chain`() {
+        val input = json(
+            """
             {
-                "model": "ds-proxy",
+                "model": "deepseek-flash",
                 "messages": [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi"}
+                    {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+                    {"role": "user", "content": "thanks, now something else"},
+                    {"role": "assistant", "content": "sure"}
                 ]
             }
-        """.trimIndent())
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(
+            input, "deepseek-flash", "https://api.deepseek.com/v1",
+        )
 
-        val auto = ChatReasoningContentNormalizer.normalize(input, "ds-proxy", ReasoningContentPolicy.AUTO)
-        assertFalse(auto["messages"]!!.jsonArray[1].jsonObject.containsKey("reasoning_content"))
+        assertEquals(input, normalized)
+    }
 
-        val always = ChatReasoningContentNormalizer.normalize(input, "ds-proxy", ReasoningContentPolicy.ALWAYS)
-        assertEquals("", always["messages"]!!.jsonArray[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
+    @Test
+    fun `deepseek host triggers even when the model name says nothing`() {
+        val input = json(
+            """
+            {
+                "model": "v4.1-flash",
+                "messages": [
+                    {"role": "assistant", "content": null, "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(
+            input, "v4.1-flash", "https://api.deepseek.com/v1",
+        )
+
+        assertEquals(
+            " ",
+            normalized["messages"]!!.jsonArray[0].jsonObject["reasoning_content"]!!.jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `deepseek model behind a relay triggers on the model name`() {
+        val input = json(
+            """
+            {
+                "model": "deepseek-v4.1-flash-1017",
+                "messages": [
+                    {"role": "assistant", "content": null, "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(
+            input, "deepseek-v4.1-flash-1017", "https://api.a6api.vip/v1",
+        )
+
+        assertTrue(normalized["messages"]!!.jsonArray[0].jsonObject.containsKey("reasoning_content"))
+    }
+
+    @Test
+    fun `relay without a recognizable model name is left alone`() {
+        val input = json(
+            """
+            {
+                "model": "gpt-4o",
+                "messages": [
+                    {"role": "assistant", "content": null, "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(
+            input, "gpt-4o", "https://api.bblabu.ai/v1",
+        )
+
+        assertEquals(input, normalized)
+    }
+
+    @Test
+    fun `mistral is never touched`() {
+        val input = toolTurnBody("mistral-large")
+        val normalized = ChatReasoningContentNormalizer.normalize(
+            input, "deepseek-flash", "https://api.mistral.ai/v1",
+        )
+
+        assertEquals(input, normalized)
+    }
+
+    @Test
+    fun `keeps an existing reasoning_content, including an empty one`() {
+        val input = json(
+            """
+            {
+                "model": "deepseek-r1",
+                "messages": [
+                    {"role": "assistant", "content": null, "reasoning_content": "my thoughts",
+                     "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+                    {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+                    {"role": "assistant", "content": "ok", "reasoning_content": ""}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-r1", "https://api.deepseek.com")
+        val messages = normalized["messages"]!!.jsonArray
+
+        assertEquals("my thoughts", messages[0].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
+        assertEquals("", messages[2].jsonObject["reasoning_content"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a null reasoning_content is refilled`() {
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "assistant", "content": null, "reasoning_content": null, "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash", "https://api.deepseek.com")
+
+        assertEquals(
+            " ",
+            normalized["messages"]!!.jsonArray[0].jsonObject["reasoning_content"]!!.jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `moves reasoning into reasoning_content and drops the alias`() {
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "assistant", "content": null, "reasoning": "from another client", "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash", "https://api.deepseek.com")
+        val message = normalized["messages"]!!.jsonArray[0].jsonObject
+
+        assertEquals("from another client", message["reasoning_content"]!!.jsonPrimitive.content)
+        // 把两个字段当同一个读的自建 DeepSeek 会以 duplicate field reasoning 拒绝。
+        assertNull(message["reasoning"])
+    }
+
+    @Test
+    fun `moves the thought alias too`() {
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "assistant", "content": null, "thought": "internal", "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash", "https://api.deepseek.com")
+        val message = normalized["messages"]!!.jsonArray[0].jsonObject
+
+        assertEquals("internal", message["reasoning_content"]!!.jsonPrimitive.content)
+        // thought 不作为同义字段删除，只有 reasoning 会被自建 DeepSeek 当成重复字段。
+        assertTrue(message.containsKey("thought"))
+    }
+
+    @Test
+    fun `joins reasoning_details text and summary`() {
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "assistant", "content": null, "reasoning_details": [
+                        {"type": "reasoning.text", "text": "first"},
+                        {"type": "reasoning.summary", "summary": " second"}
+                    ], "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash", "https://api.deepseek.com")
+        val message = normalized["messages"]!!.jsonArray[0].jsonObject
+
+        assertEquals("first second", message["reasoning_content"]!!.jsonPrimitive.content)
+        // reasoning_details 是结构化列表，原样保留。
+        assertTrue(message.containsKey("reasoning_details"))
+    }
+
+    @Test
+    fun `extracts think tags out of a string content`() {
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "assistant", "content": "<think>step one</think>\n\nthe answer", "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash", "https://api.deepseek.com")
+        val message = normalized["messages"]!!.jsonArray[0].jsonObject
+
+        assertEquals("step one", message["reasoning_content"]!!.jsonPrimitive.content)
+        assertEquals("the answer", message["content"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `extracts think tags out of content parts`() {
+        val input = json(
+            """
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "assistant", "content": [
+                        {"type": "text", "text": "<think>step one</think>the answer"}
+                    ], "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ]}
+                ]
+            }
+            """.trimIndent(),
+        )
+        val normalized = ChatReasoningContentNormalizer.normalize(input, "deepseek-flash", "https://api.deepseek.com")
+        val message = normalized["messages"]!!.jsonArray[0].jsonObject
+
+        assertEquals("step one", message["reasoning_content"]!!.jsonPrimitive.content)
+        assertEquals(
+            "the answer",
+            message["content"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `an unparsable base url still matches on the model name`() {
+        val normalized = ChatReasoningContentNormalizer.normalize(
+            toolTurnBody(), "deepseek-flash", "not a url",
+        )
+
+        assertEquals(
+            " ",
+            normalized["messages"]!!.jsonArray[1].jsonObject["reasoning_content"]!!.jsonPrimitive.content,
+        )
     }
 }
