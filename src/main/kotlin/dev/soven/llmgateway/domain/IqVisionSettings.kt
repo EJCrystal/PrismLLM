@@ -36,6 +36,9 @@ data class IqVisionConfig(
  *
  * 密钥与端点绑定：只有管理台端点与环境变量端点一致时才回退到环境变量里的密钥。
  * 否则改了端点却仍拿环境变量密钥去请求，就等于把凭据发给另一个服务。
+ *
+ * 保存过密钥但无法解密时同样不回退：管理员显式配置过的密钥坏了，应该提示重填，
+ * 而不是静默换成另一个账号的凭据继续跑——那会在 401 时才暴露。
  */
 fun IqVisionSettingsRecord?.effective(defaults: IqVisionConfig): IqVisionConfig = this?.let { stored ->
     val baseUrl = stored.baseUrl.ifBlank { defaults.baseUrl }
@@ -44,7 +47,12 @@ fun IqVisionSettingsRecord?.effective(defaults: IqVisionConfig): IqVisionConfig 
         enabled = stored.enabled,
         baseUrl = baseUrl,
         model = stored.model.ifBlank { defaults.model },
-        apiKey = stored.apiKey ?: defaults.apiKey.takeIf { sameBaseUrl },
+        apiKey = when {
+            stored.apiKey != null -> stored.apiKey
+            stored.apiKeyUnreadable -> null
+            sameBaseUrl -> defaults.apiKey
+            else -> null
+        },
         timeoutMs = stored.timeoutMs,
     )
 } ?: defaults

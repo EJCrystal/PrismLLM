@@ -103,6 +103,22 @@ class IqVisionSettingsTest {
     }
 
     @Test
+    fun `unreadable key does not fall back to the environment secret on the same endpoint`() {
+        val stored = IqVisionSettingsRecord(
+            enabled = true,
+            baseUrl = "http://127.0.0.1:8080/v1",
+            model = "vision-model",
+            apiKey = null,
+            timeoutMs = 60_000,
+            updatedAt = 123,
+            apiKeyUnreadable = true,
+        )
+
+        // 管理员显式保存过密钥，坏了就该提示重填；静默换环境变量凭据会在 401 时才暴露。
+        assertEquals(null, stored.effective(defaults).apiKey)
+    }
+
+    @Test
     fun `environment api key is not sent to a different endpoint`() {
         val stored = IqVisionSettingsRecord(
             enabled = true,
