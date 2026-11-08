@@ -3479,6 +3479,60 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun keyAutoDisableSettingsTruncatesOversizedStoredRules() = runBlocking {
+        val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository)
+        settings.saveSettings(KeyDisablePolicy(enabled = false))
+        // 正常保存路径写不出超过 50 条的列表；这里模拟人工改库或手工改过的备份。
+        // 条数要超过 MAX_EFFECTIVE_RULES（构造器上限，100）才能证明问题真的被截断挡住：
+        // 只写 70 条时构造器本来就接受，测不出「以前会 500」这条旧行为。
+        // 读设置不能因此 500，也不能让策略解析在整个渠道上失败。
+        val oversized = (1..KeyDisablePolicy.MAX_EFFECTIVE_RULES + 20).map { index ->
+            KeyDisableRule(
+                id = "bulk_$index",
+                name = "批量规则 $index",
+                statusCodes = listOf(401),
+                threshold = 1,
+                action = KeyDisableAction.PERMANENT,
+            )
+        }
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update key_auto_disable_settings set rules = ? where id = 1").use { statement ->
+                statement.setString(1, Json.encodeToString(oversized))
+                statement.executeUpdate()
+            }
+        }
+
+        val loaded = settings.loadSettings()
+        // 规则是「首条命中即止」，截断保留前 MAX_RULES 条，丢掉的都是优先级最低的兜底规则。
+        assertEquals(KeyDisablePolicy.MAX_RULES, loaded.policy.rules.size)
+        assertEquals(oversized.take(KeyDisablePolicy.MAX_RULES), loaded.policy.rules)
+
+        // 渠道解析同样不抛：继承全局时直接用截断后的全局规则。
+        val channel = createChannelWithBaseUrl(name = "oversized-global", baseUrl = "${fake.baseUrl}/ok/v1")
+        val resolved = settings.resolvePolicy(channel.id)
+        assertEquals(KeyDisablePolicy.MAX_RULES, resolved.policy.rules.size)
+        assertEquals("bulk_1", resolved.policy.rules.first().id)
+
+        // 管理接口读的是同一份数据：以前规则数超过 MAX_EFFECTIVE_RULES 时读取会 500，
+        // 现在照常返回截断后的列表。
+        testApplication {
+            application { app.install(this) }
+            val (cookie, _) = client.loginAdmin()
+            val settingsResponse = client.get("/admin/api/key-auto-disable-settings") { header(HttpHeaders.Cookie, cookie) }
+            assertEquals(HttpStatusCode.OK, settingsResponse.status, settingsResponse.bodyAsText())
+            val policyResponse = client.get("/admin/api/channels/${channel.id}/key-disable-policy") {
+                header(HttpHeaders.Cookie, cookie)
+            }
+            assertEquals(HttpStatusCode.OK, policyResponse.status, policyResponse.bodyAsText())
+            assertEquals(
+                KeyDisablePolicy.MAX_RULES,
+                Json.parseToJsonElement(policyResponse.bodyAsText()).jsonObject["effective"]
+                    ?.jsonObject?.get("rules")?.jsonArray?.size,
+            )
+        }
+    }
+
+    @Test
     fun channelKeyDisablePolicyOverridesGlobalForItsOwnChannelOnly() = runBlocking {
         val grox = createChannelWithBaseUrl(name = "grox-like", baseUrl = "${fake.baseUrl}/key-health/v1")
         val other = createChannelWithBaseUrl(name = "other", baseUrl = "${fake.baseUrl}/ok/v1")

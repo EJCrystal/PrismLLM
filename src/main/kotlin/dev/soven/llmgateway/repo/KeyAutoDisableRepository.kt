@@ -42,6 +42,7 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
 import org.jetbrains.exposed.v1.jdbc.upsert
+import org.slf4j.LoggerFactory
 
 private val keyDisableJson = Json { ignoreUnknownKeys = true }
 
@@ -78,6 +79,8 @@ class KeyAutoDisableRepository(
     private val audit: AdminAuditRepository,
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
+    private val logger = LoggerFactory.getLogger(KeyAutoDisableRepository::class.java)
+
     suspend fun loadSettings(): KeyAutoDisableSettingsRecord = suspendTransaction(database) {
         settingsInTransaction()
     }
@@ -609,13 +612,29 @@ class KeyAutoDisableRepository(
     ) = KeyAutoDisableSettingsRecord(
         policy = KeyDisablePolicy(
             enabled = row[KeyAutoDisableSettings.enabled],
-            rules = storedRules?.takeIf { it.isNotEmpty() }
-                ?.let { if (it == KeyDisablePolicy.LEGACY_DEFAULT_RULES) KeyDisablePolicy.DEFAULT_RULES else it }
-                ?: KeyDisablePolicy.DEFAULT_RULES,
+            rules = savableOrDefault(storedRules),
         ),
         revision = row[KeyAutoDisableSettings.revision],
         updatedAt = row[KeyAutoDisableSettings.updatedAt],
     )
+
+    /**
+     * 库里读出的规则转成可直接构造的列表。超长只可能来自人工改库或手工改过的备份，
+     * 正常保存路径写不出超过 [KeyDisablePolicy.MAX_RULES] 的列表。
+     * 这里按顺序保留前 [KeyDisablePolicy.MAX_RULES] 条而不是抛异常：规则是「首条命中即止」，
+     * 被丢掉的都是优先级最低的兜底规则；抛出去会让管理接口直接 500，连读都读不出来。
+     */
+    private fun savableOrDefault(storedRules: List<KeyDisableRule>?): List<KeyDisableRule> {
+        val rules = storedRules?.takeIf { it.isNotEmpty() } ?: return KeyDisablePolicy.DEFAULT_RULES
+        // 旧版默认规则要换成新默认：余额规则必须排在凭据规则之前，顺序不能沿用它。
+        if (rules == KeyDisablePolicy.LEGACY_DEFAULT_RULES) return KeyDisablePolicy.DEFAULT_RULES
+        if (rules.size <= KeyDisablePolicy.MAX_RULES) return rules
+        logger.warn(
+            "key_auto_disable_settings 保存了 {} 条规则，超过上限 {}，按顺序保留前 {} 条",
+            rules.size, KeyDisablePolicy.MAX_RULES, KeyDisablePolicy.MAX_RULES,
+        )
+        return rules.take(KeyDisablePolicy.MAX_RULES)
+    }
 
     private fun settingsAuditJson(settings: KeyAutoDisableSettingsRecord) = buildJsonObject {
         put("enabled", settings.policy.enabled)
