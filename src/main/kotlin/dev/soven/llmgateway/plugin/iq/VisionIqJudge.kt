@@ -1,8 +1,5 @@
 package dev.soven.llmgateway.plugin.iq
 
-import dev.soven.llmgateway.domain.IqVisionConfig
-import dev.soven.llmgateway.repo.IqVisionSettingsSnapshot
-import dev.soven.llmgateway.repo.IqVisionSettingsStatus
 import dev.soven.llmgateway.proxy.HtmlImageRenderer
 import dev.soven.llmgateway.proxy.SvgRenderResult
 import dev.soven.llmgateway.proxy.VisionAnimationInfo
@@ -19,66 +16,26 @@ import dev.soven.llmgateway.spi.iq.IqJudgeResult
 import dev.soven.llmgateway.spi.iq.IqJudgeVerdict
 import kotlinx.coroutines.runBlocking
 
-/** 单次判分实际使用的视觉模型；每次判分重新解析，支持管理台改配置后立即生效。 */
-sealed interface ActiveVisionModel {
-    data class Ready(val assessor: VisionAssessor, val model: String) : ActiveVisionModel
-
-    /** 未启用或端点未配置；判分转人工确认并说明原因。 */
-    data class Unavailable(val reason: String) : ActiveVisionModel
-}
-
 /**
  * 内置视觉判分器：用无头浏览器把内联 SVG 渲染成多帧截图，再交给配置的多模态模型逐项评分。
  *
  * 无头浏览器同时推进 CSS 和 SMIL 动画；没有可用浏览器时直接返回人工确认，
  * 不降级到其他渲染器。
  *
- * 渲染和模型调用都发生在网关进程内；渠道密钥不会传给判分器。模型端点默认取
- * `IQ_VISION_BASE_URL`，也可以由管理台「系统配置 → 智商检测视觉判分」覆盖。
+ * 渲染和模型调用都发生在网关进程内；渠道密钥不会传给判分器。模型端点由
+ * `IQ_VISION_BASE_URL` 配置，可以指向本机网关或自建视觉服务。
  */
-class VisionIqJudge private constructor(
+class VisionIqJudge(
     private val renderer: HtmlImageRenderer,
-    private val frameCount: Int,
-    private val activeModel: () -> ActiveVisionModel,
+    private val assessor: VisionAssessor,
+    private val model: String,
+    private val frameCount: Int = VISION_FRAME_COUNT,
 ) : IqJudge {
-    /** 固定配置：测试替身和不接管理台的部署使用。 */
-    constructor(
-        renderer: HtmlImageRenderer,
-        assessor: VisionAssessor,
-        model: String,
-        frameCount: Int = VISION_FRAME_COUNT,
-    ) : this(renderer, frameCount, { ActiveVisionModel.Ready(assessor, model) })
-
-    /**
-     * 动态配置：每次判分读取一次设置，管理台保存后无需重启。
-     *
-     * @param settings 读取当前生效配置；读库失败时应返回不可用而不是回退到部署默认值。
-     * @param assessorFactory 用给定配置构造调用器；端点或密钥变化时自然换新。
-     */
-    constructor(
-        renderer: HtmlImageRenderer,
-        settings: () -> IqVisionSettingsSnapshot,
-        assessorFactory: (IqVisionConfig) -> VisionAssessor,
-        frameCount: Int = VISION_FRAME_COUNT,
-    ) : this(renderer, frameCount, {
-        val snapshot = settings()
-        val config = snapshot.config
-        when {
-            snapshot.status == IqVisionSettingsStatus.UNREADABLE ->
-                ActiveVisionModel.Unavailable("读取视觉判分配置失败，本次跳过视觉判分，请稍后重试。")
-            !config.enabled -> ActiveVisionModel.Unavailable("视觉判分已在系统配置中关闭。")
-            !config.usable -> ActiveVisionModel.Unavailable("视觉判分端点未配置有效的 http(s) 地址。")
-            config.model.isBlank() -> ActiveVisionModel.Unavailable("视觉判分未配置模型名。")
-            else -> ActiveVisionModel.Ready(assessorFactory(config), config.model)
-        }
-    })
-
     override val id: String = "vision"
     override val displayName: String = "无头浏览器截图 + 视觉模型"
     override val description: String =
         "用无头浏览器逐帧渲染内联 SVG（CSS 与 SMIL 动画），再调用配置的多模态模型检查" +
-            "鹈鹕特征、自行车结构、骑行关系、动画连贯性和画面完成度；不发送渠道密钥。" +
-            "模型端点可在「系统配置」中调整。"
+            "鹈鹕特征、自行车结构、骑行关系、动画连贯性和画面完成度；不发送渠道密钥。"
 
     override fun judge(request: IqJudgeRequest): IqJudgeResult {
         if (!renderer.available) {
@@ -90,16 +47,6 @@ class VisionIqJudge private constructor(
                 details = mapOf("渲染器" to renderer.label),
             )
         }
-        val active = when (val resolved = activeModel()) {
-            is ActiveVisionModel.Ready -> resolved
-            is ActiveVisionModel.Unavailable -> return IqJudgeResult(
-                verdict = IqJudgeVerdict.REVIEW,
-                label = "需人工查看",
-                reason = resolved.reason,
-                details = mapOf("渲染器" to renderer.label),
-            )
-        }
-        val model = active.model
         val animation = analyzeSvgAnimation(request.html)
         val times = samplingTimes(animation, frameCount)
         val rendered = renderer.renderFrames(request.html, times)
@@ -124,7 +71,7 @@ class VisionIqJudge private constructor(
 
         val identical = frames.size > 1 && frames.all { it.png.contentEquals(frames.first().png) }
         val assessment = runBlocking {
-            active.assessor.assess(
+            assessor.assess(
                 VisionRequest(
                     frames = frames,
                     benchmark = request.benchmark,

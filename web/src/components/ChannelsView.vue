@@ -293,6 +293,8 @@ function channelFormSnapshot(useEditor = true): string {
     keys: channelKeys.value.map((key) => ({
       id: key.id, name: key.name, credential: key.credential, state: key.state, priority: key.priority,
       stateVersion: key.stateVersion, models: key.models, rateLimit: key.rateLimit,
+      // 换过凭据后旧密钥的手动记录不再代表当前上游，不计入未保存修改
+      ...(key.id && key.credential.trim() ? { manualModels: key.manualModels } : {}),
     })),
     canonicalModels: canonicalModelSnapshot(canonicalModels),
   })
@@ -714,6 +716,8 @@ async function loadKeyModels(key: ChannelKeyEditorDraft): Promise<void> {
       key.credential.trim() !== credential ||
       !sameProtocolSelection(form.protocols, protocols)
     ) return
+    // 读取成功说明当前上游可用；之前的读取失败不应再阻止保存
+    key.modelsError = ''
     key.availableModels = response?.data || []
     if (key.models.length === 0) {
       const authorized = key.availableModels.filter((model) => model.authorized).map((model) => model.id)
@@ -1158,6 +1162,12 @@ async function save(): Promise<void> {
     if (!key.models.length) {
       focusChannelKeyInForm(key)
       notify(`密钥「${name}」至少需要授权一个模型`, 'error')
+      return
+    }
+    // 读取模型失败时列表可能来自旧密钥或手动填写，保存后该密钥路由不到任何模型
+    if (key.modelsError) {
+      focusChannelKeyInForm(key)
+      notify(`密钥「${name}」模型列表读取失败，请重新读取模型（或确认手动添加的模型 ID）后再保存`, 'error')
       return
     }
     try {

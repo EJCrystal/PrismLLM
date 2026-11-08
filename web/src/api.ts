@@ -42,8 +42,6 @@ import type {
   ModelPriceRequest,
   ModelSuggestionsResponse,
   ModelTestSettings,
-  IqVisionSettings,
-  IqVisionSettingsRequest,
   WebSearchSettings,
   WebSearchSettingsRequest,
   OAuthAccount,
@@ -261,9 +259,6 @@ export const api = {
   getWebSearchSettings: () => request<WebSearchSettings>('/web-search-settings'),
   updateWebSearchSettings: (payload: WebSearchSettingsRequest) =>
     request<WebSearchSettings>('/web-search-settings', { method: 'PUT', body: JSON.stringify(payload) }),
-  getIqVisionSettings: () => request<IqVisionSettings>('/iq-vision-settings'),
-  updateIqVisionSettings: (payload: IqVisionSettingsRequest) =>
-    request<IqVisionSettings>('/iq-vision-settings', { method: 'PUT', body: JSON.stringify(payload) }),
   getKeyAutoDisableSettings: () => request<KeyAutoDisableSettingsResponse>('/key-auto-disable-settings'),
   updateKeyAutoDisableSettings: (payload: KeyAutoDisableSettingsRequest) =>
     request<KeyAutoDisableSettingsResponse>('/key-auto-disable-settings', { method: 'PUT', body: JSON.stringify(payload) }),

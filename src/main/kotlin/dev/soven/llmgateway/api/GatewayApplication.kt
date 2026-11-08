@@ -329,27 +329,6 @@ class GatewayApplication(
         baseUrl = config.manxueApiBaseUrl,
         timeoutMs = config.manxueTimeoutMs,
     )
-    /** 部署默认值；管理台未保存配置时使用，也用于判断密钥是否来自环境变量。 */
-    val iqVisionDefaults = dev.soven.llmgateway.domain.IqVisionConfig(
-        enabled = config.iqVisionEnabled,
-        baseUrl = config.iqVisionBaseUrl,
-        model = config.iqVisionModel,
-        apiKey = config.iqVisionApiKey.takeIf { it.isNotBlank() },
-        timeoutMs = config.iqVisionTimeoutMs,
-    )
-    val iqVisionSettingsRepository = dev.soven.llmgateway.repo.IqVisionSettingsRepository(
-        database = databaseFactory.database,
-        credentialCipher = credentialCipher,
-    )
-    /** 浏览器在启动期解析；管理台据此提示「视觉判分不可用」。 */
-    private val visionRenderer: HtmlImageRenderer = visionRendererOverride ?: createVisionRenderer()
-    val iqVisionBrowserAvailable: Boolean
-        get() = visionRenderer.available
-    /**
-     * 视觉判分器始终注册：是否真正调用模型由「系统配置」里的开关决定，
-     * 这样管理员不必为改一个模型名重启网关。浏览器仍在启动期解析，
-     * 更换浏览器路径需要重启。
-     */
     val iqJudgeRegistry = dev.soven.llmgateway.plugin.iq.IqJudgeRegistry(
         pluginDirectory = config.iqJudgePluginDir,
         builtIns = buildList {
@@ -357,22 +336,21 @@ class GatewayApplication(
             if (config.manxueEnabled) {
                 add(dev.soven.llmgateway.plugin.iq.ManxueIqJudge(manxueHtmlClassifier))
             }
-            add(
-                dev.soven.llmgateway.plugin.iq.VisionIqJudge(
-                    renderer = visionRenderer,
-                    // 每次判分重新读取，管理台保存后立即生效；读库失败时返回不可用而不是回退到环境变量。
-                    settings = { iqVisionSettingsRepository.loadBlocking(iqVisionDefaults) },
-                    assessorFactory = { resolved ->
-                        dev.soven.llmgateway.proxy.OpenAiVisionAssessor(
+            if (config.iqVisionEnabled) {
+                add(
+                    dev.soven.llmgateway.plugin.iq.VisionIqJudge(
+                        renderer = visionRendererOverride ?: createVisionRenderer(),
+                        assessor = dev.soven.llmgateway.proxy.OpenAiVisionAssessor(
                             httpClient = httpClient,
-                            baseUrl = resolved.baseUrl,
-                            apiKey = resolved.apiKey,
-                            model = resolved.model,
-                            timeoutMs = resolved.timeoutMs,
-                        )
-                    },
-                ),
-            )
+                            baseUrl = config.iqVisionBaseUrl,
+                            apiKey = config.iqVisionApiKey.takeIf { it.isNotBlank() },
+                            model = config.iqVisionModel,
+                            timeoutMs = config.iqVisionTimeoutMs,
+                        ),
+                        model = config.iqVisionModel,
+                    ),
+                )
+            }
         },
     )
     val iqJudgeService = dev.soven.llmgateway.plugin.iq.IqJudgeService(
