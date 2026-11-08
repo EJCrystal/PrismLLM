@@ -88,8 +88,10 @@ internal object PelicanStructureChecks {
         reversed: String,
     ): IqStructureCheck {
         // 只比直接绘制的图元：<defs>/<symbol> 里的定义和 <use> 实例的位置不代表实际绘制顺序。
-        val elements = parse(html).getAllElements()
-            .filterNot { element -> element.parents().any { parent -> parent.tagName() in NON_RENDERED_TAGS } }
+        val elements = parse(html).getAllElements().filterNot { element ->
+            element.tagName() in NON_RENDERED_TAGS ||
+                element.parents().any { parent -> parent.tagName() in NON_RENDERED_TAGS }
+        }
         val ownIndexes = elements.indices.filter { index -> matchesLayer(elements[index], matchesOwn) }
         val otherIndexes = elements.indices.filter { index -> matchesLayer(elements[index], matchesOther) }
         if (ownIndexes.isEmpty()) return advisory(id, label, missingOwn)
@@ -134,11 +136,22 @@ internal object PelicanStructureChecks {
         return block.children().none { child -> child.tagName() == "svg" || child.select("svg").isNotEmpty() }
     }
 
-    /** 样式表里是否有选中该类名、并声明了背景的规则；不解析层叠关系，只做保守命中。 */
+    /**
+     * 样式表里是否有直接选中该类名、并声明了背景的规则。
+     * 只认选择器里单独的类选择器（`.sky`、`div.sky`），`.skyline`、`.sky .cloud` 这类不算——
+     * 后者命中的是别的元素，不能据此说这个块自己画了背景。
+     */
     private fun paintsBackground(sheet: String, className: String): Boolean =
         RULE_PATTERN.findAll(sheet).any { rule ->
-            rule.groupValues[1].contains(".$className") && BACKGROUND_STYLE_PATTERN.containsMatchIn(rule.groupValues[2])
+            rule.groupValues[1].split(",").any { selector -> selectsClass(selector, className) } &&
+                BACKGROUND_STYLE_PATTERN.containsMatchIn(rule.groupValues[2])
         }
+
+    /** 只看选择器最后一级（真正被选中的那个元素）：`.sky .cloud` 选的是 `.cloud`，不是 `.sky`。 */
+    private fun selectsClass(selector: String, className: String): Boolean {
+        val subject = selector.split(*COMBINATORS).lastOrNull { it.isNotBlank() }.orEmpty()
+        return CLASS_SELECTOR_PATTERN.findAll(subject).any { match -> match.groupValues[1] == className }
+    }
 
     /** 两个元素是否互为祖孙：嵌套时比较的是容器自身，不能代表子图元的绘制顺序。 */
     private fun isNested(one: Element, other: Element): Boolean =
@@ -192,6 +205,12 @@ internal object PelicanStructureChecks {
 
     /** 粗切样式表规则：选择器与声明块。 */
     private val RULE_PATTERN = Regex("([^{}]+)\\{([^{}]*)\\}")
+
+    /** 选择器里的类名：`div.sky` 命中 `sky`，`.skyline` 不会命中 `sky`。 */
+    private val CLASS_SELECTOR_PATTERN = Regex("\\.(-?[A-Za-z_][\\w-]*)")
+
+    /** 选择器组合符：后代、子、相邻与兄弟。 */
+    private val COMBINATORS = arrayOf(" ", ">", "+", "~")
 
     /** 按单词匹配：`cloudy` 命中，`mushroom` 这类只有子串相同的命名不会误判。 */
     private val BACKGROUND_NAMES_PATTERN =

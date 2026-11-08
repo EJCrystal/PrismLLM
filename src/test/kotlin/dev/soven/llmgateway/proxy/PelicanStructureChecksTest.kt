@@ -199,6 +199,42 @@ class PelicanStructureChecksTest {
     }
 
     @Test
+    fun `similar class names and descendant selectors do not count as background`() {
+        val similar = check(
+            analyze(
+                "<!DOCTYPE html><html><head><style>.skyline{background:blue}</style></head>" +
+                    "<body><div class=\"sky\"><svg id=\"a\"></svg></div></body></html>",
+            ),
+            "single-scene",
+        )
+        assertTrue(similar.passed, similar.detail)
+
+        val descendant = check(
+            analyze(
+                "<!DOCTYPE html><html><head><style>.sky .cloud{background:blue}</style></head>" +
+                    "<body><div class=\"sky\"><svg id=\"a\"></svg></div></body></html>",
+            ),
+            "single-scene",
+        )
+        assertTrue(descendant.passed, descendant.detail)
+    }
+
+    @Test
+    fun `non-rendered containers are excluded from layer comparison`() {
+        val check = check(
+            analyze(
+                "<svg><symbol id=\"bike-frame\"><path d=\"M0 0h10\"/></symbol>" +
+                    "<path id=\"far-leg\" d=\"M0 0v10\"/><use href=\"#bike-frame\"/></svg>",
+            ),
+            "far-layer-order",
+        )
+
+        // symbol 自身不是绘制节点，远侧腿之后并没有真正的自行车图元，只能看画面。
+        assertTrue(check.passed)
+        assertFalse(check.decisive)
+    }
+
+    @Test
     fun `foreignObject background stays inside the scene`() {
         val check = check(
             analyze(
