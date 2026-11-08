@@ -1,7 +1,6 @@
 package dev.soven.llmgateway.proxy.codeassist
 
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -30,12 +29,13 @@ object CodeAssistEnvelope {
     }
 
     /**
-     * 把发往 Gemini 的请求体包成 Code Assist 信封。会话 id 由 [scope] 加首条用户文本派生，
-     * 让同一段对话落在同一个会话上；取不到文本时退化成随机值。
+     * 把发往 Gemini 的请求体包成 Code Assist 信封。会话 id 只由 [scope]（客户端凭据、
+     * 渠道、模型别名与调用方会话标识）派生：同一次对话内它保持不变，因此多轮落在同一个
+     * 上游会话上；不同客户端的相同首条消息属于不同 scope，不会共享上游会话状态。
      */
     fun wrap(body: JsonObject, model: String, project: String?, scope: String? = null): JsonObject {
         val request = JsonObject(body - "model")
-        val withSession = JsonObject(request + ("sessionId" to JsonPrimitive(sessionId(request, scope))))
+        val withSession = JsonObject(request + ("sessionId" to JsonPrimitive(sessionId(scope))))
         return JsonObject(
             buildMap {
                 put("model", JsonPrimitive(model))
@@ -67,35 +67,22 @@ object CodeAssistEnvelope {
 
     /**
      * 会话归属：客户端模型别名、渠道、调用方凭据与（可选的）调用方会话标识。
-     * 这些在多轮对话里都不变，配合首条用户文本构成稳定的 sessionId；
-     * 不同客户端即使首条消息相同，凭据或会话标识不同也不会落到同一个上游会话。
-     * 注意不要放入整段请求或每次请求都变的 request-id，那会让每一轮都换会话。
+     * 这些在多轮对话里都不变；不要放入整段请求或每次请求都变的 request-id，
+     * 那会让每一轮都换上游会话。
      */
     fun sessionScope(alias: String, channelId: String, clientKeyId: String?, sessionId: String?): String =
         alias + "\u0000" + channelId + "\u0000" + clientKeyId.orEmpty() + "\u0000" + sessionId.orEmpty()
 
-    /** [scope] 与首条用户文本的哈希，作为稳定的 sessionId；没有文本时随机。 */
-    fun sessionId(request: JsonObject, scope: String? = null): String {
-        var first = ""
-        val contents = request["contents"] as? JsonArray
-        if (contents != null) {
-            for (content in contents) {
-                val message = content as? JsonObject ?: continue
-                if ((message["role"] as? JsonPrimitive)?.content != "user") continue
-                val parts = message["parts"] as? JsonArray ?: continue
-                for (part in parts) {
-                    val text = ((part as? JsonObject)?.get("text") as? JsonPrimitive)?.content
-                    if (!text.isNullOrEmpty()) {
-                        first = text
-                        break
-                    }
-                }
-                break
-            }
-        }
-        if (first.isEmpty()) return "-" + (UUID.randomUUID().mostSignificantBits and Long.MAX_VALUE)
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(((scope?.let { it + "\u0000" } ?: "") + first).toByteArray())
+    /**
+     * 由 [scope] 派生的稳定 sessionId：同一 scope 的每一轮都得到同一个值，因此同一段
+     * 对话落在同一个上游会话上。
+     *
+     * 没有 scope（调用方没给出任何可区分会话的标识）时每次请求都用新值：此时无法判断
+     * 两个请求是否属于同一段对话，宁可放弃上游会话连续性，也不让不同调用方共用会话。
+     */
+    fun sessionId(scope: String?): String {
+        if (scope.isNullOrEmpty()) return "-" + (UUID.randomUUID().mostSignificantBits and Long.MAX_VALUE)
+        val digest = MessageDigest.getInstance("SHA-256").digest(scope.toByteArray())
         var value = 0L
         for (index in 0 until 8) {
             value = (value shl 8) or (digest[index].toLong() and 0xff)

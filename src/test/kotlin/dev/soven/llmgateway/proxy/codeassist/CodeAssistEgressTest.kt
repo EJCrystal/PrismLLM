@@ -113,7 +113,7 @@ class CodeAssistEgressTest {
     }
 
     @Test
-    fun `catalog is refetched when the negotiated tier changes`() = runBlocking {
+    fun `catalog is refetched when the negotiated tier changes`() = runBlocking<Unit> {
         val calls = java.util.concurrent.atomic.AtomicInteger(0)
         val upstream = server { exchange ->
             calls.incrementAndGet()

@@ -20,8 +20,8 @@ class CodeAssistEnvelopeTest {
 
     @Test
     fun wrapCarriesModelProjectAndStableSession() {
-        val source = body()
-        val wrapped = CodeAssistEnvelope.wrap(source, "gemini-3-pro", "project-1")
+        val scope = CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "key-1", "session-1")
+        val wrapped = CodeAssistEnvelope.wrap(body(), "gemini-3-pro", "project-1", scope)
 
         assertEquals("gemini-3-pro", wrapped["model"]!!.jsonPrimitive.content)
         assertEquals("project-1", wrapped["project"]!!.jsonPrimitive.content)
@@ -29,50 +29,34 @@ class CodeAssistEnvelopeTest {
         assertEquals("agent", wrapped["requestType"]!!.jsonPrimitive.content)
         val request = wrapped["request"]!!.jsonObject
         assertFalse("model" in request)
-        assertEquals(CodeAssistEnvelope.sessionId(source), request["sessionId"]!!.jsonPrimitive.content)
+        // 同一会话的每一轮都是同一个 sessionId，客户端传来的正文不参与派生。
+        assertEquals(CodeAssistEnvelope.sessionId(scope), request["sessionId"]!!.jsonPrimitive.content)
     }
 
     @Test
-    fun sessionIdFollowsTheFirstUserText() {
-        val first = json.parseToJsonElement(
-            """{"contents":[{"role":"user","parts":[{"text":"same question"}]}]}""",
-        ).jsonObject
-        val second = json.parseToJsonElement(
-            """{"contents":[{"role":"user","parts":[{"text":"same question"}]},{"role":"model","parts":[{"text":"answer"}]}]}""",
-        ).jsonObject
-        assertEquals(CodeAssistEnvelope.sessionId(first), CodeAssistEnvelope.sessionId(second))
-        assertTrue(CodeAssistEnvelope.sessionId(first).startsWith("-"))
+    fun sessionIdIsStableForOneScopeAndDiffersAcrossScopes() {
+        val scope = CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "key-1", "session-1")
+        // 同一次会话（含同一段对话的多轮）派生同一个上游会话 id。
+        assertEquals(CodeAssistEnvelope.sessionId(scope), CodeAssistEnvelope.sessionId(scope))
+        assertTrue(CodeAssistEnvelope.sessionId(scope).startsWith("-"))
+
+        // 别名、渠道、凭据、调用方会话标识任一不同，都不是同一个会话。
+        val others = listOf(
+            CodeAssistEnvelope.sessionScope("alias-b", "channel-1", "key-1", "session-1"),
+            CodeAssistEnvelope.sessionScope("alias-a", "channel-2", "key-1", "session-1"),
+            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "key-2", "session-1"),
+            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "key-1", "session-2"),
+        )
+        others.forEach { other -> assertTrue(CodeAssistEnvelope.sessionId(scope) != CodeAssistEnvelope.sessionId(other)) }
     }
 
     @Test
-    fun sessionIdSeparatesSessionsWithTheSameFirstMessage() {
-        val request = json.parseToJsonElement(
-            """{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}""",
-        ).jsonObject
-        val left = CodeAssistEnvelope.sessionId(
-            request,
-            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "key-1", null),
-        )
-        val otherAlias = CodeAssistEnvelope.sessionId(
-            request,
-            CodeAssistEnvelope.sessionScope("alias-b", "channel-1", "key-1", null),
-        )
-        val otherChannel = CodeAssistEnvelope.sessionId(
-            request,
-            CodeAssistEnvelope.sessionScope("alias-a", "channel-2", "key-1", null),
-        )
-        val otherRequest = CodeAssistEnvelope.sessionId(
-            request,
-            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "key-2", null),
-        )
-        // 同一会话（同客户端、同渠道、同会话标识）多轮之间保持稳定。
-        assertEquals(
-            left,
-            CodeAssistEnvelope.sessionId(request, CodeAssistEnvelope.sessionScope("alias-a", "channel-1", "key-1", null)),
-        )
-        assertTrue(left != otherAlias)
-        assertTrue(left != otherChannel)
-        assertTrue(left != otherRequest)
+    fun sessionIdWithoutScopeNeverReusesASession() {
+        // 调用方没有会话标识时无法区分两段对话，每次请求都用新的会话，不与他人共用。
+        val first = CodeAssistEnvelope.sessionId(null)
+        assertTrue(first.startsWith("-"))
+        assertTrue(first != CodeAssistEnvelope.sessionId(null))
+        assertTrue(first != CodeAssistEnvelope.sessionId(""))
     }
 
     @Test

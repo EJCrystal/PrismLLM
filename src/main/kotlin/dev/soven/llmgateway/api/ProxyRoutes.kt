@@ -1573,7 +1573,8 @@ private suspend fun proxyStream(
             ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
         ) ?: candidate.upstreamModel
         val request = CodeAssistCloak.apply(bodyJson)
-        // 会话 id 与客户端会话（API Key + 模型 + 首条用户文本）绑定，而不是只认首条文本。
+        // 会话 id 绑定客户端凭据、渠道、模型别名与调用方会话标识；不再用请求正文派生，
+        // 否则不同客户端只要首条用户文本相同就会共用一个上游会话。
         CodeAssistEnvelope.wrap(
             request,
             sentModel,
@@ -1874,7 +1875,8 @@ private suspend fun proxyJson(
             ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
         ) ?: candidate.upstreamModel
         val request = CodeAssistCloak.apply(bodyJson)
-        // 会话 id 与客户端会话（API Key + 模型 + 首条用户文本）绑定，而不是只认首条文本。
+        // 会话 id 绑定客户端凭据、渠道、模型别名与调用方会话标识；不再用请求正文派生，
+        // 否则不同客户端只要首条用户文本相同就会共用一个上游会话。
         CodeAssistEnvelope.wrap(
             request,
             sentModel,
