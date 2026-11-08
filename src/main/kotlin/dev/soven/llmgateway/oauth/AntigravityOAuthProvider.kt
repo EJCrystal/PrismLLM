@@ -7,7 +7,7 @@ import java.nio.charset.StandardCharsets
 
 /**
  * Antigravity 使用的 Google OAuth refresh token 交换（表单编码）。
- * client id 与 client secret 必须由环境变量显式配置；未配置时不会注册该 Provider。
+ * client id 与 client secret 默认取 Antigravity 桌面客户端的公开值，可用环境变量覆盖。
  *
  * @author 文杰
  * @since 2026-11-06

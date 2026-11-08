@@ -67,7 +67,7 @@ interface OAuthTokenProvider {
 }
 
 /**
- * 已装配的 Provider 集合。未配置的 Provider（例如未提供 Antigravity client id）不会出现在这里。
+ * 已装配的 Provider 集合。内置客户端参数提供方都在这里，管理员不需要预先配置。
  *
  * @author 文杰
  * @since 2026-11-06
@@ -82,9 +82,7 @@ class OAuthTokenProviderRegistry(providers: Collection<OAuthTokenProvider>) {
 
 fun buildOAuthTokenProviders(config: OAuthConfig): List<OAuthTokenProvider> = buildList {
     add(ChatGptOAuthProvider(config.chatGpt, config.requestTimeoutMs, config.proxyAllowedHosts))
-    config.antigravity?.let {
-        add(AntigravityOAuthProvider(it, config.requestTimeoutMs, config.proxyAllowedHosts))
-    }
+    add(AntigravityOAuthProvider(config.antigravity, config.requestTimeoutMs, config.proxyAllowedHosts))
 }
 
 private const val MAX_RESPONSE_BYTES = 256 * 1024

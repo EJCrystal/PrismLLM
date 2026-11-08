@@ -4,7 +4,8 @@ import dev.soven.llmgateway.domain.OAuthRoutingStrategy
 import java.net.URI
 
 /**
- * 单个 OAuth 提供方的公开客户端参数。client secret 只从环境变量读取，不落库、不写日志。
+ * 单个 OAuth 提供方的公开客户端参数。client secret 只从内置常量或环境变量读取，
+ * 不落库、不写日志；安装型客户端的 secret 是公开值，不是用户凭据。
  *
  * @author 文杰
  * @since 2026-11-06
@@ -26,7 +27,7 @@ data class OAuthProviderConfig(
 }
 
 /**
- * 订阅账号 OAuth 的运行配置。Antigravity 只有显式配置 client id 后才启用。
+ * 订阅账号 OAuth 的运行配置。两个提供方都内置公开客户端参数，可用环境变量覆盖。
  *
  * @author 文杰
  * @since 2026-11-06
@@ -60,7 +61,18 @@ data class OAuthConfig(
         redirectUri = DEFAULT_CHATGPT_REDIRECT_URI,
         loginScopes = DEFAULT_CHATGPT_LOGIN_SCOPES,
     ),
-    val antigravity: OAuthProviderConfig? = null,
+    /**
+     * Antigravity 与 ChatGPT 一样内置公开客户端参数，并同样支持浏览器登录：
+     * Google 授权后把回调地址粘回管理面即可换取 refresh token。
+     */
+    val antigravity: OAuthProviderConfig = OAuthProviderConfig(
+        clientId = DEFAULT_ANTIGRAVITY_CLIENT_ID,
+        clientSecret = DEFAULT_ANTIGRAVITY_CLIENT_SECRET,
+        tokenEndpoint = "https://oauth2.googleapis.com/token",
+        authorizeUrl = DEFAULT_ANTIGRAVITY_AUTHORIZE_URL,
+        redirectUri = DEFAULT_ANTIGRAVITY_REDIRECT_URI,
+        loginScopes = DEFAULT_ANTIGRAVITY_LOGIN_SCOPES,
+    ),
 ) {
     companion object {
         /** Codex CLI 的公开 OAuth 客户端 ID；可用 OAUTH_CHATGPT_CLIENT_ID 覆盖。 */
@@ -78,6 +90,36 @@ data class OAuthConfig(
         /** 与 Codex CLI 一致的登录 scope。 */
         const val DEFAULT_CHATGPT_LOGIN_SCOPES =
             "openid profile email offline_access api.connectors.read api.connectors.invoke"
+
+        /**
+         * Antigravity 桌面客户端的公开 OAuth 客户端 ID；可用 OAUTH_ANTIGRAVITY_CLIENT_ID 覆盖。
+         * 这是客户端内置的安装型凭据，用户不需要自己申请。
+         */
+        const val DEFAULT_ANTIGRAVITY_CLIENT_ID =
+            "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+
+        /**
+         * Antigravity 桌面客户端的公开 OAuth 客户端密钥；可用 OAUTH_ANTIGRAVITY_CLIENT_SECRET 覆盖。
+         * 安装型客户端的 secret 随客户端分发，公开可见，不构成额外的用户凭据。
+         */
+        const val DEFAULT_ANTIGRAVITY_CLIENT_SECRET = "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"
+
+        /** Google 的授权地址；可用 OAUTH_ANTIGRAVITY_AUTHORIZE_URL 覆盖。 */
+        const val DEFAULT_ANTIGRAVITY_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+
+        /** 与 Antigravity 客户端登记的一致；可用 OAUTH_ANTIGRAVITY_REDIRECT_URI 覆盖。 */
+        const val DEFAULT_ANTIGRAVITY_REDIRECT_URI = "http://localhost:8085/callback"
+
+        /**
+         * Antigravity 客户端申请的 scope：Code Assist 需要 cloud-platform，
+         * cclog 与 experimentsandconfigs 是它读取项目配置所需。
+         */
+        const val DEFAULT_ANTIGRAVITY_LOGIN_SCOPES =
+            "https://www.googleapis.com/auth/cloud-platform " +
+                "https://www.googleapis.com/auth/userinfo.email " +
+                "https://www.googleapis.com/auth/userinfo.profile " +
+                "https://www.googleapis.com/auth/cclog " +
+                "https://www.googleapis.com/auth/experimentsandconfigs"
 
         fun fromEnv(env: Map<String, String>): OAuthConfig {
             fun value(name: String, default: String? = null): String? =
@@ -138,16 +180,23 @@ data class OAuthConfig(
                 "OAUTH_CHATGPT_LOGIN_SCOPES 长度不能超过 512"
             }
 
-            val antigravityClientId = value("OAUTH_ANTIGRAVITY_CLIENT_ID")
-            val antigravity = antigravityClientId?.let { clientId ->
-                OAuthProviderConfig(
-                    clientId = clientId,
-                    clientSecret = value("OAUTH_ANTIGRAVITY_CLIENT_SECRET"),
-                    tokenEndpoint = value(
-                        "OAUTH_ANTIGRAVITY_TOKEN_ENDPOINT",
-                        "https://oauth2.googleapis.com/token",
-                    )!!,
-                ).also { validateEndpoint("OAUTH_ANTIGRAVITY_TOKEN_ENDPOINT", it.tokenEndpoint) }
+            // 与 ChatGPT 一致：内置客户端参数，环境变量只做覆盖；未配置时不再禁用该提供方。
+            val antigravity = OAuthProviderConfig(
+                clientId = value("OAUTH_ANTIGRAVITY_CLIENT_ID", DEFAULT_ANTIGRAVITY_CLIENT_ID)!!,
+                clientSecret = value("OAUTH_ANTIGRAVITY_CLIENT_SECRET", DEFAULT_ANTIGRAVITY_CLIENT_SECRET),
+                tokenEndpoint = value(
+                    "OAUTH_ANTIGRAVITY_TOKEN_ENDPOINT",
+                    "https://oauth2.googleapis.com/token",
+                )!!,
+                authorizeUrl = value("OAUTH_ANTIGRAVITY_AUTHORIZE_URL", DEFAULT_ANTIGRAVITY_AUTHORIZE_URL),
+                redirectUri = value("OAUTH_ANTIGRAVITY_REDIRECT_URI", DEFAULT_ANTIGRAVITY_REDIRECT_URI),
+                loginScopes = value("OAUTH_ANTIGRAVITY_LOGIN_SCOPES", DEFAULT_ANTIGRAVITY_LOGIN_SCOPES),
+            )
+            validateEndpoint("OAUTH_ANTIGRAVITY_TOKEN_ENDPOINT", antigravity.tokenEndpoint)
+            antigravity.authorizeUrl?.let { validateEndpoint("OAUTH_ANTIGRAVITY_AUTHORIZE_URL", it) }
+            antigravity.redirectUri?.let { validateRedirectUri("OAUTH_ANTIGRAVITY_REDIRECT_URI", it) }
+            require(antigravity.loginScopes == null || antigravity.loginScopes.length <= 512) {
+                "OAUTH_ANTIGRAVITY_LOGIN_SCOPES 长度不能超过 512"
             }
 
             return OAuthConfig(

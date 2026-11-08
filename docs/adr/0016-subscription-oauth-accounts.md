@@ -52,14 +52,15 @@
 
 ### Provider 与代理
 
-- `OAuthTokenProvider` 只负责一次刷新请求，不读写数据库。ChatGPT 使用 Auth0 兼容的 JSON 请求体，client id 默认取 Codex CLI 的公开客户端并可由 `OAUTH_CHATGPT_CLIENT_ID` 覆盖；Antigravity 使用 Google OAuth 表单编码，只有显式配置 `OAUTH_ANTIGRAVITY_CLIENT_ID` 后才注册。
+- `OAuthTokenProvider` 只负责一次刷新请求，不读写数据库。ChatGPT 使用 Auth0 兼容的 JSON 请求体，client id 默认取 Codex CLI 的公开客户端并可由 `OAUTH_CHATGPT_CLIENT_ID` 覆盖；Antigravity 使用 Google OAuth 表单编码，内置 Antigravity 桌面客户端的公开 client id 与 client secret，可用 `OAUTH_ANTIGRAVITY_CLIENT_ID` / `OAUTH_ANTIGRAVITY_CLIENT_SECRET` 覆盖。两者都不需要部署方预先申请客户端。
 - 每个账号可绑定一个 `proxy_url`。刷新 access token、额度查询与后续调用上游必须使用同一个出口；当前只支持无认证的 `http://主机:端口`，Java HttpClient 不支持 SOCKS5，需要时在网关外桥接。
 - 代理地址不允许携带账号密码，操作会把代理地址写入管理审计，便于追溯出口配置。目标主机默认只允许本机回环地址（`127.0.0.1`、`localhost`、`::1`），住宅代理等远程出口必须由部署方通过 `OAUTH_PROXY_ALLOWED_HOSTS` 显式列入；导入、登录换 token、刷新 token 与额度查询都按同一份白名单校验。
 - 刷新请求不跟随重定向，响应体限制 256 KB。
 
 ### 交互式登录
 
-- provider 同时配置 `authorizeUrl` 与 `redirectUri` 时才开放浏览器登录（`loginSupported`）。ChatGPT 默认使用 Codex CLI 的授权端点与 `http://localhost:1455/auth/callback` 回调；回调主机只允许 `127.0.0.1`、`localhost` 或 `::1`。
+- provider 同时配置 `authorizeUrl` 与 `redirectUri` 时才开放浏览器登录（`loginSupported`）。ChatGPT 默认使用 Codex CLI 的授权端点与 `http://localhost:1455/auth/callback` 回调；Antigravity 使用 Google 授权端点与客户端登记的 `http://localhost:8085/callback`，并带上 `access_type=offline`、`prompt=consent` 以获取 refresh token。回调主机只允许 `127.0.0.1`、`localhost` 或 `::1`。
+- 授权码交换按提供方补参数：ChatGPT 带 Codex 的 `originator` 身份头但不传 secret；Antigravity 传 `client_secret`（Google 安装型客户端必需）且不带 Codex 身份头。
 - 登录使用 PKCE（S256）与随机 `state`。会话只保存在进程内存，10 分钟过期，最多保留 64 个待完成会话；提交时用原子标记保证一次性使用。
 - 新建账号时 `accountId` 为空；对已有账号重新授权时传入 `accountId`，可同时更新名称与关联渠道。发起重新授权时记录账号 refresh token 密文的指纹，完成回调时若账号已被删除或替换凭据，返回 `409 oauth_login_stale`。
 - 授权码只能交换一次。交换成功后 token 暂存在内存会话中；若绑定因邮箱唯一约束失败，管理员删除原账号后可用同一 `loginId` 重试，不会再次请求 token 端点。

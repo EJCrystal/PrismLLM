@@ -1037,7 +1037,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         configured = provider in configured,
                         loginSupported = when (provider) {
                             OAuthProvider.CHATGPT -> app.config.oauth.chatGpt.supportsLogin
-                            OAuthProvider.ANTIGRAVITY -> app.config.oauth.antigravity?.supportsLogin == true
+                            OAuthProvider.ANTIGRAVITY -> app.config.oauth.antigravity.supportsLogin
                         },
                         managedChannel = dev.soven.llmgateway.domain.ProviderEndpoints.of(provider).servable,
                     )
@@ -1091,7 +1091,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
                 ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
             if (app.oauthTokenProviders.find(provider) == null) {
-                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未配置，请先设置客户端参数")
+                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未在网关内启用")
             }
             val refreshToken = request.refreshToken.trim()
             if (refreshToken.length > MAX_OAUTH_CREDENTIAL_CHARS) {
@@ -1183,7 +1183,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
                 ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
             if (app.oauthTokenProviders.find(provider) == null) {
-                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未配置，请先设置客户端参数")
+                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未在网关内启用")
             }
             if (existing.provider != provider) {
                 throw badRequest("invalid_oauth_provider", "重新授权不能修改账号的提供方")
@@ -1320,7 +1320,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
                 ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
             if (app.oauthTokenProviders.find(provider) == null) {
-                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未配置，请先设置客户端参数")
+                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未在网关内启用")
             }
             val target = request.accountId?.trim()?.takeIf { it.isNotEmpty() }?.let { accountId ->
                 app.oauthAccountRepository.findDetailed(accountId)
