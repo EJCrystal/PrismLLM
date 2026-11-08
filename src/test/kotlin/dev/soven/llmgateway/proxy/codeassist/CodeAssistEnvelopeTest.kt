@@ -45,6 +45,29 @@ class CodeAssistEnvelopeTest {
     }
 
     @Test
+    fun sessionIdSeparatesSessionsWithTheSameFirstMessage() {
+        val request = json.parseToJsonElement(
+            """{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}""",
+        ).jsonObject
+        val left = CodeAssistEnvelope.sessionId(
+            request,
+            CodeAssistEnvelope.sessionScope("alias-a", "channel-1", request),
+        )
+        val otherAlias = CodeAssistEnvelope.sessionId(
+            request,
+            CodeAssistEnvelope.sessionScope("alias-b", "channel-1", request),
+        )
+        val otherChannel = CodeAssistEnvelope.sessionId(
+            request,
+            CodeAssistEnvelope.sessionScope("alias-a", "channel-2", request),
+        )
+        // 同一会话（同客户端、同渠道）稳定；不同客户端或渠道即使首条消息相同也不碰撞。
+        assertEquals(left, CodeAssistEnvelope.sessionId(request, CodeAssistEnvelope.sessionScope("alias-a", "channel-1", request)))
+        assertTrue(left != otherAlias)
+        assertTrue(left != otherChannel)
+    }
+
+    @Test
     fun unwrapTakesTheResponseField() {
         val parsed = json.parseToJsonElement("""{"response":{"candidates":[]}}""").jsonObject
         assertEquals("""{"candidates":[]}""", CodeAssistEnvelope.unwrap(parsed).toString())

@@ -433,7 +433,11 @@ class GatewayApplication(
     /** 订阅账号的官方端点渠道：按 provider 置备，账号导入时自动挂上。 */
     val providerChannelProvisioner = ProviderChannelProvisioner(channelRepository, oauthAccountRepository)
     /** Antigravity 的 Code Assist project/tier 发现与缓存。 */
-    val codeAssistProjectResolver = CodeAssistProjectResolver(oauthAccountRepository, httpClient)
+    val codeAssistProjectResolver = CodeAssistProjectResolver(
+        oauthAccountRepository,
+        httpClient,
+        proxyAllowedHosts = config.oauth.proxyAllowedHosts,
+    )
     /** Antigravity 的模型目录与家族/变体映射。 */
     val codeAssistModelCatalog = CodeAssistModelCatalog(httpClient)
     /** Antigravity 的额度读取。 */

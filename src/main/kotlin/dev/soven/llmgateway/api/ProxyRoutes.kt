@@ -19,6 +19,7 @@ import dev.soven.llmgateway.oauth.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
 import dev.soven.llmgateway.oauth.OAuthAccountLease
 import dev.soven.llmgateway.oauth.OAuthTokenUnavailableException
+import dev.soven.llmgateway.oauth.OAuthRefreshException
 import dev.soven.llmgateway.oauth.OAuthUnavailableReason
 import dev.soven.llmgateway.oauth.parseCodexQuotaHeaders
 import dev.soven.llmgateway.oauth.parseRateLimitResetMs
@@ -1558,7 +1559,14 @@ private suspend fun proxyStream(
             candidate.upstreamModel,
             ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
         ) ?: candidate.upstreamModel
-        CodeAssistEnvelope.wrap(CodeAssistCloak.apply(bodyJson), sentModel, codeAssistProject).toString()
+        val request = CodeAssistCloak.apply(bodyJson)
+        // 会话 id 与客户端会话（API Key + 模型 + 首条用户文本）绑定，而不是只认首条文本。
+        CodeAssistEnvelope.wrap(
+            request,
+            sentModel,
+            codeAssistProject,
+            CodeAssistEnvelope.sessionScope(alias, candidate.channel.id, request),
+        ).toString()
     } else {
         bodyJson.toString()
     }
@@ -1835,7 +1843,14 @@ private suspend fun proxyJson(
             candidate.upstreamModel,
             ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
         ) ?: candidate.upstreamModel
-        CodeAssistEnvelope.wrap(CodeAssistCloak.apply(bodyJson), sentModel, codeAssistProject).toString()
+        val request = CodeAssistCloak.apply(bodyJson)
+        // 会话 id 与客户端会话（API Key + 模型 + 首条用户文本）绑定，而不是只认首条文本。
+        CodeAssistEnvelope.wrap(
+            request,
+            sentModel,
+            codeAssistProject,
+            CodeAssistEnvelope.sessionScope(alias, candidate.channel.id, request),
+        ).toString()
     } else {
         bodyJson.toString()
     }
@@ -1960,10 +1975,23 @@ private fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?): 
         }
     } ?: app.httpClient
 
-/** 代理地址已经过管理面校验，这里解析失败时按直连处理，不阻断请求。 */
+/**
+ * 账号代理配置无效时拒绝请求，绝不静默回落直连：那会绕过账号指定出口并暴露网关源 IP。
+ * 按渠道配置错误处理，不切换到其他候选。
+ */
 private fun accountEgressProxy(app: GatewayApplication, candidate: RouteCandidate): InetSocketAddress? {
-    val proxyUrl = candidate.oauthAccount?.proxyUrl ?: return null
-    return runCatching { proxyAddress(proxyUrl, app.config.oauth.proxyAllowedHosts) }.getOrNull()
+    val proxyUrl = candidate.oauthAccount?.proxyUrl?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    return try {
+        proxyAddress(proxyUrl, app.config.oauth.proxyAllowedHosts)
+    } catch (cause: OAuthRefreshException) {
+        proxyLogger.warn("invalid account proxy, channelId={}, errorCode={}", candidate.channel.id, cause.errorCode)
+        throw GatewayException(
+            HttpStatusCode.BadRequest,
+            "invalid_oauth_proxy",
+            "订阅账号代理配置无效: " + (cause.message ?: "账号代理地址无效"),
+            "invalid_request_error",
+        )
+    }
 }
 
 private suspend fun decryptCredential(app: GatewayApplication, candidate: RouteCandidate): String = try {

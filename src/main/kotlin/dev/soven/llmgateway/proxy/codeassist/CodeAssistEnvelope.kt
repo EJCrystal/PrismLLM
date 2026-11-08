@@ -18,12 +18,12 @@ object CodeAssistEnvelope {
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
-     * 把发往 Gemini 的请求体包成 Code Assist 信封。会话 id 由首条用户文本派生，
-     * 让同一段对话落在同一个会话上；取不到时退化成随机值。
+     * 把发往 Gemini 的请求体包成 Code Assist 信封。会话 id 由 [scope] 加首条用户文本派生，
+     * 让同一段对话落在同一个会话上；取不到文本时退化成随机值。
      */
-    fun wrap(body: JsonObject, model: String, project: String?): JsonObject {
+    fun wrap(body: JsonObject, model: String, project: String?, scope: String? = null): JsonObject {
         val request = JsonObject(body - "model")
-        val withSession = JsonObject(request + ("sessionId" to JsonPrimitive(sessionId(request))))
+        val withSession = JsonObject(request + ("sessionId" to JsonPrimitive(sessionId(request, scope))))
         return JsonObject(
             buildMap {
                 put("model", JsonPrimitive(model))
@@ -50,8 +50,15 @@ object CodeAssistEnvelope {
         return "data: " + inner
     }
 
-    /** 首条用户文本的哈希，作为稳定的 sessionId；没有文本时随机。 */
-    fun sessionId(request: JsonObject): String {
+    /**
+     * 会话归属：客户端模型别名与渠道。与首条用户文本一起构成 sessionId，
+     * 避免不同 API Key / 不同渠道下首条消息相同的两个会话落到同一个上游会话。
+     */
+    fun sessionScope(alias: String, channelId: String, request: JsonObject): String =
+        alias + "\u0000" + channelId + "\u0000" + json.encodeToString(JsonObject.serializer(), request)
+
+    /** [scope] 与首条用户文本的哈希，作为稳定的 sessionId；没有文本时随机。 */
+    fun sessionId(request: JsonObject, scope: String? = null): String {
         var first = ""
         val contents = request["contents"] as? JsonArray
         if (contents != null) {
@@ -70,7 +77,8 @@ object CodeAssistEnvelope {
             }
         }
         if (first.isEmpty()) return "-" + (UUID.randomUUID().mostSignificantBits and Long.MAX_VALUE)
-        val digest = MessageDigest.getInstance("SHA-256").digest(first.toByteArray())
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(((scope?.let { it + "\u0000" } ?: "") + first).toByteArray())
         var value = 0L
         for (index in 0 until 8) {
             value = (value shl 8) or (digest[index].toLong() and 0xff)

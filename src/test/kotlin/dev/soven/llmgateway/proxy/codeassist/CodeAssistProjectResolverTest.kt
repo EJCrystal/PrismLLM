@@ -144,6 +144,75 @@ class CodeAssistProjectResolverTest {
         }
     }
 
+    @Test
+    fun `failed renegotiation on a new egress does not reuse the old project`() = runBlocking {
+        // 第一个出口发现成功；换出口后 loadCodeAssist 暂时不可用。
+        val failing = AtomicReference(false)
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1internal:loadCodeAssist") { exchange ->
+            if (failing.get()) {
+                reply(exchange, 503, """{"error":{"code":503}}""")
+                return@createContext
+            }
+            reply(exchange, 200, """{"cloudaicompanionProject":"proj-old","currentTier":{"id":"free-tier"}}""")
+        }
+        server.start()
+        val base = "http://127.0.0.1:${server.address.port}"
+        try {
+            val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+            val resolver = CodeAssistProjectResolver(FakeAccounts(saved), HttpClient(Java), baseUrl = base, loadBaseUrl = base)
+            val account = account()
+
+            assertEquals("proj-old", resolver.context(account, "token").project)
+            failing.set(true)
+            val moved = account.copy(proxyUrl = "http://127.0.0.1:7890")
+
+            // 旧出口协商出的 project 不能带到新出口；同一出口下仍可沿用缓存。
+            assertNull(resolver.context(moved, "token").project)
+            assertEquals("proj-old", resolver.context(account, "token").project)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `egress key treats equivalent proxies as one egress and separates real changes`() = runBlocking {
+        val calls = AtomicReference(0)
+        // 本地正向代理：直接返回 loadCodeAssist 响应，不真正回源。
+        val proxy = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        proxy.createContext("/") { exchange ->
+            val call = calls.updateAndGet { it + 1 }
+            reply(exchange, 200, """{"cloudaicompanionProject":"proj-$call"}""")
+        }
+        proxy.start()
+        val port = proxy.address.port
+        val address = InetSocketAddress("127.0.0.1", port)
+        // 直连时这个地址连不上：能拿到 project 就说明确实走了代理。
+        val unreachable = "http://127.0.0.1:1"
+        try {
+            val resolver = CodeAssistProjectResolver(
+                FakeAccounts(AtomicReference()),
+                HttpClient(Java),
+                baseUrl = unreachable,
+                loadBaseUrl = unreachable,
+            )
+            val account = account()
+
+            assertEquals("proj-1", resolver.context(account.copy(proxyUrl = "http://127.0.0.1:$port"), "token", address).project)
+            // 同一个出口的另一种写法（结尾斜杠）命中缓存，不再请求上游。
+            assertEquals(
+                "proj-1",
+                resolver.context(account.copy(proxyUrl = "http://127.0.0.1:$port/"), "token", null).project,
+            )
+            assertEquals(1, calls.get())
+            // 白名单不接受这个代理：出口变成直连，旧出口的 project 不得沿用。
+            assertNull(resolver.context(account.copy(proxyUrl = "http://proxy.internal:3128"), "token", null).project)
+            assertEquals(1, calls.get())
+        } finally {
+            proxy.stop(0)
+        }
+    }
+
     private fun account(): OAuthAccountRecord = OAuthAccountRecord(
         id = "account-1",
         name = "antigravity",

@@ -107,7 +107,12 @@ data class OAuthConfig(
         /** Google 的授权地址；可用 OAUTH_ANTIGRAVITY_AUTHORIZE_URL 覆盖。 */
         const val DEFAULT_ANTIGRAVITY_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 
-        /** 与 Antigravity 客户端登记的一致；可用 OAUTH_ANTIGRAVITY_REDIRECT_URI 覆盖。 */
+        /**
+         * 与 Antigravity 客户端登记的一致；可用 OAUTH_ANTIGRAVITY_REDIRECT_URI 覆盖。
+         * Google 只接受该客户端注册过的回调地址，所以不能改成网关自己的地址。
+         * 这里走的是"授权后手动粘贴回调"流程：浏览器跳到该地址（打不开也没关系），
+         * 管理员把地址栏里的完整 URL 粘回管理台换 code，因此不需要网关监听 8085。
+         */
         const val DEFAULT_ANTIGRAVITY_REDIRECT_URI = "http://localhost:8085/callback"
 
         /**

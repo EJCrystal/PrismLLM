@@ -22,6 +22,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
 import java.net.InetSocketAddress
+import dev.soven.llmgateway.oauth.proxyAddress
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -39,6 +40,8 @@ class CodeAssistProjectResolver(
     private val loadBaseUrl: String = "https://cloudcode-pa.googleapis.com",
     private val ideVersion: String = "1.0.0",
     private val now: () -> Long = System::currentTimeMillis,
+    /** 校验账号代理地址的允许主机列表；与 token 刷新使用同一份配置。 */
+    private val proxyAllowedHosts: Set<String> = emptySet(),
     /** 账号代理：project 发现与开通必须与 token 刷新走同一个出口。 */
     private val clients: CodeAssistClientPool = CodeAssistClientPool(httpClient),
 ) {
@@ -52,42 +55,71 @@ class CodeAssistProjectResolver(
         fun tiers(): List<String> = (listOfNotNull(tier).filter { it.isNotBlank() } + allowedTiers).distinct()
     }
 
-    /** 上一次成功协商 project 时的出口；用于在代理变化时作废缓存。 */
-    private val negotiatedProxy = ConcurrentHashMap<String, String>()
+    /**
+     * 上一次成功协商 project 时的出口；用于在代理变化时作废缓存。
+     * 值为 [Export]，同时保存该出口下拿到的 project/tier：发现失败时只复用同一出口
+     * 协商出来的上下文，绝不把旧出口的 project 带到新出口上。
+     */
+    private val negotiated = ConcurrentHashMap<String, Export>()
 
-    private fun egressKey(proxyUrl: String?): String = normalizeProxy(proxyUrl) ?: DIRECT
+    private class Export(val egress: String, val project: String?, val tier: String?)
+
+    /**
+     * 缓存键 = 账号 + 出口。代理地址（或允许主机白名单）一变，键就变，旧缓存立即失效；
+     * 用绝对地址而不是原始字符串，本地端口 80 的两种写法视为同一出口。
+     */
+    private fun egressKey(app: OAuthAccountRecord, proxy: InetSocketAddress?): String {
+        val allowed = normalizeProxy(app.proxyUrl)?.let { url ->
+            runCatching { proxyAddress(url, proxyAllowedHosts) }.getOrNull()
+        }
+        return (proxy ?: allowed)?.let { it.hostString + ":" + it.port } ?: DIRECT
+    }
 
     /**
      * @param proxy 账号出口代理；与刷新 access token 使用同一个，避免两套 IP。
      */
     suspend fun context(account: OAuthAccountRecord, accessToken: String, proxy: InetSocketAddress? = null): Context {
-        val proxyKey = egressKey(account.proxyUrl)
+        val proxyKey = egressKey(account, proxy)
+        val export = negotiated[account.id]
         val cached = accounts.upstreamContext(account.id)
         // 缓存是按某个出口协商出来的：出口一变就必须重新发现，而不是等 TTL 过期。
-        val sameEgress = proxyKey == (negotiatedProxy[account.id] ?: proxyKey)
-        if (sameEgress && cached?.project != null && cached.checkedAt != null &&
-            now() - cached.checkedAt < TIER_TTL_MS
-        ) {
-            return Context(cached.project, cached.tier)
-        }
+        val sameEgress = proxyKey == (export?.egress ?: proxyKey)
+        val fresh = cached?.project != null && cached.checkedAt != null && now() - cached.checkedAt < TIER_TTL_MS
+        if (sameEgress && fresh) return Context(cached!!.project, cached.tier)
         val loaded = runCatching { loadCodeAssist(account.id, accessToken, proxy) }.getOrElse { cause ->
             logger.warn("loadCodeAssist failed, accountId={}, error={}", account.id, cause::class.simpleName)
             null
-        } ?: return Context(cached?.project, cached?.tier)
+        } ?: return Context(
+            when {
+                sameEgress -> cached?.project
+                export?.egress == proxyKey -> export.project
+                else -> null
+            },
+            when {
+                sameEgress -> cached?.tier
+                export?.egress == proxyKey -> export.tier
+                else -> null
+            },
+        )
         val project = loaded.project ?: runCatching {
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
         }.getOrElse { cause ->
             logger.warn("onboardUser failed, accountId={}, error={}", account.id, cause::class.simpleName)
             null
         }
-        if (project != null) {
+        val resolved = if (project != null) {
             accounts.saveUpstreamContext(account.id, project, loaded.tier, now())
+            Context(project, loaded.tier)
+        } else {
+            // 没有开通出 project：只有同一出口下的已存上下文才可沿用。
+            Context(cached?.project.takeIf { sameEgress }, cached?.tier.takeIf { sameEgress })
         }
         if (!sameEgress) {
             logger.info("account proxy changed, renegotiated code assist context, accountId={}", account.id)
         }
-        negotiatedProxy[account.id] = proxyKey
-        return Context(project ?: cached?.project, loaded.tier ?: cached?.tier)
+        // 记录本次出口实际得到的上下文；下次换出口时只认这条。
+        negotiated[account.id] = Export(proxyKey, resolved.project, resolved.tier)
+        return resolved
     }
 
     private fun normalizeProxy(proxyUrl: String?): String? = proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
