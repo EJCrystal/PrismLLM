@@ -104,6 +104,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -1533,8 +1534,12 @@ private suspend fun proxyStream(
     val bodyJson = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
     // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
     val egressProxy = accountEgressProxy(app, candidate)
+    // 准备阶段（project 发现、目录补拉）在对话请求的 withTimeout 之外，单独限时，
+    // 避免上游接受连接后不响应时无限等待；超时后按没有目录处理，请求照常发出。
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
+        withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
+            app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
+        }
     } else {
         null
     }
@@ -1543,14 +1548,16 @@ private suspend fun proxyStream(
     // 目录按 project 缓存，不会跨账号串用。
     val codeAssistCatalog = if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null) {
         val cached = app.codeAssistModelCatalog.cached(codeAssistProject)
-        cached ?: runCatching {
-            app.codeAssistModelCatalog.fetchFor(
-                credential,
-                codeAssistProject,
-                listOfNotNull(codeAssistContext?.tier),
-                egressProxy,
-            )
-        }.getOrNull()
+        cached ?: withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
+            runCatching {
+                app.codeAssistModelCatalog.fetchFor(
+                    credential,
+                    codeAssistProject,
+                    listOfNotNull(codeAssistContext?.tier),
+                    egressProxy,
+                )
+            }.getOrNull()
+        }
     } else {
         null
     }
@@ -1817,8 +1824,12 @@ private suspend fun proxyJson(
     val bodyJson = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
     // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
     val egressProxy = accountEgressProxy(app, candidate)
+    // 准备阶段（project 发现、目录补拉）在对话请求的 withTimeout 之外，单独限时，
+    // 避免上游接受连接后不响应时无限等待；超时后按没有目录处理，请求照常发出。
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
+        withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
+            app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
+        }
     } else {
         null
     }
@@ -1827,14 +1838,16 @@ private suspend fun proxyJson(
     // 目录按 project 缓存，不会跨账号串用。
     val codeAssistCatalog = if (envelope == UpstreamEnvelope.CODE_ASSIST && codeAssistProject != null) {
         val cached = app.codeAssistModelCatalog.cached(codeAssistProject)
-        cached ?: runCatching {
-            app.codeAssistModelCatalog.fetchFor(
-                credential,
-                codeAssistProject,
-                listOfNotNull(codeAssistContext?.tier),
-                egressProxy,
-            )
-        }.getOrNull()
+        cached ?: withTimeoutOrNull(preparationTimeoutMs(timeoutMs)) {
+            runCatching {
+                app.codeAssistModelCatalog.fetchFor(
+                    credential,
+                    codeAssistProject,
+                    listOfNotNull(codeAssistContext?.tier),
+                    egressProxy,
+                )
+            }.getOrNull()
+        }
     } else {
         null
     }
@@ -1974,6 +1987,11 @@ private fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?): 
             }
         }
     } ?: app.httpClient
+
+/** 准备阶段（project 发现、目录补拉）的上限：不超过对话请求本身的超时。 */
+private fun preparationTimeoutMs(timeoutMs: Long): Long = minOf(timeoutMs, PREPARATION_TIMEOUT_MS)
+
+private const val PREPARATION_TIMEOUT_MS = 20_000L
 
 /**
  * 账号代理配置无效时拒绝请求，绝不静默回落直连：那会绕过账号指定出口并暴露网关源 IP。
