@@ -22,7 +22,7 @@ class LocalStructureIqJudge : IqJudge {
                 score = 0.0,
                 details = mapOf("mode" to "structure"),
             )
-            structure.allPassed -> IqJudgeResult(
+            structure.allDecisivePassed -> IqJudgeResult(
                 verdict = IqJudgeVerdict.REVIEW,
                 label = "结构通过，待人工评分",
                 reason = "本地结构检查全部通过；请结合预览人工确认鹈鹕与自行车是否可辨。",

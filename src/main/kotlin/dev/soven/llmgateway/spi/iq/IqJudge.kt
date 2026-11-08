@@ -53,13 +53,23 @@ data class IqStructureSummary(
 ) {
     val allPassed: Boolean
         get() = checks.all { it.passed }
+
+    /** 只是辅助检查、不参与自动判定的项；其余项全部通过才算结构合格。 */
+    val allDecisivePassed: Boolean
+        get() = checks.all { it.passed || !it.decisive }
 }
 
+/**
+ * 一项结构检查。[decisive] 为 false 时只作为提示展示，不参与判定：
+ * 例如需要视觉判断才能确认的跨骑遮挡顺序，离线解析只能检查显式的命名标记，
+ * 没打标记的作品不该因此被判失败。
+ */
 data class IqStructureCheck(
     val id: String,
     val label: String,
     val passed: Boolean,
     val detail: String? = null,
+    val decisive: Boolean = true,
 )
 
 enum class IqJudgeVerdict(val value: String) {

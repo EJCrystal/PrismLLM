@@ -1343,6 +1343,8 @@ data class IqTestCheckResponse(
     val label: String,
     val passed: Boolean,
     val detail: String? = null,
+    /** 为 false 时只是提示，不参与自动判定。 */
+    val decisive: Boolean = true,
 )
 
 fun IqStructureCheck.toResponse() = IqTestCheckResponse(
@@ -1350,6 +1352,7 @@ fun IqStructureCheck.toResponse() = IqTestCheckResponse(
     label = label,
     passed = passed,
     detail = detail,
+    decisive = decisive,
 )
 
 @Serializable

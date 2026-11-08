@@ -134,7 +134,7 @@ internal fun analyzePelicanStructure(raw: String?): IqStructureSummary {
             passed = selfContained,
             detail = if (selfContained) null else "检测到 http(s)、协议相对地址或 @import",
         ),
-    )
+    ) + html?.let(PelicanStructureChecks::analyze).orEmpty()
     return IqStructureSummary(
         checks = checks,
         htmlPresent = hasDocument,
@@ -157,7 +157,7 @@ private fun evaluatePelican(
         manualVerdict == "incorrect" -> IqVerdict.INCORRECT
         !structure.htmlPresent || !structure.svgPresent -> IqVerdict.FAILED
         judgeResult != null -> judgeResult.verdict.toIqVerdict()
-        structure.allPassed -> IqVerdict.PASSED
+        structure.allDecisivePassed -> IqVerdict.PASSED
         else -> IqVerdict.REVIEW
     }
     return IqTestEvaluation(verdict = verdict, checks = structure.checks, html = html)
