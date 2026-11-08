@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import type {
+  IqVisionSettings,
   KeyAutoDisableSettingsResponse,
   ModelTestSettings,
   RetentionPolicy,
@@ -13,6 +14,7 @@ import { formatTime } from '../utils/format'
 import { countUpstreamOverrides } from '../utils/systemConfig'
 import { clearAllUpstreamModelCache } from '../upstreamModelCache'
 import Icon from './Icon.vue'
+import IqVisionSettingsModal from './IqVisionSettingsModal.vue'
 import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ModelTestSettingsModal from './ModelTestSettingsModal.vue'
 import RetentionSettingsModal from './RetentionSettingsModal.vue'
@@ -25,6 +27,7 @@ const cards = reactive({
   modelTest: { loading: true, error: '', data: null as ModelTestSettings | null },
   upstream: { loading: true, error: '', data: null as UpstreamRequestSettings | null },
   webSearch: { loading: true, error: '', data: null as WebSearchSettings | null },
+  iqVision: { loading: true, error: '', data: null as IqVisionSettings | null },
   autoDisable: { loading: true, error: '', data: null as KeyAutoDisableSettingsResponse | null },
   retention: { loading: true, error: '', data: null as RetentionPolicy | null },
 })
@@ -32,6 +35,7 @@ const cards = reactive({
 const showModelTest = ref(false)
 const showUpstream = ref(false)
 const showWebSearch = ref(false)
+const showIqVision = ref(false)
 const showAutoDisable = ref(false)
 const showRetention = ref(false)
 
@@ -114,12 +118,25 @@ async function loadRetention() {
   }
 }
 
+async function loadIqVision() {
+  cards.iqVision.loading = true
+  cards.iqVision.error = ''
+  try {
+    cards.iqVision.data = await api.getIqVisionSettings()
+  } catch (cause) {
+    cards.iqVision.error = errorMessage(cause)
+  } finally {
+    cards.iqVision.loading = false
+  }
+}
+
 async function loadAll(refresh = false) {
   if (refresh) refreshing.value = true
   await Promise.allSettled([
     loadModelTest(),
     loadUpstream(),
     loadWebSearch(),
+    loadIqVision(),
     loadAutoDisable(),
     loadRetention(),
   ])
@@ -146,6 +163,7 @@ const settingRows = computed<SettingRow[]>(() => {
   const modelTest = cards.modelTest
   const upstream = cards.upstream
   const webSearch = cards.webSearch
+  const iqVision = cards.iqVision
   const autoDisable = cards.autoDisable
   const retention = cards.retention
   return [
@@ -205,6 +223,38 @@ const settingRows = computed<SettingRow[]>(() => {
       alert: '',
       onAction: () => { showWebSearch.value = true },
       onRetry: loadWebSearch,
+    },
+    {
+      id: 'iq-vision',
+      title: '智商检测视觉判分',
+      description: '无头浏览器截图后调用的多模态模型',
+      icon: 'models',
+      loading: iqVision.loading,
+      error: iqVision.error,
+      value: iqVision.data
+        ? `${iqVision.data.enabled ? '已启用' : '已关闭'}${iqVision.data.model ? ` · ${iqVision.data.model}` : ''}`
+        : '',
+      valueTitle: iqVision.data?.baseUrl ?? '',
+      meta: iqVision.data
+        ? [
+            iqVision.data.apiKeySet
+              ? `密钥已配置（${apiKeySourceLabel(iqVision.data.apiKeySource)}）`
+              : '密钥未配置',
+            iqVision.data.source === 'settings'
+              ? updatedLabel(iqVision.data.updatedAt)
+              : '使用环境变量默认值',
+          ].join(' · ')
+        : '',
+      alert: iqVision.data
+        ? [
+            iqVision.data.apiKeyUnreadable
+              ? '已保存的密钥无法解密（主密钥可能已更换），请进入设置重新填写'
+              : '',
+            iqVision.data.browserAvailable ? '' : '未找到无头浏览器，视觉判分只会返回需人工查看',
+          ].filter(Boolean).join('；')
+        : '',
+      onAction: () => { showIqVision.value = true },
+      onRetry: loadIqVision,
     },
     {
       id: 'auto-disable',
@@ -305,6 +355,7 @@ onMounted(() => { void loadAll() })
     <ModelTestSettingsModal v-if="showModelTest" @close="showModelTest = false" @saved="loadModelTest" />
     <UpstreamRequestSettingsModal v-if="showUpstream" @close="showUpstream = false" @saved="onUpstreamSaved" />
     <WebSearchSettingsModal v-if="showWebSearch" @close="showWebSearch = false" @saved="loadWebSearch" />
+    <IqVisionSettingsModal v-if="showIqVision" @close="showIqVision = false" @saved="loadIqVision" />
     <KeyAutoDisableSettingsModal v-if="showAutoDisable" @close="showAutoDisable = false" @saved="loadAutoDisable" />
     <RetentionSettingsModal
       v-if="showRetention && cards.retention.data"

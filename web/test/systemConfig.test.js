@@ -11,8 +11,6 @@ describe('systemConfig: 系统配置展示', () => {
         userAgent: 'PrismLLM',
         headers: { 'x-test': '1' },
         body: { temperature: 0.2 },
-        reasoningContentPolicy: 'auto',
-        developerRolePolicy: null,
         protocols: {
           messages: {
             headerProfile: null,
@@ -22,7 +20,7 @@ describe('systemConfig: 系统配置展示', () => {
           },
         },
       }),
-      6,
+      5,
     )
   })
 })

@@ -1,6 +1,9 @@
 package dev.soven.llmgateway.plugin.iq
 
+import dev.soven.llmgateway.domain.IqVisionConfig
 import dev.soven.llmgateway.proxy.HtmlImageRenderer
+import dev.soven.llmgateway.repo.IqVisionSettingsSnapshot
+import dev.soven.llmgateway.repo.IqVisionSettingsStatus
 import dev.soven.llmgateway.proxy.SvgRenderResult
 import dev.soven.llmgateway.proxy.UnavailableBrowserRenderer
 import dev.soven.llmgateway.proxy.VisionAspect
@@ -264,6 +267,35 @@ class VisionIqJudgeTest {
         assertEquals(0.0, incorrect.score)
         assertEquals("需人工确认", review.label)
         assertFalse(incorrect.label == review.label)
+    }
+
+    @Test
+    fun `settings read failure asks for manual review without calling the model`() {
+        val assessor = RecordingAssessor(VisionAssessment(IqJudgeVerdict.PASSED))
+        val renderer = RecordingRenderer(SvgRenderResult.Success(ByteArray(16), 100, 100))
+        var factoryCalls = 0
+        val judge = VisionIqJudge(
+            renderer,
+            settings = {
+                // 读库失败时调用方只能拿到 UNREADABLE；此时绝不能回退到环境变量端点。
+                IqVisionSettingsSnapshot(
+                    status = IqVisionSettingsStatus.UNREADABLE,
+                    record = null,
+                    config = IqVisionConfig(true, "https://old.example.com/v1", "m", "key", 60_000),
+                )
+            },
+            assessorFactory = {
+                factoryCalls += 1
+                assessor
+            },
+        )
+
+        val result = judge.judge(request())
+
+        assertEquals(IqJudgeVerdict.REVIEW, result.verdict)
+        assertTrue(result.reason?.contains("读取视觉判分配置失败") == true, "REASON=${result.reason}")
+        assertEquals(0, factoryCalls)
+        assertEquals(0, renderer.calls)
     }
 
     @Test

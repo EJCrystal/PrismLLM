@@ -78,6 +78,8 @@ class UpstreamRequestPolicy(
     private val protocol: GatewayProtocol?,
     private val authType: String,
     private val profiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
+    /** 目标渠道地址，仅用于判断上游是否需要回传 reasoning_content（看 host）。 */
+    private val baseUrl: String = "",
 ) {
     private val layers: List<UpstreamProtocolOverrides> = buildList {
         if (channel.inheritGlobal) {
@@ -88,14 +90,6 @@ class UpstreamRequestPolicy(
         channel.protocols[protocol?.value]?.let(::add)
     }
     private val profile = layers.asReversed().firstNotNullOfOrNull { it.headerProfile } ?: "auto"
-    private val reasoningContentPolicy: ReasoningContentPolicy =
-        channel.reasoningContentPolicy?.let(ReasoningContentPolicy::fromValue)
-            ?: (if (channel.inheritGlobal) global.reasoningContentPolicy?.let(ReasoningContentPolicy::fromValue) else null)
-            ?: ReasoningContentPolicy.AUTO
-    private val developerRolePolicy: DeveloperRolePolicy =
-        channel.developerRolePolicy?.let(DeveloperRolePolicy::fromValue)
-            ?: (if (channel.inheritGlobal) global.developerRolePolicy?.let(DeveloperRolePolicy::fromValue) else null)
-            ?: DeveloperRolePolicy.AUTO
 
     fun applyHeaders(builder: HttpRequestBuilder) {
         val result = linkedMapOf<String, String?>()
@@ -132,9 +126,9 @@ class UpstreamRequestPolicy(
         } else {
             merged
         }
-        val normalized = DeveloperRoleNormalizer.normalize(compatible, protocol, developerRolePolicy)
+        val normalized = DeveloperRoleNormalizer.normalize(compatible, protocol)
         val result = if (protocol == GatewayProtocol.CHAT_COMPLETIONS) {
-            ChatReasoningContentNormalizer.normalize(normalized, upstreamModel, reasoningContentPolicy)
+            ChatReasoningContentNormalizer.normalize(normalized, upstreamModel, baseUrl)
         } else {
             normalized
         }
@@ -166,16 +160,6 @@ fun validateUpstreamRequestOverrides(overrides: UpstreamRequestOverrides) {
     fun invalid(message: String): Nothing = throw badRequest("invalid_request_overrides", message)
     if (overrides.protocols.keys.any { GatewayProtocol.fromValue(it) == null }) {
         invalid("按协议覆盖的键必须是 chat_completions、responses、messages 或 gemini")
-    }
-    if (overrides.reasoningContentPolicy != null &&
-        ReasoningContentPolicy.fromValue(overrides.reasoningContentPolicy) == null
-    ) {
-        invalid("reasoning_content 处理策略必须是 auto、always 或 never")
-    }
-    if (overrides.developerRolePolicy != null &&
-        DeveloperRolePolicy.fromValue(overrides.developerRolePolicy) == null
-    ) {
-        invalid("developer 角色处理策略必须是 auto、always 或 never")
     }
     val layers = listOf(overrides.common()) + overrides.protocols.values
     layers.forEach { layer ->

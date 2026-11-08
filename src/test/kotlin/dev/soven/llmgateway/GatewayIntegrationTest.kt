@@ -30,6 +30,9 @@ import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
 import dev.soven.llmgateway.repo.NewChannelKey
 import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.ChannelKeyUpdate
+import dev.soven.llmgateway.domain.IqVisionSettingsRecord
+import dev.soven.llmgateway.domain.effective
+import dev.soven.llmgateway.repo.IqVisionSettingsUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
@@ -3482,6 +3485,49 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `iq vision settings concurrent endpoint switch does not pair key with the wrong endpoint`() = runBlocking {
+        val repository = app.iqVisionSettingsRepository
+        val defaults = app.iqVisionDefaults
+        // 先写入一个端点固定、带密钥的配置，模拟「端点 A 上有一把已保存的密钥」。
+        repository.update {
+            IqVisionSettingsUpdate(
+                IqVisionSettingsRecord(
+                    enabled = true,
+                    baseUrl = "https://a.example.com/v1",
+                    model = "vision-a",
+                    apiKey = "key-a",
+                    timeoutMs = 60_000,
+                    updatedAt = 0,
+                ),
+            )
+        }
+
+        // 两个请求并发把端点换成各自的地址，都不重新填密钥：都应被拒绝，
+        // 因为换端点且不显式清除时不能沿用旧密钥。
+        val rejections = coroutineScope {
+            listOf("https://b.example.com/v1", "https://c.example.com/v1").map { endpoint ->
+                async(Dispatchers.IO) {
+                    runCatching {
+                        repository.update { stored ->
+                            val previous = stored.effective(defaults)
+                            if (previous.baseUrl != endpoint) {
+                                throw IllegalStateException("endpoint changed without a new key")
+                            }
+                            null
+                        }
+                    }.isFailure
+                }
+            }.awaitAll()
+        }
+        assertTrue(rejections.all { it }, "REJECTIONS=$rejections")
+
+        // 配置必须保持原样：端点仍是 A，密钥仍是 A 的。
+        val after = assertNotNull(repository.load())
+        assertEquals("https://a.example.com/v1", after.baseUrl)
+        assertEquals("key-a", after.apiKey)
+    }
+
+    @Test
     fun keyAutoDisableSettingsConcurrentFirstSaveDoesNotRace() = runBlocking {
         val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository)
         val revisions = coroutineScope {
@@ -6412,6 +6458,141 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    fun `admin iq vision settings round trip without exposing the api key`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+
+            val unauthorized = client.get("/admin/api/iq-vision-settings")
+            assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
+
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val initial = client.get("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, initial.status)
+            val initialJson = Json.parseToJsonElement(initial.bodyAsText()).jsonObject
+            // 未保存过配置时沿用环境变量默认值，测试环境没有配置，因此是 environment 来源。
+            assertEquals("environment", initialJson["source"]?.jsonPrimitive?.content)
+            // 视觉判分器必须始终出现在列表里，启用与否由配置决定。
+            val judges = client.get("/admin/api/iq-tests/judges") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val judgeIds = Json.parseToJsonElement(judges.bodyAsText()).jsonObject["judges"]!!.jsonArray
+                .map { it.jsonObject["id"]!!.jsonPrimitive.content }
+            assertTrue("vision" in judgeIds, "JUDGES=$judgeIds")
+
+            val updated = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"baseUrl":"http://127.0.0.1:8080/v1/","model":"gpt-vision","apiKey":"vision-secret","timeoutMs":90000}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, updated.status)
+            val body = updated.bodyAsText()
+            val json = Json.parseToJsonElement(body).jsonObject
+            assertEquals(true, json["enabled"]?.jsonPrimitive?.boolean)
+            assertEquals("settings", json["source"]?.jsonPrimitive?.content)
+            assertEquals("settings", json["apiKeySource"]?.jsonPrimitive?.content)
+            assertEquals(true, json["apiKeySet"]?.jsonPrimitive?.boolean)
+            assertEquals("gpt-vision", json["model"]?.jsonPrimitive?.content)
+            // 末尾斜杠统一去掉，避免拼出 //chat/completions。
+            assertEquals("http://127.0.0.1:8080/v1", json["baseUrl"]?.jsonPrimitive?.content)
+            assertEquals(90_000, json["timeoutMs"]?.jsonPrimitive?.long)
+            assertFalse(body.contains("vision-secret"), "BODY=[$body]")
+
+            // 端点变更后不能沿用旧密钥，必须显式提供新密钥。
+            val switched = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"baseUrl":"https://vision.example.com/v1","model":"gpt-vision","timeoutMs":60000}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, switched.status)
+            // 被拒绝的请求不能改动已保存的配置。
+            val afterRejected = client.get("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val afterRejectedJson = Json.parseToJsonElement(afterRejected.bodyAsText()).jsonObject
+            assertEquals("http://127.0.0.1:8080/v1", afterRejectedJson["baseUrl"]?.jsonPrimitive?.content)
+            assertEquals(true, afterRejectedJson["apiKeySet"]?.jsonPrimitive?.boolean)
+
+            // 明确勾选清除时可以换端点，结果是端点生效、密钥为空。
+            val switchedCleared = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"baseUrl":"https://vision.example.com/v1","model":"gpt-vision","clearApiKey":true,"timeoutMs":60000}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, switchedCleared.status)
+            val switchedClearedJson = Json.parseToJsonElement(switchedCleared.bodyAsText()).jsonObject
+            assertEquals("https://vision.example.com/v1", switchedClearedJson["baseUrl"]?.jsonPrimitive?.content)
+            assertEquals(false, switchedClearedJson["apiKeySet"]?.jsonPrimitive?.boolean)
+            assertEquals("none", switchedClearedJson["apiKeySource"]?.jsonPrimitive?.content)
+
+            // 启用时超时必须落在合法区间，且在保存前完成校验。
+            val invalidTimeout = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"baseUrl":"https://vision.example.com/v1","model":"gpt-vision","apiKey":"vision-secret","timeoutMs":100}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, invalidTimeout.status)
+
+            // 关闭状态下也会写库，列宽校验不能只在启用时生效，否则超长值会撞上 varchar 变成 500。
+            val longModel = "m".repeat(201)
+            val oversizedModel = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":false,"baseUrl":"https://vision.example.com/v1","model":"$longModel","timeoutMs":60000}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, oversizedModel.status)
+
+            val invalidScheme = client.put("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"enabled":true,"baseUrl":"ftp://example.com","model":"gpt-vision","apiKey":"vision-secret","timeoutMs":60000}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, invalidScheme.status)
+
+            // 只检查前缀会放行这类地址：保存成功，但请求阶段才失败。直接调用接口也必须被拒绝。
+            listOf("https://example.com:abc/v1", "https://example com/v1", "https://example.com:70000/v1").forEach { bad ->
+                val invalidHost = client.put("/admin/api/iq-vision-settings") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        """{"enabled":true,"baseUrl":"$bad","model":"gpt-vision","apiKey":"vision-secret","timeoutMs":60000}""",
+                    )
+                }
+                assertEquals(HttpStatusCode.BadRequest, invalidHost.status, "BASE_URL=$bad")
+            }
+
+            // 保存后立即生效：重新读取必须反映新值，不需要重启。
+            val reloaded = client.get("/admin/api/iq-vision-settings") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val reloadedJson = Json.parseToJsonElement(reloaded.bodyAsText()).jsonObject
+            assertEquals("gpt-vision", reloadedJson["model"]?.jsonPrimitive?.content)
+            assertEquals(true, reloadedJson["enabled"]?.jsonPrimitive?.boolean)
+        }
+    }
+
+    @Test
     fun `admin runs candy iq test and reads history`() = runBlocking {
         val channel = createChannel("iq-test", "iq-json")
         val candyResponse =
@@ -8357,6 +8538,89 @@ class GatewayIntegrationTest {
                     ).use { result ->
                         assertTrue(result.next())
                         assertEquals(1, result.getInt(1), "只有 Grox 应获得覆盖策略")
+                    }
+                }
+            }
+        } finally {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use {
+                    it.execute("drop database if exists \"$databaseName\" with (force)")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `v58 migration drops the retired reasoning and developer policy keys`() {
+        val databaseName = "migration_v58_${System.nanoTime()}"
+        val migrationUrl = postgres.jdbcUrl.substringBefore("?").substringBeforeLast("/") + "/$databaseName"
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { it.execute("create database \"$databaseName\"") }
+        }
+        try {
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("57"))
+                .load()
+                .migrate()
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    // 一个带两个已删除键的渠道、一个不带任何键的渠道，以及全局设置。
+                    statement.execute(
+                        """
+                        insert into channels (id, name, base_url, auth_type, enabled, created_at, updated_at, request_overrides)
+                        values ('v58-dirty', 'dirty', 'https://dirty.example.com/v1', 'bearer', true, 1, 1,
+                                '{"reasoningContentPolicy":"always","developerRolePolicy":"never","headerProfile":"auto"}'),
+                               ('v58-clean', 'clean', 'https://clean.example.com/v1', 'bearer', true, 1, 1,
+                                '{"headerProfile":"codex"}')
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into upstream_request_settings (id, overrides, updated_at)
+                        values (1, '{"developerRolePolicy":"always","body":{"temperature":0.2}}', 1)
+                        on conflict (id) do update set overrides = excluded.overrides
+                        """.trimIndent(),
+                    )
+                }
+            }
+
+            Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+                .load()
+                .migrate()
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery(
+                        "select request_overrides from channels where id = 'v58-dirty'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        val overrides = Json.parseToJsonElement(result.getString(1)).jsonObject
+                        assertFalse(overrides.containsKey("reasoningContentPolicy"), "已删除的策略键应被清理")
+                        assertFalse(overrides.containsKey("developerRolePolicy"))
+                        assertEquals("auto", overrides["headerProfile"]?.jsonPrimitive?.content, "其余配置必须保留")
+                    }
+                    // 不含这两个键的行不应被重写。
+                    statement.executeQuery(
+                        "select request_overrides from channels where id = 'v58-clean'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertEquals("""{"headerProfile":"codex"}""", result.getString(1))
+                    }
+                    statement.executeQuery(
+                        "select overrides from upstream_request_settings",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        val overrides = Json.parseToJsonElement(result.getString(1)).jsonObject
+                        assertFalse(overrides.containsKey("developerRolePolicy"))
+                        assertEquals(
+                            "0.2",
+                            overrides["body"]?.jsonObject?.get("temperature")?.jsonPrimitive?.content,
+                        )
                     }
                 }
             }
@@ -11036,7 +11300,7 @@ class GatewayIntegrationTest {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.createStatement().use {
                 it.execute(
-                    "truncate table cooldown_state, admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users, web_search_settings, iq_test_runs restart identity cascade",
+                    "truncate table cooldown_state, admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users, web_search_settings, iq_vision_settings, iq_test_runs restart identity cascade",
                 )
             }
         }

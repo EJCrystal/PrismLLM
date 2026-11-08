@@ -59,6 +59,89 @@ class ShapeRefusalTest {
     }
 
     @Test
+    fun `400 acknowledging a refused reasoning field is a shape refusal`() {
+        // 换一个不需要回传思考内容的候选渠道就能服务，所以是可重试的形状问题。
+        assertTrue(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"The `reasoning_content` in the thinking mode must be passed back to the API."}}""",
+            ),
+        )
+        assertTrue(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"The `content[].thinking` in the thinking mode must be passed back to the API."}}""",
+            ),
+        )
+        assertTrue(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Missing required parameter: 'reasoning_content'","type":"invalid_request_error"}}""",
+            ),
+        )
+        assertTrue(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"reasoning_content is required for assistant messages"}}""",
+            ),
+        )
+        // Mistral 的 extra_forbidden 已被既有词表覆盖。
+        assertTrue(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Extra inputs are not permitted","type":"extra_forbidden"}}""",
+            ),
+        )
+    }
+
+    @Test
+    fun `400 rejecting the developer role is a shape refusal`() {
+        assertTrue(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"developer is not one of ['system', 'assistant', 'user', 'tool', 'function']"}}""",
+            ),
+        )
+        // 泛化的角色拒绝不猜，避免把真正的请求错误当成形状问题。
+        assertFalse(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Invalid value for role: 'wizard'"}}""",
+            ),
+        )
+    }
+
+    @Test
+    fun `400 naming another missing field beside reasoning_content is not a shape refusal`() {
+        // 缺字段是所有上游都会拒绝的请求错误，顺带提到 reasoning_content 也不算形状不兼容。
+        assertFalse(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Missing required parameter: messages. reasoning_content is optional"}}""",
+            ),
+        )
+        assertFalse(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Missing required parameter: model"}}""",
+            ),
+        )
+        assertFalse(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"Required field messages is missing while reasoning_content was supplied"}}""",
+            ),
+        )
+        // 字段名在前、但谓语说的是「可选」：不能被 40 字符窗口里的 is missing 带走。
+        assertFalse(
+            ShapeRefusal.matches(
+                400,
+                """{"error":{"message":"reasoning_content is optional; messages is missing"}}""",
+            ),
+        )
+    }
+
+    @Test
     fun `other statuses never match`() {
         assertFalse(ShapeRefusal.matches(500, "unknown variant developer"))
         assertFalse(ShapeRefusal.matches(404, "failed to deserialize"))

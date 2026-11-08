@@ -288,8 +288,6 @@ function channelFormSnapshot(useEditor = true): string {
         : requestOverrideDraftSnapshot(
             createRequestOverrideDrafts(form.requestOverrides),
             form.requestOverrides.inheritGlobal !== false,
-            form.requestOverrides.reasoningContentPolicy ?? null,
-            form.requestOverrides.developerRolePolicy ?? null,
           ),
     },
     keys: channelKeys.value.map((key) => ({
@@ -393,6 +391,9 @@ watchChannelRequestInputs(form, {
   onInputsChanged: () => {
     channelKeys.value.forEach((key) => {
       key.availableModels = []
+      // 凭据等上游输入变化后，旧密钥的模型授权不再适用，勾选一并清空；
+      // 重新“读取模型”时会按 authorized 自动回填。
+      key.models = []
       key.modelsLoading = false
       key.modelsError = ''
       key.modelsRequestId = (key.modelsRequestId || 0) + 1
