@@ -59,6 +59,8 @@ import kotlin.test.assertFailsWith
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("integration")
 @Tag("shard-1")
+@Tag("channel")
+@Tag("protocol")
 class UpstreamOverridesIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
