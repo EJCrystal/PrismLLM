@@ -8,11 +8,11 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertTrue
 
 /**
- * 请求日志模块的依赖边界：日志记录、尝试明细与编解码只做纯数据转换，
- * 只允许共享内核、计价上下文的只读类型、序列化注解与标准库。
+ * 请求日志模块的依赖边界：日志记录、尝试明细、写入队列与编解码只做纯数据转换，
+ * 只允许共享内核、计价上下文的只读类型、序列化/协程调度、日志门面与标准库。
  *
- * 日志只追加、不感知持久化与 HTTP；写入队列、仓储和报表留在应用层，
- * 后续再按端口迁入。
+ * 日志只追加、不感知持久化与 HTTP；写入队列依赖注入的插入与定价函数，
+ * 仓储和报表留在应用层，后续再按端口迁入。
  *
  * @author 文杰
  * @since 2026-11-10
@@ -37,7 +37,9 @@ class RequestLogArchitectureTest {
         "java..",
         "kotlin..",
         "kotlinx.serialization..",
+        "kotlinx.coroutines..",
         "org.jetbrains.annotations..",
+        "org.slf4j..",
         "dev.soven.llmgateway.requestlog.domain..",
         "dev.soven.llmgateway.requestlog.infra..",
         "dev.soven.llmgateway.shared.domain..",
@@ -53,6 +55,10 @@ class RequestLogArchitectureTest {
         assertTrue(
             classes.any { it.name == "dev.soven.llmgateway.requestlog.infra.UpstreamAttemptCodec" },
             "ArchUnit 未导入尝试明细编解码，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.infra.RequestLogWriter" },
+            "ArchUnit 未导入请求日志写入队列，规则会空跑",
         )
     }
 

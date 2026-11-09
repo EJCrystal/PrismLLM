@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.proxy
+package dev.soven.llmgateway.requestlog.infra
 
 import dev.soven.llmgateway.pricing.domain.ModelPriceSource
 import dev.soven.llmgateway.pricing.domain.ResolvedModelPrice
