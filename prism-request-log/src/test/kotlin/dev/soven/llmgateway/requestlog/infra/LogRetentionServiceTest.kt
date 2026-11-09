@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.report
+package dev.soven.llmgateway.requestlog.infra
 
 import dev.soven.llmgateway.requestlog.domain.CleanupResult
 import dev.soven.llmgateway.requestlog.domain.RetentionPolicy

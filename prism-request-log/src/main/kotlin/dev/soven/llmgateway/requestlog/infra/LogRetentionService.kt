@@ -1,6 +1,5 @@
-package dev.soven.llmgateway.report
+package dev.soven.llmgateway.requestlog.infra
 
-import dev.soven.llmgateway.repo.RequestLogRepository
 import dev.soven.llmgateway.requestlog.domain.CleanupResult
 import dev.soven.llmgateway.requestlog.domain.RetentionPolicy
 import dev.soven.llmgateway.requestlog.domain.retentionCutoff
@@ -21,12 +20,6 @@ class LogRetentionService(
     val policy: RetentionPolicy,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    constructor(
-        repository: RequestLogRepository,
-        policy: RetentionPolicy,
-        now: () -> Long = System::currentTimeMillis,
-    ) : this(repository::deleteOlderThan, policy, now)
-
     private val logger = LoggerFactory.getLogger(LogRetentionService::class.java)
     private val running = AtomicBoolean(false)
     private val cleanupMutex = Mutex()

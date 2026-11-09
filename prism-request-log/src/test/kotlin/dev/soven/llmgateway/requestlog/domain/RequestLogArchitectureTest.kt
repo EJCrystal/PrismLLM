@@ -60,6 +60,10 @@ class RequestLogArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.requestlog.infra.RequestLogWriter" },
             "ArchUnit 未导入请求日志写入队列，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.infra.LogRetentionService" },
+            "ArchUnit 未导入保留清理服务，规则会空跑",
+        )
     }
 
     @Test
