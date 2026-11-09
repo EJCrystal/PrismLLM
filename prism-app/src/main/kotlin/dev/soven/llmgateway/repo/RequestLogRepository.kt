@@ -12,6 +12,7 @@ import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.requestlog.infra.UpstreamAttemptCodec
 import dev.soven.llmgateway.pricing.domain.PricingMode
+import dev.soven.llmgateway.pricing.persistence.PricingTierCodec
 import dev.soven.llmgateway.requestlog.domain.CleanupResult
 import dev.soven.llmgateway.requestlog.domain.UsageGroup
 import dev.soven.llmgateway.requestlog.domain.UsageReport

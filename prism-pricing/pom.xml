@@ -27,6 +27,23 @@
             <version>${coroutines.version}</version>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!-- 默认价仓储的阶梯价 JSON 编解码。 -->
+            <groupId>org.jetbrains.kotlinx</groupId>
+            <artifactId>kotlinx-serialization-json</artifactId>
+            <version>${serialization.version}</version>
+        </dependency>
+        <dependency>
+            <!-- 默认价仓储使用 Exposed 表映射。 -->
+            <groupId>org.jetbrains.exposed</groupId>
+            <artifactId>exposed-core</artifactId>
+            <version>${exposed.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.exposed</groupId>
+            <artifactId>exposed-jdbc</artifactId>
+            <version>${exposed.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>

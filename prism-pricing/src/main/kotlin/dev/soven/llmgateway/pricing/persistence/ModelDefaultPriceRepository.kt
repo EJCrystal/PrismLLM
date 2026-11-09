@@ -1,6 +1,5 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.pricing.persistence
 
-import dev.soven.llmgateway.db.ModelDefaultPrices
 import dev.soven.llmgateway.pricing.domain.DefaultModelPriceLookup
 import dev.soven.llmgateway.pricing.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.pricing.domain.ModelPriceTier
