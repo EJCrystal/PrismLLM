@@ -29,8 +29,8 @@ import dev.soven.llmgateway.pricing.domain.ModelPriceTier
 import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.pricing.domain.PricingMode
-import dev.soven.llmgateway.domain.UpstreamEnvelope
-import dev.soven.llmgateway.domain.upstreamEnvelope
+import dev.soven.llmgateway.channel.domain.UpstreamEnvelope
+import dev.soven.llmgateway.channel.domain.upstreamEnvelope
 import dev.soven.llmgateway.oauth.OAuthLoginResult
 import dev.soven.llmgateway.oauth.OAuthLoginStartResult
 import dev.soven.llmgateway.oauth.OAuthQuotaResult

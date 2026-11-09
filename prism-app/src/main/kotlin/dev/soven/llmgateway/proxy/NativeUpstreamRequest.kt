@@ -2,7 +2,7 @@ package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.UpstreamEnvelope
+import dev.soven.llmgateway.channel.domain.UpstreamEnvelope
 import io.ktor.http.encodeURLPathPart
 
 /** Gemini places the model and streaming action in the URL; the other protocols use JSON model/stream. */

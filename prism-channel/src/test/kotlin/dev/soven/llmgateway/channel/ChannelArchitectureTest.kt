@@ -43,6 +43,10 @@ class ChannelArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.channel.domain.key.ChannelKeyRateLimiter" },
             "ArchUnit 未导入密钥限流器，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.channel.domain.UpstreamHeaderProfile" },
+            "ArchUnit 未导入上游请求头档案，规则会空跑",
+        )
     }
 
     @Test

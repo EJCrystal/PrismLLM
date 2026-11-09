@@ -582,9 +582,10 @@ class UpstreamOverridesIntegrationTest : GatewayIntegrationTestBase() {
             UpstreamHeaderProfiles.defaults.first { it.id == "codex" }.version,
             snapshot.profiles.first { it.id == "codex" }.version,
         )
-        assertTrue(snapshot.lastError!!.contains("catalog:invalid_persisted_profile"))
-        assertTrue(snapshot.lastError.contains("catalog:stored_error_redacted"))
-        assertFalse(snapshot.lastError.contains("secret"))
+        val lastError = snapshot.lastError!!
+        assertTrue(lastError.contains("catalog:invalid_persisted_profile"))
+        assertTrue(lastError.contains("catalog:stored_error_redacted"))
+        assertFalse(lastError.contains("secret"))
     }
 
     @Test

@@ -14,10 +14,10 @@ import dev.soven.llmgateway.domain.channelKey
 import dev.soven.llmgateway.domain.oauthAccount
 import dev.soven.llmgateway.routing.domain.candidate.RouteCandidate
 import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
-import dev.soven.llmgateway.domain.UpstreamHeaderProfile
+import dev.soven.llmgateway.channel.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
-import dev.soven.llmgateway.domain.UpstreamEnvelope
-import dev.soven.llmgateway.domain.upstreamEnvelope
+import dev.soven.llmgateway.channel.domain.UpstreamEnvelope
+import dev.soven.llmgateway.channel.domain.upstreamEnvelope
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistEnvelope
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistCloak
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistSuspension
