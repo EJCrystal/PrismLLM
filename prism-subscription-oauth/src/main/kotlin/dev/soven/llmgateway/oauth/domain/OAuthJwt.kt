@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.oauth
+package dev.soven.llmgateway.oauth.domain
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -13,7 +13,7 @@ import java.util.Base64
  * @author 文杰
  * @since 2026-11-06
  */
-internal data class OAuthTokenClaims(
+data class OAuthTokenClaims(
     val chatgptAccountId: String? = null,
     val planType: String? = null,
     val email: String? = null,
@@ -23,7 +23,7 @@ internal data class OAuthTokenClaims(
  * 解析 JWT 中的账号声明。非 JWT、payload 不是 JSON 或缺少字段时返回 null。
  * ChatGPT 的声明位于 `https://api.openai.com/auth` 命名空间下。
  */
-internal fun parseOAuthTokenClaims(token: String?): OAuthTokenClaims? {
+fun parseOAuthTokenClaims(token: String?): OAuthTokenClaims? {
     val payload = token
         ?.split('.')
         ?.takeIf { it.size >= 2 }

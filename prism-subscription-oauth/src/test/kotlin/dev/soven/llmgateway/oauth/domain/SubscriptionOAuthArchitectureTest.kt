@@ -24,6 +24,7 @@ class SubscriptionOAuthArchitectureTest {
     private val subscriptionOAuthDependencies = arrayOf(
         "java..",
         "kotlin..",
+        "kotlinx.serialization..",
         "org.jetbrains.annotations..",
         "dev.soven.llmgateway.shared..",
         "dev.soven.llmgateway.oauth.domain..",

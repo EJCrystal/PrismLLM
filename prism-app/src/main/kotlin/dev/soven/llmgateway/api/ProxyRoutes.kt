@@ -29,8 +29,8 @@ import dev.soven.llmgateway.oauth.OAuthAccountLease
 import dev.soven.llmgateway.oauth.OAuthTokenUnavailableException
 import dev.soven.llmgateway.oauth.OAuthRefreshException
 import dev.soven.llmgateway.oauth.OAuthUnavailableReason
-import dev.soven.llmgateway.oauth.parseCodexQuotaHeaders
-import dev.soven.llmgateway.oauth.parseRateLimitResetMs
+import dev.soven.llmgateway.oauth.domain.parseCodexQuotaHeaders
+import dev.soven.llmgateway.oauth.domain.parseRateLimitResetMs
 import dev.soven.llmgateway.oauth.proxyAddress
 import java.net.InetSocketAddress
 import java.net.ProxySelector
