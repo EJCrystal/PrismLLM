@@ -22,7 +22,7 @@ import dev.soven.llmgateway.proxy.isGeminiRequestPath
 import dev.soven.llmgateway.requestlog.infra.RequestLogWriter
 import dev.soven.llmgateway.proxy.UpstreamOccupancy
 import dev.soven.llmgateway.repo.ModelPriceRepository
-import dev.soven.llmgateway.repo.ModelDefaultPriceRepository
+import dev.soven.llmgateway.pricing.persistence.ModelDefaultPriceRepository
 import dev.soven.llmgateway.pricing.domain.ModelPricingService
 import dev.soven.llmgateway.routing.readmodel.OAuthAccountDirectory
 import dev.soven.llmgateway.routing.readmodel.UpstreamModelCatalog

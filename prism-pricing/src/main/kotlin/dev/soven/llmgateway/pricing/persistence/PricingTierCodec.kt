@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.pricing.persistence
 
 import dev.soven.llmgateway.pricing.domain.ModelPriceTier
 import java.math.BigDecimal
@@ -9,7 +9,7 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 
 /** Encodes tier rates as decimal strings so JSON never passes through binary floating point. */
-internal object PricingTierCodec {
+object PricingTierCodec {
     @Serializable
     private data class StoredTier(
         val upToTokens: Long?,

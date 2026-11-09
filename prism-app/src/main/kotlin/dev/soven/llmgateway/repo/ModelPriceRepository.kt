@@ -6,6 +6,7 @@ import dev.soven.llmgateway.pricing.domain.ModelPriceLookup
 import dev.soven.llmgateway.pricing.domain.ModelPriceRecord
 import dev.soven.llmgateway.pricing.domain.ModelPriceTier
 import dev.soven.llmgateway.pricing.domain.PricingMode
+import dev.soven.llmgateway.pricing.persistence.PricingTierCodec
 import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
