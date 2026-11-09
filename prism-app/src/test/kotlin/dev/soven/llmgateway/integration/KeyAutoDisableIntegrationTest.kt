@@ -73,6 +73,7 @@ import kotlin.test.assertFailsWith
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("integration")
 @Tag("shard-3")
+@Tag("channel")
 class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
 
     /**

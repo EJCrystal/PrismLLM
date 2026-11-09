@@ -46,6 +46,7 @@ import kotlin.test.assertTrue
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("integration")
 @Tag("shard-1")
+@Tag("channel")
 class ChannelKeyPoolIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test

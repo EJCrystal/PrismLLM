@@ -46,6 +46,7 @@ import kotlin.test.assertTrue
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("integration")
 @Tag("shard-3")
+@Tag("protocol")
 class GeminiNativeIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test

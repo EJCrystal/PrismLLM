@@ -53,6 +53,7 @@ import kotlin.test.assertTrue
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("integration")
 @Tag("shard-2")
+@Tag("channel")
 class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test

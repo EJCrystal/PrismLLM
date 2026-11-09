@@ -40,6 +40,7 @@ import kotlin.test.assertTrue
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("integration")
 @Tag("shard-4")
+@Tag("channel")
 class AdminChannelIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
