@@ -1,8 +1,6 @@
-package dev.soven.llmgateway.oauth
+package dev.soven.llmgateway.oauth.infra
 
-import dev.soven.llmgateway.oauth.domain.OAuthStoredWindowState
 import dev.soven.llmgateway.oauth.domain.OAuthWindowSnapshot
-import dev.soven.llmgateway.repo.OAuthWindowStore
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -11,7 +9,7 @@ class OAuthWindowStateWriterTest {
     @Test
     fun `coalesces pending snapshots per account`() = runTest {
         val store = RecordingStore()
-        val writer = OAuthWindowStateWriter(store, backgroundScope)
+        val writer = OAuthWindowStateWriter(store::persist, backgroundScope)
         writer.submit(snapshot("account-a", listOf(1)))
         writer.submit(snapshot("account-a", listOf(1, 2)))
         writer.closeAndDrain(5_000)
@@ -23,7 +21,7 @@ class OAuthWindowStateWriterTest {
     @Test
     fun `flushes every account on close`() = runTest {
         val store = RecordingStore()
-        val writer = OAuthWindowStateWriter(store, backgroundScope)
+        val writer = OAuthWindowStateWriter(store::persist, backgroundScope)
         writer.submit(snapshot("account-a", listOf(1)))
         writer.submit(snapshot("account-b", listOf(2)))
         writer.closeAndDrain(5_000)
@@ -34,7 +32,7 @@ class OAuthWindowStateWriterTest {
     @Test
     fun `a failed write does not block other accounts`() = runTest {
         val store = RecordingStore(failKeys = setOf("account-a"))
-        val writer = OAuthWindowStateWriter(store, backgroundScope)
+        val writer = OAuthWindowStateWriter(store::persist, backgroundScope)
         writer.submit(snapshot("account-a", listOf(1)))
         writer.submit(snapshot("account-b", listOf(2)))
         writer.closeAndDrain(5_000)
@@ -48,12 +46,10 @@ class OAuthWindowStateWriterTest {
         updatedAt = 1,
     )
 
-    private class RecordingStore(private val failKeys: Set<String> = emptySet()) : OAuthWindowStore {
+    private class RecordingStore(private val failKeys: Set<String> = emptySet()) {
         val writes = mutableListOf<OAuthWindowSnapshot>()
 
-        override suspend fun loadAll(limit: Int): List<OAuthStoredWindowState> = emptyList()
-
-        override suspend fun upsert(snapshot: OAuthWindowSnapshot) {
+        suspend fun persist(snapshot: OAuthWindowSnapshot) {
             if (snapshot.accountId in failKeys) error("write failed")
             writes += snapshot
         }

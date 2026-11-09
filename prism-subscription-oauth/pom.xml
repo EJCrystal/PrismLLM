@@ -29,6 +29,12 @@
             <artifactId>kotlinx-serialization-json</artifactId>
             <version>${serialization.version}</version>
         </dependency>
+        <dependency>
+            <!-- 账号调度器与写透队列使用协程原语维护内存状态。 -->
+            <groupId>org.jetbrains.kotlinx</groupId>
+            <artifactId>kotlinx-coroutines-core</artifactId>
+            <version>${coroutines.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -49,6 +55,12 @@
         <dependency>
             <groupId>com.tngtech.archunit</groupId>
             <artifactId>archunit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlinx</groupId>
+            <artifactId>kotlinx-coroutines-test</artifactId>
+            <version>${coroutines.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.oauth
+package dev.soven.llmgateway.oauth.infra
 
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 

@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.oauth
+package dev.soven.llmgateway.oauth.infra
 
 import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
@@ -151,7 +151,7 @@ class OAuthAccountScheduler(
      * 记录一次回复头里的额度读数。比轮询更及时，能让刚打到 100% 的账号在下一次请求
      * 就被拦下；只更新内存态，下一次额度扫描仍会以 `/wham/usage` 的完整读数覆盖。
      */
-    internal suspend fun noteQuotaHeaders(
+    suspend fun noteQuotaHeaders(
         account: OAuthAccountRecord,
         reading: OAuthQuotaHeaderReading?,
         nowMs: Long = now(),
