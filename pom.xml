@@ -45,6 +45,7 @@
         <junit.version>5.13.4</junit.version>
         <mockk.version>1.14.11</mockk.version>
         <testcontainers.version>1.21.4</testcontainers.version>
+        <archunit.version>1.5.1</archunit.version>
     </properties>
 
     <dependencyManagement>
@@ -65,6 +66,11 @@
                 <groupId>dev.soven</groupId>
                 <artifactId>prism-protocol</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.tngtech.archunit</groupId>
+                <artifactId>archunit</artifactId>
+                <version>${archunit.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

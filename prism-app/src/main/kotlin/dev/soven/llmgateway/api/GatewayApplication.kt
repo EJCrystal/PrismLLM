@@ -61,6 +61,7 @@ import dev.soven.llmgateway.quota.ClientKeyQuotaService
 import dev.soven.llmgateway.quota.ChannelKeyRateLimiter
 import dev.soven.llmgateway.quota.RequestLimitService
 import dev.soven.llmgateway.security.AdminSessions
+import dev.soven.llmgateway.protocol.ProtocolConversion
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import dev.soven.llmgateway.shared.crypto.PasswordHasher
 import dev.soven.llmgateway.plugin.quota.ChannelQuotaProviderRegistry
@@ -275,6 +276,11 @@ class GatewayApplication(
     /** 测试可注入渲染器；生产环境留空，自动使用无头浏览器。 */
     private val visionRendererOverride: HtmlImageRenderer? = null,
 ) : AutoCloseable {
+    init {
+        // 协议组合缺失只会在对应请求到达时才暴露，放到启动阶段拦截。
+        ProtocolConversion.selfCheck()
+    }
+
     private val logger = LoggerFactory.getLogger(GatewayApplication::class.java)
     private val closed = AtomicBoolean(false)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
