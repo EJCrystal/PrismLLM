@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.plugin.quota
+package dev.soven.llmgateway.channel.infra.quota
 
 import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider
 import org.slf4j.LoggerFactory

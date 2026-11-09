@@ -7,6 +7,7 @@ import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.oauth.domain.OAuthAuthState
 import dev.soven.llmgateway.oauth.infra.OAuthRefreshException
 import dev.soven.llmgateway.oauth.infra.OAuthTokenProviderRegistry
+import dev.soven.llmgateway.shared.domain.KeyCredentialResolver
 import dev.soven.llmgateway.shared.domain.UpstreamCredential
 import dev.soven.llmgateway.shared.domain.saturatedAdd
 import dev.soven.llmgateway.repo.OAuthAccountRepository

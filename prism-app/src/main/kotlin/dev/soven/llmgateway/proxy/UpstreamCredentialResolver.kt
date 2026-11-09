@@ -2,7 +2,7 @@ package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.shared.error.GatewayError
 import dev.soven.llmgateway.shared.domain.UpstreamCredential
-import dev.soven.llmgateway.oauth.KeyCredentialResolver
+import dev.soven.llmgateway.shared.domain.KeyCredentialResolver
 import dev.soven.llmgateway.oauth.OAuthTokenUnavailableException
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CancellationException

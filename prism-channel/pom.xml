@@ -56,6 +56,12 @@
             <artifactId>re2j</artifactId>
             <version>${re2j.version}</version>
         </dependency>
+        <dependency>
+            <!-- 渠道额度查询用 Guava 缓存合并相同查询并限制条目数。 -->
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>${guava.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>
