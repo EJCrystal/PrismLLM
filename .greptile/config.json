@@ -1,6 +1,9 @@
 {
   "strictness": 2,
-  "commentTypes": ["logic", "syntax"],
+  "commentTypes": [
+    "logic",
+    "syntax"
+  ],
   "effort": "base",
   "autoReview": [],
   "statusCheck": true,

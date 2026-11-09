@@ -89,9 +89,14 @@ jobs:
           else
             PR_NUMBER=$(gh api "repos/${REPO}/commits/${SHA}/pulls" -q '.[0].number // empty' || true)
           fi
-          # 已降级到 PR-Agent 的 PR / commit，门禁只认 PR-Agent 的结果，避免两边抢写
+          # 已降级到 PR-Agent 的 PR / commit，门禁只认 PR-Agent 的结果，避免两边抢写。
+          # 评论拉取失败时直接退出（fail closed），否则会把已判 failure 的门禁改写成 success。
           if [ -n "$PR_NUMBER" ]; then
-            if gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
+            if ! COMMENTS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]'); then
+              echo "::warning::拉取 PR 评论失败，无法确认是否已降级，跳过改写门禁"
+              exit 0
+            fi
+            if printf '%s\n' "$COMMENTS" \
                 | jq -s -e --arg pr "$PR_AGENT_PR_MARKER" --arg commit "$PR_AGENT_COMMIT_MARKER" '
                     any(.[]; .user.login == "github-actions[bot]"
                               and (((.body // "") | contains($pr)) or ((.body // "") | contains($commit))))' > /dev/null; then
@@ -262,7 +267,10 @@ jobs:
           GREPTILE_MARKER='<!-- ai-review-tier:greptile scope=pr'
           PR_AGENT_MARKER='<!-- ai-review-tier:pr-agent scope=pr'
 
-          # 只对本 commit 生效的 PR-Agent 标记，带 SHA，避免影响同 PR 的其他 commit。
+          # 只对本 commit 生效的标记，带 SHA，避免影响同 PR 的其他 commit。
+          # 本 commit 已改走 Greptile / PR-Agent 后，后续同 commit 的事件要沿用同一档位，
+          # 否则 Greptile 的 check run 结果会被当成「当前档位不是 greptile」而被忽略。
+          commit_greptile_marker() { echo "<!-- ai-review-tier:greptile scope=commit sha=${HEAD_SHA}"; }
           commit_pr_agent_marker() { echo "<!-- ai-review-tier:pr-agent scope=commit sha=${HEAD_SHA}"; }
 
           # 手动重跑与 PR 事件本身就代表「这次要重新审」，不受去重与已放行判断限制。
@@ -380,7 +388,7 @@ jobs:
             refresh_comments
             if has_marker "$PR_AGENT_MARKER" || has_marker "$(commit_pr_agent_marker)"; then
               echo "pr-agent"
-            elif has_marker "$GREPTILE_MARKER"; then
+            elif has_marker "$GREPTILE_MARKER" || has_marker "$(commit_greptile_marker)"; then
               echo "greptile"
             elif has_trigger '^/review$'; then
               echo "pr-agent"
@@ -397,6 +405,10 @@ jobs:
             if [ "${2:-}" = "sticky" ]; then
               post_marker "$GREPTILE_MARKER" \
                 "检测到 CodeRabbit 不可用（${reason}），本 PR 合并前的审查将改用 **Greptile**；若 Greptile 也不可用，会再降级到 **PR-Agent** 兜底。"
+            else
+              # 偶发不可用：只标记本 commit，下个 commit 仍先试 CodeRabbit。
+              post_marker "$(commit_greptile_marker)" \
+                "本 commit 改由 **Greptile** 审查（${reason}）。"
             fi
             ensure_greptile_review
           }
@@ -429,67 +441,12 @@ jobs:
             exit 0
           }
 
-          # 第二级：确保 Greptile 已接过本 commit 的审查；失败或无响应则继续降级。
-          # $1 = force 时忽略既有邀请的等待窗口，立即重新邀请。
-          ensure_greptile_review() {
-            local state age deadline
-            state=$(greptile_state)
-            case "$state" in
-              reviewed)
-                if [ "$(gate_state)" != "success" ]; then
-                  set_gate success "Greptile 审查通过（CodeRabbit 不可用）"
-                fi
-                echo "Greptile 已完成本 commit 的审查。"
-                exit 0
-                ;;
-              running)
-                local running_age
-                running_age=$(greptile_running_age)
-                if [ -n "$running_age" ] && [ "$running_age" -ge "$GREPTILE_STUCK_SECONDS" ]; then
-                  # 大 PR 可能真的慢，只降级本 commit，不把这个 PR 永久固定在 PR-Agent。
-                  fallback_to_pr_agent "Greptile 已运行 ${running_age} 秒仍未结束"
-                fi
-                echo "Greptile 正在审查本 commit，等待它的 check run 结果。"
-                exit 0
-                ;;
-              failed)
-                fallback_to_pr_agent "Greptile check run 未通过"
-                ;;
-            esac
-
-            if [ "${1:-}" != "force" ]; then
-              age=$(greptile_invite_age)
-              if [ -n "$age" ]; then
-                if [ "$age" -lt "$GREPTILE_WAIT_SECONDS" ]; then
-                  # 邀请后可能已经跑完，先复核一次状态再决定是等还是继续降级。
-                  state=$(greptile_state)
-                  if [ "$state" = "reviewed" ]; then
-                    if [ "$(gate_state)" != "success" ]; then
-                      set_gate success "Greptile 审查通过（CodeRabbit 不可用）"
-                    fi
-                    echo "Greptile 已完成本 commit 的审查。"
-                    exit 0
-                  fi
-                  if [ "$state" = "failed" ]; then
-                    fallback_to_pr_agent "Greptile check run 未通过"
-                  fi
-                  echo "本 commit 已在 ${age} 秒前邀请过 Greptile，继续等待。"
-                  exit 0
-                fi
-                echo "邀请 Greptile 后 ${age} 秒仍无响应，继续降级。"
-                fallback_to_pr_agent "邀请 Greptile 后 ${age} 秒仍无响应" sticky
-              fi
-            fi
-
-            echo "邀请 Greptile 审查本 commit。"
-            post_as_pat "@greptileai review"
-            set_gate_pending "已邀请 Greptile 审查，等待结果..."
-
-            # 边等边判，不依赖后续事件：Greptile 正常时几分钟内就会出结论；
-            # 迟迟不接单（none）或接了单却一直跑不完（running）都按不可用处理，
-            # 否则门禁会永远停在 pending。
-            local absent_deadline stuck_deadline now
-            absent_deadline=$(( $(date +%s) + GREPTILE_WAIT_SECONDS ))
+          # 等待 Greptile 的 check run：$1 = 等它「接单」的最长秒数。
+          # 边等边判，不依赖后续事件：迟迟不接单（none）或接了单却一直跑不完（running）
+          # 都按不可用处理，否则本 job 退出后再没有事件推进，门禁会一直停在 pending。
+          wait_for_greptile() {
+            local wait_seconds="$1" state absent_deadline stuck_deadline now age
+            absent_deadline=$(( $(date +%s) + wait_seconds ))
             stuck_deadline=$(( $(date +%s) + GREPTILE_STUCK_SECONDS ))
             while :; do
               sleep 20
@@ -508,7 +465,7 @@ jobs:
               esac
               now=$(date +%s)
               if [ "$state" = "none" ] && [ "$now" -ge "$absent_deadline" ]; then
-                fallback_to_pr_agent "邀请 Greptile 后 ${GREPTILE_WAIT_SECONDS} 秒内无响应" sticky
+                fallback_to_pr_agent "邀请 Greptile 后 ${wait_seconds} 秒内无响应" sticky
               fi
               if [ "$state" = "running" ]; then
                 age=$(greptile_running_age)
@@ -521,8 +478,64 @@ jobs:
             done
           }
 
+          # 第二级：确保 Greptile 已接过本 commit 的审查；失败或无响应则继续降级。
+          # $1 = force 时忽略既有邀请的等待窗口，立即重新邀请。
+          ensure_greptile_review() {
+            local state age remaining
+            state=$(greptile_state)
+            case "$state" in
+              reviewed)
+                if [ "$(gate_state)" != "success" ]; then
+                  set_gate success "Greptile 审查通过（CodeRabbit 不可用）"
+                fi
+                echo "Greptile 已完成本 commit 的审查。"
+                exit 0
+                ;;
+              running)
+                local running_age
+                running_age=$(greptile_running_age)
+                if [ -n "$running_age" ] && [ "$running_age" -ge "$GREPTILE_STUCK_SECONDS" ]; then
+                  # 大 PR 可能真的慢，只降级本 commit，不把这个 PR 永久固定在 PR-Agent。
+                  fallback_to_pr_agent "Greptile 已运行 ${running_age} 秒仍未结束"
+                fi
+                echo "Greptile 正在审查本 commit，等它的 check run 结束。"
+                wait_for_greptile "$GREPTILE_WAIT_SECONDS"
+                ;;
+              failed)
+                fallback_to_pr_agent "Greptile check run 未通过"
+                ;;
+            esac
+
+            if [ "${1:-}" != "force" ]; then
+              age=$(greptile_invite_age)
+              if [ -n "$age" ]; then
+                if [ "$age" -ge "$GREPTILE_WAIT_SECONDS" ]; then
+                  echo "邀请 Greptile 后 ${age} 秒仍无响应，继续降级。"
+                  fallback_to_pr_agent "邀请 Greptile 后 ${age} 秒仍无响应" sticky
+                fi
+                # 已有邀请且还在等待窗口内：不重复发评论，但继续盯结果，
+                # 剩余时长按原始邀请时间算。
+                remaining=$(( GREPTILE_WAIT_SECONDS - age ))
+                echo "本 commit 已在 ${age} 秒前邀请过 Greptile，继续等待剩余 ${remaining} 秒。"
+                wait_for_greptile "$remaining"
+              fi
+            fi
+
+            echo "邀请 Greptile 审查本 commit。"
+            post_as_pat "@greptileai review"
+            set_gate_pending "已邀请 Greptile 审查，等待结果..."
+            wait_for_greptile "$GREPTILE_WAIT_SECONDS"
+          }
+
           TIER=$(current_tier)
           echo "当前审查档位：${TIER}"
+
+          # 同一 commit 的门禁已经通过时，只有手动触发需要重跑；其余事件直接退出，
+          # 避免迟到的上游事件重新发邀请、或把 success 改回 pending。
+          if [ "$EVENT_NAME" != "workflow_dispatch" ] && [ "$(gate_state)" = "success" ]; then
+            echo "本 commit 的 AI Review Gate 已通过，忽略本次 ${EVENT_NAME} 事件。"
+            exit 0
+          fi
 
           # ---- 手动触发：按指定档位执行，auto 表示沿用 PR 当前档位 ----
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
@@ -573,6 +586,9 @@ jobs:
               ensure_greptile_review
             fi
 
+            # 只在 running 时把结果交给后续 check_run 事件；check run 已经结束
+            # （skipped/失败/取消）时不会有新事件，必须在本 job 内直接降级，否则门禁卡死。
+            CR=""
             deadline=$(( $(date +%s) + CR_ABSENT_GRACE_SECONDS ))
             while [ "$(date +%s)" -lt "$deadline" ]; do
               CR=$(cr_state)
@@ -582,14 +598,27 @@ jobs:
                 echo "CodeRabbit 已审查完本 commit，门禁放行。"
                 exit 0
               fi
-              if [ "$CR" != "absent" ]; then
+              if [ "$CR" = "running" ]; then
                 echo "CodeRabbit 已接单，后续由它的 check run 结果决定是否降级。"
                 exit 0
               fi
+              if [ "$CR" = "unavailable" ]; then
+                break
+              fi
               sleep 10
             done
-            echo "CodeRabbit 在 ${CR_ABSENT_GRACE_SECONDS} 秒内未创建 check run，本 commit 改由 Greptile 审查。"
-            switch_to_greptile "本 commit 上 CodeRabbit 未创建任何 check run"
+
+            case "$CR" in
+              unavailable)
+                echo "CodeRabbit 在本 commit 上的 check run 已结束且未审查，改由 Greptile 审查。"
+                # check run 结论非成功属于 CodeRabbit 确认不可用，本 PR 后续 commit 也直接走低档位。
+                switch_to_greptile "本 commit 上 CodeRabbit 的 check run 已结束且未审查" sticky
+                ;;
+              *)
+                echo "CodeRabbit 在 ${CR_ABSENT_GRACE_SECONDS} 秒内未创建 check run，本 commit 改由 Greptile 审查。"
+                switch_to_greptile "本 commit 上 CodeRabbit 未创建任何 check run"
+                ;;
+            esac
           fi
 
           # ---- 第二级 Greptile 的 check run 结果 ----
