@@ -2,9 +2,9 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.OAuthAccountWindows
 import dev.soven.llmgateway.db.OAuthAccounts
-import dev.soven.llmgateway.domain.OAuthAccountPolicy
-import dev.soven.llmgateway.domain.OAuthStoredWindowState
-import dev.soven.llmgateway.domain.OAuthWindowSnapshot
+import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.oauth.domain.OAuthStoredWindowState
+import dev.soven.llmgateway.oauth.domain.OAuthWindowSnapshot
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json

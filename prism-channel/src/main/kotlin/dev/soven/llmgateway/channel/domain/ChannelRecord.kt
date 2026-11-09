@@ -5,6 +5,7 @@ import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.shared.crypto.EncryptedCredential
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.shared.domain.OAuthProvider
+import dev.soven.llmgateway.shared.domain.UpstreamCredential
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 
 /**
@@ -48,27 +49,6 @@ data class ChannelKeyRateLimitPolicy(
 
     val configured: Boolean
         get() = enabled && (requestsPerMinute != null || maxConcurrentRequests != null)
-}
-
-/**
- * 数据面可路由的上游凭据。静态渠道密钥与订阅账号都实现这一接口，
- * 路由、冷却、并发占用和凭据解析不再依赖 channel_keys 这一张表。
- *
- * 订阅账号由 subscription-oauth 上下文实现，接口不能声明为 sealed：
- * 实现跨模块后需要保持可扩展，具体分支由使用方的 `when` 显式兜底。
- */
-interface UpstreamCredential {
-    val id: String
-    val name: String
-    val priority: Int
-    val models: List<String>
-    val enabled: Boolean
-
-    val isOAuth: Boolean
-
-    fun supports(upstreamModel: String): Boolean
-
-    fun isRoutable(now: Long = System.currentTimeMillis()): Boolean
 }
 
 /**

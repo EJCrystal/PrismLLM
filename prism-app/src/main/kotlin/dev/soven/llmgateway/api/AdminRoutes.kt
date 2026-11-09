@@ -16,7 +16,7 @@ import dev.soven.llmgateway.channel.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider
 import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
 import dev.soven.llmgateway.channel.domain.ChannelKeyRateLimitPolicy
-import dev.soven.llmgateway.channel.domain.UpstreamCredential
+import dev.soven.llmgateway.shared.domain.UpstreamCredential
 import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.shared.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
@@ -26,7 +26,7 @@ import dev.soven.llmgateway.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.proxy.validateUpstreamRequestOverrides
 import dev.soven.llmgateway.domain.ModelPriceTier
-import dev.soven.llmgateway.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.domain.UpstreamEnvelope
@@ -2848,7 +2848,7 @@ private fun adminForbidden(code: String, message: String): GatewayError =
 /** 管理面账号响应：把账号关联的渠道 ID 展开成名称，并带上实时调度状态。 */
 private suspend fun oauthAccountResponse(
     app: GatewayApplication,
-    account: dev.soven.llmgateway.domain.OAuthAccountRecord,
+    account: dev.soven.llmgateway.oauth.domain.OAuthAccountRecord,
 ): OAuthAccountResponse {
     val channelsById = app.channelRepository.list().associateBy { it.id }
     return account.toResponse(
@@ -2867,8 +2867,8 @@ private suspend fun oauthAccountResponse(
  */
 private suspend fun attachProviderChannel(
     app: GatewayApplication,
-    account: dev.soven.llmgateway.domain.OAuthAccountRecord,
-): dev.soven.llmgateway.domain.OAuthAccountRecord {
+    account: dev.soven.llmgateway.oauth.domain.OAuthAccountRecord,
+): dev.soven.llmgateway.oauth.domain.OAuthAccountRecord {
     val channelId = app.providerChannelProvisioner.ensure(account.provider) ?: return account
     val attached = if (account.channelIds == setOf(channelId)) {
         account
@@ -2882,7 +2882,7 @@ private suspend fun attachProviderChannel(
 
 private suspend fun clearOAuthAccountCooldown(
     app: GatewayApplication,
-    account: dev.soven.llmgateway.domain.OAuthAccountRecord,
+    account: dev.soven.llmgateway.oauth.domain.OAuthAccountRecord,
 ) {
     app.oauthAccountScheduler.clearCooldown(account.id)
     if (account.channelIds.isEmpty()) return

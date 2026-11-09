@@ -2,12 +2,12 @@ package dev.soven.llmgateway.oauth
 
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 
-import dev.soven.llmgateway.domain.OAuthAccountRecord
-import dev.soven.llmgateway.domain.OAuthAccountPolicy
-import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
-import dev.soven.llmgateway.domain.OAuthQuotaWindow
-import dev.soven.llmgateway.domain.OAuthStoredWindowState
-import dev.soven.llmgateway.domain.OAuthWindowSnapshot
+import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
+import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaSnapshot
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaWindow
+import dev.soven.llmgateway.oauth.domain.OAuthStoredWindowState
+import dev.soven.llmgateway.oauth.domain.OAuthWindowSnapshot
 import kotlinx.coroutines.test.runTest
 import java.time.Instant
 import kotlin.test.Test

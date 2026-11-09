@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.routing.readmodel
 
-import dev.soven.llmgateway.channel.domain.UpstreamCredential
+import dev.soven.llmgateway.shared.domain.UpstreamCredential
 
 /**
  * 路由读模型需要的订阅账号目录。

@@ -2,7 +2,7 @@ package dev.soven.llmgateway.proxy.codeassist
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
-import dev.soven.llmgateway.domain.OAuthAccountRecord
+import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import io.ktor.client.HttpClient

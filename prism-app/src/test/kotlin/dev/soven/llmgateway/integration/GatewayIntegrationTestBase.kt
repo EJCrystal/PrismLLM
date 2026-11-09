@@ -6,7 +6,7 @@ import dev.soven.llmgateway.config.OAuthConfig
 import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.OAuthAccountRecord
+import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides

@@ -1,9 +1,9 @@
 package dev.soven.llmgateway.oauth
 
-import dev.soven.llmgateway.channel.domain.UpstreamCredential
+import dev.soven.llmgateway.shared.domain.UpstreamCredential
 
-import dev.soven.llmgateway.domain.OAuthAccountRecord
-import dev.soven.llmgateway.domain.OAuthRoutingStrategy
+import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
+import dev.soven.llmgateway.oauth.domain.OAuthRoutingStrategy
 import dev.soven.llmgateway.routing.domain.candidate.RouteCandidate
 import dev.soven.llmgateway.shared.domain.saturatedAdd
 import dev.soven.llmgateway.shared.domain.saturatedSubtract
@@ -178,7 +178,7 @@ class OAuthAccountRouting(
         return remaining / hours
     }
 
-    private fun poolKey(channelId: String, credential: dev.soven.llmgateway.channel.domain.UpstreamCredential): String =
+    private fun poolKey(channelId: String, credential: UpstreamCredential): String =
         "$channelId#${credential.priority}"
 
     private companion object {

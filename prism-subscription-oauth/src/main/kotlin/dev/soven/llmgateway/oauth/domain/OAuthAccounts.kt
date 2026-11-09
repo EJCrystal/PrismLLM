@@ -1,7 +1,7 @@
-package dev.soven.llmgateway.domain
+package dev.soven.llmgateway.oauth.domain
 
-import dev.soven.llmgateway.channel.domain.UpstreamCredential
 import dev.soven.llmgateway.shared.domain.OAuthProvider
+import dev.soven.llmgateway.shared.domain.UpstreamCredential
 import dev.soven.llmgateway.shared.domain.saturatedAdd
 
 /**

@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.oauth
 
-import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
-import dev.soven.llmgateway.domain.OAuthQuotaWindow
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaSnapshot
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.shared.domain.saturatedAdd
 
 /**

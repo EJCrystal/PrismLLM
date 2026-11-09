@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.oauth
 
-import dev.soven.llmgateway.domain.OAuthStoredWindowState
-import dev.soven.llmgateway.domain.OAuthWindowSnapshot
+import dev.soven.llmgateway.oauth.domain.OAuthStoredWindowState
+import dev.soven.llmgateway.oauth.domain.OAuthWindowSnapshot
 import dev.soven.llmgateway.repo.OAuthWindowStore
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test

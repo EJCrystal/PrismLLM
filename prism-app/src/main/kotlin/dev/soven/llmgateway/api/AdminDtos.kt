@@ -14,11 +14,11 @@ import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.domain.ModelTestSettingsRecord
-import dev.soven.llmgateway.domain.OAuthAccountPolicy
-import dev.soven.llmgateway.domain.OAuthAccountRecord
-import dev.soven.llmgateway.domain.OAuthAccountRuntimeState
-import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
-import dev.soven.llmgateway.domain.OAuthQuotaWindow
+import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
+import dev.soven.llmgateway.oauth.domain.OAuthAccountRuntimeState
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaSnapshot
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamRequestSettingsRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderCatalogSnapshot

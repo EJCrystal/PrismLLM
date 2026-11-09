@@ -6,7 +6,7 @@ import dev.soven.llmgateway.config.OAuthConfig
 import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.channel.domain.ChannelRecord
-import dev.soven.llmgateway.domain.OAuthAuthState
+import dev.soven.llmgateway.oauth.domain.OAuthAuthState
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.channel.persistence.ChannelRepository
 import dev.soven.llmgateway.channel.persistence.NewChannelKey

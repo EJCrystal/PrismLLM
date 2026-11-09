@@ -5,12 +5,12 @@ import dev.soven.llmgateway.db.OAuthAccountChannels
 import dev.soven.llmgateway.db.OAuthAccountModels
 import dev.soven.llmgateway.db.OAuthAccounts
 import dev.soven.llmgateway.channel.domain.ChannelKind
-import dev.soven.llmgateway.domain.OAuthAccountPolicy
-import dev.soven.llmgateway.domain.OAuthAccountRecord
-import dev.soven.llmgateway.domain.OAuthAuthState
+import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
+import dev.soven.llmgateway.oauth.domain.OAuthAuthState
 import dev.soven.llmgateway.shared.domain.OAuthProvider
-import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
-import dev.soven.llmgateway.domain.OAuthQuotaWindow
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaSnapshot
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.shared.crypto.EncryptedCredential
 import dev.soven.llmgateway.shared.crypto.credentialFingerprint
 import org.jetbrains.exposed.v1.core.ResultRow

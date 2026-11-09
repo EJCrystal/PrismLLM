@@ -5,11 +5,11 @@ import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
 import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.OAuthAccountPolicy
-import dev.soven.llmgateway.domain.OAuthAccountRecord
-import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
-import dev.soven.llmgateway.domain.OAuthQuotaWindow
-import dev.soven.llmgateway.domain.OAuthRoutingStrategy
+import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaSnapshot
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaWindow
+import dev.soven.llmgateway.oauth.domain.OAuthRoutingStrategy
 import dev.soven.llmgateway.routing.domain.candidate.RouteCandidate
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import kotlinx.coroutines.test.runTest
