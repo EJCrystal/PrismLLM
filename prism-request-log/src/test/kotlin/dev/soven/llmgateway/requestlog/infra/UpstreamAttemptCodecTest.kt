@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.requestlog.infra
 
 import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import kotlin.test.Test

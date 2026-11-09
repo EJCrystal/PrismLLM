@@ -12,6 +12,7 @@ import dev.soven.llmgateway.db.OAuthAccountChannels
 import dev.soven.llmgateway.db.OAuthAccountModels
 import dev.soven.llmgateway.db.OAuthAccounts
 import dev.soven.llmgateway.requestlog.domain.*
+import dev.soven.llmgateway.requestlog.infra.UpstreamAttemptCodec
 import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
