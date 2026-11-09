@@ -56,7 +56,7 @@ import dev.soven.llmgateway.channel.persistence.ChannelKeyUpdate
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.OAuthAccountCredentialUpdate
-import dev.soven.llmgateway.repo.KeyAutoDisableSettingsAuditContext
+import dev.soven.llmgateway.channel.persistence.KeyAutoDisableSettingsAuditContext
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyDisableMode
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.channel.domain.key.KeyDisablePolicy

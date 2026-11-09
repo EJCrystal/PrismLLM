@@ -36,7 +36,7 @@ class AdminAuditRepository(private val database: Database) {
     }
 
     /** 与系统触发的密钥状态变更共用当前事务，审计写入失败时一并回滚。 */
-    internal fun recordInTransaction(
+    fun recordInTransaction(
         actor: String?,
         action: String,
         method: String,

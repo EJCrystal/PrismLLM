@@ -55,7 +55,8 @@ import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.repo.OAuthWindowRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
-import dev.soven.llmgateway.repo.KeyAutoDisableRepository
+import dev.soven.llmgateway.channel.persistence.KeyAutoDisableRepository
+import dev.soven.llmgateway.channel.persistence.KeyStateAudit
 import dev.soven.llmgateway.channel.persistence.ChannelKeyStateChangedException
 import dev.soven.llmgateway.requestlog.infra.LogRetentionService
 import dev.soven.llmgateway.quota.infra.ClientKeyQuotaService
@@ -299,7 +300,20 @@ class GatewayApplication(
     val requestLimitService = RequestLimitService(clientKeyQuotaService)
     val adminUserRepository = AdminUserRepository(databaseFactory.database)
     val adminAuditRepository = AdminAuditRepository(databaseFactory.database)
-    val keyAutoDisableRepository = KeyAutoDisableRepository(databaseFactory.database, adminAuditRepository)
+    val keyStateAudit = KeyStateAudit { actor, action, method, path, statusCode, requestId, sourceIp, errorCode, details ->
+        adminAuditRepository.recordInTransaction(
+            actor = actor,
+            action = action,
+            method = method,
+            path = path,
+            statusCode = statusCode,
+            requestId = requestId,
+            sourceIp = sourceIp,
+            errorCode = errorCode,
+            details = details,
+        )
+    }
+    val keyAutoDisableRepository = KeyAutoDisableRepository(databaseFactory.database, keyStateAudit)
     val keyAvailabilityGate = KeyAvailabilityGate()
     val channelKeyRateLimiter = ChannelKeyRateLimiter()
     val upstreamOccupancy = UpstreamOccupancy()

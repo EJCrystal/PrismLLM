@@ -59,8 +59,8 @@ import dev.soven.llmgateway.proxy.search.hasBuiltInWebSearch
 import dev.soven.llmgateway.proxy.search.prepareResponsesSearchRequest
 import dev.soven.llmgateway.proxy.search.syntheticWebSearchName
 import dev.soven.llmgateway.proxy.search.webSearchAllowedDomains
-import dev.soven.llmgateway.repo.KeyAutoDisableRepository
-import dev.soven.llmgateway.repo.KeyAutoDisablePendingException
+import dev.soven.llmgateway.channel.persistence.KeyAutoDisableRepository
+import dev.soven.llmgateway.channel.persistence.KeyAutoDisablePendingException
 import dev.soven.llmgateway.resilience.CandidateCooldown
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyRateLimitDecision
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyRateLimitLease
