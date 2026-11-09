@@ -1,9 +1,10 @@
-package dev.soven.llmgateway.quota
+package dev.soven.llmgateway.quota.infra
 
-import dev.soven.llmgateway.shared.error.GatewayError
-import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
+import dev.soven.llmgateway.quota.domain.ClientKeyQuotaUsage
+import dev.soven.llmgateway.quota.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.domain.RequestRateLimiter
+import dev.soven.llmgateway.shared.error.GatewayError
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
@@ -83,17 +84,17 @@ class RequestLimitServiceTest {
 }
 
 private fun quotaService(onRead: () -> Unit = {}): ClientKeyQuotaService {
-    val usage = mutableMapOf<String, dev.soven.llmgateway.repo.StoredQuotaUsage>()
+    val usage = mutableMapOf<String, ClientKeyQuotaUsage>()
     return ClientKeyQuotaService(
         usageReader = { id, _ ->
             onRead()
-            usage[id] ?: dev.soven.llmgateway.repo.StoredQuotaUsage()
+            usage[id] ?: ClientKeyQuotaUsage()
         },
         usageWriter = { id, _, tokens, costs ->
-            val previous = usage[id] ?: dev.soven.llmgateway.repo.StoredQuotaUsage()
-            usage[id] = dev.soven.llmgateway.repo.StoredQuotaUsage(
-                tokens = previous.tokens + tokens,
-                costs = previous.costs.mapValues { (currency, amount) -> amount + (costs[currency] ?: java.math.BigDecimal.ZERO) },
+            val previous = usage[id] ?: ClientKeyQuotaUsage()
+            usage[id] = ClientKeyQuotaUsage(
+                dailyTokens = previous.dailyTokens + tokens,
+                dailyCosts = previous.dailyCosts.mapValues { (currency, amount) -> amount + (costs[currency] ?: java.math.BigDecimal.ZERO) },
             )
         },
         now = { 0L },

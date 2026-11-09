@@ -6,7 +6,7 @@ import dev.soven.llmgateway.shared.error.notFound
 import dev.soven.llmgateway.shared.error.serviceUnavailable
 import dev.soven.llmgateway.shared.error.unauthorized
 
-import dev.soven.llmgateway.domain.ClientKeyRecord
+import dev.soven.llmgateway.quota.domain.ClientKeyRecord
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
@@ -37,7 +37,7 @@ import java.net.ProxySelector
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
 import dev.soven.llmgateway.proxy.upstreamRequestUrl
 import dev.soven.llmgateway.requestlog.domain.BillingCalculator
-import dev.soven.llmgateway.quota.RequestLimitLease
+import dev.soven.llmgateway.quota.infra.RequestLimitLease
 import dev.soven.llmgateway.quota.domain.quotaTokensFromUsage
 import dev.soven.llmgateway.proxy.ReasoningEffort
 import dev.soven.llmgateway.proxy.ShapeRefusal
@@ -1188,7 +1188,8 @@ private suspend fun authenticate(
     val record = app.clientKeyRepository.findByHash(ClientKeyHasher.hash(raw)) ?: throw unauthorized()
     if (record.revokedAt != null) throw unauthorized("调用方密钥已撤销")
     if (!record.enabled) throw unauthorized("调用方密钥已禁用")
-    if (record.expiresAt != null && record.expiresAt <= System.currentTimeMillis()) {
+    val expiresAt = record.expiresAt
+    if (expiresAt != null && expiresAt <= System.currentTimeMillis()) {
         throw unauthorized("调用方密钥已过期")
     }
     return record

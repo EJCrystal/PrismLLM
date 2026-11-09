@@ -58,9 +58,9 @@ import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.channel.persistence.ChannelKeyStateChangedException
 import dev.soven.llmgateway.requestlog.infra.LogRetentionService
-import dev.soven.llmgateway.quota.ClientKeyQuotaService
+import dev.soven.llmgateway.quota.infra.ClientKeyQuotaService
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyRateLimiter
-import dev.soven.llmgateway.quota.RequestLimitService
+import dev.soven.llmgateway.quota.infra.RequestLimitService
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.protocol.ProtocolConversion
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
@@ -292,7 +292,10 @@ class GatewayApplication(
     val channelRepository = ChannelRepository(databaseFactory.database, credentialCipher)
     val clientKeyRepository = ClientKeyRepository(databaseFactory.database)
     val clientKeyQuotaRepository = ClientKeyQuotaRepository(databaseFactory.database)
-    val clientKeyQuotaService = ClientKeyQuotaService(clientKeyQuotaRepository)
+    val clientKeyQuotaService = ClientKeyQuotaService(
+        usageReader = clientKeyQuotaRepository::usage,
+        usageWriter = clientKeyQuotaRepository::addUsage,
+    )
     val requestLimitService = RequestLimitService(clientKeyQuotaService)
     val adminUserRepository = AdminUserRepository(databaseFactory.database)
     val adminAuditRepository = AdminAuditRepository(databaseFactory.database)

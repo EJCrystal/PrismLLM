@@ -1,12 +1,10 @@
-package dev.soven.llmgateway.quota
+package dev.soven.llmgateway.quota.infra
 
-import dev.soven.llmgateway.shared.error.GatewayError
-import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaUsage
+import dev.soven.llmgateway.quota.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.domain.checkClientKeyQuota
 import dev.soven.llmgateway.quota.domain.dailyQuotaPeriod
-import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
-import dev.soven.llmgateway.repo.StoredQuotaUsage
+import dev.soven.llmgateway.shared.error.GatewayError
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -14,18 +12,13 @@ import java.math.BigDecimal
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 调用方密钥额度检查与结算。每日用量持久化；并发计数仅在单实例内持有，进程退出即释放。
+ * 调用方密钥额度检查与结算。每日用量通过端口持久化；并发计数仅在单实例内持有，进程退出即释放。
  */
 class ClientKeyQuotaService(
-    private val usageReader: suspend (String, Long) -> StoredQuotaUsage,
+    private val usageReader: suspend (String, Long) -> ClientKeyQuotaUsage,
     private val usageWriter: suspend (String, Long, Long, Map<String, BigDecimal>) -> Unit,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    constructor(
-        repository: ClientKeyQuotaRepository,
-        now: () -> Long = System::currentTimeMillis,
-    ) : this(repository::usage, repository::addUsage, now)
-
     private val locks = Array(64) { Mutex() }
     private val concurrentRequests = ConcurrentHashMap<String, Int>()
 
@@ -38,7 +31,7 @@ class ClientKeyQuotaService(
             val active = concurrentRequests[clientKey.id] ?: 0
             val result = checkClientKeyQuota(
                 clientKey.quotas,
-                ClientKeyQuotaUsage(usage.tokens, usage.costs, active),
+                ClientKeyQuotaUsage(usage.dailyTokens, usage.dailyCosts, active),
             )
             if (!result.allowed) {
                 throw GatewayError(
@@ -72,7 +65,7 @@ class ClientKeyQuotaService(
     suspend fun currentUsage(clientKeyId: String): ClientKeyQuotaUsage {
         val period = dailyQuotaPeriod(now())
         val stored = usageReader(clientKeyId, period)
-        return ClientKeyQuotaUsage(stored.tokens, stored.costs, concurrentRequests[clientKeyId] ?: 0)
+        return stored.copy(concurrentRequests = concurrentRequests[clientKeyId] ?: 0)
     }
 
     /** 当前在途请求数快照，仅用于管理面展示；不读取数据库。 */

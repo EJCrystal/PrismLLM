@@ -1,7 +1,7 @@
-package dev.soven.llmgateway.quota
+package dev.soven.llmgateway.quota.infra
 
-import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaUsage
+import dev.soven.llmgateway.quota.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.domain.RequestRateLimitDecision
 import dev.soven.llmgateway.quota.domain.RequestRateLease
 import dev.soven.llmgateway.quota.domain.RequestRateLimiter
