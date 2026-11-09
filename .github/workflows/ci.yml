@@ -53,6 +53,7 @@ jobs:
               - 'monitoring/**'
             ci:
               - '.github/workflows/**'
+              - '.coderabbit.yaml'
 
   workflow:
     name: Validate workflow
@@ -74,6 +75,15 @@ jobs:
             -w /repo \
             rhysd/actionlint:1.7.7 \
             -color "${workflow_files[@]}"
+
+      - name: Validate review bot config
+        run: |
+          # CodeRabbit 配置是 YAML；runner 未预装 PyYAML 时跳过解析而不是误报失败。
+          if python3 -c "import yaml" 2>/dev/null; then
+            python3 -c "import yaml; yaml.safe_load(open('.coderabbit.yaml'))"
+          else
+            echo "::warning::PyYAML 不可用，跳过 .coderabbit.yaml 解析"
+          fi
 
   frontend:
     name: Test frontend
