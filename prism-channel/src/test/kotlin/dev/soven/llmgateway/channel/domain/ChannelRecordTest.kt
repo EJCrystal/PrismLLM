@@ -5,18 +5,22 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class ChannelRecordTest {
+    /**
+     * @param routable 模拟订阅账号的授权状态：OAuth token 失效时为 false，
+     * 此时账号本身仍启用，但不参与路由。
+     */
     private class Credential(
         override val id: String,
         override val name: String = id,
         override val priority: Int = 1,
         override val models: List<String> = emptyList(),
         override val enabled: Boolean = true,
+        override val isOAuth: Boolean = false,
+        private val routable: Boolean = true,
     ) : UpstreamCredential {
-        override val isOAuth: Boolean get() = false
-
         override fun supports(upstreamModel: String): Boolean = upstreamModel in models
 
-        override fun isRoutable(now: Long): Boolean = enabled
+        override fun isRoutable(now: Long): Boolean = enabled && routable
     }
 
     private fun channel(credentials: List<UpstreamCredential>) = ChannelRecord(
@@ -48,12 +52,13 @@ class ChannelRecordTest {
     }
 
     @Test
-    fun `routableCredentialCount ignores disabled and unauthorized credentials`() {
+    fun `routableCredentialCount ignores disabled unauthorized and out-of-catalog credentials`() {
         val channel = channel(
             listOf(
                 Credential("authorized", models = listOf("m1")),
                 Credential("outside-catalog", models = listOf("m3")),
                 Credential("disabled", models = listOf("m1"), enabled = false),
+                Credential("unauthorized", models = listOf("m1"), isOAuth = true, routable = false),
             ),
         )
 
