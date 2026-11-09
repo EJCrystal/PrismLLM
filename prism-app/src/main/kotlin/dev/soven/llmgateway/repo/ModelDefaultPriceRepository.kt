@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.ModelDefaultPrices
-import dev.soven.llmgateway.domain.DefaultModelPriceRecord
+import dev.soven.llmgateway.pricing.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.pricing.domain.ModelPriceTier
 import dev.soven.llmgateway.pricing.domain.PricingMode
 import org.jetbrains.exposed.v1.core.ResultRow
