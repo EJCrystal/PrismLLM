@@ -209,10 +209,12 @@ jobs:
           if [ -z "${{ steps.modules.outputs.app_tags }}" ]; then
             mvn --batch-mode -pl prism-app test
           else
-            # 单元测试全量执行；集成测试按模块标签只跑受影响的用例，
-            # 避免组合根的全量慢速套件拖慢上游模块变更。
-            mvn --batch-mode -pl prism-app test -DexcludedGroups=integration -DfailIfNoTests=true
-            mvn --batch-mode -pl prism-app test -Dgroups="${{ steps.modules.outputs.app_tags }}" -DfailIfNoTests=true
+            # 单元测试全量执行；只排除与本次上游模块无关的集成测试。
+            # 必须和单元测试放在同一个 Maven 进程里，避免二次启动 Testcontainers
+            # 反而比全量套件更慢。
+            mvn --batch-mode -pl prism-app test \
+              -DexcludedGroups="integration & !(${{ steps.modules.outputs.app_tags }})" \
+              -DfailIfNoTests=true
           fi
 
       - name: Test optional quota providers
