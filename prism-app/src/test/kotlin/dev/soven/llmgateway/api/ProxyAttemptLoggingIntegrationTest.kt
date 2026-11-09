@@ -44,6 +44,7 @@ import kotlin.test.assertTrue
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("integration")
+@Tag("channel")
 class ProxyAttemptLoggingIntegrationTest {
     private lateinit var postgres: PostgreSQLContainer<*>
     private lateinit var fake: FakeUpstream
