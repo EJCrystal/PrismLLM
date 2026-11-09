@@ -19,7 +19,7 @@ import dev.soven.llmgateway.proxy.GatewayMetrics
 import dev.soven.llmgateway.proxy.HtmlImageRenderer
 import dev.soven.llmgateway.proxy.UnavailableBrowserRenderer
 import dev.soven.llmgateway.proxy.isGeminiRequestPath
-import dev.soven.llmgateway.proxy.RequestLogWriter
+import dev.soven.llmgateway.requestlog.infra.RequestLogWriter
 import dev.soven.llmgateway.proxy.UpstreamOccupancy
 import dev.soven.llmgateway.repo.ModelPriceRepository
 import dev.soven.llmgateway.repo.ModelDefaultPriceRepository
@@ -321,7 +321,13 @@ class GatewayApplication(
     )
     val tierSharing = TierSharing()
     val metrics = GatewayMetrics()
-    val requestLogWriter = RequestLogWriter(requestLogRepository, modelPricingService, scope)
+    val requestLogWriter = RequestLogWriter(
+        insertRecord = requestLogRepository::insert,
+        resolvePrice = { record ->
+            modelPricingService.resolve(record.channelId, record.upstreamModel, record.pricingModelId)
+        },
+        scope = scope,
+    )
     val logRetentionService = LogRetentionService(requestLogRepository, config.retention)
     private val logRetentionJob = java.util.concurrent.atomic.AtomicReference<Job?>(null)
     private val logRetentionMutex = Mutex()

@@ -1,11 +1,8 @@
-package dev.soven.llmgateway.proxy
+package dev.soven.llmgateway.requestlog.infra
 
-import dev.soven.llmgateway.pricing.domain.ModelPricingService
 import dev.soven.llmgateway.pricing.domain.ResolvedModelPrice
-
 import dev.soven.llmgateway.requestlog.domain.BillingCalculator
 import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
-import dev.soven.llmgateway.repo.RequestLogRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -20,26 +17,11 @@ import kotlin.coroutines.cancellation.CancellationException
  * @author 文杰
  * @since 2026-10-21
  */
-class RequestLogWriter private constructor(
+class RequestLogWriter(
     private val insertRecord: suspend (RequestLogRecord) -> Unit,
     private val resolvePrice: suspend (RequestLogRecord) -> ResolvedModelPrice?,
     scope: CoroutineScope,
 ) {
-    constructor(
-        repository: RequestLogRepository,
-        pricingService: ModelPricingService,
-        scope: CoroutineScope,
-    ) : this(
-            repository::insert,
-            { record -> pricingService.resolve(record.channelId, record.upstreamModel, record.pricingModelId) },
-            scope,
-        )
-
-    internal constructor(
-        scope: CoroutineScope,
-        insertRecord: suspend (RequestLogRecord) -> Unit,
-        resolvePrice: suspend (RequestLogRecord) -> ResolvedModelPrice?,
-    ) : this(insertRecord, resolvePrice, scope)
 
     private val logger = LoggerFactory.getLogger(RequestLogWriter::class.java)
     private val queue = Channel<RequestLogRecord>(capacity = 1024)
