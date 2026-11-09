@@ -59,7 +59,7 @@ import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.channel.persistence.ChannelKeyStateChangedException
 import dev.soven.llmgateway.requestlog.infra.LogRetentionService
 import dev.soven.llmgateway.quota.ClientKeyQuotaService
-import dev.soven.llmgateway.quota.ChannelKeyRateLimiter
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyRateLimiter
 import dev.soven.llmgateway.quota.RequestLimitService
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.protocol.ProtocolConversion

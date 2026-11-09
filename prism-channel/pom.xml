@@ -30,6 +30,12 @@
             <version>${serialization.version}</version>
         </dependency>
         <dependency>
+            <!-- 密钥限流器用协程原语保护内存计数。 -->
+            <groupId>org.jetbrains.kotlinx</groupId>
+            <artifactId>kotlinx-coroutines-core</artifactId>
+            <version>${coroutines.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.jetbrains.exposed</groupId>
             <artifactId>exposed-core</artifactId>
             <version>${exposed.version}</version>
