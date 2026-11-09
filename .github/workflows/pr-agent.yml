@@ -106,6 +106,22 @@ jobs:
               echo "已降级到 PR-Agent，CodeRabbit 结果不再改写门禁。"
               exit 0
             fi
+            # 人工或本 workflow 已在本 commit 上发过 /review 时，门禁同样只认 PR-Agent。
+            # 否则 CodeRabbit 迟到的 success 会覆盖 PR-Agent 判出的 failure。
+            SINCE=$(gh api "repos/${REPO}/commits/${SHA}/statuses?per_page=100" \
+              --jq '[.[] | select(.context == "AI Review Gate") | .created_at] | min // empty' || true)
+            if [ -z "$SINCE" ]; then
+              SINCE=$(gh api "repos/${REPO}/commits/${SHA}/check-suites" \
+                --jq '[.check_suites[].created_at] | min // empty' 2>/dev/null || true)
+            fi
+            if [ -n "$SINCE" ] && printf '%s\n' "$COMMENTS" \
+                | jq -s -e --arg since "$SINCE" '
+                    any(.[]; .created_at >= $since
+                              and ((.user.login == "github-actions[bot]") or (.user.type != "Bot"))
+                              and ((.body // "") | gsub("^\\s+|\\s+$"; "") | test("^/review$"; "i")))' > /dev/null; then
+              echo "本 commit 已触发 PR-Agent（/review），CodeRabbit 结果不再改写门禁。"
+              exit 0
+            fi
           fi
           gh api "repos/${REPO}/statuses/${SHA}" \
             -f state="success" \
