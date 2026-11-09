@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.report
+package dev.soven.llmgateway.requestlog.domain
 
 import java.math.BigDecimal
 

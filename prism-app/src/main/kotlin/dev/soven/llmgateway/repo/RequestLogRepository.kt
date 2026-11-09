@@ -13,11 +13,11 @@ import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.requestlog.infra.UpstreamAttemptCodec
 import dev.soven.llmgateway.pricing.domain.PricingMode
 import dev.soven.llmgateway.report.CleanupResult
-import dev.soven.llmgateway.report.UsageGroup
-import dev.soven.llmgateway.report.UsageReport
-import dev.soven.llmgateway.report.UsageReportQuery
-import dev.soven.llmgateway.report.UsageTotal
-import dev.soven.llmgateway.report.UsageTrendPoint
+import dev.soven.llmgateway.requestlog.domain.UsageGroup
+import dev.soven.llmgateway.requestlog.domain.UsageReport
+import dev.soven.llmgateway.requestlog.domain.UsageReportQuery
+import dev.soven.llmgateway.requestlog.domain.UsageTotal
+import dev.soven.llmgateway.requestlog.domain.UsageTrendPoint
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.Op
 import org.jetbrains.exposed.v1.core.SortOrder

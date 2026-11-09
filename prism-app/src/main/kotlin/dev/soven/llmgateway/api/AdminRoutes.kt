@@ -67,7 +67,7 @@ import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.domain.parseDailyCostLimit
 import dev.soven.llmgateway.requestlog.domain.ChannelCooldownSummary
 import dev.soven.llmgateway.requestlog.domain.healthWindows
-import dev.soven.llmgateway.report.UsageReportQuery
+import dev.soven.llmgateway.requestlog.domain.UsageReportQuery
 import dev.soven.llmgateway.resilience.CandidateCooldown
 import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.security.credentialFingerprint

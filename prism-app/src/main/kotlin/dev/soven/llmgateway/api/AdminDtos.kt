@@ -38,9 +38,10 @@ import dev.soven.llmgateway.shared.domain.Usage
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaUsage
 import dev.soven.llmgateway.report.CleanupResult
 import dev.soven.llmgateway.report.RetentionPolicy
-import dev.soven.llmgateway.report.UsageGroup
-import dev.soven.llmgateway.report.UsageReport
-import dev.soven.llmgateway.report.UsageTotal
+import dev.soven.llmgateway.requestlog.domain.UsageGroup
+import dev.soven.llmgateway.requestlog.domain.UsageReport
+import dev.soven.llmgateway.requestlog.domain.UsageTotal
+import dev.soven.llmgateway.requestlog.domain.UsageTrendPoint
 import dev.soven.llmgateway.channel.domain.key.KeyAutoDisableSettingsRecord
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.channel.domain.key.KeyDisablePolicy
@@ -663,7 +664,7 @@ fun UsageGroup.toResponse() = UsageGroupResponse(
     costs = costs.mapValues { (_, value) -> value.stripTrailingZeros().toPlainString() },
 )
 
-fun dev.soven.llmgateway.report.UsageTrendPoint.toResponse() = UsageTrendResponse(
+fun UsageTrendPoint.toResponse() = UsageTrendResponse(
     bucketStart = bucketStart,
     requests = requests,
     errors = errors,
