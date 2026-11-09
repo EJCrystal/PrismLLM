@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertTrue
 
 /**
- * 请求日志模块的依赖边界：日志记录与尝试明细是纯值对象，
+ * 请求日志模块的依赖边界：日志记录、尝试明细与编解码只做纯数据转换，
  * 只允许共享内核、计价上下文的只读类型、序列化注解与标准库。
  *
  * 日志只追加、不感知持久化与 HTTP；写入队列、仓储和报表留在应用层，
@@ -20,14 +20,26 @@ import kotlin.test.assertTrue
 class RequestLogArchitectureTest {
     private val classes: JavaClasses = ClassFileImporter()
         .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
-        .importPackages("dev.soven.llmgateway.requestlog.domain")
+        .importPackages("dev.soven.llmgateway.requestlog.domain", "dev.soven.llmgateway.requestlog.infra")
 
-    private val requestLogDependencies = arrayOf(
+    private val requestLogDomainDependencies = arrayOf(
         "java..",
         "kotlin..",
         "kotlinx.serialization..",
         "org.jetbrains.annotations..",
         "dev.soven.llmgateway.requestlog.domain..",
+        "dev.soven.llmgateway.shared.domain..",
+        "dev.soven.llmgateway.pricing.domain..",
+    )
+
+    /** infra 可以依赖本模块的领域类型，领域层则不得反向依赖 infra。 */
+    private val requestLogInfraDependencies = arrayOf(
+        "java..",
+        "kotlin..",
+        "kotlinx.serialization..",
+        "org.jetbrains.annotations..",
+        "dev.soven.llmgateway.requestlog.domain..",
+        "dev.soven.llmgateway.requestlog.infra..",
         "dev.soven.llmgateway.shared.domain..",
         "dev.soven.llmgateway.pricing.domain..",
     )
@@ -38,13 +50,25 @@ class RequestLogArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.requestlog.domain.RequestLogRecord" },
             "ArchUnit 未导入请求日志模块类，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.infra.UpstreamAttemptCodec" },
+            "ArchUnit 未导入尝试明细编解码，规则会空跑",
+        )
     }
 
     @Test
-    fun `request log module only depends on the allowlist`() {
+    fun `request log domain only depends on the allowlist`() {
         classes()
             .that().resideInAnyPackage("dev.soven.llmgateway.requestlog.domain..")
-            .should().onlyDependOnClassesThat().resideInAnyPackage(*requestLogDependencies)
+            .should().onlyDependOnClassesThat().resideInAnyPackage(*requestLogDomainDependencies)
+            .check(classes)
+    }
+
+    @Test
+    fun `request log infra only depends on the allowlist`() {
+        classes()
+            .that().resideInAnyPackage("dev.soven.llmgateway.requestlog.infra..")
+            .should().onlyDependOnClassesThat().resideInAnyPackage(*requestLogInfraDependencies)
             .check(classes)
     }
 }

@@ -1,13 +1,13 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.requestlog.infra
 
-import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
+import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
 /** 把每次上游尝试或路由跳过的明细序列化进 request_logs.attempts_json。 */
-internal object UpstreamAttemptCodec {
+object UpstreamAttemptCodec {
     @Serializable
     private data class StoredAttempt(
         val index: Int,
