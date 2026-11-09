@@ -47,6 +47,14 @@ class ChannelArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.channel.domain.UpstreamHeaderProfile" },
             "ArchUnit 未导入上游请求头档案，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.channel.domain.UpstreamHeaderCatalogSnapshot" },
+            "ArchUnit 未导入请求头目录快照，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.channel.domain.UpstreamRequestSettingsRecord" },
+            "ArchUnit 未导入上游请求覆盖设置，规则会空跑",
+        )
     }
 
     @Test
