@@ -53,8 +53,8 @@ import dev.soven.llmgateway.repo.ModelTestSettingsRepository
 import dev.soven.llmgateway.repo.WebSearchSettingsRepository
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.repo.OAuthWindowRepository
-import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
-import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
+import dev.soven.llmgateway.channel.persistence.UpstreamRequestSettingsRepository
+import dev.soven.llmgateway.channel.persistence.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.channel.persistence.KeyAutoDisableRepository
 import dev.soven.llmgateway.channel.persistence.KeyStateAudit
 import dev.soven.llmgateway.channel.persistence.ChannelKeyStateChangedException
