@@ -2,6 +2,7 @@ package dev.soven.llmgateway.routing.domain.candidate
 
 import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.channel.domain.UpstreamCredential
+import dev.soven.llmgateway.shared.domain.RouteCandidateOrderingView
 
 /**
  * 解析后的路由候选，只包含数据面需要的字段。
@@ -15,10 +16,17 @@ import dev.soven.llmgateway.channel.domain.UpstreamCredential
 data class RouteCandidate(
     val channel: ChannelRecord,
     val credential: UpstreamCredential,
-    val upstreamModel: String,
+    override val upstreamModel: String,
     /** 选路档位：直连候选取渠道优先级，数值越小越优先。 */
     val position: Int,
-) {
+) : RouteCandidateOrderingView {
+    override val channelId: String get() = channel.id
+    override val channelName: String get() = channel.name
+    override val channelPriority: Int get() = position
+    override val credentialId: String get() = credential.id
+    override val credentialName: String get() = credential.name
+    override val credentialPriority: Int get() = credential.priority
+
     /** 计费使用的模型 ID：优先渠道配置的规范 ID，未配置时回退上游模型。 */
     val pricingModelId: String
         get() = channel.modelMappings

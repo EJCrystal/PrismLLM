@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.resilience
 
-import dev.soven.llmgateway.routing.domain.candidate.RouteCandidate
+import dev.soven.llmgateway.shared.domain.RouteCandidateOrderingView
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
@@ -29,7 +29,11 @@ class TierSharing {
      * 当提供 affinityKey 时，使用最高随机权重哈希（HRW/Rendezvous Hashing）独立计算亲和分数，
      * 避免因无关渠道进入冷却改变剩余可用渠道的亲和目标，保持缓存亲和稳定。
      */
-    fun order(scope: String, candidates: List<RouteCandidate>, affinityKey: String? = null): List<RouteCandidate> {
+    fun <T : RouteCandidateOrderingView> order(
+        scope: String,
+        candidates: List<T>,
+        affinityKey: String? = null,
+    ): List<T> {
         if (candidates.size <= 1) return candidates
         val affinity = affinityKey?.take(MAX_AFFINITY_KEY_LENGTH)
         val channelOffset = if (affinity != null) {
@@ -38,28 +42,28 @@ class TierSharing {
             channelCounters.computeIfAbsent(scope) { AtomicLong() }.getAndIncrement()
         }
         return candidates
-            .groupBy { it.position }
+            .groupBy { it.channelPriority }
             .toSortedMap()
             .flatMap { (_, tier) -> orderTier(scope, tier, channelOffset, affinity) }
     }
 
-    private fun orderTier(
+    private fun <T : RouteCandidateOrderingView> orderTier(
         scope: String,
-        tier: List<RouteCandidate>,
+        tier: List<T>,
         channelOffset: Long,
         affinityKey: String?,
-    ): List<RouteCandidate> {
-        val channels = tier.groupBy { it.channel.id }.values.toList()
+    ): List<T> {
+        val channels = tier.groupBy { it.channelId }.values.toList()
         val orderedChannels = if (affinityKey != null) {
             channels.sortedByDescending { group ->
-                val channelId = group.first().channel.id
+                val channelId = group.first().channelId
                 affinityOffset("$affinityKey#$scope#channel#$channelId")
             }
         } else {
             rotateGroups(channels, channelOffset)
         }
         return orderedChannels.flatMapIndexed { channelIndex, channelCandidates ->
-            val channelId = channelCandidates.first().channel.id
+            val channelId = channelCandidates.first().channelId
             val counterKey = "$scope|$channelId"
             val keyOffset = if (affinityKey != null) {
                 0L
@@ -70,14 +74,14 @@ class TierSharing {
                 keyCounters[counterKey]?.get() ?: 0L
             }
             channelCandidates
-                .groupBy { it.credential.priority }
+                .groupBy { it.credentialPriority }
                 .toSortedMap()
                 .flatMap { (_, keyTier) ->
                     // 同档密钥轮询或基于 HRW 的独立亲和排序；同一密钥内的多个上游模型名保持候选原有稳定顺序。
-                    val keys = keyTier.groupBy { it.credential.id }.values.toList()
+                    val keys = keyTier.groupBy { it.credentialId }.values.toList()
                     val orderedKeys = if (affinityKey != null) {
                         keys.sortedByDescending { keyGroup ->
-                            val keyId = keyGroup.first().credential.id
+                            val keyId = keyGroup.first().credentialId
                             affinityOffset("$affinityKey#$counterKey#key#$keyId")
                         }
                     } else {
@@ -88,7 +92,7 @@ class TierSharing {
         }
     }
 
-    private fun rotateGroups(groups: List<List<RouteCandidate>>, offset: Long): List<List<RouteCandidate>> {
+    private fun <T> rotateGroups(groups: List<List<T>>, offset: Long): List<List<T>> {
         if (groups.size <= 1) return groups
         val start = Math.floorMod(offset, groups.size.toLong()).toInt()
         return List(groups.size) { index -> groups[(start + index) % groups.size] }
