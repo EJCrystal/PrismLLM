@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.proxy
+package dev.soven.llmgateway.protocol
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
