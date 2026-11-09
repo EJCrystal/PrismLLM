@@ -3,6 +3,7 @@ package dev.soven.llmgateway.quota
 import dev.soven.llmgateway.shared.error.GatewayError
 import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
+import dev.soven.llmgateway.quota.domain.RequestRateLimiter
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch

@@ -1,10 +1,14 @@
-package dev.soven.llmgateway.quota
+package dev.soven.llmgateway.quota.domain
 
-import dev.soven.llmgateway.shared.error.GatewayError
-import dev.soven.llmgateway.domain.ClientKeyRecord
-import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+
+/** 一次分钟窗口限流准入结果。拒绝不消耗窗口名额。 */
+sealed interface RequestRateLimitDecision {
+    data class Allowed(val lease: RequestRateLease) : RequestRateLimitDecision
+
+    data object Denied : RequestRateLimitDecision
+}
 
 /**
  * 按 UTC 固定分钟窗口限制密钥请求数。
@@ -17,17 +21,15 @@ class RequestRateLimiter(
     private val keyWindows = mutableMapOf<String, WindowCounter>()
     private var lastPrunedMinute: Long? = null
 
-    suspend fun acquire(clientKey: ClientKeyRecord): RequestRateLease = mutex.withLock {
+    suspend fun acquire(clientKeyId: String, requestsPerMinute: Int?): RequestRateLimitDecision = mutex.withLock {
         val minute = currentMinute(now())
         pruneExpiredWindows(minute)
-        val keyWindow = keyWindows.getOrPut(clientKey.id) { WindowCounter(minute) }
-        clientKey.quotas.requestsPerMinute?.let { limit ->
-            if (keyWindow.requests >= limit) {
-                reject("key_rate_limit_exceeded", "密钥每分钟请求数已达上限")
-            }
+        val keyWindow = keyWindows.getOrPut(clientKeyId) { WindowCounter(minute) }
+        if (requestsPerMinute != null && keyWindow.requests >= requestsPerMinute) {
+            return@withLock RequestRateLimitDecision.Denied
         }
         keyWindow.requests += 1
-        RequestRateLease(clientKeyId = clientKey.id, minute = minute)
+        RequestRateLimitDecision.Allowed(RequestRateLease(clientKeyId = clientKeyId, minute = minute))
     }
 
     suspend fun currentKeyUsage(clientKeyId: String): Int = mutex.withLock {
@@ -41,14 +43,6 @@ class RequestRateLimiter(
         keyWindows.entries.removeIf { it.value.minute != minute }
         lastPrunedMinute = minute
     }
-
-    private fun reject(code: String, message: String): Nothing =
-        throw GatewayError(
-            HttpStatusCode.TooManyRequests,
-            code,
-            message,
-            "rate_limit_error",
-        )
 
     private data class WindowCounter(
         val minute: Long,
