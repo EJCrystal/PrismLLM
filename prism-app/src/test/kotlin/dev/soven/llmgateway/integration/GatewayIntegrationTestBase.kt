@@ -3,16 +3,16 @@ package dev.soven.llmgateway.integration
 import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.config.OAuthConfig
-import dev.soven.llmgateway.domain.ChannelRecord
-import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelRecord
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.OAuthAccountRecord
-import dev.soven.llmgateway.domain.OAuthProvider
+import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.domain.RequestLogRecord
-import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.fake.FakeUpstream
-import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.proxy.HtmlImageRenderer
 import dev.soven.llmgateway.proxy.SvgRenderResult
@@ -431,7 +431,7 @@ abstract class GatewayIntegrationTestBase {
             name = name,
             baseUrl = baseUrl,
             keys = listOf(
-                dev.soven.llmgateway.repo.NewChannelKey(
+                dev.soven.llmgateway.channel.persistence.NewChannelKey(
                     name = "默认密钥",
                     credential = encrypted,
                     models = modelMappings.map { it.upstreamModel },

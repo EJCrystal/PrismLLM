@@ -1,13 +1,13 @@
 package dev.soven.llmgateway.integration
 
 import dev.soven.llmgateway.config.OAuthConfig
-import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
-import dev.soven.llmgateway.domain.OAuthProvider
+import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.oauth.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
-import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.resilience.FailureKind
 import io.ktor.client.request.header

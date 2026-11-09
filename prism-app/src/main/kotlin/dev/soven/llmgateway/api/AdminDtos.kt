@@ -1,13 +1,13 @@
 package dev.soven.llmgateway.api
 
-import dev.soven.llmgateway.domain.ChannelQuotaSettings
-import dev.soven.llmgateway.domain.ChannelRecord
-import dev.soven.llmgateway.domain.ChannelKeyRecord
-import dev.soven.llmgateway.domain.ChannelQuotaCredentialSource
+import dev.soven.llmgateway.channel.domain.ChannelQuotaSettings
+import dev.soven.llmgateway.channel.domain.ChannelRecord
+import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
+import dev.soven.llmgateway.channel.domain.ChannelQuotaCredentialSource
 
 import dev.soven.llmgateway.domain.AdminAuditRecord
 import dev.soven.llmgateway.domain.ClientKeyRecord
-import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
+import dev.soven.llmgateway.channel.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.ModelPriceTier
@@ -19,7 +19,7 @@ import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAccountRuntimeState
 import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthQuotaWindow
-import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamRequestSettingsRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderCatalogSnapshot
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
@@ -41,10 +41,10 @@ import dev.soven.llmgateway.report.RetentionPolicy
 import dev.soven.llmgateway.report.UsageGroup
 import dev.soven.llmgateway.report.UsageReport
 import dev.soven.llmgateway.report.UsageTotal
-import dev.soven.llmgateway.resilience.KeyAutoDisableSettingsRecord
-import dev.soven.llmgateway.resilience.ChannelKeyState
-import dev.soven.llmgateway.resilience.KeyDisablePolicy
-import dev.soven.llmgateway.resilience.KeyDisableRule
+import dev.soven.llmgateway.channel.domain.key.KeyAutoDisableSettingsRecord
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
+import dev.soven.llmgateway.channel.domain.key.KeyDisablePolicy
+import dev.soven.llmgateway.channel.domain.key.KeyDisableRule
 import dev.soven.llmgateway.spi.iq.IqJudgeResult
 import dev.soven.llmgateway.spi.iq.IqJudgeVerdict
 import dev.soven.llmgateway.spi.iq.IqStructureCheck

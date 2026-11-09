@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.oauth
 
-import dev.soven.llmgateway.domain.OAuthProvider
+import dev.soven.llmgateway.shared.domain.OAuthProvider
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking

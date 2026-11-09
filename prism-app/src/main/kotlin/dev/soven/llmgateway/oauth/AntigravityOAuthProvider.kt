@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.oauth
 
 import dev.soven.llmgateway.config.OAuthProviderConfig
-import dev.soven.llmgateway.domain.OAuthProvider
+import dev.soven.llmgateway.shared.domain.OAuthProvider
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 

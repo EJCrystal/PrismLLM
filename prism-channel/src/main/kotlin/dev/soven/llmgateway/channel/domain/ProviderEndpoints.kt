@@ -1,6 +1,7 @@
-package dev.soven.llmgateway.domain
+package dev.soven.llmgateway.channel.domain
 
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
+import dev.soven.llmgateway.shared.domain.OAuthProvider
 
 /** 渠道来源：用户自建，或系统按订阅 provider 置备。 */
 enum class ChannelKind(val value: String) {

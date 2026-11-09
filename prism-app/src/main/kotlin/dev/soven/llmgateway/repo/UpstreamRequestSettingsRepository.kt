@@ -1,7 +1,9 @@
 package dev.soven.llmgateway.repo
 
+import dev.soven.llmgateway.channel.persistence.ChannelRepository
+
 import dev.soven.llmgateway.db.UpstreamRequestSettings
-import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamRequestSettingsRecord
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex

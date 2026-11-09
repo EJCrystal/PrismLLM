@@ -1,11 +1,11 @@
 package dev.soven.llmgateway.oauth
 
 import dev.soven.llmgateway.config.OAuthConfig
-import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.OAuthAccessToken
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAuthState
-import dev.soven.llmgateway.domain.UpstreamCredential
+import dev.soven.llmgateway.channel.domain.UpstreamCredential
 import dev.soven.llmgateway.shared.domain.saturatedAdd
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
@@ -105,6 +105,7 @@ class OAuthTokenService(
                 OAuthUnavailableReason.REAUTH_REQUIRED,
                 "订阅账号已删除",
             )
+        else -> throw IllegalStateException("未知的上游凭据类型: ${credential::class.qualifiedName}")
     }
 
     private suspend fun accessToken(account: OAuthAccountRecord, forceRefresh: Boolean): OAuthAccessToken {

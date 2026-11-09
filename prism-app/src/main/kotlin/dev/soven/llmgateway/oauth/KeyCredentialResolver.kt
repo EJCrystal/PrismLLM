@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.oauth
 
-import dev.soven.llmgateway.domain.UpstreamCredential
+import dev.soven.llmgateway.channel.domain.UpstreamCredential
 
 /**
  * 按上游凭据解析发往上游的凭据：静态密钥返回解密后的密钥，订阅账号返回 access token。

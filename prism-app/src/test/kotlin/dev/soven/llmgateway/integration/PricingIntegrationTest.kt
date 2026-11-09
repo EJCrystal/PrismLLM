@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.integration
 
-import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import io.ktor.client.request.header
 import io.ktor.client.request.delete

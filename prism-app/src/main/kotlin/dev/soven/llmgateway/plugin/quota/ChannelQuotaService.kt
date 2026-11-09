@@ -1,10 +1,10 @@
 package dev.soven.llmgateway.plugin.quota
 
 import com.google.common.cache.CacheBuilder
-import dev.soven.llmgateway.domain.ChannelKeyRecord
-import dev.soven.llmgateway.domain.ChannelRecord
-import dev.soven.llmgateway.domain.ChannelQuotaSettings
-import dev.soven.llmgateway.domain.ChannelQuotaCredentialSource
+import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
+import dev.soven.llmgateway.channel.domain.ChannelRecord
+import dev.soven.llmgateway.channel.domain.ChannelQuotaSettings
+import dev.soven.llmgateway.channel.domain.ChannelQuotaCredentialSource
 import dev.soven.llmgateway.oauth.KeyCredentialResolver
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider

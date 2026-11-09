@@ -1,5 +1,7 @@
 package dev.soven.llmgateway.oauth
 
+import dev.soven.llmgateway.channel.domain.UpstreamCredential
+
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthRoutingStrategy
 import dev.soven.llmgateway.domain.RouteCandidate
@@ -147,7 +149,7 @@ class OAuthAccountRouting(
     private fun usedShare(account: OAuthAccountRecord, hint: OAuthRoutingHint?): Double? {
         val shares = listOfNotNull(hint?.quota?.primary?.usedPercent, hint?.quota?.secondary?.usedPercent)
         if (shares.isNotEmpty()) return shares.max()
-        val limit = account.oauthPolicy?.windowLimit?.takeIf { it > 0 } ?: return null
+        val limit = account.policy?.windowLimit?.takeIf { it > 0 } ?: return null
         return (hint?.windowUsed ?: 0).toDouble() / limit * 100
     }
 
@@ -164,7 +166,7 @@ class OAuthAccountRouting(
                 ?.let { (saturatedSubtract(it, nowMs) / 3_600_000.0).coerceAtLeast(MIN_PACE_HOURS) }
             return if (hours != null) window.remainingPercent / hours else window.remainingPercent
         }
-        val policy = account.oauthPolicy ?: return null
+        val policy = account.policy ?: return null
         val limit = policy.windowLimit?.takeIf { it > 0 } ?: return null
         val remaining = (limit - (hint?.windowUsed ?: 0)).coerceAtLeast(0).toDouble() / limit * 100
         val hours = hint?.windowOldestAt
@@ -176,7 +178,7 @@ class OAuthAccountRouting(
         return remaining / hours
     }
 
-    private fun poolKey(channelId: String, credential: dev.soven.llmgateway.domain.UpstreamCredential): String =
+    private fun poolKey(channelId: String, credential: dev.soven.llmgateway.channel.domain.UpstreamCredential): String =
         "$channelId#${credential.priority}"
 
     private companion object {

@@ -1,7 +1,9 @@
 package dev.soven.llmgateway.oauth
 
-import dev.soven.llmgateway.domain.ChannelKeyRecord
-import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.shared.domain.OAuthProvider
+
+import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
+import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthAccountRecord
@@ -9,7 +11,7 @@ import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.domain.OAuthRoutingStrategy
 import dev.soven.llmgateway.domain.RouteCandidate
-import dev.soven.llmgateway.resilience.ChannelKeyState
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -173,7 +175,7 @@ class OAuthAccountRoutingTest {
     private fun key(id: String, priority: Int = 1, windowLimit: Int? = null): OAuthAccountRecord = OAuthAccountRecord(
         id = id,
         name = id,
-        provider = dev.soven.llmgateway.domain.OAuthProvider.CHATGPT,
+        provider = dev.soven.llmgateway.shared.domain.OAuthProvider.CHATGPT,
         refreshTokenCiphertext = "c",
         refreshTokenNonce = "n",
         refreshTokenKeyVersion = 1,

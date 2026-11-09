@@ -1,10 +1,10 @@
 package dev.soven.llmgateway.oauth
 
-import dev.soven.llmgateway.domain.ChannelKind
-import dev.soven.llmgateway.domain.ChannelModelRecord
-import dev.soven.llmgateway.domain.OAuthProvider
-import dev.soven.llmgateway.domain.ProviderEndpoints
-import dev.soven.llmgateway.repo.ChannelRepository
+import dev.soven.llmgateway.channel.domain.ChannelKind
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
+import dev.soven.llmgateway.shared.domain.OAuthProvider
+import dev.soven.llmgateway.channel.domain.ProviderEndpoints
+import dev.soven.llmgateway.channel.persistence.ChannelRepository
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex

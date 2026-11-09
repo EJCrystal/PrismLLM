@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.domain
+package dev.soven.llmgateway.channel.domain
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject

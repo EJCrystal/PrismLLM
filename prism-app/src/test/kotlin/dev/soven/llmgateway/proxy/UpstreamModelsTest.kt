@@ -2,8 +2,8 @@ package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.shared.error.GatewayError
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
-import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamProtocolOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.response.respondText

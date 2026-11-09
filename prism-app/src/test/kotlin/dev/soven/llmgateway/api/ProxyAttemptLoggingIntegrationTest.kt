@@ -1,11 +1,11 @@
 package dev.soven.llmgateway.api
 
 import dev.soven.llmgateway.config.GatewayConfig
-import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.fake.FakeUpstream
-import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.report.RetentionPolicy
 import dev.soven.llmgateway.report.ChannelHealthReport
 import dev.soven.llmgateway.report.ChannelHealthDetail

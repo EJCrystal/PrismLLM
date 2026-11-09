@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.oauth
 
 import dev.soven.llmgateway.config.OAuthProviderConfig
-import dev.soven.llmgateway.domain.OAuthProvider
+import dev.soven.llmgateway.shared.domain.OAuthProvider
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 

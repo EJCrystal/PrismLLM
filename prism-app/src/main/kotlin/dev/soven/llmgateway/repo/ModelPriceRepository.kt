@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.repo
 
-import dev.soven.llmgateway.db.Channels
+import dev.soven.llmgateway.channel.persistence.Channels
 import dev.soven.llmgateway.db.ModelPrices
 import dev.soven.llmgateway.domain.ModelPriceRecord
 import dev.soven.llmgateway.domain.ModelPriceTier

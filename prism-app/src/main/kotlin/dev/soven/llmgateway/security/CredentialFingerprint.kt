@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.security
 
-import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.shared.crypto.credentialFingerprint
 

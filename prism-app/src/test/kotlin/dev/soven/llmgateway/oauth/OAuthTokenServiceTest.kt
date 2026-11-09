@@ -5,11 +5,11 @@ import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.config.OAuthConfig
 import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.db.DatabaseFactory
-import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.domain.OAuthAuthState
-import dev.soven.llmgateway.domain.OAuthProvider
-import dev.soven.llmgateway.repo.ChannelRepository
-import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.shared.domain.OAuthProvider
+import dev.soven.llmgateway.channel.persistence.ChannelRepository
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.repo.OAuthAccountCredentialUpdate

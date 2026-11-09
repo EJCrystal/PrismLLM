@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.quota
 
-import dev.soven.llmgateway.domain.ChannelKeyRecord
-import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
+import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
+import dev.soven.llmgateway.channel.domain.ChannelKeyRateLimitPolicy
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock

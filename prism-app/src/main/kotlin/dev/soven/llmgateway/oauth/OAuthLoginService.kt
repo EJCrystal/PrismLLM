@@ -3,8 +3,8 @@ package dev.soven.llmgateway.oauth
 import dev.soven.llmgateway.config.OAuthConfig
 import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.domain.OAuthAccountRecord
-import dev.soven.llmgateway.domain.OAuthProvider
-import dev.soven.llmgateway.domain.ProviderEndpoints
+import dev.soven.llmgateway.shared.domain.OAuthProvider
+import dev.soven.llmgateway.channel.domain.ProviderEndpoints
 import dev.soven.llmgateway.shared.domain.saturatedAdd
 import dev.soven.llmgateway.repo.CredentialChangedException
 import dev.soven.llmgateway.repo.NewOAuthAccount

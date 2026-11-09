@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.resilience
+package dev.soven.llmgateway.channel.domain.key
 
 import com.google.re2j.Pattern
 import com.google.re2j.PatternSyntaxException
@@ -144,7 +144,7 @@ data class KeyDisableRule(
     val autoRecoverable: Boolean get() = action == KeyDisableAction.TEMPORARY
 
     /** 返回命中的模式；规则不匹配时返回 null。传输层失败没有错误体，文本条件作用于异常信息。 */
-    internal fun match(signal: KeyAttemptSignal): KeyRuleMatch? = when (signal) {
+    fun match(signal: KeyAttemptSignal): KeyRuleMatch? = when (signal) {
         KeyAttemptSignal.Success, KeyAttemptSignal.Ignored -> null
         is KeyAttemptSignal.TransportFailure ->
             if (includeTransportFailures) matchText(signal.message) else null
@@ -171,7 +171,7 @@ data class KeyDisableRule(
 }
 
 /** 命中的模式；规则只按状态码命中时为 null。 */
-internal data class KeyRuleMatch(val matchedPattern: String?)
+data class KeyRuleMatch(val matchedPattern: String?)
 
 /** 渠道自动禁用策略的三种形态，对应管理台的三选一。 */
 enum class ChannelKeyDisableMode(val value: String) {
@@ -426,7 +426,8 @@ data class KeyDisablePolicy(
         /** 合并后的有效策略上限：渠道规则 + 未命中的全局兜底，最多是单份上限的两倍。 */
         const val MAX_EFFECTIVE_RULES = MAX_RULES * 2
 
-        internal val LEGACY_DEFAULT_RULES: List<KeyDisableRule> = listOf(
+        /** 旧版标量策略迁移时复用的 V57 默认规则，应用层读取历史设置时需要。 */
+        val LEGACY_DEFAULT_RULES: List<KeyDisableRule> = listOf(
             KeyDisableRule(
                 id = "credential_invalid",
                 name = "凭据失效",
