@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.oauth
+package dev.soven.llmgateway.oauth.domain
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -20,7 +20,7 @@ import java.time.OffsetDateTime
  * @author 文杰
  * @since 2026-11-06
  */
-internal fun parseRateLimitResetMs(body: String?, now: Long = System.currentTimeMillis()): Long? {
+fun parseRateLimitResetMs(body: String?, now: Long = System.currentTimeMillis()): Long? {
     val root = body
         ?.takeIf { it.isNotBlank() }
         ?.let { text -> runCatching { Json.parseToJsonElement(text) as? JsonObject }.getOrNull() }

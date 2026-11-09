@@ -1,7 +1,5 @@
-package dev.soven.llmgateway.oauth
+package dev.soven.llmgateway.oauth.domain
 
-import dev.soven.llmgateway.oauth.domain.OAuthQuotaSnapshot
-import dev.soven.llmgateway.oauth.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.shared.domain.saturatedAdd
 
 /**
@@ -12,7 +10,7 @@ import dev.soven.llmgateway.shared.domain.saturatedAdd
  * @author 文杰
  * @since 2026-11-06
  */
-internal data class OAuthQuotaHeaderReading(
+data class OAuthQuotaHeaderReading(
     val primary: OAuthQuotaWindow? = null,
     val secondary: OAuthQuotaWindow? = null,
 )
@@ -22,7 +20,7 @@ internal data class OAuthQuotaHeaderReading(
  * `-reset-after-seconds`（secondary 同理）。缺少已用比例或窗口时长时忽略该窗口，
  * 因为无法与已有的窗口对齐。
  */
-internal fun parseCodexQuotaHeaders(
+fun parseCodexQuotaHeaders(
     headers: (String) -> String?,
     nowMs: Long,
 ): OAuthQuotaHeaderReading? {
@@ -64,7 +62,7 @@ private fun parseResetAfterSeconds(raw: String?, nowMs: Long): Long? {
  * 把响应头读数合并进已有快照：按窗口时长对齐，保留 credits、allowed 与重置次数等
  * 轮询才有的事实；没有旧快照时按 primary / secondary 命名落位。
  */
-internal fun OAuthQuotaSnapshot?.mergeQuotaHeaders(
+fun OAuthQuotaSnapshot?.mergeQuotaHeaders(
     reading: OAuthQuotaHeaderReading,
     nowMs: Long,
 ): OAuthQuotaSnapshot {

@@ -1,7 +1,5 @@
-package dev.soven.llmgateway.oauth
+package dev.soven.llmgateway.oauth.domain
 
-import dev.soven.llmgateway.oauth.domain.OAuthQuotaSnapshot
-import dev.soven.llmgateway.oauth.domain.OAuthQuotaWindow
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
