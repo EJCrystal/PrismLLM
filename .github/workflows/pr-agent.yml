@@ -97,9 +97,13 @@ jobs:
               exit 0
             fi
             if printf '%s\n' "$COMMENTS" \
-                | jq -s -e --arg pr "$PR_AGENT_PR_MARKER" --arg commit "$PR_AGENT_COMMIT_MARKER" '
+                | jq -s -e --arg pr "$PR_AGENT_PR_MARKER" \
+                         --arg commit "$PR_AGENT_COMMIT_MARKER" \
+                         --arg legacy '<!-- pr-agent-fallback-pr -->' '
                     any(.[]; .user.login == "github-actions[bot]"
-                              and (((.body // "") | contains($pr)) or ((.body // "") | contains($commit))))' > /dev/null; then
+                              and (((.body // "") | contains($pr))
+                                   or ((.body // "") | contains($commit))
+                                   or ((.body // "") | contains($legacy))))' > /dev/null; then
               echo "已降级到 PR-Agent，CodeRabbit 结果不再改写门禁。"
               exit 0
             fi
@@ -256,6 +260,16 @@ jobs:
               "$COMMENTS_FILE" > /dev/null
           }
 
+          # PR 级 PR-Agent 降级：包含旧版 workflow 的兼容标记
+          pr_agent_downgraded() {
+            has_marker "$PR_AGENT_MARKER" && return 0
+            local legacy
+            for legacy in "${LEGACY_PR_AGENT_MARKERS[@]}"; do
+              has_marker "$legacy" && return 0
+            done
+            return 1
+          }
+
           # 本 commit 推送后是否已有人（含本 workflow、人工）发过匹配的触发指令
           has_trigger() {
             jq -e --arg since "$SINCE" --arg re "$1" \
@@ -266,6 +280,9 @@ jobs:
 
           GREPTILE_MARKER='<!-- ai-review-tier:greptile scope=pr'
           PR_AGENT_MARKER='<!-- ai-review-tier:pr-agent scope=pr'
+          # 旧版两级 workflow 写下的兼容标记。合并前遗留的 PR 会带着它，
+          # 升级后要把它们当成等效的 PR 级 PR-Agent 标记，否则会回退到 CodeRabbit 重跑。
+          LEGACY_PR_AGENT_MARKERS=('<!-- pr-agent-fallback-pr -->')
 
           # 只对本 commit 生效的标记，带 SHA，避免影响同 PR 的其他 commit。
           # 本 commit 已改走 Greptile / PR-Agent 后，后续同 commit 的事件要沿用同一档位，
@@ -386,7 +403,7 @@ jobs:
           # 当前档位：PR 级标记 > 本 commit 的邀请/指令 > CodeRabbit
           current_tier() {
             refresh_comments
-            if has_marker "$PR_AGENT_MARKER" || has_marker "$(commit_pr_agent_marker)"; then
+            if pr_agent_downgraded || has_marker "$(commit_pr_agent_marker)"; then
               echo "pr-agent"
             elif has_marker "$GREPTILE_MARKER" || has_marker "$(commit_greptile_marker)"; then
               echo "greptile"
