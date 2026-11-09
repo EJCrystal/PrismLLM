@@ -6,7 +6,7 @@ import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
-import dev.soven.llmgateway.report.RetentionPolicy
+import dev.soven.llmgateway.requestlog.domain.RetentionPolicy
 import dev.soven.llmgateway.requestlog.domain.ChannelHealthReport
 import dev.soven.llmgateway.requestlog.domain.ChannelHealthDetail
 import dev.soven.llmgateway.resilience.FailureKind

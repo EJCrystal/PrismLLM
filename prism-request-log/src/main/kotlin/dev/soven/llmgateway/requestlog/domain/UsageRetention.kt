@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.report
+package dev.soven.llmgateway.requestlog.domain
 
 /** 请求日志保留期与清理批次配置。 */
 data class RetentionPolicy(
