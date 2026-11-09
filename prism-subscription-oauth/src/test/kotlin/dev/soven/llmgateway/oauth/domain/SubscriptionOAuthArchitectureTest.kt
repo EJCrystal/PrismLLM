@@ -58,6 +58,14 @@ class SubscriptionOAuthArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.oauth.infra.OAuthWindowStateWriter" },
             "ArchUnit 未导入调度状态写透队列，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.oauth.infra.OAuthTokenProviderRegistry" },
+            "ArchUnit 未导入 token 刷新器注册表，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.oauth.domain.OAuthProviderConfig" },
+            "ArchUnit 未导入 OAuth 客户端参数，规则会空跑",
+        )
     }
 
     @Test

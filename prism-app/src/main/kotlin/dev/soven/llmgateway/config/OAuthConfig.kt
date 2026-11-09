@@ -1,30 +1,8 @@
 package dev.soven.llmgateway.config
 
+import dev.soven.llmgateway.oauth.domain.OAuthProviderConfig
 import dev.soven.llmgateway.oauth.domain.OAuthRoutingStrategy
 import java.net.URI
-
-/**
- * 单个 OAuth 提供方的公开客户端参数。client secret 只从内置常量或环境变量读取，
- * 不落库、不写日志；安装型客户端的 secret 是公开值，不是用户凭据。
- *
- * @author 文杰
- * @since 2026-11-06
- */
-data class OAuthProviderConfig(
-    val clientId: String,
-    val clientSecret: String? = null,
-    val tokenEndpoint: String,
-    /** 上游额度查询地址；为空表示该提供方不支持额度观测。 */
-    val usageUrl: String? = null,
-    /** 交互式登录授权地址；为空表示该提供方不支持从网关发起登录。 */
-    val authorizeUrl: String? = null,
-    /** 交互式登录回调地址，必须与 OAuth 客户端登记的一致。 */
-    val redirectUri: String? = null,
-    /** 交互式登录申请的 scope；为空时由提供方决定。 */
-    val loginScopes: String? = null,
-) {
-    val supportsLogin: Boolean get() = authorizeUrl != null && redirectUri != null
-}
 
 /**
  * 订阅账号 OAuth 的运行配置。两个提供方都内置公开客户端参数，可用环境变量覆盖。
@@ -181,7 +159,8 @@ data class OAuthConfig(
             chatGpt.usageUrl?.let { validateEndpoint("OAUTH_CHATGPT_USAGE_URL", it) }
             chatGpt.authorizeUrl?.let { validateEndpoint("OAUTH_CHATGPT_AUTHORIZE_URL", it) }
             chatGpt.redirectUri?.let { validateRedirectUri("OAUTH_CHATGPT_REDIRECT_URI", it) }
-            require(chatGpt.loginScopes == null || chatGpt.loginScopes.length <= 512) {
+            val chatGptLoginScopes = chatGpt.loginScopes
+            require(chatGptLoginScopes == null || chatGptLoginScopes.length <= 512) {
                 "OAUTH_CHATGPT_LOGIN_SCOPES 长度不能超过 512"
             }
 
@@ -200,7 +179,8 @@ data class OAuthConfig(
             validateEndpoint("OAUTH_ANTIGRAVITY_TOKEN_ENDPOINT", antigravity.tokenEndpoint)
             antigravity.authorizeUrl?.let { validateEndpoint("OAUTH_ANTIGRAVITY_AUTHORIZE_URL", it) }
             antigravity.redirectUri?.let { validateRedirectUri("OAUTH_ANTIGRAVITY_REDIRECT_URI", it) }
-            require(antigravity.loginScopes == null || antigravity.loginScopes.length <= 512) {
+            val antigravityLoginScopes = antigravity.loginScopes
+            require(antigravityLoginScopes == null || antigravityLoginScopes.length <= 512) {
                 "OAUTH_ANTIGRAVITY_LOGIN_SCOPES 长度不能超过 512"
             }
 

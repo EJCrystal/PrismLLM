@@ -1,9 +1,11 @@
 package dev.soven.llmgateway.oauth
 
 import dev.soven.llmgateway.config.OAuthConfig
-import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
+import dev.soven.llmgateway.oauth.domain.OAuthProviderConfig
 import dev.soven.llmgateway.oauth.domain.parseOAuthTokenClaims
+import dev.soven.llmgateway.oauth.infra.OAuthRefreshException
+import dev.soven.llmgateway.oauth.infra.postTokenRequest
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.channel.domain.ProviderEndpoints
 import dev.soven.llmgateway.shared.domain.saturatedAdd
@@ -129,7 +131,7 @@ class OAuthLoginService(
         val query = buildList {
             add("response_type" to "code")
             add("client_id" to providerConfig.clientId)
-            add("redirect_uri" to providerConfig.redirectUri)
+            add("redirect_uri" to providerConfig.redirectUri!!)
             providerConfig.loginScopes?.let { add("scope" to it) }
             add("code_challenge" to challenge(verifier))
             add("code_challenge_method" to "S256")

@@ -26,12 +26,12 @@ import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.oauth.infra.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.infra.OAuthAccountDenyReason
 import dev.soven.llmgateway.oauth.infra.OAuthAccountLease
+import dev.soven.llmgateway.oauth.infra.OAuthRefreshException
 import dev.soven.llmgateway.oauth.OAuthTokenUnavailableException
-import dev.soven.llmgateway.oauth.OAuthRefreshException
 import dev.soven.llmgateway.oauth.OAuthUnavailableReason
 import dev.soven.llmgateway.oauth.domain.parseCodexQuotaHeaders
 import dev.soven.llmgateway.oauth.domain.parseRateLimitResetMs
-import dev.soven.llmgateway.oauth.proxyAddress
+import dev.soven.llmgateway.oauth.infra.proxyAddress
 import java.net.InetSocketAddress
 import java.net.ProxySelector
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
