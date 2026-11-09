@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
 
 /**
  * 请求日志模块的依赖边界：日志记录与尝试明细是纯值对象，
- * 只允许共享内核、计价上下文的只读类型与标准库。
+ * 只允许共享内核、计价上下文的只读类型、序列化注解与标准库。
  *
  * 日志只追加、不感知持久化与 HTTP；写入队列、仓储和报表留在应用层，
  * 后续再按端口迁入。
@@ -25,6 +25,7 @@ class RequestLogArchitectureTest {
     private val requestLogDependencies = arrayOf(
         "java..",
         "kotlin..",
+        "kotlinx.serialization..",
         "org.jetbrains.annotations..",
         "dev.soven.llmgateway.requestlog.domain..",
         "dev.soven.llmgateway.shared.domain..",

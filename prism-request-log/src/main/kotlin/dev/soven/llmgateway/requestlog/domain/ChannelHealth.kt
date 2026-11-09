@@ -1,6 +1,5 @@
-package dev.soven.llmgateway.report
+package dev.soven.llmgateway.requestlog.domain
 
-import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import kotlinx.serialization.Serializable
 
 enum class AttemptOutcome { SUCCESS, FAILURE, EXCLUDED }

@@ -1,6 +1,5 @@
-package dev.soven.llmgateway.report
+package dev.soven.llmgateway.requestlog.domain
 
-import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import kotlin.test.Test
 import kotlin.test.assertEquals
 

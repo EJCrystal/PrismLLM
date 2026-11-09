@@ -65,7 +65,8 @@ import dev.soven.llmgateway.channel.domain.key.toKeyDisablePolicy
 import dev.soven.llmgateway.channel.domain.key.KeyAutoDisablePolicy
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.domain.parseDailyCostLimit
-import dev.soven.llmgateway.report.ChannelCooldownSummary
+import dev.soven.llmgateway.requestlog.domain.ChannelCooldownSummary
+import dev.soven.llmgateway.requestlog.domain.healthWindows
 import dev.soven.llmgateway.report.UsageReportQuery
 import dev.soven.llmgateway.resilience.CandidateCooldown
 import dev.soven.llmgateway.security.AdminSessions
@@ -1982,7 +1983,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             call.response.headers.append("Cache-Control", "no-store")
             val window = call.request.queryParameters["window"] ?: "24h"
-            if (window !in dev.soven.llmgateway.report.healthWindows) throw badRequest("invalid_health_window", "时间范围仅支持 24h、7d、15d、30d")
+            if (window !in healthWindows) throw badRequest("invalid_health_window", "时间范围仅支持 24h、7d、15d、30d")
             val channels = app.channelHealthRepository.listHealthChannelOverviews()
             val cooldowns = channels.associate { channel ->
                 channel.id to app.candidateCooldown.channelCooldownSummary(
@@ -2005,7 +2006,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             call.response.headers.append("Cache-Control", "no-store")
             val window = call.request.queryParameters["window"] ?: "24h"
-            if (window !in dev.soven.llmgateway.report.healthWindows) throw badRequest("invalid_health_window", "时间范围仅支持 24h、7d、15d、30d")
+            if (window !in healthWindows) throw badRequest("invalid_health_window", "时间范围仅支持 24h、7d、15d、30d")
             val channel = channelWithCredentials(app, app.channelRepository.find(call.requiredParam("id", "缺少渠道 id"))
                 ?: throw notFound("channel_not_found", "渠道不存在"))
             val availability = channel.keys.flatMap { key ->
@@ -2017,7 +2018,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         cooldown != null -> "COOLDOWN"
                         else -> "ACTIVE"
                     }
-                    dev.soven.llmgateway.report.HealthAvailability(
+                    dev.soven.llmgateway.requestlog.domain.HealthAvailability(
                         key.id, key.name, model, state,
                         when (state) {
                             "COOLDOWN" -> cooldown?.reason
