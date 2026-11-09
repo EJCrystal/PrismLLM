@@ -7,8 +7,8 @@ import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.report.RetentionPolicy
-import dev.soven.llmgateway.report.ChannelHealthReport
-import dev.soven.llmgateway.report.ChannelHealthDetail
+import dev.soven.llmgateway.requestlog.domain.ChannelHealthReport
+import dev.soven.llmgateway.requestlog.domain.ChannelHealthDetail
 import dev.soven.llmgateway.resilience.FailureKind
 import dev.soven.llmgateway.shared.crypto.ClientKeyHasher
 import io.ktor.client.HttpClient
@@ -350,7 +350,8 @@ class ProxyAttemptLoggingIntegrationTest {
             val detail = Json.decodeFromString<ChannelHealthDetail>(response.bodyAsText())
             val availability = detail.availability.single()
             assertEquals("COOLDOWN", availability.state)
-            assertTrue(availability.until != null && availability.until > System.currentTimeMillis())
+            val until = availability.until
+            assertTrue(until != null && until > System.currentTimeMillis())
             assertTrue(availability.until != 1L)
         }
     }

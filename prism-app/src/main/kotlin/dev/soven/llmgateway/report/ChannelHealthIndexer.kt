@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.report
 
 import dev.soven.llmgateway.repo.RequestLogRepository
+import dev.soven.llmgateway.requestlog.domain.healthWindows
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 

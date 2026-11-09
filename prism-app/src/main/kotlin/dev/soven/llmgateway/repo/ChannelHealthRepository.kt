@@ -11,7 +11,7 @@ import dev.soven.llmgateway.channel.persistence.Channels
 import dev.soven.llmgateway.db.OAuthAccountChannels
 import dev.soven.llmgateway.db.OAuthAccountModels
 import dev.soven.llmgateway.db.OAuthAccounts
-import dev.soven.llmgateway.report.*
+import dev.soven.llmgateway.requestlog.domain.*
 import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq

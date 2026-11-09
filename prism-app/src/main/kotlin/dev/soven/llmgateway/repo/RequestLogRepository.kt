@@ -5,7 +5,7 @@ import dev.soven.llmgateway.channel.persistence.Channels
 import dev.soven.llmgateway.db.ClientKeys
 import dev.soven.llmgateway.db.RequestLogs
 import dev.soven.llmgateway.db.RequestAttempts
-import dev.soven.llmgateway.report.attemptOutcome
+import dev.soven.llmgateway.requestlog.domain.attemptOutcome
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
