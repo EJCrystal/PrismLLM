@@ -36,7 +36,7 @@ import java.net.InetSocketAddress
 import java.net.ProxySelector
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
 import dev.soven.llmgateway.proxy.upstreamRequestUrl
-import dev.soven.llmgateway.proxy.BillingCalculator
+import dev.soven.llmgateway.requestlog.domain.BillingCalculator
 import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
 import dev.soven.llmgateway.quota.ChannelKeyRateLimitLease
 import dev.soven.llmgateway.quota.ChannelKeyRateLimitReason

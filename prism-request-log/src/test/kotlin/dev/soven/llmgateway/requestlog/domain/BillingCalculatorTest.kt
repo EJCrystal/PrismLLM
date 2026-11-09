@@ -1,11 +1,10 @@
-package dev.soven.llmgateway.proxy
+package dev.soven.llmgateway.requestlog.domain
 
 import dev.soven.llmgateway.pricing.domain.ModelPriceSource
 import dev.soven.llmgateway.pricing.domain.ResolvedModelPrice
 
 import dev.soven.llmgateway.protocol.UsageParser
 
-import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.pricing.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.pricing.domain.ModelPriceRecord
 import dev.soven.llmgateway.pricing.domain.ModelPriceTier

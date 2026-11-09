@@ -40,6 +40,12 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- 计费测试用真实协议解析结果构造用量，仅测试期依赖其他纯模块。 -->
+            <groupId>dev.soven</groupId>
+            <artifactId>prism-protocol</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.jetbrains.kotlin</groupId>
             <artifactId>kotlin-test-junit5</artifactId>
             <version>${kotlin.version}</version>
