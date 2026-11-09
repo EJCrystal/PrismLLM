@@ -28,10 +28,12 @@ class RequestLogArchitectureTest {
         "kotlinx.serialization..",
         "org.jetbrains.annotations..",
         "dev.soven.llmgateway.requestlog.domain..",
-        "dev.soven.llmgateway.requestlog.infra..",
         "dev.soven.llmgateway.shared.domain..",
         "dev.soven.llmgateway.pricing.domain..",
     )
+
+    /** infra 可以依赖本模块的领域类型，反过来不允许。 */
+    private val requestLogInfraDependencies = requestLogDependencies + "dev.soven.llmgateway.requestlog.infra.."
 
     @Test
     fun `import covers the request log module`() {
@@ -46,10 +48,18 @@ class RequestLogArchitectureTest {
     }
 
     @Test
-    fun `request log module only depends on the allowlist`() {
+    fun `request log domain only depends on the allowlist`() {
         classes()
-            .that().resideInAnyPackage("dev.soven.llmgateway.requestlog.domain..", "dev.soven.llmgateway.requestlog.infra..")
+            .that().resideInAnyPackage("dev.soven.llmgateway.requestlog.domain..")
             .should().onlyDependOnClassesThat().resideInAnyPackage(*requestLogDependencies)
+            .check(classes)
+    }
+
+    @Test
+    fun `request log infra only depends on the allowlist`() {
+        classes()
+            .that().resideInAnyPackage("dev.soven.llmgateway.requestlog.infra..")
+            .should().onlyDependOnClassesThat().resideInAnyPackage(*requestLogInfraDependencies)
             .check(classes)
     }
 }
