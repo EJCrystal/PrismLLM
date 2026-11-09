@@ -4,7 +4,7 @@ import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.repo.CooldownStateRepository
+import dev.soven.llmgateway.resilience.persistence.CooldownStateRepository
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.resilience.CooldownStateSnapshot
 import dev.soven.llmgateway.resilience.FailureKind
