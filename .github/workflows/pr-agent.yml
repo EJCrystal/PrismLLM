@@ -843,6 +843,9 @@ jobs:
           PR_REVIEWER.EXTRA_INSTRUCTIONS: "Please write the entire review, summaries, explanations, and advice in Simplified Chinese (简体中文). Pay special attention to security, boundary conditions, and test coverage."
           PR_REVIEWER.ENABLE_LARGE_PR_CHUNKING: "true"
           PR_REVIEWER.MAX_NUMBER_OF_CALLS: "3"
+          # 默认 3 条；命中上限时 PR-Agent 会把该轮判为 partial，不再把已修复的意见转为
+          # RESOLVED（判定条件是 len(findings) < num_max_findings）。留出余量避免门禁死锁。
+          PR_REVIEWER.NUM_MAX_FINDINGS: "10"
           PR_CODE_SUGGESTIONS.EXTRA_INSTRUCTIONS: "Please write all suggestions and explanations in Simplified Chinese (简体中文)."
           PR_DESCRIPTION.EXTRA_INSTRUCTIONS: "Please write the PR description and summary in Simplified Chinese (简体中文)."
 
