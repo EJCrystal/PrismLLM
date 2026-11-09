@@ -63,7 +63,7 @@ npm --prefix web run build
 
 # 2. 构建并运行后端（首次启动会自动通过 Flyway 执行数据库表结构迁移）
 mvn package
-java -jar target/prism-llm-0.1.0-SNAPSHOT.jar
+java -jar prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar
 ```
 
 ---
