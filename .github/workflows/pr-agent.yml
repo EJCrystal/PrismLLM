@@ -660,13 +660,24 @@ jobs:
           GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
           GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
           GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"
-          PR_REVIEWER.EXTRA_INSTRUCTIONS: "Please write the entire review, summaries, explanations, and advice in Simplified Chinese (简体中文). Pay special attention to security, boundary conditions, and test coverage."
+          # 负向约束针对大 PR 分块和持久化 findings 的两个已知噪声源：
+          # - 分块后模型看不到其它 chunk 里的定义，容易把已有 helper/import 报成缺失；
+          # - 历史 findings 回灌会让模型沿用旧措辞重复报告，即使当前代码已经修好。
+          PR_REVIEWER.EXTRA_INSTRUCTIONS: |
+            Please write the entire review, summaries, explanations, and advice in Simplified Chinese (简体中文).
+            Pay special attention to security, boundary conditions, and test coverage.
+            Only report issues that can be proven from the diff or the repository. Before reporting a missing symbol, import, helper, or function, verify it is actually absent from the whole repository, not just the current file or chunk. The diff may be split into chunks; absence from one chunk is not evidence that a symbol is missing.
+            Do not repeat a finding that the current code has already fixed. If the code quoted in a previous finding no longer exists, mark that finding resolved instead of reporting it again.
+            Do not report pure style, refactoring, or micro-performance suggestions unless they can cause incorrect behavior or a test failure. Avoid duplicate findings for the same root cause.
           PR_REVIEWER.ENABLE_LARGE_PR_CHUNKING: "true"
           PR_REVIEWER.MAX_NUMBER_OF_CALLS: "3"
           # 默认 3 条；命中上限时 PR-Agent 会把该轮判为 partial，不再把已修复的意见转为
           # RESOLVED（判定条件是 len(findings) < num_max_findings）。大 PR（如测试拆分）
           # 一轮可能报 30+ 条，10 条会稳定判 partial 并让门禁死锁，这里留足余量。
           PR_REVIEWER.NUM_MAX_FINDINGS: "50"
+          # 默认 8000 字符会让模型逐条复读已修复的旧意见；降到 2000 仍保留足够上下文，
+          # 同时减少锚定效应。旧 ACTIVE 意见若不再被本轮报告，会在全量复审后转为 RESOLVED。
+          PR_REVIEWER.MAX_PREVIOUS_FINDINGS_CHARS: "2000"
           PR_CODE_SUGGESTIONS.EXTRA_INSTRUCTIONS: "Please write all suggestions and explanations in Simplified Chinese (简体中文)."
           PR_DESCRIPTION.EXTRA_INSTRUCTIONS: "Please write the PR description and summary in Simplified Chinese (简体中文)."
 
@@ -701,8 +712,13 @@ jobs:
           fi
 
           landed=false
-          ACTIVE_FINDINGS=0
           LANDED_BODIES=""
+          # OUTCOME 非 success 时下面的 read 不会执行；先初始化为 0，保证
+          # set -u 下后续计数比较始终有定义。
+          ACTIVE_FINDINGS=0
+          WAIVED_FINDINGS=0
+          STALE_FINDINGS=0
+          UNRESOLVED_FINDINGS=0
           if [ "$OUTCOME" = "success" ]; then
             # PR-Agent 的输出：issue 评论（walkthrough/摘要）或 review（/review 的评审）。
             # 以 HEAD SHA 起算：本次运行之后才产生的 bot 输出才算本次审查落地。
@@ -758,68 +774,32 @@ jobs:
             #   <!-- pr-agent-review-state:v1
             #   {"findings":[{"state":"ACTIVE",...}], ...}
             #   -->
-            # 里，其中 ACTIVE 表示仍未解决。判定规则：
-            # - 只统计 PR-Agent 机器人自己的评论：user.type=Bot + 精确登录名。
-            #   普通用户贴的伪造状态块直接忽略（否则任何人都能卡住别人的 PR）
-            # - 有机器人状态块但登录名不在已知列表（例如换了集成方式）时判失败，
-            #   否则作者过滤会把评论全滤掉、门禁退化成"只看产出是否存在"
-            # - 只统计 last_seen_head_sha 等于当前 HEAD 的 finding。PR-Agent 会把历史
-            #   finding 一直留在列表里、只有再次命中时更新 last_seen_head_sha，按 HEAD
-            #   过滤才能让已修复的意见自动失效，而不是永久卡住合并；字段缺失按"属于
-            #   当前 HEAD"处理，避免字段改名后门禁静默放行
-            # - jq 的 "s" 只影响 ^/$ 锚定，跨行匹配必须用 "m"，这里用 "ms" 兼容两种语义
-            # 解析失败按未通过处理（fail closed），不要静默放行。
-            if ! COMMENTS_NDJSON=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]'); then
-              echo "::error::拉取 PR 评论失败，无法校验 PR-Agent 意见状态"
+            # 里，其中 ACTIVE 表示仍未解决。这里用 .github/scripts/pr_agent_gate.py
+            # 统计当前 HEAD 的 ACTIVE 意见，并在计数前做两类过滤：
+            # - stale：finding 正文引用的代码表达式已不在标注行附近（±10 行），
+            #   说明描述对应的是旧代码，不再阻塞合并；
+            # - waiver：base 分支（通常为 main）的 .github/pr-agent-waivers.json 中按 finding_id 登记、
+            #   带原因和可选过期日期的误报。豁免只从 base 分支读取，PR 不能给自己豁免。
+            # 脚本还会校验状态块作者、当前 HEAD、状态块结构；任何解析/请求失败都按
+            # 未通过处理（fail closed），不要静默放行。
+            set +e
+            REVIEW_STATE=$(python3 .github/scripts/pr_agent_gate.py)
+            GATE_STATUS=$?
+            set -e
+            if [ "${GATE_STATUS}" -ne 0 ]; then
+              case "${GATE_STATUS}" in
+                3) GATE_DESCRIPTION="PR-Agent 状态块作者不在已知机器人列表中" ;;
+                *) GATE_DESCRIPTION="PR-Agent 审查状态解析失败，请查看 Actions 日志" ;;
+              esac
+              echo "::error::${GATE_DESCRIPTION}"
               gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
                 -f state="failure" \
                 -f context="AI Review Gate" \
-                -f description="拉取 PR 评论失败，无法校验审查意见" || true
+                -f description="${GATE_DESCRIPTION}" || true
               exit 1
             fi
-            if ! REVIEW_STATE=$(
-              printf '%s\n' "${COMMENTS_NDJSON}" | jq -sr --arg head "${HEAD_SHA}" '
-                  [ .[] | select(.user.type == "Bot")
-                        | select((.body // "") | contains("pr-agent-review-state:v1")) ] as $marked
-                | [ $marked[]
-                    | select(.user.type == "Bot"
-                             and (.user.login | IN("github-actions[bot]", "pr-agent[bot]", "qodo-merge-pro[bot]")))
-                  ] as $allowed
-                | {
-                    marked: ($marked | length),
-                    allowed: ($allowed | length),
-                    active: ([ $allowed[]
-                               | .body
-                               | (capture("pr-agent-review-state:v1\\s*(?<state>\\{.*?\\})\\s*-->"; "ms").state
-                                  // error("unparsable pr-agent review state"))
-                               | fromjson
-                               # 语法有效但结构不符（缺 findings、非数组、被截断）同样按解析失败处理。
-                               | if type == "object" and (.findings | type) == "array"
-                                 then .findings[]
-                                 else error("invalid pr-agent review state structure") end
-                               | select(.state == "ACTIVE" and ((.last_seen_head_sha // $head) == $head))
-                             ] | length)
-                  }
-                | "\(.marked) \(.allowed) \(.active)"'
-            ); then
-              echo "::error::无法解析 PR-Agent 审查状态，按未通过处理"
-              gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
-                -f state="failure" \
-                -f context="AI Review Gate" \
-                -f description="PR-Agent 审查状态解析失败，请查看 Actions 日志" || true
-              exit 1
-            fi
-            read -r MARKED_COMMENTS ALLOWED_COMMENTS ACTIVE_FINDINGS <<< "${REVIEW_STATE}"
-            # 只要有一条机器人状态块的作者不在已知列表中就判失败，即使同时存在已知机器人的评论：
-            # 否则 PR-Agent 更换账号后，新账号的 ACTIVE 意见会被静默忽略。
-            if [ "${MARKED_COMMENTS}" -gt "${ALLOWED_COMMENTS}" ]; then
-              echo "::error::存在 $((MARKED_COMMENTS - ALLOWED_COMMENTS)) 条 PR-Agent 状态块来自未知机器人账号，按未通过处理"
-              gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
-                -f state="failure" \
-                -f context="AI Review Gate" \
-                -f description="PR-Agent 状态块作者不在已知机器人列表中" || true
-              exit 1
-            fi
+            read -r ACTIVE_FINDINGS WAIVED_FINDINGS STALE_FINDINGS UNRESOLVED_FINDINGS <<< "${REVIEW_STATE}"
+            echo "PR-Agent ACTIVE=${ACTIVE_FINDINGS} waived=${WAIVED_FINDINGS} stale=${STALE_FINDINGS} unresolved=${UNRESOLVED_FINDINGS}"
           fi
 
           # 分块审查必须完整：失败块、未纳入文件或被裁剪文件都视为覆盖不足，不予放行。
@@ -842,20 +822,25 @@ jobs:
             fi
           fi
 
-          if [ "$landed" = "true" ] && [ "${ACTIVE_FINDINGS}" -gt 0 ]; then
-            echo "::error::PR-Agent 仍有 ${ACTIVE_FINDINGS} 条未解决的 ACTIVE 意见，门禁不予放行"
+          if [ "$landed" = "true" ] && [ "${UNRESOLVED_FINDINGS}" -gt 0 ]; then
+            echo "::error::PR-Agent 仍有 ${UNRESOLVED_FINDINGS} 条未解决意见（已豁免 ${WAIVED_FINDINGS} 条，忽略 ${STALE_FINDINGS} 条过期描述）"
             gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
               -f state="failure" \
               -f context="AI Review Gate" \
-              -f description="PR-Agent 仍有 ${ACTIVE_FINDINGS} 条未解决意见" || true
+              -f description="PR-Agent 仍有 ${UNRESOLVED_FINDINGS} 条未解决意见" || true
             exit 1
           fi
 
           if [ "$landed" = "true" ]; then
+            if [ "${WAIVED_FINDINGS}" -gt 0 ] || [ "${STALE_FINDINGS}" -gt 0 ]; then
+              GATE_DESCRIPTION="PR-Agent 审查通过（豁免 ${WAIVED_FINDINGS} 条，忽略 ${STALE_FINDINGS} 条过期描述）"
+            else
+              GATE_DESCRIPTION="PR-Agent 审查通过"
+            fi
             gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
               -f state="success" \
               -f context="AI Review Gate" \
-              -f description="PR-Agent 审查通过" || true
+              -f description="${GATE_DESCRIPTION}" || true
           elif [ "$OUTCOME" = "success" ]; then
             echo "::warning::PR-Agent 步骤成功但 PR 上没有它的输出（评论/review），疑似静默失败"
             gh api "repos/${REPO}/statuses/${HEAD_SHA}" \

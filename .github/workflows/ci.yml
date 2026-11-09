@@ -55,6 +55,7 @@ jobs:
               - 'monitoring/**'
             ci:
               - '.github/workflows/**'
+              - '.github/scripts/**'
               - '.coderabbit.yaml'
 
   workflow:
@@ -77,6 +78,9 @@ jobs:
             -w /repo \
             rhysd/actionlint:1.7.7 \
             -color "${workflow_files[@]}"
+
+      - name: Validate PR-Agent gate script
+        run: python3 -m py_compile .github/scripts/pr_agent_gate.py
 
       - name: Validate review bot config
         run: |
