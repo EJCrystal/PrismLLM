@@ -1,7 +1,5 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.oauth.persistence
 
-import dev.soven.llmgateway.db.OAuthAccountWindows
-import dev.soven.llmgateway.db.OAuthAccounts
 import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.oauth.domain.OAuthStoredWindowState
 import dev.soven.llmgateway.oauth.domain.OAuthWindowSnapshot
