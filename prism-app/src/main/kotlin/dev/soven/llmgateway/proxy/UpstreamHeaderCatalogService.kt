@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.proxy
 
-import dev.soven.llmgateway.domain.UpstreamHeaderCatalogSnapshot
-import dev.soven.llmgateway.domain.UpstreamHeaderProfile
+import dev.soven.llmgateway.channel.domain.UpstreamHeaderCatalogSnapshot
+import dev.soven.llmgateway.channel.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRecord
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
 import io.ktor.client.HttpClient

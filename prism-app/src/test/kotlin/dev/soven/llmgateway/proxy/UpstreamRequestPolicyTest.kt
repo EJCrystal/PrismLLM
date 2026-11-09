@@ -4,7 +4,7 @@ import dev.soven.llmgateway.shared.error.GatewayError
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.shared.domain.UpstreamProtocolOverrides
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
-import dev.soven.llmgateway.domain.UpstreamHeaderProfile
+import dev.soven.llmgateway.channel.domain.UpstreamHeaderProfile
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.json.Json
