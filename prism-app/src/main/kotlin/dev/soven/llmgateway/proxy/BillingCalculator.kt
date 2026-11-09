@@ -2,8 +2,10 @@ package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.domain.ModelPriceRecord
-import dev.soven.llmgateway.domain.ModelPriceTier
-import dev.soven.llmgateway.domain.PricingMode
+import dev.soven.llmgateway.pricing.domain.ModelPriceSource
+import dev.soven.llmgateway.pricing.domain.ModelPriceTier
+import dev.soven.llmgateway.pricing.domain.PricingMode
+import dev.soven.llmgateway.pricing.domain.ResolvedModelPrice
 import dev.soven.llmgateway.domain.RequestLogRecord
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -120,7 +122,7 @@ object BillingCalculator {
     ): BigDecimal {
         if (tokens <= 0) return ZERO
         if (!progressive) {
-            val tier = tiers.firstOrNull { it.upToTokens == null || tokens <= it.upToTokens } ?: tiers.last()
+            val tier = tiers.firstOrNull { tier -> tier.upToTokens?.let { tokens <= it } ?: true } ?: tiers.last()
             return BigDecimal.valueOf(tokens).multiply(rate(tier))
         }
 

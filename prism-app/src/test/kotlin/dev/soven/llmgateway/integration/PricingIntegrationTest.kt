@@ -524,7 +524,7 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
             inputPricePerMillion = BigDecimal.ZERO,
             outputPricePerMillion = BigDecimal.ZERO,
             cachedInputPricePerMillion = null,
-            pricingMode = dev.soven.llmgateway.domain.PricingMode.PER_REQUEST,
+            pricingMode = dev.soven.llmgateway.pricing.domain.PricingMode.PER_REQUEST,
             perRequestPrice = BigDecimal("0.05"),
         )
         app.modelPriceRepository.create(
@@ -534,7 +534,7 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
             inputPricePerMillion = BigDecimal.ZERO,
             outputPricePerMillion = BigDecimal.ZERO,
             cachedInputPricePerMillion = null,
-            pricingMode = dev.soven.llmgateway.domain.PricingMode.PER_REQUEST,
+            pricingMode = dev.soven.llmgateway.pricing.domain.PricingMode.PER_REQUEST,
             perRequestPrice = BigDecimal("0.05"),
         )
         val key = createClientKey()
@@ -574,7 +574,7 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
             inputPricePerMillion = BigDecimal.ZERO,
             outputPricePerMillion = BigDecimal.ZERO,
             cachedInputPricePerMillion = null,
-            pricingMode = dev.soven.llmgateway.domain.PricingMode.PER_REQUEST,
+            pricingMode = dev.soven.llmgateway.pricing.domain.PricingMode.PER_REQUEST,
             perRequestPrice = BigDecimal("0.08"),
         )
         val key = createClientKey()
@@ -604,14 +604,14 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
             inputPricePerMillion = BigDecimal.ZERO,
             outputPricePerMillion = BigDecimal.ZERO,
             cachedInputPricePerMillion = null,
-            pricingMode = dev.soven.llmgateway.domain.PricingMode.TIERED,
+            pricingMode = dev.soven.llmgateway.pricing.domain.PricingMode.TIERED,
             priceTiers = listOf(
-                dev.soven.llmgateway.domain.ModelPriceTier(
+                dev.soven.llmgateway.pricing.domain.ModelPriceTier(
                     upToTokens = 5,
                     inputPricePerMillion = BigDecimal("1.0"),
                     outputPricePerMillion = BigDecimal("2.0"),
                 ),
-                dev.soven.llmgateway.domain.ModelPriceTier(
+                dev.soven.llmgateway.pricing.domain.ModelPriceTier(
                     upToTokens = null,
                     inputPricePerMillion = BigDecimal("2.0"),
                     outputPricePerMillion = BigDecimal("4.0"),

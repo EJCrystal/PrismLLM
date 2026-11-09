@@ -3,8 +3,8 @@ package dev.soven.llmgateway.repo
 import dev.soven.llmgateway.channel.persistence.Channels
 import dev.soven.llmgateway.db.ModelPrices
 import dev.soven.llmgateway.domain.ModelPriceRecord
-import dev.soven.llmgateway.domain.ModelPriceTier
-import dev.soven.llmgateway.domain.PricingMode
+import dev.soven.llmgateway.pricing.domain.ModelPriceTier
+import dev.soven.llmgateway.pricing.domain.PricingMode
 import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and

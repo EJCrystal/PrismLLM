@@ -10,7 +10,7 @@ import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.UpstreamAttemptRecord
-import dev.soven.llmgateway.domain.PricingMode
+import dev.soven.llmgateway.pricing.domain.PricingMode
 import dev.soven.llmgateway.report.CleanupResult
 import dev.soven.llmgateway.report.UsageGroup
 import dev.soven.llmgateway.report.UsageReport

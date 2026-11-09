@@ -1,5 +1,8 @@
 package dev.soven.llmgateway.proxy
 
+import dev.soven.llmgateway.pricing.domain.ModelPriceSource
+import dev.soven.llmgateway.pricing.domain.ResolvedModelPrice
+
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import kotlinx.coroutines.CoroutineScope

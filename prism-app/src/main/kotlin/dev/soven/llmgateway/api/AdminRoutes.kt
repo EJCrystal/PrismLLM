@@ -25,10 +25,10 @@ import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.proxy.validateUpstreamRequestOverrides
-import dev.soven.llmgateway.domain.ModelPriceTier
+import dev.soven.llmgateway.pricing.domain.ModelPriceTier
 import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.shared.domain.OAuthProvider
-import dev.soven.llmgateway.domain.PricingMode
+import dev.soven.llmgateway.pricing.domain.PricingMode
 import dev.soven.llmgateway.domain.UpstreamEnvelope
 import dev.soven.llmgateway.domain.upstreamEnvelope
 import dev.soven.llmgateway.oauth.OAuthLoginResult
