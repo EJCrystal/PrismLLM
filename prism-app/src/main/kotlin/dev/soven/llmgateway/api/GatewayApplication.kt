@@ -23,7 +23,7 @@ import dev.soven.llmgateway.proxy.RequestLogWriter
 import dev.soven.llmgateway.proxy.UpstreamOccupancy
 import dev.soven.llmgateway.repo.ModelPriceRepository
 import dev.soven.llmgateway.repo.ModelDefaultPriceRepository
-import dev.soven.llmgateway.proxy.ModelPricingService
+import dev.soven.llmgateway.pricing.domain.ModelPricingService
 import dev.soven.llmgateway.routing.readmodel.OAuthAccountDirectory
 import dev.soven.llmgateway.routing.readmodel.UpstreamModelCatalog
 import dev.soven.llmgateway.proxy.ModelPriceReferenceService

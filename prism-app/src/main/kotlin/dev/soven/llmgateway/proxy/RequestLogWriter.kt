@@ -1,5 +1,6 @@
 package dev.soven.llmgateway.proxy
 
+import dev.soven.llmgateway.pricing.domain.ModelPricingService
 import dev.soven.llmgateway.pricing.domain.ResolvedModelPrice
 
 import dev.soven.llmgateway.domain.RequestLogRecord
@@ -27,7 +28,11 @@ class RequestLogWriter private constructor(
         repository: RequestLogRepository,
         pricingService: ModelPricingService,
         scope: CoroutineScope,
-    ) : this(repository::insert, { record -> pricingService.resolve(record) }, scope)
+    ) : this(
+            repository::insert,
+            { record -> pricingService.resolve(record.channelId, record.upstreamModel, record.pricingModelId) },
+            scope,
+        )
 
     internal constructor(
         scope: CoroutineScope,
