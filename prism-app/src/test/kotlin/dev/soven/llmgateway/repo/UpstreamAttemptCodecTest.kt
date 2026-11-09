@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.repo
 
-import dev.soven.llmgateway.domain.UpstreamAttemptRecord
+import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull

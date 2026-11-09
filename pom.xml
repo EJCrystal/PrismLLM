@@ -28,6 +28,7 @@
         <module>prism-subscription-oauth</module>
         <module>prism-quota</module>
         <module>prism-pricing</module>
+        <module>prism-request-log</module>
         <module>prism-app</module>
     </modules>
 
@@ -102,6 +103,11 @@
             <dependency>
                 <groupId>dev.soven</groupId>
                 <artifactId>prism-pricing</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.soven</groupId>
+                <artifactId>prism-request-log</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

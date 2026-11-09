@@ -3,7 +3,7 @@ package dev.soven.llmgateway.api
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.report.RetentionPolicy

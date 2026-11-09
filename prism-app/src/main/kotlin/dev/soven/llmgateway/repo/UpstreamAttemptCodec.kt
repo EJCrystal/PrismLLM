@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.UpstreamAttemptRecord
+import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json

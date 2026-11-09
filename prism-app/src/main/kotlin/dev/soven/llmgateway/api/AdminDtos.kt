@@ -24,7 +24,7 @@ import dev.soven.llmgateway.domain.UpstreamRequestSettingsRecord
 import dev.soven.llmgateway.domain.UpstreamHeaderCatalogSnapshot
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.domain.IqTestRunRecord
-import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.plugin.iq.IqJudgeInfo
 import dev.soven.llmgateway.plugin.iq.IqJudgePluginFailure
 import dev.soven.llmgateway.proxy.IqBenchmark

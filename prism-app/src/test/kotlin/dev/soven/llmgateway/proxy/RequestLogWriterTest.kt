@@ -4,7 +4,7 @@ import dev.soven.llmgateway.pricing.domain.ModelPriceSource
 import dev.soven.llmgateway.pricing.domain.ResolvedModelPrice
 
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

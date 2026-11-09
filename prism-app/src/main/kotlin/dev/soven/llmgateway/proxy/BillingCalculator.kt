@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.proxy
 
-import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.pricing.domain.BillingRequest
 import dev.soven.llmgateway.pricing.domain.CalculatedCost
 import dev.soven.llmgateway.pricing.domain.DefaultModelPriceRecord
