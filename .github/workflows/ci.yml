@@ -29,6 +29,7 @@ jobs:
       protocol: ${{ steps.filter.outputs.protocol }}
       channel: ${{ steps.filter.outputs.channel }}
       routing: ${{ steps.filter.outputs.routing }}
+      resilience: ${{ steps.filter.outputs.resilience }}
       app: ${{ steps.filter.outputs.app }}
       build: ${{ steps.filter.outputs.build }}
       extensions: ${{ steps.filter.outputs.extensions }}
@@ -56,6 +57,7 @@ jobs:
               - 'prism-protocol/**'
               - 'prism-channel/**'
               - 'prism-routing/**'
+              - 'prism-resilience/**'
               - 'prism-app/**'
               - 'extensions/**'
               - 'pom.xml'
@@ -68,6 +70,8 @@ jobs:
               - 'prism-channel/**'
             routing:
               - 'prism-routing/**'
+            resilience:
+              - 'prism-resilience/**'
             app:
               - 'prism-app/**'
             build:
@@ -173,11 +177,13 @@ jobs:
           app_tags=""
           # 共享内核与根构建变更影响所有模块；其余变更只验证自身及下游。
           if [ "${{ needs.changes.outputs.build }}" = "true" ] || [ "${{ needs.changes.outputs.shared }}" = "true" ]; then
-            modules="prism-shared,prism-protocol,prism-channel,prism-routing"
+            modules="prism-shared,prism-protocol,prism-channel,prism-routing,prism-resilience"
             app_tests="true"
           else
             if [ "${{ needs.changes.outputs.protocol }}" = "true" ]; then modules="prism-protocol"; fi
             if [ "${{ needs.changes.outputs.channel }}" = "true" ]; then modules="${modules:+$modules,}prism-channel"; fi
+            # resilience 只依赖共享内核，变更时验证自身即可；app 是它的下游。
+            if [ "${{ needs.changes.outputs.resilience }}" = "true" ]; then modules="${modules:+$modules,}prism-resilience"; fi
             # routing 依赖 channel 与 protocol：上游模块变更同样要验证 routing 的编译与单测。
             if [ "${{ needs.changes.outputs.channel }}" = "true" ] \
               || [ "${{ needs.changes.outputs.protocol }}" = "true" ] \
@@ -188,10 +194,11 @@ jobs:
             if [ "${{ needs.changes.outputs.app }}" = "true" ] \
               || [ "${{ needs.changes.outputs.protocol }}" = "true" ] \
               || [ "${{ needs.changes.outputs.channel }}" = "true" ] \
-              || [ "${{ needs.changes.outputs.routing }}" = "true" ]; then
+              || [ "${{ needs.changes.outputs.routing }}" = "true" ] \
+              || [ "${{ needs.changes.outputs.resilience }}" = "true" ]; then
               app_tests="true"
             fi
-            # app 自身或 routing 变更跑全量；只有 protocol/channel 变更时，按模块标签只跑相关集成测试。
+            # app 自身、routing 或 resilience 变更跑全量；只有 protocol/channel 变更时，按模块标签只跑相关集成测试。
             # 单元测试始终全量执行，标签只用于筛选慢速集成测试。
             if [ "${{ needs.changes.outputs.app }}" != "true" ] && [ "${{ needs.changes.outputs.routing }}" != "true" ]; then
               if [ "${{ needs.changes.outputs.channel }}" = "true" ]; then app_tags="channel"; fi
