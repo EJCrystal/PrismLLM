@@ -1,6 +1,5 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.resilience.persistence
 
-import dev.soven.llmgateway.db.CooldownStates
 import dev.soven.llmgateway.resilience.CooldownStateSnapshot
 import dev.soven.llmgateway.resilience.CooldownStateStore
 import org.jetbrains.exposed.v1.core.ResultRow
