@@ -3,7 +3,7 @@ package dev.soven.llmgateway.proxy
 import dev.soven.llmgateway.pricing.domain.ModelPricingService
 import dev.soven.llmgateway.pricing.domain.ResolvedModelPrice
 
-import dev.soven.llmgateway.domain.RequestLogRecord
+import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.repo.RequestLogRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job

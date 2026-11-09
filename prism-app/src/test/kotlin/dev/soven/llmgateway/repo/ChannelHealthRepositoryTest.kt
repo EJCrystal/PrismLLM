@@ -9,8 +9,8 @@ import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.RequestLogRecord
-import dev.soven.llmgateway.domain.UpstreamAttemptRecord
+import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
+import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.report.HealthMetrics
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
