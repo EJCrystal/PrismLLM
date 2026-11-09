@@ -48,11 +48,12 @@ class SubscriptionOAuthArchitectureTest {
         "dev.soven.llmgateway.oauth.infra..",
     )
 
-    /** 账号与窗口快照的持久化只认识本模块领域模型与 Exposed。 */
+    /** 账号与窗口快照的持久化只认识本模块领域模型与 Exposed；suspend 仓储允许协程原语。 */
     private val subscriptionOAuthPersistenceDependencies = arrayOf(
         "java..",
         "kotlin..",
         "kotlinx.serialization..",
+        "kotlinx.coroutines..",
         "org.jetbrains.annotations..",
         "org.jetbrains.exposed..",
         "dev.soven.llmgateway.shared..",
