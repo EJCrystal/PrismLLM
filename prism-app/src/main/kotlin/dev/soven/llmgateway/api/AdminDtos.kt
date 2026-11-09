@@ -10,8 +10,8 @@ import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.channel.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.ModelPriceRecord
-import dev.soven.llmgateway.domain.ModelPriceTier
-import dev.soven.llmgateway.domain.PricingMode
+import dev.soven.llmgateway.pricing.domain.ModelPriceTier
+import dev.soven.llmgateway.pricing.domain.PricingMode
 import dev.soven.llmgateway.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.domain.ModelTestSettingsRecord
 import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy

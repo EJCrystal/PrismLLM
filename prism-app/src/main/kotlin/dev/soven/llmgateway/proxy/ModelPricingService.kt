@@ -1,35 +1,13 @@
 package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.domain.RequestLogRecord
-import dev.soven.llmgateway.domain.ModelPriceTier
-import dev.soven.llmgateway.domain.PricingMode
+import dev.soven.llmgateway.pricing.domain.ModelPriceSource
+import dev.soven.llmgateway.pricing.domain.ModelPriceTier
+import dev.soven.llmgateway.pricing.domain.PricingMode
+import dev.soven.llmgateway.pricing.domain.ResolvedModelPrice
 import dev.soven.llmgateway.repo.ModelDefaultPriceRepository
 import dev.soven.llmgateway.repo.ModelPriceRepository
 import java.math.BigDecimal
-
-/** 单次请求实际采用的计价来源。 */
-enum class ModelPriceSource(val value: String) {
-    CHANNEL_OVERRIDE("channel_override"),
-    MODEL_DEFAULT("model_default"),
-}
-
-/**
- * 解析后的有效单价。渠道覆盖价优先，其次是对外模型默认价。
- */
-data class ResolvedModelPrice(
-    val source: ModelPriceSource,
-    val modelId: String,
-    val channelPriceId: String? = null,
-    val defaultPriceId: String? = null,
-    val currency: String,
-    val inputPricePerMillion: BigDecimal,
-    val outputPricePerMillion: BigDecimal,
-    val cachedInputPricePerMillion: BigDecimal?,
-    val cachedInputWritePricePerMillion: BigDecimal? = null,
-    val pricingMode: PricingMode = PricingMode.TOKEN,
-    val perRequestPrice: BigDecimal? = null,
-    val priceTiers: List<ModelPriceTier> = emptyList(),
-)
 
 /**
  * 统一解析渠道覆盖价与模型默认价。数据面与管理面使用同一优先级：

@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.repo
 
-import dev.soven.llmgateway.domain.ModelPriceTier
+import dev.soven.llmgateway.pricing.domain.ModelPriceTier
 import java.math.BigDecimal
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
