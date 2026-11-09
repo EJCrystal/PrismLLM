@@ -796,8 +796,11 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.OK, send().status)
             assertEquals(3, awaitRequestLog().upstreamAttempts)
 
-            awaitCondition("transient cooldown to expire", timeoutMs = 5_000) {
-                app.candidateCooldown.cooldownState(primary.id, primary.keys.single().id, "m1") == null
+            // 两个渠道各自按渠道键冷却，secondary 的失败晚于 primary；必须等两者都到期，
+            // 否则第二次请求合法地跳过仍在冷却的 secondary，尝试次数会少一次。
+            awaitCondition("transient cooldowns to expire", timeoutMs = 5_000) {
+                !app.candidateCooldown.isBlocked(primary.id, primary.keys.single().id, "m1") &&
+                    !app.candidateCooldown.isBlocked(secondary.id, secondary.keys.single().id, "m2")
             }
             assertEquals(HttpStatusCode.OK, send().status)
             awaitRequestLogCount(2)
