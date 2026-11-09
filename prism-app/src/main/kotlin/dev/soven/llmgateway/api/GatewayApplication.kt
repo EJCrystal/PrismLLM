@@ -30,7 +30,7 @@ import dev.soven.llmgateway.proxy.CurrencyExchangeService
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.repo.AdminUserRepository
 import dev.soven.llmgateway.repo.AdminAuditRepository
-import dev.soven.llmgateway.repo.ChannelRepository
+import dev.soven.llmgateway.channel.persistence.ChannelRepository
 import dev.soven.llmgateway.repo.ClientKeyRepository
 import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
 import dev.soven.llmgateway.repo.CooldownStateRepository
@@ -55,7 +55,7 @@ import dev.soven.llmgateway.repo.OAuthWindowRepository
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
-import dev.soven.llmgateway.repo.ChannelKeyStateChangedException
+import dev.soven.llmgateway.channel.persistence.ChannelKeyStateChangedException
 import dev.soven.llmgateway.report.LogRetentionService
 import dev.soven.llmgateway.quota.ClientKeyQuotaService
 import dev.soven.llmgateway.quota.ChannelKeyRateLimiter

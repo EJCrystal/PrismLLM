@@ -1,8 +1,8 @@
 package dev.soven.llmgateway.integration
 
-import dev.soven.llmgateway.resilience.KeyDisableAction
-import dev.soven.llmgateway.resilience.KeyDisablePolicy
-import dev.soven.llmgateway.resilience.KeyDisableRule
+import dev.soven.llmgateway.channel.domain.key.KeyDisableAction
+import dev.soven.llmgateway.channel.domain.key.KeyDisablePolicy
+import dev.soven.llmgateway.channel.domain.key.KeyDisableRule
 import io.ktor.client.request.header
 import io.ktor.client.request.delete
 import io.ktor.client.request.get

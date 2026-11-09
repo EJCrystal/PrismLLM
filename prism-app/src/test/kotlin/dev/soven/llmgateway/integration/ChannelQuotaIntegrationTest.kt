@@ -1,9 +1,9 @@
 package dev.soven.llmgateway.integration
 
-import dev.soven.llmgateway.domain.ChannelQuotaSettings
-import dev.soven.llmgateway.domain.ChannelQuotaCredentialSource
-import dev.soven.llmgateway.repo.NewChannelKey
-import dev.soven.llmgateway.repo.ChannelKeyUpdate
+import dev.soven.llmgateway.channel.domain.ChannelQuotaSettings
+import dev.soven.llmgateway.channel.domain.ChannelQuotaCredentialSource
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
+import dev.soven.llmgateway.channel.persistence.ChannelKeyUpdate
 import dev.soven.llmgateway.shared.crypto.ClientKeyHasher
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import io.ktor.client.request.header

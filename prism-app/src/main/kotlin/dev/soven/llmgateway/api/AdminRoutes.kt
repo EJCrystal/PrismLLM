@@ -1,31 +1,33 @@
 package dev.soven.llmgateway.api
 
+import dev.soven.llmgateway.channel.domain.ProviderEndpoints
+
 import dev.soven.llmgateway.shared.error.GatewayError
 import dev.soven.llmgateway.shared.error.badRequest
 import dev.soven.llmgateway.shared.error.notFound
 import dev.soven.llmgateway.shared.error.serviceUnavailable
 
-import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.domain.IqVisionSettingsRecord
 import dev.soven.llmgateway.domain.NewIqTestRun
 import dev.soven.llmgateway.repo.IqVisionSettingsUpdate
 import dev.soven.llmgateway.domain.sameVisionEndpoint
-import dev.soven.llmgateway.domain.ChannelQuotaSettings
+import dev.soven.llmgateway.channel.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider
-import dev.soven.llmgateway.domain.ChannelKeyRecord
-import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
-import dev.soven.llmgateway.domain.UpstreamCredential
-import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
+import dev.soven.llmgateway.channel.domain.ChannelKeyRateLimitPolicy
+import dev.soven.llmgateway.channel.domain.UpstreamCredential
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.shared.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
 import dev.soven.llmgateway.shared.domain.effectiveAuthType
-import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.proxy.validateUpstreamRequestOverrides
 import dev.soven.llmgateway.domain.ModelPriceTier
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
-import dev.soven.llmgateway.domain.OAuthProvider
+import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.domain.PricingMode
 import dev.soven.llmgateway.domain.UpstreamEnvelope
 import dev.soven.llmgateway.domain.upstreamEnvelope
@@ -50,17 +52,17 @@ import dev.soven.llmgateway.proxy.modelListProtocol
 import dev.soven.llmgateway.proxy.probeUpstreamProtocols
 import dev.soven.llmgateway.proxy.resolveSavedCredential
 import dev.soven.llmgateway.proxy.testChannelModelConnectivity
-import dev.soven.llmgateway.repo.ChannelKeyUpdate
-import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.channel.persistence.ChannelKeyUpdate
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.repo.OAuthAccountCredentialUpdate
 import dev.soven.llmgateway.repo.KeyAutoDisableSettingsAuditContext
-import dev.soven.llmgateway.resilience.ChannelKeyDisableMode
-import dev.soven.llmgateway.resilience.ChannelKeyState
-import dev.soven.llmgateway.resilience.KeyDisablePolicy
-import dev.soven.llmgateway.resilience.requireSavable
-import dev.soven.llmgateway.resilience.toKeyDisablePolicy
-import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyDisableMode
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
+import dev.soven.llmgateway.channel.domain.key.KeyDisablePolicy
+import dev.soven.llmgateway.channel.domain.key.requireSavable
+import dev.soven.llmgateway.channel.domain.key.toKeyDisablePolicy
+import dev.soven.llmgateway.channel.domain.key.KeyAutoDisablePolicy
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.parseDailyCostLimit
 import dev.soven.llmgateway.report.ChannelCooldownSummary
@@ -1136,7 +1138,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                             OAuthProvider.CHATGPT -> app.config.oauth.chatGpt.supportsLogin
                             OAuthProvider.ANTIGRAVITY -> app.config.oauth.antigravity.supportsLogin
                         },
-                        managedChannel = dev.soven.llmgateway.domain.ProviderEndpoints.of(provider).servable,
+                        managedChannel = dev.soven.llmgateway.channel.domain.ProviderEndpoints.of(provider).servable,
                     )
                 },
             )
@@ -1325,7 +1327,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         channelIds = channelIds,
                         models = request.models,
                         priority = request.priority,
-                        providerChannelPending = dev.soven.llmgateway.domain.ProviderEndpoints.of(provider).servable,
+                        providerChannelPending = dev.soven.llmgateway.channel.domain.ProviderEndpoints.of(provider).servable,
                     ),
                 )
             } catch (cause: Throwable) {
@@ -1981,7 +1983,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.response.headers.append("Cache-Control", "no-store")
             val window = call.request.queryParameters["window"] ?: "24h"
             if (window !in dev.soven.llmgateway.report.healthWindows) throw badRequest("invalid_health_window", "时间范围仅支持 24h、7d、15d、30d")
-            val channels = app.channelRepository.listHealthChannelOverviews()
+            val channels = app.channelHealthRepository.listHealthChannelOverviews()
             val cooldowns = channels.associate { channel ->
                 channel.id to app.candidateCooldown.channelCooldownSummary(
                     channel.id,

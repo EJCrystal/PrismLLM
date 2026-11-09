@@ -1,22 +1,8 @@
 package dev.soven.llmgateway.domain
 
+import dev.soven.llmgateway.channel.domain.UpstreamCredential
+import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.shared.domain.saturatedAdd
-
-/**
- * 订阅账号的 OAuth 提供方。
- *
- * @author 文杰
- * @since 2026-11-06
- */
-enum class OAuthProvider(val value: String) {
-    CHATGPT("chatgpt"),
-    ANTIGRAVITY("antigravity"),
-    ;
-
-    companion object {
-        fun fromValue(value: String): OAuthProvider? = entries.firstOrNull { it.value == value }
-    }
-}
 
 /**
  * 订阅账号的刷新状态。REAUTH_REQUIRED 表示 refresh token 已失效，只能由管理员重新导入。
@@ -90,8 +76,6 @@ data class OAuthAccountRecord(
     val createdAt: Long,
     val updatedAt: Long,
 ) : UpstreamCredential {
-    override val oauthPolicy: OAuthAccountPolicy get() = policy
-
     override val isOAuth: Boolean get() = true
 
     override fun supports(upstreamModel: String): Boolean = models.isEmpty() || upstreamModel in models

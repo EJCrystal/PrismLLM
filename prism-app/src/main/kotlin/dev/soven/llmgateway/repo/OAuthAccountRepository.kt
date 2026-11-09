@@ -1,14 +1,14 @@
 package dev.soven.llmgateway.repo
 
-import dev.soven.llmgateway.db.Channels
+import dev.soven.llmgateway.channel.persistence.Channels
 import dev.soven.llmgateway.db.OAuthAccountChannels
 import dev.soven.llmgateway.db.OAuthAccountModels
 import dev.soven.llmgateway.db.OAuthAccounts
-import dev.soven.llmgateway.domain.ChannelKind
+import dev.soven.llmgateway.channel.domain.ChannelKind
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAuthState
-import dev.soven.llmgateway.domain.OAuthProvider
+import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.shared.crypto.EncryptedCredential

@@ -1,5 +1,8 @@
 package dev.soven.llmgateway.domain
 
+import dev.soven.llmgateway.channel.domain.ChannelRecord
+import dev.soven.llmgateway.shared.domain.OAuthProvider
+
 /**
  * 上游请求的外层封装。Gemini 协议本身没有信封；Google Code Assist 把同样的
  * Gemini 请求包在 {model, project, request, ...} 里，响应也包一层 {response}。

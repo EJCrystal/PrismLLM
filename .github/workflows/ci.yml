@@ -25,6 +25,12 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       monitoring: ${{ steps.filter.outputs.monitoring }}
       ci: ${{ steps.filter.outputs.ci }}
+      shared: ${{ steps.filter.outputs.shared }}
+      protocol: ${{ steps.filter.outputs.protocol }}
+      channel: ${{ steps.filter.outputs.channel }}
+      app: ${{ steps.filter.outputs.app }}
+      build: ${{ steps.filter.outputs.build }}
+      extensions: ${{ steps.filter.outputs.extensions }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -47,10 +53,24 @@ jobs:
             backend:
               - 'prism-shared/**'
               - 'prism-protocol/**'
+              - 'prism-channel/**'
               - 'prism-app/**'
               - 'extensions/**'
               - 'pom.xml'
               - 'Dockerfile'
+            shared:
+              - 'prism-shared/**'
+            protocol:
+              - 'prism-protocol/**'
+            channel:
+              - 'prism-channel/**'
+            app:
+              - 'prism-app/**'
+            build:
+              - 'pom.xml'
+              - 'Dockerfile'
+            extensions:
+              - 'extensions/**'
             monitoring:
               - 'monitoring/**'
             ci:
@@ -141,10 +161,36 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Test backend and install plugin SPI
-        run: mvn --batch-mode install
+      - name: Resolve affected test modules
+        id: modules
+        run: |
+          all="prism-shared,prism-protocol,prism-channel,prism-app"
+          # 共享内核与根构建变更影响所有模块；其余变更只验证自身及下游。
+          if [ "${{ needs.changes.outputs.build }}" = "true" ] || [ "${{ needs.changes.outputs.shared }}" = "true" ]; then
+            modules="$all"
+          else
+            modules=""
+            if [ "${{ needs.changes.outputs.protocol }}" = "true" ]; then modules="prism-protocol"; fi
+            if [ "${{ needs.changes.outputs.channel }}" = "true" ]; then modules="${modules:+$modules,}prism-channel"; fi
+            if [ "${{ needs.changes.outputs.app }}" = "true" ]; then modules="${modules:+$modules,}prism-app"; fi
+            # app 是组合根，覆盖 channel/protocol 的集成行为；上游模块变更必须连同它一起验证。
+            if [ -n "$modules" ] && [ "${{ needs.changes.outputs.app }}" != "true" ] \
+              && { [ "${{ needs.changes.outputs.protocol }}" = "true" ] || [ "${{ needs.changes.outputs.channel }}" = "true" ]; }; then
+              modules="$modules,prism-app"
+            fi
+          fi
+          echo "modules=$modules" >> "$GITHUB_OUTPUT"
+          echo "Affected test modules: ${modules:-none}"
+
+      - name: Compile backend and install plugin SPI
+        run: mvn --batch-mode -DskipTests install
+
+      - name: Test affected backend modules
+        if: steps.modules.outputs.modules != ''
+        run: mvn --batch-mode -pl "${{ steps.modules.outputs.modules }}" test
 
       - name: Test optional quota providers
+        if: needs.changes.outputs.extensions == 'true' || needs.changes.outputs.shared == 'true' || needs.changes.outputs.build == 'true'
         run: mvn --batch-mode -f extensions/quota-providers/pom.xml verify
 
   monitoring:

@@ -1,11 +1,11 @@
 package dev.soven.llmgateway.integration
 
 import dev.soven.llmgateway.db.DatabaseFactory
-import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.UpstreamRequestOverrides
-import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
-import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamProtocolOverrides
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.proxy.HeaderProfileVersionSource

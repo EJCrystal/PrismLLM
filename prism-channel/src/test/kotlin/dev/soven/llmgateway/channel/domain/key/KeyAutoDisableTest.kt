@@ -1,4 +1,5 @@
-package dev.soven.llmgateway.resilience
+package dev.soven.llmgateway.channel.domain.key
+
 
 import kotlin.test.Test
 import kotlin.test.assertEquals

@@ -2,12 +2,12 @@ package dev.soven.llmgateway.integration
 
 import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.config.GatewayConfig
-import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
+import dev.soven.llmgateway.channel.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.repo.NewChannelKey
-import dev.soven.llmgateway.repo.ChannelKeyUpdate
-import dev.soven.llmgateway.resilience.ChannelKeyState
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
+import dev.soven.llmgateway.channel.persistence.ChannelKeyUpdate
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
 import io.ktor.client.request.header

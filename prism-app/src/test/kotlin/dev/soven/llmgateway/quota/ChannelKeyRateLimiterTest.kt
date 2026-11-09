@@ -1,9 +1,9 @@
 package dev.soven.llmgateway.quota
 
-import dev.soven.llmgateway.resilience.ChannelKeyState
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 
-import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
-import dev.soven.llmgateway.domain.ChannelKeyRecord
+import dev.soven.llmgateway.channel.domain.ChannelKeyRateLimitPolicy
+import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin

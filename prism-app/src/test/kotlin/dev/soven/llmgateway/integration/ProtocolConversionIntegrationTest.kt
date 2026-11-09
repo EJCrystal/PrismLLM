@@ -2,11 +2,11 @@ package dev.soven.llmgateway.integration
 
 import com.sun.net.httpserver.HttpServer
 import dev.soven.llmgateway.api.GatewayApplication
-import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.UpstreamRequestOverrides
-import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamProtocolOverrides
 import dev.soven.llmgateway.domain.WebSearchSettingsRecord
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO

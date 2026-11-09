@@ -1,13 +1,13 @@
 package dev.soven.llmgateway.proxy
 
-import dev.soven.llmgateway.domain.ChannelModelRecord
-import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RouteCandidate
 import dev.soven.llmgateway.protocol.ProtocolConversion
-import dev.soven.llmgateway.repo.ChannelRepository
+import dev.soven.llmgateway.channel.persistence.ChannelRepository
 import dev.soven.llmgateway.repo.OAuthAccountRepository
-import dev.soven.llmgateway.resilience.ChannelKeyState
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 
 /**
  * 一个允许直连的渠道模型，以及它对外使用的规范 ID。

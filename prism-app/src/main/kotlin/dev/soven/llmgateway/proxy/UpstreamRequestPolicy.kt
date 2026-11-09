@@ -3,9 +3,9 @@ package dev.soven.llmgateway.proxy
 import dev.soven.llmgateway.shared.error.GatewayError
 import dev.soven.llmgateway.shared.error.badRequest
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamProtocolOverrides
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
-import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.json.JsonArray
@@ -166,7 +166,8 @@ fun validateUpstreamRequestOverrides(overrides: UpstreamRequestOverrides) {
         if (layer.headerProfile != null && layer.headerProfile !in UpstreamHeaderProfiles.ids) {
             invalid("请求头预设无效")
         }
-        if (layer.userAgent != null && !validHeaderValue(layer.userAgent)) invalid("User-Agent 包含非法字符或超过 8192 字符")
+        val userAgent = layer.userAgent
+        if (userAgent != null && !validHeaderValue(userAgent)) invalid("User-Agent 包含非法字符或超过 8192 字符")
         if (layer.headers.size > 64) invalid("每层自定义请求头不能超过 64 个")
         val names = mutableSetOf<String>()
         layer.headers.forEach { (name, value) ->

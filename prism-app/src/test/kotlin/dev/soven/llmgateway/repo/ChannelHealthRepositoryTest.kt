@@ -1,15 +1,18 @@
 package dev.soven.llmgateway.repo
 
+import dev.soven.llmgateway.channel.persistence.ChannelRepository
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
+
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.db.DatabaseFactory
-import dev.soven.llmgateway.domain.ChannelModelRecord
-import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.RequestLogRecord
 import dev.soven.llmgateway.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.report.HealthMetrics
-import dev.soven.llmgateway.resilience.ChannelKeyState
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
@@ -92,7 +95,7 @@ class ChannelHealthRepositoryTest {
         )
         val identities = channels.listHealthChannels()
         assertEquals(mapOf(active.id to true, disabled.id to false), identities)
-        val overviews = channels.listHealthChannelOverviews()
+        val overviews = health.listHealthChannelOverviews()
         assertEquals(setOf(active.id, disabled.id), overviews.map { it.id }.toSet())
         assertEquals(1, overviews.first { it.id == active.id }.keys.size)
         // 两个渠道的密钥都是 ACTIVE，但只有一个渠道启用；可路由凭据数与会话状态无关。
@@ -124,7 +127,7 @@ class ChannelHealthRepositoryTest {
             ),
             authType = "bearer", enabled = true, modelMappings = listOf(ChannelModelRecord("m1")),
         )
-        val overviews = channels.listHealthChannelOverviews().associateBy { it.id }
+        val overviews = health.listHealthChannelOverviews().associateBy { it.id }
         assertEquals(1, overviews.getValue(routable.id).routableCredentials)
         assertEquals(0, overviews.getValue(suspended.id).routableCredentials)
         assertTrue(overviews.getValue(routable.id).keys.single().routable)
@@ -156,7 +159,7 @@ class ChannelHealthRepositoryTest {
         )
 
         // 概览与详情必须同口径：授权模型与渠道目录无交集时都算 0。
-        val overviews = channels.listHealthChannelOverviews().associateBy { it.id }
+        val overviews = health.listHealthChannelOverviews().associateBy { it.id }
         assertEquals(0, overviews.getValue(stale.id).routableCredentials)
         assertFalse(overviews.getValue(stale.id).keys.single().routable)
         assertEquals(0, assertNotNull(channels.find(stale.id)).routableCredentialCount())

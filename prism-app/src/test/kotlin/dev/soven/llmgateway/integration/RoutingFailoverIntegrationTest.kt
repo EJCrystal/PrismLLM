@@ -1,11 +1,11 @@
 package dev.soven.llmgateway.integration
 
 import dev.soven.llmgateway.api.GatewayApplication
-import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.repo.CooldownStateRepository
-import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.resilience.CooldownStateSnapshot
 import dev.soven.llmgateway.resilience.FailureKind
 import io.ktor.client.request.header

@@ -3,11 +3,11 @@ package dev.soven.llmgateway.integration
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.ThrowableProxyUtil
 import ch.qos.logback.core.AppenderBase
-import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.UpstreamRequestOverrides
-import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.shared.domain.UpstreamProtocolOverrides
 import io.ktor.client.request.header
 import io.ktor.client.request.get
 import io.ktor.client.request.post

@@ -3,11 +3,11 @@ package dev.soven.llmgateway.proxy
 import dev.soven.llmgateway.shared.domain.Usage
 
 import dev.soven.llmgateway.shared.error.GatewayError
-import dev.soven.llmgateway.domain.ChannelRecord
-import dev.soven.llmgateway.domain.UpstreamCredential
+import dev.soven.llmgateway.channel.domain.ChannelRecord
+import dev.soven.llmgateway.channel.domain.UpstreamCredential
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.authTypeFor
-import dev.soven.llmgateway.domain.UpstreamRequestOverrides
+import dev.soven.llmgateway.channel.domain.authTypeFor
+import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
 import dev.soven.llmgateway.oauth.KeyCredentialResolver
 import io.ktor.client.HttpClient

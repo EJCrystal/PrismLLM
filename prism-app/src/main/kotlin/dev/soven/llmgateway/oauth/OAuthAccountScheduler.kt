@@ -73,7 +73,7 @@ class OAuthAccountScheduler(
 
     /** 预检查：只判断是否可准入，不消耗窗口名额或并发额度。 */
     suspend fun check(account: OAuthAccountRecord): OAuthAccountDecision.Denied? {
-        val policy = account.oauthPolicy ?: return null
+        val policy = account.policy ?: return null
         return mutex.withLock {
             val nowMs = now()
             val state = states[account.id] ?: return@withLock null
@@ -83,7 +83,7 @@ class OAuthAccountScheduler(
     }
 
     suspend fun acquire(account: OAuthAccountRecord): OAuthAccountDecision {
-        val policy = account.oauthPolicy ?: return OAuthAccountDecision.Allowed(null)
+        val policy = account.policy ?: return OAuthAccountDecision.Allowed(null)
         return mutex.withLock {
             val nowMs = now()
             val state = states.getOrPut(account.id) { AccountState() }
@@ -118,7 +118,7 @@ class OAuthAccountScheduler(
         retryAfterMs: Long?,
         nowMs: Long = now(),
     ) {
-        val policy = account.oauthPolicy ?: return
+        val policy = account.policy ?: return
         mutex.withLock {
             val state = states.getOrPut(account.id) { AccountState() }
             state.prune(nowMs, policy)
@@ -153,7 +153,7 @@ class OAuthAccountScheduler(
         reading: OAuthQuotaHeaderReading?,
         nowMs: Long = now(),
     ) {
-        if (reading == null || account.oauthPolicy == null) return
+        if (reading == null || account.policy == null) return
         mutex.withLock {
             val state = states.getOrPut(account.id) { AccountState() }
             state.quota = state.quota.mergeQuotaHeaders(reading, nowMs)
@@ -200,7 +200,7 @@ class OAuthAccountScheduler(
     ): Map<String, OAuthRoutingHint> = mutex.withLock {
         val hints = HashMap<String, OAuthRoutingHint>(accounts.size)
         for (account in accounts) {
-            val policy = account.oauthPolicy ?: continue
+            val policy = account.policy ?: continue
             val state = states[account.id] ?: continue
             state.prune(nowMs, policy)
             hints[account.id] = OAuthRoutingHint(

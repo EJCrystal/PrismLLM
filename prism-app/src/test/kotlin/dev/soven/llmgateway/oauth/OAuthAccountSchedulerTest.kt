@@ -1,5 +1,7 @@
 package dev.soven.llmgateway.oauth
 
+import dev.soven.llmgateway.shared.domain.OAuthProvider
+
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
@@ -385,7 +387,7 @@ class OAuthAccountSchedulerTest {
     private fun key(policy: OAuthAccountPolicy? = OAuthAccountPolicy()): OAuthAccountRecord = OAuthAccountRecord(
         id = "key-1",
         name = "account",
-        provider = dev.soven.llmgateway.domain.OAuthProvider.CHATGPT,
+        provider = dev.soven.llmgateway.shared.domain.OAuthProvider.CHATGPT,
         refreshTokenCiphertext = "refresh-cipher",
         refreshTokenNonce = "refresh-nonce",
         refreshTokenKeyVersion = 1,

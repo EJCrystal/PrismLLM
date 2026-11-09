@@ -1,7 +1,7 @@
-package dev.soven.llmgateway.resilience
+package dev.soven.llmgateway.channel.domain.key
 
-import dev.soven.llmgateway.domain.ChannelKeyRecord
-import dev.soven.llmgateway.domain.ChannelRecord
+import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
+import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import kotlin.test.Test
 import kotlin.test.assertEquals

@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.resilience
+package dev.soven.llmgateway.channel.domain.key
 
 /** 上游密钥自动禁用的全局策略，两个条件任一满足即停用。 */
 data class KeyAutoDisablePolicy(

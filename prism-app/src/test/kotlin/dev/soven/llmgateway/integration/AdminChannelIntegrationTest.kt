@@ -1,9 +1,9 @@
 package dev.soven.llmgateway.integration
 
 import dev.soven.llmgateway.api.GatewayApplication
-import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import io.ktor.client.request.header
 import io.ktor.client.request.get
 import io.ktor.client.request.post

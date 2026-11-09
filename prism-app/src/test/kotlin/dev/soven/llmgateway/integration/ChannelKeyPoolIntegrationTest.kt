@@ -1,13 +1,13 @@
 package dev.soven.llmgateway.integration
 
-import dev.soven.llmgateway.domain.ChannelModelRecord
+import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.repo.NewChannelKey
-import dev.soven.llmgateway.repo.ChannelKeyUpdate
-import dev.soven.llmgateway.resilience.KeyAttemptOutcome
-import dev.soven.llmgateway.resilience.ChannelKeyState
+import dev.soven.llmgateway.channel.persistence.NewChannelKey
+import dev.soven.llmgateway.channel.persistence.ChannelKeyUpdate
+import dev.soven.llmgateway.channel.domain.key.KeyAttemptOutcome
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.resilience.FailureKind
-import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
+import dev.soven.llmgateway.channel.domain.key.KeyAutoDisablePolicy
 import io.ktor.client.request.header
 import io.ktor.client.request.get
 import io.ktor.client.request.post
