@@ -16,6 +16,7 @@ COPY prism-channel ./prism-channel
 COPY prism-routing ./prism-routing
 COPY prism-resilience ./prism-resilience
 COPY prism-subscription-oauth ./prism-subscription-oauth
+COPY prism-quota ./prism-quota
 COPY prism-app ./prism-app
 RUN --mount=type=cache,target=/root/.m2 mvn -B -DskipTests -pl prism-app -am package
 

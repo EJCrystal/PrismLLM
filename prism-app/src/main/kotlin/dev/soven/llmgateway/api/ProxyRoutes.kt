@@ -41,7 +41,7 @@ import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
 import dev.soven.llmgateway.quota.ChannelKeyRateLimitLease
 import dev.soven.llmgateway.quota.ChannelKeyRateLimitReason
 import dev.soven.llmgateway.quota.RequestLimitLease
-import dev.soven.llmgateway.quota.quotaTokensFromUsage
+import dev.soven.llmgateway.quota.domain.quotaTokensFromUsage
 import dev.soven.llmgateway.proxy.ReasoningEffort
 import dev.soven.llmgateway.proxy.ShapeRefusal
 import dev.soven.llmgateway.shared.domain.TraceContextFactory

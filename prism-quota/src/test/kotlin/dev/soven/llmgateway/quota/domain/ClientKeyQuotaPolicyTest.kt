@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.quota
+package dev.soven.llmgateway.quota.domain
 
 import java.math.BigDecimal
 import kotlin.test.Test

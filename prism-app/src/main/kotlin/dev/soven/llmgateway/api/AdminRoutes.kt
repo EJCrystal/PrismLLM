@@ -63,8 +63,8 @@ import dev.soven.llmgateway.channel.domain.key.KeyDisablePolicy
 import dev.soven.llmgateway.channel.domain.key.requireSavable
 import dev.soven.llmgateway.channel.domain.key.toKeyDisablePolicy
 import dev.soven.llmgateway.channel.domain.key.KeyAutoDisablePolicy
-import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
-import dev.soven.llmgateway.quota.parseDailyCostLimit
+import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
+import dev.soven.llmgateway.quota.domain.parseDailyCostLimit
 import dev.soven.llmgateway.report.ChannelCooldownSummary
 import dev.soven.llmgateway.report.UsageReportQuery
 import dev.soven.llmgateway.resilience.CandidateCooldown
