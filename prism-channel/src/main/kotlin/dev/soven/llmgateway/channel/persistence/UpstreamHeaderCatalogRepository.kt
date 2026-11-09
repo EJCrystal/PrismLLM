@@ -1,8 +1,5 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.channel.persistence
 
-import dev.soven.llmgateway.db.UpstreamHeaderCatalogState
-import dev.soven.llmgateway.db.UpstreamHeaderProfilePins
-import dev.soven.llmgateway.db.UpstreamHeaderProfileVersions
 import dev.soven.llmgateway.channel.domain.UpstreamHeaderProfile
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.builtins.MapSerializer

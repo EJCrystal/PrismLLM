@@ -71,6 +71,14 @@ class ChannelArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.channel.infra.quota.ChannelQuotaProviderRegistry" },
             "ArchUnit 未导入额度插件注册表，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.channel.persistence.UpstreamRequestSettingsRepository" },
+            "ArchUnit 未导入上游请求设置仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.channel.persistence.UpstreamHeaderCatalogRepository" },
+            "ArchUnit 未导入请求头目录仓储，规则会空跑",
+        )
     }
 
     @Test

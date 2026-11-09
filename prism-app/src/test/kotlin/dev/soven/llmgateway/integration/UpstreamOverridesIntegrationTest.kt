@@ -6,8 +6,8 @@ import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.shared.domain.UpstreamProtocolOverrides
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
-import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
-import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
+import dev.soven.llmgateway.channel.persistence.UpstreamRequestSettingsRepository
+import dev.soven.llmgateway.channel.persistence.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.proxy.HeaderProfileVersionSource
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.proxy.UpstreamHeaderProfiles
