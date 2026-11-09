@@ -1,45 +1,11 @@
 package dev.soven.llmgateway.domain
 
-import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
-import dev.soven.llmgateway.channel.domain.ChannelRecord
-import dev.soven.llmgateway.channel.domain.UpstreamCredential
 import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import kotlinx.serialization.json.JsonObject
 import java.math.BigDecimal
 
-
-/**
- * 解析后的路由候选，只包含数据面需要的字段。
- *
- * @author 文杰
- * @since 2026-10-21
- */
-data class RouteCandidate(
-    val channel: ChannelRecord,
-    val credential: UpstreamCredential,
-    val upstreamModel: String,
-    /** 选路档位：直连候选取渠道优先级，数值越小越优先。 */
-    val position: Int,
-) {
-    /** 仅静态渠道密钥可用的旧能力（自动禁用、密钥限流）；订阅账号为 null。 */
-    val channelKey: ChannelKeyRecord?
-        get() = credential as? ChannelKeyRecord
-
-    /** 订阅账号专属能力（账号级窗口、并发、额度）；静态密钥为 null。 */
-    val oauthAccount: OAuthAccountRecord?
-        get() = credential as? OAuthAccountRecord
-
-    /** 计费使用的模型 ID：优先渠道配置的规范 ID，未配置时回退上游模型。 */
-    val pricingModelId: String
-        get() = channel.modelMappings
-            .firstOrNull { it.upstreamModel.trim() == upstreamModel.trim() }
-            ?.canonicalModelId
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-            ?: upstreamModel.trim()
-}
 
 /**
  * 上游 /models 返回的模型。

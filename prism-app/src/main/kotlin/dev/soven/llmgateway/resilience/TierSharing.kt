@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.resilience
 
-import dev.soven.llmgateway.domain.RouteCandidate
+import dev.soven.llmgateway.routing.domain.candidate.RouteCandidate
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 

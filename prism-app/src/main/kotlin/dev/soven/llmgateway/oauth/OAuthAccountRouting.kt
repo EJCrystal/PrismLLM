@@ -4,7 +4,7 @@ import dev.soven.llmgateway.channel.domain.UpstreamCredential
 
 import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthRoutingStrategy
-import dev.soven.llmgateway.domain.RouteCandidate
+import dev.soven.llmgateway.routing.domain.candidate.RouteCandidate
 import dev.soven.llmgateway.shared.domain.saturatedAdd
 import dev.soven.llmgateway.shared.domain.saturatedSubtract
 import java.util.concurrent.ConcurrentHashMap

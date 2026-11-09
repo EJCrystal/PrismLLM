@@ -15,7 +15,7 @@ class TierSharingTest {
         keyName: String = "default",
         keyPriority: Int = 1,
         upstreamModel: String = "m",
-    ) = dev.soven.llmgateway.domain.RouteCandidate(
+    ) = dev.soven.llmgateway.routing.domain.candidate.RouteCandidate(
         channel = ChannelRecord(
             id = "id-$name",
             name = name,
@@ -64,7 +64,7 @@ class TierSharingTest {
         name: String,
         keys: List<Pair<String, Int>>,
         upstreamModel: String = "m",
-    ): List<dev.soven.llmgateway.domain.RouteCandidate> {
+    ): List<dev.soven.llmgateway.routing.domain.candidate.RouteCandidate> {
         val channelKeys = keys.map { (keyName, keyPriority) ->
             ChannelKeyRecord(
                 id = "key-$name-$keyName",
@@ -93,7 +93,7 @@ class TierSharingTest {
             keys = channelKeys,
         )
         return channelKeys.map { key ->
-            dev.soven.llmgateway.domain.RouteCandidate(
+            dev.soven.llmgateway.routing.domain.candidate.RouteCandidate(
                 channel = channel,
                 credential = key,
                 upstreamModel = upstreamModel,

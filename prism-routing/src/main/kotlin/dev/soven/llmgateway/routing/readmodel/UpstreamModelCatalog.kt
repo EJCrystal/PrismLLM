@@ -1,13 +1,14 @@
-package dev.soven.llmgateway.proxy
+package dev.soven.llmgateway.routing.readmodel
 
 import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.channel.domain.ChannelRecord
-import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.RouteCandidate
-import dev.soven.llmgateway.protocol.ProtocolConversion
-import dev.soven.llmgateway.channel.persistence.ChannelRepository
-import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
+import dev.soven.llmgateway.channel.persistence.ChannelRepository
+import dev.soven.llmgateway.protocol.ProtocolConversion
+import dev.soven.llmgateway.routing.domain.candidate.CandidateSet
+import dev.soven.llmgateway.routing.domain.candidate.RouteCandidate
+import dev.soven.llmgateway.routing.domain.ordering.OrderingRules
+import dev.soven.llmgateway.shared.domain.GatewayProtocol
 
 /**
  * 一个允许直连的渠道模型，以及它对外使用的规范 ID。
@@ -30,7 +31,7 @@ private data class ConfiguredModel(val channel: ChannelRecord, val mapping: Chan
  */
 class UpstreamModelCatalog(
     private val channelRepository: ChannelRepository,
-    private val oauthAccountRepository: OAuthAccountRepository,
+    private val oauthAccounts: OAuthAccountDirectory,
 ) {
     suspend fun listDirectModels(): List<DirectModel> =
         directExposureChannels().flatMap { channel ->
@@ -62,35 +63,12 @@ class UpstreamModelCatalog(
                     )
                 }
             }
-            .sortedWith(compareBy(
-                { it.position },
-                { it.channel.name },
-                { it.credential.priority },
-                { it.credential.name },
-                { it.credential.id },
-                { it.upstreamModel },
-            ))
-
-    /**
-     * 一次目录快照下解析模型的可用性，路由与「为什么不可用」的判定都基于同一份快照，
-     * 避免候选查询与诊断查询之间凭据恢复（临时停用到期、人工启用）导致自相矛盾的结论。
-     *
-     * @param candidates        当前协议下可用的路由候选（含协议转换）。
-     * @param configured        全协议下模型已配置的渠道条目，与凭据是否可路由无关。
-     * @param protocolReachable 是否存在任一渠道能原生支持或转换出当前协议。
-     * @param retryAt           凭据全部不可路由时的最早自动恢复时间；没有临时停用密钥时为 null。
-     */
-    data class ModelAvailability(
-        val candidates: List<RouteCandidate>,
-        val configured: Boolean,
-        val protocolReachable: Boolean,
-        val retryAt: Long?,
-    )
+            .let(OrderingRules::initialOrder)
 
     /**
      * 解析模型在当前协议下的可用性。所有分支都基于 [configuredModels] 的单次快照。
      */
-    suspend fun resolve(model: String, protocol: GatewayProtocol, now: Long = System.currentTimeMillis()): ModelAvailability {
+    suspend fun resolve(model: String, protocol: GatewayProtocol, now: Long = System.currentTimeMillis()): CandidateSet {
         val configured = configuredModels(model)
         val protocolEntries = configured.filter { entry ->
             protocol in entry.channel.protocols ||
@@ -105,17 +83,8 @@ class UpstreamModelCatalog(
                     position = entry.channel.priority,
                 )
             }
-        }.sortedWith(compareBy(
-            { it.position },
-            { it.channel.name },
-            { it.credential.priority },
-            { it.credential.name },
-            { it.credential.id },
-            { it.upstreamModel },
-        ))
-        // 原生协议优先于协议转换：转换多一层损耗，能用原生就别转。
-        val candidates = allCandidates.filter { protocol in it.channel.protocols } +
-            allCandidates.filter { protocol !in it.channel.protocols }
+        }.let(OrderingRules::initialOrder)
+        val candidates = OrderingRules.nativeProtocolFirst(allCandidates, protocol)
         // 临时停用到期的密钥会自行恢复，用最早的恢复时间告诉调用方何时重试；
         // 人工或永久停用不会自动恢复，不参与重试提示。
         val retryAt = protocolEntries.asSequence()
@@ -126,7 +95,7 @@ class UpstreamModelCatalog(
             }
             .mapNotNull { key -> key.recoveryAt(now) }
             .minOrNull()
-        return ModelAvailability(
+        return CandidateSet(
             candidates = candidates,
             configured = configured.isNotEmpty(),
             protocolReachable = protocolEntries.isNotEmpty(),
@@ -148,7 +117,7 @@ class UpstreamModelCatalog(
         }
 
     private suspend fun directExposureChannels(): List<ChannelRecord> {
-        val accountsByChannel = oauthAccountRepository.listByChannel()
+        val accountsByChannel = oauthAccounts.listByChannel()
         return channelRepository.list()
             .filter { it.enabled }
             .map { channel -> channel.copy(oauthAccounts = accountsByChannel[channel.id].orEmpty()) }

@@ -28,6 +28,7 @@ jobs:
       shared: ${{ steps.filter.outputs.shared }}
       protocol: ${{ steps.filter.outputs.protocol }}
       channel: ${{ steps.filter.outputs.channel }}
+      routing: ${{ steps.filter.outputs.routing }}
       app: ${{ steps.filter.outputs.app }}
       build: ${{ steps.filter.outputs.build }}
       extensions: ${{ steps.filter.outputs.extensions }}
@@ -54,6 +55,7 @@ jobs:
               - 'prism-shared/**'
               - 'prism-protocol/**'
               - 'prism-channel/**'
+              - 'prism-routing/**'
               - 'prism-app/**'
               - 'extensions/**'
               - 'pom.xml'
@@ -64,6 +66,8 @@ jobs:
               - 'prism-protocol/**'
             channel:
               - 'prism-channel/**'
+            routing:
+              - 'prism-routing/**'
             app:
               - 'prism-app/**'
             build:
@@ -169,20 +173,27 @@ jobs:
           app_tags=""
           # 共享内核与根构建变更影响所有模块；其余变更只验证自身及下游。
           if [ "${{ needs.changes.outputs.build }}" = "true" ] || [ "${{ needs.changes.outputs.shared }}" = "true" ]; then
-            modules="prism-shared,prism-protocol,prism-channel"
+            modules="prism-shared,prism-protocol,prism-channel,prism-routing"
             app_tests="true"
           else
             if [ "${{ needs.changes.outputs.protocol }}" = "true" ]; then modules="prism-protocol"; fi
             if [ "${{ needs.changes.outputs.channel }}" = "true" ]; then modules="${modules:+$modules,}prism-channel"; fi
-            # app 是组合根，覆盖 channel/protocol 的集成行为；上游模块变更必须连同它一起验证。
+            # routing 依赖 channel 与 protocol：上游模块变更同样要验证 routing 的编译与单测。
+            if [ "${{ needs.changes.outputs.channel }}" = "true" ] \
+              || [ "${{ needs.changes.outputs.protocol }}" = "true" ] \
+              || [ "${{ needs.changes.outputs.routing }}" = "true" ]; then
+              modules="${modules:+$modules,}prism-routing"
+            fi
+            # app 是组合根，覆盖 routing/channel/protocol 的集成行为；上游模块变更必须连同它一起验证。
             if [ "${{ needs.changes.outputs.app }}" = "true" ] \
               || [ "${{ needs.changes.outputs.protocol }}" = "true" ] \
-              || [ "${{ needs.changes.outputs.channel }}" = "true" ]; then
+              || [ "${{ needs.changes.outputs.channel }}" = "true" ] \
+              || [ "${{ needs.changes.outputs.routing }}" = "true" ]; then
               app_tests="true"
             fi
-            # app 自身变更跑全量；只有上游模块变更时，按模块标签只跑相关集成测试。
+            # app 自身或 routing 变更跑全量；只有 protocol/channel 变更时，按模块标签只跑相关集成测试。
             # 单元测试始终全量执行，标签只用于筛选慢速集成测试。
-            if [ "${{ needs.changes.outputs.app }}" != "true" ]; then
+            if [ "${{ needs.changes.outputs.app }}" != "true" ] && [ "${{ needs.changes.outputs.routing }}" != "true" ]; then
               if [ "${{ needs.changes.outputs.channel }}" = "true" ]; then app_tags="channel"; fi
               # Surefire 的 groups 支持 JUnit Platform 标签表达式，用 | 明确表达 OR。
               if [ "${{ needs.changes.outputs.protocol }}" = "true" ]; then app_tags="${app_tags:+$app_tags|}protocol"; fi
