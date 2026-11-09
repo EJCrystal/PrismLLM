@@ -210,6 +210,13 @@ jobs:
             sleep 5
           done
           if [ -z "$SINCE" ]; then
+            # init_gate 尚未写入时，用本 commit 上最早的 check suite 创建时间近似 push 时间。
+            # 直接退回 commit 时间不安全：commit 可能早于 push 很久，上一个 commit 的
+            # /review 评论会落在这段时间里，被误算成本 commit 的触发而跳过去重。
+            SINCE=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-suites" \
+              --jq '[.check_suites[].created_at] | min // empty' 2>/dev/null || true)
+          fi
+          if [ -z "$SINCE" ]; then
             SINCE=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" -q .commit.committer.date)
           fi
           echo "审查起算时间：${SINCE}"
@@ -256,10 +263,13 @@ jobs:
             return 1
           }
 
-          # 本 commit 推送后是否已有人（含本 workflow、人工）发过匹配的触发指令
+          # 本 commit 推送后是否已有人（含本 workflow、人工）发过匹配的触发指令。
+          # 只认 github-actions[bot] 与真人账号：其他机器人（如 CodeRabbit）的评论里
+          # 即使出现 /review 字样，也不能被当成触发指令。
           has_trigger() {
             jq -e --arg since "$SINCE" --arg re "$1" \
               'any(.[]; .created_at >= $since
+                        and ((.user.login == "github-actions[bot]") or (.user.type != "Bot"))
                         and ((.body // "") | gsub("^\\s+|\\s+$"; "") | test($re; "i")))' \
               "$COMMENTS_FILE" > /dev/null
           }
