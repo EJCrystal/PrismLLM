@@ -1,5 +1,6 @@
 package dev.soven.llmgateway.channel.domain
 
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -23,7 +24,10 @@ class ChannelRecordTest {
         override fun isRoutable(now: Long): Boolean = enabled && routable
     }
 
-    private fun channel(credentials: List<UpstreamCredential>) = ChannelRecord(
+    private fun channel(
+        credentials: List<UpstreamCredential> = emptyList(),
+        keys: List<ChannelKeyRecord> = emptyList(),
+    ) = ChannelRecord(
         id = "channel-1",
         name = "channel",
         baseUrl = "https://example.invalid",
@@ -32,6 +36,7 @@ class ChannelRecordTest {
         enabled = true,
         createdAt = 0,
         updatedAt = 0,
+        keys = keys,
         modelMappings = listOf(ChannelModelRecord("m1"), ChannelModelRecord("m2")),
         oauthAccounts = credentials,
     )
@@ -49,6 +54,30 @@ class ChannelRecordTest {
         )
 
         assertEquals(listOf("c", "a", "b"), channel.credentialsFor("m1", now = 0).map { it.id })
+    }
+
+    @Test
+    fun `credentialsFor merges static keys and oauth accounts in one stable order`() {
+        val channel = channel(
+            credentials = listOf(Credential("oauth-b", priority = 0, models = listOf("m1"))),
+            keys = listOf(
+                ChannelKeyRecord(
+                    id = "key-a",
+                    channelId = "channel-1",
+                    name = "key-a",
+                    credentialCiphertext = "cipher",
+                    credentialNonce = "nonce",
+                    credentialKeyVersion = 1,
+                    state = ChannelKeyState.ACTIVE,
+                    priority = 1,
+                    models = listOf("m1"),
+                    createdAt = 0,
+                    updatedAt = 0,
+                ),
+            ),
+        )
+
+        assertEquals(listOf("oauth-b", "key-a"), channel.credentialsFor("m1", now = 0).map { it.id })
     }
 
     @Test
