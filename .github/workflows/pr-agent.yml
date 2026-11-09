@@ -130,13 +130,14 @@ jobs:
 
   # 3. 审查路由：CodeRabbit 优先，不可用时降级到 PR-Agent。
   #
-  #    第一级 CodeRabbit：正常完成即放行（job 2）；跳过（OSS 仓库需手动邀请）、限流、
-  #    check run 失败、邀请后无响应 → 降级到 PR-Agent。
+  #    第一级 CodeRabbit：正常完成即放行（job 2）。跳过自动审查（OSS 仓库 star < 10）不
+  #    算服务不可用：本 job 用 PAT 发 @coderabbitai review 邀请，再等它接单；只有邀请后
+  #    仍跳过、限流、check run 失败或邀请无响应才降级到 PR-Agent。
   #    第二级 PR-Agent：发 /review，由 job 4 执行并裁决门禁（含 ACTIVE 意见检查）。
   #
-  #    降级范围：限流、OSS 跳过、邀请无响应这类「服务不可用」记 PR 级隐藏标记，本 PR
-  #    后续 commit 直接沿用 PR-Agent；偶发的 check run 失败只影响本 commit，下个
-  #    commit 仍从 CodeRabbit 开始。本 commit 的档位也能从已有的 /review 评论推断出来。
+  #    降级范围：限流、邀请后仍跳过或无响应、观察窗口内完全没有 check run 记 PR 级隐藏
+  #    标记，本 PR 后续 commit 直接沿用 PR-Agent；偶发的 check run 失败只影响本 commit，
+  #    下个 commit 仍从 CodeRabbit 开始。本 commit 的档位也能从已有的 /review 评论推断出来。
   #    触发评论必须用 PAT 发送：GITHUB_TOKEN 发出的评论不会触发新的 workflow，
   #    CodeRabbit 也不响应机器人发起的指令。
   route_review:
@@ -327,8 +328,10 @@ jobs:
             refresh_comments
           }
 
-          # CodeRabbit 在本 commit 上的状态：running / reviewed / unavailable / absent
-          # reviewed 要求 check run 成功且输出里没有 rate limited；skipped 不算已审。
+          # CodeRabbit 在本 commit 上的状态：
+          # running / reviewed / rate_limited / unavailable / skipped / absent
+          # reviewed 要求 check run 成功且输出里没有 rate limited；skipped 只表示「OSS 仓库
+          # 需手动邀请」，由调用方先发邀请，不能当成服务不可用直接降级。
           cr_state() {
             gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100" --paginate \
               | jq -sr '
@@ -338,7 +341,11 @@ jobs:
                             | select(.conclusion == "success")
                             | select((((.output.title // "") + "\n" + (.output.summary // "")) | test("rate limited"; "i") | not))
                           ] | length) > 0 then "reviewed"
-                    elif ($runs | length) > 0 then "unavailable"
+                    elif ([ $runs[]
+                            | select((((.output.title // "") + "\n" + (.output.summary // "")) | test("rate limited"; "i")))
+                          ] | length) > 0 then "rate_limited"
+                    elif ([ $runs[] | select(.conclusion != "skipped") ] | length) > 0 then "unavailable"
+                    elif ($runs | length) > 0 then "skipped"
                     else "absent" end' || echo "absent"
           }
 
@@ -346,6 +353,18 @@ jobs:
             gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100" \
               --jq '[.check_runs[] | select(.app.slug == "coderabbitai") | .id] | max // 0' \
               || echo 0
+          }
+
+          # 邀请之后 CodeRabbit 是否又给出了 skipped 结论（说明邀请没有生效）。
+          # $1 = 邀请时间（ISO8601），无新 check run 时返回非零。
+          coderabbit_skipped_after() {
+            gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100" --paginate \
+              | jq -sr --arg ts "$1" '
+                  any(.[].check_runs[];
+                      .app.slug == "coderabbitai"
+                      and .status == "completed"
+                      and .conclusion == "skipped"
+                      and ((.started_at // "") >= $ts))' > /dev/null
           }
 
           # CodeRabbit 限流时会先发一条普通评论（rate limited by coderabbit.ai），
@@ -356,6 +375,17 @@ jobs:
                         and (((.updated_at // .created_at) // "") >= $since)
                         and ((.body // "") | test("rate limited by coderabbit.ai|Review limit reached"; "i")))' \
               "$COMMENTS_FILE" > /dev/null
+          }
+
+          # 本 commit 上最近一次 CodeRabbit 邀请（人工作出的 @coderabbitai review）时间；
+          # 没有则输出空。只认 github-actions[bot] 与真人，避免机器人评论里的字样误判。
+          latest_cr_invite_at() {
+            jq -r --arg since "$SINCE" '
+              [ .[] | select((.created_at // "") >= $since)
+                   | select((.user.login == "github-actions[bot]") or (.user.type != "Bot"))
+                   | select(((.body // "") | gsub("^\\s+|\\s+$"; "") | test("^@coderabbitai (full )?review$"; "i")))
+                   | .created_at ] | max // empty' \
+              "$COMMENTS_FILE"
           }
 
           # 当前档位：PR 级标记 > 本 commit 的 /review > CodeRabbit
@@ -378,7 +408,7 @@ jobs:
             if [ "${2:-}" = "sticky" ]; then
               # 服务级不可用：本 PR 后续 commit 都直接走 PR-Agent。
               post_marker "$PR_AGENT_MARKER" \
-                "检测到 CodeRabbit 不可用（${reason}），本 PR 合并前的审查已改用 **PR-Agent** 兜底。"
+                "CodeRabbit 未能完成本 PR 的审查（${reason}），本 PR 合并前的审查已改用 **PR-Agent** 兜底。"
             elif [ "$FORCE_PR_AGENT_POST" != "1" ]; then
               # 偶发失败：只标记本 commit，下个 commit 仍从 CodeRabbit 开始。
               # 手动重跑不再留标记，避免评论区多一条无意义提示。
@@ -394,6 +424,52 @@ jobs:
             post_as_pat "/review"
             set_gate_pending "已触发 PR-Agent 审查（${reason}）..."
             exit 0
+          }
+
+          # 邀请 CodeRabbit 并等待它创建新的 check run。
+          # OSS 仓库（star < 10）不会自动审查，但 @coderabbitai review 能正常触发；
+          # 只有邀请后仍跳过、限流或超时无响应才降级到 PR-Agent。
+          # $1 = 邀请前该 commit 上最近的 check run id，用于识别邀请后产生的新 run。
+          invite_coderabbit() {
+            local baseline="$1"
+            local invite_at deadline
+            refresh_comments
+            if coderabbit_rate_limited; then
+              fallback_to_pr_agent "限流" sticky
+            fi
+            # 同一 commit 上 PR 事件与 check_run 事件可能先后进入本函数：已有邀请就复用，
+            # 不重复发评论，也不要把「邀请刚发出、新 check run 还没建」当成邀请失败。
+            invite_at=$(latest_cr_invite_at)
+            if [ -z "$invite_at" ]; then
+              echo "CodeRabbit 跳过了自动审查，先邀请 CodeRabbit。"
+              post_as_pat "@coderabbitai review"
+              set_gate_pending "已邀请 CodeRabbit 审查，等待结果..."
+              invite_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            else
+              echo "本 commit 已邀请过 CodeRabbit（${invite_at}），继续等待它接单。"
+            fi
+            # 邀请前就已经又出现了一次 skipped（并发事件或邀请被忽略），不必再等满 5 分钟。
+            if coderabbit_skipped_after "$invite_at"; then
+              fallback_to_pr_agent "邀请后仍跳过审查" sticky
+            fi
+            deadline=$(( $(date -u -d "$invite_at" +%s) + INVITE_WAIT_SECONDS ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              sleep 15
+              if [ "$(latest_coderabbit_run)" -gt "$baseline" ]; then
+                # 新 check run 可能直接就是又一次 skipped（邀请无效），不能当成已接单。
+                if coderabbit_skipped_after "$invite_at"; then
+                  fallback_to_pr_agent "邀请后仍跳过审查" sticky
+                fi
+                echo "CodeRabbit 已开始处理，后续由它的 check run 结果决定是否降级。"
+                exit 0
+              fi
+              # 限流时 CodeRabbit 常先回一条评论，带结论的 check run 会晚一些。
+              refresh_comments
+              if coderabbit_rate_limited; then
+                fallback_to_pr_agent "限流" sticky
+              fi
+            done
+            fallback_to_pr_agent "邀请后 ${INVITE_WAIT_SECONDS} 秒内无响应" sticky
           }
 
           TIER=$(current_tier)
@@ -425,6 +501,10 @@ jobs:
                     echo "CodeRabbit 正在处理本 commit，等待其 check run 结果。"
                     exit 0
                     ;;
+                  rate_limited)
+                    echo "CodeRabbit 已限流，改由 PR-Agent 审查。"
+                    fallback_to_pr_agent "限流" sticky
+                    ;;
                 esac
                 post_as_pat "@coderabbitai review"
                 set_gate_pending "已手动邀请 CodeRabbit 审查，等待结果..."
@@ -440,7 +520,7 @@ jobs:
             exit 0
           fi
 
-          # ---- PR 事件：确认 CodeRabbit 是否接单；真正的分流交给它的 check_run 事件 ----
+          # ---- PR 事件：确认 CodeRabbit 是否接单；running 时交给它的 check_run 事件 ----
           if [ "$EVENT_NAME" = "pull_request" ]; then
             if [ "$TIER" = "pr-agent" ]; then
               # 新的 push / 重新打开都要重新审一次，不能因为历史 /review 就跳过。
@@ -448,8 +528,9 @@ jobs:
               fallback_to_pr_agent "本 PR 已降级到 PR-Agent"
             fi
 
-            # 只在 running 时把结果交给后续 check_run 事件；check run 已经结束
-            # （skipped/失败/取消）时不会有新事件，必须在本 job 内直接降级，否则门禁卡死。
+            # CodeRabbit 接单（running）时把结果交给后续 check_run 事件；check run 已经
+            # 结束时不会有新事件，必须在本 job 内处理：跳过自动审查要先邀请 CodeRabbit，
+            # 限流、失败/取消或完全没有 check run 才降级。
             CR=""
             deadline=$(( $(date +%s) + CR_ABSENT_GRACE_SECONDS ))
             while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -464,23 +545,32 @@ jobs:
                 echo "CodeRabbit 已接单，后续由它的 check run 结果决定是否降级。"
                 exit 0
               fi
-              if [ "$CR" = "unavailable" ]; then
+              if [ "$CR" != "absent" ]; then
                 break
               fi
               sleep 10
             done
 
             case "$CR" in
+              skipped)
+                # OSS 仓库（star < 10）不自动审查，skipped 只代表需要手动邀请。
+                echo "CodeRabbit 跳过了自动审查（需手动邀请），先邀请 CodeRabbit。"
+                invite_coderabbit "$(latest_coderabbit_run)"
+                ;;
+              rate_limited)
+                echo "CodeRabbit 已限流，改由 PR-Agent 审查。"
+                fallback_to_pr_agent "限流" sticky
+                ;;
               unavailable)
-                echo "CodeRabbit 在本 commit 上的 check run 已结束且未审查，改由 PR-Agent 审查。"
-                # check run 结论非成功属于 CodeRabbit 确认不可用，本 PR 后续 commit 也直接走低档位。
-                fallback_to_pr_agent "本 commit 上 CodeRabbit 的 check run 已结束且未审查" sticky
+                echo "CodeRabbit 在本 commit 上的 check run 失败或取消，改由 PR-Agent 审查。"
+                # 单次失败/取消多为偶发，只降级本 commit，下个 commit 仍先试 CodeRabbit。
+                fallback_to_pr_agent "本 commit 上 CodeRabbit 的 check run 失败或取消"
                 ;;
               *)
-                echo "CodeRabbit 在 ${CR_ABSENT_GRACE_SECONDS} 秒内未创建 check run，本 commit 改由 PR-Agent 审查。"
-                # OSS 仓库（star < 10）不会自动审查，而它的跳过 check run 往往要到观察窗口之后才出现；
-                # 这里按服务级不可用处理，后续 commit 直接沿用 PR-Agent，避免每次推送都空等一轮。
-                fallback_to_pr_agent "本 commit 上 CodeRabbit 未创建任何 check run" sticky
+                # 观察窗口内没有 check run：可能还没轮到 CodeRabbit，也可能它没被安装。
+                # 先邀请一次，邀请后仍无 check run 才降级。
+                echo "CodeRabbit 在 ${CR_ABSENT_GRACE_SECONDS} 秒内未创建 check run，先邀请它确认。"
+                invite_coderabbit "$(latest_coderabbit_run)"
                 ;;
             esac
           fi
@@ -523,10 +613,6 @@ jobs:
             fallback_to_pr_agent "check run 结论为 ${CHECK_CONCLUSION}"
           fi
 
-          if has_trigger '^@coderabbitai (full )?review$'; then
-            fallback_to_pr_agent "邀请后仍跳过审查" sticky
-          fi
-
           # 限流提示是普通评论，可能先于 rate-limited check run 出现。
           # 邀请前先看评论并短暂等待复查，避免限流时仍发出邀请。
           rate_limit_deadline=$(( $(date +%s) + RATE_LIMIT_WAIT_SECONDS ))
@@ -545,25 +631,9 @@ jobs:
             sleep 5
           done
 
-          echo "CodeRabbit 跳过了自动审查，先邀请 CodeRabbit。"
-          post_as_pat "@coderabbitai review"
-          set_gate_pending "已邀请 CodeRabbit 审查，等待结果..."
-
-          # CodeRabbit 接受邀请（含随后限流）都会创建新的 check run，完成时由新事件继续路由。
-          deadline=$(( $(date +%s) + INVITE_WAIT_SECONDS ))
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            sleep 15
-            if [ "$(latest_coderabbit_run)" -gt "$CHECK_RUN_ID" ]; then
-              echo "CodeRabbit 已开始处理，后续由它的 check run 结果决定是否降级。"
-              exit 0
-            fi
-            # 限流时 CodeRabbit 常先回一条评论，带结论的 check run 会晚一些。
-            refresh_comments
-            if coderabbit_rate_limited; then
-              fallback_to_pr_agent "限流" sticky
-            fi
-          done
-          fallback_to_pr_agent "邀请后 ${INVITE_WAIT_SECONDS} 秒内无响应" sticky
+          # 跳过自动审查（OSS 仓库 star < 10）：邀请 CodeRabbit，而不是直接降级。
+          # 邀请后仍跳过、限流或 5 分钟无响应时，invite_coderabbit 内部会降级到 PR-Agent。
+          invite_coderabbit "$CHECK_RUN_ID"
 
   # 4. 核心审查 Job：评论区 /review 等指令（含 job 3 代发的 /review）
   pr_agent_review:
