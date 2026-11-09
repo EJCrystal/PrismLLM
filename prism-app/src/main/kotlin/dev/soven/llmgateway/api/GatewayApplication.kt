@@ -24,7 +24,8 @@ import dev.soven.llmgateway.proxy.UpstreamOccupancy
 import dev.soven.llmgateway.repo.ModelPriceRepository
 import dev.soven.llmgateway.repo.ModelDefaultPriceRepository
 import dev.soven.llmgateway.proxy.ModelPricingService
-import dev.soven.llmgateway.proxy.UpstreamModelCatalog
+import dev.soven.llmgateway.routing.readmodel.OAuthAccountDirectory
+import dev.soven.llmgateway.routing.readmodel.UpstreamModelCatalog
 import dev.soven.llmgateway.proxy.ModelPriceReferenceService
 import dev.soven.llmgateway.proxy.CurrencyExchangeService
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
@@ -465,7 +466,10 @@ class GatewayApplication(
     val codeAssistModelCatalog = CodeAssistModelCatalog(httpClient, clients = codeAssistClients)
     /** Antigravity 的额度读取。 */
     val codeAssistQuotaClient = CodeAssistQuotaClient(httpClient, clients = codeAssistClients)
-    val modelCatalog = UpstreamModelCatalog(channelRepository, oauthAccountRepository)
+    val modelCatalog = UpstreamModelCatalog(
+        channelRepository,
+        OAuthAccountDirectory { oauthAccountRepository.listByChannel() },
+    )
     val oauthTokenProviders = OAuthTokenProviderRegistry(buildOAuthTokenProviders(config.oauth))
     val oauthTokenService = OAuthTokenService(oauthAccountRepository, credentialCipher, oauthTokenProviders, config.oauth)
     /** 交互式 OAuth 登录：PKCE 会话只保存在内存，单次使用。 */

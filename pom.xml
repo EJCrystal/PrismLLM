@@ -23,6 +23,7 @@
         <module>prism-shared</module>
         <module>prism-protocol</module>
         <module>prism-channel</module>
+        <module>prism-routing</module>
         <module>prism-app</module>
     </modules>
 
@@ -71,6 +72,11 @@
             <dependency>
                 <groupId>dev.soven</groupId>
                 <artifactId>prism-channel</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.soven</groupId>
+                <artifactId>prism-routing</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

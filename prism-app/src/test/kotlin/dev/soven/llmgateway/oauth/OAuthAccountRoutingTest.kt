@@ -10,7 +10,7 @@ import dev.soven.llmgateway.domain.OAuthAccountRecord
 import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.domain.OAuthRoutingStrategy
-import dev.soven.llmgateway.domain.RouteCandidate
+import dev.soven.llmgateway.routing.domain.candidate.RouteCandidate
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
