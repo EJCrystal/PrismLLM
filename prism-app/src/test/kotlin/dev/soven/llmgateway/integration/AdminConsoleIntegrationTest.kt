@@ -161,6 +161,7 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `admin web search settings round trip without exposing the api key`() = runBlocking {
+        // 共享测试数据库：无论断言在哪一步失败，finally 都会把开关恢复为关闭。
         testApplication {
             application { app.install(this) }
             val client = jsonClient()
@@ -708,6 +709,7 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `admin password change revokes sessions and uses new password`() = runBlocking {
+        // 共享测试数据库：无论断言在哪一步失败，finally 都会把密码还原。
         val initialPassword = initialAdminPassword
         val rotatedPassword = "new-password-123"
         testApplication {

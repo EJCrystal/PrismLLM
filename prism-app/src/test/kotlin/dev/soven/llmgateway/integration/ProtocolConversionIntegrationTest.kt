@@ -415,6 +415,7 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
                 )
             }
             assertEquals(HttpStatusCode.OK, chat.status)
+            // awaitLogWithEffort 由 GatewayIntegrationTestBase 提供，轮询等待指定 effort 的请求日志。
             assertEquals("high", awaitLogWithEffort("high").reasoningEffort)
 
             val responses = client.post("/v1/responses") {
@@ -977,6 +978,7 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `six explicit converters route non streaming requests and record actual protocols`() = runBlocking {
+        // 六个转换器的公共断言集中在 GatewayIntegrationTestBase.assertSixConverterRoutes。
         assertSixConverterRoutes(stream = false)
     }
 

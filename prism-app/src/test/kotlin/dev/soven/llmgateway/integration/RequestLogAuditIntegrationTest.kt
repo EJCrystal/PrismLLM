@@ -33,6 +33,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
+import org.junit.jupiter.api.Timeout
 import java.math.BigDecimal
 import java.sql.DriverManager
 import java.util.concurrent.atomic.AtomicInteger
@@ -276,8 +277,9 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                         while (result.next()) {
                             (1..8).forEach { index ->
                                 val value = result.getString(index) ?: return@forEach
-                                assertFalse(value.contains(oldKey), "audit row leaked old key: $value")
-                                assertFalse(value.contains(newKey), "audit row leaked rotated key: $value")
+                                // 失败信息不要带上列值，避免把泄漏的密钥原样打进 CI 日志。
+                                assertFalse(value.contains(oldKey), "audit column $index leaked old key")
+                                assertFalse(value.contains(newKey), "audit column $index leaked rotated key")
                             }
                         }
                     }
@@ -363,16 +365,12 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    @Timeout(300)
     fun `migrations tolerate duplicate rows`() {
         val databaseName = createMigrationDatabase("migration_latest")
         val migrationUrl = migrationDatabaseUrl(databaseName)
         try {
-            Flyway.configure()
-                .dataSource(migrationUrl, postgres.username, postgres.password)
-                .locations("classpath:db/migration")
-                .target(MigrationVersion.fromVersion("7"))
-                .load()
-                .migrate()
+            migrateTo(migrationUrl, "7")
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
@@ -401,12 +399,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
             }
 
             // 先迁到 V19，构造一个关闭直连的渠道，验证 V20 会把它转为停用
-            Flyway.configure()
-                .dataSource(migrationUrl, postgres.username, postgres.password)
-                .locations("classpath:db/migration")
-                .target(MigrationVersion.fromVersion("19"))
-                .load()
-                .migrate()
+            migrateTo(migrationUrl, "19")
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
@@ -420,12 +413,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
             }
 
             // 迁到 V31，构造三种旧密钥验证 V32 回填规则
-            Flyway.configure()
-                .dataSource(migrationUrl, postgres.username, postgres.password)
-                .locations("classpath:db/migration")
-                .target(MigrationVersion.fromVersion("31"))
-                .load()
-                .migrate()
+            migrateTo(migrationUrl, "31")
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
@@ -455,12 +443,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
             }
 
             // 迁到 V53，构造一个仍关联两个手工渠道的 Antigravity 账号，验证 V54 不删除历史关联。
-            Flyway.configure()
-                .dataSource(migrationUrl, postgres.username, postgres.password)
-                .locations("classpath:db/migration")
-                .target(MigrationVersion.fromVersion("53"))
-                .load()
-                .migrate()
+            migrateTo(migrationUrl, "53")
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
@@ -481,12 +464,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
             }
 
             // 先升到 V55，写入含 activity_disabled 的全局规则，再验证 V57 在缺少 Grox 渠道时不会删除它。
-            Flyway.configure()
-                .dataSource(migrationUrl, postgres.username, postgres.password)
-                .locations("classpath:db/migration")
-                .target(MigrationVersion.fromVersion("55"))
-                .load()
-                .migrate()
+            migrateTo(migrationUrl, "55")
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.prepareStatement("update key_auto_disable_settings set rules = ? where id = 1").use { statement ->
@@ -502,11 +480,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 }
             }
 
-            Flyway.configure()
-                .dataSource(migrationUrl, postgres.username, postgres.password)
-                .locations("classpath:db/migration")
-                .load()
-                .migrate()
+            migrateTo(migrationUrl)
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
@@ -784,16 +758,12 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    @Timeout(300)
     fun `v57 migration moves activity rule into existing grox channel`() {
         val databaseName = createMigrationDatabase("migration_v57")
         val migrationUrl = migrationDatabaseUrl(databaseName)
         try {
-            Flyway.configure()
-                .dataSource(migrationUrl, postgres.username, postgres.password)
-                .locations("classpath:db/migration")
-                .target(MigrationVersion.fromVersion("55"))
-                .load()
-                .migrate()
+            migrateTo(migrationUrl, "55")
 
             val activityRule = KeyDisableRule(
                 id = "activity_disabled",
@@ -818,11 +788,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 }
             }
 
-            Flyway.configure()
-                .dataSource(migrationUrl, postgres.username, postgres.password)
-                .locations("classpath:db/migration")
-                .load()
-                .migrate()
+            migrateTo(migrationUrl)
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
@@ -863,16 +829,12 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    @Timeout(300)
     fun `v58 migration drops the retired reasoning and developer policy keys`() {
         val databaseName = createMigrationDatabase("migration_v58")
         val migrationUrl = migrationDatabaseUrl(databaseName)
         try {
-            Flyway.configure()
-                .dataSource(migrationUrl, postgres.username, postgres.password)
-                .locations("classpath:db/migration")
-                .target(MigrationVersion.fromVersion("57"))
-                .load()
-                .migrate()
+            migrateTo(migrationUrl, "57")
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
@@ -896,11 +858,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 }
             }
 
-            Flyway.configure()
-                .dataSource(migrationUrl, postgres.username, postgres.password)
-                .locations("classpath:db/migration")
-                .load()
-                .migrate()
+            migrateTo(migrationUrl)
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
@@ -1096,6 +1054,20 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
             connection.createStatement().use { it.execute("create database \"$name\"") }
         }
         return name
+    }
+
+    /** 分阶段执行迁移；失败时带上目标版本，避免多段迁移里的异常难以定位。 */
+    private fun migrateTo(migrationUrl: String, version: String? = null) {
+        val stage = version?.let { "V$it" } ?: "latest"
+        try {
+            val configuration = Flyway.configure()
+                .dataSource(migrationUrl, postgres.username, postgres.password)
+                .locations("classpath:db/migration")
+            if (version != null) configuration.target(MigrationVersion.fromVersion(version))
+            configuration.load().migrate()
+        } catch (e: Exception) {
+            throw IllegalStateException("Flyway migration to $stage failed", e)
+        }
     }
 
     private fun migrationDatabaseUrl(databaseName: String): String {

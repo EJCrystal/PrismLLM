@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.integration
 
 import dev.soven.llmgateway.api.GatewayApplication
+import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
@@ -59,6 +60,17 @@ import kotlin.test.assertTrue
 @Tag("integration")
 @Tag("shard-1")
 class RateLimitIntegrationTest : GatewayIntegrationTestBase() {
+
+    /**
+     * 用新配置重建共享应用。
+     *
+     * `GatewayApplication.close()` 是幂等的：若在关闭旧实例后、重新赋值前失败，
+     * `tearDown()` 再次关闭旧实例也不会产生副作用。
+     */
+    private fun rebuildApp(newConfig: GatewayConfig) {
+        app.close()
+        app = GatewayApplication(newConfig)
+    }
 
     @Test
     fun `channel key RPM is shared across models and returns retry after`() = runBlocking {
@@ -173,8 +185,7 @@ class RateLimitIntegrationTest : GatewayIntegrationTestBase() {
     @Tag("channel-key-rate-limit")
     @Test
     fun `channel key concurrency fails over to backup and returns 429 when both keys are busy`() = runBlocking {
-        app.close()
-        app = GatewayApplication(config(totalTimeoutMs = 20_000))
+        rebuildApp(config(totalTimeoutMs = 20_000))
         val channel = app.channelRepository.create(
             name = "concurrency-end-to-end",
             baseUrl = "${fake.baseUrl}/concurrency-hold/v1",
@@ -264,8 +275,7 @@ class RateLimitIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `local rate limit denials inspect every candidate without consuming attempt budget`() = runBlocking {
-        app.close()
-        app = GatewayApplication(config(maxAttempts = 1))
+        rebuildApp(config(maxAttempts = 1))
         val policy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1)
         val channel = app.channelRepository.create(
             name = "all-keys-locally-limited",
@@ -520,8 +530,7 @@ class RateLimitIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `channel key concurrency lease is released after proxy timeout`() = runBlocking {
-        app.close()
-        app = GatewayApplication(config(firstTokenTimeoutMs = 1_000, totalTimeoutMs = 100))
+        rebuildApp(config(firstTokenTimeoutMs = 1_000, totalTimeoutMs = 100))
         val channel = app.channelRepository.create(
             name = "concurrency-timeout",
             baseUrl = "${fake.baseUrl}/slow/v1",
@@ -562,8 +571,7 @@ class RateLimitIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `channel key concurrency lease is released when timeout budget expires before sending`() = runBlocking {
-        app.close()
-        app = GatewayApplication(config(totalTimeoutMs = 0))
+        rebuildApp(config(totalTimeoutMs = 0))
         val channel = app.channelRepository.create(
             name = "concurrency-expired-budget",
             baseUrl = "${fake.baseUrl}/ok/v1",
@@ -825,15 +833,9 @@ class RateLimitIntegrationTest : GatewayIntegrationTestBase() {
 
             val first = async(Dispatchers.Default) { send() }
             val clientKeyId = app.clientKeyRepository.list().single().id
-            val heldDeadline = System.currentTimeMillis() + 2_000
-            while (app.clientKeyQuotaService.currentUsage(clientKeyId).concurrentRequests == 0 && System.currentTimeMillis() < heldDeadline) {
-                delay(5)
+            awaitCondition("第一个请求占用并发槽位", timeoutMs = 2_000) {
+                app.clientKeyQuotaService.currentUsage(clientKeyId).concurrentRequests == 1
             }
-            assertEquals(
-                1,
-                app.clientKeyQuotaService.currentUsage(clientKeyId).concurrentRequests,
-                "并发请求在 2000ms 内未占用配额槽位，无法验证超限拒绝",
-            )
 
             val rejected = send()
             assertEquals(HttpStatusCode.TooManyRequests, rejected.status)

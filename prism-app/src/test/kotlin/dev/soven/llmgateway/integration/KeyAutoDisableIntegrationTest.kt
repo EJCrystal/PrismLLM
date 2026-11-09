@@ -626,10 +626,11 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
             modelMappings = mappingsOf("gpt-4o-mini"),
         )
         DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
-            connection.prepareStatement("update channel_keys set auto_disable_until = ? where id = ?").use { statement ->
-                // 在写入前取时间并留足余量，避免用例执行耗时吃掉到期时间。
-                statement.setLong(1, System.currentTimeMillis() + 300_000)
-                statement.setString(2, channel.keys.single().id)
+            // 到期时间由数据库在写入瞬间计算，避免应用与数据库时钟偏差或计算/写入间隙。
+            connection.prepareStatement(
+                "update channel_keys set auto_disable_until = (extract(epoch from now()) * 1000)::bigint + 300000 where id = ?",
+            ).use { statement ->
+                statement.setString(1, channel.keys.single().id)
                 statement.executeUpdate()
             }
         }
