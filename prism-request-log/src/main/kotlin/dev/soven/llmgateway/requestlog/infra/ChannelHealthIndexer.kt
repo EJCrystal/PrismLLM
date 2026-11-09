@@ -1,16 +1,15 @@
-package dev.soven.llmgateway.report
+package dev.soven.llmgateway.requestlog.infra
 
-import dev.soven.llmgateway.repo.RequestLogRepository
 import dev.soven.llmgateway.requestlog.domain.healthWindows
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 
 /** One bounded background pass after upgrade; persistent flags make restarts harmless. */
-fun startChannelHealthIndexer(repository: RequestLogRepository, scope: CoroutineScope): Job = scope.launch {
+fun startChannelHealthIndexer(indexBatch: suspend (Long) -> Int, scope: CoroutineScope): Job = scope.launch {
     val logger = LoggerFactory.getLogger("ChannelHealthIndexer")
     while (isActive) {
         try {
-            val count = repository.indexHealthBatch(System.currentTimeMillis() - healthWindows.getValue("30d"))
+            val count = indexBatch(System.currentTimeMillis() - healthWindows.getValue("30d"))
             if (count == 0) break
             delay(250)
         } catch (cause: CancellationException) {

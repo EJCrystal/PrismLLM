@@ -513,7 +513,10 @@ val requestLogWriter = RequestLogWriter(
 
     fun install(app: Application) {
         databaseFactory.migrate()
-        channelHealthIndexJob = dev.soven.llmgateway.report.startChannelHealthIndexer(requestLogRepository, scope)
+        channelHealthIndexJob = dev.soven.llmgateway.requestlog.infra.startChannelHealthIndexer(
+            { cutoff -> requestLogRepository.indexHealthBatch(cutoff) },
+            scope,
+        )
         runBlocking { upstreamRequestSettingsRepository.load() }
         runBlocking { upstreamHeaderCatalogService.initialize() }
         runBlocking { seedAdmin() }
