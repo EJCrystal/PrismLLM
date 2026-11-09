@@ -1,138 +1,44 @@
 package dev.soven.llmgateway.integration
 
-import ch.qos.logback.classic.spi.ILoggingEvent
-import ch.qos.logback.classic.spi.ThrowableProxyUtil
-import ch.qos.logback.core.AppenderBase
-import com.sun.net.httpserver.HttpServer
-import dev.soven.llmgateway.api.GatewayApplication
-import dev.soven.llmgateway.config.GatewayConfig
-import dev.soven.llmgateway.config.OAuthConfig
-import dev.soven.llmgateway.domain.ChannelRecord
-import dev.soven.llmgateway.domain.ChannelQuotaSettings
-import dev.soven.llmgateway.domain.ChannelQuotaCredentialSource
-import dev.soven.llmgateway.domain.ChannelKeyRecord
-import dev.soven.llmgateway.domain.ChannelModelRecord
-import dev.soven.llmgateway.domain.ChannelKeyRateLimitPolicy
-import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.NewIqTestRun
-import dev.soven.llmgateway.domain.OAuthAccountPolicy
-import dev.soven.llmgateway.domain.OAuthAccountRecord
-import dev.soven.llmgateway.domain.OAuthProvider
-import dev.soven.llmgateway.domain.RequestLogRecord
-import dev.soven.llmgateway.domain.UpstreamRequestOverrides
-import dev.soven.llmgateway.domain.UpstreamProtocolOverrides
-import dev.soven.llmgateway.domain.UpstreamHeaderProfile
-import dev.soven.llmgateway.domain.WebSearchSettingsRecord
-import dev.soven.llmgateway.fake.FakeUpstream
-import dev.soven.llmgateway.oauth.OAuthAccountDecision
-import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
-import dev.soven.llmgateway.repo.NewChannelKey
-import dev.soven.llmgateway.repo.NewOAuthAccount
-import dev.soven.llmgateway.repo.ChannelKeyUpdate
 import dev.soven.llmgateway.domain.IqVisionSettingsRecord
 import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.repo.IqVisionSettingsUpdate
-import dev.soven.llmgateway.repo.KeyAutoDisableRepository
-import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
-import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
-import dev.soven.llmgateway.proxy.HeaderProfileVersionSource
-import dev.soven.llmgateway.proxy.HtmlImageRenderer
-import dev.soven.llmgateway.proxy.SvgRenderResult
-import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
-import dev.soven.llmgateway.proxy.UpstreamHeaderProfiles
-import dev.soven.llmgateway.resilience.KeyAttemptOutcome
-import dev.soven.llmgateway.resilience.KeyAttemptSignal
-import dev.soven.llmgateway.resilience.ChannelKeyDisableMode
-import dev.soven.llmgateway.resilience.ChannelKeyState
-import dev.soven.llmgateway.resilience.FailureKind
-import dev.soven.llmgateway.resilience.KeyAutoDisablePolicy
-import dev.soven.llmgateway.resilience.KeyDisableAction
-import dev.soven.llmgateway.resilience.KeyDisablePolicy
-import dev.soven.llmgateway.resilience.KeyDisableRule
-import dev.soven.llmgateway.resilience.ResolvedKeyDisablePolicy
-import dev.soven.llmgateway.resilience.toKeyDisablePolicy
-import dev.soven.llmgateway.shared.crypto.ClientKeyHasher
-import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
-import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
-import dev.soven.llmgateway.report.RetentionPolicy
-import dev.soven.llmgateway.resilience.CooldownPolicy
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
-import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.put
-import io.ktor.client.request.options
-import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
-import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.createApplicationPlugin
-import io.ktor.server.application.hooks.ResponseBodyReadyForSend
 import io.ktor.server.application.install
-import io.ktor.server.engine.embeddedServer
-import io.ktor.server.netty.Netty
-import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import io.ktor.util.cio.ChannelWriteException
-import io.ktor.utils.io.readUTF8Line
-import org.flywaydb.core.Flyway
-import org.flywaydb.core.api.MigrationVersion
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.yield
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.boolean
-import kotlinx.serialization.json.double
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
-import org.junit.jupiter.api.AfterAll
-import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
-import org.junit.jupiter.api.io.TempDir
-import org.slf4j.LoggerFactory
-import org.testcontainers.containers.PostgreSQLContainer
-import java.io.IOException
-import java.math.BigDecimal
-import java.net.InetSocketAddress
-import java.nio.file.Path
-import java.sql.DriverManager
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertIs
-import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
-import kotlin.test.assertSame
 import kotlin.test.assertTrue
-import kotlin.test.assertFailsWith
 
 /**
  * 数据面集成测试：真实 PostgreSQL、假上游、Ktor 测试宿主。
@@ -838,6 +744,16 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
                 setBody("""{"username":"admin","password":"new-password-123"}""")
             }
             assertEquals(HttpStatusCode.OK, newPassword.status)
+
+            // 还原密码，避免同类中后续用例仍按初始密码登录而失败。
+            val (newSession, newCsrf) = client.loginAdmin(password = "new-password-123")
+            val restored = client.put("/admin/api/account/password") {
+                header(HttpHeaders.Cookie, newSession)
+                header("X-CSRF-Token", newCsrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"currentPassword":"new-password-123","newPassword":"test-password"}""")
+            }
+            assertEquals(HttpStatusCode.NoContent, restored.status)
         }
     }
 }

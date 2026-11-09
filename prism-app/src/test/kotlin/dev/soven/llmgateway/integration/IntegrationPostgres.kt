@@ -29,6 +29,7 @@ object IntegrationPostgres {
     /** 为当前测试类克隆一份模板库，返回它的 JDBC URL。 */
     fun newDatabase(): String {
         val target = container
+        // name 只由内部计数器生成，不接收外部输入；这里是 DDL，无法使用绑定参数。
         val name = "prism_test_" + counter.incrementAndGet()
         execute(target, "create database \"$name\" template \"$TEMPLATE_DB\"")
         return jdbcUrl(target, name)
