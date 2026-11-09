@@ -24,6 +24,7 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       backend: ${{ steps.filter.outputs.backend }}
       monitoring: ${{ steps.filter.outputs.monitoring }}
+      deps: ${{ steps.filter.outputs.deps }}
       ci: ${{ steps.filter.outputs.ci }}
       shared: ${{ steps.filter.outputs.shared }}
       protocol: ${{ steps.filter.outputs.protocol }}
@@ -97,6 +98,12 @@ jobs:
               - 'extensions/**'
             monitoring:
               - 'monitoring/**'
+            # 依赖清单变更（或清单内容变化）时才值得跑 CVE 扫描
+            deps:
+              - 'pom.xml'
+              - '**/pom.xml'
+              - 'web/package-lock.json'
+              - '.github/workflows/ci.yml'
             ci:
               - '.github/workflows/**'
               - '.github/scripts/**'
@@ -279,6 +286,173 @@ jobs:
       - name: Test optional quota providers
         if: needs.changes.outputs.extensions == 'true' || needs.changes.outputs.shared == 'true' || needs.changes.outputs.build == 'true'
         run: mvn --batch-mode -f extensions/quota-providers/pom.xml verify
+
+  dependency-scan:
+    name: Scan dependencies
+    needs: changes
+    # 只在依赖清单变化（或 workflow 自身改动）时重扫，纯代码改动不必重复付出扫描成本；
+    # push 到 main 也跑一次，保证基线随时可查。
+    if: needs.changes.outputs.deps == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Generate CycloneDX SBOM
+        # 直接把多模块 pom.xml 交给 OSV Scanner 会失败：本项目各模块用 0.1.0-SNAPSHOT
+        # 互相引用，这些 SNAPSHOT 从未发布到任何 Maven 仓库，OSV 的 deps.dev 解析器
+        # 报 "version ...: not found" 并以 128 退出（CodeRabbit 内嵌 OSV 的报错就是它）。
+        # 改由 Maven 自己解析完整依赖树生成 SBOM，OSV 只负责按 purl 匹配漏洞。
+        run: >-
+          mvn --batch-mode --no-transfer-progress
+          org.cyclonedx:cyclonedx-maven-plugin:2.9.3:makeAggregateBom
+          -DoutputFormat=json -DoutputName=bom
+
+      - name: Scan SBOM and frontend lockfile
+        run: |
+          set +e
+          # 按 digest pin（v2.7.0），避免滚动 tag 悄悄换掉扫描逻辑；升级时同步更新 digest。
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo" \
+            -w /repo \
+            ghcr.io/google/osv-scanner@sha256:4f3b7e2c64b9d38a5febc5a7e4a3dfef1d1362f726dea7a2ef4762b46469fcd0 \
+            scan source \
+              -L target/bom.json \
+              -L web/package-lock.json \
+              --format json \
+              --output-file /repo/osv-results.json
+          status=$?
+          set -e
+          # OSV Scanner 用 exit 1 表示「扫到了漏洞」，这是正常结果，交给下一步按严重度裁决；
+          # 其余非零码（127 通用错误、128 未解析到任何包）说明扫描本身没跑成，必须 fail closed，
+          # 否则一旦解析器退回 128，门禁会误判成「没有漏洞」而放行。
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+            echo "::error::OSV Scanner 执行异常（exit $status），未产出扫描结果"
+            exit "$status"
+          fi
+
+      - name: Evaluate findings
+        env:
+          # 默认只阻断 CRITICAL。当前主干还有若干 HIGH 待升级（guava/jsoup/jackson），
+          # 清理完后把仓库变量 DEPENDENCY_SCAN_MIN_SEVERITY 设为 HIGH 即可收紧，无需改本文件。
+          MIN_SEVERITY: ${{ vars.DEPENDENCY_SCAN_MIN_SEVERITY || 'CRITICAL' }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          RANK = {"UNKNOWN": 0, "LOW": 1, "MODERATE": 2, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+
+          threshold = os.environ.get("MIN_SEVERITY", "CRITICAL").strip().upper()
+          if threshold not in RANK:
+              sys.exit(f"未知的 MIN_SEVERITY 取值：{threshold}")
+
+          try:
+              with open("osv-results.json", encoding="utf-8") as handle:
+                  report = json.load(handle)
+          except OSError as error:
+              sys.exit(f"未找到 OSV 扫描结果，扫描步骤可能失败：{error}")
+
+          def version_key(text):
+              return [int(part) for part in re.findall(r"\d+", text)]
+
+          def first_safe_fix(current, fixed_versions):
+              # 同一条 advisory 往往同时覆盖 2.x 与 3.x 等多个区间，事件里的 fixed 版本
+              # 可能属于另一个大版本（如对 3.0.1 报出 2.18.8）。只接受「比当前版本高且
+              # 大版本相同」的修复版本；没有就退回最小的更高版本，避免给出误导性的升级建议。
+              current_key = version_key(current)
+              candidates = sorted(
+                  {item for item in fixed_versions if version_key(item) > current_key},
+                  key=version_key,
+              )
+              if not candidates:
+                  return None
+              same_major = [item for item in candidates if version_key(item)[:1] == current_key[:1]]
+              return (same_major or candidates)[0]
+
+          findings = []
+          for result in report.get("results") or []:
+              source = (result.get("source") or {}).get("path", "").replace("/repo/", "")
+              for package in result.get("packages") or []:
+                  meta = package.get("package") or {}
+                  for vuln in package.get("vulnerabilities") or []:
+                      severity = str((vuln.get("database_specific") or {}).get("severity", "UNKNOWN")).upper()
+                      fixed = first_safe_fix(
+                          meta.get("version", ""),
+                          [
+                              event["fixed"]
+                              for affected in vuln.get("affected") or []
+                              for rng in affected.get("ranges") or []
+                              for event in rng.get("events") or []
+                              if event.get("fixed")
+                          ],
+                      )
+                      findings.append(
+                          {
+                              "rank": RANK.get(severity, 0),
+                              "severity": severity,
+                              "package": meta.get("name", ""),
+                              "version": meta.get("version", ""),
+                              "id": vuln.get("id", ""),
+                              "fixed": fixed or "-",
+                              "source": source,
+                          }
+                      )
+
+          findings.sort(key=lambda item: (-item["rank"], item["package"], item["id"]))
+          blocking = [item for item in findings if item["rank"] >= RANK[threshold]]
+
+          lines = ["## 依赖漏洞扫描", ""]
+          if not findings:
+              lines.append("未发现已知依赖漏洞。")
+          else:
+              counts = {}
+              for item in findings:
+                  counts[item["severity"]] = counts.get(item["severity"], 0) + 1
+              summary = "、".join(
+                  f"{name} {count}"
+                  for name, count in sorted(counts.items(), key=lambda pair: -RANK.get(pair[0], 0))
+              )
+              affected = {(item["package"], item["version"]) for item in findings}
+              lines.append(f"共 {len(affected)} 个依赖命中 {len(findings)} 条已知漏洞（{summary}）。")
+              lines.append(f"阻断门槛 `{threshold}`：本次阻断 {len(blocking)} 条。")
+              lines.append("")
+              lines.append("| 严重度 | 依赖 | 版本 | 漏洞 | 修复版本 | 来源 |")
+              lines.append("| --- | --- | --- | --- | --- | --- |")
+              for item in findings:
+                  lines.append(
+                      f"| {item['severity']} | `{item['package']}` | {item['version']} "
+                      f"| [{item['id']}](https://osv.dev/{item['id']}) | {item['fixed']} | {item['source']} |"
+                  )
+
+          body = "\n".join(lines)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as handle:
+                  handle.write(body + "\n")
+          print(body)
+
+          if blocking:
+              for item in blocking[:20]:
+                  print(
+                      f"::error title=依赖漏洞::{item['severity']} {item['package']} "
+                      f"{item['version']} {item['id']} 修复版本 {item['fixed']}"
+                  )
+              sys.exit(1)
+          print(f"未发现严重度 >= {threshold} 的依赖漏洞。")
+          PY
 
   monitoring:
     name: Validate monitoring

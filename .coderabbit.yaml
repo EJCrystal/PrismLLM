@@ -74,8 +74,13 @@ reviews:
     # High-signal checks for this Kotlin/Ktor + Vue gateway.
     semgrep: { enabled: true }
     gitleaks: { enabled: true }
-    osvScanner: { enabled: true }
     actionlint: { enabled: true }
     zizmor: { enabled: true }
     hadolint: { enabled: true }
+    # 依赖漏洞交给 CI 的 dependency-scan 作业（.github/workflows/ci.yml）：
+    # CodeRabbit 沙箱里的 OSV Scanner 解析不了本仓库的 Maven 多模块结构——各模块用
+    # 0.1.0-SNAPSHOT 互相引用且从未发布，扫描器报 "version ...: not found"、以 128 退出，
+    # 只在评论里留一条 operational warning，既不阻断合并也不产出任何 CVE 结果。
+    # 关掉它避免每改一次 pom.xml 就复现一次噪声；trivy 保留作为容器/依赖的第二道体检。
+    osvScanner: { enabled: false }
     trivy: { enabled: true }
