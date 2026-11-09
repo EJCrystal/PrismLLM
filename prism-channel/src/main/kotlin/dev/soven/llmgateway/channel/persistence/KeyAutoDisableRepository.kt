@@ -1,9 +1,5 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.channel.persistence
 
-import dev.soven.llmgateway.channel.persistence.ChannelKeyHealth
-import dev.soven.llmgateway.channel.persistence.ChannelKeys
-import dev.soven.llmgateway.channel.persistence.Channels
-import dev.soven.llmgateway.channel.persistence.KeyAutoDisableSettings
 import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyDisableMode
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyDisablePolicyCodec
@@ -76,7 +72,7 @@ class KeyAutoDisablePendingException : RuntimeException(null, null, false, false
  */
 class KeyAutoDisableRepository(
     private val database: Database,
-    private val audit: AdminAuditRepository,
+    private val audit: KeyStateAudit,
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
     private val logger = LoggerFactory.getLogger(KeyAutoDisableRepository::class.java)
@@ -132,7 +128,7 @@ class KeyAutoDisableRepository(
         }
         val after = resolvePolicyInTransaction(channelId)
         auditContext?.let { context ->
-            audit.recordInTransaction(
+            audit.record(
                 actor = context.actor,
                 action = "channel.key_disable_policy.update",
                 method = "PUT",
@@ -174,7 +170,7 @@ class KeyAutoDisableRepository(
             it[updatedAt] = after.updatedAt
         }
         auditContext?.let { context ->
-            audit.recordInTransaction(
+            audit.record(
                 actor = context.actor,
                 action = "key_auto_disable_settings.update",
                 method = "PUT",
@@ -457,7 +453,7 @@ class KeyAutoDisableRepository(
             .single()[Channels.name]
         val httpStatus = (signal as? KeyAttemptSignal.UpstreamResponse)?.statusCode
         val upstreamCode = (signal as? KeyAttemptSignal.UpstreamResponse)?.upstreamCode
-        audit.recordInTransaction(
+        audit.record(
             actor = "system",
             action = "channel_key.auto_disable",
             method = "AUTO",
@@ -497,7 +493,7 @@ class KeyAutoDisableRepository(
     ) {
         val channelName = Channels.select(Channels.name).where { Channels.id eq channelId }
             .single()[Channels.name]
-        audit.recordInTransaction(
+        audit.record(
             actor = "system",
             action = "channel_key.auto_recover",
             method = "AUTO",

@@ -36,6 +36,12 @@
             <version>${coroutines.version}</version>
         </dependency>
         <dependency>
+            <!-- 自动停用仓储写状态迁移与审计失败需要日志门面。 -->
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.jetbrains.exposed</groupId>
             <artifactId>exposed-core</artifactId>
             <version>${exposed.version}</version>

@@ -8,7 +8,7 @@ import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.channel.persistence.ChannelKeyUpdate
 import dev.soven.llmgateway.domain.effective
-import dev.soven.llmgateway.repo.KeyAutoDisableRepository
+import dev.soven.llmgateway.channel.persistence.KeyAutoDisableRepository
 import dev.soven.llmgateway.channel.domain.key.KeyAttemptOutcome
 import dev.soven.llmgateway.channel.domain.key.KeyAttemptSignal
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyDisableMode
@@ -724,9 +724,9 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
         val channel = createAutoDisablePool(withBackup = false)
         val primary = channel.keys.single()
         var now = 0L
-        var repository = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository) { now }
+        var repository = KeyAutoDisableRepository(app.databaseFactory.database, app.keyStateAudit) { now }
         repeat(2) { assertNull(repository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "auth-$it", 401)) }
-        repository = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository) { now }
+        repository = KeyAutoDisableRepository(app.databaseFactory.database, app.keyStateAudit) { now }
         assertNotNull(repository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "auth-3", 403))
         val restored = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
         assertEquals(ChannelKeyState.AUTO_PERMANENT, restored.state)
@@ -741,7 +741,7 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
         assertNull(reset.autoDisabledAt)
         repeat(4) { assertNull(repository.recordOutcome(reset, KeyAttemptOutcome.FAILURE, "window-$it", 500)) }
         now = 300_000
-        repository = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository) { now }
+        repository = KeyAutoDisableRepository(app.databaseFactory.database, app.keyStateAudit) { now }
         assertNull(repository.recordOutcome(reset, KeyAttemptOutcome.FAILURE, "expired", 429))
         repeat(3) { assertNull(repository.recordOutcome(reset, KeyAttemptOutcome.FAILURE, "new-$it", 429)) }
         assertNotNull(repository.recordOutcome(reset, KeyAttemptOutcome.FAILURE, "new-4", 500))
@@ -854,7 +854,7 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun keyAutoDisableSettingsConcurrentFirstSaveDoesNotRace() = runBlocking {
-        val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository)
+        val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.keyStateAudit)
         val revisions = coroutineScope {
             (4..15).map { index -> async(Dispatchers.IO) {
                 settings.saveSettings(KeyAutoDisablePolicy(authFailureThreshold = index)).after.revision
@@ -866,7 +866,7 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun keyAutoDisableSettingsMigratesLegacyDefaultsWithoutOverwritingCustomRules() = runBlocking {
-        val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository)
+        val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.keyStateAudit)
         val initial = settings.saveSettings(KeyDisablePolicy(enabled = false)).after
         fun overwriteRules(rules: List<KeyDisableRule>) {
             DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
@@ -908,7 +908,7 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun keyAutoDisableSettingsTruncatesOversizedStoredRules() = runBlocking {
-        val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository)
+        val settings = KeyAutoDisableRepository(app.databaseFactory.database, app.keyStateAudit)
         settings.saveSettings(KeyDisablePolicy(enabled = false))
         // 正常保存路径写不出超过 50 条的列表；这里模拟人工改库或手工改过的备份。
         // 条数要超过 MAX_EFFECTIVE_RULES（构造器上限，100）才能证明问题真的被截断挡住：
@@ -1268,7 +1268,7 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
                 "{}",
             )) assertEquals(HttpStatusCode.BadRequest, put(body).status, body)
             assertEquals(HttpStatusCode.OK, put(valid).status)
-            val persisted = KeyAutoDisableRepository(app.databaseFactory.database, app.adminAuditRepository).loadSettings()
+            val persisted = KeyAutoDisableRepository(app.databaseFactory.database, app.keyStateAudit).loadSettings()
             assertEquals(KeyAutoDisablePolicy(false, 4, 10, 15).toKeyDisablePolicy(), persisted.policy)
             val audit = app.adminAuditRepository.list(100).first { it.action == "key_auto_disable_settings.update" && it.result == "success" }
             assertEquals("settings-change", audit.requestId)
