@@ -1,4 +1,10 @@
 {
   "version": 1,
-  "waivers": []
+  "waivers": [
+    {
+      "finding_id": "c7f18bfe841c",
+      "reason": "test probe: 验证 waiver 读取链路，验证后删除",
+      "expires": "2026-12-31"
+    }
+  ]
 }
