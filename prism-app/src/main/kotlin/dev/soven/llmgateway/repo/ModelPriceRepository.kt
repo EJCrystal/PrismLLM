@@ -2,6 +2,7 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.channel.persistence.Channels
 import dev.soven.llmgateway.db.ModelPrices
+import dev.soven.llmgateway.pricing.domain.ModelPriceLookup
 import dev.soven.llmgateway.pricing.domain.ModelPriceRecord
 import dev.soven.llmgateway.pricing.domain.ModelPriceTier
 import dev.soven.llmgateway.pricing.domain.PricingMode
@@ -26,7 +27,7 @@ import java.util.UUID
  * @author 文杰
  * @since 2026-10-22
  */
-class ModelPriceRepository(private val database: Database) {
+class ModelPriceRepository(private val database: Database) : ModelPriceLookup {
     suspend fun list(): List<ModelPriceRecord> = suspendTransaction(database) {
         ModelPrices
             .join(Channels, JoinType.INNER, ModelPrices.channelId, Channels.id)
@@ -35,7 +36,7 @@ class ModelPriceRepository(private val database: Database) {
             .sortedWith(compareBy({ it.channelName }, { it.upstreamModel }))
     }
 
-    suspend fun find(channelId: String, upstreamModel: String): ModelPriceRecord? =
+    override suspend fun find(channelId: String, upstreamModel: String): ModelPriceRecord? =
         suspendTransaction(database) {
             val normalizedModel = upstreamModel.trim()
             if (normalizedModel.isEmpty()) return@suspendTransaction null

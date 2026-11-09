@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.ModelDefaultPrices
+import dev.soven.llmgateway.pricing.domain.DefaultModelPriceLookup
 import dev.soven.llmgateway.pricing.domain.DefaultModelPriceRecord
 import dev.soven.llmgateway.pricing.domain.ModelPriceTier
 import dev.soven.llmgateway.pricing.domain.PricingMode
@@ -21,14 +22,14 @@ import java.util.UUID
  * @author 文杰
  * @since 2026-10-27
  */
-class ModelDefaultPriceRepository(private val database: Database) {
+class ModelDefaultPriceRepository(private val database: Database) : DefaultModelPriceLookup {
     suspend fun list(): List<DefaultModelPriceRecord> = suspendTransaction(database) {
         ModelDefaultPrices.selectAll()
             .map(::toRecord)
             .sortedBy { it.modelId }
     }
 
-    suspend fun find(modelId: String): DefaultModelPriceRecord? = suspendTransaction(database) {
+    override suspend fun find(modelId: String): DefaultModelPriceRecord? = suspendTransaction(database) {
         val normalized = modelId.trim()
         if (normalized.isEmpty()) return@suspendTransaction null
         ModelDefaultPrices.selectAll()
