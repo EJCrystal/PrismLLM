@@ -5,6 +5,7 @@ import dev.soven.llmgateway.shared.error.badRequest
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.shared.domain.UpstreamProtocolOverrides
 import dev.soven.llmgateway.domain.UpstreamHeaderProfile
+import dev.soven.llmgateway.protocol.ChatReasoningContentNormalizer
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.http.HttpStatusCode

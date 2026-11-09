@@ -24,6 +24,10 @@ class ProtocolArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.protocol.ProtocolConverter" },
             "ArchUnit 未导入协议模块类，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.protocol.ChatReasoningContentNormalizer" },
+            "ArchUnit 未导入思考内容补齐器，规则会空跑",
+        )
     }
 
     @Test
