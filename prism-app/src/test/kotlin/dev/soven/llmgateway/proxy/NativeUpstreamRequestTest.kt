@@ -1,5 +1,7 @@
 package dev.soven.llmgateway.proxy
 
+import dev.soven.llmgateway.protocol.UsageParser
+
 import dev.soven.llmgateway.shared.error.GatewayError
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import io.ktor.http.HttpStatusCode

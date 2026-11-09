@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.proxy.search
 
 import dev.soven.llmgateway.shared.domain.Usage
-import dev.soven.llmgateway.proxy.UsageParser
+import dev.soven.llmgateway.protocol.UsageParser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
