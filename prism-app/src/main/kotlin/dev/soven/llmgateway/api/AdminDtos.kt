@@ -36,8 +36,8 @@ import dev.soven.llmgateway.proxy.evaluateLegacyCandy
 import dev.soven.llmgateway.proxy.ModelConnectivityTestResult
 import dev.soven.llmgateway.shared.domain.Usage
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaUsage
-import dev.soven.llmgateway.report.CleanupResult
-import dev.soven.llmgateway.report.RetentionPolicy
+import dev.soven.llmgateway.requestlog.domain.CleanupResult
+import dev.soven.llmgateway.requestlog.domain.RetentionPolicy
 import dev.soven.llmgateway.requestlog.domain.UsageGroup
 import dev.soven.llmgateway.requestlog.domain.UsageReport
 import dev.soven.llmgateway.requestlog.domain.UsageTotal

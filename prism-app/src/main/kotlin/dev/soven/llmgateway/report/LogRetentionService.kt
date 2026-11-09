@@ -1,6 +1,9 @@
 package dev.soven.llmgateway.report
 
 import dev.soven.llmgateway.repo.RequestLogRepository
+import dev.soven.llmgateway.requestlog.domain.CleanupResult
+import dev.soven.llmgateway.requestlog.domain.RetentionPolicy
+import dev.soven.llmgateway.requestlog.domain.retentionCutoff
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job

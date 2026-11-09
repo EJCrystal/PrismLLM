@@ -2,7 +2,7 @@ package dev.soven.llmgateway.config
 
 import java.nio.file.Path
 import java.util.Base64
-import dev.soven.llmgateway.report.RetentionPolicy
+import dev.soven.llmgateway.requestlog.domain.RetentionPolicy
 import dev.soven.llmgateway.resilience.CooldownPolicy
 import dev.soven.llmgateway.spi.iq.IqJudge
 

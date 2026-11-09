@@ -1,5 +1,7 @@
 package dev.soven.llmgateway.report
 
+import dev.soven.llmgateway.requestlog.domain.CleanupResult
+import dev.soven.llmgateway.requestlog.domain.RetentionPolicy
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
