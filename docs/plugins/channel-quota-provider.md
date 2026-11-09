@@ -144,7 +144,7 @@ providerId 为空表示关闭；允许保存尚未安装插件的 ID，安装并
 ~~~xml
 <dependency>
   <groupId>dev.soven</groupId>
-  <artifactId>prism-llm</artifactId>
+  <artifactId>prism-shared</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <classifier>quota-spi</classifier>
   <scope>provided</scope>

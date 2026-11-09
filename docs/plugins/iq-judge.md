@@ -17,7 +17,7 @@ mkdir -p plugins/iq-judges
 cp your-judge/target/your-judge.jar plugins/iq-judges/
 ~~~
 
-`mvn install` 会同时生成 `prism-llm-<version>-iq-judge-spi.jar`，供插件编译时使用。
+`mvn install` 会同时生成 `prism-shared-<version>-iq-judge-spi.jar`，供插件编译时使用。
 插件目录由 `IQ_JUDGE_PLUGIN_DIR` 指定，默认是网关工作目录下的 `plugins/iq-judges`。
 Compose 将宿主机 `./plugins` 只读挂载到 `/app/plugins`；若改目录，要同步修改容器环境变量和卷挂载目标。
 
@@ -36,7 +36,7 @@ Compose 将宿主机 `./plugins` 只读挂载到 `/app/plugins`；若改目录�
 ~~~xml
 <dependency>
   <groupId>dev.soven</groupId>
-  <artifactId>prism-llm</artifactId>
+  <artifactId>prism-shared</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <classifier>iq-judge-spi</classifier>
   <scope>provided</scope>

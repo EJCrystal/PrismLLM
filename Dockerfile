@@ -10,8 +10,10 @@ RUN npm run build
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /app
 COPY pom.xml ./
-COPY src ./src
-RUN --mount=type=cache,target=/root/.m2 mvn -B -DskipTests package
+COPY prism-shared ./prism-shared
+COPY prism-protocol ./prism-protocol
+COPY prism-app ./prism-app
+RUN --mount=type=cache,target=/root/.m2 mvn -B -DskipTests -pl prism-app -am package
 
 FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
@@ -34,7 +36,7 @@ RUN apt-get update \
          echo "跳过 Chrome 安装：视觉判分将返回需人工查看"; \
        fi \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /app/target/prism-llm-0.1.0-SNAPSHOT.jar app.jar
+COPY --from=build /app/prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar app.jar
 COPY --from=web /web/dist /app/web/dist
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

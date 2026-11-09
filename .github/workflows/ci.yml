@@ -45,7 +45,9 @@ jobs:
               - 'web/**'
               - 'Dockerfile'
             backend:
-              - 'src/**'
+              - 'prism-shared/**'
+              - 'prism-protocol/**'
+              - 'prism-app/**'
               - 'extensions/**'
               - 'pom.xml'
               - 'Dockerfile'
