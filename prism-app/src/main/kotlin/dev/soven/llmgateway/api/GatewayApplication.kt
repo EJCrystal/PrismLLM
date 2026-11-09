@@ -57,7 +57,7 @@ import dev.soven.llmgateway.repo.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.repo.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.channel.persistence.ChannelKeyStateChangedException
-import dev.soven.llmgateway.report.LogRetentionService
+import dev.soven.llmgateway.requestlog.infra.LogRetentionService
 import dev.soven.llmgateway.quota.ClientKeyQuotaService
 import dev.soven.llmgateway.quota.ChannelKeyRateLimiter
 import dev.soven.llmgateway.quota.RequestLimitService
@@ -321,14 +321,14 @@ class GatewayApplication(
     )
     val tierSharing = TierSharing()
     val metrics = GatewayMetrics()
-    val requestLogWriter = RequestLogWriter(
+val requestLogWriter = RequestLogWriter(
         insertRecord = requestLogRepository::insert,
         resolvePrice = { record ->
             modelPricingService.resolve(record.channelId, record.upstreamModel, record.pricingModelId)
         },
         scope = scope,
     )
-    val logRetentionService = LogRetentionService(requestLogRepository, config.retention)
+    val logRetentionService = LogRetentionService(requestLogRepository::deleteOlderThan, config.retention)
     private val logRetentionJob = java.util.concurrent.atomic.AtomicReference<Job?>(null)
     private val logRetentionMutex = Mutex()
     private val keyAutoRecoveryJob = AtomicReference<Job?>(null)
