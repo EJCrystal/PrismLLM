@@ -713,6 +713,12 @@ jobs:
 
           landed=false
           LANDED_BODIES=""
+          # OUTCOME 非 success 时下面的 read 不会执行；先初始化为 0，保证
+          # set -u 下后续计数比较始终有定义。
+          ACTIVE_FINDINGS=0
+          WAIVED_FINDINGS=0
+          STALE_FINDINGS=0
+          UNRESOLVED_FINDINGS=0
           if [ "$OUTCOME" = "success" ]; then
             # PR-Agent 的输出：issue 评论（walkthrough/摘要）或 review（/review 的评审）。
             # 以 HEAD SHA 起算：本次运行之后才产生的 bot 输出才算本次审查落地。

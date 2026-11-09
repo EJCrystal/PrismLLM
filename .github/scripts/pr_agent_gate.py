@@ -56,7 +56,9 @@ def gh_raw(endpoint: str) -> str | None:
     if result.returncode == 0:
         return result.stdout
     stderr = result.stderr.lower()
-    if "not found" in stderr or "http 404" in stderr or "404" in stderr:
+    # gh api 的 404 提示形如 "gh: Not Found (HTTP 404)"；不要用裸 "404"
+    # 匹配，否则端口号等其它错误文本会被误当成文件不存在。
+    if "not found" in stderr or "http 404" in stderr:
         return None
     raise GateError(f"gh api {endpoint} 失败：{result.stderr.strip()}")
 
@@ -126,12 +128,23 @@ def load_waivers(repo: str, pr_number: str) -> list[dict]:
     return waivers
 
 
+def safe_repo_path(path: object) -> bool:
+    """只接受仓库内的普通相对路径，拒绝绝对路径、反斜杠和 URL 编码。"""
+    if not isinstance(path, str) or not path:
+        return False
+    if path.startswith("/") or "\\" in path or "%" in path:
+        return False
+    return all(part not in ("", ".", "..") for part in path.split("/"))
+
+
 def code_tokens(body: str) -> list[str]:
     """提取 finding 正文里反引号包住的代码表达式。"""
     tokens = []
     for raw in re.findall(r"`([^`\n]+)`", body):
         token = raw.strip()
-        if len(token) < 8:
+        # 带调用的短表达式（如 foo()）也能唯一指向旧代码；普通单词仍要求 8 字符，
+        # 避免 state/reason 这类通用词误命中。
+        if len(token) < (5 if "(" in token else 8):
             continue
         if "://" in token or token.startswith(("/", "~", "http")):
             continue
@@ -150,7 +163,7 @@ def is_stale(finding: dict, repo: str, head_sha: str, file_cache: dict[str, str 
     path = finding.get("path")
     if not isinstance(path, str) or not path:
         return False, "没有可校验的文件路径"
-    if path.startswith("/") or ".." in path.split("/"):
+    if not safe_repo_path(path):
         return False, "文件路径不安全，保留给人工判断"
 
     if path not in file_cache:
