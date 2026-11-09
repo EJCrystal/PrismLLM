@@ -9,6 +9,9 @@ class ProtocolConversionException(
 ) : IllegalArgumentException(message)
 
 object ProtocolConversion {
+    /** 启动自检，校验协议转换注册表覆盖所有有序组合。 */
+    fun selfCheck() = ProtocolConverterRegistry.selfCheck()
+
     fun supports(inbound: GatewayProtocol, outbound: GatewayProtocol): Boolean =
         ProtocolConverterRegistry.supports(inbound, outbound)
 
