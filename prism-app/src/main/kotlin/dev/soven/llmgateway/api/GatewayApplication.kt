@@ -41,7 +41,7 @@ import dev.soven.llmgateway.oauth.OAuthAccountRouting
 import dev.soven.llmgateway.oauth.infra.OAuthAccountScheduler
 import dev.soven.llmgateway.oauth.OAuthLoginService
 import dev.soven.llmgateway.oauth.OAuthQuotaService
-import dev.soven.llmgateway.oauth.OAuthTokenProviderRegistry
+import dev.soven.llmgateway.oauth.infra.OAuthTokenProviderRegistry
 import dev.soven.llmgateway.oauth.OAuthTokenService
 import dev.soven.llmgateway.oauth.ProviderChannelProvisioner
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistProjectResolver

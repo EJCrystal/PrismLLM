@@ -34,10 +34,10 @@ import dev.soven.llmgateway.domain.upstreamEnvelope
 import dev.soven.llmgateway.oauth.OAuthLoginResult
 import dev.soven.llmgateway.oauth.OAuthLoginStartResult
 import dev.soven.llmgateway.oauth.OAuthQuotaResult
-import dev.soven.llmgateway.oauth.OAuthRefreshException
+import dev.soven.llmgateway.oauth.infra.OAuthRefreshException
 import dev.soven.llmgateway.oauth.OAuthRefreshResult
 import dev.soven.llmgateway.oauth.OAuthUnavailableReason
-import dev.soven.llmgateway.oauth.proxyAddress
+import dev.soven.llmgateway.oauth.infra.proxyAddress
 import dev.soven.llmgateway.proxy.CatalogModel
 import dev.soven.llmgateway.proxy.IqBenchmark
 import dev.soven.llmgateway.proxy.IqVerdict

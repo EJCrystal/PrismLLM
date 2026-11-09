@@ -23,7 +23,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
 import java.net.InetSocketAddress
-import dev.soven.llmgateway.oauth.proxyAddress
+import dev.soven.llmgateway.oauth.infra.proxyAddress
 import java.util.concurrent.ConcurrentHashMap
 
 /**

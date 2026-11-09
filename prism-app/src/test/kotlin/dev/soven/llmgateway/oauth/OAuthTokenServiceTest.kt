@@ -3,10 +3,15 @@ package dev.soven.llmgateway.oauth
 import com.sun.net.httpserver.HttpServer
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.config.OAuthConfig
-import dev.soven.llmgateway.config.OAuthProviderConfig
 import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.oauth.domain.OAuthAuthState
+import dev.soven.llmgateway.oauth.domain.OAuthProviderConfig
+import dev.soven.llmgateway.oauth.infra.ChatGptOAuthProvider
+import dev.soven.llmgateway.oauth.infra.OAuthRefreshException
+import dev.soven.llmgateway.oauth.infra.OAuthTokenProviderRegistry
+import dev.soven.llmgateway.oauth.infra.isProxyHostAllowed
+import dev.soven.llmgateway.oauth.infra.proxyAddress
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.channel.persistence.ChannelRepository
 import dev.soven.llmgateway.channel.persistence.NewChannelKey

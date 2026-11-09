@@ -1,6 +1,6 @@
-package dev.soven.llmgateway.oauth
+package dev.soven.llmgateway.oauth.infra
 
-import dev.soven.llmgateway.config.OAuthConfig
+import dev.soven.llmgateway.oauth.domain.OAuthProviderConfig
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -80,11 +80,6 @@ class OAuthTokenProviderRegistry(providers: Collection<OAuthTokenProvider>) {
     fun available(): Set<OAuthProvider> = byProvider.keys.toSet()
 }
 
-fun buildOAuthTokenProviders(config: OAuthConfig): List<OAuthTokenProvider> = buildList {
-    add(ChatGptOAuthProvider(config.chatGpt, config.requestTimeoutMs, config.proxyAllowedHosts))
-    add(AntigravityOAuthProvider(config.antigravity, config.requestTimeoutMs, config.proxyAllowedHosts))
-}
-
 private const val MAX_RESPONSE_BYTES = 256 * 1024
 private val TERMINAL_ERROR_CODES = setOf("invalid_grant", "invalid_client", "unauthorized_client", "invalid_token")
 
@@ -92,7 +87,7 @@ private val TERMINAL_ERROR_CODES = setOf("invalid_grant", "invalid_client", "una
  * 发送一次 token 刷新请求。每次调用创建独立的 HttpClient：账号代理是请求级参数，
  * 不能污染共享客户端；刷新频率低，创建与销毁成本可以接受。
  */
-internal suspend fun postTokenRequest(
+suspend fun postTokenRequest(
     endpoint: String,
     contentType: String,
     body: String,
@@ -144,7 +139,7 @@ internal suspend fun postTokenRequest(
  * 代理目标默认只允许本机回环地址，其他主机必须由 [allowedHosts] 显式放行：
  * 管理面输入不应成为访问任意内网主机的跳板。回环地址始终允许，便于本地代理调试。
  */
-internal fun proxyAddress(proxyUrl: String?, allowedHosts: Set<String> = emptySet()): InetSocketAddress? {
+fun proxyAddress(proxyUrl: String?, allowedHosts: Set<String> = emptySet()): InetSocketAddress? {
     val value = proxyUrl?.trim()?.takeIf { it.isNotEmpty() } ?: return null
     val uri = runCatching { URI(value) }.getOrElse {
         throw OAuthRefreshException(false, "proxy_invalid", "账号代理地址无效")
@@ -178,7 +173,7 @@ internal fun proxyAddress(proxyUrl: String?, allowedHosts: Set<String> = emptySe
 internal fun normalizeProxyHost(host: String): String =
     host.trim().removePrefix("[").removeSuffix("]").lowercase()
 
-internal fun isProxyHostAllowed(host: String?, allowedHosts: Set<String>): Boolean {
+fun isProxyHostAllowed(host: String?, allowedHosts: Set<String>): Boolean {
     val normalized = host?.takeIf { it.isNotBlank() }?.let(::normalizeProxyHost) ?: return false
     return normalized in LOOPBACK_PROXY_HOSTS || normalized in allowedHosts
 }
@@ -224,7 +219,7 @@ private fun extractErrorCode(text: String): String? = runCatching {
     ?.takeIf { it.isNotBlank() }
 
 /** 有界读取响应体；token 与额度查询共用，避免上游返回超大响应时占满内存。 */
-internal suspend fun sendBounded(client: HttpClient, request: HttpRequest): HttpResponse<ByteArray> =
+suspend fun sendBounded(client: HttpClient, request: HttpRequest): HttpResponse<ByteArray> =
     suspendCancellableCoroutine { continuation ->
         val future = client.sendAsync(
             request,
