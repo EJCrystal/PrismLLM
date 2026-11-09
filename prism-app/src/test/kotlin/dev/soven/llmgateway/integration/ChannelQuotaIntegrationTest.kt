@@ -5,7 +5,7 @@ import dev.soven.llmgateway.channel.domain.ChannelQuotaCredentialSource
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.channel.persistence.ChannelKeyUpdate
 import dev.soven.llmgateway.shared.crypto.ClientKeyHasher
-import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
+import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
 import io.ktor.client.request.header
 import io.ktor.client.request.get
 import io.ktor.client.request.post

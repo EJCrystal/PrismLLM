@@ -2,6 +2,9 @@ package dev.soven.llmgateway.quota
 
 import dev.soven.llmgateway.shared.error.GatewayError
 import dev.soven.llmgateway.domain.ClientKeyRecord
+import dev.soven.llmgateway.quota.domain.ClientKeyQuotaUsage
+import dev.soven.llmgateway.quota.domain.checkClientKeyQuota
+import dev.soven.llmgateway.quota.domain.dailyQuotaPeriod
 import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
 import dev.soven.llmgateway.repo.StoredQuotaUsage
 import io.ktor.http.HttpStatusCode

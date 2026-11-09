@@ -2,6 +2,7 @@ package dev.soven.llmgateway.quota
 
 import dev.soven.llmgateway.shared.error.GatewayError
 import dev.soven.llmgateway.domain.ClientKeyRecord
+import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
 import dev.soven.llmgateway.repo.StoredQuotaUsage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async

@@ -17,7 +17,7 @@ import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.proxy.HtmlImageRenderer
 import dev.soven.llmgateway.proxy.SvgRenderResult
 import dev.soven.llmgateway.shared.crypto.ClientKeyHasher
-import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
+import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
 import dev.soven.llmgateway.report.RetentionPolicy
 import dev.soven.llmgateway.resilience.CooldownPolicy
 import io.ktor.client.HttpClient

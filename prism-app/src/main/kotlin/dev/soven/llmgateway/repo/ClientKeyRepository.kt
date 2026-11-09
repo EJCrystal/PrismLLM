@@ -2,7 +2,7 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.ClientKeys
 import dev.soven.llmgateway.domain.ClientKeyRecord
-import dev.soven.llmgateway.quota.ClientKeyQuotaLimits
+import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq

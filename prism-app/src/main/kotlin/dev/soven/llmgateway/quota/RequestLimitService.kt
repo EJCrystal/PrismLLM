@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.quota
 
 import dev.soven.llmgateway.domain.ClientKeyRecord
+import dev.soven.llmgateway.quota.domain.ClientKeyQuotaUsage
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.math.BigDecimal
