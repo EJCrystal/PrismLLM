@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.proxy
+package dev.soven.llmgateway.protocol
 
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import kotlinx.serialization.json.JsonObject
@@ -8,7 +8,7 @@ import kotlinx.serialization.json.JsonPrimitive
 internal const val MAX_REPORTED_MODEL_CHARS = 200
 
 /** Extract the model identifier declared by an upstream response, when present. */
-internal fun extractReportedModel(protocol: GatewayProtocol, json: JsonObject?): String? {
+fun extractReportedModel(protocol: GatewayProtocol, json: JsonObject?): String? {
     if (json == null) return null
 
     val candidates = when (protocol) {

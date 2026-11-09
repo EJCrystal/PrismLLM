@@ -1,5 +1,6 @@
 package dev.soven.llmgateway.proxy
 
+import dev.soven.llmgateway.protocol.extractReportedModel
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray

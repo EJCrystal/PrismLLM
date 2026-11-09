@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.protocol.UsageParser
+import dev.soven.llmgateway.protocol.extractReportedModel
 
 import dev.soven.llmgateway.shared.domain.Usage
 
