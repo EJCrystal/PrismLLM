@@ -4,6 +4,7 @@ import dev.soven.llmgateway.shared.domain.UpstreamCredential
 
 import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.oauth.domain.OAuthRoutingStrategy
+import dev.soven.llmgateway.oauth.infra.OAuthRoutingHint
 import dev.soven.llmgateway.routing.domain.candidate.RouteCandidate
 import dev.soven.llmgateway.shared.domain.saturatedAdd
 import dev.soven.llmgateway.shared.domain.saturatedSubtract

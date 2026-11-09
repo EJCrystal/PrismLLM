@@ -5,8 +5,8 @@ import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.shared.domain.OAuthProvider
-import dev.soven.llmgateway.oauth.OAuthAccountDecision
-import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
+import dev.soven.llmgateway.oauth.infra.OAuthAccountDecision
+import dev.soven.llmgateway.oauth.infra.OAuthAccountDenyReason
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.repo.NewOAuthAccount
 import dev.soven.llmgateway.resilience.FailureKind

@@ -38,7 +38,7 @@ import dev.soven.llmgateway.repo.CooldownStateRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
 import dev.soven.llmgateway.repo.RetentionSettingsRepository
 import dev.soven.llmgateway.oauth.OAuthAccountRouting
-import dev.soven.llmgateway.oauth.OAuthAccountScheduler
+import dev.soven.llmgateway.oauth.infra.OAuthAccountScheduler
 import dev.soven.llmgateway.oauth.OAuthLoginService
 import dev.soven.llmgateway.oauth.OAuthQuotaService
 import dev.soven.llmgateway.oauth.OAuthTokenProviderRegistry
@@ -47,7 +47,7 @@ import dev.soven.llmgateway.oauth.ProviderChannelProvisioner
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistProjectResolver
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistModelCatalog
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistQuotaClient
-import dev.soven.llmgateway.oauth.OAuthWindowStateWriter
+import dev.soven.llmgateway.oauth.infra.OAuthWindowStateWriter
 import dev.soven.llmgateway.oauth.buildOAuthTokenProviders
 import dev.soven.llmgateway.repo.ModelTestSettingsRepository
 import dev.soven.llmgateway.repo.WebSearchSettingsRepository
@@ -492,7 +492,7 @@ val requestLogWriter = RequestLogWriter(
     val channelQuotaService = ChannelQuotaService(channelQuotaProviderRegistry, credentialCipher, oauthTokenService)
     /** 订阅账号级调度：账号级滑动窗口、单号并发与 429 冷却。内存态权威，快照异步落库。 */
     val oauthWindowRepository = OAuthWindowRepository(databaseFactory.database)
-    val oauthWindowStateWriter = OAuthWindowStateWriter(oauthWindowRepository, scope)
+    val oauthWindowStateWriter = OAuthWindowStateWriter(oauthWindowRepository::upsert, scope)
     val oauthAccountScheduler = OAuthAccountScheduler(
         defaultCooldownMs = config.oauth.rateLimitDefaultMs,
         maxCooldownMs = config.oauth.rateLimitMaxMs,

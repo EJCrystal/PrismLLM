@@ -1,7 +1,6 @@
-package dev.soven.llmgateway.oauth
+package dev.soven.llmgateway.oauth.infra
 
 import dev.soven.llmgateway.oauth.domain.OAuthWindowSnapshot
-import dev.soven.llmgateway.repo.OAuthWindowStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
@@ -21,7 +20,7 @@ import kotlin.coroutines.cancellation.CancellationException
  * @since 2026-11-06
  */
 class OAuthWindowStateWriter(
-    private val store: OAuthWindowStore,
+    private val persist: suspend (OAuthWindowSnapshot) -> Unit,
     scope: CoroutineScope,
 ) {
     private val logger = LoggerFactory.getLogger(OAuthWindowStateWriter::class.java)
@@ -48,7 +47,7 @@ class OAuthWindowStateWriter(
             val entry = pending.entries.firstOrNull() ?: break
             if (!pending.remove(entry.key, entry.value)) continue
             try {
-                store.upsert(entry.value)
+                persist(entry.value)
                 wrote = true
             } catch (cause: CancellationException) {
                 throw cause

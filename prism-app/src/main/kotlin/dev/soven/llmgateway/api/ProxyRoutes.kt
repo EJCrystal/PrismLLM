@@ -23,9 +23,9 @@ import dev.soven.llmgateway.proxy.codeassist.CodeAssistCloak
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistSuspension
 import dev.soven.llmgateway.channel.domain.authTypeFor
 import dev.soven.llmgateway.domain.effective
-import dev.soven.llmgateway.oauth.OAuthAccountDecision
-import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
-import dev.soven.llmgateway.oauth.OAuthAccountLease
+import dev.soven.llmgateway.oauth.infra.OAuthAccountDecision
+import dev.soven.llmgateway.oauth.infra.OAuthAccountDenyReason
+import dev.soven.llmgateway.oauth.infra.OAuthAccountLease
 import dev.soven.llmgateway.oauth.OAuthTokenUnavailableException
 import dev.soven.llmgateway.oauth.OAuthRefreshException
 import dev.soven.llmgateway.oauth.OAuthUnavailableReason
