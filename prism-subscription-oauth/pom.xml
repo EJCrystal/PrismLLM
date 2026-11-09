@@ -35,6 +35,17 @@
             <artifactId>kotlinx-coroutines-core</artifactId>
             <version>${coroutines.version}</version>
         </dependency>
+        <dependency>
+            <!-- 订阅账号与窗口快照表映射使用 Exposed。 -->
+            <groupId>org.jetbrains.exposed</groupId>
+            <artifactId>exposed-core</artifactId>
+            <version>${exposed.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.exposed</groupId>
+            <artifactId>exposed-jdbc</artifactId>
+            <version>${exposed.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>

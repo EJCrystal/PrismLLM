@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
 
 /**
  * 订阅账号模块的依赖边界：领域只允许共享内核，基础设施可再加协程与日志门面，
- * 均禁止反向引用渠道、路由或应用层。
+ * 持久化可再加 Exposed，均禁止反向引用渠道、路由或应用层。
  *
  * 账号实现共享内核的 [dev.soven.llmgateway.shared.domain.UpstreamCredential] 角色接口，
  * 业务字段与策略留在本模块；一旦直接依赖 channel/routing/app，模块拆分就重新变成环。
@@ -20,7 +20,11 @@ import kotlin.test.assertTrue
 class SubscriptionOAuthArchitectureTest {
     private val classes: JavaClasses = ClassFileImporter()
         .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
-        .importPackages("dev.soven.llmgateway.oauth.domain", "dev.soven.llmgateway.oauth.infra")
+        .importPackages(
+            "dev.soven.llmgateway.oauth.domain",
+            "dev.soven.llmgateway.oauth.infra",
+            "dev.soven.llmgateway.oauth.persistence",
+        )
 
     private val subscriptionOAuthDependencies = arrayOf(
         "java..",
@@ -42,6 +46,18 @@ class SubscriptionOAuthArchitectureTest {
         "dev.soven.llmgateway.shared..",
         "dev.soven.llmgateway.oauth.domain..",
         "dev.soven.llmgateway.oauth.infra..",
+    )
+
+    /** 账号与窗口快照的持久化只认识本模块领域模型与 Exposed。 */
+    private val subscriptionOAuthPersistenceDependencies = arrayOf(
+        "java..",
+        "kotlin..",
+        "kotlinx.serialization..",
+        "org.jetbrains.annotations..",
+        "org.jetbrains.exposed..",
+        "dev.soven.llmgateway.shared..",
+        "dev.soven.llmgateway.oauth.domain..",
+        "dev.soven.llmgateway.oauth.persistence..",
     )
 
     @Test
@@ -66,6 +82,18 @@ class SubscriptionOAuthArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.oauth.domain.OAuthProviderConfig" },
             "ArchUnit 未导入 OAuth 客户端参数，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.oauth.persistence.OAuthAccounts" },
+            "ArchUnit 未导入订阅账号表，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.oauth.persistence.OAuthAccountWindows" },
+            "ArchUnit 未导入账号窗口快照表，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.oauth.persistence.OAuthWindowRepository" },
+            "ArchUnit 未导入窗口快照仓储，规则会空跑",
+        )
     }
 
     @Test
@@ -81,6 +109,14 @@ class SubscriptionOAuthArchitectureTest {
         classes()
             .that().resideInAnyPackage("dev.soven.llmgateway.oauth.infra..")
             .should().onlyDependOnClassesThat().resideInAnyPackage(*subscriptionOAuthInfraDependencies)
+            .check(classes)
+    }
+
+    @Test
+    fun `subscription oauth persistence only depends on the allowlist`() {
+        classes()
+            .that().resideInAnyPackage("dev.soven.llmgateway.oauth.persistence..")
+            .should().onlyDependOnClassesThat().resideInAnyPackage(*subscriptionOAuthPersistenceDependencies)
             .check(classes)
     }
 }

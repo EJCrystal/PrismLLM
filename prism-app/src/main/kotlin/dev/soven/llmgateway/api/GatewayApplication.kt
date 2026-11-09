@@ -52,7 +52,7 @@ import dev.soven.llmgateway.oauth.buildOAuthTokenProviders
 import dev.soven.llmgateway.repo.ModelTestSettingsRepository
 import dev.soven.llmgateway.repo.WebSearchSettingsRepository
 import dev.soven.llmgateway.repo.OAuthAccountRepository
-import dev.soven.llmgateway.repo.OAuthWindowRepository
+import dev.soven.llmgateway.oauth.persistence.OAuthWindowRepository
 import dev.soven.llmgateway.channel.persistence.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.channel.persistence.UpstreamHeaderCatalogRepository
 import dev.soven.llmgateway.channel.persistence.KeyAutoDisableRepository
