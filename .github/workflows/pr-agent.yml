@@ -1,11 +1,11 @@
-name: AI Review Gatekeeper (CodeRabbit & PR-Agent)
+name: AI Review Gatekeeper (CodeRabbit → Greptile → PR-Agent)
 
 'on':
   # 场景 1：PR 打开或推新 commit 时，初始化门禁状态为 pending，防止审查未跑完就误合并
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
 
-  # 场景 2：Check Run 结束时（CodeRabbit 成功放行，或超额时自动唤醒 PR-Agent 兜底）
+  # 场景 2：Check Run 结束时，按 CodeRabbit → Greptile → PR-Agent 的优先级决定放行还是降级
   check_run:
     types: [completed]
 
@@ -20,8 +20,18 @@ name: AI Review Gatekeeper (CodeRabbit & PR-Agent)
         description: 'Pull Request 编号（如 74、75，用于手动指定测试目标）'
         required: true
         type: string
+      tier:
+        description: '从哪一级开始审查：auto=沿用 PR 当前档位；greptile/pr-agent=强制从该级开始'
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - greptile
+          - pr-agent
 
 permissions:
+  checks: read
   issues: write
   pull-requests: write
   contents: read
@@ -30,7 +40,7 @@ permissions:
 jobs:
   # 1. PR 打开或更新时，将 AI Review Gate 置为 pending
   init_gate:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - name: Set AI Review Gate to Pending
@@ -39,19 +49,27 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # 同一 SHA 已经放行时不再覆盖：重复的 pull_request / ready_for_review 事件
+          # 不能把成功状态改回 pending。失败或 pending 则允许重新置为 pending 以重跑审查。
+          STATE=$(gh api "repos/${REPO}/commits/${SHA}/statuses?per_page=100" \
+            --jq '[.[] | select(.context == "AI Review Gate")] | .[0].state // ""' || true)
+          if [ "${STATE:-}" = "success" ]; then
+            echo "本 commit 的 AI Review Gate 已通过，跳过初始化。"
+            exit 0
+          fi
           gh api "repos/${REPO}/statuses/${SHA}" \
             -f state="pending" \
             -f context="AI Review Gate" \
-            -f description="等待 CodeRabbit 或 PR-Agent 审查完成..." || true
+            -f description="等待 CodeRabbit / Greptile / PR-Agent 审查完成..." || true
 
-  # 2. CodeRabbit 正常完成且未超额时，将 AI Review Gate 标记为 success 放行
+  # 2. CodeRabbit（第一级）正常完成且未超额时，将 AI Review Gate 标记为 success 放行
   coderabbit_gate:
     if: >-
       github.event_name == 'check_run' &&
       github.event.check_run.app.slug == 'coderabbitai' &&
       github.event.check_run.conclusion == 'success' &&
       !contains(github.event.check_run.output.title, 'rate limited') &&
-      !contains(github.event.check_run.output.summary, 'Rate limited')
+      !contains(github.event.check_run.output.summary, 'rate limited')
     runs-on: ubuntu-latest
     steps:
       - name: Mark Gate as Success by CodeRabbit
@@ -59,46 +77,80 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.check_run.head_sha }}
+          CHECK_PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
+          # 整个 PR 已降级，或本 commit 自己已降级到 PR-Agent 时，CodeRabbit 结果不再改写门禁。
+          # 其他 commit 的 commit 级标记不影响本 commit，故带上 SHA。
+          PR_AGENT_PR_MARKER: '<!-- ai-review-tier:pr-agent scope=pr'
+          PR_AGENT_COMMIT_MARKER: '<!-- ai-review-tier:pr-agent scope=commit sha=${{ github.event.check_run.head_sha }}'
         run: |
+          set -euo pipefail
+          if [ -n "$CHECK_PR_URL" ] && [ "$CHECK_PR_URL" != "null" ]; then
+            PR_NUMBER="${CHECK_PR_URL##*/}"
+          else
+            PR_NUMBER=$(gh api "repos/${REPO}/commits/${SHA}/pulls" -q '.[0].number // empty' || true)
+          fi
+          # 已降级到 PR-Agent 的 PR / commit，门禁只认 PR-Agent 的结果，避免两边抢写
+          if [ -n "$PR_NUMBER" ]; then
+            if gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
+                | jq -s -e --arg pr "$PR_AGENT_PR_MARKER" --arg commit "$PR_AGENT_COMMIT_MARKER" '
+                    any(.[]; .user.login == "github-actions[bot]"
+                              and (((.body // "") | contains($pr)) or ((.body // "") | contains($commit))))' > /dev/null; then
+              echo "已降级到 PR-Agent，CodeRabbit 结果不再改写门禁。"
+              exit 0
+            fi
+          fi
           gh api "repos/${REPO}/statuses/${SHA}" \
             -f state="success" \
             -f context="AI Review Gate" \
             -f description="CodeRabbit 审查通过" || true
 
-  # 3. 审查路由：CodeRabbit 优先，PR-Agent 仅在 CodeRabbit 确认不可用时兜底。
-  #    - CodeRabbit 跳过（star < 10 不自动审查）：只邀请 CodeRabbit，不发 /review；
-  #      邀请后若 CodeRabbit 限流，会产生新的 check_run 再次进入本 job 走兜底；
-  #      若等待期内 CodeRabbit 毫无响应，同样兜底。
-  #    - CodeRabbit 限流、超额或失败：发 /review 交给 PR-Agent（job 4）。
-  #    - 同一 commit 已有 CodeRabbit 审查在跑或已完成：不重复邀请，也不切 PR-Agent。
-  #    - 手动 Run workflow：明确指定 PR-Agent，直接发 /review。
-  #    同一 commit 已有对应的触发评论（含人工发的）就不再重复发送，避免评论区噪声。
+  # 3. 审查路由：CodeRabbit 优先，不可用时降级到 Greptile，再不可用由 PR-Agent 兜底。
+  #
+  #    第一级 CodeRabbit：正常完成即放行（job 2）；跳过（OSS 仓库需手动邀请）、限流、
+  #    check run 失败、邀请后无响应 → 降级到 Greptile。
+  #    第二级 Greptile：邀请后产生成功的 check run 才放行；check run 失败、邀请后始终
+  #    没有结果、或已开工却一直不结束 → 降级到 PR-Agent。
+  #    第三级 PR-Agent：发 /review，由 job 4 执行并裁决门禁（含 ACTIVE 意见检查）。
+  #
+  #    降级范围：限流、OSS 跳过、邀请无响应这类「服务不可用」记 PR 级隐藏标记，本 PR
+  #    后续 commit 直接沿用更低的档位；偶发的 check run 失败只影响本 commit，下个
+  #    commit 仍从 CodeRabbit 开始。本 commit 的档位也能从已有的邀请评论推断出来。
   #    触发评论必须用 PAT 发送：GITHUB_TOKEN 发出的评论不会触发新的 workflow，
-  #    sender 为 Bot 会被 job 4 与 PR-Agent 过滤，CodeRabbit 也不响应机器人发起的指令。
+  #    CodeRabbit / Greptile 也不响应机器人发起的指令。
   route_review:
-    # Actions 表达式的 contains() 对字符串不区分大小写，'Rate Limited' 等写法同样命中。
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
       (
         github.event_name == 'check_run' &&
-        github.event.check_run.app.slug == 'coderabbitai' &&
         (
-          github.event.check_run.conclusion != 'success' ||
-          contains(github.event.check_run.output.title, 'rate limited') ||
-          contains(github.event.check_run.output.summary, 'rate limited')
+          (
+            github.event.check_run.app.slug == 'coderabbitai' &&
+            (
+              github.event.check_run.conclusion != 'success' ||
+              contains(github.event.check_run.output.title, 'rate limited') ||
+              contains(github.event.check_run.output.summary, 'rate limited')
+            )
+          ) ||
+          github.event.check_run.app.slug == 'greptile-apps'
         )
       )
     concurrency:
-      group: review-route-${{ github.event.check_run.head_sha || inputs.pr_number }}
+      group: review-route-${{ github.event.pull_request.head.sha || github.event.check_run.head_sha || inputs.pr_number }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
+    # 邀请 CodeRabbit（最长 5 分钟）+ 邀请 Greptile（最长 6 分钟）都在这里等待
+    timeout-minutes: 30
     steps:
-      - name: Route review to CodeRabbit or PR-Agent
+      - name: Route review to CodeRabbit, Greptile or PR-Agent
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRIGGER_TOKEN: ${{ secrets.PR_AGENT_TRIGGER_TOKEN }}
           REPO: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
+          PR_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHECK_APP: ${{ github.event.check_run.app.slug }}
           CHECK_PR_URL: ${{ github.event.check_run.pull_requests[0].url }}
           CHECK_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           CHECK_RUN_ID: ${{ github.event.check_run.id }}
@@ -106,140 +158,475 @@ jobs:
           CHECK_TITLE: ${{ github.event.check_run.output.title }}
           CHECK_SUMMARY: ${{ github.event.check_run.output.summary }}
           DISPATCH_PR: ${{ inputs.pr_number }}
+          DISPATCH_TIER: ${{ inputs.tier }}
           # CodeRabbit 接受邀请后通常数秒内就会创建新的 check run
           INVITE_WAIT_SECONDS: "300"
           # CodeRabbit 的限流提示先以评论出现，带 rate limited 结论的 check run 会晚几秒；
           # 邀请前等一小段时间复查，避免限流时仍发出邀请。
           RATE_LIMIT_WAIT_SECONDS: "45"
+          # Greptile 官方耗时：小 PR 1–2 分钟，中等约 3 分钟，大 PR 3–5 分钟。
+          GREPTILE_WAIT_SECONDS: "360"
+          # Greptile 已经开工但迟迟不结束（check run 一直 running）的上限，超过才当作不可用，
+          # 避免把正常但慢的后台运行误判成故障反复降级。
+          GREPTILE_STUCK_SECONDS: "900"
+          # PR 事件里等 CodeRabbit 接单的时长；超过仍没有任何 check run 才当作本 commit 没有它。
+          CR_ABSENT_GRACE_SECONDS: "60"
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "check_run" ]; then
-            HEAD_SHA="$CHECK_HEAD_SHA"
-            if [ -n "$CHECK_PR_URL" ] && [ "$CHECK_PR_URL" != "null" ]; then
-              PR_NUMBER="${CHECK_PR_URL##*/}"
-            else
-              PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number // empty')
-            fi
-            if [ -z "$PR_NUMBER" ]; then
-              echo "未找到对应的 PR，跳过。"
-              exit 0
-            fi
-          else
-            if ! [[ "$DISPATCH_PR" =~ ^[0-9]+$ ]]; then
-              echo "::error::pr_number 必须是数字：$DISPATCH_PR"
-              exit 1
-            fi
-            PR_NUMBER="$DISPATCH_PR"
-            HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" -q .head.sha)
+          CHECK_RUN_ID="${CHECK_RUN_ID:-0}"
+
+          case "$EVENT_NAME" in
+            check_run)
+              HEAD_SHA="$CHECK_HEAD_SHA"
+              if [ -n "$CHECK_PR_URL" ] && [ "$CHECK_PR_URL" != "null" ]; then
+                PR_NUMBER="${CHECK_PR_URL##*/}"
+              else
+                PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" -q '.[0].number // empty')
+              fi
+              ;;
+            pull_request)
+              HEAD_SHA="$PR_HEAD_SHA"
+              PR_NUMBER="$PR_EVENT_NUMBER"
+              ;;
+            *)
+              if ! [[ "$DISPATCH_PR" =~ ^[0-9]+$ ]]; then
+                echo "::error::pr_number 必须是数字：$DISPATCH_PR"
+                exit 1
+              fi
+              PR_NUMBER="$DISPATCH_PR"
+              HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" -q .head.sha)
+              ;;
+          esac
+
+          if [ -z "${PR_NUMBER:-}" ]; then
+            echo "未找到对应的 PR，跳过。"
+            exit 0
           fi
+
+          # 本 commit 的起算时间：init_gate 在 push 时写入的首个门禁状态。
+          # 同一个 PR 的 pull_request 与 check_run 事件会并发启动，init_gate 可能还没写入，
+          # 这时先等一会儿，避免退化成提交时间而把上一个 commit 的 /review 当成本 commit 的触发。
+          since_deadline=$(( $(date +%s) + 60 ))
+          while :; do
+            SINCE=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/statuses" --paginate \
+              --jq '.[] | select(.context == "AI Review Gate") | .created_at' | sort | head -1 || true)
+            [ -n "$SINCE" ] && break
+            [ "$(date +%s)" -ge "$since_deadline" ] && break
+            sleep 5
+          done
+          if [ -z "$SINCE" ]; then
+            SINCE=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" -q .commit.committer.date)
+          fi
+          echo "审查起算时间：${SINCE}"
 
           set_gate() {
             gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
               -f state="$1" -f context="AI Review Gate" -f description="$2" || true
           }
 
-          if [ -z "$TRIGGER_TOKEN" ]; then
-            echo "::error::未配置 secret PR_AGENT_TRIGGER_TOKEN，无法触发审查"
-            set_gate failure "缺少 PR_AGENT_TRIGGER_TOKEN，无法触发审查"
-            exit 1
-          fi
+          gate_state() {
+            gh api "repos/${REPO}/commits/${HEAD_SHA}/statuses?per_page=100" \
+              --jq '[.[] | select(.context == "AI Review Gate")] | .[0].state // ""' 2>/dev/null || echo ""
+          }
 
-          # 本 commit 的起算时间：init_gate 在 push 时写入的首个门禁状态，取不到则用提交时间。
-          SINCE=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/statuses" --paginate \
-            --jq '.[] | select(.context == "AI Review Gate") | .created_at' | sort | head -1)
-          if [ -z "$SINCE" ]; then
-            SINCE=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" -q .commit.committer.date)
-          fi
+          # 只在门禁尚未通过时写 pending，避免把已完成的审查结果改回去
+          set_gate_pending() {
+            if [ "$(gate_state)" != "success" ]; then
+              set_gate pending "$1"
+            fi
+          }
 
-          # 本 commit 推送后是否已有人（含本 workflow、人工）发过匹配的触发指令。
+          # ---- 评论快照：一次拉取，供档位标记与触发历史判断复用 ----
+          COMMENTS_FILE=$(mktemp)
+          refresh_comments() {
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
+              | jq -s '.' > "$COMMENTS_FILE"
+          }
+          refresh_comments
+
+          # 只看 github-actions[bot] 的评论，正文含指定隐藏标记即命中（防伪造）
+          has_marker() {
+            jq -e --arg m "$1" \
+              'any(.[]; .user.login == "github-actions[bot]" and ((.body // "") | contains($m)))' \
+              "$COMMENTS_FILE" > /dev/null
+          }
+
+          # 本 commit 推送后是否已有人（含本 workflow、人工）发过匹配的触发指令
           has_trigger() {
-            local count
-            count=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
-              | jq -s --arg since "$SINCE" --arg re "$1" \
-                  '[.[] | select(.created_at >= $since)
-                        | select((.body // "") | gsub("^\\s+|\\s+$"; "") | test($re; "i"))] | length')
-            [ "$count" -gt 0 ]
+            jq -e --arg since "$SINCE" --arg re "$1" \
+              'any(.[]; .created_at >= $since
+                        and ((.body // "") | gsub("^\\s+|\\s+$"; "") | test($re; "i")))' \
+              "$COMMENTS_FILE" > /dev/null
+          }
+
+          GREPTILE_MARKER='<!-- ai-review-tier:greptile scope=pr'
+          PR_AGENT_MARKER='<!-- ai-review-tier:pr-agent scope=pr'
+
+          # 只对本 commit 生效的 PR-Agent 标记，带 SHA，避免影响同 PR 的其他 commit。
+          commit_pr_agent_marker() { echo "<!-- ai-review-tier:pr-agent scope=commit sha=${HEAD_SHA}"; }
+
+          # 手动重跑与 PR 事件本身就代表「这次要重新审」，不受去重与已放行判断限制。
+          FORCE_PR_AGENT_POST=0
+
+          # $1 = 隐藏标记（不含结尾 -->）；$2 = 面向开发者的提示正文
+          post_marker() {
+            if ! has_marker "$1"; then
+              gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+                -f body="$1 -->
+          > 💡 **提示**：$2" > /dev/null
+              refresh_comments
+            fi
           }
 
           post_as_pat() {
+            if [ -z "$TRIGGER_TOKEN" ]; then
+              echo "::error::未配置 secret PR_AGENT_TRIGGER_TOKEN，无法发送「$1」"
+              set_gate failure "缺少 PR_AGENT_TRIGGER_TOKEN，无法触发审查"
+              exit 1
+            fi
             if ! GH_TOKEN="$TRIGGER_TOKEN" gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
                 -f body="$1" > /dev/null; then
               echo "::error::使用 PR_AGENT_TRIGGER_TOKEN 发送「$1」失败，请检查 token 是否过期或缺少写权限"
               set_gate failure "发送审查指令失败，请检查 PR_AGENT_TRIGGER_TOKEN"
               exit 1
             fi
+            refresh_comments
           }
 
-          # CodeRabbit 在本 commit 上最新的 check run id（filter=all 才能看到被替换掉的旧 run）。
+          # CodeRabbit 在本 commit 上的状态：running / reviewed / unavailable / absent
+          # reviewed 要求 check run 成功且输出里没有 rate limited；skipped 不算已审。
+          cr_state() {
+            gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100" --paginate \
+              | jq -sr '
+                  [ .[].check_runs[] | select(.app.slug == "coderabbitai") ] as $runs
+                  | if ([ $runs[] | select(.status != "completed") ] | length) > 0 then "running"
+                    elif ([ $runs[]
+                            | select(.conclusion == "success")
+                            | select((((.output.title // "") + "\n" + (.output.summary // "")) | test("rate limited"; "i") | not))
+                          ] | length) > 0 then "reviewed"
+                    elif ($runs | length) > 0 then "unavailable"
+                    else "absent" end' || echo "absent"
+          }
+
+          # Greptile 在本 commit 上的状态：running / reviewed / failed / none
+          # 优先看 check run；没有 check run 时用本 commit 之后的 review 作为补充信号。
+          greptile_state() {
+            local state reviews
+            state=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100" --paginate \
+              | jq -sr '
+                  [ .[].check_runs[] | select(.app.slug == "greptile-apps") ] as $runs
+                  | if ([ $runs[] | select(.status != "completed") ] | length) > 0 then "running"
+                    elif ([ $runs[] | select(.conclusion == "success") ] | length) > 0 then "reviewed"
+                    elif ($runs | length) > 0 then "failed"
+                    else "" end' || true)
+            if [ -z "$state" ]; then
+              reviews=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate --jq '.[]' \
+                | jq -s --arg since "$SINCE" '
+                    [ .[]
+                      | select((.user.login // "") | startswith("greptile"))
+                      | select((.submitted_at // "") >= $since)
+                    ] | length' || echo 0)
+              reviews="${reviews:-0}"
+              if [ "$reviews" -gt 0 ]; then state="reviewed"; else state="none"; fi
+            fi
+            echo "$state"
+          }
+
+          # Greptile 未完成的 check run 已运行多少秒；没有在跑的输出空字符串。
+          greptile_running_age() {
+            local started
+            started=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100" --paginate \
+              | jq -sr '
+                  [ .[].check_runs[]
+                    | select(.app.slug == "greptile-apps")
+                    | select(.status != "completed")
+                    | .started_at // empty
+                  ] | min // empty')
+            if [ -n "$started" ]; then
+              echo $(( $(date +%s) - $(date -d "$started" +%s) ))
+            fi
+          }
+
           latest_coderabbit_run() {
             gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100" \
-              --jq '[.check_runs[] | select(.app.slug == "coderabbitai") | .id] | max // 0'
-          }
-
-          # CodeRabbit 是否已在处理或已审完本 commit。只认 check run 的“接单/完成”信号：
-          # - 本 commit 上有未完成的 CodeRabbit check run：已接单，等它的结果
-          # - 本 commit 上有推送后开始且成功的 check run：已审完
-          # 不把结论为 skipped 的 run 当成已审，否则会漏掉 OSS 库必需的手动邀请；
-          # 也不用评论摘要判断：CodeRabbit 会在审查开始前先发摘要占位评论。
-          has_coderabbit_review() {
-            local runs
-            runs=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100" --paginate \
-              | jq -s --arg since "$SINCE" '
-                  [ .[].check_runs[]
-                    | select(.app.slug == "coderabbitai")
-                    | select(
-                        .status != "completed"
-                        or (.conclusion == "success" and .started_at >= $since)
-                      )
-                  ] | length')
-            [ "$runs" -gt 0 ]
+              --jq '[.check_runs[] | select(.app.slug == "coderabbitai") | .id] | max // 0' \
+              || echo 0
           }
 
           # CodeRabbit 限流时会先发一条普通评论（rate limited by coderabbit.ai），
           # 带 rate limited 结论的 check run 会晚几秒才出现。
           coderabbit_rate_limited() {
-            local count
-            count=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
-              | jq -s --arg since "$SINCE" '
-                  [ .[]
-                    | select(.user.login == "coderabbitai[bot]")
-                    | select(((.updated_at // .created_at) // "") >= $since)
-                    | select((.body // "") | test("rate limited by coderabbit.ai|Review limit reached"; "i"))
-                  ] | length')
-            [ "$count" -gt 0 ]
+            jq -e --arg since "$SINCE" '
+              any(.[]; .user.login == "coderabbitai[bot]"
+                        and (((.updated_at // .created_at) // "") >= $since)
+                        and ((.body // "") | test("rate limited by coderabbit.ai|Review limit reached"; "i")))' \
+              "$COMMENTS_FILE" > /dev/null
           }
 
-          # PR 级切换标记：CodeRabbit 在本 PR 上限流或对邀请无响应后写入，此后直到合并都只用 PR-Agent。
-          SWITCH_MARKER="<!-- pr-agent-fallback-pr -->"
-          pr_switched() {
-            local count
-            count=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[]' \
-              | jq -s --arg m "$SWITCH_MARKER" \
-                  '[.[] | select(.user.login == "github-actions[bot]" and ((.body // "") | contains($m)))] | length')
-            [ "$count" -gt 0 ]
-          }
-
-          # $1 原因；$2 为 sticky 时把本 PR 永久切换到 PR-Agent（仅首次切换时留一条提示）。
-          fallback_to_pr_agent() {
-            if [ "${2:-}" = "sticky" ] && ! pr_switched; then
-              gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-                -f body="${SWITCH_MARKER}
-          > 💡 **提示**：检测到 CodeRabbit 不可用（$1），本 PR 合并前的审查将改由 **PR-Agent** 兜底，不再邀请 CodeRabbit。" > /dev/null
+          # 最近一次 @greptileai 邀请距今多少秒；没有邀请时输出空字符串。
+          greptile_invite_age() {
+            local ts
+            ts=$(jq -r --arg since "$SINCE" '
+              [ .[] | select(.created_at >= $since)
+                    | select((.body // "") | gsub("^\\s+|\\s+$"; "") | test("^@greptile(ai)?( review)?$"; "i"))
+              ] | sort_by(.created_at) | last | .created_at // empty' "$COMMENTS_FILE" || true)
+            if [ -n "$ts" ]; then
+              echo $(( $(date +%s) - $(date -d "$ts" +%s) ))
             fi
-            if has_trigger '^/review$'; then
+          }
+
+          # 当前档位：PR 级标记 > 本 commit 的邀请/指令 > CodeRabbit
+          current_tier() {
+            refresh_comments
+            if has_marker "$PR_AGENT_MARKER" || has_marker "$(commit_pr_agent_marker)"; then
+              echo "pr-agent"
+            elif has_marker "$GREPTILE_MARKER"; then
+              echo "greptile"
+            elif has_trigger '^/review$'; then
+              echo "pr-agent"
+            elif has_trigger '^@greptile(ai)?( review)?$'; then
+              echo "greptile"
+            else
+              echo "coderabbit"
+            fi
+          }
+
+          # 降级到 Greptile：$1 原因，$2 为 sticky 时把本 PR 后续 commit 也固定在 Greptile
+          switch_to_greptile() {
+            local reason="$1"
+            if [ "${2:-}" = "sticky" ]; then
+              post_marker "$GREPTILE_MARKER" \
+                "检测到 CodeRabbit 不可用（${reason}），本 PR 合并前的审查将改用 **Greptile**；若 Greptile 也不可用，会再降级到 **PR-Agent** 兜底。"
+            fi
+            ensure_greptile_review
+          }
+
+          # 降级到 PR-Agent：$1 原因，$2 为 sticky 时固定到本 PR
+          fallback_to_pr_agent() {
+            local reason="$1"
+            if [ "$FORCE_PR_AGENT_POST" != "1" ] && [ "$(gate_state)" = "success" ]; then
+              echo "本 commit 的 AI Review Gate 已通过，无需再触发 PR-Agent。"
+              exit 0
+            fi
+            if [ "${2:-}" = "sticky" ]; then
+              # 服务级不可用：本 PR 后续 commit 都直接走 PR-Agent。
+              post_marker "$PR_AGENT_MARKER" \
+                "CodeRabbit 与 Greptile 均不可用（${reason}），本 PR 合并前的审查已改用 **PR-Agent** 兜底。"
+            elif [ "$FORCE_PR_AGENT_POST" != "1" ]; then
+              # 偶发失败：只标记本 commit，下个 commit 仍从 CodeRabbit 开始。
+              # 手动重跑不再留标记，避免评论区多一条无意义提示。
+              post_marker "$(commit_pr_agent_marker)" \
+                "本 commit 改由 **PR-Agent** 审查（${reason}）。"
+            fi
+            refresh_comments
+            if [ "$FORCE_PR_AGENT_POST" != "1" ] && has_trigger '^/review$'; then
               echo "本 commit 已有 /review，不再重复触发 PR-Agent。"
               exit 0
             fi
-            echo "CodeRabbit 不可用（$1），交给 PR-Agent。"
+            echo "降级到 PR-Agent（${reason}）。"
             post_as_pat "/review"
-            set_gate pending "已触发 PR-Agent 审查（CodeRabbit 不可用）..."
+            set_gate_pending "已触发 PR-Agent 审查（${reason}）..."
             exit 0
           }
 
+          # 第二级：确保 Greptile 已接过本 commit 的审查；失败或无响应则继续降级。
+          # $1 = force 时忽略既有邀请的等待窗口，立即重新邀请。
+          ensure_greptile_review() {
+            local state age deadline
+            state=$(greptile_state)
+            case "$state" in
+              reviewed)
+                if [ "$(gate_state)" != "success" ]; then
+                  set_gate success "Greptile 审查通过（CodeRabbit 不可用）"
+                fi
+                echo "Greptile 已完成本 commit 的审查。"
+                exit 0
+                ;;
+              running)
+                local running_age
+                running_age=$(greptile_running_age)
+                if [ -n "$running_age" ] && [ "$running_age" -ge "$GREPTILE_STUCK_SECONDS" ]; then
+                  # 大 PR 可能真的慢，只降级本 commit，不把这个 PR 永久固定在 PR-Agent。
+                  fallback_to_pr_agent "Greptile 已运行 ${running_age} 秒仍未结束"
+                fi
+                echo "Greptile 正在审查本 commit，等待它的 check run 结果。"
+                exit 0
+                ;;
+              failed)
+                fallback_to_pr_agent "Greptile check run 未通过"
+                ;;
+            esac
+
+            if [ "${1:-}" != "force" ]; then
+              age=$(greptile_invite_age)
+              if [ -n "$age" ]; then
+                if [ "$age" -lt "$GREPTILE_WAIT_SECONDS" ]; then
+                  # 邀请后可能已经跑完，先复核一次状态再决定是等还是继续降级。
+                  state=$(greptile_state)
+                  if [ "$state" = "reviewed" ]; then
+                    if [ "$(gate_state)" != "success" ]; then
+                      set_gate success "Greptile 审查通过（CodeRabbit 不可用）"
+                    fi
+                    echo "Greptile 已完成本 commit 的审查。"
+                    exit 0
+                  fi
+                  if [ "$state" = "failed" ]; then
+                    fallback_to_pr_agent "Greptile check run 未通过"
+                  fi
+                  echo "本 commit 已在 ${age} 秒前邀请过 Greptile，继续等待。"
+                  exit 0
+                fi
+                echo "邀请 Greptile 后 ${age} 秒仍无响应，继续降级。"
+                fallback_to_pr_agent "邀请 Greptile 后 ${age} 秒仍无响应" sticky
+              fi
+            fi
+
+            echo "邀请 Greptile 审查本 commit。"
+            post_as_pat "@greptileai review"
+            set_gate_pending "已邀请 Greptile 审查，等待结果..."
+
+            # 边等边判，不依赖后续事件：Greptile 正常时几分钟内就会出结论；
+            # 迟迟不接单（none）或接了单却一直跑不完（running）都按不可用处理，
+            # 否则门禁会永远停在 pending。
+            local absent_deadline stuck_deadline now
+            absent_deadline=$(( $(date +%s) + GREPTILE_WAIT_SECONDS ))
+            stuck_deadline=$(( $(date +%s) + GREPTILE_STUCK_SECONDS ))
+            while :; do
+              sleep 20
+              state=$(greptile_state)
+              case "$state" in
+                reviewed)
+                  if [ "$(gate_state)" != "success" ]; then
+                    set_gate success "Greptile 审查通过（CodeRabbit 不可用）"
+                  fi
+                  echo "Greptile 已完成本 commit 的审查。"
+                  exit 0
+                  ;;
+                failed)
+                  fallback_to_pr_agent "Greptile check run 未通过"
+                  ;;
+              esac
+              now=$(date +%s)
+              if [ "$state" = "none" ] && [ "$now" -ge "$absent_deadline" ]; then
+                fallback_to_pr_agent "邀请 Greptile 后 ${GREPTILE_WAIT_SECONDS} 秒内无响应" sticky
+              fi
+              if [ "$state" = "running" ]; then
+                age=$(greptile_running_age)
+                if { [ -n "$age" ] && [ "$age" -ge "$GREPTILE_STUCK_SECONDS" ]; } ||
+                   [ "$now" -ge "$stuck_deadline" ]; then
+                  # 大 PR 可能真的慢，只降级本 commit，不把这个 PR 永久固定在 PR-Agent。
+                  fallback_to_pr_agent "Greptile 已运行 ${GREPTILE_STUCK_SECONDS} 秒仍未结束"
+                fi
+              fi
+            done
+          }
+
+          TIER=$(current_tier)
+          echo "当前审查档位：${TIER}"
+
+          # ---- 手动触发：按指定档位执行，auto 表示沿用 PR 当前档位 ----
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            post_as_pat "/review"
-            set_gate pending "已手动触发 PR-Agent 审查，等待结果..."
+            FORCE_PR_AGENT_POST=1
+            case "${DISPATCH_TIER:-auto}" in
+              auto)
+                case "$TIER" in
+                  coderabbit)
+                    if [ "$(cr_state)" = "reviewed" ]; then
+                      set_gate success "CodeRabbit 审查通过"
+                      echo "CodeRabbit 已审查完本 commit，门禁放行。"
+                      exit 0
+                    fi
+                    post_as_pat "@coderabbitai review"
+                    set_gate_pending "已手动邀请 CodeRabbit 审查，等待结果..."
+                    ;;
+                  greptile)
+                    ensure_greptile_review force
+                    ;;
+                  pr-agent)
+                    fallback_to_pr_agent "手动触发"
+                    ;;
+                esac
+                ;;
+              greptile)
+                echo "手动指定从 Greptile 开始。"
+                ensure_greptile_review force
+                ;;
+              pr-agent)
+                fallback_to_pr_agent "手动指定"
+                ;;
+              *)
+                echo "::error::未知审查档位：${DISPATCH_TIER}"
+                exit 1
+                ;;
+            esac
             exit 0
+          fi
+
+          # ---- PR 事件：确认 CodeRabbit 是否接单；真正的分流交给它的 check_run 事件 ----
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [ "$TIER" = "pr-agent" ]; then
+              # 新的 push / 重新打开都要重新审一次，不能因为历史 /review 就跳过。
+              FORCE_PR_AGENT_POST=1
+              fallback_to_pr_agent "本 PR 已降级到 PR-Agent"
+            fi
+            if [ "$TIER" = "greptile" ]; then
+              ensure_greptile_review
+            fi
+
+            deadline=$(( $(date +%s) + CR_ABSENT_GRACE_SECONDS ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              CR=$(cr_state)
+              if [ "$CR" = "reviewed" ]; then
+                # 重跑/重复事件时 CodeRabbit 可能早已审完，不再等 check_run 事件。
+                set_gate success "CodeRabbit 审查通过"
+                echo "CodeRabbit 已审查完本 commit，门禁放行。"
+                exit 0
+              fi
+              if [ "$CR" != "absent" ]; then
+                echo "CodeRabbit 已接单，后续由它的 check run 结果决定是否降级。"
+                exit 0
+              fi
+              sleep 10
+            done
+            echo "CodeRabbit 在 ${CR_ABSENT_GRACE_SECONDS} 秒内未创建 check run，本 commit 改由 Greptile 审查。"
+            switch_to_greptile "本 commit 上 CodeRabbit 未创建任何 check run"
+          fi
+
+          # ---- 第二级 Greptile 的 check run 结果 ----
+          if [ "$CHECK_APP" = "greptile-apps" ]; then
+            if [ "$TIER" != "greptile" ]; then
+              echo "当前档位为 ${TIER}，Greptile 结果不参与本 commit 的门禁判定。"
+              exit 0
+            fi
+            STATE=$(greptile_state)
+            if [ "$STATE" = "reviewed" ]; then
+              set_gate success "Greptile 审查通过（CodeRabbit 不可用）"
+              exit 0
+            fi
+            if [ "$STATE" = "running" ]; then
+              echo "Greptile 还有其他 check run 在跑，等待其完成。"
+              exit 0
+            fi
+            # 与 CodeRabbit 一致：单次失败多为偶发，只降级本 commit，下个 commit 仍从 CodeRabbit 开始。
+            fallback_to_pr_agent "Greptile check run 结论为 ${CHECK_CONCLUSION}"
+          fi
+
+          # ---- 第一级 CodeRabbit 的 check run 结果 ----
+          # 先确认 CodeRabbit 在本 commit 上的真实状态：只要它成功审完（哪怕是降级后
+          # 被人工补邀请的），仍按最高优先级放行。已整体切到 PR-Agent 的 PR 例外，
+          # 避免迟到的 CodeRabbit 成功把 PR-Agent 判出的 failure 改写成 success。
+          CR=$(cr_state)
+          if [ "$CR" = "reviewed" ] && [ "$TIER" != "pr-agent" ]; then
+            set_gate success "CodeRabbit 审查通过"
+            exit 0
+          fi
+
+          if [ "$TIER" = "pr-agent" ]; then
+            echo "本 PR 已降级到 PR-Agent，忽略 CodeRabbit 事件。"
+            exit 0
+          fi
+          if [ "$TIER" = "greptile" ]; then
+            ensure_greptile_review
           fi
 
           # 同一 commit 已有更新的 CodeRabbit check run 时，以新的为准，本次事件已过期。
@@ -248,31 +635,32 @@ jobs:
             exit 0
           fi
 
-          # 同一 commit 已在审查或已审完时，不再重复邀请，也不切 PR-Agent。
-          if has_coderabbit_review; then
-            echo "CodeRabbit 已在处理或已审完本 commit，跳过重复邀请与兜底。"
+          if [ "$CR" = "running" ]; then
+            echo "CodeRabbit 已在处理本 commit，跳过重复邀请与降级。"
             exit 0
           fi
 
-          if pr_switched; then
-            fallback_to_pr_agent "本 PR 此前已切换到 PR-Agent"
-          fi
-
-          if printf '%s\n%s\n' "$CHECK_TITLE" "$CHECK_SUMMARY" | grep -qi "rate limited"; then
-            fallback_to_pr_agent "限流" sticky
+          if printf '%s\n%s\n' "$CHECK_TITLE" "$CHECK_SUMMARY" | grep -qi "rate limited" \
+             || coderabbit_rate_limited; then
+            switch_to_greptile "限流" sticky
           fi
 
           if [ "$CHECK_CONCLUSION" != "skipped" ]; then
-            # 失败、取消、超时多为偶发，只对本 commit 兜底，下个 commit 仍先用 CodeRabbit。
-            fallback_to_pr_agent "check run 结论为 ${CHECK_CONCLUSION}"
+            # 失败、取消、超时多为偶发，只对本 commit 降级，下个 commit 仍先用 CodeRabbit。
+            switch_to_greptile "check run 结论为 ${CHECK_CONCLUSION}"
+          fi
+
+          if has_trigger '^@coderabbitai (full )?review$'; then
+            switch_to_greptile "邀请后仍跳过审查" sticky
           fi
 
           # 限流提示是普通评论，可能先于 rate-limited check run 出现。
-          # 邀请前先看评论并短暂等待复查，避免限流时还发一条重复的邀请。
+          # 邀请前先看评论并短暂等待复查，避免限流时仍发出邀请。
           rate_limit_deadline=$(( $(date +%s) + RATE_LIMIT_WAIT_SECONDS ))
           while :; do
+            refresh_comments
             if coderabbit_rate_limited; then
-              fallback_to_pr_agent "限流" sticky
+              switch_to_greptile "限流" sticky
             fi
             if [ "$(latest_coderabbit_run)" -gt "$CHECK_RUN_ID" ]; then
               echo "等待期间 CodeRabbit 已有新的 check run，交给它的结果处理。"
@@ -284,24 +672,25 @@ jobs:
             sleep 5
           done
 
-          if has_trigger '^@coderabbitai (full )?review$'; then
-            fallback_to_pr_agent "邀请后仍跳过审查" sticky
-          fi
-
           echo "CodeRabbit 跳过了自动审查，先邀请 CodeRabbit。"
           post_as_pat "@coderabbitai review"
-          set_gate pending "已邀请 CodeRabbit 审查，等待结果..."
+          set_gate_pending "已邀请 CodeRabbit 审查，等待结果..."
 
           # CodeRabbit 接受邀请（含随后限流）都会创建新的 check run，完成时由新事件继续路由。
           deadline=$(( $(date +%s) + INVITE_WAIT_SECONDS ))
           while [ "$(date +%s)" -lt "$deadline" ]; do
             sleep 15
             if [ "$(latest_coderabbit_run)" -gt "$CHECK_RUN_ID" ]; then
-              echo "CodeRabbit 已开始处理，后续由它的 check run 结果决定是否兜底。"
+              echo "CodeRabbit 已开始处理，后续由它的 check run 结果决定是否降级。"
               exit 0
             fi
+            # 限流时 CodeRabbit 常先回一条评论，带结论的 check run 会晚一些。
+            refresh_comments
+            if coderabbit_rate_limited; then
+              switch_to_greptile "限流" sticky
+            fi
           done
-          fallback_to_pr_agent "邀请后 ${INVITE_WAIT_SECONDS} 秒内无响应" sticky
+          switch_to_greptile "邀请后 ${INVITE_WAIT_SECONDS} 秒内无响应" sticky
 
   # 4. 核心审查 Job：评论区 /review 等指令（含 job 3 代发的 /review）
   pr_agent_review:
@@ -452,7 +841,7 @@ jobs:
                 github-actions*|pr-agent*|qodo*)
                   if [ "$created_epoch" -ge "$START_EPOCH" ]; then
                     # 排除本 workflow 自身发出的提示评论与失败错误消息，避免假阳性
-                    if echo "$body" | grep -qiE "检测到 CodeRabbit|coderabbit-skip-invite|Failed to review PR"; then
+                    if echo "$body" | grep -qiE "检测到 CodeRabbit|检测到 Greptile|ai-review-tier:|coderabbit-skip-invite|Failed to review PR"; then
                       continue
                     fi
                     if echo "$body" | grep -qiE "PR Reviewer Guide|PR Code Suggestions|<!-- pr-agent:|Persistent review" \
@@ -474,7 +863,7 @@ jobs:
                 case "$author" in
                   github-actions*|pr-agent*|qodo*)
                     if [ "$created_epoch" -ge "$START_EPOCH" ]; then
-                      if echo "$body" | grep -qiE "检测到 CodeRabbit|coderabbit-skip-invite|Failed to review PR"; then
+                      if echo "$body" | grep -qiE "检测到 CodeRabbit|检测到 Greptile|ai-review-tier:|coderabbit-skip-invite|Failed to review PR"; then
                         continue
                       fi
                       if echo "$body" | grep -qiE "PR Reviewer Guide|PR Code Suggestions|<!-- pr-agent:|Persistent review" \

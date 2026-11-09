@@ -53,6 +53,8 @@ jobs:
               - 'monitoring/**'
             ci:
               - '.github/workflows/**'
+              - '.coderabbit.yaml'
+              - '.greptile/**'
 
   workflow:
     name: Validate workflow
@@ -74,6 +76,17 @@ jobs:
             -w /repo \
             rhysd/actionlint:1.7.7 \
             -color "${workflow_files[@]}"
+
+      - name: Validate review bot config
+        run: |
+          # Greptile 配置是 JSON，解析失败会导致它静默回落到控制台默认值。
+          python3 -m json.tool .greptile/config.json > /dev/null
+          # CodeRabbit 配置是 YAML；runner 未预装 PyYAML 时跳过解析而不是误报失败。
+          if python3 -c "import yaml" 2>/dev/null; then
+            python3 -c "import yaml; yaml.safe_load(open('.coderabbit.yaml'))"
+          else
+            echo "::warning::PyYAML 不可用，跳过 .coderabbit.yaml 解析"
+          fi
 
   frontend:
     name: Test frontend

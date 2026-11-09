@@ -1,0 +1,21 @@
+{
+  "strictness": 2,
+  "commentTypes": ["logic", "syntax"],
+  "effort": "base",
+  "autoReview": [],
+  "statusCheck": true,
+  "ignorePatterns": "**/package-lock.json\n**/*.lock\n**/dist/**\n**/target/**\nmidscene_run/**",
+  "instructions": "本项目是 Kotlin/Ktor + Vue 3 的 LLM 网关，请用简体中文输出全部审查内容、摘要与建议。重点关注安全（凭据泄漏、越权、SSRF）、边界条件、并发与取消语义、事务一致性以及测试覆盖；不要评论纯格式问题。",
+  "rules": [
+    {
+      "id": "no-credential-leak",
+      "rule": "任何日志、审计、异常信息或 API 响应都不得包含明文密钥、OAuth token 或密码。",
+      "severity": "high"
+    },
+    {
+      "id": "tests-for-behavior-change",
+      "rule": "改变对外行为（协议、路由、计费、管理面接口）时应有对应测试。",
+      "severity": "medium"
+    }
+  ]
+}

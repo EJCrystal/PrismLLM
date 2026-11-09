@@ -96,6 +96,7 @@ java -jar target/prism-llm-0.1.0-SNAPSHOT.jar
 - 💵 **[计费与用量核算](docs/billing.md)**：费用计算公式、双层单价继承模型与多维度用量报表。
 - 🔌 **[渠道额度插件指南](docs/plugins/channel-quota-provider.md)**：Sub2API 与 New API 额度查询插件安装与自定义开发。
 - 📈 **[监控与告警配置](monitoring/README.md)**：Prometheus 采集规则、告警模板与 Grafana 接入。
+- 🤖 **[AI 代码审查门禁](docs/ai-code-review.md)**：CodeRabbit → Greptile → PR-Agent 三级降级规则与所需配置。
 
 ---
 
