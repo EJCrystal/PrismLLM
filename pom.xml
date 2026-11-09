@@ -25,6 +25,7 @@
         <module>prism-channel</module>
         <module>prism-routing</module>
         <module>prism-resilience</module>
+        <module>prism-subscription-oauth</module>
         <module>prism-app</module>
     </modules>
 
@@ -84,6 +85,11 @@
             <dependency>
                 <groupId>dev.soven</groupId>
                 <artifactId>prism-resilience</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.soven</groupId>
+                <artifactId>prism-subscription-oauth</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

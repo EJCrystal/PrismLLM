@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.oauth
 
-import dev.soven.llmgateway.domain.OAuthWindowSnapshot
+import dev.soven.llmgateway.oauth.domain.OAuthWindowSnapshot
 import dev.soven.llmgateway.repo.OAuthWindowStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job

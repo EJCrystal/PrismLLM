@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.config
 
-import dev.soven.llmgateway.domain.OAuthRoutingStrategy
+import dev.soven.llmgateway.oauth.domain.OAuthRoutingStrategy
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith

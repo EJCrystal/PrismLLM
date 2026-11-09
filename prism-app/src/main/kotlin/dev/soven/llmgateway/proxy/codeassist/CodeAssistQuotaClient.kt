@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.proxy.codeassist
 
-import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
-import dev.soven.llmgateway.domain.OAuthQuotaWindow
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaSnapshot
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaWindow
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.post

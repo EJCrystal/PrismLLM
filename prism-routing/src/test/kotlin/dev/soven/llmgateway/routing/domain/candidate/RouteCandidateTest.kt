@@ -2,7 +2,7 @@ package dev.soven.llmgateway.routing.domain.candidate
 
 import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.channel.domain.ChannelRecord
-import dev.soven.llmgateway.channel.domain.UpstreamCredential
+import dev.soven.llmgateway.shared.domain.UpstreamCredential
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import kotlin.test.Test
 import kotlin.test.assertEquals

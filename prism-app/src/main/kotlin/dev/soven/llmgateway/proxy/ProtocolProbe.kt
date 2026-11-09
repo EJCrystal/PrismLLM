@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.proxy
 
 import dev.soven.llmgateway.channel.domain.ChannelRecord
-import dev.soven.llmgateway.channel.domain.UpstreamCredential
+import dev.soven.llmgateway.shared.domain.UpstreamCredential
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.channel.domain.authTypeFor
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides

@@ -1,10 +1,10 @@
 package dev.soven.llmgateway.oauth
 
 import dev.soven.llmgateway.config.OAuthConfig
-import dev.soven.llmgateway.domain.OAuthAccountRecord
+import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.shared.domain.OAuthProvider
-import dev.soven.llmgateway.domain.OAuthQuotaSnapshot
-import dev.soven.llmgateway.domain.OAuthQuotaWindow
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaSnapshot
+import dev.soven.llmgateway.oauth.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.shared.domain.saturatedAdd
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistProjectResolver

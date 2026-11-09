@@ -2,6 +2,7 @@ package dev.soven.llmgateway.channel.domain
 
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
+import dev.soven.llmgateway.shared.domain.UpstreamCredential
 import kotlin.test.Test
 import kotlin.test.assertEquals
 

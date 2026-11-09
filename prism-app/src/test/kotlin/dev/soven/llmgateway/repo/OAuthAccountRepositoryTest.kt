@@ -3,7 +3,7 @@ package dev.soven.llmgateway.repo
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.db.OAuthAccounts
-import dev.soven.llmgateway.domain.OAuthAccountRecord
+import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import kotlinx.coroutines.runBlocking

@@ -3,7 +3,7 @@ package dev.soven.llmgateway.integration
 import dev.soven.llmgateway.config.OAuthConfig
 import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.OAuthAccountPolicy
+import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.oauth.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.OAuthAccountDenyReason
