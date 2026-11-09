@@ -16,16 +16,18 @@
   用 PAT 发 `@coderabbitai review` 邀请；邀请后 5 分钟内没有新的 check run 就降级。
 - PR 事件本身也会等 60 秒：CodeRabbit 连 check run 都没创建，就直接转 Greptile。如果 CodeRabbit 的
   check run 已经结束且不是成功结论（skipped / 失败），同样在本 job 内直接降级，不会干等后续事件。
+  OSS 仓库的跳过 check run 常常晚于这 60 秒才出现，因此「观察窗口内完全没有 check run」也按服务级
+  不可用处理，记 PR 级标记。
 - 降级到 Greptile 时发 `@greptileai review`；6 分钟内没有 check run，或 check run 持续运行超过 15 分钟，
   继续降级到 PR-Agent。等待在发起邀请的那个 job 内完成，不依赖后续事件。
 - 降级到 PR-Agent 时发 `/review`，由 `pr_agent_review` job 执行并把审查结论写回门禁。
 
 ## 降级范围
 
-- **PR 级**（限流、OSS 跳过、CodeRabbit check run 已结束且未审查、Greptile 邀请后始终没有 check run）：
-  在该 PR 的评论里写隐藏标记
+- **PR 级**（限流、OSS 跳过、CodeRabbit 在观察窗口内完全没有创建 check run、CodeRabbit check run
+  已结束且未审查、Greptile 邀请后始终没有 check run）：在该 PR 的评论里写隐藏标记
   `<!-- ai-review-tier:greptile|pr-agent scope=pr -->`，后续 commit 直接沿用更低档位，不再反复邀请失效的服务。
-- **commit 级**（单次 check run 失败、Greptile 接了单但运行超时、CodeRabbit 在本 commit 上完全没出现）：
+- **commit 级**（单次 check run 失败、Greptile 接了单但运行超时）：
   在该 commit 上写
   `<!-- ai-review-tier:pr-agent scope=commit sha=<sha> -->`，只影响当前 commit，下一个 commit 仍从 CodeRabbit 开始。
 - 标记只认 `github-actions[bot]` 发的评论，人工或第三方伪造的同名标记会被忽略。
@@ -45,6 +47,10 @@
 Greptile 通过 GitHub App `greptile-apps` 接入，需要在该仓库安装并启用；仓库级配置在
 `.greptile/config.json`（严格度、忽略路径、中文输出与审查规则）。Greptile 的自动审查已关闭
 （`autoReview: []`），只响应 workflow 发出的 `@greptileai review`，避免与 CodeRabbit 抢跑和浪费额度。
+
+配置字段按 Greptile 官方定义（<https://www.greptile.com/docs/code-review/greptile-config-reference>）：
+`ignorePatterns` 是**用 `\n` 分隔的单个字符串**，不是数组；`autoReview` 才是数组。不要为了消除
+「应为数组」的误报把它改成数组——Greptile 会把整个字符串当成一个匹配模式。
 
 ## 手动重跑
 

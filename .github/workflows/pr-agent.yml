@@ -642,6 +642,9 @@ jobs:
 
           # ---- 第二级 Greptile 的 check run 结果 ----
           if [ "$CHECK_APP" = "greptile-apps" ]; then
+            # TIER 在脚本开头求值；并发的 PR 事件可能随后才写入 Greptile 标记，
+            # 这里重新确认一次，避免把刚生效的 Greptile 成功结论当成「档位不符」忽略。
+            TIER=$(current_tier)
             if [ "$TIER" != "greptile" ]; then
               echo "当前档位为 ${TIER}，Greptile 结果不参与本 commit 的门禁判定。"
               exit 0
@@ -664,6 +667,8 @@ jobs:
           # 被人工补邀请的），仍按最高优先级放行。已整体切到 PR-Agent 的 PR 例外，
           # 避免迟到的 CodeRabbit 成功把 PR-Agent 判出的 failure 改写成 success。
           CR=$(cr_state)
+          # 与 Greptile 分支同理：处理事件前重新确认档位，避免并发写入的降级标记被漏读。
+          TIER=$(current_tier)
           if [ "$CR" = "reviewed" ] && [ "$TIER" != "pr-agent" ]; then
             set_gate success "CodeRabbit 审查通过"
             exit 0
