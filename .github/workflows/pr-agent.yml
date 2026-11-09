@@ -357,9 +357,10 @@ jobs:
 
           # 邀请之后 CodeRabbit 是否又给出了 skipped 结论（说明邀请没有生效）。
           # $1 = 邀请时间（ISO8601），无新 check run 时返回非零。
+          # jq -e 的退出码才反映布尔结果：-e 在输出为 false/null 时返回 1。
           coderabbit_skipped_after() {
             gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100" --paginate \
-              | jq -sr --arg ts "$1" '
+              | jq -ser --arg ts "$1" '
                   any(.[].check_runs[];
                       .app.slug == "coderabbitai"
                       and .status == "completed"
@@ -444,7 +445,14 @@ jobs:
               echo "CodeRabbit 跳过了自动审查，先邀请 CodeRabbit。"
               post_as_pat "@coderabbitai review"
               set_gate_pending "已邀请 CodeRabbit 审查，等待结果..."
-              invite_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+              # 用 GitHub 记录的 created_at 而不是本机时钟：Runner 时钟落后会让
+              # 邀请前的 skipped run 被 coderabbit_skipped_after 误判成「邀请后仍跳过」。
+              # post_as_pat 发完已 refresh_comments，这条邀请评论必然在文件里。
+              invite_at=$(latest_cr_invite_at)
+              if [ -z "$invite_at" ]; then
+                # 兜底：API 刷新拿不到时，多留 5 秒余量避免时钟偏差误判。
+                invite_at=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%SZ)
+              fi
             else
               echo "本 commit 已邀请过 CodeRabbit（${invite_at}），继续等待它接单。"
             fi
