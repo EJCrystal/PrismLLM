@@ -9,7 +9,7 @@ import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.channel.persistence.ChannelKeyUpdate
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
-import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyRateLimitDecision
 import io.ktor.client.request.header
 import io.ktor.client.request.delete
 import io.ktor.client.request.get

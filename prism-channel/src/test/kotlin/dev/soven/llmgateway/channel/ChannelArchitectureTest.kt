@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertTrue
 
 /**
- * 渠道模块的依赖边界：只允许共享内核、持久化与序列化库，禁止反向引用应用层。
+ * 渠道模块的依赖边界：只允许共享内核、持久化、序列化与协程原语，禁止反向引用应用层。
  *
  * 渠道被路由、代理与管理面依赖，一旦它反过来引用 proxy/api 就会重新把模块拆成环。
  *
@@ -25,6 +25,7 @@ class ChannelArchitectureTest {
         "java..",
         "kotlin..",
         "kotlinx.serialization..",
+        "kotlinx.coroutines..",
         "org.jetbrains.annotations..",
         "org.jetbrains.exposed..",
         "com.google.re2j..",
@@ -37,6 +38,10 @@ class ChannelArchitectureTest {
         assertTrue(
             classes.any { it.name == "dev.soven.llmgateway.channel.domain.ChannelRecord" },
             "ArchUnit 未导入渠道模块类，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.channel.domain.key.ChannelKeyRateLimiter" },
+            "ArchUnit 未导入密钥限流器，规则会空跑",
         )
     }
 

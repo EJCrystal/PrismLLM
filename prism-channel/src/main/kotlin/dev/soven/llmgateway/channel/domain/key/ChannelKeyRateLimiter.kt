@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.quota
+package dev.soven.llmgateway.channel.domain.key
 
 import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
 import dev.soven.llmgateway.channel.domain.ChannelKeyRateLimitPolicy

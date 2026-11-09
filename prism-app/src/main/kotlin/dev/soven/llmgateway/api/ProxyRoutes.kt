@@ -37,9 +37,6 @@ import java.net.ProxySelector
 import dev.soven.llmgateway.proxy.UpstreamRequestPolicy
 import dev.soven.llmgateway.proxy.upstreamRequestUrl
 import dev.soven.llmgateway.requestlog.domain.BillingCalculator
-import dev.soven.llmgateway.quota.ChannelKeyRateLimitDecision
-import dev.soven.llmgateway.quota.ChannelKeyRateLimitLease
-import dev.soven.llmgateway.quota.ChannelKeyRateLimitReason
 import dev.soven.llmgateway.quota.RequestLimitLease
 import dev.soven.llmgateway.quota.domain.quotaTokensFromUsage
 import dev.soven.llmgateway.proxy.ReasoningEffort
@@ -65,6 +62,9 @@ import dev.soven.llmgateway.proxy.search.webSearchAllowedDomains
 import dev.soven.llmgateway.repo.KeyAutoDisableRepository
 import dev.soven.llmgateway.repo.KeyAutoDisablePendingException
 import dev.soven.llmgateway.resilience.CandidateCooldown
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyRateLimitDecision
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyRateLimitLease
+import dev.soven.llmgateway.channel.domain.key.ChannelKeyRateLimitReason
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.resilience.CooldownPermit
 import dev.soven.llmgateway.resilience.FailureKind
