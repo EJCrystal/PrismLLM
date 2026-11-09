@@ -6,7 +6,7 @@ import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
 import dev.soven.llmgateway.channel.domain.ChannelQuotaCredentialSource
 
 import dev.soven.llmgateway.domain.AdminAuditRecord
-import dev.soven.llmgateway.domain.ClientKeyRecord
+import dev.soven.llmgateway.quota.domain.ClientKeyRecord
 import dev.soven.llmgateway.channel.domain.ChannelKeyRateLimitPolicy
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.pricing.domain.ModelPriceRecord

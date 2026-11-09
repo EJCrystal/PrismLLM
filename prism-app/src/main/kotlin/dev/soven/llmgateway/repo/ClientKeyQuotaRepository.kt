@@ -1,6 +1,7 @@
 package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.db.ClientKeyQuotaUsage as ClientKeyQuotaUsageTable
+import dev.soven.llmgateway.quota.domain.ClientKeyQuotaUsage
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
@@ -15,13 +16,13 @@ import java.math.BigDecimal
  * 调用方密钥按自然日累计的 token 与费用账本。
  */
 class ClientKeyQuotaRepository(private val database: Database) {
-    suspend fun usage(clientKeyId: String, period: Long): StoredQuotaUsage = suspendTransaction(database) {
+    suspend fun usage(clientKeyId: String, period: Long): ClientKeyQuotaUsage = suspendTransaction(database) {
         ClientKeyQuotaUsageTable
             .selectAll()
             .where { (ClientKeyQuotaUsageTable.clientKeyId eq clientKeyId) and (ClientKeyQuotaUsageTable.period eq period) }
             .singleOrNull()
-            ?.let(::toStored)
-            ?: StoredQuotaUsage()
+            ?.let(::toUsage)
+            ?: ClientKeyQuotaUsage()
     }
 
     suspend fun addUsage(
@@ -55,21 +56,12 @@ class ClientKeyQuotaRepository(private val database: Database) {
         }
     }
 
-    private fun toStored(row: ResultRow) = StoredQuotaUsage(
-        tokens = row[ClientKeyQuotaUsageTable.tokens],
-        costs = mapOf(
+    private fun toUsage(row: ResultRow) = ClientKeyQuotaUsage(
+        dailyTokens = row[ClientKeyQuotaUsageTable.tokens],
+        dailyCosts = mapOf(
             "USD" to row[ClientKeyQuotaUsageTable.usdCost],
             "CNY" to row[ClientKeyQuotaUsageTable.cnyCost],
             "EUR" to row[ClientKeyQuotaUsageTable.eurCost],
         ),
     )
 }
-
-data class StoredQuotaUsage(
-    val tokens: Long = 0,
-    val costs: Map<String, BigDecimal> = mapOf(
-        "USD" to BigDecimal.ZERO,
-        "CNY" to BigDecimal.ZERO,
-        "EUR" to BigDecimal.ZERO,
-    ),
-)

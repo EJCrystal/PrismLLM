@@ -1,9 +1,9 @@
-package dev.soven.llmgateway.quota
+package dev.soven.llmgateway.quota.infra
 
-import dev.soven.llmgateway.shared.error.GatewayError
-import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
-import dev.soven.llmgateway.repo.StoredQuotaUsage
+import dev.soven.llmgateway.quota.domain.ClientKeyQuotaUsage
+import dev.soven.llmgateway.quota.domain.ClientKeyRecord
+import dev.soven.llmgateway.shared.error.GatewayError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -79,14 +79,14 @@ class ClientKeyQuotaServiceTest {
 
         val error = assertFailsWith<GatewayError> { service.acquire(key) }
         assertEquals("daily_token_quota_exceeded", error.code)
-        assertTrue(storage.usage[key.id]!!.tokens == 5L)
+        assertTrue(storage.usage[key.id]!!.dailyTokens == 5L)
     }
 
     @Test
     fun `releases concurrency when usage write fails`() = runBlocking {
         var shouldFail = true
         val service = ClientKeyQuotaService(
-            usageReader = { _, _ -> StoredQuotaUsage() },
+            usageReader = { _, _ -> ClientKeyQuotaUsage() },
             usageWriter = { _, _, _, _ ->
                 if (shouldFail) throw IllegalStateException("database unavailable")
             },
@@ -119,15 +119,15 @@ class ClientKeyQuotaServiceTest {
     private class InMemoryUsageRepository : InMemoryQuotaStore()
 
     private open class InMemoryQuotaStore {
-        val usage = mutableMapOf<String, StoredQuotaUsage>()
+        val usage = mutableMapOf<String, ClientKeyQuotaUsage>()
 
         fun service(now: () -> Long = { 1L }) = ClientKeyQuotaService(
-            usageReader = { id, _ -> usage[id] ?: StoredQuotaUsage() },
+            usageReader = { id, _ -> usage[id] ?: ClientKeyQuotaUsage() },
             usageWriter = { id, _, tokens, costs ->
-                val previous = usage[id] ?: StoredQuotaUsage()
-                usage[id] = StoredQuotaUsage(
-                    tokens = previous.tokens + tokens,
-                    costs = previous.costs.mapValues { (currency, amount) ->
+                val previous = usage[id] ?: ClientKeyQuotaUsage()
+                usage[id] = ClientKeyQuotaUsage(
+                    dailyTokens = previous.dailyTokens + tokens,
+                    dailyCosts = previous.dailyCosts.mapValues { (currency, amount) ->
                         amount + (costs[currency] ?: BigDecimal.ZERO)
                     },
                 )
