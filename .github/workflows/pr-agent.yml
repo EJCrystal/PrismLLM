@@ -633,7 +633,9 @@ jobs:
                 ;;
               *)
                 echo "CodeRabbit 在 ${CR_ABSENT_GRACE_SECONDS} 秒内未创建 check run，本 commit 改由 Greptile 审查。"
-                switch_to_greptile "本 commit 上 CodeRabbit 未创建任何 check run"
+                # OSS 仓库（star < 10）不会自动审查，而它的跳过 check run 往往要到观察窗口之后才出现；
+                # 这里按服务级不可用处理，后续 commit 直接沿用 Greptile，避免每次推送都空等一轮。
+                switch_to_greptile "本 commit 上 CodeRabbit 未创建任何 check run" sticky
                 ;;
             esac
           fi
