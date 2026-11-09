@@ -1,5 +1,6 @@
 package dev.soven.llmgateway.integration
 
+import dev.soven.llmgateway.db.DatabaseFactory
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.domain.UpstreamRequestOverrides
@@ -530,26 +531,36 @@ class UpstreamOverridesIntegrationTest : GatewayIntegrationTestBase() {
         val repository = UpstreamHeaderCatalogRepository(app.databaseFactory.database)
         repository.saveRefresh(UpstreamHeaderProfiles.defaults, 1_000, 1_000, null)
         DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
-            connection.createStatement().use { statement ->
-                statement.executeUpdate(
-                    """insert into upstream_header_profile_versions
-                       (profile_id, version, name, headers, source, fetched_at)
-                       values ('claude', '9.9.9', 'Poisoned', '{"Authorization":"secret"}', 'test', 9999)""",
-                )
-                statement.executeUpdate(
-                    """insert into upstream_header_profile_versions
-                       (profile_id, version, name, headers, source, fetched_at)
-                       values ('claude', '9.9.8', 'MalformedJson', '{invalid json}', 'test', 9998)""",
-                )
-                statement.executeUpdate(
-                    """insert into upstream_header_profile_versions
-                       (profile_id, version, name, headers, source, fetched_at)
-                       values ('codex', 'invalid version!', 'BadVersion', '{}', 'test', 9997)""",
-                )
-                statement.executeUpdate(
-                    """update upstream_header_catalog_state
-                       set last_error = 'https://user:secret@internal.example/path?token=secret' where id = 1""",
-                )
+            // 多条写入放在同一事务里，避免中途失败时留下半套脏数据影响后续断言。
+            connection.autoCommit = false
+            try {
+                connection.createStatement().use { statement ->
+                    statement.executeUpdate(
+                        """insert into upstream_header_profile_versions
+                           (profile_id, version, name, headers, source, fetched_at)
+                           values ('claude', '9.9.9', 'Poisoned', '{"Authorization":"secret"}', 'test', 9999)""",
+                    )
+                    statement.executeUpdate(
+                        """insert into upstream_header_profile_versions
+                           (profile_id, version, name, headers, source, fetched_at)
+                           values ('claude', '9.9.8', 'MalformedJson', '{invalid json}', 'test', 9998)""",
+                    )
+                    statement.executeUpdate(
+                        """insert into upstream_header_profile_versions
+                           (profile_id, version, name, headers, source, fetched_at)
+                           values ('codex', 'invalid version!', 'BadVersion', '{}', 'test', 9997)""",
+                    )
+                    statement.executeUpdate(
+                        """update upstream_header_catalog_state
+                           set last_error = 'https://user:secret@internal.example/path?token=secret' where id = 1""",
+                    )
+                }
+                connection.commit()
+            } catch (cause: Throwable) {
+                connection.rollback()
+                throw cause
+            } finally {
+                connection.autoCommit = true
             }
         }
         val service = UpstreamHeaderCatalogService(
@@ -783,12 +794,18 @@ class UpstreamOverridesIntegrationTest : GatewayIntegrationTestBase() {
     @Test
     @Tag("upstream-request-overrides")
     fun failedGlobalSettingsSavePreservesTheCachedSnapshot() = runBlocking {
-        val repository = app.upstreamRequestSettingsRepository
-        val saved = repository.save(UpstreamRequestOverrides(userAgent = "working-UA"))
-        app.databaseFactory.close()
-        assertSame(saved, repository.load(), "缓存命中不应访问数据库")
-        assertFailsWith<java.sql.SQLException> { repository.save(UpstreamRequestOverrides(userAgent = "failed-UA")) }
-        assertSame(saved, repository.load(), "失败的写入不应替换快照")
+        // 用独立连接池模拟数据库故障，避免关闭基类共享的 app.databaseFactory。
+        val failingFactory = DatabaseFactory(config())
+        try {
+            val repository = UpstreamRequestSettingsRepository(failingFactory.database)
+            val saved = repository.save(UpstreamRequestOverrides(userAgent = "working-UA"))
+            failingFactory.close()
+            assertSame(saved, repository.load(), "缓存命中不应访问数据库")
+            assertFailsWith<java.sql.SQLException> { repository.save(UpstreamRequestOverrides(userAgent = "failed-UA")) }
+            assertSame(saved, repository.load(), "失败的写入不应替换快照")
+        } finally {
+            failingFactory.close()
+        }
     }
 
     @Test

@@ -829,7 +829,11 @@ class RateLimitIntegrationTest : GatewayIntegrationTestBase() {
             while (app.clientKeyQuotaService.currentUsage(clientKeyId).concurrentRequests == 0 && System.currentTimeMillis() < heldDeadline) {
                 delay(5)
             }
-            assertEquals(1, app.clientKeyQuotaService.currentUsage(clientKeyId).concurrentRequests)
+            assertEquals(
+                1,
+                app.clientKeyQuotaService.currentUsage(clientKeyId).concurrentRequests,
+                "并发请求在 2000ms 内未占用配额槽位，无法验证超限拒绝",
+            )
 
             val rejected = send()
             assertEquals(HttpStatusCode.TooManyRequests, rejected.status)

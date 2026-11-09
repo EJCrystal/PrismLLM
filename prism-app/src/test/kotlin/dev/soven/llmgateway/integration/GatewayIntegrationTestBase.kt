@@ -86,6 +86,12 @@ abstract class GatewayIntegrationTestBase {
     /** 每个测试类一份随机主密钥；类内多次创建应用时仍需使用同一把密钥解密凭据。 */
     private val masterKey: ByteArray = java.security.SecureRandom().generateSeed(32)
 
+    /** 集成测试统一的管理员初始密码；修改密码的用例从这里取旧密码，避免多处硬编码漂移。 */
+    protected val initialAdminPassword: String = "test-password"
+
+    /** awaitRequestLog 已取走的日志；同一用例连续请求时，避免把上一条日志当成本次结果。 */
+    private val consumedRequestIds = mutableSetOf<String>()
+
     @BeforeAll
     fun startInfrastructure() {
         postgres = IntegrationPostgres.container
@@ -110,6 +116,7 @@ abstract class GatewayIntegrationTestBase {
         fake.resetQuotaUsage()
         fake.resetOAuthToken()
         fake.clearChatHold()
+        consumedRequestIds.clear()
         app = GatewayApplication(config(), visionRendererOverride = TestVisionRenderer())
         app.databaseFactory.migrate()
         truncateAll()
@@ -117,6 +124,7 @@ abstract class GatewayIntegrationTestBase {
 
     @AfterEach
     fun tearDown() {
+        // close() 幂等：测试内重建应用时已经关闭过的实例再次关闭不会产生副作用。
         if (::app.isInitialized) app.close()
     }
 
@@ -248,7 +256,7 @@ abstract class GatewayIntegrationTestBase {
 
     protected suspend fun HttpClient.loginAdmin(
         username: String = "admin",
-        password: String = "test-password",
+        password: String = initialAdminPassword,
     ): Pair<String, String> {
         val login = post("/admin/api/login") {
             contentType(ContentType.Application.Json)
@@ -296,7 +304,7 @@ abstract class GatewayIntegrationTestBase {
         databasePassword = postgres.password,
         masterKey = masterKey,
         adminUsername = "admin",
-        adminPassword = "test-password",
+        adminPassword = initialAdminPassword,
         corsOrigins = corsOrigins,
         requestBodyLimitBytes = 1024 * 1024,
         connectTimeoutMs = 1_000,
@@ -543,12 +551,20 @@ abstract class GatewayIntegrationTestBase {
         cachedInputPricePerMillion = cached?.let(::BigDecimal),
     )
 
+    /**
+     * 等待一条尚未被取走的请求日志。基类在每个测试前清空 request_logs，单请求用例
+     * 直接拿到本次记录；同一用例连续发请求时，已取走的 requestId 会被跳过，不会把
+     * 上一条日志误当成本次结果。需要按字段筛选时用 [awaitLogWithEffort]。
+     */
     protected suspend fun awaitRequestLog(timeoutMs: Long = 3_000): RequestLogRecord {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
-            val logs = app.requestLogRepository.list(10)
-            // RequestLogRepository.list() 按自增 id 倒序返回，first() 即最新一条。
-            if (logs.isNotEmpty()) return logs.first()
+            // RequestLogRepository.list() 按自增 id 倒序返回，firstOrNull 即最新一条未读记录。
+            val log = app.requestLogRepository.list(10).firstOrNull { it.requestId !in consumedRequestIds }
+            if (log != null) {
+                consumedRequestIds += log.requestId
+                return log
+            }
             delay(50)
         }
         error("request log not written within ${timeoutMs}ms")
@@ -586,12 +602,25 @@ abstract class GatewayIntegrationTestBase {
         error("upstream request was not cancelled within ${timeoutMs}ms")
     }
 
+    /**
+     * 清空当前测试库的业务表。表名从 `pg_tables` 动态读取，避免新增迁移后忘记同步
+     * 硬编码列表而留下跨用例数据；`flyway_schema_history` 必须保留，否则迁移状态会丢失。
+     */
     protected fun truncateAll() {
         DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
+            val tables = mutableListOf<String>()
+            connection.prepareStatement(
+                "select tablename from pg_tables where schemaname = current_schema() and tablename <> 'flyway_schema_history'",
+            ).use { statement ->
+                statement.executeQuery().use { result ->
+                    while (result.next()) tables += result.getString(1)
+                }
+            }
+            if (tables.isEmpty()) return@use
+            // 表名来自系统目录且已按标识符转义，不接受外部输入；DDL 无法使用绑定参数。
+            val quoted = tables.joinToString(", ") { "\"" + it.replace("\"", "\"\"") + "\"" }
             connection.createStatement().use {
-                it.execute(
-                    "truncate table cooldown_state, admin_audit_logs, retention_settings, model_test_settings, upstream_request_settings, upstream_header_catalog_state, upstream_header_profile_versions, upstream_header_profile_pins, key_auto_disable_settings, request_logs, model_default_prices, model_prices, client_key_quota_usage, client_keys, channels, admin_users, web_search_settings, iq_vision_settings, iq_test_runs restart identity cascade",
-                )
+                it.execute("truncate table $quoted restart identity cascade")
             }
         }
     }

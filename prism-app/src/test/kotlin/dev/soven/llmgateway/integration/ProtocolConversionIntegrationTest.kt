@@ -155,12 +155,12 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
             exchange.sendResponseHeaders(200, bytes.size.toLong())
             exchange.responseBody.use { it.write(bytes) }
         }
-        searchServer.start()
         // 测试宿主会缓冲整个响应体，无法观察增量到达；这里用真实 Netty 宿主和流式客户端验证首事件时间。
         val server = embeddedServer(Netty, port = 0, host = "127.0.0.1") { app.install(this) }
-        server.start(wait = false)
         val http = HttpClient(CIO)
         try {
+            searchServer.start()
+            server.start(wait = false)
             val channel = createChannel("web-search", "web-search")
             exposeAsModel("fast-chat", channel to "gpt-4o-mini")
             val key = createClientKey()
@@ -215,8 +215,9 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
             }
         } finally {
             http.close()
-            server.stop(0, 1_000)
-            searchServer.stop(0)
+            // 启动阶段失败时 stop 可能抛出未启动异常，清理阶段忽略即可。
+            runCatching { server.stop(0, 1_000) }
+            runCatching { searchServer.stop(0) }
         }
     }
 

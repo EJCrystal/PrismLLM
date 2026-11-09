@@ -169,66 +169,68 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
 
             val (sessionCookie, csrf) = client.loginAdmin()
-            val initial = client.get("/admin/api/web-search-settings") {
-                header(HttpHeaders.Cookie, sessionCookie)
-            }
-            assertEquals(HttpStatusCode.OK, initial.status)
-            assertEquals(
-                "environment",
-                Json.parseToJsonElement(initial.bodyAsText()).jsonObject["source"]?.jsonPrimitive?.content,
-            )
-
-            val updated = client.put("/admin/api/web-search-settings") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody(
-                    """{"enabled":true,"provider":"tavily","apiKey":"tvly-secret","baseUrl":null,"maxResults":8,"timeoutMs":10000,"maxRounds":4,"maxPageChars":1200}""",
+            try {
+                val initial = client.get("/admin/api/web-search-settings") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                }
+                assertEquals(HttpStatusCode.OK, initial.status)
+                assertEquals(
+                    "environment",
+                    Json.parseToJsonElement(initial.bodyAsText()).jsonObject["source"]?.jsonPrimitive?.content,
                 )
-            }
-            assertEquals(HttpStatusCode.OK, updated.status)
-            val body = updated.bodyAsText()
-            val json = Json.parseToJsonElement(body).jsonObject
-            assertEquals(true, json["enabled"]?.jsonPrimitive?.boolean)
-            assertEquals("settings", json["source"]?.jsonPrimitive?.content)
-            assertEquals("settings", json["apiKeySource"]?.jsonPrimitive?.content)
-            assertEquals(true, json["apiKeySet"]?.jsonPrimitive?.boolean)
-            assertEquals(8, json["maxResults"]?.jsonPrimitive?.int)
-            assertEquals(1200, json["maxPageChars"]?.jsonPrimitive?.int)
-            assertFalse(body.contains("tvly-secret"), "BODY=[$body]")
 
-            // 切换后端时不能沿用旧后端的密钥。
-            val switched = client.put("/admin/api/web-search-settings") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody(
-                    """{"enabled":true,"provider":"brave","baseUrl":null,"maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
-                )
-            }
-            assertEquals(HttpStatusCode.BadRequest, switched.status)
+                val updated = client.put("/admin/api/web-search-settings") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        """{"enabled":true,"provider":"tavily","apiKey":"tvly-secret","baseUrl":null,"maxResults":8,"timeoutMs":10000,"maxRounds":4,"maxPageChars":1200}""",
+                    )
+                }
+                assertEquals(HttpStatusCode.OK, updated.status)
+                val body = updated.bodyAsText()
+                val json = Json.parseToJsonElement(body).jsonObject
+                assertEquals(true, json["enabled"]?.jsonPrimitive?.boolean)
+                assertEquals("settings", json["source"]?.jsonPrimitive?.content)
+                assertEquals("settings", json["apiKeySource"]?.jsonPrimitive?.content)
+                assertEquals(true, json["apiKeySet"]?.jsonPrimitive?.boolean)
+                assertEquals(8, json["maxResults"]?.jsonPrimitive?.int)
+                assertEquals(1200, json["maxPageChars"]?.jsonPrimitive?.int)
+                assertFalse(body.contains("tvly-secret"), "BODY=[$body]")
 
-            // 地址长度在保存前校验，避免数据库列宽错误变成 500。
-            val tooLong = client.put("/admin/api/web-search-settings") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody(
-                    """{"enabled":true,"provider":"tavily","apiKey":"tvly-secret","baseUrl":"https://example.com/${"a".repeat(500)}","maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
-                )
-            }
-            assertEquals(HttpStatusCode.BadRequest, tooLong.status)
+                // 切换后端时不能沿用旧后端的密钥。
+                val switched = client.put("/admin/api/web-search-settings") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        """{"enabled":true,"provider":"brave","baseUrl":null,"maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
+                    )
+                }
+                assertEquals(HttpStatusCode.BadRequest, switched.status)
 
-            // 共享测试数据库：把开关恢复为关闭，避免影响其它用例。
-            val disabled = client.put("/admin/api/web-search-settings") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody(
-                    """{"enabled":false,"provider":"tavily","baseUrl":null,"maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
-                )
+                // 地址长度在保存前校验，避免数据库列宽错误变成 500。
+                val tooLong = client.put("/admin/api/web-search-settings") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        """{"enabled":true,"provider":"tavily","apiKey":"tvly-secret","baseUrl":"https://example.com/${"a".repeat(500)}","maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
+                    )
+                }
+                assertEquals(HttpStatusCode.BadRequest, tooLong.status)
+            } finally {
+                // 共享测试数据库：即使断言失败也把开关恢复为关闭，避免影响其它用例。
+                val disabled = client.put("/admin/api/web-search-settings") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        """{"enabled":false,"provider":"tavily","baseUrl":null,"maxResults":6,"timeoutMs":15000,"maxRounds":6,"maxPageChars":1500}""",
+                    )
+                }
+                assertEquals(HttpStatusCode.OK, disabled.status)
             }
-            assertEquals(HttpStatusCode.OK, disabled.status)
         }
     }
 
@@ -706,54 +708,76 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `admin password change revokes sessions and uses new password`() = runBlocking {
+        val initialPassword = initialAdminPassword
+        val rotatedPassword = "new-password-123"
         testApplication {
             application { app.install(this) }
             val client = jsonClient()
             val (sessionCookie, csrf) = client.loginAdmin()
 
-            val wrongCurrent = client.put("/admin/api/account/password") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"currentPassword":"wrong-password","newPassword":"new-password-123"}""")
+            suspend fun restoreAdminPassword() {
+                // 修改成功后当前会话会被吊销，必须用新密码重新登录再改回初始密码；
+                // 如果修改本身没有生效，则确认初始密码仍然可用即可。
+                val rotatedLogin = client.post("/admin/api/login") {
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"username":"admin","password":"$rotatedPassword"}""")
+                }
+                if (rotatedLogin.status == HttpStatusCode.OK) {
+                    val (newSession, newCsrf) = client.loginAdmin(password = rotatedPassword)
+                    val restored = client.put("/admin/api/account/password") {
+                        header(HttpHeaders.Cookie, newSession)
+                        header("X-CSRF-Token", newCsrf)
+                        contentType(ContentType.Application.Json)
+                        setBody("""{"currentPassword":"$rotatedPassword","newPassword":"$initialPassword"}""")
+                    }
+                    assertEquals(HttpStatusCode.NoContent, restored.status, "还原管理员密码失败")
+                    return
+                }
+                val initialLogin = client.post("/admin/api/login") {
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"username":"admin","password":"$initialPassword"}""")
+                }
+                assertEquals(HttpStatusCode.OK, initialLogin.status, "管理员密码既不是新密码也不是初始密码")
             }
-            assertEquals(HttpStatusCode.BadRequest, wrongCurrent.status)
-            assertTrue(wrongCurrent.bodyAsText().contains("invalid_current_password"))
 
-            val changed = client.put("/admin/api/account/password") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"currentPassword":"test-password","newPassword":"new-password-123"}""")
-            }
-            assertEquals(HttpStatusCode.NoContent, changed.status)
+            try {
+                val wrongCurrent = client.put("/admin/api/account/password") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"currentPassword":"wrong-password","newPassword":"$rotatedPassword"}""")
+                }
+                assertEquals(HttpStatusCode.BadRequest, wrongCurrent.status)
+                assertTrue(wrongCurrent.bodyAsText().contains("invalid_current_password"))
 
-            val oldSession = client.get("/admin/api/me") {
-                header(HttpHeaders.Cookie, sessionCookie)
-            }
-            assertEquals(HttpStatusCode.Unauthorized, oldSession.status)
+                val changed = client.put("/admin/api/account/password") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"currentPassword":"$initialPassword","newPassword":"$rotatedPassword"}""")
+                }
+                assertEquals(HttpStatusCode.NoContent, changed.status)
 
-            val oldPassword = client.post("/admin/api/login") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"username":"admin","password":"test-password"}""")
-            }
-            assertEquals(HttpStatusCode.Unauthorized, oldPassword.status)
+                val oldSession = client.get("/admin/api/me") {
+                    header(HttpHeaders.Cookie, sessionCookie)
+                }
+                assertEquals(HttpStatusCode.Unauthorized, oldSession.status)
 
-            val newPassword = client.post("/admin/api/login") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"username":"admin","password":"new-password-123"}""")
-            }
-            assertEquals(HttpStatusCode.OK, newPassword.status)
+                val oldPassword = client.post("/admin/api/login") {
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"username":"admin","password":"$initialPassword"}""")
+                }
+                assertEquals(HttpStatusCode.Unauthorized, oldPassword.status)
 
-            // 还原密码，避免同类中后续用例仍按初始密码登录而失败。
-            val (newSession, newCsrf) = client.loginAdmin(password = "new-password-123")
-            val restored = client.put("/admin/api/account/password") {
-                header(HttpHeaders.Cookie, newSession)
-                header("X-CSRF-Token", newCsrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"currentPassword":"new-password-123","newPassword":"test-password"}""")
+                val newPassword = client.post("/admin/api/login") {
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"username":"admin","password":"$rotatedPassword"}""")
+                }
+                assertEquals(HttpStatusCode.OK, newPassword.status)
+            } finally {
+                // 共享测试数据库：无论断言是否失败都还原密码，避免影响同类中的后续用例。
+                restoreAdminPassword()
             }
-            assertEquals(HttpStatusCode.NoContent, restored.status)
         }
     }
 }

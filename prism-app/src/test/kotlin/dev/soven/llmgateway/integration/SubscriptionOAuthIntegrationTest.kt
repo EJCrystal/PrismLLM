@@ -316,7 +316,7 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
             assertTrue(missingExpiry.bodyAsText().contains("invalid_oauth_access_token"))
 
             val expiredAccess = import(
-                """{"provider":"chatgpt","refreshToken":"rt","accessToken":"at","accessTokenExpiresAt":${System.currentTimeMillis() - 1}}""",
+                """{"provider":"chatgpt","refreshToken":"rt","accessToken":"at","accessTokenExpiresAt":${System.currentTimeMillis() - 60_000}}""",
             )
             assertEquals(HttpStatusCode.BadRequest, expiredAccess.status)
             assertTrue(expiredAccess.bodyAsText().contains("invalid_oauth_access_token"))
@@ -699,7 +699,11 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
             assertTrue(tokenRequest.body.contains("grant_type=authorization_code"))
             assertTrue(tokenRequest.body.contains("code=google-code"))
             assertTrue(tokenRequest.body.contains("client_id=${OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_ID}"))
-            assertTrue(tokenRequest.body.contains("client_secret=${OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_SECRET}"))
+            // 断言消息不要带上请求体：请求体包含真实的 client_secret。
+            assertTrue(
+                tokenRequest.body.split("&").contains("client_secret=${OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_SECRET}"),
+                "token request 缺少 client_secret",
+            )
             assertNull(tokenRequest.requestHeaders["originator"])
         }
     }

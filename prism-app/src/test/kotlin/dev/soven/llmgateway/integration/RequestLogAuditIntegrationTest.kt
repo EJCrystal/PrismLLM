@@ -269,14 +269,16 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
 
             DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
-                    // 固定 SQL，不拼接任何动态值；仅读取整表用于泄漏检查。
+                    // 固定 SQL，不拼接任何动态值；逐列检查而不是先拼串，避免列边界造成误判。
                     statement.executeQuery(
-                        "select concat_ws('|', actor, action, method, path, request_id, source_ip, error_code) from admin_audit_logs",
+                        "select actor, action, method, path, request_id, source_ip, error_code, details::text from admin_audit_logs",
                     ).use { result ->
                         while (result.next()) {
-                            val row = result.getString(1)
-                            assertTrue(!row.contains(oldKey), "audit row leaked old key: $row")
-                            assertTrue(!row.contains(newKey), "audit row leaked rotated key: $row")
+                            (1..8).forEach { index ->
+                                val value = result.getString(index) ?: return@forEach
+                                assertFalse(value.contains(oldKey), "audit row leaked old key: $value")
+                                assertFalse(value.contains(newKey), "audit row leaked rotated key: $value")
+                            }
                         }
                     }
                 }
@@ -362,11 +364,8 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `migrations tolerate duplicate rows`() {
-        val databaseName = "migration_latest_${System.nanoTime()}"
-        val migrationUrl = databaseUrl.substringBefore("?").substringBeforeLast("/") + "/$databaseName"
-        DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
-            connection.createStatement().use { it.execute("create database \"$databaseName\"") }
-        }
+        val databaseName = createMigrationDatabase("migration_latest")
+        val migrationUrl = migrationDatabaseUrl(databaseName)
         try {
             Flyway.configure()
                 .dataSource(migrationUrl, postgres.username, postgres.password)
@@ -786,11 +785,8 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `v57 migration moves activity rule into existing grox channel`() {
-        val databaseName = "migration_v57_${System.nanoTime()}"
-        val migrationUrl = databaseUrl.substringBefore("?").substringBeforeLast("/") + "/$databaseName"
-        DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
-            connection.createStatement().use { it.execute("create database \"$databaseName\"") }
-        }
+        val databaseName = createMigrationDatabase("migration_v57")
+        val migrationUrl = migrationDatabaseUrl(databaseName)
         try {
             Flyway.configure()
                 .dataSource(migrationUrl, postgres.username, postgres.password)
@@ -868,11 +864,8 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `v58 migration drops the retired reasoning and developer policy keys`() {
-        val databaseName = "migration_v58_${System.nanoTime()}"
-        val migrationUrl = databaseUrl.substringBefore("?").substringBeforeLast("/") + "/$databaseName"
-        DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
-            connection.createStatement().use { it.execute("create database \"$databaseName\"") }
-        }
+        val databaseName = createMigrationDatabase("migration_v58")
+        val migrationUrl = migrationDatabaseUrl(databaseName)
         try {
             Flyway.configure()
                 .dataSource(migrationUrl, postgres.username, postgres.password)
@@ -1093,8 +1086,26 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
         }
     }
 
+    private val databaseNamePattern = Regex("[A-Za-z0-9_]+")
+
+    /** 迁移用例需要独立数据库；名称由固定前缀和 nanoTime 生成，仍校验字符集后再拼 DDL。 */
+    private fun createMigrationDatabase(prefix: String): String {
+        val name = "${prefix}_${System.nanoTime()}"
+        require(name.matches(databaseNamePattern)) { "unsafe database name: $name" }
+        DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { it.execute("create database \"$name\"") }
+        }
+        return name
+    }
+
+    private fun migrationDatabaseUrl(databaseName: String): String {
+        require(databaseName.matches(databaseNamePattern)) { "unsafe database name: $databaseName" }
+        return databaseUrl.substringBefore("?").substringBeforeLast("/") + "/$databaseName"
+    }
+
     /** 清理临时迁移库；清理失败不应覆盖测试本身的原始异常。 */
     private fun dropDatabaseQuietly(databaseName: String) {
+        require(databaseName.matches(databaseNamePattern)) { "unsafe database name: $databaseName" }
         runCatching {
             DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use {

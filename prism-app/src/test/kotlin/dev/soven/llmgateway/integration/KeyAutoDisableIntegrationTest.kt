@@ -48,6 +48,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
 import java.io.IOException
@@ -74,42 +75,61 @@ import kotlin.test.assertFailsWith
 @Tag("shard-3")
 class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
 
+    /**
+     * 审计失败用例会临时给 admin_audit_logs 加 CHECK 约束。约束名是本类专用，
+     * 每个用例结束后无条件删除，避免用例中途失败时残留约束并拖垮后续用例。
+     */
+    @AfterEach
+    fun dropTemporaryConstraints() {
+        runCatching {
+            DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use {
+                    it.execute("alter table admin_audit_logs drop constraint if exists test_auto_disable_audit_failure")
+                }
+            }
+        }
+    }
+
     @Test
     fun keyAutoDisableDefaultsFailOverAndPersistAudit() = runBlocking {
-        app.close()
-        app = GatewayApplication(config().let { it.copy(cooldown = it.cooldown.copy(authFailureMs = 1)) })
         val channel = createAutoDisablePool()
         val key = createClientKey()
-        testApplication {
-            application { app.install(this) }
-            repeat(3) { index ->
-                fake.keyStatuses["Bearer key-primary"] = if (index == 2) 403 else 401
-                assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key, requestId = "auto-auth-$index").status)
-                val current = assertNotNull(app.channelRepository.find(channel.id))
-                assertEquals(index < 2, current.keys.first { it.name == "primary" }.state == ChannelKeyState.ACTIVE)
-                assertTrue(current.keys.first { it.name == "backup" }.state == ChannelKeyState.ACTIVE)
-                delay(5)
+        // 本用例需要 1ms 的鉴权失败冷却；使用独立实例，避免关闭并替换基类共享的 app。
+        val policyApp = GatewayApplication(config().let { it.copy(cooldown = it.cooldown.copy(authFailureMs = 1)) })
+        try {
+            testApplication {
+                application { policyApp.install(this) }
+                repeat(3) { index ->
+                    fake.keyStatuses["Bearer key-primary"] = if (index == 2) 403 else 401
+                    assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key, requestId = "auto-auth-$index").status)
+                    val current = assertNotNull(policyApp.channelRepository.find(channel.id))
+                    assertEquals(index < 2, current.keys.first { it.name == "primary" }.state == ChannelKeyState.ACTIVE)
+                    assertTrue(current.keys.first { it.name == "backup" }.state == ChannelKeyState.ACTIVE)
+                    delay(5)
+                }
+                assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key).status)
+                assertEquals(3, fake.requests.count { it.authorization == "Bearer key-primary" })
+                assertEquals(4, fake.requests.count { it.authorization == "Bearer key-backup" })
+                awaitRequestLogCount(4)
+                assertEquals(listOf(1, 2, 2, 2), app.requestLogRepository.list(10).mapNotNull { it.upstreamAttempts }.sorted())
+                val audits = app.adminAuditRepository.list(100).filter { it.action == "channel_key.auto_disable" }
+                val audit = audits.single()
+                assertEquals("system", audit.actor)
+                assertEquals("auto-auth-2", audit.requestId)
+                assertEquals("403", audit.details?.get("httpStatus")?.jsonPrimitive?.content)
+                assertEquals("3", audit.details?.get("count")?.jsonPrimitive?.content)
+                assertEquals("auth_rejected", audit.details?.get("ruleId")?.jsonPrimitive?.content)
+                assertEquals("TEMPORARY", audit.details?.get("action")?.jsonPrimitive?.content)
+                assertEquals("AUTO_TEMPORARY", audit.details?.get("state")?.jsonPrimitive?.content)
+                assertNotNull(audit.details?.get("disableUntil")?.jsonPrimitive?.content)
+                val text = audit.details.toString()
+                assertFalse(text.contains("key-primary"))
+                assertFalse(text.contains("private-test-prompt"))
             }
-            assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key).status)
-            assertEquals(3, fake.requests.count { it.authorization == "Bearer key-primary" })
-            assertEquals(4, fake.requests.count { it.authorization == "Bearer key-backup" })
-            awaitRequestLogCount(4)
-            assertEquals(listOf(1, 2, 2, 2), app.requestLogRepository.list(10).mapNotNull { it.upstreamAttempts }.sorted())
-            val audits = app.adminAuditRepository.list(100).filter { it.action == "channel_key.auto_disable" }
-            val audit = audits.single()
-            assertEquals("system", audit.actor)
-            assertEquals("auto-auth-2", audit.requestId)
-            assertEquals("403", audit.details?.get("httpStatus")?.jsonPrimitive?.content)
-            assertEquals("3", audit.details?.get("count")?.jsonPrimitive?.content)
-            assertEquals("auth_rejected", audit.details?.get("ruleId")?.jsonPrimitive?.content)
-            assertEquals("TEMPORARY", audit.details?.get("action")?.jsonPrimitive?.content)
-            assertEquals("AUTO_TEMPORARY", audit.details?.get("state")?.jsonPrimitive?.content)
-            assertNotNull(audit.details?.get("disableUntil")?.jsonPrimitive?.content)
-            val text = audit.details.toString()
-            assertFalse(text.contains("key-primary"))
-            assertFalse(text.contains("private-test-prompt"))
+        } finally {
+            policyApp.close()
         }
-        app = GatewayApplication(config())
+        // 基类实例一直未关闭，重新读取同一数据库即可验证停用状态已持久化。
         val restored = assertNotNull(app.channelRepository.find(channel.id)).keys.first { it.name == "primary" }
         assertEquals(ChannelKeyState.AUTO_TEMPORARY, restored.state)
         assertNotNull(restored.autoDisabledAt)
@@ -605,10 +625,10 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
             enabled = true,
             modelMappings = mappingsOf("gpt-4o-mini"),
         )
-        val until = System.currentTimeMillis() + 120_000
         DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
             connection.prepareStatement("update channel_keys set auto_disable_until = ? where id = ?").use { statement ->
-                statement.setLong(1, until)
+                // 在写入前取时间并留足余量，避免用例执行耗时吃掉到期时间。
+                statement.setLong(1, System.currentTimeMillis() + 300_000)
                 statement.setString(2, channel.keys.single().id)
                 statement.executeUpdate()
             }
@@ -625,7 +645,7 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
             assertTrue(response.bodyAsText().contains("model_credentials_unavailable"))
             // 临时停用会自动恢复，Retry-After 应指向到期时间而不是固定值。
             val retryAfter = assertNotNull(response.headers[HttpHeaders.RetryAfter])
-            assertTrue(retryAfter.toLong() in 1..180, "RETRY-AFTER=[$retryAfter]")
+            assertTrue(retryAfter.toLong() in 1..600, "RETRY-AFTER=[$retryAfter]")
         }
     }
 
@@ -771,7 +791,10 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
             assertTrue(assertNotNull(app.channelRepository.find(primary.channelId)).keys.single().state == ChannelKeyState.ACTIVE)
             assertTrue(app.adminAuditRepository.list(100).none { it.action == "channel_key.auto_disable" })
         } finally {
-            constraint("alter table admin_audit_logs drop constraint test_auto_disable_audit_failure")
+            // finally 里再失败不能让约束留到后续用例；@AfterEach 会再做一次兜底清理。
+            runCatching {
+                constraint("alter table admin_audit_logs drop constraint if exists test_auto_disable_audit_failure")
+            }
         }
         assertNotNull(app.keyAutoDisableRepository.recordOutcome(primary, KeyAttemptOutcome.AUTH_FAILURE, "retry", 403))
         val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_disable" }

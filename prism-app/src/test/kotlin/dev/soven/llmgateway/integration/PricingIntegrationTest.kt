@@ -171,6 +171,8 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
         exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         createPrice(channel, "gpt-4o-mini", input = "1", output = "2")
         val key = createClientKey()
+        // 固定一次时间基准，避免 from/to 分别取时钟后在边界用例里产生毫秒级漂移。
+        val reportNow = System.currentTimeMillis()
         testApplication {
             application { app.install(this) }
             repeat(2) {
@@ -228,13 +230,8 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
                 expiresAt = currentKey.expiresAt,
                 quotas = currentKey.quotas,
             )
-            val login = client.post("/admin/api/login") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"username":"admin","password":"test-password"}""")
-            }
-            val cookie = login.headers.getAll(HttpHeaders.SetCookie).orEmpty()
-                .first { it.startsWith("gw_session=") }.substringBefore(";")
-            val report = client.get("/admin/api/usage-report?from=${System.currentTimeMillis() - 86_400_000L}&to=${System.currentTimeMillis() + 60_000L}") {
+            val (cookie, _) = client.loginAdmin()
+            val report = client.get("/admin/api/usage-report?from=${reportNow - 86_400_000L}&to=${reportNow + 60_000L}") {
                 header(HttpHeaders.Cookie, cookie)
             }
             assertEquals(HttpStatusCode.OK, report.status, report.bodyAsText())
@@ -275,7 +272,7 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
                     .map { it.jsonObject["clientKeyName"]!!.jsonPrimitive.content }
                     .toSet(),
             )
-            val reportAfterDelete = client.get("/admin/api/usage-report?from=${System.currentTimeMillis() - 86_400_000L}&to=${System.currentTimeMillis() + 60_000L}") {
+            val reportAfterDelete = client.get("/admin/api/usage-report?from=${reportNow - 86_400_000L}&to=${reportNow + 60_000L}") {
                 header(HttpHeaders.Cookie, cookie)
             }
             assertEquals(HttpStatusCode.OK, reportAfterDelete.status, reportAfterDelete.bodyAsText())
@@ -297,7 +294,7 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
             )
             assertTrue(json["trend"]!!.jsonArray.isNotEmpty())
 
-            val rangeNow = System.currentTimeMillis()
+            val rangeNow = reportNow
             suspend fun reportStatus(from: Long, to: Long): Pair<HttpStatusCode, String> {
                 val response = client.get("/admin/api/usage-report?from=$from&to=$to") {
                     header(HttpHeaders.Cookie, cookie)
@@ -337,14 +334,7 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
         testApplication {
             application { app.install(this) }
             val client = jsonClient()
-            val login = client.post("/admin/api/login") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"username":"admin","password":"test-password"}""")
-            }
-            assertEquals(HttpStatusCode.OK, login.status)
-            val setCookies = login.headers.getAll(HttpHeaders.SetCookie).orEmpty()
-            val sessionCookie = setCookies.first { it.startsWith("gw_session=") }.substringBefore(";")
-            val csrf = setCookies.first { it.startsWith("gw_csrf=") }.substringAfter("=").substringBefore(";")
+            val (sessionCookie, csrf) = client.loginAdmin()
 
             val response = client.get("/admin/api/model-prices/reference?model=deepseek-chat") {
                 header(HttpHeaders.Cookie, sessionCookie)
@@ -459,32 +449,19 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `concurrent default price updates map unique conflicts to 409`() = runBlocking {
-        suspend fun createDefaultPrice(modelId: String) = checkNotNull(
-            app.modelDefaultPriceRepository.create(
-                modelId = modelId,
-                currency = "USD",
-                inputPricePerMillion = BigDecimal.ONE,
-                outputPricePerMillion = BigDecimal.ONE,
-                cachedInputPricePerMillion = null,
-            ),
-        )
-
-        val first = createDefaultPrice("race-first")
-        val second = createDefaultPrice("race-second")
-
+    fun `concurrent default price creates map duplicate model to 409`() = runBlocking {
         testApplication {
             application { app.install(this) }
             val client = jsonClient()
             val (sessionCookie, csrf) = client.loginAdmin()
             val ready = AtomicInteger(0)
             val responses = coroutineScope {
-                listOf(first.id, second.id).map { id ->
+                (1..2).map {
                     async(Dispatchers.Default) {
                         ready.incrementAndGet()
                         val deadline = System.nanoTime() + 5_000_000_000L
                         while (ready.get() < 2 && System.nanoTime() < deadline) yield()
-                        client.put("/admin/api/model-default-prices/$id") {
+                        client.post("/admin/api/model-default-prices") {
                             header(HttpHeaders.Cookie, sessionCookie)
                             header("X-CSRF-Token", csrf)
                             contentType(ContentType.Application.Json)
@@ -496,9 +473,41 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
                 }.map { it.await() }
             }
 
-            assertTrue(responses.all { it.status == HttpStatusCode.BadRequest }, responses.map { it.status }.toString())
-            assertTrue(responses.all { it.bodyAsText().contains("model_default_price_model_immutable") })
-            assertEquals(0, app.modelDefaultPriceRepository.list().count { it.modelId == "race-target" })
+            // 两个请求都通过了前置存在性检查时，唯一键冲突必须映射成 409 而不是 500。
+            assertEquals(1, responses.count { it.status == HttpStatusCode.Created }, responses.map { it.status }.toString())
+            assertEquals(1, responses.count { it.status == HttpStatusCode.Conflict }, responses.map { it.status }.toString())
+            val conflict = responses.single { it.status == HttpStatusCode.Conflict }
+            assertTrue(conflict.bodyAsText().contains("model_default_price_exists"), conflict.bodyAsText())
+            assertEquals(1, app.modelDefaultPriceRepository.list().count { it.modelId == "race-target" })
+        }
+    }
+
+    @Test
+    fun `default price update rejects model id changes`() = runBlocking {
+        val existing = checkNotNull(
+            app.modelDefaultPriceRepository.create(
+                modelId = "immutable-source",
+                currency = "USD",
+                inputPricePerMillion = BigDecimal.ONE,
+                outputPricePerMillion = BigDecimal.ONE,
+                cachedInputPricePerMillion = null,
+            ),
+        )
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.put("/admin/api/model-default-prices/${existing.id}") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"modelId":"immutable-target","currency":"USD","inputPricePerMillion":"2","outputPricePerMillion":"3"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("model_default_price_model_immutable"), response.bodyAsText())
+            assertEquals("immutable-source", app.modelDefaultPriceRepository.findById(existing.id)?.modelId)
         }
     }
 

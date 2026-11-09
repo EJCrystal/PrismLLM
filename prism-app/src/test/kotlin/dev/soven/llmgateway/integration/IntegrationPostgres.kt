@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger
 object IntegrationPostgres {
     private const val TEMPLATE_DB = "prism_template"
     private val counter = AtomicInteger()
+    private val SAFE_DATABASE_NAME = Regex("[A-Za-z0-9_]+")
 
     val container: PostgreSQLContainer<*> by lazy {
         PostgreSQLContainer("postgres:16-alpine").apply {
@@ -29,19 +30,25 @@ object IntegrationPostgres {
     /** 为当前测试类克隆一份模板库，返回它的 JDBC URL。 */
     fun newDatabase(): String {
         val target = container
-        // name 只由内部计数器生成，不接收外部输入；这里是 DDL，无法使用绑定参数。
+        // 数据库名只由内部计数器生成，不接收外部输入；DDL 无法使用绑定参数，
+        // 因此仍校验字符集并转义标识符，避免将来改动命名逻辑时引入注入。
         val name = "prism_test_" + counter.incrementAndGet()
-        execute(target, "create database \"$name\" template \"$TEMPLATE_DB\"")
+        execute(target, "create database ${quoteIdentifier(name)} template ${quoteIdentifier(TEMPLATE_DB)}")
         return jdbcUrl(target, name)
     }
 
     private fun createTemplate(target: PostgreSQLContainer<*>) {
-        execute(target, "create database \"$TEMPLATE_DB\"")
+        execute(target, "create database ${quoteIdentifier(TEMPLATE_DB)}")
         Flyway.configure()
             .dataSource(jdbcUrl(target, TEMPLATE_DB), target.username, target.password)
             .locations("classpath:db/migration")
             .load()
             .migrate()
+    }
+
+    private fun quoteIdentifier(name: String): String {
+        require(name.matches(SAFE_DATABASE_NAME)) { "unsafe database name: $name" }
+        return "\"$name\""
     }
 
     private fun execute(target: PostgreSQLContainer<*>, sql: String) {

@@ -417,13 +417,7 @@ class ChannelQuotaIntegrationTest : GatewayIntegrationTestBase() {
     fun `admin client key API validates and returns quota settings`() = runBlocking {
         testApplication {
             application { app.install(this) }
-            val login = client.post("/admin/api/login") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"username":"admin","password":"test-password"}""")
-            }
-            val setCookies = login.headers.getAll(HttpHeaders.SetCookie).orEmpty()
-            val sessionCookie = setCookies.first { it.startsWith("gw_session=") }.substringBefore(";")
-            val csrf = setCookies.first { it.startsWith("gw_csrf=") }.substringAfter("=").substringBefore(";")
+            val (sessionCookie, csrf) = client.loginAdmin()
 
             suspend fun create(body: String) = client.post("/admin/api/client-keys") {
                 header(HttpHeaders.Cookie, sessionCookie)

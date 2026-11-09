@@ -4,7 +4,9 @@ import dev.soven.llmgateway.api.GatewayApplication
 import dev.soven.llmgateway.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
+import dev.soven.llmgateway.repo.CooldownStateRepository
 import dev.soven.llmgateway.repo.NewChannelKey
+import dev.soven.llmgateway.resilience.CooldownStateSnapshot
 import dev.soven.llmgateway.resilience.FailureKind
 import io.ktor.client.request.header
 import io.ktor.client.request.delete
@@ -639,7 +641,9 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
 
             // 冷却到期后主别名重新参与，并可在恢复后独立承接请求
             fake.failingModels.remove("alias-fail")
-            delay(350)
+            awaitCondition("candidate cooldown to expire", timeoutMs = 5_000) {
+                app.candidateCooldown.cooldownState(channel.id, channel.keys.single().id, "alias-fail") == null
+            }
             assertEquals(HttpStatusCode.OK, send().status)
             awaitRequestLogCount(3)
             val thirdLog = app.requestLogRepository.list(10).first()
@@ -791,7 +795,9 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.OK, send().status)
             assertEquals(3, awaitRequestLog().upstreamAttempts)
 
-            delay(350)
+            awaitCondition("transient cooldown to expire", timeoutMs = 5_000) {
+                app.candidateCooldown.cooldownState(primary.id, primary.keys.single().id, "m1") == null
+            }
             assertEquals(HttpStatusCode.OK, send().status)
             awaitRequestLogCount(2)
             assertEquals(3, app.requestLogRepository.list(10).first().upstreamAttempts)
@@ -801,9 +807,9 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `cooldown reason survives persistence round trip`() = runBlocking {
-        val repository = dev.soven.llmgateway.repo.CooldownStateRepository(app.databaseFactory.database)
+        val repository = CooldownStateRepository(app.databaseFactory.database)
         repository.upsert(
-            dev.soven.llmgateway.resilience.CooldownStateSnapshot(
+            CooldownStateSnapshot(
                 stateKey = "ch:persisted",
                 consecutiveFailures = 2,
                 cooldownUntil = 123_456L,

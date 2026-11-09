@@ -443,14 +443,7 @@ class AdminChannelIntegrationTest : GatewayIntegrationTestBase() {
         testApplication {
             application { app.install(this) }
             val client = jsonClient()
-            val login = client.post("/admin/api/login") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"username":"admin","password":"test-password"}""")
-            }
-            assertEquals(HttpStatusCode.OK, login.status)
-            val setCookies = login.headers.getAll(HttpHeaders.SetCookie).orEmpty()
-            val sessionCookie = setCookies.first { it.startsWith("gw_session=") }.substringBefore(";")
-            val csrf = setCookies.first { it.startsWith("gw_csrf=") }.substringAfter("=").substringBefore(";")
+            val (sessionCookie, csrf) = client.loginAdmin()
 
             val channelResponse = client.post("/admin/api/channels") {
                 header(HttpHeaders.Cookie, sessionCookie)
