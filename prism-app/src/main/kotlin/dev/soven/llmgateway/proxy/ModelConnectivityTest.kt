@@ -12,7 +12,7 @@ import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.channel.domain.authTypeFor
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.channel.domain.UpstreamHeaderProfile
-import dev.soven.llmgateway.oauth.KeyCredentialResolver
+import dev.soven.llmgateway.shared.domain.KeyCredentialResolver
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.post

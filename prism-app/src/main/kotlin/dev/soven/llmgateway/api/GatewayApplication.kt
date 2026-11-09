@@ -66,8 +66,8 @@ import dev.soven.llmgateway.security.AdminSessions
 import dev.soven.llmgateway.protocol.ProtocolConversion
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import dev.soven.llmgateway.shared.crypto.PasswordHasher
-import dev.soven.llmgateway.plugin.quota.ChannelQuotaProviderRegistry
-import dev.soven.llmgateway.plugin.quota.ChannelQuotaService
+import dev.soven.llmgateway.channel.infra.quota.ChannelQuotaProviderRegistry
+import dev.soven.llmgateway.channel.infra.quota.ChannelQuotaService
 import dev.soven.llmgateway.resilience.CandidateCooldown
 import dev.soven.llmgateway.resilience.CooldownStateWriter
 import dev.soven.llmgateway.resilience.KeyAvailabilityGate
