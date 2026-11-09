@@ -3,6 +3,7 @@ package dev.soven.llmgateway.quota
 import dev.soven.llmgateway.shared.error.GatewayError
 import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
+import dev.soven.llmgateway.quota.domain.RequestRateLimiter
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
@@ -15,7 +16,8 @@ import kotlin.test.assertFailsWith
 class RequestLimitServiceTest {
     @Test
     fun `key request limit rejects before quota reservation`() = runBlocking {
-        val quotaService = quotaService()
+        var quotaReads = 0
+        val quotaService = quotaService { quotaReads++ }
         val service = RequestLimitService(
             clientKeyQuotaService = quotaService,
             rateLimiter = RequestRateLimiter(now = { 0L }),
@@ -26,8 +28,11 @@ class RequestLimitServiceTest {
         )
 
         val lease = service.acquire(key)
+        assertEquals(1, quotaReads)
         val rejected = assertFailsWith<GatewayError> { service.acquire(key) }
         assertEquals("key_rate_limit_exceeded", rejected.code)
+        // 限流拒绝发生在配额读取之前，不能因拒绝而多读或占用并发。
+        assertEquals(1, quotaReads)
         service.release(lease)
         assertEquals(0, quotaService.currentUsage(key.id).concurrentRequests)
     }
@@ -77,10 +82,13 @@ class RequestLimitServiceTest {
     }
 }
 
-private fun quotaService(): ClientKeyQuotaService {
+private fun quotaService(onRead: () -> Unit = {}): ClientKeyQuotaService {
     val usage = mutableMapOf<String, dev.soven.llmgateway.repo.StoredQuotaUsage>()
     return ClientKeyQuotaService(
-        usageReader = { id, _ -> usage[id] ?: dev.soven.llmgateway.repo.StoredQuotaUsage() },
+        usageReader = { id, _ ->
+            onRead()
+            usage[id] ?: dev.soven.llmgateway.repo.StoredQuotaUsage()
+        },
         usageWriter = { id, _, tokens, costs ->
             val previous = usage[id] ?: dev.soven.llmgateway.repo.StoredQuotaUsage()
             usage[id] = dev.soven.llmgateway.repo.StoredQuotaUsage(

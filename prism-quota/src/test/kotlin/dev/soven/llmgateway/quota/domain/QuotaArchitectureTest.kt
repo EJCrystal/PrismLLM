@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertTrue
 
 /**
- * 配额模块的依赖边界：策略是纯函数，只允许 JDK 与 Kotlin 标准库。
+ * 配额模块的依赖边界：策略与内存限流器只允许 JDK、Kotlin 标准库与协程原语。
  *
  * 额度策略不感知渠道、路由、持久化或 HTTP；一旦引入这些依赖，
  * 「请求是否放行」的判定就会与运行时基础设施重新耦合。
@@ -24,6 +24,7 @@ class QuotaArchitectureTest {
     private val quotaDependencies = arrayOf(
         "java..",
         "kotlin..",
+        "kotlinx.coroutines..",
         "org.jetbrains.annotations..",
         "dev.soven.llmgateway.quota.domain..",
     )

@@ -2,6 +2,11 @@ package dev.soven.llmgateway.quota
 
 import dev.soven.llmgateway.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaUsage
+import dev.soven.llmgateway.quota.domain.RequestRateLimitDecision
+import dev.soven.llmgateway.quota.domain.RequestRateLease
+import dev.soven.llmgateway.quota.domain.RequestRateLimiter
+import dev.soven.llmgateway.shared.error.GatewayError
+import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.math.BigDecimal
@@ -14,13 +19,19 @@ class RequestLimitService(
     private val rateLimiter: RequestRateLimiter = RequestRateLimiter(),
 ) {
     suspend fun acquire(clientKey: ClientKeyRecord): RequestLimitLease {
-        val rateLease = rateLimiter.acquire(clientKey)
-        try {
-            val quotaLease = clientKeyQuotaService.acquire(clientKey)
-            return RequestLimitLease(rateLease, quotaLease)
-        } catch (cause: Throwable) {
-            throw cause
+        val rateLease = when (
+            val decision = rateLimiter.acquire(clientKey.id, clientKey.quotas.requestsPerMinute)
+        ) {
+            is RequestRateLimitDecision.Allowed -> decision.lease
+            RequestRateLimitDecision.Denied -> throw GatewayError(
+                HttpStatusCode.TooManyRequests,
+                "key_rate_limit_exceeded",
+                "密钥每分钟请求数已达上限",
+                "rate_limit_error",
+            )
         }
+        val quotaLease = clientKeyQuotaService.acquire(clientKey)
+        return RequestLimitLease(rateLease, quotaLease)
     }
 
     suspend fun settle(
