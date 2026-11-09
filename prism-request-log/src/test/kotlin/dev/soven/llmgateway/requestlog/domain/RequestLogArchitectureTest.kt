@@ -64,6 +64,10 @@ class RequestLogArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.requestlog.infra.LogRetentionService" },
             "ArchUnit 未导入保留清理服务，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.infra.ChannelHealthIndexerKt" },
+            "ArchUnit 未导入健康度索引任务，规则会空跑",
+        )
     }
 
     @Test
