@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.proxy
+package dev.soven.llmgateway.protocol
 
 /**
  * 识别上游“只拒绝请求形状”的错误，参考 magpie 的 shapeRefused 处理。

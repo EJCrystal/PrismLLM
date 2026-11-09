@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.proxy
+package dev.soven.llmgateway.protocol
 
 import kotlin.test.Test
 import kotlin.test.assertFalse

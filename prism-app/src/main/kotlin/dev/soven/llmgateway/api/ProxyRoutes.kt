@@ -39,13 +39,13 @@ import dev.soven.llmgateway.proxy.upstreamRequestUrl
 import dev.soven.llmgateway.requestlog.domain.BillingCalculator
 import dev.soven.llmgateway.quota.infra.RequestLimitLease
 import dev.soven.llmgateway.quota.domain.quotaTokensFromUsage
-import dev.soven.llmgateway.proxy.ReasoningEffort
-import dev.soven.llmgateway.proxy.ShapeRefusal
+import dev.soven.llmgateway.protocol.ReasoningEffort
+import dev.soven.llmgateway.protocol.ShapeRefusal
 import dev.soven.llmgateway.shared.domain.TraceContextFactory
 import dev.soven.llmgateway.proxy.applyUpstreamAuthentication
 import dev.soven.llmgateway.shared.domain.Usage
 import dev.soven.llmgateway.protocol.UsageParser
-import dev.soven.llmgateway.proxy.extractReportedModel
+import dev.soven.llmgateway.protocol.extractReportedModel
 import dev.soven.llmgateway.protocol.MAX_PROTOCOL_EVENT_BYTES
 import dev.soven.llmgateway.protocol.ProtocolConversion
 import dev.soven.llmgateway.protocol.ProtocolConversionException

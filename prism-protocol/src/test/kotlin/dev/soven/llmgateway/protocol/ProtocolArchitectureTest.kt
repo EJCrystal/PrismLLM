@@ -28,6 +28,22 @@ class ProtocolArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.protocol.ChatReasoningContentNormalizer" },
             "ArchUnit 未导入思考内容补齐器，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.protocol.DeveloperRoleNormalizer" },
+            "ArchUnit 未导入 developer 角色归一化器，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.protocol.ReasoningEffort" },
+            "ArchUnit 未导入推理强度读取器，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.protocol.ShapeRefusal" },
+            "ArchUnit 未导入请求形状拒绝识别器，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.protocol.ReportedModelKt" },
+            "ArchUnit 未导入上游模型名提取器，规则会空跑",
+        )
     }
 
     @Test
