@@ -21,7 +21,7 @@ import dev.soven.llmgateway.proxy.UnavailableBrowserRenderer
 import dev.soven.llmgateway.proxy.isGeminiRequestPath
 import dev.soven.llmgateway.requestlog.infra.RequestLogWriter
 import dev.soven.llmgateway.proxy.UpstreamOccupancy
-import dev.soven.llmgateway.repo.ModelPriceRepository
+import dev.soven.llmgateway.pricing.persistence.ModelPriceRepository
 import dev.soven.llmgateway.pricing.persistence.ModelDefaultPriceRepository
 import dev.soven.llmgateway.pricing.domain.ModelPricingService
 import dev.soven.llmgateway.routing.readmodel.OAuthAccountDirectory
@@ -31,6 +31,7 @@ import dev.soven.llmgateway.proxy.CurrencyExchangeService
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.repo.AdminUserRepository
 import dev.soven.llmgateway.repo.AdminAuditRepository
+import dev.soven.llmgateway.repo.PricingChannelNames
 import dev.soven.llmgateway.repo.RequestLogCurrentNames
 import dev.soven.llmgateway.channel.persistence.ChannelRepository
 import dev.soven.llmgateway.quota.persistence.ClientKeyRepository
@@ -327,7 +328,7 @@ class GatewayApplication(
     val iqTestRunRepository = dev.soven.llmgateway.repo.IqTestRunRepository(databaseFactory.database)
     val upstreamRequestSettingsRepository = UpstreamRequestSettingsRepository(databaseFactory.database)
     val upstreamHeaderCatalogRepository = UpstreamHeaderCatalogRepository(databaseFactory.database)
-    val modelPriceRepository = ModelPriceRepository(databaseFactory.database)
+    val modelPriceRepository = ModelPriceRepository(databaseFactory.database, PricingChannelNames())
     val modelDefaultPriceRepository = ModelDefaultPriceRepository(databaseFactory.database)
     val modelPricingService = ModelPricingService(modelPriceRepository, modelDefaultPriceRepository)
     val sessions = AdminSessions()

@@ -1,13 +1,10 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.pricing.persistence
 
-import dev.soven.llmgateway.channel.persistence.Channels
-import dev.soven.llmgateway.db.ModelPrices
+import dev.soven.llmgateway.pricing.domain.ChannelNameLookup
 import dev.soven.llmgateway.pricing.domain.ModelPriceLookup
 import dev.soven.llmgateway.pricing.domain.ModelPriceRecord
 import dev.soven.llmgateway.pricing.domain.ModelPriceTier
 import dev.soven.llmgateway.pricing.domain.PricingMode
-import dev.soven.llmgateway.pricing.persistence.PricingTierCodec
-import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
@@ -28,12 +25,14 @@ import java.util.UUID
  * @author 文杰
  * @since 2026-10-22
  */
-class ModelPriceRepository(private val database: Database) : ModelPriceLookup {
+class ModelPriceRepository(
+    private val database: Database,
+    private val channelNames: ChannelNameLookup,
+) : ModelPriceLookup {
     suspend fun list(): List<ModelPriceRecord> = suspendTransaction(database) {
-        ModelPrices
-            .join(Channels, JoinType.INNER, ModelPrices.channelId, Channels.id)
-            .selectAll()
-            .map(::toRecord)
+        val rows = ModelPrices.selectAll().toList()
+        val names = channelNames.names(rows.map { it[ModelPrices.channelId] }.toSet())
+        rows.map { toRecord(it, names) }
             .sortedWith(compareBy({ it.channelName }, { it.upstreamModel }))
     }
 
@@ -41,12 +40,10 @@ class ModelPriceRepository(private val database: Database) : ModelPriceLookup {
         suspendTransaction(database) {
             val normalizedModel = upstreamModel.trim()
             if (normalizedModel.isEmpty()) return@suspendTransaction null
-            ModelPrices
-                .join(Channels, JoinType.INNER, ModelPrices.channelId, Channels.id)
-                .selectAll()
+            ModelPrices.selectAll()
                 .where { (ModelPrices.channelId eq channelId) and (ModelPrices.upstreamModel eq normalizedModel) }
                 .singleOrNull()
-                ?.let(::toRecord)
+                ?.let { row -> toRecord(row, channelNames.names(setOf(row[ModelPrices.channelId]))) }
         }
 
     suspend fun findById(id: String): ModelPriceRecord? = suspendTransaction(database) {
@@ -173,14 +170,14 @@ class ModelPriceRepository(private val database: Database) : ModelPriceLookup {
             }
         }
 
-        ModelPrices
-            .join(Channels, JoinType.INNER, ModelPrices.channelId, Channels.id)
-            .selectAll()
+        val rows = ModelPrices.selectAll()
             .where {
                 (ModelPrices.channelId eq channelId) and
                     (ModelPrices.upstreamModel inList normalizedModels)
             }
-            .map(::toRecord)
+            .toList()
+        val names = channelNames.names(rows.map { it[ModelPrices.channelId] }.toSet())
+        rows.map { toRecord(it, names) }
             .sortedBy { it.upstreamModel }
     }
 
@@ -189,17 +186,15 @@ class ModelPriceRepository(private val database: Database) : ModelPriceLookup {
     }
 
     private fun load(id: String): ModelPriceRecord? =
-        ModelPrices
-            .join(Channels, JoinType.INNER, ModelPrices.channelId, Channels.id)
-            .selectAll()
+        ModelPrices.selectAll()
             .where { ModelPrices.id eq id }
             .singleOrNull()
-            ?.let(::toRecord)
+            ?.let { row -> toRecord(row, channelNames.names(setOf(row[ModelPrices.channelId]))) }
 
-    private fun toRecord(row: ResultRow) = ModelPriceRecord(
+    private fun toRecord(row: ResultRow, names: Map<String, String>) = ModelPriceRecord(
         id = row[ModelPrices.id],
         channelId = row[ModelPrices.channelId],
-        channelName = row[Channels.name],
+        channelName = names[row[ModelPrices.channelId]] ?: row[ModelPrices.channelId],
         upstreamModel = row[ModelPrices.upstreamModel],
         currency = row[ModelPrices.currency],
         inputPricePerMillion = row[ModelPrices.inputPricePerMillion],
