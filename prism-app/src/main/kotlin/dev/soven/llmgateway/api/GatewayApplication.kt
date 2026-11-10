@@ -36,7 +36,7 @@ import dev.soven.llmgateway.quota.persistence.ClientKeyRepository
 import dev.soven.llmgateway.quota.persistence.ClientKeyQuotaRepository
 import dev.soven.llmgateway.resilience.persistence.CooldownStateRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
-import dev.soven.llmgateway.repo.RetentionSettingsRepository
+import dev.soven.llmgateway.requestlog.persistence.RetentionSettingsRepository
 import dev.soven.llmgateway.oauth.OAuthAccountRouting
 import dev.soven.llmgateway.oauth.infra.OAuthAccountScheduler
 import dev.soven.llmgateway.oauth.OAuthLoginService

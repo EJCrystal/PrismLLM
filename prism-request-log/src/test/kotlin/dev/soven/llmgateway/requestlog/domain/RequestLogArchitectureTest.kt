@@ -20,7 +20,11 @@ import kotlin.test.assertTrue
 class RequestLogArchitectureTest {
     private val classes: JavaClasses = ClassFileImporter()
         .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
-        .importPackages("dev.soven.llmgateway.requestlog.domain", "dev.soven.llmgateway.requestlog.infra")
+        .importPackages(
+            "dev.soven.llmgateway.requestlog.domain",
+            "dev.soven.llmgateway.requestlog.infra",
+            "dev.soven.llmgateway.requestlog.persistence",
+        )
 
     private val requestLogDomainDependencies = arrayOf(
         "java..",
@@ -46,6 +50,16 @@ class RequestLogArchitectureTest {
         "dev.soven.llmgateway.pricing.domain..",
     )
 
+    /** 保留设置持久化只认识 Exposed 与本模块，不引入 HTTP 或上游基础设施。 */
+    private val requestLogPersistenceDependencies = arrayOf(
+        "java..",
+        "kotlin..",
+        "kotlinx.coroutines..",
+        "org.jetbrains.annotations..",
+        "org.jetbrains.exposed..",
+        "dev.soven.llmgateway.requestlog.persistence..",
+    )
+
     @Test
     fun `import covers the request log module`() {
         assertTrue(
@@ -68,6 +82,14 @@ class RequestLogArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.requestlog.infra.ChannelHealthIndexerKt" },
             "ArchUnit 未导入健康度索引任务，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RetentionSettingsRepository" },
+            "ArchUnit 未导入保留设置仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RetentionSettings" },
+            "ArchUnit 未导入保留设置表，规则会空跑",
+        )
     }
 
     @Test
@@ -83,6 +105,14 @@ class RequestLogArchitectureTest {
         classes()
             .that().resideInAnyPackage("dev.soven.llmgateway.requestlog.infra..")
             .should().onlyDependOnClassesThat().resideInAnyPackage(*requestLogInfraDependencies)
+            .check(classes)
+    }
+
+    @Test
+    fun `request log persistence only depends on the allowlist`() {
+        classes()
+            .that().resideInAnyPackage("dev.soven.llmgateway.requestlog.persistence..")
+            .should().onlyDependOnClassesThat().resideInAnyPackage(*requestLogPersistenceDependencies)
             .check(classes)
     }
 }
