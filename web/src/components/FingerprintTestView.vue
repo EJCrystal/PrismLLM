@@ -368,7 +368,7 @@ onBeforeUnmount(stopTimer)
               <div>
                 <span>排名分数</span>
                 <strong>{{ formatFingerprintScore(analysis.rankingScore) }}</strong>
-                <small>越小越接近参考回答</small>
+                <small>越大越接近参考回答</small>
               </div>
               <div>
                 <span>上游用量</span>

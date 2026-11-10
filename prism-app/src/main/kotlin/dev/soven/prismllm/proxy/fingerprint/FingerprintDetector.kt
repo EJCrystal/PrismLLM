@@ -37,7 +37,7 @@ class FingerprintDetector private constructor(
     private val ldaWeights: List<DoubleArray>,
     private val ldaBias: DoubleArray,
     private val references: List<List<DoubleArray>>,
-    private val referenceNorms: List<DoubleArray>,
+    private val referenceSquaredNorms: List<DoubleArray>,
     private val hellingerBank: FeatureBank,
     private val orderedBank: OrderedFeatureBank,
     private val blendFrequency: Double,
@@ -210,7 +210,7 @@ class FingerprintDetector private constructor(
         }
         val frequencyHead = standardized(columnMean(lda))
         val near = standardized(references.mapIndexed { index, reference ->
-            median(ax.map { -nearestMeanDistance(it, reference, referenceNorms[index]) })
+            median(ax.map { -nearestMeanDistance(it, reference, referenceSquaredNorms[index]) })
         })
         val base = standardized(columnMean(full.map { baseline(it) }))
         val frequency = standardized(DoubleArray(frequencyHead.size) { index ->
@@ -226,10 +226,14 @@ class FingerprintDetector private constructor(
         return ranking
     }
 
-    private fun nearestMeanDistance(x: DoubleArray, reference: List<DoubleArray>, norms: DoubleArray): Double {
+    internal fun nearestMeanDistance(
+        x: DoubleArray,
+        reference: List<DoubleArray>,
+        squaredNorms: DoubleArray,
+    ): Double {
         val xx = dot(x, x)
         val distances = DoubleArray(reference.size) { index ->
-            max(0.0, xx + norms[index] - 2 * dot(x, reference[index]))
+            max(0.0, xx + squaredNorms[index] - 2 * dot(x, reference[index]))
         }
         distances.sort()
         val take = min(7, distances.size)
@@ -370,7 +374,9 @@ class FingerprintDetector private constructor(
                 ldaWeights = elementMatrix(ranker.element("lda_weights")),
                 ldaBias = elementFloats(ranker.element("lda_bias")),
                 references = references,
-                referenceNorms = references.map { model -> DoubleArray(model.size) { norm(model[it]) } },
+                referenceSquaredNorms = references.map { model ->
+                    DoubleArray(model.size) { dot(model[it], model[it]) }
+                },
                 hellingerBank = hellingerBank,
                 orderedBank = orderedBank,
                 blendFrequency = ranker.obj("blend").number("frequency"),

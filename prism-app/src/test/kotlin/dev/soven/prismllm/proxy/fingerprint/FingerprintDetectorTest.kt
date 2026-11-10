@@ -61,6 +61,16 @@ class FingerprintDetectorTest {
     }
 
     @Test
+    fun `nearest mean distance uses squared reference norms`() {
+        val distance = detector.nearestMeanDistance(
+            doubleArrayOf(1.0, 0.0),
+            listOf(doubleArrayOf(3.0, 4.0)),
+            doubleArrayOf(25.0),
+        )
+        assertEquals(20.0, distance, 1e-12)
+    }
+
+    @Test
     fun `rejects regular sequences that do not look like model output`() {
         val outputs = listOf(11, 22, 33).map { seed ->
             val random = kotlin.random.Random(seed)
