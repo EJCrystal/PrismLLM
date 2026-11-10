@@ -171,13 +171,32 @@ export function oauthSupportsModelCatalog(provider: string): boolean {
 }
 
 /**
- * 能读取上游模型目录的账号：与后端 `listUsableForProvider` 一致，必须是启用且授权正常的账号。
- * 停用或待重新授权的账号不能用来探测目录。
+ * 能读取上游模型目录的账号：目录请求只依赖凭据，账号停用也可以同步，
+ * 但 reauth 状态说明 refresh token 已失效，必然读不到。
  */
-export function isOAuthAccountUsable(
-  account: Pick<OAuthAccount, 'enabled' | 'authState'>,
-): boolean {
-  return account.enabled && account.authState === 'ACTIVE'
+export function oauthCanSyncCatalog(account: Pick<OAuthAccount, 'authState'>): boolean {
+  return account.authState === 'ACTIVE'
+}
+
+/**
+ * 账号级的模型目录：已同步时以账号自己的目录为准，未同步时退回所关联渠道的模型。
+ * 不同账号的开通方式不同，目录不能跨账号共享。
+ */
+export function oauthAccountModelCatalog(
+  account: Pick<OAuthAccount, 'modelCatalog'>,
+  channelModels: string[],
+): string[] {
+  return account.modelCatalog ?? channelModels
+}
+
+/** 模型授权可选项：账号目录（未同步时用渠道模型），并保留已授权但目录暂缺的模型。 */
+export function oauthAccountModelOptions(
+  account: Pick<OAuthAccount, 'models' | 'modelCatalog'> | null,
+  channelModels: string[],
+): string[] {
+  const base = account ? oauthAccountModelCatalog(account, channelModels) : channelModels
+  const options = new Set([...base, ...(account?.models ?? [])])
+  return [...options].sort()
 }
 
 /** 模型选择器的搜索过滤：大小写不敏感，匹配模型名片段；空查询返回全部。 */
@@ -187,12 +206,14 @@ export function filterOAuthModels(models: string[], query: string): string[] {
   return models.filter((model) => model.toLowerCase().includes(text))
 }
 
-/** 连通性测试可选的模型：端点渠道模型与账号授权模型的交集。 */
+/** 连通性测试可选的模型：账号目录（未同步时用端点渠道模型）与账号授权模型的交集。 */
 export function oauthTestModels(
-  account: Pick<OAuthAccount, 'models' | 'channelIds'>,
+  account: Pick<OAuthAccount, 'models' | 'channelIds' | 'modelCatalog'>,
   channels: Array<{ id: string; models: string[] }>,
 ): string[] {
-  const available = availableOAuthModels(channels, account.channelIds)
+  const available = account.modelCatalog
+    ? [...account.modelCatalog].sort()
+    : availableOAuthModels(channels, account.channelIds)
   if (account.models.length === 0) return available
   return available.filter((model) => account.models.includes(model))
 }

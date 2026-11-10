@@ -53,6 +53,36 @@ class ProviderChannelProvisioner(
     }
 
     /**
+     * 把各账号自己的模型目录合并回系统渠道。渠道模型是所有账号目录的并集，
+     * 供路由前判断模型是否可能存在；账号级 supports() 再按自己的目录过滤。
+     *
+     * 仍有账号未同步目录时保留渠道原有映射，避免把未同步账号能调度的模型摘掉；
+     * 全部账号同步后渠道目录收敛为并集，上游已下线的模型会随之移除。
+     */
+    suspend fun syncModelUnion(provider: OAuthProvider): Int {
+        val channelId = ensure(provider) ?: return 0
+        val providerAccounts = accounts.listAll().filter { it.provider == provider }
+        val union = LinkedHashMap<String, ChannelModelRecord>()
+        if (providerAccounts.any { it.modelCatalog == null }) {
+            channels.find(channelId)?.modelMappings?.forEach { union[it.upstreamModel] = it }
+        }
+        providerAccounts.forEach { account ->
+            account.modelCatalog?.forEach { entry ->
+                union.putIfAbsent(
+                    entry.upstreamModel,
+                    ChannelModelRecord(
+                        upstreamModel = entry.upstreamModel,
+                        canonicalModelId = entry.canonicalModelId,
+                    ),
+                )
+            }
+        }
+        if (union.isEmpty()) return 0
+        channels.replaceModels(channelId, union.values.toList())
+        return union.size
+    }
+
+    /**
      * 把 V54 标记为待搬迁的历史账号挂到各自的 provider 渠道。
      * 每个账号成功后清除标记，中途失败的下次启动继续；协议未实现的 provider 保持待搬迁。
      */

@@ -1705,6 +1705,9 @@ data class OAuthAccountResponse(
     val priority: Int,
     /** 空列表表示继承所关联渠道的全部模型。 */
     val models: List<String> = emptyList(),
+    /** 该账号自己的上游模型目录（upstream id）；null 表示尚未同步。 */
+    val modelCatalog: List<String>? = null,
+    val modelCatalogSyncedAt: Long? = null,
     val channelIds: List<String> = emptyList(),
     val channels: List<OAuthAccountChannelResponse> = emptyList(),
     val tokenType: String,
@@ -1800,6 +1803,8 @@ fun OAuthAccountRecord.toResponse(
     enabled = enabled,
     priority = priority,
     models = models,
+    modelCatalog = modelCatalog?.map { it.upstreamModel },
+    modelCatalogSyncedAt = modelCatalogSyncedAt,
     channelIds = channelIds.sorted(),
     channels = channels,
     tokenType = tokenType,

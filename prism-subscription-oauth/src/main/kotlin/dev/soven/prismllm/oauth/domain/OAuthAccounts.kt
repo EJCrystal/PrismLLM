@@ -36,6 +36,17 @@ enum class OAuthRoutingStrategy(val value: String) {
 }
 
 /**
+ * 账号自己的上游模型目录条目。不同账号的开通方式不同，上游返回的模型集合也不同，
+ * 因此目录按账号保存；[upstreamModel] 是实际可调用的变体 id，
+ * [canonicalModelId] 是聚合后的对外模型 id（与渠道映射规则一致）。
+ */
+@Serializable
+data class OAuthAccountModelCatalogEntry(
+    val upstreamModel: String,
+    val canonicalModelId: String? = null,
+)
+
+/**
  * 独立的订阅账号。长期 refresh token、短期 access token、调度策略、额度与渠道关联
  * 都保存在账号自身，不再依附于 channel_keys。
  *
@@ -63,6 +74,12 @@ data class OAuthAccountRecord(
     override val priority: Int = 1,
     /** 空列表表示继承所关联渠道的全部模型。 */
     override val models: List<String> = emptyList(),
+    /**
+     * 该账号从上游同步到的模型目录；null 表示尚未同步，沿用渠道目录。
+     * 非 null 时，即使渠道里有该模型，只要目录里没有，账号也不能调度。
+     */
+    val modelCatalog: List<OAuthAccountModelCatalogEntry>? = null,
+    val modelCatalogSyncedAt: Long? = null,
     val channelIds: Set<String> = emptySet(),
     val refreshFailureCount: Int = 0,
     val lastRefreshError: String? = null,
@@ -79,7 +96,13 @@ data class OAuthAccountRecord(
 ) : UpstreamCredential {
     override val isOAuth: Boolean get() = true
 
-    override fun supports(upstreamModel: String): Boolean = models.isEmpty() || upstreamModel in models
+    /**
+     * 账号能调度的上游变体：既要在显式授权列表内（空列表表示不限制），
+     * 也要在该账号自己同步到的目录内（未同步时不限制，沿用渠道目录）。
+     */
+    override fun supports(upstreamModel: String): Boolean =
+        (models.isEmpty() || upstreamModel in models) &&
+            (modelCatalog == null || modelCatalog.any { it.upstreamModel == upstreamModel })
 
     /**
      * 停用的账号不参与路由；等待重新授权的账号仍保留为候选，让数据面返回

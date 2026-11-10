@@ -962,6 +962,9 @@ export interface OAuthAccount {
   enabled: boolean
   priority: number
   models: string[]
+  /** 该账号自己的上游模型目录（upstream id）；null 表示尚未同步。 */
+  modelCatalog: string[] | null
+  modelCatalogSyncedAt: number | null
   channelIds: string[]
   channels: Array<{ id: string; name: string }>
   tokenType: string

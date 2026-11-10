@@ -11,8 +11,10 @@ import {
   formatUsedPercent,
   formatWindowSeconds,
   isOAuthAccountCooling,
-  isOAuthAccountUsable,
   isOAuthQuotaBlocked,
+  oauthAccountModelCatalog,
+  oauthAccountModelOptions,
+  oauthCanSyncCatalog,
   oauthAccountStatus,
   oauthAuthStateBadge,
   oauthAuthStateLabel,
@@ -255,6 +257,23 @@ describe('oauthAccount: 上游额度展示', () => {
     ]
     assert.deepEqual(availableOAuthModels(channels, ['a', 'b']), ['claude-sonnet', 'gemini-3-flash', 'gemini-3-pro'])
     assert.deepEqual(availableOAuthModels(channels, []), [])
+    // 账号目录优先于渠道模型；未同步时才回落到渠道模型，已授权但目录暂缺的模型保留可见。
+    assert.deepEqual(
+      oauthAccountModelCatalog({ modelCatalog: ['gemini-3-flash'] }, ['gpt-5']),
+      ['gemini-3-flash'],
+    )
+    assert.deepEqual(oauthAccountModelCatalog({ modelCatalog: null }, ['gpt-5']), ['gpt-5'])
+    assert.deepEqual(
+      oauthAccountModelOptions(
+        { models: ['gemini-3-pro'], modelCatalog: ['gemini-3-flash'] },
+        ['gpt-5'],
+      ),
+      ['gemini-3-flash', 'gemini-3-pro'],
+    )
+    assert.deepEqual(
+      oauthAccountModelOptions({ models: [], modelCatalog: null }, ['gpt-5']),
+      ['gpt-5'],
+    )
     assert.deepEqual(buildOAuthModels(true, ['gemini-3-pro'], 'gpt-5'), [])
     assert.deepEqual(buildOAuthModels(false, ['gemini-3-pro'], 'gpt-5, gemini-3-pro\n claude-sonnet '), [
       'claude-sonnet',
@@ -282,10 +301,9 @@ describe('oauthAccount: 上游额度展示', () => {
     assert.equal(oauthSupportsModelCatalog('antigravity'), true)
     assert.equal(oauthSupportsModelCatalog('chatgpt'), false)
     assert.equal(oauthSupportsModelCatalog('custom'), false)
-    // 目录同步用账号代为读取：只有启用且授权正常的账号可用，停用/待重新授权都不行。
-    assert.equal(isOAuthAccountUsable({ enabled: true, authState: 'ACTIVE' }), true)
-    assert.equal(isOAuthAccountUsable({ enabled: false, authState: 'ACTIVE' }), false)
-    assert.equal(isOAuthAccountUsable({ enabled: true, authState: 'REAUTH_REQUIRED' }), false)
+    // 目录按账号读取：停用账号仍可用自己的凭据同步，待重新授权则不行。
+    assert.equal(oauthCanSyncCatalog({ authState: 'ACTIVE' }), true)
+    assert.equal(oauthCanSyncCatalog({ authState: 'REAUTH_REQUIRED' }), false)
   })
 
   it('连通性测试的协议与模型来自官方端点渠道和账号授权', () => {
@@ -305,6 +323,21 @@ describe('oauthAccount: 上游额度展示', () => {
       ['gemini-3-pro'],
     )
     assert.deepEqual(oauthTestModels({ models: [], channelIds: [] }, channels), [])
+    // 已同步目录的账号只用自己的目录，不同账号不共享模型集合。
+    assert.deepEqual(
+      oauthTestModels(
+        { models: [], channelIds: ['provider'], modelCatalog: ['gemini-3-flash'] },
+        channels,
+      ),
+      ['gemini-3-flash'],
+    )
+    assert.deepEqual(
+      oauthTestModels(
+        { models: ['gemini-3-pro'], channelIds: ['provider'], modelCatalog: ['gemini-3-flash', 'gemini-3-pro'] },
+        channels,
+      ),
+      ['gemini-3-pro'],
+    )
   })
 
   it('项目发现失败只把开通列为可能的处理步骤', () => {
