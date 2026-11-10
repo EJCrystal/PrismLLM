@@ -71,6 +71,30 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `request log display resolves current channel and client key names`() = runBlocking {
+        val channel = createChannel("current-channel", "channel")
+        createClientKey()
+        val clientKey = app.clientKeyRepository.list().single()
+        val channelKey = channel.keys.single()
+        app.requestLogRepository.insert(
+            requestLog("name-resolution", createdAt = System.currentTimeMillis()).copy(
+                clientKeyId = clientKey.id,
+                clientKeyName = "stale-client",
+                channelId = channel.id,
+                channelName = "stale-channel",
+                channelKeyId = channelKey.id,
+                channelKeyName = "stale-key",
+            ),
+        )
+
+        val displayed = app.requestLogRepository.listForDisplay(10)
+            .single { it.requestId == "name-resolution" }
+        assertEquals(clientKey.name, displayed.clientKeyName)
+        assertEquals(channel.name, displayed.channelName)
+        assertEquals(channelKey.name, displayed.channelKeyName)
+    }
+
+    @Test
     fun `client key lifecycle and admin audit enforce permission boundaries`() = runBlocking {
         testApplication {
             application { app.install(this) }

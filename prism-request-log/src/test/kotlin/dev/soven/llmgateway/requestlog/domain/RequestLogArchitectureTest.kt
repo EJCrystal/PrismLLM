@@ -1,5 +1,7 @@
 package dev.soven.llmgateway.requestlog.domain
 
+import com.tngtech.archunit.base.DescribedPredicate
+import com.tngtech.archunit.core.domain.JavaClass
 import com.tngtech.archunit.core.domain.JavaClasses
 import com.tngtech.archunit.core.importer.ClassFileImporter
 import com.tngtech.archunit.core.importer.ImportOption
@@ -50,15 +52,38 @@ class RequestLogArchitectureTest {
         "dev.soven.llmgateway.pricing.domain..",
     )
 
-    /** 保留设置持久化只认识 Exposed 与本模块，不引入 HTTP 或上游基础设施。 */
+    /** 日志表与名称解析端口只认识 Exposed、协程原语与本模块，不引入渠道或 HTTP。 */
     private val requestLogPersistenceDependencies = arrayOf(
         "java..",
         "kotlin..",
         "kotlinx.coroutines..",
         "org.jetbrains.annotations..",
         "org.jetbrains.exposed..",
+        "dev.soven.llmgateway.requestlog.domain..",
         "dev.soven.llmgateway.requestlog.persistence..",
     )
+
+    /** 请求日志仓储额外依赖计价的只读类型、尝试明细编解码与日志门面。 */
+    private val requestLogRepositoryDependencies = arrayOf(
+        *requestLogPersistenceDependencies,
+        "org.slf4j..",
+        "dev.soven.llmgateway.shared.domain..",
+        "dev.soven.llmgateway.pricing.domain..",
+        "dev.soven.llmgateway.pricing.persistence..",
+        "dev.soven.llmgateway.requestlog.infra..",
+    )
+
+    /** 仓储编译后会拆出多个协程 lambda 类，按全限定名前缀一并识别。 */
+    private val requestLogRepositoryPart = DescribedPredicate.describe<JavaClass>(
+        "are part of RequestLogRepository",
+    ) { clazz -> clazz.name.startsWith("dev.soven.llmgateway.requestlog.persistence.RequestLogRepository") }
+
+    private val requestLogPersistenceExceptRepository = DescribedPredicate.describe<JavaClass>(
+        "reside in requestlog.persistence but are not part of RequestLogRepository",
+    ) { clazz ->
+        clazz.packageName.startsWith("dev.soven.llmgateway.requestlog.persistence") &&
+            !clazz.name.startsWith("dev.soven.llmgateway.requestlog.persistence.RequestLogRepository")
+    }
 
     @Test
     fun `import covers the request log module`() {
@@ -98,6 +123,18 @@ class RequestLogArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RequestAttempts" },
             "ArchUnit 未导入上游尝试明细表，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RequestLogRepository" },
+            "ArchUnit 未导入请求日志仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RequestLogNameResolver" },
+            "ArchUnit 未导入日志名称解析端口，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RequestLogNameKind" },
+            "ArchUnit 未导入日志名称实体种类，规则会空跑",
+        )
     }
 
     @Test
@@ -119,8 +156,16 @@ class RequestLogArchitectureTest {
     @Test
     fun `request log persistence only depends on the allowlist`() {
         classes()
-            .that().resideInAnyPackage("dev.soven.llmgateway.requestlog.persistence..")
+            .that(requestLogPersistenceExceptRepository)
             .should().onlyDependOnClassesThat().resideInAnyPackage(*requestLogPersistenceDependencies)
+            .check(classes)
+    }
+
+    @Test
+    fun `request log repository only depends on the allowlist`() {
+        classes()
+            .that(requestLogRepositoryPart)
+            .should().onlyDependOnClassesThat().resideInAnyPackage(*requestLogRepositoryDependencies)
             .check(classes)
     }
 }

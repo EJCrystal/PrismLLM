@@ -49,6 +49,12 @@
             <artifactId>exposed-jdbc</artifactId>
             <version>${exposed.version}</version>
         </dependency>
+        <dependency>
+            <!-- 日志仓储在清理批处理失败时记录告警。 -->
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>

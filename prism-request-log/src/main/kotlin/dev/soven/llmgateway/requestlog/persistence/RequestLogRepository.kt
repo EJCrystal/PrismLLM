@@ -1,10 +1,5 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.requestlog.persistence
 
-import dev.soven.llmgateway.channel.persistence.ChannelKeys
-import dev.soven.llmgateway.channel.persistence.Channels
-import dev.soven.llmgateway.quota.persistence.ClientKeys
-import dev.soven.llmgateway.requestlog.persistence.RequestLogs
-import dev.soven.llmgateway.requestlog.persistence.RequestAttempts
 import dev.soven.llmgateway.requestlog.domain.attemptOutcome
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
@@ -64,7 +59,10 @@ import org.slf4j.LoggerFactory
  * @author 文杰
  * @since 2026-10-21
  */
-class RequestLogRepository(private val database: Database) {
+class RequestLogRepository(
+    private val database: Database,
+    private val nameResolver: RequestLogNameResolver,
+) {
     private val logger = LoggerFactory.getLogger(RequestLogRepository::class.java)
     private val failoverAggregate: org.jetbrains.exposed.v1.core.Expression<Long?> = run {
         val attempts = coalesce(RequestLogs.upstreamAttempts, org.jetbrains.exposed.v1.core.intLiteral(1))
@@ -147,7 +145,7 @@ class RequestLogRepository(private val database: Database) {
     }
 
     /** Process IDs selected by one batch, even if another gateway indexes them first. */
-    internal suspend fun indexSelectedHealthBatch(ids: List<Long>): Int {
+    suspend fun indexSelectedHealthBatch(ids: List<Long>): Int {
         var firstFailure: Exception? = null
         for (id in ids) {
             try {
@@ -224,9 +222,9 @@ class RequestLogRepository(private val database: Database) {
             .orderBy(RequestLogs.id, org.jetbrains.exposed.v1.core.SortOrder.DESC)
             .limit(limit.coerceIn(1, 500))
             .map(::toRecord)
-        val clientKeyNames = currentNames(ClientKeys.id, ClientKeys.name, records.mapNotNull { it.clientKeyId })
-        val channelNames = currentNames(Channels.id, Channels.name, records.mapNotNull { it.channelId })
-        val channelKeyNames = currentNames(ChannelKeys.id, ChannelKeys.name, records.mapNotNull { it.channelKeyId })
+        val clientKeyNames = nameResolver.resolve(RequestLogNameKind.CLIENT_KEY, records.mapNotNull { it.clientKeyId }.toSet())
+        val channelNames = nameResolver.resolve(RequestLogNameKind.CHANNEL, records.mapNotNull { it.channelId }.toSet())
+        val channelKeyNames = nameResolver.resolve(RequestLogNameKind.CHANNEL_KEY, records.mapNotNull { it.channelKeyId }.toSet())
         records.map { record ->
             record.copy(
                 clientKeyName = record.clientKeyId?.let { clientKeyNames[it] }?.takeIf { it.isNotBlank() }
@@ -258,14 +256,14 @@ class RequestLogRepository(private val database: Database) {
                 RequestLogs.clientKeyName,
                 where,
                 unassignedId = UNASSIGNED_CLIENT_KEY,
-                resolveCurrentNames = { ids -> currentNames(ClientKeys.id, ClientKeys.name, ids) },
+                resolveCurrentNames = { ids -> nameResolver.resolve(RequestLogNameKind.CLIENT_KEY, ids) },
             ),
             byChannel = groupedQuery(
                 RequestLogs.channelId,
                 RequestLogs.channelName,
                 where,
                 unassignedId = UNASSIGNED_CHANNEL,
-                resolveCurrentNames = { ids -> currentNames(Channels.id, Channels.name, ids) },
+                resolveCurrentNames = { ids -> nameResolver.resolve(RequestLogNameKind.CHANNEL, ids) },
             ),
             byModel = groupedQuery(RequestLogs.upstreamModel, RequestLogs.upstreamModel, where, unassignedId = UNASSIGNED_MODEL),
             byChannelKey = groupedQuery(
@@ -273,7 +271,7 @@ class RequestLogRepository(private val database: Database) {
                 RequestLogs.channelKeyName,
                 where,
                 unassignedId = UNASSIGNED_CHANNEL_KEY,
-                resolveCurrentNames = { ids -> currentNames(ChannelKeys.id, ChannelKeys.name, ids) },
+                resolveCurrentNames = { ids -> nameResolver.resolve(RequestLogNameKind.CHANNEL_KEY, ids) },
             ),
             byProtocol = groupedQuery(RequestLogs.protocol, RequestLogs.protocol, where, unassignedId = UNASSIGNED_PROTOCOL),
             byErrorCode = errorQuery(this, query),
@@ -430,23 +428,6 @@ class RequestLogRepository(private val database: Database) {
                 costs = costs[id].orEmpty(),
             )
         }.sortedByDescending { it.totalTokens }
-    }
-
-    private fun currentNames(
-        idColumn: Column<String>,
-        nameColumn: Column<String>,
-        ids: Collection<String>,
-    ): Map<String, String> {
-        val distinctIds = ids.asSequence().filter { it.isNotBlank() }.distinct().toList()
-        if (distinctIds.isEmpty()) return emptyMap()
-        return idColumn.table.select(idColumn, nameColumn)
-            .where { idColumn inList distinctIds }
-            .mapNotNull { row ->
-                val id = row[idColumn].takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                val name = row[nameColumn].takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                id to name
-            }
-            .toMap()
     }
 
     private fun <T : String?> groupedCosts(
