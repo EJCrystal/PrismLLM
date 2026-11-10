@@ -1506,7 +1506,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
         post("/oauth-accounts/{id}/model-test") {
             call.requireAdmin(app)
             val accountId = call.requiredParam("id", "缺少账号 id")
-            val account = app.oauthAccountRepository.find(accountId)
+            // 必须加载模型授权：find() 的空模型列表表示“全部模型”，会绕开账号级限制。
+            val account = app.oauthAccountRepository.findDetailed(accountId)
                 ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
             val request = call.receive<ChannelModelTestRequest>()
             val model = request.model.trim()
