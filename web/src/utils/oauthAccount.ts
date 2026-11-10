@@ -65,6 +65,19 @@ export function formatCooldownRemaining(until: number | null | undefined, now: n
   return `${seconds} 秒`
 }
 
+/**
+ * access token 的剩余时间。它是短期凭据，到期前会自动续期，
+ * 这里的倒计时只用来解释「为什么刚授权就显示快过期」。
+ */
+export function formatTokenRemaining(expiresAt: number | null | undefined, now: number): string | null {
+  if (expiresAt == null || !Number.isFinite(expiresAt)) return null
+  if (expiresAt <= now) return '已过期'
+  const minutes = Math.ceil((expiresAt - now) / 60_000)
+  if (minutes >= 1_440) return `${Math.ceil(minutes / 1_440)} 天后`
+  if (minutes >= 60) return `${Math.ceil(minutes / 60)} 小时后`
+  return `${minutes} 分钟后`
+}
+
 export function isOAuthAccountCooling(account: Pick<OAuthAccount, 'runtime'>, now: number): boolean {
   return formatCooldownRemaining(account.runtime.cooldownUntil, now) != null
 }
@@ -204,6 +217,37 @@ export function filterOAuthModels(models: string[], query: string): string[] {
   const text = query.trim().toLowerCase()
   if (!text) return [...models]
   return models.filter((model) => model.toLowerCase().includes(text))
+}
+
+export interface OAuthAccountModelsView {
+  /** 账号实际可调度的模型，按名称排序并去重。 */
+  names: string[]
+  /** 表格里直接展示的模型名称。 */
+  visible: string[]
+  /** 折叠进 +N 的模型名称。 */
+  hidden: string[]
+  /** models 为空、继承账号目录或关联渠道模型。 */
+  inherited: boolean
+}
+
+/**
+ * 账号可调度的具体模型名称：显式授权优先；未单独限制时用账号自己的目录，
+ * 尚未同步目录时退回所关联渠道的模型。models 为空不表示“没有模型”，
+ * 所以不能只显示数量。
+ */
+export function oauthAccountModelsView(
+  account: Pick<OAuthAccount, 'models' | 'modelCatalog' | 'channelIds'>,
+  channels: Array<{ id: string; models: string[] }>,
+  maxVisible = 3,
+): OAuthAccountModelsView {
+  const inherited = account.models.length === 0
+  const source = inherited
+    ? account.modelCatalog ?? availableOAuthModels(channels, account.channelIds)
+    : account.models
+  const names = [...new Set(source.map((model) => model.trim()).filter(Boolean))].sort()
+  const limit = Math.max(1, Math.floor(maxVisible))
+  const visible = names.slice(0, limit)
+  return { names, visible, hidden: names.slice(visible.length), inherited }
 }
 
 /** 连通性测试可选的模型：账号目录（未同步时用端点渠道模型）与账号授权模型的交集。 */

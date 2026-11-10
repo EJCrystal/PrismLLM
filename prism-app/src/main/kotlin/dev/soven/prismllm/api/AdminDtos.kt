@@ -1726,6 +1726,8 @@ data class OAuthAccountResponse(
     val quota: OAuthQuotaResponse? = null,
     val createdAt: Long,
     val updatedAt: Long,
+    /** refresh token 的获取时间；重新授权时更新，日常 token 刷新不改变。 */
+    val authorizedAt: Long,
     val policy: OAuthAccountPolicyResponse,
     val runtime: OAuthAccountRuntimeResponse,
 )
@@ -1822,6 +1824,7 @@ fun OAuthAccountRecord.toResponse(
     quota = quota?.toResponse(),
     createdAt = createdAt,
     updatedAt = updatedAt,
+    authorizedAt = authorizedAt,
     policy = policy.toResponse(),
     runtime = OAuthAccountRuntimeResponse(
         windowUsed = runtime?.windowUsed ?: 0,

@@ -209,6 +209,8 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals("ACTIVE", account["authState"]!!.jsonPrimitive.content)
             assertEquals("free@example.com", account["accountEmail"]!!.jsonPrimitive.content)
             assertEquals(expiresAt, account["accessTokenExpiresAt"]!!.jsonPrimitive.long)
+            // 新建账号的授权时间就是创建时间；access token 到期时间更短，不能替代授权时间。
+            assertEquals(account["createdAt"]!!.jsonPrimitive.long, account["authorizedAt"]!!.jsonPrimitive.long)
             assertEquals("http://127.0.0.1:8080", account["proxyUrl"]!!.jsonPrimitive.content)
             val policy = account["policy"]!!.jsonObject
             assertEquals(10_800, policy["windowSeconds"]!!.jsonPrimitive.int)

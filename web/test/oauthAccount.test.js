@@ -8,12 +8,14 @@ import {
   filterOAuthModels,
   formatCooldownRemaining,
   formatQuotaReset,
+  formatTokenRemaining,
   formatUsedPercent,
   formatWindowSeconds,
   isOAuthAccountCooling,
   isOAuthQuotaBlocked,
   oauthAccountModelCatalog,
   oauthAccountModelOptions,
+  oauthAccountModelsView,
   oauthCanSyncCatalog,
   oauthAccountStatus,
   oauthAuthStateBadge,
@@ -98,6 +100,64 @@ describe('oauthAccount: 订阅账号看板展示', () => {
     assert.equal(formatCooldownRemaining(NOW + 3_600_000, NOW), '1 小时')
     assert.equal(formatCooldownRemaining(null, NOW), null)
     assert.equal(formatCooldownRemaining(NOW - 1, NOW), null)
+  })
+
+  it('access token 剩余时间用来说明短期凭据，而不是授权有效期', () => {
+    assert.equal(formatTokenRemaining(NOW + 3_600_000, NOW), '1 小时后')
+    assert.equal(formatTokenRemaining(NOW + 90_000, NOW), '2 分钟后')
+    assert.equal(formatTokenRemaining(NOW, NOW), '已过期')
+    assert.equal(formatTokenRemaining(NOW - 1, NOW), '已过期')
+    assert.equal(formatTokenRemaining(null, NOW), null)
+  })
+
+  it('账号模型列优先显示显式授权，其次账号目录，最后关联渠道', () => {
+    const channels = [
+      { id: 'c1', models: ['gemini-3-pro', 'gemini-3-flash'] },
+      { id: 'c2', models: ['claude-sonnet-4-5'] },
+    ]
+    // 显式授权优先于目录和渠道。
+    assert.deepEqual(
+      oauthAccountModelsView(
+        { models: ['gpt-5', 'gpt-5'], modelCatalog: ['gemini-3-pro'], channelIds: ['c1', 'c2'] },
+        channels,
+      ),
+      { names: ['gpt-5'], visible: ['gpt-5'], hidden: [], inherited: false },
+    )
+    // 未单独限制时使用账号自己的上游目录。
+    assert.deepEqual(
+      oauthAccountModelsView(
+        { models: [], modelCatalog: ['claude-sonnet-4-5', 'gemini-3-pro'], channelIds: ['c1'] },
+        channels,
+      ),
+      {
+        names: ['claude-sonnet-4-5', 'gemini-3-pro'],
+        visible: ['claude-sonnet-4-5', 'gemini-3-pro'],
+        hidden: [],
+        inherited: true,
+      },
+    )
+    // 未同步目录时退回所关联渠道的模型并集。
+    assert.deepEqual(
+      oauthAccountModelsView({ models: [], modelCatalog: null, channelIds: ['c1', 'c2'] }, channels),
+      {
+        names: ['claude-sonnet-4-5', 'gemini-3-flash', 'gemini-3-pro'],
+        visible: ['claude-sonnet-4-5', 'gemini-3-flash', 'gemini-3-pro'],
+        hidden: [],
+        inherited: true,
+      },
+    )
+  })
+
+  it('模型列表只展示前几个，其余折叠成 +N', () => {
+    const view = oauthAccountModelsView(
+      { models: ['m1', 'm2', 'm3', 'm4', 'm5'], modelCatalog: null, channelIds: [] },
+      [],
+      2,
+    )
+    assert.deepEqual(view.visible, ['m1', 'm2'])
+    assert.deepEqual(view.hidden, ['m3', 'm4', 'm5'])
+    assert.equal(view.names.length, 5)
+    assert.equal(view.inherited, false)
   })
 })
 

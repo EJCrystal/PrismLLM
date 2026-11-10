@@ -93,6 +93,8 @@ data class OAuthAccountRecord(
     val quota: OAuthQuotaSnapshot? = null,
     val createdAt: Long,
     val updatedAt: Long,
+    /** refresh token 的获取时间：首次导入/登录与重新授权时更新，日常 token 刷新不改变。 */
+    val authorizedAt: Long = createdAt,
 ) : UpstreamCredential {
     override val isOAuth: Boolean get() = true
 

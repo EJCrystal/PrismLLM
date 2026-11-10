@@ -2336,6 +2336,79 @@ input[type="password"]::-ms-clear,
   min-width: 190px;
 }
 
+/* 订阅账号模型：直接显示具体模型名，超出部分折叠成 +N。 */
+.oauth-account-models {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: 190px;
+  margin-top: 5px;
+}
+
+.oauth-model-badge {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 7px;
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oauth-model-inherited {
+  font-size: 10px;
+}
+
+/* access token 是短期凭据；授权时间单独一行，避免把 token 到期误读成授权失效。 */
+.oauth-token-cell {
+  min-width: 168px;
+}
+
+.oauth-token-expiry {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.oauth-token-renew {
+  padding: 3px 7px;
+  font-size: 9px;
+}
+
+.oauth-token-authorized {
+  margin-top: 2px;
+}
+
+/* 窄屏横向滚动时操作列保持可见，和渠道、调用方密钥表一致。 */
+.oauth-accounts-table .actions-col {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  width: 190px;
+  min-width: 190px;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.oauth-accounts-table th.actions-col {
+  z-index: 5;
+  background: var(--table-head-bg);
+}
+
+.oauth-accounts-table tbody tr:hover > td.actions-col {
+  background: color-mix(in srgb, var(--brand) 4%, var(--panel));
+}
+
+@media (max-width: 640px) {
+  .oauth-accounts-table th.actions-col,
+  .oauth-accounts-table td.actions-col {
+    position: static;
+  }
+}
+
 .quota-group + .quota-group {
   margin-top: 8px;
 }

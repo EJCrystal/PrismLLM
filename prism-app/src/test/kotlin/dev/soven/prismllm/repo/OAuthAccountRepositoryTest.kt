@@ -5,6 +5,7 @@ import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.db.DatabaseFactory
 import dev.soven.prismllm.oauth.ProviderChannelProvisioner
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
+import dev.soven.prismllm.oauth.persistence.OAuthAccountCredentialUpdate
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.oauth.persistence.OAuthAccounts
 import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
@@ -223,6 +224,48 @@ class OAuthAccountRepositoryTest {
         val updated = channels.find(channelId)!!.modelMappings.map { it.upstreamModel }.toSet()
         assertTrue(updated.contains("gemini-4-argon-union"))
         assertTrue(updated.contains("gemini-3-flash-union"))
+    }
+
+    @Test
+    fun `authorized time changes only when the refresh token is replaced`() = runBlocking {
+        val account = create("authorized", enabled = true)
+        assertEquals(account.createdAt, account.authorizedAt)
+
+        // 日常刷新只换 access token，即使轮换了 refresh token 也仍是同一次授权。
+        val refreshed = repository.saveRefreshed(
+            accountId = account.id,
+            accessToken = cipher.encrypt("new-access"),
+            expiresAt = account.createdAt + 3_600_000,
+            tokenType = "Bearer",
+            scope = null,
+            rotatedRefreshToken = cipher.encrypt("rotated-refresh"),
+            now = account.createdAt + 1_000,
+        )!!
+        assertEquals(account.authorizedAt, refreshed.authorizedAt)
+
+        // 只补 access token、不换 refresh token 同样不算重新授权。
+        val accessOnly = repository.updateCredentials(
+            accountId = account.id,
+            input = OAuthAccountCredentialUpdate(
+                provider = account.provider,
+                accessToken = cipher.encrypt("imported-access"),
+                accessTokenExpiresAt = account.createdAt + 7_200_000,
+            ),
+            now = account.createdAt + 2_000,
+        )!!
+        assertEquals(account.authorizedAt, accessOnly.authorizedAt)
+
+        // 导入新的 refresh token 才是新的授权，授权时间随本次操作更新。
+        val reauthorized = repository.updateCredentials(
+            accountId = account.id,
+            input = OAuthAccountCredentialUpdate(
+                provider = account.provider,
+                refreshToken = cipher.encrypt("new-refresh"),
+            ),
+            now = account.createdAt + 5_000,
+        )!!
+        assertEquals(account.createdAt + 5_000, reauthorized.authorizedAt)
+        assertEquals(account.createdAt, reauthorized.createdAt)
     }
 
     private suspend fun create(name: String, enabled: Boolean): OAuthAccountRecord =

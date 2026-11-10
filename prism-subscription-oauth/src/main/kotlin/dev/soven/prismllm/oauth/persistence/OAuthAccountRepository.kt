@@ -249,6 +249,7 @@ open class OAuthAccountRepository(
             it[maxConcurrentRequests] = 1
             it[createdAt] = now
             it[OAuthAccounts.updatedAt] = now
+            it[authorizedAt] = now
         }
         replaceChannels(id, input.channelIds, now)
         replaceModels(id, input.models, now)
@@ -290,6 +291,8 @@ open class OAuthAccountRepository(
                 it[refreshTokenCiphertext] = refresh.ciphertext
                 it[refreshTokenNonce] = refresh.nonce
                 it[refreshTokenKeyVersion] = refresh.keyVersion
+                // 换成新的 refresh token 才算一次新的授权；只更新 access token 不改变授权时间。
+                it[authorizedAt] = now
             }
             it[accessTokenCiphertext] = input.accessToken?.ciphertext
             it[accessTokenNonce] = input.accessToken?.nonce
@@ -691,6 +694,7 @@ open class OAuthAccountRepository(
         quota = toQuota(row),
         createdAt = row[OAuthAccounts.createdAt],
         updatedAt = row[OAuthAccounts.updatedAt],
+        authorizedAt = row[OAuthAccounts.authorizedAt],
     )
 
     private fun toModelCatalog(row: ResultRow): List<OAuthAccountModelCatalogEntry>? =

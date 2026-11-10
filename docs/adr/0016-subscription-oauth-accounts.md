@@ -10,7 +10,7 @@
 
 ### 数据模型
 
-- 新增独立表 `oauth_accounts`：账号 id、名称、provider、账号邮箱/套餐、`refresh_token_*` 密文、`access_token_*` 密文与到期时间、`auth_state`、`enabled`、`priority`、代理、调度策略、额度快照与时间戳。
+- 新增独立表 `oauth_accounts`：账号 id、名称、provider、账号邮箱/套餐、`refresh_token_*` 密文、`access_token_*` 密文与到期时间、`auth_state`、`enabled`、`priority`、代理、调度策略、额度快照与时间戳。`authorized_at` 记录 refresh token 的获取时间，只在重新授权时更新；短期 access token 的到期时间不能代表授权有效期（见 [V65](../migrations/V65-oauth-authorized-at.md)）。
 - 新增 `oauth_account_channels`：账号与渠道的多对多关联。渠道只决定请求发往哪个上游端点，账号决定用哪个身份；同一账号可以同时服务多个渠道。
 - 新增 `oauth_account_models`：账号显式授权的上游模型。没有记录表示继承所关联渠道的全部模型，便于新账号直接使用渠道模型目录。
 - 新增 `oauth_account_windows`：账号级调度状态快照，随账号级联删除。
