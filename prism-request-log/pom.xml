@@ -38,6 +38,17 @@
             <artifactId>kotlinx-coroutines-core</artifactId>
             <version>${coroutines.version}</version>
         </dependency>
+        <dependency>
+            <!-- 保留清理设置表映射与开关持久化使用 Exposed。 -->
+            <groupId>org.jetbrains.exposed</groupId>
+            <artifactId>exposed-core</artifactId>
+            <version>${exposed.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.exposed</groupId>
+            <artifactId>exposed-jdbc</artifactId>
+            <version>${exposed.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>

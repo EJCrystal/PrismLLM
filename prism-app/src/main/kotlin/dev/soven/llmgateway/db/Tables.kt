@@ -83,17 +83,6 @@ object AdminAuditLogs : Table("admin_audit_logs") {
     }
 }
 
-/**
- * 请求日志保留策略的运行期设置。数据库中的值覆盖启动环境变量。
- */
-object RetentionSettings : Table("retention_settings") {
-    val id = integer("id")
-    val cleanupEnabled = bool("cleanup_enabled")
-    val updatedAt = long("updated_at")
-
-    override val primaryKey = PrimaryKey(id)
-}
-
 /** 渠道模型连通性测试的全局默认值。 */
 object ModelTestSettings : Table("model_test_settings") {
     val id = integer("id")
