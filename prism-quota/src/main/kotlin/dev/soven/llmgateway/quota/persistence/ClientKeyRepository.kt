@@ -1,6 +1,5 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.quota.persistence
 
-import dev.soven.llmgateway.db.ClientKeys
 import dev.soven.llmgateway.quota.domain.ClientKeyRecord
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaLimits
 import org.jetbrains.exposed.v1.core.ResultRow

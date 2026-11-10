@@ -1,6 +1,5 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.quota.persistence
 
-import dev.soven.llmgateway.db.ClientKeyQuotaUsage as ClientKeyQuotaUsageTable
 import dev.soven.llmgateway.quota.domain.ClientKeyQuotaUsage
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
@@ -17,9 +16,9 @@ import java.math.BigDecimal
  */
 class ClientKeyQuotaRepository(private val database: Database) {
     suspend fun usage(clientKeyId: String, period: Long): ClientKeyQuotaUsage = suspendTransaction(database) {
-        ClientKeyQuotaUsageTable
+        ClientKeyQuotaUsages
             .selectAll()
-            .where { (ClientKeyQuotaUsageTable.clientKeyId eq clientKeyId) and (ClientKeyQuotaUsageTable.period eq period) }
+            .where { (ClientKeyQuotaUsages.clientKeyId eq clientKeyId) and (ClientKeyQuotaUsages.period eq period) }
             .singleOrNull()
             ?.let(::toUsage)
             ?: ClientKeyQuotaUsage()
@@ -31,12 +30,12 @@ class ClientKeyQuotaRepository(private val database: Database) {
         tokens: Long,
         costs: Map<String, BigDecimal>,
     ) = suspendTransaction(database) {
-        val existing = ClientKeyQuotaUsageTable
+        val existing = ClientKeyQuotaUsages
             .selectAll()
-            .where { (ClientKeyQuotaUsageTable.clientKeyId eq clientKeyId) and (ClientKeyQuotaUsageTable.period eq period) }
+            .where { (ClientKeyQuotaUsages.clientKeyId eq clientKeyId) and (ClientKeyQuotaUsages.period eq period) }
             .singleOrNull()
         if (existing == null) {
-            ClientKeyQuotaUsageTable.insert {
+            ClientKeyQuotaUsages.insert {
                 it[this.clientKeyId] = clientKeyId
                 it[this.period] = period
                 it[this.tokens] = tokens.coerceAtLeast(0)
@@ -45,8 +44,8 @@ class ClientKeyQuotaRepository(private val database: Database) {
                 it[eurCost] = costs["EUR"] ?: BigDecimal.ZERO
             }
         } else {
-            ClientKeyQuotaUsageTable.update({
-                (ClientKeyQuotaUsageTable.clientKeyId eq clientKeyId) and (ClientKeyQuotaUsageTable.period eq period)
+            ClientKeyQuotaUsages.update({
+                (ClientKeyQuotaUsages.clientKeyId eq clientKeyId) and (ClientKeyQuotaUsages.period eq period)
             }) {
                 it[this.tokens] = existing[this.tokens] + tokens.coerceAtLeast(0)
                 it[usdCost] = existing[usdCost] + (costs["USD"] ?: BigDecimal.ZERO)
@@ -57,11 +56,11 @@ class ClientKeyQuotaRepository(private val database: Database) {
     }
 
     private fun toUsage(row: ResultRow) = ClientKeyQuotaUsage(
-        dailyTokens = row[ClientKeyQuotaUsageTable.tokens],
+        dailyTokens = row[ClientKeyQuotaUsages.tokens],
         dailyCosts = mapOf(
-            "USD" to row[ClientKeyQuotaUsageTable.usdCost],
-            "CNY" to row[ClientKeyQuotaUsageTable.cnyCost],
-            "EUR" to row[ClientKeyQuotaUsageTable.eurCost],
+            "USD" to row[ClientKeyQuotaUsages.usdCost],
+            "CNY" to row[ClientKeyQuotaUsages.cnyCost],
+            "EUR" to row[ClientKeyQuotaUsages.eurCost],
         ),
     )
 }

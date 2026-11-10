@@ -9,7 +9,8 @@ import kotlin.test.assertTrue
 
 /**
  * 配额模块的依赖边界：策略与内存限流器只允许 JDK、Kotlin 标准库与协程原语；
- * 应用服务可以依赖共享内核的错误类型，但仍不感知渠道、持久化或 HTTP 框架。
+ * 应用服务可以依赖共享内核的错误类型；持久化可再加 Exposed，
+ * 但都不感知渠道、路由或 HTTP 框架。
  *
  * 额度策略不感知渠道、路由、持久化或 HTTP；一旦引入这些依赖，
  * 「请求是否放行」的判定就会与运行时基础设施重新耦合。
@@ -20,7 +21,11 @@ import kotlin.test.assertTrue
 class QuotaArchitectureTest {
     private val classes: JavaClasses = ClassFileImporter()
         .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
-        .importPackages("dev.soven.llmgateway.quota.domain", "dev.soven.llmgateway.quota.infra")
+        .importPackages(
+            "dev.soven.llmgateway.quota.domain",
+            "dev.soven.llmgateway.quota.infra",
+            "dev.soven.llmgateway.quota.persistence",
+        )
 
     private val quotaDomainDependencies = arrayOf(
         "java..",
@@ -41,6 +46,17 @@ class QuotaArchitectureTest {
         "dev.soven.llmgateway.shared.error..",
     )
 
+    /** 调用方密钥与额度账本的持久化只认识本模块领域模型与 Exposed。 */
+    private val quotaPersistenceDependencies = arrayOf(
+        "java..",
+        "kotlin..",
+        "kotlinx.coroutines..",
+        "org.jetbrains.annotations..",
+        "org.jetbrains.exposed..",
+        "dev.soven.llmgateway.quota.domain..",
+        "dev.soven.llmgateway.quota.persistence..",
+    )
+
     @Test
     fun `import covers the quota module`() {
         assertTrue(
@@ -59,6 +75,22 @@ class QuotaArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.quota.infra.RequestLimitService" },
             "ArchUnit 未导入请求准入服务，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.quota.persistence.ClientKeyRepository" },
+            "ArchUnit 未导入调用方密钥仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.quota.persistence.ClientKeyQuotaRepository" },
+            "ArchUnit 未导入额度账本仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.quota.persistence.ClientKeys" },
+            "ArchUnit 未导入调用方密钥表，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.quota.persistence.ClientKeyQuotaUsages" },
+            "ArchUnit 未导入额度账本表，规则会空跑",
+        )
     }
 
     @Test
@@ -74,6 +106,14 @@ class QuotaArchitectureTest {
         classes()
             .that().resideInAnyPackage("dev.soven.llmgateway.quota.infra..")
             .should().onlyDependOnClassesThat().resideInAnyPackage(*quotaInfraDependencies)
+            .check(classes)
+    }
+
+    @Test
+    fun `quota persistence only depends on the allowlist`() {
+        classes()
+            .that().resideInAnyPackage("dev.soven.llmgateway.quota.persistence..")
+            .should().onlyDependOnClassesThat().resideInAnyPackage(*quotaPersistenceDependencies)
             .check(classes)
     }
 }
