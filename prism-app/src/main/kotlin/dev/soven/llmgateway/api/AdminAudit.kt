@@ -1,6 +1,6 @@
 package dev.soven.llmgateway.api
 
-import dev.soven.llmgateway.repo.AdminAuditRepository
+import dev.soven.llmgateway.admin.persistence.AdminAuditRepository
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall

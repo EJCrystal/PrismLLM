@@ -29,8 +29,8 @@ import dev.soven.llmgateway.routing.readmodel.UpstreamModelCatalog
 import dev.soven.llmgateway.proxy.ModelPriceReferenceService
 import dev.soven.llmgateway.proxy.CurrencyExchangeService
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
-import dev.soven.llmgateway.repo.AdminUserRepository
-import dev.soven.llmgateway.repo.AdminAuditRepository
+import dev.soven.llmgateway.admin.persistence.AdminUserRepository
+import dev.soven.llmgateway.admin.persistence.AdminAuditRepository
 import dev.soven.llmgateway.repo.ChannelHealthDirectoryRepository
 import dev.soven.llmgateway.repo.OAuthProviderChannelLookup
 import dev.soven.llmgateway.repo.PricingChannelNames
