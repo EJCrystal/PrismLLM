@@ -21,6 +21,7 @@ import {
   oauthPolicySummary,
   oauthProviderLabel,
   oauthQuotaCreditsLabel,
+  oauthQuotaErrorHint,
   oauthQuotaErrorLabel,
   oauthQuotaTone,
   oauthQuotaWindows,
@@ -527,11 +528,12 @@ onBeforeUnmount(() => {
                     <span v-if="oauthQuotaCreditsLabel(account.quota)">{{ oauthQuotaCreditsLabel(account.quota) }}</span>
                     <span v-if="isOAuthQuotaBlocked(account, now)" class="text-danger">额度用尽</span>
                   </div>
-                  <div
-                    v-if="account.quota.error"
-                    class="small text-danger"
-                    :title="account.quota.error === 'project_missing' ? '请先用该 Google 账号登录一次 Antigravity 应用完成开通，再刷新额度' : ''"
-                  >{{ oauthQuotaErrorLabel(account.quota.error) }}</div>
+                  <div v-if="account.quota.error" class="small text-danger">
+                    {{ oauthQuotaErrorLabel(account.quota.error) }}
+                  </div>
+                  <div v-if="oauthQuotaErrorHint(account.quota.error)" class="small muted">
+                    {{ oauthQuotaErrorHint(account.quota.error) }}
+                  </div>
                   <span v-if="!oauthQuotaWindows(account.quota).length && !account.quota.error" class="muted small">暂无读数</span>
                 </template>
                 <span v-else class="muted small">暂无读数</span>

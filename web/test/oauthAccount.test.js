@@ -13,6 +13,7 @@ import {
   oauthPolicySummary,
   oauthProviderLabel,
   oauthQuotaCreditsLabel,
+  oauthQuotaErrorHint,
   oauthQuotaErrorLabel,
   oauthQuotaSummary,
   oauthQuotaTone,
@@ -166,10 +167,17 @@ describe('oauthAccount: 上游额度展示', () => {
   it('额度读取失败时给出可读原因，未知错误码保留原文', () => {
     assert.equal(oauthQuotaErrorLabel(null), null)
     assert.equal(oauthQuotaErrorLabel(''), null)
-    assert.equal(oauthQuotaErrorLabel('project_missing'), '账号未完成 Antigravity 开通')
+    assert.equal(oauthQuotaErrorLabel('project_missing'), '未获取到 Antigravity 项目')
     assert.equal(oauthQuotaErrorLabel('quota_read_timeout'), '额度读取超时')
     assert.equal(oauthQuotaErrorLabel('credential_unavailable'), '凭据不可用，请刷新 token')
     assert.equal(oauthQuotaErrorLabel('upstream_429'), '读取失败：upstream_429')
+  })
+
+  it('项目发现失败只把开通列为可能的处理步骤', () => {
+    assert.equal(oauthQuotaErrorHint(null), null)
+    assert.equal(oauthQuotaErrorHint('quota_read_timeout'), null)
+    assert.match(oauthQuotaErrorHint('project_missing'), /若账号尚未开通/)
+    assert.match(oauthQuotaErrorHint('project_missing'), /Antigravity 应用/)
   })
 
   it('浏览器登录回调只接受带 code 或 error 的地址', () => {

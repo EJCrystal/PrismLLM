@@ -136,10 +136,19 @@ export function isOAuthQuotaBlocked(account: Pick<OAuthAccount, 'runtime'>, now:
 /** 额度读取失败时的简短说明；未知错误码保留原文便于排查。 */
 export function oauthQuotaErrorLabel(error: string | null | undefined): string | null {
   if (!error) return null
-  if (error === 'project_missing') return '账号未完成 Antigravity 开通'
+  if (error === 'project_missing') return '未获取到 Antigravity 项目'
   if (error === 'quota_read_timeout') return '额度读取超时'
   if (error === 'credential_unavailable') return '凭据不可用，请刷新 token'
   return `读取失败：${error}`
+}
+
+/**
+ * 额度读取失败时的处理建议。项目发现失败既可能是账号未开通，也可能是发现请求失败，
+ * 所以只把开通列为可能的处理步骤，不能断定账号未开通。
+ */
+export function oauthQuotaErrorHint(error: string | null | undefined): string | null {
+  if (error !== 'project_missing') return null
+  return '若账号尚未开通，请先用同一个 Google 账号登录一次 Antigravity 应用，再刷新额度'
 }
 
 /** 额度单元格的紧凑文本；无读数时返回 null。 */
