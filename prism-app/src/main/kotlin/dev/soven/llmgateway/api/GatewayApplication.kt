@@ -388,14 +388,14 @@ val requestLogWriter = RequestLogWriter(
         timeoutMs = config.manxueTimeoutMs,
     )
     /** 部署默认值；管理台未保存配置时使用，也用于判断密钥是否来自环境变量。 */
-    val iqVisionDefaults = dev.soven.llmgateway.domain.IqVisionConfig(
+    val iqVisionDefaults = dev.soven.llmgateway.admin.domain.IqVisionConfig(
         enabled = config.iqVisionEnabled,
         baseUrl = config.iqVisionBaseUrl,
         model = config.iqVisionModel,
         apiKey = config.iqVisionApiKey.takeIf { it.isNotBlank() },
         timeoutMs = config.iqVisionTimeoutMs,
     )
-    val iqVisionSettingsRepository = dev.soven.llmgateway.repo.IqVisionSettingsRepository(
+    val iqVisionSettingsRepository = dev.soven.llmgateway.admin.persistence.IqVisionSettingsRepository(
         database = databaseFactory.database,
         credentialCipher = credentialCipher,
     )

@@ -1,9 +1,8 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.admin.persistence
 
-import dev.soven.llmgateway.db.IqVisionSettings
-import dev.soven.llmgateway.domain.IqVisionConfig
-import dev.soven.llmgateway.domain.IqVisionSettingsRecord
-import dev.soven.llmgateway.domain.effective
+import dev.soven.llmgateway.admin.domain.IqVisionConfig
+import dev.soven.llmgateway.admin.domain.IqVisionSettingsRecord
+import dev.soven.llmgateway.admin.domain.effective
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database

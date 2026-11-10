@@ -2,9 +2,9 @@ package dev.soven.llmgateway.integration
 
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.admin.domain.NewIqTestRun
-import dev.soven.llmgateway.domain.IqVisionSettingsRecord
-import dev.soven.llmgateway.domain.effective
-import dev.soven.llmgateway.repo.IqVisionSettingsUpdate
+import dev.soven.llmgateway.admin.domain.IqVisionSettingsRecord
+import dev.soven.llmgateway.admin.domain.effective
+import dev.soven.llmgateway.admin.persistence.IqVisionSettingsUpdate
 import io.ktor.client.request.header
 import io.ktor.client.request.get
 import io.ktor.client.request.post

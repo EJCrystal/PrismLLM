@@ -1,8 +1,8 @@
 package dev.soven.llmgateway.plugin.iq
 
-import dev.soven.llmgateway.domain.IqVisionConfig
-import dev.soven.llmgateway.repo.IqVisionSettingsSnapshot
-import dev.soven.llmgateway.repo.IqVisionSettingsStatus
+import dev.soven.llmgateway.admin.domain.IqVisionConfig
+import dev.soven.llmgateway.admin.persistence.IqVisionSettingsSnapshot
+import dev.soven.llmgateway.admin.persistence.IqVisionSettingsStatus
 import dev.soven.llmgateway.proxy.HtmlImageRenderer
 import dev.soven.llmgateway.proxy.SvgRenderResult
 import dev.soven.llmgateway.proxy.VisionAnimationInfo

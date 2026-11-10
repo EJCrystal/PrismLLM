@@ -1,8 +1,8 @@
 package dev.soven.llmgateway.api
 
-import dev.soven.llmgateway.domain.IqVisionConfig
-import dev.soven.llmgateway.domain.IqVisionSettingsRecord
-import dev.soven.llmgateway.domain.effective
+import dev.soven.llmgateway.admin.domain.IqVisionConfig
+import dev.soven.llmgateway.admin.domain.IqVisionSettingsRecord
+import dev.soven.llmgateway.admin.domain.effective
 import kotlinx.serialization.Serializable
 
 /**

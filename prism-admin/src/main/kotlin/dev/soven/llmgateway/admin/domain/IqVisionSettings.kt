@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.domain
+package dev.soven.llmgateway.admin.domain
 
 import java.net.URI
 
