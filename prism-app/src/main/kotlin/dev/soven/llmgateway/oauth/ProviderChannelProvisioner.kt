@@ -5,7 +5,7 @@ import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.channel.domain.ProviderEndpoints
 import dev.soven.llmgateway.channel.persistence.ChannelRepository
-import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock

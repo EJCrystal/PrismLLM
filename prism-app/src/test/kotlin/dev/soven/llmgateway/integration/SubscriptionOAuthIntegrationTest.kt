@@ -8,7 +8,7 @@ import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.oauth.infra.OAuthAccountDecision
 import dev.soven.llmgateway.oauth.infra.OAuthAccountDenyReason
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
-import dev.soven.llmgateway.repo.NewOAuthAccount
+import dev.soven.llmgateway.oauth.persistence.NewOAuthAccount
 import dev.soven.llmgateway.resilience.FailureKind
 import io.ktor.client.request.header
 import io.ktor.client.request.delete

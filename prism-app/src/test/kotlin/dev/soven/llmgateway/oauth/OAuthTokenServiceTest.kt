@@ -15,9 +15,10 @@ import dev.soven.llmgateway.oauth.infra.proxyAddress
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.channel.persistence.ChannelRepository
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
-import dev.soven.llmgateway.repo.NewOAuthAccount
-import dev.soven.llmgateway.repo.OAuthAccountRepository
-import dev.soven.llmgateway.repo.OAuthAccountCredentialUpdate
+import dev.soven.llmgateway.oauth.persistence.NewOAuthAccount
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository
+import dev.soven.llmgateway.repo.OAuthProviderChannelLookup
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountCredentialUpdate
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
@@ -69,7 +70,7 @@ class OAuthTokenServiceTest {
         factory.migrate()
         cipher = CredentialCipher(ByteArray(32) { 7 })
         channels = ChannelRepository(factory.database, cipher)
-        accounts = OAuthAccountRepository(factory.database)
+        accounts = OAuthAccountRepository(factory.database, OAuthProviderChannelLookup())
         server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/token") { exchange ->
             tokenRequests.incrementAndGet()

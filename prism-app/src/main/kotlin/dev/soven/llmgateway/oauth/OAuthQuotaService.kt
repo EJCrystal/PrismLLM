@@ -10,7 +10,7 @@ import dev.soven.llmgateway.oauth.infra.OAuthRefreshException
 import dev.soven.llmgateway.oauth.infra.proxyAddress
 import dev.soven.llmgateway.oauth.infra.sendBounded
 import dev.soven.llmgateway.shared.domain.OAuthProvider
-import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistProjectResolver
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistQuotaClient
 import kotlinx.coroutines.CancellationException

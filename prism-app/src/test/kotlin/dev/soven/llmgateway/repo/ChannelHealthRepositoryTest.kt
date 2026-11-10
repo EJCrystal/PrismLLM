@@ -13,6 +13,8 @@ import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.requestlog.domain.HealthMetrics
+import dev.soven.llmgateway.oauth.persistence.NewOAuthAccount
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository
 import dev.soven.llmgateway.requestlog.domain.HealthChannelSubject
 import dev.soven.llmgateway.requestlog.infra.ChannelHealthRepository
 import dev.soven.llmgateway.requestlog.persistence.RequestLogRepository
@@ -185,7 +187,7 @@ class ChannelHealthRepositoryTest {
             keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"), models = listOf("m1"))),
             authType = "bearer", enabled = true, modelMappings = listOf(ChannelModelRecord("m1")),
         )
-        val accounts = OAuthAccountRepository(factory.database)
+        val accounts = OAuthAccountRepository(factory.database, OAuthProviderChannelLookup())
         fun account(name: String, models: List<String>, enabled: Boolean = true) = NewOAuthAccount(
             name = name,
             provider = OAuthProvider.ANTIGRAVITY,

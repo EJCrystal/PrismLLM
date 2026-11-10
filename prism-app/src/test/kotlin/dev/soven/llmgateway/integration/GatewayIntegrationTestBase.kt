@@ -13,7 +13,7 @@ import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
-import dev.soven.llmgateway.repo.NewOAuthAccount
+import dev.soven.llmgateway.oauth.persistence.NewOAuthAccount
 import dev.soven.llmgateway.proxy.HtmlImageRenderer
 import dev.soven.llmgateway.proxy.SvgRenderResult
 import dev.soven.llmgateway.shared.crypto.ClientKeyHasher

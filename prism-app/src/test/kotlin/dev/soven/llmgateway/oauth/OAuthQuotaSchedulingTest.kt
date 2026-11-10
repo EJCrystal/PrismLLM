@@ -7,8 +7,9 @@ import dev.soven.llmgateway.oauth.domain.OAuthQuotaSnapshot
 import dev.soven.llmgateway.oauth.domain.OAuthQuotaWindow
 import dev.soven.llmgateway.channel.persistence.ChannelRepository
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
-import dev.soven.llmgateway.repo.NewOAuthAccount
-import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.oauth.persistence.NewOAuthAccount
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository
+import dev.soven.llmgateway.repo.OAuthProviderChannelLookup
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
@@ -51,7 +52,7 @@ class OAuthQuotaSchedulingTest {
         factory.migrate()
         cipher = CredentialCipher(ByteArray(32) { 9 })
         channels = ChannelRepository(factory.database, cipher)
-        accounts = OAuthAccountRepository(factory.database)
+        accounts = OAuthAccountRepository(factory.database, OAuthProviderChannelLookup())
     }
 
     @AfterAll

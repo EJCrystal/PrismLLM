@@ -32,6 +32,7 @@ import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.repo.AdminUserRepository
 import dev.soven.llmgateway.repo.AdminAuditRepository
 import dev.soven.llmgateway.repo.ChannelHealthDirectoryRepository
+import dev.soven.llmgateway.repo.OAuthProviderChannelLookup
 import dev.soven.llmgateway.repo.PricingChannelNames
 import dev.soven.llmgateway.repo.RequestLogCurrentNames
 import dev.soven.llmgateway.channel.persistence.ChannelRepository
@@ -54,7 +55,7 @@ import dev.soven.llmgateway.oauth.infra.OAuthWindowStateWriter
 import dev.soven.llmgateway.oauth.buildOAuthTokenProviders
 import dev.soven.llmgateway.channel.persistence.ModelTestSettingsRepository
 import dev.soven.llmgateway.repo.WebSearchSettingsRepository
-import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository
 import dev.soven.llmgateway.oauth.persistence.OAuthWindowRepository
 import dev.soven.llmgateway.channel.persistence.UpstreamRequestSettingsRepository
 import dev.soven.llmgateway.channel.persistence.UpstreamHeaderCatalogRepository
@@ -477,7 +478,7 @@ val requestLogWriter = RequestLogWriter(
         manifestUrl = config.upstreamHeaderCatalogUrl,
     )
     /** 订阅账号 access token 解析与后台轮换；未配置任何 Provider 时后台任务不扫描。 */
-    val oauthAccountRepository = OAuthAccountRepository(databaseFactory.database)
+    val oauthAccountRepository = OAuthAccountRepository(databaseFactory.database, OAuthProviderChannelLookup())
     /** 订阅账号的官方端点渠道：按 provider 置备，账号导入时自动挂上。 */
     val providerChannelProvisioner = ProviderChannelProvisioner(channelRepository, oauthAccountRepository)
     /**

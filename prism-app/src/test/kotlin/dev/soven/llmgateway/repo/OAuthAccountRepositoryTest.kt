@@ -2,6 +2,8 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.db.DatabaseFactory
+import dev.soven.llmgateway.oauth.persistence.NewOAuthAccount
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository
 import dev.soven.llmgateway.oauth.persistence.OAuthAccounts
 import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.shared.domain.OAuthProvider
@@ -46,7 +48,7 @@ class OAuthAccountRepositoryTest {
         )
         factory.migrate()
         cipher = CredentialCipher(ByteArray(32) { 5 })
-        repository = OAuthAccountRepository(factory.database)
+        repository = OAuthAccountRepository(factory.database, OAuthProviderChannelLookup())
     }
 
     @AfterAll

@@ -99,6 +99,14 @@ class SubscriptionOAuthArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.oauth.persistence.OAuthWindowRepository" },
             "ArchUnit 未导入窗口快照仓储，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository" },
+            "ArchUnit 未导入订阅账号仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.oauth.persistence.ProviderChannelLookup" },
+            "ArchUnit 未导入 provider 渠道端口，规则会空跑",
+        )
     }
 
     @Test

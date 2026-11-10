@@ -54,8 +54,8 @@ import dev.soven.llmgateway.proxy.resolveSavedCredential
 import dev.soven.llmgateway.proxy.testChannelModelConnectivity
 import dev.soven.llmgateway.channel.persistence.ChannelKeyUpdate
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
-import dev.soven.llmgateway.repo.NewOAuthAccount
-import dev.soven.llmgateway.repo.OAuthAccountCredentialUpdate
+import dev.soven.llmgateway.oauth.persistence.NewOAuthAccount
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountCredentialUpdate
 import dev.soven.llmgateway.channel.persistence.KeyAutoDisableSettingsAuditContext
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyDisableMode
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
