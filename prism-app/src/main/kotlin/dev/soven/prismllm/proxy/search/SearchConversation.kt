@@ -419,18 +419,30 @@ fun prepareResponsesSearchRequest(request: JsonObject, syntheticName: String): J
 }
 
 /**
- * 请求级 tools 与 additional_tools 输入项里的工具合并为请求级 tools；
- * 没有额外工具时原样返回。只用于搜索代理内部，转换层有完整的 [dev.soven.prismllm.protocol.AdditionalToolsKt] 版本。
+ * 请求级 tools 与 additional_tools 输入项里的工具合并为请求级 tools；没有额外工具时原样返回。
+ * 只用于搜索代理内部，转换层有完整的 [dev.soven.prismllm.protocol.AdditionalToolsKt] 版本；
+ * 搜索路径先移除 additional_tools 项，协议层的去重不会再执行，因此这里按同一规则去重：
+ * 已有工具优先保留，没有 name 的宿主工具按 type 去重。
  */
 private fun liftRequestTools(request: JsonObject): JsonObject {
     val extra = additionalToolsHostedTools(request)
     if (extra.isEmpty()) return request
     val tools = (request["tools"] as? JsonArray).orEmpty().toMutableList()
-    tools += extra
+    fun keyOf(tool: JsonObject): String {
+        val name = (tool["name"] as? JsonPrimitive)?.contentOrNull
+        return if (!name.isNullOrEmpty()) name else "#" + ((tool["type"] as? JsonPrimitive)?.contentOrNull ?: "")
+    }
+    val seen = tools.mapNotNullTo(mutableSetOf()) { (it as? JsonObject)?.let(::keyOf) }
+    extra.forEach { tool -> if (seen.add(keyOf(tool))) tools += tool }
     return JsonObject(request + ("tools" to JsonArray(tools)))
 }
 
-/** additional_tools 输入项里的全部工具对象，namespace 平铺。 */
+/**
+ * additional_tools 输入项里的全部工具对象。与协议层 liftAdditionalTools 只平铺 "functions"
+ * namespace 不同，这里平铺所有 namespace：这是有意的差异——搜索代理的产物要转成 Chat 上游，
+ * Chat 没有 namespace 概念，保留非 functions 的 namespace 标记只会在转换时被显式拒绝；
+ * 平铺后非 function 类型仍会在后续工具类型校验处报错，行为等价且多救回一层普通函数工具。
+ */
 private fun additionalToolsHostedTools(request: JsonObject): List<JsonObject> =
     (request["input"] as? JsonArray).orEmpty()
         .mapNotNull { it as? JsonObject }

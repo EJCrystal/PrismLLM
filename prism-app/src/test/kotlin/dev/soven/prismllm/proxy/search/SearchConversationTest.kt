@@ -384,8 +384,7 @@ class SearchConversationTest {
     }
 
     @Test
-    fun `additional tools function names block the synthetic name too`() {
-        val request = obj(
+    fun `additional tools function names block the synthetic name too`() {        val request = obj(
             """{
               "model":"m",
               "input":[
@@ -400,6 +399,36 @@ class SearchConversationTest {
         )
 
         assertEquals("magpie_web_search", syntheticWebSearchName(request))
+    }
+
+    @Test
+    fun `additional tools merge dedupes by name keeping existing tools`() {
+        // 搜索路径先移除 additional_tools 项，协议层的去重不再执行；抬升必须自带同规则去重。
+        val request = obj(
+            """{
+              "model":"m",
+              "input":[
+                {"type":"additional_tools","tools":[
+                  {"type":"namespace","name":"functions","tools":[
+                    {"type":"function","name":"shell","parameters":{"type":"object","properties":{"cmd":{}},"description":"client shell"}},
+                    {"type":"function","name":"fetch","parameters":{"type":"object"}},
+                    {"type":"web_search"}
+                  ]}
+                ]},
+                {"type":"message","role":"user","content":"hi"}
+              ],
+              "tools":[{"type":"function","name":"shell","description":"request-level shell","parameters":{"type":"object","properties":{"c":{}}}}]
+            }""",
+        )
+
+        val prepared = prepareResponsesSearchRequest(request, "web_search")
+        val tools = prepared["tools"]!!.jsonArray
+        // 同名 shell 保留请求级声明；fetch 与宿主 web_search（无 name）只出现一次，末位是合成函数。
+        assertEquals(3, tools.size)
+        assertEquals("shell", tools[0].jsonObject["name"]!!.toString().trim('"'))
+        assertEquals("request-level shell", tools[0].jsonObject["description"]!!.toString().trim('"'))
+        assertEquals("fetch", tools[1].jsonObject["name"]!!.toString().trim('"'))
+        assertEquals("web_search", tools[2].jsonObject["name"]!!.toString().trim('"'))
     }
 
     @Test
