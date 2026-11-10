@@ -9,10 +9,10 @@ import dev.soven.llmgateway.oauth.infra.postTokenRequest
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.channel.domain.ProviderEndpoints
 import dev.soven.llmgateway.shared.domain.saturatedAdd
-import dev.soven.llmgateway.repo.CredentialChangedException
-import dev.soven.llmgateway.repo.NewOAuthAccount
-import dev.soven.llmgateway.repo.OAuthAccountRepository
-import dev.soven.llmgateway.repo.OAuthAccountCredentialUpdate
+import dev.soven.llmgateway.oauth.persistence.CredentialChangedException
+import dev.soven.llmgateway.oauth.persistence.NewOAuthAccount
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountCredentialUpdate
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import dev.soven.llmgateway.security.credentialFingerprint
 import kotlinx.serialization.json.JsonObject

@@ -4,7 +4,8 @@ import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.shared.domain.OAuthProvider
-import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository
+import dev.soven.llmgateway.oauth.persistence.ProviderChannelLookup
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
 import kotlinx.coroutines.TimeoutCancellationException
@@ -337,7 +338,7 @@ class CodeAssistProjectResolverTest {
     /** 测试用内存实现：替换 repository 的缓存读写，不触碰真实数据库。 */
     private class FakeAccounts(
         private val saved: AtomicReference<OAuthAccountRepository.UpstreamContext?>,
-    ) : OAuthAccountRepository(unusedDatabase()) {
+    ) : OAuthAccountRepository(unusedDatabase(), ProviderChannelLookup { emptySet() }) {
         override suspend fun loadUpstreamContext(accountId: String): OAuthAccountRepository.UpstreamContext? =
             saved.get()
 

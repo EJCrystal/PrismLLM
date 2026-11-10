@@ -1,10 +1,5 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.oauth.persistence
 
-import dev.soven.llmgateway.channel.persistence.Channels
-import dev.soven.llmgateway.oauth.persistence.OAuthAccountChannels
-import dev.soven.llmgateway.oauth.persistence.OAuthAccountModels
-import dev.soven.llmgateway.oauth.persistence.OAuthAccounts
-import dev.soven.llmgateway.channel.domain.ChannelKind
 import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.oauth.domain.OAuthAuthState
@@ -81,7 +76,10 @@ data class OAuthAccountCredentialUpdate(
  * @author 文杰
  * @since 2026-11-06
  */
-open class OAuthAccountRepository(private val database: Database) {
+open class OAuthAccountRepository(
+    private val database: Database,
+    private val providerChannels: ProviderChannelLookup,
+) {
     /** 数据面快速路径：只读账号本体，不加载模型与渠道关联。 */
     suspend fun find(id: String): OAuthAccountRecord? = suspendTransaction(database) {
         OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }.singleOrNull()
@@ -578,10 +576,7 @@ open class OAuthAccountRepository(private val database: Database) {
         val managedIds = if (ids.isEmpty()) {
             emptySet()
         } else {
-            Channels.selectAll()
-                .where { (Channels.id inList ids) and (Channels.kind eq ChannelKind.PROVIDER.value) }
-                .map { it[Channels.id] }
-                .toSet()
+            providerChannels.managedChannelIds(ids)
         }
         ids.forEach { channelId ->
             OAuthAccountChannels.insert {

@@ -10,7 +10,7 @@ import dev.soven.llmgateway.oauth.infra.OAuthTokenProviderRegistry
 import dev.soven.llmgateway.shared.domain.KeyCredentialResolver
 import dev.soven.llmgateway.shared.domain.UpstreamCredential
 import dev.soven.llmgateway.shared.domain.saturatedAdd
-import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope

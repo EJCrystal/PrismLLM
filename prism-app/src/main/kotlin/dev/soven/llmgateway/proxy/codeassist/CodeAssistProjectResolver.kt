@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.proxy.codeassist
 
 import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
-import dev.soven.llmgateway.repo.OAuthAccountRepository
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountRepository
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -86,7 +86,8 @@ class CodeAssistProjectResolver(
         // 缓存是按某个出口协商出来的：出口一变就必须重新发现，而不是等 TTL 过期。
         // 进程刚启动、还没有协商记录时也按未知出口处理：持久化的上下文可能来自别的出口。
         val sameEgress = export?.egress == proxyKey
-        val fresh = cached?.project != null && cached.checkedAt != null && now() - cached.checkedAt < TIER_TTL_MS
+        val checkedAt = cached?.checkedAt
+        val fresh = cached?.project != null && checkedAt != null && now() - checkedAt < TIER_TTL_MS
         if (sameEgress && fresh) return Context(cached!!.project, cached.tier)
         val loaded = attempt(account.id, "loadCodeAssist") { loadCodeAssist(account.id, accessToken, proxy) }
             ?: return Context(
