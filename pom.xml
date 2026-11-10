@@ -29,6 +29,7 @@
         <module>prism-quota</module>
         <module>prism-pricing</module>
         <module>prism-request-log</module>
+        <module>prism-admin</module>
         <module>prism-app</module>
     </modules>
 
@@ -108,6 +109,11 @@
             <dependency>
                 <groupId>dev.soven</groupId>
                 <artifactId>prism-request-log</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.soven</groupId>
+                <artifactId>prism-admin</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

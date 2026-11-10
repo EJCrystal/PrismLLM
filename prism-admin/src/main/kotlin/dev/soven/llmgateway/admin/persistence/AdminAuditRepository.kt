@@ -1,7 +1,6 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.admin.persistence
 
-import dev.soven.llmgateway.db.AdminAuditLogs
-import dev.soven.llmgateway.domain.AdminAuditRecord
+import dev.soven.llmgateway.admin.domain.AdminAuditRecord
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.Op
@@ -36,7 +35,7 @@ class AdminAuditRepository(private val database: Database) {
     }
 
     /** 与系统触发的密钥状态变更共用当前事务，审计写入失败时一并回滚。 */
-    internal fun recordInTransaction(
+    fun recordInTransaction(
         actor: String?,
         action: String,
         method: String,
