@@ -19,6 +19,11 @@ export function modelTestProtocolLabel(protocol: string): string {
   return MODEL_TEST_PROTOCOL_LABELS[protocol] || protocol
 }
 
+/** 渠道与模型组合在检测目标下拉中的唯一 key。 */
+export function modelTestTargetKey(channelId: string, model: string): string {
+  return `${channelId}\u0000${model}`
+}
+
 export interface ModelTestRequestInput {
   model?: string | null
   protocol?: string | null

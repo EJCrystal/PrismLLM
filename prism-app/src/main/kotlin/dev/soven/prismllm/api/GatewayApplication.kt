@@ -29,6 +29,7 @@ import dev.soven.prismllm.routing.readmodel.UpstreamModelCatalog
 import dev.soven.prismllm.proxy.ModelPriceReferenceService
 import dev.soven.prismllm.proxy.CurrencyExchangeService
 import dev.soven.prismllm.proxy.UpstreamHeaderCatalogService
+import dev.soven.prismllm.proxy.fingerprint.FingerprintDetector
 import dev.soven.prismllm.admin.persistence.AdminUserRepository
 import dev.soven.prismllm.admin.persistence.AdminAuditRepository
 import dev.soven.prismllm.repo.ChannelHealthDirectoryRepository
@@ -332,6 +333,10 @@ class GatewayApplication(
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
     val iqTestRunRepository = dev.soven.prismllm.admin.persistence.IqTestRunRepository(databaseFactory.database)
+    val fingerprintTestRunRepository = dev.soven.prismllm.admin.persistence.FingerprintTestRunRepository(databaseFactory.database)
+    val fingerprintDetector: FingerprintDetector? = runCatching { FingerprintDetector.loadDefault() }
+        .onFailure { logger.warn("指纹检测参考库加载失败，相关接口将返回 503", it) }
+        .getOrNull()
     val iqQuestionRepository = dev.soven.prismllm.admin.persistence.IqQuestionRepository(databaseFactory.database)
     val upstreamRequestSettingsRepository = UpstreamRequestSettingsRepository(databaseFactory.database)
     val upstreamHeaderCatalogRepository = UpstreamHeaderCatalogRepository(databaseFactory.database)

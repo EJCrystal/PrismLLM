@@ -129,6 +129,7 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "PUT" && path.startsWith("/admin/api/iq-tests/questions/") -> "iq_question.update"
     method == "DELETE" && path.startsWith("/admin/api/iq-tests/questions/") -> "iq_question.delete"
     method == "POST" && path == "/admin/api/iq-tests" -> "iq_test.run"
+    method == "POST" && path == "/admin/api/model-tests/fingerprint" -> "model_test.fingerprint_run"
     method == "PUT" && IQ_TEST_MANUAL_VERDICT_PATTERN.matches(path) -> "iq_test.manual_verdict"
     method == "POST" && CHANNEL_COOLDOWN_CLEAR_PATTERN.matches(path) -> "channel.cooldown.clear"
     method == "POST" && path == "/admin/api/oauth-login/start" -> "oauth_account.login.start"
