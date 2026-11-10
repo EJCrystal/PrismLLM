@@ -11,7 +11,7 @@ import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.admin.domain.IqVisionSettingsRecord
 import dev.soven.llmgateway.admin.domain.NewIqTestRun
 import dev.soven.llmgateway.admin.persistence.IqVisionSettingsUpdate
-import dev.soven.llmgateway.domain.sameVisionEndpoint
+import dev.soven.llmgateway.admin.domain.sameVisionEndpoint
 import dev.soven.llmgateway.channel.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider
 import dev.soven.llmgateway.channel.domain.ChannelKeyRecord
