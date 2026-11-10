@@ -57,6 +57,18 @@ class PricingArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.pricing.persistence.ModelDefaultPrices" },
             "ArchUnit 未导入默认价表，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.pricing.domain.ChannelNameLookup" },
+            "ArchUnit 未导入渠道名称查询端口，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.pricing.persistence.ModelPriceRepository" },
+            "ArchUnit 未导入模型单价仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.pricing.persistence.ModelPrices" },
+            "ArchUnit 未导入模型单价表，规则会空跑",
+        )
     }
 
     @Test
