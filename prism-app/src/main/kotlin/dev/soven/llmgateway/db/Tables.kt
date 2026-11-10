@@ -83,15 +83,6 @@ object AdminAuditLogs : Table("admin_audit_logs") {
     }
 }
 
-/** 渠道模型连通性测试的全局默认值。 */
-object ModelTestSettings : Table("model_test_settings") {
-    val id = integer("id")
-    val defaultPrompt = text("default_prompt")
-    val updatedAt = long("updated_at")
-
-    override val primaryKey = PrimaryKey(id)
-}
-
 /** 管理台可编辑的 Web 搜索设置；没有行时沿用环境变量默认值。 */
 object WebSearchSettings : Table("web_search_settings") {
     val id = integer("id")

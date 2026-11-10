@@ -79,6 +79,18 @@ class ChannelArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.channel.persistence.UpstreamHeaderCatalogRepository" },
             "ArchUnit 未导入请求头目录仓储，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.channel.domain.ModelTestSettingsRecord" },
+            "ArchUnit 未导入模型测试设置记录，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.channel.persistence.ModelTestSettingsRepository" },
+            "ArchUnit 未导入模型测试设置仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.channel.persistence.ModelTestSettings" },
+            "ArchUnit 未导入模型测试设置表，规则会空跑",
+        )
     }
 
     @Test

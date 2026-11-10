@@ -49,7 +49,7 @@ import dev.soven.llmgateway.proxy.codeassist.CodeAssistModelCatalog
 import dev.soven.llmgateway.proxy.codeassist.CodeAssistQuotaClient
 import dev.soven.llmgateway.oauth.infra.OAuthWindowStateWriter
 import dev.soven.llmgateway.oauth.buildOAuthTokenProviders
-import dev.soven.llmgateway.repo.ModelTestSettingsRepository
+import dev.soven.llmgateway.channel.persistence.ModelTestSettingsRepository
 import dev.soven.llmgateway.repo.WebSearchSettingsRepository
 import dev.soven.llmgateway.repo.OAuthAccountRepository
 import dev.soven.llmgateway.oauth.persistence.OAuthWindowRepository
