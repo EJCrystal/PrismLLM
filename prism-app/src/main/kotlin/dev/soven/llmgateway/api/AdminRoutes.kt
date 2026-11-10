@@ -8,9 +8,9 @@ import dev.soven.llmgateway.shared.error.notFound
 import dev.soven.llmgateway.shared.error.serviceUnavailable
 
 import dev.soven.llmgateway.channel.domain.ChannelRecord
-import dev.soven.llmgateway.domain.IqVisionSettingsRecord
+import dev.soven.llmgateway.admin.domain.IqVisionSettingsRecord
 import dev.soven.llmgateway.admin.domain.NewIqTestRun
-import dev.soven.llmgateway.repo.IqVisionSettingsUpdate
+import dev.soven.llmgateway.admin.persistence.IqVisionSettingsUpdate
 import dev.soven.llmgateway.domain.sameVisionEndpoint
 import dev.soven.llmgateway.channel.domain.ChannelQuotaSettings
 import dev.soven.llmgateway.spi.quota.ChannelQuotaProvider
@@ -23,6 +23,7 @@ import dev.soven.llmgateway.shared.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
 import dev.soven.llmgateway.shared.domain.effectiveAuthType
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.admin.domain.WebSearchSettingsRecord
+import dev.soven.llmgateway.admin.domain.effective
 import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.proxy.validateUpstreamRequestOverrides
 import dev.soven.llmgateway.pricing.domain.ModelPriceTier

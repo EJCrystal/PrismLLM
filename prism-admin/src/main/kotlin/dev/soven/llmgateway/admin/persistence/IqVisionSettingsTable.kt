@@ -1,4 +1,4 @@
-package dev.soven.llmgateway.db
+package dev.soven.llmgateway.admin.persistence
 
 import org.jetbrains.exposed.v1.core.Table
 
