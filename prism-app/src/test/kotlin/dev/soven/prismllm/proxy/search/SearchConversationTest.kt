@@ -344,6 +344,125 @@ class SearchConversationTest {
     }
 
     @Test
+    fun `codex lite shape with web search in additional tools is prepared`() {
+        // Codex Responses Lite：web_search 藏在 additional_tools 输入项的 functions namespace 里。
+        val request = obj(
+            """{
+              "model":"gpt-6",
+              "input":[
+                {"type":"additional_tools","role":"developer","tools":[
+                  {"type":"namespace","name":"functions","tools":[
+                    {"type":"function","name":"shell","parameters":{"type":"object"}},
+                    {"type":"web_search","filters":{"allowed_domains":["example.com"]}}
+                  ]}
+                ]},
+                {"type":"message","role":"developer","content":[{"type":"input_text","text":"plan first"}]},
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"latest go?"}]}
+              ]
+            }""",
+        )
+
+        assertTrue(hasBuiltInWebSearch(request))
+        assertEquals(listOf("example.com"), webSearchAllowedDomains(request))
+        // 宿主 web_search 没有 name，不占用函数名；shell 才是命名工具。
+        assertEquals("web_search", syntheticWebSearchName(request))
+
+        val prepared = prepareResponsesSearchRequest(request, "web_search")
+        // 输入项只剩两条 message；工具只剩 shell 与合成函数，内置 web_search 已剥离。
+        val input = prepared["input"]!!.jsonArray
+        assertEquals(2, input.size)
+        val tools = prepared["tools"]!!.jsonArray
+        assertEquals(2, tools.size)
+        assertEquals("shell", tools[0].jsonObject["name"]!!.toString().trim('"'))
+        assertEquals("web_search", tools[1].jsonObject["name"]!!.toString().trim('"'))
+        // 未指定 tool_choice：首轮强制调用合成函数。
+        val choice = prepared["tool_choice"]!!.jsonObject
+        assertEquals("web_search", choice["name"]!!.toString().trim('"'))
+        // 改写后的请求可以直接转成 Chat（工具都是普通 function）。
+        val chat = responsesToChatRequest(prepared)
+        assertEquals(2, chat["tools"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `additional tools function names block the synthetic name too`() {        val request = obj(
+            """{
+              "model":"m",
+              "input":[
+                {"type":"additional_tools","tools":[
+                  {"type":"namespace","name":"functions","tools":[
+                    {"type":"function","name":"web_search","parameters":{"type":"object"}}
+                  ]}
+                ]},
+                {"type":"message","role":"user","content":"hi"}
+              ]
+            }""",
+        )
+
+        assertEquals("magpie_web_search", syntheticWebSearchName(request))
+    }
+
+    @Test
+    fun `additional tools merge dedupes by name keeping existing tools`() {
+        // 搜索路径先移除 additional_tools 项，协议层的去重不再执行；抬升必须自带同规则去重。
+        val request = obj(
+            """{
+              "model":"m",
+              "input":[
+                {"type":"additional_tools","tools":[
+                  {"type":"namespace","name":"functions","tools":[
+                    {"type":"function","name":"shell","parameters":{"type":"object","properties":{"cmd":{}},"description":"client shell"}},
+                    {"type":"function","name":"fetch","parameters":{"type":"object"}},
+                    {"type":"web_search"}
+                  ]}
+                ]},
+                {"type":"message","role":"user","content":"hi"}
+              ],
+              "tools":[{"type":"function","name":"shell","description":"request-level shell","parameters":{"type":"object","properties":{"c":{}}}}]
+            }""",
+        )
+
+        val prepared = prepareResponsesSearchRequest(request, "web_search")
+        val tools = prepared["tools"]!!.jsonArray
+        // 同名 shell 保留请求级声明；fetch 与宿主 web_search（无 name）只出现一次，末位是合成函数。
+        assertEquals(3, tools.size)
+        assertEquals("shell", tools[0].jsonObject["name"]!!.toString().trim('"'))
+        assertEquals("request-level shell", tools[0].jsonObject["description"]!!.toString().trim('"'))
+        assertEquals("fetch", tools[1].jsonObject["name"]!!.toString().trim('"'))
+        assertEquals("web_search", tools[2].jsonObject["name"]!!.toString().trim('"'))
+    }
+
+    @Test
+    fun `history function calls lose the namespace marker on the search path`() {
+        // 搜索路径删除 additional_tools 项后协议层不会再清理历史调用；抬升必须同步去掉 namespace 标记，
+        // 与 liftAdditionalTools 的行为一致，否则转换后的调用项携带 Chat 无法表达的分组字段。
+        val request = obj(
+            """{
+              "model":"m",
+              "input":[
+                {"type":"additional_tools","tools":[
+                  {"type":"namespace","name":"functions","tools":[
+                    {"type":"function","name":"shell","parameters":{"type":"object"}}
+                  ]}
+                ]},
+                {"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}","namespace":"functions"},
+                {"type":"function_call_output","call_id":"call_1","output":"done"},
+                {"type":"message","role":"user","content":"hi"}
+              ]
+            }""",
+        )
+
+        val prepared = prepareResponsesSearchRequest(request, "web_search")
+        val input = prepared["input"]!!.jsonArray
+        assertEquals(3, input.size)
+        assertEquals("function_call", input[0].jsonObject["type"]!!.toString().trim('"'))
+        assertEquals(null, input[0].jsonObject["namespace"])
+        assertEquals("function_call_output", input[1].jsonObject["type"]!!.toString().trim('"'))
+        // 改写后可直接转成 Chat：function_call 已是普通调用。
+        val chat = responsesToChatRequest(prepared)
+        assertEquals(1, chat["messages"]!!.jsonArray.filter { it.jsonObject["role"]!!.toString().contains("assistant") }.size)
+    }
+
+    @Test
     fun `prepared request converts to chat after dropping history search items`() {
         val request = obj(
             """{"model":"m","input":[{"type":"message","role":"user","content":"hi"},{"type":"web_search_call","id":"ws_1"}],"tools":[{"type":"web_search"}]}""",

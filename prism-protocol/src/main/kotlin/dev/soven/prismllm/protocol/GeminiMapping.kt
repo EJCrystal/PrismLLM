@@ -469,7 +469,10 @@ internal fun geminiToResponsesRequest(request: JsonObject, upstreamModel: String
     }
 }
 
-internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {
+internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: String): JsonObject {
+    // Codex 的 Responses Lite 形状把工具放在 additional_tools 输入项里；转换前先抬升为请求级 tools。
+    val responses = liftAdditionalTools(responses)
+    return buildJsonObject {
     validateResponsesRequest(responses)
     val system = mutableListOf<String>()
     responses.string("instructions")?.takeIf { it.isNotBlank() }?.let { system += it }
@@ -573,6 +576,7 @@ internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: Stri
         }) })
     }
     responsesToolChoiceToGemini(responses["tool_choice"])?.let { put("toolConfig", it) }
+    }
 }
 
 internal fun geminiToResponsesResponse(response: JsonObject, model: String): JsonObject = buildJsonObject {
