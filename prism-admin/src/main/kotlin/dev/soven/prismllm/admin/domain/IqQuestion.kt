@@ -29,7 +29,9 @@ fun normalizeIqAnswer(answerType: String, value: String): String? {
             if (!IQ_NUMBER.matches(text)) return null
             val number = text.toBigDecimalOrNull() ?: return null
             if (number.scale().toLong() !in -10000L..10000L || number.precision() > 2000) return null
-            number.stripTrailingZeros().toString()
+            val normalized = number.stripTrailingZeros()
+            if (normalized.scale().toLong() !in -10000L..10000L) return null
+            normalized.toString().takeIf { it.length <= 2000 }
         }
         else -> null
     }

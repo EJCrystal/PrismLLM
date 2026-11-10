@@ -45,6 +45,18 @@ class IqQuestionTestTest {
     }
 
     @Test
+    fun accepted_numbers_remain_valid_after_normalization_at_scale_and_length_limits() {
+        assertNull(normalizeIqAnswer("number", "10e10000"))
+        assertNull(normalizeIqAnswer("number", "-100e10000"))
+        assertNull(normalizeIqAnswer("number", "9".repeat(1994) + "e9999"))
+        for (answer in listOf("10e9999", "1e10000", "1e-10000", "0e10000", "21.000", "9".repeat(2000), "9".repeat(1991) + "e9999")) {
+            val normalized = requireNotNull(normalizeIqAnswer("number", answer)) { answer }
+            assertEquals(normalized, normalizeIqAnswer("number", normalized), answer)
+            assertEquals(IqVerdict.PASSED, evaluateIqQuestion("""{"answer":$answer}""", "number", normalized).verdict)
+        }
+    }
+
+    @Test
     fun text_comparison_trims_only_outer_whitespace_and_respects_case() {
         assertEquals(IqVerdict.PASSED, evaluateIqQuestion("""{"answer":"  Cat  "}""", "text", "Cat").verdict)
         assertEquals(IqVerdict.INCORRECT, evaluateIqQuestion("""{"answer":"cat"}""", "text", "Cat").verdict)
