@@ -49,8 +49,9 @@ sealed interface OAuthQuotaResult {
 }
 
 /**
- * 上游额度观测：读取 ChatGPT 的 `/wham/usage`，把 5 小时与每周窗口的使用比例、
- * 重置时间、credits 与可重置额度写入账号表，并同步给调度器。
+ * 上游额度观测：ChatGPT 读取 `/wham/usage`，Antigravity 读取 Code Assist 的
+ * `retrieveUserQuotaSummary`，把 5 小时与每周窗口的使用比例、重置时间、
+ * credits 与可重置额度写入账号表，并同步给调度器。
  *
  * 约束：
  * - 只读取，不消耗上游额度；每次读数都走账号绑定的同一个代理出口。

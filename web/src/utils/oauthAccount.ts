@@ -133,6 +133,15 @@ export function isOAuthQuotaBlocked(account: Pick<OAuthAccount, 'runtime'>, now:
   return until != null && until > now
 }
 
+/** 额度读取失败时的简短说明；未知错误码保留原文便于排查。 */
+export function oauthQuotaErrorLabel(error: string | null | undefined): string | null {
+  if (!error) return null
+  if (error === 'project_missing') return '账号未完成 Antigravity 开通'
+  if (error === 'quota_read_timeout') return '额度读取超时'
+  if (error === 'credential_unavailable') return '凭据不可用，请刷新 token'
+  return `读取失败：${error}`
+}
+
 /** 额度单元格的紧凑文本；无读数时返回 null。 */
 export function oauthQuotaSummary(quota: OAuthQuota | null | undefined): string | null {
   if (!quota) return null

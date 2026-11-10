@@ -13,6 +13,7 @@ import {
   oauthPolicySummary,
   oauthProviderLabel,
   oauthQuotaCreditsLabel,
+  oauthQuotaErrorLabel,
   oauthQuotaSummary,
   oauthQuotaTone,
   oauthQuotaWindows,
@@ -160,6 +161,15 @@ describe('oauthAccount: 上游额度展示', () => {
     assert.equal(oauthQuotaCreditsLabel({ ...quota, creditsBalance: null }), null)
     assert.equal(oauthQuotaSummary(quota), '5 小时 100% · 7 天 43% · Credits 12.5')
     assert.equal(oauthQuotaSummary(null), null)
+  })
+
+  it('额度读取失败时给出可读原因，未知错误码保留原文', () => {
+    assert.equal(oauthQuotaErrorLabel(null), null)
+    assert.equal(oauthQuotaErrorLabel(''), null)
+    assert.equal(oauthQuotaErrorLabel('project_missing'), '账号未完成 Antigravity 开通')
+    assert.equal(oauthQuotaErrorLabel('quota_read_timeout'), '额度读取超时')
+    assert.equal(oauthQuotaErrorLabel('credential_unavailable'), '凭据不可用，请刷新 token')
+    assert.equal(oauthQuotaErrorLabel('upstream_429'), '读取失败：upstream_429')
   })
 
   it('浏览器登录回调只接受带 code 或 error 的地址', () => {
