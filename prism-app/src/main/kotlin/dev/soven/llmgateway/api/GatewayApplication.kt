@@ -31,6 +31,7 @@ import dev.soven.llmgateway.proxy.CurrencyExchangeService
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.repo.AdminUserRepository
 import dev.soven.llmgateway.repo.AdminAuditRepository
+import dev.soven.llmgateway.repo.ChannelHealthDirectoryRepository
 import dev.soven.llmgateway.repo.PricingChannelNames
 import dev.soven.llmgateway.repo.RequestLogCurrentNames
 import dev.soven.llmgateway.channel.persistence.ChannelRepository
@@ -320,7 +321,11 @@ class GatewayApplication(
     val channelKeyRateLimiter = ChannelKeyRateLimiter()
     val upstreamOccupancy = UpstreamOccupancy()
     val requestLogRepository = RequestLogRepository(databaseFactory.database, RequestLogCurrentNames())
-    val channelHealthRepository = dev.soven.llmgateway.repo.ChannelHealthRepository(databaseFactory.database, config.cooldown.ttftSlowThresholdMs)
+    val channelHealthRepository = dev.soven.llmgateway.requestlog.infra.ChannelHealthRepository(
+        databaseFactory.database,
+        config.cooldown.ttftSlowThresholdMs,
+        ChannelHealthDirectoryRepository(databaseFactory.database),
+    )
     private var channelHealthIndexJob: Job? = null
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)

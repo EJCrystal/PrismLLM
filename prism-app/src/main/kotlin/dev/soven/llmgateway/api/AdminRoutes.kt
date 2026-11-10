@@ -2035,7 +2035,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
             }
             call.respond(
                 app.channelHealthRepository.detail(
-                    window, channel, app.config.retention.retentionDays, availability,
+                    window,
+                    dev.soven.llmgateway.requestlog.domain.HealthChannelSubject(
+                        channel.id, channel.enabled, channel.keys.associate { it.id to it.name },
+                    ),
+                    app.config.retention.retentionDays, availability,
                     cooldown = app.candidateCooldown.channelCooldownSummary(
                         channel.id,
                         channel.keys.map { it.id to it.models },

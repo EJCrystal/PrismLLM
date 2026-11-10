@@ -141,3 +141,33 @@ fun healthState(
 }
 
 private fun Double.asPercent(): Int = (this * 100).toInt()
+
+/** 健康度概览里单个渠道密钥的只读事实。 */
+data class HealthChannelKey(
+    val id: String,
+    val models: List<String>,
+    val routable: Boolean,
+)
+
+/** 渠道健康度概览：只含渠道身份、启用状态与凭据可路由性。 */
+data class HealthChannelOverview(
+    val id: String,
+    val enabled: Boolean,
+    val keys: List<HealthChannelKey>,
+    /** 支持该渠道任一授权模型的可路由凭据总数（静态密钥 + 订阅账号）。 */
+    val routableCredentials: Int = 0,
+)
+
+/** 详情查询所需的渠道事实；密钥名称由调用方合并订阅账号名称后传入。 */
+data class HealthChannelSubject(
+    val id: String,
+    val enabled: Boolean,
+    val keyNames: Map<String, String> = emptyMap(),
+)
+
+/** 渠道与订阅账号目录的只读端口，由应用层注入，避免日志模块依赖渠道或账号上下文。 */
+interface ChannelHealthDirectory {
+    suspend fun overviews(now: Long): List<HealthChannelOverview>
+
+    suspend fun oauthAccountNames(channelId: String): Map<String, String>
+}

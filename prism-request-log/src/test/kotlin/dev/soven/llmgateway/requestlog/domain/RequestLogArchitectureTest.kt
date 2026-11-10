@@ -45,6 +45,7 @@ class RequestLogArchitectureTest {
         "kotlinx.serialization..",
         "kotlinx.coroutines..",
         "org.jetbrains.annotations..",
+        "org.jetbrains.exposed..",
         "org.slf4j..",
         "dev.soven.llmgateway.requestlog.domain..",
         "dev.soven.llmgateway.requestlog.infra..",
@@ -106,6 +107,18 @@ class RequestLogArchitectureTest {
         assertTrue(
             classes.any { it.name == "dev.soven.llmgateway.requestlog.infra.ChannelHealthIndexerKt" },
             "ArchUnit 未导入健康度索引任务，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.infra.ChannelHealthRepository" },
+            "ArchUnit 未导入健康度报表仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.domain.ChannelHealthDirectory" },
+            "ArchUnit 未导入健康度目录端口，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.domain.HealthChannelOverview" },
+            "ArchUnit 未导入健康度概览记录，规则会空跑",
         )
         assertTrue(
             classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RetentionSettingsRepository" },
