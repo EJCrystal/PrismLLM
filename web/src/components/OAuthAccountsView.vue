@@ -22,8 +22,6 @@ import {
   isOAuthAccountCooling,
   isOAuthQuotaBlocked,
   oauthAccountStatus,
-  oauthAuthStateBadge,
-  oauthAuthStateLabel,
   oauthLoginCallbackError,
   oauthPolicySummary,
   oauthProviderLabel,
@@ -414,8 +412,8 @@ function openSettings(account: OAuthAccount) {
     enabled: account.enabled,
     proxyUrl: account.proxyUrl ?? '',
     clearProxy: false,
-    // 默认手动选择：空模型列表在后端表示“全部模型”，界面不再默认继承全部。
-    allModels: false,
+    // 如实反映当前配置：空列表在后端表示“全部模型”。列表常驻可见，取消勾选即可改为只调度子集。
+    allModels: account.models.length === 0,
     selectedModels: [...account.models],
     customModels: '',
     modelQuery: '',
@@ -863,15 +861,36 @@ onBeforeUnmount(() => {
           <span>模型授权</span>
           <div class="oauth-model-picker">
             <div class="oauth-model-picker-toolbar">
-              <label class="oauth-model-search">
+              <label class="oauth-model-search" :class="{ 'is-disabled': settingsForm.allModels }">
                 <Icon name="search" :size="15" />
-                <input v-model="settingsForm.modelQuery" autocomplete="off" placeholder="搜索模型" />
+                <input
+                  v-model="settingsForm.modelQuery"
+                  autocomplete="off"
+                  :disabled="settingsForm.allModels"
+                  placeholder="搜索模型"
+                />
               </label>
-              <span class="muted small">已选 {{ selectedModelCount }} / {{ settingsModelOptions.length }}</span>
+              <span class="muted small">
+                {{
+                  settingsForm.allModels
+                    ? `全部 ${settingsModelOptions.length} 个模型`
+                    : `已选 ${selectedModelCount} / ${settingsModelOptions.length}`
+                }}
+              </span>
             </div>
-            <div v-if="!settingsForm.allModels" class="oauth-model-list">
-              <label v-for="model in filteredSettingsModels" :key="model" class="oauth-model-option">
-                <input v-model="settingsForm.selectedModels" type="checkbox" :value="model" />
+            <div class="oauth-model-list" :class="{ 'is-disabled': settingsForm.allModels }">
+              <label
+                v-for="model in filteredSettingsModels"
+                :key="model"
+                class="oauth-model-option"
+                :class="{ 'is-disabled': settingsForm.allModels }"
+              >
+                <input
+                  v-model="settingsForm.selectedModels"
+                  type="checkbox"
+                  :value="model"
+                  :disabled="settingsForm.allModels"
+                />
                 <span class="mono">{{ model }}</span>
               </label>
               <span v-if="settingsModelOptions.length === 0" class="oauth-model-empty muted small">
@@ -881,8 +900,8 @@ onBeforeUnmount(() => {
                 没有匹配「{{ settingsForm.modelQuery }}」的模型。
               </span>
             </div>
-            <p v-else class="oauth-model-all-hint muted small">
-              全部模型会随系统渠道目录变化自动生效，不需要逐个勾选。
+            <p v-if="settingsForm.allModels" class="oauth-model-all-hint muted small">
+              当前继承系统渠道的全部模型；取消勾选「全部模型」后可只调度勾选的模型。
             </p>
             <div class="oauth-model-picker-actions">
               <button
@@ -905,6 +924,7 @@ onBeforeUnmount(() => {
             <input
               v-model="settingsForm.customModels"
               autocomplete="off"
+              :disabled="settingsForm.allModels"
               placeholder="补充列表外的模型，多个用逗号分隔"
             />
           </div>

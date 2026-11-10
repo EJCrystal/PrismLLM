@@ -2436,6 +2436,13 @@ input[type="password"]::-ms-clear,
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 14%, transparent);
 }
 
+/* 「全部模型」继承系统目录时，列表保持可见但整体只读，避免看起来像还能改。 */
+.oauth-model-search.is-disabled {
+  opacity: 0.6;
+  border-color: var(--line);
+  box-shadow: none;
+}
+
 .oauth-model-search input {
   flex: 1 1 auto;
   min-width: 0;
@@ -2475,6 +2482,15 @@ input[type="password"]::-ms-clear,
 
 .oauth-model-option:hover {
   background: var(--panel);
+}
+
+.oauth-model-option.is-disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.oauth-model-option.is-disabled:hover {
+  background: transparent;
 }
 
 .oauth-model-option input {
