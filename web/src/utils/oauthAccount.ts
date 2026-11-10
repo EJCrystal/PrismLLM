@@ -32,6 +32,14 @@ export function oauthAuthStateBadge(state: string): 'success' | 'danger' | 'neut
   return 'neutral'
 }
 
+/** 账号当前状态只显示一个徽标：停用优先于 token 授权状态，避免同时出现「正常」和「已停用」。 */
+export function oauthAccountStatus(
+  account: Pick<OAuthAccount, 'enabled' | 'authState'>,
+): { label: string; tone: 'success' | 'danger' | 'neutral' } {
+  if (!account.enabled) return { label: '已停用', tone: 'neutral' }
+  return { label: oauthAuthStateLabel(account.authState), tone: oauthAuthStateBadge(account.authState) }
+}
+
 /** 把秒数转成易读时长；非整单位时退回秒数。 */
 export function formatWindowSeconds(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return '—'
@@ -152,6 +160,21 @@ const PROVIDER_PROTOCOLS: Record<string, string[]> = {
 /** 订阅账号的官方端点协议；未知提供方没有可测协议。 */
 export function oauthProviderProtocols(provider: string): string[] {
   return PROVIDER_PROTOCOLS[provider] ?? []
+}
+
+/**
+ * 支持从上游刷新模型目录的提供方。与后端 `/oauth-providers/{provider}/models/refresh`
+ * 的能力保持一致：目前只有走 Code Assist 的 Antigravity 能读取官方目录。
+ */
+export function oauthSupportsModelCatalog(provider: string): boolean {
+  return provider === 'antigravity'
+}
+
+/** 模型选择器的搜索过滤：大小写不敏感，匹配模型名片段；空查询返回全部。 */
+export function filterOAuthModels(models: string[], query: string): string[] {
+  const text = query.trim().toLowerCase()
+  if (!text) return [...models]
+  return models.filter((model) => model.toLowerCase().includes(text))
 }
 
 /** 连通性测试可选的模型：端点渠道模型与账号授权模型的交集。 */

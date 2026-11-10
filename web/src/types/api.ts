@@ -882,6 +882,15 @@ export interface OAuthProviderInfo {
   managedChannel: boolean
 }
 
+export interface OAuthProviderModel {
+  id: string
+  name: string
+}
+
+export interface OAuthProviderModelsResponse {
+  models: OAuthProviderModel[]
+}
+
 export interface OAuthAccountPolicy {
   windowLimit: number | null
   windowSeconds: number

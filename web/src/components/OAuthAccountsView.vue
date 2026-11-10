@@ -15,13 +15,13 @@ import {
   buildOAuthImportPayload,
   buildOAuthModels,
   buildOAuthPolicyPayload,
+  filterOAuthModels,
   formatCooldownRemaining,
   formatQuotaReset,
   formatUsedPercent,
   isOAuthAccountCooling,
   isOAuthQuotaBlocked,
-  oauthAuthStateBadge,
-  oauthAuthStateLabel,
+  oauthAccountStatus,
   oauthLoginCallbackError,
   oauthPolicySummary,
   oauthProviderLabel,
@@ -32,6 +32,7 @@ import {
   oauthQuotaTone,
   oauthQuotaWindows,
   oauthRuntimeSummary,
+  oauthSupportsModelCatalog,
   oauthTestModels,
 } from '../utils/oauthAccount'
 
@@ -41,6 +42,7 @@ const channels = ref<Channel[]>([])
 const loading = ref(true)
 const error = ref('')
 const busyId = ref<string | null>(null)
+const syncingModels = ref(false)
 const now = ref(Date.now())
 let clock: number | undefined
 
@@ -86,9 +88,10 @@ const settingsForm = reactive({
   enabled: true,
   proxyUrl: '',
   clearProxy: false,
-  allModels: true,
+  allModels: false,
   selectedModels: [] as string[],
   customModels: '',
+  modelQuery: '',
   channelIds: [] as string[],
 })
 
@@ -103,6 +106,18 @@ const settingsModelOptions = computed(() => {
   for (const model of settingsForm.selectedModels) options.add(model)
   return [...options].sort()
 })
+
+/** 搜索只影响可见列表，已勾选但被过滤掉的模型保持选中。 */
+const filteredSettingsModels = computed(() =>
+  filterOAuthModels(settingsModelOptions.value, settingsForm.modelQuery),
+)
+
+const selectedModelCount = computed(() => new Set(settingsForm.selectedModels).size)
+
+/** 页面上的「同步模型」只对支持 Code Assist 目录的提供方生效。 */
+const syncableProviders = computed(() =>
+  [...new Set(accounts.value.map((account) => account.provider))].filter(oauthSupportsModelCatalog),
+)
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
@@ -137,6 +152,25 @@ async function load() {
 
 function providerManagesChannel(providerId: string): boolean {
   return providers.value.find((item) => item.id === providerId)?.managedChannel === true
+}
+
+/** 从上游刷新系统渠道的模型目录；目前由 Antigravity 的 Code Assist 目录提供。 */
+async function syncModels() {
+  if (syncableProviders.value.length === 0 || syncingModels.value) return
+  syncingModels.value = true
+  try {
+    let total = 0
+    for (const provider of syncableProviders.value) {
+      const result = await api.refreshOAuthProviderModels(provider)
+      total += result.models.length
+    }
+    notify(`已同步 ${total} 个模型`)
+    await load()
+  } catch (cause) {
+    notify(errorMessage(cause), 'error')
+  } finally {
+    syncingModels.value = false
+  }
 }
 
 const importChannelsManaged = computed(() => providerManagesChannel(importForm.provider))
@@ -378,23 +412,26 @@ function openSettings(account: OAuthAccount) {
     enabled: account.enabled,
     proxyUrl: account.proxyUrl ?? '',
     clearProxy: false,
+    // 如实反映当前配置：空列表在后端表示“全部模型”。列表常驻可见，取消勾选即可改为只调度子集。
     allModels: account.models.length === 0,
     selectedModels: [...account.models],
     customModels: '',
+    modelQuery: '',
     channelIds: [...account.channelIds],
   })
   showSettings.value = true
 }
 
-watch(
-  () => settingsForm.allModels,
-  (allModels) => {
-    // 从「全部模型」切到手动选择时，先勾上当前目录里的全部模型，让用户做减法。
-    if (!allModels && settingsForm.selectedModels.length === 0) {
-      settingsForm.selectedModels = [...settingsModelOptions.value]
-    }
-  },
-)
+/** 全选只作用于当前搜索结果，未匹配的模型保持原状。 */
+function selectVisibleModels() {
+  const selected = new Set(settingsForm.selectedModels)
+  for (const model of filteredSettingsModels.value) selected.add(model)
+  settingsForm.selectedModels = [...selected]
+}
+
+function clearSelectedModels() {
+  settingsForm.selectedModels = []
+}
 
 async function saveSettings() {
   if (!settingsTarget.value) return
@@ -463,6 +500,16 @@ onBeforeUnmount(() => {
   <section class="page-stack page-compact">
     <div class="page-overview">
       <div class="section-head page-actions">
+        <button
+          type="button"
+          class="button"
+          :disabled="syncingModels || syncableProviders.length === 0"
+          :title="syncableProviders.length === 0 ? '当前没有支持同步模型目录的账号' : '从上游刷新系统渠道的模型目录'"
+          @click="syncModels"
+        >
+          <Icon name="refresh" :size="16" />
+          {{ syncingModels ? '同步中…' : '同步模型' }}
+        </button>
         <button type="button" class="button primary" @click="openImport">
           <Icon name="plus" :size="17" />
           新建账号
@@ -538,11 +585,13 @@ onBeforeUnmount(() => {
                 <div v-if="account.accountPlan" class="small muted">{{ account.accountPlan }}</div>
               </td>
               <td>
-                <span class="badge" :class="oauthAuthStateBadge(account.authState)">
-                  {{ oauthAuthStateLabel(account.authState) }}
+                <span class="badge" :class="oauthAccountStatus(account).tone">
+                  {{ oauthAccountStatus(account).label }}
                 </span>
-                <span v-if="!account.enabled" class="badge neutral">已停用</span>
-                <div v-if="account.authState === 'REAUTH_REQUIRED' && account.lastRefreshError" class="small text-danger">
+                <div
+                  v-if="account.enabled && account.authState === 'REAUTH_REQUIRED' && account.lastRefreshError"
+                  class="small text-danger"
+                >
                   {{ account.lastRefreshError }}
                 </div>
               </td>
@@ -810,23 +859,76 @@ onBeforeUnmount(() => {
         </label>
         <div class="field">
           <span>模型授权</span>
-          <label class="checkbox-row">
-            <input v-model="settingsForm.allModels" type="checkbox" />
-            <span>全部模型</span>
-          </label>
-          <template v-if="!settingsForm.allModels">
-            <div class="oauth-model-picker">
-              <label v-for="model in settingsModelOptions" :key="model" class="checkbox-row">
-                <input v-model="settingsForm.selectedModels" type="checkbox" :value="model" />
+          <div class="oauth-model-picker">
+            <div class="oauth-model-picker-toolbar">
+              <label class="oauth-model-search" :class="{ 'is-disabled': settingsForm.allModels }">
+                <Icon name="search" :size="15" />
+                <input
+                  v-model="settingsForm.modelQuery"
+                  autocomplete="off"
+                  :disabled="settingsForm.allModels"
+                  placeholder="搜索模型"
+                />
+              </label>
+              <span class="muted small">
+                {{
+                  settingsForm.allModels
+                    ? `全部 ${settingsModelOptions.length} 个模型`
+                    : `已选 ${selectedModelCount} / ${settingsModelOptions.length}`
+                }}
+              </span>
+            </div>
+            <div class="oauth-model-list" :class="{ 'is-disabled': settingsForm.allModels }">
+              <label
+                v-for="model in filteredSettingsModels"
+                :key="model"
+                class="oauth-model-option"
+                :class="{ 'is-disabled': settingsForm.allModels }"
+              >
+                <input
+                  v-model="settingsForm.selectedModels"
+                  type="checkbox"
+                  :value="model"
+                  :disabled="settingsForm.allModels"
+                />
                 <span class="mono">{{ model }}</span>
               </label>
-              <span v-if="settingsModelOptions.length === 0" class="muted small">
-                所关联渠道还没有模型，可先在渠道页同步模型目录。
+              <span v-if="settingsModelOptions.length === 0" class="oauth-model-empty muted small">
+                系统渠道还没有模型，可点页面右上角的「同步模型」从上游刷新目录。
               </span>
-              <input v-model="settingsForm.customModels" autocomplete="off" placeholder="补充列表外的模型，多个用逗号分隔" />
+              <span v-else-if="filteredSettingsModels.length === 0" class="oauth-model-empty muted small">
+                没有匹配「{{ settingsForm.modelQuery }}」的模型。
+              </span>
             </div>
-          </template>
-          <small>勾选「全部模型」表示继承所关联渠道的全部模型；取消后只调度勾选或补充的模型。</small>
+            <p v-if="settingsForm.allModels" class="oauth-model-all-hint muted small">
+              当前继承系统渠道的全部模型；取消勾选「全部模型」后可只调度勾选的模型。
+            </p>
+            <div class="oauth-model-picker-actions">
+              <button
+                v-if="!settingsForm.allModels"
+                type="button"
+                class="link-button"
+                @click="selectVisibleModels"
+              >
+                {{ settingsForm.modelQuery.trim() ? '全选搜索结果' : '全选' }}
+              </button>
+              <button v-if="!settingsForm.allModels" type="button" class="link-button" @click="clearSelectedModels">
+                清空
+              </button>
+              <span class="oauth-model-picker-spacer"></span>
+              <label class="checkbox-row small">
+                <input v-model="settingsForm.allModels" type="checkbox" />
+                <span>全部模型</span>
+              </label>
+            </div>
+            <input
+              v-model="settingsForm.customModels"
+              autocomplete="off"
+              :disabled="settingsForm.allModels"
+              placeholder="补充列表外的模型，多个用逗号分隔"
+            />
+          </div>
+          <small>默认只调度勾选的模型；勾选「全部模型」则继承所关联渠道的全部模型。</small>
         </div>
         <div v-if="settingsChannelsManaged" class="field">
           <span>上游端点</span>
