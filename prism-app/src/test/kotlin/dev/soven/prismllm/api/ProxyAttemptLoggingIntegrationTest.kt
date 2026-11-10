@@ -311,6 +311,9 @@ class ProxyAttemptLoggingIntegrationTest {
             assertEquals(HttpStatusCode.OK, overview.status)
             assertEquals("no-store", overview.headers["Cache-Control"])
             val report = Json.decodeFromString<ChannelHealthReport>(overview.bodyAsText())
+            // 大盘阈值与冷却阈值解耦：这里走 fromEnv 默认配置，报告下发健康度自己的阈值。
+            assertEquals(30_000L, report.slowFirstTokenMs)
+            assertEquals(10_000L, report.slowP50FirstTokenMs)
             val summary = report.channels.single { it.channelId == channel.id }
             assertEquals(1, summary.metrics.attempts)
             assertEquals(1, summary.metrics.successes)

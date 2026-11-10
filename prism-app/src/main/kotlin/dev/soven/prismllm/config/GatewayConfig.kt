@@ -2,6 +2,7 @@ package dev.soven.prismllm.config
 
 import java.nio.file.Path
 import java.util.Base64
+import dev.soven.prismllm.requestlog.domain.HealthPolicy
 import dev.soven.prismllm.requestlog.domain.RetentionPolicy
 import dev.soven.prismllm.resilience.CooldownPolicy
 import dev.soven.prismllm.spi.iq.IqJudge
@@ -32,6 +33,8 @@ data class GatewayConfig(
     val cookieSecure: Boolean,
     val retention: RetentionPolicy,
     val cooldown: CooldownPolicy = CooldownPolicy(),
+    /** 渠道健康度大盘的延迟判定阈值；与冷却阈值独立，互不影响。 */
+    val health: HealthPolicy = HealthPolicy(),
     val keyAutoRecoveryIntervalMs: Long = 30_000,
     val upstreamHeaderRefreshIntervalMs: Long = 3_600_000,
     val upstreamHeaderCatalogUrl: String? = null,
@@ -87,6 +90,9 @@ data class GatewayConfig(
             val cooldownAuthFailureMs = longValue("COOLDOWN_AUTH_FAILURE_MS", 600_000)
             val ttftSlowThresholdMs = longValue("TTFT_SLOW_THRESHOLD_MS", 10_000)
             val ttftSlowStreak = longValue("TTFT_SLOW_STREAK", 3).toInt()
+            // 大盘阈值与冷却阈值解耦，默认值固定；P50 默认值不会高于 P95 阈值。
+            val healthSlowFirstTokenMs = longValue("HEALTH_SLOW_FIRST_TOKEN_MS", 30_000)
+            val healthSlowP50FirstTokenMs = longValue("HEALTH_SLOW_P50_FIRST_TOKEN_MS", minOf(10_000L, healthSlowFirstTokenMs))
             val keyAutoRecoveryIntervalMs = longValue("KEY_AUTO_RECOVERY_INTERVAL_MS", 30_000)
             val upstreamHeaderRefreshIntervalMs = longValue("UPSTREAM_HEADER_REFRESH_INTERVAL_MS", 3_600_000)
             val manxueTimeoutMs = longValue("MANXUE_TIMEOUT_MS", 60_000)
@@ -137,6 +143,10 @@ data class GatewayConfig(
             require(cooldownAuthFailureMs in 10_000..86_400_000) { "COOLDOWN_AUTH_FAILURE_MS 必须在 10000..86400000 之间" }
             require(ttftSlowThresholdMs in 100..600_000) { "TTFT_SLOW_THRESHOLD_MS 必须在 100..600000 之间" }
             require(ttftSlowStreak in 1..100) { "TTFT_SLOW_STREAK 必须在 1..100 之间" }
+            require(healthSlowFirstTokenMs in 100..600_000) { "HEALTH_SLOW_FIRST_TOKEN_MS 必须在 100..600000 之间" }
+            require(healthSlowP50FirstTokenMs in 100..healthSlowFirstTokenMs) {
+                "HEALTH_SLOW_P50_FIRST_TOKEN_MS 必须在 100..HEALTH_SLOW_FIRST_TOKEN_MS 之间"
+            }
             require(keyAutoRecoveryIntervalMs in 1_000..3_600_000) {
                 "KEY_AUTO_RECOVERY_INTERVAL_MS 必须在 1000..3600000 之间"
             }
@@ -215,6 +225,10 @@ data class GatewayConfig(
                     authFailureMs = cooldownAuthFailureMs,
                     ttftSlowThresholdMs = ttftSlowThresholdMs,
                     ttftSlowStreak = ttftSlowStreak,
+                ),
+                health = HealthPolicy(
+                    slowFirstTokenMs = healthSlowFirstTokenMs,
+                    slowP50FirstTokenMs = healthSlowP50FirstTokenMs,
                 ),
                 keyAutoRecoveryIntervalMs = keyAutoRecoveryIntervalMs,
                 upstreamHeaderRefreshIntervalMs = upstreamHeaderRefreshIntervalMs,

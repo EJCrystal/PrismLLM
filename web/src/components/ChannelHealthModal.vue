@@ -283,7 +283,7 @@ function tryClose() {
         <div class="health-footnote muted small">
           <p>最近成功 {{ formatTime(metrics.lastSuccessAt) }} · 最近失败 {{ formatTime(metrics.lastFailureAt) }}</p>
           <p>排除 {{ metrics.excluded }} 次客户端取消、参数错误或网关协议转换失败。HTTP 200 后流式失败仍算失败。未知不代表可用或不可用。</p>
-          <p>至少 {{ detail.report.minimumSamples }} 个样本才判定健康度；最近一小时无有效样本显示未知。错误率 ≥ {{ healthPercent(detail.report.warningErrorRate) }} 需关注、≥ {{ healthPercent(detail.report.criticalErrorRate) }} 异常；P95 首 token 超过 {{ formatDuration(detail.report.slowFirstTokenMs) }} 且样本足够时提示关注。</p>
+          <p>至少 {{ detail.report.minimumSamples }} 个样本才判定健康度；最近一小时无有效样本显示未知。错误率 ≥ {{ healthPercent(detail.report.warningErrorRate) }} 需关注、≥ {{ healthPercent(detail.report.criticalErrorRate) }} 异常；首 token P95 超过 {{ formatDuration(detail.report.slowFirstTokenMs) }}、或 P50 超过 {{ formatDuration(detail.report.slowP50FirstTokenMs) }}，且样本足够时提示关注。这两条只影响关注提示，不触发冷却。</p>
           <p>TTFT 仅统计有首 token 的成功流式尝试；总耗时按上游单次尝试计时。输出速度为输出 token ÷（上游耗时 − 首 token），包含传输及工具等待，只供同模型、同协议比较。</p>
         </div>
       </template>

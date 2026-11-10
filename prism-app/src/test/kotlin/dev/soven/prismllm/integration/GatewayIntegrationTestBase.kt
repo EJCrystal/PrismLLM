@@ -19,6 +19,7 @@ import dev.soven.prismllm.proxy.SvgRenderResult
 import dev.soven.prismllm.shared.crypto.ClientKeyHasher
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
 import dev.soven.prismllm.requestlog.domain.RetentionPolicy
+import dev.soven.prismllm.requestlog.domain.HealthPolicy
 import dev.soven.prismllm.resilience.CooldownPolicy
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -337,6 +338,8 @@ abstract class GatewayIntegrationTestBase {
             ttftSlowThresholdMs = ttftSlowThresholdMs,
             ttftSlowStreak = ttftSlowStreak,
         ),
+        // 健康度阈值独立于冷却阈值，测试里显式给足，避免延迟判定干扰其它用例。
+        health = HealthPolicy(slowFirstTokenMs = 600_000, slowP50FirstTokenMs = 300_000),
         keyAutoRecoveryIntervalMs = keyAutoRecoveryIntervalMs,
         upstreamHeaderRefreshEnabled = false,
         upstreamHeaderRefreshIntervalMs = 3_600_000,

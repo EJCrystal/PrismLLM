@@ -13,6 +13,7 @@ import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.requestlog.domain.RequestLogRecord
 import dev.soven.prismllm.requestlog.domain.UpstreamAttemptRecord
 import dev.soven.prismllm.requestlog.domain.HealthMetrics
+import dev.soven.prismllm.requestlog.domain.HealthPolicy
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.requestlog.domain.HealthChannelSubject
@@ -60,7 +61,11 @@ class ChannelHealthRepositoryTest {
         )))
         factory.migrate()
         logs = RequestLogRepository(factory.database, RequestLogCurrentNames())
-        health = ChannelHealthRepository(factory.database, 10_000, ChannelHealthDirectoryRepository(factory.database))
+        health = ChannelHealthRepository(
+            factory.database,
+            HealthPolicy(slowFirstTokenMs = 10_000, slowP50FirstTokenMs = 5_000),
+            ChannelHealthDirectoryRepository(factory.database),
+        )
     }
 
     @AfterAll

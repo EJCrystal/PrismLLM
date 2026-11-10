@@ -33,6 +33,58 @@ class GatewayConfigTest {
     }
 
     @Test
+    fun healthThresholdsUseTheirOwnDefaultsAndStayIndependentOfCooldown() {
+        val defaults = GatewayConfig.fromEnv(requiredEnv)
+
+        assertEquals(10_000L, defaults.cooldown.ttftSlowThresholdMs)
+        assertEquals(30_000L, defaults.health.slowFirstTokenMs)
+        assertEquals(10_000L, defaults.health.slowP50FirstTokenMs)
+
+        // 只调冷却是冷却的事，大盘阈值不跟着漂。
+        val cooldownOnly = GatewayConfig.fromEnv(requiredEnv + ("TTFT_SLOW_THRESHOLD_MS" to "4000"))
+        assertEquals(4_000L, cooldownOnly.cooldown.ttftSlowThresholdMs)
+        assertEquals(30_000L, cooldownOnly.health.slowFirstTokenMs)
+        assertEquals(10_000L, cooldownOnly.health.slowP50FirstTokenMs)
+
+        val healthOnly = GatewayConfig.fromEnv(
+            requiredEnv + mapOf(
+                "TTFT_SLOW_THRESHOLD_MS" to "10000",
+                "HEALTH_SLOW_FIRST_TOKEN_MS" to "30000",
+                "HEALTH_SLOW_P50_FIRST_TOKEN_MS" to "8000",
+            ),
+        )
+        assertEquals(10_000L, healthOnly.cooldown.ttftSlowThresholdMs)
+        assertEquals(30_000L, healthOnly.health.slowFirstTokenMs)
+        assertEquals(8_000L, healthOnly.health.slowP50FirstTokenMs)
+    }
+
+    @Test
+    fun healthP50DefaultNeverExceedsTheP95Threshold() {
+        val config = GatewayConfig.fromEnv(requiredEnv + ("HEALTH_SLOW_FIRST_TOKEN_MS" to "3000"))
+
+        assertEquals(3_000L, config.health.slowFirstTokenMs)
+        assertEquals(3_000L, config.health.slowP50FirstTokenMs)
+    }
+
+    @Test
+    fun healthThresholdsRejectOutOfRangeAndInvertedValues() {
+        assertFailsWith<IllegalArgumentException> {
+            GatewayConfig.fromEnv(requiredEnv + ("HEALTH_SLOW_FIRST_TOKEN_MS" to "50"))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            GatewayConfig.fromEnv(requiredEnv + ("HEALTH_SLOW_P50_FIRST_TOKEN_MS" to "50"))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            GatewayConfig.fromEnv(
+                requiredEnv + mapOf(
+                    "HEALTH_SLOW_FIRST_TOKEN_MS" to "5000",
+                    "HEALTH_SLOW_P50_FIRST_TOKEN_MS" to "6000",
+                ),
+            )
+        }
+    }
+
+    @Test
     fun trustedProxyNetworksCanBeConfiguredAsIpv4AndIpv6Cidrs() {
         val config = GatewayConfig.fromEnv(
             requiredEnv + ("TRUSTED_PROXY_CIDRS" to "172.19.0.0/16, 2001:db8:1234::/48"),

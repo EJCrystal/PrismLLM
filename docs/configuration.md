@@ -52,6 +52,8 @@ openssl rand -base64 32
 | `KEY_AUTO_RECOVERY_INTERVAL_MS`| `30000` | 自动临时停用密钥的到期扫描与恢复清理间隔 |
 | `TTFT_SLOW_THRESHOLD_MS` | `10000` | 流式请求首 Token 耗时软阈值（毫秒） |
 | `TTFT_SLOW_STREAK` | `3` | 首 Token 连续超过软阈值的次数，达到后触发候选临时冷却 |
+| `HEALTH_SLOW_FIRST_TOKEN_MS` | `30000` | 渠道健康度用首 Token P95 判定阈值（毫秒）；只影响「需关注」提示，不触发冷却 |
+| `HEALTH_SLOW_P50_FIRST_TOKEN_MS` | `10000` | 渠道健康度用首 Token P50 提示阈值（毫秒）；需不大于 P95 阈值，只影响「需关注」提示 |
 
 ### 上游请求预设与插件
 

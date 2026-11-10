@@ -11,6 +11,7 @@ import dev.soven.prismllm.requestlog.domain.HealthBucket
 import dev.soven.prismllm.requestlog.domain.HealthChannelOverview
 import dev.soven.prismllm.requestlog.domain.HealthChannelSubject
 import dev.soven.prismllm.requestlog.domain.HealthError
+import dev.soven.prismllm.requestlog.domain.HealthPolicy
 import dev.soven.prismllm.requestlog.domain.HealthMetrics
 import dev.soven.prismllm.requestlog.domain.HealthRequests
 import dev.soven.prismllm.requestlog.domain.healthState
@@ -30,7 +31,7 @@ import java.sql.ResultSet
  */
 class ChannelHealthRepository(
     private val database: Database,
-    private val slowFirstTokenMs: Long,
+    private val healthPolicy: HealthPolicy,
     private val directory: ChannelHealthDirectory,
 ) {
     /** 渠道概览由应用层目录实现提供，日志模块只负责报表与详情查询。 */
@@ -137,10 +138,12 @@ class ChannelHealthRepository(
             buildMap { while (rs.next()) put(rs.getString("channel_id"), rs.getLong("n")) }
         }.orEmpty()
         return ChannelHealthReport(
-            window, from, now, retentionDays, pending, slowFirstTokenMs = slowFirstTokenMs,
+            window, from, now, retentionDays, pending,
+            slowFirstTokenMs = healthPolicy.slowFirstTokenMs,
+            slowP50FirstTokenMs = healthPolicy.slowP50FirstTokenMs,
             channels = channels.map { (id, enabled) ->
                 val metrics = observations[id] ?: HealthMetrics()
-                val (state, reason) = healthState(metrics, enabled, now, slowFirstTokenMs, routableCredentials[id])
+                val (state, reason) = healthState(metrics, enabled, now, healthPolicy, routableCredentials[id])
                 val cooldown = cooldowns[id]
                 // 无可用凭据是比「历史数据补齐中」更确定的事实，不能被索引进度覆盖。
                 val pendingApplies = pendingChannels.contains(id) && enabled && state != "NO_CREDENTIALS"
