@@ -813,17 +813,23 @@ onBeforeUnmount(() => {
 
     <Modal v-if="showPolicy && policyTarget" title="账号调度策略" @close="showPolicy = false">
       <form class="form-grid" @submit.prevent="savePolicy">
+        <p class="muted small policy-hint">
+          窗口请求数与单号最大并发是两种独立限制：前者限制一段时间内的总请求量，后者限制同一时刻正在进行的请求数。
+        </p>
         <label class="field">
           <span>窗口请求数</span>
           <input v-model="policyForm.windowLimit" type="number" min="1" max="100000" placeholder="留空表示不限" />
+          <small>在「窗口时长」内最多放行多少次请求；留空表示不限总量，仍受并发与 429 冷却约束。</small>
         </label>
         <label class="field">
           <span>窗口时长（秒）</span>
           <input v-model="policyForm.windowSeconds" type="number" min="60" max="604800" />
+          <small>滑动窗口长度，例如 10800 秒 = 3 小时；窗口请求数按这个时长滚动统计。</small>
         </label>
         <label class="field">
           <span>单号最大并发</span>
           <input v-model="policyForm.maxConcurrentRequests" type="number" min="1" max="1000" />
+          <small>同一时刻最多有多少个请求正在使用该账号；达到上限后该账号会被跳过并改试其他账号，未占用窗口额度。</small>
         </label>
         <div class="form-actions">
           <button type="button" class="button" @click="showPolicy = false">取消</button>
