@@ -30,8 +30,7 @@ import kotlinx.serialization.json.put
  * @author 文杰
  * @since 2026-11-10
  */
-internal const val LITE_FUNCTION_NAMESPACE = "functions"
-
+public const val LITE_FUNCTION_NAMESPACE = "functions"
 /** 请求里有 `additional_tools` 时返回抬升后的副本，没有时原样返回。 */
 internal fun liftAdditionalTools(request: JsonObject): JsonObject {
     val input = request["input"] as? JsonArray ?: return request

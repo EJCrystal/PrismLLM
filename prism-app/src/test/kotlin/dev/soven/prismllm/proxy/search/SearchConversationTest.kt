@@ -432,6 +432,37 @@ class SearchConversationTest {
     }
 
     @Test
+    fun `history function calls lose the namespace marker on the search path`() {
+        // 搜索路径删除 additional_tools 项后协议层不会再清理历史调用；抬升必须同步去掉 namespace 标记，
+        // 与 liftAdditionalTools 的行为一致，否则转换后的调用项携带 Chat 无法表达的分组字段。
+        val request = obj(
+            """{
+              "model":"m",
+              "input":[
+                {"type":"additional_tools","tools":[
+                  {"type":"namespace","name":"functions","tools":[
+                    {"type":"function","name":"shell","parameters":{"type":"object"}}
+                  ]}
+                ]},
+                {"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}","namespace":"functions"},
+                {"type":"function_call_output","call_id":"call_1","output":"done"},
+                {"type":"message","role":"user","content":"hi"}
+              ]
+            }""",
+        )
+
+        val prepared = prepareResponsesSearchRequest(request, "web_search")
+        val input = prepared["input"]!!.jsonArray
+        assertEquals(3, input.size)
+        assertEquals("function_call", input[0].jsonObject["type"]!!.toString().trim('"'))
+        assertEquals(null, input[0].jsonObject["namespace"])
+        assertEquals("function_call_output", input[1].jsonObject["type"]!!.toString().trim('"'))
+        // 改写后可直接转成 Chat：function_call 已是普通调用。
+        val chat = responsesToChatRequest(prepared)
+        assertEquals(1, chat["messages"]!!.jsonArray.filter { it.jsonObject["role"]!!.toString().contains("assistant") }.size)
+    }
+
+    @Test
     fun `prepared request converts to chat after dropping history search items`() {
         val request = obj(
             """{"model":"m","input":[{"type":"message","role":"user","content":"hi"},{"type":"web_search_call","id":"ws_1"}],"tools":[{"type":"web_search"}]}""",

@@ -1,6 +1,7 @@
 package dev.soven.prismllm.proxy.search
 
 import dev.soven.prismllm.shared.domain.Usage
+import dev.soven.prismllm.protocol.LITE_FUNCTION_NAMESPACE
 import dev.soven.prismllm.protocol.UsageParser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -421,8 +422,8 @@ fun prepareResponsesSearchRequest(request: JsonObject, syntheticName: String): J
 /**
  * 请求级 tools 与 additional_tools 输入项里的工具合并为请求级 tools；没有额外工具时原样返回。
  * 只用于搜索代理内部，转换层有完整的 [dev.soven.prismllm.protocol.AdditionalToolsKt] 版本；
- * 搜索路径先移除 additional_tools 项，协议层的去重不会再执行，因此这里按同一规则去重：
- * 已有工具优先保留，没有 name 的宿主工具按 type 去重。
+ * 搜索路径先移除 additional_tools 项，协议层的去重与 namespace 清理不会再执行，因此这里按
+ * 同一规则去重：已有工具优先保留，没有 name 的宿主工具按 type 去重。
  */
 private fun liftRequestTools(request: JsonObject): JsonObject {
     val extra = additionalToolsHostedTools(request)
@@ -434,7 +435,17 @@ private fun liftRequestTools(request: JsonObject): JsonObject {
     }
     val seen = tools.mapNotNullTo(mutableSetOf()) { (it as? JsonObject)?.let(::keyOf) }
     extra.forEach { tool -> if (seen.add(keyOf(tool))) tools += tool }
-    return JsonObject(request + ("tools" to JsonArray(tools)))
+    val input = request["input"] as? JsonArray ?: return JsonObject(request + ("tools" to JsonArray(tools)))
+    // 历史调用项按分组 namespace 记录；工具平铺后调用侧标记一并去掉，与协议层 liftAdditionalTools 一致。
+    val normalized = input.map { element ->
+        val item = element as? JsonObject
+        if (item != null && item["namespace"] == JsonPrimitive(LITE_FUNCTION_NAMESPACE)) {
+            JsonObject(item.filterKeys { it != "namespace" })
+        } else {
+            element
+        }
+    }
+    return JsonObject(request + ("tools" to JsonArray(tools)) + ("input" to JsonArray(normalized)))
 }
 
 /**
