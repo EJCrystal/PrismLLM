@@ -42,6 +42,7 @@ class CodeAssistQuotaClient(
         val body = buildJsonObject { put("project", project) }
         val response = clients.client(proxy).post(baseUrl + "/v1internal:retrieveUserQuotaSummary") {
             header(HttpHeaders.Authorization, "Bearer " + accessToken)
+            header(HttpHeaders.UserAgent, ANTIGRAVITY_CODE_ASSIST_USER_AGENT)
             header("X-Goog-Api-Client", "gl-node/22.21.1")
             contentType(ContentType.Application.Json)
             setBody(body.toString())

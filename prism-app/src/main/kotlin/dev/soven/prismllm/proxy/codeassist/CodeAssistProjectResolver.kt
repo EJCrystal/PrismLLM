@@ -39,7 +39,7 @@ class CodeAssistProjectResolver(
     private val httpClient: HttpClient,
     private val baseUrl: String = "https://daily-cloudcode-pa.googleapis.com",
     private val loadBaseUrl: String = "https://cloudcode-pa.googleapis.com",
-    private val ideVersion: String = "1.0.0",
+    private val ideVersion: String = "2.29.1",
     private val now: () -> Long = System::currentTimeMillis,
     /** 校验账号代理地址的允许主机列表；与 token 刷新使用同一份配置。 */
     private val proxyAllowedHosts: Set<String> = emptySet(),
@@ -206,6 +206,7 @@ class CodeAssistProjectResolver(
         val response = clients.client(proxy).post(url) {
             header(HttpHeaders.Authorization, "Bearer " + accessToken)
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            header(HttpHeaders.UserAgent, ANTIGRAVITY_CODE_ASSIST_USER_AGENT)
             header("X-Goog-Api-Client", "gl-node/22.21.1")
             contentType(ContentType.Application.Json)
             setBody(body)
