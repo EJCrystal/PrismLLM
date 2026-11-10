@@ -9,9 +9,12 @@ import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
+import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.requestlog.domain.HealthMetrics
+import dev.soven.llmgateway.requestlog.domain.HealthChannelSubject
+import dev.soven.llmgateway.requestlog.infra.ChannelHealthRepository
 import dev.soven.llmgateway.requestlog.persistence.RequestLogRepository
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
@@ -55,7 +58,7 @@ class ChannelHealthRepositoryTest {
         )))
         factory.migrate()
         logs = RequestLogRepository(factory.database, RequestLogCurrentNames())
-        health = ChannelHealthRepository(factory.database, 10_000)
+        health = ChannelHealthRepository(factory.database, 10_000, ChannelHealthDirectoryRepository(factory.database))
     }
 
     @AfterAll
@@ -67,6 +70,7 @@ class ChannelHealthRepositoryTest {
     @BeforeEach
     fun clear() {
         sql("truncate table request_logs cascade")
+        sql("truncate table oauth_accounts cascade")
         sql("truncate table channels cascade")
     }
 
@@ -173,6 +177,33 @@ class ChannelHealthRepositoryTest {
     }
 
     @Test
+    fun overviewCountsOnlyRoutableOAuthAccounts() = runBlocking {
+        val cipher = CredentialCipher(ByteArray(32) { 7 })
+        val channels = ChannelRepository(factory.database, cipher)
+        val channel = channels.create(
+            name = "oauth-pool", baseUrl = "https://example.invalid/v1",
+            keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"), models = listOf("m1"))),
+            authType = "bearer", enabled = true, modelMappings = listOf(ChannelModelRecord("m1")),
+        )
+        val accounts = OAuthAccountRepository(factory.database)
+        fun account(name: String, models: List<String>, enabled: Boolean = true) = NewOAuthAccount(
+            name = name,
+            provider = OAuthProvider.ANTIGRAVITY,
+            refreshToken = cipher.encrypt("refresh-token"),
+            channelIds = listOf(channel.id),
+            models = models,
+            enabled = enabled,
+        )
+        accounts.create(account("inherits", emptyList()))
+        accounts.create(account("matching", listOf("m1")))
+        accounts.create(account("mismatched", listOf("m2")))
+        accounts.create(account("disabled", listOf("m1"), enabled = false))
+
+        // 1 个可路由静态密钥 + 继承渠道目录 + 显式包含 m1 的账号；不匹配与停用账号不计入。
+        assertEquals(3, health.listHealthChannelOverviews().single().routableCredentials)
+    }
+
+    @Test
     fun failoverExclusionsAndStreamFailuresAreAggregatedIndependently() = runBlocking {
         logs.insert(log(listOf(
             attempt("a", 429).copy(index = 1, upstreamErrorCode = "rate_limit"),
@@ -199,7 +230,7 @@ class ChannelHealthRepositoryTest {
         assertEquals(HealthMetrics(), report.channels[2].metrics)
         assertEquals("UNKNOWN", observedA.state)
 
-        val detail = health.detail("24h", a, 30, emptyList(), now)
+        val detail = health.detail("24h", subject(a), 30, emptyList(), now)
         assertEquals(24, detail.trend.size)
         assertEquals(3, detail.trend.sumOf { it.metrics.attempts })
         assertEquals("model-a", detail.byModel.single().id)
@@ -222,7 +253,7 @@ class ChannelHealthRepositoryTest {
         assertNull(metrics.outputTokensPerSecond)
         assertEquals(1_000.0, metrics.p95TotalMs)
         for ((window, days) in listOf("7d" to 7, "15d" to 15, "30d" to 30)) {
-            val detail = health.detail(window, a, 30, emptyList(), now)
+            val detail = health.detail(window, subject(a), 30, emptyList(), now)
             assertEquals(days, detail.trend.size)
             assertEquals(3, detail.report.channels.single().metrics.attempts)
             assertEquals(3, detail.trend.sumOf { it.metrics.attempts })
@@ -352,7 +383,7 @@ class ChannelHealthRepositoryTest {
         val report = health.report("24h", mapOf("a" to true, "b" to true), 30, now)
         assertEquals("UNKNOWN", report.channels.first { it.channelId == "b" }.state)
         assertFalse(report.channels.first { it.channelId == "a" }.reason.contains("补齐"))
-        val detailA = health.detail("24h", a, 30, emptyList(), now)
+        val detailA = health.detail("24h", subject(a), 30, emptyList(), now)
         assertFalse(detailA.report.channels.single().reason.contains("补齐"))
     }
 
@@ -362,9 +393,9 @@ class ChannelHealthRepositoryTest {
         sql("delete from request_attempts")
         sql("update request_logs set health_indexed = false")
 
-        val detailA = health.detail("24h", a, 30, emptyList(), now)
-        val detailB = health.detail("24h", b, 30, emptyList(), now)
-        val detailC = health.detail("24h", channel("c"), 30, emptyList(), now)
+        val detailA = health.detail("24h", subject(a), 30, emptyList(), now)
+        val detailB = health.detail("24h", subject(b), 30, emptyList(), now)
+        val detailC = health.detail("24h", subject(channel("c")), 30, emptyList(), now)
 
         assertTrue(detailA.report.indexing)
         assertTrue(detailA.report.channels.single().reason.contains("补齐"))
@@ -415,8 +446,12 @@ class ChannelHealthRepositoryTest {
         val longError = "upstream_" + "a".repeat(180)
         logs.insert(log(listOf(attempt("a", 503).copy(upstreamErrorCode = longError)), failed = true))
         assertEquals(21, health.report("24h", mapOf("a" to true), 30, now).channels.single().metrics.attempts)
-        assertEquals(longError, health.detail("24h", a, 30, emptyList(), now).errors.single().code)
+        assertEquals(longError, health.detail("24h", subject(a), 30, emptyList(), now).errors.single().code)
     }
+
+    private fun subject(channel: ChannelRecord) = HealthChannelSubject(
+        channel.id, channel.enabled, channel.keys.associate { it.id to it.name },
+    )
 
     private fun channel(id: String) = ChannelRecord(id, id, "https://example.invalid/v1", "bearer", listOf(GatewayProtocol.RESPONSES), true, now, now)
 
