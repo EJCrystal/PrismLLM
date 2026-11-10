@@ -5,7 +5,7 @@ import dev.soven.llmgateway.channel.persistence.ChannelKeyModels
 import dev.soven.llmgateway.channel.persistence.ChannelKeys
 import dev.soven.llmgateway.channel.persistence.ChannelModels
 import dev.soven.llmgateway.channel.persistence.Channels
-import dev.soven.llmgateway.db.OAuthAccountChannels
+import dev.soven.llmgateway.oauth.persistence.OAuthAccountChannels
 import dev.soven.llmgateway.oauth.persistence.OAuthAccountModels
 import dev.soven.llmgateway.oauth.persistence.OAuthAccounts
 import dev.soven.llmgateway.requestlog.domain.ChannelHealthDirectory
