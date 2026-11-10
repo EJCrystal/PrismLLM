@@ -324,7 +324,7 @@ class GatewayApplication(
     val requestLogRepository = RequestLogRepository(databaseFactory.database, RequestLogCurrentNames())
     val channelHealthRepository = dev.soven.prismllm.requestlog.infra.ChannelHealthRepository(
         databaseFactory.database,
-        config.cooldown.ttftSlowThresholdMs,
+        config.health,
         ChannelHealthDirectoryRepository(databaseFactory.database),
     )
     private var channelHealthIndexJob: Job? = null

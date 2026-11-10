@@ -2,12 +2,15 @@ package dev.soven.prismllm.requestlog.domain
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class ChannelHealthTest {
     private val now = 1_800_000_000_000L
 
+    private val policy = HealthPolicy(slowFirstTokenMs = 2_000, slowP50FirstTokenMs = 500)
+
     private fun state(metrics: HealthMetrics, enabled: Boolean = true, routableCredentials: Int? = null) =
-        healthState(metrics, enabled, now, 2_000, routableCredentials).first
+        healthState(metrics, enabled, now, policy, routableCredentials).first
 
     @Test
     fun `unknown covers empty sparse and stale observations`() {
@@ -26,11 +29,16 @@ class ChannelHealthTest {
 
     @Test
     fun `report defaults and state evaluation share the published thresholds`() {
-        val report = ChannelHealthReport("24h", 0, now, 30, false, slowFirstTokenMs = 2_000, channels = emptyList())
+        val report = ChannelHealthReport(
+            "24h", 0, now, 30, false,
+            slowFirstTokenMs = 2_000, slowP50FirstTokenMs = 500, channels = emptyList(),
+        )
         assertEquals(ChannelHealthThresholds.MINIMUM_SAMPLES, report.minimumSamples)
         assertEquals(ChannelHealthThresholds.STALE_AFTER_MS, report.staleAfterMs)
         assertEquals(ChannelHealthThresholds.WARNING_ERROR_RATE, report.warningErrorRate)
         assertEquals(ChannelHealthThresholds.CRITICAL_ERROR_RATE, report.criticalErrorRate)
+        assertEquals(2_000L, report.slowFirstTokenMs)
+        assertEquals(500L, report.slowP50FirstTokenMs)
 
         val enough = ChannelHealthThresholds.MINIMUM_SAMPLES.toLong()
         assertEquals("HEALTHY", state(HealthMetrics(attempts = enough, lastObservedAt = now)))
@@ -65,6 +73,35 @@ class ChannelHealthTest {
         assertEquals("HEALTHY", state(metrics))
         assertEquals("WARNING", state(metrics.copy(firstTokenSamples = 20)))
         assertEquals("HEALTHY", state(metrics.copy(firstTokenSamples = 20, p95FirstTokenMs = 2_000.0)))
+    }
+
+    @Test
+    fun `p50 and p95 thresholds warn independently and p95 wins the reason`() {
+        val enough = ChannelHealthThresholds.MINIMUM_SAMPLES.toLong()
+        val slowP50 = HealthMetrics(
+            attempts = enough, successes = enough, lastObservedAt = now,
+            firstTokenSamples = enough, p50FirstTokenMs = 600.0, p95FirstTokenMs = 1_900.0,
+        )
+        // P95 未越界但 P50 越界：整体偏慢也要提示，原因指向 P50。
+        assertEquals("WARNING" to "P50 首 token 超过 500ms 提示阈值", healthState(slowP50, true, now, policy))
+        // 两个阈值都没超过才算健康。
+        assertEquals("HEALTHY", state(slowP50.copy(p50FirstTokenMs = 500.0, p95FirstTokenMs = 2_000.0)))
+        // 同时越界时先报 P95。
+        assertEquals(
+            "WARNING" to "P95 首 token 超过 2000ms 判定阈值",
+            healthState(slowP50.copy(p50FirstTokenMs = 100.0, p95FirstTokenMs = 2_001.0), true, now, policy),
+        )
+        // 流式样本不足时只是跳过延迟档，成功率正常时仍判健康。
+        assertEquals("HEALTHY", state(slowP50.copy(firstTokenSamples = enough - 1)))
+    }
+
+    @Test
+    fun `health policy rejects a p50 threshold above the p95 threshold`() {
+        assertFailsWith<IllegalArgumentException> {
+            HealthPolicy(slowFirstTokenMs = 1_000, slowP50FirstTokenMs = 2_000)
+        }
+        assertEquals(30_000L, HealthPolicy().slowFirstTokenMs)
+        assertEquals(10_000L, HealthPolicy().slowP50FirstTokenMs)
     }
 
     @Test

@@ -17,7 +17,8 @@ export interface ChannelHealthSummary {
 }
 export interface ChannelHealthReport {
   window: HealthWindow; from: number; to: number; retentionDays: number; indexing: boolean
-  minimumSamples: number; staleAfterMs: number; warningErrorRate: number; criticalErrorRate: number; slowFirstTokenMs: number
+  minimumSamples: number; staleAfterMs: number; warningErrorRate: number; criticalErrorRate: number
+  slowFirstTokenMs: number; slowP50FirstTokenMs: number
   channels: ChannelHealthSummary[]
 }
 export interface HealthBreakdown { id: string; name: string; metrics: HealthMetrics }

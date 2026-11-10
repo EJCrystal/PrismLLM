@@ -26,6 +26,27 @@ object ChannelHealthThresholds {
     const val CRITICAL_ERROR_RATE = 0.20
 }
 
+/**
+ * 健康度的延迟判定阈值，与冷却策略刻意分开：放宽这里只减少大盘提示，
+ * 不会让慢候选继续留在路由池里，故障转移仍按 CooldownPolicy 判定。
+ *
+ * P50 提示阈值高于 P95 判定阈值时那一档永远不会触发，因此构造期直接拒绝。
+ */
+data class HealthPolicy(
+    /** 首 token P95 超过该值时渠道显示「需关注」。 */
+    val slowFirstTokenMs: Long = 30_000,
+    /** 首 token P50 超过该值时同样提示「需关注」，比 P95 更早暴露整体偏慢。 */
+    val slowP50FirstTokenMs: Long = 10_000,
+) {
+    init {
+        require(slowFirstTokenMs > 0) { "slowFirstTokenMs must be positive" }
+        require(slowP50FirstTokenMs > 0) { "slowP50FirstTokenMs must be positive" }
+        require(slowP50FirstTokenMs <= slowFirstTokenMs) {
+            "slowP50FirstTokenMs must not exceed slowFirstTokenMs"
+        }
+    }
+}
+
 @Serializable
 data class HealthMetrics(
     val attempts: Long = 0,
@@ -102,6 +123,7 @@ data class ChannelHealthReport(
     val warningErrorRate: Double = ChannelHealthThresholds.WARNING_ERROR_RATE,
     val criticalErrorRate: Double = ChannelHealthThresholds.CRITICAL_ERROR_RATE,
     val slowFirstTokenMs: Long,
+    val slowP50FirstTokenMs: Long,
     val channels: List<ChannelHealthSummary>,
 )
 
@@ -124,7 +146,7 @@ fun healthState(
     metrics: HealthMetrics,
     enabled: Boolean,
     now: Long,
-    slowFirstTokenMs: Long,
+    health: HealthPolicy,
     routableCredentials: Int? = null,
 ): Pair<String, String> = when {
     !enabled -> "DISABLED" to "渠道已停用"
@@ -136,7 +158,10 @@ fun healthState(
         "CRITICAL" to "上游失败率达到 ${ChannelHealthThresholds.CRITICAL_ERROR_RATE.asPercent()}%"
     metrics.failures.toDouble() / metrics.attempts >= ChannelHealthThresholds.WARNING_ERROR_RATE ->
         "WARNING" to "上游失败率达到 ${ChannelHealthThresholds.WARNING_ERROR_RATE.asPercent()}%"
-    metrics.firstTokenSamples >= ChannelHealthThresholds.MINIMUM_SAMPLES && (metrics.p95FirstTokenMs ?: 0.0) > slowFirstTokenMs -> "WARNING" to "P95 首 token 超过软阈值"
+    metrics.firstTokenSamples >= ChannelHealthThresholds.MINIMUM_SAMPLES && (metrics.p95FirstTokenMs ?: 0.0) > health.slowFirstTokenMs ->
+        "WARNING" to "P95 首 token 超过 ${health.slowFirstTokenMs}ms 判定阈值"
+    metrics.firstTokenSamples >= ChannelHealthThresholds.MINIMUM_SAMPLES && (metrics.p50FirstTokenMs ?: 0.0) > health.slowP50FirstTokenMs ->
+        "WARNING" to "P50 首 token 超过 ${health.slowP50FirstTokenMs}ms 提示阈值"
     else -> "HEALTHY" to "成功率正常"
 }
 
