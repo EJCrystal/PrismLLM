@@ -110,7 +110,7 @@ async function runTest() {
           <select v-model="form.model" :disabled="testing || models.length === 0">
             <option v-for="model in models" :key="model" :value="model">{{ model }}</option>
           </select>
-          <small v-if="models.length === 0">该账号还没有可测试的模型，请先在订阅账号页点「同步模型」刷新目录。</small>
+          <small v-if="models.length === 0">该账号还没有可测试的模型，请先在订阅账号页点「同步模型目录」刷新目录。</small>
         </label>
         <label class="field">
           <span>协议</span>
