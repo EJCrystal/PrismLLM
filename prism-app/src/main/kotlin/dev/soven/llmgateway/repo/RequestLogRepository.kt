@@ -2,7 +2,7 @@ package dev.soven.llmgateway.repo
 
 import dev.soven.llmgateway.channel.persistence.ChannelKeys
 import dev.soven.llmgateway.channel.persistence.Channels
-import dev.soven.llmgateway.db.ClientKeys
+import dev.soven.llmgateway.quota.persistence.ClientKeys
 import dev.soven.llmgateway.db.RequestLogs
 import dev.soven.llmgateway.db.RequestAttempts
 import dev.soven.llmgateway.requestlog.domain.attemptOutcome

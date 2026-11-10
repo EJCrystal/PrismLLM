@@ -32,8 +32,8 @@ import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.repo.AdminUserRepository
 import dev.soven.llmgateway.repo.AdminAuditRepository
 import dev.soven.llmgateway.channel.persistence.ChannelRepository
-import dev.soven.llmgateway.repo.ClientKeyRepository
-import dev.soven.llmgateway.repo.ClientKeyQuotaRepository
+import dev.soven.llmgateway.quota.persistence.ClientKeyRepository
+import dev.soven.llmgateway.quota.persistence.ClientKeyQuotaRepository
 import dev.soven.llmgateway.resilience.persistence.CooldownStateRepository
 import dev.soven.llmgateway.repo.RequestLogRepository
 import dev.soven.llmgateway.repo.RetentionSettingsRepository
