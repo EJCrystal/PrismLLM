@@ -304,6 +304,14 @@ describe('usageReport: 增强报表数据', () => {
       costs: {},
       avgFirstTokenMs: 2_400,
       avgTotalMs: 1_500,
+    }, {
+      id: 'key-c',
+      name: 'c',
+      requests: 1,
+      errors: 0,
+      costs: {},
+      avgFirstTokenMs: 12,
+      avgTotalMs: 4,
     }], '按渠道')
     const lines = csv.trim().split('\n')
     // 表头写明单位，值统一为秒，短耗时不会退回 ms 造成混排。
@@ -312,6 +320,8 @@ describe('usageReport: 增强报表数据', () => {
     assert.ok(!lines[0].includes('(ms)'), lines[0])
     assert.ok(lines[1].endsWith('0.85,30,'), lines[1])
     assert.ok(lines[2].endsWith('2.4,1.5,'), lines[2])
+    // 毫秒换算成秒最多 3 位小数，短耗时精度不丢失（不能截断成 0.01 / 0）。
+    assert.ok(lines[3].endsWith('0.012,0.004,'), lines[3])
   })
 
   it('CSV 耗时缺失时输出空单元格而不是 0', () => {

@@ -81,7 +81,8 @@ describe('utils: format 格式化工具函数库', () => {
     it('把毫秒换算成固定单位的秒，供表格与 CSV 使用', () => {
       assert.equal(durationSeconds(1500), 1.5)
       assert.equal(durationSeconds(30_000), 30)
-      assert.equal(durationSeconds(12), 0.01)
+      assert.equal(durationSeconds(12), 0.012)
+      assert.equal(durationSeconds(4), 0.004)
       assert.equal(durationSeconds(0), 0)
     })
 

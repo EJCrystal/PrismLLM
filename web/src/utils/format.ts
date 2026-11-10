@@ -76,14 +76,16 @@ export function formatDuration(ms: number | string | null | undefined, fallback 
 
 /**
  * 把毫秒换算成固定单位的秒值，供表格 / CSV 等整列统一单位的场景使用。
- * 保留 2 位小数，缺失或非法值返回 null，便于调用方输出空单元格。
+ * 不做取整：毫秒本身是整数，换算成秒最多 3 位小数，精度无损
+ * （截断到 2 位小数会让 12ms 变 0.01、4ms 变 0）。缺失或非法值返回
+ * null，便于调用方输出空单元格。
  *
  * @param {number|string|null} ms 毫秒数值
  * @returns {number|null}
  */
 export function durationSeconds(ms: number | string | null | undefined): number | null {
   if (ms == null || Number.isNaN(Number(ms))) return null
-  return Math.round((Number(ms) / 1000) * 100) / 100
+  return Number(ms) / 1000
 }
 
 /**
