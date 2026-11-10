@@ -118,8 +118,10 @@ describe('iqTest: 智商检测展示', () => {
   })
 
   it('耗时按毫秒与秒展示', () => {
+    // 复用全局时长规则：>= 1 秒换算成 s，整秒不带小数。
     assert.equal(formatIqLatency(800), '800 ms')
     assert.equal(formatIqLatency(12_340), '12.3 s')
+    assert.equal(formatIqLatency(12_000), '12 s')
     assert.equal(formatIqLatency(-1), '—')
   })
 })

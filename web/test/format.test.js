@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   formatTime,
   formatDuration,
+  durationSeconds,
   formatNumber,
   formatTokensCompact,
   formatCost,
@@ -57,14 +58,37 @@ describe('utils: format 格式化工具函数库', () => {
     })
 
     it('大于等于 1000 毫秒换算为秒 (s)', () => {
-      assert.equal(formatDuration(1500), '1.50 s')
-      assert.equal(formatDuration(2000), '2.00 s')
+      assert.equal(formatDuration(1500), '1.5 s')
+      assert.equal(formatDuration(2000), '2 s')
+    })
+
+    it('整秒不带小数，非整秒保留 1 位，避免同一列出现无意义的尾零', () => {
+      assert.equal(formatDuration(1000), '1 s')
+      assert.equal(formatDuration(30_000), '30 s')
+      assert.equal(formatDuration(1_234), '1.2 s')
+      assert.equal(formatDuration(59_999), '60 s')
+      assert.equal(formatDuration(999), '999 ms')
     })
 
     it('null 或非数字回退占位符', () => {
       assert.equal(formatDuration(null), '—')
       assert.equal(formatDuration(undefined), '—')
       assert.equal(formatDuration('bad'), '—')
+    })
+  })
+
+  describe('durationSeconds', () => {
+    it('把毫秒换算成固定单位的秒，供表格与 CSV 使用', () => {
+      assert.equal(durationSeconds(1500), 1.5)
+      assert.equal(durationSeconds(30_000), 30)
+      assert.equal(durationSeconds(12), 0.01)
+      assert.equal(durationSeconds(0), 0)
+    })
+
+    it('缺失或非法值返回 null，便于调用方输出空单元格', () => {
+      assert.equal(durationSeconds(null), null)
+      assert.equal(durationSeconds(undefined), null)
+      assert.equal(durationSeconds('bad'), null)
     })
   })
 

@@ -12,6 +12,7 @@ import {
   normalizeModelTestSettings,
 } from '../utils/modelTest'
 import { oauthProviderLabel, oauthProviderProtocols } from '../utils/oauthAccount'
+import { formatDuration } from '../utils/format'
 import Modal from './Modal.vue'
 
 const props = defineProps<{
@@ -141,7 +142,7 @@ async function runTest() {
         <div class="model-test-result-head">
           <strong>{{ modelTestResultTitle(result) }}</strong>
           <span v-if="result.statusCode" class="badge" :class="modelTestResultTone(result)">HTTP {{ result.statusCode }}</span>
-          <span class="muted small">{{ result.latencyMs }} ms</span>
+          <span class="muted small">{{ formatDuration(result.latencyMs) }}</span>
         </div>
         <div v-if="result.success" class="model-test-reported-model">
           <span class="muted small">上游响应中的模型标识</span>

@@ -1,5 +1,6 @@
 package dev.soven.prismllm.requestlog.domain
 
+import dev.soven.prismllm.shared.domain.formatDurationText
 import kotlinx.serialization.Serializable
 
 enum class AttemptOutcome { SUCCESS, FAILURE, EXCLUDED }
@@ -159,9 +160,9 @@ fun healthState(
     metrics.failures.toDouble() / metrics.attempts >= ChannelHealthThresholds.WARNING_ERROR_RATE ->
         "WARNING" to "上游失败率达到 ${ChannelHealthThresholds.WARNING_ERROR_RATE.asPercent()}%"
     metrics.firstTokenSamples >= ChannelHealthThresholds.MINIMUM_SAMPLES && (metrics.p95FirstTokenMs ?: 0.0) > health.slowFirstTokenMs ->
-        "WARNING" to "P95 首 token 超过 ${health.slowFirstTokenMs}ms 判定阈值"
+        "WARNING" to "P95 首 token 超过 ${formatDurationText(health.slowFirstTokenMs)} 判定阈值"
     metrics.firstTokenSamples >= ChannelHealthThresholds.MINIMUM_SAMPLES && (metrics.p50FirstTokenMs ?: 0.0) > health.slowP50FirstTokenMs ->
-        "WARNING" to "P50 首 token 超过 ${health.slowP50FirstTokenMs}ms 提示阈值"
+        "WARNING" to "P50 首 token 超过 ${formatDurationText(health.slowP50FirstTokenMs)} 提示阈值"
     else -> "HEALTHY" to "成功率正常"
 }
 

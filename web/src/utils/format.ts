@@ -55,7 +55,11 @@ export function formatTime(
 }
 
 /**
- * 格式化请求耗时（毫秒/秒）。
+ * 格式化耗时展示，全局唯一的时长单位规则：
+ * 小于 1 秒用 `ms`，大于等于 1 秒一律换算成 `s`（整秒不带小数，非整秒保留 1 位）。
+ *
+ * 表格与 CSV 等需要可比较、可求和的列不要用本函数逐值切换单位，
+ * 改用 [durationSeconds] 输出固定单位的数值。
  *
  * @param {number|null} ms 毫秒数值
  * @param {string} fallback 缺省值
@@ -65,7 +69,21 @@ export function formatDuration(ms: number | string | null | undefined, fallback 
   if (ms == null || Number.isNaN(Number(ms))) return fallback
   const num = Number(ms)
   if (num < 1000) return `${Math.round(num)} ms`
-  return `${(num / 1000).toFixed(2)} s`
+  // 先按 1 位小数取整，再判断是否整秒；否则 59999ms 会输出 "60.0 s"。
+  const rounded = Math.round((num / 1000) * 10) / 10
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)} s`
+}
+
+/**
+ * 把毫秒换算成固定单位的秒值，供表格 / CSV 等整列统一单位的场景使用。
+ * 保留 2 位小数，缺失或非法值返回 null，便于调用方输出空单元格。
+ *
+ * @param {number|string|null} ms 毫秒数值
+ * @returns {number|null}
+ */
+export function durationSeconds(ms: number | string | null | undefined): number | null {
+  if (ms == null || Number.isNaN(Number(ms))) return null
+  return Math.round((Number(ms) / 1000) * 100) / 100
 }
 
 /**

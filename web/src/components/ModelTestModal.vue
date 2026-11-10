@@ -4,6 +4,7 @@ import { api } from '../api'
 import { notify } from '../toast'
 import type { Channel, ChannelModelTestResult } from '../types/api'
 import { isKeyRoutable } from '../utils/channelForm'
+import { formatDuration } from '../utils/format'
 import {
   buildModelTestRequest,
   formatModelTestUsage,
@@ -150,7 +151,7 @@ async function runTest() {
           <strong>{{ modelTestResultTitle(result) }}</strong>
           <span v-if="result.keyName" class="badge neutral">{{ result.keyName }}</span>
           <span v-if="result.statusCode" class="badge" :class="modelTestResultTone(result)">HTTP {{ result.statusCode }}</span>
-          <span class="muted small">{{ result.latencyMs }} ms</span>
+          <span class="muted small">{{ formatDuration(result.latencyMs) }}</span>
         </div>
         <div v-if="result.success" class="model-test-reported-model">
           <span class="muted small">上游响应中的模型标识</span>
