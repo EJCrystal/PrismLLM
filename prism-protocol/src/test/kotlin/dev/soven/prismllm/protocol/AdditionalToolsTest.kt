@@ -252,4 +252,48 @@ class AdditionalToolsTest {
         assertEquals("web_search", tools[0].jsonObject.string("type"))
         assertEquals("shell", tools[1].jsonObject.string("name"))
     }
+
+    @Test
+    fun `duplicate unnamed hosted tools dedupe by type across request and additional tools`() {
+        // 请求级与 additional_tools 各带一个无 name 的 web_search：按 #type 去重，保留请求级声明。
+        val request = json(
+            """{
+              "model":"gpt",
+              "input":[
+                {"type":"additional_tools","tools":[
+                  {"type":"web_search","filters":{"allowed_domains":["example.com"]}},
+                  {"type":"function","name":"shell","parameters":{"type":"object"}}
+                ]}
+              ],
+              "tools":[{"type":"web_search"}]
+            }""",
+        )
+        val lifted = liftAdditionalTools(request)
+        val tools = lifted["tools"]!!.jsonArray
+        assertEquals(2, tools.size)
+        assertEquals("web_search", tools[0].jsonObject.string("type"))
+        // 已有工具优先保留：additional_tools 里带 filters 的副本不覆盖请求级声明。
+        assertEquals(null, tools[0].jsonObject["filters"])
+        assertEquals("shell", tools[1].jsonObject.string("name"))
+    }
+
+    @Test
+    fun `non object tool entries are skipped without corrupting the key index`() {
+        // 畸形元素（非对象）不参与去重索引；合法工具仍正常平铺。
+        val request = json(
+            """{
+              "model":"gpt",
+              "input":[
+                {"type":"additional_tools","tools":[
+                  "garbage",
+                  {"type":"function","name":"shell","parameters":{"type":"object"}}
+                ]}
+              ]
+            }""",
+        )
+        val lifted = liftAdditionalTools(request)
+        val tools = lifted["tools"]!!.jsonArray
+        assertEquals(1, tools.size)
+        assertEquals("shell", tools[0].jsonObject.string("name"))
+    }
 }

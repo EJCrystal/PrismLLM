@@ -78,11 +78,11 @@ internal fun liftAdditionalTools(request: JsonObject): JsonObject {
     }
 }
 
-/** 工具按名字索引；没有名字的宿主工具（如 `web_search`）按类型索引。 */
+/** 工具按名字索引；没有名字的宿主工具（如 `web_search`）按类型索引，非对象元素不参与匹配。 */
 private fun toolsByName(tools: List<JsonElement>): MutableMap<String, JsonObject> {
     val have = LinkedHashMap<String, JsonObject>()
-    tools.forEachIndexed { index, element ->
-        (element as? JsonObject)?.let { have[toolKey(it)] = it } ?: run { have["#$index"] = JsonObject(emptyMap()) }
+    tools.forEach { element ->
+        (element as? JsonObject)?.let { have[toolKey(it)] = it }
     }
     return have
 }
