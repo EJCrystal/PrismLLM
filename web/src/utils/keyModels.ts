@@ -41,7 +41,8 @@ export function invalidateKeyModels(key: ChannelKeyEditorDraft): void {
 export function applyDiscoveredKeyModels(key: ChannelKeyEditorDraft, models: KeyModelOption[]): void {
   key.availableModels = models
   if (key.modelsSourceChanged) {
-    key.models = models.map(model => model.id)
+    const selectedManual = key.manualModels.filter(id => key.models.includes(id))
+    key.models = [...new Set([...models.map(model => model.id), ...selectedManual])]
   } else {
     const available = new Set([...models.map(model => model.id), ...key.manualModels])
     key.models = key.models.filter(id => available.has(id))

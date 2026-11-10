@@ -49,6 +49,22 @@ describe('credential-specific model state', () => {
     applyDiscoveredKeyModels(key, [{ id: 'A', authorized: true }])
     assert.deepEqual(key.models, [])
   })
+  it('preserves only selected manual models added under the new credential before first discovery', () => {
+    for (const replaced of [false, true]) {
+      const key = draft()
+      if (replaced) invalidateKeyModels(key)
+      else Object.assign(key, { models: [], manualModels: [], modelsSourceChanged: true })
+      key.manualModels = ['manual', 'C', 'unselected']
+      key.models = ['manual', 'C']
+      applyDiscoveredKeyModels(key, [{ id: 'C' }, { id: 'D' }])
+      assert.deepEqual(key.models, ['C', 'D', 'manual'])
+      assert.equal(key.modelsSourceChanged, false)
+      assert.ok(!key.models.includes('A'))
+      assert.ok(!key.models.includes('B'))
+      applyDiscoveredKeyModels(key, [{ id: 'D' }])
+      assert.deepEqual(key.models, ['C', 'D', 'manual'])
+    }
+  })
   it('filters IDs case-insensitively without changing selections', () => {
     const key = draft()
     const options = [{ id: 'GPT-4o' }, { id: 'claude' }]
