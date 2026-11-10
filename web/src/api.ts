@@ -56,6 +56,7 @@ import type {
   OAuthLoginStart,
   OAuthLoginStartRequest,
   OAuthProviderInfo,
+  OAuthProviderModelsResponse,
   PageOptions,
   ProtocolProbeResponse,
   RequestLog,
@@ -171,6 +172,10 @@ export const api = {
     request<Channel>(`/channels/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteChannel: (id: string) => request<null>(`/channels/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listOAuthProviders: () => requestList<OAuthProviderInfo>('/oauth-providers'),
+  refreshOAuthProviderModels: (provider: string) =>
+    request<OAuthProviderModelsResponse>(`/oauth-providers/${encodeURIComponent(provider)}/models/refresh`, {
+      method: 'POST',
+    }),
   listOAuthAccounts: () => requestList<OAuthAccount>('/oauth-accounts'),
   importOAuthAccount: (payload: OAuthAccountImportRequest) =>
     request<OAuthAccount>('/oauth-accounts', { method: 'POST', body: JSON.stringify(payload) }),

@@ -5,12 +5,14 @@ import {
   buildOAuthImportPayload,
   buildOAuthModels,
   buildOAuthPolicyPayload,
+  filterOAuthModels,
   formatCooldownRemaining,
   formatQuotaReset,
   formatUsedPercent,
   formatWindowSeconds,
   isOAuthAccountCooling,
   isOAuthQuotaBlocked,
+  oauthAccountStatus,
   oauthAuthStateBadge,
   oauthAuthStateLabel,
   oauthLoginCallbackError,
@@ -26,6 +28,7 @@ import {
   oauthQuotaTone,
   oauthQuotaWindows,
   oauthRuntimeSummary,
+  oauthSupportsModelCatalog,
   oauthTestModels,
 } from '../src/utils/oauthAccount'
 
@@ -53,6 +56,19 @@ describe('oauthAccount: 订阅账号看板展示', () => {
     assert.equal(oauthAuthStateLabel('REAUTH_REQUIRED'), '需重新授权')
     assert.equal(oauthAuthStateBadge('ACTIVE'), 'success')
     assert.equal(oauthAuthStateBadge('REAUTH_REQUIRED'), 'danger')
+    assert.deepEqual(oauthAccountStatus({ enabled: true, authState: 'ACTIVE' }), {
+      label: '正常',
+      tone: 'success',
+    })
+    // 停用优先于 token 状态：状态列只显示一个徽标，不能同时出现「正常」和「已停用」。
+    assert.deepEqual(oauthAccountStatus({ enabled: false, authState: 'ACTIVE' }), {
+      label: '已停用',
+      tone: 'neutral',
+    })
+    assert.deepEqual(oauthAccountStatus({ enabled: false, authState: 'REAUTH_REQUIRED' }), {
+      label: '已停用',
+      tone: 'neutral',
+    })
   })
 
   it('窗口时长按整单位展示，非整单位退回秒数', () => {
@@ -245,6 +261,26 @@ describe('oauthAccount: 上游额度展示', () => {
       'gpt-5',
     ])
     assert.deepEqual(buildOAuthModels(false, [], ''), [])
+  })
+
+  it('模型选择器支持搜索过滤，目录同步只对 Code Assist 提供方开放', () => {
+    const models = [
+      'claude-opus-5-5-high',
+      'gemini-3.8-flash-high',
+      'gemini-4-argon-high',
+      'gpt-oss-120b-medium',
+    ]
+    assert.deepEqual(filterOAuthModels(models, ''), models)
+    assert.deepEqual(filterOAuthModels(models, '  '), models)
+    assert.deepEqual(filterOAuthModels(models, '  GEMINI '), [
+      'gemini-3.8-flash-high',
+      'gemini-4-argon-high',
+    ])
+    assert.deepEqual(filterOAuthModels(models, 'claude'), ['claude-opus-5-5-high'])
+    assert.deepEqual(filterOAuthModels(models, 'no-match'), [])
+    assert.equal(oauthSupportsModelCatalog('antigravity'), true)
+    assert.equal(oauthSupportsModelCatalog('chatgpt'), false)
+    assert.equal(oauthSupportsModelCatalog('custom'), false)
   })
 
   it('连通性测试的协议与模型来自官方端点渠道和账号授权', () => {
