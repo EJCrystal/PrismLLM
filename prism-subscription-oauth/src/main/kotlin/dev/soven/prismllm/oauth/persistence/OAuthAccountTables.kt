@@ -41,6 +41,9 @@ object OAuthAccounts : Table("oauth_accounts") {
     val windowLimit = integer("window_limit").nullable()
     val windowSeconds = integer("window_seconds").default(10_800)
     val maxConcurrentRequests = integer("max_concurrent_requests").default(1)
+    /** 该账号自己的上游模型目录（JSON）；null 表示尚未同步，沿用渠道目录。 */
+    val modelCatalog = text("model_catalog").nullable()
+    val modelCatalogSyncedAt = long("model_catalog_synced_at").nullable()
     /** ChatGPT 账号 id，来自 access token JWT，用于读取 /wham/usage。 */
     val chatgptAccountId = varchar("chatgpt_account_id", 128).nullable()
     /** 上游额度快照：5 小时窗口（primary）与每周窗口（secondary）。 */

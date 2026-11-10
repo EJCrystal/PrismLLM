@@ -27,6 +27,7 @@ import dev.soven.prismllm.admin.domain.effective
 import dev.soven.prismllm.domain.effective
 import dev.soven.prismllm.proxy.validateUpstreamRequestOverrides
 import dev.soven.prismllm.pricing.domain.ModelPriceTier
+import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
 import dev.soven.prismllm.oauth.domain.OAuthAccountPolicy
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.pricing.domain.PricingMode
@@ -1227,25 +1228,25 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(HttpStatusCode.NoContent)
         }
 
-        post("/oauth-providers/{provider}/models/refresh") {
+        post("/oauth-accounts/{id}/models/refresh") {
             call.requireAdmin(app)
-            val provider = OAuthProvider.fromValue(
-                call.requiredParam("provider", "缺少 provider").trim().lowercase(),
-            ) ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
-            val channelId = app.providerChannelProvisioner.ensure(provider)
-                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
+            val accountId = call.requiredParam("id", "缺少账号 id")
+            // 必须加载账号自身的授权与目录：目录按账号隔离，不能用别的账号或共享渠道代替。
+            val account = app.oauthAccountRepository.findDetailed(accountId)
+                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            val channelId = app.providerChannelProvisioner.ensure(account.provider)
+                ?: throw badRequest(
+                    "oauth_provider_not_servable",
+                    "该提供方的上游协议尚未实现: " + account.provider.value,
+                )
             // 模型目录只由 Code Assist 的 fetchAvailableModels 提供，目前仅 Antigravity 具备；
-            // ChatGPT 的目录沿用系统渠道种子模型，走 PUT 接口维护。
+            // ChatGPT 的目录沿用系统渠道种子模型，走 provider 的 PUT 接口维护。
             if (app.channelRepository.find(channelId)?.upstreamEnvelope != UpstreamEnvelope.CODE_ASSIST) {
                 throw badRequest(
                     "model_catalog_not_supported",
-                    "该提供方不支持从上游刷新模型目录: " + provider.value,
+                    "该提供方不支持从上游刷新模型目录: " + account.provider.value,
                 )
             }
-            // 账号必须属于本 provider，否则会拿别的提供方凭据去调 Code Assist；
-            // 只取启用且 ACTIVE 的账号，避免待重新授权的账号把刷新卡死。
-            val account = app.oauthAccountRepository.listUsableForProvider(provider).firstOrNull()
-                ?: throw badRequest("oauth_account_missing", "该提供方没有可用的订阅账号，无法读取模型目录")
             val token = try {
                 app.oauthTokenService.accessToken(account.id)
             } catch (cause: CancellationException) {
@@ -1291,20 +1292,24 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     retryable = true,
                 )
             }
-            // 目录里家族 id 不一定可调用：渠道登记家族对应的默认变体，对外仍只暴露家族 id。
-            // 这样数据面目录补拉失败或超时时，请求发出的也是上游真实存在的模型。
-            app.channelRepository.replaceModels(
-                channelId,
+            // 目录按账号保存：不同开通方式（Pixel/Jio 优惠与正价）拿到的模型集合不同。
+            // 渠道登记家族对应的默认变体并保留 canonical 映射，对外仍暴露家族 id。
+            app.oauthAccountRepository.saveModelCatalog(
+                account.id,
                 models.map { model ->
                     val upstream = catalog.upstreamId(model)
-                    ChannelModelRecord(
+                    OAuthAccountModelCatalogEntry(
                         upstreamModel = upstream,
                         canonicalModelId = model.id.takeIf { it != upstream },
                     )
                 },
             )
+            // 系统渠道的模型是所有账号目录的并集，供路由前判断模型是否可能存在；
+            // 账号级 supports() 再按自己的目录过滤，避免把请求发给没有该模型的账号。
+            app.providerChannelProvisioner.syncModelUnion(account.provider)
             call.markAdminAuditDetails(buildJsonObject {
-                put("provider", provider.value)
+                put("accountId", account.id)
+                put("provider", account.provider.value)
                 put("models", models.joinToString(",") { it.id })
             })
             call.respond(

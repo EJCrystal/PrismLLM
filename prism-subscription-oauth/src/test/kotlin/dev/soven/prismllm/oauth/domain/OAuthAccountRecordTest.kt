@@ -31,6 +31,21 @@ class OAuthAccountRecordTest {
     }
 
     @Test
+    fun `account catalog restricts models beyond the shared channel list`() {
+        val catalog = listOf(
+            OAuthAccountModelCatalogEntry("gemini-3.8-flash-high", "gemini-3.8-flash"),
+            OAuthAccountModelCatalogEntry("claude-opus-5-5-high", "claude-opus-5-5"),
+        )
+        // 未同步目录时沿用渠道模型；同步后只认自己目录里的变体。
+        assertTrue(account(models = emptyList()).supports("gemini-4-argon-high"))
+        assertTrue(account(models = emptyList(), modelCatalog = catalog).supports("gemini-3.8-flash-high"))
+        assertFalse(account(models = emptyList(), modelCatalog = catalog).supports("gemini-4-argon-high"))
+        // 显式授权与目录同时生效，取交集。
+        assertFalse(account(models = listOf("gemini-4-argon-high"), modelCatalog = catalog).supports("gemini-4-argon-high"))
+        assertFalse(account(models = listOf("gemini-3.8-flash-high"), modelCatalog = catalog).supports("claude-opus-5-5-high"))
+    }
+
+    @Test
     fun `routability follows the manual enabled flag`() {
         assertTrue(account(enabled = true).isRoutable(now = 1_000))
         assertFalse(account(enabled = false).isRoutable(now = 1_000))
@@ -142,6 +157,7 @@ class OAuthAccountRecordTest {
     private fun account(
         enabled: Boolean = true,
         models: List<String> = emptyList(),
+        modelCatalog: List<OAuthAccountModelCatalogEntry>? = null,
         accessTokenCiphertext: String? = null,
         accessTokenNonce: String? = null,
         accessTokenKeyVersion: Int? = null,
@@ -160,6 +176,7 @@ class OAuthAccountRecordTest {
         accessTokenExpiresAt = accessTokenExpiresAt,
         enabled = enabled,
         models = models,
+        modelCatalog = modelCatalog,
         lastRefreshedAt = lastRefreshedAt,
         createdAt = 0,
         updatedAt = 0,

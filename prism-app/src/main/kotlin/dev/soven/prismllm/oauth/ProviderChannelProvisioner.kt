@@ -27,6 +27,12 @@ class ProviderChannelProvisioner(
     /** 单实例部署下串行化「查不到就创建」，避免并发首次导入各建一条渠道。 */
     private val ensureMutex = Mutex()
 
+    /**
+     * 串行化目录并集重算。两个账号并发同步时，若一个先读到旧目录、另一个已完成
+     * 更新，最后写回的并集可能不含新模型；同一提供方的读取与替换必须成对执行。
+     */
+    private val unionMutex = Mutex()
+
     /** 找到或创建 provider 渠道；网关尚未实现该 provider 的上游协议时返回 null。 */
     suspend fun ensure(provider: OAuthProvider): String? = ensureMutex.withLock {
         val endpoint = ProviderEndpoints.of(provider)
@@ -50,6 +56,36 @@ class ProviderChannelProvisioner(
             created.id,
         )
         return created.id
+    }
+
+    /**
+     * 把各账号自己的模型目录合并回系统渠道。渠道模型是所有账号目录的并集，
+     * 供路由前判断模型是否可能存在；账号级 supports() 再按自己的目录过滤。
+     *
+     * 仍有账号未同步目录时保留渠道原有映射，避免把未同步账号能调度的模型摘掉；
+     * 全部账号同步后渠道目录收敛为并集，上游已下线的模型会随之移除。
+     */
+    suspend fun syncModelUnion(provider: OAuthProvider): Int = unionMutex.withLock {
+        val channelId = ensure(provider) ?: return@withLock 0
+        val providerAccounts = accounts.listAll().filter { it.provider == provider }
+        val union = LinkedHashMap<String, ChannelModelRecord>()
+        if (providerAccounts.any { it.modelCatalog == null }) {
+            channels.find(channelId)?.modelMappings?.forEach { union[it.upstreamModel] = it }
+        }
+        providerAccounts.forEach { account ->
+            account.modelCatalog?.forEach { entry ->
+                union.putIfAbsent(
+                    entry.upstreamModel,
+                    ChannelModelRecord(
+                        upstreamModel = entry.upstreamModel,
+                        canonicalModelId = entry.canonicalModelId,
+                    ),
+                )
+            }
+        }
+        if (union.isEmpty()) return@withLock 0
+        channels.replaceModels(channelId, union.values.toList())
+        union.size
     }
 
     /**

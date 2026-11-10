@@ -1,5 +1,6 @@
 package dev.soven.prismllm.oauth.persistence
 
+import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
 import dev.soven.prismllm.oauth.domain.OAuthAccountPolicy
 import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.domain.OAuthAuthState
@@ -340,6 +341,33 @@ open class OAuthAccountRepository(
         } > 0
     }
 
+    /**
+     * 保存账号自己的上游模型目录。目录按账号隔离：不同开通方式拿到的模型不同，
+     * 不能用某个账号的结果覆盖共享渠道目录。
+     */
+    suspend fun saveModelCatalog(
+        accountId: String,
+        catalog: List<OAuthAccountModelCatalogEntry>,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean = suspendTransaction(database) {
+        val entries = catalog
+            .mapNotNull { entry ->
+                val upstreamModel = entry.upstreamModel.trim()
+                if (upstreamModel.isEmpty()) null
+                else OAuthAccountModelCatalogEntry(
+                    upstreamModel = upstreamModel.take(MAX_CATALOG_MODEL_ID),
+                    canonicalModelId = entry.canonicalModelId?.trim()?.take(MAX_CATALOG_MODEL_ID),
+                )
+            }
+            .distinctBy { it.upstreamModel }
+            .take(MAX_CATALOG_MODELS)
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+            it[modelCatalog] = quotaJson.encodeToString(entries)
+            it[modelCatalogSyncedAt] = now
+            it[OAuthAccounts.updatedAt] = now
+        } > 0
+    }
+
     suspend fun setChannels(
         accountId: String,
         channelIds: Collection<String>,
@@ -647,6 +675,8 @@ open class OAuthAccountRepository(
         enabled = row[OAuthAccounts.enabled],
         priority = row[OAuthAccounts.priority],
         models = models,
+        modelCatalog = toModelCatalog(row),
+        modelCatalogSyncedAt = row[OAuthAccounts.modelCatalogSyncedAt],
         channelIds = channelIds,
         refreshFailureCount = row[OAuthAccounts.refreshFailureCount],
         lastRefreshError = row[OAuthAccounts.lastRefreshError],
@@ -662,6 +692,14 @@ open class OAuthAccountRepository(
         createdAt = row[OAuthAccounts.createdAt],
         updatedAt = row[OAuthAccounts.updatedAt],
     )
+
+    private fun toModelCatalog(row: ResultRow): List<OAuthAccountModelCatalogEntry>? =
+        row[OAuthAccounts.modelCatalog]
+            ?.let { raw ->
+                runCatching {
+                    quotaJson.decodeFromString<List<OAuthAccountModelCatalogEntry>>(raw)
+                }.getOrNull()
+            }
 
     private fun toQuota(row: ResultRow): OAuthQuotaSnapshot? {
         val checkedAt = row[OAuthAccounts.quotaCheckedAt]
@@ -708,6 +746,8 @@ open class OAuthAccountRepository(
  * 分组额度的存储上限。上游目前只给两个模型家族，正常读数远小于这些上限；
  * 限量是为了让异常响应也能编码成合法 JSON，界面最多展示前几组。
  */
+private const val MAX_CATALOG_MODELS = 500
+private const val MAX_CATALOG_MODEL_ID = 200
 private const val MAX_QUOTA_GROUPS = 16
 private const val MAX_QUOTA_GROUP_WINDOWS = 8
 private const val MAX_QUOTA_GROUP_NAME = 100

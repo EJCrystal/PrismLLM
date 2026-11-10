@@ -1,16 +1,21 @@
 package dev.soven.prismllm.repo
 
+import dev.soven.prismllm.channel.persistence.ChannelRepository
 import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.db.DatabaseFactory
+import dev.soven.prismllm.oauth.ProviderChannelProvisioner
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.oauth.persistence.OAuthAccounts
+import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
 import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.domain.OAuthQuotaGroup
 import dev.soven.prismllm.oauth.domain.OAuthQuotaSnapshot
 import dev.soven.prismllm.oauth.domain.OAuthQuotaWindow
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.shared.crypto.CredentialCipher
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
@@ -23,6 +28,9 @@ import java.util.Base64
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * 管理面读取模型目录时只挑可用的账号：状态条件必须在数据库里生效，
@@ -141,6 +149,80 @@ class OAuthAccountRepositoryTest {
         assertEquals(16, stored.size)
         assertEquals(100, stored.first().name.length)
         assertEquals(8, stored.first().windows.size)
+    }
+
+    @Test
+    fun `account model catalog is stored per account and drives routing support`() = runBlocking {
+        val pixel = create("pixel", enabled = true)
+        val full = create("full", enabled = true)
+
+        repository.saveModelCatalog(
+            pixel.id,
+            listOf(OAuthAccountModelCatalogEntry("gemini-3.8-flash-high", "gemini-3.8-flash")),
+            now = 9_000,
+        )
+        repository.saveModelCatalog(
+            full.id,
+            listOf(
+                OAuthAccountModelCatalogEntry("gemini-3.8-flash-high", "gemini-3.8-flash"),
+                OAuthAccountModelCatalogEntry("claude-opus-5-5-high", "claude-opus-5-5"),
+            ),
+            now = 10_000,
+        )
+
+        val storedPixel = repository.findDetailed(pixel.id)!!
+        val storedFull = repository.findDetailed(full.id)!!
+        assertEquals(listOf("gemini-3.8-flash-high"), storedPixel.modelCatalog?.map { it.upstreamModel })
+        assertEquals(9_000, storedPixel.modelCatalogSyncedAt)
+        assertEquals(2, storedFull.modelCatalog?.size)
+        // 目录按账号生效：正价账号能调的模型不会因为 pixel 账号没同步而被放行。
+        assertTrue(storedPixel.supports("gemini-3.8-flash-high"))
+        assertFalse(storedPixel.supports("claude-opus-5-5-high"))
+        assertTrue(storedFull.supports("claude-opus-5-5-high"))
+        // 未同步目录的账号沿用渠道模型。
+        val untouched = create("untouched", enabled = true)
+        assertNull(repository.findDetailed(untouched.id)!!.modelCatalog)
+        assertTrue(repository.findDetailed(untouched.id)!!.supports("claude-opus-5-5-high"))
+    }
+
+    @Test
+    fun `channel union keeps models from every account under concurrent sync`() = runBlocking {
+        val channels = ChannelRepository(factory.database, cipher)
+        val provisioner = ProviderChannelProvisioner(channels, repository)
+        val channelId = provisioner.ensure(OAuthProvider.ANTIGRAVITY)!!
+        val pixel = create("union-pixel", enabled = true)
+        val full = create("union-full", enabled = true)
+        repository.saveModelCatalog(
+            pixel.id,
+            listOf(OAuthAccountModelCatalogEntry("gemini-3-flash-union")),
+            now = 1_000,
+        )
+        repository.saveModelCatalog(
+            full.id,
+            listOf(
+                OAuthAccountModelCatalogEntry("claude-opus-5-5-union", "claude-opus-5-5"),
+                OAuthAccountModelCatalogEntry("gemini-3-flash-union"),
+            ),
+            now = 2_000,
+        )
+
+        // 并发重算被串行化：不能出现一个旧快照把另一个账号刚写入的模型覆盖掉。
+        coroutineScope {
+            launch { provisioner.syncModelUnion(OAuthProvider.ANTIGRAVITY) }
+            launch { provisioner.syncModelUnion(OAuthProvider.ANTIGRAVITY) }
+        }
+        val union = channels.find(channelId)!!.modelMappings.map { it.upstreamModel }.toSet()
+        assertTrue(union.containsAll(setOf("gemini-3-flash-union", "claude-opus-5-5-union")))
+
+        repository.saveModelCatalog(
+            full.id,
+            listOf(OAuthAccountModelCatalogEntry("gemini-4-argon-union", "gemini-4-argon")),
+            now = 3_000,
+        )
+        provisioner.syncModelUnion(OAuthProvider.ANTIGRAVITY)
+        val updated = channels.find(channelId)!!.modelMappings.map { it.upstreamModel }.toSet()
+        assertTrue(updated.contains("gemini-4-argon-union"))
+        assertTrue(updated.contains("gemini-3-flash-union"))
     }
 
     private suspend fun create(name: String, enabled: Boolean): OAuthAccountRecord =

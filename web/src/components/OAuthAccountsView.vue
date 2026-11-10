@@ -20,8 +20,9 @@ import {
   formatQuotaReset,
   formatUsedPercent,
   isOAuthAccountCooling,
-  isOAuthAccountUsable,
   isOAuthQuotaBlocked,
+  oauthAccountModelOptions,
+  oauthCanSyncCatalog,
   oauthAccountStatus,
   oauthLoginCallbackError,
   oauthPolicySummary,
@@ -43,7 +44,7 @@ const channels = ref<Channel[]>([])
 const loading = ref(true)
 const error = ref('')
 const busyId = ref<string | null>(null)
-const syncingModels = ref(false)
+const syncingId = ref<string | null>(null)
 const now = ref(Date.now())
 let clock: number | undefined
 
@@ -101,12 +102,13 @@ const reauthCount = computed(() => accounts.value.filter((item) => item.authStat
 const coolingCount = computed(() => accounts.value.filter((item) => isOAuthAccountCooling(item, now.value)).length)
 const configuredProviders = computed(() => providers.value.filter((item) => item.configured))
 const channelOptions = computed(() => [...channels.value].sort((a, b) => a.name.localeCompare(b.name)))
-/** 模型授权可选项：所关联渠道的模型并集，并保留账号已授权但目录里暂时没有的模型。 */
-const settingsModelOptions = computed(() => {
-  const options = new Set(availableOAuthModels(channels.value, settingsForm.channelIds))
-  for (const model of settingsForm.selectedModels) options.add(model)
-  return [...options].sort()
-})
+/** 模型授权可选项：优先用账号自己的目录，未同步时退回所关联渠道的模型。 */
+const settingsModelOptions = computed(() =>
+  oauthAccountModelOptions(
+    settingsTarget.value,
+    availableOAuthModels(channels.value, settingsForm.channelIds),
+  ),
+)
 
 /** 搜索只影响可见列表，已勾选但被过滤掉的模型保持选中。 */
 const filteredSettingsModels = computed(() =>
@@ -114,20 +116,6 @@ const filteredSettingsModels = computed(() =>
 )
 
 const selectedModelCount = computed(() => new Set(settingsForm.selectedModels).size)
-
-/**
- * 页面上的「同步模型目录」只对支持 Code Assist 目录、且存在可用账号的提供方生效。
- * 目录属于系统渠道，由任一启用且授权正常的账号代为读取，因此这是提供方级动作。
- */
-const syncableProviders = computed(() =>
-  [
-    ...new Set(
-      accounts.value
-        .filter((account) => oauthSupportsModelCatalog(account.provider) && isOAuthAccountUsable(account))
-        .map((account) => account.provider),
-    ),
-  ],
-)
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
@@ -164,22 +152,21 @@ function providerManagesChannel(providerId: string): boolean {
   return providers.value.find((item) => item.id === providerId)?.managedChannel === true
 }
 
-/** 从上游刷新系统渠道的模型目录；目前由 Antigravity 的 Code Assist 目录提供。 */
-async function syncModels() {
-  if (syncableProviders.value.length === 0 || syncingModels.value) return
-  syncingModels.value = true
+/**
+ * 从上游刷新该账号自己的模型目录。不同开通方式（Pixel/Jio 优惠与正价）拿到的
+ * 模型集合不同，所以目录按账号保存，不能互相覆盖。
+ */
+async function syncAccountModels(account: OAuthAccount) {
+  if (syncingId.value) return
+  syncingId.value = account.id
   try {
-    const synced: string[] = []
-    for (const provider of syncableProviders.value) {
-      const result = await api.refreshOAuthProviderModels(provider)
-      synced.push(`${oauthProviderLabel(provider)} ${result.models.length} 个模型`)
-    }
-    notify(`已同步模型目录：${synced.join('、')}`)
+    const result = await api.refreshOAuthAccountModels(account.id)
+    notify(`已同步 ${result.models.length} 个模型`)
     await load()
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
-    syncingModels.value = false
+    syncingId.value = null
   }
 }
 
@@ -510,20 +497,6 @@ onBeforeUnmount(() => {
   <section class="page-stack page-compact">
     <div class="page-overview">
       <div class="section-head page-actions">
-        <button
-          type="button"
-          class="button"
-          :disabled="syncingModels || syncableProviders.length === 0"
-          :title="
-            syncableProviders.length === 0
-              ? '需要至少一个已启用且授权正常的 Antigravity 账号，才能代为读取上游模型目录'
-              : '从上游刷新系统渠道的模型目录；目录由该提供方的所有账号共享，不会改动各账号的模型授权'
-          "
-          @click="syncModels"
-        >
-          <Icon name="refresh" :size="16" />
-          {{ syncingModels ? '同步中…' : '同步模型目录' }}
-        </button>
         <button type="button" class="button primary" @click="openImport">
           <Icon name="plus" :size="17" />
           新建账号
@@ -685,6 +658,20 @@ onBeforeUnmount(() => {
                   </button>
                   <button type="button" class="button small" :disabled="busyId === account.id" @click="refreshQuota(account)">
                     刷新额度
+                  </button>
+                  <button
+                    v-if="oauthSupportsModelCatalog(account.provider)"
+                    type="button"
+                    class="button small"
+                    :disabled="syncingId === account.id || !oauthCanSyncCatalog(account)"
+                    :title="
+                      oauthCanSyncCatalog(account)
+                        ? '从上游读取该账号自己的模型目录；不同账号的可用模型可能不同'
+                        : '账号需要重新授权后才能读取上游模型目录'
+                    "
+                    @click="syncAccountModels(account)"
+                  >
+                    {{ syncingId === account.id ? '同步中…' : '同步模型' }}
                   </button>
                   <button type="button" class="button small" @click="openTest(account)">测试</button>
                   <button type="button" class="button small" @click="openPolicy(account)">调度策略</button>
@@ -914,14 +901,14 @@ onBeforeUnmount(() => {
                 <span class="mono">{{ model }}</span>
               </label>
               <span v-if="settingsModelOptions.length === 0" class="oauth-model-empty muted small">
-                系统渠道还没有模型，可点页面右上角的「同步模型目录」从上游刷新。
+                该账号还没有可选模型，可点该行「同步模型」从上游读取目录。
               </span>
               <span v-else-if="filteredSettingsModels.length === 0" class="oauth-model-empty muted small">
                 没有匹配「{{ settingsForm.modelQuery }}」的模型。
               </span>
             </div>
             <p v-if="settingsForm.allModels" class="oauth-model-all-hint muted small">
-              当前继承系统渠道的全部模型；取消勾选「全部模型」后可只调度勾选的模型。
+              {{ settingsTarget?.modelCatalog ? '当前使用该账号目录里的全部模型；' : '当前继承所关联渠道的全部模型；' }}取消勾选「全部模型」后可只调度勾选的模型。
             </p>
             <div class="oauth-model-picker-actions">
               <button
@@ -948,7 +935,12 @@ onBeforeUnmount(() => {
               placeholder="补充列表外的模型，多个用逗号分隔"
             />
           </div>
-          <small>列表来自系统渠道目录，可用页面右上角的「同步模型目录」刷新；默认只调度勾选的模型，勾选「全部模型」则继承所关联渠道的全部模型。</small>
+          <small v-if="settingsTarget?.modelCatalog">
+            列表是该账号自己的模型目录（{{ settingsTarget.modelCatalogSyncedAt ? formatTime(settingsTarget.modelCatalogSyncedAt) : '尚未记录时间' }} 同步）；不同账号的可用模型可能不同，点该行「同步模型」可重新读取。
+          </small>
+          <small v-else>
+            该账号还没有同步模型目录，当前显示所关联渠道的模型；点该行「同步模型」可从上游读取该账号自己的目录。
+          </small>
         </div>
         <div v-if="settingsChannelsManaged" class="field">
           <span>上游端点</span>
