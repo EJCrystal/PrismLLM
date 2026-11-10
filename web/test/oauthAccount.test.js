@@ -11,6 +11,7 @@ import {
   formatUsedPercent,
   formatWindowSeconds,
   isOAuthAccountCooling,
+  isOAuthAccountUsable,
   isOAuthQuotaBlocked,
   oauthAccountStatus,
   oauthAuthStateBadge,
@@ -281,6 +282,10 @@ describe('oauthAccount: 上游额度展示', () => {
     assert.equal(oauthSupportsModelCatalog('antigravity'), true)
     assert.equal(oauthSupportsModelCatalog('chatgpt'), false)
     assert.equal(oauthSupportsModelCatalog('custom'), false)
+    // 目录同步用账号代为读取：只有启用且授权正常的账号可用，停用/待重新授权都不行。
+    assert.equal(isOAuthAccountUsable({ enabled: true, authState: 'ACTIVE' }), true)
+    assert.equal(isOAuthAccountUsable({ enabled: false, authState: 'ACTIVE' }), false)
+    assert.equal(isOAuthAccountUsable({ enabled: true, authState: 'REAUTH_REQUIRED' }), false)
   })
 
   it('连通性测试的协议与模型来自官方端点渠道和账号授权', () => {

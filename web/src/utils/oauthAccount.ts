@@ -170,6 +170,16 @@ export function oauthSupportsModelCatalog(provider: string): boolean {
   return provider === 'antigravity'
 }
 
+/**
+ * 能读取上游模型目录的账号：与后端 `listUsableForProvider` 一致，必须是启用且授权正常的账号。
+ * 停用或待重新授权的账号不能用来探测目录。
+ */
+export function isOAuthAccountUsable(
+  account: Pick<OAuthAccount, 'enabled' | 'authState'>,
+): boolean {
+  return account.enabled && account.authState === 'ACTIVE'
+}
+
 /** 模型选择器的搜索过滤：大小写不敏感，匹配模型名片段；空查询返回全部。 */
 export function filterOAuthModels(models: string[], query: string): string[] {
   const text = query.trim().toLowerCase()
