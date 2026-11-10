@@ -34,15 +34,18 @@ class CodeAssistProjectResolverTest {
     @Test
     fun `onboard serializes tier and caches the project`() = runBlocking {
         val requests = CopyOnWriteArrayList<Pair<String, String>>()
+        val userAgents = CopyOnWriteArrayList<String>()
         val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/v1internal:loadCodeAssist") { exchange ->
             requests += "/v1internal:loadCodeAssist" to exchange.requestBody.readAllBytes().decodeToString()
+            userAgents += exchange.requestHeaders.getFirst("User-Agent")
             reply(exchange, 200, """{"allowedTiers":[{"id":"free-tier"}]}""")
         }
         server.createContext("/v1internal:onboardUser") { exchange ->
             val body = exchange.requestBody.readAllBytes().decodeToString()
             requests += "/v1internal:onboardUser" to body
+            userAgents += exchange.requestHeaders.getFirst("User-Agent")
             reply(exchange, 200, """{"done":true,"response":{"cloudaicompanionProject":"proj-1"}}""")
         }
         server.start()
@@ -55,6 +58,9 @@ class CodeAssistProjectResolverTest {
 
             assertEquals("proj-1", probe.project)
             assertEquals("proj-1", saved.get()?.project)
+            // Google 按 User-Agent 识别调用方；缺少 Antigravity 标识会拿不到项目。
+            assertEquals(2, userAgents.size)
+            assertTrue(userAgents.all { it.startsWith("antigravity/") })
             // 当前 tier 缺失时，用账号可开通的第一个 tier 开通。
             val onboardBody = requests.first { it.first == "/v1internal:onboardUser" }.second
             assertEquals("free-tier", json.parseToJsonElement(onboardBody).jsonObject["tier_id"]!!.jsonPrimitive.content)
