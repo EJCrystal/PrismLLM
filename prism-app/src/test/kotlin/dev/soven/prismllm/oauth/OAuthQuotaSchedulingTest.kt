@@ -75,6 +75,13 @@ class OAuthQuotaSchedulingTest {
     }
 
     @Test
+    fun `antigravity accounts are included in the quota sweep`() = runBlocking {
+        val accountId = createAccount(OAuthProvider.ANTIGRAVITY)
+
+        assertTrue(accountId in accounts.listDueForQuota(attemptedBefore = 1_000_000L).map { it.id })
+    }
+
+    @Test
     fun `a successful read records both the freshness and the attempt time`() = runBlocking {
         val accountId = createAccount()
         val checkedAt = 5_000L
@@ -91,10 +98,10 @@ class OAuthQuotaSchedulingTest {
         assertTrue(accountId in accounts.listDueForQuota(attemptedBefore = checkedAt + 1).map { it.id })
     }
 
-    private fun createAccount(): String = runBlocking {
+    private fun createAccount(provider: OAuthProvider = OAuthProvider.CHATGPT): String = runBlocking {
         val channel = channels.create(
             name = "oauth-quota-" + UUID.randomUUID(),
-            baseUrl = "https://chatgpt.example/v1",
+            baseUrl = "https://subscription.example/v1",
             keys = listOf(NewChannelKey("account", cipher.encrypt("refresh-token"))),
             authType = "bearer",
             enabled = true,
@@ -102,7 +109,7 @@ class OAuthQuotaSchedulingTest {
         accounts.create(
             NewOAuthAccount(
                 name = "quota-account",
-                provider = OAuthProvider.CHATGPT,
+                provider = provider,
                 accountEmail = "quota-${UUID.randomUUID()}@example.com",
                 refreshToken = cipher.encrypt("refresh-token"),
                 channelIds = listOf(channel.id),

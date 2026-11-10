@@ -21,6 +21,8 @@ import {
   oauthPolicySummary,
   oauthProviderLabel,
   oauthQuotaCreditsLabel,
+  oauthQuotaErrorHint,
+  oauthQuotaErrorLabel,
   oauthQuotaTone,
   oauthQuotaWindows,
   oauthRuntimeSummary,
@@ -522,10 +524,17 @@ onBeforeUnmount(() => {
                     </span>
                     <span class="quota-value small muted">{{ Math.round(window.usedPercent) }}%</span>
                   </div>
-                  <div class="small muted">
+                  <div v-if="oauthQuotaCreditsLabel(account.quota) || isOAuthQuotaBlocked(account, now)" class="small muted">
                     <span v-if="oauthQuotaCreditsLabel(account.quota)">{{ oauthQuotaCreditsLabel(account.quota) }}</span>
                     <span v-if="isOAuthQuotaBlocked(account, now)" class="text-danger">额度用尽</span>
                   </div>
+                  <div v-if="account.quota.error" class="small text-danger">
+                    {{ oauthQuotaErrorLabel(account.quota.error) }}
+                  </div>
+                  <div v-if="oauthQuotaErrorHint(account.quota.error)" class="small muted">
+                    {{ oauthQuotaErrorHint(account.quota.error) }}
+                  </div>
+                  <span v-if="!oauthQuotaWindows(account.quota).length && !account.quota.error" class="muted small">暂无读数</span>
                 </template>
                 <span v-else class="muted small">暂无读数</span>
               </td>

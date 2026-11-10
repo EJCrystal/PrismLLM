@@ -160,7 +160,10 @@ open class OAuthAccountRepository(
         }
 
     /**
-     * 后台额度扫描：只返回仍可自动刷新、且距上次尝试已过期的 ChatGPT 账号。
+     * 后台额度扫描：返回仍可自动刷新、且距上次尝试已过期的订阅账号。
+     *
+     * ChatGPT 与 Antigravity 都支持额度读取；后者需要账号先在 Code Assist
+     * 完成开通，未开通时扫描会记录 project_missing 并等待下一轮重试。
      *
      * 排序用“最近一次尝试”而不是“最近一次成功读数”，否则持续失败的账号会一直排在
      * 队首、每轮被重新选中，账号数超过一轮上限时会把健康账号饿死。
@@ -171,7 +174,10 @@ open class OAuthAccountRepository(
                 .where {
                     (OAuthAccounts.authState eq OAuthAuthState.ACTIVE.value) and
                         (OAuthAccounts.enabled eq true) and
-                        (OAuthAccounts.provider eq OAuthProvider.CHATGPT.value) and
+                        (OAuthAccounts.provider inList listOf(
+                            OAuthProvider.CHATGPT.value,
+                            OAuthProvider.ANTIGRAVITY.value,
+                        )) and
                         (
                             OAuthAccounts.quotaAttemptedAt.isNull() or
                                 (OAuthAccounts.quotaAttemptedAt less attemptedBefore)
