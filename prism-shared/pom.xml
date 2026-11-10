@@ -67,7 +67,7 @@
                         <goals><goal>jar</goal></goals>
                         <configuration>
                             <classifier>quota-spi</classifier>
-                            <includes><include>dev/soven/llmgateway/spi/quota/**</include></includes>
+                            <includes><include>dev/soven/prismllm/spi/quota/**</include></includes>
                         </configuration>
                     </execution>
                     <execution>
@@ -76,7 +76,7 @@
                         <goals><goal>jar</goal></goals>
                         <configuration>
                             <classifier>iq-judge-spi</classifier>
-                            <includes><include>dev/soven/llmgateway/spi/iq/**</include></includes>
+                            <includes><include>dev/soven/prismllm/spi/iq/**</include></includes>
                         </configuration>
                     </execution>
                 </executions>

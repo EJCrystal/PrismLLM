@@ -137,7 +137,7 @@
 ### 外部 JAR 判分器
 
 外部判分器通过稳定的 `IqJudge` SPI 接入，按现有额度插件的方式从 `IQ_JUDGE_PLUGIN_DIR`
-加载 JAR，并使用 `META-INF/services/dev.soven.llmgateway.spi.iq.IqJudge` 注册。
+加载 JAR，并使用 `META-INF/services/dev.soven.prismllm.spi.iq.IqJudge` 注册。
 编译方式、示例代码与安全边界见 [iq-judge.md](plugins/iq-judge.md)。
 
 判分器 ID 只允许小写字母、数字、`.`、`_` 和 `-`，最长 64 个字符；内置判分器优先，

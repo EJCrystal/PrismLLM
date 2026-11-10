@@ -1,0 +1,173 @@
+package dev.soven.prismllm.requestlog.infra
+
+import dev.soven.prismllm.requestlog.domain.CleanupResult
+import dev.soven.prismllm.requestlog.domain.RetentionPolicy
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runTest
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+
+class LogRetentionServiceTest {
+    @Test
+    fun `cleans in batches until a short page`() = runBlocking {
+        val cutoff = 1_000L
+        val pages = ArrayDeque(listOf(
+            CleanupResult(100, cutoff),
+            CleanupResult(100, cutoff),
+            CleanupResult(25, cutoff),
+        ))
+        val calls = AtomicInteger()
+        val service = LogRetentionService(
+            deleteBatch = { requestedCutoff, size ->
+                assertEquals(cutoff, requestedCutoff)
+                assertEquals(100, size)
+                calls.incrementAndGet()
+                pages.removeFirst()
+            },
+            policy = RetentionPolicy(batchSize = 100),
+            now = { cutoff + 30 * 86_400_000L },
+        )
+
+        val result = service.cleanExpired()
+
+        assertEquals(225, result.deleted)
+        assertEquals(3, calls.get())
+    }
+
+    @Test
+    fun `stops immediately when nothing is expired`() = runBlocking {
+        val calls = AtomicInteger()
+        val service = LogRetentionService(
+            deleteBatch = { _, _ ->
+                calls.incrementAndGet()
+                CleanupResult(0, 1)
+            },
+            policy = RetentionPolicy(batchSize = 100),
+            now = { 1L },
+        )
+
+        assertEquals(0, service.cleanExpired().deleted)
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun `serializes concurrent cleanup requests`() = runBlocking {
+        var active = 0
+        var maxActive = 0
+        val service = LogRetentionService(
+            deleteBatch = { _, _ ->
+                active++
+                maxActive = maxOf(maxActive, active)
+                active--
+                CleanupResult(0, 1)
+            },
+            policy = RetentionPolicy(batchSize = 100),
+            now = { 1L },
+        )
+
+        listOf(async { service.cleanExpired() }, async { service.cleanExpired() }).awaitAll()
+
+        assertEquals(1, maxActive)
+    }
+
+    @Test
+    fun `disabled scheduled cleanup does not start but manual cleanup still runs`() = runBlocking {
+        val calls = AtomicInteger()
+        val service = LogRetentionService(
+            deleteBatch = { _, _ ->
+                calls.incrementAndGet()
+                CleanupResult(0, 1)
+            },
+            policy = RetentionPolicy(cleanupEnabled = false, cleanupIntervalMs = 60_000),
+            now = { 1L },
+        )
+
+        assertNull(service.start(this))
+        assertFalse(service.scheduledCleanupRunning)
+        assertEquals(0, service.cleanExpired().deleted)
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun `cancelling the scheduled job fully stops it`() = runBlocking {
+        val cleanupStarted = CompletableDeferred<Unit>()
+        val service = LogRetentionService(
+            deleteBatch = { _, _ ->
+                cleanupStarted.complete(Unit)
+                CleanupResult(0, 1)
+            },
+            policy = RetentionPolicy(cleanupEnabled = true, cleanupIntervalMs = 60_000),
+            now = { 1L },
+        )
+
+        val job = service.start(this)!!
+        cleanupStarted.await()
+        assertTrue(service.scheduledCleanupRunning)
+
+        job.cancelAndJoin()
+
+        assertTrue(job.isCancelled)
+        assertFalse(service.scheduledCleanupRunning)
+    }
+
+    @Test
+    fun `cancelling before first dispatch clears running state and allows restart`() = runTest {
+        val calls = AtomicInteger()
+        val cleanupStarted = CompletableDeferred<Unit>()
+        val service = LogRetentionService(
+            deleteBatch = { _, _ ->
+                calls.incrementAndGet()
+                cleanupStarted.complete(Unit)
+                CleanupResult(0, 1)
+            },
+            policy = RetentionPolicy(cleanupIntervalMs = 60_000),
+            now = { 1L },
+        )
+
+        val job = assertNotNull(service.start(this))
+        assertTrue(service.scheduledCleanupRunning)
+        assertNull(service.start(this), "Only one scheduled job may run")
+        assertEquals(0, calls.get(), "The scheduler has not dispatched the coroutine body")
+
+        job.cancelAndJoin()
+
+        assertEquals(0, calls.get())
+        assertFalse(service.scheduledCleanupRunning)
+
+        val restarted = assertNotNull(service.start(this))
+        cleanupStarted.await()
+        assertEquals(1, calls.get())
+        assertTrue(service.scheduledCleanupRunning)
+        restarted.cancelAndJoin()
+        assertFalse(service.scheduledCleanupRunning)
+    }
+
+    @Test
+    fun `starting in an already cancelled scope does not leave running state set`() = runTest {
+        val parent = Job().apply { cancel() }
+        val scope = CoroutineScope(StandardTestDispatcher(testScheduler) + parent)
+        val service = LogRetentionService(
+            deleteBatch = { _, _ -> error("Cancelled jobs must not run cleanup") },
+            policy = RetentionPolicy(),
+        )
+
+        val job = assertNotNull(service.start(scope))
+        job.join()
+
+        assertTrue(job.isCancelled)
+        assertFalse(service.scheduledCleanupRunning)
+    }
+
+}

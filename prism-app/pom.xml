@@ -281,7 +281,7 @@
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>dev.soven.llmgateway.MainKt</mainClass>
+                                    <mainClass>dev.soven.prismllm.MainKt</mainClass>
                                 </transformer>
                             </transformers>
                         </configuration>
@@ -293,7 +293,7 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.5.1</version>
                 <configuration>
-                    <mainClass>dev.soven.llmgateway.MainKt</mainClass>
+                    <mainClass>dev.soven.prismllm.MainKt</mainClass>
                 </configuration>
             </plugin>
         </plugins>
