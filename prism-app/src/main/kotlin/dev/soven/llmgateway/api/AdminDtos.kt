@@ -23,7 +23,7 @@ import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.channel.domain.UpstreamRequestSettingsRecord
 import dev.soven.llmgateway.channel.domain.UpstreamHeaderCatalogSnapshot
 import dev.soven.llmgateway.channel.domain.UpstreamHeaderProfile
-import dev.soven.llmgateway.domain.IqTestRunRecord
+import dev.soven.llmgateway.admin.domain.IqTestRunRecord
 import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.plugin.iq.IqJudgeInfo
 import dev.soven.llmgateway.plugin.iq.IqJudgePluginFailure

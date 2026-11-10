@@ -331,7 +331,7 @@ class GatewayApplication(
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
-    val iqTestRunRepository = dev.soven.llmgateway.repo.IqTestRunRepository(databaseFactory.database)
+    val iqTestRunRepository = dev.soven.llmgateway.admin.persistence.IqTestRunRepository(databaseFactory.database)
     val upstreamRequestSettingsRepository = UpstreamRequestSettingsRepository(databaseFactory.database)
     val upstreamHeaderCatalogRepository = UpstreamHeaderCatalogRepository(databaseFactory.database)
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database, PricingChannelNames())
