@@ -1,5 +1,6 @@
 import type { PriceChannel } from './modelPrice'
 import type { UsageGroup, UsageReport, UsageTrend } from '../types/api'
+import { durationSeconds } from './format'
 
 export function usageCostAmount(value: unknown): string {
   return String(value ?? '')
@@ -242,7 +243,8 @@ export function usageReportCsv(
   dimensionRows: UsageGroup[] | null | undefined,
   _dimensionLabel: string,
 ): string {
-  const header = ['维度', '请求数', '错误数', '成功率', '输入 token', '输出 token', '缓存读 token', '缓存写 token', '推理 token', '总 token', '故障转移', '平均首 token (ms)', '平均总耗时 (ms)', '费用']
+  // 耗时列固定用秒，保证同一列可比较、可求和；界面上的逐值单位切换只用于单点展示。
+  const header = ['维度', '请求数', '错误数', '成功率', '输入 token', '输出 token', '缓存读 token', '缓存写 token', '推理 token', '总 token', '故障转移', '平均首 token (s)', '平均总耗时 (s)', '费用']
   const lines: Array<Array<string | number>> = [header]
   for (const row of dimensionRows || []) {
     const costs = usageCostEntries(row.costs).map((entry) => `${entry.currency} ${entry.value}`).join(' / ')
@@ -258,8 +260,8 @@ export function usageReportCsv(
       row.reasoningTokens,
       row.totalTokens,
       row.failovers,
-      row.avgFirstTokenMs ?? '',
-      row.avgTotalMs ?? '',
+      durationSeconds(row.avgFirstTokenMs) ?? '',
+      durationSeconds(row.avgTotalMs) ?? '',
       costs,
     ])
   }

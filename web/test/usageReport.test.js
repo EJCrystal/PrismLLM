@@ -287,6 +287,47 @@ describe('usageReport: 增强报表数据', () => {
     assert.ok(csv.includes('CNY 2 / USD 0.5'))
   })
 
+  it('CSV 耗时列固定用秒，同一列不做逐值单位切换', () => {
+    const csv = usageReportCsv({ from: 0, to: 1 }, [{
+      id: 'key-a',
+      name: 'a',
+      requests: 1,
+      errors: 0,
+      costs: {},
+      avgFirstTokenMs: 850,
+      avgTotalMs: 30_000,
+    }, {
+      id: 'key-b',
+      name: 'b',
+      requests: 1,
+      errors: 0,
+      costs: {},
+      avgFirstTokenMs: 2_400,
+      avgTotalMs: 1_500,
+    }], '按渠道')
+    const lines = csv.trim().split('\n')
+    // 表头写明单位，值统一为秒，短耗时不会退回 ms 造成混排。
+    assert.ok(lines[0].includes('平均首 token (s)'), lines[0])
+    assert.ok(lines[0].includes('平均总耗时 (s)'), lines[0])
+    assert.ok(!lines[0].includes('(ms)'), lines[0])
+    assert.ok(lines[1].endsWith('0.85,30,'), lines[1])
+    assert.ok(lines[2].endsWith('2.4,1.5,'), lines[2])
+  })
+
+  it('CSV 耗时缺失时输出空单元格而不是 0', () => {
+    const csv = usageReportCsv({ from: 0, to: 1 }, [{
+      id: 'key-a',
+      name: 'a',
+      requests: 0,
+      errors: 0,
+      costs: {},
+      avgFirstTokenMs: null,
+      avgTotalMs: null,
+    }], '按渠道')
+    const row = csv.trim().split('\n')[1]
+    assert.ok(row.endsWith(',,'), row)
+  })
+
   it('CSV 导出中和以公式字符开头的文本', () => {
     const csv = usageReportCsv({ from: 0, to: 1 }, [{
       id: '=cmd',

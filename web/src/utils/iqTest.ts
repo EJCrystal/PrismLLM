@@ -1,4 +1,5 @@
 import type { IqVerdict } from '../types/api'
+import { formatDuration } from './format'
 
 const PREVIEW_CSP = [
   "default-src 'none'",
@@ -66,10 +67,10 @@ function stripPreviewNavigation(document: Document): void {
   })
 }
 
+/** 智商检测的耗时展示复用全局时长规则，避免同一套单位在多个工具里分叉。 */
 export function formatIqLatency(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'
-  if (ms < 1000) return `${Math.round(ms)} ms`
-  return `${(ms / 1000).toFixed(1)} s`
+  return formatDuration(ms)
 }
 
 export function formatIqTime(value: number): string {

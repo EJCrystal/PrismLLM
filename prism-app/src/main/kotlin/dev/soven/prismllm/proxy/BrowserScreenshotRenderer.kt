@@ -1,5 +1,6 @@
 package dev.soven.prismllm.proxy
 
+import dev.soven.prismllm.shared.domain.formatDurationText
 import java.io.File
 import java.io.IOException
 import java.nio.file.FileVisitResult
@@ -120,7 +121,7 @@ class BrowserScreenshotRenderer(
             process = started
             if (!started.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
                 terminate(started)
-                return SvgRenderResult.Failure("无头浏览器渲染超时（${timeoutMs}ms）")
+                return SvgRenderResult.Failure("无头浏览器渲染超时（${formatDurationText(timeoutMs)}）")
             }
             if (started.exitValue() != 0) {
                 return SvgRenderResult.Failure("无头浏览器退出码 ${started.exitValue()}")

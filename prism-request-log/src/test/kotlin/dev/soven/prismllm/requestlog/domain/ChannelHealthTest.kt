@@ -88,7 +88,7 @@ class ChannelHealthTest {
         assertEquals("HEALTHY", state(slowP50.copy(p50FirstTokenMs = 500.0, p95FirstTokenMs = 2_000.0)))
         // 同时越界时先报 P95。
         assertEquals(
-            "WARNING" to "P95 首 token 超过 2000ms 判定阈值",
+            "WARNING" to "P95 首 token 超过 2s 判定阈值",
             healthState(slowP50.copy(p50FirstTokenMs = 100.0, p95FirstTokenMs = 2_001.0), true, now, policy),
         )
         // 流式样本不足时只是跳过延迟档，成功率正常时仍判健康。
