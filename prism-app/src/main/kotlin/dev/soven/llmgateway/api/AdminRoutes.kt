@@ -9,7 +9,7 @@ import dev.soven.llmgateway.shared.error.serviceUnavailable
 
 import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.domain.IqVisionSettingsRecord
-import dev.soven.llmgateway.domain.NewIqTestRun
+import dev.soven.llmgateway.admin.domain.NewIqTestRun
 import dev.soven.llmgateway.repo.IqVisionSettingsUpdate
 import dev.soven.llmgateway.domain.sameVisionEndpoint
 import dev.soven.llmgateway.channel.domain.ChannelQuotaSettings

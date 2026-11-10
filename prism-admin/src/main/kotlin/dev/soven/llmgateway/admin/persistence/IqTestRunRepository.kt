@@ -1,8 +1,7 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.admin.persistence
 
-import dev.soven.llmgateway.db.IqTestRuns
-import dev.soven.llmgateway.domain.IqTestRunRecord
-import dev.soven.llmgateway.domain.NewIqTestRun
+import dev.soven.llmgateway.admin.domain.IqTestRunRecord
+import dev.soven.llmgateway.admin.domain.NewIqTestRun
 import dev.soven.llmgateway.shared.domain.Usage
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder

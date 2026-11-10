@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertTrue
 
 /**
- * 管理面模块的依赖边界：领域只允许标准库与序列化，持久化可再加 Exposed，
+ * 管理面模块的依赖边界：领域只允许标准库、序列化与共享内核，持久化可再加 Exposed，
  * 禁止反向引用渠道、路由或应用层。
  *
  * @author 文杰
@@ -27,6 +27,7 @@ class AdminArchitectureTest {
         "kotlin..",
         "kotlinx.serialization..",
         "org.jetbrains.annotations..",
+        "dev.soven.llmgateway.shared..",
     )
 
     /** 管理员账号与审计仓储只认识本模块领域模型与 Exposed；suspend 仓储允许协程原语。 */
@@ -37,6 +38,7 @@ class AdminArchitectureTest {
         "kotlinx.coroutines..",
         "org.jetbrains.annotations..",
         "org.jetbrains.exposed..",
+        "dev.soven.llmgateway.shared..",
         "dev.soven.llmgateway.admin.domain..",
         "dev.soven.llmgateway.admin.persistence..",
     )
@@ -66,6 +68,22 @@ class AdminArchitectureTest {
         assertTrue(
             classes.any { it.name == "dev.soven.llmgateway.admin.persistence.AdminAuditRepository" },
             "ArchUnit 未导入审计仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.admin.domain.IqTestRunRecord" },
+            "ArchUnit 未导入智商检测记录，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.admin.domain.NewIqTestRun" },
+            "ArchUnit 未导入待写入的智商检测记录，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.admin.persistence.IqTestRuns" },
+            "ArchUnit 未导入智商检测表，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.admin.persistence.IqTestRunRepository" },
+            "ArchUnit 未导入智商检测仓储，规则会空跑",
         )
     }
 

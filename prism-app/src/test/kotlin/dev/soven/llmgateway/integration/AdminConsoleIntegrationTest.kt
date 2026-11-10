@@ -1,7 +1,7 @@
 package dev.soven.llmgateway.integration
 
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
-import dev.soven.llmgateway.domain.NewIqTestRun
+import dev.soven.llmgateway.admin.domain.NewIqTestRun
 import dev.soven.llmgateway.domain.IqVisionSettingsRecord
 import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.repo.IqVisionSettingsUpdate
