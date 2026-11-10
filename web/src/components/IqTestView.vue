@@ -19,6 +19,7 @@ import {
   formatIqTime,
   iqTargetKey,
   iqVerdictTone,
+  shouldAdoptIqRunResult,
   withIqPreviewCsp,
 } from '../utils/iqTest'
 import CopyButton from './CopyButton.vue'
@@ -35,6 +36,12 @@ interface ActiveRun {
   model: string
   keyName: string
   startedAt: number
+}
+
+/** 失败任务的请求快照：重试必须复现当时的目标，而不是当前下拉框里的配置。 */
+interface FailedRun {
+  job: ActiveRun
+  request: IqTestRunRequest
 }
 
 const questions = ref<IqQuestion[]>([])
@@ -65,6 +72,10 @@ const activeRuns = ref<ActiveRun[]>([])
 const nowTick = ref(Date.now())
 /** 用户手动点开历史记录后，后台完成的检测不再抢占详情区。 */
 const detailPinned = ref(false)
+/** 人工判定表单有未保存修改时，后台完成的结果不能替换详情并清空输入。 */
+const manualDirty = ref(false)
+/** 当前错误区展示的是哪次失败；重试只认这份快照。 */
+const failedRun = ref<FailedRun | null>(null)
 const manualForm = reactive<{
   verdict: '' | 'passed' | 'incorrect'
   score: number | null
@@ -270,6 +281,7 @@ function run() {
   }
   activeRuns.value.push(job)
   runError.value = ''
+  failedRun.value = null
   previewMode.value = 'preview'
   detailPinned.value = false
   ensureTicker()
@@ -279,7 +291,7 @@ function run() {
 async function executeRun(job: ActiveRun, request: IqTestRunRequest) {
   try {
     const result = await api.runIqTest(request)
-    if (!detailPinned.value) {
+    if (shouldAdoptIqRunResult({ pinned: detailPinned.value, editing: manualDirty.value })) {
       detail.value = result
       syncManualForm(result)
       scrollResultIntoView()
@@ -291,11 +303,26 @@ async function executeRun(job: ActiveRun, request: IqTestRunRequest) {
     )
   } catch (cause) {
     runError.value = `${job.model}：${errorMessage(cause)}`
+    failedRun.value = { job, request }
     notify(runError.value, 'error')
   } finally {
     activeRuns.value = activeRuns.value.filter((item) => item.id !== job.id)
     if (!activeRuns.value.length) stopTicker()
   }
+}
+
+/** 用失败任务的请求快照重试，配置切换后也不会误测当前选中的目标。 */
+function retryFailed() {
+  const failed = failedRun.value
+  if (!failed) return
+  const job: ActiveRun = { ...failed.job, id: ++runSeq, startedAt: Date.now() }
+  activeRuns.value.push(job)
+  runError.value = ''
+  failedRun.value = null
+  previewMode.value = 'preview'
+  detailPinned.value = false
+  ensureTicker()
+  void executeRun(job, failed.request)
 }
 
 async function openRun(run: IqTestRunSummary, options: { scroll?: boolean; manual?: boolean } = {}) {
@@ -304,6 +331,7 @@ async function openRun(run: IqTestRunSummary, options: { scroll?: boolean; manua
   if (manual) detailPinned.value = true
   detailLoading.value = true
   runError.value = ''
+  failedRun.value = null
   previewMode.value = 'preview'
   try {
     detail.value = await api.getIqRun(run.id)
@@ -332,6 +360,11 @@ function syncManualForm(run: IqTestRunDetail) {
   manualForm.verdict = run.manualVerdict ?? ''
   manualForm.score = run.manualScore
   manualForm.note = run.manualNote ?? ''
+  manualDirty.value = false
+}
+
+function markManualDirty() {
+  manualDirty.value = true
 }
 
 async function submitManual() {
@@ -551,7 +584,7 @@ onBeforeUnmount(stopTicker)
         <div class="iq-main-column">
           <div v-if="runError" class="callout danger iq-run-error">
             <span>{{ runError }}</span>
-            <button type="button" class="link-button" :disabled="!canRun" @click="run">重试</button>
+            <button type="button" class="link-button" :disabled="!failedRun" @click="retryFailed">重试该目标</button>
           </div>
 
           <section v-if="activeRuns.length" class="panel iq-active" aria-live="polite">
@@ -671,7 +704,7 @@ onBeforeUnmount(stopTicker)
               <div class="iq-manual-grid">
                 <label class="field">
                   <span>结论</span>
-                  <select v-model="manualForm.verdict" :disabled="manualSubmitting">
+                  <select v-model="manualForm.verdict" :disabled="manualSubmitting" @change="markManualDirty">
                     <option value="">不修改</option>
                     <option value="passed">通过</option>
                     <option value="incorrect">未通过</option>
@@ -679,7 +712,7 @@ onBeforeUnmount(stopTicker)
                 </label>
                 <label class="field">
                   <span>评分</span>
-                  <select v-model="manualForm.score" :disabled="manualSubmitting">
+                  <select v-model="manualForm.score" :disabled="manualSubmitting" @change="markManualDirty">
                     <option :value="null">不评分</option>
                     <option v-for="score in [1, 2, 3, 4, 5]" :key="score" :value="score">{{ score }} / 5</option>
                   </select>
@@ -687,7 +720,7 @@ onBeforeUnmount(stopTicker)
               </div>
               <label class="field">
                 <span>备注</span>
-                <textarea v-model="manualForm.note" rows="2" maxlength="500" placeholder="可选" :disabled="manualSubmitting"></textarea>
+                <textarea v-model="manualForm.note" rows="2" maxlength="500" placeholder="可选" :disabled="manualSubmitting" @input="markManualDirty"></textarea>
               </label>
               <button type="button" class="button primary mini" :disabled="manualSubmitting || !manualForm.verdict" @click="submitManual">
                 {{ manualSubmitting ? '保存中…' : '保存人工判定' }}

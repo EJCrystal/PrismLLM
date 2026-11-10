@@ -18,6 +18,16 @@ export function iqTargetKey(channelId: string, model: string): string {
   return `${channelId}\u0000${model}`
 }
 
+/**
+ * 后台完成的检测能否直接替换详情区。
+ *
+ * `pinned` 表示用户手动点开了某条历史记录；`editing` 表示人工判定表单里有尚未保存的
+ * 修改。两者任一成立时都不能替换，否则会抢走用户正在查看的内容或清空未保存的输入。
+ */
+export function shouldAdoptIqRunResult(guard: { pinned: boolean; editing: boolean }): boolean {
+  return !guard.pinned && !guard.editing
+}
+
 export function iqVerdictTone(verdict: IqVerdict): 'success' | 'warning' | 'danger' {
   if (verdict === 'passed') return 'success'
   if (verdict === 'failed') return 'danger'
