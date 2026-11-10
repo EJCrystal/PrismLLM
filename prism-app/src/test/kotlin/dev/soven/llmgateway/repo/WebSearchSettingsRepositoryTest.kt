@@ -1,9 +1,10 @@
 package dev.soven.llmgateway.repo
 
+import dev.soven.llmgateway.admin.domain.WebSearchSettingsRecord
+import dev.soven.llmgateway.admin.persistence.WebSearchSettings
+import dev.soven.llmgateway.admin.persistence.WebSearchSettingsRepository
 import dev.soven.llmgateway.config.GatewayConfig
 import dev.soven.llmgateway.db.DatabaseFactory
-import dev.soven.llmgateway.db.WebSearchSettings
-import dev.soven.llmgateway.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.v1.jdbc.deleteAll

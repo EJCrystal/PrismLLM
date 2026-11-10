@@ -10,7 +10,7 @@ import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
-import dev.soven.llmgateway.domain.WebSearchSettingsRecord
+import dev.soven.llmgateway.admin.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.fake.FakeUpstream
 import dev.soven.llmgateway.channel.persistence.NewChannelKey
 import dev.soven.llmgateway.oauth.persistence.NewOAuthAccount

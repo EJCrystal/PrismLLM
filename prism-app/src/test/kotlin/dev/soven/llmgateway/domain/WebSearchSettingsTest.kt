@@ -1,5 +1,6 @@
 package dev.soven.llmgateway.domain
 
+import dev.soven.llmgateway.admin.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.config.WebSearchConfig
 import kotlin.test.Test
 import kotlin.test.assertEquals
