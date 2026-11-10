@@ -20,7 +20,6 @@ internal const val FINGERPRINT_VALUE_MAX = 355
 internal const val FINGERPRINT_DIMENSION = FINGERPRINT_VALUE_MAX - FINGERPRINT_VALUE_MIN + 1
 
 private const val ALPHA = 0.5
-private val DIGIT_RUN = Regex("\\d+")
 private val SIGNED_INTEGER = Regex("-?\\d+")
 private val POSITIONAL_WEIGHTS = doubleArrayOf(0.6, 0.15, 0.125, 0.125)
 private val POSITIONAL_CENTRES = DoubleArray(24) { 1 + it * 354.0 / 23 }
@@ -36,7 +35,7 @@ internal fun parseFingerprintNumbers(text: String): IntArray {
     val runs = mutableListOf<MutableList<Int>>()
     var current = mutableListOf<Int>()
     var previousEnd = 0
-    for (match in DIGIT_RUN.findAll(text)) {
+    for (match in SIGNED_INTEGER.findAll(text)) {
         val separator = text.substring(previousEnd, match.range.first)
         if (current.isNotEmpty() && containsLetter(separator)) {
             runs.add(current)

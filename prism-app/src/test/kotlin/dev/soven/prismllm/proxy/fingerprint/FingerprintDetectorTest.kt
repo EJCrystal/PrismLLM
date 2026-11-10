@@ -23,6 +23,8 @@ class FingerprintDetectorTest {
             parseFingerprintNumbers("first 1, 2 abc 101 102 103").toList(),
         )
         assertEquals(2, countOutOfRangeIntegers("1 356 -2 355"))
+        assertEquals(listOf(1, 2, 3), parseFingerprintNumbers("-1 -2 -3 1 2 3 -4").toList())
+        assertEquals(emptyList<Int>(), parseFingerprintNumbers("-1 -2 -3").toList())
     }
 
     @Test
