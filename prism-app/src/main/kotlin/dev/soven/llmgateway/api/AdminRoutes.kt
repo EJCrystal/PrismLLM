@@ -22,7 +22,7 @@ import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.shared.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
 import dev.soven.llmgateway.shared.domain.effectiveAuthType
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
-import dev.soven.llmgateway.domain.WebSearchSettingsRecord
+import dev.soven.llmgateway.admin.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.domain.effective
 import dev.soven.llmgateway.proxy.validateUpstreamRequestOverrides
 import dev.soven.llmgateway.pricing.domain.ModelPriceTier

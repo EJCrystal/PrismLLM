@@ -38,6 +38,7 @@ class AdminArchitectureTest {
         "kotlinx.coroutines..",
         "org.jetbrains.annotations..",
         "org.jetbrains.exposed..",
+        "org.slf4j..",
         "dev.soven.llmgateway.shared..",
         "dev.soven.llmgateway.admin.domain..",
         "dev.soven.llmgateway.admin.persistence..",
@@ -84,6 +85,18 @@ class AdminArchitectureTest {
         assertTrue(
             classes.any { it.name == "dev.soven.llmgateway.admin.persistence.IqTestRunRepository" },
             "ArchUnit 未导入智商检测仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.admin.domain.WebSearchSettingsRecord" },
+            "ArchUnit 未导入 Web 搜索设置记录，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.admin.persistence.WebSearchSettings" },
+            "ArchUnit 未导入 Web 搜索设置表，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.admin.persistence.WebSearchSettingsRepository" },
+            "ArchUnit 未导入 Web 搜索设置仓储，规则会空跑",
         )
     }
 

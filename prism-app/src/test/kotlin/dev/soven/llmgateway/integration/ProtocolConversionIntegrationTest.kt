@@ -7,7 +7,7 @@ import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.shared.domain.UpstreamRequestOverrides
 import dev.soven.llmgateway.shared.domain.UpstreamProtocolOverrides
-import dev.soven.llmgateway.domain.WebSearchSettingsRecord
+import dev.soven.llmgateway.admin.domain.WebSearchSettingsRecord
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header

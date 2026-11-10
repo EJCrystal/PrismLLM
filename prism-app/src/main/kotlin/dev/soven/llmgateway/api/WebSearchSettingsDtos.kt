@@ -3,7 +3,7 @@ package dev.soven.llmgateway.api
 import dev.soven.llmgateway.config.WEB_SEARCH_PROVIDERS
 import dev.soven.llmgateway.config.WebSearchConfig
 import dev.soven.llmgateway.config.webSearchBaseUrlError
-import dev.soven.llmgateway.domain.WebSearchSettingsRecord
+import dev.soven.llmgateway.admin.domain.WebSearchSettingsRecord
 import dev.soven.llmgateway.domain.effective
 import kotlinx.serialization.Serializable
 
