@@ -12,6 +12,7 @@ import dev.soven.llmgateway.shared.domain.GatewayProtocol
 import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.requestlog.domain.HealthMetrics
+import dev.soven.llmgateway.requestlog.persistence.RequestLogRepository
 import dev.soven.llmgateway.channel.domain.key.ChannelKeyState
 import dev.soven.llmgateway.shared.crypto.CredentialCipher
 import kotlinx.coroutines.runBlocking
@@ -53,7 +54,7 @@ class ChannelHealthRepositoryTest {
             "ADMIN_PASSWORD" to "test-password",
         )))
         factory.migrate()
-        logs = RequestLogRepository(factory.database)
+        logs = RequestLogRepository(factory.database, RequestLogCurrentNames())
         health = ChannelHealthRepository(factory.database, 10_000)
     }
 

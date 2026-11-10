@@ -50,13 +50,19 @@ class RequestLogArchitectureTest {
         "dev.soven.llmgateway.pricing.domain..",
     )
 
-    /** 保留设置持久化只认识 Exposed 与本模块，不引入 HTTP 或上游基础设施。 */
+    /** 日志与保留设置的持久化只认识 Exposed、本模块与计价的只读类型，不引入渠道或 HTTP。 */
     private val requestLogPersistenceDependencies = arrayOf(
         "java..",
         "kotlin..",
         "kotlinx.coroutines..",
         "org.jetbrains.annotations..",
         "org.jetbrains.exposed..",
+        "org.slf4j..",
+        "dev.soven.llmgateway.shared.domain..",
+        "dev.soven.llmgateway.pricing.domain..",
+        "dev.soven.llmgateway.pricing.persistence..",
+        "dev.soven.llmgateway.requestlog.domain..",
+        "dev.soven.llmgateway.requestlog.infra..",
         "dev.soven.llmgateway.requestlog.persistence..",
     )
 
@@ -97,6 +103,18 @@ class RequestLogArchitectureTest {
         assertTrue(
             classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RequestAttempts" },
             "ArchUnit 未导入上游尝试明细表，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RequestLogRepository" },
+            "ArchUnit 未导入请求日志仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RequestLogNameResolver" },
+            "ArchUnit 未导入日志名称解析端口，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RequestLogNameKind" },
+            "ArchUnit 未导入日志名称实体种类，规则会空跑",
         )
     }
 

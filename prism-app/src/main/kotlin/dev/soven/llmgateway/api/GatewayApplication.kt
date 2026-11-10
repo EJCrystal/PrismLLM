@@ -31,11 +31,12 @@ import dev.soven.llmgateway.proxy.CurrencyExchangeService
 import dev.soven.llmgateway.proxy.UpstreamHeaderCatalogService
 import dev.soven.llmgateway.repo.AdminUserRepository
 import dev.soven.llmgateway.repo.AdminAuditRepository
+import dev.soven.llmgateway.repo.RequestLogCurrentNames
 import dev.soven.llmgateway.channel.persistence.ChannelRepository
 import dev.soven.llmgateway.quota.persistence.ClientKeyRepository
 import dev.soven.llmgateway.quota.persistence.ClientKeyQuotaRepository
 import dev.soven.llmgateway.resilience.persistence.CooldownStateRepository
-import dev.soven.llmgateway.repo.RequestLogRepository
+import dev.soven.llmgateway.requestlog.persistence.RequestLogRepository
 import dev.soven.llmgateway.requestlog.persistence.RetentionSettingsRepository
 import dev.soven.llmgateway.oauth.OAuthAccountRouting
 import dev.soven.llmgateway.oauth.infra.OAuthAccountScheduler
@@ -317,7 +318,7 @@ class GatewayApplication(
     val keyAvailabilityGate = KeyAvailabilityGate()
     val channelKeyRateLimiter = ChannelKeyRateLimiter()
     val upstreamOccupancy = UpstreamOccupancy()
-    val requestLogRepository = RequestLogRepository(databaseFactory.database)
+    val requestLogRepository = RequestLogRepository(databaseFactory.database, RequestLogCurrentNames())
     val channelHealthRepository = dev.soven.llmgateway.repo.ChannelHealthRepository(databaseFactory.database, config.cooldown.ttftSlowThresholdMs)
     private var channelHealthIndexJob: Job? = null
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
