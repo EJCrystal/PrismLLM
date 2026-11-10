@@ -1,20 +1,6 @@
 package dev.soven.llmgateway.db
 
-import dev.soven.llmgateway.channel.persistence.Channels
-import dev.soven.llmgateway.oauth.persistence.OAuthAccounts
-import org.jetbrains.exposed.v1.core.ReferenceOption
 import org.jetbrains.exposed.v1.core.Table
-
-/** 订阅账号与渠道的多对多关联；同一账号可以被多个渠道复用。 */
-object OAuthAccountChannels : Table("oauth_account_channels") {
-    val accountId = varchar("account_id", 36).references(OAuthAccounts.id, onDelete = ReferenceOption.CASCADE)
-    val channelId = varchar("channel_id", 36).references(Channels.id, onDelete = ReferenceOption.CASCADE)
-    /** 挂在系统 provider 渠道上；每个账号最多一条，由部分唯一索引保证。 */
-    val managed = bool("managed").default(false)
-    val createdAt = long("created_at")
-
-    override val primaryKey = PrimaryKey(accountId, channelId)
-}
 
 /**
  * 管理员账号表。

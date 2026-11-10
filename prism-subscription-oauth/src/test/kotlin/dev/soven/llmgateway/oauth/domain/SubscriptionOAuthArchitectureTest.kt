@@ -88,6 +88,10 @@ class SubscriptionOAuthArchitectureTest {
             "ArchUnit 未导入订阅账号表，规则会空跑",
         )
         assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.oauth.persistence.OAuthAccountChannels" },
+            "ArchUnit 未导入账号渠道关联表，规则会空跑",
+        )
+        assertTrue(
             classes.any { it.name == "dev.soven.llmgateway.oauth.persistence.OAuthAccountWindows" },
             "ArchUnit 未导入账号窗口快照表，规则会空跑",
         )
