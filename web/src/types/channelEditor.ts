@@ -30,4 +30,5 @@ export interface ChannelKeyEditorDraft {
   modelsLoading: boolean
   modelsError: string
   modelsRequestId: number
+  modelsSourceChanged: boolean
 }

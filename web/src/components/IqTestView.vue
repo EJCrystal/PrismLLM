@@ -4,6 +4,7 @@ import { api } from '../api'
 import { notify } from '../toast'
 import type {
   IqBenchmarkDefinition,
+  IqQuestion,
   IqBenchmarkId,
   IqJudgeFailure,
   IqJudgeInfo,
@@ -21,7 +22,15 @@ import {
 } from '../utils/iqTest'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
+import SearchSelect from './SearchSelect.vue'
+import IqQuestionBankModal from './IqQuestionBankModal.vue'
 
+const questions = ref<IqQuestion[]>([])
+const showQuestionBank = ref(false)
+const enabledQuestionCount = computed(() => questions.value.filter(question => question.enabled).length)
+const credentialOptions = computed(() => (selectedTarget.value?.credentials ?? []).map(credential => ({
+  value: credential.id, label: credential.name + '（优先级 ' + credential.priority + '）', searchText: credential.name,
+})))
 const benchmarks = ref<IqBenchmarkDefinition[]>([])
 const targets = ref<IqTestTarget[]>([])
 const judges = ref<IqJudgeInfo[]>([])
@@ -98,7 +107,7 @@ const filteredHistory = computed(() =>
 const canRun = computed(() =>
   !!selectedTarget.value &&
   !!benchmark.value &&
-  (selectedBenchmark.value === 'candy' || !!selectedJudgeId.value) &&
+  (selectedBenchmark.value === 'candy' ? enabledQuestionCount.value > 0 : !!selectedJudgeId.value) &&
   !running.value &&
   !loading.value,
 )
@@ -182,11 +191,13 @@ async function loadAll() {
   loading.value = true
   loadError.value = ''
   try {
-    const [definitions, targetList, judgeResponse] = await Promise.all([
+    const [definitions, targetList, judgeResponse, questionList] = await Promise.all([
       api.listIqBenchmarks(),
       api.listIqTargets(),
       api.listIqJudges(),
+      api.listIqQuestions(),
     ])
+    questions.value = questionList
     benchmarks.value = definitions
     targets.value = targetList
     judges.value = judgeResponse.judges
@@ -242,7 +253,8 @@ async function run() {
       keyId: selectedKeyId.value || null,
       protocol: (selectedProtocol.value || null) as ProtocolId | null,
       judgeId: item.id === 'candy' ? null : judgeId,
-      prompt: promptText.value.trim() || undefined,
+      prompt: item.id === 'candy' ? undefined : promptText.value.trim() || undefined,
+      useQuestionBank: item.id === 'candy',
     })
     detail.value = result
     syncManualForm(result)
@@ -329,7 +341,7 @@ onBeforeUnmount(stopTimer)
     <div class="iq-hero panel">
       <div class="iq-hero-copy">
         <span class="iq-eyebrow">MODEL IQ PROBE</span>
-        <h2>用两道内置题看模型表现</h2>
+        <h2>用动画与随机推理题看模型表现</h2>
         <p>
           鹈鹕骑行与糖果测试来自社区常用的“降智检测”题。测试通过已保存的渠道凭据直接请求上游，
           不写入请求日志，也不消耗调用方密钥额度。
@@ -378,7 +390,13 @@ onBeforeUnmount(stopTimer)
               </span>
             </button>
           </div>
-          <div v-if="benchmark" class="iq-prompt-editor">
+          <div v-if="selectedBenchmark === 'candy'" class="iq-prompt-editor">
+            <div class="iq-section-head"><span class="iq-section-label">随机题库</span><button type="button" class="link-button" :disabled="running" @click="showQuestionBank = true">管理题库</button></div>
+            <p class="iq-grading">共 {{ questions.length }} 道题，{{ enabledQuestionCount }} 道已启用。每次运行由服务端随机抽一道。</p>
+            <p v-if="!enabledQuestionCount" class="callout warning">没有启用的题目，请先在题库中添加或启用题目。</p>
+            <p class="iq-prompt-meta">标准答案不会发送给模型；收到 JSON 的 answer 后在本地比较。测试不提供搜索或工具调用。</p>
+          </div>
+          <div v-else-if="benchmark" class="iq-prompt-editor">
             <div class="iq-section-head">
               <span class="iq-section-label">提示词</span>
               <button
@@ -401,10 +419,7 @@ onBeforeUnmount(stopTimer)
             ></textarea>
             <p class="iq-prompt-meta">
               {{ promptText.trim().length.toLocaleString() }} 字符
-              <template v-if="selectedBenchmark === 'candy'">
-                · 糖果题按 JSON 的 answer 等于 21 判定，修改题目后判分可能不再适用
-              </template>
-              <template v-else>· 留空则使用内置默认提示词</template>
+              · 留空则使用内置默认提示词
             </p>
             <p class="iq-grading"><strong>判分：</strong>{{ benchmark.grading }}</p>
           </div>
@@ -435,14 +450,10 @@ onBeforeUnmount(stopTimer)
           </p>
 
           <div v-if="selectedTarget" class="iq-target-grid">
-            <label class="field">
+            <div class="field iq-credential-field">
               <span>使用凭据</span>
-              <select v-model="selectedKeyId" :disabled="running || selectedTarget.credentials.length < 2">
-                <option v-for="credential in selectedTarget.credentials" :key="credential.id" :value="credential.id">
-                  {{ credential.name }}（优先级 {{ credential.priority }}）
-                </option>
-              </select>
-            </label>
+              <SearchSelect :key="selectedTargetKey" v-model="selectedKeyId" label="上游凭据" :options="credentialOptions" :disabled="running" />
+            </div>
             <label class="field">
               <span>协议</span>
               <select v-model="selectedProtocol" :disabled="running">
@@ -675,6 +686,7 @@ onBeforeUnmount(stopTimer)
                   <span class="muted small">{{ passedCheckCount }}/{{ detail.checks.length }} 项通过</span>
                 </div>
                 <p v-if="legacyCandy">历史记录按旧版规则判定：HTML 可见文字中出现独立的 <strong>21</strong> 即通过。</p>
+                <p v-else-if="detail.questionId != null"><strong>{{ detail.questionTitle }}</strong> · {{ detail.answerType === 'number' ? '数字按值比较' : '文本去除首尾空白后精确比较' }}。</p>
                 <p v-else>读取模型返回的 JSON，<code>answer</code> 等于 <strong>21</strong> 即通过。</p>
                 <div class="iq-checks">
                   <ul>
@@ -686,13 +698,14 @@ onBeforeUnmount(stopTimer)
                   </ul>
                 </div>
                 <p v-if="legacyCandy" class="iq-caveat">旧记录保留当时的判分结果，不会按新规则重算。</p>
-                <p v-else class="iq-caveat">JSON 无法解析或 answer 不是整数时判定为失败；不评价 reason 的推理质量。</p>
+                <p v-else class="iq-caveat">JSON 无法解析、answer 缺失或类型不符时判定为格式失败；不评价 reason 的推理质量。</p>
               </div>
-              <aside v-if="detail.success && detail.expectedAnswer != null" class="iq-candy-grade">
+              <aside v-if="detail.success && (detail.expectedAnswerValue != null || detail.expectedAnswer != null)" class="iq-candy-grade">
                 <span class="muted small">本题判定</span>
                 <strong :class="detail.verdict === 'passed' ? 'iq-pass-text' : 'iq-fail-text'">{{ detail.verdictLabel }}</strong>
-                <p>期望答案：<strong>{{ detail.expectedAnswer }}</strong></p>
+                <p>期望答案：<strong>{{ detail.expectedAnswerValue ?? detail.expectedAnswer }}</strong></p>
                 <p v-if="legacyCandy">回答中{{ detail.matchedAnswer != null ? '出现' : '未出现' }}独立数字 21。</p>
+                <p v-else-if="detail.questionId != null">实际答案：<strong>{{ detail.actualAnswer ?? '未返回有效答案' }}</strong></p>
                 <p v-else>{{ detail.matchedAnswer != null ? 'answer 为 21。' : 'answer 不为 21 或无法解析。' }}</p>
                 <p v-if="!legacyCandy" class="iq-caveat">只按 JSON 的 answer 判定；不评价 reason 的推理质量。</p>
               </aside>
@@ -759,6 +772,7 @@ onBeforeUnmount(stopTimer)
               </span>
               <small class="iq-history-meta">
                 {{ run.channelName }} · {{ formatIqTime(run.createdAt) }}
+                <template v-if="run.questionTitle"> · {{ run.questionTitle }}</template>
                 <template v-if="run.judgeResult"> · {{ run.judgeResult.judgeLabel }}</template>
               </small>
             </button>
@@ -766,6 +780,7 @@ onBeforeUnmount(stopTimer)
         </section>
       </div>
     </div>
+    <IqQuestionBankModal v-if="showQuestionBank" :questions="questions" @change="questions = $event" @close="showQuestionBank = false" />
   </section>
 </template>
 
@@ -1015,6 +1030,8 @@ onBeforeUnmount(stopTimer)
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
+
+.iq-credential-field { grid-column: 1 / -1; }
 
 .iq-target-meta {
   display: flex;
@@ -1315,6 +1332,7 @@ onBeforeUnmount(stopTimer)
 }
 
 .iq-candy-grade {
+  overflow-wrap: anywhere;
   display: grid;
   gap: 8px;
   padding: 14px;

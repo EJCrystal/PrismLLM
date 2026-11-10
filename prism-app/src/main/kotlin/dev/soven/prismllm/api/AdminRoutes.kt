@@ -41,6 +41,8 @@ import dev.soven.prismllm.oauth.OAuthUnavailableReason
 import dev.soven.prismllm.oauth.infra.proxyAddress
 import dev.soven.prismllm.proxy.CatalogModel
 import dev.soven.prismllm.proxy.IqBenchmark
+import dev.soven.prismllm.proxy.iqQuestionPrompt
+import dev.soven.prismllm.proxy.selectIqQuestion
 import dev.soven.prismllm.proxy.IqVerdict
 import dev.soven.prismllm.proxy.analyzePelicanStructure
 import dev.soven.prismllm.proxy.evaluateIqTest
@@ -571,7 +573,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     resolveSavedCredential(app.oauthTokenService, target)
                 }
                 ?: throw badRequest("invalid_channel", "发现上游模型需要提供凭据")
-            val authorized = savedCredential?.models?.toSet().orEmpty()
+            val authorizationCredential = savedCredential.takeIf { request.credential.isNullOrBlank() }
+            val authorized = authorizationCredential?.models?.toSet().orEmpty()
             val mappingByUpstream = saved?.modelMappings?.associateBy { it.upstreamModel }.orEmpty()
             val discoveryProtocols = request.protocols?.takeIf { it.isNotEmpty() }?.let(::parseProtocols)
                 ?: saved?.protocols.orEmpty()
@@ -590,7 +593,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     ChannelModelResponse(
                         id = it.id,
                         ownedBy = it.ownedBy,
-                        authorized = (savedCredential?.isOAuth == true && savedCredential.models.isEmpty()) || it.id in authorized,
+                        authorized = (authorizationCredential?.isOAuth == true && authorizationCredential.models.isEmpty()) || it.id in authorized,
                         canonicalModelId = mapping?.canonicalModelId,
                         mappingSource = mapping?.mappingSource,
                     )
@@ -777,6 +780,40 @@ fun Route.adminRoutes(app: GatewayApplication) {
             )
         }
 
+        get("/iq-tests/questions") {
+            call.requireAdmin(app)
+            val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 200) ?: 200
+            val offset = call.request.queryParameters["offset"]?.toLongOrNull()?.coerceAtLeast(0) ?: 0
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(app.iqQuestionRepository.list(limit, offset).map { it.toResponse() })
+        }
+
+        post("/iq-tests/questions") {
+            call.requireAdmin(app)
+            val question = app.iqQuestionRepository.create(call.receive<IqQuestionRequest>().validated())
+            call.markAdminAuditDetails(buildJsonObject { put("questionId", question.id); put("title", question.title) })
+            call.respond(HttpStatusCode.Created, question.toResponse())
+        }
+
+        put("/iq-tests/questions/{id}") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少题目 id").toLongOrNull()
+                ?: throw badRequest("invalid_iq_question", "题目 id 无效")
+            val question = app.iqQuestionRepository.update(id, call.receive<IqQuestionRequest>().validated())
+                ?: throw notFound("iq_question_not_found", "题目不存在")
+            call.markAdminAuditDetails(buildJsonObject { put("questionId", id); put("title", question.title) })
+            call.respond(question.toResponse())
+        }
+
+        delete("/iq-tests/questions/{id}") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少题目 id").toLongOrNull()
+                ?: throw badRequest("invalid_iq_question", "题目 id 无效")
+            if (!app.iqQuestionRepository.delete(id)) throw notFound("iq_question_not_found", "题目不存在")
+            call.markAdminAuditDetails(buildJsonObject { put("questionId", id) })
+            call.respond(HttpStatusCode.NoContent)
+        }
+
         get("/iq-tests/targets") {
             call.requireAdmin(app)
             val accountsByChannel = app.oauthAccountRepository.listByChannel()
@@ -831,8 +868,19 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (model.isEmpty() || model.length > 200) {
                 throw badRequest("invalid_iq_test", "模型名长度必须在 1..200 之间")
             }
-            val prompt = request.prompt?.trim()?.takeIf { it.isNotEmpty() } ?: benchmark.prompt
-            if (prompt.length > IQ_TEST_MAX_PROMPT_CHARS) {
+            if (request.useQuestionBank && benchmark != IqBenchmark.CANDY) {
+                throw badRequest("invalid_iq_test", "题库仅用于糖果测试")
+            }
+            if (request.useQuestionBank && !request.prompt.isNullOrBlank()) {
+                throw badRequest("invalid_iq_test", "题库模式不能同时提交自定义提示词，请在题库中编辑题干")
+            }
+            val question = if (request.useQuestionBank) {
+                selectIqQuestion(app.iqQuestionRepository.enabled())
+                    ?: throw badRequest("iq_question_bank_empty", "没有启用的题目，请先添加或启用题目")
+            } else null
+            val prompt = question?.let(::iqQuestionPrompt)
+                ?: request.prompt?.trim()?.takeIf { it.isNotEmpty() } ?: benchmark.prompt
+            if (prompt.length > IQ_TEST_MAX_PROMPT_CHARS && question == null) {
                 throw badRequest("invalid_iq_test", "提示词长度不能超过 $IQ_TEST_MAX_PROMPT_CHARS 个字符")
             }
             if (model !in channel.models) {
@@ -867,6 +915,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 maxResponseChars = IQ_TEST_MAX_RESPONSE_CHARS,
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
                 headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                isolatedIqRequest = benchmark == IqBenchmark.CANDY,
             )
             val html = if (benchmark == IqBenchmark.PELICAN) extractHtmlDocument(result.responseText) else null
             val structure = if (benchmark == IqBenchmark.PELICAN) {
@@ -898,6 +947,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 errorMessage = result.errorMessage,
                 structure = structure,
                 judgeResult = judgeResult,
+                answerType = question?.answerType,
+                expectedAnswerValue = question?.expectedAnswer,
             )
             val record = app.iqTestRunRepository.insert(
                 NewIqTestRun(
@@ -917,6 +968,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     responseText = result.responseText,
                     expectedAnswer = evaluation.expectedAnswer,
                     matchedAnswer = evaluation.matchedAnswer,
+                    questionId = question?.id,
+                    questionTitle = question?.title,
+                    answerType = question?.answerType,
+                    expectedAnswerValue = question?.expectedAnswer,
+                    actualAnswer = evaluation.actualAnswer,
                     errorMessage = result.errorMessage,
                     usage = result.usage,
                     upstreamReportedModel = result.upstreamReportedModel?.take(200),

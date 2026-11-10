@@ -332,6 +332,7 @@ class GatewayApplication(
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
     val iqTestRunRepository = dev.soven.prismllm.admin.persistence.IqTestRunRepository(databaseFactory.database)
+    val iqQuestionRepository = dev.soven.prismllm.admin.persistence.IqQuestionRepository(databaseFactory.database)
     val upstreamRequestSettingsRepository = UpstreamRequestSettingsRepository(databaseFactory.database)
     val upstreamHeaderCatalogRepository = UpstreamHeaderCatalogRepository(databaseFactory.database)
     val modelPriceRepository = ModelPriceRepository(databaseFactory.database, PricingChannelNames())

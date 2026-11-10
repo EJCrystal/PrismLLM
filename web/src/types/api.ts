@@ -759,6 +759,19 @@ export interface IqTestTarget {
   credentials: IqTestTargetCredential[]
 }
 
+export interface IqQuestionInput {
+  title: string
+  prompt: string
+  answerType: 'number' | 'text'
+  expectedAnswer: string
+  enabled: boolean
+}
+
+export interface IqQuestion extends IqQuestionInput {
+  id: number
+  updatedAt: number
+}
+
 export interface IqTestRunRequest {
   channelId: string
   model: string
@@ -767,6 +780,7 @@ export interface IqTestRunRequest {
   protocol?: ProtocolId | null
   judgeId?: string | null
   /** 本次使用的提示词；留空时由服务端使用题目内置提示词。 */
+  useQuestionBank?: boolean
   prompt?: string | null
 }
 
@@ -831,6 +845,9 @@ export interface IqTestRunSummary {
   protocol: string
   statusCode: number | null
   latencyMs: number
+  questionId?: number | null
+  questionTitle?: string | null
+  answerType?: 'number' | 'text' | null
   createdAt: number
   errorMessage: string | null
   usage: ChannelModelTestUsage | null
@@ -846,6 +863,8 @@ export interface IqTestRunDetail extends IqTestRunSummary {
   responseText: string | null
   html: string | null
   checks: IqTestCheck[]
+  expectedAnswerValue?: string | null
+  actualAnswer?: string | null
   expectedAnswer: number | null
   matchedAnswer: number | null
   upstreamReportedModel: string | null
