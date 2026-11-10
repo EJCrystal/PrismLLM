@@ -36,7 +36,7 @@ const meta = {
   },
   'oauth-accounts': {
     title: '订阅账号',
-    desc: '独立管理 ChatGPT / Antigravity 的 OAuth 账号，可关联多个渠道，统一管理 token 刷新、账号滑动窗口与 429 冷却。refresh token 只在导入时提交一次。',
+    desc: '独立管理 ChatGPT / Antigravity 的 OAuth 账号，可关联多个渠道，统一管理 token 刷新、账号滑动窗口与 429 冷却。refresh token 只在导入时提交一次；access token 是短期凭据，到期前会自动续期，列表里的到期时间不是账号授权失效。',
   },
   'client-keys': {
     title: '调用方密钥',

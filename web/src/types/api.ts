@@ -1091,6 +1091,8 @@ export interface OAuthAccount {
   quota: OAuthQuota | null
   createdAt: number
   updatedAt: number
+  /** refresh token 的获取时间；重新授权时更新，日常 token 刷新不改变。 */
+  authorizedAt: number
   policy: OAuthAccountPolicy
   runtime: OAuthAccountRuntime
 }

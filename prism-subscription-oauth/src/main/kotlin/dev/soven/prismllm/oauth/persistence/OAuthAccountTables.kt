@@ -69,6 +69,8 @@ object OAuthAccounts : Table("oauth_accounts") {
     val upstreamTierCheckedAt = long("upstream_tier_checked_at").nullable()
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
+    /** refresh token 的获取时间；重新授权时更新，日常 token 刷新不改变。 */
+    val authorizedAt = long("authorized_at")
 
     override val primaryKey = PrimaryKey(id)
 }

@@ -3,7 +3,7 @@ import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/vue'
 import { useAnchoredPanel } from '../composables/useAnchoredPanel'
 import Icon from './Icon.vue'
 
-interface ActionMenuItem { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean }
+interface ActionMenuItem { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean; title?: string }
 const props = withDefaults(defineProps<{ label: string; items: ActionMenuItem[]; icon?: string; compact?: boolean; disabled?: boolean }>(), { icon: 'more', compact: false, disabled: false })
 const emit = defineEmits<{ select: [id: string] }>()
 const { anchor, panelStyle, place } = useAnchoredPanel(240, props.items.length * 44 + 16)
@@ -19,7 +19,7 @@ const { anchor, panelStyle, place } = useAnchoredPanel(240, props.items.length *
     <Teleport to="body">
       <MenuItems class="floating-menu" :style="panelStyle">
         <MenuItem v-for="item in items" :key="item.id" v-slot="{ active }" :disabled="item.disabled" as="template">
-          <button type="button" class="floating-menu-item" :class="{ active, danger: item.danger }" :disabled="item.disabled" @click="emit('select', item.id)">
+          <button type="button" class="floating-menu-item" :class="{ active, danger: item.danger }" :title="item.title" :disabled="item.disabled" @click="emit('select', item.id)">
             <Icon v-if="item.icon" :name="item.icon" :size="17" /><span>{{ item.label }}</span>
           </button>
         </MenuItem>

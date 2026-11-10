@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import type { Channel, OAuthAccount, OAuthLoginStart, OAuthProviderInfo } from '../types/api'
+import ActionMenu from './ActionMenu.vue'
 import CopyButton from './CopyButton.vue'
 import ErrorState from './ErrorState.vue'
 import Icon from './Icon.vue'
@@ -18,10 +19,12 @@ import {
   filterOAuthModels,
   formatCooldownRemaining,
   formatQuotaReset,
+  formatTokenRemaining,
   formatUsedPercent,
   isOAuthAccountCooling,
   isOAuthQuotaBlocked,
   oauthAccountModelOptions,
+  oauthAccountModelsView,
   oauthCanSyncCatalog,
   oauthAccountStatus,
   oauthLoginCallbackError,
@@ -125,8 +128,31 @@ function channelSummary(account: OAuthAccount): string {
   return account.channels.map((channel) => channel.name).join('、') || '未关联渠道'
 }
 
-function modelsLabel(account: OAuthAccount): string {
-  return account.models.length === 0 ? '全部渠道模型' : `${account.models.length} 个模型`
+/** 看板直接展示账号可调度的具体模型，不再只给一个数量。 */
+const accountModelViews = computed(() =>
+  new Map(accounts.value.map((account) => [account.id, oauthAccountModelsView(account, channels.value)])),
+)
+
+function accountModelView(account: OAuthAccount) {
+  return accountModelViews.value.get(account.id) ?? oauthAccountModelsView(account, channels.value)
+}
+
+/** access token 是短期凭据，倒计时只用于解释它为什么会很快到期。 */
+function tokenExpiryLabel(account: OAuthAccount, now: number): string {
+  if (account.accessTokenExpiresAt == null) return '尚未获取 token'
+  const remaining = formatTokenRemaining(account.accessTokenExpiresAt, now)
+  if (remaining == null) return '尚未获取 token'
+  return remaining === '已过期' ? remaining : `${remaining}到期`
+}
+
+function tokenExpiryTitle(account: OAuthAccount): string {
+  if (account.accessTokenExpiresAt == null) {
+    return '尚未获取 access token；首次调用上游或手动刷新后会自动生成。'
+  }
+  const base = `Access token 于 ${formatTime(account.accessTokenExpiresAt)} 到期。它是短期凭据，正常状态下会在到期前自动用 refresh token 续期；这里显示的不是账号授权的有效期。`
+  if (account.authState === 'REAUTH_REQUIRED') return `${base}当前 refresh token 已失效，需要重新授权后才能恢复。`
+  if (!account.enabled) return `${base}账号已停用，启用后会恢复自动续期。`
+  return base
 }
 
 async function load() {
@@ -481,6 +507,49 @@ async function deleteAccount(account: OAuthAccount) {
   }
 }
 
+interface OAuthAccountActionItem {
+  id: string
+  label: string
+  icon?: string
+  danger?: boolean
+  disabled?: boolean
+  title?: string
+}
+
+/** 低频与破坏性操作收进更多菜单，行内只保留刷新、测试与设置。 */
+function accountActionItems(account: OAuthAccount): OAuthAccountActionItem[] {
+  const busy = busyId.value === account.id
+  return [
+    { id: 'refresh-quota', label: '刷新额度', icon: 'chart', disabled: busy },
+    ...(oauthSupportsModelCatalog(account.provider)
+      ? [{
+          id: 'sync-models',
+          label: '同步模型',
+          icon: 'models',
+          disabled: syncingId.value === account.id || !oauthCanSyncCatalog(account),
+          title: oauthCanSyncCatalog(account)
+            ? '从上游读取该账号自己的模型目录；不同账号的可用模型可能不同'
+            : '账号需要重新授权后才能读取上游模型目录',
+        }]
+      : []),
+    { id: 'policy', label: '调度策略', icon: 'bolt' },
+    { id: 'reauth', label: '重新授权', icon: 'lock' },
+    ...(account.runtime.cooldownUntil && account.runtime.cooldownUntil > now.value
+      ? [{ id: 'clear-cooldown', label: '解除冷却', icon: 'check', disabled: busy }]
+      : []),
+    { id: 'delete', label: '删除账号', icon: 'trash', danger: true, disabled: busy },
+  ]
+}
+
+function accountAction(id: string, account: OAuthAccount) {
+  if (id === 'refresh-quota') void refreshQuota(account)
+  else if (id === 'sync-models') void syncAccountModels(account)
+  else if (id === 'policy') openPolicy(account)
+  else if (id === 'reauth') openReauth(account)
+  else if (id === 'clear-cooldown') void clearCooldown(account)
+  else if (id === 'delete') void deleteAccount(account)
+}
+
 onMounted(() => {
   load()
   clock = window.setInterval(() => {
@@ -548,7 +617,7 @@ onBeforeUnmount(() => {
               <th>账号</th>
               <th>提供方</th>
               <th>状态</th>
-              <th>Token</th>
+              <th>Access token</th>
               <th>上游额度</th>
               <th>调度</th>
               <th>最近刷新</th>
@@ -564,7 +633,26 @@ onBeforeUnmount(() => {
                 <div class="channel-id-cell">
                   <span class="muted small">{{ channelSummary(account) }}</span>
                   <span class="badge neutral small">优先级 {{ account.priority }}</span>
-                  <span class="badge neutral small">{{ modelsLabel(account) }}</span>
+                </div>
+                <div
+                  class="oauth-account-models"
+                  :title="accountModelView(account).names.join('\n') || '该账号暂无可调度的模型'"
+                >
+                  <template v-if="accountModelView(account).names.length">
+                    <span
+                      v-for="model in accountModelView(account).visible"
+                      :key="model"
+                      class="badge info small oauth-model-badge"
+                      :title="model"
+                    >{{ model }}</span>
+                    <span
+                      v-if="accountModelView(account).hidden.length"
+                      class="badge neutral small"
+                      :title="accountModelView(account).hidden.join('\n')"
+                    >+{{ accountModelView(account).hidden.length }}</span>
+                    <span v-if="accountModelView(account).inherited" class="oauth-model-inherited muted small">全部模型</span>
+                  </template>
+                  <span v-else class="muted small">暂无模型</span>
                 </div>
               </td>
               <td>
@@ -582,8 +670,14 @@ onBeforeUnmount(() => {
                   {{ account.lastRefreshError }}
                 </div>
               </td>
-              <td class="muted small">
-                <div>{{ account.accessTokenExpiresAt ? '到期 ' + formatTime(account.accessTokenExpiresAt) : '尚未获取 token' }}</div>
+              <td class="oauth-token-cell muted small">
+                <div class="oauth-token-expiry" :title="tokenExpiryTitle(account)">
+                  <span :class="{ 'text-danger': account.accessTokenExpiresAt != null && account.accessTokenExpiresAt <= now }">
+                    {{ tokenExpiryLabel(account, now) }}
+                  </span>
+                  <span v-if="account.accessTokenExpiresAt != null && account.authState === 'ACTIVE'" class="badge neutral small oauth-token-renew">自动续期</span>
+                </div>
+                <div class="oauth-token-authorized">授权于 {{ formatTime(account.authorizedAt ?? account.createdAt) }}</div>
                 <div v-if="account.proxyUrl" class="mono" :title="account.proxyUrl">{{ account.proxyUrl }}</div>
               </td>
               <td class="oauth-quota-cell">
@@ -653,42 +747,31 @@ onBeforeUnmount(() => {
               </td>
               <td class="actions-col">
                 <div class="row-actions">
-                  <button type="button" class="button small" :disabled="busyId === account.id" @click="refreshToken(account)">
-                    刷新 token
-                  </button>
-                  <button type="button" class="button small" :disabled="busyId === account.id" @click="refreshQuota(account)">
-                    刷新额度
-                  </button>
                   <button
-                    v-if="oauthSupportsModelCatalog(account.provider)"
                     type="button"
-                    class="button small"
-                    :disabled="syncingId === account.id || !oauthCanSyncCatalog(account)"
-                    :title="
-                      oauthCanSyncCatalog(account)
-                        ? '从上游读取该账号自己的模型目录；不同账号的可用模型可能不同'
-                        : '账号需要重新授权后才能读取上游模型目录'
-                    "
-                    @click="syncAccountModels(account)"
-                  >
-                    {{ syncingId === account.id ? '同步中…' : '同步模型' }}
-                  </button>
-                  <button type="button" class="button small" @click="openTest(account)">测试</button>
-                  <button type="button" class="button small" @click="openPolicy(account)">调度策略</button>
-                  <button type="button" class="button small" @click="openSettings(account)">设置</button>
-                  <button type="button" class="button small" @click="openReauth(account)">重新授权</button>
-                  <button type="button" class="button small danger" :disabled="busyId === account.id" @click="deleteAccount(account)">
-                    删除
-                  </button>
-                  <button
-                    v-if="account.runtime.cooldownUntil && account.runtime.cooldownUntil > now"
-                    type="button"
-                    class="button small"
+                    class="button ghost mini"
+                    title="刷新 access token（用 refresh token 续期）"
                     :disabled="busyId === account.id"
-                    @click="clearCooldown(account)"
+                    @click="refreshToken(account)"
                   >
-                    解除冷却
+                    刷新
                   </button>
+                  <button type="button" class="button ghost mini" @click="openTest(account)">测试</button>
+                  <button
+                    type="button"
+                    class="icon-button"
+                    :title="'设置 ' + account.name"
+                    :aria-label="'设置 ' + account.name"
+                    @click="openSettings(account)"
+                  >
+                    <Icon name="settings" :size="16" />
+                  </button>
+                  <ActionMenu
+                    :label="account.name + '的更多操作'"
+                    compact
+                    :items="accountActionItems(account)"
+                    @select="accountAction($event, account)"
+                  />
                 </div>
               </td>
             </tr>
