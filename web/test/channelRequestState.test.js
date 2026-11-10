@@ -67,6 +67,28 @@ describe('channel request state', () => {
     assert.equal(hasCredentialDraft([{ credential: '' }, { credential: 'sk-new' }]), true)
   })
 
+  it('表单回填期间不清理已保存的模型授权', () => {
+    const form = reactive({ baseUrl: '', authType: 'bearer' })
+    let hydrating = true
+    let invalidated = 0
+    const models = createRequestTracker()
+    const probes = createRequestTracker()
+    const stop = watchChannelRequestInputs(form, {
+      modelRequests: models,
+      probeRequests: probes,
+      shouldInvalidate: () => !hydrating,
+      onInputsChanged: () => { invalidated += 1 },
+    })
+
+    form.baseUrl = 'https://api.example.com/v1'
+    assert.equal(invalidated, 0, '打开编辑表单回填地址时不应清空模型授权')
+
+    hydrating = false
+    form.baseUrl = 'https://api.example.com/v2'
+    assert.equal(invalidated, 1, '用户修改上游地址后仍应清空模型授权')
+    stop()
+  })
+
   it('请求覆盖变更会丢弃正在返回的模型列表和协议探测', () => {
     const revision = ref(0)
     const form = reactive({ baseUrl: 'https://example.com/v1', authType: 'bearer' })

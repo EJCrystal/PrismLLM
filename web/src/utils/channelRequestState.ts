@@ -42,17 +42,21 @@ export function watchChannelRequestInputs(
     onInputsChanged,
     credentialSource = () => form.credential,
     settingsSource = () => undefined,
+    shouldInvalidate = () => true,
   }: {
     modelRequests: Pick<RequestTracker, 'invalidate'>
     probeRequests: Pick<RequestTracker, 'invalidate'>
     onInputsChanged: () => void
     credentialSource?: () => unknown
     settingsSource?: () => unknown
+    /** 表单回填等非用户修改场景可返回 false，跳过模型授权与探测结果失效。 */
+    shouldInvalidate?: () => boolean
   },
 ) {
   return watch(
     () => [form.baseUrl, credentialSource(), form.authType, JSON.stringify(form.protocolAuthTypes || {}), settingsSource()],
     () => {
+      if (!shouldInvalidate()) return
       modelRequests.invalidate()
       probeRequests.invalidate()
       onInputsChanged()
