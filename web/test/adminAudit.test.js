@@ -63,6 +63,31 @@ describe('adminAudit: 管理操作审计展示', () => {
     )
   })
 
+  it('展示指纹检测操作的关键参数', () => {
+    assert.equal(auditActionLabel('model_test.fingerprint_run'), '运行指纹检测')
+    assert.deepEqual(
+      auditDetailsRows({
+        action: 'model_test.fingerprint_run',
+        details: {
+          channelId: 'c1',
+          model: 'm1',
+          keyId: 'k1',
+          protocol: 'messages',
+          decision: 'scored',
+          prediction: 'claude-haiku-4.5',
+        },
+      }),
+      [
+        ['渠道 ID', 'c1'],
+        ['模型', 'm1'],
+        ['凭据 ID', 'k1'],
+        ['协议', 'messages'],
+        ['判定', 'scored'],
+        ['预测模型', 'claude-haiku-4.5'],
+      ],
+    )
+  })
+
   it('展示订阅账号操作的关键参数', () => {
     assert.deepEqual(
       auditDetailsRows({

@@ -16,6 +16,7 @@ const actionLabels: Record<string, string> = {
   'iq_question.delete': '删除检测题目',
   'iq_test.run': '运行智商检测',
   'iq_test.manual_verdict': '保存智商检测人工判定',
+  'model_test.fingerprint_run': '运行指纹检测',
   'channel.create': '创建渠道',
   'channel.update': '更新渠道',
   'channel.delete': '删除渠道',
@@ -93,6 +94,8 @@ interface AuditDetails {
   id?: string | number | null
   verdict?: string | null
   score?: number | null
+  decision?: string | null
+  prediction?: string | null
   result?: string | null
   windowLimit?: number | null
   windowSeconds?: number | null
@@ -206,6 +209,16 @@ export function auditDetailsRows(entry: AuditEntry | null | undefined): AuditDet
       ['记录 ID', displayDetail(details.id)],
       ['结论', details.verdict === 'passed' ? '通过' : details.verdict === 'incorrect' ? '未通过' : displayDetail(details.verdict)],
       ['评分', details.score == null ? '未评分' : `${details.score} / 5`],
+    ]
+  }
+  if (entry?.action === 'model_test.fingerprint_run') {
+    return [
+      ['渠道 ID', displayDetail(details.channelId)],
+      ['模型', displayDetail(details.model)],
+      ['凭据 ID', displayDetail(details.keyId)],
+      ['协议', displayDetail(details.protocol)],
+      ['判定', displayDetail(details.decision)],
+      ['预测模型', displayDetail(details.prediction)],
     ]
   }
   return []

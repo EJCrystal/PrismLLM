@@ -734,6 +734,119 @@ export interface ChannelModelTestResult {
   usage: ChannelModelTestUsage | null
 }
 
+/** 连通性、智商与指纹检测共用的渠道模型目标。 */
+export interface ModelTestTargetCredential {
+  id: string
+  name: string
+  priority: number
+}
+
+export interface ModelTestTarget {
+  channelId: string
+  channelName: string
+  channelEnabled: boolean
+  model: string
+  protocols: ProtocolId[]
+  credentials: ModelTestTargetCredential[]
+}
+
+export type FingerprintDecision = 'scored' | 'partial' | 'not_model' | 'unscorable'
+
+export interface FingerprintCandidate {
+  model: string
+  displayName: string
+  family: string
+  familyName: string
+  score: number
+  probability: number | null
+}
+
+export interface FingerprintDiagnostic {
+  index: number
+  parsedNumbers: number
+  minimumNumbers: number
+  accepted: boolean
+  rawOutOfRangeCount: number
+}
+
+export interface FingerprintSequence {
+  autocorrelation: number
+  smallStepShare: number
+  modelLike: boolean
+}
+
+export interface FingerprintAnalysis {
+  decision: FingerprintDecision
+  method: string
+  prediction: string | null
+  predictionName: string
+  familyPrediction: string | null
+  familyPredictionName: string
+  probability: number | null
+  probabilityStatus: 'reference_calibrated' | 'unavailable'
+  usedOutputs: number
+  totalOutputs: number
+  rankingScore: number | null
+  results: FingerprintCandidate[]
+  diagnostics: FingerprintDiagnostic[]
+  sequence: FingerprintSequence | null
+  evidenceLabel: string
+  evidenceReason: string
+  detectorSha256: string
+  bankBuiltAt: string
+}
+
+export interface FingerprintSample {
+  index: number
+  expectedCount: number
+  prompt: string
+  text: string | null
+  parsedNumbers: number
+  minimumNumbers: number
+  accepted: boolean
+  statusCode: number | null
+  latencyMs: number
+  errorMessage: string | null
+  reportedModel: string | null
+}
+
+export interface FingerprintRunRequest {
+  channelId: string
+  model: string
+  keyId?: string | null
+  protocol?: ProtocolId | null
+}
+
+export interface FingerprintDetectorInfo {
+  modelCount: number
+  bankBuiltAt: string
+  detectorSha256: string
+}
+
+export interface FingerprintRun {
+  id: number
+  channelId: string
+  channelName: string
+  channelKeyId: string | null
+  channelKeyName: string | null
+  model: string
+  protocol: string
+  success: boolean
+  statusCode: number | null
+  latencyMs: number
+  decision: FingerprintDecision
+  prediction: string | null
+  predictionName: string | null
+  probability: number | null
+  usedOutputs: number
+  totalOutputs: number
+  createdAt: number
+  errorMessage: string | null
+  usage: ChannelModelTestUsage | null
+  analysis?: FingerprintAnalysis | null
+  samples?: FingerprintSample[]
+}
+
 export type IqBenchmarkId = 'pelican' | 'candy'
 export type IqVerdict = 'passed' | 'incorrect' | 'review' | 'failed'
 

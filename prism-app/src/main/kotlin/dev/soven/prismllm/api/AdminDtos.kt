@@ -24,6 +24,7 @@ import dev.soven.prismllm.channel.domain.UpstreamRequestSettingsRecord
 import dev.soven.prismllm.channel.domain.UpstreamHeaderCatalogSnapshot
 import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
 import dev.soven.prismllm.admin.domain.IqTestRunRecord
+import dev.soven.prismllm.admin.domain.FingerprintTestRunRecord
 import dev.soven.prismllm.requestlog.domain.RequestLogRecord
 import dev.soven.prismllm.plugin.iq.IqJudgeInfo
 import dev.soven.prismllm.plugin.iq.IqJudgePluginFailure
@@ -34,6 +35,8 @@ import dev.soven.prismllm.proxy.analyzePelicanStructure
 import dev.soven.prismllm.proxy.evaluateIqTest
 import dev.soven.prismllm.proxy.evaluateLegacyCandy
 import dev.soven.prismllm.proxy.ModelConnectivityTestResult
+import dev.soven.prismllm.proxy.fingerprint.FingerprintAnalysis
+import dev.soven.prismllm.proxy.fingerprint.FingerprintSamplePayload
 import dev.soven.prismllm.shared.domain.Usage
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaUsage
 import dev.soven.prismllm.requestlog.domain.CleanupResult
@@ -49,6 +52,7 @@ import dev.soven.prismllm.channel.domain.key.KeyDisableRule
 import dev.soven.prismllm.spi.iq.IqJudgeResult
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
 import dev.soven.prismllm.spi.iq.IqStructureCheck
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -1827,3 +1831,81 @@ fun OAuthAccountRecord.toResponse(
         quotaBlockedUntil = runtime?.quotaBlockedUntil,
     ),
 )
+
+/** 指纹检测参考库信息；页面用它说明闭集规模和构建时间。 */
+@Serializable
+data class FingerprintDetectorInfoResponse(
+    val modelCount: Int,
+    val bankBuiltAt: String,
+    val detectorSha256: String,
+)
+
+/** 指纹检测请求：与智商检测共用渠道模型与凭据选择。 */
+@Serializable
+data class FingerprintRunRequest(
+    val channelId: String,
+    val model: String,
+    val keyId: String? = null,
+    val protocol: String? = null,
+)
+
+/** 一次指纹检测的采样摘要与排名结果；列表只返回摘要，详情才带完整排名与回答。 */
+@Serializable
+data class FingerprintRunResponse(
+    val id: Long,
+    val channelId: String,
+    val channelName: String,
+    val channelKeyId: String? = null,
+    val channelKeyName: String? = null,
+    val model: String,
+    val protocol: String,
+    val success: Boolean,
+    val statusCode: Int? = null,
+    val latencyMs: Long,
+    val decision: String,
+    val prediction: String? = null,
+    val predictionName: String? = null,
+    val probability: Double? = null,
+    val usedOutputs: Int,
+    val totalOutputs: Int,
+    val createdAt: Long,
+    val errorMessage: String? = null,
+    val usage: ChannelModelTestUsageResponse? = null,
+    val analysis: FingerprintAnalysis? = null,
+    val samples: List<FingerprintSamplePayload> = emptyList(),
+)
+
+fun FingerprintTestRunRecord.toResponse(includeDetail: Boolean): FingerprintRunResponse = FingerprintRunResponse(
+    id = id,
+    channelId = channelId,
+    channelName = channelName,
+    channelKeyId = channelKeyId,
+    channelKeyName = channelKeyName,
+    model = model,
+    protocol = protocol,
+    success = success,
+    statusCode = statusCode,
+    latencyMs = latencyMs,
+    decision = decision,
+    prediction = prediction,
+    predictionName = predictionName,
+    probability = probability,
+    usedOutputs = usedOutputs,
+    totalOutputs = totalOutputs,
+    createdAt = createdAt,
+    errorMessage = errorMessage,
+    usage = usage?.toTestResponse(),
+    analysis = if (includeDetail) {
+        runCatching { FINGERPRINT_JSON.decodeFromString<FingerprintAnalysis>(analysisJson) }.getOrNull()
+    } else {
+        null
+    },
+    samples = if (includeDetail) {
+        runCatching { FINGERPRINT_JSON.decodeFromString<List<FingerprintSamplePayload>>(samplesJson) }
+            .getOrDefault(emptyList())
+    } else {
+        emptyList()
+    },
+)
+
+internal val FINGERPRINT_JSON = Json { ignoreUnknownKeys = true }

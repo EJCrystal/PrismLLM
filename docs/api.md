@@ -163,7 +163,12 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
     -d '{"model": "gpt-4o-mini", "protocol": "chat_completions", "prompt": "请只回复 OK"}'
   ```
 
-### 4. 智商检测
+### 4. 模型检测
+
+连通性、智商与指纹检测共用的可测试目标：`GET /admin/api/model-tests/targets`。返回值与
+`/admin/api/iq-tests/targets` 相同，包含渠道、已授权模型、可用协议与凭据摘要。
+
+#### 智商检测
 
 - 题目定义：`GET /admin/api/iq-tests/benchmarks`
 - 判分器列表：`GET /admin/api/iq-tests/judges`
@@ -186,6 +191,24 @@ SVG/HTML，再由 `judgeId` 指定的判分器判分；省略时使用 `IQ_DEFAU
 糖果题只要求模型返回 `{"answer": <整数>, "reason": "<推导过程>"}`，由本地规则按 `answer` 是否等于 21 判分，
 不调用判分器，`judgeId` 会被忽略。鹈鹕题的最终判定顺序为人工判定 > 判分器结果 > 本地结构兜底。
 结果保留最近 200 次。详细说明见 `docs/iq-test.md`。
+
+#### 指纹检测
+
+- 参考库信息：`GET /admin/api/model-tests/fingerprint/info`
+- 运行检测：`POST /admin/api/model-tests/fingerprint`
+- 历史与详情：`GET /admin/api/model-tests/fingerprint?limit=20`、
+  `GET /admin/api/model-tests/fingerprint/<id>`
+
+```bash
+curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerprint \
+  -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
+  -d '{"channelId":"<channel-id>","model":"claude-haiku-4.5","protocol":"messages"}'
+```
+
+一次运行生成三道随机数字题并并行请求上游，最长等待 4 分钟。`keyId` 省略时按渠道凭据优先级选择，
+`protocol` 省略时使用渠道首选协议。响应包含判定（`scored` / `partial` / `not_model` / `unscorable`）、
+68 个候选模型的分数与相对概率、逐样本诊断和原始回答。结果保存在 `fingerprint_test_runs`，保留最近 100 次；
+单条回答最多保存 20000 字符。参考库随应用打包，比对过程不联网。详细说明见 `docs/model-detection.md`。
 
 ### 5. 冷却可见性与手动解除
 

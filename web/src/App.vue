@@ -16,13 +16,13 @@ import AccountSettingsModal from './components/AccountSettingsModal.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import InfoPopover from './components/InfoPopover.vue'
 
-const IqTestView = defineAsyncComponent(() => import('./components/IqTestView.vue'))
+const ModelTestView = defineAsyncComponent(() => import('./components/ModelTestView.vue'))
 
 const navItems = [
   { id: 'channels', label: '渠道', icon: 'channels' },
   { id: 'oauth-accounts', label: '订阅账号', icon: 'users' },
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
-  { id: 'iq-test', label: '智商检测', icon: 'brain' },
+  { id: 'model-tests', label: '模型检测', icon: 'fingerprint' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
   { id: 'usage-reports', label: '用量报表', icon: 'chart' },
   { id: 'audit-logs', label: '操作审计', icon: 'shield' },
@@ -42,9 +42,9 @@ const meta = {
     title: '调用方密钥',
     desc: '调用方凭据只在创建或轮换时显示一次，请立即保存。服务端仅保存 SHA-256 哈希与展示前缀。',
   },
-  'iq-test': {
-    title: '智商检测',
-    desc: '用鹈鹕骑行动画与随机推理题观察模型表现。鹈鹕题在本地生成 SVG/HTML，由可选判分器（本地结构 + 人工、满血AI 分类、视觉模型或外部 JAR）判定；糖果题从题库随机抽取，按 JSON 的 answer 与预设答案本地比对，不提供联网搜索工具。题库支持自定义题干及数字或文本答案；鹈鹕提示词可在运行前修改，单次结果不代表模型整体能力。',
+  'model-tests': {
+    title: '模型检测',
+    desc: '统一管理连通性、智商与指纹检测。连通性检测用真实请求确认渠道与凭据可用；智商检测通过鹈鹕与糖果题观察推理表现；指纹检测根据随机数字序列比对本地参考库，判断模型更接近哪个已知模型。所有检测都直接发往上游渠道，不经过数据面，也不写入请求日志。',
   },
 
   logs: {
@@ -227,7 +227,7 @@ onBeforeUnmount(() => {
         <ChannelsView v-if="view === 'channels'" />
         <OAuthAccountsView v-else-if="view === 'oauth-accounts'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
-        <IqTestView v-else-if="view === 'iq-test'" />
+        <ModelTestView v-else-if="view === 'model-tests'" />
         <LogsView v-else-if="view === 'logs'" />
         <UsageReportsView v-else-if="view === 'usage-reports'" />
         <AdminAuditLogsView v-else-if="view === 'audit-logs'" />

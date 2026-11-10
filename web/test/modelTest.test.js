@@ -5,6 +5,7 @@ import {
   buildModelTestRequest,
   formatModelTestUsage,
   modelTestProtocolLabel,
+  modelTestTargetKey,
   normalizeModelTestSettings,
 } from '../src/utils/modelTest'
 
@@ -45,6 +46,12 @@ describe('modelTest: 渠道模型连通性测试', () => {
       prompt: 'hello',
       keyId: ' key-1 ',
     }).keyId, 'key-1')
+  })
+
+  it('用渠道与模型组合出唯一的目标 key', () => {
+    assert.notEqual(modelTestTargetKey('c1', 'm1'), modelTestTargetKey('c2', 'm1'))
+    assert.notEqual(modelTestTargetKey('c1', 'm1'), modelTestTargetKey('c1', 'm2'))
+    assert.equal(modelTestTargetKey('c1', 'm1'), modelTestTargetKey('c1', 'm1'))
   })
 
   it('协议显示名称和用量摘要可读', () => {

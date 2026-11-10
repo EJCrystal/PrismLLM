@@ -10,6 +10,7 @@ import dev.soven.prismllm.shared.error.serviceUnavailable
 import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.admin.domain.IqVisionSettingsRecord
 import dev.soven.prismllm.admin.domain.NewIqTestRun
+import dev.soven.prismllm.admin.domain.NewFingerprintTestRun
 import dev.soven.prismllm.admin.persistence.IqVisionSettingsUpdate
 import dev.soven.prismllm.admin.domain.sameVisionEndpoint
 import dev.soven.prismllm.channel.domain.ChannelQuotaSettings
@@ -17,6 +18,7 @@ import dev.soven.prismllm.spi.quota.ChannelQuotaProvider
 import dev.soven.prismllm.channel.domain.ChannelKeyRecord
 import dev.soven.prismllm.channel.domain.ChannelKeyRateLimitPolicy
 import dev.soven.prismllm.shared.domain.UpstreamCredential
+import dev.soven.prismllm.shared.domain.Usage
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
@@ -52,9 +54,13 @@ import dev.soven.prismllm.spi.iq.IqJudgeRequest
 import dev.soven.prismllm.spi.iq.IqJudgeResult
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
 import dev.soven.prismllm.proxy.fetchUpstreamModels
+import dev.soven.prismllm.proxy.fingerprint.FingerprintChallengeGenerator
+import dev.soven.prismllm.proxy.fingerprint.FingerprintOutput
+import dev.soven.prismllm.proxy.fingerprint.FingerprintSamplePayload
 import dev.soven.prismllm.proxy.modelListProtocol
 import dev.soven.prismllm.proxy.probeUpstreamProtocols
 import dev.soven.prismllm.proxy.resolveSavedCredential
+import dev.soven.prismllm.proxy.ModelConnectivityTestResult
 import dev.soven.prismllm.proxy.testChannelModelConnectivity
 import dev.soven.prismllm.proxy.testOAuthAccountModelConnectivity
 import dev.soven.prismllm.channel.persistence.ChannelKeyUpdate
@@ -100,11 +106,15 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Base64
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
@@ -817,28 +827,162 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/iq-tests/targets") {
             call.requireAdmin(app)
-            val accountsByChannel = app.oauthAccountRepository.listByChannel()
-            val targets = app.channelRepository.list().flatMap { channel ->
-                val hydrated = channel.copy(oauthAccounts = accountsByChannel[channel.id].orEmpty())
-                hydrated.models.mapNotNull { model ->
-                    val credentials = hydrated.credentialsFor(model)
-                    if (credentials.isEmpty()) {
-                        null
-                    } else {
-                        IqTestTargetResponse(
-                            channelId = channel.id,
-                            channelName = channel.name,
-                            channelEnabled = channel.enabled,
+            call.respond(app.modelTestTargets())
+        }
+
+        get("/model-tests/targets") {
+            call.requireAdmin(app)
+            call.respond(app.modelTestTargets())
+        }
+
+        get("/model-tests/fingerprint") {
+            call.requireAdmin(app)
+            val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 50) ?: 20
+            call.respond(app.fingerprintTestRunRepository.list(limit).map { it.toResponse(includeDetail = false) })
+        }
+
+        get("/model-tests/fingerprint/info") {
+            call.requireAdmin(app)
+            val detector = app.fingerprintDetector
+                ?: throw serviceUnavailable(
+                    "fingerprint_detector_unavailable",
+                    "指纹检测参考库未加载，请检查服务启动日志",
+                )
+            call.respond(
+                FingerprintDetectorInfoResponse(
+                    modelCount = detector.modelCount,
+                    bankBuiltAt = detector.bankBuiltAt,
+                    detectorSha256 = detector.detectorSha256,
+                ),
+            )
+        }
+
+        get("/model-tests/fingerprint/{id}") {
+            call.requireAdmin(app)
+            val id = call.requiredParam("id", "缺少检测记录 id").toLongOrNull()
+                ?: throw badRequest("invalid_fingerprint_test", "检测记录 id 无效")
+            val record = app.fingerprintTestRunRepository.find(id)
+                ?: throw notFound("fingerprint_test_not_found", "检测记录不存在")
+            call.respond(record.toResponse(includeDetail = true))
+        }
+
+        post("/model-tests/fingerprint") {
+            call.requireAdmin(app)
+            val detector = app.fingerprintDetector
+                ?: throw serviceUnavailable(
+                    "fingerprint_detector_unavailable",
+                    "指纹检测参考库未加载，请检查服务启动日志",
+                )
+            val request = call.receive<FingerprintRunRequest>()
+            val channelId = request.channelId.trim()
+            if (channelId.isEmpty()) throw badRequest("invalid_fingerprint_test", "缺少渠道 id")
+            val channel = app.channelRepository.find(channelId)?.let { channelWithCredentials(app, it) }
+                ?: throw notFound("channel_not_found", "渠道不存在")
+            val model = request.model.trim()
+            if (model.isEmpty() || model.length > 200) {
+                throw badRequest("invalid_fingerprint_test", "模型名长度必须在 1..200 之间")
+            }
+            if (model !in channel.models) {
+                throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
+            }
+            val credential = resolveChannelCredentialForModel(channel, model, request.keyId)
+            val protocol = request.protocol?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                GatewayProtocol.fromValue(it) ?: throw badRequest("invalid_fingerprint_test_protocol", "检测协议无效")
+            } ?: preferredProbeProtocol(channel)
+            if (protocol !in channel.protocols) {
+                throw badRequest("fingerprint_test_protocol_unsupported", "渠道未启用协议 ${protocol.value}")
+            }
+            val challenges = FingerprintChallengeGenerator.generate()
+            val overrides = app.upstreamRequestSettingsRepository.load().overrides
+            val headerProfiles = app.upstreamHeaderCatalogService.profiles()
+            val startedAt = System.currentTimeMillis()
+            // 三个样本同时发出，与 lm-detector 的默认采样方式一致；任一请求失败只影响该样本。
+            val results = coroutineScope {
+                challenges.map { challenge ->
+                    async {
+                        testChannelModelConnectivity(
+                            channel = channel,
+                            credentialRef = credential,
                             model = model,
-                            protocols = channel.protocols.map { it.value },
-                            credentials = credentials.map {
-                                IqTestTargetCredentialResponse(it.id, it.name, it.priority)
-                            },
+                            protocol = protocol,
+                            prompt = challenge.prompt,
+                            credentials = app.oauthTokenService,
+                            httpClient = app.httpClient,
+                            timeoutMs = FINGERPRINT_TIMEOUT_MS,
+                            maxOutputTokens = FINGERPRINT_MAX_OUTPUT_TOKENS,
+                            maxResponseChars = FINGERPRINT_MAX_RESPONSE_CHARS,
+                            globalOverrides = overrides,
+                            headerProfiles = headerProfiles,
+                            isolatedIqRequest = true,
                         )
                     }
-                }
+                }.awaitAll()
             }
-            call.respond(targets)
+            val latencyMs = System.currentTimeMillis() - startedAt
+            val outputs = challenges.mapIndexed { index, challenge ->
+                FingerprintOutput(
+                    expectedCount = challenge.expectedCount,
+                    text = results[index].responseText.orEmpty(),
+                )
+            }
+            val analysis = detector.analyze(outputs)
+            val samples = challenges.mapIndexed { index, challenge ->
+                val result = results[index]
+                val diagnostic = analysis.diagnostics[index]
+                FingerprintSamplePayload(
+                    index = index,
+                    expectedCount = challenge.expectedCount,
+                    prompt = challenge.prompt,
+                    text = result.responseText?.take(FINGERPRINT_MAX_STORED_SAMPLE_CHARS),
+                    parsedNumbers = diagnostic.parsedNumbers,
+                    minimumNumbers = diagnostic.minimumNumbers,
+                    accepted = diagnostic.accepted,
+                    statusCode = result.statusCode,
+                    latencyMs = result.latencyMs,
+                    errorMessage = result.errorMessage,
+                    reportedModel = result.upstreamReportedModel?.take(200),
+                )
+            }
+            val usage = aggregateFingerprintUsage(results)
+            val errorMessage = if (analysis.usedOutputs == 0) {
+                results.firstNotNullOfOrNull { it.errorMessage } ?: "三条回答都没有达到有效数字数量"
+            } else {
+                null
+            }
+            val record = app.fingerprintTestRunRepository.insert(
+                NewFingerprintTestRun(
+                    channelId = channel.id,
+                    channelName = channel.name.take(100),
+                    channelKeyId = credential.id,
+                    channelKeyName = credential.name.take(100),
+                    model = model,
+                    protocol = protocol.value,
+                    success = analysis.usedOutputs > 0,
+                    statusCode = results.firstNotNullOfOrNull { it.statusCode },
+                    latencyMs = latencyMs,
+                    decision = analysis.decision,
+                    prediction = analysis.prediction?.take(120),
+                    predictionName = analysis.predictionName.take(120),
+                    probability = analysis.probability?.takeIf { it.isFinite() }?.coerceIn(0.0, 1.0),
+                    usedOutputs = analysis.usedOutputs,
+                    totalOutputs = analysis.totalOutputs,
+                    analysisJson = FINGERPRINT_JSON.encodeToString(analysis),
+                    samplesJson = FINGERPRINT_JSON.encodeToString(samples),
+                    errorMessage = errorMessage,
+                    usage = usage,
+                ),
+            )
+            call.markAdminAuditDetails(
+                buildJsonObject {
+                    put("channelId", channel.id)
+                    put("model", model)
+                    put("keyId", credential.id)
+                    put("protocol", protocol.value)
+                    put("decision", analysis.decision)
+                    analysis.prediction?.let { put("prediction", it.take(120)) }
+                },
+            )
+            call.respond(record.toResponse(includeDetail = true))
         }
 
         get("/iq-tests") {
@@ -890,7 +1034,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val credential = resolveChannelCredentialForModel(channel, model, request.keyId)
             val protocol = request.protocol?.trim()?.takeIf { it.isNotEmpty() }?.let {
                 GatewayProtocol.fromValue(it) ?: throw badRequest("invalid_iq_test_protocol", "检测协议无效")
-            } ?: preferredIqTestProtocol(channel)
+            } ?: preferredProbeProtocol(channel)
             if (protocol !in channel.protocols) {
                 throw badRequest("iq_test_protocol_unsupported", "渠道未启用协议 ${protocol.value}")
             }
@@ -2404,6 +2548,46 @@ private fun credentialUnavailable(credential: UpstreamCredential): GatewayError 
         else -> badRequest("channel_key_disabled", "渠道凭据已停用")
     }
 
+/** 可选的模型测试目标：渠道已授权模型及其可用凭据（静态密钥与订阅账号）。 */
+private suspend fun GatewayApplication.modelTestTargets(): List<IqTestTargetResponse> {
+    val accountsByChannel = oauthAccountRepository.listByChannel()
+    return channelRepository.list().flatMap { channel ->
+        val hydrated = channel.copy(oauthAccounts = accountsByChannel[channel.id].orEmpty())
+        hydrated.models.mapNotNull { model ->
+            val credentials = hydrated.credentialsFor(model)
+            if (credentials.isEmpty()) {
+                null
+            } else {
+                IqTestTargetResponse(
+                    channelId = channel.id,
+                    channelName = channel.name,
+                    channelEnabled = channel.enabled,
+                    model = model,
+                    protocols = channel.protocols.map { it.value },
+                    credentials = credentials.map {
+                        IqTestTargetCredentialResponse(it.id, it.name, it.priority)
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** 三条样本的 token 用量相加；完全没有返回用量时保持未知。 */
+private fun aggregateFingerprintUsage(results: List<ModelConnectivityTestResult>): Usage? {
+    val usages = results.mapNotNull { it.usage }
+    if (usages.isEmpty()) return null
+    fun sum(select: (Usage) -> Long?): Long? =
+        if (usages.all { select(it) == null }) null else usages.sumOf { select(it) ?: 0L }
+    return Usage(
+        input = sum { it.input },
+        output = sum { it.output },
+        cached = sum { it.cached },
+        reasoning = sum { it.reasoning },
+        total = sum { it.total },
+    )
+}
+
 /** 管理面渠道操作需要同时看到静态密钥与关联订阅账号。 */
 private suspend fun channelWithCredentials(app: GatewayApplication, channel: ChannelRecord): ChannelRecord =
     channel.copy(oauthAccounts = app.oauthAccountRepository.listByChannel()[channel.id].orEmpty())
@@ -2432,7 +2616,7 @@ private fun GatewayApplication.effectiveIqDefaultJudge(): String {
 }
 
 /** 优先用 Responses，其次 Chat Completions；都不可用时回退到渠道的第一个协议。 */
-private fun preferredIqTestProtocol(channel: ChannelRecord): GatewayProtocol =
+private fun preferredProbeProtocol(channel: ChannelRecord): GatewayProtocol =
     channel.protocols.firstOrNull { it == GatewayProtocol.RESPONSES }
         ?: channel.protocols.firstOrNull { it == GatewayProtocol.CHAT_COMPLETIONS }
         ?: channel.protocols.firstOrNull { it == GatewayProtocol.MESSAGES }
@@ -2960,6 +3144,12 @@ private fun isUniqueViolation(cause: Throwable): Boolean =
 private const val MODEL_TEST_PROMPT_MAX = 4_000
 private const val IQ_TEST_MAX_RESPONSE_CHARS = 200_000
 private const val IQ_TEST_MAX_PROMPT_CHARS = 20_000
+
+/** 指纹检测单次请求的上限；三条样本并行发出，超时按单条计算。 */
+private const val FINGERPRINT_TIMEOUT_MS = 240_000L
+private const val FINGERPRINT_MAX_OUTPUT_TOKENS = 8_192
+private const val FINGERPRINT_MAX_RESPONSE_CHARS = 50_000
+private const val FINGERPRINT_MAX_STORED_SAMPLE_CHARS = 20_000
 
 private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLimits {
     if (request.dailyTokenLimit != null && request.dailyTokenLimit < 0) {
