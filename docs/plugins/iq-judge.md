@@ -30,7 +30,7 @@ Compose 将宿主机 `./plugins` 只读挂载到 `/app/plugins`；若改目录�
 
 ## 开发自定义插件
 
-使用 Java、Kotlin 或其他 JVM 语言实现 `dev.soven.llmgateway.spi.iq.IqJudge`，提供公开无参构造函数。
+使用 Java、Kotlin 或其他 JVM 语言实现 `dev.soven.prismllm.spi.iq.IqJudge`，提供公开无参构造函数。
 核心发布的轻量编译制品为：
 
 ~~~xml
@@ -54,7 +54,7 @@ Gradle 使用同坐标的 `compileOnly` 依赖，并排除传递依赖。不要�
 ~~~kotlin
 package example
 
-import dev.soven.llmgateway.spi.iq.*
+import dev.soven.prismllm.spi.iq.*
 
 class ExampleJudge : IqJudge {
     override val id = "example"
@@ -74,7 +74,7 @@ class ExampleJudge : IqJudge {
 }
 ~~~
 
-在 `src/main/resources/META-INF/services/dev.soven.llmgateway.spi.iq.IqJudge` 文件中写入：
+在 `src/main/resources/META-INF/services/dev.soven.prismllm.spi.iq.IqJudge` 文件中写入：
 
 ~~~text
 example.ExampleJudge

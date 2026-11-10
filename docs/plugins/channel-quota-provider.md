@@ -139,7 +139,7 @@ providerId 为空表示关闭；允许保存尚未安装插件的 ID，安装并
 
 ## 开发自定义插件
 
-使用 Java、Kotlin 或其他 JVM 语言实现 dev.soven.llmgateway.spi.quota.ChannelQuotaProvider，提供公开无参构造函数。核心发布的轻量编译制品为：
+使用 Java、Kotlin 或其他 JVM 语言实现 dev.soven.prismllm.spi.quota.ChannelQuotaProvider，提供公开无参构造函数。核心发布的轻量编译制品为：
 
 ~~~xml
 <dependency>
@@ -161,7 +161,7 @@ providerId 为空表示关闭；允许保存尚未安装插件的 ID，安装并
 ~~~kotlin
 package example
 
-import dev.soven.llmgateway.spi.quota.*
+import dev.soven.prismllm.spi.quota.*
 
 class ExampleQuotaProvider : ChannelQuotaProvider {
     override val id = "example"
@@ -178,7 +178,7 @@ class ExampleQuotaProvider : ChannelQuotaProvider {
 }
 ~~~
 
-在 src/main/resources/META-INF/services/dev.soven.llmgateway.spi.quota.ChannelQuotaProvider 文件中写入：
+在 src/main/resources/META-INF/services/dev.soven.prismllm.spi.quota.ChannelQuotaProvider 文件中写入：
 
 ~~~text
 example.ExampleQuotaProvider
