@@ -19,3 +19,11 @@
 > 2026-11-06 补充：Responses 的 `web_search` 在管理台「系统配置 → Web 搜索」配置搜索后端
 > （或设置 `WEB_SEARCH_*`）后由网关代理执行，不再走跨协议转换拒绝；
 > 其余 Provider 内置工具仍按本 ADR 显式失败。
+
+> 2026-11-10 补充：Responses 的 `additional_tools` 输入项（Codex "Responses Lite" 形状，
+> Codex 对 gpt-6 / gpt-5.6 等 Lite 模型把全部工具放在输入首项、不发 `tools` 字段）在跨协议
+> 转换前抬升为请求级 `tools`：`functions` namespace 拆开平铺、同名工具去重、历史调用项去掉
+> `namespace` 标记。该映射无损（Chat/Messages/Gemini 的工具本就按请求声明），参照 magpie 的
+> liftAdditionalTools（magpie#350、#325）；原生 Responses 透传不受影响。搜索代理同样感知该
+> 形状：`additional_tools` 里的 `web_search` 参与检测、域名过滤与工具名占用，剥离逻辑统一
+> 在抬升之后执行。

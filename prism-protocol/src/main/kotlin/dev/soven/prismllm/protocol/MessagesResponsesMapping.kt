@@ -136,8 +136,11 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
     }
 }
 
-internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {
-    validateResponsesRequest(request)
+internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: String): JsonObject {
+    // Codex 的 Responses Lite 形状把工具放在 additional_tools 输入项里；转换前先抬升为请求级 tools。
+    val request = liftAdditionalTools(request)
+    return buildJsonObject {
+        validateResponsesRequest(request)
     put("model", upstreamModel)
     listOf("stream", "temperature", "top_p").forEach { field -> request[field]?.let { put(field, it) } }
     val requestedMaxTokens = request.long("max_output_tokens")
@@ -236,6 +239,7 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
             if (type == "tool") put("name", choiceObject?.string("name").orEmpty())
             if (disableParallel) put("disable_parallel_tool_use", true)
         }
+    }
     }
 }
 

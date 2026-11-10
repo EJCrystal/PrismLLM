@@ -266,28 +266,92 @@ fun hasBuiltInWebSearch(request: JsonObject): Boolean =
     (request["tools"] as? JsonArray).orEmpty().any { raw ->
         val type = ((raw as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull
         type?.startsWith("web_search") == true
-    }
+    } || additionalToolsHostedTypes(request).any { it.startsWith("web_search") }
+
+/** `additional_tools` 输入项（Codex Responses Lite 形状）携带的宿主工具类型。 */
+private fun additionalToolsHostedTypes(request: JsonObject): List<String> =
+    (request["input"] as? JsonArray).orEmpty()
+        .mapNotNull { it as? JsonObject }
+        .filter { (it["type"] as? JsonPrimitive)?.contentOrNull == "additional_tools" }
+        .flatMap { item -> (item["tools"] as? JsonArray).orEmpty() }
+        .flatMap { tool ->
+            val obj = tool as? JsonObject
+            when {
+                obj == null -> emptyList()
+                // 嵌套 namespace（Lite 把 Codex 自有函数归在 "functions" 里）逐层展开。
+                (obj["type"] as? JsonPrimitive)?.contentOrNull == "namespace" ->
+                    (obj["tools"] as? JsonArray).orEmpty()
+                        .mapNotNull { nested -> (nested as? JsonObject)?.get("type") as? JsonPrimitive }
+                        .mapNotNull { it.contentOrNull }
+                else -> listOfNotNull((obj["type"] as? JsonPrimitive)?.contentOrNull)
+            }
+        }
 
 /**
  * 读取内置搜索工具上的 `filters.allowed_domains`。
  * 内置工具会被剥离，限制必须由搜索后端或结果过滤来落实，不能静默丢弃。
  */
-fun webSearchAllowedDomains(request: JsonObject): List<String> =
-    (request["tools"] as? JsonArray).orEmpty()
+fun webSearchAllowedDomains(request: JsonObject): List<String> {
+    val hosted = (request["tools"] as? JsonArray).orEmpty()
         .mapNotNull { it as? JsonObject }
         .firstOrNull { tool ->
             ((tool["type"] as? JsonPrimitive)?.contentOrNull)?.startsWith("web_search") == true
         }
+        // additional_tools（Lite 形状）里的内置搜索工具同样读取 filters.allowed_domains。
+        ?: run {
+            (request["input"] as? JsonArray).orEmpty()
+                .mapNotNull { it as? JsonObject }
+                .filter { (it["type"] as? JsonPrimitive)?.contentOrNull == "additional_tools" }
+                .flatMap { item -> (item["tools"] as? JsonArray).orEmpty() }
+                .mapNotNull { it as? JsonObject }
+                .firstOrNull { tool ->
+                    val type = (tool["type"] as? JsonPrimitive)?.contentOrNull
+                    (type?.startsWith("web_search") == true) ||
+                        (type == "namespace" && (tool["tools"] as? JsonArray).orEmpty().any { nested ->
+                            (((nested as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull)
+                                ?.startsWith("web_search") == true
+                        })
+                }
+                // 域名过滤在内置工具对象上；namespace 包裹时取其中第一个 web_search 工具。
+                ?.let { container ->
+                    if ((container["type"] as? JsonPrimitive)?.contentOrNull == "namespace") {
+                        (container["tools"] as? JsonArray).orEmpty()
+                            .mapNotNull { it as? JsonObject }
+                            .firstOrNull { ((it["type"] as? JsonPrimitive)?.contentOrNull)?.startsWith("web_search") == true }
+                    } else {
+                        container
+                    }
+                }
+        }
+    return hosted
         ?.let { tool -> (tool["filters"] as? JsonObject)?.get("allowed_domains") as? JsonArray }
         ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf(String::isNotEmpty) }
         ?.distinct()
         .orEmpty()
+}
 
-/** 客户端已有同名工具时，合成工具改名，避免覆盖。 */
+/** 客户端已有同名工具时，合成工具改名，避免覆盖。请求级与 additional_tools（Lite 形状）里的工具都算占用。 */
 fun syntheticWebSearchName(request: JsonObject): String {
-    val used = (request["tools"] as? JsonArray).orEmpty().mapNotNull { raw ->
-        ((raw as? JsonObject)?.get("name") as? JsonPrimitive)?.contentOrNull
-    }.toSet()
+    val used = buildSet {
+        (request["tools"] as? JsonArray).orEmpty().forEach { raw ->
+            ((raw as? JsonObject)?.get("name") as? JsonPrimitive)?.contentOrNull?.let(::add)
+        }
+        (request["input"] as? JsonArray).orEmpty()
+            .mapNotNull { it as? JsonObject }
+            .filter { (it["type"] as? JsonPrimitive)?.contentOrNull == "additional_tools" }
+            .flatMap { item -> (item["tools"] as? JsonArray).orEmpty() }
+            .forEach { tool ->
+                val obj = tool as? JsonObject
+                when {
+                    obj == null -> Unit
+                    (obj["type"] as? JsonPrimitive)?.contentOrNull == "namespace" ->
+                        (obj["tools"] as? JsonArray).orEmpty().forEach { nested ->
+                            ((nested as? JsonObject)?.get("name") as? JsonPrimitive)?.contentOrNull?.let(::add)
+                        }
+                    else -> (obj["name"] as? JsonPrimitive)?.contentOrNull?.let(::add)
+                }
+            }
+    }
     var name = "web_search"
     while (name in used) name = "magpie_$name"
     return name
@@ -296,55 +360,87 @@ fun syntheticWebSearchName(request: JsonObject): String {
 /**
  * 把 Responses 请求里无法转成 Chat 的内置 web_search 剥离，并追加一个普通函数工具。
  * 历史里的 web_search_call 也一并去掉，避免变成没有 tool 消息接住的孤立 tool_call。
+ * Codex 的 Lite 形状把工具放在 additional_tools 输入项里：先抬升为请求级 tools，再统一剥离。
  */
-fun prepareResponsesSearchRequest(request: JsonObject, syntheticName: String): JsonObject = buildJsonObject {
-    request.forEach { (key, value) ->
-        when (key) {
-            "input", "tools", "tool_choice" -> Unit
-            else -> put(key, value)
-        }
-    }
-    val input = request["input"]
-    if (input is JsonArray) {
-        put("input", JsonArray(input.filter { raw ->
-            val type = ((raw as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull
-            type != "web_search_call"
-        }))
-    } else if (input != null) {
-        put("input", input)
-    }
-    val tools = (request["tools"] as? JsonArray).orEmpty().filter { raw ->
-        val type = ((raw as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull
-        type?.startsWith("web_search") != true
-    }.toMutableList()
-    tools += buildJsonObject {
-        put("type", "function")
-        put("name", syntheticName)
-        put("description", WEB_SEARCH_TOOL_DESCRIPTION)
-        putJsonObject("parameters") {
-            put("type", "object")
-            putJsonObject("properties") {
-                putJsonObject("query") {
-                    put("type", "string")
-                    put("description", "What to search for")
-                }
+fun prepareResponsesSearchRequest(request: JsonObject, syntheticName: String): JsonObject {
+    val lifted = liftRequestTools(request)
+    return buildJsonObject {
+        lifted.forEach { (key, value) ->
+            when (key) {
+                "input", "tools", "tool_choice" -> Unit
+                else -> put(key, value)
             }
-            put("required", buildJsonArray { add(JsonPrimitive("query")) })
         }
-    }
-    put("tools", JsonArray(tools))
-    val choice = request["tool_choice"]
-    val choiceType = ((choice as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull
-    val forcedSearch = buildJsonObject {
-        put("type", "function")
-        put("name", syntheticName)
-    }
-    when {
-        // 客户端强制内置搜索时，改写成强制调用合成函数，保留“必须搜索”的语义。
-        choiceType?.startsWith("web_search") == true -> put("tool_choice", forcedSearch)
-        // 未指定 tool_choice 时首轮强制搜索一次，保证配置后端后内置 web_search 一定被执行；
-        // 后续轮次会降级为 auto，模型仍可直接作答。
-        choice == null -> put("tool_choice", forcedSearch)
-        else -> put("tool_choice", choice)
+        val input = lifted["input"]
+        if (input is JsonArray) {
+            put("input", JsonArray(input.filter { raw ->
+                val type = ((raw as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull
+                // web_search_call 无法转成 Chat；additional_tools 的工具已抬升为请求级 tools，项本身移除。
+                type != "web_search_call" && type != "additional_tools"
+            }))
+        } else if (input != null) {
+            put("input", input)
+        }
+        val tools = (lifted["tools"] as? JsonArray).orEmpty().filter { raw ->
+            val type = ((raw as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull
+            type?.startsWith("web_search") != true
+        }.toMutableList()
+        tools += buildJsonObject {
+            put("type", "function")
+            put("name", syntheticName)
+            put("description", WEB_SEARCH_TOOL_DESCRIPTION)
+            putJsonObject("parameters") {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("query") {
+                        put("type", "string")
+                        put("description", "What to search for")
+                    }
+                }
+                put("required", buildJsonArray { add(JsonPrimitive("query")) })
+            }
+        }
+        put("tools", JsonArray(tools))
+        val choice = lifted["tool_choice"]
+        val choiceType = ((choice as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull
+        val forcedSearch = buildJsonObject {
+            put("type", "function")
+            put("name", syntheticName)
+        }
+        when {
+            // 客户端强制内置搜索时，改写成强制调用合成函数，保留“必须搜索”的语义。
+            choiceType?.startsWith("web_search") == true -> put("tool_choice", forcedSearch)
+            // 未指定 tool_choice 时首轮强制搜索一次，保证配置后端后内置 web_search 一定被执行；
+            // 后续轮次会降级为 auto，模型仍可直接作答。
+            choice == null -> put("tool_choice", forcedSearch)
+            else -> put("tool_choice", choice)
+        }
     }
 }
+
+/**
+ * 请求级 tools 与 additional_tools 输入项里的工具合并为请求级 tools；
+ * 没有额外工具时原样返回。只用于搜索代理内部，转换层有完整的 [dev.soven.prismllm.protocol.AdditionalToolsKt] 版本。
+ */
+private fun liftRequestTools(request: JsonObject): JsonObject {
+    val extra = additionalToolsHostedTools(request)
+    if (extra.isEmpty()) return request
+    val tools = (request["tools"] as? JsonArray).orEmpty().toMutableList()
+    tools += extra
+    return JsonObject(request + ("tools" to JsonArray(tools)))
+}
+
+/** additional_tools 输入项里的全部工具对象，namespace 平铺。 */
+private fun additionalToolsHostedTools(request: JsonObject): List<JsonObject> =
+    (request["input"] as? JsonArray).orEmpty()
+        .mapNotNull { it as? JsonObject }
+        .filter { (it["type"] as? JsonPrimitive)?.contentOrNull == "additional_tools" }
+        .flatMap { item -> (item["tools"] as? JsonArray).orEmpty() }
+        .flatMap { tool ->
+            val obj = tool as? JsonObject ?: return@flatMap emptyList()
+            if ((obj["type"] as? JsonPrimitive)?.contentOrNull == "namespace") {
+                (obj["tools"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+            } else {
+                listOf(obj)
+            }
+        }

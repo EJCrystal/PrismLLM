@@ -344,6 +344,65 @@ class SearchConversationTest {
     }
 
     @Test
+    fun `codex lite shape with web search in additional tools is prepared`() {
+        // Codex Responses Lite：web_search 藏在 additional_tools 输入项的 functions namespace 里。
+        val request = obj(
+            """{
+              "model":"gpt-6",
+              "input":[
+                {"type":"additional_tools","role":"developer","tools":[
+                  {"type":"namespace","name":"functions","tools":[
+                    {"type":"function","name":"shell","parameters":{"type":"object"}},
+                    {"type":"web_search","filters":{"allowed_domains":["example.com"]}}
+                  ]}
+                ]},
+                {"type":"message","role":"developer","content":[{"type":"input_text","text":"plan first"}]},
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"latest go?"}]}
+              ]
+            }""",
+        )
+
+        assertTrue(hasBuiltInWebSearch(request))
+        assertEquals(listOf("example.com"), webSearchAllowedDomains(request))
+        // 宿主 web_search 没有 name，不占用函数名；shell 才是命名工具。
+        assertEquals("web_search", syntheticWebSearchName(request))
+
+        val prepared = prepareResponsesSearchRequest(request, "web_search")
+        // 输入项只剩两条 message；工具只剩 shell 与合成函数，内置 web_search 已剥离。
+        val input = prepared["input"]!!.jsonArray
+        assertEquals(2, input.size)
+        val tools = prepared["tools"]!!.jsonArray
+        assertEquals(2, tools.size)
+        assertEquals("shell", tools[0].jsonObject["name"]!!.toString().trim('"'))
+        assertEquals("web_search", tools[1].jsonObject["name"]!!.toString().trim('"'))
+        // 未指定 tool_choice：首轮强制调用合成函数。
+        val choice = prepared["tool_choice"]!!.jsonObject
+        assertEquals("web_search", choice["name"]!!.toString().trim('"'))
+        // 改写后的请求可以直接转成 Chat（工具都是普通 function）。
+        val chat = responsesToChatRequest(prepared)
+        assertEquals(2, chat["tools"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `additional tools function names block the synthetic name too`() {
+        val request = obj(
+            """{
+              "model":"m",
+              "input":[
+                {"type":"additional_tools","tools":[
+                  {"type":"namespace","name":"functions","tools":[
+                    {"type":"function","name":"web_search","parameters":{"type":"object"}}
+                  ]}
+                ]},
+                {"type":"message","role":"user","content":"hi"}
+              ]
+            }""",
+        )
+
+        assertEquals("magpie_web_search", syntheticWebSearchName(request))
+    }
+
+    @Test
     fun `prepared request converts to chat after dropping history search items`() {
         val request = obj(
             """{"model":"m","input":[{"type":"message","role":"user","content":"hi"},{"type":"web_search_call","id":"ws_1"}],"tools":[{"type":"web_search"}]}""",

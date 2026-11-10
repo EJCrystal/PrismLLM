@@ -11,8 +11,11 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
-public fun responsesToChatRequest(request: JsonObject): JsonObject = buildJsonObject {
-    validateResponsesRequest(request)
+public fun responsesToChatRequest(request: JsonObject): JsonObject {
+    // Codex 的 Responses Lite 形状把工具放在 additional_tools 输入项里；转换前先抬升为请求级 tools。
+    val request = liftAdditionalTools(request)
+    return buildJsonObject {
+        validateResponsesRequest(request)
     request.string("model")?.let { put("model", it) }
     request.boolean("stream")?.let { put("stream", it) }
     request.number("temperature")?.let { put("temperature", it) }
@@ -116,6 +119,7 @@ public fun responsesToChatRequest(request: JsonObject): JsonObject = buildJsonOb
         }))
     }
     request["tool_choice"]?.takeIf { it !is JsonNull }?.let { choice -> put("tool_choice", responsesToolChoiceToChat(choice)) }
+    }
 }
 
 internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {

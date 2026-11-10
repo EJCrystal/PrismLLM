@@ -54,6 +54,7 @@
 | 图片 | 用户消息和工具结果里的图片支持四协议互转：Messages `image`、Chat `image_url`、Responses `input_image`、Gemini `inlineData`/`fileData` 按 base64 或 URL 双向映射。Chat 的 tool 消息只能承载文本，工具返回的图片会移到随后的 user 消息并标注来源，紧跟用户自己的内容，避免连续两条 user 消息；Messages ↔ Responses 与 Gemini 直接把图片放进工具结果本身 |
 | 文件、音频、内置工具 | 文件与音频仍不支持跨协议转换；Responses 的 `web_search*` 在配置搜索后端后由网关代理执行。Messages 工具仅接受缺省 type 或 custom，Gemini 仅支持 functionDeclarations，其它内置工具在调用上游前明确拒绝 |
 | Responses 内置 web_search | 在管理台「系统配置 → Web 搜索」配置搜索后端（或设置 `WEB_SEARCH_*`）后，带 `web_search` 的 Responses 请求会转成 Chat 上游：网关注入普通 `web_search` 函数工具、执行搜索并多轮续写，最终编码为 `web_search_call`。同时支持原生 Responses 与 Chat 的渠道也会走该代理，保证配置搜索后端后内置 `web_search` 一定被执行；只支持 Responses 的渠道保持透传。客户端用 `tool_choice` 强制 `web_search*` 或未指定 `tool_choice` 时，首轮强制调用合成函数搜索一次，后续轮次降级为 `auto`；客户端显式指定其它 `tool_choice` 时保持原样。`filters.allowed_domains` 会传给搜索后端（Tavily `include_domains`、Exa `includeDomains`），并按域名后缀再过滤一次结果。上游返回的 `refusal` 保留为 Responses 的拒绝内容项。流式请求先发 `response.created`，搜索与文本产出时增量发送，不在最终回答完成后一次性回放。未配置搜索后端时保持原有拒绝行为 |
+| Responses `additional_tools` | Codex "Responses Lite" 形状（gpt-6 / gpt-5.6 等）把全部工具放在 `input` 首项 `additional_tools`，不发 `tools` 字段；只有 OpenAI 后端认识该项，其它上游直接 400 且 Codex 不重试。跨协议转换前把该项抬升为请求级 `tools`：`functions` namespace 平铺、同名工具去重、同名 namespace 合并、历史调用项去掉 `namespace` 标记（参照 magpie 的 liftAdditionalTools）。搜索代理同样感知该形状：`additional_tools` 里的 `web_search` 参与搜索检测、`filters.allowed_domains` 读取与合成工具命名，剥离在抬升后统一执行 |
 | Responses 状态续接与存储 | 拒绝 `previous_response_id`、`store=true`、非空 `include`、自动 `truncation`；允许原有无副作用默认值 |
 | 结构化输出 | Chat ↔ Responses 保留已有映射；转换到 Messages 仍拒绝 |
 | Messages 专有扩展 | `context_management`、`output_config` 等仍明确报错，不通过删除字段绕过 |
@@ -62,4 +63,4 @@
 
 ## 验证
 
-`ProtocolConversionTest` 保留既有回归；`ProtocolConversionContractTest` 覆盖十二方向接口、透传、末帧、错误、异常 EOF 和会话隔离；`MessagesResponsesConversionTest` 覆盖直转顺序、工具参数、缓存用量与不支持字段；`ToolImageConversionTest` 覆盖工具结果图片的重定位、并行工具结果、历史轮次与各协议间图片映射。数据面集成测试覆盖六方向的普通和流式请求、实际出站端点及尝试日志。
+`ProtocolConversionTest` 保留既有回归；`ProtocolConversionContractTest` 覆盖十二方向接口、透传、末帧、错误、异常 EOF 和会话隔离；`MessagesResponsesConversionTest` 覆盖直转顺序、工具参数、缓存用量与不支持字段；`ToolImageConversionTest` 覆盖工具结果图片的重定位、并行工具结果、历史轮次与各协议间图片映射；`AdditionalToolsTest` 覆盖 `additional_tools` 抬升、namespace 平铺、去重与 Responses→Chat/Messages/Gemini 全链路。数据面集成测试覆盖六方向的普通和流式请求、实际出站端点及尝试日志。
