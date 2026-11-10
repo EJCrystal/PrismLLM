@@ -19,6 +19,7 @@ COPY prism-subscription-oauth ./prism-subscription-oauth
 COPY prism-quota ./prism-quota
 COPY prism-pricing ./prism-pricing
 COPY prism-request-log ./prism-request-log
+COPY prism-admin ./prism-admin
 COPY prism-app ./prism-app
 RUN --mount=type=cache,target=/root/.m2 mvn -B -DskipTests -pl prism-app -am package
 
