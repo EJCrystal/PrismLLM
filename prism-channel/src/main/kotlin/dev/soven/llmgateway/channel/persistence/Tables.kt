@@ -139,3 +139,12 @@ object ChannelModels : Table("channel_models") {
 
     override val primaryKey = PrimaryKey(channelId, upstreamModel)
 }
+
+/** 渠道模型连通性测试的全局默认值。 */
+object ModelTestSettings : Table("model_test_settings") {
+    val id = integer("id")
+    val defaultPrompt = text("default_prompt")
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(id)
+}

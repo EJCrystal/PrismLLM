@@ -1,7 +1,6 @@
-package dev.soven.llmgateway.repo
+package dev.soven.llmgateway.channel.persistence
 
-import dev.soven.llmgateway.db.ModelTestSettings
-import dev.soven.llmgateway.domain.ModelTestSettingsRecord
+import dev.soven.llmgateway.channel.domain.ModelTestSettingsRecord
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.selectAll

@@ -13,7 +13,7 @@ import dev.soven.llmgateway.pricing.domain.ModelPriceRecord
 import dev.soven.llmgateway.pricing.domain.ModelPriceTier
 import dev.soven.llmgateway.pricing.domain.PricingMode
 import dev.soven.llmgateway.pricing.domain.DefaultModelPriceRecord
-import dev.soven.llmgateway.domain.ModelTestSettingsRecord
+import dev.soven.llmgateway.channel.domain.ModelTestSettingsRecord
 import dev.soven.llmgateway.oauth.domain.OAuthAccountPolicy
 import dev.soven.llmgateway.oauth.domain.OAuthAccountRecord
 import dev.soven.llmgateway.oauth.domain.OAuthAccountRuntimeState
