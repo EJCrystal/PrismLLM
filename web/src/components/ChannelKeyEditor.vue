@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
 import SecretInput from './SecretInput.vue'
+import { filterKeyModels } from '../utils/keyModels'
 import { parseManualModelIds } from '../utils/channelForm'
 import { channelKeyRateLimitSummary } from '../utils/channelKeyRateLimit'
 import { formatTime } from '../utils/format'
@@ -18,6 +19,7 @@ const emit = defineEmits<{
   (event: 'load-models'): void
 }>()
 
+const modelSearch = ref('')
 const modelsOpen = ref(props.channelKey.models.length === 0)
 
 // 停用到期后还有探测租约时仍然接不到请求，恢复时间要按两个时间的较晚者展示，
@@ -36,6 +38,8 @@ const modelOptions = computed<KeyModelOption[]>(() => {
   return [...options.values()].sort((left, right) => left.id.localeCompare(right.id))
 })
 
+const visibleModels = computed(() => filterKeyModels(modelOptions.value, modelSearch.value))
+
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
 }
@@ -52,7 +56,12 @@ function toggleModel(modelId: string): void {
 }
 
 function selectAllModels(): void {
-  props.channelKey.models = modelOptions.value.map((model) => model.id)
+  props.channelKey.models = [...new Set([...props.channelKey.models, ...visibleModels.value.map(model => model.id)])].sort()
+}
+
+function deselectVisibleModels(): void {
+  const visible = new Set(visibleModels.value.map(model => model.id))
+  props.channelKey.models = props.channelKey.models.filter(id => !visible.has(id))
 }
 
 function clearModels(): void {
@@ -184,8 +193,9 @@ function addManualModels(): void {
             :aria-controls="`manual-models-panel-${channelKey.localId}`"
             @click="openManualModels"
           >手动添加</button>
-          <button type="button" class="button ghost mini" @click="selectAllModels">全选</button>
-          <button type="button" class="button ghost mini" @click="clearModels">清空</button>
+          <button type="button" class="button ghost mini" @click="selectAllModels">全选当前结果</button>
+          <button type="button" class="button ghost mini" @click="deselectVisibleModels">取消当前结果</button>
+          <button type="button" class="button ghost mini" @click="clearModels">清空全部选择</button>
         </div>
 
         <div v-if="channelKey.showManualModels" :id="`manual-models-panel-${channelKey.localId}`" class="channel-key-manual-models">
@@ -216,9 +226,14 @@ function addManualModels(): void {
           <p>可点击“手动添加”填写上游模型 ID，添加并选中后即可保存。</p>
         </div>
 
-        <div v-if="modelOptions.length" class="channel-model-auth-body">
+        <label class="field">
+          <span>搜索模型（{{ visibleModels.length }}/{{ modelOptions.length }}）</span>
+          <input v-model="modelSearch" type="search" placeholder="输入模型 ID 过滤…" autocomplete="off" />
+        </label>
+        <p v-if="modelOptions.length && !visibleModels.length" class="muted small" role="status">没有匹配的模型。</p>
+        <div v-if="visibleModels.length" class="channel-model-auth-body">
           <div class="channel-model-auth-list">
-            <label v-for="model in modelOptions" :key="model.id" class="channel-model-option">
+            <label v-for="model in visibleModels" :key="model.id" class="channel-model-option">
               <input
                 type="checkbox"
                 :checked="channelKey.models.includes(model.id)"
@@ -231,7 +246,7 @@ function addManualModels(): void {
             </label>
           </div>
         </div>
-        <div v-else class="channel-model-auth-placeholder">
+        <div v-else-if="!modelOptions.length" class="channel-model-auth-placeholder">
           点击“读取模型”获取列表，或点击“手动添加”填写该密钥可用的上游模型 ID。
         </div>
       </div>

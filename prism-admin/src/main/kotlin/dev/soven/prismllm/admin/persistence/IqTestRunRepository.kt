@@ -35,6 +35,11 @@ class IqTestRunRepository(private val database: Database) {
             it[responseText] = run.responseText
             it[expectedAnswer] = run.expectedAnswer
             it[matchedAnswer] = run.matchedAnswer
+            it[questionId] = run.questionId
+            it[questionTitle] = run.questionTitle
+            it[answerType] = run.answerType
+            it[expectedAnswerValue] = run.expectedAnswerValue
+            it[actualAnswer] = run.actualAnswer
             it[errorMessage] = run.errorMessage
             it[inputTokens] = run.usage?.input
             it[outputTokens] = run.usage?.output
@@ -122,6 +127,11 @@ class IqTestRunRepository(private val database: Database) {
         responseText = row[IqTestRuns.responseText],
         expectedAnswer = row[IqTestRuns.expectedAnswer],
         matchedAnswer = row[IqTestRuns.matchedAnswer],
+        questionId = row[IqTestRuns.questionId],
+        questionTitle = row[IqTestRuns.questionTitle],
+        answerType = row[IqTestRuns.answerType],
+        expectedAnswerValue = row[IqTestRuns.expectedAnswerValue],
+        actualAnswer = row[IqTestRuns.actualAnswer],
         errorMessage = row[IqTestRuns.errorMessage],
         usage = usageFrom(row),
         upstreamReportedModel = row[IqTestRuns.upstreamReportedModel],

@@ -1336,6 +1336,7 @@ data class IqTestRunRequest(
     val judgeId: String? = null,
     /** 可选的本次提示词；留空时使用题目内置提示词。 */
     val prompt: String? = null,
+    val useQuestionBank: Boolean = false,
 )
 
 @Serializable
@@ -1431,6 +1432,11 @@ data class IqTestRunResponse(
     val checks: List<IqTestCheckResponse> = emptyList(),
     val expectedAnswer: Int? = null,
     val matchedAnswer: Int? = null,
+    val questionId: Long? = null,
+    val questionTitle: String? = null,
+    val answerType: String? = null,
+    val expectedAnswerValue: String? = null,
+    val actualAnswer: String? = null,
     val errorMessage: String? = null,
     val usage: ChannelModelTestUsageResponse? = null,
     val upstreamReportedModel: String? = null,
@@ -1462,6 +1468,8 @@ fun IqTestRunRecord.toResponse(includeDetail: Boolean): IqTestRunResponse {
                 structure = structure,
                 judgeResult = automaticJudge,
                 manualVerdict = manualVerdict,
+                answerType = answerType,
+                expectedAnswerValue = expectedAnswerValue,
             )
         }
     } else {
@@ -1489,6 +1497,11 @@ fun IqTestRunRecord.toResponse(includeDetail: Boolean): IqTestRunResponse {
         responseText = responseText.takeIf { includeDetail },
         html = evaluation?.html.takeIf { includeDetail },
         checks = if (includeDetail) evaluation?.checks?.map { it.toResponse() }.orEmpty() else emptyList(),
+        questionId = questionId,
+        questionTitle = questionTitle,
+        answerType = answerType,
+        expectedAnswerValue = expectedAnswerValue.takeIf { includeDetail },
+        actualAnswer = actualAnswer.takeIf { includeDetail },
         expectedAnswer = evaluation?.expectedAnswer.takeIf { includeDetail },
         matchedAnswer = evaluation?.matchedAnswer.takeIf { includeDetail },
         errorMessage = errorMessage,

@@ -70,6 +70,7 @@ suspend fun testChannelModelConnectivity(
     maxResponseChars: Int = MAX_RESPONSE_CHARS,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
+    isolatedIqRequest: Boolean = false,
 ): ModelConnectivityTestResult {
     val credential = resolveSavedCredential(credentials, credentialRef)
     return runModelConnectivityTest(
@@ -87,6 +88,7 @@ suspend fun testChannelModelConnectivity(
         maxResponseChars = maxResponseChars,
         globalOverrides = globalOverrides,
         headerProfiles = headerProfiles,
+        isolatedIqRequest = isolatedIqRequest,
     )
 }
 
@@ -141,6 +143,7 @@ private suspend fun runModelConnectivityTest(
     maxResponseChars: Int,
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
+    isolatedIqRequest: Boolean = false,
 ): ModelConnectivityTestResult {
     if (envelope == UpstreamEnvelope.CODE_ASSIST && project.isNullOrBlank()) {
         return ModelConnectivityTestResult(
@@ -159,9 +162,9 @@ private suspend fun runModelConnectivityTest(
             val policy = UpstreamRequestPolicy(
                 globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles, channel.baseUrl,
             )
-            val requestBody = policy.body(
-                Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject, model,
-            )
+            val original = Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject
+            val overridden = policy.body(original, model)
+            val requestBody = if (isolatedIqRequest) isolateIqRequestBody(original, overridden, protocol) else overridden
             val limited = limitModelTestTokens(requestBody, protocol, maxOutputTokens)
             val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
                 CodeAssistEnvelope.wrap(CodeAssistCloak.apply(limited), model, project).toString()
@@ -235,6 +238,37 @@ private suspend fun runModelConnectivityTest(
             usage = null,
         )
     }
+}
+
+/** Allow only decoding settings from body overrides: tools, search flags, history and alternate inputs cannot enter an IQ test. */
+internal fun isolateIqRequestBody(original: JsonObject, overridden: JsonObject, protocol: GatewayProtocol): JsonObject {
+    val scalarSettings = when (protocol) {
+        GatewayProtocol.CHAT_COMPLETIONS -> setOf("temperature", "top_p", "seed", "presence_penalty", "frequency_penalty", "reasoning_effort", "max_tokens", "max_completion_tokens")
+        GatewayProtocol.RESPONSES -> setOf("temperature", "top_p", "max_output_tokens")
+        GatewayProtocol.MESSAGES -> setOf("temperature", "top_p", "top_k", "max_tokens")
+        GatewayProtocol.GEMINI -> emptySet()
+    }
+    val safe = overridden.filter { (key, value) -> key in scalarSettings && value is JsonPrimitive && value != kotlinx.serialization.json.JsonNull }
+    val body = original.toMutableMap().apply { putAll(safe) }
+    if (protocol == GatewayProtocol.RESPONSES) {
+        (overridden["reasoning"] as? JsonObject)?.let { reasoning ->
+            body["reasoning"] = JsonObject(reasoning.filter { (key, value) -> key in setOf("effort", "summary") && value is JsonPrimitive })
+        }
+        body["store"] = JsonPrimitive(false)
+    }
+    if (protocol == GatewayProtocol.MESSAGES) {
+        (overridden["thinking"] as? JsonObject)?.let { thinking ->
+            body["thinking"] = JsonObject(thinking.filter { (key, value) -> key in setOf("type", "budget_tokens") && value is JsonPrimitive })
+        }
+    }
+    if (protocol == GatewayProtocol.GEMINI) {
+        val generation = original["generationConfig"] as JsonObject
+        val safeGeneration = (overridden["generationConfig"] as? JsonObject).orEmpty().filter { (key, value) ->
+            key in setOf("temperature", "topP", "topK", "maxOutputTokens", "seed") && value is JsonPrimitive
+        }
+        body["generationConfig"] = JsonObject(generation + safeGeneration)
+    }
+    return JsonObject(body)
 }
 
 internal fun buildModelTestBody(

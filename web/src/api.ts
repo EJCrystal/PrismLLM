@@ -24,6 +24,8 @@ import type {
   ClientKeyRequest,
   ExchangeRates,
   IqBenchmarkDefinition,
+  IqQuestion,
+  IqQuestionInput,
   IqJudgesResponse,
   IqTestRunDetail,
   IqTestRunRequest,
@@ -239,6 +241,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  listIqQuestions: async (): Promise<IqQuestion[]> => {
+    const questions: IqQuestion[] = []
+    for (let offset = 0; ; offset += 200) {
+      const page = await requestList<IqQuestion>('/iq-tests/questions?limit=200&offset=' + offset)
+      questions.push(...page)
+      if (page.length < 200) return questions
+    }
+  },
+  createIqQuestion: (payload: IqQuestionInput) =>
+    request<IqQuestion>('/iq-tests/questions', { method: 'POST', body: JSON.stringify(payload) }),
+  updateIqQuestion: (id: number, payload: IqQuestionInput) =>
+    request<IqQuestion>('/iq-tests/questions/' + id, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteIqQuestion: (id: number) => request<void>('/iq-tests/questions/' + id, { method: 'DELETE' }),
   listIqBenchmarks: () => request<IqBenchmarkDefinition[]>('/iq-tests/benchmarks'),
   listIqJudges: () => request<IqJudgesResponse>('/iq-tests/judges'),
   listIqTargets: () => requestList<IqTestTarget>('/iq-tests/targets'),

@@ -523,6 +523,17 @@ class AdminChannelIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals("true", savedModels.getValue("gpt-4o-mini")["authorized"]!!.jsonPrimitive.content)
             assertEquals("false", savedModels.getValue("deepseek-chat")["authorized"]!!.jsonPrimitive.content)
 
+            val replacement = client.post("/admin/api/channels/model-discovery") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"baseUrl":"${channel.baseUrl}","channelId":"${channel.id}","credential":"replacement-secret"}""")
+            }
+            assertEquals(HttpStatusCode.OK, replacement.status)
+            val replacementModels = Json.parseToJsonElement(replacement.bodyAsText()).jsonObject["data"]!!.jsonArray
+            assertTrue(replacementModels.all { it.jsonObject["authorized"]!!.jsonPrimitive.content == "false" })
+            assertEquals("Bearer replacement-secret", fake.modelRequests.last().authorization)
+
             val withExplicitKey = client.post("/admin/api/channels/model-discovery") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
                 header("X-CSRF-Token", session.session.csrf)

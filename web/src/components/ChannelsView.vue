@@ -51,6 +51,7 @@ import type { ChannelDisplayModel } from '../utils/channelDisplay'
 import type { ChannelKeyRateLimitDraft } from '../utils/channelKeyRateLimit'
 import type { ChannelKeyEditorDraft } from '../types/channelEditor'
 import { keyStateBadge, keyStateTone } from '../utils/channelKey'
+import { invalidateKeyModels, applyDiscoveredKeyModels, watchKeyCredentials } from '../utils/keyModels'
 import {
   buildPricePrompt,
   channelPriceSummaries,
@@ -396,24 +397,23 @@ let hydratingChannelForm = false
 watchChannelRequestInputs(form, {
   modelRequests,
   probeRequests,
-  credentialSource: () => channelKeys.value.map((key) => key.credential).join('\u0000'),
+  credentialSource: () => undefined,
   settingsSource: () => overrideRevision.value,
   shouldInvalidate: () => !hydratingChannelForm,
   onInputsChanged: () => {
-    channelKeys.value.forEach((key) => {
-      key.availableModels = []
-      // 凭据等上游输入变化后，旧密钥的模型授权不再适用，勾选一并清空；
-      // 重新“读取模型”时会按 authorized 自动回填。
-      key.models = []
-      key.modelsLoading = false
-      key.modelsError = ''
-      key.modelsRequestId = (key.modelsRequestId || 0) + 1
-    })
+    channelKeys.value.forEach(invalidateKeyModels)
     if (!probeResults.value.length && !probeAddedProtocols.length) return
     probeResults.value = []
     if (probeAddedProtocols.length) form.protocols = removeProbeAddedProtocols(form.protocols, probeAddedProtocols)
     probeAddedProtocols = []
   },
+})
+
+watchKeyCredentials(() => channelKeys.value, () => !hydratingChannelForm, () => {
+  probeRequests.invalidate()
+  probeResults.value = []
+  if (probeAddedProtocols.length) form.protocols = removeProbeAddedProtocols(form.protocols, probeAddedProtocols)
+  probeAddedProtocols = []
 })
 
 const enabledCount = computed(() => channels.value.filter((channel) => channel.enabled).length)
@@ -630,6 +630,7 @@ function newKeyDraft(overrides: NewKeyOverrides = {}): ChannelKeyEditorDraft {
     modelsLoading: false,
     modelsError: '',
     modelsRequestId: 0,
+    modelsSourceChanged: !overrides.id,
   }
 }
 
@@ -727,11 +728,7 @@ async function loadKeyModels(key: ChannelKeyEditorDraft): Promise<void> {
     ) return
     // 读取成功说明当前上游可用；之前的读取失败不应再阻止保存
     key.modelsError = ''
-    key.availableModels = response?.data || []
-    if (key.models.length === 0) {
-      const authorized = key.availableModels.filter((model) => model.authorized).map((model) => model.id)
-      key.models = authorized.length ? authorized : (key.id ? [] : key.availableModels.map((model) => model.id))
-    }
+    applyDiscoveredKeyModels(key, response?.data || [])
   } catch (cause) {
     if (
       requestId === key.modelsRequestId &&

@@ -16,7 +16,7 @@ import kotlinx.serialization.json.contentOrNull
  * 管理员可以在运行时替换提示词，便于调整题目细节；历史记录会保留当次实际使用的提示词。
  *
  * 判分器可插拔：鹈鹕由运行时选中的 IqJudge 判定；
- * 糖果测试只要求模型返回 JSON，answer 等于官方答案 21 即通过。
+ * 糖果测试读取 JSON 的 answer，在本地按题库答案判分；旧 API 保留固定答案 21。
  */
 enum class IqBenchmark(
     val value: String,
@@ -37,8 +37,8 @@ enum class IqBenchmark(
     CANDY(
         value = "candy",
         label = "糖果测试",
-        summary = "返回 JSON，给出糖果组合推理题的最终答案与推导过程。",
-        grading = "JSON 中的 answer 等于 21 即通过；不使用 HTML 判分器。",
+        summary = "从题库随机抽题，返回 JSON 答案，在本地与预设答案比较。",
+        grading = "题库模式按抽中题目的预设答案判分；旧接口按 21 判分，不使用 HTML 判分器。",
         maxOutputTokens = 8_192,
         timeoutMs = 120_000,
     ),
@@ -69,6 +69,7 @@ data class IqTestEvaluation(
     val html: String? = null,
     val expectedAnswer: Int? = null,
     val matchedAnswer: Int? = null,
+    val actualAnswer: String? = null,
 )
 
 fun evaluateIqTest(
@@ -79,6 +80,8 @@ fun evaluateIqTest(
     structure: IqStructureSummary? = null,
     judgeResult: IqJudgeResult? = null,
     manualVerdict: String? = null,
+    answerType: String? = null,
+    expectedAnswerValue: String? = null,
 ): IqTestEvaluation {
     if (!success) {
         return IqTestEvaluation(
@@ -98,7 +101,9 @@ fun evaluateIqTest(
             val summary = structure ?: analyzePelicanStructure(text)
             evaluatePelican(text, summary, judgeResult, manualVerdict)
         }
-        IqBenchmark.CANDY -> evaluateCandy(text)
+        IqBenchmark.CANDY -> if (answerType != null && expectedAnswerValue != null) {
+            evaluateIqQuestion(text, answerType, expectedAnswerValue)
+        } else evaluateCandy(text)
     }
 }
 
@@ -259,7 +264,7 @@ private fun parseCandyPayload(raw: String): CandyPayload? {
  * 容忍代码围栏和前后说明；依次尝试每个 `{` 起点，返回第一个能解析为 JSON 对象且括号配对的片段。
  * 说明文字里出现花括号（例如“集合 {圆苹果, 星桃}”）时不会挡住后面的真正答案。
  */
-private fun extractJsonObject(raw: String): JsonObject? {
+internal fun extractJsonObject(raw: String): JsonObject? {
     val text = raw.trim()
     val fenced = JSON_FENCE_PATTERN.find(text)?.groupValues?.get(1)?.trim()
     return listOfNotNull(fenced, text)
