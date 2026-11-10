@@ -390,11 +390,15 @@ function moveProtocol(index: number, delta: number): void {
   form.protocols.splice(next, 0, item)
 }
 
+// 打开或切换渠道时会批量回填 Base URL、认证方式、协议与密钥，
+// 这些赋值不是用户修改上游，不能触发“上游变化清空模型授权”的失效逻辑。
+let hydratingChannelForm = false
 watchChannelRequestInputs(form, {
   modelRequests,
   probeRequests,
   credentialSource: () => channelKeys.value.map((key) => key.credential).join('\u0000'),
   settingsSource: () => overrideRevision.value,
+  shouldInvalidate: () => !hydratingChannelForm,
   onInputsChanged: () => {
     channelKeys.value.forEach((key) => {
       key.availableModels = []
@@ -977,20 +981,25 @@ function openCreate() {
   probeResults.value = []
   probeAddedProtocols = []
   modelRequests.invalidate()
-  channelKeys.value = [newKeyDraft({ name: '默认密钥', priority: 1 })]
-  selectedChannelKeyId.value = channelKeys.value[0].localId
-  expandedChannelKeyId.value = channelKeys.value[0].localId
-  clearMappings()
-  Object.assign(form, {
-    name: '',
-    baseUrl: '',
-    authType: 'bearer',
-    protocolAuthTypes: {},
-    protocols: ['chat_completions'],
-    enabled: true,
-    priority: 1,
-    requestOverrides: normalizeRequestOverrides(),
-  })
+  hydratingChannelForm = true
+  try {
+    channelKeys.value = [newKeyDraft({ name: '默认密钥', priority: 1 })]
+    selectedChannelKeyId.value = channelKeys.value[0].localId
+    expandedChannelKeyId.value = channelKeys.value[0].localId
+    clearMappings()
+    Object.assign(form, {
+      name: '',
+      baseUrl: '',
+      authType: 'bearer',
+      protocolAuthTypes: {},
+      protocols: ['chat_completions'],
+      enabled: true,
+      priority: 1,
+      requestOverrides: normalizeRequestOverrides(),
+    })
+  } finally {
+    hydratingChannelForm = false
+  }
   showForm.value = true
   formSnapshot.value = channelFormSnapshot(false)
 }
@@ -1005,34 +1014,39 @@ function openEdit(channel: Channel): void {
   probeResults.value = []
   probeAddedProtocols = []
   modelRequests.invalidate()
-  const savedKeys = channel.keys?.length
-    ? channel.keys
-    : [{ name: '默认密钥', state: 'ACTIVE' as const, priority: 1, models: channel.models || [] }]
-  channelKeys.value = savedKeys.map((key) => newKeyDraft(key))
-  const initialKey = isMobile.value ? defaultChannelKey.value : channelKeys.value[0]
-  selectedChannelKeyId.value = initialKey?.localId || null
-  expandedChannelKeyId.value = isMobile.value ? initialKey?.localId || null : null
-  clearMappings()
-  ;(channel.modelMappings || []).forEach((mapping) => {
-    originalMappings[mapping.upstreamModel] = {
-      canonicalModelId: mapping.canonicalModelId || null,
-      mappingSource: mapping.mappingSource || null,
-    }
-    if (mapping.canonicalModelId) {
-      canonicalModels[mapping.upstreamModel] = mapping.canonicalModelId
-    }
-  })
-  showAllMappings.value = mappingCount.value === 0
-  Object.assign(form, {
-    name: channel.name,
-    baseUrl: channel.baseUrl,
-    authType: channel.authType || 'bearer',
-    protocolAuthTypes: { ...(channel.protocolAuthTypes || {}) },
-    protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
-    enabled: channel.enabled,
-    priority: channel.priority ?? 1,
-    requestOverrides: channel.requestOverrides || {},
-  })
+  hydratingChannelForm = true
+  try {
+    const savedKeys = channel.keys?.length
+      ? channel.keys
+      : [{ name: '默认密钥', state: 'ACTIVE' as const, priority: 1, models: channel.models || [] }]
+    channelKeys.value = savedKeys.map((key) => newKeyDraft(key))
+    const initialKey = isMobile.value ? defaultChannelKey.value : channelKeys.value[0]
+    selectedChannelKeyId.value = initialKey?.localId || null
+    expandedChannelKeyId.value = isMobile.value ? initialKey?.localId || null : null
+    clearMappings()
+    ;(channel.modelMappings || []).forEach((mapping) => {
+      originalMappings[mapping.upstreamModel] = {
+        canonicalModelId: mapping.canonicalModelId || null,
+        mappingSource: mapping.mappingSource || null,
+      }
+      if (mapping.canonicalModelId) {
+        canonicalModels[mapping.upstreamModel] = mapping.canonicalModelId
+      }
+    })
+    showAllMappings.value = mappingCount.value === 0
+    Object.assign(form, {
+      name: channel.name,
+      baseUrl: channel.baseUrl,
+      authType: channel.authType || 'bearer',
+      protocolAuthTypes: { ...(channel.protocolAuthTypes || {}) },
+      protocols: channel.protocols?.length ? [...channel.protocols] : ['chat_completions'],
+      enabled: channel.enabled,
+      priority: channel.priority ?? 1,
+      requestOverrides: channel.requestOverrides || {},
+    })
+  } finally {
+    hydratingChannelForm = false
+  }
   showForm.value = true
   formSnapshot.value = channelFormSnapshot(false)
 }
