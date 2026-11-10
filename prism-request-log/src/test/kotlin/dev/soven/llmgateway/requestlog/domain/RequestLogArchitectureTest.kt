@@ -90,6 +90,14 @@ class RequestLogArchitectureTest {
             classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RetentionSettings" },
             "ArchUnit 未导入保留设置表，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RequestLogs" },
+            "ArchUnit 未导入请求日志表，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.llmgateway.requestlog.persistence.RequestAttempts" },
+            "ArchUnit 未导入上游尝试明细表，规则会空跑",
+        )
     }
 
     @Test
