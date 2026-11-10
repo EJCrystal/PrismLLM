@@ -482,10 +482,17 @@ internal fun parseCodexReleaseTag(text: String): String {
 }
 
 /** 从 electron-builder 的 YAML 更新清单里取 `version:`，避免为一行字段引入 YAML 依赖。 */
-internal fun parseAntigravityVersion(text: String): String =
-    Regex("(?m)^version:[ \\t]*([0-9A-Za-z][0-9A-Za-z._+-]*)[ \\t]*$")
-        .find(text)
-        ?.groupValues
-        ?.get(1)
+internal fun parseAntigravityVersion(text: String): String {
+    // 清单可能写成裸值或加引号，行尾也可能是 CRLF；先取出整行值，再用严格正则校验。
+    val raw = text.lineSequence()
+        .firstOrNull { line -> line.startsWith("version:") }
+        ?.substringAfter("version:")
+        ?.trim()
         ?: error("响应缺少 version")
+    val version = raw.removeSurrounding("\"").removeSurrounding("'")
+    if (!ANTIGRAVITY_VERSION.matches(version)) error("响应中的 version 无效")
+    return version
+}
 
+/** 版本号允许版本段与构建后缀；不接受空值、空格或 YAML 注释等额外内容。 */
+private val ANTIGRAVITY_VERSION = Regex("[0-9A-Za-z][0-9A-Za-z._+-]*")

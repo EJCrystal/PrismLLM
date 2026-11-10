@@ -535,8 +535,16 @@ open class OAuthAccountRepository(
             it[quotaCreditsUnlimited] = snapshot.creditsUnlimited
             it[quotaResetCredits] = snapshot.resetCredits
             it[quotaGroups] = snapshot.groups
+                // 分组名与窗口来自上游，编码前先限量，避免异常响应把 JSON 撑大后截断成非法内容。
+                .take(MAX_QUOTA_GROUPS)
+                .map { group ->
+                    group.copy(
+                        name = group.name.take(MAX_QUOTA_GROUP_NAME),
+                        windows = group.windows.take(MAX_QUOTA_GROUP_WINDOWS),
+                    )
+                }
                 .takeIf { groups -> groups.isNotEmpty() }
-                ?.let { groups -> quotaJson.encodeToString(groups).take(20_000) }
+                ?.let { groups -> quotaJson.encodeToString(groups) }
             it[quotaCheckedAt] = snapshot.checkedAt
             it[quotaAttemptedAt] = snapshot.checkedAt
             it[quotaError] = null
@@ -695,3 +703,11 @@ open class OAuthAccountRepository(
         .take(120)
         .ifBlank { "quota_read_failed" }
 }
+
+/**
+ * 分组额度的存储上限。上游目前只给两个模型家族，正常读数远小于这些上限；
+ * 限量是为了让异常响应也能编码成合法 JSON，界面最多展示前几组。
+ */
+private const val MAX_QUOTA_GROUPS = 16
+private const val MAX_QUOTA_GROUP_WINDOWS = 8
+private const val MAX_QUOTA_GROUP_NAME = 100

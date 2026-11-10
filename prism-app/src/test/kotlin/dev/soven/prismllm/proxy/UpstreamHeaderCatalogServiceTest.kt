@@ -27,7 +27,11 @@ class UpstreamHeaderCatalogServiceTest {
             path: Antigravity.zip
         """.trimIndent()
         assertEquals("2.30.0", parseAntigravityVersion(manifest))
+        assertEquals("2.30.0", parseAntigravityVersion("version: '2.30.0'\r\nfiles: []"))
+        assertEquals("2.30.0", parseAntigravityVersion("version: \"2.30.0\""))
         assertFailsWith<IllegalStateException> { parseAntigravityVersion("files: []") }
+        assertFailsWith<IllegalStateException> { parseAntigravityVersion("version: not a version") }
+        assertFailsWith<IllegalStateException> { parseAntigravityVersion("  version: 2.30.0") }
     }
 
     @Test

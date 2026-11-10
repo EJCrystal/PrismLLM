@@ -125,6 +125,24 @@ class OAuthAccountRepositoryTest {
         assertEquals(snapshot.groups, repository.findDetailed(account.id)!!.quota!!.groups)
     }
 
+    @Test
+    fun `oversized quota groups are trimmed before encoding`() = runBlocking {
+        val account = create("oversized", enabled = true)
+        val groups = (1..20).map { index ->
+            OAuthQuotaGroup(
+                name = "G".repeat(200) + index,
+                windows = (1..10).map { OAuthQuotaWindow(1.0, 18_000, null) },
+            )
+        }
+
+        repository.saveQuota(account.id, OAuthQuotaSnapshot(groups = groups, checkedAt = 5_000))
+
+        val stored = repository.findDetailed(account.id)!!.quota!!.groups
+        assertEquals(16, stored.size)
+        assertEquals(100, stored.first().name.length)
+        assertEquals(8, stored.first().windows.size)
+    }
+
     private suspend fun create(name: String, enabled: Boolean): OAuthAccountRecord =
         repository.create(
             NewOAuthAccount(

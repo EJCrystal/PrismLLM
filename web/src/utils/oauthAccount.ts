@@ -115,13 +115,13 @@ export function oauthQuotaWindows(quota: OAuthQuota | null | undefined): OAuthQu
 }
 
 /**
- * 把上游的模型家族名收敛成看板上的短标签。只收敛整个家族的分组：
- * "Gemini 4 Argon" 这类带版本的单模型分组单独占用额度，必须原样保留。
+ * 把上游的模型家族名收敛成看板上的短标签。只做大小写与连接词归一：
+ * "Gemini 4 Argon" 这类带版本的单模型分组单独占用额度，必须原样保留；
+ * 只有 Claude 的分组也不能被误标成 "Claude & GPT"。
  */
 export function oauthQuotaGroupLabel(name: string): string {
   const trimmed = name.trim()
-  if (/^gemini$/i.test(trimmed)) return 'Gemini'
-  if (/^claude(\s*(&|and)\s*gpt)?$/i.test(trimmed)) return 'Claude & GPT'
+  if (/^claude\s+and\s+gpt$/i.test(trimmed)) return 'Claude & GPT'
   return trimmed
 }
 

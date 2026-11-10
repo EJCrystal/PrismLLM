@@ -194,6 +194,7 @@ describe('oauthAccount: 上游额度展示', () => {
     }
     assert.equal(oauthQuotaGroupLabel('Gemini'), 'Gemini')
     assert.equal(oauthQuotaGroupLabel('Claude and GPT'), 'Claude & GPT')
+    assert.equal(oauthQuotaGroupLabel('Claude'), 'Claude')
     assert.equal(oauthQuotaGroupLabel('Gemini 4 Argon'), 'Gemini 4 Argon')
 
     const groups = oauthQuotaGroups(grouped)
