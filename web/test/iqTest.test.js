@@ -5,6 +5,7 @@ import {
   formatIqLatency,
   iqTargetKey,
   iqVerdictTone,
+  shouldAdoptIqRunResult,
   withIqPreviewCsp,
 } from '../src/utils/iqTest'
 
@@ -24,6 +25,13 @@ describe('iqTest: 智商检测展示', () => {
     assert.equal(iqVerdictTone('failed'), 'danger')
     assert.equal(iqVerdictTone('incorrect'), 'warning')
     assert.equal(iqVerdictTone('review'), 'warning')
+  })
+
+  it('后台检测完成时保护用户正在查看或编辑的详情', () => {
+    assert.equal(shouldAdoptIqRunResult({ pinned: false, editing: false }), true)
+    assert.equal(shouldAdoptIqRunResult({ pinned: true, editing: false }), false)
+    assert.equal(shouldAdoptIqRunResult({ pinned: false, editing: true }), false)
+    assert.equal(shouldAdoptIqRunResult({ pinned: true, editing: true }), false)
   })
 
   it('在已有 head 中注入 CSP，并保留原有内容', () => {

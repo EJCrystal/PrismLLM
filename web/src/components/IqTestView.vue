@@ -9,6 +9,7 @@ import type {
   IqJudgeFailure,
   IqJudgeInfo,
   IqTestRunDetail,
+  IqTestRunRequest,
   IqTestRunSummary,
   IqTestTarget,
   ProtocolId,
@@ -18,6 +19,7 @@ import {
   formatIqTime,
   iqTargetKey,
   iqVerdictTone,
+  shouldAdoptIqRunResult,
   withIqPreviewCsp,
 } from '../utils/iqTest'
 import CopyButton from './CopyButton.vue'
@@ -25,12 +27,26 @@ import Icon from './Icon.vue'
 import SearchSelect from './SearchSelect.vue'
 import IqQuestionBankModal from './IqQuestionBankModal.vue'
 
+interface ActiveRun {
+  id: number
+  benchmark: IqBenchmarkId
+  benchmarkLabel: string
+  channelId: string
+  channelName: string
+  model: string
+  keyName: string
+  startedAt: number
+}
+
+/** 失败任务的请求快照：重试必须复现当时的目标，而不是当前下拉框里的配置。 */
+interface FailedRun {
+  job: ActiveRun
+  request: IqTestRunRequest
+}
+
 const questions = ref<IqQuestion[]>([])
 const showQuestionBank = ref(false)
 const enabledQuestionCount = computed(() => questions.value.filter(question => question.enabled).length)
-const credentialOptions = computed(() => (selectedTarget.value?.credentials ?? []).map(credential => ({
-  value: credential.id, label: credential.name + '（优先级 ' + credential.priority + '）', searchText: credential.name,
-})))
 const benchmarks = ref<IqBenchmarkDefinition[]>([])
 const targets = ref<IqTestTarget[]>([])
 const judges = ref<IqJudgeInfo[]>([])
@@ -45,15 +61,21 @@ const historyFilter = ref<'all' | IqBenchmarkId>('all')
 const promptText = ref('')
 const loading = ref(true)
 const loadingHistory = ref(false)
-const running = ref(false)
 const detailLoading = ref(false)
 const detail = ref<IqTestRunDetail | null>(null)
 const previewMode = ref<'preview' | 'source'>('preview')
 const loadError = ref('')
 const runError = ref('')
-const elapsed = ref(0)
 const manualSubmitting = ref(false)
 const resultRef = ref<HTMLElement | null>(null)
+const activeRuns = ref<ActiveRun[]>([])
+const nowTick = ref(Date.now())
+/** 用户手动点开历史记录后，后台完成的检测不再抢占详情区。 */
+const detailPinned = ref(false)
+/** 人工判定表单有未保存修改时，后台完成的结果不能替换详情并清空输入。 */
+const manualDirty = ref(false)
+/** 当前错误区展示的是哪次失败；重试只认这份快照。 */
+const failedRun = ref<FailedRun | null>(null)
 const manualForm = reactive<{
   verdict: '' | 'passed' | 'incorrect'
   score: number | null
@@ -63,7 +85,9 @@ const manualForm = reactive<{
   score: null,
   note: '',
 })
-let timer: ReturnType<typeof setInterval> | null = null
+let runSeq = 0
+let historyRequestSeq = 0
+let tickTimer: ReturnType<typeof setInterval> | null = null
 
 const benchmark = computed(() =>
   benchmarks.value.find((item) => item.id === selectedBenchmark.value) ?? benchmarks.value[0] ?? null,
@@ -77,28 +101,18 @@ const selectedJudge = computed(() =>
 const promptCustomized = computed(() =>
   !!benchmark.value && promptText.value.trim() !== benchmark.value.prompt.trim(),
 )
-const targetGroups = computed(() => {
-  const groups = new Map<string, {
-    channelId: string
-    channelName: string
-    channelEnabled: boolean
-    items: IqTestTarget[]
-  }>()
-  for (const target of targets.value) {
-    const group = groups.get(target.channelId)
-    if (group) {
-      group.items.push(target)
-    } else {
-      groups.set(target.channelId, {
-        channelId: target.channelId,
-        channelName: target.channelName,
-        channelEnabled: target.channelEnabled,
-        items: [target],
-      })
-    }
-  }
-  return [...groups.values()]
-})
+const targetOptions = computed(() => targets.value.map((target) => ({
+  value: iqTargetKey(target.channelId, target.model),
+  label: target.model,
+  hint: `${target.credentials.length} 个可用凭据`,
+  group: target.channelEnabled ? target.channelName : `${target.channelName}（已停用）`,
+  searchText: `${target.channelName} ${target.model}`,
+})))
+const credentialOptions = computed(() => (selectedTarget.value?.credentials ?? []).map((credential) => ({
+  value: credential.id,
+  label: credential.name,
+  hint: `优先级 ${credential.priority}`,
+})))
 const filteredHistory = computed(() =>
   historyFilter.value === 'all'
     ? history.value
@@ -108,7 +122,6 @@ const canRun = computed(() =>
   !!selectedTarget.value &&
   !!benchmark.value &&
   (selectedBenchmark.value === 'candy' ? enabledQuestionCount.value > 0 : !!selectedJudgeId.value) &&
-  !running.value &&
   !loading.value,
 )
 const passedCheckCount = computed(() => detail.value?.checks.filter((check) => check.passed).length ?? 0)
@@ -145,6 +158,24 @@ function usageSummary(run: IqTestRunSummary | IqTestRunDetail | null): string {
   return parts.length ? parts.join(' · ') : '上游未返回用量'
 }
 
+function activeSeconds(run: ActiveRun): number {
+  return Math.max(0, Math.floor((nowTick.value - run.startedAt) / 1000))
+}
+
+function ensureTicker() {
+  if (tickTimer) return
+  nowTick.value = Date.now()
+  tickTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 1000)
+}
+
+function stopTicker() {
+  if (!tickTimer) return
+  clearInterval(tickTimer)
+  tickTimer = null
+}
+
 function syncSelectedTarget() {
   const target = selectedTarget.value
   if (!target) {
@@ -160,30 +191,17 @@ function syncSelectedTarget() {
   }
 }
 
-function startTimer() {
-  stopTimer()
-  elapsed.value = 0
-  const startedAt = Date.now()
-  timer = setInterval(() => {
-    elapsed.value = Math.floor((Date.now() - startedAt) / 1000)
-  }, 1000)
-}
-
-function stopTimer() {
-  if (timer) {
-    clearInterval(timer)
-    timer = null
-  }
-}
-
 async function loadHistory() {
+  const requestId = ++historyRequestSeq
   loadingHistory.value = true
   try {
-    history.value = await api.listIqRuns(50)
+    const runs = await api.listIqRuns(50)
+    // 并发的检测可能同时刷新历史；只接受最后一次请求的结果，避免旧响应覆盖新记录。
+    if (requestId === historyRequestSeq) history.value = runs
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
-    loadingHistory.value = false
+    if (requestId === historyRequestSeq) loadingHistory.value = false
   }
 }
 
@@ -211,7 +229,7 @@ async function loadAll() {
     syncSelectedTarget()
     await loadHistory()
     if (!detail.value && history.value.length) {
-      await openRun(history.value[0], { scroll: false })
+      await openRun(history.value[0], { scroll: false, manual: false })
     }
   } catch (cause) {
     loadError.value = errorMessage(cause)
@@ -235,49 +253,85 @@ function scrollResultIntoView() {
   })
 }
 
-async function run() {
+/** 立即发起一个检测；界面不再锁死，可以连续提交多个目标。 */
+function run() {
   const target = selectedTarget.value
   const item = benchmark.value
   const judgeId = selectedJudgeId.value
   if (!target || !item || (item.id !== 'candy' && !judgeId)) return
-  running.value = true
+  const job: ActiveRun = {
+    id: ++runSeq,
+    benchmark: item.id,
+    benchmarkLabel: item.label,
+    channelId: target.channelId,
+    channelName: target.channelName,
+    model: target.model,
+    keyName: target.credentials.find((credential) => credential.id === selectedKeyId.value)?.name ?? '默认凭据',
+    startedAt: Date.now(),
+  }
+  const request: IqTestRunRequest = {
+    channelId: target.channelId,
+    model: target.model,
+    benchmark: item.id,
+    keyId: selectedKeyId.value || null,
+    protocol: (selectedProtocol.value || null) as ProtocolId | null,
+    judgeId: item.id === 'candy' ? null : judgeId,
+    prompt: item.id === 'candy' ? undefined : promptText.value.trim() || undefined,
+    useQuestionBank: item.id === 'candy',
+  }
+  activeRuns.value.push(job)
   runError.value = ''
+  failedRun.value = null
   previewMode.value = 'preview'
-  startTimer()
-  let completed = false
+  detailPinned.value = false
+  ensureTicker()
+  void executeRun(job, request)
+}
+
+async function executeRun(job: ActiveRun, request: IqTestRunRequest) {
   try {
-    const result = await api.runIqTest({
-      channelId: target.channelId,
-      model: target.model,
-      benchmark: item.id,
-      keyId: selectedKeyId.value || null,
-      protocol: (selectedProtocol.value || null) as ProtocolId | null,
-      judgeId: item.id === 'candy' ? null : judgeId,
-      prompt: item.id === 'candy' ? undefined : promptText.value.trim() || undefined,
-      useQuestionBank: item.id === 'candy',
-    })
-    detail.value = result
-    syncManualForm(result)
-    completed = true
+    const result = await api.runIqTest(request)
+    if (shouldAdoptIqRunResult({ pinned: detailPinned.value, editing: manualDirty.value })) {
+      detail.value = result
+      syncManualForm(result)
+      scrollResultIntoView()
+    }
     await loadHistory()
     notify(
-      `${item.label}：${result.verdictLabel}`,
+      `${job.benchmarkLabel} · ${job.channelName} / ${job.model}：${result.verdictLabel}`,
       result.verdict === 'passed' ? 'success' : result.verdict === 'failed' ? 'error' : 'warning',
     )
   } catch (cause) {
-    runError.value = errorMessage(cause)
+    runError.value = `${job.model}：${errorMessage(cause)}`
+    failedRun.value = { job, request }
     notify(runError.value, 'error')
   } finally {
-    running.value = false
-    stopTimer()
-    if (completed) scrollResultIntoView()
+    activeRuns.value = activeRuns.value.filter((item) => item.id !== job.id)
+    if (!activeRuns.value.length) stopTicker()
   }
 }
 
-async function openRun(run: IqTestRunSummary, options: { scroll?: boolean } = {}) {
+/** 用失败任务的请求快照重试，配置切换后也不会误测当前选中的目标。 */
+function retryFailed() {
+  const failed = failedRun.value
+  if (!failed) return
+  const job: ActiveRun = { ...failed.job, id: ++runSeq, startedAt: Date.now() }
+  activeRuns.value.push(job)
+  runError.value = ''
+  failedRun.value = null
+  previewMode.value = 'preview'
+  detailPinned.value = false
+  ensureTicker()
+  void executeRun(job, failed.request)
+}
+
+async function openRun(run: IqTestRunSummary, options: { scroll?: boolean; manual?: boolean } = {}) {
   if (detailLoading.value) return
+  const { scroll = true, manual = true } = options
+  if (manual) detailPinned.value = true
   detailLoading.value = true
   runError.value = ''
+  failedRun.value = null
   previewMode.value = 'preview'
   try {
     detail.value = await api.getIqRun(run.id)
@@ -294,7 +348,7 @@ async function openRun(run: IqTestRunSummary, options: { scroll?: boolean } = {}
       selectedProtocol.value = detail.value.protocol
       syncSelectedTarget()
     }
-    if (options.scroll !== false) scrollResultIntoView()
+    if (scroll) scrollResultIntoView()
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
@@ -306,6 +360,11 @@ function syncManualForm(run: IqTestRunDetail) {
   manualForm.verdict = run.manualVerdict ?? ''
   manualForm.score = run.manualScore
   manualForm.note = run.manualNote ?? ''
+  manualDirty.value = false
+}
+
+function markManualDirty() {
+  manualDirty.value = true
 }
 
 async function submitManual() {
@@ -333,24 +392,26 @@ watch(benchmark, (item) => {
 }, { immediate: true })
 
 onMounted(loadAll)
-onBeforeUnmount(stopTimer)
+onBeforeUnmount(stopTicker)
 </script>
 
 <template>
   <section class="page-stack iq-page">
     <div class="iq-hero panel">
       <div class="iq-hero-copy">
-        <span class="iq-eyebrow">MODEL IQ PROBE</span>
-        <h2>用动画与随机推理题看模型表现</h2>
+        <span class="iq-eyebrow"><i class="iq-eyebrow-dot"></i>MODEL IQ PROBE</span>
+        <h2>用动画与随机推理题，看清模型的真实水平</h2>
         <p>
           鹈鹕骑行与糖果测试来自社区常用的“降智检测”题。测试通过已保存的渠道凭据直接请求上游，
           不写入请求日志，也不消耗调用方密钥额度。
         </p>
       </div>
       <div class="iq-hero-note">
-        <Icon name="shield" :size="18" />
-        <span>本地生成 · 判分器可选</span>
-        <small>local 判分不出本机；满血AI、视觉判分或外部插件会把 HTML/逐帧截图发到对应服务，渠道密钥永不发送</small>
+        <span class="iq-note-icon"><Icon name="shield" :size="18" /></span>
+        <div>
+          <strong>渠道密钥不会离开本机</strong>
+          <small>local 判分不出本机；满血AI、视觉判分或外部插件会把 HTML / 逐帧截图发到对应服务。</small>
+        </div>
       </div>
     </div>
 
@@ -375,7 +436,6 @@ onBeforeUnmount(stopTimer)
               type="button"
               class="iq-benchmark-card"
               :class="{ active: selectedBenchmark === item.id }"
-              :disabled="running"
               @click="selectedBenchmark = item.id"
             >
               <span class="iq-benchmark-icon">
@@ -391,7 +451,7 @@ onBeforeUnmount(stopTimer)
             </button>
           </div>
           <div v-if="selectedBenchmark === 'candy'" class="iq-prompt-editor">
-            <div class="iq-section-head"><span class="iq-section-label">随机题库</span><button type="button" class="link-button" :disabled="running" @click="showQuestionBank = true">管理题库</button></div>
+            <div class="iq-section-head"><span class="iq-section-label">随机题库</span><button type="button" class="link-button" @click="showQuestionBank = true">管理题库</button></div>
             <p class="iq-grading">共 {{ questions.length }} 道题，{{ enabledQuestionCount }} 道已启用。每次运行由服务端随机抽一道。</p>
             <p v-if="!enabledQuestionCount" class="callout warning">没有启用的题目，请先在题库中添加或启用题目。</p>
             <p class="iq-prompt-meta">标准答案不会发送给模型；收到 JSON 的 answer 后在本地比较。测试不提供搜索或工具调用。</p>
@@ -402,7 +462,7 @@ onBeforeUnmount(stopTimer)
               <button
                 type="button"
                 class="link-button"
-                :disabled="running || !promptCustomized"
+                :disabled="!promptCustomized"
                 @click="resetPrompt"
               >
                 恢复默认
@@ -413,7 +473,6 @@ onBeforeUnmount(stopTimer)
               class="iq-prompt-input"
               rows="9"
               maxlength="20000"
-              :disabled="running"
               spellcheck="false"
               aria-label="检测提示词"
             ></textarea>
@@ -427,51 +486,46 @@ onBeforeUnmount(stopTimer)
 
         <div class="iq-section">
           <span class="iq-section-label">检测目标</span>
-          <label v-if="targets.length" class="field">
-            <span>渠道与模型</span>
-            <select v-model="selectedTargetKey" :disabled="running" @change="syncSelectedTarget">
-              <optgroup
-                v-for="group in targetGroups"
-                :key="group.channelId"
-                :label="group.channelEnabled ? group.channelName : `${group.channelName}（已停用）`"
-              >
-                <option
-                  v-for="target in group.items"
-                  :key="iqTargetKey(target.channelId, target.model)"
-                  :value="iqTargetKey(target.channelId, target.model)"
-                >
-                  {{ target.model }} · {{ target.credentials.length }} 个凭据
-                </option>
-              </optgroup>
-            </select>
-          </label>
+          <div v-if="targets.length" class="iq-target">
+            <div class="field iq-select-field">
+              <span>渠道与模型</span>
+              <SearchSelect
+                v-model="selectedTargetKey"
+                label="渠道与模型"
+                :options="targetOptions"
+                :panel-width="340"
+                placeholder="选择渠道与模型"
+              />
+            </div>
+            <div v-if="selectedTarget" class="iq-target-grid">
+              <div class="field iq-select-field iq-credential-field">
+                <span>使用凭据</span>
+                <SearchSelect
+                  v-model="selectedKeyId"
+                  label="上游凭据"
+                  :options="credentialOptions"
+                  :panel-width="300"
+                  placeholder="选择上游凭据"
+                />
+              </div>
+              <label class="field">
+                <span>协议</span>
+                <select v-model="selectedProtocol">
+                  <option value="">自动</option>
+                  <option v-for="protocol in selectedTarget.protocols" :key="protocol" :value="protocol">
+                    {{ protocolLabel(protocol) }}
+                  </option>
+                </select>
+              </label>
+            </div>
+            <p v-if="selectedTarget && !selectedTarget.channelEnabled" class="iq-inline-warning">
+              <Icon name="info" :size="14" />
+              渠道已停用，仍可用已保存的凭据发起测试。
+            </p>
+          </div>
           <p v-else class="iq-no-target">
             还没有可测试的模型。请先在「渠道」中授权模型，并至少配置一个可用凭据。
           </p>
-
-          <div v-if="selectedTarget" class="iq-target-grid">
-            <div class="field iq-credential-field">
-              <span>使用凭据</span>
-              <SearchSelect :key="selectedTargetKey" v-model="selectedKeyId" label="上游凭据" :options="credentialOptions" :disabled="running" />
-            </div>
-            <label class="field">
-              <span>协议</span>
-              <select v-model="selectedProtocol" :disabled="running">
-                <option value="">自动</option>
-                <option v-for="protocol in selectedTarget.protocols" :key="protocol" :value="protocol">
-                  {{ protocolLabel(protocol) }}
-                </option>
-              </select>
-            </label>
-          </div>
-
-          <div v-if="selectedTarget" class="iq-target-meta">
-            <span class="badge neutral">{{ selectedTarget.channelName }}</span>
-            <span v-if="!selectedTarget.channelEnabled" class="badge warning">渠道已停用</span>
-            <span class="muted small">
-              {{ selectedTarget.credentials.length }} 个可用凭据 · {{ selectedTarget.protocols.length }} 种协议
-            </span>
-          </div>
         </div>
 
         <div class="iq-section">
@@ -482,7 +536,7 @@ onBeforeUnmount(stopTimer)
           <template v-else>
             <label v-if="judges.length" class="field">
               <span>鹈鹕判分器</span>
-              <select v-model="selectedJudgeId" :disabled="running">
+              <select v-model="selectedJudgeId">
                 <option v-for="judge in judges" :key="judge.id" :value="judge.id">
                   {{ judge.label }}{{ judge.builtIn ? '' : '（插件）' }}
                 </option>
@@ -510,224 +564,241 @@ onBeforeUnmount(stopTimer)
           </template>
         </div>
 
-        <button type="button" class="button primary full iq-run-button" :disabled="!canRun" @click="run">
-          <Icon :name="running ? 'refresh' : 'bolt'" :size="17" :class="{ 'is-spinning': running }" />
-          {{ running ? `正在检测 · ${elapsed} 秒` : '开始测试' }}
-        </button>
-        <p class="iq-run-note">
-          {{ benchmark?.id === 'pelican' ? '图形题通常需要 30–120 秒，超时 180 秒。' : '推理题通常需要 10–60 秒，超时 120 秒。' }}
-          请保持页面打开；完成后会自动写入检测历史。
-        </p>
+        <div class="iq-run-area">
+          <button type="button" class="button primary full iq-run-button" :disabled="!canRun" @click="run">
+            <Icon name="bolt" :size="17" />
+            开始测试
+          </button>
+          <p class="iq-run-note">
+            {{ benchmark?.id === 'pelican' ? '图形题通常需要 30–120 秒，超时 180 秒。' : '推理题通常需要 10–60 秒，超时 120 秒。' }}
+            完成后自动写入检测历史。
+          </p>
+          <p v-if="activeRuns.length" class="iq-run-live">
+            <i class="iq-live-dot"></i>
+            已有 {{ activeRuns.length }} 个检测在后台进行，可继续切换目标开始新的检测。
+          </p>
+        </div>
       </aside>
 
       <div class="iq-main">
-        <div v-if="runError" class="callout danger iq-run-error">
-          <span>{{ runError }}</span>
-          <button type="button" class="link-button" :disabled="!canRun" @click="run">重试</button>
-        </div>
-
-        <section v-if="running" class="panel iq-running">
-          <span class="iq-running-spinner"></span>
-          <div>
-            <strong>{{ benchmark?.label }} · {{ selectedTarget?.model }}</strong>
-            <p>正在等待上游返回，已等待 {{ elapsed }} 秒。</p>
-          </div>
-        </section>
-
-        <section v-else-if="detailLoading" class="panel iq-loading">
-          <span class="spinner"></span>
-          <p>正在读取检测详情…</p>
-        </section>
-
-        <section v-else-if="detail" ref="resultRef" class="panel iq-result">
-          <header class="iq-result-head">
-            <div class="iq-result-title">
-              <span class="badge" :class="iqVerdictTone(detail.verdict)">{{ detail.verdictLabel }}</span>
-              <h3>{{ detail.benchmarkLabel }}</h3>
-              <small>{{ detail.model }}</small>
-            </div>
-            <div class="iq-result-meta">
-              <span>HTTP {{ detail.statusCode ?? '—' }}</span>
-              <span>{{ formatIqLatency(detail.latencyMs) }}</span>
-              <span>{{ formatIqTime(detail.createdAt) }}</span>
-            </div>
-          </header>
-
-          <div class="iq-result-summary">
-            <div><span class="muted small">渠道</span><strong>{{ detail.channelName }}</strong></div>
-            <div><span class="muted small">凭据</span><strong>{{ detail.channelKeyName || '—' }}</strong></div>
-            <div><span class="muted small">协议</span><strong>{{ protocolLabel(detail.protocol) }}</strong></div>
-            <div><span class="muted small">上游声明模型</span><strong>{{ detail.upstreamReportedModel || '未返回' }}</strong></div>
+        <div class="iq-main-column">
+          <div v-if="runError" class="callout danger iq-run-error">
+            <span>{{ runError }}</span>
+            <button type="button" class="link-button" :disabled="!failedRun" @click="retryFailed">重试该目标</button>
           </div>
 
-          <details v-if="detail.prompt" class="iq-used-prompt">
-            <summary>本次使用的提示词</summary>
-            <pre class="iq-prompt">{{ detail.prompt }}</pre>
-          </details>
-
-          <div v-if="detail.errorMessage" class="callout danger">{{ detail.errorMessage }}</div>
-
-          <div
-            v-if="detail.judgeResult"
-            class="iq-external"
-            :class="`tone-${iqVerdictTone(detail.judgeResult.verdict)}`"
-          >
-            <div class="iq-section-head">
-              <strong>{{ detail.benchmark === 'pelican' ? '判分结果' : '判分器参考' }}</strong>
-              <span class="badge" :class="iqVerdictTone(detail.judgeResult.verdict)">
-                {{ detail.judgeResult.label }}
-              </span>
+          <section v-if="activeRuns.length" class="panel iq-active" aria-live="polite">
+            <div class="iq-active-head">
+              <span class="iq-active-title"><i class="iq-live-dot"></i>正在检测 {{ activeRuns.length }} 个目标</span>
+              <span class="iq-active-hint">页面不会锁定，可继续提交其他模型</span>
             </div>
-            <p>
-              <strong>{{ detail.judgeResult.judgeLabel }}</strong>
-              <template v-if="detail.judgeResult.score != null"> · {{ detail.judgeResult.score }} / 100</template>
-              <template v-if="detail.judgeResult.reason"> · {{ detail.judgeResult.reason }}</template>
-            </p>
-            <small v-if="detail.judgeResult.checkedAt">判分时间：{{ formatIqTime(detail.judgeResult.checkedAt) }}</small>
-            <details
-              v-if="Object.keys(detail.judgeResult.details).length"
-              class="iq-judge-details"
-              :open="detail.judgeResult.judgeId === 'vision'"
-            >
-              <summary>逐项检测</summary>
-              <dl>
-                <template v-for="(value, key) in detail.judgeResult.details" :key="key">
-                  <dt>{{ key }}</dt>
-                  <dd>{{ value }}</dd>
-                </template>
-              </dl>
+            <div class="iq-active-list">
+              <article v-for="job in activeRuns" :key="job.id" class="iq-active-item">
+                <span class="iq-active-spinner" aria-hidden="true"></span>
+                <div class="iq-active-copy">
+                  <strong>{{ job.model }}</strong>
+                  <small>{{ job.channelName }} · {{ job.benchmarkLabel }} · {{ job.keyName }}</small>
+                </div>
+                <span class="iq-active-time">{{ activeSeconds(job) }} 秒</span>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="detailLoading" class="panel iq-loading">
+            <span class="spinner"></span>
+            <p>正在读取检测详情…</p>
+          </section>
+
+          <section v-else-if="detail" ref="resultRef" class="panel iq-result">
+            <header class="iq-result-head">
+              <div class="iq-result-title">
+                <span class="badge" :class="iqVerdictTone(detail.verdict)">{{ detail.verdictLabel }}</span>
+                <h3>{{ detail.benchmarkLabel }}</h3>
+                <small>{{ detail.model }}</small>
+              </div>
+              <div class="iq-result-meta">
+                <span class="iq-meta-chip">HTTP {{ detail.statusCode ?? '—' }}</span>
+                <span class="iq-meta-chip">{{ formatIqLatency(detail.latencyMs) }}</span>
+                <span class="iq-meta-chip">{{ formatIqTime(detail.createdAt) }}</span>
+              </div>
+            </header>
+
+            <div class="iq-result-summary">
+              <div class="iq-stat-tile"><span class="iq-stat-label">渠道</span><strong>{{ detail.channelName }}</strong></div>
+              <div class="iq-stat-tile"><span class="iq-stat-label">凭据</span><strong>{{ detail.channelKeyName || '—' }}</strong></div>
+              <div class="iq-stat-tile"><span class="iq-stat-label">协议</span><strong>{{ protocolLabel(detail.protocol) }}</strong></div>
+              <div class="iq-stat-tile"><span class="iq-stat-label">上游声明模型</span><strong>{{ detail.upstreamReportedModel || '未返回' }}</strong></div>
+            </div>
+
+            <details v-if="detail.prompt" class="iq-used-prompt">
+              <summary>本次使用的提示词</summary>
+              <pre class="iq-prompt">{{ detail.prompt }}</pre>
             </details>
-          </div>
 
-          <div v-if="detail.html" class="iq-preview">
-            <div class="iq-preview-bar">
-              <div class="iq-segmented">
-                <button type="button" :class="{ active: previewMode === 'preview' }" @click="previewMode = 'preview'">预览</button>
-                <button type="button" :class="{ active: previewMode === 'source' }" @click="previewMode = 'source'">HTML</button>
-              </div>
-              <span class="muted small">{{ detail.html.length.toLocaleString() }} 字符 · 已阻止外部资源和脚本</span>
-              <CopyButton :text="sourceText" title="复制 HTML" variant="subtle" />
-            </div>
-            <iframe
-              v-if="previewMode === 'preview'"
-              class="iq-frame"
-              :srcdoc="previewHtml"
-              sandbox=""
-              referrerpolicy="no-referrer"
-              title="模型作品预览"
-            ></iframe>
-            <pre v-else class="iq-source">{{ detail.html }}</pre>
-          </div>
-          <div v-else class="iq-raw">
-            <div class="iq-section-head">
-              <strong>原始响应</strong>
-              <CopyButton :text="detail.responseText || ''" title="复制原始响应" variant="subtle" />
-            </div>
-            <pre class="iq-source">{{ detail.responseText || '上游未返回文本' }}</pre>
-          </div>
+            <div v-if="detail.errorMessage" class="callout danger">{{ detail.errorMessage }}</div>
 
-          <div v-if="detail.benchmark === 'pelican' && detail.html" class="iq-manual">
-            <div class="iq-section-head">
-              <strong>人工判定</strong>
-              <span v-if="detail.manualVerdict" class="badge info">已人工判定</span>
-            </div>
-            <div class="iq-manual-grid">
-              <label class="field">
-                <span>结论</span>
-                <select v-model="manualForm.verdict" :disabled="manualSubmitting">
-                  <option value="">不修改</option>
-                  <option value="passed">通过</option>
-                  <option value="incorrect">未通过</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>评分</span>
-                <select v-model="manualForm.score" :disabled="manualSubmitting">
-                  <option :value="null">不评分</option>
-                  <option v-for="score in [1, 2, 3, 4, 5]" :key="score" :value="score">{{ score }} / 5</option>
-                </select>
-              </label>
-            </div>
-            <label class="field">
-              <span>备注</span>
-              <textarea v-model="manualForm.note" rows="2" maxlength="500" placeholder="可选" :disabled="manualSubmitting"></textarea>
-            </label>
-            <button type="button" class="button primary mini" :disabled="manualSubmitting || !manualForm.verdict" @click="submitManual">
-              {{ manualSubmitting ? '保存中…' : '保存人工判定' }}
-            </button>
-            <p v-if="detail.manualUpdatedAt" class="muted small">上次人工判定：{{ formatIqTime(detail.manualUpdatedAt) }}</p>
-          </div>
-
-          <template v-if="detail.benchmark === 'pelican'">
-            <div class="iq-checks">
+            <div
+              v-if="detail.judgeResult"
+              class="iq-external"
+              :class="`tone-${iqVerdictTone(detail.judgeResult.verdict)}`"
+            >
               <div class="iq-section-head">
-                <strong>本地辅助检查</strong>
-                <span class="muted small">{{ passedCheckCount }}/{{ detail.checks.length }} 项通过</span>
+                <strong>{{ detail.benchmark === 'pelican' ? '判分结果' : '判分器参考' }}</strong>
+                <span class="badge" :class="iqVerdictTone(detail.judgeResult.verdict)">
+                  {{ detail.judgeResult.label }}
+                </span>
               </div>
-              <ul>
-                <li v-for="check in detail.checks" :key="check.id" :class="{ passed: check.passed }">
-                  <Icon :name="check.passed ? 'check' : 'close'" :size="14" />
-                  <span>{{ check.label }}</span>
-                  <small v-if="check.detail">{{ check.detail }}</small>
-                  <em v-if="check.decisive === false" class="iq-check-optional">提示</em>
-                </li>
-              </ul>
-              <p class="iq-caveat">
-                {{ detail.judgeResult ? `本次由「${detail.judgeResult.judgeLabel}」判分；` : '' }}本地检查只看 HTML、SVG、动画、资源依赖和能离线确认的图层顺序，需要看画面的比例与美感交给判分器或人工。标「提示」的项不参与判定。
+              <p>
+                <strong>{{ detail.judgeResult.judgeLabel }}</strong>
+                <template v-if="detail.judgeResult.score != null"> · {{ detail.judgeResult.score }} / 100</template>
+                <template v-if="detail.judgeResult.reason"> · {{ detail.judgeResult.reason }}</template>
               </p>
+              <small v-if="detail.judgeResult.checkedAt">判分时间：{{ formatIqTime(detail.judgeResult.checkedAt) }}</small>
+              <details
+                v-if="Object.keys(detail.judgeResult.details).length"
+                class="iq-judge-details"
+                :open="detail.judgeResult.judgeId === 'vision'"
+              >
+                <summary>逐项检测</summary>
+                <dl>
+                  <template v-for="(value, key) in detail.judgeResult.details" :key="key">
+                    <dt>{{ key }}</dt>
+                    <dd>{{ value }}</dd>
+                  </template>
+                </dl>
+              </details>
             </div>
-          </template>
 
-          <template v-else>
-            <div class="iq-candy-layout">
-              <div class="iq-candy-answer">
+            <div v-if="detail.html" class="iq-preview">
+              <div class="iq-preview-bar">
+                <div class="iq-segmented">
+                  <button type="button" :class="{ active: previewMode === 'preview' }" @click="previewMode = 'preview'">预览</button>
+                  <button type="button" :class="{ active: previewMode === 'source' }" @click="previewMode = 'source'">HTML</button>
+                </div>
+                <span class="muted small">{{ detail.html.length.toLocaleString() }} 字符 · 已阻止外部资源和脚本</span>
+                <CopyButton :text="sourceText" title="复制 HTML" variant="subtle" />
+              </div>
+              <iframe
+                v-if="previewMode === 'preview'"
+                class="iq-frame"
+                :srcdoc="previewHtml"
+                sandbox=""
+                referrerpolicy="no-referrer"
+                title="模型作品预览"
+              ></iframe>
+              <pre v-else class="iq-source">{{ detail.html }}</pre>
+            </div>
+            <div v-else class="iq-raw">
+              <div class="iq-section-head">
+                <strong>原始响应</strong>
+                <CopyButton :text="detail.responseText || ''" title="复制原始响应" variant="subtle" />
+              </div>
+              <pre class="iq-source">{{ detail.responseText || '上游未返回文本' }}</pre>
+            </div>
+
+            <div v-if="detail.benchmark === 'pelican' && detail.html" class="iq-manual">
+              <div class="iq-section-head">
+                <strong>人工判定</strong>
+                <span v-if="detail.manualVerdict" class="badge info">已人工判定</span>
+              </div>
+              <div class="iq-manual-grid">
+                <label class="field">
+                  <span>结论</span>
+                  <select v-model="manualForm.verdict" :disabled="manualSubmitting" @change="markManualDirty">
+                    <option value="">不修改</option>
+                    <option value="passed">通过</option>
+                    <option value="incorrect">未通过</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>评分</span>
+                  <select v-model="manualForm.score" :disabled="manualSubmitting" @change="markManualDirty">
+                    <option :value="null">不评分</option>
+                    <option v-for="score in [1, 2, 3, 4, 5]" :key="score" :value="score">{{ score }} / 5</option>
+                  </select>
+                </label>
+              </div>
+              <label class="field">
+                <span>备注</span>
+                <textarea v-model="manualForm.note" rows="2" maxlength="500" placeholder="可选" :disabled="manualSubmitting" @input="markManualDirty"></textarea>
+              </label>
+              <button type="button" class="button primary mini" :disabled="manualSubmitting || !manualForm.verdict" @click="submitManual">
+                {{ manualSubmitting ? '保存中…' : '保存人工判定' }}
+              </button>
+              <p v-if="detail.manualUpdatedAt" class="muted small">上次人工判定：{{ formatIqTime(detail.manualUpdatedAt) }}</p>
+            </div>
+
+            <template v-if="detail.benchmark === 'pelican'">
+              <div class="iq-checks">
                 <div class="iq-section-head">
-                  <strong>判分依据</strong>
+                  <strong>本地辅助检查</strong>
                   <span class="muted small">{{ passedCheckCount }}/{{ detail.checks.length }} 项通过</span>
                 </div>
-                <p v-if="legacyCandy">历史记录按旧版规则判定：HTML 可见文字中出现独立的 <strong>21</strong> 即通过。</p>
-                <p v-else-if="detail.questionId != null"><strong>{{ detail.questionTitle }}</strong> · {{ detail.answerType === 'number' ? '数字按值比较' : '文本去除首尾空白后精确比较' }}。</p>
-                <p v-else>读取模型返回的 JSON，<code>answer</code> 等于 <strong>21</strong> 即通过。</p>
-                <div class="iq-checks">
-                  <ul>
-                    <li v-for="check in detail.checks" :key="check.id" :class="{ passed: check.passed }">
-                      <Icon :name="check.passed ? 'check' : 'close'" :size="14" />
-                      <span>{{ check.label }}</span>
-                      <small v-if="check.detail">{{ check.detail }}</small>
-                    </li>
-                  </ul>
-                </div>
-                <p v-if="legacyCandy" class="iq-caveat">旧记录保留当时的判分结果，不会按新规则重算。</p>
-                <p v-else class="iq-caveat">JSON 无法解析、answer 缺失或类型不符时判定为格式失败；不评价 reason 的推理质量。</p>
+                <ul>
+                  <li v-for="check in detail.checks" :key="check.id" :class="{ passed: check.passed }">
+                    <Icon :name="check.passed ? 'check' : 'close'" :size="14" />
+                    <span>{{ check.label }}</span>
+                    <small v-if="check.detail">{{ check.detail }}</small>
+                    <em v-if="check.decisive === false" class="iq-check-optional">提示</em>
+                  </li>
+                </ul>
+                <p class="iq-caveat">
+                  {{ detail.judgeResult ? `本次由「${detail.judgeResult.judgeLabel}」判分；` : '' }}本地检查只看 HTML、SVG、动画、资源依赖和能离线确认的图层顺序，需要看画面的比例与美感交给判分器或人工。标「提示」的项不参与判定。
+                </p>
               </div>
-              <aside v-if="detail.success && (detail.expectedAnswerValue != null || detail.expectedAnswer != null)" class="iq-candy-grade">
-                <span class="muted small">本题判定</span>
-                <strong :class="detail.verdict === 'passed' ? 'iq-pass-text' : 'iq-fail-text'">{{ detail.verdictLabel }}</strong>
-                <p>期望答案：<strong>{{ detail.expectedAnswerValue ?? detail.expectedAnswer }}</strong></p>
-                <p v-if="legacyCandy">回答中{{ detail.matchedAnswer != null ? '出现' : '未出现' }}独立数字 21。</p>
-                <p v-else-if="detail.questionId != null">实际答案：<strong>{{ detail.actualAnswer ?? '未返回有效答案' }}</strong></p>
-                <p v-else>{{ detail.matchedAnswer != null ? 'answer 为 21。' : 'answer 不为 21 或无法解析。' }}</p>
-                <p v-if="!legacyCandy" class="iq-caveat">只按 JSON 的 answer 判定；不评价 reason 的推理质量。</p>
-              </aside>
-              <aside v-else class="iq-candy-grade">
-                <span class="muted small">本题判定</span>
-                <strong class="iq-fail-text">未完成</strong>
-                <p v-if="!detail.success">上游请求失败，无法判分。请查看错误信息后重试。</p>
-                <p v-else>上游返回的文本为空，无法判分。</p>
-              </aside>
-            </div>
-          </template>
+            </template>
 
-          <footer class="iq-result-foot">
-            <span class="muted small">{{ usageSummary(detail) }}</span>
-          </footer>
-        </section>
+            <template v-else>
+              <div class="iq-candy-layout">
+                <div class="iq-candy-answer">
+                  <div class="iq-section-head">
+                    <strong>判分依据</strong>
+                    <span class="muted small">{{ passedCheckCount }}/{{ detail.checks.length }} 项通过</span>
+                  </div>
+                  <p v-if="legacyCandy">历史记录按旧版规则判定：HTML 可见文字中出现独立的 <strong>21</strong> 即通过。</p>
+                  <p v-else-if="detail.questionId != null"><strong>{{ detail.questionTitle }}</strong> · {{ detail.answerType === 'number' ? '数字按值比较' : '文本去除首尾空白后精确比较' }}。</p>
+                  <p v-else>读取模型返回的 JSON，<code>answer</code> 等于 <strong>21</strong> 即通过。</p>
+                  <div class="iq-checks">
+                    <ul>
+                      <li v-for="check in detail.checks" :key="check.id" :class="{ passed: check.passed }">
+                        <Icon :name="check.passed ? 'check' : 'close'" :size="14" />
+                        <span>{{ check.label }}</span>
+                        <small v-if="check.detail">{{ check.detail }}</small>
+                      </li>
+                    </ul>
+                  </div>
+                  <p v-if="legacyCandy" class="iq-caveat">旧记录保留当时的判分结果，不会按新规则重算。</p>
+                  <p v-else class="iq-caveat">JSON 无法解析、answer 缺失或类型不符时判定为格式失败；不评价 reason 的推理质量。</p>
+                </div>
+                <aside v-if="detail.success && (detail.expectedAnswerValue != null || detail.expectedAnswer != null)" class="iq-candy-grade">
+                  <span class="iq-stat-label">本题判定</span>
+                  <strong :class="detail.verdict === 'passed' ? 'iq-pass-text' : 'iq-fail-text'">{{ detail.verdictLabel }}</strong>
+                  <p>期望答案：<strong>{{ detail.expectedAnswerValue ?? detail.expectedAnswer }}</strong></p>
+                  <p v-if="legacyCandy">回答中{{ detail.matchedAnswer != null ? '出现' : '未出现' }}独立数字 21。</p>
+                  <p v-else-if="detail.questionId != null">实际答案：<strong>{{ detail.actualAnswer ?? '未返回有效答案' }}</strong></p>
+                  <p v-else>{{ detail.matchedAnswer != null ? 'answer 为 21。' : 'answer 不为 21 或无法解析。' }}</p>
+                  <p v-if="!legacyCandy" class="iq-caveat">只按 JSON 的 answer 判定；不评价 reason 的推理质量。</p>
+                </aside>
+                <aside v-else class="iq-candy-grade">
+                  <span class="iq-stat-label">本题判定</span>
+                  <strong class="iq-fail-text">未完成</strong>
+                  <p v-if="!detail.success">上游请求失败，无法判分。请查看错误信息后重试。</p>
+                  <p v-else>上游返回的文本为空，无法判分。</p>
+                </aside>
+              </div>
+            </template>
 
-        <section v-else class="panel iq-empty">
-          <div class="iq-empty-icon"><Icon name="brain" :size="30" /></div>
-          <strong>选择模型，运行第一道题</strong>
-          <p>每道题都是一次真实的上游请求。结果会保留最近 200 次，方便横向比较不同模型。</p>
-        </section>
+            <footer class="iq-result-foot">
+              <span class="muted small">{{ usageSummary(detail) }}</span>
+            </footer>
+          </section>
+
+          <section v-else-if="!activeRuns.length" class="panel iq-empty">
+            <div class="iq-empty-icon"><Icon name="brain" :size="30" /></div>
+            <strong>选择模型，运行第一道题</strong>
+            <p>每道题都是一次真实的上游请求。结果会保留最近 200 次，方便横向比较不同模型。</p>
+          </section>
+        </div>
 
         <section class="panel iq-history">
           <header class="iq-history-head">
@@ -756,8 +827,8 @@ onBeforeUnmount(stopTimer)
               :key="run.id"
               type="button"
               class="iq-history-item"
-              :class="{ active: detail?.id === run.id }"
-              @click="openRun(run)"
+              :class="[`tone-${iqVerdictTone(run.verdict)}`, { active: detail?.id === run.id }]"
+              @click="openRun(run, { manual: true })"
             >
               <span class="iq-history-top">
                 <span class="iq-history-main">
@@ -786,19 +857,145 @@ onBeforeUnmount(stopTimer)
 
 <style scoped>
 .iq-page {
-  max-width: 1480px;
+  --iq-radius: 22px;
+  --iq-glass-bg: rgba(255, 255, 255, 0.56);
+  --iq-glass-strong: rgba(255, 255, 255, 0.7);
+  --iq-glass-soft: rgba(255, 255, 255, 0.4);
+  --iq-glass-border: rgba(255, 255, 255, 0.72);
+  --iq-glass-line: rgba(148, 163, 184, 0.18);
+  --iq-glass-sheen: rgba(255, 255, 255, 0.68);
+  --iq-glass-shadow:
+    0 24px 60px -28px rgba(15, 23, 42, 0.26),
+    0 10px 24px -18px rgba(15, 23, 42, 0.18);
+  --iq-glass-inset:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.14);
+  --iq-field-bg: rgba(255, 255, 255, 0.42);
+  --iq-field-hover: rgba(255, 255, 255, 0.64);
+  --iq-field-border: rgba(148, 163, 184, 0.26);
+  --iq-tile-bg: rgba(255, 255, 255, 0.62);
+  --iq-aurora-a: rgba(37, 99, 235, 0.2);
+  --iq-aurora-b: rgba(139, 92, 246, 0.15);
+  --iq-aurora-c: rgba(6, 182, 212, 0.12);
+  --iq-aurora-d: rgba(245, 158, 11, 0.08);
+  position: relative;
+  isolation: isolate;
+  max-width: 1520px;
   margin: 0 auto;
+  overflow-x: clip;
+}
+
+.iq-page::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  inset: -30px 0 -44px;
+  pointer-events: none;
+  background:
+    radial-gradient(48rem 34rem at 8% 0%, var(--iq-aurora-a), transparent 68%),
+    radial-gradient(42rem 32rem at 92% 8%, var(--iq-aurora-b), transparent 70%),
+    radial-gradient(46rem 34rem at 58% 58%, var(--iq-aurora-c), transparent 72%),
+    radial-gradient(38rem 30rem at 12% 88%, var(--iq-aurora-d), transparent 70%);
+  filter: blur(10px);
+  animation: iq-aurora-drift 26s ease-in-out infinite alternate;
+}
+
+.iq-page > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes iq-aurora-drift {
+  from {
+    transform: translate3d(-0.8%, -0.4%, 0) scale(1.01);
+  }
+  to {
+    transform: translate3d(1.4%, 0.9%, 0) scale(1.05);
+  }
+}
+
+[data-theme="dark"] .iq-page {
+  --iq-glass-bg: rgba(17, 24, 39, 0.58);
+  --iq-glass-strong: rgba(24, 35, 55, 0.74);
+  --iq-glass-soft: rgba(30, 41, 59, 0.42);
+  --iq-glass-border: rgba(148, 163, 184, 0.16);
+  --iq-glass-line: rgba(148, 163, 184, 0.14);
+  --iq-glass-sheen: rgba(255, 255, 255, 0.08);
+  --iq-glass-shadow:
+    0 28px 64px -30px rgba(0, 0, 0, 0.72),
+    0 12px 28px -20px rgba(0, 0, 0, 0.5);
+  --iq-glass-inset:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+  --iq-field-bg: rgba(8, 13, 24, 0.4);
+  --iq-field-hover: rgba(30, 41, 59, 0.62);
+  --iq-field-border: rgba(148, 163, 184, 0.18);
+  --iq-tile-bg: rgba(148, 163, 184, 0.12);
+  --iq-aurora-a: rgba(59, 130, 246, 0.22);
+  --iq-aurora-b: rgba(168, 85, 247, 0.18);
+  --iq-aurora-c: rgba(34, 211, 238, 0.14);
+  --iq-aurora-d: rgba(251, 191, 36, 0.08);
+}
+
+[data-theme="sepia"] .iq-page {
+  --iq-glass-bg: rgba(252, 249, 242, 0.62);
+  --iq-glass-strong: rgba(252, 249, 242, 0.78);
+  --iq-glass-soft: rgba(252, 249, 242, 0.46);
+  --iq-glass-border: rgba(255, 255, 255, 0.65);
+  --iq-glass-line: rgba(181, 161, 133, 0.2);
+  --iq-glass-sheen: rgba(255, 255, 255, 0.6);
+  --iq-glass-shadow:
+    0 24px 60px -30px rgba(76, 55, 28, 0.24),
+    0 10px 24px -18px rgba(76, 55, 28, 0.16);
+  --iq-field-bg: rgba(255, 252, 246, 0.5);
+  --iq-field-hover: rgba(255, 252, 246, 0.72);
+  --iq-field-border: rgba(181, 161, 133, 0.28);
+  --iq-tile-bg: rgba(255, 252, 246, 0.66);
+  --iq-aurora-a: rgba(180, 83, 9, 0.14);
+  --iq-aurora-b: rgba(217, 119, 6, 0.1);
+  --iq-aurora-c: rgba(20, 184, 166, 0.08);
+  --iq-aurora-d: rgba(251, 191, 36, 0.08);
+}
+
+.iq-page .panel {
+  border: 1px solid var(--iq-glass-border);
+  border-radius: var(--iq-radius);
+  background:
+    linear-gradient(145deg, var(--iq-glass-sheen) 0%, transparent 38%),
+    var(--iq-glass-bg);
+  box-shadow: var(--iq-glass-shadow), var(--iq-glass-inset);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
 }
 
 .iq-hero {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  padding: 22px 24px;
-  background:
-    radial-gradient(circle at 8% 0%, rgba(37, 99, 235, 0.12), transparent 42%),
-    var(--panel);
+  gap: 26px;
+  overflow: hidden;
+  padding: 24px 26px;
+}
+
+.iq-hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(120% 90% at 6% 0%, rgba(255, 255, 255, 0.55), transparent 48%);
+  opacity: 0.65;
+}
+
+[data-theme="dark"] .iq-hero::after {
+  background: radial-gradient(120% 90% at 6% 0%, rgba(255, 255, 255, 0.12), transparent 48%);
+  opacity: 0.8;
+}
+
+.iq-hero > * {
+  position: relative;
+  z-index: 1;
 }
 
 .iq-hero-copy {
@@ -806,20 +1003,33 @@ onBeforeUnmount(stopTimer)
 }
 
 .iq-eyebrow {
-  color: var(--brand);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: color-mix(in srgb, var(--brand) 82%, var(--ink));
+  font-size: 10.5px;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+}
+
+.iq-eyebrow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--brand);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 14%, transparent);
 }
 
 .iq-hero h2 {
-  margin: 6px 0 8px;
-  font-size: 22px;
+  margin: 8px 0 8px;
+  font-size: 23px;
+  font-weight: 750;
   line-height: 1.25;
+  letter-spacing: -0.015em;
 }
 
 .iq-hero p {
-  max-width: 780px;
+  max-width: 760px;
   margin: 0;
   color: var(--muted);
   font-size: 13px;
@@ -828,42 +1038,59 @@ onBeforeUnmount(stopTimer)
 
 .iq-hero-note {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
   flex: 0 0 auto;
-  gap: 6px;
-  max-width: 250px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--bg);
-  color: var(--muted);
-  font-size: 12px;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 330px;
+  padding: 14px 16px;
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 16px;
+  background: var(--iq-glass-soft);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 45%, transparent);
 }
 
-.iq-hero-note span {
+[data-theme="dark"] .iq-hero-note {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.iq-note-icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--brand) 13%, transparent);
+  color: var(--brand);
+}
+
+.iq-hero-note strong {
+  display: block;
+  margin-bottom: 4px;
   color: var(--ink);
-  font-weight: 650;
+  font-size: 12.5px;
+  font-weight: 700;
 }
 
 .iq-hero-note small {
-  flex-basis: 100%;
-  line-height: 1.5;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.55;
 }
 
 .iq-layout {
   display: grid;
   grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
   align-items: start;
-  gap: 16px;
+  gap: 18px;
 }
 
 .iq-control {
   position: sticky;
   top: 16px;
   display: grid;
-  gap: 18px;
-  padding: 18px;
+  gap: 20px;
+  padding: 20px;
 }
 
 .iq-section {
@@ -872,12 +1099,32 @@ onBeforeUnmount(stopTimer)
   min-width: 0;
 }
 
+.iq-section + .iq-section {
+  padding-top: 18px;
+  border-top: 1px solid var(--iq-glass-line);
+}
+
 .iq-section-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
+  font-size: 10.5px;
+  font-weight: 750;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+
+.iq-section-label::before {
+  width: 14px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--brand), transparent);
+  content: '';
+}
+
+.iq-section-head .iq-section-label {
+  color: var(--muted);
 }
 
 .iq-benchmark-list {
@@ -886,44 +1133,60 @@ onBeforeUnmount(stopTimer)
 }
 
 .iq-benchmark-card {
+  position: relative;
   display: flex;
   align-items: flex-start;
   width: 100%;
-  gap: 10px;
+  gap: 11px;
   padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--panel);
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 14px;
+  background: var(--iq-glass-soft);
   color: var(--ink);
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
 }
 
-.iq-benchmark-card:hover:not(:disabled) {
-  border-color: var(--line-strong);
+.iq-benchmark-card:hover {
+  border-color: color-mix(in srgb, var(--brand) 26%, var(--iq-glass-line));
+  background: var(--iq-glass-strong);
   transform: translateY(-1px);
 }
 
 .iq-benchmark-card.active {
-  border-color: color-mix(in srgb, var(--brand) 45%, var(--line));
-  background: color-mix(in srgb, var(--brand) 6%, var(--panel));
+  border-color: color-mix(in srgb, var(--brand) 46%, var(--iq-glass-border));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--brand) 14%, var(--iq-glass-strong)), color-mix(in srgb, var(--brand) 4%, var(--iq-glass-soft)));
+  box-shadow:
+    0 14px 30px -20px color-mix(in srgb, var(--brand) 65%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
 }
 
-.iq-benchmark-card:disabled {
-  cursor: not-allowed;
-  opacity: 0.72;
+[data-theme="dark"] .iq-benchmark-card.active {
+  box-shadow:
+    0 14px 30px -20px rgba(59, 130, 246, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .iq-benchmark-icon {
   display: grid;
-  place-items: center;
   flex: 0 0 auto;
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  background: var(--bg);
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--iq-tile-bg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
   color: var(--brand);
+}
+
+[data-theme="dark"] .iq-benchmark-icon {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.iq-benchmark-card.active .iq-benchmark-icon {
+  background: color-mix(in srgb, var(--brand) 15%, var(--iq-tile-bg));
 }
 
 .iq-benchmark-copy {
@@ -944,20 +1207,21 @@ onBeforeUnmount(stopTimer)
 
 .iq-benchmark-check {
   display: grid;
-  place-items: center;
   flex: 0 0 auto;
   width: 20px;
   height: 20px;
   margin-left: auto;
+  place-items: center;
   border-radius: 999px;
-  background: var(--brand);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--brand) 72%, white), var(--brand));
+  box-shadow: 0 4px 10px -4px color-mix(in srgb, var(--brand) 70%, transparent);
   color: #fff;
 }
 
 .iq-prompt-editor {
   display: grid;
   gap: 8px;
-  border-top: 1px dashed var(--line);
+  border-top: 1px solid var(--iq-glass-line);
   padding-top: 10px;
 }
 
@@ -965,11 +1229,11 @@ onBeforeUnmount(stopTimer)
   width: 100%;
   min-height: 150px;
   max-height: 340px;
-  padding: 10px;
+  padding: 11px;
   resize: vertical;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg);
+  border: 1px solid var(--iq-field-border);
+  border-radius: 12px;
+  background: var(--iq-field-bg);
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
@@ -977,13 +1241,8 @@ onBeforeUnmount(stopTimer)
 }
 
 .iq-prompt-input:focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid color-mix(in srgb, var(--brand) 65%, transparent);
   outline-offset: 1px;
-}
-
-.iq-prompt-input:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
 }
 
 .iq-prompt-meta {
@@ -994,7 +1253,7 @@ onBeforeUnmount(stopTimer)
 }
 
 .iq-used-prompt {
-  margin-top: 10px;
+  margin-top: 2px;
 }
 
 .iq-used-prompt summary {
@@ -1006,11 +1265,11 @@ onBeforeUnmount(stopTimer)
 .iq-prompt {
   max-height: 240px;
   margin: 8px 0;
-  padding: 10px;
+  padding: 11px;
   overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg);
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 10px;
+  background: var(--iq-field-bg);
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
@@ -1025,40 +1284,137 @@ onBeforeUnmount(stopTimer)
   line-height: 1.55;
 }
 
+.iq-target {
+  display: grid;
+  gap: 10px;
+}
+
+.iq-select-field {
+  --sd-bg: var(--iq-field-bg);
+  --sd-border: var(--iq-field-border);
+  --sd-bg-hover: var(--iq-field-hover);
+  --sd-border-hover: color-mix(in srgb, var(--brand) 34%, var(--iq-field-border));
+  --sd-radius: 12px;
+}
+
 .iq-target-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
-.iq-credential-field { grid-column: 1 / -1; }
+.iq-credential-field {
+  grid-column: 1 / -1;
+}
 
-.iq-target-meta {
+.iq-inline-warning {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
+  gap: 7px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 24%, var(--iq-glass-line));
+  border-radius: 9px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 11.5px;
+  line-height: 1.45;
 }
 
 .iq-no-target {
   margin: 0;
   padding: 12px;
-  border: 1px dashed var(--line);
-  border-radius: 9px;
+  border: 1px dashed var(--iq-glass-line);
+  border-radius: 10px;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
 }
 
+.iq-page .field > span {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.iq-page .field select,
+.iq-page .field textarea {
+  border: 1px solid var(--iq-field-border);
+  border-radius: 12px;
+  background: var(--iq-field-bg);
+  color: var(--ink);
+}
+
+.iq-page .field select:focus,
+.iq-page .field textarea:focus {
+  border-color: color-mix(in srgb, var(--brand) 55%, var(--iq-field-border));
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 12%, transparent);
+}
+
+.iq-run-area {
+  display: grid;
+  gap: 9px;
+}
+
 .iq-run-button {
-  min-height: 42px;
+  min-height: 46px;
+  border-radius: 14px;
+  font-size: 13px;
+}
+
+.iq-page .button.primary.iq-run-button {
+  border: 1px solid color-mix(in srgb, var(--brand) 68%, white 32%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0) 48%),
+    linear-gradient(180deg, color-mix(in srgb, var(--brand) 82%, white), var(--brand) 58%, var(--brand-deep));
+  box-shadow:
+    0 16px 30px -16px color-mix(in srgb, var(--brand) 82%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.iq-page .button.primary.iq-run-button:hover:not(:disabled) {
+  filter: brightness(1.05);
 }
 
 .iq-run-note {
-  margin: -6px 0 0;
+  margin: 0;
   color: var(--muted);
   font-size: 11.5px;
   line-height: 1.55;
+}
+
+.iq-run-live {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--brand);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.iq-live-dot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--brand);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 15%, transparent);
+  animation: iq-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes iq-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.82);
+  }
 }
 
 .is-spinning {
@@ -1070,40 +1426,29 @@ onBeforeUnmount(stopTimer)
   grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
   align-items: start;
   min-width: 0;
+  gap: 18px;
+}
+
+.iq-main-column {
+  display: grid;
+  min-width: 0;
   gap: 16px;
 }
 
-.iq-loading,
-.iq-running {
+.iq-loading {
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 22px;
 }
 
-.iq-loading p,
-.iq-running p {
+.iq-loading p {
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 13px;
 }
 
-.iq-running-spinner {
-  width: 22px;
-  height: 22px;
-  border: 2px solid var(--line);
-  border-top-color: var(--brand);
-  border-radius: 999px;
-  animation: spin 0.8s linear infinite;
-}
-
-.iq-load-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
+.iq-load-error,
 .iq-run-error {
   display: flex;
   align-items: center;
@@ -1111,10 +1456,117 @@ onBeforeUnmount(stopTimer)
   gap: 12px;
 }
 
+.iq-active {
+  position: relative;
+  display: grid;
+  gap: 12px;
+  overflow: hidden;
+  padding: 18px 20px;
+}
+
+.iq-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: -20%;
+  width: 34%;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--brand), transparent);
+  opacity: 0.65;
+  animation: iq-progress 1.9s ease-in-out infinite;
+}
+
+@keyframes iq-progress {
+  0% {
+    left: -30%;
+  }
+  100% {
+    left: 110%;
+  }
+}
+
+.iq-active-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.iq-active-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.iq-active-hint {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.iq-active-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.iq-active-item {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 12px;
+  background: var(--iq-glass-soft);
+}
+
+.iq-active-spinner {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  border: 2px solid color-mix(in srgb, var(--brand) 18%, var(--iq-glass-line));
+  border-top-color: var(--brand);
+  border-radius: 999px;
+  animation: spin 0.8s linear infinite;
+}
+
+.iq-active-copy {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 2px;
+}
+
+.iq-active-copy strong {
+  overflow: hidden;
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iq-active-copy small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iq-active-time {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
 .iq-result {
   display: grid;
-  gap: 16px;
-  padding: 18px;
+  gap: 18px;
+  padding: 20px 22px;
 }
 
 .iq-result-head {
@@ -1134,7 +1586,8 @@ onBeforeUnmount(stopTimer)
 
 .iq-result-title h3 {
   margin: 0;
-  font-size: 17px;
+  font-size: 18px;
+  letter-spacing: -0.01em;
 }
 
 .iq-result-title small {
@@ -1147,36 +1600,51 @@ onBeforeUnmount(stopTimer)
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 6px;
+}
+
+.iq-meta-chip {
+  padding: 4px 9px;
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 999px;
+  background: var(--iq-glass-soft);
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .iq-result-summary {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg);
 }
 
-.iq-result-summary div {
+.iq-stat-tile {
   display: grid;
   min-width: 0;
   gap: 3px;
+  padding: 11px 12px;
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 12px;
+  background: var(--iq-glass-soft);
 }
 
-.iq-result-summary strong {
+.iq-stat-tile strong {
   overflow-wrap: anywhere;
   font-size: 12.5px;
 }
 
+.iq-stat-label {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+}
+
 .iq-preview {
   display: grid;
-  gap: 8px;
   min-width: 0;
+  gap: 8px;
 }
 
 .iq-preview-bar {
@@ -1185,21 +1653,25 @@ onBeforeUnmount(stopTimer)
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 12px;
+  background: var(--iq-glass-soft);
 }
 
 .iq-segmented {
   display: inline-flex;
   gap: 2px;
   padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--bg);
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg) 46%, transparent);
 }
 
 .iq-segmented button {
-  padding: 5px 10px;
+  padding: 5px 11px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 999px;
   background: transparent;
   color: var(--muted);
   font-size: 12px;
@@ -1207,18 +1679,23 @@ onBeforeUnmount(stopTimer)
 }
 
 .iq-segmented button.active {
-  background: var(--panel);
+  background: var(--iq-glass-strong);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6);
   color: var(--ink);
-  box-shadow: var(--shadow-soft);
+}
+
+[data-theme="dark"] .iq-segmented button.active {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .iq-frame {
   width: 100%;
   height: min(62vh, 620px);
   min-height: 320px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 12px;
   background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
 }
 
 .iq-source,
@@ -1227,9 +1704,9 @@ onBeforeUnmount(stopTimer)
   margin: 0;
   padding: 12px;
   overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--bg);
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 10px;
+  background: var(--iq-field-bg);
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
@@ -1275,8 +1752,9 @@ onBeforeUnmount(stopTimer)
   flex-wrap: wrap;
   gap: 7px;
   padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 10px;
+  background: var(--iq-glass-soft);
   color: var(--danger);
   font-size: 12.5px;
 }
@@ -1284,7 +1762,7 @@ onBeforeUnmount(stopTimer)
 .iq-check-optional {
   margin-left: 6px;
   padding: 0 5px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--iq-glass-line);
   border-radius: 5px;
   color: var(--muted);
   font-size: 11px;
@@ -1292,6 +1770,8 @@ onBeforeUnmount(stopTimer)
 }
 
 .iq-checks li.passed {
+  border-color: color-mix(in srgb, var(--success) 24%, var(--iq-glass-line));
+  background: color-mix(in srgb, var(--success) 6%, var(--iq-glass-soft));
   color: var(--success);
 }
 
@@ -1316,8 +1796,8 @@ onBeforeUnmount(stopTimer)
 .iq-candy-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(220px, 0.7fr);
-  gap: 14px;
   align-items: start;
+  gap: 14px;
 }
 
 .iq-candy-answer {
@@ -1332,17 +1812,17 @@ onBeforeUnmount(stopTimer)
 }
 
 .iq-candy-grade {
-  overflow-wrap: anywhere;
   display: grid;
+  overflow-wrap: anywhere;
   gap: 8px;
   padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg);
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 14px;
+  background: var(--iq-glass-soft);
 }
 
 .iq-candy-grade strong {
-  font-size: 20px;
+  font-size: 21px;
 }
 
 .iq-candy-grade p {
@@ -1376,9 +1856,9 @@ onBeforeUnmount(stopTimer)
 
 .iq-judge-failures {
   padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg);
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 9px;
+  background: var(--iq-glass-soft);
   color: var(--muted);
   font-size: 11.5px;
   line-height: 1.55;
@@ -1427,9 +1907,9 @@ onBeforeUnmount(stopTimer)
   display: grid;
   gap: 10px;
   padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg);
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 14px;
+  background: var(--iq-glass-soft);
 }
 
 .iq-manual-grid {
@@ -1446,9 +1926,9 @@ onBeforeUnmount(stopTimer)
   display: grid;
   gap: 6px;
   padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg);
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 12px;
+  background: var(--iq-glass-soft);
 }
 
 .iq-external p {
@@ -1470,7 +1950,7 @@ onBeforeUnmount(stopTimer)
   flex-wrap: wrap;
   gap: 12px;
   padding-top: 10px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--iq-glass-line);
 }
 
 .iq-empty {
@@ -1483,13 +1963,24 @@ onBeforeUnmount(stopTimer)
 
 .iq-empty-icon {
   display: grid;
-  place-items: center;
-  width: 58px;
-  height: 58px;
+  width: 60px;
+  height: 60px;
   margin-bottom: 2px;
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--brand) 9%, var(--panel));
+  place-items: center;
+  border: 1px solid var(--iq-glass-line);
+  border-radius: 19px;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.7), transparent 60%),
+    color-mix(in srgb, var(--brand) 10%, var(--iq-glass-soft));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
   color: var(--brand);
+}
+
+[data-theme="dark"] .iq-empty-icon {
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.1), transparent 60%),
+    color-mix(in srgb, var(--brand) 18%, var(--iq-glass-soft));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .iq-empty strong {
@@ -1514,7 +2005,7 @@ onBeforeUnmount(stopTimer)
   min-width: 0;
   max-height: calc(100vh - 32px);
   gap: 12px;
-  padding: 16px 18px;
+  padding: 18px;
 }
 
 .iq-history-head {
@@ -1544,8 +2035,8 @@ onBeforeUnmount(stopTimer)
 
 .iq-history-empty {
   padding: 20px;
-  border: 1px dashed var(--line);
-  border-radius: 9px;
+  border: 1px dashed var(--iq-glass-line);
+  border-radius: 10px;
   color: var(--muted);
   font-size: 12.5px;
   text-align: center;
@@ -1553,23 +2044,54 @@ onBeforeUnmount(stopTimer)
 
 .iq-history-list {
   display: grid;
-  gap: 6px;
   min-height: 0;
+  gap: 7px;
   overflow-y: auto;
   padding-right: 2px;
 }
 
 .iq-history-item {
+  --item-tone: var(--iq-glass-line);
   display: grid;
   width: 100%;
   gap: 4px;
   padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--panel);
+  border: 1px solid var(--iq-glass-line);
+  border-left: 3px solid color-mix(in srgb, var(--item-tone) 82%, transparent);
+  border-radius: 11px;
+  background: var(--iq-glass-soft);
   color: var(--ink);
   text-align: left;
   cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.iq-history-item.tone-success {
+  --item-tone: var(--success-fill);
+}
+
+.iq-history-item.tone-danger {
+  --item-tone: var(--danger-fill);
+}
+
+.iq-history-item.tone-warning {
+  --item-tone: var(--warning-fill);
+}
+
+.iq-history-item:hover {
+  border-color: color-mix(in srgb, var(--brand) 22%, var(--iq-glass-line));
+  background: var(--iq-glass-strong);
+  transform: translateY(-1px);
+}
+
+.iq-history-item.active {
+  border-color: color-mix(in srgb, var(--brand) 42%, var(--iq-glass-line));
+  background: color-mix(in srgb, var(--brand) 7%, var(--iq-glass-strong));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+[data-theme="dark"] .iq-history-item.active {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .iq-history-top {
@@ -1578,16 +2100,6 @@ onBeforeUnmount(stopTimer)
   justify-content: space-between;
   min-width: 0;
   gap: 10px;
-}
-
-.iq-history-item:hover {
-  border-color: var(--line-strong);
-  background: var(--bg);
-}
-
-.iq-history-item.active {
-  border-color: color-mix(in srgb, var(--brand) 45%, var(--line));
-  background: color-mix(in srgb, var(--brand) 5%, var(--panel));
 }
 
 .iq-history-main {
@@ -1623,6 +2135,23 @@ onBeforeUnmount(stopTimer)
 .iq-history-side small {
   color: var(--muted);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .iq-page::before,
+  .iq-live-dot,
+  .iq-active::after {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .iq-page .panel {
+    background: var(--panel);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 @media (max-width: 1360px) {
@@ -1644,6 +2173,10 @@ onBeforeUnmount(stopTimer)
   .iq-history-list {
     overflow: visible;
   }
+
+  .iq-result-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1000px) {
@@ -1663,6 +2196,10 @@ onBeforeUnmount(stopTimer)
     padding: 18px;
   }
 
+  .iq-hero h2 {
+    font-size: 20px;
+  }
+
   .iq-hero-note {
     max-width: none;
     width: 100%;
@@ -1675,7 +2212,7 @@ onBeforeUnmount(stopTimer)
   }
 
   .iq-result {
-    padding: 14px;
+    padding: 16px;
   }
 
   .iq-result-head {
