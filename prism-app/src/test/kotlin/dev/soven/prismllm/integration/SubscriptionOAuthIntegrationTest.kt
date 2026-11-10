@@ -336,6 +336,41 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `oauth model test rejects models the account is not authorized for`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            val imported = client.post("/admin/api/oauth-accounts") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"provider":"antigravity","refreshToken":"model-test-rt"}""")
+            }
+            assertEquals(HttpStatusCode.OK, imported.status)
+            val accountId = Json.parseToJsonElement(imported.bodyAsText())
+                .jsonObject["id"]!!.jsonPrimitive.content
+
+            val update = client.put("/admin/api/oauth-accounts/$accountId/models") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"models":["gemini-3-pro"]}""")
+            }
+            assertEquals(HttpStatusCode.OK, update.status)
+
+            // 账号只授权了 gemini-3-pro；测试接口必须加载这层限制，不能按“全部模型”放行。
+            val rejected = client.post("/admin/api/oauth-accounts/$accountId/model-test") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gemini-3-flash","protocol":"gemini","prompt":"ping"}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, rejected.status)
+            assertTrue(rejected.bodyAsText().contains("model_not_authorized"))
+        }
+    }
+
+    @Test
     fun `admin oauth provider models rejects invalid body before provisioning`() = runBlocking {
         testApplication {
             application { app.install(this) }

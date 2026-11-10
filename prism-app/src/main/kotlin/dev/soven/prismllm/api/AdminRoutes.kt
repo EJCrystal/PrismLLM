@@ -53,6 +53,7 @@ import dev.soven.prismllm.proxy.modelListProtocol
 import dev.soven.prismllm.proxy.probeUpstreamProtocols
 import dev.soven.prismllm.proxy.resolveSavedCredential
 import dev.soven.prismllm.proxy.testChannelModelConnectivity
+import dev.soven.prismllm.proxy.testOAuthAccountModelConnectivity
 import dev.soven.prismllm.channel.persistence.ChannelKeyUpdate
 import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
@@ -1502,6 +1503,86 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(oauthAccountResponse(app, account))
         }
 
+        post("/oauth-accounts/{id}/model-test") {
+            call.requireAdmin(app)
+            val accountId = call.requiredParam("id", "缺少账号 id")
+            // 必须加载模型授权：find() 的空模型列表表示“全部模型”，会绕开账号级限制。
+            val account = app.oauthAccountRepository.findDetailed(accountId)
+                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            val request = call.receive<ChannelModelTestRequest>()
+            val model = request.model.trim()
+            if (model.isEmpty() || model.length > 200) {
+                throw badRequest("invalid_model_test", "模型名长度必须在 1..200 之间")
+            }
+            if (!account.supports(model)) {
+                throw badRequest("model_not_authorized", "账号「${account.name}」未授权模型「$model」")
+            }
+            val protocol = GatewayProtocol.fromValue(request.protocol.trim())
+                ?: throw badRequest("invalid_model_test_protocol", "测试协议无效")
+            val endpoint = ProviderEndpoints.of(account.provider)
+            if (protocol !in endpoint.protocols) {
+                throw badRequest("model_test_protocol_unsupported", "订阅账号不支持协议 ${protocol.value}")
+            }
+            // 端点渠道由系统置备，承载官方地址与请求覆盖；测试必须使用与数据面完全相同的配置。
+            val channelId = app.providerChannelProvisioner.ensure(account.provider)
+                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + account.provider.value)
+            val channel = app.channelRepository.find(channelId)
+                ?: throw notFound("channel_not_found", "系统端点渠道不存在")
+            if (model !in channel.models) {
+                throw badRequest("model_not_authorized", "系统端点渠道尚未配置模型「$model」")
+            }
+            val settings = app.modelTestSettingsRepository.load()
+            val prompt = request.prompt?.trim()?.takeIf { it.isNotEmpty() } ?: settings.defaultPrompt
+            if (prompt.length > MODEL_TEST_PROMPT_MAX) {
+                throw badRequest("invalid_model_test_prompt", "测试提示词不能超过 $MODEL_TEST_PROMPT_MAX 个字符")
+            }
+            val proxy = try {
+                account.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
+                    ?.let { proxyAddress(it, app.config.oauth.proxyAllowedHosts) }
+            } catch (cause: OAuthRefreshException) {
+                throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
+            }
+            val token = try {
+                app.oauthTokenService.accessToken(account.id)
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Throwable) {
+                throw GatewayError(
+                    HttpStatusCode.BadGateway,
+                    "oauth_credential_unavailable",
+                    "读取账号凭据失败: " + (cause.message ?: cause::class.simpleName),
+                    "upstream_error",
+                    retryable = true,
+                )
+            } ?: throw badRequest("oauth_credential_unavailable", "账号还没有可用的 access token")
+            val project = if (channel.upstreamEnvelope == UpstreamEnvelope.CODE_ASSIST) {
+                withTimeoutOrNull(MODEL_TEST_PREPARE_TIMEOUT_MS) {
+                    app.codeAssistProjectResolver.context(account, token.accessToken, proxy)
+                }?.project
+            } else {
+                null
+            }
+            val result = testOAuthAccountModelConnectivity(
+                channel = channel,
+                accessToken = token.accessToken,
+                project = project,
+                model = model,
+                protocol = protocol,
+                prompt = prompt,
+                httpClient = upstreamClient(app, proxy),
+                codeAssistUserAgent = app.currentAntigravityUserAgent(),
+                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+            )
+            call.markAdminAuditDetails(buildJsonObject {
+                put("accountId", accountId)
+                put("model", model)
+                put("protocol", protocol.value)
+                put("success", result.success)
+            })
+            call.respond(result.toResponse(model, protocol, account.id, account.name, prompt))
+        }
+
         post("/oauth-login/start") {
             call.requireAdmin(app)
             val request = call.receive<OAuthLoginStartRequest>()
@@ -2563,6 +2644,8 @@ private const val DEFAULT_CHANNEL_KEY_NAME = "默认密钥"
 
 /** 管理面刷新模型目录的总上限：覆盖 project 探测、开通轮询与目录请求。 */
 private const val MODEL_REFRESH_TIMEOUT_MS = 60_000L
+/** 订阅账号连通性测试前的 project 发现预算；对话本身另有 45 秒上限。 */
+private const val MODEL_TEST_PREPARE_TIMEOUT_MS = 20_000L
 
 private fun normalizeModelMappings(request: ChannelRequest): List<ChannelModelRecord>? {
     val raw = when {

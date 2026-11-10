@@ -7,6 +7,11 @@ import dev.soven.prismllm.shared.domain.Usage
 
 import dev.soven.prismllm.shared.error.GatewayError
 import dev.soven.prismllm.channel.domain.ChannelRecord
+import dev.soven.prismllm.channel.domain.UpstreamEnvelope
+import dev.soven.prismllm.channel.domain.upstreamEnvelope
+import dev.soven.prismllm.proxy.codeassist.CodeAssistCloak
+import dev.soven.prismllm.proxy.codeassist.CodeAssistEnvelope
+import dev.soven.prismllm.proxy.codeassist.DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT
 import dev.soven.prismllm.shared.domain.UpstreamCredential
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.channel.domain.authTypeFor
@@ -67,7 +72,86 @@ suspend fun testChannelModelConnectivity(
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): ModelConnectivityTestResult {
     val credential = resolveSavedCredential(credentials, credentialRef)
+    return runModelConnectivityTest(
+        channel = channel,
+        credential = credential,
+        model = model,
+        protocol = protocol,
+        prompt = prompt,
+        httpClient = httpClient,
+        envelope = UpstreamEnvelope.NONE,
+        project = null,
+        codeAssistUserAgent = DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT,
+        timeoutMs = timeoutMs,
+        maxOutputTokens = maxOutputTokens,
+        maxResponseChars = maxResponseChars,
+        globalOverrides = globalOverrides,
+        headerProfiles = headerProfiles,
+    )
+}
 
+/**
+ * 订阅账号的连通性测试：使用账号自己的 access token 与官方端点。
+ * Antigravity 的请求必须带上账号 project 并包一层 Code Assist 信封，
+ * 与数据面保持一致，否则测出来的结果不能代表真实调用。
+ */
+suspend fun testOAuthAccountModelConnectivity(
+    channel: ChannelRecord,
+    accessToken: String,
+    project: String?,
+    model: String,
+    protocol: GatewayProtocol,
+    prompt: String,
+    httpClient: HttpClient,
+    codeAssistUserAgent: String = DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT,
+    timeoutMs: Long = 45_000,
+    maxOutputTokens: Int = 128,
+    maxResponseChars: Int = MAX_RESPONSE_CHARS,
+    globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
+    headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
+): ModelConnectivityTestResult = runModelConnectivityTest(
+    channel = channel,
+    credential = accessToken,
+    model = model,
+    protocol = protocol,
+    prompt = prompt,
+    httpClient = httpClient,
+    envelope = channel.upstreamEnvelope,
+    project = project,
+    codeAssistUserAgent = codeAssistUserAgent,
+    timeoutMs = timeoutMs,
+    maxOutputTokens = maxOutputTokens,
+    maxResponseChars = maxResponseChars,
+    globalOverrides = globalOverrides,
+    headerProfiles = headerProfiles,
+)
+
+private suspend fun runModelConnectivityTest(
+    channel: ChannelRecord,
+    credential: String,
+    model: String,
+    protocol: GatewayProtocol,
+    prompt: String,
+    httpClient: HttpClient,
+    envelope: UpstreamEnvelope,
+    project: String?,
+    codeAssistUserAgent: String,
+    timeoutMs: Long,
+    maxOutputTokens: Int,
+    maxResponseChars: Int,
+    globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
+): ModelConnectivityTestResult {
+    if (envelope == UpstreamEnvelope.CODE_ASSIST && project.isNullOrBlank()) {
+        return ModelConnectivityTestResult(
+            success = false,
+            statusCode = null,
+            latencyMs = 0,
+            responseText = null,
+            errorMessage = "未获取到 Antigravity 项目，无法发起请求；请确认账号已完成开通",
+            usage = null,
+        )
+    }
     val startedAt = System.currentTimeMillis()
     return try {
         withTimeout(timeoutMs) {
@@ -78,21 +162,32 @@ suspend fun testChannelModelConnectivity(
             val requestBody = policy.body(
                 Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject, model,
             )
-            val response = httpClient.post(upstreamRequestUrl(channel.baseUrl, protocol, model)) {
+            val limited = limitModelTestTokens(requestBody, protocol, maxOutputTokens)
+            val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                CodeAssistEnvelope.wrap(CodeAssistCloak.apply(limited), model, project).toString()
+            } else {
+                limited.toString()
+            }
+            val response = httpClient.post(
+                upstreamRequestUrl(channel.baseUrl, protocol, model, envelope = envelope),
+            ) {
                 applyUpstreamAuthentication(credential, authType, protocol)
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 policy.applyHeaders(this)
-                setBody(
-                    TextContent(
-                        limitModelTestTokens(requestBody, protocol, maxOutputTokens).toString(),
-                        ContentType.Application.Json,
-                    ),
-                )
+                if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                    applyCodeAssistIdentity(codeAssistUserAgent)
+                }
+                setBody(TextContent(body, ContentType.Application.Json))
             }
-            val body = response.bodyAsText()
+            val bodyText = response.bodyAsText()
             val latencyMs = System.currentTimeMillis() - startedAt
             val status = response.status.value
-            val json = parseJsonObject(body)
+            val parsed = parseJsonObject(bodyText)
+            val json = if (envelope == UpstreamEnvelope.CODE_ASSIST && parsed != null) {
+                CodeAssistEnvelope.unwrap(parsed)
+            } else {
+                parsed
+            }
             if (status in 200..299) {
                 ModelConnectivityTestResult(
                     success = true,
@@ -104,12 +199,17 @@ suspend fun testChannelModelConnectivity(
                     upstreamReportedModel = extractReportedModel(protocol, json),
                 )
             } else {
+                val errorText = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                    CodeAssistEnvelope.errorBody(bodyText)
+                } else {
+                    bodyText
+                }
                 ModelConnectivityTestResult(
                     success = false,
                     statusCode = status,
                     latencyMs = latencyMs,
                     responseText = null,
-                    errorMessage = extractModelTestError(json, body, status),
+                    errorMessage = extractModelTestError(parseJsonObject(errorText), errorText, status),
                     usage = null,
                 )
             }

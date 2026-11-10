@@ -45,6 +45,8 @@ class CodeAssistProjectResolver(
     private val proxyAllowedHosts: Set<String> = emptySet(),
     /** 账号代理：project 发现与开通必须与 token 刷新走同一个出口。 */
     private val clients: CodeAssistClientPool = CodeAssistClientPool(httpClient),
+    /** 当前 Antigravity 客户端 UA；由全局请求头目录提供，目录不可用时退回内置值。 */
+    private val userAgent: () -> String = { DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT },
 ) {
     private val logger = LoggerFactory.getLogger(CodeAssistProjectResolver::class.java)
     private val json = Json { ignoreUnknownKeys = true }
@@ -206,7 +208,7 @@ class CodeAssistProjectResolver(
         val response = clients.client(proxy).post(url) {
             header(HttpHeaders.Authorization, "Bearer " + accessToken)
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-            header(HttpHeaders.UserAgent, ANTIGRAVITY_CODE_ASSIST_USER_AGENT)
+            header(HttpHeaders.UserAgent, userAgent())
             header("X-Goog-Api-Client", "gl-node/22.21.1")
             contentType(ContentType.Application.Json)
             setBody(body)

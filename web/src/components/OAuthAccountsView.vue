@@ -7,12 +7,17 @@ import CopyButton from './CopyButton.vue'
 import ErrorState from './ErrorState.vue'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
+import OAuthModelTestModal from './OAuthModelTestModal.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { fromLocalInput, formatTime } from '../utils/format'
 import {
+  availableOAuthModels,
   buildOAuthImportPayload,
+  buildOAuthModels,
   buildOAuthPolicyPayload,
   formatCooldownRemaining,
+  formatQuotaReset,
+  formatUsedPercent,
   isOAuthAccountCooling,
   isOAuthQuotaBlocked,
   oauthAuthStateBadge,
@@ -23,9 +28,11 @@ import {
   oauthQuotaCreditsLabel,
   oauthQuotaErrorHint,
   oauthQuotaErrorLabel,
+  oauthQuotaGroups,
   oauthQuotaTone,
   oauthQuotaWindows,
   oauthRuntimeSummary,
+  oauthTestModels,
 } from '../utils/oauthAccount'
 
 const accounts = ref<OAuthAccount[]>([])
@@ -67,6 +74,9 @@ const policyForm = reactive<{ windowLimit: string | number; windowSeconds: strin
   maxConcurrentRequests: 1,
 })
 
+const showTest = ref(false)
+const testTarget = ref<OAuthAccount | null>(null)
+
 const showSettings = ref(false)
 const settingsSaving = ref(false)
 const settingsTarget = ref<OAuthAccount | null>(null)
@@ -76,7 +86,9 @@ const settingsForm = reactive({
   enabled: true,
   proxyUrl: '',
   clearProxy: false,
-  models: '',
+  allModels: true,
+  selectedModels: [] as string[],
+  customModels: '',
   channelIds: [] as string[],
 })
 
@@ -85,6 +97,12 @@ const reauthCount = computed(() => accounts.value.filter((item) => item.authStat
 const coolingCount = computed(() => accounts.value.filter((item) => isOAuthAccountCooling(item, now.value)).length)
 const configuredProviders = computed(() => providers.value.filter((item) => item.configured))
 const channelOptions = computed(() => [...channels.value].sort((a, b) => a.name.localeCompare(b.name)))
+/** 模型授权可选项：所关联渠道的模型并集，并保留账号已授权但目录里暂时没有的模型。 */
+const settingsModelOptions = computed(() => {
+  const options = new Set(availableOAuthModels(channels.value, settingsForm.channelIds))
+  for (const model of settingsForm.selectedModels) options.add(model)
+  return [...options].sort()
+})
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
@@ -347,6 +365,11 @@ async function savePolicy() {
   }
 }
 
+function openTest(account: OAuthAccount) {
+  testTarget.value = account
+  showTest.value = true
+}
+
 function openSettings(account: OAuthAccount) {
   settingsTarget.value = account
   Object.assign(settingsForm, {
@@ -355,14 +378,31 @@ function openSettings(account: OAuthAccount) {
     enabled: account.enabled,
     proxyUrl: account.proxyUrl ?? '',
     clearProxy: false,
-    models: account.models.join(', '),
+    allModels: account.models.length === 0,
+    selectedModels: [...account.models],
+    customModels: '',
     channelIds: [...account.channelIds],
   })
   showSettings.value = true
 }
 
+watch(
+  () => settingsForm.allModels,
+  (allModels) => {
+    // 从「全部模型」切到手动选择时，先勾上当前目录里的全部模型，让用户做减法。
+    if (!allModels && settingsForm.selectedModels.length === 0) {
+      settingsForm.selectedModels = [...settingsModelOptions.value]
+    }
+  },
+)
+
 async function saveSettings() {
   if (!settingsTarget.value) return
+  const models = buildOAuthModels(settingsForm.allModels, settingsForm.selectedModels, settingsForm.customModels)
+  if (!settingsForm.allModels && models.length === 0) {
+    notify('请至少选择一个模型，或勾选「全部模型」', 'error')
+    return
+  }
   settingsSaving.value = true
   try {
     const proxyUrl = settingsForm.proxyUrl.trim() || null
@@ -378,7 +418,6 @@ async function saveSettings() {
       proxyUrl: clearProxy ? null : proxyUrl,
       clearProxy,
     })
-    const models = settingsForm.models.split(/[,\n]/).map((item) => item.trim()).filter(Boolean)
     await api.updateOAuthAccountModels(settingsTarget.value.id, { models })
     if (!settingsChannelsManaged.value) {
       await api.updateOAuthAccountChannels(settingsTarget.value.id, { channelIds: [...settingsForm.channelIds] })
@@ -513,17 +552,45 @@ onBeforeUnmount(() => {
               </td>
               <td class="oauth-quota-cell">
                 <template v-if="account.quota">
-                  <div v-for="window in oauthQuotaWindows(account.quota)" :key="window.key" class="quota-row">
-                    <span class="quota-label">{{ window.label }}</span>
-                    <span class="quota-track">
-                      <span
-                        class="quota-fill"
-                        :class="'is-' + oauthQuotaTone(window.usedPercent)"
-                        :style="{ width: window.usedPercent + '%' }"
-                      ></span>
-                    </span>
-                    <span class="quota-value small muted">{{ Math.round(window.usedPercent) }}%</span>
+                  <div v-if="oauthQuotaGroups(account.quota).length" class="quota-groups">
+                    <div v-for="group in oauthQuotaGroups(account.quota)" :key="group.key" class="quota-group">
+                      <div class="quota-group-label">{{ group.label }}</div>
+                      <div v-for="window in group.windows" :key="window.key" class="quota-window">
+                        <div class="quota-row">
+                          <span class="quota-label">{{ window.label }}</span>
+                          <span class="quota-track">
+                            <span
+                              class="quota-fill"
+                              :class="'is-' + oauthQuotaTone(window.usedPercent)"
+                              :style="{ width: window.usedPercent + '%' }"
+                            ></span>
+                          </span>
+                          <span class="quota-value small muted">已用 {{ formatUsedPercent(window.usedPercent) }}%</span>
+                        </div>
+                        <div v-if="formatQuotaReset(window.resetsAt, now)" class="quota-reset small muted">
+                          {{ formatQuotaReset(window.resetsAt, now) }}
+                        </div>
+                      </div>
+                    </div>
                   </div>
+                  <template v-else>
+                    <div v-for="window in oauthQuotaWindows(account.quota)" :key="window.key" class="quota-window">
+                      <div class="quota-row">
+                        <span class="quota-label">{{ window.label }}</span>
+                        <span class="quota-track">
+                          <span
+                            class="quota-fill"
+                            :class="'is-' + oauthQuotaTone(window.usedPercent)"
+                            :style="{ width: window.usedPercent + '%' }"
+                          ></span>
+                        </span>
+                        <span class="quota-value small muted">已用 {{ formatUsedPercent(window.usedPercent) }}%</span>
+                      </div>
+                      <div v-if="formatQuotaReset(window.resetsAt, now)" class="quota-reset small muted">
+                        {{ formatQuotaReset(window.resetsAt, now) }}
+                      </div>
+                    </div>
+                  </template>
                   <div v-if="oauthQuotaCreditsLabel(account.quota) || isOAuthQuotaBlocked(account, now)" class="small muted">
                     <span v-if="oauthQuotaCreditsLabel(account.quota)">{{ oauthQuotaCreditsLabel(account.quota) }}</span>
                     <span v-if="isOAuthQuotaBlocked(account, now)" class="text-danger">额度用尽</span>
@@ -556,6 +623,7 @@ onBeforeUnmount(() => {
                   <button type="button" class="button small" :disabled="busyId === account.id" @click="refreshQuota(account)">
                     刷新额度
                   </button>
+                  <button type="button" class="button small" @click="openTest(account)">测试</button>
                   <button type="button" class="button small" @click="openPolicy(account)">调度策略</button>
                   <button type="button" class="button small" @click="openSettings(account)">设置</button>
                   <button type="button" class="button small" @click="openReauth(account)">重新授权</button>
@@ -715,6 +783,13 @@ onBeforeUnmount(() => {
       </form>
     </Modal>
 
+    <OAuthModelTestModal
+      v-if="showTest && testTarget"
+      :account="testTarget"
+      :models="oauthTestModels(testTarget, channels)"
+      @close="showTest = false"
+    />
+
     <Modal v-if="showSettings && settingsTarget" title="账号设置" @close="showSettings = false">
       <form class="form-grid" @submit.prevent="saveSettings">
         <label class="field">
@@ -733,10 +808,26 @@ onBeforeUnmount(() => {
           <span>账号代理</span>
           <input v-model="settingsForm.proxyUrl" autocomplete="off" placeholder="http://127.0.0.1:7890" :disabled="settingsForm.clearProxy" />
         </label>
-        <label class="field">
+        <div class="field">
           <span>模型授权</span>
-          <textarea v-model="settingsForm.models" rows="3" placeholder="留空表示继承所关联渠道的全部模型；多个模型用逗号或换行分隔"></textarea>
-        </label>
+          <label class="checkbox-row">
+            <input v-model="settingsForm.allModels" type="checkbox" />
+            <span>全部模型</span>
+          </label>
+          <template v-if="!settingsForm.allModels">
+            <div class="oauth-model-picker">
+              <label v-for="model in settingsModelOptions" :key="model" class="checkbox-row">
+                <input v-model="settingsForm.selectedModels" type="checkbox" :value="model" />
+                <span class="mono">{{ model }}</span>
+              </label>
+              <span v-if="settingsModelOptions.length === 0" class="muted small">
+                所关联渠道还没有模型，可先在渠道页同步模型目录。
+              </span>
+              <input v-model="settingsForm.customModels" autocomplete="off" placeholder="补充列表外的模型，多个用逗号分隔" />
+            </div>
+          </template>
+          <small>勾选「全部模型」表示继承所关联渠道的全部模型；取消后只调度勾选或补充的模型。</small>
+        </div>
         <div v-if="settingsChannelsManaged" class="field">
           <span>上游端点</span>
           <p class="muted small">该账号的端点渠道由系统维护，不能手工调整。</p>

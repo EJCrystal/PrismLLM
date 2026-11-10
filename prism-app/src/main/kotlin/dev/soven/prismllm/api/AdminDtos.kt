@@ -1668,8 +1668,16 @@ data class OAuthQuotaResponse(
     val creditsBalance: Double? = null,
     val creditsUnlimited: Boolean = false,
     val resetCredits: Int? = null,
+    /** Antigravity 按模型家族分组的额度；ChatGPT 为空。 */
+    val groups: List<OAuthQuotaGroupResponse> = emptyList(),
     val checkedAt: Long,
     val error: String? = null,
+)
+
+@Serializable
+data class OAuthQuotaGroupResponse(
+    val name: String,
+    val windows: List<OAuthQuotaWindowResponse> = emptyList(),
 )
 
 @Serializable
@@ -1755,6 +1763,12 @@ fun OAuthQuotaSnapshot.toResponse() = OAuthQuotaResponse(
     creditsBalance = creditsBalance,
     creditsUnlimited = creditsUnlimited,
     resetCredits = resetCredits,
+    groups = groups.map { group ->
+        OAuthQuotaGroupResponse(
+            name = group.name,
+            windows = group.windows.map { it.toResponse() },
+        )
+    },
     checkedAt = checkedAt,
     error = error,
 )

@@ -903,6 +903,11 @@ export interface OAuthQuotaWindow {
   resetsAt: number | null
 }
 
+export interface OAuthQuotaGroup {
+  name: string
+  windows: OAuthQuotaWindow[]
+}
+
 export interface OAuthQuota {
   primary: OAuthQuotaWindow | null
   secondary: OAuthQuotaWindow | null
@@ -910,6 +915,8 @@ export interface OAuthQuota {
   creditsBalance: number | null
   creditsUnlimited: boolean
   resetCredits: number | null
+  /** Antigravity 按模型家族分组的额度；ChatGPT 为空。 */
+  groups: OAuthQuotaGroup[]
   checkedAt: number
   error: string | null
 }

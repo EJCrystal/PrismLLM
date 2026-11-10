@@ -44,9 +44,9 @@ object UpstreamHeaderProfiles {
             ), "npm:@google/genai",
         ),
         UpstreamHeaderProfile(
-            "antigravity", "Antigravity", "2.23.0", linkedMapOf(
-                "User-Agent" to "antigravity/hub/2.23.0 windows/amd64",
-            ), "builtin",
+            "antigravity", "Antigravity", "2.30.0", linkedMapOf(
+                "User-Agent" to "antigravity/hub/2.30.0 windows/amd64",
+            ), "antigravity:hub",
         ),
     )
     val ids = defaults.map { it.id }.toSet() + setOf("auto", "none")

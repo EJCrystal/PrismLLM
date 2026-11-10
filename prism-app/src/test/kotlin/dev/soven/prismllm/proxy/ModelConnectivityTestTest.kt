@@ -1,14 +1,27 @@
 package dev.soven.prismllm.proxy
 
+import com.sun.net.httpserver.HttpExchange
+import com.sun.net.httpserver.HttpServer
+import dev.soven.prismllm.channel.domain.ChannelKind
+import dev.soven.prismllm.channel.domain.ChannelModelRecord
+import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.protocol.extractReportedModel
 import dev.soven.prismllm.shared.domain.GatewayProtocol
+import dev.soven.prismllm.shared.domain.OAuthProvider
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.java.Java
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicReference
 
 class ModelConnectivityTestTest {
     @Test
@@ -58,6 +71,90 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun `code assist account test wraps the request with project and unwraps the response`() = runBlocking {
+        val body = AtomicReference<String>()
+        val userAgent = AtomicReference<String>()
+        val authorization = AtomicReference<String>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1internal:generateContent") { exchange ->
+            body.set(exchange.requestBody.readAllBytes().decodeToString())
+            userAgent.set(exchange.requestHeaders.getFirst("User-Agent"))
+            authorization.set(exchange.requestHeaders.getFirst("Authorization"))
+            reply(
+                exchange,
+                """{"response":{"candidates":[{"content":{"parts":[{"text":"model ok"}]}}],"modelVersion":"gemini-3-pro"}}""",
+            )
+        }
+        server.start()
+        try {
+            val channel = ChannelRecord(
+                id = "provider",
+                name = "provider",
+                baseUrl = "http://127.0.0.1:${server.address.port}",
+                authType = "bearer",
+                protocols = listOf(GatewayProtocol.GEMINI),
+                enabled = true,
+                createdAt = 0,
+                updatedAt = 0,
+                modelMappings = listOf(ChannelModelRecord("gemini-3-pro")),
+                kind = ChannelKind.PROVIDER,
+                provider = OAuthProvider.ANTIGRAVITY,
+            )
+
+            val result = testOAuthAccountModelConnectivity(
+                channel = channel,
+                accessToken = "access-token",
+                project = "aicode-consumers",
+                model = "gemini-3-pro",
+                protocol = GatewayProtocol.GEMINI,
+                prompt = "say ok",
+                httpClient = HttpClient(Java),
+                codeAssistUserAgent = "antigravity/hub/2.30.0 windows/amd64",
+            )
+
+            assertTrue(result.success)
+            assertEquals("model ok", result.responseText)
+            assertEquals("gemini-3-pro", result.upstreamReportedModel)
+            assertTrue(body.get().contains("\"project\":\"aicode-consumers\""))
+            assertTrue(body.get().contains("\"request\""))
+            assertEquals("antigravity/hub/2.30.0 windows/amd64", userAgent.get())
+            assertEquals("Bearer access-token", authorization.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `code assist account test refuses to send without a project`() = runBlocking {
+        val channel = ChannelRecord(
+            id = "provider",
+            name = "provider",
+            baseUrl = "https://example.test",
+            authType = "bearer",
+            protocols = listOf(GatewayProtocol.GEMINI),
+            enabled = true,
+            createdAt = 0,
+            updatedAt = 0,
+            kind = ChannelKind.PROVIDER,
+            provider = OAuthProvider.ANTIGRAVITY,
+        )
+
+        val result = testOAuthAccountModelConnectivity(
+            channel = channel,
+            accessToken = "access-token",
+            project = null,
+            model = "gemini-3-pro",
+            protocol = GatewayProtocol.GEMINI,
+            prompt = "say ok",
+            httpClient = HttpClient(Java),
+        )
+
+        assertFalse(result.success)
+        assertNull(result.statusCode)
+        assertTrue(result.errorMessage!!.contains("未获取到 Antigravity 项目"))
+    }
+
+    @Test
     fun `extracts text from each protocol response`() {
         val chat = Json.parseToJsonElement(
             """{"choices":[{"message":{"content":"chat ok"}}]}""",
@@ -93,5 +190,12 @@ class ModelConnectivityTestTest {
 
         assertEquals("responses-model", extractReportedModel(GatewayProtocol.RESPONSES, responses))
         assertEquals("messages-model", extractReportedModel(GatewayProtocol.MESSAGES, messages))
+    }
+
+    private fun reply(exchange: HttpExchange, body: String) {
+        val bytes = body.toByteArray()
+        exchange.responseHeaders.add("Content-Type", "application/json")
+        exchange.sendResponseHeaders(200, bytes.size.toLong())
+        exchange.responseBody.use { it.write(bytes) }
     }
 }
