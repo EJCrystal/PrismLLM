@@ -9,6 +9,7 @@ import dev.soven.llmgateway.channel.domain.ChannelModelRecord
 import dev.soven.llmgateway.channel.domain.ChannelRecord
 import dev.soven.llmgateway.shared.domain.FailureStage
 import dev.soven.llmgateway.shared.domain.GatewayProtocol
+import dev.soven.llmgateway.shared.domain.OAuthProvider
 import dev.soven.llmgateway.requestlog.domain.RequestLogRecord
 import dev.soven.llmgateway.requestlog.domain.UpstreamAttemptRecord
 import dev.soven.llmgateway.requestlog.domain.HealthMetrics
@@ -69,6 +70,7 @@ class ChannelHealthRepositoryTest {
     @BeforeEach
     fun clear() {
         sql("truncate table request_logs cascade")
+        sql("truncate table oauth_accounts cascade")
         sql("truncate table channels cascade")
     }
 
@@ -172,6 +174,33 @@ class ChannelHealthRepositoryTest {
             routableCredentials = overviews.mapValues { it.value.routableCredentials },
         )
         assertEquals("NO_CREDENTIALS", report.channels.single().state)
+    }
+
+    @Test
+    fun overviewCountsOnlyRoutableOAuthAccounts() = runBlocking {
+        val cipher = CredentialCipher(ByteArray(32) { 7 })
+        val channels = ChannelRepository(factory.database, cipher)
+        val channel = channels.create(
+            name = "oauth-pool", baseUrl = "https://example.invalid/v1",
+            keys = listOf(NewChannelKey("key", cipher.encrypt("test-secret"), models = listOf("m1"))),
+            authType = "bearer", enabled = true, modelMappings = listOf(ChannelModelRecord("m1")),
+        )
+        val accounts = OAuthAccountRepository(factory.database)
+        fun account(name: String, models: List<String>, enabled: Boolean = true) = NewOAuthAccount(
+            name = name,
+            provider = OAuthProvider.ANTIGRAVITY,
+            refreshToken = cipher.encrypt("refresh-token"),
+            channelIds = listOf(channel.id),
+            models = models,
+            enabled = enabled,
+        )
+        accounts.create(account("inherits", emptyList()))
+        accounts.create(account("matching", listOf("m1")))
+        accounts.create(account("mismatched", listOf("m2")))
+        accounts.create(account("disabled", listOf("m1"), enabled = false))
+
+        // 1 个可路由静态密钥 + 继承渠道目录 + 显式包含 m1 的账号；不匹配与停用账号不计入。
+        assertEquals(3, health.listHealthChannelOverviews().single().routableCredentials)
     }
 
     @Test

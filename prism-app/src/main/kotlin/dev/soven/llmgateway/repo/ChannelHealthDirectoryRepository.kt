@@ -16,6 +16,7 @@ import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
@@ -102,7 +103,7 @@ class ChannelHealthDirectoryRepository(private val database: Database) : Channel
      * 每渠道可路由的订阅账号数。账号 `models` 为空表示继承渠道全部模型；
      * 显式授权时必须与渠道目录有交集，否则该账号调不到任何模型。
      */
-    private fun routableAccountCounts(
+    private fun JdbcTransaction.routableAccountCounts(
         channelIds: List<String>,
         modelsByChannel: Map<String, Set<String>>,
     ): Map<String, Int> {
