@@ -486,17 +486,40 @@ val requestLogWriter = RequestLogWriter(
      * 由应用统一关闭，避免关闭网关后遗留代理客户端。
      */
     private val codeAssistClients = dev.soven.prismllm.proxy.codeassist.CodeAssistClientPool(httpClient)
+    /**
+     * Code Assist 的管理请求也必须像 Antigravity 客户端一样带上 UA；
+     * 版本由全局请求头目录统一刷新，目录不可用时退回内置值。
+     */
+    private val antigravityUserAgent: () -> String = {
+        upstreamHeaderCatalogService.profiles()
+            .firstOrNull { it.id == "antigravity" }
+            ?.headers?.get("User-Agent")
+            ?.takeIf(String::isNotBlank)
+            ?: dev.soven.prismllm.proxy.codeassist.DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT
+    }
+    /** 当前 Antigravity 客户端 UA；管理面的连通性测试与数据面使用同一份目录版本。 */
+    fun currentAntigravityUserAgent(): String = antigravityUserAgent()
+
     /** Antigravity 的 Code Assist project/tier 发现与缓存。 */
     val codeAssistProjectResolver = CodeAssistProjectResolver(
         oauthAccountRepository,
         httpClient,
         proxyAllowedHosts = config.oauth.proxyAllowedHosts,
         clients = codeAssistClients,
+        userAgent = antigravityUserAgent,
     )
     /** Antigravity 的模型目录与家族/变体映射。 */
-    val codeAssistModelCatalog = CodeAssistModelCatalog(httpClient, clients = codeAssistClients)
+    val codeAssistModelCatalog = CodeAssistModelCatalog(
+        httpClient,
+        clients = codeAssistClients,
+        userAgent = antigravityUserAgent,
+    )
     /** Antigravity 的额度读取。 */
-    val codeAssistQuotaClient = CodeAssistQuotaClient(httpClient, clients = codeAssistClients)
+    val codeAssistQuotaClient = CodeAssistQuotaClient(
+        httpClient,
+        clients = codeAssistClients,
+        userAgent = antigravityUserAgent,
+    )
     val modelCatalog = UpstreamModelCatalog(
         channelRepository,
         OAuthAccountDirectory { oauthAccountRepository.listByChannel() },

@@ -4,10 +4,13 @@ import dev.soven.prismllm.oauth.domain.OAuthAccountPolicy
 import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.domain.OAuthAuthState
 import dev.soven.prismllm.shared.domain.OAuthProvider
+import dev.soven.prismllm.oauth.domain.OAuthQuotaGroup
 import dev.soven.prismllm.oauth.domain.OAuthQuotaSnapshot
 import dev.soven.prismllm.oauth.domain.OAuthQuotaWindow
 import dev.soven.prismllm.shared.crypto.EncryptedCredential
 import dev.soven.prismllm.shared.crypto.credentialFingerprint
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
@@ -80,6 +83,9 @@ open class OAuthAccountRepository(
     private val database: Database,
     private val providerChannels: ProviderChannelLookup,
 ) {
+    /** 额度分组只用于展示，字段演进时忽略未知键，避免旧读数读不出来。 */
+    private val quotaJson = Json { ignoreUnknownKeys = true }
+
     /** 数据面快速路径：只读账号本体，不加载模型与渠道关联。 */
     suspend fun find(id: String): OAuthAccountRecord? = suspendTransaction(database) {
         OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }.singleOrNull()
@@ -528,6 +534,9 @@ open class OAuthAccountRepository(
             it[quotaCreditsBalance] = snapshot.creditsBalance
             it[quotaCreditsUnlimited] = snapshot.creditsUnlimited
             it[quotaResetCredits] = snapshot.resetCredits
+            it[quotaGroups] = snapshot.groups
+                .takeIf { groups -> groups.isNotEmpty() }
+                ?.let { groups -> quotaJson.encodeToString(groups).take(20_000) }
             it[quotaCheckedAt] = snapshot.checkedAt
             it[quotaAttemptedAt] = snapshot.checkedAt
             it[quotaError] = null
@@ -665,6 +674,9 @@ open class OAuthAccountRepository(
             creditsBalance = row[OAuthAccounts.quotaCreditsBalance],
             creditsUnlimited = row[OAuthAccounts.quotaCreditsUnlimited],
             resetCredits = row[OAuthAccounts.quotaResetCredits],
+            groups = row[OAuthAccounts.quotaGroups]
+                ?.let { raw -> runCatching { quotaJson.decodeFromString<List<OAuthQuotaGroup>>(raw) }.getOrNull() }
+                .orEmpty(),
             checkedAt = checkedAt ?: 0,
             error = error,
         )

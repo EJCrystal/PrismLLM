@@ -2331,19 +2331,29 @@ input[type="password"]::-ms-clear,
   background: color-mix(in srgb, var(--brand) 4%, var(--panel));
 }
 
-/* 订阅账号上游额度：窗口使用率进度条。 */
+/* 订阅账号上游额度：按模型家族分组，窗口使用率进度条。 */
 .oauth-quota-cell {
-  min-width: 168px;
+  min-width: 190px;
+}
+
+.quota-group + .quota-group {
+  margin-top: 8px;
+}
+
+.quota-group-label {
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.quota-window + .quota-window {
+  margin-top: 5px;
 }
 
 .quota-row {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.quota-row + .quota-row {
-  margin-top: 4px;
 }
 
 .quota-label {
@@ -2378,8 +2388,31 @@ input[type="password"]::-ms-clear,
 
 .quota-value {
   flex: 0 0 auto;
-  min-width: 34px;
+  min-width: 52px;
   text-align: right;
+}
+
+.quota-reset {
+  margin-top: 1px;
+  margin-left: 48px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+/* 订阅账号模型授权：可勾选渠道模型并补充自定义模型。 */
+.oauth-model-picker {
+  display: grid;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.oauth-model-picker .checkbox-row {
+  font-size: 12px;
 }
 
 /* 订阅账号浏览器登录：登录链接与生成动作。 */

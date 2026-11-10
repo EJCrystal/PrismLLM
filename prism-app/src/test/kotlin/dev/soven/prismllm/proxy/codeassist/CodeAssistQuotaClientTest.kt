@@ -30,12 +30,15 @@ class CodeAssistQuotaClientTest {
         server.start()
         try {
             val base = "http://127.0.0.1:${server.address.port}"
-            val snapshot = CodeAssistQuotaClient(HttpClient(Java), baseUrl = base)
-                .read("token", "aicode-consumers")
+            val snapshot = CodeAssistQuotaClient(
+                HttpClient(Java),
+                baseUrl = base,
+                userAgent = { "antigravity/hub/2.30.0 windows/amd64" },
+            ).read("token", "aicode-consumers")
 
             assertEquals(20.0, snapshot!!.primary!!.usedPercent, 0.001)
-            // 缺少 Antigravity 标识时 Google 会拒绝请求；项目必须原样传给上游。
-            assertTrue(userAgent.get().startsWith("antigravity/"))
+            // 缺少 Antigravity 标识时 Google 会拒绝请求；UA 由全局请求头目录注入。
+            assertEquals("antigravity/hub/2.30.0 windows/amd64", userAgent.get())
             assertTrue(body.get().contains("\"project\":\"aicode-consumers\""))
         } finally {
             server.stop(0)
@@ -58,6 +61,16 @@ class CodeAssistQuotaClientTest {
         assertEquals(25.0, snapshot.primary!!.usedPercent)
         assertEquals(50.0, snapshot.secondary!!.usedPercent)
         assertEquals(Instant.parse("2026-11-06T12:00:00Z").toEpochMilli(), snapshot.primary!!.resetsAt)
+        assertEquals(listOf("Gemini"), snapshot.groups.map { it.name })
+        assertEquals(listOf(18_000, 604_800), snapshot.groups.single().windows.map { it.windowSeconds })
+    }
+
+    @Test
+    fun normalizesUpstreamGroupNames() {
+        assertEquals("Gemini", client.normalizeQuotaGroupName("Gemini Models"))
+        assertEquals("Claude & GPT", client.normalizeQuotaGroupName("Claude and GPT Models"))
+        assertEquals("Gemini 4 Argon", client.normalizeQuotaGroupName("Gemini 4 Argon"))
+        assertEquals("额度", client.normalizeQuotaGroupName("   "))
     }
 
     @Test

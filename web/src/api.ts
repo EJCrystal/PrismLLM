@@ -229,6 +229,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  testOAuthAccountModel: (id: string, payload: ChannelModelTestRequest) =>
+    request<ChannelModelTestResult>(`/oauth-accounts/${encodeURIComponent(id)}/model-test`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   listIqBenchmarks: () => request<IqBenchmarkDefinition[]>('/iq-tests/benchmarks'),
   listIqJudges: () => request<IqJudgesResponse>('/iq-tests/judges'),
   listIqTargets: () => requestList<IqTestTarget>('/iq-tests/targets'),

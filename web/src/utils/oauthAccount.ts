@@ -77,15 +77,21 @@ export function oauthRuntimeSummary(
 }
 
 export interface OAuthQuotaWindowView {
-  key: 'primary' | 'secondary'
+  key: string
   label: string
   usedPercent: number
   remainingPercent: number
   resetsAt: number | null
 }
 
+export interface OAuthQuotaGroupView {
+  key: string
+  label: string
+  windows: OAuthQuotaWindowView[]
+}
+
 function quotaWindowView(
-  key: 'primary' | 'secondary',
+  key: string,
   window: OAuthQuotaWindow | null,
   fallbackLabel: string,
 ): OAuthQuotaWindowView | null {
@@ -108,6 +114,83 @@ export function oauthQuotaWindows(quota: OAuthQuota | null | undefined): OAuthQu
   ].filter((window): window is OAuthQuotaWindowView => window != null)
 }
 
+/**
+ * 把上游的模型家族名收敛成看板上的短标签。只收敛整个家族的分组：
+ * "Gemini 4 Argon" 这类带版本的单模型分组单独占用额度，必须原样保留。
+ */
+export function oauthQuotaGroupLabel(name: string): string {
+  const trimmed = name.trim()
+  if (/^gemini$/i.test(trimmed)) return 'Gemini'
+  if (/^claude(\s*(&|and)\s*gpt)?$/i.test(trimmed)) return 'Claude & GPT'
+  return trimmed
+}
+
+/**
+ * Antigravity 按模型家族分组的额度；没有分组（如 ChatGPT）时返回空数组，
+ * 由调用方回退到 [oauthQuotaWindows]。
+ */
+export function oauthQuotaGroups(quota: OAuthQuota | null | undefined): OAuthQuotaGroupView[] {
+  if (!quota?.groups?.length) return []
+  return quota.groups
+    .map((group, groupIndex) => ({
+      key: `${groupIndex}:${group.name}`,
+      label: oauthQuotaGroupLabel(group.name),
+      windows: group.windows
+        .map((window, windowIndex) =>
+          quotaWindowView(`${groupIndex}:${windowIndex}`, window, '窗口'),
+        )
+        .filter((window): window is OAuthQuotaWindowView => window != null),
+    }))
+    .filter((group) => group.windows.length > 0)
+}
+
+const PROVIDER_PROTOCOLS: Record<string, string[]> = {
+  chatgpt: ['responses'],
+  antigravity: ['gemini'],
+}
+
+/** 订阅账号的官方端点协议；未知提供方没有可测协议。 */
+export function oauthProviderProtocols(provider: string): string[] {
+  return PROVIDER_PROTOCOLS[provider] ?? []
+}
+
+/** 连通性测试可选的模型：端点渠道模型与账号授权模型的交集。 */
+export function oauthTestModels(
+  account: Pick<OAuthAccount, 'models' | 'channelIds'>,
+  channels: Array<{ id: string; models: string[] }>,
+): string[] {
+  const available = availableOAuthModels(channels, account.channelIds)
+  if (account.models.length === 0) return available
+  return available.filter((model) => account.models.includes(model))
+}
+
+/** 账号设置里可勾选的模型：来自账号关联渠道的模型并集。 */
+export function availableOAuthModels(
+  channels: Array<{ id: string; models: string[] }>,
+  channelIds: string[],
+): string[] {
+  const selectedChannels = new Set(channelIds)
+  const models = new Set<string>()
+  for (const channel of channels) {
+    if (!selectedChannels.has(channel.id)) continue
+    for (const model of channel.models) {
+      if (model.trim()) models.add(model.trim())
+    }
+  }
+  return [...models].sort()
+}
+
+/** 保存时的模型授权：授权全部（空数组）或勾选 + 自定义模型去重。 */
+export function buildOAuthModels(allModels: boolean, selected: string[], custom: string): string[] {
+  if (allModels) return []
+  const models = new Set(selected.map((model) => model.trim()).filter(Boolean))
+  for (const model of custom.split(/[,\n]/)) {
+    const value = model.trim()
+    if (value) models.add(value)
+  }
+  return [...models].sort()
+}
+
 /** 使用率对应的展示等级：用尽 / 偏高 / 正常。 */
 export function oauthQuotaTone(usedPercent: number): 'success' | 'warning' | 'danger' {
   if (usedPercent >= 100) return 'danger'
@@ -118,6 +201,24 @@ export function oauthQuotaTone(usedPercent: number): 'success' | 'warning' | 'da
 export function formatQuotaNumber(value: number): string {
   if (!Number.isFinite(value)) return '—'
   return Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
+
+/** 使用率按一位小数展示；非零但不足 0.1% 时仍显示 0.1，避免看起来完全没用过。 */
+export function formatUsedPercent(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0'
+  if (value >= 100) return '100'
+  if (value < 0.1) return '0.1'
+  return formatQuotaNumber(Math.round(value * 10) / 10)
+}
+
+/** 额度窗口的重置倒计时；已到重置时间或没有重置时间返回 null。 */
+export function formatQuotaReset(resetsAt: number | null | undefined, now: number): string | null {
+  if (resetsAt == null || !Number.isFinite(resetsAt)) return null
+  const minutes = Math.ceil((resetsAt - now) / 60_000)
+  if (minutes <= 0) return null
+  if (minutes >= 1_440) return `${Math.ceil(minutes / 1_440)} 天后重置`
+  if (minutes >= 60) return `${Math.ceil(minutes / 60)} 小时后重置`
+  return `${minutes} 分钟后重置`
 }
 
 /** credits 余额；上游没有给出时返回 null。 */
@@ -155,7 +256,7 @@ export function oauthQuotaErrorHint(error: string | null | undefined): string | 
 export function oauthQuotaSummary(quota: OAuthQuota | null | undefined): string | null {
   if (!quota) return null
   const parts = oauthQuotaWindows(quota).map(
-    (window) => `${window.label} ${Math.round(window.usedPercent)}%`,
+    (window) => `${window.label} 已用 ${formatUsedPercent(window.usedPercent)}%`,
   )
   const credits = oauthQuotaCreditsLabel(quota)
   if (credits) parts.push(credits)

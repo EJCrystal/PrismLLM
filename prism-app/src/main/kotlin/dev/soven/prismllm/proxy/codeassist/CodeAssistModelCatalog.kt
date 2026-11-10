@@ -37,6 +37,8 @@ class CodeAssistModelCatalog(
     private val now: () -> Long = System::currentTimeMillis,
     /** 账号代理：目录请求与 token 刷新走同一个出口。 */
     private val clients: CodeAssistClientPool = CodeAssistClientPool(httpClient),
+    /** 当前 Antigravity 客户端 UA；由全局请求头目录提供，目录不可用时退回内置值。 */
+    private val userAgent: () -> String = { DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT },
 ) {
     private val logger = LoggerFactory.getLogger(CodeAssistModelCatalog::class.java)
     private val json = Json { ignoreUnknownKeys = true }
@@ -186,7 +188,7 @@ class CodeAssistModelCatalog(
         }
         val response = clients.client(proxy).post(baseUrl + "/v1internal:fetchAvailableModels") {
             header(HttpHeaders.Authorization, "Bearer " + accessToken)
-            header(HttpHeaders.UserAgent, ANTIGRAVITY_CODE_ASSIST_USER_AGENT)
+            header(HttpHeaders.UserAgent, userAgent())
             header("X-Goog-Api-Client", "gl-node/22.21.1")
             contentType(ContentType.Application.Json)
             setBody(body.toString())

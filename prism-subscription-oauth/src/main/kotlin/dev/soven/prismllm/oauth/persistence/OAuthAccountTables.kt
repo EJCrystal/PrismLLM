@@ -54,6 +54,8 @@ object OAuthAccounts : Table("oauth_accounts") {
     val quotaCreditsBalance = double("quota_credits_balance").nullable()
     val quotaCreditsUnlimited = bool("quota_credits_unlimited").default(false)
     val quotaResetCredits = integer("quota_reset_credits").nullable()
+    /** Antigravity 按模型家族分组的额度快照（JSON）；ChatGPT 为空。 */
+    val quotaGroups = text("quota_groups").nullable()
     val quotaCheckedAt = long("quota_checked_at").nullable()
     /** 最近一次额度读取尝试（成功或失败），只用于后台扫描排序，不代表读数新鲜度。 */
     val quotaAttemptedAt = long("quota_attempted_at").nullable()

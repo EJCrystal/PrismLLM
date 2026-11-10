@@ -3,6 +3,7 @@ package dev.soven.prismllm.oauth.domain
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.shared.domain.UpstreamCredential
 import dev.soven.prismllm.shared.domain.saturatedAdd
+import kotlinx.serialization.Serializable
 
 /**
  * 订阅账号的刷新状态。REAUTH_REQUIRED 表示 refresh token 已失效，只能由管理员重新导入。
@@ -108,6 +109,7 @@ data class OAuthAccountRecord(
  * @author 文杰
  * @since 2026-11-06
  */
+@Serializable
 data class OAuthQuotaWindow(
     val usedPercent: Double,
     val windowSeconds: Int? = null,
@@ -134,6 +136,8 @@ data class OAuthQuotaSnapshot(
     val creditsBalance: Double? = null,
     val creditsUnlimited: Boolean = false,
     val resetCredits: Int? = null,
+    /** Antigravity 按模型家族分组的额度；ChatGPT 没有分组，留空。 */
+    val groups: List<OAuthQuotaGroup> = emptyList(),
     val checkedAt: Long,
     val error: String? = null,
 ) {
@@ -158,6 +162,13 @@ data class OAuthQuotaSnapshot(
     /** 读数是否仍可作为调度依据；过期读数只展示，不拦截。 */
     fun isFresh(now: Long, maxAgeMs: Long): Boolean = checkedAt > 0 && now - checkedAt <= maxAgeMs
 }
+
+/** 一组模型家族的上游额度，例如 Gemini 与 Claude/GPT 各自有 5h、weekly 窗口。 */
+@Serializable
+data class OAuthQuotaGroup(
+    val name: String,
+    val windows: List<OAuthQuotaWindow> = emptyList(),
+)
 
 /**
  * 解密后的短期 access token。

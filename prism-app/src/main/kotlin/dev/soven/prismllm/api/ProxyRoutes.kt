@@ -42,6 +42,7 @@ import dev.soven.prismllm.quota.domain.quotaTokensFromUsage
 import dev.soven.prismllm.protocol.ReasoningEffort
 import dev.soven.prismllm.protocol.ShapeRefusal
 import dev.soven.prismllm.shared.domain.TraceContextFactory
+import dev.soven.prismllm.proxy.applyCodeAssistIdentity
 import dev.soven.prismllm.proxy.applyUpstreamAuthentication
 import dev.soven.prismllm.shared.domain.Usage
 import dev.soven.prismllm.protocol.UsageParser
@@ -1622,8 +1623,8 @@ private suspend fun proxyStream(
                 header(HttpHeaders.Accept, ContentType.Text.EventStream.toString())
                 policy.applyHeaders(this)
                 if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-                    header(HttpHeaders.UserAgent, "antigravity/1.0.0")
-                    header("X-Goog-Api-Client", "gl-node/22.21.1")
+                    // 客户端身份由全局请求头目录维护，避免把版本号写死在数据面。
+                    applyCodeAssistIdentity(app.currentAntigravityUserAgent())
                 }
                 setBody(TextContent(body, ContentType.Application.Json))
             }.execute { response ->
@@ -1921,8 +1922,8 @@ private suspend fun proxyJson(
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
                 policy.applyHeaders(this)
                 if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-                    header(HttpHeaders.UserAgent, "antigravity/1.0.0")
-                    header("X-Goog-Api-Client", "gl-node/22.21.1")
+                    // 客户端身份由全局请求头目录维护，避免把版本号写死在数据面。
+                    applyCodeAssistIdentity(app.currentAntigravityUserAgent())
                 }
                 setBody(TextContent(body, ContentType.Application.Json))
             }
@@ -2011,7 +2012,7 @@ private fun protocolNotSupported(alias: String, protocol: GatewayProtocol): Gate
  * 账号出口：project 发现、模型目录与对话请求都要与 token 刷新走同一个代理。
  * 配置了 proxy_url 时改用按该代理创建的客户端，没有解析结果时沿用应用共享客户端。
  */
-private fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?): HttpClient =
+internal fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?): HttpClient =
     proxy?.let { address ->
         app.accountEgressClients.computeIfAbsent(address.hostString + ":" + address.port) { _ ->
             HttpClient(Java) {

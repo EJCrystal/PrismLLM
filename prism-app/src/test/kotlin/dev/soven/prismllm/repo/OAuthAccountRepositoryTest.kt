@@ -6,6 +6,9 @@ import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.oauth.persistence.OAuthAccounts
 import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
+import dev.soven.prismllm.oauth.domain.OAuthQuotaGroup
+import dev.soven.prismllm.oauth.domain.OAuthQuotaSnapshot
+import dev.soven.prismllm.oauth.domain.OAuthQuotaWindow
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.shared.crypto.CredentialCipher
 import kotlinx.coroutines.runBlocking
@@ -99,6 +102,27 @@ class OAuthAccountRepositoryTest {
             OAuthAccountRepository.UpstreamContext("proj-1", null, 2_000),
             repository.upstreamContext(account.id),
         )
+    }
+
+    @Test
+    fun `quota groups survive persistence for grouped Antigravity limits`() = runBlocking {
+        val account = create("groups", enabled = true)
+        val snapshot = OAuthQuotaSnapshot(
+            primary = OAuthQuotaWindow(1.5, 18_000, 10_000),
+            secondary = OAuthQuotaWindow(2.5, 604_800, 20_000),
+            groups = listOf(
+                OAuthQuotaGroup(
+                    "Gemini",
+                    listOf(OAuthQuotaWindow(1.5, 18_000, 10_000), OAuthQuotaWindow(2.5, 604_800, 20_000)),
+                ),
+                OAuthQuotaGroup("Claude & GPT", listOf(OAuthQuotaWindow(0.0, 18_000, null))),
+            ),
+            checkedAt = 5_000,
+        )
+
+        repository.saveQuota(account.id, snapshot)
+
+        assertEquals(snapshot.groups, repository.findDetailed(account.id)!!.quota!!.groups)
     }
 
     private suspend fun create(name: String, enabled: Boolean): OAuthAccountRecord =

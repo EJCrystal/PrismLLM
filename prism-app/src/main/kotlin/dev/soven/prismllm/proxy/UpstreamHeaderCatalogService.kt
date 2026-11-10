@@ -264,6 +264,7 @@ class UpstreamHeaderCatalogService(
                 headers["User-Agent"] = "google-genai-sdk/" + version
                 headers["x-goog-api-client"] = "google-genai-sdk/" + version
             }
+            "antigravity" -> headers["User-Agent"] = "antigravity/hub/" + version + " windows/amd64"
             else -> return base
         }
         return base.copy(
@@ -348,6 +349,9 @@ class UpstreamHeaderCatalogService(
             HeaderProfileVersionSource("google", "npm:@google/genai") {
                 fetchNpmVersion(it, "https://registry.npmjs.org/@google/genai/latest")
             },
+            HeaderProfileVersionSource("antigravity", "antigravity:hub") {
+                fetchAntigravityVersion(it)
+            },
         )
 
         suspend fun fetchNpmVersion(client: HttpClient, url: String): String =
@@ -357,6 +361,18 @@ class UpstreamHeaderCatalogService(
             }.execute { response ->
                 if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
                 parseNpmVersionResponse(readLimitedText(response))
+            }
+
+        /** Antigravity 的 electron-builder 更新清单，第一行就是最新版本号。 */
+        suspend fun fetchAntigravityVersion(client: HttpClient): String =
+            client.prepareGet(
+                "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml",
+            ) {
+                header(HttpHeaders.UserAgent, "electron-builder")
+                timeout { requestTimeoutMillis = 15_000 }
+            }.execute { response ->
+                if (!response.status.isSuccess()) throw HeaderCatalogHttpException(response.status.value)
+                parseAntigravityVersion(readLimitedText(response))
             }
 
         suspend fun fetchCodexVersion(client: HttpClient): String =
@@ -431,7 +447,7 @@ internal fun sanitizeCatalogSource(value: String): String {
     }
 }
 
-private val SAFE_CATALOG_SOURCE = Regex("(?:npm|github):[0-9A-Za-z@][0-9A-Za-z._/@+-]{0,199}")
+private val SAFE_CATALOG_SOURCE = Regex("(?:npm|github|antigravity):[0-9A-Za-z@][0-9A-Za-z._/@+-]{0,199}")
 
 private const val MAX_SOURCE_BYTES = 1_048_576
 
@@ -464,3 +480,12 @@ internal fun parseCodexReleaseTag(text: String): String {
         ?: error("响应缺少 tag_name")
     return tag.removePrefix("rust-v").removePrefix("v")
 }
+
+/** 从 electron-builder 的 YAML 更新清单里取 `version:`，避免为一行字段引入 YAML 依赖。 */
+internal fun parseAntigravityVersion(text: String): String =
+    Regex("(?m)^version:[ \\t]*([0-9A-Za-z][0-9A-Za-z._+-]*)[ \\t]*$")
+        .find(text)
+        ?.groupValues
+        ?.get(1)
+        ?: error("响应缺少 version")
+

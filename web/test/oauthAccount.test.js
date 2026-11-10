@@ -1,9 +1,13 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  availableOAuthModels,
   buildOAuthImportPayload,
+  buildOAuthModels,
   buildOAuthPolicyPayload,
   formatCooldownRemaining,
+  formatQuotaReset,
+  formatUsedPercent,
   formatWindowSeconds,
   isOAuthAccountCooling,
   isOAuthQuotaBlocked,
@@ -12,13 +16,17 @@ import {
   oauthLoginCallbackError,
   oauthPolicySummary,
   oauthProviderLabel,
+  oauthProviderProtocols,
   oauthQuotaCreditsLabel,
   oauthQuotaErrorHint,
   oauthQuotaErrorLabel,
+  oauthQuotaGroupLabel,
+  oauthQuotaGroups,
   oauthQuotaSummary,
   oauthQuotaTone,
   oauthQuotaWindows,
   oauthRuntimeSummary,
+  oauthTestModels,
 } from '../src/utils/oauthAccount'
 
 const NOW = 1_762_400_000_000
@@ -160,8 +168,56 @@ describe('oauthAccount: 上游额度展示', () => {
     assert.equal(oauthQuotaCreditsLabel(quota), 'Credits 12.5')
     assert.equal(oauthQuotaCreditsLabel({ ...quota, creditsUnlimited: true }), 'Credits 不限')
     assert.equal(oauthQuotaCreditsLabel({ ...quota, creditsBalance: null }), null)
-    assert.equal(oauthQuotaSummary(quota), '5 小时 100% · 7 天 43% · Credits 12.5')
+    assert.equal(oauthQuotaSummary(quota), '5 小时 已用 100% · 7 天 已用 42.5% · Credits 12.5')
     assert.equal(oauthQuotaSummary(null), null)
+  })
+
+  it('Antigravity 按模型家族分组展示窗口', () => {
+    const grouped = {
+      ...quota,
+      groups: [
+        {
+          name: 'Gemini',
+          windows: [
+            { usedPercent: 0.61, remainingPercent: 99.39, windowSeconds: 18_000, resetsAt: NOW + 4 * 3_600_000 },
+            { usedPercent: 8.68, remainingPercent: 91.32, windowSeconds: 604_800, resetsAt: NOW + 3 * 86_400_000 },
+          ],
+        },
+        {
+          name: 'Claude and GPT',
+          windows: [
+            { usedPercent: 0, remainingPercent: 100, windowSeconds: 18_000, resetsAt: null },
+          ],
+        },
+        { name: '空分组', windows: [] },
+      ],
+    }
+    assert.equal(oauthQuotaGroupLabel('Gemini'), 'Gemini')
+    assert.equal(oauthQuotaGroupLabel('Claude and GPT'), 'Claude & GPT')
+    assert.equal(oauthQuotaGroupLabel('Gemini 4 Argon'), 'Gemini 4 Argon')
+
+    const groups = oauthQuotaGroups(grouped)
+    assert.equal(groups.length, 2)
+    assert.equal(groups[0].label, 'Gemini')
+    assert.deepEqual(groups[0].windows.map((window) => window.label), ['5 小时', '7 天'])
+    assert.equal(groups[1].label, 'Claude & GPT')
+    assert.deepEqual(oauthQuotaGroups(quota), [])
+    assert.deepEqual(oauthQuotaGroups(null), [])
+  })
+
+  it('使用率保留一位小数，重置时间按量级展示', () => {
+    assert.equal(formatUsedPercent(0), '0')
+    assert.equal(formatUsedPercent(0.04), '0.1')
+    assert.equal(formatUsedPercent(0.61), '0.6')
+    assert.equal(formatUsedPercent(8.68), '8.7')
+    assert.equal(formatUsedPercent(42.5), '42.5')
+    assert.equal(formatUsedPercent(100), '100')
+
+    assert.equal(formatQuotaReset(NOW + 30_000, NOW), '1 分钟后重置')
+    assert.equal(formatQuotaReset(NOW + 2 * 3_600_000, NOW), '2 小时后重置')
+    assert.equal(formatQuotaReset(NOW + 49 * 3_600_000, NOW), '3 天后重置')
+    assert.equal(formatQuotaReset(NOW - 1, NOW), null)
+    assert.equal(formatQuotaReset(null, NOW), null)
   })
 
   it('额度读取失败时给出可读原因，未知错误码保留原文', () => {
@@ -171,6 +227,42 @@ describe('oauthAccount: 上游额度展示', () => {
     assert.equal(oauthQuotaErrorLabel('quota_read_timeout'), '额度读取超时')
     assert.equal(oauthQuotaErrorLabel('credential_unavailable'), '凭据不可用，请刷新 token')
     assert.equal(oauthQuotaErrorLabel('upstream_429'), '读取失败：upstream_429')
+  })
+
+  it('模型授权只列出所关联渠道的模型，保存时去重并支持全部模型', () => {
+    const channels = [
+      { id: 'a', models: ['gemini-3-pro', 'gemini-3-flash'] },
+      { id: 'b', models: ['gemini-3-flash', 'claude-sonnet'] },
+      { id: 'c', models: ['gpt-5'] },
+    ]
+    assert.deepEqual(availableOAuthModels(channels, ['a', 'b']), ['claude-sonnet', 'gemini-3-flash', 'gemini-3-pro'])
+    assert.deepEqual(availableOAuthModels(channels, []), [])
+    assert.deepEqual(buildOAuthModels(true, ['gemini-3-pro'], 'gpt-5'), [])
+    assert.deepEqual(buildOAuthModels(false, ['gemini-3-pro'], 'gpt-5, gemini-3-pro\n claude-sonnet '), [
+      'claude-sonnet',
+      'gemini-3-pro',
+      'gpt-5',
+    ])
+    assert.deepEqual(buildOAuthModels(false, [], ''), [])
+  })
+
+  it('连通性测试的协议与模型来自官方端点渠道和账号授权', () => {
+    const channels = [
+      { id: 'provider', models: ['gemini-3-pro', 'gemini-3-flash', 'claude-sonnet'] },
+      { id: 'other', models: ['gpt-5'] },
+    ]
+    assert.deepEqual(oauthProviderProtocols('antigravity'), ['gemini'])
+    assert.deepEqual(oauthProviderProtocols('chatgpt'), ['responses'])
+    assert.deepEqual(oauthProviderProtocols('custom'), [])
+    assert.deepEqual(
+      oauthTestModels({ models: [], channelIds: ['provider'] }, channels),
+      ['claude-sonnet', 'gemini-3-flash', 'gemini-3-pro'],
+    )
+    assert.deepEqual(
+      oauthTestModels({ models: ['gemini-3-pro'], channelIds: ['provider'] }, channels),
+      ['gemini-3-pro'],
+    )
+    assert.deepEqual(oauthTestModels({ models: [], channelIds: [] }, channels), [])
   })
 
   it('项目发现失败只把开通列为可能的处理步骤', () => {
