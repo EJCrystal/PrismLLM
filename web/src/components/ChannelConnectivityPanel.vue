@@ -125,8 +125,10 @@ async function runSingle() {
 }
 
 async function runBatch() {
-  const queue = channelTargets.value.map((target) => createRow(target, target.credentials[0]?.id ?? ''))
-  rows.value = queue
+  const rowsToRun = channelTargets.value.map((target) => createRow(target, target.credentials[0]?.id ?? ''))
+  rows.value = rowsToRun
+  // 工作线程从独立队列取任务，避免 shift 同时删掉展示中的结果。
+  const queue = [...rowsToRun]
   running.value = true
   try {
     const workers = Array.from({ length: Math.min(2, queue.length) }, async () => {

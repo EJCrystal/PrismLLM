@@ -116,16 +116,33 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [iqRuns, fingerprintRuns] = await Promise.all([
+    // 两类记录分开处理：一类失败时仍展示另一类，避免整页被单个请求拖垮。
+    const [iqResult, fingerprintResult] = await Promise.allSettled([
       api.listIqRuns(IQ_LIMIT),
       api.listFingerprintRuns(FINGERPRINT_LIMIT),
     ])
-    rows.value = mergeTestRecords(iqRuns, fingerprintRuns)
-  } catch (cause) {
-    error.value = errorMessage(cause)
+    const failures: string[] = []
+    if (iqResult.status === 'rejected') failures.push(`智商记录：${errorMessage(iqResult.reason)}`)
+    if (fingerprintResult.status === 'rejected') {
+      failures.push(`指纹记录：${errorMessage(fingerprintResult.reason)}`)
+    }
+    rows.value = mergeTestRecords(
+      iqResult.status === 'fulfilled' ? iqResult.value : [],
+      fingerprintResult.status === 'fulfilled' ? fingerprintResult.value : [],
+    )
+    if (failures.length) {
+      const prefix = failures.length === 2 ? '检测记录加载失败' : '部分检测记录加载失败'
+      const suffix = failures.length === 2 ? '' : '，其余记录已正常加载'
+      error.value = `${prefix}（${failures.join('；')}）${suffix}`
+    }
   } finally {
     loading.value = false
   }
+}
+
+/** 人工判定会改写持久化记录，重新拉取以保证列表与详情一致。 */
+function onRecordUpdated() {
+  void load()
 }
 
 function resetFilters() {
@@ -218,9 +235,13 @@ onMounted(load)
       </template>
     </FilterPanel>
 
-    <ErrorState v-if="error" :message="error" :busy="loading" @retry="load" />
+    <ErrorState v-if="error && !rows.length" :message="error" :busy="loading" @retry="load" />
 
     <div v-else class="panel table-panel">
+      <div v-if="error" class="callout danger test-records-partial-error">
+        <span>{{ error }}</span>
+        <button type="button" class="link-button" :disabled="loading" @click="load">重试</button>
+      </div>
       <TablePlaceholder
         v-if="loading || visibleRows.length === 0"
         :loading="loading"
@@ -353,6 +374,7 @@ onMounted(load)
         :key="`iq-${activeRecord.id}`"
         mode="record"
         :record-id="activeRecord.id"
+        @record-updated="onRecordUpdated"
       />
       <FingerprintTestView
         v-else
@@ -433,6 +455,14 @@ onMounted(load)
 
 .test-records-retention {
   margin: 0;
+}
+
+.test-records-partial-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px;
 }
 
 @media (max-width: 720px) {

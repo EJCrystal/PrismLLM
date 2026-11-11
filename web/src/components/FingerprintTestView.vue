@@ -312,7 +312,7 @@ onBeforeUnmount(stopTimer)
             三条请求并行发出，通常需要 30–120 秒；渠道较慢时最长等待 4 分钟。每次运行的题面都重新生成。
           </p>
           <p v-if="detectorInfo" class="fingerprint-run-note">
-            参考库包含 {{ detectorInfo.modelCount }} 个模型，检测过程不联网。
+            参考库包含 {{ detectorInfo.modelCount }} 个模型；指纹比对在本地完成，不调用外部指纹服务。
           </p>
         </div>
 

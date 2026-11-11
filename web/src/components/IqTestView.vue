@@ -58,6 +58,7 @@ const props = withDefaults(defineProps<{
 })
 const emit = defineEmits<{
   (event: 'open-record', id: number): void
+  (event: 'record-updated', id: number): void
 }>()
 
 const questions = ref<IqQuestion[]>([])
@@ -365,6 +366,7 @@ async function submitManual() {
     })
     syncManualForm(detail.value)
     notify('人工判定已保存')
+    emit('record-updated', detail.value.id)
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {

@@ -54,8 +54,8 @@ export function iqTestRecord(run: IqTestRunSummary): TestRecordRow {
     statusCode: run.statusCode,
     latencyMs: run.latencyMs,
     summary: `${run.benchmarkLabel} · ${run.verdictLabel}`,
-    // 请求本身失败时判定只可能是兜底值，直接按失败展示，避免把网络错误显示成“需复核”。
-    tone: run.success ? iqVerdictTone(run.verdict) : 'danger',
+    // 请求失败按失败展示；incorrect（答错或人工判定未通过）也归入“未通过”，与筛选口径一致。
+    tone: run.success ? (run.verdict === 'incorrect' ? 'danger' : iqVerdictTone(run.verdict)) : 'danger',
   }
 }
 

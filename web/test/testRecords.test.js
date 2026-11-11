@@ -75,7 +75,7 @@ describe('testRecords: 智商与指纹记录归一', () => {
     assert.equal(review.tone, 'warning')
 
     const incorrect = iqTestRecord(iqRun({ id: 4, verdict: 'incorrect', verdictLabel: '回答错误' }))
-    assert.equal(incorrect.tone, 'warning')
+    assert.equal(incorrect.tone, 'danger')
 
     const failed = iqTestRecord(iqRun({ id: 5, verdict: 'failed', verdictLabel: '请求失败' }))
     assert.equal(failed.tone, 'danger')
