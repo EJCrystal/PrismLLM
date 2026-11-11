@@ -1,4 +1,20 @@
 {
   "version": 1,
-  "waivers": []
+  "waivers": [
+    {
+      "finding_id": "c737884e5893",
+      "reason": "PR #220 分组费用误报：groupedCosts 已按分组 ID 汇总 sum(cost_amount)（仅 USD），调用处 costUsd = costs[id] 正确，API/前端透传无误；PricingIntegrationTest 已补 byClientKey.costUsd 断言。该 finding 的正文 token（costUsd = costs[id] 等）不含点号，gate 的 stale 检测无法识别其描述的旧多币种实现已被本 PR 重构移除，故永久 ACTIVE。已在线程回复确认（comment 6790384541）。",
+      "expires": "2026-12-31"
+    },
+    {
+      "finding_id": "cb4d8f5816f3",
+      "reason": "PR #220 空趋势桶为设计选择：后端只返回有请求的桶，前端 fillTrendBuckets 以 costUsd:null 补齐并把缺值渲染为 0，保证折线连续——「无可计费请求=0 费用」是图表期望契约，已加集成断言固定该行为。正文 token（cost_amount/sum/null）均无点号，stale 检测失效导致永久 ACTIVE。已在线程回复说明（comment 6790384541）。",
+      "expires": "2026-12-31"
+    },
+    {
+      "finding_id": "e936ca18cc14",
+      "reason": "PR #220 历史费用混算误报：生产库实证 request_logs 31,773 条非空费用记录全部 cost_currency='USD'（零 CNY/EUR 行，cost_amount IS NULL 的行被 sum 忽略），model_prices/model_default_prices 也仅 USD，不存在可混算的数据，加 WHERE cost_currency='USD' 是死代码。正文 token（cost_currency/cost_amount/costUsd）无点号，stale 检测失效导致永久 ACTIVE。已在线程回复附实证（comment 6790384541）。",
+      "expires": "2026-12-31"
+    }
+  ]
 }
