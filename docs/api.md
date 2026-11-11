@@ -269,7 +269,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
   ```bash
   curl -b cookies.txt -X POST http://localhost:8080/admin/api/oauth-login/start \
     -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
-    -d '{"provider":"chatgpt","name":"新账号","channelIds":["<channel-id>"]}'
+    -d '{"provider":"chatgpt","name":"新账号"}'
   ```
 
   返回一次性 `loginId`、`authorizeUrl`（10 分钟内有效）与 `redirectUri`。在浏览器打开 `authorizeUrl` 完成登录后，把浏览器最终停留的完整回调地址提交给网关：
@@ -282,7 +282,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 
   - `provider` 仅支持 `chatgpt` 与 `antigravity`；两者的客户端参数都内置，直接可登录。
   - 新建账号时不要传 `accountId`；对已有账号重新授权时传 `accountId`，可附带新的 `name` 与 `channelIds`。
-  - `channelIds` 已废弃：`managedChannel=true` 的提供方会忽略该字段，登录后自动关联系统端点渠道；只有上游协议尚未实现的提供方仍按原方式手工关联。
+  - `channelIds` 通常不需要传：新建账号登录后自动关联系统端点渠道。启动时仍会校验提交的每个 ID 必须存在，不存在返回 `400 invalid_oauth_channels`；`managedChannel=true` 的提供方在登录完成后的关联处理里忽略该字段。
   - `priority` 取值 1..1000（在「账号设置」里修改），数值越小越优先；只影响同渠道内账号之间的排序。
   - `proxyUrl` 可在「账号设置」里配置，只支持无认证的 `http://主机:端口`；目标主机默认为本机回环地址，其他主机需要服务端配置 `OAUTH_PROXY_ALLOWED_HOSTS`，否则返回 `400 invalid_oauth_proxy`。重新授权时不改动已有代理。
   - `callbackUrl` 支持完整 URL、裸查询串或 `?查询串`，最长 4096 字符；必须是浏览器登录后真实产生的地址，不要手工拼接。

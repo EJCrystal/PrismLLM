@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import type { Channel, OAuthAccount, OAuthLoginStart, OAuthProviderInfo } from '../types/api'
@@ -55,6 +55,8 @@ const loginStarting = ref(false)
 const loginCompleting = ref(false)
 const loginSession = ref<OAuthLoginStart | null>(null)
 const callbackUrl = ref('')
+/** 会话按发起时的提供方生成；切换提供方或重开弹窗后旧请求不得写回界面。 */
+let loginGeneration = 0
 const reauthTarget = ref<OAuthAccount | null>(null)
 const importForm = reactive({
   name: '',
@@ -201,6 +203,7 @@ const settingsChannelsManaged = computed(() => {
 })
 
 function resetLoginSession() {
+  loginGeneration++
   loginSession.value = null
   callbackUrl.value = ''
   loginStarting.value = false
@@ -238,21 +241,30 @@ function openReauth(account: OAuthAccount) {
 
 async function beginLogin() {
   if (loginStarting.value) return
+  const generation = loginGeneration
   loginStarting.value = true
   try {
-    loginSession.value = await api.startOAuthLogin({
+    const session = await api.startOAuthLogin({
       provider: importForm.provider,
       accountId: reauthTarget.value?.id ?? null,
       name: importForm.name.trim() || null,
       channelIds: importChannelsManaged.value ? [] : [...importForm.channelIds],
     })
+    // 期间切换了提供方或重开了弹窗：丢弃旧会话，避免按旧 loginId 提交回调。
+    if (generation !== loginGeneration) return
+    loginSession.value = session
     callbackUrl.value = ''
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
-    loginStarting.value = false
+    if (generation === loginGeneration) loginStarting.value = false
   }
 }
+
+watch(
+  () => importForm.provider,
+  () => resetLoginSession(),
+)
 
 async function completeLogin() {
   if (loginCompleting.value) return
@@ -266,9 +278,11 @@ async function completeLogin() {
     return
   }
   const callback = callbackUrl.value.trim()
+  const loginId = loginSession.value.loginId
+  const generation = loginGeneration
   loginCompleting.value = true
   try {
-    await api.completeOAuthLogin(loginSession.value.loginId, { callbackUrl: callback })
+    await api.completeOAuthLogin(loginId, { callbackUrl: callback })
     if (reauthTarget.value) {
       await api.updateOAuthAccountSettings(reauthTarget.value.id, {
         name: importForm.name.trim() || null,
@@ -281,7 +295,7 @@ async function completeLogin() {
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
-    loginCompleting.value = false
+    if (generation === loginGeneration) loginCompleting.value = false
   }
 }
 
