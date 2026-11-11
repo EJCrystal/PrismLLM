@@ -504,25 +504,6 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 }
             }
 
-            // V67 兜底：构造旧版校验遗留的非 USD 历史数据（CNY 价格与 CNY 费用日志），
-            // 验证迁移把它们清洗为 USD / 未计费而不是让 CHECK 约束失败。
-            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
-                connection.createStatement().use { statement ->
-                    statement.execute(
-                        """
-                        insert into model_prices (id, channel_id, upstream_model, currency, input_price_per_million, output_price_per_million, created_at, updated_at)
-                        values ('v67-cny-price', 'migration-channel', 'cny-model', 'CNY', 7, 14, 1, 1)
-                        """.trimIndent(),
-                    )
-                    statement.execute(
-                        """
-                        insert into request_logs (request_id, alias, status_code, total_ms, created_at, cost_amount, cost_currency)
-                        values ('v67-cny-log', 'cny-legacy', 200, 1, 1, 7, 'CNY')
-                        """.trimIndent(),
-                    )
-                }
-            }
-
             migrateTo(migrationUrl)
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
@@ -572,17 +553,12 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                         assertTrue(result.next())
                         assertEquals("67", result.getString(1))
                     }
-                    // V67 数据清洗：非 USD 历史费用置 NULL（未计费），非 USD 价格归一为 USD，CHECK 不拒迁。
+                    // V67 只对清洁库生效：USD 历史行原样保留，仅加 CHECK 约束（非 USD 数据由独立用例验证会被拒迁）。
                     statement.executeQuery(
-                        "select cost_amount, cost_currency from request_logs where request_id = 'v67-cny-log'",
+                        "select count(*) from information_schema.table_constraints where constraint_name = 'ck_model_prices_currency_usd'",
                     ).use { result ->
                         assertTrue(result.next())
-                        assertNull(result.getObject(1), "非 USD 历史费用应置 NULL 而不是标成 USD")
-                        assertNull(result.getObject(2))
-                    }
-                    statement.executeQuery("select currency from model_prices where id = 'v67-cny-price'").use { result ->
-                        assertTrue(result.next())
-                        assertEquals("USD", result.getString(1), "非 USD 价格配置应归一为 USD")
+                        assertEquals(1, result.getInt(1), "V67 应为 model_prices 加 USD-only CHECK")
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -943,6 +919,70 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                             "0.2",
                             overrides["body"]?.jsonObject?.get("temperature")?.jsonPrimitive?.content,
                         )
+                    }
+                }
+            }
+        } finally {
+            dropDatabaseQuietly(databaseName)
+        }
+    }
+
+    @Test
+    @Timeout(300)
+    fun `v67 migration refuses non-USD legacy data instead of relabeling amounts`() {
+        val databaseName = createMigrationDatabase("migration_v67_dirty")
+        val migrationUrl = migrationDatabaseUrl(databaseName)
+        try {
+            migrateTo(migrationUrl, "55")
+
+            // 旧版校验遗留的非 USD 数据（CNY 价格与 CNY 费用日志）。V67 必须中止迁移
+            // 而不是把原币金额改标 USD——未换算金额混入 USD 账本正是 issue #222 要阻止的。
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into channels (id, name, base_url, auth_type, enabled, created_at, updated_at)
+                        values ('migration-channel', 'migration-channel', 'https://example.com/v1', 'bearer', true, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into model_prices (id, channel_id, upstream_model, currency, input_price_per_million, output_price_per_million, created_at, updated_at)
+                        values ('v67-cny-price', 'migration-channel', 'cny-model', 'CNY', 7, 14, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into request_logs (request_id, alias, status_code, total_ms, created_at, cost_amount, cost_currency)
+                        values ('v67-cny-log', 'cny-legacy', 200, 1, 1, 7, 'CNY')
+                        """.trimIndent(),
+                    )
+                }
+            }
+
+            val failure = runCatching { migrateTo(migrationUrl) }
+            assertTrue(failure.isFailure, "存在非 USD 存量数据时 V67 应中止迁移")
+            val cause = generateSequence(failure.exceptionOrNull()) { it.cause }
+                .map { it.message ?: "" }
+                .firstOrNull { it.contains("V67") }
+            assertNotNull(cause, "失败链里应有 V67 守卫的中文报错，实际：${failure.exceptionOrNull()}")
+
+            // 中止后数据库停留在 V66，脏行未被改写，管理员可换算或删除后重跑。
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
+                        assertTrue(result.next())
+                        assertEquals("66", result.getString(1), "V67 中止后应停在 V66")
+                    }
+                    statement.executeQuery("select currency, input_price_per_million from model_prices where id = 'v67-cny-price'").use { result ->
+                        assertTrue(result.next())
+                        assertEquals("CNY", result.getString(1), "中止迁移不得改标币种")
+                        assertEquals(0, result.getBigDecimal(2).compareTo(BigDecimal("7")), "中止迁移不得改写金额")
+                    }
+                    statement.executeQuery("select cost_amount, cost_currency from request_logs where request_id = 'v67-cny-log'").use { result ->
+                        assertTrue(result.next())
+                        assertEquals(0, result.getBigDecimal(1).compareTo(BigDecimal("7")), "中止迁移不得改写历史费用")
+                        assertEquals("CNY", result.getString(2))
                     }
                 }
             }
