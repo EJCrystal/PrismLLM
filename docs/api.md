@@ -254,9 +254,9 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 
 订阅账号是独立的上游凭据实体：账号拥有自己的 id、refresh/access token、代理、优先级、模型授权、调度策略与额度，**不再依附于任何渠道密钥**。
 
-订阅凭据只能用于提供方自己的官方端点，因此端点由代码常量固定：网关为每个已实现上游协议的 provider 置备一条 kind=provider 的系统渠道，账号导入后自动关联到它，用户不再手工选择渠道。这类渠道不可编辑、不可删除，也不出现在渠道列表里。详细语义见 ADR 0016。
+订阅凭据只能用于提供方自己的官方端点，因此端点由代码常量固定：网关为每个已实现上游协议的 provider 置备一条 kind=provider 的系统渠道，账号登录后自动关联到它，用户不再手工选择渠道。这类渠道不可编辑、不可删除，也不出现在渠道列表里。详细语义见 ADR 0016。
 
-- 查看可用的 OAuth 提供方：`GET /admin/api/oauth-providers`，返回 `id`、`label`、`configured`、`loginSupported` 与 `managedChannel`。`configured` 表示网关已注册该提供方的 token 刷新器；`chatgpt` 与 `antigravity` 都内置公开客户端参数，默认即为 `true`，不需要部署方预先申请。两者也都内置授权端点与回调地址，可以直接发起浏览器登录；`managedChannel=true` 表示账号的端点渠道由系统维护。
+- 查看可用的 OAuth 提供方：`GET /admin/api/oauth-providers`，返回 `id`、`label`、`configured` 与 `managedChannel`。`configured` 表示网关已注册该提供方的 token 刷新器；`chatgpt` 与 `antigravity` 都内置公开客户端参数，默认即为 `true`，不需要部署方预先申请。两者也都内置授权端点与回调地址，可以直接发起浏览器登录；`managedChannel=true` 表示账号的端点渠道由系统维护。
 - 维护官方模型列表：`PUT /admin/api/oauth-providers/{provider}/models`，请求体 `{"models":["..."]}`；整体替换系统端点渠道的模型映射，用于官方模型变更。
 - 从上游刷新模型目录：`POST /admin/api/oauth-providers/{provider}/models/refresh`；仅 Code Assist 类提供方（目前是 Antigravity）支持，其他提供方返回 `model_catalog_not_supported`。使用时从该提供方**已启用且仍为 ACTIVE** 的账号中取最近更新的一个，读取官方模型列表（Code Assist 的 fetchAvailableModels，按当前 tier 与 `allowedTiers` 逐个尝试），写回系统渠道并返回 `{"models":[{"id","name"}]}`。项目发现、模型目录与额度查询都经该账号的出口代理发出；账号代理无效时返回 `invalid_oauth_proxy`。没有可用账号时返回 `oauth_account_missing`。
 - 账号看板：`GET /admin/api/oauth-accounts`，返回账号 `id` / `name`、provider、授权状态、是否启用、优先级、授权模型、关联渠道（`channelIds` 与 `channels[{id,name}]`）、token 到期时间、上游额度读数、调度策略与实时状态。响应不包含任何 token，且禁止缓存。
@@ -264,34 +264,12 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
   - `authState=REAUTH_REQUIRED` 的账号仍保留为候选，但凭据解析会返回 `subscription_account_unavailable` 并继续尝试其他候选；不会把 refresh token 发给上游。
   - `quota`：最近一次成功读取的上游额度快照，包含 5 小时与每周窗口的 `usedPercent` / `remainingPercent` / `windowSeconds` / `resetsAt`、`allowed`、credits 余额与可重置次数、`checkedAt` 与最近一次失败错误码。
   - `runtime.quotaBlockedUntil`：额度读数未过期且某个窗口已用尽时的预计恢复时间；此时新请求会被拒绝。
-- 新建账号（不需要先建渠道或密钥）：
-
-  ```bash
-  curl -b cookies.txt -X POST http://localhost:8080/admin/api/oauth-accounts \
-    -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
-    -d '{"name":"Free 账号","provider":"chatgpt","refreshToken":"<refresh-token>","accountEmail":"free@example.com","channelIds":["<channel-id>"],"priority":1,"proxyUrl":"http://127.0.0.1:7890"}'
-  ```
-
-  - `provider` 仅支持 `chatgpt` 与 `antigravity`；两者的客户端参数都内置，直接可导入。
-  - `channelIds` 已废弃：`managedChannel=true` 的提供方会忽略该字段，导入后自动关联系统端点渠道；只有上游协议尚未实现的提供方（当前是 `antigravity`）仍按原方式手工关联。
-  - 渠道本身不再必须持有静态密钥：可以创建渠道后只关联订阅账号，数据面会把账号作为该渠道路由凭据。
-  - `accessToken` 与 `accessTokenExpiresAt` 可选，但必须成对出现且未过期；留空则导入后按需刷新。
-  - `priority` 取值 1..1000，数值越小越优先；只影响同渠道内账号之间的排序。
-  - `proxyUrl` 只支持无认证的 `http://主机:端口`；目标主机默认为本机回环地址，其他主机需要服务端配置 `OAUTH_PROXY_ALLOWED_HOSTS`，否则返回 `400 invalid_oauth_proxy`。
-  - 同一提供方下邮箱唯一，重复创建返回 `409 oauth_account_email_exists`。
-
-- 重新授权（替换凭据）：`PUT /admin/api/oauth-accounts/<account-id>`，请求体与新建一致。只替换 refresh/access token，不改启停状态；成功后清空账号级冷却与各关联渠道下的候选冷却。留空 refresh token 表示保留现有长期凭据。
-- 修改账号设置：`PUT /admin/api/oauth-accounts/<account-id>/settings`，请求体 `{name, priority, enabled, proxyUrl, clearProxy}`；`enabled=false` 后账号不再参与路由。
-- 调整关联渠道：`PUT /admin/api/oauth-accounts/<account-id>/channels`，请求体 `{"channelIds":["..."]}`；整体替换关联集合。`managedChannel=true` 的提供方返回 `400 oauth_account_channel_managed`，关联由系统维护。
-- 调整模型授权：`PUT /admin/api/oauth-accounts/<account-id>/models`，请求体 `{"models":["..."]}`；传空数组表示继承所关联渠道的全部模型。
-- 删除账号：`DELETE /admin/api/oauth-accounts/<account-id>`；token、额度与调度状态一并删除，不影响渠道或静态密钥。
-
-- 浏览器登录（交互式授权）：提供方配置了授权地址与回调地址时可用，网关使用 PKCE + `state` 完成授权码交换。
+- 新建与重新授权账号：统一走浏览器登录（交互式授权），网关使用 PKCE + `state` 完成授权码交换，不需要先建渠道或密钥，也不需要手工粘贴 refresh token。
 
   ```bash
   curl -b cookies.txt -X POST http://localhost:8080/admin/api/oauth-login/start \
     -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
-    -d '{"provider":"chatgpt","name":"新账号","channelIds":["<channel-id>"],"proxyUrl":"http://127.0.0.1:7890"}'
+    -d '{"provider":"chatgpt","name":"新账号","channelIds":["<channel-id>"]}'
   ```
 
   返回一次性 `loginId`、`authorizeUrl`（10 分钟内有效）与 `redirectUri`。在浏览器打开 `authorizeUrl` 完成登录后，把浏览器最终停留的完整回调地址提交给网关：
@@ -302,12 +280,21 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
     -d '{"callbackUrl":"http://localhost:1455/auth/callback?code=<code>&state=<state>"}'
   ```
 
+  - `provider` 仅支持 `chatgpt` 与 `antigravity`；两者的客户端参数都内置，直接可登录。
   - 新建账号时不要传 `accountId`；对已有账号重新授权时传 `accountId`，可附带新的 `name` 与 `channelIds`。
+  - `channelIds` 已废弃：`managedChannel=true` 的提供方会忽略该字段，登录后自动关联系统端点渠道；只有上游协议尚未实现的提供方仍按原方式手工关联。
+  - `priority` 取值 1..1000（在「账号设置」里修改），数值越小越优先；只影响同渠道内账号之间的排序。
+  - `proxyUrl` 可在「账号设置」里配置，只支持无认证的 `http://主机:端口`；目标主机默认为本机回环地址，其他主机需要服务端配置 `OAUTH_PROXY_ALLOWED_HOSTS`，否则返回 `400 invalid_oauth_proxy`。重新授权时不改动已有代理。
   - `callbackUrl` 支持完整 URL、裸查询串或 `?查询串`，最长 4096 字符；必须是浏览器登录后真实产生的地址，不要手工拼接。
   - 登录会话只存在于内存，10 分钟有效；授权码只能交换一次，绑定成功后会话立即失效。过期或重复提交返回 `400 oauth_login_expired`，`state` 不匹配返回 `400 oauth_login_invalid_callback`。
   - 重新授权期间目标账号被删除或替换凭据时返回 `409 oauth_login_stale`，不会把授权结果写到新目标上。
   - 换取 token 失败返回 `502 oauth_login_failed`；提供方未配置授权参数返回 `400 oauth_login_unsupported`；邮箱已存在返回 `409 oauth_account_email_exists`，删除原账号后可用同一 `loginId` 重试，不会再次请求 token 端点。
-  - 成功后账号立即写入关联渠道并清空冷却；响应不包含 token。
+  - 成功后账号立即写入关联渠道并清空冷却；响应不包含 token，长期凭据只以密文落库。
+
+- 修改账号设置：`PUT /admin/api/oauth-accounts/<account-id>/settings`，请求体 `{name, priority, enabled, proxyUrl, clearProxy}`；`enabled=false` 后账号不再参与路由，管理台列表内可直接切换。
+- 调整关联渠道：`PUT /admin/api/oauth-accounts/<account-id>/channels`，请求体 `{"channelIds":["..."]}`；整体替换关联集合。`managedChannel=true` 的提供方返回 `400 oauth_account_channel_managed`，关联由系统维护。
+- 调整模型授权：`PUT /admin/api/oauth-accounts/<account-id>/models`，请求体 `{"models":["..."]}`；传空数组表示继承所关联渠道的全部模型。
+- 删除账号：`DELETE /admin/api/oauth-accounts/<account-id>`；token、额度与调度状态一并删除，不影响渠道或静态密钥。
 
 - 编辑调度策略：
 
@@ -323,7 +310,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
   - `POST /admin/api/oauth-accounts/<account-id>/quota/refresh`：立即读取一次上游额度并写入快照；失败保留上一次成功读数，返回 `502 oauth_quota_failed`，账号不支持或没有可用 access token 时返回 `400 oauth_quota_unsupported`。
   - `POST /admin/api/oauth-accounts/<account-id>/refresh`：允许对 `REAUTH_REQUIRED` 账号再试一次；失败返回 `502 oauth_refresh_failed`。
   - `POST /admin/api/oauth-accounts/<account-id>/cooldown/clear`：清除账号级冷却，并清理该账号在所有关联渠道下的候选冷却。
-- 以上写操作分别写入审计动作 `oauth_account.import`、`oauth_account.delete`、`oauth_account.settings.update`、`oauth_account.login.start`、`oauth_account.login`、`oauth_account.policy.update`、`oauth_account.quota.refresh`、`oauth_account.refresh` 与 `oauth_account.cooldown.clear`，只记录账号 id、provider、策略参数、渠道 id 与操作结果。
+- 以上写操作分别写入审计动作 `oauth_account.delete`、`oauth_account.settings.update`、`oauth_account.login.start`、`oauth_account.login`、`oauth_account.policy.update`、`oauth_account.quota.refresh`、`oauth_account.refresh` 与 `oauth_account.cooldown.clear`，只记录账号 id、provider、策略参数、渠道 id 与操作结果。
 
 ---
 

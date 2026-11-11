@@ -1,6 +1,5 @@
 import type {
   OAuthAccount,
-  OAuthAccountImportRequest,
   OAuthAccountPolicy,
   OAuthAccountPolicyRequest,
   OAuthQuota,
@@ -361,62 +360,6 @@ export function oauthLoginCallbackError(raw: string): string | null {
   if (!text) return '请粘贴浏览器最终停留的地址'
   if (/(^|[?&])(code|error)=/.test(text)) return null
   return '回调地址缺少 code 参数，请复制登录跳转后浏览器地址栏里的完整 URL'
-}
-
-export interface OAuthImportForm {
-  name: string
-  provider: string
-  refreshToken: string
-  accountEmail: string
-  accountPlan: string
-  proxyUrl: string
-  accessToken: string
-  accessTokenExpiresAt: number | null
-  channelIds: string[]
-  priority: number
-}
-
-/**
- * 校验并转换导入表单。refresh token 必填；access token 与到期时间必须成对出现，
- * 避免后端保存一个无法使用的 token。
- */
-export function buildOAuthImportPayload(
-  form: OAuthImportForm,
-  now: number = Date.now(),
-  options: { allowEmptyRefreshToken?: boolean } = {},
-): OAuthAccountImportRequest {
-  const provider = form.provider.trim()
-  if (!provider) throw new Error('请选择账号提供方')
-  const refreshToken = form.refreshToken.trim()
-  if (!refreshToken && !options.allowEmptyRefreshToken) throw new Error('请填写 refresh token')
-  const accessToken = form.accessToken.trim()
-  if (accessToken && form.accessTokenExpiresAt == null) {
-    throw new Error('填写 access token 时必须同时填写到期时间')
-  }
-  if (!accessToken && form.accessTokenExpiresAt != null) {
-    throw new Error('填写到期时间时必须同时填写 access token')
-  }
-  if (form.accessTokenExpiresAt != null && form.accessTokenExpiresAt <= now) {
-    throw new Error('access token 到期时间必须晚于当前时间')
-  }
-
-  const payload: OAuthAccountImportRequest = { provider, refreshToken }
-  const name = (form.name ?? '').trim()
-  if (name) payload.name = name
-  const channelIds = form.channelIds ?? []
-  if (channelIds.length > 0) payload.channelIds = channelIds
-  if ((form.priority ?? 1) !== 1) payload.priority = form.priority
-  const email = form.accountEmail.trim()
-  if (email) payload.accountEmail = email
-  const plan = form.accountPlan.trim()
-  if (plan) payload.accountPlan = plan
-  const proxy = form.proxyUrl.trim()
-  if (proxy) payload.proxyUrl = proxy
-  if (accessToken) {
-    payload.accessToken = accessToken
-    payload.accessTokenExpiresAt = form.accessTokenExpiresAt
-  }
-  return payload
 }
 
 export interface OAuthPolicyForm {

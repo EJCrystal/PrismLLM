@@ -12,8 +12,8 @@ OAuth 的 access token 是短期凭据，ChatGPT 与 Antigravity 通常只有约
 
 `authorized_at` 只在 refresh token 被替换时更新：
 
-- 新建账号（导入 refresh token 或浏览器登录）时等于创建时间。
-- 重新授权、导入新的 refresh token 时更新为本次操作时间。
+- 新建账号（浏览器登录）时等于创建时间。
+- 重新授权换取新的 refresh token 时更新为本次操作时间。
 - 日常 access token 刷新、refresh token 轮换不改变，因为它仍属于同一次授权。
 
 ## 回滚

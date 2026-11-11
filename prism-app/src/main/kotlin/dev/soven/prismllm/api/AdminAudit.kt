@@ -134,8 +134,6 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "POST" && CHANNEL_COOLDOWN_CLEAR_PATTERN.matches(path) -> "channel.cooldown.clear"
     method == "POST" && path == "/admin/api/oauth-login/start" -> "oauth_account.login.start"
     method == "POST" && OAUTH_LOGIN_COMPLETE_PATTERN.matches(path) -> "oauth_account.login"
-    method == "POST" && path == "/admin/api/oauth-accounts" -> "oauth_account.import"
-    method == "PUT" && OAUTH_ACCOUNT_ITEM_PATTERN.matches(path) -> "oauth_account.import"
     method == "DELETE" && OAUTH_ACCOUNT_ITEM_PATTERN.matches(path) -> "oauth_account.delete"
     method == "PUT" && OAUTH_ACCOUNT_SETTINGS_PATTERN.matches(path) -> "oauth_account.settings.update"
     method == "PUT" && OAUTH_ACCOUNT_POLICY_PATTERN.matches(path) -> "oauth_account.policy.update"

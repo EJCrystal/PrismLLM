@@ -52,7 +52,6 @@ import type {
   WebSearchSettings,
   WebSearchSettingsRequest,
   OAuthAccount,
-  OAuthAccountImportRequest,
   OAuthAccountChannelsRequest,
   OAuthAccountModelsRequest,
   OAuthAccountSettingsRequest,
@@ -181,15 +180,8 @@ export const api = {
       method: 'POST',
     }),
   listOAuthAccounts: () => requestList<OAuthAccount>('/oauth-accounts'),
-  importOAuthAccount: (payload: OAuthAccountImportRequest) =>
-    request<OAuthAccount>('/oauth-accounts', { method: 'POST', body: JSON.stringify(payload) }),
   deleteOAuthAccount: (id: string) =>
     request<null>(`/oauth-accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  updateOAuthAccount: (id: string, payload: OAuthAccountImportRequest) =>
-    request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    }),
   updateOAuthAccountSettings: (id: string, payload: OAuthAccountSettingsRequest) =>
     request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(id)}/settings`, {
       method: 'PUT',

@@ -999,7 +999,6 @@ export interface OAuthProviderInfo {
   id: string
   label: string
   configured: boolean
-  loginSupported: boolean
   managedChannel: boolean
 }
 
@@ -1102,22 +1101,6 @@ export interface OAuthLoginStart {
 
 export interface OAuthLoginCompleteRequest {
   callbackUrl: string
-}
-
-export interface OAuthAccountImportRequest {
-  name?: string | null
-  provider: string
-  refreshToken: string
-  accountEmail?: string | null
-  accountPlan?: string | null
-  proxyUrl?: string | null
-  accessToken?: string | null
-  accessTokenExpiresAt?: number | null
-  tokenType?: string | null
-  scope?: string | null
-  channelIds?: string[]
-  models?: string[]
-  priority?: number
 }
 
 export interface OAuthAccountSettingsRequest {
