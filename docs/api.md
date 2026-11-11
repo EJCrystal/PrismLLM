@@ -175,7 +175,7 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 - 可测试目标：`GET /admin/api/iq-tests/targets`
 - 运行检测：`POST /admin/api/iq-tests`
 - 人工判定：`PUT /admin/api/iq-tests/<id>/manual-verdict`
-- 历史与详情：`GET /admin/api/iq-tests?limit=50`、`GET /admin/api/iq-tests/<id>`
+- 历史与详情：`GET /admin/api/iq-tests?limit=200`、`GET /admin/api/iq-tests/<id>`
 
 ```bash
 curl -b cookies.txt -X POST http://localhost:8080/admin/api/iq-tests \
@@ -196,7 +196,7 @@ SVG/HTML，再由 `judgeId` 指定的判分器判分；省略时使用 `IQ_DEFAU
 
 - 参考库信息：`GET /admin/api/model-tests/fingerprint/info`
 - 运行检测：`POST /admin/api/model-tests/fingerprint`
-- 历史与详情：`GET /admin/api/model-tests/fingerprint?limit=20`、
+- 历史与详情：`GET /admin/api/model-tests/fingerprint?limit=100`、
   `GET /admin/api/model-tests/fingerprint/<id>`
 
 ```bash

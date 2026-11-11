@@ -15,7 +15,7 @@ import { vScrollHint } from '../directives/scrollHint'
 import Modal from './Modal.vue'
 import PriceEditorModal from './PriceEditorModal.vue'
 import DefaultPriceModal from './DefaultPriceModal.vue'
-import ModelTestModal from './ModelTestModal.vue'
+import ChannelTestDrawer from './ChannelTestDrawer.vue'
 import RequestOverridesEditor from './RequestOverridesEditor.vue'
 import ChannelKeyDisablePolicyModal from './ChannelKeyDisablePolicyModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
@@ -60,6 +60,10 @@ import {
   resolveSavedChannel,
 } from '../utils/modelPrice'
 
+const emit = defineEmits<{
+  (event: 'open-test-record', payload: { type: 'iq' | 'fingerprint'; id: number }): void
+}>()
+
 interface RequestOverridesEditorExpose {
   getValue: () => UpstreamRequestOverrides
   getSnapshot: () => string
@@ -76,9 +80,9 @@ interface ChannelFormState extends Omit<ChannelFormDraft, 'requestOverrides' | '
   requestOverrides: UpstreamRequestOverrides
 }
 
-interface ModelTestTarget {
+interface ChannelTestTarget {
   channel: Channel
-  model: string
+  model?: string
 }
 
 interface PriceEditorTarget {
@@ -258,7 +262,7 @@ const prices = ref<ModelPrice[]>([])
 const defaultPrices = ref<ModelDefaultPrice[]>([])
 const priceEditor = ref<PriceEditorTarget | null>(null)
 const showDefaultPrices = ref(false)
-const testTarget = ref<ModelTestTarget | null>(null)
+const testTarget = ref<ChannelTestTarget | null>(null)
 const overrideEditor = ref<RequestOverridesEditorExpose | null>(null)
 const overrideRevision = ref(0)
 const keyDisablePolicyTarget = ref<Channel | null>(null)
@@ -743,32 +747,17 @@ function savedEditingChannel(): Channel | null {
   return channels.value.find((channel) => channel.id === editingId.value) || null
 }
 
-function canTestModel(modelId: string): boolean {
-  const channel = savedEditingChannel()
-  if (!channel?.protocols?.length) return false
-  return channel.keys?.length
-    ? channel.keys.some((key) => isKeyRoutable(key) && key.models.includes(modelId))
-    : channel.models.includes(modelId)
+function openTestDrawer(channel: Channel, model?: string): void {
+  testTarget.value = { channel, model }
 }
 
-function openModelTest(modelId: string): void {
-  const channel = savedEditingChannel()
-  if (!channel) {
-    notify('请先保存渠道后再测试模型', 'warning')
-    return
-  }
-  const supported = channel.keys?.length
-    ? channel.keys.some((key) => isKeyRoutable(key) && key.models.includes(modelId))
-    : channel.models.includes(modelId)
-  if (!supported) {
-    notify('该模型尚未保存到渠道，请先保存渠道后再测试', 'warning')
-    return
-  }
-  if (!channel.protocols?.length) {
-    notify('渠道尚未启用任何协议，无法测试', 'warning')
-    return
-  }
-  testTarget.value = { channel, model: modelId }
+function closeTestDrawer(): void {
+  testTarget.value = null
+}
+
+function openTestRecord(payload: { type: 'iq' | 'fingerprint'; id: number }): void {
+  testTarget.value = null
+  emit('open-test-record', payload)
 }
 
 const priorityEditingId = ref<string | null>(null)
@@ -1049,7 +1038,7 @@ function openEdit(channel: Channel): void {
 }
 
 function closeChannelForm() {
-  if (testTarget.value || rateLimitTarget.value) return
+  if (rateLimitTarget.value) return
   if (isFormDirty.value && !window.confirm('当前渠道配置尚未保存，确定关闭吗？')) return
   showForm.value = false
   formSnapshot.value = ''
@@ -1513,6 +1502,9 @@ onMounted(() => {
               <td class="actions-col">
                 <div class="row-actions">
                   <button type="button" class="button ghost mini" :title="'按密钥查询 ' + channel.name + ' 的账户额度'" @click="quotaTarget = channel">额度</button>
+                  <button type="button" class="icon-button" title="测试模型" :aria-label="'测试渠道 ' + channel.name" @click="openTestDrawer(channel)">
+                    <Icon name="bolt" :size="16" />
+                  </button>
                   <button type="button" class="icon-button" title="编辑渠道" :aria-label="'编辑渠道 ' + channel.name" @click="openEdit(channel)">
                     <Icon name="edit" :size="16" />
                   </button>
@@ -1602,6 +1594,9 @@ onMounted(() => {
 
           <div class="channel-mobile-actions">
             <button type="button" class="button ghost mini" :title="'按密钥查询 ' + channel.name + ' 的账户额度'" @click="quotaTarget = channel">额度</button>
+            <button type="button" class="icon-button" title="测试模型" :aria-label="'测试渠道 ' + channel.name" @click="openTestDrawer(channel)">
+              <Icon name="bolt" :size="16" />
+            </button>
             <button type="button" class="icon-button" title="编辑渠道" :aria-label="'编辑渠道 ' + channel.name" @click="openEdit(channel)">
               <Icon name="edit" :size="16" />
             </button>
@@ -1669,6 +1664,14 @@ onMounted(() => {
 
     <ChannelHealthModal v-if="healthTarget" :key="healthTarget.id" :channel="healthTarget" :initial-window="healthWindow" @close="onCloseHealthModal" />
     <ChannelQuotaModal v-if="quotaTarget" :key="quotaTarget.id" :channel="quotaTarget" @close="quotaTarget = null" @saved="onQuotaSaved" />
+    <ChannelTestDrawer
+      v-if="testTarget"
+      :key="testTarget.channel.id"
+      :channel="testTarget.channel"
+      :initial-model="testTarget.model"
+      @close="closeTestDrawer"
+      @open-record="openTestRecord"
+    />
 
     <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide roomy mobile-fullscreen @close="closeChannelForm">
       <template #subhead>
@@ -1986,15 +1989,6 @@ onMounted(() => {
                     </button>
                     <button
                       type="button"
-                      class="button ghost mini channel-model-test-btn"
-                      :disabled="!canTestModel(modelId)"
-                      :title="canTestModel(modelId) ? '测试模型连通性' : '保存渠道和模型后可测试'"
-                      @click="openModelTest(modelId)"
-                    >
-                      测试
-                    </button>
-                    <button
-                      type="button"
                       class="button ghost mini channel-mapping-fill-btn"
                       @click="copyUpstreamToCanonical(modelId)"
                     >填入</button>
@@ -2032,7 +2026,6 @@ onMounted(() => {
                 </div>
                 <p v-if="!visibleMappingModels.length" class="channel-form-empty-inline">没有匹配的模型。</p>
               </div>
-              <p class="channel-form-note">测试会使用已保存的渠道配置发送一次真实上游请求。</p>
             </template>
           </section>
 
@@ -2080,13 +2073,6 @@ onMounted(() => {
           {{ saving ? '保存中…' : '保存渠道' }}
         </button>
       </template>
-
-      <ModelTestModal
-        v-if="testTarget"
-        :channel="testTarget.channel"
-        :model="testTarget.model"
-        @close="testTarget = null"
-      />
 
       <ChannelKeyRateLimitModal
         v-if="rateLimitTarget"
@@ -2393,7 +2379,6 @@ onMounted(() => {
   .channel-canonical-input-wrap input { min-height: 44px; height: 44px; padding-right: 46px !important; font-size: 16px; }
   .channel-canonical-input-wrap input::placeholder { font-size: 12px; }
   .channel-canonical-clear { width: 34px; height: 34px; }
-  .channel-model-test-btn { min-height: 34px; }
 }
 /* 降低透明度时，渠道表单与密钥区的玻璃表面回退到实色。 */
 @media (prefers-reduced-transparency: reduce) {

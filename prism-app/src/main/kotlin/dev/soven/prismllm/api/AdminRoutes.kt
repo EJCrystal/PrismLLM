@@ -831,8 +831,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/model-tests/fingerprint") {
             call.requireAdmin(app)
-            val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 50) ?: 20
-            call.respond(app.fingerprintTestRunRepository.list(limit).map { it.toResponse(includeDetail = false) })
+            val limit = call.queryInt("limit", default = 20, min = 1, max = 100)
+            call.respond(
+                app.fingerprintTestRunRepository.list(limit)
+                    .map { it.toResponse(includeDetail = false) },
+            )
         }
 
         get("/model-tests/fingerprint/info") {
@@ -981,8 +984,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/iq-tests") {
             call.requireAdmin(app)
-            val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 50
-            call.respond(app.iqTestRunRepository.list(limit).map { it.toResponse(includeDetail = false) })
+            val limit = call.queryInt("limit", default = 50, min = 1, max = 200)
+            call.respond(
+                app.iqTestRunRepository.list(limit)
+                    .map { it.toResponse(includeDetail = false) },
+            )
         }
 
         get("/iq-tests/{id}") {

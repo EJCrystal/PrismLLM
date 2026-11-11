@@ -61,6 +61,25 @@ describe('API 契约的运行时形状', () => {
     assert.equal(params.get('result'), 'success')
   })
 
+  it('检测记录列表按保留上限读取全部记录', async (t) => {
+    const originalFetch = globalThis.fetch
+    const urls = []
+    t.after(() => { globalThis.fetch = originalFetch })
+    globalThis.fetch = async (input) => {
+      urls.push(String(input))
+      return new Response('[]', { status: 200 })
+    }
+    await api.listIqRuns(200)
+    await api.listFingerprintRuns(100)
+    assert.deepEqual(
+      urls.map((url) => {
+        const parsed = new URL(url, 'http://localhost')
+        return parsed.pathname + parsed.search
+      }),
+      ['/admin/api/iq-tests?limit=200', '/admin/api/model-tests/fingerprint?limit=100'],
+    )
+  })
+
   it('订阅账号接口使用约定路径、方法并编码 id', async (t) => {
     const originalFetch = globalThis.fetch
     const originalDocument = globalThis.document

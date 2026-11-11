@@ -1,6 +1,6 @@
 # 智商检测
 
-管理台「模型检测 → 智商检测」页用鹈鹕骑行动画和随机推理题观察模型表现。模型通过渠道已保存的上游凭据请求上游：
+管理台渠道列表的「测试 → 智商检测」页签用鹈鹕骑行动画和随机推理题观察模型表现。模型通过渠道已保存的上游凭据请求上游：
 鹈鹕题生成 SVG/HTML，糖果题从题库随机抽取，只返回 JSON。鹈鹕提示词可在运行前修改，糖果题通过题库编辑。
 实际提示词和判分答案快照会随记录保存。生成请求不经过数据面，因此不写入请求日志，也不消耗调用方密钥额度。
 
@@ -319,8 +319,9 @@ curl -b cookies.txt -X PUT http://localhost:8080/admin/api/iq-tests/<id>/manual-
 ### 历史与详情
 
 ```bash
-curl -b cookies.txt 'http://localhost:8080/admin/api/iq-tests?limit=50'
+curl -b cookies.txt 'http://localhost:8080/admin/api/iq-tests?limit=200'
 curl -b cookies.txt http://localhost:8080/admin/api/iq-tests/<id>
 ```
 
-历史上限由服务端固定为最近 200 次；列表只返回摘要，详情返回完整响应与结构检查。
+历史上限由服务端固定为最近 200 次；列表只返回摘要，详情返回完整响应与结构检查。管理台的
+「检测记录」页会一次读取全部保留记录，并在前端按类型、渠道、模型和结论筛选。

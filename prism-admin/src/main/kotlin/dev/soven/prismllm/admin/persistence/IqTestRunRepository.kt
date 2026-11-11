@@ -66,10 +66,11 @@ class IqTestRunRepository(private val database: Database) {
     }
 
     suspend fun list(limit: Int): List<IqTestRunRecord> = suspendTransaction(database) {
-        IqTestRuns.selectAll()
+        // 列表只展示摘要；response_text 可能接近长度上限，一次读取 200 条会带来大量无用的 I/O。
+        IqTestRuns.select(LIST_COLUMNS)
             .orderBy(IqTestRuns.id, SortOrder.DESC)
-            .limit(limit.coerceIn(1, MAX_LIST_SIZE))
-            .map(::toRecord)
+            .limit(limit.coerceIn(1, MAX_RUNS))
+            .map { toRecord(it, includeResponse = false) }
     }
 
     suspend fun find(id: Long): IqTestRunRecord? = suspendTransaction(database) {
@@ -109,7 +110,7 @@ class IqTestRunRepository(private val database: Database) {
         IqTestRuns.deleteWhere { IqTestRuns.id less cutoff }
     }
 
-    private fun toRecord(row: ResultRow) = IqTestRunRecord(
+    private fun toRecord(row: ResultRow, includeResponse: Boolean = true) = IqTestRunRecord(
         id = row[IqTestRuns.id],
         benchmark = row[IqTestRuns.benchmark],
         channelId = row[IqTestRuns.channelId],
@@ -124,7 +125,7 @@ class IqTestRunRepository(private val database: Database) {
         latencyMs = row[IqTestRuns.latencyMs],
         verdict = row[IqTestRuns.verdict],
         prompt = row[IqTestRuns.prompt],
-        responseText = row[IqTestRuns.responseText],
+        responseText = if (includeResponse) row[IqTestRuns.responseText] else null,
         expectedAnswer = row[IqTestRuns.expectedAnswer],
         matchedAnswer = row[IqTestRuns.matchedAnswer],
         questionId = row[IqTestRuns.questionId],
@@ -165,6 +166,8 @@ class IqTestRunRepository(private val database: Database) {
 
     companion object {
         private const val MAX_RUNS = 200
-        private const val MAX_LIST_SIZE = 100
+
+        /** 列表查询跳过 response_text，详情查询仍读取完整内容。 */
+        private val LIST_COLUMNS = IqTestRuns.columns.filterNot { it == IqTestRuns.responseText }
     }
 }

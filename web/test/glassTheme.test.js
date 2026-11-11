@@ -108,8 +108,9 @@ test('侧栏回退使用深色导航底色而不是面板色', () => {
 test('弹层与组件级玻璃表面自带回退', () => {
   const files = {
     'SearchSelect.vue': ['.search-select-panel'],
-    'FingerprintTestView.vue': ['.fingerprint-hero'],
-    'ModelConnectivityView.vue': ['.probe-hero'],
+    'FingerprintTestView.vue': ['.fingerprint-summary'],
+    'ChannelConnectivityPanel.vue': ['.connectivity-response pre'],
+    'ChannelTestDrawer.vue': ['.channel-test-tab.active'],
     'KeyDisableRuleFields.vue': ['.key-auto-disable-rule textarea'],
     'ChannelKeyEditor.vue': ['.channel-key-editor'],
     'ChannelKeyRateLimitModal.vue': ['.channel-key-rate-limit-preview'],
