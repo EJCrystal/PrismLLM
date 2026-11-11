@@ -51,11 +51,21 @@ class CodeAssistProjectResolver(
     private val logger = LoggerFactory.getLogger(CodeAssistProjectResolver::class.java)
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** 数据面的 Code Assist 上下文：project，以及目录与资格判断使用的 tier（付费档优先）。 */
     data class Context(val project: String?, val tier: String?)
 
-    /** 模型目录探测结果：当前 tier 优先，其次账号可开通的 tier。 */
-    data class Probe(val project: String?, val tier: String?, val allowedTiers: List<String> = emptyList()) {
-        fun tiers(): List<String> = (listOfNotNull(tier).filter { it.isNotBlank() } + allowedTiers).distinct()
+    /** 模型目录探测结果：付费档优先，其次当前档；允许档只用于首次开通。 */
+    data class Probe(
+        val project: String?,
+        val tier: String?,
+        val allowedTiers: List<String> = emptyList(),
+        val paidTier: String? = null,
+    ) {
+        /**
+         * fetchAvailableModels 的 entitlement 列表：付费档优先，其次当前档；
+         * Google 不接受在目录请求里显式命名 free/legacy 档，因此这两档留给无档位兜底。
+         */
+        fun tiers(): List<String> = catalogTiers(tier, paidTier)
     }
 
     /**
@@ -114,17 +124,26 @@ class CodeAssistProjectResolver(
         }
         // 只有成功解析出 project 才更新协商状态；下次换出口时只认这条。
         // 内存与数据库写同一份合并结果，避免重启后读到与本次请求不同的 tier。
-        return recordContext(account.id, proxyKey, project, loaded.tier)
+        return recordContext(account.id, proxyKey, project, loaded.catalogTier(), loaded.reportsTier())
     }
 
     /**
      * 记录一次成功的上下文协商。上游这次没给 tier 时沿用本出口已协商的 tier，并把合并后的
      * 结果同时写进数据库与内存：只写一个会让重启前后的行为不一致（数据库留着旧 tier，
      * 进程内却是 null，或反过来）。
+     *
+     * @param tierReported 上游是否报告了档位。免费档也会报告，但过滤后 catalog tier 为 null：
+     * 此时必须覆盖成 null，否则套餐降级后还会一直沿用旧的付费档。
      */
-    private suspend fun recordContext(accountId: String, egress: String, project: String, tier: String?): Context {
+    private suspend fun recordContext(
+        accountId: String,
+        egress: String,
+        project: String,
+        tier: String?,
+        tierReported: Boolean = tier != null,
+    ): Context {
         val previous = negotiated[accountId]
-        val merged = tier ?: previous?.takeIf { it.egress == egress }?.tier
+        val merged = if (tierReported) tier else previous?.takeIf { it.egress == egress }?.tier
         accounts.saveUpstreamContext(accountId, project, merged, now())
         negotiated[accountId] = Export(egress, project, merged)
         return Context(project, merged)
@@ -153,10 +172,21 @@ class CodeAssistProjectResolver(
         val loaded = loadCodeAssist(account.id, accessToken, proxy)
         val project = loaded.project ?: attempt(account.id, "onboardUser") {
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
-        } ?: return Probe(accounts.upstreamContext(account.id)?.project, loaded.tier, loaded.allowedTiers)
+        } ?: return Probe(
+            accounts.upstreamContext(account.id)?.project,
+            loaded.tier,
+            loaded.allowedTiers,
+            loaded.paidTier,
+        )
         // 管理面探测同样确定了该出口下的上下文，数据面可以直接复用。
-        val context = recordContext(account.id, egressKey(account, proxy), project, loaded.tier)
-        return Probe(context.project, context.tier, loaded.allowedTiers)
+        val context = recordContext(
+            account.id,
+            egressKey(account, proxy),
+            project,
+            loaded.catalogTier(),
+            loaded.reportsTier(),
+        )
+        return Probe(context.project, loaded.tier, loaded.allowedTiers, loaded.paidTier)
     }
 
     private suspend fun loadCodeAssist(accountId: String, accessToken: String, proxy: InetSocketAddress?): Loaded {
@@ -165,15 +195,23 @@ class CodeAssistProjectResolver(
             ?: throw IllegalStateException("loadCodeAssist 返回的不是 JSON 对象")
         val project = (root["cloudaicompanionProject"] as? JsonPrimitive)?.contentOrNull
             ?: (root["cloudaicompanionProject"] as? JsonObject)?.get("id")?.let { (it as? JsonPrimitive)?.contentOrNull }
+        // currentTier 是当前实际开通的档位，paidTier 是账号有资格使用的付费档；
+        // 两者必须分开保留：目录请求要用付费档，开通只能沿用当前档。
         val tier = (root["currentTier"] as? JsonObject)?.get("id")?.let { (it as? JsonPrimitive)?.contentOrNull }
-            ?: (root["paidTier"] as? JsonObject)?.get("id")?.let { (it as? JsonPrimitive)?.contentOrNull }
+        val paidTier = (root["paidTier"] as? JsonObject)?.get("id")?.let { (it as? JsonPrimitive)?.contentOrNull }
         // allowedTiers 是账号可以开通的 tier；currentTier 为空时要从中选一个开通。
         val allowed = (root["allowedTiers"] as? JsonArray).orEmpty()
             .mapNotNull { (it as? JsonObject)?.get("id")?.let { id -> (id as? JsonPrimitive)?.contentOrNull } }
         if (project == null) {
-            logger.info("loadCodeAssist reports no project, accountId={}, tier={}, allowedTiers={}", accountId, tier, allowed)
+            logger.info(
+                "loadCodeAssist reports no project, accountId={}, tier={}, paidTier={}, allowedTiers={}",
+                accountId,
+                tier,
+                paidTier,
+                allowed,
+            )
         }
-        return Loaded(project, tier, allowed)
+        return Loaded(project, tier, allowed, paidTier)
     }
 
     private suspend fun onboard(accessToken: String, tier: String?, proxy: InetSocketAddress?): String? {
@@ -222,7 +260,14 @@ class CodeAssistProjectResolver(
         val project: String?,
         val tier: String?,
         val allowedTiers: List<String> = emptyList(),
-    )
+        val paidTier: String? = null,
+    ) {
+        /** 记录到上下文里的档位：优先付费档，因为它决定了目录与数据面能力。 */
+        fun catalogTier(): String? = catalogTiers(tier, paidTier).firstOrNull()
+
+        /** 上游是否报告了档位；免费档也会报告，用来清掉降级前的付费档。 */
+        fun reportsTier(): Boolean = tier != null || paidTier != null
+    }
 
     private companion object {
         const val TIER_TTL_MS = 3_600_000L
@@ -231,5 +276,17 @@ class CodeAssistProjectResolver(
         const val LOAD_BODY = "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"}}"
         /** 直连出口在缓存键里的占位值，ConcurrentHashMap 不接受 null。 */
         const val DIRECT = "\u0000direct"
+        const val FREE_TIER = "free-tier"
+        const val LEGACY_TIER = "legacy-tier"
+
+        /**
+         * fetchAvailableModels 只认付费档和当前档：免费档、legacy 档既不算付费能力，
+         * 也不能显式命名（Google 会直接报错），所以只作为没有档位时的兜底。
+         */
+        fun catalogTiers(tier: String?, paidTier: String?): List<String> =
+            listOfNotNull(paidTier, tier)
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && it != FREE_TIER && it != LEGACY_TIER }
+                .distinct()
     }
 }

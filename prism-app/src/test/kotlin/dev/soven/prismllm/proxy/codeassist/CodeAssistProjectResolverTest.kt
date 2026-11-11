@@ -100,6 +100,57 @@ class CodeAssistProjectResolverTest {
     }
 
     @Test
+    fun `probe keeps catalog entitlements to the paid and current tier`() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1internal:loadCodeAssist") { exchange ->
+            reply(
+                exchange,
+                200,
+                """{"cloudaicompanionProject":"proj-1","currentTier":{"id":"free-tier"},"paidTier":{"id":"g1-pro-tier"},"allowedTiers":[{"id":"standard-tier"},{"id":"free-tier"}]}""",
+            )
+        }
+        server.start()
+        val base = "http://127.0.0.1:${server.address.port}"
+        try {
+            val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+            val resolver = CodeAssistProjectResolver(FakeAccounts(saved), HttpClient(Java), baseUrl = base, loadBaseUrl = base)
+
+            val probe = resolver.probe(account(), "token")
+
+            // 付费档排在当前档之前；free-tier 不能显式命名，Google 会以 400 拒绝。
+            assertEquals(listOf("g1-pro-tier"), probe.tiers())
+            // 数据面上下文记录付费档，请求目录时不会再退回免费档。
+            assertEquals("g1-pro-tier", saved.get()?.tier)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `probe falls back to the current tier and asks without entitlement when none is paid`() = runBlocking {
+        val body = AtomicReference(
+            """{"cloudaicompanionProject":"proj-1","currentTier":{"id":"standard-tier"}}""",
+        )
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1internal:loadCodeAssist") { exchange ->
+            reply(exchange, 200, body.get())
+        }
+        server.start()
+        val base = "http://127.0.0.1:${server.address.port}"
+        try {
+            val resolver = CodeAssistProjectResolver(FakeAccounts(AtomicReference()), HttpClient(Java), baseUrl = base, loadBaseUrl = base)
+
+            assertEquals(listOf("standard-tier"), resolver.probe(account(), "token").tiers())
+
+            // 只有免费档：不显式命名，目录请求由调用方补一次无 entitlement 的兜底。
+            body.set("""{"cloudaicompanionProject":"proj-1","currentTier":{"id":"free-tier"}}""")
+            assertEquals(emptyList(), resolver.probe(account(), "token").tiers())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `probe surfaces allowed tiers when the account has no project`() = runBlocking {
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/v1internal:loadCodeAssist") { exchange ->
@@ -118,8 +169,9 @@ class CodeAssistProjectResolverTest {
             val probe = resolver.probe(account(), "token")
 
             assertNull(probe.project)
-            // 目录拉取要能按账号可开通的 tier 逐个尝试。
-            assertEquals(listOf("standard-tier", "free-tier"), probe.tiers())
+            assertEquals(listOf("standard-tier", "free-tier"), probe.allowedTiers)
+            // 允许档只用于首次开通，不能当成目录 entitlement 逐个去试。
+            assertEquals(emptyList(), probe.tiers())
             assertNull(saved.get())
         } finally {
             server.stop(0)
@@ -290,6 +342,41 @@ class CodeAssistProjectResolverTest {
             clock.set(2 * 60 * 60 * 1000L)
             assertEquals("standard-tier", resolver.context(account, "token").tier)
             assertEquals("standard-tier", saved.get()?.tier)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `downgrading to the free tier clears the cached paid tier`() = runBlocking {
+        val clock = AtomicReference(0L)
+        val paid = AtomicReference(true)
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1internal:loadCodeAssist") { exchange ->
+            val body = if (paid.get()) {
+                """{"cloudaicompanionProject":"proj-1","currentTier":{"id":"free-tier"},"paidTier":{"id":"g1-pro-tier"}}"""
+            } else {
+                """{"cloudaicompanionProject":"proj-1","currentTier":{"id":"free-tier"}}"""
+            }
+            reply(exchange, 200, body)
+        }
+        server.start()
+        val base = "http://127.0.0.1:${server.address.port}"
+        try {
+            val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+            val resolver = CodeAssistProjectResolver(
+                FakeAccounts(saved), HttpClient(Java), baseUrl = base, loadBaseUrl = base, now = { clock.get() },
+            )
+            val account = account()
+
+            assertEquals("g1-pro-tier", resolver.context(account, "token").tier)
+            assertEquals("g1-pro-tier", saved.get()?.tier)
+            // 套餐降级后上游只报告 free-tier：过滤后不再有付费档，必须覆盖旧的付费档，
+            // 否则目录请求会继续拿已经失效的 entitlement。
+            paid.set(false)
+            clock.set(2 * 60 * 60 * 1000L)
+            assertNull(resolver.context(account, "token").tier)
+            assertNull(saved.get()?.tier)
         } finally {
             server.stop(0)
         }

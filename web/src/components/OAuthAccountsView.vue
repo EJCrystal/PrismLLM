@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import type { Channel, OAuthAccount, OAuthLoginStart, OAuthProviderInfo } from '../types/api'
@@ -19,7 +19,6 @@ import {
   filterOAuthModels,
   formatCooldownRemaining,
   formatQuotaReset,
-  formatTokenRemaining,
   formatUsedPercent,
   isOAuthAccountCooling,
   isOAuthQuotaBlocked,
@@ -87,6 +86,7 @@ const testTarget = ref<OAuthAccount | null>(null)
 const showSettings = ref(false)
 const settingsSaving = ref(false)
 const settingsTarget = ref<OAuthAccount | null>(null)
+const settingsModelsRef = ref<HTMLElement | null>(null)
 const settingsForm = reactive({
   name: '',
   priority: 1,
@@ -120,6 +120,12 @@ const filteredSettingsModels = computed(() =>
 
 const selectedModelCount = computed(() => new Set(settingsForm.selectedModels).size)
 
+/** 已勾选但不在账号当前目录里的模型：上游会拒绝调用，需要重同步或取消勾选。 */
+function settingsModelOutsideCatalog(model: string): boolean {
+  const catalog = settingsTarget.value?.modelCatalog
+  return catalog != null && !catalog.includes(model)
+}
+
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
 }
@@ -137,22 +143,9 @@ function accountModelView(account: OAuthAccount) {
   return accountModelViews.value.get(account.id) ?? oauthAccountModelsView(account, channels.value)
 }
 
-/** access token 是短期凭据，倒计时只用于解释它为什么会很快到期。 */
-function tokenExpiryLabel(account: OAuthAccount, now: number): string {
-  if (account.accessTokenExpiresAt == null) return '尚未获取 token'
-  const remaining = formatTokenRemaining(account.accessTokenExpiresAt, now)
-  if (remaining == null) return '尚未获取 token'
-  return remaining === '已过期' ? remaining : `${remaining}到期`
-}
-
-function tokenExpiryTitle(account: OAuthAccount): string {
-  if (account.accessTokenExpiresAt == null) {
-    return '尚未获取 access token；首次调用上游或手动刷新后会自动生成。'
-  }
-  const base = `Access token 于 ${formatTime(account.accessTokenExpiresAt)} 到期。它是短期凭据，正常状态下会在到期前自动用 refresh token 续期；这里显示的不是账号授权的有效期。`
-  if (account.authState === 'REAUTH_REQUIRED') return `${base}当前 refresh token 已失效，需要重新授权后才能恢复。`
-  if (!account.enabled) return `${base}账号已停用，启用后会恢复自动续期。`
-  return base
+/** access token 是短期凭据，表格不再展示它的倒计时，只保留授权时间供核对。 */
+function authorizedAt(account: OAuthAccount): number {
+  return account.authorizedAt ?? account.createdAt
 }
 
 async function load() {
@@ -182,18 +175,32 @@ function providerManagesChannel(providerId: string): boolean {
  * 从上游刷新该账号自己的模型目录。不同开通方式（Pixel/Jio 优惠与正价）拿到的
  * 模型集合不同，所以目录按账号保存，不能互相覆盖。
  */
-async function syncAccountModels(account: OAuthAccount) {
-  if (syncingId.value) return
+async function syncAccountModels(account: OAuthAccount): Promise<OAuthAccount | null> {
+  if (syncingId.value) return null
   syncingId.value = account.id
   try {
     const result = await api.refreshOAuthAccountModels(account.id)
     notify(`已同步 ${result.models.length} 个模型`)
     await load()
+    const refreshed = accounts.value.find((item) => item.id === account.id) ?? null
+    // 设置弹窗里的同步要立即刷新同一个模型列表，而不是让用户关掉弹窗再看表格。
+    if (refreshed && showSettings.value && settingsTarget.value?.id === account.id) {
+      settingsTarget.value = refreshed
+    }
+    return refreshed
   } catch (cause) {
     notify(errorMessage(cause), 'error')
+    return null
   } finally {
     syncingId.value = null
   }
+}
+
+/** 模型授权面板内的同步入口：同步目录后直接在同一列表里勾选。 */
+async function syncSettingsModels() {
+  const target = settingsTarget.value
+  if (!target) return
+  await syncAccountModels(target)
 }
 
 const importChannelsManaged = computed(() => providerManagesChannel(importForm.provider))
@@ -427,7 +434,7 @@ function openTest(account: OAuthAccount) {
   showTest.value = true
 }
 
-function openSettings(account: OAuthAccount) {
+function openSettings(account: OAuthAccount, focusModels = false) {
   settingsTarget.value = account
   Object.assign(settingsForm, {
     name: account.name,
@@ -443,6 +450,10 @@ function openSettings(account: OAuthAccount) {
     channelIds: [...account.channelIds],
   })
   showSettings.value = true
+  if (focusModels) {
+    // 「选择模型」直接从模型授权开始，免去用户在大表单里再找一遍。
+    nextTick(() => settingsModelsRef.value?.scrollIntoView({ block: 'center' }))
+  }
 }
 
 /** 全选只作用于当前搜索结果，未匹配的模型保持原状。 */
@@ -466,11 +477,8 @@ async function saveSettings() {
   settingsSaving.value = true
   try {
     const proxyUrl = settingsForm.proxyUrl.trim() || null
+    // 勾选「清除代理」时输入框已禁用，以勾选为准：残留的旧地址不应阻止清除。
     const clearProxy = settingsForm.clearProxy || (proxyUrl == null && settingsTarget.value.proxyUrl != null)
-    if (clearProxy && proxyUrl != null) {
-      notify('不能同时填写代理和勾选清除代理', 'error')
-      return
-    }
     await api.updateOAuthAccountSettings(settingsTarget.value.id, {
       name: settingsForm.name.trim() || null,
       priority: Number(settingsForm.priority),
@@ -516,22 +524,26 @@ interface OAuthAccountActionItem {
   title?: string
 }
 
-/** 低频与破坏性操作收进更多菜单，行内只保留刷新、测试与设置。 */
+/** 低频与破坏性操作收进更多菜单，行内只保留测试、设置与更多。 */
 function accountActionItems(account: OAuthAccount): OAuthAccountActionItem[] {
   const busy = busyId.value === account.id
   return [
+    {
+      id: 'refresh-token',
+      label: '刷新 token',
+      icon: 'refresh',
+      disabled: busy,
+      title: '用 refresh token 换取新的 access token；正常调用时网关会自动续期',
+    },
     { id: 'refresh-quota', label: '刷新额度', icon: 'chart', disabled: busy },
-    ...(oauthSupportsModelCatalog(account.provider)
-      ? [{
-          id: 'sync-models',
-          label: '同步模型',
-          icon: 'models',
-          disabled: syncingId.value === account.id || !oauthCanSyncCatalog(account),
-          title: oauthCanSyncCatalog(account)
-            ? '从上游读取该账号自己的模型目录；不同账号的可用模型可能不同'
-            : '账号需要重新授权后才能读取上游模型目录',
-        }]
-      : []),
+    {
+      id: 'select-models',
+      label: '选择模型',
+      icon: 'models',
+      title: oauthSupportsModelCatalog(account.provider)
+        ? '打开账号设置，可同步上游模型目录并直接勾选该账号可调度的模型'
+        : '打开账号设置，勾选该账号可调度的模型',
+    },
     { id: 'policy', label: '调度策略', icon: 'bolt' },
     { id: 'reauth', label: '重新授权', icon: 'lock' },
     ...(account.runtime.cooldownUntil && account.runtime.cooldownUntil > now.value
@@ -542,8 +554,9 @@ function accountActionItems(account: OAuthAccount): OAuthAccountActionItem[] {
 }
 
 function accountAction(id: string, account: OAuthAccount) {
-  if (id === 'refresh-quota') void refreshQuota(account)
-  else if (id === 'sync-models') void syncAccountModels(account)
+  if (id === 'refresh-token') void refreshToken(account)
+  else if (id === 'refresh-quota') void refreshQuota(account)
+  else if (id === 'select-models') openSettings(account, true)
   else if (id === 'policy') openPolicy(account)
   else if (id === 'reauth') openReauth(account)
   else if (id === 'clear-cooldown') void clearCooldown(account)
@@ -576,22 +589,22 @@ onBeforeUnmount(() => {
         <div class="stat-card">
           <span>订阅账号</span>
           <strong>{{ accounts.length }}</strong>
-          <small>独立账号，可关联多个渠道</small>
+          <small>独立凭据，可关联多个渠道</small>
         </div>
         <div class="stat-card">
           <span>可用</span>
           <strong class="text-success">{{ activeCount }}</strong>
-          <small>已启用且可自动刷新 access token</small>
+          <small>已启用且凭据可自动续期</small>
         </div>
         <div class="stat-card">
           <span>需重新授权</span>
           <strong :class="reauthCount > 0 ? 'text-danger' : ''">{{ reauthCount }}</strong>
-          <small>refresh token 已失效</small>
+          <small>refresh token 失效</small>
         </div>
         <div class="stat-card">
           <span>冷却中</span>
           <strong>{{ coolingCount }}</strong>
-          <small>被上游 429 限流暂停调度</small>
+          <small>429 限流后暂停调度</small>
         </div>
       </div>
     </div>
@@ -617,7 +630,6 @@ onBeforeUnmount(() => {
               <th>账号</th>
               <th>提供方</th>
               <th>状态</th>
-              <th>Access token</th>
               <th>上游额度</th>
               <th>调度</th>
               <th>最近刷新</th>
@@ -634,6 +646,11 @@ onBeforeUnmount(() => {
                   <span class="muted small">{{ channelSummary(account) }}</span>
                   <span class="badge neutral small">优先级 {{ account.priority }}</span>
                 </div>
+                <div
+                  v-if="account.proxyUrl"
+                  class="oauth-account-proxy mono small muted"
+                  :title="`该账号的出口代理：${account.proxyUrl}`"
+                >{{ account.proxyUrl }}</div>
                 <div
                   class="oauth-account-models"
                   :title="accountModelView(account).names.join('\n') || '该账号暂无可调度的模型'"
@@ -669,16 +686,6 @@ onBeforeUnmount(() => {
                 >
                   {{ account.lastRefreshError }}
                 </div>
-              </td>
-              <td class="oauth-token-cell muted small">
-                <div class="oauth-token-expiry" :title="tokenExpiryTitle(account)">
-                  <span :class="{ 'text-danger': account.accessTokenExpiresAt != null && account.accessTokenExpiresAt <= now }">
-                    {{ tokenExpiryLabel(account, now) }}
-                  </span>
-                  <span v-if="account.accessTokenExpiresAt != null && account.authState === 'ACTIVE'" class="badge neutral small oauth-token-renew">自动续期</span>
-                </div>
-                <div class="oauth-token-authorized">授权于 {{ formatTime(account.authorizedAt ?? account.createdAt) }}</div>
-                <div v-if="account.proxyUrl" class="mono" :title="account.proxyUrl">{{ account.proxyUrl }}</div>
               </td>
               <td class="oauth-quota-cell">
                 <template v-if="account.quota">
@@ -742,20 +749,16 @@ onBeforeUnmount(() => {
                   冷却剩余 {{ formatCooldownRemaining(account.runtime.cooldownUntil, now) }}
                 </div>
               </td>
-              <td class="muted small">
-                {{ account.lastRefreshedAt ? formatTime(account.lastRefreshedAt) : '尚未刷新' }}
+              <td class="oauth-refresh-cell small">
+                <div :title="'最近一次成功续期 access token 的时间'">
+                  {{ account.lastRefreshedAt ? formatTime(account.lastRefreshedAt) : '尚未刷新' }}
+                </div>
+                <div class="muted" :title="'账号授权的建立时间；access token 到期会自动续期，不影响授权。'">
+                  授权于 {{ formatTime(authorizedAt(account)) }}
+                </div>
               </td>
               <td class="actions-col">
                 <div class="row-actions">
-                  <button
-                    type="button"
-                    class="button ghost mini"
-                    title="刷新 access token（用 refresh token 续期）"
-                    :disabled="busyId === account.id"
-                    @click="refreshToken(account)"
-                  >
-                    刷新
-                  </button>
                   <button type="button" class="button ghost mini" @click="openTest(account)">测试</button>
                   <button
                     type="button"
@@ -943,11 +946,23 @@ onBeforeUnmount(() => {
           <input v-model="settingsForm.enabled" type="checkbox" />
           <span>启用账号</span>
         </label>
-        <label class="field">
-          <span>账号代理</span>
-          <input v-model="settingsForm.proxyUrl" autocomplete="off" placeholder="http://127.0.0.1:7890" :disabled="settingsForm.clearProxy" />
-        </label>
         <div class="field">
+          <span>账号代理</span>
+          <div class="oauth-proxy-row">
+            <input
+              v-model="settingsForm.proxyUrl"
+              autocomplete="off"
+              placeholder="http://127.0.0.1:7890"
+              :disabled="settingsForm.clearProxy"
+            />
+            <label class="checkbox-row oauth-proxy-clear" title="保存后移除该账号的代理，改为直连">
+              <input v-model="settingsForm.clearProxy" type="checkbox" />
+              <span>清除代理</span>
+            </label>
+          </div>
+          <small>可选，留空或勾选「清除代理」都表示直连；代理只支持无认证的 HTTP 正向代理。</small>
+        </div>
+        <div ref="settingsModelsRef" class="field">
           <span>模型授权</span>
           <div class="oauth-model-picker">
             <div class="oauth-model-picker-toolbar">
@@ -982,9 +997,18 @@ onBeforeUnmount(() => {
                   :disabled="settingsForm.allModels"
                 />
                 <span class="mono">{{ model }}</span>
+                <span
+                  v-if="settingsModelOutsideCatalog(model)"
+                  class="badge warning small oauth-model-outside"
+                  title="该模型不在账号当前套餐的目录里，调用会被上游拒绝；重新同步目录后可取消勾选"
+                >目录外</span>
               </label>
               <span v-if="settingsModelOptions.length === 0" class="oauth-model-empty muted small">
-                该账号还没有可选模型，可点该行「同步模型」从上游读取目录。
+                {{
+                  settingsTarget && oauthSupportsModelCatalog(settingsTarget.provider)
+                    ? '该账号还没有可选模型。点「同步模型」读取该账号自己的目录。'
+                    : '该账号暂无可选模型，请先为关联渠道配置模型，或在下方补充列表外的模型。'
+                }}
               </span>
               <span v-else-if="filteredSettingsModels.length === 0" class="oauth-model-empty muted small">
                 没有匹配「{{ settingsForm.modelQuery }}」的模型。
@@ -1005,6 +1029,20 @@ onBeforeUnmount(() => {
               <button v-if="!settingsForm.allModels" type="button" class="link-button" @click="clearSelectedModels">
                 清空
               </button>
+              <button
+                v-if="settingsTarget && oauthSupportsModelCatalog(settingsTarget.provider)"
+                type="button"
+                class="link-button"
+                :disabled="syncingId === settingsTarget.id || !oauthCanSyncCatalog(settingsTarget) || settingsSaving"
+                :title="
+                  oauthCanSyncCatalog(settingsTarget)
+                    ? '从上游重新读取该账号自己的模型目录，并立即刷新下方可选模型'
+                    : '账号需要重新授权后才能读取上游模型目录'
+                "
+                @click="syncSettingsModels"
+              >
+                {{ syncingId === settingsTarget.id ? '同步中…' : '同步模型' }}
+              </button>
               <span class="oauth-model-picker-spacer"></span>
               <label class="checkbox-row small">
                 <input v-model="settingsForm.allModels" type="checkbox" />
@@ -1019,10 +1057,13 @@ onBeforeUnmount(() => {
             />
           </div>
           <small v-if="settingsTarget?.modelCatalog">
-            列表是该账号自己的模型目录（{{ settingsTarget.modelCatalogSyncedAt ? formatTime(settingsTarget.modelCatalogSyncedAt) : '尚未记录时间' }} 同步）；不同账号的可用模型可能不同，点该行「同步模型」可重新读取。
+            来自该账号自己的模型目录 · {{ settingsTarget.modelCatalogSyncedAt ? formatTime(settingsTarget.modelCatalogSyncedAt) : '同步时间未知' }}；不同账号的可用模型可能不同。
+          </small>
+          <small v-else-if="settingsTarget && oauthSupportsModelCatalog(settingsTarget.provider)">
+            还没有同步过目录，列表暂时来自所关联渠道；点「同步模型」读取该账号自己的目录。
           </small>
           <small v-else>
-            该账号还没有同步模型目录，当前显示所关联渠道的模型；点该行「同步模型」可从上游读取该账号自己的目录。
+            该提供方暂不支持同步模型目录，列表来自所关联渠道；可直接勾选要授权的模型，或在下方补充列表外的模型。
           </small>
         </div>
         <div v-if="settingsChannelsManaged" class="field">
@@ -1038,10 +1079,6 @@ onBeforeUnmount(() => {
             </label>
           </div>
         </div>
-        <label class="checkbox-row">
-          <input v-model="settingsForm.clearProxy" type="checkbox" />
-          <span>清除代理</span>
-        </label>
         <div class="form-actions">
           <button type="button" class="button" @click="showSettings = false">取消</button>
           <button type="submit" class="button primary" :disabled="settingsSaving">{{ settingsSaving ? '保存中…' : '保存' }}</button>

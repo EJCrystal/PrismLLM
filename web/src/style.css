@@ -2463,8 +2463,8 @@ input[type="password"]::-ms-clear,
   flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  max-width: 190px;
-  margin-top: 5px;
+  max-width: 220px;
+  margin-top: 6px;
 }
 
 .oauth-model-badge {
@@ -2482,25 +2482,32 @@ input[type="password"]::-ms-clear,
   font-size: 10px;
 }
 
-/* access token 是短期凭据；授权时间单独一行，避免把 token 到期误读成授权失效。 */
-.oauth-token-cell {
-  min-width: 168px;
+/* 订阅账号表：账号与额度是多行内容，统一顶对齐后各行阅读起点一致。 */
+.oauth-accounts-table td {
+  vertical-align: top;
 }
 
-.oauth-token-expiry {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
+.oauth-accounts-table td:first-child {
+  min-width: 224px;
 }
 
-.oauth-token-renew {
-  padding: 3px 7px;
-  font-size: 9px;
+.oauth-account-proxy {
+  max-width: 220px;
+  margin-top: 4px;
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.oauth-token-authorized {
-  margin-top: 2px;
+.oauth-refresh-cell {
+  min-width: 128px;
+  white-space: nowrap;
+}
+
+.oauth-refresh-cell .muted {
+  margin-top: 3px;
+  font-size: 11px;
 }
 
 /* 窄屏横向滚动时操作列保持可见，和渠道、调用方密钥表一致。 */
@@ -2508,8 +2515,8 @@ input[type="password"]::-ms-clear,
   position: sticky;
   right: 0;
   z-index: 2;
-  width: 190px;
-  min-width: 190px;
+  width: 168px;
+  min-width: 168px;
   border-left: 1px solid var(--glass-line);
   background: var(--surface-solid);
 }
@@ -2712,6 +2719,12 @@ input[type="password"]::-ms-clear,
 
 .oauth-model-option .mono {
   overflow-wrap: anywhere;
+}
+
+.oauth-model-option .oauth-model-outside {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  font-size: 9px;
 }
 
 .oauth-model-empty {
@@ -3214,6 +3227,25 @@ input[type="password"]::-ms-clear,
 .checkbox-row input {
   width: auto;
   min-height: auto;
+}
+
+/* 账号设置里的代理输入与清除开关并排，避免开关漂到表单末尾。 */
+.oauth-proxy-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.oauth-proxy-row > input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.oauth-proxy-clear {
+  flex: 0 0 auto;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .oauth-channel-picker {
