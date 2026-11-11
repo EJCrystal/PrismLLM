@@ -44,8 +44,10 @@ test('status text colors meet WCAG AA against theme surfaces and keep separate f
 
 test('sticky table headers use the same theme surface as regular headers', () => {
   for (const selector of [':root', '[data-theme="dark"]', '[data-theme="sepia"]']) {
-    const tokens = themeTokens(selector)
-    assert.ok(tokens.get('table-head-bg'))
+    const start = css.indexOf(selector + ' {')
+    assert.notEqual(start, -1, 'missing theme block: ' + selector)
+    const block = css.slice(start, css.indexOf('}', start))
+    assert.match(block, /--surface-head:/, 'missing --surface-head token in ' + selector)
   }
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
   for (const selector of [
@@ -60,7 +62,7 @@ test('sticky table headers use the same theme surface as regular headers', () =>
       selectors.split(',').some((item) => item.trim() === selector) && /background:/.test(body))
     assert.ok(backgrounds.length, 'missing header background rule ' + selector)
     for (const [, , body] of backgrounds) {
-      assert.match(body, /background:\s*var\(--table-head-bg\)/, selector + ' must share the themed header surface')
+      assert.match(body, /background:\s*var\(--surface-head\)/, selector + ' must share the themed header surface')
     }
   }
 })

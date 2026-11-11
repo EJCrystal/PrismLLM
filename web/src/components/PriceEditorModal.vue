@@ -716,7 +716,7 @@ function requestClose() {
 
 .model-selection-message {
   padding: 11px 12px;
-  border: 1px dashed var(--line);
+  border: 1px dashed var(--glass-line);
   border-radius: 10px;
   color: var(--muted);
   font-size: 12px;
@@ -739,9 +739,9 @@ function requestClose() {
   gap: 10px;
   min-width: 0;
   padding: 11px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--glass-field);
   color: var(--ink);
 }
 
@@ -752,10 +752,16 @@ function requestClose() {
   transition: border-color 150ms ease, background-color 150ms ease, box-shadow 150ms ease;
 }
 
-.model-switch-option:hover,
+.model-switch-option:hover {
+  border-color: color-mix(in srgb, var(--brand) 40%, var(--glass-line));
+  background: var(--glass-field-strong);
+}
+
+/* 键盘焦点必须可辨认：全局 outline 被组件规则覆盖过，这里显式恢复。 */
 .model-switch-option:focus-visible {
-  border-color: var(--line-strong);
-  outline: 0;
+  border-color: var(--brand);
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
 }
 
 .model-switch-option.active {
@@ -765,7 +771,7 @@ function requestClose() {
 }
 
 .model-single-option {
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .model-option-copy {

@@ -101,7 +101,7 @@ function removeRule(index: number) {
   gap: 12px;
   min-width: 0;
   padding: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
 }
 
@@ -138,9 +138,9 @@ function removeRule(index: number) {
   width: 100%;
   resize: vertical;
   padding: 9px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 9px;
-  background: var(--bg);
+  background: var(--glass-field);
   color: var(--text);
   font: inherit;
   font-size: 13px;
@@ -150,5 +150,12 @@ function removeRule(index: number) {
 @media (max-width: 520px) {
   .key-auto-disable-grid { grid-template-columns: 1fr; }
   .key-auto-disable-rule-head { align-items: stretch; flex-direction: column; }
+}
+/* 降低透明度时，文本框等半透明控件回退到实色与常规边线。 */
+@media (prefers-reduced-transparency: reduce) {
+  .key-auto-disable-rule textarea {
+    background: var(--panel);
+    border-color: var(--line);
+  }
 }
 </style>

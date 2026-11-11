@@ -296,7 +296,7 @@ onMounted(load)
 </template>
 
 <style scoped>
-.audit-filters { display: grid; grid-template-columns: repeat(5, minmax(140px, 1fr)) auto; align-items: end; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.audit-filters { display: grid; grid-template-columns: repeat(5, minmax(140px, 1fr)) auto; align-items: end; gap: 12px; padding: 14px; border: 1px solid var(--glass-line); border-radius: 12px; background: var(--glass-field); }
 .audit-filters .field { min-width: 0; margin: 0; }
 .audit-filters > .filter-chip-group { justify-self: start; }
 .audit-filters input, .audit-filters select { width: 100%; min-width: 0; }
@@ -308,10 +308,10 @@ onMounted(load)
 .audit-details dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; white-space: normal; }
 .audit-details dt { color: var(--muted); }
 .audit-details dd { margin: 0; overflow-wrap: anywhere; }
-.audit-row-day td { padding-top: 10px; padding-bottom: 10px; border-bottom-color: transparent; background: color-mix(in srgb, var(--brand) 5%, var(--panel)); }
+.audit-row-day td { padding-top: 10px; padding-bottom: 10px; border-bottom-color: transparent; background: color-mix(in srgb, var(--brand) 7%, transparent); }
 .audit-day-cell { color: var(--brand); font-size: 12px; font-weight: 750; letter-spacing: .01em; }
 .audit-day-marker { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 14%, transparent); }
-.audit-login-group-cell { padding-top: 10px !important; padding-bottom: 10px !important; background: color-mix(in srgb, var(--info) 4%, var(--panel)); }
+.audit-login-group-cell { padding-top: 10px !important; padding-bottom: 10px !important; background: color-mix(in srgb, var(--info) 6%, transparent); }
 .audit-login-group { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
 .audit-login-group strong { color: var(--ink); }
 .audit-login-group details { margin-left: auto; }

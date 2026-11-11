@@ -181,9 +181,9 @@ async function runTest() {
   justify-content: space-between;
   gap: 12px;
   padding: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .model-test-summary > div {
@@ -232,9 +232,9 @@ async function runTest() {
 .model-test-error-detail {
   justify-self: start;
   padding: 3px 7px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 6px;
-  background: var(--panel);
+  background: var(--glass-field);
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
@@ -256,9 +256,9 @@ async function runTest() {
   margin: 0;
   padding: 10px;
   overflow: auto;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 8px;
-  background: var(--panel);
+  background: var(--glass-field);
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;

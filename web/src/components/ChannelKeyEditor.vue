@@ -320,9 +320,9 @@ function addManualModels(): void {
   gap: 14px;
   min-width: 0;
   padding: 11px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--glass-field);
 }
 
 .channel-key-rate-limit-row > div {
@@ -340,7 +340,7 @@ function addManualModels(): void {
   display: grid;
   gap: 10px;
   padding-top: 12px;
-  border-top: 1px dashed var(--line);
+  border-top: 1px dashed var(--glass-line);
 }
 
 .channel-key-models-head {
@@ -371,9 +371,9 @@ function addManualModels(): void {
   display: grid;
   gap: 10px;
   padding: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .channel-key-editor .channel-model-auth-toolbar {
@@ -382,7 +382,7 @@ function addManualModels(): void {
 
 .channel-key-editor .channel-model-auth-list {
   max-height: 280px;
-  background: var(--panel);
+  background: var(--glass-field-strong);
 }
 
 .channel-key-editor .channel-model-option:hover {
@@ -504,6 +504,17 @@ function addManualModels(): void {
   .channel-key-delete {
     width: 100%;
     min-height: 40px;
+  }
+}
+/* 降低透明度时，编辑器内部的玻璃卡片回退到实色。 */
+@media (prefers-reduced-transparency: reduce) {
+  .channel-key-editor,
+  .channel-key-models-panel,
+  .channel-key-rate-limit-row {
+    background: var(--panel);
+    border-color: var(--line);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 }
 </style>

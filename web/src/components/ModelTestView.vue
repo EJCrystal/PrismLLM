@@ -92,7 +92,7 @@ const activeComponent = computed(() => components[activeTab.value])
 }
 
 .model-test-tab:hover {
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .model-test-tab.active {
@@ -107,7 +107,7 @@ const activeComponent = computed(() => components[activeTab.value])
   width: 34px;
   height: 34px;
   border-radius: 10px;
-  background: var(--bg);
+  background: var(--glass-field);
   color: var(--muted);
 }
 

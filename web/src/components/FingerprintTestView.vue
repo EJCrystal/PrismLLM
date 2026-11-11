@@ -544,8 +544,9 @@ onBeforeUnmount(stopTimer)
   gap: 24px;
   padding: 22px 24px;
   background:
-    radial-gradient(circle at 6% 0%, rgba(14, 165, 233, 0.12), transparent 44%),
-    var(--panel);
+    radial-gradient(circle at 6% 0%, color-mix(in srgb, var(--brand) 15%, transparent), transparent 46%),
+    linear-gradient(148deg, var(--glass-sheen) 0%, transparent 44%),
+    var(--glass-bg);
 }
 
 .fingerprint-hero-copy {
@@ -579,9 +580,9 @@ onBeforeUnmount(stopTimer)
   grid-template-columns: repeat(3, auto);
   gap: 6px 18px;
   padding: 12px 16px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 12px;
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .fingerprint-bank div {
@@ -709,7 +710,7 @@ onBeforeUnmount(stopTimer)
   align-items: flex-start;
   gap: 6px;
   padding-top: 12px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--glass-line);
 }
 
 .fingerprint-disclaimer :deep(svg) {
@@ -804,9 +805,9 @@ onBeforeUnmount(stopTimer)
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 1px;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 12px;
-  background: var(--line);
+  background: var(--glass-line);
 }
 
 .fingerprint-summary > div {
@@ -814,7 +815,7 @@ onBeforeUnmount(stopTimer)
   gap: 4px;
   min-width: 0;
   padding: 12px 14px;
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .fingerprint-summary span {
@@ -907,7 +908,7 @@ onBeforeUnmount(stopTimer)
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background: var(--line);
+  background: var(--glass-line);
 }
 
 .fingerprint-bar span {
@@ -932,9 +933,9 @@ onBeforeUnmount(stopTimer)
 
 .fingerprint-detail,
 .fingerprint-sample {
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .fingerprint-detail > summary,
@@ -1001,9 +1002,9 @@ onBeforeUnmount(stopTimer)
 .fingerprint-sequence div {
   justify-content: space-between;
   padding: 8px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 8px;
-  background: var(--panel);
+  background: var(--glass-field);
 }
 
 .fingerprint-sequence span {
@@ -1040,9 +1041,9 @@ onBeforeUnmount(stopTimer)
   margin: 8px 0 0;
   padding: 12px;
   overflow: auto;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 8px;
-  background: var(--panel);
+  background: var(--glass-field);
   color: var(--ink);
   font-size: 11.5px;
   line-height: 1.6;
@@ -1053,7 +1054,7 @@ onBeforeUnmount(stopTimer)
 .fingerprint-footer {
   margin: 0;
   padding-top: 12px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--glass-line);
 }
 
 .fingerprint-footer a {
@@ -1095,7 +1096,7 @@ onBeforeUnmount(stopTimer)
 }
 
 .fingerprint-history-item:hover {
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .fingerprint-history-item.active {
@@ -1194,6 +1195,30 @@ onBeforeUnmount(stopTimer)
 
   .fingerprint-candidate-line strong {
     white-space: normal;
+  }
+}
+/* 降低透明度时，本组件优先级更高的玻璃表面单独回退到实色。 */
+@media (prefers-reduced-transparency: reduce) {
+  .fingerprint-hero,
+  .fingerprint-bank,
+  .fingerprint-detail,
+  .fingerprint-prompt,
+  .fingerprint-sample,
+  .fingerprint-sample-text,
+  .fingerprint-sequence,
+  .fingerprint-summary {
+    background: var(--panel);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .fingerprint-bank,
+  .fingerprint-detail,
+  .fingerprint-prompt,
+  .fingerprint-sample,
+  .fingerprint-sequence,
+  .fingerprint-summary {
+    border-color: var(--line);
   }
 }
 </style>

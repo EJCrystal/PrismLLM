@@ -248,7 +248,7 @@ onMounted(loadProviders)
 .quota-unsaved { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .quota-config summary { cursor: pointer; margin-bottom: 12px; }
 .quota-config textarea { font-family: var(--font-mono, monospace); width: 100%; }
-.quota-result { border-top: 1px solid var(--line); padding-top: 18px; display: grid; gap: 14px; }
+.quota-result { border-top: 1px solid var(--glass-line); padding-top: 18px; display: grid; gap: 14px; }
 .quota-result-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .quota-balance { font-size: 28px; line-height: 1.3; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .quota-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px 20px; margin: 0; font-size: 13px; }

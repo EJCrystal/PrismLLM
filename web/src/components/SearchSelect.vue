@@ -163,9 +163,9 @@ function choose(value: string, close: () => void) {
   min-height: 44px;
   gap: 10px;
   padding: 8px 12px;
-  border: 1px solid var(--sd-border, var(--line));
+  border: 1px solid var(--sd-border, var(--glass-line));
   border-radius: var(--sd-radius, 10px);
-  background: var(--sd-bg, var(--panel));
+  background: var(--sd-bg, var(--glass-field));
   color: var(--ink);
   text-align: left;
   cursor: pointer;
@@ -173,12 +173,12 @@ function choose(value: string, close: () => void) {
 }
 
 .search-select-trigger:hover:not(:disabled) {
-  border-color: var(--sd-border-hover, var(--line-strong));
-  background: var(--sd-bg-hover, var(--bg));
+  border-color: var(--sd-border-hover, var(--glass-highlight));
+  background: var(--sd-bg-hover, var(--glass-field-strong));
 }
 
 .search-select-trigger[aria-expanded="true"] {
-  border-color: color-mix(in srgb, var(--brand) 55%, var(--line));
+  border-color: color-mix(in srgb, var(--brand) 55%, var(--glass-line));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 12%, transparent);
 }
 
@@ -232,12 +232,12 @@ function choose(value: string, close: () => void) {
   flex-direction: column;
   overflow: hidden;
   padding: 10px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--glass-border);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(18px) saturate(140%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  background: var(--glass-surface-strong);
+  box-shadow: var(--glass-shadow), var(--glass-inset);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
   animation: search-select-in 0.14s ease both;
 }
 
@@ -258,9 +258,9 @@ function choose(value: string, close: () => void) {
   flex: 0 0 auto;
   gap: 7px;
   padding: 0 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 9px;
-  background: var(--bg);
+  background: var(--glass-field);
   color: var(--muted);
 }
 
@@ -314,7 +314,7 @@ function choose(value: string, close: () => void) {
   top: 0;
   z-index: 1;
   padding: 6px 8px 4px;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  background: color-mix(in srgb, var(--glass-bg-strong) 92%, transparent);
   color: var(--muted);
   font-size: 10px;
   font-weight: 700;
@@ -379,5 +379,18 @@ function choose(value: string, close: () => void) {
   color: var(--muted);
   font-size: 12px;
   text-align: center;
+}
+/* 弹层被 Teleport 到 body，拿不到页面容器的回退，需要自己声明。 */
+@media (prefers-reduced-transparency: reduce) {
+  .search-select-panel {
+    background: var(--panel);
+    border-color: var(--line);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .search-select-group-label {
+    background: var(--panel);
+  }
 }
 </style>
