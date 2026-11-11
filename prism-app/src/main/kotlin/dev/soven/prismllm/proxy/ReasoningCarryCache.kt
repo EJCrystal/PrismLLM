@@ -62,8 +62,10 @@ class ReasoningCarryCache(
     private fun prune() {
         val now = clock()
         val last = prunedAt.get()
-        if (now - last < PRUNE_INTERVAL_MILLIS || !prunedAt.compareAndSet(last, now)) return
-        entries.entries.removeIf { now - it.value.seenAt > keepMillis }
+        // 过期扫描按分钟节流；容量淘汰不受节流影响，否则同一分钟内连续写入会突破上限。
+        if (now - last >= PRUNE_INTERVAL_MILLIS && prunedAt.compareAndSet(last, now)) {
+            entries.entries.removeIf { now - it.value.seenAt > keepMillis }
+        }
         val overflow = entries.size - maxEntries
         if (overflow > 0) {
             entries.entries.sortedBy { it.value.seenAt }.take(overflow).forEach { entries.remove(it.key) }

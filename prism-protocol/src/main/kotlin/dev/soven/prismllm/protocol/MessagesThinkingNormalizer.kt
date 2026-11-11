@@ -57,7 +57,7 @@ object MessagesThinkingNormalizer {
                     add(element)
                     return@forEach
                 }
-                var thought = false
+                var thought = content.any { (it as? JsonObject)?.string("type") == "thinking" }
                 var called = false
                 var edited = false
                 val blocks = mutableListOf<JsonElement>()
@@ -73,11 +73,12 @@ object MessagesThinkingNormalizer {
                         }
                         "redacted_thinking" -> {
                             edited = true
+                            // 整条消息已有 thinking（任意位置）时 redacted 块对 DeepSeek 无意义，直接丢弃；
+                            // 没有 thinking 时用第一个占位块替换，多个 redacted 只换一个。
                             if (!thought) {
                                 thought = true
                                 blocks += placeholderThinking()
                             }
-                            // 已有 thinking 时这个块对 DeepSeek 无意义，直接丢弃。
                         }
                         else -> blocks += partElement
                     }

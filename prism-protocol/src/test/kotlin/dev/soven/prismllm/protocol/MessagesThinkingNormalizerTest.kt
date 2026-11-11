@@ -74,6 +74,22 @@ class MessagesThinkingNormalizerTest {
     }
 
     @Test
+    fun `redacted thinking before a real thinking block is dropped without a placeholder`() {
+        val body = json("""{"messages":[
+            {"role":"user","content":"hi"},
+            {"role":"assistant","content":[
+                {"type":"redacted_thinking","data":"opaque"},
+                {"type":"thinking","thinking":"plan","signature":""},
+                {"type":"text","text":"done"}
+            ]}
+        ]}""")
+        val normalized = MessagesThinkingNormalizer.normalize(body, "deepseek-v3.2", "https://api.deepseek.com/anthropic")
+        val blocks = normalized["messages"]!!.jsonArray[1].jsonObject["content"]!!.jsonArray
+        assertEquals(listOf("thinking", "text"), blocks.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        assertEquals("plan", blocks[0].jsonObject["thinking"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `official anthropic and other vendors keep their requests byte for byte`() {
         assertSame(toolTurn, MessagesThinkingNormalizer.normalize(toolTurn, "claude-sonnet-4-5", "https://api.anthropic.com"))
         assertSame(toolTurn, MessagesThinkingNormalizer.normalize(toolTurn, "claude-sonnet-4-5", "https://some-relay.example.com"))

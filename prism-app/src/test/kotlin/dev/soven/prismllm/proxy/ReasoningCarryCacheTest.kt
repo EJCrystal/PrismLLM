@@ -37,6 +37,22 @@ class ReasoningCarryCacheTest {
     }
 
     @Test
+    fun `capacity is enforced even within the pruning interval`() {
+        var now = 0L
+        val cache = ReasoningCarryCache(maxEntries = 2, keepMillis = 1_000_000, clock = { now })
+
+        val first = cache.keep("a")
+        now = 1_000
+        val second = cache.keep("b")
+        now = 2_000
+        val third = cache.keep("c")
+
+        assertNull(cache.recall(first))
+        assertEquals("b", cache.recall(second))
+        assertEquals("c", cache.recall(third))
+    }
+
+    @Test
     fun `scoped views only recall what their own channel kept`() {
         val cache = ReasoningCarryCache()
         val first = cache.scoped("channel-a")
