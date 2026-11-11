@@ -57,16 +57,16 @@ object MessagesThinkingNormalizer {
                     add(element)
                     return@forEach
                 }
-                var thought = content.any { (it as? JsonObject)?.string("type") == "thinking" }
+                // 先扫描整条消息：redacted_thinking 要不要换成占位块只取决于消息里有没有
+                // 真实 thinking，与两类块谁先谁后无关，因此这里的结果在循环中不再变化。
+                val hasThinking = content.any { (it as? JsonObject)?.string("type") == "thinking" }
                 var called = false
                 var edited = false
+                var placeholderAdded = false
                 val blocks = mutableListOf<JsonElement>()
                 content.forEach { partElement ->
                     when ((partElement as? JsonObject)?.string("type")) {
-                        "thinking" -> {
-                            thought = true
-                            blocks += partElement
-                        }
+                        "thinking" -> blocks += partElement
                         "tool_use" -> {
                             called = true
                             blocks += partElement
@@ -75,15 +75,15 @@ object MessagesThinkingNormalizer {
                             edited = true
                             // 整条消息已有 thinking（任意位置）时 redacted 块对 DeepSeek 无意义，直接丢弃；
                             // 没有 thinking 时用第一个占位块替换，多个 redacted 只换一个。
-                            if (!thought) {
-                                thought = true
+                            if (!hasThinking && !placeholderAdded) {
+                                placeholderAdded = true
                                 blocks += placeholderThinking()
                             }
                         }
                         else -> blocks += partElement
                     }
                 }
-                if ((called || after) && !thought) {
+                if ((called || after) && !hasThinking && !placeholderAdded) {
                     edited = true
                     blocks.add(0, placeholderThinking())
                 }
