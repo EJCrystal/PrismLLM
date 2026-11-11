@@ -304,8 +304,9 @@ onMounted(loadAll)
   gap: 24px;
   padding: 22px 24px;
   background:
-    radial-gradient(circle at 8% 0%, rgba(37, 99, 235, 0.12), transparent 42%),
-    var(--panel);
+    radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--brand) 16%, transparent), transparent 46%),
+    linear-gradient(148deg, var(--glass-sheen) 0%, transparent 44%),
+    var(--glass-bg);
 }
 
 .probe-eyebrow {
@@ -337,9 +338,9 @@ onMounted(loadAll)
   gap: 6px;
   max-width: 250px;
   padding: 12px 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 12px;
-  background: var(--bg);
+  background: var(--glass-field);
   color: var(--muted);
   font-size: 12px;
 }
@@ -406,9 +407,9 @@ onMounted(loadAll)
   width: 100%;
   min-height: 140px;
   padding: 10px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--bg);
+  background: var(--glass-field);
   color: var(--ink);
   font: inherit;
   line-height: 1.55;
@@ -530,9 +531,9 @@ onMounted(loadAll)
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
   padding: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 12px;
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .probe-result-grid div {
@@ -566,9 +567,9 @@ onMounted(loadAll)
   margin: 0;
   padding: 14px;
   overflow: auto;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--bg);
+  background: var(--glass-field);
   color: var(--ink);
   font-size: 12px;
   line-height: 1.6;

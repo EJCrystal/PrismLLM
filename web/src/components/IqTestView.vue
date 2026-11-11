@@ -858,26 +858,16 @@ onBeforeUnmount(stopTicker)
 <style scoped>
 .iq-page {
   --iq-radius: 22px;
-  --iq-glass-bg: rgba(255, 255, 255, 0.56);
-  --iq-glass-strong: rgba(255, 255, 255, 0.7);
-  --iq-glass-soft: rgba(255, 255, 255, 0.4);
-  --iq-glass-border: rgba(255, 255, 255, 0.72);
-  --iq-glass-line: rgba(148, 163, 184, 0.18);
-  --iq-glass-sheen: rgba(255, 255, 255, 0.68);
-  --iq-glass-shadow:
-    0 24px 60px -28px rgba(15, 23, 42, 0.26),
-    0 10px 24px -18px rgba(15, 23, 42, 0.18);
-  --iq-glass-inset:
-    inset 0 1px 0 rgba(255, 255, 255, 0.72),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.14);
-  --iq-field-bg: rgba(255, 255, 255, 0.42);
-  --iq-field-hover: rgba(255, 255, 255, 0.64);
-  --iq-field-border: rgba(148, 163, 184, 0.26);
-  --iq-tile-bg: rgba(255, 255, 255, 0.62);
-  --iq-aurora-a: rgba(37, 99, 235, 0.2);
-  --iq-aurora-b: rgba(139, 92, 246, 0.15);
-  --iq-aurora-c: rgba(6, 182, 212, 0.12);
-  --iq-aurora-d: rgba(245, 158, 11, 0.08);
+  --iq-glass-strong: var(--glass-bg-strong);
+  --iq-glass-soft: var(--glass-bg-soft);
+  --iq-glass-border: var(--glass-border);
+  --iq-glass-line: var(--glass-line);
+  --iq-glass-shadow: var(--glass-shadow);
+  --iq-glass-inset: var(--glass-inset);
+  --iq-field-bg: var(--glass-field);
+  --iq-field-hover: var(--glass-field-strong);
+  --iq-field-border: var(--glass-line);
+  --iq-tile-bg: var(--glass-bg-strong);
   position: relative;
   isolation: isolate;
   max-width: 1520px;
@@ -885,87 +875,18 @@ onBeforeUnmount(stopTicker)
   overflow-x: clip;
 }
 
-.iq-page::before {
-  content: '';
-  position: absolute;
-  z-index: 0;
-  inset: -30px 0 -44px;
-  pointer-events: none;
-  background:
-    radial-gradient(48rem 34rem at 8% 0%, var(--iq-aurora-a), transparent 68%),
-    radial-gradient(42rem 32rem at 92% 8%, var(--iq-aurora-b), transparent 70%),
-    radial-gradient(46rem 34rem at 58% 58%, var(--iq-aurora-c), transparent 72%),
-    radial-gradient(38rem 30rem at 12% 88%, var(--iq-aurora-d), transparent 70%);
-  filter: blur(10px);
-  animation: iq-aurora-drift 26s ease-in-out infinite alternate;
-}
-
 .iq-page > * {
   position: relative;
   z-index: 1;
 }
 
-@keyframes iq-aurora-drift {
-  from {
-    transform: translate3d(-0.8%, -0.4%, 0) scale(1.01);
-  }
-  to {
-    transform: translate3d(1.4%, 0.9%, 0) scale(1.05);
-  }
-}
-
-[data-theme="dark"] .iq-page {
-  --iq-glass-bg: rgba(17, 24, 39, 0.58);
-  --iq-glass-strong: rgba(24, 35, 55, 0.74);
-  --iq-glass-soft: rgba(30, 41, 59, 0.42);
-  --iq-glass-border: rgba(148, 163, 184, 0.16);
-  --iq-glass-line: rgba(148, 163, 184, 0.14);
-  --iq-glass-sheen: rgba(255, 255, 255, 0.08);
-  --iq-glass-shadow:
-    0 28px 64px -30px rgba(0, 0, 0, 0.72),
-    0 12px 28px -20px rgba(0, 0, 0, 0.5);
-  --iq-glass-inset:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
-  --iq-field-bg: rgba(8, 13, 24, 0.4);
-  --iq-field-hover: rgba(30, 41, 59, 0.62);
-  --iq-field-border: rgba(148, 163, 184, 0.18);
-  --iq-tile-bg: rgba(148, 163, 184, 0.12);
-  --iq-aurora-a: rgba(59, 130, 246, 0.22);
-  --iq-aurora-b: rgba(168, 85, 247, 0.18);
-  --iq-aurora-c: rgba(34, 211, 238, 0.14);
-  --iq-aurora-d: rgba(251, 191, 36, 0.08);
-}
-
-[data-theme="sepia"] .iq-page {
-  --iq-glass-bg: rgba(252, 249, 242, 0.62);
-  --iq-glass-strong: rgba(252, 249, 242, 0.78);
-  --iq-glass-soft: rgba(252, 249, 242, 0.46);
-  --iq-glass-border: rgba(255, 255, 255, 0.65);
-  --iq-glass-line: rgba(181, 161, 133, 0.2);
-  --iq-glass-sheen: rgba(255, 255, 255, 0.6);
-  --iq-glass-shadow:
-    0 24px 60px -30px rgba(76, 55, 28, 0.24),
-    0 10px 24px -18px rgba(76, 55, 28, 0.16);
-  --iq-field-bg: rgba(255, 252, 246, 0.5);
-  --iq-field-hover: rgba(255, 252, 246, 0.72);
-  --iq-field-border: rgba(181, 161, 133, 0.28);
-  --iq-tile-bg: rgba(255, 252, 246, 0.66);
-  --iq-aurora-a: rgba(180, 83, 9, 0.14);
-  --iq-aurora-b: rgba(217, 119, 6, 0.1);
-  --iq-aurora-c: rgba(20, 184, 166, 0.08);
-  --iq-aurora-d: rgba(251, 191, 36, 0.08);
-}
-
 .iq-page .panel {
   border: 1px solid var(--iq-glass-border);
   border-radius: var(--iq-radius);
-  background:
-    linear-gradient(145deg, var(--iq-glass-sheen) 0%, transparent 38%),
-    var(--iq-glass-bg);
+  background: var(--glass-surface);
   box-shadow: var(--iq-glass-shadow), var(--iq-glass-inset);
-  backdrop-filter: blur(22px) saturate(150%);
-  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(155%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(155%);
 }
 
 .iq-hero {
@@ -1046,11 +967,7 @@ onBeforeUnmount(stopTicker)
   border: 1px solid var(--iq-glass-line);
   border-radius: 16px;
   background: var(--iq-glass-soft);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, white 45%, transparent);
-}
-
-[data-theme="dark"] .iq-hero-note {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
 }
 
 .iq-note-icon {
