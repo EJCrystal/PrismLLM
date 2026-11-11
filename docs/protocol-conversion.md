@@ -46,9 +46,11 @@
 | 并行工具开关 | Messages 的 `disable_parallel_tool_use` 与 Responses/Chat 的 `parallel_tool_calls` 对应 |
 | 用量 | 统一计数后输出目标字段；Messages 缓存读写加入输入总量，Responses/Chat 输入量不重复增加缓存 |
 | 思考参数 | 沿用已有 budget 与 effort 的分档近似映射，不声称无损；转换到 Messages 时保留显式 token 上限，将预算限制在上限减 1，且不低于 1024；启用思考但显式上限不大于 1024 时本地报错，不隐式提高调用方上限或关闭思考 |
-| 推理响应 | Messages thinking 可转为 Responses reasoning；直转中无法表示的 redacted_thinking 或缺少 Anthropic 签名的 Responses reasoning 明确报错，不伪造 thinking 块 |
+| 推理响应 | Messages thinking 可转为 Responses reasoning；Responses reasoning 直转 Messages 时按可见文本还原为 thinking 块，`signature` 留空串而不伪造（对齐 magpie），没有文本也没有签名的项直接丢弃；无法表示的 redacted_thinking 仍明确报错 |
+| 密封推理跨轮 | Responses 上游的 reasoning 项带 `encrypted_content` 时，转给 Messages/Chat 客户端前把该调用之前的密封推理挂到第一个工具调用 ID 上：`<call_id>__rk16__<key>`，载荷按内容哈希暂存在进程内（90 天未读取过期，最多 2048 条）。客户端把调用 ID 原样带回后还原调用 ID，并把 reasoning 项放回 assistant 轮之前；key 已丢失时只还原 ID、不补推理。载荷按渠道隔离，下一轮换到其它渠道时同样只还原 ID、不补推理——`encrypted_content` 由签发它的上游账号加密，换账号回放会被拒绝（magpie 以记住拒绝并重试处理同一问题）。Gemini 客户端没有可回传的调用 ID，不参与携带。非 Responses 客户端在带工具且要求思考时，向上游追加 `include: ["reasoning.encrypted_content"]` |
 | 思考历史 | Messages → Chat 将 assistant 的 thinking 块合并为 `reasoning_content`，`redacted_thinking` 无对应表示直接丢弃；Messages → Responses 同时省略 thinking 与 `redacted_thinking`，因为 Responses 的 reasoning 项需要上游自己的加密内容，伪造会被拒绝；仅含被省略块的消息整条不输出。Messages → Gemini 将 thinking 转为 `thought` part，`redacted_thinking` 仍明确拒绝 |
-| 流式输出 | 文本、工具参数增量、结束原因、末尾用量与错误；没有结束原因的 EOF 不伪造成功结束，代理层仍检测缺失终止事件的流中断 |
+| DeepSeek 工具轮 thinking | 上游为 Messages 协议且 host 或上游模型名含 `deepseek` 时，工具轮（assistant 带 `tool_use`，或紧跟只含 `tool_result` 的 user 消息）缺少 thinking 的，在内容开头补一个占位块（`thinking` 为单个空格、`signature` 为空串）；`redacted_thinking` 在该轮没有 thinking 时替换为占位，已有 thinking 时丢弃。官方 Anthropic 端点与 `claude-*` 模型不处理，按它们自己的签名规则校验 |
+| 流式输出 | 文本、工具参数增量、思考增量、结束原因、末尾用量与错误；Responses reasoning 转为 Messages 的 thinking 块（`signature` 为空串，不发 `signature_delta`）、Chat 的 `reasoning_content` 增量，新的 reasoning 项开始或正文开始时收口上一个 thinking 块；`response.output_item.done` 带回 `encrypted_content` 的密封推理同样挂到下一个工具调用 ID 上；没有结束原因的 EOF 不伪造成功结束，代理层仍检测缺失终止事件的流中断 |
 | 安全停止原因 | Chat `content_filter`、Responses `incomplete/content_filter` 与 Messages `refusal` 相互映射，普通响应与流式返回均不降级为自然结束 |
 | Gemini | 四协议全矩阵；Gemini 的模型与 stream 位于 URL，转换后的请求体不携带 model/stream。`cachedContent`、非空 `safetySettings`、`responseModalities` 与非单候选仍明确拒绝。工具 schema 收敛到 Gemini Schema 子集：删除 `additionalProperties`、`$schema`、`$defs`、`x-*` 等字段，`const` 转 `enum`，`oneOf` 转 `anyOf`，`["string","null"]` 转 `nullable`，本地 `$ref` 展开、`allOf` 摊平成单个节点，tuple 形式的 `items`/`prefixItems` 近似为 `anyOf`，缺失 `type` 的节点按结构关键字和值域推断（Vertex 对缺 type 直接 400）。Gemini 的 `Schema.enum` 只接受字符串，非字符串枚举值放弃值域约束但保留原类型；`not`、外部或循环 `$ref`、分支全部无法转换的联合类型明确报错，不输出无类型节点；单次工具 schema 展开设有节点上限，防止引用放大耗尽资源 |
 | 图片 | 用户消息和工具结果里的图片支持四协议互转：Messages `image`、Chat `image_url`、Responses `input_image`、Gemini `inlineData`/`fileData` 按 base64 或 URL 双向映射。Chat 的 tool 消息只能承载文本，工具返回的图片会移到随后的 user 消息并标注来源，紧跟用户自己的内容，避免连续两条 user 消息；Messages ↔ Responses 与 Gemini 直接把图片放进工具结果本身 |
@@ -63,4 +65,4 @@
 
 ## 验证
 
-`ProtocolConversionTest` 保留既有回归；`ProtocolConversionContractTest` 覆盖十二方向接口、透传、末帧、错误、异常 EOF 和会话隔离；`MessagesResponsesConversionTest` 覆盖直转顺序、工具参数、缓存用量与不支持字段；`ToolImageConversionTest` 覆盖工具结果图片的重定位、并行工具结果、历史轮次与各协议间图片映射；`AdditionalToolsTest` 覆盖 `additional_tools` 抬升、namespace 平铺、去重与 Responses→Chat/Messages/Gemini 全链路。数据面集成测试覆盖六方向的普通和流式请求、实际出站端点及尝试日志。
+`ProtocolConversionTest` 保留既有回归；`ProtocolConversionContractTest` 覆盖十二方向接口、透传、末帧、错误、异常 EOF 和会话隔离；`MessagesResponsesConversionTest` 覆盖直转顺序、工具参数、缓存用量与不支持字段；`ReasoningCarryTest` 覆盖密封推理在调用 ID 上的跨轮往返（含流式）、`include` 注入时机与 key 丢失后的降级；`MessagesThinkingNormalizerTest` 覆盖 DeepSeek 工具轮占位 thinking 与其它厂商的逐字节不变；`ToolImageConversionTest` 覆盖工具结果图片的重定位、并行工具结果、历史轮次与各协议间图片映射；`AdditionalToolsTest` 覆盖 `additional_tools` 抬升、namespace 平铺、去重与 Responses→Chat/Messages/Gemini 全链路。数据面集成测试覆盖六方向的普通和流式请求、实际出站端点及尝试日志。

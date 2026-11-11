@@ -30,6 +30,7 @@ internal class ChatStreamEncoder(private val model: String) : StreamEncoder {
         }
         val delta = buildJsonObject {
             if (!started) put("role", chunk.role ?: "assistant")
+            chunk.thinking?.let { put("reasoning_content", it) }
             chunk.content?.let { put("content", it) }
             chunk.refusal?.let { put("refusal", it) }
             if (toolCalls.isNotEmpty()) {
@@ -77,6 +78,7 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
     private var messageStarted = false
     private var nextBlockIndex = 0
     private var openTextBlock: Int? = null
+    private var openThinkingBlock: Int? = null
     private val openToolBlocks = linkedMapOf<Int, Int>()
 
     override fun emit(chunk: StreamEvent, usage: TokenUsage?): List<String> {
@@ -103,9 +105,25 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
             lines += "data: $start"
             lines += ""
         }
+        // Responses reasoning 没有 Anthropic 签名：照样开 thinking 块，签名留空串，不伪造
+        // （对齐 magpie：`signature` 字段始终存在，没有签名时为空）。
+        if (chunk.thinkingStart) closeThinkingBlock(lines)
+        chunk.thinking?.takeIf { it.isNotEmpty() }?.let { thinking ->
+            val index = openThinkingBlock ?: nextBlockIndex++.also { block ->
+                closeTextBlock(lines)
+                openThinkingBlock = block
+                lines += "event: content_block_start"
+                lines += "data: ${buildJsonObject { put("type", "content_block_start"); put("index", block); putJsonObject("content_block") { put("type", "thinking"); put("thinking", ""); put("signature", "") } }}"
+                lines += ""
+            }
+            lines += "event: content_block_delta"
+            lines += "data: ${buildJsonObject { put("type", "content_block_delta"); put("index", index); putJsonObject("delta") { put("type", "thinking_delta"); put("thinking", thinking) } }}"
+            lines += ""
+        }
         listOfNotNull(chunk.content, chunk.refusal).filter { it.isNotEmpty() }
             .joinToString("").takeIf { it.isNotEmpty() }?.let { text ->
             val index = openTextBlock ?: nextBlockIndex++.also { block ->
+                closeThinkingBlock(lines)
                 openTextBlock = block
                 lines += "event: content_block_start"
                 lines += "data: ${buildJsonObject { put("type", "content_block_start"); put("index", block); putJsonObject("content_block") { put("type", "text"); put("text", "") } }}"
@@ -117,6 +135,7 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
         }
         chunk.toolCalls.forEach { tool ->
             closeTextBlock(lines)
+            closeThinkingBlock(lines)
             val blockIndex = openToolBlocks.getOrPut(tool.index) {
                 nextBlockIndex++.also { block ->
                     lines += "event: content_block_start"
@@ -131,6 +150,7 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
             }
         }
         if (chunk.finishReason != null) {
+            closeThinkingBlock(lines)
             closeTextBlock(lines)
             openToolBlocks.values.forEach { block ->
                 lines += "event: content_block_stop"
@@ -154,6 +174,15 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
             lines += "data: ${buildJsonObject { put("type", "content_block_stop"); put("index", block) }}"
             lines += ""
             openTextBlock = null
+        }
+    }
+
+    private fun closeThinkingBlock(lines: MutableList<String>) {
+        openThinkingBlock?.let { block ->
+            lines += "event: content_block_stop"
+            lines += "data: ${buildJsonObject { put("type", "content_block_stop"); put("index", block) }}"
+            lines += ""
+            openThinkingBlock = null
         }
     }
 

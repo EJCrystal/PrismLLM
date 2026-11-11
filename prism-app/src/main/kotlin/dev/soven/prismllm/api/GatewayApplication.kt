@@ -17,6 +17,7 @@ import dev.soven.prismllm.db.DatabaseFactory
 import dev.soven.prismllm.proxy.BrowserScreenshotRenderer
 import dev.soven.prismllm.proxy.GatewayMetrics
 import dev.soven.prismllm.proxy.HtmlImageRenderer
+import dev.soven.prismllm.proxy.ReasoningCarryCache
 import dev.soven.prismllm.proxy.UnavailableBrowserRenderer
 import dev.soven.prismllm.proxy.isGeminiRequestPath
 import dev.soven.prismllm.requestlog.infra.RequestLogWriter
@@ -292,6 +293,8 @@ class GatewayApplication(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val shuttingDown = AtomicBoolean(false)
+    /** 跨协议携带的 Responses 密封推理，按内容哈希暂存在进程内。 */
+    val reasoningCarryCache = ReasoningCarryCache()
     val databaseFactory = DatabaseFactory(config)
     val credentialCipher = CredentialCipher(config.masterKey)
     val channelRepository = ChannelRepository(databaseFactory.database, credentialCipher)

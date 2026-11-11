@@ -114,14 +114,29 @@ internal class ResponsesStreamDecoder : StreamDecoder {
             }
             "response.output_item.added" -> {
                 val item = json["item"] as? JsonObject
-                if (item?.string("type") == "function_call") {
-                    responseToolSeen = true
-                    listOf(StreamEvent(id, toolCalls = listOf(ToolCallDelta(
-                        index = json.long("output_index")?.toInt() ?: 0,
-                        id = item.string("call_id") ?: item.string("id"),
-                        name = item.string("name"),
-                        arguments = item.string("arguments"),
-                    ))))
+                when (item?.string("type")) {
+                    "function_call" -> {
+                        responseToolSeen = true
+                        listOf(StreamEvent(id, toolCalls = listOf(ToolCallDelta(
+                            index = json.long("output_index")?.toInt() ?: 0,
+                            id = item.string("call_id") ?: item.string("id"),
+                            name = item.string("name"),
+                            arguments = item.string("arguments"),
+                        ))))
+                    }
+                    // 新的 reasoning 项：把上一个 thinking 块收口。没有增量的项不会产出空块。
+                    "reasoning" -> listOf(StreamEvent(id, thinkingStart = true))
+                    else -> emptyList()
+                }
+            }
+            "response.reasoning_summary_text.delta", "response.reasoning_text.delta" -> {
+                json.string("delta")?.takeIf { it.isNotEmpty() }?.let { listOf(StreamEvent(id, thinking = it)) } ?: emptyList()
+            }
+            // 密封推理在项结束时才带全 encrypted_content：交给转换器挂到下一个工具调用 ID 上（对齐 magpie 的 KSealed）。
+            "response.output_item.done" -> {
+                val item = json["item"] as? JsonObject
+                if (item?.string("type") == "reasoning" && !item.string("encrypted_content").isNullOrEmpty()) {
+                    listOf(StreamEvent(id, sealedReasoning = item))
                 } else emptyList()
             }
             "response.function_call_arguments.delta" -> listOf(StreamEvent(id, toolCalls = listOf(ToolCallDelta(

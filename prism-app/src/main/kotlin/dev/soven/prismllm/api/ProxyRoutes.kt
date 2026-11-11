@@ -1542,7 +1542,13 @@ private suspend fun proxyStream(
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson
     } else {
-        ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel)
+        ProtocolConversion.convertRequest(
+            protocol,
+            upstreamProtocol,
+            requestJson,
+            candidate.upstreamModel,
+            carry = app.reasoningCarryCache.scoped(candidate.channel.id),
+        )
     }
     val streamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = true)
     val usageRequest = if (upstreamProtocol == GatewayProtocol.CHAT_COMPLETIONS && protocol != upstreamProtocol) {
@@ -1605,7 +1611,12 @@ private suspend fun proxyStream(
     } else {
         bodyJson.toString()
     }
-    val converter = ProtocolConversion.streamConverter(protocol, upstreamProtocol, alias)
+    val converter = ProtocolConversion.streamConverter(
+        protocol,
+        upstreamProtocol,
+        alias,
+        carry = app.reasoningCarryCache.scoped(candidate.channel.id),
+    )
 
     try {
         withTimeout(remainingMs(callDeadlineNanos)) {
@@ -1849,7 +1860,13 @@ private suspend fun proxyJson(
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson
     } else {
-        ProtocolConversion.convertRequest(protocol, upstreamProtocol, requestJson, candidate.upstreamModel)
+        ProtocolConversion.convertRequest(
+            protocol,
+            upstreamProtocol,
+            requestJson,
+            candidate.upstreamModel,
+            carry = app.reasoningCarryCache.scoped(candidate.channel.id),
+        )
     }
     val nonStreamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = false)
     val bodyJson = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
@@ -1969,7 +1986,13 @@ private suspend fun proxyJson(
                 }
             } else {
                 val parsed = json ?: throw transportFailure(false)
-                ProtocolConversion.convertResponse(protocol, upstreamProtocol, parsed, model = alias).toString()
+                ProtocolConversion.convertResponse(
+                    protocol,
+                    upstreamProtocol,
+                    parsed,
+                    model = alias,
+                    carry = app.reasoningCarryCache.scoped(candidate.channel.id),
+                ).toString()
             }
             state.committed = true
             state.statusCode = response.status.value
