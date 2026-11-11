@@ -122,7 +122,11 @@ public fun responsesToChatRequest(request: JsonObject): JsonObject {
     }
 }
 
-internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {
+internal fun chatToResponsesRequest(
+    chat: JsonObject,
+    upstreamModel: String,
+    carry: ReasoningCarryStore? = null,
+): JsonObject = buildJsonObject {
     rejectUnknownFields(chat, chatRequestFields, "request")
     put("model", upstreamModel)
     chat.boolean("stream")?.let { put("stream", it) }
@@ -132,19 +136,24 @@ internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): Js
     if (chat["stop"].let { it != null && it !is JsonNull }) unsupported("stop", "Responses 不支持 stop/stop_sequences")
     chat.string("user")?.let { put("user", it) }
     chat.string("reasoning_effort")?.let { effort -> putJsonObject("reasoning") { put("effort", effort) } }
+    // 工具循环里把上游的密封推理挂到调用 ID 上跨轮带回：请上游在 reasoning 项里给出 encrypted_content。
+    if (chatAsksSealedReasoning(chat)) put("include", JsonArray(listOf(JsonPrimitive("reasoning.encrypted_content"))))
     chat["response_format"]?.takeIf { it !is JsonNull }?.let { format ->
         putJsonObject("text") { put("format", chatResponseFormatToResponses(format)) }
     }
     chat["parallel_tool_calls"]?.takeIf { it !is JsonNull }?.let { put("parallel_tool_calls", it) }
 
+    // 工具调用 ID 上可能挂着上一轮的密封推理：还原 ID，并把 reasoning 项放回 assistant 轮之前。
+    val (messages, carriedReasoning) = recoverChatReasoningCarry(chat.array("messages"), carry)
     val system = mutableListOf<String>()
     val input = mutableListOf<JsonObject>()
-    chat.array("messages").forEachIndexed { index, element ->
+    messages.forEachIndexed { index, element ->
         val message = element as? JsonObject ?: unsupported("messages[$index]", "消息必须是对象")
         when (message.string("role")) {
             "system", "developer" -> system += message.textContentStrict("content", "messages[$index].content")
             "user", "assistant" -> {
                 val role = message.string("role") ?: "user"
+                carriedReasoning[index]?.forEach { input += it }
                 val parts = chatContentToResponsesParts(message["content"], role, "messages[$index].content")
                 val hasContent = parts.any {
                     it.string("type") == "input_image" || !it.string("text").isNullOrEmpty()
@@ -194,7 +203,12 @@ internal fun chatToResponsesRequest(chat: JsonObject, upstreamModel: String): Js
     chat["tool_choice"]?.takeIf { it !is JsonNull }?.let { choice -> put("tool_choice", chatToolChoiceToResponses(choice)) }
 }
 
-internal fun responsesToChatResponse(response: JsonObject, model: String): JsonObject {
+internal fun responsesToChatResponse(
+    response: JsonObject,
+    model: String,
+    carry: ReasoningCarryStore? = null,
+): JsonObject {
+    val sealed = SealedReasoningCollector(carry)
     val content = mutableListOf<String>()
     val refusals = mutableListOf<String>()
     val reasoning = mutableListOf<String>()
@@ -211,7 +225,7 @@ internal fun responsesToChatResponse(response: JsonObject, model: String): JsonO
                 }
             }
             "function_call" -> toolCalls += buildJsonObject {
-                put("id", item.string("call_id") ?: item.string("id").orEmpty())
+                put("id", sealed.callId(item.string("call_id") ?: item.string("id").orEmpty()))
                 put("type", "function")
                 putJsonObject("function") {
                     put("name", item.string("name").orEmpty())
@@ -219,6 +233,7 @@ internal fun responsesToChatResponse(response: JsonObject, model: String): JsonO
                 }
             }
             "reasoning" -> {
+                sealed.offer(item)
                 val summary = item.array("summary").mapNotNull { part ->
                     (part as? JsonObject)?.string("text")?.takeIf { it.isNotBlank() }
                 }
@@ -326,6 +341,12 @@ internal fun chatToResponsesResponse(chat: JsonObject, model: String): JsonObjec
         put("output", JsonArray(output))
         chatUsageToResponses(chat["usage"] as? JsonObject)?.let { put("usage", it) }
     }
+}
+
+/** 工具轮才需要跨轮携带推理；客户端没有要求思考时不额外向上游索要 encrypted_content。 */
+private fun chatAsksSealedReasoning(chat: JsonObject): Boolean {
+    if (chat["tools"].let { it !is JsonArray || it.isEmpty() }) return false
+    return chat.string("reasoning_effort")?.let { it != "none" } ?: false
 }
 
 internal fun responsesMessageToChat(item: JsonObject, path: String): JsonObject {

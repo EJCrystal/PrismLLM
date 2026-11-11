@@ -7,6 +7,7 @@ import dev.soven.prismllm.shared.domain.UpstreamProtocolOverrides
 import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
 import dev.soven.prismllm.protocol.ChatReasoningContentNormalizer
 import dev.soven.prismllm.protocol.DeveloperRoleNormalizer
+import dev.soven.prismllm.protocol.MessagesThinkingNormalizer
 import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.http.HttpStatusCode
@@ -129,10 +130,10 @@ class UpstreamRequestPolicy(
             merged
         }
         val normalized = DeveloperRoleNormalizer.normalize(compatible, protocol)
-        val result = if (protocol == GatewayProtocol.CHAT_COMPLETIONS) {
-            ChatReasoningContentNormalizer.normalize(normalized, upstreamModel, baseUrl)
-        } else {
-            normalized
+        val result = when (protocol) {
+            GatewayProtocol.CHAT_COMPLETIONS -> ChatReasoningContentNormalizer.normalize(normalized, upstreamModel, baseUrl)
+            GatewayProtocol.MESSAGES -> MessagesThinkingNormalizer.normalize(normalized, upstreamModel, baseUrl)
+            else -> normalized
         }
         if (result.toString().toByteArray(Charsets.UTF_8).size.toLong() > limitBytes) {
             throw GatewayError(

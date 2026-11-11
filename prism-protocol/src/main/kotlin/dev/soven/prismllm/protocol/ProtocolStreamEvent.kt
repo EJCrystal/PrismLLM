@@ -125,6 +125,12 @@ internal data class StreamEvent(
     val id: String,
     val role: String? = null,
     val content: String? = null,
+    /** 思考增量；Responses reasoning 转 Messages 时写入 thinking 块。 */
+    val thinking: String? = null,
+    /** 新的 reasoning 项开始，用于把上一个 thinking 块收口（对齐 magpie 的 KThinkStart）。 */
+    val thinkingStart: Boolean = false,
+    /** Responses 密封推理项的原始 JSON（含 encrypted_content），挂到下一个工具调用 ID 上跨轮携带。 */
+    val sealedReasoning: JsonObject? = null,
     val refusal: String? = null,
     val toolCalls: List<ToolCallDelta> = emptyList(),
     val finishReason: FinishReason? = null,

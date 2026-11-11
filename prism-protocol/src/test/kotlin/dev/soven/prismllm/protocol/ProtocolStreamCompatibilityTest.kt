@@ -39,6 +39,21 @@ class ProtocolStreamCompatibilityTest {
     }
 
     @Test
+    fun `responses reasoning deltas reach chat clients as reasoning content`() {
+        val converter = ChatCompletionToResponses.streamConverter("public")
+        val output = events(feed(converter, listOf(
+            """{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}""",
+            """{"type":"response.reasoning_summary_text.delta","delta":"think"}""",
+            """{"type":"response.reasoning_text.delta","delta":" more"}""",
+            """{"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"m1","role":"assistant"}}""",
+            """{"type":"response.output_text.delta","delta":"answer"}""",
+        )))
+        val deltas = output.flatMap { it.array("choices") }.map { it.jsonObject["delta"]!!.jsonObject }
+        assertEquals("think more", deltas.mapNotNull { it.string("reasoning_content") }.joinToString(""))
+        assertEquals("answer", deltas.mapNotNull { it.string("content") }.joinToString(""))
+    }
+
+    @Test
     fun `normal chat chunks with null error do not fail but real errors retain response identity`() {
         listOf(GatewayProtocol.MESSAGES, GatewayProtocol.RESPONSES).forEach { client ->
             val converter = ProtocolConverterRegistry.get(client, GatewayProtocol.CHAT_COMPLETIONS).streamConverter("public")

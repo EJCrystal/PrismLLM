@@ -20,21 +20,42 @@ object ProtocolConversion {
         outbound: GatewayProtocol,
         request: JsonObject,
         upstreamModel: String,
-    ): JsonObject = if (inbound == outbound) request.withModel(upstreamModel)
-        else ProtocolConverterRegistry.get(inbound, outbound).convertRequest(request, upstreamModel)
+        carry: ReasoningCarryStore? = null,
+    ): JsonObject = when {
+        inbound == outbound -> request.withModel(upstreamModel)
+        carry != null && inbound == GatewayProtocol.MESSAGES && outbound == GatewayProtocol.RESPONSES ->
+            messagesToResponsesRequest(request, upstreamModel, carry)
+        carry != null && inbound == GatewayProtocol.CHAT_COMPLETIONS && outbound == GatewayProtocol.RESPONSES ->
+            chatToResponsesRequest(request, upstreamModel, carry)
+        else -> ProtocolConverterRegistry.get(inbound, outbound).convertRequest(request, upstreamModel)
+    }
 
     fun convertResponse(
         inbound: GatewayProtocol,
         outbound: GatewayProtocol,
         response: JsonObject,
         model: String,
-    ): JsonObject = if (inbound == outbound) response
-        else ProtocolConverterRegistry.get(inbound, outbound).convertResponse(response, model)
+        carry: ReasoningCarryStore? = null,
+    ): JsonObject = when {
+        inbound == outbound -> response
+        carry != null && inbound == GatewayProtocol.MESSAGES && outbound == GatewayProtocol.RESPONSES ->
+            responsesToMessagesResponse(response, model, carry)
+        carry != null && inbound == GatewayProtocol.CHAT_COMPLETIONS && outbound == GatewayProtocol.RESPONSES ->
+            responsesToChatResponse(response, model, carry)
+        else -> ProtocolConverterRegistry.get(inbound, outbound).convertResponse(response, model)
+    }
 
     fun streamConverter(
         inbound: GatewayProtocol,
         outbound: GatewayProtocol,
         model: String,
-    ): ProtocolStreamConverter? = if (inbound == outbound) null
-        else ProtocolConverterRegistry.get(inbound, outbound).streamConverter(model)
+        carry: ReasoningCarryStore? = null,
+    ): ProtocolStreamConverter? = when {
+        inbound == outbound -> null
+        carry != null && inbound == GatewayProtocol.MESSAGES && outbound == GatewayProtocol.RESPONSES ->
+            EventStreamConverter(ResponsesStreamDecoder(), MessagesStreamEncoder(model), carry)
+        carry != null && inbound == GatewayProtocol.CHAT_COMPLETIONS && outbound == GatewayProtocol.RESPONSES ->
+            EventStreamConverter(ResponsesStreamDecoder(), ChatStreamEncoder(model), carry)
+        else -> ProtocolConverterRegistry.get(inbound, outbound).streamConverter(model)
+    }
 }

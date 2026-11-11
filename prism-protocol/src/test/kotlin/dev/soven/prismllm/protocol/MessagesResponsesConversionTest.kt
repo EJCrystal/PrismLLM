@@ -237,15 +237,94 @@ class MessagesResponsesConversionTest {
     }
 
     @Test
-    fun `direct responses reject reasoning blocks that cannot be represented faithfully`() {
-        val unsupportedReasoning = json("""{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"plan"}]}]}""")
-        assertEquals("output[0].type", assertFailsWith<ProtocolConversionException> {
-            MessagesToResponses.convertResponse(unsupportedReasoning, "public")
-        }.field)
+    fun `direct responses reject redacted thinking that cannot be represented faithfully`() {
         val redacted = json("""{"content":[{"type":"redacted_thinking","data":"opaque"}]}""")
         assertEquals("content[0].type", assertFailsWith<ProtocolConversionException> {
             ResponsesToMessages.convertResponse(redacted, "public")
         }.field)
+    }
+
+    @Test
+    fun `responses reasoning becomes a thinking block with an empty signature`() {
+        val converted = MessagesToResponses.convertResponse(json("""{"output":[
+            {"type":"reasoning","summary":[{"type":"summary_text","text":"plan "},{"type":"summary_text","text":"more"}]},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}
+        ]}"""), "public")
+
+        val blocks = converted["content"]!!.jsonArray
+        assertEquals(listOf("thinking", "text"), blocks.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        assertEquals("plan more", blocks[0].jsonObject["thinking"]!!.jsonPrimitive.content)
+        assertEquals("", blocks[0].jsonObject["signature"]!!.jsonPrimitive.content)
+        assertEquals("end_turn", converted["stop_reason"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `responses reasoning prefers reasoning text over summary and drops empty items`() {
+        val converted = MessagesToResponses.convertResponse(json("""{"output":[
+            {"type":"reasoning","content":[{"type":"reasoning_text","text":"full thought"}],"summary":[{"type":"summary_text","text":"short"}]},
+            {"type":"reasoning","summary":[]},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}
+        ]}"""), "public")
+
+        val blocks = converted["content"]!!.jsonArray
+        assertEquals(listOf("thinking", "text"), blocks.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        assertEquals("full thought", blocks[0].jsonObject["thinking"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `responses reasoning streams as a thinking block before the text block`() {
+        val converter = MessagesToResponses.streamConverter("public")
+        val frames = listOf(
+            """{"type":"response.created","response":{"id":"resp_1"}}""",
+            """{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}""",
+            """{"type":"response.reasoning_summary_text.delta","delta":"think "}""",
+            """{"type":"response.reasoning_summary_text.delta","delta":"more"}""",
+            """{"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1","role":"assistant"}}""",
+            """{"type":"response.output_text.delta","delta":"answer"}""",
+            """{"type":"response.completed","response":{"id":"resp_1","output":[],"usage":{"input_tokens":1,"output_tokens":2}}}""",
+        ).flatMap { converter.feed("data: $it") + converter.feed("") } + converter.finish()
+        val events = frames.filter { it.startsWith("data: {") }.map { json(it.removePrefix("data: ")) }
+
+        val starts = events.filter { it.string("type") == "content_block_start" }
+        assertEquals(2, starts.size)
+        assertEquals("thinking", starts[0]["content_block"]!!.jsonObject.string("type"))
+        assertEquals("", starts[0]["content_block"]!!.jsonObject.string("signature"))
+        assertEquals("text", starts[1]["content_block"]!!.jsonObject.string("type"))
+        assertEquals(
+            "think more",
+            events.joinToString("") { event ->
+                (event["delta"] as? JsonObject)?.takeIf { it.string("type") == "thinking_delta" }?.string("thinking").orEmpty()
+            },
+        )
+        assertEquals("answer", events.joinToString("") { event ->
+            (event["delta"] as? JsonObject)?.takeIf { it.string("type") == "text_delta" }?.string("text").orEmpty()
+        })
+        assertFalse(events.any { it.string("type") == "content_block_delta" && (it["delta"] as? JsonObject)?.string("type") == "signature_delta" })
+        assertEquals("end_turn", events.first { it.string("type") == "message_delta" }["delta"]!!.jsonObject.string("stop_reason"))
+    }
+
+    @Test
+    fun `each responses reasoning item opens its own thinking block`() {
+        val converter = MessagesToResponses.streamConverter("public")
+        val frames = listOf(
+            """{"type":"response.created","response":{"id":"resp_1"}}""",
+            """{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}""",
+            """{"type":"response.reasoning_summary_text.delta","delta":"one"}""",
+            """{"type":"response.output_item.added","output_index":1,"item":{"type":"reasoning","id":"rs_2"}}""",
+            """{"type":"response.reasoning_text.delta","delta":"two"}""",
+            """{"type":"response.completed","response":{"id":"resp_1","output":[],"usage":{"input_tokens":1,"output_tokens":2}}}""",
+        ).flatMap { converter.feed("data: $it") + converter.feed("") } + converter.finish()
+        val events = frames.filter { it.startsWith("data: {") }.map { json(it.removePrefix("data: ")) }
+
+        val starts = events.filter { it.string("type") == "content_block_start" }
+        assertEquals(listOf("thinking", "thinking"), starts.map { it["content_block"]!!.jsonObject.string("type") })
+        assertEquals(listOf("0", "1"), starts.map { it["index"]!!.jsonPrimitive.content })
+        assertEquals(listOf("one", "two"), events.filter { it.string("type") == "content_block_delta" }
+            .map { (it["delta"] as JsonObject).string("thinking").orEmpty() })
+        // 第二个 reasoning 项开始时，上一个 thinking 块已经收口。
+        val firstStop = events.indexOfFirst { it.string("type") == "content_block_stop" }
+        val secondStart = events.indexOfFirst { it.string("type") == "content_block_start" && it["index"]!!.jsonPrimitive.content == "1" }
+        assertTrue(firstStop in 0 until secondStart)
     }
 
     @Test

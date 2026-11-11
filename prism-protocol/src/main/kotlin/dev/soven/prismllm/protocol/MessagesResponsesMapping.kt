@@ -10,7 +10,11 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
-internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {
+internal fun messagesToResponsesRequest(
+    request: JsonObject,
+    upstreamModel: String,
+    carry: ReasoningCarryStore? = null,
+): JsonObject = buildJsonObject {
     validateMessagesRequest(request)
     put("model", upstreamModel)
     listOf("stream", "temperature", "top_p").forEach { field -> request[field]?.let { put(field, it) } }
@@ -18,6 +22,8 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
     if (request["stop_sequences"].let { it != null && it !is JsonNull }) unsupported("stop_sequences", "Responses 不支持 stop_sequences")
     (request["metadata"] as? JsonObject)?.string("user_id")?.let { put("user", it) }
     request.thinkingEffort()?.let { effort -> putJsonObject("reasoning") { put("effort", effort) } }
+    // 工具循环里把上游的密封推理挂到调用 ID 上跨轮带回：请上游在 reasoning 项里给出 encrypted_content。
+    if (messagesAskSealedReasoning(request)) put("include", JsonArray(listOf(JsonPrimitive("reasoning.encrypted_content"))))
     val instructions = mutableListOf<String>()
     request.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { instructions += it }
     val input = mutableListOf<JsonObject>()
@@ -48,7 +54,12 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
         }
     }
 
-    joinSplitToolCalls(request.array("messages")).forEachIndexed { index, element ->
+    // 客户端带回的调用 ID 可能挂着上一轮的密封推理：先还原 ID，再把 reasoning 项放回 assistant 轮之前。
+    val (messages, carriedReasoning) = recoverMessagesReasoningCarry(
+        joinSplitToolCalls(request.array("messages")),
+        carry,
+    )
+    messages.forEachIndexed { index, element ->
         val path = "messages[$index]"
         val message = element as? JsonObject ?: unsupported(path, "消息必须是对象")
         val role = message.string("role") ?: unsupported("$path.role", "缺少 role")
@@ -56,6 +67,7 @@ internal fun messagesToResponsesRequest(request: JsonObject, upstreamModel: Stri
             "system", "developer" -> addSystemTurn(message.textContentStrict("content", "$path.content"))
             "user", "assistant" -> {
                 conversationStarted = true
+                if (role == "assistant") carriedReasoning[index]?.forEach { input += it }
                 val parts = mutableListOf<JsonObject>()
                 fun flushParts() {
                     addMessage(role, parts.toList())
@@ -293,44 +305,81 @@ internal fun messagesToResponsesResponse(response: JsonObject, model: String): J
     TokenUsage.fromMessages(response["usage"] as? JsonObject)?.let { put("usage", it.toResponses()) }
 }
 
-internal fun responsesToMessagesResponse(response: JsonObject, model: String): JsonObject = buildJsonObject {
-    put("id", response.string("id") ?: "msg_"+System.currentTimeMillis())
-    put("type", "message")
-    put("role", "assistant")
-    put("model", model)
-    val content = mutableListOf<JsonObject>()
-    response.array("output").forEachIndexed { index, value ->
-        val item = value as? JsonObject ?: unsupported("output[$index]", "输出项必须是对象")
-        when (item.string("type")) {
-            "message" -> item.array("content").forEachIndexed { partIndex, part ->
-                val block = part as? JsonObject ?: unsupported("output[$index].content[$partIndex]", "内容块必须是对象")
-                when (block.string("type")) {
-                    "text", "output_text" -> content += messageTextBlock(block.string("text").orEmpty())
-                    "refusal" -> block.string("refusal")?.takeIf { it.isNotEmpty() }?.let { content += messageTextBlock(it) }
-                    else -> unsupported("output[$index].content[$partIndex].type", "第一版不支持该 Responses 输出内容")
+internal fun responsesToMessagesResponse(
+    response: JsonObject,
+    model: String,
+    carry: ReasoningCarryStore? = null,
+): JsonObject {
+    val sealed = SealedReasoningCollector(carry)
+    return buildJsonObject {
+        put("id", response.string("id") ?: "msg_"+System.currentTimeMillis())
+        put("type", "message")
+        put("role", "assistant")
+        put("model", model)
+        val content = mutableListOf<JsonObject>()
+        response.array("output").forEachIndexed { index, value ->
+            val item = value as? JsonObject ?: unsupported("output[$index]", "输出项必须是对象")
+            when (item.string("type")) {
+                "message" -> item.array("content").forEachIndexed { partIndex, part ->
+                    val block = part as? JsonObject ?: unsupported("output[$index].content[$partIndex]", "内容块必须是对象")
+                    when (block.string("type")) {
+                        "text", "output_text" -> content += messageTextBlock(block.string("text").orEmpty())
+                        "refusal" -> block.string("refusal")?.takeIf { it.isNotEmpty() }?.let { content += messageTextBlock(it) }
+                        else -> unsupported("output[$index].content[$partIndex].type", "第一版不支持该 Responses 输出内容")
+                    }
                 }
+                "function_call" -> content += buildJsonObject {
+                    put("type", "tool_use")
+                    put("id", sealed.callId(item.string("call_id") ?: item.string("id").orEmpty()))
+                    put("name", item.string("name").orEmpty())
+                    put("input", parseJsonObjectOrEmpty(item.string("arguments")))
+                }
+                // 对齐 magpie：Responses reasoning 的可见文本照样转成 thinking 块。
+                // Anthropic 签名无从得知，signature 留空串，不伪造；没有文本也没有签名的项直接丢弃。
+                "reasoning" -> {
+                    sealed.offer(item)
+                    reasoningText(item).takeIf { it.isNotEmpty() }?.let { text ->
+                        content += buildJsonObject {
+                            put("type", "thinking")
+                            put("thinking", text)
+                            put("signature", "")
+                        }
+                    }
+                }
+                else -> unsupported("output[$index].type", "第一版不支持 Responses 输出项 "+item.string("type"))
             }
-            "function_call" -> content += buildJsonObject {
-                put("type", "tool_use")
-                put("id", item.string("call_id") ?: item.string("id").orEmpty())
-                put("name", item.string("name").orEmpty())
-                put("input", parseJsonObjectOrEmpty(item.string("arguments")))
-            }
-            "reasoning" -> unsupported("output[$index].type", "Messages 不支持缺少 Anthropic thinking signature 的 Responses reasoning")
-            else -> unsupported("output[$index].type", "第一版不支持 Responses 输出项 "+item.string("type"))
         }
+        put("content", JsonArray(content))
+        val incompleteReason = (response["incomplete_details"] as? JsonObject)?.string("reason")
+        put("stop_reason", when {
+            response.string("status") == "incomplete" -> if (incompleteReason == "content_filter") "refusal" else "max_tokens"
+            content.any { it.string("type") == "tool_use" } -> "tool_use"
+            else -> "end_turn"
+        })
+        put("stop_sequence", JsonNull)
+        TokenUsage.fromResponses(response["usage"] as? JsonObject)?.let { put("usage", it.toMessages()) }
     }
-    put("content", JsonArray(content))
-    val incompleteReason = (response["incomplete_details"] as? JsonObject)?.string("reason")
-    put("stop_reason", when {
-        response.string("status") == "incomplete" -> if (incompleteReason == "content_filter") "refusal" else "max_tokens"
-        content.any { it.string("type") == "tool_use" } -> "tool_use"
-        else -> "end_turn"
-    })
-    put("stop_sequence", JsonNull)
-    TokenUsage.fromResponses(response["usage"] as? JsonObject)?.let { put("usage", it.toMessages()) }
 }
 
+/** 工具轮才需要跨轮携带推理；客户端没有要求思考时不额外向上游索要 encrypted_content。 */
+private fun messagesAskSealedReasoning(request: JsonObject): Boolean {
+    if (request["tools"].let { it !is JsonArray || it.isEmpty() }) return false
+    val thinking = request["thinking"] as? JsonObject
+    return when {
+        thinking == null -> request.thinkingEffort()?.takeIf { it != "none" } != null
+        thinking.string("type") == "disabled" -> false
+        else -> true
+    }
+}
+
+/** Responses reasoning 的可见文本：优先 content 里的 reasoning_text，否则拼接 summary（对齐 magpie）。 */
+private fun reasoningText(item: JsonObject): String {
+    val content = item.array("content").joinToString("") { part ->
+        (part as? JsonObject)?.takeIf { it.string("type") == "reasoning_text" }?.string("text").orEmpty()
+    }
+    if (content.isNotEmpty()) return content
+    return item.array("summary").joinToString("") { part -> (part as? JsonObject)?.string("text").orEmpty() }
+}
 
 /** Responses 消息内容可以是字符串，也可以是 input_text / input_image 内容项数组。 */
 internal fun responsesContentToMessagesBlocks(content: JsonElement?, path: String): List<JsonObject> = when (content) {
