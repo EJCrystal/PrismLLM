@@ -142,16 +142,30 @@ def code_tokens(body: str) -> list[str]:
     tokens = []
     for raw in re.findall(r"`([^`\n]+)`", body):
         token = raw.strip()
-        # 带调用的短表达式（如 foo()）也能唯一指向旧代码；普通单词仍要求 8 字符，
-        # 避免 state/reason 这类通用词误命中。
-        if len(token) < (5 if "(" in token else 8):
-            continue
         if "://" in token or token.startswith(("/", "~", "http")):
             continue
-        if "(" not in token and not re.search(r"[A-Za-z_]\w*\.[A-Za-z_]\w*", token):
+        # 长度门槛：普通词要求 8 字符，避免 state/reason 这类通用词误命中；
+        # 括号调用（foo()）和明显代码形态的标识符（snake_case/camelCase/复合表达式）
+        # 已足够区分普通词，放宽到 5 字符（costUsd 这类 7 字符 camelCase 不能漏）。
+        threshold = 5 if ("(" in token or code_like(token)) else 8
+        if len(token) < threshold:
             continue
         tokens.append(token)
     return list(dict.fromkeys(tokens))
+
+
+def code_like(token: str) -> bool:
+    """判断裸标识符/复合表达式是否像代码，而不是普通中文/英文短语。
+
+    - snake_case（cost_amount）、camelCase（costUsd）、kotlin 风格（costUsd?）算代码；
+    - 复合表达式（costUsd = costs[id]）算代码；
+    - 纯小写单词（reason）或常见短语不算，避免把正文里随口的词当锚点。
+    """
+    if any(ch in token for ch in "()[]{}=.<>!:+-*/"):
+        return True
+    if "_" in token:
+        return True
+    return bool(re.search(r"[a-z][A-Z]", token))
 
 
 def token_present(token: str, text: str) -> bool:

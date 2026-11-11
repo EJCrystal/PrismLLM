@@ -28,6 +28,7 @@ import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
 import dev.soven.prismllm.admin.domain.effective
 import dev.soven.prismllm.domain.effective
 import dev.soven.prismllm.proxy.validateUpstreamRequestOverrides
+import dev.soven.prismllm.pricing.domain.BILLING_CURRENCY
 import dev.soven.prismllm.pricing.domain.ModelPriceTier
 import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
 import dev.soven.prismllm.oauth.domain.OAuthAccountPolicy
@@ -3119,8 +3120,9 @@ private fun parseOptionalPrice(value: String?, label: String): BigDecimal? =
 
 private fun parseCurrency(value: String): String {
     val currency = value.trim().uppercase()
-    if (!CURRENCY_PATTERN.matches(currency)) {
-        throw badRequest("invalid_model_price", "币种必须是 3 到 8 位字母")
+    // 多币种移除后计费统一 USD；非 USD 价格会让未换算金额混入 USD 账本与报表（issue #222）。
+    if (currency != BILLING_CURRENCY) {
+        throw badRequest("invalid_model_price", "计费币种仅支持 USD")
     }
     return currency
 }
@@ -3256,7 +3258,6 @@ private const val MAX_OAUTH_PROXY_CHARS = 512
 private const val MAX_OAUTH_SCOPE_CHARS = 512
 private const val MAX_OAUTH_CALLBACK_CHARS = 4_096
 
-private val CURRENCY_PATTERN = Regex("[A-Za-z]{3,8}")
 private const val MAX_MODEL_SUGGESTIONS = 500
 private const val MAPPING_SOURCE_MANUAL = "manual"
 private val MAPPING_SOURCES = setOf(MAPPING_SOURCE_MANUAL, "models_dev")

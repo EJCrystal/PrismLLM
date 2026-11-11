@@ -8,6 +8,9 @@ enum class ModelPriceSource(val value: String) {
     MODEL_DEFAULT("model_default"),
 }
 
+/** 计费币种统一为 USD；价格配置与费用账本均不接受其他币种。 */
+const val BILLING_CURRENCY = "USD"
+
 /**
  * 解析后的有效单价。渠道覆盖价优先，其次是对外模型默认价。
  */

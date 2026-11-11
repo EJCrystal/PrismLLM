@@ -146,6 +146,30 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `admin rejects non-USD currency so foreign amounts cannot enter the USD ledger`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+
+        testApplication {
+            application { app.install(this) }
+            val (sessionCookie, csrf) = client.loginAdmin()
+            // issue #222：API 层不再接受任何非 USD 币种，防止原币金额未换算混入 USD 账本与报表。
+            val rejected = client.post("/admin/api/model-prices/batch") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"channelId":"${channel.id}","upstreamModels":["gpt-4o-mini"],"currency":"CNY","inputPricePerMillion":"7","outputPricePerMillion":"14"}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, rejected.status)
+            assertTrue(rejected.bodyAsText().contains("invalid_model_price"))
+
+            val stored = app.modelPriceRepository.list().filter { it.channelId == channel.id }
+            assertTrue(stored.isEmpty(), "被拒绝的配置不应落库")
+        }
+    }
+
+    @Test
     fun `admin deletes one channel price override without affecting other models`() = runBlocking {
         val channel = createChannel("openai", "ok")
         val target = createPrice(channel, "gpt-4o-mini", input = "1", output = "2")

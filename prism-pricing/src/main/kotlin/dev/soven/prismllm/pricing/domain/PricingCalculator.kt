@@ -37,6 +37,8 @@ object PricingCalculator {
     private val ZERO = BigDecimal.ZERO
 
     fun calculate(request: BillingRequest, price: ResolvedModelPrice): CalculatedCost? {
+        // 结算防御：非 USD 价格若绕过配置校验（如手工改库）混入，拒绝计费而不是把原币金额当 USD 记账。
+        if (price.currency != BILLING_CURRENCY) return null
         if (price.pricingMode == PricingMode.PER_REQUEST) {
             if (!request.succeeded) return null
             val requestPrice = price.perRequestPrice ?: return null
