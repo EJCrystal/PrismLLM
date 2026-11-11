@@ -1149,7 +1149,7 @@ private suspend fun settleRequestLimitOnExit(
     app.requestLimitService.settle(
         lease,
         quotaTokensFromUsage(usage?.total, usage?.input, usage?.output),
-        calculatedCost?.let { mapOf(it.currency to it.amount) } ?: emptyMap(),
+        calculatedCost?.amount ?: java.math.BigDecimal.ZERO,
     )
 }
 

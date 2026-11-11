@@ -73,7 +73,7 @@ class RequestLimitServiceTest {
 
         val lease = service.acquire(key)
         assertEquals(1, quotaService.currentUsage(key.id).concurrentRequests)
-        service.settle(lease, tokens = 10L, costs = mapOf("USD" to BigDecimal("0.01")))
+        service.settle(lease, tokens = 10L, usdCost = BigDecimal("0.01"))
         assertEquals(0, quotaService.currentUsage(key.id).concurrentRequests)
 
         val second = service.acquire(key)
@@ -90,11 +90,11 @@ private fun quotaService(onRead: () -> Unit = {}): ClientKeyQuotaService {
             onRead()
             usage[id] ?: ClientKeyQuotaUsage()
         },
-        usageWriter = { id, _, tokens, costs ->
+        usageWriter = { id, _, tokens, usdCost ->
             val previous = usage[id] ?: ClientKeyQuotaUsage()
             usage[id] = ClientKeyQuotaUsage(
                 dailyTokens = previous.dailyTokens + tokens,
-                dailyCosts = previous.dailyCosts.mapValues { (currency, amount) -> amount + (costs[currency] ?: java.math.BigDecimal.ZERO) },
+                dailyUsdCost = previous.dailyUsdCost + usdCost,
             )
         },
         now = { 0L },

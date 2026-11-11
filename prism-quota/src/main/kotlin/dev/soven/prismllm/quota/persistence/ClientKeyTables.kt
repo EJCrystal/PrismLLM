@@ -18,8 +18,6 @@ object ClientKeys : Table("client_keys") {
     val expiresAt = long("expires_at").nullable()
     val dailyTokenLimit = long("daily_token_limit").nullable()
     val dailyUsdLimit = decimal("daily_usd_limit", 18, 8).nullable()
-    val dailyCnyLimit = decimal("daily_cny_limit", 18, 8).nullable()
-    val dailyEurLimit = decimal("daily_eur_limit", 18, 8).nullable()
     val maxConcurrentRequests = integer("max_concurrent_requests").nullable()
     val requestsPerMinute = integer("requests_per_minute").nullable()
     val createdAt = long("created_at")
@@ -37,8 +35,6 @@ object ClientKeyQuotaUsages : Table("client_key_quota_usage") {
     val period = long("period")
     val tokens = long("tokens").default(0)
     val usdCost = decimal("usd_cost", 18, 8).default(java.math.BigDecimal.ZERO)
-    val cnyCost = decimal("cny_cost", 18, 8).default(java.math.BigDecimal.ZERO)
-    val eurCost = decimal("eur_cost", 18, 8).default(java.math.BigDecimal.ZERO)
 
     override val primaryKey = PrimaryKey(clientKeyId, period)
 }

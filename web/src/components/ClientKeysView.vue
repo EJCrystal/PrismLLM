@@ -22,8 +22,6 @@ interface ClientKeyForm {
   expiresAt: string
   dailyTokenLimit: number | string | null
   dailyUsdLimit: number | string | null
-  dailyCnyLimit: number | string | null
-  dailyEurLimit: number | string | null
   maxConcurrentRequests: number | string | null
   requestsPerMinute: number | string | null
 }
@@ -67,8 +65,6 @@ const form = reactive<ClientKeyForm>({
   expiresAt: '',
   dailyTokenLimit: '',
   dailyUsdLimit: '',
-  dailyCnyLimit: '',
-  dailyEurLimit: '',
   maxConcurrentRequests: '',
   requestsPerMinute: '',
 })
@@ -100,8 +96,6 @@ function openCreate() {
     expiresAt: '',
     dailyTokenLimit: '',
     dailyUsdLimit: '',
-    dailyCnyLimit: '',
-    dailyEurLimit: '',
     maxConcurrentRequests: '',
     requestsPerMinute: '',
   })
@@ -117,8 +111,6 @@ function openEdit(key: ClientKey) {
     expiresAt: toLocalInput(key.expiresAt),
     dailyTokenLimit: key.dailyTokenLimit ?? '',
     dailyUsdLimit: key.dailyUsdLimit ?? '',
-    dailyCnyLimit: key.dailyCnyLimit ?? '',
-    dailyEurLimit: key.dailyEurLimit ?? '',
     maxConcurrentRequests: key.maxConcurrentRequests ?? '',
     requestsPerMinute: key.requestsPerMinute ?? '',
   })
@@ -159,8 +151,6 @@ async function toggle(key: ClientKey) {
       expiresAt: key.expiresAt,
       dailyTokenLimit: key.dailyTokenLimit,
       dailyUsdLimit: key.dailyUsdLimit,
-      dailyCnyLimit: key.dailyCnyLimit,
-      dailyEurLimit: key.dailyEurLimit,
       maxConcurrentRequests: key.maxConcurrentRequests,
       requestsPerMinute: key.requestsPerMinute,
     })
@@ -339,7 +329,7 @@ onMounted(() => {
           <small>按 UTC 自然日累计上游返回的总 token；达到上限后返回 429。</small>
         </label>
         <label class="field" for="client-key-daily-usd-limit">
-          <span>每日费用上限 (USD)</span>
+          <span>每日费用上限 ($)</span>
           <input
             id="client-key-daily-usd-limit"
             v-model="form.dailyUsdLimit"

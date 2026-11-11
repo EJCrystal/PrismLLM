@@ -10,8 +10,6 @@ import ErrorState from './ErrorState.vue'
 import FilterSelect from './FilterSelect.vue'
 import { formatNumber, formatTokensCompact, formatDuration } from '../utils/format'
 import {
-  usageCostEntries,
-  usageCostForCurrency,
   usageDeltaTone,
   USAGE_REPORT_PRESETS,
   usageReportPresetRange,
@@ -88,7 +86,6 @@ const requests = createLatestRequestGuard()
 const comparisonRequests = createLatestRequestGuard()
 const dimension = ref<DimensionId>('clientKey')
 const trendMetric = ref<TrendMetricId>('requests')
-const costMetricCurrency = ref('')
 
 const dimensions: DimensionOption[] = [
   { id: 'clientKey', label: '调用方密钥', title: '按调用方密钥', key: 'byClientKey' },
@@ -120,14 +117,14 @@ const trendMetrics: TrendMetric[] = [
   {
     id: 'cost',
     label: '费用',
-    series: [{ id: 'cost', label: '费用', value: (row) => usageCostForCurrency(row.costs, costMetricCurrency.value) }],
+    series: [{ id: 'cost', label: '费用', value: (row) => Number(row.costUsd ?? '') || 0 }],
   },
 ]
 const protocolLabels: Record<string, string> = { chat_completions: 'Chat Completions', responses: 'Responses', messages: 'Messages' }
 
 const emptyTotal: UsageTotal = {
   requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, cachedWriteTokens: 0,
-  reasoningTokens: 0, totalTokens: 0, activeClientKeys: 0, failovers: 0, avgFirstTokenMs: null, avgTotalMs: null, costs: {},
+  reasoningTokens: 0, totalTokens: 0, activeClientKeys: 0, failovers: 0, avgFirstTokenMs: null, avgTotalMs: null, costUsd: null,
 }
 const total = computed<UsageTotal>(() => report.value?.total || emptyTotal)
 const successRate = computed(() => usagePercent(total.value.requests, total.value.errors))
@@ -205,7 +202,7 @@ function selectChartBucket(): void {
   rangeError.value = ''
   load({ range })
 }
-watch([trendRows, trendMetric, costMetricCurrency], () => { chartIndex.value = null })
+watch([trendRows, trendMetric], () => { chartIndex.value = null })
 const trendSeriesPoints = computed(() => activeTrendMetric.value.series.map((series, index) => ({
   id: series.id,
   label: series.label,
@@ -220,7 +217,6 @@ const trendArea = computed(() => {
   if (!lastPoint) return ''
   return `8,142 ${seriesPoints} ${lastPoint.split(',')[0]},142`
 })
-const costCurrencies = computed(() => usageCostEntries(total.value.costs).map((entry) => entry.currency))
 const modelOptions = computed(() => usageModelOptions(report.value, channels.value))
 const hasFilters = computed(() => Object.values(filters.value).some(Boolean))
 const filterChips = computed(() => {
@@ -250,9 +246,8 @@ function deltaText(current: number, previous: number): string {
 const comparison = computed(() => {
   const previous = previousReport.value?.total
   if (!previous) return null
-  const currency = costMetricCurrency.value || costCurrencies.value[0] || usageCostEntries(previous.costs)[0]?.currency || 'USD'
-  const currentCost = usageCostForCurrency(total.value.costs, currency)
-  const previousCost = usageCostForCurrency(previous.costs, currency)
+  const currentCost = Number(total.value.costUsd ?? '') || 0
+  const previousCost = Number(previous.costUsd ?? '') || 0
   return {
     from: previousReport.value?.from || 0,
     to: previousReport.value?.to || 0,
@@ -262,7 +257,6 @@ const comparison = computed(() => {
     errorsTone: usageDeltaTone(total.value.errors, previous.errors, true),
     cost: deltaText(currentCost, previousCost),
     costTone: usageDeltaTone(currentCost, previousCost, true),
-    currency,
   }
 })
 
@@ -279,7 +273,7 @@ function formatBucket(value: number): string {
 
 function formatTrendValue(value: number): string {
   if (trendMetric.value === 'cost') {
-    return `${costMetricCurrency.value} ${Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 8 })}`
+    return `$${Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 8 })}`
   }
   return trendMetric.value === 'requests' ? formatNumber(value) : formatTokensCompact(value)
 }
@@ -298,9 +292,8 @@ function protocolLabel(value: string): string {
   return protocolLabels[value] || value
 }
 
-function costText(costs: Record<string, string>): string {
-  const entries = usageCostEntries(costs)
-  return entries.length ? entries.map((entry) => `${entry.currency} ${entry.value}`).join(' / ') : '—'
+function costText(row: UsageGroup): string {
+  return row.costUsd != null ? `$${row.costUsd}` : '—'
 }
 
 function latency(value: number | null): string {
@@ -389,8 +382,6 @@ async function load({ quiet = false, range }: { quiet?: boolean; range?: ExactRa
     }).catch(() => null)).then((comparison) => {
       if (comparison.isLatest) previousReport.value = comparison.value
     })
-    const currencies = usageCostEntries(result.value?.total?.costs).map((entry) => entry.currency)
-    if (!currencies.includes(costMetricCurrency.value)) costMetricCurrency.value = currencies[0] || 'USD'
   } catch (cause) {
     const isLatest = !(cause instanceof Error && 'isLatest' in cause) || Boolean(cause.isLatest)
     if (isLatest) error.value = errorMessage(cause)
@@ -438,7 +429,7 @@ onMounted(() => {
 <template>
   <section class="page-stack usage-report-page">
     <div class="section-head report-head">
-      <p class="report-head-note">费用按计费币种分别汇总，不做汇率换算。</p>
+      <p class="report-head-note">费用统一按 USD 汇总。</p>
       <div class="report-head-actions">
         <button type="button" class="button ghost refresh-button" :disabled="loading || refreshing" :aria-busy="refreshing" @click="refresh">
           <Icon name="refresh" :size="16" /> {{ refreshing ? '刷新中…' : '刷新' }}
@@ -509,14 +500,9 @@ onMounted(() => {
         </div>
         <div class="stat-card accent">
           <span>费用</span>
-          <div class="cost-lines" v-if="usageCostEntries(total.costs).length">
-            <div class="cost-line" v-for="entry in usageCostEntries(total.costs)" :key="entry.currency">
-              <strong class="cost-amount">{{ entry.value }}</strong>
-              <span v-if="entry.currency !== 'USD'" class="cost-currency">{{ entry.currency }}</span>
-            </div>
-          </div>
+          <strong v-if="total.costUsd != null" class="cost-amount report-cost">${{ total.costUsd }}</strong>
           <strong v-else class="report-cost muted">—</strong>
-          <small>按计费币种分别汇总</small>
+          <small>USD 计费合计</small>
         </div>
         <div class="stat-card">
           <span>平均首 token</span><strong>{{ latency(total.avgFirstTokenMs) }}</strong>
@@ -530,7 +516,7 @@ onMounted(() => {
         </div>
         <div class="usage-period-comparison-item"><span>请求</span><b :class="`text-${comparison.requestsTone}`">{{ comparison.requests }}</b></div>
         <div class="usage-period-comparison-item"><span>错误</span><b :class="`text-${comparison.errorsTone}`">{{ comparison.errors }}</b></div>
-        <div class="usage-period-comparison-item"><span>费用（{{ comparison.currency }}）</span><b :class="`text-${comparison.costTone}`">{{ comparison.cost }}</b></div>
+        <div class="usage-period-comparison-item"><span>费用</span><b :class="`text-${comparison.costTone}`">{{ comparison.cost }}</b></div>
       </div>
 
       <div class="usage-secondary-kpis">
@@ -550,12 +536,6 @@ onMounted(() => {
             <span class="report-count">{{ trendRows.length }} 个时间点</span>
           </div>
           <div class="usage-trend-controls">
-            <label v-if="trendMetric === 'cost' && costCurrencies.length > 1" class="usage-currency-select">
-              <span>币种</span>
-              <select v-model="costMetricCurrency" class="select-input">
-                <option v-for="currency in costCurrencies" :key="currency" :value="currency">{{ currency }}</option>
-              </select>
-            </label>
             <div class="usage-segmented" role="tablist" aria-label="趋势指标">
               <button v-for="metric in trendMetrics" :key="metric.id" type="button" :class="{ active: trendMetric === metric.id }" @click="trendMetric = metric.id">{{ metric.label }}</button>
             </div>
@@ -569,7 +549,7 @@ onMounted(() => {
           </div>
           <div class="usage-chart-with-axis">
           <div class="usage-chart-y-axis" aria-hidden="true"><span v-for="tick in chartScale.ticks" :key="tick" :style="{ top: `${(142 - tick / chartScale.max * 134) / 150 * 100}%` }">{{ trendMetric === 'cost' ? Number(tick.toPrecision(6)).toLocaleString('zh-CN', { maximumFractionDigits: 8 }) : formatTokensCompact(tick) }}</span></div>
-          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? costMetricCurrency : trendMetric === 'tokens' ? '单位 token' : '单位 次'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @keydown="chartKey">
+          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? '单位 USD' : trendMetric === 'tokens' ? '单位 token' : '单位 次'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @keydown="chartKey">
             <defs><linearGradient id="usage-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0.01"/></linearGradient></defs>
             <line v-for="tick in chartScale.ticks" :key="tick" x1="8" :y1="142 - tick / chartScale.max * 134" x2="632" :y2="142 - tick / chartScale.max * 134" class="usage-chart-grid" />
             <polygon v-if="trendArea" :points="trendArea" class="usage-chart-area" />
@@ -583,7 +563,7 @@ onMounted(() => {
           <div class="usage-chart-legend">
             <span v-for="series in trendSeriesPoints" :key="series.id"><i :class="['dot', series.className]"></i>{{ series.label }} 最高 {{ formatTrendValue(series.max) }}</span>
             <span v-if="trendMetric === 'tokens'" class="usage-chart-note" title="输入 token 包含缓存读与缓存写；缓存命中率只统计缓存读">缓存读 / 写是输入 token 的子集 · 整体缓存命中率 {{ cacheHitText }}</span>
-            <span v-if="trendMetric === 'cost'">仅统计 {{ costMetricCurrency }}，不合并其他币种</span>
+            <span v-if="trendMetric === 'cost'">仅统计 USD 费用</span>
           </div>
         </div>
       </div>
@@ -626,7 +606,7 @@ onMounted(() => {
                 <td><span class="badge" :class="row.errors ? 'warning' : 'success'">{{ errorRate(row) }}</span></td>
                 <td>{{ formatTokensCompact(row.totalTokens) }}<small class="muted"> 入 {{ formatTokensCompact(row.inputTokens) }} / 出 {{ formatTokensCompact(row.outputTokens) }}</small></td>
                 <td>{{ latency(row.avgTotalMs) }}<small class="muted"> 首 token {{ latency(row.avgFirstTokenMs) }}</small></td>
-                <td class="small">{{ costText(row.costs) }}</td>
+                <td class="small">{{ costText(row) }}</td>
               </tr>
             </tbody>
           </table>

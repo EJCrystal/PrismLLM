@@ -117,10 +117,17 @@ export function formatTokensCompact(value: number | string | null | undefined, f
 
 const CURRENCY_SYMBOLS = {
   USD: '$',
-  CNY: '¥',
-  EUR: '€',
-  JPY: '¥',
-  GBP: '£',
+}
+
+/**
+ * 币种展示符号；USD 返回 $，其他历史币种回退为原代码。
+ *
+ * @param {string|null|undefined} currency 币种代号
+ * @returns {string}
+ */
+export function currencySymbol(currency: string | null | undefined): string {
+  if (!currency) return ''
+  return CURRENCY_SYMBOLS[currency as keyof typeof CURRENCY_SYMBOLS] || currency
 }
 
 /**
@@ -187,7 +194,7 @@ export interface PriceSnapshotLike {
 export function formatPriceSummary(price: PriceSnapshotLike | null | undefined, fallback = '—'): string {
   if (!price) return fallback
   const mode = price.pricingMode || 'token'
-  const currency = price.currency || price.costCurrency || 'USD'
+  const currency = currencySymbol(price.currency || price.costCurrency || 'USD')
   if (mode === 'per_request') {
     return `按次 ${formatUnitPrice(price.perRequestPrice)} ${currency}`
   }
@@ -217,7 +224,7 @@ export interface PriceSnapshotRow {
 
 export function formatPriceSnapshot(price: PriceSnapshotLike | null | undefined): PriceSnapshotRow[] {
   if (!price) return []
-  const currency = price.currency || price.costCurrency || 'USD'
+  const currency = currencySymbol(price.currency || price.costCurrency || 'USD')
   const unit = (value: string | null | undefined) => `${formatUnitPrice(value)} ${currency} / 1M`
   const cachedUnit = (value: string | null | undefined, input: string | null | undefined) => value == null
     ? `沿用输入价（${unit(input)}）`

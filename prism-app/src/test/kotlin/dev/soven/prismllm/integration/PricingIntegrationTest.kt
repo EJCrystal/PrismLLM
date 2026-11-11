@@ -132,14 +132,14 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"channelId":"${channel.id}","upstreamModels":["gpt-4o-mini","deepseek-chat"],"currency":"CNY","inputPricePerMillion":"7","outputPricePerMillion":"14"}""",
+                    """{"channelId":"${channel.id}","upstreamModels":["gpt-4o-mini","deepseek-chat"],"currency":"USD","inputPricePerMillion":"7","outputPricePerMillion":"14"}""",
                 )
             }
 
             assertEquals(HttpStatusCode.OK, response.status)
             val prices = app.modelPriceRepository.list().filter { it.channelId == channel.id }
             assertEquals(2, prices.size)
-            assertTrue(prices.all { it.currency == "CNY" })
+            assertTrue(prices.all { it.currency == "USD" })
             assertTrue(prices.all { it.inputPricePerMillion.compareTo(BigDecimal("7")) == 0 })
             assertTrue(prices.all { it.outputPricePerMillion.compareTo(BigDecimal("14")) == 0 })
         }
@@ -243,7 +243,7 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals("3", total["cachedTokens"]!!.jsonPrimitive.content)
             assertEquals("2", total["reasoningTokens"]!!.jsonPrimitive.content)
             assertEquals("2", total["failovers"]!!.jsonPrimitive.content)
-            assertEquals("0.000037", total["costs"]!!.jsonObject["USD"]!!.jsonPrimitive.content)
+            assertEquals("0.000037", total["costUsd"]!!.jsonPrimitive.content)
             val byKey = json["byClientKey"]!!.jsonArray.single().jsonObject
             assertEquals(currentKey.id, byKey["id"]!!.jsonPrimitive.content)
             assertEquals("paid", byKey["name"]!!.jsonPrimitive.content)
@@ -361,13 +361,13 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"modelId":"deepseek-v4.1-flash","currency":"CNY","inputPricePerMillion":"7","outputPricePerMillion":"14","cachedInputPricePerMillion":"1"}""",
+                    """{"modelId":"deepseek-v4.1-flash","currency":"USD","inputPricePerMillion":"7","outputPricePerMillion":"14","cachedInputPricePerMillion":"1"}""",
                 )
             }
             assertEquals(HttpStatusCode.Created, created.status)
             val createdJson = Json.parseToJsonElement(created.bodyAsText()).jsonObject
             val id = createdJson["id"]!!.jsonPrimitive.content
-            assertEquals("CNY", createdJson["currency"]!!.jsonPrimitive.content)
+            assertEquals("USD", createdJson["currency"]!!.jsonPrimitive.content)
 
             val duplicate = client.post("/admin/api/model-default-prices") {
                 header(HttpHeaders.Cookie, sessionCookie)

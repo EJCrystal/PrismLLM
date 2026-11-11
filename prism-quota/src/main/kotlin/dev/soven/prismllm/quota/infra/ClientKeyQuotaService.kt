@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class ClientKeyQuotaService(
     private val usageReader: suspend (String, Long) -> ClientKeyQuotaUsage,
-    private val usageWriter: suspend (String, Long, Long, Map<String, BigDecimal>) -> Unit,
+    private val usageWriter: suspend (String, Long, Long, BigDecimal) -> Unit,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val locks = Array(64) { Mutex() }
@@ -31,7 +31,7 @@ class ClientKeyQuotaService(
             val active = concurrentRequests[clientKey.id] ?: 0
             val result = checkClientKeyQuota(
                 clientKey.quotas,
-                ClientKeyQuotaUsage(usage.dailyTokens, usage.dailyCosts, active),
+                ClientKeyQuotaUsage(usage.dailyTokens, usage.dailyUsdCost, active),
             )
             if (!result.allowed) {
                 throw GatewayError(
@@ -46,10 +46,10 @@ class ClientKeyQuotaService(
         }
     }
 
-    suspend fun settle(lease: QuotaLease, tokens: Long, costs: Map<String, BigDecimal>) {
+    suspend fun settle(lease: QuotaLease, tokens: Long, usdCost: BigDecimal) {
         try {
-            if (tokens <= 0 && costs.values.all { it.signum() <= 0 }) return
-            usageWriter(lease.clientKeyId, lease.period, tokens, costs)
+            if (tokens <= 0 && usdCost.signum() <= 0) return
+            usageWriter(lease.clientKeyId, lease.period, tokens, usdCost)
         } finally {
             release(lease)
         }

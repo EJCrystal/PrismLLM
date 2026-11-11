@@ -25,7 +25,8 @@ data class UsageTotal(
     val failovers: Long = 0,
     val avgFirstTokenMs: Long? = null,
     val avgTotalMs: Long? = null,
-    val costs: Map<String, BigDecimal> = emptyMap(),
+    /** 区间内费用合计（USD）；没有任何可计费请求时为 null。 */
+    val costUsd: BigDecimal? = null,
 )
 
 data class UsageGroup(
@@ -42,7 +43,7 @@ data class UsageGroup(
     val failovers: Long = 0,
     val avgFirstTokenMs: Long? = null,
     val avgTotalMs: Long? = null,
-    val costs: Map<String, BigDecimal>,
+    val costUsd: BigDecimal?,
 )
 
 data class UsageTrendPoint(
@@ -55,7 +56,7 @@ data class UsageTrendPoint(
     val cachedWriteTokens: Long,
     val reasoningTokens: Long,
     val totalTokens: Long,
-    val costs: Map<String, BigDecimal>,
+    val costUsd: BigDecimal?,
 )
 
 data class UsageReport(

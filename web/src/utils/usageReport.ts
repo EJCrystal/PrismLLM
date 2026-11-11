@@ -9,23 +9,6 @@ export function usageCostAmount(value: unknown): string {
     .trim()
 }
 
-export interface UsageCostEntry {
-  currency: string
-  value: string
-}
-
-export function usageCostEntries(costs: Record<string, string | number | null | undefined> | null | undefined): UsageCostEntry[] {
-  return Object.entries(costs || {})
-    .filter(([, value]) => value != null)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([currency, value]) => ({ currency, value: usageCostAmount(value) }))
-}
-
-export function usageCostForCurrency(costs: Record<string, string | number | null | undefined> | null | undefined, currency: string): number {
-  const value = usageCostEntries(costs).find((entry) => entry.currency === currency)?.value
-  return Number(value) || 0
-}
-
 export function usageDeltaTone(current: number, previous: number, inverse = false): string {
   const delta = previous === 0 ? null : ((current - previous) / previous) * 100
   if (delta == null || delta === 0) return 'neutral'
@@ -185,7 +168,7 @@ export function fillTrendBuckets(
       cachedWriteTokens: 0,
       reasoningTokens: 0,
       totalTokens: 0,
-      costs: {},
+      costUsd: null,
     })
   }
   return result
@@ -244,10 +227,9 @@ export function usageReportCsv(
   _dimensionLabel: string,
 ): string {
   // 耗时列固定用秒，保证同一列可比较、可求和；界面上的逐值单位切换只用于单点展示。
-  const header = ['维度', '请求数', '错误数', '成功率', '输入 token', '输出 token', '缓存读 token', '缓存写 token', '推理 token', '总 token', '故障转移', '平均首 token (s)', '平均总耗时 (s)', '费用']
+  const header = ['维度', '请求数', '错误数', '成功率', '输入 token', '输出 token', '缓存读 token', '缓存写 token', '推理 token', '总 token', '故障转移', '平均首 token (s)', '平均总耗时 (s)', '费用 (USD)']
   const lines: Array<Array<string | number>> = [header]
   for (const row of dimensionRows || []) {
-    const costs = usageCostEntries(row.costs).map((entry) => `${entry.currency} ${entry.value}`).join(' / ')
     lines.push([
       row.name || row.id,
       row.requests,
@@ -262,7 +244,7 @@ export function usageReportCsv(
       row.failovers,
       durationSeconds(row.avgFirstTokenMs) ?? '',
       durationSeconds(row.avgTotalMs) ?? '',
-      costs,
+      row.costUsd ?? '',
     ])
   }
   return `${lines.map((line) => line.map((value, index) => csvCell(value, { text: index === 0 || index === 13 })).join(',')).join('\n')}\n`

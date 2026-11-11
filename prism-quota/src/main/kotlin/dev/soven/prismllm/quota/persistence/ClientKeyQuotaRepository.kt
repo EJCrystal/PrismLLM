@@ -28,7 +28,7 @@ class ClientKeyQuotaRepository(private val database: Database) {
         clientKeyId: String,
         period: Long,
         tokens: Long,
-        costs: Map<String, BigDecimal>,
+        usdCost: BigDecimal,
     ) = suspendTransaction(database) {
         val existing = ClientKeyQuotaUsages
             .selectAll()
@@ -39,28 +39,20 @@ class ClientKeyQuotaRepository(private val database: Database) {
                 it[this.clientKeyId] = clientKeyId
                 it[this.period] = period
                 it[this.tokens] = tokens.coerceAtLeast(0)
-                it[usdCost] = costs["USD"] ?: BigDecimal.ZERO
-                it[cnyCost] = costs["CNY"] ?: BigDecimal.ZERO
-                it[eurCost] = costs["EUR"] ?: BigDecimal.ZERO
+                it[ClientKeyQuotaUsages.usdCost] = usdCost
             }
         } else {
             ClientKeyQuotaUsages.update({
                 (ClientKeyQuotaUsages.clientKeyId eq clientKeyId) and (ClientKeyQuotaUsages.period eq period)
             }) {
                 it[this.tokens] = existing[this.tokens] + tokens.coerceAtLeast(0)
-                it[usdCost] = existing[usdCost] + (costs["USD"] ?: BigDecimal.ZERO)
-                it[cnyCost] = existing[cnyCost] + (costs["CNY"] ?: BigDecimal.ZERO)
-                it[eurCost] = existing[eurCost] + (costs["EUR"] ?: BigDecimal.ZERO)
+                it[ClientKeyQuotaUsages.usdCost] = existing[ClientKeyQuotaUsages.usdCost] + usdCost
             }
         }
     }
 
     private fun toUsage(row: ResultRow) = ClientKeyQuotaUsage(
         dailyTokens = row[ClientKeyQuotaUsages.tokens],
-        dailyCosts = mapOf(
-            "USD" to row[ClientKeyQuotaUsages.usdCost],
-            "CNY" to row[ClientKeyQuotaUsages.cnyCost],
-            "EUR" to row[ClientKeyQuotaUsages.eurCost],
-        ),
+        dailyUsdCost = row[ClientKeyQuotaUsages.usdCost],
     )
 }

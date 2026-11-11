@@ -75,7 +75,7 @@ describe('渠道额度插件', () => {
   })
 
   it('保留零余额、负余额和十进制精度，失败不显示为零', () => {
-    assert.equal(quotaBalance({ status: 'AVAILABLE', remaining: '0', unit: 'USD' }), '0 USD')
+    assert.equal(quotaBalance({ status: 'AVAILABLE', remaining: '0', unit: 'USD' }), '$0')
     assert.equal(quotaBalance({ status: 'AVAILABLE', remaining: '-1.250000000000001', unit: 'CNY' }), '-1.250000000000001 CNY')
     assert.equal(quotaBalance({ status: 'AVAILABLE', remaining: '500000', unit: 'quota' }), '500000 quota')
     assert.equal(quotaBalance({ status: 'UNLIMITED' }), '无限制')

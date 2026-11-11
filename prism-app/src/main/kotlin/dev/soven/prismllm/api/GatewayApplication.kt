@@ -27,7 +27,6 @@ import dev.soven.prismllm.pricing.domain.ModelPricingService
 import dev.soven.prismllm.routing.readmodel.OAuthAccountDirectory
 import dev.soven.prismllm.routing.readmodel.UpstreamModelCatalog
 import dev.soven.prismllm.proxy.ModelPriceReferenceService
-import dev.soven.prismllm.proxy.CurrencyExchangeService
 import dev.soven.prismllm.proxy.UpstreamHeaderCatalogService
 import dev.soven.prismllm.proxy.fingerprint.FingerprintDetector
 import dev.soven.prismllm.admin.persistence.AdminUserRepository
@@ -475,7 +474,6 @@ val requestLogWriter = RequestLogWriter(
     }
 
     val modelPriceReferenceService = ModelPriceReferenceService(httpClient)
-    val currencyExchangeService = CurrencyExchangeService(httpClient)
     val upstreamHeaderCatalogService = UpstreamHeaderCatalogService(
         httpClient = httpClient,
         repository = upstreamHeaderCatalogRepository,

@@ -249,7 +249,7 @@ class RequestLogRepository(
             from = query.from,
             to = query.to,
             granularity = reportGranularity(query.from, query.to),
-            total = totals.copy(costs = costsByCurrency(where)),
+            total = totals.copy(costUsd = costUsd(where)),
             trend = trendQuery(this, query),
             byClientKey = groupedQuery(
                 RequestLogs.clientKeyId,
@@ -321,16 +321,11 @@ class RequestLogRepository(
         ).where { where }
     }
 
-    private fun costsByCurrency(where: Op<Boolean>): Map<String, BigDecimal> {
+    private fun costUsd(where: Op<Boolean>): BigDecimal? {
         val cost = RequestLogs.costAmount.sum()
-        return RequestLogs.select(RequestLogs.costCurrency, cost)
+        return RequestLogs.select(cost)
             .where { where }
-            .groupBy(RequestLogs.costCurrency)
-            .mapNotNull { row ->
-                val currency = row[RequestLogs.costCurrency] ?: return@mapNotNull null
-                val amount = row[cost] ?: return@mapNotNull null
-                currency to amount
-            }.toMap()
+            .singleOrNull()?.let { row -> row[cost] }
     }
 
     private fun ResultRow.toUsageTotal(): UsageTotal {
@@ -352,7 +347,7 @@ class RequestLogRepository(
             failovers = (this[failoverAggregate]?.toLong() ?: 0L).coerceAtLeast(0L),
             avgFirstTokenMs = this[RequestLogs.firstTokenMs.avg()]?.toLong(),
             avgTotalMs = this[RequestLogs.totalMs.avg()]?.toLong(),
-            costs = emptyMap(),
+            costUsd = null,
         )
     }
 
@@ -425,7 +420,7 @@ class RequestLogRepository(
                     ?.let { count -> grouped.sumOf { row -> row[firstTokenSum] ?: 0L } / count },
                 avgTotalMs = grouped.sumOf { it[totalCount] }.takeIf { it > 0 }
                     ?.let { count -> grouped.sumOf { row -> row[totalSum] ?: 0L } / count },
-                costs = costs[id].orEmpty(),
+                costUsd = costs[id],
             )
         }.sortedByDescending { it.totalTokens }
     }
@@ -434,20 +429,16 @@ class RequestLogRepository(
         idColumn: org.jetbrains.exposed.v1.core.Column<T>,
         where: Op<Boolean>,
         unassignedId: String,
-    ): Map<String, Map<String, BigDecimal>> {
+    ): Map<String, BigDecimal> {
         val cost = RequestLogs.costAmount.sum()
-        return RequestLogs.select(idColumn, RequestLogs.costCurrency, cost)
+        return RequestLogs.select(idColumn, cost)
             .where { where }
-            .groupBy(idColumn, RequestLogs.costCurrency)
-            .toList()
-            .groupBy { it[idColumn]?.takeIf { value -> value.isNotBlank() } ?: unassignedId }
-            .mapValues { (_, rows) ->
-                rows.mapNotNull { row ->
-                    val currency = row[RequestLogs.costCurrency] ?: return@mapNotNull null
-                    val amount = row[cost] ?: return@mapNotNull null
-                    currency to amount
-                }.groupingBy { it.first }.fold(BigDecimal.ZERO) { total, entry -> total + entry.second }
-            }
+            .groupBy(idColumn)
+            .mapNotNull { row ->
+                val groupId = row[idColumn]?.takeIf { value -> value.isNotBlank() } ?: unassignedId
+                val amount = row[cost] ?: return@mapNotNull null
+                groupId to amount
+            }.toMap()
     }
 
     private fun trendQuery(transaction: JdbcTransaction, query: UsageReportQuery): List<UsageTrendPoint> {
@@ -470,11 +461,10 @@ class RequestLogRepository(
                    coalesce(sum(cached_write_tokens), 0) as cached_write_tokens,
                    coalesce(sum(reasoning_tokens), 0) as reasoning_tokens,
                    coalesce(sum(total_tokens), 0) as total_tokens,
-                   sum(cost_amount) as cost_amount,
-                   cost_currency
+                   sum(cost_amount) as cost_amount
             from request_logs
             where ${filter.sql}
-            group by bucket, cost_currency
+            group by bucket
             order by bucket
         """.trimIndent()
         val args = listOf(
@@ -496,31 +486,26 @@ class RequestLogRepository(
                             cachedWriteTokens = result.getLong("cached_write_tokens"),
                             reasoningTokens = result.getLong("reasoning_tokens"),
                             totalTokens = result.getLong("total_tokens"),
-                            currency = result.getString("cost_currency"),
                             cost = result.getBigDecimal("cost_amount"),
                         ),
                     )
                 }
             }
         }.orEmpty()
-        return rows.groupBy { it.bucket }
-            .map { (bucket, grouped) ->
-                UsageTrendPoint(
-                    bucketStart = (firstBucket + bucket) * width - offset,
-                    requests = grouped.sumOf { it.requests },
-                    errors = grouped.sumOf { it.errors },
-                    inputTokens = grouped.sumOf { it.inputTokens },
-                    outputTokens = grouped.sumOf { it.outputTokens },
-                    cachedTokens = grouped.sumOf { it.cachedTokens },
-                    cachedWriteTokens = grouped.sumOf { it.cachedWriteTokens },
-                    reasoningTokens = grouped.sumOf { it.reasoningTokens },
-                    totalTokens = grouped.sumOf { it.totalTokens },
-                    costs = grouped.mapNotNull { row ->
-                        if (row.currency != null && row.cost != null) row.currency to row.cost else null
-                    }.groupingBy { it.first }.fold(BigDecimal.ZERO) { total, entry -> total + entry.second },
-                )
-            }
-            .sortedBy { it.bucketStart }
+        return rows.map { row ->
+            UsageTrendPoint(
+                bucketStart = (firstBucket + row.bucket) * width - offset,
+                requests = row.requests,
+                errors = row.errors,
+                inputTokens = row.inputTokens,
+                outputTokens = row.outputTokens,
+                cachedTokens = row.cachedTokens,
+                cachedWriteTokens = row.cachedWriteTokens,
+                reasoningTokens = row.reasoningTokens,
+                totalTokens = row.totalTokens,
+                costUsd = row.cost,
+            )
+        }.sortedBy { it.bucketStart }
     }
 
     private fun errorQuery(transaction: JdbcTransaction, query: UsageReportQuery): List<UsageGroup> {
@@ -549,7 +534,7 @@ class RequestLogRepository(
                 inputTokens = 0,
                 outputTokens = 0,
                 totalTokens = 0,
-                costs = emptyMap(),
+                costUsd = null,
             )
         }
     }
@@ -594,7 +579,6 @@ class RequestLogRepository(
         val cachedWriteTokens: Long,
         val reasoningTokens: Long,
         val totalTokens: Long,
-        val currency: String?,
         val cost: BigDecimal?,
     )
 

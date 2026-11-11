@@ -37,9 +37,9 @@ class RequestLimitService(
     suspend fun settle(
         lease: RequestLimitLease,
         tokens: Long,
-        costs: Map<String, BigDecimal>,
+        usdCost: BigDecimal,
     ) = withContext(NonCancellable) {
-        clientKeyQuotaService.settle(lease.quotaLease, tokens, costs)
+        clientKeyQuotaService.settle(lease.quotaLease, tokens, usdCost)
     }
 
     suspend fun release(lease: RequestLimitLease) = withContext(NonCancellable) {
