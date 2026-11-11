@@ -8,7 +8,6 @@ import {
   filterOAuthModels,
   formatCooldownRemaining,
   formatQuotaReset,
-  formatTokenRemaining,
   formatUsedPercent,
   formatWindowSeconds,
   isOAuthAccountCooling,
@@ -87,9 +86,9 @@ describe('oauthAccount: 订阅账号看板展示', () => {
   it('调度摘要包含窗口、并发与冷却剩余时间', () => {
     const policy = { windowLimit: 40, windowSeconds: 10_800, maxConcurrentRequests: 2 }
     const runtime = { windowUsed: 12, cooldownUntil: NOW + 90_000, consecutiveRateLimits: 2, activeRequests: 1 }
-    assert.equal(oauthPolicySummary(policy), '40 次 / 3 小时 · 并发 2')
-    assert.equal(oauthPolicySummary({ ...policy, windowLimit: null }), '不限窗口 · 并发 2')
-    assert.equal(oauthRuntimeSummary({ policy, runtime }, NOW), '窗口 12/40 · 并发 1/2 · 冷却剩余 2 分钟')
+    assert.equal(oauthPolicySummary(policy), '40 次 / 3 小时 · 并发上限 2')
+    assert.equal(oauthPolicySummary({ ...policy, windowLimit: null }), '不限窗口 · 并发上限 2')
+    assert.equal(oauthRuntimeSummary({ policy, runtime }, NOW), '窗口 12/40 · 当前并发 1/2 · 冷却剩余 2 分钟')
     assert.equal(isOAuthAccountCooling({ runtime }, NOW), true)
     assert.equal(isOAuthAccountCooling({ runtime: { ...runtime, cooldownUntil: NOW } }, NOW), false)
   })
@@ -102,26 +101,30 @@ describe('oauthAccount: 订阅账号看板展示', () => {
     assert.equal(formatCooldownRemaining(NOW - 1, NOW), null)
   })
 
-  it('access token 剩余时间用来说明短期凭据，而不是授权有效期', () => {
-    assert.equal(formatTokenRemaining(NOW + 3_600_000, NOW), '1 小时后')
-    assert.equal(formatTokenRemaining(NOW + 90_000, NOW), '2 分钟后')
-    assert.equal(formatTokenRemaining(NOW, NOW), '已过期')
-    assert.equal(formatTokenRemaining(NOW - 1, NOW), '已过期')
-    assert.equal(formatTokenRemaining(null, NOW), null)
-  })
-
-  it('账号模型列优先显示显式授权，其次账号目录，最后关联渠道', () => {
+  it('账号模型列优先显示显式授权，并剔除目录里已不存在的模型', () => {
     const channels = [
       { id: 'c1', models: ['gemini-3-pro', 'gemini-3-flash'] },
       { id: 'c2', models: ['claude-sonnet-4-5'] },
     ]
-    // 显式授权优先于目录和渠道。
+    // 显式授权优先于目录；已不在当前目录里的模型不会参与路由，不能继续展示成可用。
     assert.deepEqual(
       oauthAccountModelsView(
-        { models: ['gpt-5', 'gpt-5'], modelCatalog: ['gemini-3-pro'], channelIds: ['c1', 'c2'] },
+        {
+          models: ['gpt-5', 'gemini-3-flash', 'gemini-3-pro'],
+          modelCatalog: ['gemini-3-pro', 'gemini-3-flash'],
+          channelIds: ['c1', 'c2'],
+        },
         channels,
       ),
-      { names: ['gpt-5'], visible: ['gpt-5'], hidden: [], inherited: false },
+      { names: ['gemini-3-flash', 'gemini-3-pro'], visible: ['gemini-3-flash', 'gemini-3-pro'], hidden: [], inherited: false },
+    )
+    // 只勾选目录内的一部分模型时，表格也只显示这一部分。
+    assert.deepEqual(
+      oauthAccountModelsView(
+        { models: ['gemini-3-pro'], modelCatalog: ['gemini-3-pro', 'gemini-3-flash'], channelIds: ['c1'] },
+        channels,
+      ),
+      { names: ['gemini-3-pro'], visible: ['gemini-3-pro'], hidden: [], inherited: false },
     )
     // 未单独限制时使用账号自己的上游目录。
     assert.deepEqual(

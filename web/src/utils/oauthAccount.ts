@@ -53,7 +53,7 @@ export function oauthPolicySummary(policy: OAuthAccountPolicy): string {
   const window = policy.windowLimit == null
     ? '不限窗口'
     : `${policy.windowLimit} 次 / ${formatWindowSeconds(policy.windowSeconds)}`
-  return `${window} · 并发 ${policy.maxConcurrentRequests}`
+  return `${window} · 并发上限 ${policy.maxConcurrentRequests}`
 }
 
 /** 冷却剩余时长；已结束或未设置返回 null。 */
@@ -63,19 +63,6 @@ export function formatCooldownRemaining(until: number | null | undefined, now: n
   if (seconds >= 3_600) return `${Math.ceil(seconds / 3_600)} 小时`
   if (seconds >= 60) return `${Math.ceil(seconds / 60)} 分钟`
   return `${seconds} 秒`
-}
-
-/**
- * access token 的剩余时间。它是短期凭据，到期前会自动续期，
- * 这里的倒计时只用来解释「为什么刚授权就显示快过期」。
- */
-export function formatTokenRemaining(expiresAt: number | null | undefined, now: number): string | null {
-  if (expiresAt == null || !Number.isFinite(expiresAt)) return null
-  if (expiresAt <= now) return '已过期'
-  const minutes = Math.ceil((expiresAt - now) / 60_000)
-  if (minutes >= 1_440) return `${Math.ceil(minutes / 1_440)} 天后`
-  if (minutes >= 60) return `${Math.ceil(minutes / 60)} 小时后`
-  return `${minutes} 分钟后`
 }
 
 export function isOAuthAccountCooling(account: Pick<OAuthAccount, 'runtime'>, now: number): boolean {
@@ -90,7 +77,7 @@ export function oauthRuntimeSummary(
   if (account.policy.windowLimit != null) {
     parts.push(`窗口 ${account.runtime.windowUsed}/${account.policy.windowLimit}`)
   }
-  parts.push(`并发 ${account.runtime.activeRequests}/${account.policy.maxConcurrentRequests}`)
+  parts.push(`当前并发 ${account.runtime.activeRequests}/${account.policy.maxConcurrentRequests}`)
   const cooldown = formatCooldownRemaining(account.runtime.cooldownUntil, now)
   if (cooldown) parts.push(`冷却剩余 ${cooldown}`)
   if (isOAuthQuotaBlocked(account, now)) parts.push('额度用尽')
@@ -231,7 +218,8 @@ export interface OAuthAccountModelsView {
 }
 
 /**
- * 账号可调度的具体模型名称：显式授权优先；未单独限制时用账号自己的目录，
+ * 账号真正可调度的具体模型名称：有目录时，显式授权只保留目录内的模型，
+ * 避免把套餐里没有的模型展示成可用；未单独限制时用账号自己的目录，
  * 尚未同步目录时退回所关联渠道的模型。models 为空不表示“没有模型”，
  * 所以不能只显示数量。
  */
@@ -241,9 +229,12 @@ export function oauthAccountModelsView(
   maxVisible = 3,
 ): OAuthAccountModelsView {
   const inherited = account.models.length === 0
+  const catalog = account.modelCatalog
   const source = inherited
-    ? account.modelCatalog ?? availableOAuthModels(channels, account.channelIds)
-    : account.models
+    ? catalog ?? availableOAuthModels(channels, account.channelIds)
+    : catalog
+      ? account.models.filter((model) => catalog.includes(model))
+      : account.models
   const names = [...new Set(source.map((model) => model.trim()).filter(Boolean))].sort()
   const limit = Math.max(1, Math.floor(maxVisible))
   const visible = names.slice(0, limit)

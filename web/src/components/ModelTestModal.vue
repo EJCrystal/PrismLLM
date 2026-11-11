@@ -8,6 +8,7 @@ import { formatDuration } from '../utils/format'
 import {
   buildModelTestRequest,
   formatModelTestUsage,
+  modelTestErrorView,
   modelTestProtocolLabel,
   modelTestResultTitle,
   modelTestResultTone,
@@ -38,6 +39,7 @@ const loadingSettings = ref(true)
 const testing = ref(false)
 const result = ref<ChannelModelTestResult | null>(null)
 const usageText = computed(() => formatModelTestUsage(result.value?.usage))
+const errorView = computed(() => modelTestErrorView(result.value))
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
@@ -158,7 +160,11 @@ async function runTest() {
           <code>{{ result.upstreamReportedModel || '上游未返回' }}</code>
           <small class="muted">这是上游响应声明的值，不能独立证明实际执行的模型。</small>
         </div>
-        <p v-if="result.errorMessage" class="model-test-error">{{ result.errorMessage }}</p>
+        <div v-if="errorView" class="model-test-error">
+          <strong>{{ errorView.title }}</strong>
+          <p v-if="errorView.hint" class="model-test-error-hint">{{ errorView.hint }}</p>
+          <code v-if="errorView.detail" class="model-test-error-detail">{{ errorView.detail }}</code>
+        </div>
         <pre v-if="result.responseText" class="model-test-response">{{ result.responseText }}</pre>
         <small v-if="usageText" class="muted">{{ usageText }}</small>
       </div>
@@ -214,7 +220,28 @@ async function runTest() {
 }
 
 .model-test-error {
+  display: grid;
+  gap: 5px;
   margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.model-test-error-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.model-test-error-detail {
+  justify-self: start;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
   overflow-wrap: anywhere;
 }
 
