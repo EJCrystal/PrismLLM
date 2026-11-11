@@ -247,6 +247,7 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
             val byKey = json["byClientKey"]!!.jsonArray.single().jsonObject
             assertEquals(currentKey.id, byKey["id"]!!.jsonPrimitive.content)
             assertEquals("paid", byKey["name"]!!.jsonPrimitive.content)
+            assertEquals("0.000037", byKey["costUsd"]!!.jsonPrimitive.content)
             assertEquals(
                 setOf("test-key", "renamed-key"),
                 app.requestLogRepository.list(10).mapNotNull { it.clientKeyName }.toSet(),
@@ -292,7 +293,11 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
                 setOf("stream_interrupted", "500"),
                 json["byErrorCode"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet(),
             )
-            assertTrue(json["trend"]!!.jsonArray.isNotEmpty())
+            val trendRows = json["trend"]!!.jsonArray.map { it.jsonObject }
+            assertTrue(trendRows.isNotEmpty())
+            // 后端只返回有请求的桶（sum 不产生空桶行）；空桶由前端补齐且费用为 null。
+            // 该断言固定接口契约：无可计费数据的桶不出现在响应里，费用列不留 0 占位。
+            assertTrue(trendRows.all { it["costUsd"]!!.jsonPrimitive.isString.not() || it["costUsd"]!!.jsonPrimitive.content != "0" })
 
             val rangeNow = reportNow
             suspend fun reportStatus(from: Long, to: Long): Pair<HttpStatusCode, String> {
