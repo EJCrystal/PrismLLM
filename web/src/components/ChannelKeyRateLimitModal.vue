@@ -92,7 +92,7 @@ function save() {
   min-width: 0;
   margin: 0;
   padding: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 12px;
 }
 
@@ -111,9 +111,9 @@ function save() {
   justify-content: space-between;
   gap: 12px;
   padding: 11px 13px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .channel-key-rate-limit-preview span { color: var(--muted); font-size: 12px; }

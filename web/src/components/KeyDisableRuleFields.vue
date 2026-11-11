@@ -101,7 +101,7 @@ function removeRule(index: number) {
   gap: 12px;
   min-width: 0;
   padding: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
 }
 
@@ -138,9 +138,9 @@ function removeRule(index: number) {
   width: 100%;
   resize: vertical;
   padding: 9px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 9px;
-  background: var(--bg);
+  background: var(--glass-field);
   color: var(--text);
   font: inherit;
   font-size: 13px;

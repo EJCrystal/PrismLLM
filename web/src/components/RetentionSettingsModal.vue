@@ -98,7 +98,7 @@ async function cleanup(): Promise<void> {
   justify-content: space-between;
   gap: 16px;
   padding: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
 }
 

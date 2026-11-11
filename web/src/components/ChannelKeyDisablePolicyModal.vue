@@ -206,7 +206,7 @@ onMounted(load)
   display: grid;
   gap: 10px;
   padding: 12px 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
 }
 

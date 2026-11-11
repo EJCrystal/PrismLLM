@@ -710,7 +710,7 @@ onBeforeUnmount(stopTimer)
   align-items: flex-start;
   gap: 6px;
   padding-top: 12px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--glass-line);
 }
 
 .fingerprint-disclaimer :deep(svg) {
@@ -908,7 +908,7 @@ onBeforeUnmount(stopTimer)
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background: var(--line);
+  background: var(--glass-line);
 }
 
 .fingerprint-bar span {
@@ -1054,7 +1054,7 @@ onBeforeUnmount(stopTimer)
 .fingerprint-footer {
   margin: 0;
   padding-top: 12px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--glass-line);
 }
 
 .fingerprint-footer a {

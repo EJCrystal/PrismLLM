@@ -110,9 +110,9 @@ async function remove(question: IqQuestion) {
 
 <style scoped>
 .question-form, .question-list { display: grid; gap: 12px; padding: 16px 0; }
-.question-list { border-top: 1px solid var(--line); }
+.question-list { border-top: 1px solid var(--glass-line); }
 .question-enabled, .question-actions, .question-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.question-row { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+.question-row { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--glass-line); border-radius: 8px; overflow-wrap: anywhere; }
 .question-row p { margin: 0; }
 .question-answer { white-space: pre-wrap; }
 textarea { width: 100%; resize: vertical; }

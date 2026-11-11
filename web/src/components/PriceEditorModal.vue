@@ -733,7 +733,7 @@ function requestClose() {
 
 .model-selection-message {
   padding: 11px 12px;
-  border: 1px dashed var(--line);
+  border: 1px dashed var(--glass-line);
   border-radius: 10px;
   color: var(--muted);
   font-size: 12px;
@@ -756,9 +756,9 @@ function requestClose() {
   gap: 10px;
   min-width: 0;
   padding: 11px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--glass-field);
   color: var(--ink);
 }
 
@@ -771,7 +771,7 @@ function requestClose() {
 
 .model-switch-option:hover,
 .model-switch-option:focus-visible {
-  border-color: var(--line-strong);
+  border-color: var(--glass-line);
   outline: 0;
 }
 
@@ -782,7 +782,7 @@ function requestClose() {
 }
 
 .model-single-option {
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .model-option-copy {

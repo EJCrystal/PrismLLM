@@ -320,9 +320,9 @@ function addManualModels(): void {
   gap: 14px;
   min-width: 0;
   padding: 11px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--glass-field);
 }
 
 .channel-key-rate-limit-row > div {
@@ -340,7 +340,7 @@ function addManualModels(): void {
   display: grid;
   gap: 10px;
   padding-top: 12px;
-  border-top: 1px dashed var(--line);
+  border-top: 1px dashed var(--glass-line);
 }
 
 .channel-key-models-head {
@@ -371,9 +371,9 @@ function addManualModels(): void {
   display: grid;
   gap: 10px;
   padding: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--bg);
+  background: var(--glass-field);
 }
 
 .channel-key-editor .channel-model-auth-toolbar {
@@ -382,7 +382,7 @@ function addManualModels(): void {
 
 .channel-key-editor .channel-model-auth-list {
   max-height: 280px;
-  background: var(--panel);
+  background: var(--glass-field-strong);
 }
 
 .channel-key-editor .channel-model-option:hover {

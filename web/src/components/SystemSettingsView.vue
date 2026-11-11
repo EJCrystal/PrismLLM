@@ -381,7 +381,7 @@ onMounted(() => { void loadAll() })
 }
 
 .system-config-setting + .system-config-setting {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--glass-line);
 }
 
 .system-config-icon {
@@ -390,7 +390,7 @@ onMounted(() => { void loadAll() })
   height: 36px;
   flex: 0 0 auto;
   place-items: center;
-  border: 1px solid color-mix(in srgb, var(--brand) 12%, var(--line));
+  border: 1px solid color-mix(in srgb, var(--brand) 12%, var(--glass-line));
   border-radius: 11px;
   background: var(--info-soft);
   color: var(--brand);
