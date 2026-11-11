@@ -3,6 +3,7 @@ name: prism-llm
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: llm_gateway
       POSTGRES_USER: llm_gateway
@@ -19,6 +20,7 @@ services:
 
   gateway:
     build: .
+    restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: jdbc:postgresql://postgres:5432/llm_gateway
