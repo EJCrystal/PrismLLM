@@ -431,6 +431,7 @@ class RequestLogRepository(
         unassignedId: String,
     ): Map<String, BigDecimal> {
         val cost = RequestLogs.costAmount.sum()
+        // 空串与 NULL 是不同的 SQL 分组值，映射后都落到 unassignedId，必须累加而不是覆盖。
         return RequestLogs.select(idColumn, cost)
             .where { where }
             .groupBy(idColumn)
@@ -438,7 +439,9 @@ class RequestLogRepository(
                 val groupId = row[idColumn]?.takeIf { value -> value.isNotBlank() } ?: unassignedId
                 val amount = row[cost] ?: return@mapNotNull null
                 groupId to amount
-            }.toMap()
+            }
+            .groupingBy { it.first }
+            .fold(BigDecimal.ZERO) { total, (_, amount) -> total.add(amount) }
     }
 
     private fun trendQuery(transaction: JdbcTransaction, query: UsageReportQuery): List<UsageTrendPoint> {
