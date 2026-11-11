@@ -43,8 +43,9 @@ function handlePageSizeChange(event: Event) {
 
 <template>
   <div v-if="loaded > 0" class="cursor-pager">
-    <span class="muted small">
-      已加载 {{ loaded }} 条{{ hasMore ? '，还有更早记录' : '，已到末尾' }}
+    <span class="muted small cursor-pager-status" :class="{ 'has-more': hasMore }">
+      <span>已加载 {{ loaded }} 条</span>
+      <span class="cursor-pager-tail">{{ hasMore ? '，还有更早记录' : '，已到末尾' }}</span>
     </span>
     <div class="cursor-pager-actions">
       <label class="cursor-page-size">
@@ -66,7 +67,8 @@ function handlePageSizeChange(event: Event) {
         @click="emit('load-more')"
       >
         <Icon name="down" :size="15" />
-        {{ loadingMore ? '正在加载…' : '加载更早记录' }}
+        <span class="cursor-pager-more-label-long">{{ loadingMore ? '正在加载…' : '加载更早记录' }}</span>
+        <span class="cursor-pager-more-label-short">{{ loadingMore ? '加载中…' : '更早记录' }}</span>
       </button>
     </div>
   </div>
