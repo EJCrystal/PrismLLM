@@ -399,7 +399,7 @@ class ChannelQuotaIntegrationTest : GatewayIntegrationTestBase() {
             expiresAt = null,
             quotas = ClientKeyQuotaLimits(
                 dailyTokens = 1000,
-                dailyCosts = mapOf("USD" to BigDecimal("5.50"), "CNY" to BigDecimal("40")),
+                dailyUsdLimit = BigDecimal("5.50"),
                 maxConcurrentRequests = 4,
                 requestsPerMinute = 120,
             ),
@@ -407,9 +407,7 @@ class ChannelQuotaIntegrationTest : GatewayIntegrationTestBase() {
 
         val loaded = app.clientKeyRepository.find(created.id)!!
         assertEquals(1000, loaded.quotas.dailyTokens)
-        assertEquals(0, loaded.quotas.dailyCostLimit("USD")?.compareTo(BigDecimal("5.50")))
-        assertEquals(0, loaded.quotas.dailyCostLimit("CNY")?.compareTo(BigDecimal("40")))
-        assertEquals(null, loaded.quotas.dailyCostLimit("EUR"))
+        assertEquals(0, loaded.quotas.dailyUsdLimit?.compareTo(BigDecimal("5.50")))
         assertEquals(4, loaded.quotas.maxConcurrentRequests)
         assertEquals(120, loaded.quotas.requestsPerMinute)
     }

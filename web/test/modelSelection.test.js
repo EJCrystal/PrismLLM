@@ -17,7 +17,7 @@ const prices = [
     id: 'price-a',
     channelId,
     upstreamModel: 'model-a',
-    currency: 'CNY',
+    currency: 'USD',
     inputPricePerMillion: '7',
     outputPricePerMillion: '14',
   },
@@ -60,7 +60,7 @@ describe('modelSelection: 渠道模型切换', () => {
     const target = resolveModelSelectionTarget(channelId, ' model-a ', prices)
     assert.equal(target.modelId, 'model-a')
     assert.equal(target.price?.id, 'price-a')
-    assert.equal(target.draft.currency, 'CNY')
+    assert.equal(target.draft.currency, 'USD')
     assert.equal(target.draft.inputPricePerMillion, '7')
   })
 
@@ -121,7 +121,7 @@ describe('modelSelection: 单模型与多模型渠道的价格隔离', () => {
 
     const form = emptySelectionForm(channel)
     selectModel(form, 'model-a')
-    assert.equal(form.currency, 'CNY')
+    assert.equal(form.currency, 'USD')
     assert.equal(form.inputPricePerMillion, '7')
     assert.equal(form.outputPricePerMillion, '14')
 
@@ -141,7 +141,7 @@ describe('modelSelection: 单模型与多模型渠道的价格隔离', () => {
     assert.equal(form.outputPricePerMillion, '')
 
     selectModel(form, 'model-a')
-    assert.equal(form.currency, 'CNY')
+    assert.equal(form.currency, 'USD')
     assert.equal(form.inputPricePerMillion, '7')
     assert.equal(form.outputPricePerMillion, '14')
   })

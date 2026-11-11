@@ -7,6 +7,7 @@ import {
   formatNumber,
   formatTokensCompact,
   formatCost,
+  currencySymbol,
   formatUnitPrice,
   formatPriceSummary,
   formatPriceSnapshot,
@@ -117,17 +118,25 @@ describe('utils: format 格式化工具函数库', () => {
       assert.equal(formatCost(null), null)
     })
 
-    it('微金额保留精度，不同货币符号前缀正确', () => {
+    it('微金额保留精度，美元符号前缀正确', () => {
       assert.equal(formatCost(0.000025, 'USD'), '$0.000025')
-      assert.equal(formatCost(0.005, 'CNY'), '¥0.005')
       assert.equal(formatCost(1.5, 'USD'), '$1.5')
-      assert.equal(formatCost(10.25, 'EUR'), '€10.25')
     })
 
     it('空币种只返回金额，由调用方单独渲染币种', () => {
       assert.equal(formatCost(0.005, ''), '0.005')
       assert.equal(formatCost(10.25, ''), '10.25')
       assert.equal(formatCost(null, ''), null)
+    })
+  })
+
+  describe('currencySymbol', () => {
+    it('USD 返回符号，其他币种回退原代码', () => {
+      assert.equal(currencySymbol('USD'), '$')
+      assert.equal(currencySymbol('CNY'), 'CNY')
+      assert.equal(currencySymbol('quota'), 'quota')
+      assert.equal(currencySymbol(''), '')
+      assert.equal(currencySymbol(null), '')
     })
   })
 
@@ -145,25 +154,25 @@ describe('utils: format 格式化工具函数库', () => {
     it('格式化 Token 单价', () => {
       assert.equal(
         formatPriceSummary({ inputPricePerMillion: '0.15', outputPricePerMillion: '0.6', currency: 'USD' }),
-        '输入 0.15 · 输出 0.6 · USD / 1M',
+        '输入 0.15 · 输出 0.6 · $ / 1M',
       )
     })
 
     it('格式化按次费用', () => {
       assert.equal(
         formatPriceSummary({ pricingMode: 'per_request', perRequestPrice: '0.04', currency: 'USD' }),
-        '按次 0.04 USD',
+        '按次 0.04 $',
       )
     })
 
     it('格式化阶梯计费与总量阶梯计费', () => {
       assert.equal(
-        formatPriceSummary({ pricingMode: 'tiered', priceTiers: [{}, {}], currency: 'CNY' }),
-        '阶梯价 (2 档) · CNY',
+        formatPriceSummary({ pricingMode: 'tiered', priceTiers: [{}, {}], currency: 'USD' }),
+        '阶梯价 (2 档) · $',
       )
       assert.equal(
         formatPriceSummary({ pricingMode: 'volume', priceTiers: [{}], currency: 'USD' }),
-        '阶梯总量价 (1 档) · USD',
+        '阶梯总量价 (1 档) · $',
       )
     })
 
@@ -184,10 +193,10 @@ describe('utils: format 格式化工具函数库', () => {
           cachedInputWritePricePerMillion: '1.5',
         }),
         [
-          { label: '输入单价', value: '1 USD / 1M' },
-          { label: '输出单价', value: '2 USD / 1M' },
-          { label: '缓存读单价', value: '0.4 USD / 1M' },
-          { label: '缓存写单价', value: '1.5 USD / 1M' },
+          { label: '输入单价', value: '1 $ / 1M' },
+          { label: '输出单价', value: '2 $ / 1M' },
+          { label: '缓存读单价', value: '0.4 $ / 1M' },
+          { label: '缓存写单价', value: '1.5 $ / 1M' },
         ],
       )
     })
@@ -196,15 +205,15 @@ describe('utils: format 格式化工具函数库', () => {
       assert.deepEqual(
         formatPriceSnapshot({
           pricingMode: 'tiered',
-          costCurrency: 'CNY',
+          costCurrency: 'USD',
           priceTiers: [
             { upToTokens: 128000, inputPricePerMillion: '1', outputPricePerMillion: '2' },
             { upToTokens: null, inputPricePerMillion: '3', outputPricePerMillion: '4', cachedInputPricePerMillion: '0.8', cachedInputWritePricePerMillion: '2.5' },
           ],
         }),
         [
-          { label: '第 1 档 · ≤ 128,000 tokens', value: '输入 1 · 输出 2 · 缓存读 沿用输入价（1 CNY / 1M） · 缓存写 沿用输入价（1 CNY / 1M） · CNY / 1M' },
-          { label: '第 2 档 · ≥ 128,001 tokens', value: '输入 3 · 输出 4 · 缓存读 0.8 CNY / 1M · 缓存写 2.5 CNY / 1M · CNY / 1M' },
+          { label: '第 1 档 · ≤ 128,000 tokens', value: '输入 1 · 输出 2 · 缓存读 沿用输入价（1 $ / 1M） · 缓存写 沿用输入价（1 $ / 1M） · $ / 1M' },
+          { label: '第 2 档 · ≥ 128,001 tokens', value: '输入 3 · 输出 4 · 缓存读 0.8 $ / 1M · 缓存写 2.5 $ / 1M · $ / 1M' },
         ],
       )
       assert.deepEqual(formatPriceSnapshot({ pricingMode: 'volume', priceTiers: [] }), [])
@@ -212,7 +221,7 @@ describe('utils: format 格式化工具函数库', () => {
 
     it('显示按次单价并安全处理空快照', () => {
       assert.deepEqual(formatPriceSnapshot({ pricingMode: 'per_request', perRequestPrice: '0.04', costCurrency: 'USD' }), [
-        { label: '每次请求', value: '0.04 USD' },
+        { label: '每次请求', value: '0.04 $' },
       ])
       assert.deepEqual(formatPriceSnapshot(null), [])
     })

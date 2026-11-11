@@ -9,16 +9,16 @@ import kotlin.test.assertTrue
 
 class ClientKeyQuotaPolicyTest {
     @Test
-    fun `allows usage below daily token and currency budgets`() {
+    fun `allows usage below daily token and usd budget`() {
         val result = checkClientKeyQuota(
             ClientKeyQuotaLimits(
                 dailyTokens = 100,
-                dailyCosts = mapOf("USD" to BigDecimal("1.00"), "CNY" to BigDecimal("7")),
+                dailyUsdLimit = BigDecimal("1.00"),
                 maxConcurrentRequests = 2,
             ),
             ClientKeyQuotaUsage(
                 dailyTokens = 99,
-                dailyCosts = mapOf("USD" to BigDecimal("0.99"), "CNY" to BigDecimal("6.99")),
+                dailyUsdCost = BigDecimal("0.99"),
                 concurrentRequests = 1,
             ),
         )
@@ -39,19 +39,16 @@ class ClientKeyQuotaPolicyTest {
     }
 
     @Test
-    fun `checks each currency independently without conversion`() {
-        val limits = ClientKeyQuotaLimits(dailyCosts = mapOf(
-            "USD" to BigDecimal("1.00"),
-            "CNY" to BigDecimal("7.00"),
-        ))
+    fun `rejects usd budget when consumed cost reaches the limit`() {
+        val limits = ClientKeyQuotaLimits(dailyUsdLimit = BigDecimal("1.00"))
 
         assertFalse(checkClientKeyQuota(
             limits,
-            ClientKeyQuotaUsage(dailyCosts = mapOf("USD" to BigDecimal("1.01"))),
+            ClientKeyQuotaUsage(dailyUsdCost = BigDecimal("1.01")),
         ).allowed)
         assertTrue(checkClientKeyQuota(
             limits,
-            ClientKeyQuotaUsage(dailyCosts = mapOf("CNY" to BigDecimal("6.99"))),
+            ClientKeyQuotaUsage(dailyUsdCost = BigDecimal("0.99")),
         ).allowed)
     }
 

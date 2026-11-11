@@ -194,13 +194,13 @@ describe('API 契约的运行时形状', () => {
 
   it('价格表单与请求体使用后端约定字段', () => {
     assert.deepEqual(priceFormState({
-      currency: 'CNY',
+      currency: 'USD',
       inputPricePerMillion: '1.5',
       outputPricePerMillion: '2',
       pricingMode: 'token',
       priceTiers: [],
     }), {
-      currency: 'CNY',
+      currency: 'USD',
       inputPricePerMillion: '1.5',
       outputPricePerMillion: '2',
       cachedInputPricePerMillion: '',
@@ -254,11 +254,11 @@ describe('API 契约的运行时形状', () => {
     assert.deepEqual(settings.rules[0].statusCodes, [401])
   })
 
-  it('报表补齐的桶保留后端成本键和零值字段', () => {
+  it('报表补齐的桶保留 USD 成本键和零值字段', () => {
     const rows = fillTrendBuckets([], 0, 3_600_000, 'hour', 0)
     assert.equal(rows.length, 2)
     assert.equal(rows[0].requests, 0)
-    assert.deepEqual(rows[0].costs, {})
+    assert.deepEqual(rows[0].costUsd, null)
     assert.equal(rows[0].cachedWriteTokens, 0)
   })
 })

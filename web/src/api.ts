@@ -22,7 +22,6 @@ import type {
   ClientKey,
   ClientKeyCreated,
   ClientKeyRequest,
-  ExchangeRates,
   FingerprintDetectorInfo,
   FingerprintRun,
   FingerprintRunRequest,
@@ -157,7 +156,6 @@ export const api = {
     request<MeResponse>('/account/avatar', { method: 'PUT', body: JSON.stringify(payload) }),
   changePassword: (payload: ChangePasswordRequest) =>
     request<null>('/account/password', { method: 'PUT', body: JSON.stringify(payload) }),
-  getExchangeRates: () => request<ExchangeRates>('/exchange-rates'),
 
   listChannels: () => requestList<Channel>('/channels'),
   getOccupancy: () => request<RuntimeOccupancy>('/occupancy'),

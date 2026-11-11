@@ -51,9 +51,7 @@ class ClientKeyRepository(private val database: Database) {
             it[ClientKeys.enabled] = enabled
             it[ClientKeys.expiresAt] = expiresAt
             it[ClientKeys.dailyTokenLimit] = quotas.dailyTokens
-            it[ClientKeys.dailyUsdLimit] = quotas.dailyCostLimit("USD")
-            it[ClientKeys.dailyCnyLimit] = quotas.dailyCostLimit("CNY")
-            it[ClientKeys.dailyEurLimit] = quotas.dailyCostLimit("EUR")
+            it[ClientKeys.dailyUsdLimit] = quotas.dailyUsdLimit
             it[ClientKeys.maxConcurrentRequests] = quotas.maxConcurrentRequests
             it[ClientKeys.requestsPerMinute] = quotas.requestsPerMinute
             it[createdAt] = now
@@ -77,9 +75,7 @@ class ClientKeyRepository(private val database: Database) {
                 it[ClientKeys.enabled] = enabled
                 it[ClientKeys.expiresAt] = expiresAt
                 it[ClientKeys.dailyTokenLimit] = quotas.dailyTokens
-                it[ClientKeys.dailyUsdLimit] = quotas.dailyCostLimit("USD")
-                it[ClientKeys.dailyCnyLimit] = quotas.dailyCostLimit("CNY")
-                it[ClientKeys.dailyEurLimit] = quotas.dailyCostLimit("EUR")
+                it[ClientKeys.dailyUsdLimit] = quotas.dailyUsdLimit
                 it[ClientKeys.maxConcurrentRequests] = quotas.maxConcurrentRequests
                 it[ClientKeys.requestsPerMinute] = quotas.requestsPerMinute
             }
@@ -133,11 +129,7 @@ class ClientKeyRepository(private val database: Database) {
         expiresAt = row[ClientKeys.expiresAt],
         quotas = ClientKeyQuotaLimits(
             dailyTokens = row[ClientKeys.dailyTokenLimit],
-            dailyCosts = buildMap {
-                row[ClientKeys.dailyUsdLimit]?.let { put("USD", it) }
-                row[ClientKeys.dailyCnyLimit]?.let { put("CNY", it) }
-                row[ClientKeys.dailyEurLimit]?.let { put("EUR", it) }
-            },
+            dailyUsdLimit = row[ClientKeys.dailyUsdLimit],
             maxConcurrentRequests = row[ClientKeys.maxConcurrentRequests],
             requestsPerMinute = row[ClientKeys.requestsPerMinute],
         ),

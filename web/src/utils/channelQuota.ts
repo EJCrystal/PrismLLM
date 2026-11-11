@@ -1,4 +1,5 @@
 import type { ChannelQuotaSettings, ChannelQuotaSettingsRequest, ChannelQuotaSnapshot } from '../types/api'
+import { currencySymbol } from './format'
 
 export function buildQuotaSettings(providerId: string, configText: string): ChannelQuotaSettings {
   if (!providerId) return { providerId: '', config: {} }
@@ -63,5 +64,8 @@ export function quotaStatus(result: Pick<ChannelQuotaSnapshot, 'status'>): { lab
 export function quotaBalance(result: ChannelQuotaSnapshot): string {
   if (result.status === 'UNLIMITED') return '无限制'
   if (result.status !== 'AVAILABLE' || result.remaining == null) return '—'
-  return result.remaining + (result.unit ? ' ' + result.unit : '')
+  if (!result.unit) return result.remaining
+  // USD 显示符号前缀（如 $0）；其余单位（如 quota）保持「数值 单位」。
+  const symbol = currencySymbol(result.unit)
+  return symbol === result.unit ? `${result.remaining} ${result.unit}` : `${symbol}${result.remaining}`
 }

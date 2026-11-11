@@ -93,7 +93,6 @@ function referenceDraftKey() {
     form.channelId,
     form.upstreamModel.trim(),
     activePrice.value?.id || '',
-    form.currency,
     form.inputPricePerMillion,
     form.outputPricePerMillion,
     form.cachedInputPricePerMillion,
@@ -328,7 +327,6 @@ function markModelAsManuallyEntered() {
 function applyDefaultPrice() {
   const price = inheritedPrice.value
   if (!price) return
-  form.currency = price.currency || 'USD'
   form.inputPricePerMillion = price.inputPricePerMillion ?? ''
   form.outputPricePerMillion = price.outputPricePerMillion ?? ''
   form.cachedInputPricePerMillion = price.cachedInputPricePerMillion ?? ''
@@ -372,11 +370,7 @@ async function fetchReferencePrice() {
     notify('请先输入或选择上游模型', 'warning')
     return
   }
-  if (form.currency !== 'USD' && hasPriceDraft(form)) {
-    notify('参考价以 USD 计；当前单价不是 USD，请先清空金额或新建 USD 单价', 'warning')
-    return
-  }
-  if (hasPriceDraft(form) && !window.confirm('获取参考价会用 USD 金额覆盖当前填写的单价和币种，是否继续？')) {
+  if (hasPriceDraft(form) && !window.confirm('获取参考价会用 USD 参考金额覆盖当前填写的单价，是否继续？')) {
     return
   }
   const requestId = ++referenceRequestId
@@ -386,7 +380,6 @@ async function fetchReferencePrice() {
   try {
     const res = await api.getModelPriceReference(modelName)
     if (requestId !== referenceRequestId || draftKey !== referenceDraftKey()) return
-    form.currency = 'USD'
     form.pricingMode = 'token'
     form.perRequestPrice = ''
     form.priceTiers = []
@@ -639,16 +632,6 @@ function requestClose() {
         <small v-else-if="channelModelOptions.length">该模型尚未配置渠道覆盖价，可手动填写或获取 USD 参考价。</small>
         <small v-else>该渠道没有可读取的模型，可直接输入模型名。</small>
       </section>
-      <label class="field">
-        <span>计费币种</span>
-        <input
-          type="text"
-          :value="form.currency"
-          readonly
-          aria-label="计费币种"
-        />
-        <small>获取参考价会切换为 USD。</small>
-      </label>
       <PriceFields :form="form" />
 
       <p v-if="activePrice?.id" class="muted small price-source-note">正在编辑渠道覆盖价。</p>

@@ -132,14 +132,14 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"channelId":"${channel.id}","upstreamModels":["gpt-4o-mini","deepseek-chat"],"currency":"CNY","inputPricePerMillion":"7","outputPricePerMillion":"14"}""",
+                    """{"channelId":"${channel.id}","upstreamModels":["gpt-4o-mini","deepseek-chat"],"currency":"USD","inputPricePerMillion":"7","outputPricePerMillion":"14"}""",
                 )
             }
 
             assertEquals(HttpStatusCode.OK, response.status)
             val prices = app.modelPriceRepository.list().filter { it.channelId == channel.id }
             assertEquals(2, prices.size)
-            assertTrue(prices.all { it.currency == "CNY" })
+            assertTrue(prices.all { it.currency == "USD" })
             assertTrue(prices.all { it.inputPricePerMillion.compareTo(BigDecimal("7")) == 0 })
             assertTrue(prices.all { it.outputPricePerMillion.compareTo(BigDecimal("14")) == 0 })
         }
@@ -243,10 +243,11 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals("3", total["cachedTokens"]!!.jsonPrimitive.content)
             assertEquals("2", total["reasoningTokens"]!!.jsonPrimitive.content)
             assertEquals("2", total["failovers"]!!.jsonPrimitive.content)
-            assertEquals("0.000037", total["costs"]!!.jsonObject["USD"]!!.jsonPrimitive.content)
+            assertEquals("0.000037", total["costUsd"]!!.jsonPrimitive.content)
             val byKey = json["byClientKey"]!!.jsonArray.single().jsonObject
             assertEquals(currentKey.id, byKey["id"]!!.jsonPrimitive.content)
             assertEquals("paid", byKey["name"]!!.jsonPrimitive.content)
+            assertEquals("0.000037", byKey["costUsd"]!!.jsonPrimitive.content)
             assertEquals(
                 setOf("test-key", "renamed-key"),
                 app.requestLogRepository.list(10).mapNotNull { it.clientKeyName }.toSet(),
@@ -292,7 +293,11 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
                 setOf("stream_interrupted", "500"),
                 json["byErrorCode"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet(),
             )
-            assertTrue(json["trend"]!!.jsonArray.isNotEmpty())
+            val trendRows = json["trend"]!!.jsonArray.map { it.jsonObject }
+            assertTrue(trendRows.isNotEmpty())
+            // 后端只返回有请求的桶（sum 不产生空桶行）；空桶由前端补齐且费用为 null。
+            // 该断言固定接口契约：无可计费数据的桶不出现在响应里，费用列不留 0 占位。
+            assertTrue(trendRows.all { it["costUsd"]!!.jsonPrimitive.isString.not() || it["costUsd"]!!.jsonPrimitive.content != "0" })
 
             val rangeNow = reportNow
             suspend fun reportStatus(from: Long, to: Long): Pair<HttpStatusCode, String> {
@@ -361,13 +366,13 @@ class PricingIntegrationTest : GatewayIntegrationTestBase() {
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
                 setBody(
-                    """{"modelId":"deepseek-v4.1-flash","currency":"CNY","inputPricePerMillion":"7","outputPricePerMillion":"14","cachedInputPricePerMillion":"1"}""",
+                    """{"modelId":"deepseek-v4.1-flash","currency":"USD","inputPricePerMillion":"7","outputPricePerMillion":"14","cachedInputPricePerMillion":"1"}""",
                 )
             }
             assertEquals(HttpStatusCode.Created, created.status)
             val createdJson = Json.parseToJsonElement(created.bodyAsText()).jsonObject
             val id = createdJson["id"]!!.jsonPrimitive.content
-            assertEquals("CNY", createdJson["currency"]!!.jsonPrimitive.content)
+            assertEquals("USD", createdJson["currency"]!!.jsonPrimitive.content)
 
             val duplicate = client.post("/admin/api/model-default-prices") {
                 header(HttpHeaders.Cookie, sessionCookie)

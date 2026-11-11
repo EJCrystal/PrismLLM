@@ -241,11 +241,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(HttpStatusCode.NoContent)
         }
 
-        get("/exchange-rates") {
-            call.requireAdmin(app)
-            call.respond(app.currencyExchangeService.getRates())
-        }
-
         get("/web-search-settings") {
             call.requireAdmin(app)
             call.response.headers.append("Cache-Control", "no-store")
@@ -3161,16 +3156,14 @@ private fun validateClientKeyQuotas(request: ClientKeyRequest): ClientKeyQuotaLi
     if (request.requestsPerMinute != null && request.requestsPerMinute < 0) {
         throw badRequest("invalid_client_key", "每分钟请求数必须是非负整数")
     }
-    val costs = try {
-        listOf("USD" to request.dailyUsdLimit, "CNY" to request.dailyCnyLimit, "EUR" to request.dailyEurLimit)
-            .mapNotNull { (currency, value) -> parseDailyCostLimit(value)?.let { currency to it } }
-            .toMap()
+    val usdLimit = try {
+        parseDailyCostLimit(request.dailyUsdLimit)
     } catch (cause: IllegalArgumentException) {
         throw badRequest("invalid_client_key", cause.message ?: "每日费用上限无效")
     }
     return ClientKeyQuotaLimits(
         dailyTokens = request.dailyTokenLimit,
-        dailyCosts = costs,
+        dailyUsdLimit = usdLimit,
         maxConcurrentRequests = request.maxConcurrentRequests,
         requestsPerMinute = request.requestsPerMinute,
     )
