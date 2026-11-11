@@ -15,14 +15,15 @@ import SystemSettingsView from './components/SystemSettingsView.vue'
 import AccountSettingsModal from './components/AccountSettingsModal.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import InfoPopover from './components/InfoPopover.vue'
+import type { TestRecordType } from './utils/testRecords'
 
-const ModelTestView = defineAsyncComponent(() => import('./components/ModelTestView.vue'))
+const TestRecordsView = defineAsyncComponent(() => import('./components/TestRecordsView.vue'))
 
 const navItems = [
   { id: 'channels', label: '渠道', icon: 'channels' },
   { id: 'oauth-accounts', label: '订阅账号', icon: 'users' },
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
-  { id: 'model-tests', label: '模型检测', icon: 'fingerprint' },
+  { id: 'model-tests', label: '检测记录', icon: 'fingerprint' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
   { id: 'usage-reports', label: '用量报表', icon: 'chart' },
   { id: 'audit-logs', label: '操作审计', icon: 'shield' },
@@ -43,8 +44,8 @@ const meta = {
     desc: '调用方凭据只在创建或轮换时显示一次，请立即保存。服务端仅保存 SHA-256 哈希与展示前缀。',
   },
   'model-tests': {
-    title: '模型检测',
-    desc: '统一管理连通性、智商与指纹检测。连通性检测用真实请求确认渠道与凭据可用；智商检测通过鹈鹕与糖果题观察推理表现；指纹检测根据随机数字序列比对本地参考库，判断模型更接近哪个已知模型。所有检测都直接发往上游渠道，不经过数据面，也不写入请求日志。',
+    title: '检测记录',
+    desc: '查看智商与指纹检测的历史记录，可按类型、渠道、模型和结论筛选。检测直接发往上游渠道，不经过数据面，也不写入请求日志；连通性检测不落库。发起测试请在渠道列表点击「测试」。',
   },
 
   logs: {
@@ -70,6 +71,7 @@ const user = ref<MeResponse | null>(null)
 const view = ref<keyof typeof meta>('channels')
 const navOpen = ref(false)
 const accountOpen = ref(false)
+const recordTarget = ref<{ type: TestRecordType; id: number } | null>(null)
 const currentMeta = computed(() => meta[view.value] || meta.channels)
 const isDataView = computed(() => view.value === 'channels' || view.value === 'logs' || view.value === 'audit-logs')
 
@@ -90,7 +92,15 @@ function onAuthenticated(authenticatedUser: MeResponse) {
 }
 
 function selectView(id: keyof typeof meta) {
+  recordTarget.value = null
   view.value = id
+  navOpen.value = false
+}
+
+/** 渠道测试面板里的「查看完整记录」直接落到检测记录页并打开对应详情。 */
+function openTestRecord(payload: { type: TestRecordType; id: number }) {
+  recordTarget.value = payload
+  view.value = 'model-tests'
   navOpen.value = false
 }
 
@@ -224,10 +234,14 @@ onBeforeUnmount(() => {
       </header>
 
       <main class="content" :class="{ 'content-data': isDataView, 'logs-content': view === 'logs' }">
-        <ChannelsView v-if="view === 'channels'" />
+        <ChannelsView v-if="view === 'channels'" @open-test-record="openTestRecord" />
         <OAuthAccountsView v-else-if="view === 'oauth-accounts'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
-        <ModelTestView v-else-if="view === 'model-tests'" />
+        <TestRecordsView
+          v-else-if="view === 'model-tests'"
+          :initial-record="recordTarget"
+          @record-opened="recordTarget = null"
+        />
         <LogsView v-else-if="view === 'logs'" />
         <UsageReportsView v-else-if="view === 'usage-reports'" />
         <AdminAuditLogsView v-else-if="view === 'audit-logs'" />

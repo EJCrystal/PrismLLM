@@ -68,7 +68,7 @@ class IqTestRunRepository(private val database: Database) {
     suspend fun list(limit: Int): List<IqTestRunRecord> = suspendTransaction(database) {
         IqTestRuns.selectAll()
             .orderBy(IqTestRuns.id, SortOrder.DESC)
-            .limit(limit.coerceIn(1, MAX_LIST_SIZE))
+            .limit(limit.coerceIn(1, MAX_RUNS))
             .map(::toRecord)
     }
 
@@ -165,6 +165,5 @@ class IqTestRunRepository(private val database: Database) {
 
     companion object {
         private const val MAX_RUNS = 200
-        private const val MAX_LIST_SIZE = 100
     }
 }

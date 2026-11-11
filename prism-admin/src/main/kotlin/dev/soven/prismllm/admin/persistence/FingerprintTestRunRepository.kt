@@ -50,7 +50,7 @@ class FingerprintTestRunRepository(private val database: Database) {
     suspend fun list(limit: Int): List<FingerprintTestRunRecord> = suspendTransaction(database) {
         FingerprintTestRuns.selectAll()
             .orderBy(FingerprintTestRuns.id, SortOrder.DESC)
-            .limit(limit.coerceIn(1, MAX_LIST_SIZE))
+            .limit(limit.coerceIn(1, MAX_RUNS))
             .map(::toRecord)
     }
 
@@ -112,6 +112,5 @@ class FingerprintTestRunRepository(private val database: Database) {
 
     companion object {
         private const val MAX_RUNS = 100
-        private const val MAX_LIST_SIZE = 50
     }
 }

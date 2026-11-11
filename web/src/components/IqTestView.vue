@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import type {
+  Channel,
   IqBenchmarkDefinition,
   IqQuestion,
   IqBenchmarkId,
@@ -10,7 +11,6 @@ import type {
   IqJudgeInfo,
   IqTestRunDetail,
   IqTestRunRequest,
-  IqTestRunSummary,
   IqTestTarget,
   ProtocolId,
 } from '../types/api'
@@ -44,6 +44,22 @@ interface FailedRun {
   request: IqTestRunRequest
 }
 
+const props = withDefaults(defineProps<{
+  /** run：渠道内发起检测；record：只展示一条历史记录。 */
+  mode?: 'run' | 'record'
+  channel?: Channel | null
+  initialModel?: string
+  recordId?: number | null
+}>(), {
+  mode: 'run',
+  channel: null,
+  initialModel: '',
+  recordId: null,
+})
+const emit = defineEmits<{
+  (event: 'open-record', id: number): void
+}>()
+
 const questions = ref<IqQuestion[]>([])
 const showQuestionBank = ref(false)
 const enabledQuestionCount = computed(() => questions.value.filter(question => question.enabled).length)
@@ -51,16 +67,13 @@ const benchmarks = ref<IqBenchmarkDefinition[]>([])
 const targets = ref<IqTestTarget[]>([])
 const judges = ref<IqJudgeInfo[]>([])
 const judgeFailures = ref<IqJudgeFailure[]>([])
-const history = ref<IqTestRunSummary[]>([])
 const selectedBenchmark = ref<IqBenchmarkId>('pelican')
 const selectedTargetKey = ref('')
 const selectedKeyId = ref('')
 const selectedProtocol = ref('')
 const selectedJudgeId = ref('')
-const historyFilter = ref<'all' | IqBenchmarkId>('all')
 const promptText = ref('')
 const loading = ref(true)
-const loadingHistory = ref(false)
 const detailLoading = ref(false)
 const detail = ref<IqTestRunDetail | null>(null)
 const previewMode = ref<'preview' | 'source'>('preview')
@@ -86,14 +99,18 @@ const manualForm = reactive<{
   note: '',
 })
 let runSeq = 0
-let historyRequestSeq = 0
 let tickTimer: ReturnType<typeof setInterval> | null = null
 
+const recordMode = computed(() => props.mode === 'record')
+const compact = computed(() => props.mode === 'run')
+const scopedTargets = computed(() =>
+  props.channel ? targets.value.filter((target) => target.channelId === props.channel?.id) : targets.value,
+)
 const benchmark = computed(() =>
   benchmarks.value.find((item) => item.id === selectedBenchmark.value) ?? benchmarks.value[0] ?? null,
 )
 const selectedTarget = computed(() =>
-  targets.value.find((item) => iqTargetKey(item.channelId, item.model) === selectedTargetKey.value) ?? null,
+  scopedTargets.value.find((item) => iqTargetKey(item.channelId, item.model) === selectedTargetKey.value) ?? null,
 )
 const selectedJudge = computed(() =>
   judges.value.find((item) => item.id === selectedJudgeId.value) ?? null,
@@ -101,7 +118,7 @@ const selectedJudge = computed(() =>
 const promptCustomized = computed(() =>
   !!benchmark.value && promptText.value.trim() !== benchmark.value.prompt.trim(),
 )
-const targetOptions = computed(() => targets.value.map((target) => ({
+const targetOptions = computed(() => scopedTargets.value.map((target) => ({
   value: iqTargetKey(target.channelId, target.model),
   label: target.model,
   hint: `${target.credentials.length} 个可用凭据`,
@@ -113,11 +130,6 @@ const credentialOptions = computed(() => (selectedTarget.value?.credentials ?? [
   label: credential.name,
   hint: `优先级 ${credential.priority}`,
 })))
-const filteredHistory = computed(() =>
-  historyFilter.value === 'all'
-    ? history.value
-    : history.value.filter((run) => run.benchmark === historyFilter.value),
-)
 const canRun = computed(() =>
   !!selectedTarget.value &&
   !!benchmark.value &&
@@ -147,7 +159,7 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
 }
 
-function usageSummary(run: IqTestRunSummary | IqTestRunDetail | null): string {
+function usageSummary(run: IqTestRunDetail | null): string {
   const usage = run?.usage
   if (!usage) return '上游未返回用量'
   const parts: string[] = []
@@ -191,20 +203,6 @@ function syncSelectedTarget() {
   }
 }
 
-async function loadHistory() {
-  const requestId = ++historyRequestSeq
-  loadingHistory.value = true
-  try {
-    const runs = await api.listIqRuns(50)
-    // 并发的检测可能同时刷新历史；只接受最后一次请求的结果，避免旧响应覆盖新记录。
-    if (requestId === historyRequestSeq) history.value = runs
-  } catch (cause) {
-    notify(errorMessage(cause), 'error')
-  } finally {
-    if (requestId === historyRequestSeq) loadingHistory.value = false
-  }
-}
-
 async function loadAll() {
   loading.value = true
   loadError.value = ''
@@ -223,20 +221,41 @@ async function loadAll() {
     if (!judges.value.some((judge) => judge.id === selectedJudgeId.value)) {
       selectedJudgeId.value = judgeResponse.defaultJudgeId || judges.value[0]?.id || ''
     }
-    if (!selectedTargetKey.value && targetList.length) {
-      selectedTargetKey.value = iqTargetKey(targetList[0].channelId, targetList[0].model)
+    const preferred = props.initialModel
+      ? scopedTargets.value.find((target) => target.model === props.initialModel)
+      : null
+    const first = preferred ?? scopedTargets.value[0]
+    if (!selectedTargetKey.value && first) {
+      selectedTargetKey.value = iqTargetKey(first.channelId, first.model)
     }
     syncSelectedTarget()
-    await loadHistory()
-    if (!detail.value && history.value.length) {
-      await openRun(history.value[0], { scroll: false, manual: false })
-    }
   } catch (cause) {
     loadError.value = errorMessage(cause)
     notify(loadError.value, 'error')
   } finally {
     loading.value = false
   }
+}
+
+async function loadRecord(id: number) {
+  detailLoading.value = true
+  loadError.value = ''
+  try {
+    detail.value = await api.getIqRun(id)
+    selectedBenchmark.value = detail.value.benchmark
+    syncManualForm(detail.value)
+  } catch (cause) {
+    loadError.value = errorMessage(cause)
+    notify(loadError.value, 'error')
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+/** 记录模式只需要重试详情本身，不能退回发起页的完整初始化。 */
+function retryLoad() {
+  if (recordMode.value && props.recordId != null) void loadRecord(props.recordId)
+  else void loadAll()
 }
 
 function resetPrompt() {
@@ -296,7 +315,6 @@ async function executeRun(job: ActiveRun, request: IqTestRunRequest) {
       syncManualForm(result)
       scrollResultIntoView()
     }
-    await loadHistory()
     notify(
       `${job.benchmarkLabel} · ${job.channelName} / ${job.model}：${result.verdictLabel}`,
       result.verdict === 'passed' ? 'success' : result.verdict === 'failed' ? 'error' : 'warning',
@@ -325,37 +343,6 @@ function retryFailed() {
   void executeRun(job, failed.request)
 }
 
-async function openRun(run: IqTestRunSummary, options: { scroll?: boolean; manual?: boolean } = {}) {
-  if (detailLoading.value) return
-  const { scroll = true, manual = true } = options
-  if (manual) detailPinned.value = true
-  detailLoading.value = true
-  runError.value = ''
-  failedRun.value = null
-  previewMode.value = 'preview'
-  try {
-    detail.value = await api.getIqRun(run.id)
-    selectedBenchmark.value = detail.value.benchmark
-    const judgeId = detail.value.judgeResult?.judgeId
-    if (judgeId && judges.value.some((judge) => judge.id === judgeId)) {
-      selectedJudgeId.value = judgeId
-    }
-    syncManualForm(detail.value)
-    const targetKey = iqTargetKey(detail.value.channelId, detail.value.model)
-    if (targets.value.some((target) => iqTargetKey(target.channelId, target.model) === targetKey)) {
-      selectedTargetKey.value = targetKey
-      selectedKeyId.value = detail.value.channelKeyId || ''
-      selectedProtocol.value = detail.value.protocol
-      syncSelectedTarget()
-    }
-    if (scroll) scrollResultIntoView()
-  } catch (cause) {
-    notify(errorMessage(cause), 'error')
-  } finally {
-    detailLoading.value = false
-  }
-}
-
 function syncManualForm(run: IqTestRunDetail) {
   manualForm.verdict = run.manualVerdict ?? ''
   manualForm.score = run.manualScore
@@ -377,7 +364,6 @@ async function submitManual() {
       note: manualForm.note.trim() || null,
     })
     syncManualForm(detail.value)
-    await loadHistory()
     notify('人工判定已保存')
   } catch (cause) {
     notify(errorMessage(cause), 'error')
@@ -391,29 +377,23 @@ watch(benchmark, (item) => {
   promptText.value = item?.prompt ?? ''
 }, { immediate: true })
 
-onMounted(loadAll)
+onMounted(() => {
+  if (recordMode.value && props.recordId != null) {
+    loading.value = false
+    void loadRecord(props.recordId)
+    return
+  }
+  void loadAll()
+})
 onBeforeUnmount(stopTicker)
 </script>
 
 <template>
-  <section class="page-stack iq-page">
-    <div class="iq-hero panel">
-      <div class="iq-hero-copy">
-        <span class="iq-eyebrow"><i class="iq-eyebrow-dot"></i>MODEL IQ PROBE</span>
-        <h2>用动画与随机推理题，看清模型的真实水平</h2>
-        <p>
-          鹈鹕骑行与糖果测试来自社区常用的“降智检测”题。测试通过已保存的渠道凭据直接请求上游，
-          不写入请求日志，也不消耗调用方密钥额度。
-        </p>
-      </div>
-      <div class="iq-hero-note">
-        <span class="iq-note-icon"><Icon name="shield" :size="18" /></span>
-        <div>
-          <strong>渠道密钥不会离开本机</strong>
-          <small>local 判分不出本机；满血AI、视觉判分或外部插件会把 HTML / 逐帧截图发到对应服务。</small>
-        </div>
-      </div>
-    </div>
+  <section class="page-stack iq-page" :class="{ 'iq-embedded': mode === 'run' }">
+    <p v-if="mode === 'run'" class="iq-embedded-note">
+      <Icon name="shield" :size="14" />
+      测试通过已保存的渠道凭据直接请求上游，不写入请求日志，也不消耗调用方密钥额度。
+    </p>
 
     <div v-if="loading" class="panel iq-loading">
       <span class="spinner"></span>
@@ -422,11 +402,11 @@ onBeforeUnmount(stopTicker)
 
     <div v-else-if="loadError" class="callout danger iq-load-error">
       <span>{{ loadError }}</span>
-      <button type="button" class="link-button" @click="loadAll">重试</button>
+      <button type="button" class="link-button" @click="retryLoad">重试</button>
     </div>
 
-    <div v-else class="iq-layout">
-      <aside class="iq-control panel">
+    <div v-else class="iq-layout" :class="{ 'iq-record-mode': recordMode }">
+      <aside v-if="!recordMode" class="iq-control panel">
         <div class="iq-section">
           <span class="iq-section-label">检测题目</span>
           <div class="iq-benchmark-list">
@@ -486,8 +466,16 @@ onBeforeUnmount(stopTicker)
 
         <div class="iq-section">
           <span class="iq-section-label">检测目标</span>
-          <div v-if="targets.length" class="iq-target">
-            <div class="field iq-select-field">
+          <div v-if="scopedTargets.length" class="iq-target">
+            <label v-if="channel" class="field iq-select-field">
+              <span>模型</span>
+              <select v-model="selectedTargetKey">
+                <option v-for="option in targetOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+            <div v-else class="field iq-select-field">
               <span>渠道与模型</span>
               <SearchSelect
                 v-model="selectedTargetKey"
@@ -630,7 +618,7 @@ onBeforeUnmount(stopTicker)
               <div class="iq-stat-tile"><span class="iq-stat-label">上游声明模型</span><strong>{{ detail.upstreamReportedModel || '未返回' }}</strong></div>
             </div>
 
-            <details v-if="detail.prompt" class="iq-used-prompt">
+            <details v-if="detail.prompt && !compact" class="iq-used-prompt">
               <summary>本次使用的提示词</summary>
               <pre class="iq-prompt">{{ detail.prompt }}</pre>
             </details>
@@ -655,7 +643,7 @@ onBeforeUnmount(stopTicker)
               </p>
               <small v-if="detail.judgeResult.checkedAt">判分时间：{{ formatIqTime(detail.judgeResult.checkedAt) }}</small>
               <details
-                v-if="Object.keys(detail.judgeResult.details).length"
+                v-if="!compact && Object.keys(detail.judgeResult.details).length"
                 class="iq-judge-details"
                 :open="detail.judgeResult.judgeId === 'vision'"
               >
@@ -669,7 +657,7 @@ onBeforeUnmount(stopTicker)
               </details>
             </div>
 
-            <div v-if="detail.html" class="iq-preview">
+            <div v-if="detail.html && !compact" class="iq-preview">
               <div class="iq-preview-bar">
                 <div class="iq-segmented">
                   <button type="button" :class="{ active: previewMode === 'preview' }" @click="previewMode = 'preview'">预览</button>
@@ -688,7 +676,7 @@ onBeforeUnmount(stopTicker)
               ></iframe>
               <pre v-else class="iq-source">{{ detail.html }}</pre>
             </div>
-            <div v-else class="iq-raw">
+            <div v-else-if="!compact" class="iq-raw">
               <div class="iq-section-head">
                 <strong>原始响应</strong>
                 <CopyButton :text="detail.responseText || ''" title="复制原始响应" variant="subtle" />
@@ -696,7 +684,7 @@ onBeforeUnmount(stopTicker)
               <pre class="iq-source">{{ detail.responseText || '上游未返回文本' }}</pre>
             </div>
 
-            <div v-if="detail.benchmark === 'pelican' && detail.html" class="iq-manual">
+            <div v-if="!compact && detail.benchmark === 'pelican' && detail.html" class="iq-manual">
               <div class="iq-section-head">
                 <strong>人工判定</strong>
                 <span v-if="detail.manualVerdict" class="badge info">已人工判定</span>
@@ -728,7 +716,7 @@ onBeforeUnmount(stopTicker)
               <p v-if="detail.manualUpdatedAt" class="muted small">上次人工判定：{{ formatIqTime(detail.manualUpdatedAt) }}</p>
             </div>
 
-            <template v-if="detail.benchmark === 'pelican'">
+            <template v-if="!compact && detail.benchmark === 'pelican'">
               <div class="iq-checks">
                 <div class="iq-section-head">
                   <strong>本地辅助检查</strong>
@@ -748,7 +736,7 @@ onBeforeUnmount(stopTicker)
               </div>
             </template>
 
-            <template v-else>
+            <template v-else-if="!compact">
               <div class="iq-candy-layout">
                 <div class="iq-candy-answer">
                   <div class="iq-section-head">
@@ -788,67 +776,24 @@ onBeforeUnmount(stopTicker)
               </div>
             </template>
 
+            <p v-if="compact" class="muted small iq-compact-hint">
+              完整判分细节、HTML 预览与人工判定可在「检测记录」中查看。
+            </p>
+
             <footer class="iq-result-foot">
               <span class="muted small">{{ usageSummary(detail) }}</span>
+              <button v-if="compact" type="button" class="button ghost mini" @click="emit('open-record', detail.id)">
+                查看完整记录
+              </button>
             </footer>
           </section>
 
-          <section v-else-if="!activeRuns.length" class="panel iq-empty">
+          <section v-else-if="!recordMode && !activeRuns.length" class="panel iq-empty">
             <div class="iq-empty-icon"><Icon name="brain" :size="30" /></div>
             <strong>选择模型，运行第一道题</strong>
             <p>每道题都是一次真实的上游请求。结果会保留最近 200 次，方便横向比较不同模型。</p>
           </section>
         </div>
-
-        <section class="panel iq-history">
-          <header class="iq-history-head">
-            <div>
-              <strong>检测历史</strong>
-              <small>最近 50 次 · 保留最近 200 次</small>
-            </div>
-            <div class="iq-history-actions">
-              <div class="iq-segmented">
-                <button type="button" :class="{ active: historyFilter === 'all' }" @click="historyFilter = 'all'">全部</button>
-                <button type="button" :class="{ active: historyFilter === 'pelican' }" @click="historyFilter = 'pelican'">鹈鹕</button>
-                <button type="button" :class="{ active: historyFilter === 'candy' }" @click="historyFilter = 'candy'">糖果</button>
-              </div>
-              <button type="button" class="button ghost mini" :disabled="loadingHistory" @click="loadHistory">
-                <Icon name="refresh" :size="14" :class="{ 'is-spinning': loadingHistory }" />
-                刷新
-              </button>
-            </div>
-          </header>
-          <div v-if="!filteredHistory.length" class="iq-history-empty">
-            {{ loadingHistory ? '正在读取历史…' : '还没有检测记录' }}
-          </div>
-          <div v-else class="iq-history-list">
-            <button
-              v-for="run in filteredHistory"
-              :key="run.id"
-              type="button"
-              class="iq-history-item"
-              :class="[`tone-${iqVerdictTone(run.verdict)}`, { active: detail?.id === run.id }]"
-              @click="openRun(run, { manual: true })"
-            >
-              <span class="iq-history-top">
-                <span class="iq-history-main">
-                  <span class="badge" :class="iqVerdictTone(run.verdict)">{{ run.benchmarkLabel }}</span>
-                  <span v-if="run.manualVerdict" class="badge info">人工</span>
-                  <strong>{{ run.model }}</strong>
-                </span>
-                <span class="iq-history-side">
-                  <span class="badge" :class="iqVerdictTone(run.verdict)">{{ run.verdictLabel }}</span>
-                  <small>{{ formatIqLatency(run.latencyMs) }}</small>
-                </span>
-              </span>
-              <small class="iq-history-meta">
-                {{ run.channelName }} · {{ formatIqTime(run.createdAt) }}
-                <template v-if="run.questionTitle"> · {{ run.questionTitle }}</template>
-                <template v-if="run.judgeResult"> · {{ run.judgeResult.judgeLabel }}</template>
-              </small>
-            </button>
-          </div>
-        </section>
       </div>
     </div>
     <IqQuestionBankModal v-if="showQuestionBank" :questions="questions" @change="questions = $event" @close="showQuestionBank = false" />
@@ -889,110 +834,14 @@ onBeforeUnmount(stopTicker)
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(155%);
 }
 
-.iq-hero {
-  position: relative;
+.iq-embedded-note {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 26px;
-  overflow: hidden;
-  padding: 24px 26px;
-}
-
-.iq-hero::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  background: radial-gradient(120% 90% at 6% 0%, rgba(255, 255, 255, 0.55), transparent 48%);
-  opacity: 0.65;
-}
-
-[data-theme="dark"] .iq-hero::after {
-  background: radial-gradient(120% 90% at 6% 0%, rgba(255, 255, 255, 0.12), transparent 48%);
-  opacity: 0.8;
-}
-
-.iq-hero > * {
-  position: relative;
-  z-index: 1;
-}
-
-.iq-hero-copy {
-  min-width: 0;
-}
-
-.iq-eyebrow {
-  display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: color-mix(in srgb, var(--brand) 82%, var(--ink));
-  font-size: 10.5px;
-  font-weight: 750;
-  letter-spacing: 0.16em;
-}
-
-.iq-eyebrow-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--brand);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 14%, transparent);
-}
-
-.iq-hero h2 {
-  margin: 8px 0 8px;
-  font-size: 23px;
-  font-weight: 750;
-  line-height: 1.25;
-  letter-spacing: -0.015em;
-}
-
-.iq-hero p {
-  max-width: 760px;
   margin: 0;
   color: var(--muted);
-  font-size: 13px;
-  line-height: 1.65;
-}
-
-.iq-hero-note {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: flex-start;
-  gap: 12px;
-  max-width: 330px;
-  padding: 14px 16px;
-  border: 1px solid var(--iq-glass-line);
-  border-radius: 16px;
-  background: var(--iq-glass-soft);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
-}
-
-.iq-note-icon {
-  display: grid;
-  flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--brand) 13%, transparent);
-  color: var(--brand);
-}
-
-.iq-hero-note strong {
-  display: block;
-  margin-bottom: 4px;
-  color: var(--ink);
-  font-size: 12.5px;
-  font-weight: 700;
-}
-
-.iq-hero-note small {
-  color: var(--muted);
-  font-size: 11.5px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .iq-layout {
@@ -1000,6 +849,14 @@ onBeforeUnmount(stopTicker)
   grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
   align-items: start;
   gap: 18px;
+}
+
+.iq-layout.iq-record-mode {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.iq-compact-hint {
+  margin: 0;
 }
 
 .iq-control {
@@ -1334,13 +1191,9 @@ onBeforeUnmount(stopTicker)
   }
 }
 
-.is-spinning {
-  animation: spin 0.8s linear infinite;
-}
-
 .iq-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   min-width: 0;
   gap: 18px;
@@ -1615,8 +1468,7 @@ onBeforeUnmount(stopTicker)
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
 }
 
-.iq-source,
-.iq-answer-text {
+.iq-source {
   max-height: 420px;
   margin: 0;
   padding: 12px;
@@ -1630,11 +1482,6 @@ onBeforeUnmount(stopTicker)
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.iq-answer-text {
-  font-family: inherit;
-  font-size: 13px;
 }
 
 .iq-section-head {
@@ -1865,6 +1712,8 @@ onBeforeUnmount(stopTicker)
 .iq-result-foot {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
   padding-top: 10px;
   border-top: 1px solid var(--iq-glass-line);
@@ -1912,149 +1761,6 @@ onBeforeUnmount(stopTicker)
   line-height: 1.6;
 }
 
-.iq-history {
-  position: sticky;
-  top: 16px;
-  grid-column: 2;
-  grid-row: 1;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  min-width: 0;
-  max-height: calc(100vh - 32px);
-  gap: 12px;
-  padding: 18px;
-}
-
-.iq-history-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.iq-history-head > div:first-child {
-  display: grid;
-  gap: 2px;
-}
-
-.iq-history-head small {
-  color: var(--muted);
-  font-size: 11.5px;
-}
-
-.iq-history-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.iq-history-empty {
-  padding: 20px;
-  border: 1px dashed var(--iq-glass-line);
-  border-radius: 10px;
-  color: var(--muted);
-  font-size: 12.5px;
-  text-align: center;
-}
-
-.iq-history-list {
-  display: grid;
-  min-height: 0;
-  gap: 7px;
-  overflow-y: auto;
-  padding-right: 2px;
-}
-
-.iq-history-item {
-  --item-tone: var(--iq-glass-line);
-  display: grid;
-  width: 100%;
-  gap: 4px;
-  padding: 10px 12px;
-  border: 1px solid var(--iq-glass-line);
-  border-left: 3px solid color-mix(in srgb, var(--item-tone) 82%, transparent);
-  border-radius: 11px;
-  background: var(--iq-glass-soft);
-  color: var(--ink);
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
-}
-
-.iq-history-item.tone-success {
-  --item-tone: var(--success-fill);
-}
-
-.iq-history-item.tone-danger {
-  --item-tone: var(--danger-fill);
-}
-
-.iq-history-item.tone-warning {
-  --item-tone: var(--warning-fill);
-}
-
-.iq-history-item:hover {
-  border-color: color-mix(in srgb, var(--brand) 22%, var(--iq-glass-line));
-  background: var(--iq-glass-strong);
-  transform: translateY(-1px);
-}
-
-.iq-history-item.active {
-  border-color: color-mix(in srgb, var(--brand) 42%, var(--iq-glass-line));
-  background: color-mix(in srgb, var(--brand) 7%, var(--iq-glass-strong));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
-}
-
-[data-theme="dark"] .iq-history-item.active {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-}
-
-.iq-history-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-width: 0;
-  gap: 10px;
-}
-
-.iq-history-main {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  min-width: 0;
-  gap: 7px;
-}
-
-.iq-history-main strong {
-  max-width: 100%;
-  overflow: hidden;
-  font-size: 12.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.iq-history-meta {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.iq-history-side {
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  gap: 8px;
-}
-
-.iq-history-side small {
-  color: var(--muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .iq-page::before,
   .iq-live-dot,
@@ -2080,17 +1786,6 @@ onBeforeUnmount(stopTicker)
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .iq-history {
-    position: static;
-    grid-column: auto;
-    grid-row: auto;
-    max-height: none;
-  }
-
-  .iq-history-list {
-    overflow: visible;
-  }
-
   .iq-result-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2107,21 +1802,6 @@ onBeforeUnmount(stopTicker)
 }
 
 @media (max-width: 640px) {
-  .iq-hero {
-    align-items: flex-start;
-    flex-direction: column;
-    padding: 18px;
-  }
-
-  .iq-hero h2 {
-    font-size: 20px;
-  }
-
-  .iq-hero-note {
-    max-width: none;
-    width: 100%;
-  }
-
   .iq-target-grid,
   .iq-candy-layout,
   .iq-manual-grid {
@@ -2147,20 +1827,6 @@ onBeforeUnmount(stopTicker)
   .iq-frame {
     height: 420px;
     min-height: 260px;
-  }
-
-  .iq-history-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .iq-history-item {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .iq-history-side {
-    align-self: flex-end;
   }
 }
 </style>
