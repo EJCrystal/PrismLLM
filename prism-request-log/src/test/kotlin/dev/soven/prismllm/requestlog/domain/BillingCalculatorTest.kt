@@ -71,7 +71,7 @@ class BillingCalculatorTest {
             DefaultModelPriceRecord(
                 id = "default-price",
                 modelId = "model",
-                currency = "CNY",
+                currency = "USD",
                 inputPricePerMillion = BigDecimal("3"),
                 outputPricePerMillion = BigDecimal("4"),
                 cachedInputPricePerMillion = BigDecimal("1"),
@@ -81,8 +81,28 @@ class BillingCalculatorTest {
         )
 
         assertEquals(BigDecimal("0.00046000"), cost?.amount)
-        assertEquals("CNY", cost?.currency)
+        assertEquals("USD", cost?.currency)
         assertEquals(BigDecimal("1"), cost?.cachedInputPricePerMillion)
+    }
+
+    @Test
+    fun `refuses to bill non-USD prices instead of debting foreign amounts as USD`() {
+        // issue #222：计价器对非 USD 价格直接拒绝，原币金额不能未换算记入 USD 账本。
+        val cost = BillingCalculator.calculate(
+            record(input = 100, output = 50, cached = 20),
+            DefaultModelPriceRecord(
+                id = "default-price",
+                modelId = "model",
+                currency = "CNY",
+                inputPricePerMillion = BigDecimal("3"),
+                outputPricePerMillion = BigDecimal("4"),
+                cachedInputPricePerMillion = BigDecimal("1"),
+                createdAt = 0,
+                updatedAt = 0,
+            ),
+        )
+
+        assertNull(cost)
     }
 
     @Test

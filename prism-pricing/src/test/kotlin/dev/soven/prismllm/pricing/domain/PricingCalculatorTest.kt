@@ -72,6 +72,15 @@ class PricingCalculatorTest {
         assertNull(PricingCalculator.calculate(request(input = 10, output = 10, known = false), price()))
     }
 
+    @Test
+    fun `refuses to bill non-USD prices instead of debting foreign amounts as USD`() {
+        val nonUsd = price(input = "7", output = "14").copy(currency = "CNY")
+        assertNull(
+            PricingCalculator.calculate(request(input = 1_000_000, output = 500_000), nonUsd),
+            "非 USD 价格必须拒绝计费，避免原币金额未换算混入 USD 账本",
+        )
+    }
+
     private fun request(
         input: Long?,
         output: Long?,

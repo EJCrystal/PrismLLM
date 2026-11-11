@@ -131,7 +131,9 @@ jobs:
             -color "${workflow_files[@]}"
 
       - name: Validate PR-Agent gate script
-        run: python3 -m py_compile .github/scripts/pr_agent_gate.py
+        run: |
+          python3 -m py_compile .github/scripts/pr_agent_gate.py
+          python3 .github/scripts/test_pr_agent_gate.py
 
       - name: Validate review bot config
         run: |
