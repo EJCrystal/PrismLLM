@@ -599,4 +599,23 @@ onMounted(loadAll)
     position: static;
   }
 }
+/* 降低透明度时，本组件优先级更高的玻璃表面单独回退到实色。 */
+@media (prefers-reduced-transparency: reduce) {
+  .probe-hero,
+  .probe-note,
+  .probe-prompt,
+  .probe-response-text,
+  .probe-result-grid {
+    background: var(--panel);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .probe-note,
+  .probe-prompt,
+  .probe-response-text,
+  .probe-result-grid {
+    border-color: var(--line);
+  }
+}
 </style>

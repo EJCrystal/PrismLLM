@@ -1197,4 +1197,28 @@ onBeforeUnmount(stopTimer)
     white-space: normal;
   }
 }
+/* 降低透明度时，本组件优先级更高的玻璃表面单独回退到实色。 */
+@media (prefers-reduced-transparency: reduce) {
+  .fingerprint-hero,
+  .fingerprint-bank,
+  .fingerprint-detail,
+  .fingerprint-prompt,
+  .fingerprint-sample,
+  .fingerprint-sample-text,
+  .fingerprint-sequence,
+  .fingerprint-summary {
+    background: var(--panel);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .fingerprint-bank,
+  .fingerprint-detail,
+  .fingerprint-prompt,
+  .fingerprint-sample,
+  .fingerprint-sequence,
+  .fingerprint-summary {
+    border-color: var(--line);
+  }
+}
 </style>

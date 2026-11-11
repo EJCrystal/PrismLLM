@@ -64,10 +64,50 @@ test('内部控件使用半透明字段令牌而不是实色背景', () => {
 test('系统要求降低透明度时回退到实色并移除模糊', () => {
   const start = css.indexOf('@media (prefers-reduced-transparency: reduce)')
   assert.notEqual(start, -1, '缺少 prefers-reduced-transparency 回退')
-  const block = css.slice(start, css.indexOf('\n}\n', start))
-  for (const selector of ['.panel', '.modal', '.search-box', '.sidebar']) {
+  const block = css.slice(start)
+  for (const selector of ['.panel', '.modal', '.search-box']) {
     assert.ok(block.includes(selector), '回退块必须覆盖 ' + selector)
   }
   assert.match(block, /backdrop-filter:\s*none/)
   assert.match(block, /background:\s*var\(--panel\)/)
+})
+
+test('降低透明度回退能真正赢得层叠', () => {
+  const start = css.indexOf('@media (prefers-reduced-transparency: reduce)')
+  const block = css.slice(start)
+  // 主题限定选择器 (0,2,0) 与随后的同级规则都会覆盖单类选择器，必须提升优先级。
+  assert.match(block, /!important/, '回退规则必须带 !important 才能压过主题选择器')
+  // 回退块必须位于文件末尾，否则会被后面的 .table-view-popover 等规则覆盖。
+  const rest = css.slice(start + block.length)
+  assert.doesNotMatch(rest, /^\s*[^@\s]/m, '降低透明度回退之后不应再有普通样式规则')
+})
+
+test('侧栏回退使用深色导航底色而不是面板色', () => {
+  const start = css.indexOf('@media (prefers-reduced-transparency: reduce)')
+  const block = css.slice(start)
+  const sidebar = block.slice(block.indexOf('.sidebar {'))
+  const body = sidebar.slice(0, sidebar.indexOf('}'))
+  assert.match(body, /background:\s*var\(--nav\)/, '侧栏必须回退到 --nav，浅色主题下白底白字不可读')
+  assert.doesNotMatch(body, /var\(--panel\)/)
+})
+
+test('弹层与组件级玻璃表面自带回退', () => {
+  const files = {
+    'SearchSelect.vue': ['.search-select-panel'],
+    'FingerprintTestView.vue': ['.fingerprint-hero'],
+    'ModelConnectivityView.vue': ['.probe-hero'],
+    'KeyDisableRuleFields.vue': ['.key-auto-disable-rule textarea'],
+    'ChannelKeyEditor.vue': ['.channel-key-editor'],
+    'ChannelKeyRateLimitModal.vue': ['.channel-key-rate-limit-preview'],
+    'ChannelsView.vue': ['.channel-key-detail', '.protocol-row'],
+  }
+  for (const [file, selectors] of Object.entries(files)) {
+    const source = readFileSync(new URL('../src/components/' + file, import.meta.url), 'utf8')
+    const start = source.indexOf('@media (prefers-reduced-transparency: reduce)')
+    assert.notEqual(start, -1, file + ' 缺少降低透明度回退')
+    const block = source.slice(start)
+    for (const selector of selectors) {
+      assert.ok(block.includes(selector), file + ' 的回退块必须覆盖 ' + selector)
+    }
+  }
 })

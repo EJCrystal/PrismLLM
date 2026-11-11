@@ -2395,4 +2395,27 @@ onMounted(() => {
   .channel-canonical-clear { width: 34px; height: 34px; }
   .channel-model-test-btn { min-height: 34px; }
 }
+/* 降低透明度时，渠道表单与密钥区的玻璃表面回退到实色。 */
+@media (prefers-reduced-transparency: reduce) {
+  .channel-form-empty,
+  .channel-key-nav-item.is-active,
+  .channel-key-detail,
+  .channel-key-accordion-item,
+  .channel-canonical-section,
+  .channel-canonical-row,
+  .channel-mobile-card,
+  .protocol-row,
+  .channel-canonical-input-wrap input {
+    background: var(--panel);
+    border-color: var(--line);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .channel-form-tab-count,
+  .channel-mobile-priority,
+  .protocol-order-actions .icon-button {
+    background: var(--bg);
+  }
+}
 </style>

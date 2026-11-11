@@ -151,4 +151,11 @@ function removeRule(index: number) {
   .key-auto-disable-grid { grid-template-columns: 1fr; }
   .key-auto-disable-rule-head { align-items: stretch; flex-direction: column; }
 }
+/* 降低透明度时，文本框等半透明控件回退到实色与常规边线。 */
+@media (prefers-reduced-transparency: reduce) {
+  .key-auto-disable-rule textarea {
+    background: var(--panel);
+    border-color: var(--line);
+  }
+}
 </style>

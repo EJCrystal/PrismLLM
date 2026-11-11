@@ -380,4 +380,17 @@ function choose(value: string, close: () => void) {
   font-size: 12px;
   text-align: center;
 }
+/* 弹层被 Teleport 到 body，拿不到页面容器的回退，需要自己声明。 */
+@media (prefers-reduced-transparency: reduce) {
+  .search-select-panel {
+    background: var(--panel);
+    border-color: var(--line);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .search-select-group-label {
+    background: var(--panel);
+  }
+}
 </style>

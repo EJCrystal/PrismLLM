@@ -506,4 +506,15 @@ function addManualModels(): void {
     min-height: 40px;
   }
 }
+/* 降低透明度时，编辑器内部的玻璃卡片回退到实色。 */
+@media (prefers-reduced-transparency: reduce) {
+  .channel-key-editor,
+  .channel-key-models-panel,
+  .channel-key-rate-limit-row {
+    background: var(--panel);
+    border-color: var(--line);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
 </style>

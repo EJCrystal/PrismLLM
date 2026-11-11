@@ -124,4 +124,11 @@ function save() {
   .channel-key-rate-limit-preview { align-items: flex-start; flex-direction: column; }
   .channel-key-rate-limit-preview strong { text-align: left; }
 }
+/* 降低透明度时，预览块回退到实色。 */
+@media (prefers-reduced-transparency: reduce) {
+  .channel-key-rate-limit-preview {
+    background: var(--panel);
+    border-color: var(--line);
+  }
+}
 </style>
