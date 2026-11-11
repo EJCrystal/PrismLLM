@@ -71,11 +71,15 @@ export interface ModelTestErrorView {
  * 只显示原文会让人误以为网关或网络出了问题。
  */
 export function modelTestErrorView(
-  result: Pick<ChannelModelTestResult, 'statusCode' | 'errorMessage'> | null | undefined,
+  result: Pick<ChannelModelTestResult, 'success' | 'statusCode' | 'errorMessage'> | null | undefined,
 ): ModelTestErrorView | null {
-  const message = String(result?.errorMessage ?? '').trim()
-  const status = result?.statusCode ?? null
-  // 成功响应没有错误正文：2xx 不能生成「上游返回 HTTP 200」之类的错误视图。
+  if (!result) return null
+  // 测试成功时没有错误可展示：即使上游省略了状态码或 errorMessage，
+  // 也不能把成功结果渲染成「上游返回 HTTP 200」之类的失败提示。
+  if (result.success) return null
+  const message = String(result.errorMessage ?? '').trim()
+  const status = result.statusCode ?? null
+  // 没有错误正文的 2xx 同样是成功响应（后端可能没有标记 success）。
   if (!message && (status == null || (status >= 200 && status < 300))) return null
   const detail = message || null
   if (status === 404) {

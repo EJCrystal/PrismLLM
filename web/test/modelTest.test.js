@@ -67,6 +67,10 @@ describe('modelTest: 渠道模型连通性测试', () => {
   })
 
   it('成功的 2xx 结果不生成错误视图', () => {
+    // 成功标记优先：上游可能保留旧的错误正文，测试成功时也不能显示失败提示。
+    assert.equal(modelTestErrorView({ success: true, statusCode: 200, errorMessage: null }), null)
+    assert.equal(modelTestErrorView({ success: true, statusCode: 200, errorMessage: 'stale error' }), null)
+    assert.equal(modelTestErrorView({ success: true, statusCode: null, errorMessage: '' }), null)
     assert.equal(modelTestErrorView({ statusCode: 200, errorMessage: null }), null)
     assert.equal(modelTestErrorView({ statusCode: 201, errorMessage: '' }), null)
     assert.equal(modelTestErrorView({ statusCode: null, errorMessage: null }), null)
