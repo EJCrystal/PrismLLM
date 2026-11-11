@@ -35,6 +35,13 @@ def test_plain_words_are_not_code():
     assert code_tokens("普通词 `reason` 和 `state` 不是锚点") == []
 
 
+def test_long_lowercase_words_are_not_code():
+    # CodeRabbit review：`validation` 这类长小写词在正文里常见，
+    # 若当锚点，标注行附近没该词就会把仍有效的意见误判 stale。
+    assert code_tokens("补充 `validation` 的回归测试") == []
+    assert code_tokens("检查 `implementation` 是否覆盖 `cost_amount`") == ["cost_amount"]
+
+
 def test_chinese_is_not_code():
     assert code_tokens("`未分配费用` 被覆盖") == []
 

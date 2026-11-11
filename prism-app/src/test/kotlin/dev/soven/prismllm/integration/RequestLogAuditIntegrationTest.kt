@@ -504,6 +504,25 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 }
             }
 
+            // V67 兜底：构造旧版校验遗留的非 USD 历史数据（CNY 价格与 CNY 费用日志），
+            // 验证迁移把它们清洗为 USD / 未计费而不是让 CHECK 约束失败。
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into model_prices (id, channel_id, upstream_model, currency, input_price_per_million, output_price_per_million, created_at, updated_at)
+                        values ('v67-cny-price', 'migration-channel', 'cny-model', 'CNY', 7, 14, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into request_logs (request_id, alias, status_code, total_ms, created_at, cost_amount, cost_currency)
+                        values ('v67-cny-log', 'cny-legacy', 200, 1, 1, 7, 'CNY')
+                        """.trimIndent(),
+                    )
+                }
+            }
+
             migrateTo(migrationUrl)
 
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
@@ -552,6 +571,18 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
                         assertEquals("67", result.getString(1))
+                    }
+                    // V67 数据清洗：非 USD 历史费用置 NULL（未计费），非 USD 价格归一为 USD，CHECK 不拒迁。
+                    statement.executeQuery(
+                        "select cost_amount, cost_currency from request_logs where request_id = 'v67-cny-log'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        assertNull(result.getObject(1), "非 USD 历史费用应置 NULL 而不是标成 USD")
+                        assertNull(result.getObject(2))
+                    }
+                    statement.executeQuery("select currency from model_prices where id = 'v67-cny-price'").use { result ->
+                        assertTrue(result.next())
+                        assertEquals("USD", result.getString(1), "非 USD 价格配置应归一为 USD")
                     }
                     statement.executeQuery("select request_overrides, quota_settings, quota_credential_ciphertext, quota_credential_nonce, protocol_auth_types from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -683,7 +714,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                         assertEquals(1, result.getInt(1), "V25 应为 request_logs 增加 cached_write_tokens 列")
                     }
                     statement.executeQuery(
-                        "select upstream_model, input_price_per_million from model_prices where channel_id = 'migration-channel'",
+                        "select upstream_model, input_price_per_million from model_prices where channel_id = 'migration-channel' and upstream_model = 'duplicate-model'",
                     ).use { result ->
                         assertTrue(result.next())
                         assertEquals("duplicate-model", result.getString(1), "V24 应清理 trim 后重复的价格并保留最近更新的一条")

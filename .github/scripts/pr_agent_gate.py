@@ -144,11 +144,14 @@ def code_tokens(body: str) -> list[str]:
         token = raw.strip()
         if "://" in token or token.startswith(("/", "~", "http")):
             continue
-        # 长度门槛：普通词要求 8 字符，避免 state/reason 这类通用词误命中；
-        # 括号调用（foo()）和明显代码形态的标识符（snake_case/camelCase/复合表达式）
-        # 已足够区分普通词，放宽到 5 字符（costUsd 这类 7 字符 camelCase 不能漏）。
-        threshold = 5 if ("(" in token or code_like(token)) else 8
-        if len(token) < threshold:
+        # 只有明显代码形态的表达式才能当 stale 锚点：
+        # - 括号/括号调用（foo()）、复合表达式（x = y[1]、a.b）
+        # - snake_case（cost_amount）/ camelCase（costUsd）
+        # 纯小写单词（validation、reason）无论多长都不能当锚点——它们在自然语言
+        # 正文里太常见，标注行附近没这个词不代表意见过期（CodeRabbit review 指出）。
+        if not code_like(token):
+            continue
+        if len(token) < 5:
             continue
         tokens.append(token)
     return list(dict.fromkeys(tokens))
@@ -159,7 +162,8 @@ def code_like(token: str) -> bool:
 
     - snake_case（cost_amount）、camelCase（costUsd）、kotlin 风格（costUsd?）算代码；
     - 复合表达式（costUsd = costs[id]）算代码；
-    - 纯小写单词（reason）或常见短语不算，避免把正文里随口的词当锚点。
+    - 纯小写单词（reason / validation）不算：无符号、无下划线、无大小写交错，
+      无论长度都可能出现在普通英文句子里，不能作为「引用的代码已不存在」的证据。
     """
     if any(ch in token for ch in "()[]{}=.<>!:+-*/"):
         return True
