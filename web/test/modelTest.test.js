@@ -4,6 +4,7 @@ import {
   MODEL_TEST_DEFAULT_PROMPT,
   buildModelTestRequest,
   formatModelTestUsage,
+  modelTestErrorView,
   modelTestProtocolLabel,
   modelTestTargetKey,
   normalizeModelTestSettings,
@@ -63,5 +64,49 @@ describe('modelTest: 渠道模型连通性测试', () => {
       reasoningTokens: 1,
       totalTokens: 13,
     }), '输入 10 · 输出 3 · 推理 1 · 总计 13')
+  })
+
+  it('成功的 2xx 结果不生成错误视图', () => {
+    // 成功标记优先：上游可能保留旧的错误正文，测试成功时也不能显示失败提示。
+    assert.equal(modelTestErrorView({ success: true, statusCode: 200, errorMessage: null }), null)
+    assert.equal(modelTestErrorView({ success: true, statusCode: 200, errorMessage: 'stale error' }), null)
+    assert.equal(modelTestErrorView({ success: true, statusCode: null, errorMessage: '' }), null)
+    assert.equal(modelTestErrorView({ statusCode: 200, errorMessage: null }), null)
+    assert.equal(modelTestErrorView({ statusCode: 201, errorMessage: '' }), null)
+    assert.equal(modelTestErrorView({ statusCode: null, errorMessage: null }), null)
+  })
+
+  it('404 翻译成模型权限不足，并保留上游原文', () => {
+    const view = modelTestErrorView({
+      statusCode: 404,
+      errorMessage: 'Requested entity was not found.',
+    })
+    assert.equal(view.title, '该账号无法调用这个模型')
+    assert.equal(view.detail, 'Requested entity was not found.')
+    assert.match(view.hint, /套餐|模型目录/)
+  })
+
+  it('鉴权与限流错误给出可执行的下一步', () => {
+    assert.equal(modelTestErrorView({ statusCode: 401, errorMessage: 'Unauthorized' }).title, '账号凭据已失效')
+    assert.equal(modelTestErrorView({ statusCode: 403, errorMessage: 'Permission denied' }).title, '账号无权调用这个模型')
+    assert.equal(modelTestErrorView({ statusCode: 429, errorMessage: 'Rate limited' }).title, '上游限流')
+    assert.equal(modelTestErrorView({ statusCode: 503, errorMessage: 'Unavailable' }).title, '上游暂时不可用')
+  })
+
+  it('没有状态码时识别超时、项目缺失与网络错误', () => {
+    assert.equal(modelTestErrorView({ statusCode: null, errorMessage: '测试超时（45 秒）' }).title, '测试超时')
+    assert.equal(
+      modelTestErrorView({ statusCode: null, errorMessage: '未获取到 Antigravity 项目，无法发起请求；请确认账号已完成开通' }).title,
+      '账号还没有 Antigravity 项目',
+    )
+    assert.equal(modelTestErrorView({ statusCode: null, errorMessage: '无法连接上游：connect timeout' }).title, '无法连接上游')
+    assert.equal(modelTestErrorView(null), null)
+  })
+
+  it('未识别的错误保留原文，不吞掉排查信息', () => {
+    const view = modelTestErrorView({ statusCode: 418, errorMessage: 'unexpected teapot' })
+    assert.equal(view.title, 'unexpected teapot')
+    assert.equal(view.detail, null)
+    assert.equal(view.hint, null)
   })
 })
