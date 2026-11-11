@@ -82,6 +82,20 @@ test('降低透明度回退能真正赢得层叠', () => {
   assert.doesNotMatch(rest, /^\s*[^@\s]/m, '降低透明度回退之后不应再有普通样式规则')
 })
 
+test('输入框与次要按钮在降低透明度时连背景和模糊一起回退', () => {
+  const start = css.indexOf('@media (prefers-reduced-transparency: reduce)')
+  const block = css.slice(start)
+  // 只恢复边框、不撤掉半透明底与模糊，等于沿用玻璃外观。
+  for (const selector of ['.field input', '.field textarea', '.select-input', '.button.ghost', '.button.mini']) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const rule = new RegExp('([^{}]*' + escaped + '[^{}]*)\\{([^{}]*)\\}', 'g')
+    const bodies = [...block.matchAll(rule)].map((m) => m[2])
+    const withBg = bodies.some((b) => /background(-color)?:\s*var\(--panel\)\s*!important/.test(b))
+    assert.ok(withBg, selector + ' 必须在回退块里设置实色背景')
+  }
+  assert.match(block, /backdrop-filter:\s*none\s*!important/)
+})
+
 test('侧栏回退使用深色导航底色而不是面板色', () => {
   const start = css.indexOf('@media (prefers-reduced-transparency: reduce)')
   const block = css.slice(start)

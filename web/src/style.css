@@ -8109,10 +8109,39 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .field input,
   .field select,
   .field textarea,
+  .search-box input,
   .button.ghost,
   .button.mini,
   .select-input {
     border-color: var(--line) !important;
+  }
+
+  /* 输入框、下拉与次要按钮此前也是实色，回退时必须连背景和模糊一起撤掉；
+     连同悬停/聚焦态一起覆盖，避免交互后又滑回半透明。 */
+  .field input,
+  .field select,
+  .field textarea,
+  .search-box input,
+  .button.ghost,
+  .button.mini,
+  .select-input,
+  .field input:hover:not(:disabled),
+  .field select:hover:not(:disabled),
+  .field textarea:hover:not(:disabled),
+  .search-box input:hover,
+  .button.ghost:hover,
+  .button.mini:hover:not(:disabled),
+  .select-input:hover:not(:disabled),
+  .field input:focus,
+  .field select:focus,
+  .field textarea:focus,
+  .search-box input:focus,
+  .button.ghost:focus,
+  .button.mini:focus,
+  .select-input:focus {
+    background-color: var(--panel) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
   }
 }
 
