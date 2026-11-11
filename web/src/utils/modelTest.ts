@@ -75,7 +75,8 @@ export function modelTestErrorView(
 ): ModelTestErrorView | null {
   const message = String(result?.errorMessage ?? '').trim()
   const status = result?.statusCode ?? null
-  if (!message && status == null) return null
+  // 成功响应没有错误正文：2xx 不能生成「上游返回 HTTP 200」之类的错误视图。
+  if (!message && (status == null || (status >= 200 && status < 300))) return null
   const detail = message || null
   if (status === 404) {
     return {

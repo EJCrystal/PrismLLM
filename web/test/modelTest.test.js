@@ -66,6 +66,12 @@ describe('modelTest: 渠道模型连通性测试', () => {
     }), '输入 10 · 输出 3 · 推理 1 · 总计 13')
   })
 
+  it('成功的 2xx 结果不生成错误视图', () => {
+    assert.equal(modelTestErrorView({ statusCode: 200, errorMessage: null }), null)
+    assert.equal(modelTestErrorView({ statusCode: 201, errorMessage: '' }), null)
+    assert.equal(modelTestErrorView({ statusCode: null, errorMessage: null }), null)
+  })
+
   it('404 翻译成模型权限不足，并保留上游原文', () => {
     const view = modelTestErrorView({
       statusCode: 404,
