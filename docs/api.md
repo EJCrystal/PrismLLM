@@ -335,7 +335,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 - `requestsPerMinute`：按 UTC 固定分钟窗口限制单密钥每分钟请求数。
 - `maxConcurrentRequests`：单密钥同时处理并发上限。
 - `dailyTokenLimit`：按 UTC 自然日限制总 Token 数。
-- `dailyUsdLimit` / `dailyCnyLimit` / `dailyEurLimit`：按币种独立的每日费用上限。
+- `dailyUsdLimit`：每日费用上限（USD）。
 
 ### 2. 密钥轮换（Rotate）与永久撤销（Revoke）
 

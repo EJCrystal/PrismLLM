@@ -307,8 +307,6 @@ export interface UpstreamRequestSettings {
 export interface ClientKeyQuotaUsage {
   dailyTokens: number
   dailyUsdCost: string
-  dailyCnyCost: string
-  dailyEurCost: string
   concurrentRequests: number
   currentMinuteRequests: number
 }
@@ -343,8 +341,6 @@ export interface ClientKey {
   expiresAt: number | null
   dailyTokenLimit: number | null
   dailyUsdLimit: string | null
-  dailyCnyLimit: string | null
-  dailyEurLimit: string | null
   maxConcurrentRequests: number | null
   requestsPerMinute: number | null
   quotaUsage: ClientKeyQuotaUsage
@@ -359,8 +355,6 @@ export interface ClientKeyRequest {
   expiresAt?: number | null
   dailyTokenLimit?: number | null
   dailyUsdLimit?: string | null
-  dailyCnyLimit?: string | null
-  dailyEurLimit?: string | null
   maxConcurrentRequests?: number | null
   requestsPerMinute?: number | null
 }
@@ -381,7 +375,8 @@ export interface UsageDimensions {
 }
 
 export interface UsageCosts {
-  costs: Record<string, string>
+  /** USD 费用合计；没有任何可计费请求时为 null。 */
+  costUsd: string | null
 }
 
 export interface UsageTotal extends UsageDimensions, UsageCosts {
@@ -497,13 +492,6 @@ export interface ModelPriceReference {
   cachedInputPricePerMillion: string | null
   provider: string | null
   source: string
-}
-
-export interface ExchangeRates {
-  base: string
-  date: string
-  source: string
-  rates: Record<string, string>
 }
 
 export interface RequestLog {

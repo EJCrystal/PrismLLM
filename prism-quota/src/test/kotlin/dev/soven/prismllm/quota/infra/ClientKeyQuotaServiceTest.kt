@@ -21,7 +21,7 @@ class ClientKeyQuotaServiceTest {
         val key = key(ClientKeyQuotaLimits(maxConcurrentRequests = 1))
 
         val lease = service.acquire(key)
-        service.settle(lease, tokens = 7, costs = mapOf("USD" to BigDecimal("0.25")))
+        service.settle(lease, tokens = 7, usdCost = BigDecimal("0.25"))
 
         assertEquals(0, service.currentUsage(key.id).concurrentRequests)
         assertEquals(7, service.currentUsage(key.id).dailyTokens)
@@ -33,7 +33,7 @@ class ClientKeyQuotaServiceTest {
         val key = key(ClientKeyQuotaLimits(maxConcurrentRequests = 1))
 
         val lease = service.acquire(key)
-        service.settle(lease, tokens = 0, costs = emptyMap())
+        service.settle(lease, tokens = 0, usdCost = BigDecimal.ZERO)
 
         service.acquire(key)
         assertEquals(1, service.currentUsage(key.id).concurrentRequests)
@@ -72,10 +72,10 @@ class ClientKeyQuotaServiceTest {
     fun `checks persisted tokens and costs on next acquisition`() = runBlocking {
         val storage = InMemoryUsageRepository()
         val service = storage.service()
-        val key = key(ClientKeyQuotaLimits(dailyTokens = 5, dailyCosts = mapOf("USD" to BigDecimal("1"))))
+        val key = key(ClientKeyQuotaLimits(dailyTokens = 5, dailyUsdLimit = BigDecimal("1")))
 
         val lease = service.acquire(key)
-        service.settle(lease, tokens = 5, costs = mapOf("USD" to BigDecimal("1")))
+        service.settle(lease, tokens = 5, usdCost = BigDecimal("1"))
 
         val error = assertFailsWith<GatewayError> { service.acquire(key) }
         assertEquals("daily_token_quota_exceeded", error.code)
@@ -96,7 +96,7 @@ class ClientKeyQuotaServiceTest {
         val lease = service.acquire(key)
 
         assertFailsWith<IllegalStateException> {
-            service.settle(lease, tokens = 10, costs = emptyMap())
+            service.settle(lease, tokens = 10, usdCost = BigDecimal.ZERO)
         }
 
         shouldFail = false
@@ -123,13 +123,11 @@ class ClientKeyQuotaServiceTest {
 
         fun service(now: () -> Long = { 1L }) = ClientKeyQuotaService(
             usageReader = { id, _ -> usage[id] ?: ClientKeyQuotaUsage() },
-            usageWriter = { id, _, tokens, costs ->
+            usageWriter = { id, _, tokens, usdCost ->
                 val previous = usage[id] ?: ClientKeyQuotaUsage()
                 usage[id] = ClientKeyQuotaUsage(
                     dailyTokens = previous.dailyTokens + tokens,
-                    dailyCosts = previous.dailyCosts.mapValues { (currency, amount) ->
-                        amount + (costs[currency] ?: BigDecimal.ZERO)
-                    },
+                    dailyUsdCost = previous.dailyUsdCost + usdCost,
                 )
             },
             now = now,

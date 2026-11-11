@@ -41,7 +41,6 @@ function referenceDraftKey() {
   return [
     activePrice.value?.id || '',
     form.modelId.trim(),
-    form.currency,
     form.inputPricePerMillion,
     form.outputPricePerMillion,
     form.cachedInputPricePerMillion,
@@ -94,11 +93,7 @@ async function fetchReferencePrice() {
     notify('请先填写或选择模型 ID', 'warning')
     return
   }
-  if (form.currency !== 'USD' && hasPriceDraft(form)) {
-    notify('参考价以 USD 计；当前单价不是 USD，请先清空金额或新建 USD 默认价', 'warning')
-    return
-  }
-  if (hasPriceDraft(form) && !window.confirm('获取参考价会用 USD 金额覆盖当前填写的单价和币种，是否继续？')) {
+  if (hasPriceDraft(form) && !window.confirm('获取参考价会用 USD 参考金额覆盖当前填写的单价，是否继续？')) {
     return
   }
   const requestId = ++referenceRequestId
@@ -108,7 +103,6 @@ async function fetchReferencePrice() {
   try {
     const res = await api.getModelPriceReference(modelName)
     if (requestId !== referenceRequestId || draftKey !== referenceDraftKey()) return
-    form.currency = 'USD'
     form.pricingMode = 'token'
     form.perRequestPrice = ''
     form.cachedInputWritePricePerMillion = ''
@@ -233,12 +227,6 @@ async function remove(price: ModelDefaultPrice) {
         </datalist>
         <small v-if="activePrice">已配置的默认单价不可修改模型 ID；如需更换模型请新增或删除后重新配置。</small>
         <small v-else>默认价按模型 ID 生效；渠道覆盖价优先。模型 ID 通常是渠道配置的规范 ID，未配置时使用上游模型名。</small>
-      </label>
-
-      <label class="field">
-        <span>计费币种</span>
-        <input type="text" :value="form.currency" readonly aria-label="计费币种" />
-        <small>获取参考价会切换为 USD。</small>
       </label>
 
       <PriceFields :form="form" />

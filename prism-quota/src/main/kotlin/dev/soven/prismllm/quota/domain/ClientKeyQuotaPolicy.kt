@@ -4,28 +4,24 @@ import java.math.BigDecimal
 
 /**
  * 调用方密钥的可选每日额度、每分钟请求数和并发上限。null 表示该维度不设限。
+ * 费用额度按 USD 计。
  */
 data class ClientKeyQuotaLimits(
     val dailyTokens: Long? = null,
-    val dailyCosts: Map<String, BigDecimal> = emptyMap(),
+    val dailyUsdLimit: BigDecimal? = null,
     val maxConcurrentRequests: Int? = null,
     val requestsPerMinute: Int? = null,
-) {
-    fun dailyCostLimit(currency: String): BigDecimal? = dailyCosts[currency.uppercase()]
-}
+)
 
 /**
- * 按自然日累计的额度用量。费用按计费币种分别累计，不做隐含汇率换算。
+ * 按自然日累计的额度用量。费用按 USD 累计。
  */
 data class ClientKeyQuotaUsage(
     val dailyTokens: Long = 0,
-    val dailyCosts: Map<String, BigDecimal> = emptyMap(),
+    val dailyUsdCost: BigDecimal = BigDecimal.ZERO,
     val concurrentRequests: Int = 0,
     val currentMinuteRequests: Int = 0,
-) {
-    fun dailyCost(currency: String): BigDecimal =
-        dailyCosts[currency.uppercase()] ?: BigDecimal.ZERO
-}
+)
 
 enum class QuotaRejectionReason(val code: String) {
     DAILY_TOKENS("daily_token_quota_exceeded"),
@@ -56,13 +52,12 @@ fun checkClientKeyQuota(
             return QuotaCheckResult(false, QuotaRejectionReason.CONCURRENCY, "并发请求数已达上限")
         }
     }
-    limits.dailyCosts.keys.sorted().forEach { currency ->
-        val limit = limits.dailyCostLimit(currency) ?: return@forEach
-        if (limit.signum() >= 0 && usage.dailyCost(currency) >= limit) {
+    limits.dailyUsdLimit?.let { limit ->
+        if (limit.signum() >= 0 && usage.dailyUsdCost >= limit) {
             return QuotaCheckResult(
                 false,
                 QuotaRejectionReason.DAILY_COST,
-                "今日 $currency 费用额度已用完",
+                "今日 USD 费用额度已用完",
             )
         }
     }

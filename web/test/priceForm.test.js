@@ -14,18 +14,18 @@ import {
   resetPriceForm,
 } from '../src/utils/priceForm'
 
-describe('priceForm: 计费单价的币种与金额', () => {
-  it('编辑已有非 USD 单价时保留原币种和金额', () => {
+describe('priceForm: 计费单价的金额与快照币种', () => {
+  it('编辑已有 USD 单价时保留金额', () => {
     const form = priceFormState({
-      currency: 'CNY',
+      currency: 'USD',
       inputPricePerMillion: '7.00000000',
       outputPricePerMillion: '14.00000000',
       cachedInputPricePerMillion: '1.00000000',
     })
     const payload = buildPricePayload(form, 'channel-a', 'model-a')
 
-    assert.equal(form.currency, 'CNY')
-    assert.equal(payload.currency, 'CNY')
+    assert.equal(form.currency, 'USD')
+    assert.equal(payload.currency, 'USD')
     assert.equal(payload.inputPricePerMillion, '7.00000000')
     assert.equal(payload.outputPricePerMillion, '14.00000000')
     assert.equal(payload.cachedInputPricePerMillion, '1.00000000')
@@ -57,13 +57,13 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(payload.currency, 'USD')
   })
 
-  it('从已有 CNY 单价切换到未定价模型时重置为 USD 草稿', () => {
+  it('从已有单价切换到未定价模型时重置为 USD 草稿', () => {
     const existing = priceFormState({
-      currency: 'CNY',
+      currency: 'USD',
       inputPricePerMillion: '7',
       outputPricePerMillion: '14',
     })
-    assert.equal(existing.currency, 'CNY')
+    assert.equal(existing.currency, 'USD')
 
     const draft = emptyPriceDraft()
     assert.equal(draft.currency, 'USD')
@@ -85,14 +85,14 @@ describe('priceForm: 计费单价的币种与金额', () => {
     applyPriceToForm(form, {
       channelId: 'c2',
       upstreamModel: 'deepseek-v4.1-flash',
-      currency: 'CNY',
+      currency: 'USD',
       inputPricePerMillion: '7',
       outputPricePerMillion: '14',
       cachedInputPricePerMillion: '1',
     })
     assert.equal(form.channelId, 'c2')
     assert.equal(form.upstreamModel, 'deepseek-v4.1-flash')
-    assert.equal(form.currency, 'CNY')
+    assert.equal(form.currency, 'USD')
     assert.equal(form.inputPricePerMillion, '7')
     assert.equal(form.outputPricePerMillion, '14')
     assert.equal(form.cachedInputPricePerMillion, '1')
@@ -102,7 +102,7 @@ describe('priceForm: 计费单价的币种与金额', () => {
     const form = {
       channelId: 'c1',
       upstreamModel: 'deepseek-v4.1-flash',
-      currency: 'CNY',
+      currency: 'USD',
       inputPricePerMillion: '7',
       outputPricePerMillion: '14',
       cachedInputPricePerMillion: '1',
@@ -116,11 +116,11 @@ describe('priceForm: 计费单价的币种与金额', () => {
     assert.equal(form.cachedInputPricePerMillion, '')
   })
 
-  it('构建模型默认价请求体并保留原币种', () => {
+  it('构建模型默认价请求体', () => {
     const form = {
       ...defaultPriceFormState({
         modelId: 'deepseek-flash',
-        currency: 'CNY',
+        currency: 'USD',
         inputPricePerMillion: '7',
         outputPricePerMillion: '14',
         cachedInputPricePerMillion: '1',
@@ -128,7 +128,7 @@ describe('priceForm: 计费单价的币种与金额', () => {
     }
     const payload = buildDefaultPricePayload(form, ' deepseek-flash ')
     assert.equal(payload.modelId, 'deepseek-flash')
-    assert.equal(payload.currency, 'CNY')
+    assert.equal(payload.currency, 'USD')
     assert.equal(payload.inputPricePerMillion, '7')
     assert.equal(payload.outputPricePerMillion, '14')
     assert.equal(payload.cachedInputPricePerMillion, '1')

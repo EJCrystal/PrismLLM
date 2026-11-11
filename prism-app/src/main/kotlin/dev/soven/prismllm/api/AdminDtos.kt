@@ -422,8 +422,6 @@ data class ClientKeyRequest(
     val expiresAt: Long? = null,
     val dailyTokenLimit: Long? = null,
     val dailyUsdLimit: String? = null,
-    val dailyCnyLimit: String? = null,
-    val dailyEurLimit: String? = null,
     val maxConcurrentRequests: Int? = null,
     val requestsPerMinute: Int? = null,
 )
@@ -443,8 +441,6 @@ data class ClientKeyResponse(
     val expiresAt: Long?,
     val dailyTokenLimit: Long?,
     val dailyUsdLimit: String?,
-    val dailyCnyLimit: String?,
-    val dailyEurLimit: String?,
     val maxConcurrentRequests: Int?,
     val requestsPerMinute: Int?,
     val quotaUsage: ClientKeyQuotaUsageResponse,
@@ -460,9 +456,7 @@ fun ClientKeyRecord.toResponse() = ClientKeyResponse(
     enabled = enabled,
     expiresAt = expiresAt,
     dailyTokenLimit = quotas.dailyTokens,
-    dailyUsdLimit = quotas.dailyCostLimit("USD")?.stripTrailingZeros()?.toPlainString(),
-    dailyCnyLimit = quotas.dailyCostLimit("CNY")?.stripTrailingZeros()?.toPlainString(),
-    dailyEurLimit = quotas.dailyCostLimit("EUR")?.stripTrailingZeros()?.toPlainString(),
+    dailyUsdLimit = quotas.dailyUsdLimit?.stripTrailingZeros()?.toPlainString(),
     maxConcurrentRequests = quotas.maxConcurrentRequests,
     requestsPerMinute = quotas.requestsPerMinute,
     quotaUsage = ClientKeyQuotaUsageResponse(),
@@ -478,9 +472,7 @@ fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyRe
     enabled = enabled,
     expiresAt = expiresAt,
     dailyTokenLimit = quotas.dailyTokens,
-    dailyUsdLimit = quotas.dailyCostLimit("USD")?.stripTrailingZeros()?.toPlainString(),
-    dailyCnyLimit = quotas.dailyCostLimit("CNY")?.stripTrailingZeros()?.toPlainString(),
-    dailyEurLimit = quotas.dailyCostLimit("EUR")?.stripTrailingZeros()?.toPlainString(),
+    dailyUsdLimit = quotas.dailyUsdLimit?.stripTrailingZeros()?.toPlainString(),
     maxConcurrentRequests = quotas.maxConcurrentRequests,
     requestsPerMinute = quotas.requestsPerMinute,
     quotaUsage = usage,
@@ -491,9 +483,7 @@ fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyRe
 
 fun quotaUsageResponse(usage: ClientKeyQuotaUsage) = ClientKeyQuotaUsageResponse(
     dailyTokens = usage.dailyTokens,
-    dailyUsdCost = usage.dailyCost("USD").stripTrailingZeros().toPlainString(),
-    dailyCnyCost = usage.dailyCost("CNY").stripTrailingZeros().toPlainString(),
-    dailyEurCost = usage.dailyCost("EUR").stripTrailingZeros().toPlainString(),
+    dailyUsdCost = usage.dailyUsdCost.stripTrailingZeros().toPlainString(),
     concurrentRequests = usage.concurrentRequests,
     currentMinuteRequests = usage.currentMinuteRequests,
 )
@@ -502,8 +492,6 @@ fun quotaUsageResponse(usage: ClientKeyQuotaUsage) = ClientKeyQuotaUsageResponse
 data class ClientKeyQuotaUsageResponse(
     val dailyTokens: Long = 0,
     val dailyUsdCost: String = "0",
-    val dailyCnyCost: String = "0",
-    val dailyEurCost: String = "0",
     val concurrentRequests: Int = 0,
     val currentMinuteRequests: Int = 0,
 )
@@ -569,7 +557,8 @@ data class UsageTotalResponse(
     val failovers: Long,
     val avgFirstTokenMs: Long? = null,
     val avgTotalMs: Long? = null,
-    val costs: Map<String, String>,
+    /** 费用合计（USD）；没有任何可计费请求时为 null。 */
+    val costUsd: String? = null,
 )
 
 @Serializable
@@ -587,7 +576,7 @@ data class UsageGroupResponse(
     val failovers: Long,
     val avgFirstTokenMs: Long? = null,
     val avgTotalMs: Long? = null,
-    val costs: Map<String, String>,
+    val costUsd: String? = null,
 )
 
 @Serializable
@@ -601,7 +590,7 @@ data class UsageTrendResponse(
     val cachedWriteTokens: Long,
     val reasoningTokens: Long,
     val totalTokens: Long,
-    val costs: Map<String, String>,
+    val costUsd: String? = null,
 )
 
 @Serializable
@@ -648,7 +637,7 @@ fun UsageTotal.toResponse() = UsageTotalResponse(
     failovers = failovers,
     avgFirstTokenMs = avgFirstTokenMs,
     avgTotalMs = avgTotalMs,
-    costs = costs.mapValues { (_, value) -> value.stripTrailingZeros().toPlainString() },
+    costUsd = costUsd?.stripTrailingZeros()?.toPlainString(),
 )
 
 fun UsageGroup.toResponse() = UsageGroupResponse(
@@ -665,7 +654,7 @@ fun UsageGroup.toResponse() = UsageGroupResponse(
     failovers = failovers,
     avgFirstTokenMs = avgFirstTokenMs,
     avgTotalMs = avgTotalMs,
-    costs = costs.mapValues { (_, value) -> value.stripTrailingZeros().toPlainString() },
+    costUsd = costUsd?.stripTrailingZeros()?.toPlainString(),
 )
 
 fun UsageTrendPoint.toResponse() = UsageTrendResponse(
@@ -678,7 +667,7 @@ fun UsageTrendPoint.toResponse() = UsageTrendResponse(
     cachedWriteTokens = cachedWriteTokens,
     reasoningTokens = reasoningTokens,
     totalTokens = totalTokens,
-    costs = costs.mapValues { (_, value) -> value.stripTrailingZeros().toPlainString() },
+    costUsd = costUsd?.stripTrailingZeros()?.toPlainString(),
 )
 
 fun RetentionPolicy.toResponse(now: Long) = RetentionPolicyResponse(
@@ -707,8 +696,6 @@ data class ClientKeyCreatedResponse(
     val expiresAt: Long?,
     val dailyTokenLimit: Long?,
     val dailyUsdLimit: String?,
-    val dailyCnyLimit: String?,
-    val dailyEurLimit: String?,
     val maxConcurrentRequests: Int?,
     val requestsPerMinute: Int?,
     val createdAt: Long,
@@ -724,9 +711,7 @@ fun ClientKeyRecord.toCreatedResponse(rawKey: String) = ClientKeyCreatedResponse
     enabled = enabled,
     expiresAt = expiresAt,
     dailyTokenLimit = quotas.dailyTokens,
-    dailyUsdLimit = quotas.dailyCostLimit("USD")?.stripTrailingZeros()?.toPlainString(),
-    dailyCnyLimit = quotas.dailyCostLimit("CNY")?.stripTrailingZeros()?.toPlainString(),
-    dailyEurLimit = quotas.dailyCostLimit("EUR")?.stripTrailingZeros()?.toPlainString(),
+    dailyUsdLimit = quotas.dailyUsdLimit?.stripTrailingZeros()?.toPlainString(),
     maxConcurrentRequests = quotas.maxConcurrentRequests,
     requestsPerMinute = quotas.requestsPerMinute,
     createdAt = createdAt,
@@ -937,17 +922,6 @@ data class ModelPriceReferenceResponse(
     val cachedInputPricePerMillion: String? = null,
     val provider: String? = null,
     val source: String,
-)
-
-/**
- * USD 基准的币种汇率。价格换算在管理面完成，不改变历史计费规则。
- */
-@Serializable
-data class ExchangeRatesResponse(
-    val base: String,
-    val date: String,
-    val source: String,
-    val rates: Map<String, String>,
 )
 
 /**

@@ -3,8 +3,6 @@ import assert from 'node:assert/strict'
 import { usageChartBucketRange } from '../src/utils/usageChart'
 import {
   usageCostAmount,
-  usageCostEntries,
-  usageCostForCurrency,
   usageDeltaTone,
   usageReportPresetRange,
   toDatetimeLocalValue,
@@ -25,37 +23,12 @@ describe('usageReport: 用量报表展示', () => {
     assert.equal(usageDeltaTone(120, 0, true), 'neutral')
   })
 
-  it('费用条目按币种排序并剔除空值，不隐含换算', () => {
-    assert.deepEqual(usageCostEntries({ USD: '0.25', CNY: '2' }), [
-      { currency: 'CNY', value: '2' },
-      { currency: 'USD', value: '0.25' },
-    ])
-    assert.deepEqual(usageCostEntries({ USD: null }), [])
-    assert.deepEqual(usageCostEntries({}), [])
-  })
-
-  it('单一美元条目正确提取', () => {
-    assert.deepEqual(usageCostEntries({ USD: '12.3456' }), [
-      { currency: 'USD', value: '12.3456' },
-    ])
-  })
-
-  it('费用趋势只读取当前币种，缺失币种按零处理', () => {
-    assert.equal(usageCostForCurrency({ USD: '0.25', CNY: '2' }, 'CNY'), 2)
-    assert.equal(usageCostForCurrency({ USD: '0.25' }, 'CNY'), 0)
-    assert.equal(usageCostForCurrency({ USD: '0.25 USD' }, 'USD'), 0.25)
-    assert.equal(usageCostForCurrency({}, 'USD'), 0)
-  })
-
   it('费用金额末尾的 USD 在展示和导出前统一移除', () => {
     assert.equal(usageCostAmount('0.25 USD'), '0.25')
     assert.equal(usageCostAmount(' 0.25 usd '), '0.25')
     assert.equal(usageCostAmount('0.25 (USD)'), '0.25')
     assert.equal(usageCostAmount('USD 0.25'), 'USD 0.25')
-    assert.deepEqual(usageCostEntries({ USD: '0.25 USD', CNY: '2' }), [
-      { currency: 'CNY', value: '2' },
-      { currency: 'USD', value: '0.25' },
-    ])
+    assert.equal(usageCostAmount(null), '')
   })
 
   it('快捷项覆盖今天、昨天、最近 24 小时、7 天和 30 天', () => {
@@ -196,7 +169,7 @@ describe('usageReport: 增强报表数据', () => {
     assert.equal(rows[0].requests, 0)
     assert.equal(rows[1].requests, 2)
     assert.equal(rows[2].requests, 0)
-    assert.deepEqual(rows[2].costs, {})
+    assert.equal(rows[2].costUsd, null)
   })
 
   it('空报表也按查询范围补齐时间桶，并遵循浏览器时区', () => {
@@ -261,7 +234,7 @@ describe('usageReport: 增强报表数据', () => {
     assert.equal(usageGroupLabel({ id: 'hasOwnProperty', name: null }), 'hasOwnProperty')
   })
 
-  it('CSV 导出包含分组维度和多币种费用，并正确转义逗号', () => {
+  it('CSV 导出包含分组维度和 USD 费用列，并正确转义逗号', () => {
     const csv = usageReportCsv({
       from: 0,
       to: 1,
@@ -279,12 +252,13 @@ describe('usageReport: 增强报表数据', () => {
       failovers: 1,
       avgFirstTokenMs: 12,
       avgTotalMs: 34,
-      costs: { USD: '0.5', CNY: '2' },
+      costUsd: '0.5',
     }], '按渠道')
     assert.ok(csv.startsWith('维度,'))
     assert.ok(csv.includes('"name,with,comma"'))
     assert.ok(csv.includes('66.7%'))
-    assert.ok(csv.includes('CNY 2 / USD 0.5'))
+    assert.ok(csv.includes('费用 (USD)'))
+    assert.ok(csv.includes(',0.5'))
   })
 
   it('CSV 耗时列固定用秒，同一列不做逐值单位切换', () => {
@@ -293,15 +267,16 @@ describe('usageReport: 增强报表数据', () => {
       name: 'a',
       requests: 1,
       errors: 0,
-      costs: {},
+      costUsd: null,
       avgFirstTokenMs: 850,
       avgTotalMs: 30_000,
+      costUsd: null,
     }, {
       id: 'key-b',
       name: 'b',
       requests: 1,
       errors: 0,
-      costs: {},
+      costUsd: null,
       avgFirstTokenMs: 2_400,
       avgTotalMs: 1_500,
     }, {
@@ -309,7 +284,7 @@ describe('usageReport: 增强报表数据', () => {
       name: 'c',
       requests: 1,
       errors: 0,
-      costs: {},
+      costUsd: null,
       avgFirstTokenMs: 12,
       avgTotalMs: 4,
     }], '按渠道')
@@ -330,7 +305,7 @@ describe('usageReport: 增强报表数据', () => {
       name: 'a',
       requests: 0,
       errors: 0,
-      costs: {},
+      costUsd: null,
       avgFirstTokenMs: null,
       avgTotalMs: null,
     }], '按渠道')
@@ -344,7 +319,7 @@ describe('usageReport: 增强报表数据', () => {
       name: '=SUM(A1)',
       requests: 1,
       errors: 0,
-      costs: {},
+      costUsd: null,
     }], '按渠道')
     assert.ok(csv.includes("'=SUM(A1)"), csv)
   })

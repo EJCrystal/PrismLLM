@@ -776,7 +776,7 @@ class RateLimitIntegrationTest : GatewayIntegrationTestBase() {
         exposeAsModel("fast-chat", channel to "gpt-4o-mini")
         createPrice(channel, "gpt-4o-mini", input = "1", output = "2")
         val key = createClientKey(
-            ClientKeyQuotaLimits(dailyCosts = mapOf("USD" to BigDecimal("0.000016"))),
+            ClientKeyQuotaLimits(dailyUsdLimit = BigDecimal("0.000016")),
         )
 
         testApplication {
@@ -800,7 +800,7 @@ class RateLimitIntegrationTest : GatewayIntegrationTestBase() {
         exposeAsModel("default-cost-chat", channel to "gpt-4o-mini")
         createDefaultPrice("gpt-4o-mini", input = "1", output = "2")
         val key = createClientKey(
-            ClientKeyQuotaLimits(dailyCosts = mapOf("USD" to BigDecimal("0.000016"))),
+            ClientKeyQuotaLimits(dailyUsdLimit = BigDecimal("0.000016")),
         )
 
         testApplication {

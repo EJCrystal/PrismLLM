@@ -232,7 +232,7 @@ watch([query, channelFilter, modelFilter, statusFilter], async () => {
 })
 
 function formatCostAmount(log: RequestLog): string | null {
-  return formatCostUtil(log.costAmount, '')
+  return formatCostUtil(log.costAmount, log.costCurrency || 'USD')
 }
 
 function formatThroughput(log: RequestLog): string {
@@ -553,7 +553,6 @@ onMounted(load)
               <td v-if="logColumnVisible('cost')" class="nowrap log-col-cost" :title="costTitle(log)">
                 <span v-if="log.costAmount != null" class="cost-line log-cost">
                   <span class="cost-amount">{{ formatCostAmount(log) }}</span>
-                  <span class="cost-currency">{{ log.costCurrency || '—' }}</span>
                 </span>
                 <span v-else-if="log.usageKnown && log.channelId && log.upstreamModel" class="muted">未配置</span>
                 <span v-else class="muted">—</span>
@@ -636,7 +635,6 @@ onMounted(load)
                 <dd>
                   <span v-if="selected.costAmount != null" class="cost-line detail-cost">
                     <span class="cost-amount">{{ formatCostAmount(selected) }}</span>
-                    <span class="cost-currency">{{ selected.costCurrency || '—' }}</span>
                   </span>
                   <span v-else>{{ selected.usageKnown ? '未配置' : '—' }}</span>
                 </dd>
@@ -792,7 +790,6 @@ onMounted(load)
                 <span>费用</span>
                 <strong v-if="selected.costAmount != null" class="cost-line detail-cost">
                   <span class="cost-amount">{{ formatCostAmount(selected) }}</span>
-                  <span class="cost-currency">{{ selected.costCurrency || '—' }}</span>
                 </strong>
                 <strong v-else>{{ selected.usageKnown ? '未配置' : '—' }}</strong>
               </div>
