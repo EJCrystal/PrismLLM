@@ -10,10 +10,9 @@ import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import OAuthModelTestModal from './OAuthModelTestModal.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
-import { fromLocalInput, formatTime } from '../utils/format'
+import { formatTime } from '../utils/format'
 import {
   availableOAuthModels,
-  buildOAuthImportPayload,
   buildOAuthModels,
   buildOAuthPolicyPayload,
   filterOAuthModels,
@@ -26,6 +25,7 @@ import {
   oauthAccountModelsView,
   oauthCanSyncCatalog,
   oauthAccountStatus,
+  oauthAuthStateLabel,
   oauthLoginCallbackError,
   oauthPolicySummary,
   oauthProviderLabel,
@@ -51,22 +51,16 @@ const now = ref(Date.now())
 let clock: number | undefined
 
 const showImport = ref(false)
-const importSaving = ref(false)
-const importMode = ref<'login' | 'token'>('login')
 const loginStarting = ref(false)
 const loginCompleting = ref(false)
 const loginSession = ref<OAuthLoginStart | null>(null)
 const callbackUrl = ref('')
+/** 会话按发起时的提供方生成；切换提供方或重开弹窗后旧请求不得写回界面。 */
+let loginGeneration = 0
 const reauthTarget = ref<OAuthAccount | null>(null)
 const importForm = reactive({
   name: '',
   provider: 'chatgpt',
-  refreshToken: '',
-  accountEmail: '',
-  accountPlan: '',
-  proxyUrl: '',
-  accessToken: '',
-  accessTokenExpiresAt: '',
   channelIds: [] as string[],
   priority: 1,
 })
@@ -90,7 +84,6 @@ const settingsModelsRef = ref<HTMLElement | null>(null)
 const settingsForm = reactive({
   name: '',
   priority: 1,
-  enabled: true,
   proxyUrl: '',
   clearProxy: false,
   allModels: false,
@@ -209,11 +202,8 @@ const settingsChannelsManaged = computed(() => {
   return target ? providerManagesChannel(target.provider) : false
 })
 
-function providerSupportsLogin(providerId: string): boolean {
-  return providers.value.find((item) => item.id === providerId)?.loginSupported === true
-}
-
 function resetLoginSession() {
+  loginGeneration++
   loginSession.value = null
   callbackUrl.value = ''
   loginStarting.value = false
@@ -224,12 +214,6 @@ function resetImportForm(provider: string) {
   Object.assign(importForm, {
     name: '',
     provider,
-    refreshToken: '',
-    accountEmail: '',
-    accountPlan: '',
-    proxyUrl: '',
-    accessToken: '',
-    accessTokenExpiresAt: '',
     channelIds: [],
     priority: 1,
   })
@@ -240,7 +224,6 @@ function openImport() {
   resetLoginSession()
   const provider = configuredProviders.value[0]?.id ?? providers.value[0]?.id ?? 'chatgpt'
   resetImportForm(provider)
-  importMode.value = providerSupportsLogin(provider) ? 'login' : 'token'
   showImport.value = true
 }
 
@@ -250,51 +233,38 @@ function openReauth(account: OAuthAccount) {
   Object.assign(importForm, {
     name: account.name,
     provider: account.provider,
-    refreshToken: '',
-    accountEmail: account.accountEmail ?? '',
-    accountPlan: account.accountPlan ?? '',
-    proxyUrl: account.proxyUrl ?? '',
-    accessToken: '',
-    accessTokenExpiresAt: '',
     channelIds: [...account.channelIds],
     priority: account.priority,
   })
-  importMode.value = providerSupportsLogin(account.provider) ? 'login' : 'token'
   showImport.value = true
 }
 
-function switchImportMode(mode: 'login' | 'token') {
-  if (mode === 'login' && !providerSupportsLogin(importForm.provider)) return
-  importMode.value = mode
-  resetLoginSession()
-}
-
-watch(
-  () => importForm.provider,
-  (provider) => {
-    resetLoginSession()
-    if (!providerSupportsLogin(provider)) importMode.value = 'token'
-  },
-)
-
 async function beginLogin() {
   if (loginStarting.value) return
+  const generation = loginGeneration
   loginStarting.value = true
   try {
-    loginSession.value = await api.startOAuthLogin({
+    const session = await api.startOAuthLogin({
       provider: importForm.provider,
       accountId: reauthTarget.value?.id ?? null,
       name: importForm.name.trim() || null,
       channelIds: importChannelsManaged.value ? [] : [...importForm.channelIds],
-      proxyUrl: importForm.proxyUrl.trim() || null,
     })
+    // 期间切换了提供方或重开了弹窗：丢弃旧会话，避免按旧 loginId 提交回调。
+    if (generation !== loginGeneration) return
+    loginSession.value = session
     callbackUrl.value = ''
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
-    loginStarting.value = false
+    if (generation === loginGeneration) loginStarting.value = false
   }
 }
+
+watch(
+  () => importForm.provider,
+  () => resetLoginSession(),
+)
 
 async function completeLogin() {
   if (loginCompleting.value) return
@@ -308,9 +278,11 @@ async function completeLogin() {
     return
   }
   const callback = callbackUrl.value.trim()
+  const loginId = loginSession.value.loginId
+  const generation = loginGeneration
   loginCompleting.value = true
   try {
-    await api.completeOAuthLogin(loginSession.value.loginId, { callbackUrl: callback })
+    await api.completeOAuthLogin(loginId, { callbackUrl: callback })
     if (reauthTarget.value) {
       await api.updateOAuthAccountSettings(reauthTarget.value.id, {
         name: importForm.name.trim() || null,
@@ -323,44 +295,7 @@ async function completeLogin() {
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
-    loginCompleting.value = false
-  }
-}
-
-async function submitImport() {
-  if (importMode.value === 'login') {
-    await completeLogin()
-    return
-  }
-  await saveImport()
-}
-
-async function saveImport() {
-  importSaving.value = true
-  try {
-    const payload = buildOAuthImportPayload({
-      ...importForm,
-      accessTokenExpiresAt: fromLocalInput(importForm.accessTokenExpiresAt),
-    }, Date.now(), { allowEmptyRefreshToken: reauthTarget.value != null })
-    if (reauthTarget.value) {
-      await api.updateOAuthAccount(reauthTarget.value.id, payload)
-      await api.updateOAuthAccountSettings(reauthTarget.value.id, {
-        name: importForm.name.trim() || null,
-        priority: Number(importForm.priority),
-      })
-      if (!importChannelsManaged.value) {
-        await api.updateOAuthAccountChannels(reauthTarget.value.id, { channelIds: [...importForm.channelIds] })
-      }
-    } else {
-      await api.importOAuthAccount(payload)
-    }
-    notify(reauthTarget.value ? '订阅账号已重新授权' : '订阅账号已导入')
-    showImport.value = false
-    await load()
-  } catch (cause) {
-    notify(errorMessage(cause), 'error')
-  } finally {
-    importSaving.value = false
+    if (generation === loginGeneration) loginCompleting.value = false
   }
 }
 
@@ -370,6 +305,21 @@ async function refreshToken(account: OAuthAccount) {
   try {
     await api.refreshOAuthAccount(account.id)
     notify('access token 已刷新')
+    await load()
+  } catch (cause) {
+    notify(errorMessage(cause), 'error')
+  } finally {
+    busyId.value = null
+  }
+}
+
+async function toggleAccountEnabled(account: OAuthAccount) {
+  if (busyId.value != null) return
+  busyId.value = account.id
+  const enabled = !account.enabled
+  try {
+    await api.updateOAuthAccountSettings(account.id, { enabled })
+    notify(`订阅账号「${account.name}」已${enabled ? '启用' : '停用'}`)
     await load()
   } catch (cause) {
     notify(errorMessage(cause), 'error')
@@ -439,7 +389,6 @@ function openSettings(account: OAuthAccount, focusModels = false) {
   Object.assign(settingsForm, {
     name: account.name,
     priority: account.priority,
-    enabled: account.enabled,
     proxyUrl: account.proxyUrl ?? '',
     clearProxy: false,
     // 如实反映当前配置：空列表在后端表示“全部模型”。列表常驻可见，取消勾选即可改为只调度子集。
@@ -482,7 +431,6 @@ async function saveSettings() {
     await api.updateOAuthAccountSettings(settingsTarget.value.id, {
       name: settingsForm.name.trim() || null,
       priority: Number(settingsForm.priority),
-      enabled: settingsForm.enabled,
       proxyUrl: clearProxy ? null : proxyUrl,
       clearProxy,
     })
@@ -538,10 +486,10 @@ function accountActionItems(account: OAuthAccount): OAuthAccountActionItem[] {
     { id: 'refresh-quota', label: '刷新额度', icon: 'chart', disabled: busy },
     {
       id: 'select-models',
-      label: '选择模型',
+      label: '账号设置',
       icon: 'models',
       title: oauthSupportsModelCatalog(account.provider)
-        ? '打开账号设置，可同步上游模型目录并直接勾选该账号可调度的模型'
+        ? '打开账号设置，可同步上游模型目录并勾选该账号可调度的模型'
         : '打开账号设置，勾选该账号可调度的模型',
     },
     { id: 'policy', label: '调度策略', icon: 'bolt' },
@@ -677,9 +625,25 @@ onBeforeUnmount(() => {
                 <div v-if="account.accountPlan" class="small muted">{{ account.accountPlan }}</div>
               </td>
               <td>
-                <span class="badge" :class="oauthAccountStatus(account).tone">
-                  {{ oauthAccountStatus(account).label }}
-                </span>
+                <button
+                  type="button"
+                  class="oauth-status-toggle"
+                  role="switch"
+                  :class="account.enabled ? 'is-enabled' : 'is-disabled'"
+                  :aria-checked="account.enabled"
+                  :aria-label="`订阅账号「${account.name}」${account.enabled ? '已启用' : '已停用'}`"
+                  :title="account.enabled ? '点击停用该账号' : '点击启用该账号'"
+                  :disabled="busyId === account.id"
+                  @click="toggleAccountEnabled(account)"
+                >
+                  <span class="oauth-status-track" aria-hidden="true"><span></span></span>
+                  <span class="oauth-status-label">{{ account.enabled ? '启用' : '停用' }}</span>
+                </button>
+                <div class="oauth-auth-state">
+                  <span class="badge" :class="account.enabled ? oauthAccountStatus(account).tone : 'neutral'">
+                    {{ account.enabled ? oauthAuthStateLabel(account.authState) : '凭据状态 ' + oauthAuthStateLabel(account.authState) }}
+                  </span>
+                </div>
                 <div
                   v-if="account.enabled && account.authState === 'REAUTH_REQUIRED' && account.lastRefreshError"
                   class="small text-danger"
@@ -784,7 +748,7 @@ onBeforeUnmount(() => {
     </div>
 
     <Modal v-if="showImport" :title="reauthTarget ? '重新授权订阅账号' : '新建订阅账号'" wide @close="showImport = false">
-      <form class="form-grid" @submit.prevent="submitImport">
+      <form class="form-grid" @submit.prevent="completeLogin">
         <label class="field">
           <span>账号名称</span>
           <input v-model="importForm.name" autocomplete="off" placeholder="可选，默认使用邮箱" />
@@ -824,75 +788,35 @@ onBeforeUnmount(() => {
           <small>数值越小越优先；只影响账号之间的排序，不改变渠道优先级。</small>
         </label>
 
-        <div v-if="providerSupportsLogin(importForm.provider)" class="field">
+        <div class="field">
           <span>授权方式</span>
-          <div class="health-window-tabs" role="tablist" aria-label="授权方式">
-            <button type="button" role="tab" :aria-selected="importMode === 'login'" :class="{ active: importMode === 'login' }" @click="switchImportMode('login')">
-              浏览器登录
-            </button>
-            <button type="button" role="tab" :aria-selected="importMode === 'token'" :class="{ active: importMode === 'token' }" @click="switchImportMode('token')">
-              导入 refresh token
-            </button>
-          </div>
-          <small>浏览器登录会走提供方的官方授权页，网关换取 token 后加密保存，无需手动复制凭据。</small>
+          <p class="muted small">只能通过浏览器登录授权：网关走提供方的官方授权页换取并加密保存 token，无需手动复制凭据。</p>
         </div>
 
-        <label class="field">
-          <span>账号代理</span>
-          <input v-model="importForm.proxyUrl" autocomplete="off" placeholder="http://127.0.0.1:7890" />
-          <small>可选。登录换 token、刷新 token 与调用上游使用同一出口，只支持无认证的 HTTP 正向代理。</small>
-        </label>
-
-        <template v-if="importMode === 'login'">
-          <div class="field">
-            <span>登录链接</span>
-            <div v-if="loginSession" class="callout info oauth-login-link">
-              <a :href="loginSession.authorizeUrl" target="_blank" rel="noopener noreferrer">{{ loginSession.authorizeUrl }}</a>
-              <CopyButton :text="loginSession.authorizeUrl" title="复制登录链接" />
-            </div>
-            <div v-else class="oauth-login-actions">
-              <button type="button" class="button" :disabled="loginStarting" @click="beginLogin">
-                {{ loginStarting ? '生成中…' : '生成登录链接' }}
-              </button>
-              <small>生成后在新标签页完成登录；链接 10 分钟内有效，且只能使用一次。</small>
-            </div>
+        <div class="field">
+          <span>登录链接</span>
+          <div v-if="loginSession" class="callout info oauth-login-link">
+            <a :href="loginSession.authorizeUrl" target="_blank" rel="noopener noreferrer">{{ loginSession.authorizeUrl }}</a>
+            <CopyButton :text="loginSession.authorizeUrl" title="复制登录链接" />
           </div>
+          <div v-else class="oauth-login-actions">
+            <button type="button" class="button" :disabled="loginStarting" @click="beginLogin">
+              {{ loginStarting ? '生成中…' : '生成登录链接' }}
+            </button>
+            <small>生成后在新标签页完成登录；链接 10 分钟内有效，且只能使用一次。</small>
+          </div>
+        </div>
 
-          <label v-if="loginSession" class="field">
-            <span>回调地址</span>
-            <textarea v-model="callbackUrl" rows="3" spellcheck="false" placeholder="登录完成后把浏览器地址栏里的完整 URL 粘贴到这里"></textarea>
-            <small>回调地址形如 {{ loginSession.redirectUri }}?code=…&amp;state=…</small>
-          </label>
-        </template>
-
-        <template v-else>
-          <label class="field">
-            <span>Refresh token</span>
-            <input v-model="importForm.refreshToken" type="password" autocomplete="off" placeholder="粘贴账号的 refresh token" />
-            <small>{{ reauthTarget ? '留空表示保留现有 refresh token；重新授权时请填写新的 token。' : '只在导入时提交一次，服务端加密保存，之后不再回显。' }}</small>
-          </label>
-          <label class="field">
-            <span>账号邮箱</span>
-            <input v-model="importForm.accountEmail" autocomplete="off" placeholder="可选，用于识别账号" />
-          </label>
-          <label class="field">
-            <span>套餐</span>
-            <input v-model="importForm.accountPlan" autocomplete="off" placeholder="例如 free" />
-          </label>
-          <label class="field">
-            <span>Access token</span>
-            <input v-model="importForm.accessToken" type="password" autocomplete="off" placeholder="可选，已有短期 token 时填写" />
-          </label>
-          <label class="field">
-            <span>Access token 到期时间</span>
-            <input v-model="importForm.accessTokenExpiresAt" type="datetime-local" />
-          </label>
-        </template>
+        <label v-if="loginSession" class="field">
+          <span>回调地址</span>
+          <textarea v-model="callbackUrl" rows="3" spellcheck="false" placeholder="登录完成后把浏览器地址栏里的完整 URL 粘贴到这里"></textarea>
+          <small>回调地址形如 {{ loginSession.redirectUri }}?code=…&amp;state=…</small>
+        </label>
 
         <div class="form-actions">
           <button type="button" class="button" @click="showImport = false">取消</button>
-          <button type="submit" class="button primary" :disabled="importSaving || loginCompleting">
-            {{ importSaving || loginCompleting ? '提交中…' : reauthTarget ? '重新授权' : '创建账号' }}
+          <button type="submit" class="button primary" :disabled="loginCompleting">
+            {{ loginCompleting ? '提交中…' : reauthTarget ? '重新授权' : '创建账号' }}
           </button>
         </div>
       </form>
@@ -941,10 +865,7 @@ onBeforeUnmount(() => {
         <label class="field">
           <span>优先级</span>
           <input v-model.number="settingsForm.priority" type="number" min="1" max="1000" />
-        </label>
-        <label class="checkbox-row">
-          <input v-model="settingsForm.enabled" type="checkbox" />
-          <span>启用账号</span>
+          <small>数值越小越优先；只影响账号之间的排序，不改变渠道优先级。</small>
         </label>
         <div class="field">
           <span>账号代理</span>

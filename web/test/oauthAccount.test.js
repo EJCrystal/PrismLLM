@@ -2,7 +2,6 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   availableOAuthModels,
-  buildOAuthImportPayload,
   buildOAuthModels,
   buildOAuthPolicyPayload,
   filterOAuthModels,
@@ -37,19 +36,6 @@ import {
 } from '../src/utils/oauthAccount'
 
 const NOW = 1_762_400_000_000
-
-function importForm(overrides = {}) {
-  return {
-    provider: 'chatgpt',
-    refreshToken: '  refresh-token  ',
-    accountEmail: '',
-    accountPlan: '',
-    proxyUrl: '',
-    accessToken: '',
-    accessTokenExpiresAt: null,
-    ...overrides,
-  }
-}
 
 describe('oauthAccount: 订阅账号看板展示', () => {
   it('提供方与授权状态使用可读标签和徽标', () => {
@@ -164,44 +150,7 @@ describe('oauthAccount: 订阅账号看板展示', () => {
   })
 })
 
-describe('oauthAccount: 导入与策略表单', () => {
-  it('只提交非空的可选字段，并裁剪 refresh token', () => {
-    const payload = buildOAuthImportPayload(importForm({ accountEmail: ' free@example.com ', accountPlan: 'free' }), NOW)
-    assert.deepEqual(payload, {
-      provider: 'chatgpt',
-      refreshToken: 'refresh-token',
-      accountEmail: 'free@example.com',
-      accountPlan: 'free',
-    })
-  })
-
-  it('access token 与到期时间必须成对出现且未过期', () => {
-    assert.throws(
-      () => buildOAuthImportPayload(importForm({ accessToken: 'at' }), NOW),
-      /必须同时填写到期时间/,
-    )
-    assert.throws(
-      () => buildOAuthImportPayload(importForm({ accessTokenExpiresAt: NOW + 60_000 }), NOW),
-      /必须同时填写 access token/,
-    )
-    assert.throws(
-      () => buildOAuthImportPayload(importForm({ accessToken: 'at', accessTokenExpiresAt: NOW }), NOW),
-      /必须晚于当前时间/,
-    )
-    const payload = buildOAuthImportPayload(
-      importForm({ accessToken: ' at ', accessTokenExpiresAt: NOW + 60_000, proxyUrl: ' http://127.0.0.1:7890 ' }),
-      NOW,
-    )
-    assert.equal(payload.accessToken, 'at')
-    assert.equal(payload.accessTokenExpiresAt, NOW + 60_000)
-    assert.equal(payload.proxyUrl, 'http://127.0.0.1:7890')
-  })
-
-  it('缺少 refresh token 或提供方时拒绝提交', () => {
-    assert.throws(() => buildOAuthImportPayload(importForm({ refreshToken: '   ' }), NOW), /refresh token/)
-    assert.throws(() => buildOAuthImportPayload(importForm({ provider: '  ' }), NOW), /提供方/)
-  })
-
+describe('oauthAccount: 策略表单', () => {
   it('策略表单把空窗口转为不限制，并校验取值范围', () => {
     assert.deepEqual(
       buildOAuthPolicyPayload({ windowLimit: '', windowSeconds: '10800', maxConcurrentRequests: '1' }),

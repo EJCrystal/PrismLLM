@@ -2491,6 +2491,60 @@ input[type="password"]::-ms-clear,
   min-width: 224px;
 }
 
+/* 订阅账号：列表内直接启停，和渠道列表一致；凭据状态另起一行展示。 */
+.oauth-status-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 7px;
+  min-width: max-content;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.oauth-status-label { flex: 0 0 auto; white-space: nowrap; }
+
+.oauth-status-track {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 34px;
+  height: 20px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--danger-fill) 58%, var(--line-strong));
+  border-radius: 999px;
+  background: var(--danger-soft);
+  transition: background .16s ease, border-color .16s ease;
+}
+
+.oauth-status-track > span {
+  position: absolute;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, .2);
+  transition: transform .16s ease;
+}
+
+.oauth-status-toggle.is-enabled .oauth-status-track { border-color: var(--success); background: var(--success); }
+.oauth-status-toggle.is-enabled .oauth-status-track > span { transform: translateX(14px); }
+.oauth-status-toggle.is-enabled .oauth-status-label { color: var(--success); }
+.oauth-status-toggle.is-disabled .oauth-status-track { border-color: var(--danger); background: var(--danger); }
+.oauth-status-toggle.is-disabled .oauth-status-label { color: var(--danger); }
+.oauth-status-toggle:disabled { opacity: .55; cursor: wait; }
+.oauth-status-toggle:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; border-radius: 4px; }
+
+.oauth-auth-state { margin-top: 6px; }
+
 .oauth-account-proxy {
   max-width: 220px;
   margin-top: 4px;

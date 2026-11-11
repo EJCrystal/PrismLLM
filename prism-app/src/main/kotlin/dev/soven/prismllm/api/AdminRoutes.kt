@@ -66,8 +66,6 @@ import dev.soven.prismllm.proxy.testChannelModelConnectivity
 import dev.soven.prismllm.proxy.testOAuthAccountModelConnectivity
 import dev.soven.prismllm.channel.persistence.ChannelKeyUpdate
 import dev.soven.prismllm.channel.persistence.NewChannelKey
-import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
-import dev.soven.prismllm.oauth.persistence.OAuthAccountCredentialUpdate
 import dev.soven.prismllm.channel.persistence.KeyAutoDisableSettingsAuditContext
 import dev.soven.prismllm.channel.domain.key.ChannelKeyDisableMode
 import dev.soven.prismllm.channel.domain.key.ChannelKeyState
@@ -1334,10 +1332,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         id = provider.value,
                         label = OAUTH_PROVIDER_LABELS[provider] ?: provider.value,
                         configured = provider in configured,
-                        loginSupported = when (provider) {
-                            OAuthProvider.CHATGPT -> app.config.oauth.chatGpt.supportsLogin
-                            OAuthProvider.ANTIGRAVITY -> app.config.oauth.antigravity.supportsLogin
-                        },
                         managedChannel = dev.soven.prismllm.channel.domain.ProviderEndpoints.of(provider).servable,
                     )
                 },
@@ -1475,82 +1469,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(accounts)
         }
 
-        post("/oauth-accounts") {
-            call.requireAdmin(app)
-            val request = call.receive<OAuthAccountImportRequest>()
-            val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
-                ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
-            if (app.oauthTokenProviders.find(provider) == null) {
-                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未在网关内启用")
-            }
-            val refreshToken = request.refreshToken.trim()
-            if (refreshToken.length > MAX_OAUTH_CREDENTIAL_CHARS) {
-                throw badRequest("invalid_oauth_refresh_token", "refresh token 长度超出限制")
-            }
-            if (refreshToken.isEmpty()) throw badRequest("invalid_oauth_refresh_token", "refresh token 不能为空")
-            val accessToken = request.accessToken?.trim()?.takeIf { it.isNotEmpty() }
-            val expiresAt = request.accessTokenExpiresAt
-            if ((accessToken == null) != (expiresAt == null)) {
-                throw badRequest("invalid_oauth_access_token", "access token 与到期时间必须同时提供")
-            }
-            if (accessToken != null && accessToken.length > MAX_OAUTH_CREDENTIAL_CHARS) {
-                throw badRequest("invalid_oauth_access_token", "access token 长度超出限制")
-            }
-            if (expiresAt != null && expiresAt <= System.currentTimeMillis()) {
-                throw badRequest("invalid_oauth_access_token", "access token 到期时间必须晚于当前时间")
-            }
-            val proxyUrl = request.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
-            if (proxyUrl != null && proxyUrl.length > MAX_OAUTH_PROXY_CHARS) {
-                throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
-            }
-            validateOAuthProxyUrl(app, proxyUrl)
-            val channelIds = request.channelIds.map(String::trim).filter(String::isNotEmpty).distinct()
-            val existingChannelIds = app.channelRepository.list().map { it.id }.toSet()
-            channelIds.firstOrNull { it !in existingChannelIds }?.let { missing ->
-                throw badRequest("invalid_oauth_channels", "渠道不存在: $missing")
-            }
-            if (request.priority !in 1..1000) {
-                throw badRequest("invalid_oauth_priority", "账号优先级必须在 1..1000 之间")
-            }
-            var account = try {
-                app.oauthAccountRepository.create(
-                    NewOAuthAccount(
-                        name = request.name?.trim()?.takeIf { it.isNotEmpty() }
-                            ?: request.accountEmail?.trim()?.takeIf { it.isNotEmpty() }
-                            ?: OAUTH_PROVIDER_LABELS[provider]
-                            ?: provider.value,
-                        provider = provider,
-                        accountEmail = request.accountEmail?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_EMAIL_CHARS),
-                        accountPlan = request.accountPlan?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_PLAN_CHARS),
-                        refreshToken = app.credentialCipher.encrypt(refreshToken),
-                        accessToken = accessToken?.let(app.credentialCipher::encrypt),
-                        accessTokenExpiresAt = expiresAt,
-                        tokenType = request.tokenType?.trim()?.takeIf { it.isNotEmpty() }?.take(40) ?: "Bearer",
-                        scope = request.scope?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_SCOPE_CHARS),
-                        proxyUrl = proxyUrl,
-                        channelIds = channelIds,
-                        models = request.models,
-                        priority = request.priority,
-                        providerChannelPending = dev.soven.prismllm.channel.domain.ProviderEndpoints.of(provider).servable,
-                    ),
-                )
-            } catch (cause: Throwable) {
-                if (isUniqueViolation(cause)) {
-                    throw conflict("oauth_account_email_exists", "同一提供方下该邮箱已存在账号")
-                }
-                throw cause
-            }
-            account = attachProviderChannel(app, account)
-            clearOAuthAccountCooldown(app, account)
-            call.markAdminAuditDetails(buildJsonObject {
-                put("accountId", account.id)
-                put("provider", provider.value)
-                put("channels", account.channelIds.joinToString(","))
-                proxyUrl?.let { put("proxyUrl", it) }
-            })
-            call.respond(oauthAccountResponse(app, account))
-        }
-
         delete("/oauth-accounts/{id}") {
             call.requireAdmin(app)
             val accountId = call.requiredParam("id", "缺少账号 id")
@@ -1562,65 +1480,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             clearOAuthAccountCooldown(app, existing)
             call.markAdminAuditDetails(buildJsonObject { put("accountId", accountId) })
             call.respond(HttpStatusCode.NoContent)
-        }
-
-        put("/oauth-accounts/{id}") {
-            call.requireAdmin(app)
-            val accountId = call.requiredParam("id", "缺少账号 id")
-            val existing = app.oauthAccountRepository.find(accountId)
-                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
-            val request = call.receive<OAuthAccountImportRequest>()
-            val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
-                ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
-            if (app.oauthTokenProviders.find(provider) == null) {
-                throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未在网关内启用")
-            }
-            if (existing.provider != provider) {
-                throw badRequest("invalid_oauth_provider", "重新授权不能修改账号的提供方")
-            }
-            val refreshToken = request.refreshToken.trim()
-            if (refreshToken.length > MAX_OAUTH_CREDENTIAL_CHARS) {
-                throw badRequest("invalid_oauth_refresh_token", "refresh token 长度超出限制")
-            }
-            val accessToken = request.accessToken?.trim()?.takeIf { it.isNotEmpty() }
-            val expiresAt = request.accessTokenExpiresAt
-            if ((accessToken == null) != (expiresAt == null)) {
-                throw badRequest("invalid_oauth_access_token", "access token 与到期时间必须同时提供")
-            }
-            val proxyUrl = request.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
-            if (proxyUrl != null && proxyUrl.length > MAX_OAUTH_PROXY_CHARS) {
-                throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
-            }
-            validateOAuthProxyUrl(app, proxyUrl)
-            var account = try {
-                app.oauthAccountRepository.updateCredentials(
-                    accountId = accountId,
-                    input = OAuthAccountCredentialUpdate(
-                        provider = provider,
-                        accountEmail = request.accountEmail?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_EMAIL_CHARS),
-                        accountPlan = request.accountPlan?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_PLAN_CHARS),
-                        refreshToken = refreshToken.takeIf { it.isNotEmpty() }?.let(app.credentialCipher::encrypt),
-                        accessToken = accessToken?.let(app.credentialCipher::encrypt),
-                        accessTokenExpiresAt = expiresAt,
-                        tokenType = request.tokenType?.trim()?.takeIf { it.isNotEmpty() }?.take(40) ?: "Bearer",
-                        scope = request.scope?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_OAUTH_SCOPE_CHARS),
-                        proxyUrl = proxyUrl,
-                    ),
-                ) ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
-            } catch (cause: Throwable) {
-                if (isUniqueViolation(cause)) {
-                    throw conflict("oauth_account_email_exists", "同一提供方下该邮箱已存在账号")
-                }
-                throw cause
-            }
-            account = attachProviderChannel(app, account)
-            clearOAuthAccountCooldown(app, account)
-            call.markAdminAuditDetails(buildJsonObject {
-                put("accountId", account.id)
-                put("provider", provider.value)
-                proxyUrl?.let { put("proxyUrl", it) }
-            })
-            call.respond(oauthAccountResponse(app, account))
         }
 
         put("/oauth-accounts/{id}/settings") {
@@ -1799,7 +1658,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (target != null && target.provider != provider) {
                 throw badRequest("invalid_oauth_provider", "重新授权不能修改账号的提供方")
             }
-            val proxyUrl = request.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
+            // 新建表单不再填代理；重新授权时沿用账号已有的代理，避免换 token 后出口被清空。
+            val proxyUrl = request.proxyUrl?.trim()?.takeIf { it.isNotEmpty() } ?: target?.proxyUrl
             if (proxyUrl != null && proxyUrl.length > MAX_OAUTH_PROXY_CHARS) {
                 throw badRequest("invalid_oauth_proxy", "账号代理地址长度超出限制")
             }
@@ -1822,7 +1682,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             ) {
                 OAuthLoginStartResult.UnsupportedProvider -> throw badRequest(
                     "oauth_login_unsupported",
-                    "该提供方未配置授权地址与回调地址，请改为导入 refresh token",
+                    "该提供方未配置授权地址与回调地址，请检查该提供方的授权配置",
                 )
                 is OAuthLoginStartResult.Started -> {
                     call.markAdminAuditDetails(buildJsonObject {
@@ -1874,7 +1734,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 }
                 OAuthLoginResult.UnsupportedProvider -> throw badRequest(
                     "oauth_login_unsupported",
-                    "该提供方未配置授权地址与回调地址，请改为导入 refresh token",
+                    "该提供方未配置授权地址与回调地址，请检查该提供方的授权配置",
                 )
                 is OAuthLoginResult.Failed -> {
                     call.markAdminAuditDetails(buildJsonObject {
@@ -3250,12 +3110,7 @@ private val OAUTH_PROVIDER_LABELS = mapOf(
     OAuthProvider.ANTIGRAVITY to "Antigravity",
 )
 
-/** refresh token 与 access token 的长度上限；正常 JWT 远小于该值。 */
-private const val MAX_OAUTH_CREDENTIAL_CHARS = 8_192
-private const val MAX_OAUTH_EMAIL_CHARS = 320
-private const val MAX_OAUTH_PLAN_CHARS = 64
 private const val MAX_OAUTH_PROXY_CHARS = 512
-private const val MAX_OAUTH_SCOPE_CHARS = 512
 private const val MAX_OAUTH_CALLBACK_CHARS = 4_096
 
 private const val MAX_MODEL_SUGGESTIONS = 500

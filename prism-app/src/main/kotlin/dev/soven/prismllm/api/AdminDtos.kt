@@ -1560,23 +1560,6 @@ private fun iqVerdictLabel(verdict: String, benchmark: IqBenchmark?): String = w
  * @since 2026-11-06
  */
 @Serializable
-data class OAuthAccountImportRequest(
-    val name: String? = null,
-    val provider: String,
-    val refreshToken: String,
-    val accountEmail: String? = null,
-    val accountPlan: String? = null,
-    val proxyUrl: String? = null,
-    val accessToken: String? = null,
-    val accessTokenExpiresAt: Long? = null,
-    val tokenType: String? = null,
-    val scope: String? = null,
-    val channelIds: List<String> = emptyList(),
-    val models: List<String> = emptyList(),
-    val priority: Int = 1,
-)
-
-@Serializable
 data class OAuthLoginStartRequest(
     val provider: String,
     /** 为空表示新建账号；非空表示对已有账号重新授权。 */
@@ -1733,9 +1716,7 @@ data class OAuthProviderResponse(
     val id: String,
     val label: String,
     val configured: Boolean,
-    /** 是否支持从网关发起交互式登录；不支持时只能导入 refresh token。 */
-    val loginSupported: Boolean = false,
-    /** 该 provider 的官方端点渠道由系统置备，账号导入后自动关联。 */
+    /** 该 provider 的官方端点渠道由系统置备，账号通过浏览器登录创建后自动关联。 */
     val managedChannel: Boolean = false,
 )
 

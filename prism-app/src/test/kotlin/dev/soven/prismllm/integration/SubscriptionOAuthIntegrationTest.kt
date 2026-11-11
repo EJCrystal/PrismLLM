@@ -176,68 +176,33 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `admin oauth import binds the account and lists it on the dashboard`() = runBlocking {
+    fun `admin oauth dashboard lists the account and reports provider capabilities`() = runBlocking {
         val channel = createChannel("openai", "ok")
-        val expiresAt = System.currentTimeMillis() + 3_600_000
+        val account = createOAuthAccount(channel, "free@example.com")
 
         testApplication {
             application { app.install(this) }
-            val (cookie, csrf) = client.loginAdmin()
-            val response = client.post("/admin/api/oauth-accounts") {
-                header(HttpHeaders.Cookie, cookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody(
-                    """{"provider":"chatgpt","refreshToken":"refresh-token-value","accountEmail":"free@example.com",""" +
-                        """"accountPlan":"free","proxyUrl":"http://127.0.0.1:8080","accessToken":"access-token-value",""" +
-                        """"accessTokenExpiresAt":$expiresAt,"channelIds":["${channel.id}"]}""",
-                )
-            }
-
-            assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertFalse(body.contains("refresh-token-value"))
-            assertFalse(body.contains("access-token-value"))
-            val account = Json.parseToJsonElement(body).jsonObject
-            val accountId = account["id"]!!.jsonPrimitive.content
-            assertTrue(accountId.isNotBlank())
-            // 订阅账号只服务官方端点：请求里的 channelIds 被忽略，改挂系统置备渠道。
-            val providerChannelId = assertNotNull(app.channelRepository.findProviderChannel(OAuthProvider.CHATGPT)).id
-            assertEquals(providerChannelId, account["channelIds"]!!.jsonArray.single().jsonPrimitive.content)
-            assertTrue(account["channelIds"]!!.jsonArray.none { it.jsonPrimitive.content == channel.id })
-            assertEquals("chatgpt", account["provider"]!!.jsonPrimitive.content)
-            assertEquals("ACTIVE", account["authState"]!!.jsonPrimitive.content)
-            assertEquals("free@example.com", account["accountEmail"]!!.jsonPrimitive.content)
-            assertEquals(expiresAt, account["accessTokenExpiresAt"]!!.jsonPrimitive.long)
-            // 新建账号的授权时间就是创建时间；access token 到期时间更短，不能替代授权时间。
-            assertEquals(account["createdAt"]!!.jsonPrimitive.long, account["authorizedAt"]!!.jsonPrimitive.long)
-            assertEquals("http://127.0.0.1:8080", account["proxyUrl"]!!.jsonPrimitive.content)
-            val policy = account["policy"]!!.jsonObject
-            assertEquals(10_800, policy["windowSeconds"]!!.jsonPrimitive.int)
-            assertEquals(1, policy["maxConcurrentRequests"]!!.jsonPrimitive.int)
-            assertEquals(0, account["runtime"]!!.jsonObject["windowUsed"]!!.jsonPrimitive.int)
+            val (cookie, _) = client.loginAdmin()
 
             val listing = client.get("/admin/api/oauth-accounts") {
                 header(HttpHeaders.Cookie, cookie)
             }
             assertEquals(HttpStatusCode.OK, listing.status)
             assertEquals("no-store", listing.headers["Cache-Control"])
-            assertFalse(listing.bodyAsText().contains("refresh-token-value"))
-            val entries = Json.parseToJsonElement(listing.bodyAsText()).jsonArray
-            assertTrue(entries.any { it.jsonObject["id"]!!.jsonPrimitive.content == accountId })
-
-            val auditResponse = client.get("/admin/api/audit-logs?limit=20") {
-                header(HttpHeaders.Cookie, cookie)
-            }
-            assertEquals(HttpStatusCode.OK, auditResponse.status)
-            val importAudit = Json.parseToJsonElement(auditResponse.bodyAsText()).jsonArray
-                .map { it.jsonObject }
-                .single { it["action"]!!.jsonPrimitive.content == "oauth_account.import" }
-            assertEquals("chatgpt", importAudit["details"]!!.jsonObject["provider"]!!.jsonPrimitive.content)
-            assertEquals(
-                "http://127.0.0.1:8080",
-                importAudit["details"]!!.jsonObject["proxyUrl"]!!.jsonPrimitive.content,
-            )
+            val body = listing.bodyAsText()
+            assertFalse(body.contains("oauth-refresh-token"))
+            val entries = Json.parseToJsonElement(body).jsonArray
+            val listed = entries.single { it.jsonObject["id"]!!.jsonPrimitive.content == account.id }.jsonObject
+            assertEquals("chatgpt", listed["provider"]!!.jsonPrimitive.content)
+            assertEquals("ACTIVE", listed["authState"]!!.jsonPrimitive.content)
+            assertEquals("free@example.com", listed["accountEmail"]!!.jsonPrimitive.content)
+            // 看板按账号自己的关联渠道展示。
+            assertEquals(channel.id, listed["channelIds"]!!.jsonArray.single().jsonPrimitive.content)
+            assertEquals(listed["createdAt"]!!.jsonPrimitive.long, listed["authorizedAt"]!!.jsonPrimitive.long)
+            val policy = listed["policy"]!!.jsonObject
+            assertEquals(10_800, policy["windowSeconds"]!!.jsonPrimitive.int)
+            assertEquals(1, policy["maxConcurrentRequests"]!!.jsonPrimitive.int)
+            assertEquals(0, listed["runtime"]!!.jsonObject["windowUsed"]!!.jsonPrimitive.int)
 
             val providers = client.get("/admin/api/oauth-providers") {
                 header(HttpHeaders.Cookie, cookie)
@@ -248,109 +213,60 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
             // Antigravity 与 ChatGPT 一样内置公开客户端参数，不需要部署方预先配置。
             assertEquals(mapOf("chatgpt" to true, "antigravity" to true), byProvider)
             val managed = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
-                .associate {
-                    it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["managedChannel"]!!.jsonPrimitive.boolean
-                }
+                .associate { it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["managedChannel"]!!.jsonPrimitive.boolean }
             // Antigravity 走 Code Assist 信封协议，账号同样挂到系统置备渠道。
             assertEquals(mapOf("chatgpt" to true, "antigravity" to true), managed)
-            val loginSupported = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
-                .associate {
-                    it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["loginSupported"]!!.jsonPrimitive.boolean
-                }
-            // 两个提供方都内置了授权地址与回调地址，可以直接发起浏览器登录。
-            assertEquals(mapOf("chatgpt" to true, "antigravity" to true), loginSupported)
 
-            val stored = assertNotNull(app.oauthAccountRepository.find(accountId))
-            assertNotEquals("refresh-token-value", stored.refreshTokenCiphertext)
+            // 长期凭据只以密文落库，列表与详情都不回显。
+            val stored = assertNotNull(app.oauthAccountRepository.find(account.id))
+            assertNotEquals("oauth-refresh-token", stored.refreshTokenCiphertext)
             assertEquals(
-                "refresh-token-value",
+                "oauth-refresh-token",
                 app.credentialCipher.decrypt(stored.refreshTokenCiphertext, stored.refreshTokenNonce),
             )
-            assertEquals(10_800, stored.policy.windowSeconds)
             assertEquals("free@example.com", stored.accountEmail)
         }
     }
 
     @Test
-    fun `admin oauth import accepts antigravity and rejects invalid input`() = runBlocking {
-        val channel = createChannel("openai", "ok")
-
+    fun `admin oauth login start validates account proxy`() = runBlocking {
         testApplication {
             application { app.install(this) }
             val (cookie, csrf) = client.loginAdmin()
-            suspend fun import(body: String) = client.post("/admin/api/oauth-accounts") {
+            suspend fun start(body: String) = client.post("/admin/api/oauth-login/start") {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
 
-            // Antigravity 内置公开客户端参数，未做任何部署配置也能导入账号。
-            val antigravity = import("""{"provider":"antigravity","refreshToken":"rt"}""")
-            assertEquals(HttpStatusCode.OK, antigravity.status)
-            assertEquals(
-                "antigravity",
-                Json.parseToJsonElement(antigravity.bodyAsText()).jsonObject["provider"]!!.jsonPrimitive.content,
-            )
-
-            val unknownProvider = import("""{"provider":"gemini","refreshToken":"rt"}""")
-            assertEquals(HttpStatusCode.BadRequest, unknownProvider.status)
-            assertTrue(unknownProvider.bodyAsText().contains("invalid_oauth_provider"))
-
-            val blankToken = import("""{"provider":"chatgpt","refreshToken":"   "}""")
-            assertEquals(HttpStatusCode.BadRequest, blankToken.status)
-            assertTrue(blankToken.bodyAsText().contains("invalid_oauth_refresh_token"))
-
-            val proxy = import(
-                """{"provider":"chatgpt","refreshToken":"rt","proxyUrl":"socks5://127.0.0.1:1080"}""",
-            )
-            assertEquals(HttpStatusCode.BadRequest, proxy.status)
-            assertTrue(proxy.bodyAsText().contains("invalid_oauth_proxy"))
+            val badScheme = start("""{"provider":"chatgpt","proxyUrl":"socks5://127.0.0.1:1080"}""")
+            assertEquals(HttpStatusCode.BadRequest, badScheme.status)
+            assertTrue(badScheme.bodyAsText().contains("invalid_oauth_proxy"))
 
             // 远程代理主机默认不放行，避免管理面输入被用来访问任意内网主机。
-            val remoteProxy = import(
-                """{"provider":"chatgpt","refreshToken":"rt","proxyUrl":"http://proxy.example.com:8080"}""",
-            )
+            val remoteProxy = start("""{"provider":"chatgpt","proxyUrl":"http://proxy.example.com:8080"}""")
             assertEquals(HttpStatusCode.BadRequest, remoteProxy.status)
             assertTrue(remoteProxy.bodyAsText().contains("OAUTH_PROXY_ALLOWED_HOSTS"))
 
-            val missingExpiry = import("""{"provider":"chatgpt","refreshToken":"rt","accessToken":"at"}""")
-            assertEquals(HttpStatusCode.BadRequest, missingExpiry.status)
-            assertTrue(missingExpiry.bodyAsText().contains("invalid_oauth_access_token"))
+            val unknownProvider = start("""{"provider":"gemini"}""")
+            assertEquals(HttpStatusCode.BadRequest, unknownProvider.status)
+            assertTrue(unknownProvider.bodyAsText().contains("invalid_oauth_provider"))
 
-            val expiredAccess = import(
-                """{"provider":"chatgpt","refreshToken":"rt","accessToken":"at","accessTokenExpiresAt":${System.currentTimeMillis() - 60_000}}""",
-            )
-            assertEquals(HttpStatusCode.BadRequest, expiredAccess.status)
-            assertTrue(expiredAccess.bodyAsText().contains("invalid_oauth_access_token"))
-
-            val missingChannel = import(
-                """{"provider":"chatgpt","refreshToken":"rt","channelIds":["missing"]}""",
-            )
+            val missingChannel = start("""{"provider":"chatgpt","channelIds":["missing"]}""")
             assertEquals(HttpStatusCode.BadRequest, missingChannel.status)
             assertTrue(missingChannel.bodyAsText().contains("invalid_oauth_channels"))
-
-            assertEquals(
-                0,
-                scalarInt("select count(*) from oauth_account_channels where channel_id = ?", channel.id),
-            )
         }
     }
 
     @Test
     fun `oauth model test rejects models the account is not authorized for`() = runBlocking {
+        val channel = createChannel("openai", "ok")
         testApplication {
             application { app.install(this) }
             val (cookie, csrf) = client.loginAdmin()
-            val imported = client.post("/admin/api/oauth-accounts") {
-                header(HttpHeaders.Cookie, cookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"provider":"antigravity","refreshToken":"model-test-rt"}""")
-            }
-            assertEquals(HttpStatusCode.OK, imported.status)
-            val accountId = Json.parseToJsonElement(imported.bodyAsText())
-                .jsonObject["id"]!!.jsonPrimitive.content
+            val account = createOAuthAccount(channel, "model-test@example.com", provider = OAuthProvider.ANTIGRAVITY)
+            val accountId = account.id
 
             val update = client.put("/admin/api/oauth-accounts/$accountId/models") {
                 header(HttpHeaders.Cookie, cookie)
@@ -394,37 +310,35 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `admin oauth import rejects the same account email on another key`() = runBlocking {
-        val first = createChannel("openai-a", "ok")
-        val second = createChannel("openai-b", "ok")
+    fun `admin oauth login rejects a duplicate account email`() = runBlocking {
+        val channel = createChannel("openai", "ok")
+        createOAuthAccount(channel, "login@example.com")
 
         testApplication {
             application { app.install(this) }
             val (cookie, csrf) = client.loginAdmin()
-            suspend fun import(channel: ChannelRecord, refreshToken: String) =
-                client.post("/admin/api/oauth-accounts") {
-                    header(HttpHeaders.Cookie, cookie)
-                    header("X-CSRF-Token", csrf)
-                    contentType(ContentType.Application.Json)
-                    setBody(
-                        """{"provider":"chatgpt","refreshToken":"$refreshToken","accountEmail":"same@example.com","channelIds":["${channel.id}"]}""",
-                    )
-                }
+            val started = client.post("/admin/api/oauth-login/start") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"provider":"chatgpt","channelIds":["${channel.id}"]}""")
+            }
+            assertEquals(HttpStatusCode.OK, started.status)
+            val startedBody = Json.parseToJsonElement(started.bodyAsText()).jsonObject
+            val loginId = startedBody["loginId"]!!.jsonPrimitive.content
+            val state = startedBody["authorizeUrl"]!!.jsonPrimitive.content
+                .substringAfter("state=").substringBefore("&")
 
-            assertEquals(HttpStatusCode.OK, import(first, "rt-a").status)
-            val duplicated = import(second, "rt-b")
-            assertEquals(HttpStatusCode.Conflict, duplicated.status)
-            assertTrue(duplicated.bodyAsText().contains("oauth_account_email_exists"))
-
-            // 冲突时整个事务回滚，不会留下第二个账号或渠道关联。
-            assertEquals(1, scalarInt("select count(*) from oauth_accounts where account_email = 'same@example.com'"))
-            assertEquals(
-                1,
-                scalarInt(
-                    "select count(*) from oauth_account_channels c join oauth_accounts a on a.id = c.account_id " +
-                        "where a.account_email = 'same@example.com'",
-                ),
-            )
+            val completed = client.post("/admin/api/oauth-login/$loginId/complete") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"callbackUrl":"http://localhost:1455/auth/callback?code=auth-code&state=$state"}""")
+            }
+            assertEquals(HttpStatusCode.Conflict, completed.status)
+            assertTrue(completed.bodyAsText().contains("oauth_account_email_exists"))
+            // 冲突不会留下第二个账号。
+            assertEquals(1, scalarInt("select count(*) from oauth_accounts where account_email = 'login@example.com'"))
         }
     }
 
