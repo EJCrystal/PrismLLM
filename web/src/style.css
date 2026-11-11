@@ -2990,6 +2990,10 @@ input[type="password"]::-ms-clear,
   gap: 8px;
 }
 
+.cursor-pager-more-label-short {
+  display: none;
+}
+
 .cursor-page-size {
   display: inline-flex;
   align-items: center;
@@ -3009,26 +3013,73 @@ input[type="password"]::-ms-clear,
 }
 
 @media (max-width: 640px) {
+  /* 分页器在手机上压成一行：加载状态 + 每页 + 加载更早，避免占用表格高度。 */
   .cursor-pager {
-    align-items: stretch;
-    flex-direction: column;
-    padding: 11px 12px;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 6px;
+    min-height: 0;
+    padding: 6px 10px;
+  }
+
+  .cursor-pager-status {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 10.5px;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 窄屏只留「已加载 N 条」，把「还有更早记录」交给按钮文案表达；
+     已到末尾时按钮消失，仍完整显示状态。 */
+  .cursor-pager-status.has-more .cursor-pager-tail {
+    display: none;
+  }
+
+  .cursor-pager-more-label-long {
+    display: none;
+  }
+
+  .cursor-pager-more-label-short {
+    display: inline;
   }
 
   .cursor-pager-actions {
-    width: 100%;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 4px;
+    width: auto;
   }
 
   .cursor-page-size {
-    flex: 1 1 150px;
+    flex: 0 0 auto;
+    gap: 3px;
+    font-size: 10.5px;
   }
 
   .cursor-page-size select {
-    flex: 1;
+    flex: 0 0 auto;
+    width: 66px;
+    min-height: 30px;
+    padding: 3px 20px 3px 6px;
+    font-size: 10.5px;
   }
 
   .cursor-pager .button {
-    flex: 1 1 180px;
+    flex: 0 0 auto;
+    gap: 4px;
+    min-height: 30px;
+    padding: 4px 8px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .cursor-pager .button > svg {
+    width: 13px;
+    height: 13px;
   }
 }
 
@@ -6583,76 +6634,72 @@ textarea:disabled {
 }
 
 @media (max-width: 900px) {
-  .main-data {
-    height: auto;
-    min-height: 100vh;
-    min-height: 100dvh;
-  }
-
-  .content-data {
-    display: block;
-    overflow: visible;
-    padding-bottom: 28px;
-  }
-
-  .content-data > .page-stack {
-    display: grid;
-  }
-
-  .content-data .table-panel {
-    height: clamp(340px, 60dvh, 560px);
-    min-height: 0;
-  }
-
-  /* Let the request log table use the viewport space below the compact mobile header.
-     Keep its toolbar and pager visible while rows scroll inside the table area. */
-  .main-data.logs-data {
+  /* 移动端列表页统一成「固定视口框架 + 内部滚动」：顶栏与工具条钉住，
+     表格面板吃掉剩余高度、在内部滚动。此前表格高度被写死成 60dvh，
+     列表短的时候页面下方会空出一大块。 */
+  .main-fill {
+    display: flex;
     height: 100vh;
     height: 100dvh;
     min-height: 0;
+    flex-direction: column;
     overflow: hidden;
   }
 
-  .content-data.logs-content {
+  .content-fill {
     display: flex;
     flex: 1 1 auto;
+    flex-direction: column;
     min-height: 0;
-    overflow: hidden;
-    padding-bottom: 12px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding-bottom: 14px;
   }
 
-  .content-data.logs-content > .page-stack {
+  /* .content 在 640px 断点里带 42px 底部内边距，数据页需要收紧，
+     并顺带给全面屏手势条留出安全区。 */
+  .main-fill .content-fill {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .content-fill > .page-stack {
     display: flex;
     flex: 1 1 auto;
+    flex-direction: column;
     min-height: 0;
   }
 
-  .logs-content .logs-overview {
+  /* 概览、工具条与分页器只占自然高度，剩余空间全部留给表格。 */
+  .content-fill > .page-stack > .channel-page-head,
+  .content-fill > .page-stack > .logs-overview,
+  .content-fill > .page-stack > .page-overview,
+  .content-fill > .page-stack > .test-records-toolbar,
+  .content-fill > .page-stack > .filter-panel,
+  .content-fill > .page-stack > .test-records-retention,
+  .content-fill .table-toolbar,
+  .content-fill .channel-list-toolbar,
+  .content-fill .cursor-pager {
     flex: 0 0 auto;
   }
 
-  .logs-content .table-panel {
+  .content-fill .table-panel {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
     width: 100%;
     height: auto;
-    min-height: 0;
+    min-height: 200px;
   }
 
-  .logs-content .table-toolbar {
-    flex: 0 0 auto;
-  }
-
-  .logs-content .table-scroll-paged {
+  /* 表格本体承担滚动，表头继续粘在面板顶部。 */
+  .content-fill .table-scroll,
+  .content-fill .table-scroll-paged,
+  .content-fill .channel-mobile-list,
+  .content-fill .test-record-mobile-list {
     flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
-  }
-
-  .logs-content .cursor-pager {
-    flex: 0 0 auto;
   }
 
   .login-page {

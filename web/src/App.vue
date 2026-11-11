@@ -74,6 +74,14 @@ const accountOpen = ref(false)
 const recordTarget = ref<{ type: TestRecordType; id: number } | null>(null)
 const currentMeta = computed(() => meta[view.value] || meta.channels)
 const isDataView = computed(() => view.value === 'channels' || view.value === 'logs' || view.value === 'audit-logs')
+/** 列表型页面：手机上统一成「工具条钉住 + 表格内部滚动」，避免列表末尾留下空白。 */
+const isListView = computed(
+  () =>
+    isDataView.value ||
+    view.value === 'oauth-accounts' ||
+    view.value === 'client-keys' ||
+    view.value === 'model-tests',
+)
 
 async function restoreSession() {
   try {
@@ -191,7 +199,7 @@ onBeforeUnmount(() => {
 
     <div v-if="navOpen" class="sidebar-scrim" @click="navOpen = false"></div>
 
-    <div class="main" :class="{ 'main-data': isDataView, 'logs-data': view === 'logs' }">
+    <div class="main" :class="{ 'main-data': isDataView, 'main-fill': isListView }">
       <header class="topbar">
         <div class="topbar-left">
           <button type="button" class="icon-button mobile-menu" aria-label="打开导航" @click="navOpen = true">
@@ -233,7 +241,7 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <main class="content" :class="{ 'content-data': isDataView, 'logs-content': view === 'logs' }">
+      <main class="content" :class="{ 'content-data': isDataView, 'content-fill': isListView }">
         <ChannelsView v-if="view === 'channels'" @open-test-record="openTestRecord" />
         <OAuthAccountsView v-else-if="view === 'oauth-accounts'" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
