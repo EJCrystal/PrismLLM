@@ -361,6 +361,7 @@ open class OAuthAccountRepository(
                 else OAuthAccountModelCatalogEntry(
                     upstreamModel = upstreamModel.take(MAX_CATALOG_MODEL_ID),
                     canonicalModelId = entry.canonicalModelId?.trim()?.take(MAX_CATALOG_MODEL_ID),
+                    displayName = entry.displayName?.trim()?.take(MAX_CATALOG_MODEL_ID),
                 )
             }
             .distinctBy { it.upstreamModel }

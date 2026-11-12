@@ -1422,7 +1422,15 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         "timeout_error",
                         retryable = true,
                     )
-                    entries.addAll(catalog.map { OAuthAccountModelCatalogEntry(upstreamModel = it.id) })
+                                        // ChatGPT 目录没有家族结构：name 保留上游 display_name，供目录响应展示。
+                    entries.addAll(
+                        catalog.map {
+                            OAuthAccountModelCatalogEntry(
+                                upstreamModel = it.id,
+                                displayName = it.name,
+                            )
+                        },
+                    )
                 }
                 else -> {
                     // probe 可能包含一次开通轮询，整体限时，避免上游迟缓时管理请求一直挂着。
@@ -1493,9 +1501,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(
                 OAuthProviderModelsResponse(
                                         models = entries.map { entry ->
-                        // name 返回目录的展示语义：canonical 家族 id 或上游模型名本身；
-                        // upstream 与 name 相同时置空，避免 UI 出现重复标签。
-                        val name = entry.canonicalModelId?.takeIf { it != entry.upstreamModel }
+                        // name 返回目录的展示语义：优先上游 display_name，其次 canonical 家族 id；
+                        // 与 upstreamModel 相同时置空，避免 UI 出现重复标签。
+                        val name = (entry.displayName ?: entry.canonicalModelId)
+                            ?.takeIf { it != entry.upstreamModel }
                         OAuthProviderModelResponse(entry.upstreamModel, name)
                     },
                 ),
