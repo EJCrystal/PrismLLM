@@ -129,6 +129,33 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun `responses stream with standalone error event reports error`() {
+        val body = parseResponsesStreamText(
+            listOf(
+                "event: error",
+                "data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"standalone boom\"}",
+            ).joinToString("\n"),
+        )
+        assertNotNull(body)
+        val error = body?.get("error")?.jsonObject
+        assertEquals("standalone boom", error?.get("message")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `responses stream completed text replaces incremental text instead of duplicating`() {
+        val body = parseResponsesStreamText(
+            listOf(
+                "event: response.output_text.delta",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}",
+                "event: response.completed",
+                "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-6-luna\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK\"}]}]}}",
+            ).joinToString("\n"),
+        )
+        assertNotNull(body)
+        assertEquals("OK", collectText(body?.get("output_text")))
+    }
+
+    @Test
     fun `codex model list skips entries whose slug id and name are all blank`() {
         val models = parseModelList(
             """{"models":[{"slug":"","id":"valid"},{"slug":"","id":"  ","name":"blank-name"},{"slug":"kept"}]}""",

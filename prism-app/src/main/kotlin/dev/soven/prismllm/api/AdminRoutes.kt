@@ -1478,7 +1478,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 entries,
             )
             // 同步后只删除授权里目录外的行（事务内读当前行，不覆盖并发改动）；
-            // 全部被删时账号回到「跟随目录」语义，不会扩大授权范围。
+            // 显式授权全部落空时写入哨兵行，保持「显式零授权」，不扩大为继承目录。
             if (account.models.isNotEmpty()) {
                 app.oauthAccountRepository.removeModelsOutsideCatalog(account.id, entries.map { it.upstreamModel })
             }

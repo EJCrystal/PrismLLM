@@ -400,7 +400,12 @@ open class OAuthAccountRepository(
 
     /**
      * 目录同步后的授权收敛：在同一事务里读取当前授权行，只删除目录外的行，
-     * 保留管理员在目录抓取期间的并发改动；全部被删时账号回到「跟随目录」语义。
+     * 保留管理员在目录抓取期间的并发改动。
+     *
+     * 删除后如果一行不剩，说明「显式授权」的模型全部不在新目录里——这不等于「跟随目录」，
+     * 不能让账号继承整个目录。用一条显式零授权哨兵行（目录里不可能存在的名字）占住
+     * 「models 非空」状态：supports() 只匹配该哨兵，任何真实模型都会被拒绝，
+     * 管理接口的授权勾选也会看到它并允许管理员重新选择。
      */
     suspend fun removeModelsOutsideCatalog(
         accountId: String,
@@ -415,8 +420,26 @@ open class OAuthAccountRepository(
             (OAuthAccountModels.accountId eq accountId) and
                 (OAuthAccountModels.upstreamModel notInList allowed)
         }
+        val remaining = OAuthAccountModels.selectAll()
+            .where { OAuthAccountModels.accountId eq accountId }
+            .count()
+        if (remaining == 0L) {
+            OAuthAccountModels.insert {
+                it[OAuthAccountModels.accountId] = accountId
+                it[upstreamModel] = EXPLICIT_EMPTY_MODELS_SENTINEL
+                it[createdAt] = now
+            }
+        }
         OAuthAccounts.update({ OAuthAccounts.id eq accountId }) { it[OAuthAccounts.updatedAt] = now }
         true
+    }
+
+    companion object {
+        /**
+         * 「显式授权但目录里已无可用模型」的哨兵行。目录同步只会写入真实模型名，
+         * 且该名字不可能是合法模型 id，因此绝不会与目录或真实授权冲突。
+         */
+        private const val EXPLICIT_EMPTY_MODELS_SENTINEL = "(no models available)"
     }
 
     suspend fun delete(accountId: String): Boolean = suspendTransaction(database) {

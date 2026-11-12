@@ -426,6 +426,10 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
         if (delta != null) {
             text = (text.orEmpty() + delta).takeIf { it.isNotEmpty() }
         }
+        if (type == "error") {
+            // 独立 error 事件的 code/message 在事件顶层；归一化成 error 嵌套形状。
+            failedError = buildJsonObject { put("error", event) }
+        }
         if (type.startsWith("response.failed")) {
             failedError = event["response"] as? JsonObject
         }
@@ -444,8 +448,9 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
                             ?.joinToString("")
                     }
                     ?.joinToString("")
+                // 完成事件的 output 携带完整文本：有增量时以它为准，避免拼接出重复文本。
                 if (!completedText.isNullOrEmpty()) {
-                    text = (text.orEmpty() + completedText).takeIf { it.isNotEmpty() }
+                    text = completedText
                 }
             }
         }
@@ -456,7 +461,7 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
         output?.let { put("output", it) }
         usage?.let { put("usage", it) }
         reportedModel?.let { put("model", it) }
-        failedError?.let { put("error", it["error"] ?: it) }
+        failedError?.let { failed -> put("error", failed["error"] ?: failed) }
     }
 }
 
