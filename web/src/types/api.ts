@@ -845,6 +845,14 @@ export interface IqBenchmarkDefinition {
   summary: string
   prompt: string
   grading: string
+  /** 通常耗时提示。 */
+  durationHint: string
+  /** 题目默认超时（毫秒）。 */
+  defaultTimeoutMs: number
+  /** 单次检测允许的最大超时（硬上限）。 */
+  maxTimeoutMs: number
+  /** 实际生效的默认超时：IQ_TEST_TIMEOUT_MS > 题目默认值。 */
+  effectiveTimeoutMs: number
 }
 
 export interface IqTestTargetCredential {
@@ -885,6 +893,8 @@ export interface IqTestRunRequest {
   /** 本次使用的提示词；留空时由服务端使用题目内置提示词。 */
   useQuestionBank?: boolean
   prompt?: string | null
+  /** 本次超时覆盖（毫秒）；留空使用默认值，最多 600000 毫秒。 */
+  timeoutMs?: number | null
 }
 
 export interface IqTestCheck {

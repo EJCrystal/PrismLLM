@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom'
 import {
   formatIqLatency,
   iqTargetKey,
+  iqTimeoutHint,
   iqVerdictTone,
   shouldAdoptIqRunResult,
   withIqPreviewCsp,
@@ -131,5 +132,18 @@ describe('iqTest: 智商检测展示', () => {
     assert.equal(formatIqLatency(12_340), '12.3 s')
     assert.equal(formatIqLatency(12_000), '12 s')
     assert.equal(formatIqLatency(-1), '—')
+  })
+
+  it('超时提示按服务端下发的生效值生成', () => {
+    assert.equal(
+      iqTimeoutHint({ durationHint: '图形题通常需要 30–120 秒', effectiveTimeoutMs: 180_000 }),
+      '图形题通常需要 30–120 秒，超时 180 秒。',
+    )
+    // IQ_TEST_TIMEOUT_MS 压低后，提示跟着变成真实拦截时刻，不再写死 180 秒。
+    assert.equal(
+      iqTimeoutHint({ durationHint: '图形题通常需要 30–120 秒', effectiveTimeoutMs: 90_000 }),
+      '图形题通常需要 30–120 秒，超时 90 秒。',
+    )
+    assert.equal(iqTimeoutHint(null), '')
   })
 })

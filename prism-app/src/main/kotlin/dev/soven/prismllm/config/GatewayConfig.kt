@@ -48,6 +48,11 @@ data class GatewayConfig(
     val iqDefaultJudge: String = "local",
     val iqJudgeTimeoutMs: Long = 60_000,
     val iqJudgePluginDir: Path = Path.of("plugins/iq-judges"),
+    /**
+     * 智商检测单次等待上游的默认超时；为空时使用题目内置默认值（图形题 180 秒、推理题 120 秒）。
+     * 单次检测的 timeoutMs 仍可覆盖它，但任何来源都不能超过 [IQ_TEST_TIMEOUT_MAX_MS]。
+     */
+    val iqTestTimeoutMs: Long? = null,
     /** 内置视觉判分器；启用时必须配置 OpenAI 兼容的多模态端点与模型。 */
     val iqVisionEnabled: Boolean = false,
     val iqVisionBaseUrl: String = "",
@@ -66,6 +71,9 @@ data class GatewayConfig(
     val webSearch: WebSearchConfig = WebSearchConfig(),
 ) {
     companion object {
+        /** 智商检测单次等待上游的硬上限；题目默认、环境变量与单次请求覆盖都不能超过它。 */
+        const val IQ_TEST_TIMEOUT_MAX_MS = 600_000L
+
         fun fromEnv(env: Map<String, String> = System.getenv()): GatewayConfig {
             fun value(name: String, default: String? = null): String =
                 env[name]?.takeIf { it.isNotBlank() }
@@ -98,6 +106,13 @@ data class GatewayConfig(
             val manxueTimeoutMs = longValue("MANXUE_TIMEOUT_MS", 60_000)
             var iqJudgeTimeoutMs = longValue("IQ_JUDGE_TIMEOUT_MS", 60_000)
             require(iqJudgeTimeoutMs in 1_000..300_000) { "IQ_JUDGE_TIMEOUT_MS 必须在 1000..300000 之间" }
+            // 留空时沿用题目各自的默认超时；显式配置时统一覆盖所有题目的默认值。
+            val iqTestTimeoutMs = env["IQ_TEST_TIMEOUT_MS"]?.takeIf { it.isNotBlank() }?.let { raw ->
+                raw.toLongOrNull() ?: error("环境变量 IQ_TEST_TIMEOUT_MS 必须是整数")
+            }
+            require(iqTestTimeoutMs == null || iqTestTimeoutMs in 1_000..IQ_TEST_TIMEOUT_MAX_MS) {
+                "IQ_TEST_TIMEOUT_MS 必须在 1000..$IQ_TEST_TIMEOUT_MAX_MS 之间"
+            }
             val iqDefaultJudge = value("IQ_DEFAULT_JUDGE", "local")
             require(Regex(IqJudge.ID_PATTERN).matches(iqDefaultJudge)) {
                 "IQ_DEFAULT_JUDGE 必须是合法的判分器 ID"
@@ -244,6 +259,7 @@ data class GatewayConfig(
                 iqDefaultJudge = iqDefaultJudge,
                 iqJudgeTimeoutMs = iqJudgeTimeoutMs,
                 iqJudgePluginDir = Path.of(value("IQ_JUDGE_PLUGIN_DIR", "plugins/iq-judges")),
+                iqTestTimeoutMs = iqTestTimeoutMs,
                 iqVisionEnabled = iqVisionEnabled,
                 iqVisionBaseUrl = iqVisionBaseUrl,
                 iqVisionApiKey = value("IQ_VISION_API_KEY", ""),

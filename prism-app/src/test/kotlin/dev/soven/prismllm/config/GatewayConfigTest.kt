@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class GatewayConfigTest {
@@ -106,6 +107,38 @@ class GatewayConfigTest {
         assertEquals(4_000_000, config.iqVisionMaxImageBytes)
         assertEquals("", config.iqVisionBrowserPath)
         assertEquals(15_000L, config.iqVisionBrowserTimeoutMs)
+    }
+
+    @Test
+    fun iqTestTimeoutIsUnsetByDefaultSoBenchmarksKeepTheirOwnValues() {
+        val config = GatewayConfig.fromEnv(requiredEnv)
+
+        assertNull(config.iqTestTimeoutMs)
+    }
+
+    @Test
+    fun iqTestTimeoutCanBeOverriddenAndRejectsOutOfRangeValues() {
+        val config = GatewayConfig.fromEnv(requiredEnv + ("IQ_TEST_TIMEOUT_MS" to "240000"))
+
+        assertEquals(240_000L, config.iqTestTimeoutMs)
+
+        assertFailsWith<IllegalArgumentException> {
+            GatewayConfig.fromEnv(requiredEnv + ("IQ_TEST_TIMEOUT_MS" to "500"))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            GatewayConfig.fromEnv(requiredEnv + ("IQ_TEST_TIMEOUT_MS" to "600001"))
+        }
+        // 非法整数与其它数值环境变量一样由 error() 抛出。
+        assertFailsWith<IllegalStateException> {
+            GatewayConfig.fromEnv(requiredEnv + ("IQ_TEST_TIMEOUT_MS" to "abc"))
+        }
+    }
+
+    @Test
+    fun blankIqTestTimeoutKeepsPerBenchmarkDefaults() {
+        val config = GatewayConfig.fromEnv(requiredEnv + ("IQ_TEST_TIMEOUT_MS" to " "))
+
+        assertNull(config.iqTestTimeoutMs)
     }
 
     @Test

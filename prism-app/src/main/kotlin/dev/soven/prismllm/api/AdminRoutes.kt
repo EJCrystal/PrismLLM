@@ -45,6 +45,7 @@ import dev.soven.prismllm.oauth.OAuthRefreshResult
 import dev.soven.prismllm.oauth.OAuthUnavailableReason
 import dev.soven.prismllm.oauth.infra.proxyAddress
 import dev.soven.prismllm.proxy.CatalogModel
+import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.proxy.IqBenchmark
 import dev.soven.prismllm.proxy.iqQuestionPrompt
 import dev.soven.prismllm.proxy.selectIqQuestion
@@ -63,6 +64,7 @@ import dev.soven.prismllm.proxy.modelListProtocol
 import dev.soven.prismllm.proxy.probeUpstreamProtocols
 import dev.soven.prismllm.proxy.resolveSavedCredential
 import dev.soven.prismllm.proxy.ModelConnectivityTestResult
+import dev.soven.prismllm.proxy.resolveTimeoutMs
 import dev.soven.prismllm.proxy.testChannelModelConnectivity
 import dev.soven.prismllm.proxy.testOAuthAccountModelConnectivity
 import dev.soven.prismllm.channel.persistence.ChannelKeyUpdate
@@ -693,7 +695,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/iq-tests/benchmarks") {
             call.requireAdmin(app)
-            call.respond(IqBenchmark.entries.map { it.toDefinitionResponse() })
+            call.respond(IqBenchmark.entries.map { it.toDefinitionResponse(app.config.iqTestTimeoutMs) })
         }
 
         get("/iq-vision-settings") {
@@ -1050,6 +1052,16 @@ fun Route.adminRoutes(app: GatewayApplication) {
             } else {
                 null
             }
+            // 单次覆盖必须落在合法区间；越界直接拒绝，避免悄悄截断后与管理台输入不一致。
+            request.timeoutMs?.let { requested ->
+                if (requested !in 1_000..GatewayConfig.IQ_TEST_TIMEOUT_MAX_MS) {
+                    throw badRequest(
+                        "invalid_iq_test_timeout",
+                        "检测超时必须在 1000..${GatewayConfig.IQ_TEST_TIMEOUT_MAX_MS} 毫秒之间",
+                    )
+                }
+            }
+            val timeoutMs = benchmark.resolveTimeoutMs(request.timeoutMs, app.config.iqTestTimeoutMs)
             val result = testChannelModelConnectivity(
                 channel = channel,
                 credentialRef = credential,
@@ -1058,7 +1070,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 prompt = prompt,
                 credentials = app.oauthTokenService,
                 httpClient = app.httpClient,
-                timeoutMs = benchmark.timeoutMs,
+                timeoutMs = timeoutMs,
                 maxOutputTokens = benchmark.maxOutputTokens,
                 maxResponseChars = IQ_TEST_MAX_RESPONSE_CHARS,
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,

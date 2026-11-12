@@ -1,4 +1,4 @@
-import type { IqVerdict } from '../types/api'
+import type { IqBenchmarkDefinition, IqVerdict } from '../types/api'
 import { formatDuration } from './format'
 
 const PREVIEW_CSP = [
@@ -81,6 +81,21 @@ function stripPreviewNavigation(document: Document): void {
 export function formatIqLatency(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'
   return formatDuration(ms)
+}
+
+/**
+ * 题目超时提示，例如「图形题通常需要 30–120 秒，超时 180 秒」。
+ *
+ * 超时数值来自服务端下发的题目定义，不在前端写死：IQ_TEST_TIMEOUT_MS 或题目默认值调整后，
+ * 界面提示会自动跟随，避免提示与真实拦截时刻不一致。
+ */
+export function iqTimeoutHint(
+  definition: Pick<IqBenchmarkDefinition, 'durationHint' | 'effectiveTimeoutMs'> | null | undefined,
+): string {
+  if (!definition) return ''
+  if (!Number.isFinite(definition.effectiveTimeoutMs)) return `${definition.durationHint}。`
+  const seconds = Math.max(1, Math.round(definition.effectiveTimeoutMs / 1000))
+  return `${definition.durationHint}，超时 ${seconds} 秒。`
 }
 
 export function formatIqTime(value: number): string {

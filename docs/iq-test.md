@@ -207,6 +207,7 @@ curl https://manxue.ai/api/v1/tests/<id>
 | `IQ_DEFAULT_JUDGE` | `local` | 默认判分器 ID；不存在时退回 `local`，再退回第一个可用判分器。 |
 | `IQ_JUDGE_TIMEOUT_MS` | `60000` | 单次判分的总超时，1000–300000；启用 `vision` 且未显式配置时自动提高到 6×浏览器单帧超时+视觉超时（最多 300000）。 |
 | `IQ_JUDGE_PLUGIN_DIR` | `plugins/iq-judges` | 外部判分器 JAR 目录；不存在时视为空目录。 |
+| `IQ_TEST_TIMEOUT_MS` | 空 | 单次检测等待上游的默认超时，1000–600000；留空时使用题目默认值（图形题 180 秒、推理题 120 秒）。单次请求的 `timeoutMs` 可再覆盖，但所有来源都不超过 600000 毫秒。 |
 | `MANXUE_ENABLED` | `true` | 是否注册 `manxue` 判分器。 |
 | `MANXUE_API_BASE_URL` | `https://manxue.ai` | 满血 API 基础地址。 |
 | `MANXUE_TIMEOUT_MS` | `60000` | POST + 轮询的总超时。 |
@@ -296,8 +297,9 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/iq-tests \
 
 `benchmark` 取 `pelican` 或 `candy`。`keyId`、`protocol` 可省略；省略协议时优先 Responses，
 其次 Chat Completions。鹈鹕题的 `judgeId` 省略时使用 `IQ_DEFAULT_JUDGE`；糖果题忽略 `judgeId`，
-也不会调用判分器。生成请求同步等待上游完成：图形题超时 180 秒，糖果题超时 120 秒；
-鹈鹕判分另有 `IQ_JUDGE_TIMEOUT_MS` 超时。
+也不会调用判分器。生成请求同步等待上游完成：未配置 `IQ_TEST_TIMEOUT_MS` 时，
+图形题超时 180 秒，糖果题超时 120 秒；配置后统一以它为准。可选的 `timeoutMs` 只覆盖本次检测，
+最多 600000 毫秒。鹈鹕判分另有 `IQ_JUDGE_TIMEOUT_MS` 超时。
 
 响应包含 `verdict`（`passed` / `incorrect` / `review` / `failed`）、`checks`、`html`、
 `responseText`、`judgeResult`（`judgeId` / `judgeLabel` / `verdict` / `label` / `reason` / `score` / `details`）、

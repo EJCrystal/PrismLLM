@@ -28,6 +28,7 @@ import dev.soven.prismllm.admin.domain.FingerprintTestRunRecord
 import dev.soven.prismllm.requestlog.domain.RequestLogRecord
 import dev.soven.prismllm.plugin.iq.IqJudgeInfo
 import dev.soven.prismllm.plugin.iq.IqJudgePluginFailure
+import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.proxy.IqBenchmark
 import dev.soven.prismllm.proxy.IqTestEvaluation
 import dev.soven.prismllm.proxy.IqVerdict
@@ -35,6 +36,7 @@ import dev.soven.prismllm.proxy.analyzePelicanStructure
 import dev.soven.prismllm.proxy.evaluateIqTest
 import dev.soven.prismllm.proxy.evaluateLegacyCandy
 import dev.soven.prismllm.proxy.ModelConnectivityTestResult
+import dev.soven.prismllm.proxy.resolveTimeoutMs
 import dev.soven.prismllm.proxy.fingerprint.FingerprintAnalysis
 import dev.soven.prismllm.proxy.fingerprint.FingerprintSamplePayload
 import dev.soven.prismllm.shared.domain.Usage
@@ -1269,7 +1271,7 @@ fun ModelConnectivityTestResult.toResponse(
     upstreamReportedModel = upstreamReportedModel,
 )
 
-/** 智商检测的内置题目定义，供管理台展示默认提示词与判分口径。 */
+/** 智商检测的内置题目定义，供管理台展示默认提示词、判分口径与超时口径。 */
 @Serializable
 data class IqBenchmarkDefinitionResponse(
     val id: String,
@@ -1277,14 +1279,26 @@ data class IqBenchmarkDefinitionResponse(
     val summary: String,
     val prompt: String,
     val grading: String,
+    /** 通常耗时提示，例如「图形题通常需要 30–120 秒」。 */
+    val durationHint: String,
+    /** 题目内置的默认超时；未配置 IQ_TEST_TIMEOUT_MS 时即为生效值。 */
+    val defaultTimeoutMs: Long,
+    /** 单次检测允许的最大超时（硬上限），单次请求的 timeoutMs 不能超过它。 */
+    val maxTimeoutMs: Long,
+    /** 实际生效的默认超时：IQ_TEST_TIMEOUT_MS > 题目默认值。 */
+    val effectiveTimeoutMs: Long,
 )
 
-fun IqBenchmark.toDefinitionResponse() = IqBenchmarkDefinitionResponse(
+fun IqBenchmark.toDefinitionResponse(configuredDefaultMs: Long? = null) = IqBenchmarkDefinitionResponse(
     id = value,
     label = label,
     summary = summary,
     prompt = prompt,
     grading = grading,
+    durationHint = durationHint,
+    defaultTimeoutMs = timeoutMs,
+    maxTimeoutMs = GatewayConfig.IQ_TEST_TIMEOUT_MAX_MS,
+    effectiveTimeoutMs = resolveTimeoutMs(null, configuredDefaultMs),
 )
 
 /** 可供智商检测选择的渠道模型与可用凭据。 */
@@ -1316,6 +1330,8 @@ data class IqTestRunRequest(
     /** 可选的本次提示词；留空时使用题目内置提示词。 */
     val prompt: String? = null,
     val useQuestionBank: Boolean = false,
+    /** 可选的本次超时覆盖；留空使用部署默认值或题目默认值，最多 600000 毫秒。 */
+    val timeoutMs: Long? = null,
 )
 
 @Serializable
