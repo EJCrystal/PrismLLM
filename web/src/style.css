@@ -6520,6 +6520,13 @@ textarea:disabled {
   padding: 22px 24px;
 }
 
+.modal-body.is-contained {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+
 .modal-foot {
   display: flex;
   flex: 0 0 auto;
@@ -6586,6 +6593,13 @@ textarea:disabled {
   gap: 9px;
   width: min(360px, calc(100vw - 44px));
   pointer-events: none;
+}
+
+@media (max-width: 1000px) {
+  body:has(.modal-body.is-contained) .toast-stack {
+    top: calc(12px + env(safe-area-inset-top));
+    bottom: auto;
+  }
 }
 
 .toast {

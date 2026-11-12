@@ -15,6 +15,8 @@ import {
 import { formatIqLatency, formatIqTime } from '../utils/iqTest'
 import { modelTestProtocolLabel, modelTestTargetKey } from '../utils/modelTest'
 import Icon from './Icon.vue'
+import TestWorkbench from './TestWorkbench.vue'
+import TestEmptyState from './TestEmptyState.vue'
 
 const props = withDefaults(defineProps<{
   /** run：渠道内发起检测；record：只展示一条历史记录。 */
@@ -45,7 +47,7 @@ const selectedKeyId = ref('')
 const selectedProtocol = ref('')
 const showAllCandidates = ref(false)
 const elapsed = ref(0)
-const resultRef = ref<HTMLElement | null>(null)
+const workbench = ref<InstanceType<typeof TestWorkbench> | null>(null)
 let timer: ReturnType<typeof setInterval> | null = null
 
 const recordMode = computed(() => props.mode === 'record')
@@ -134,12 +136,6 @@ function stopTimer() {
   }
 }
 
-/** 堆叠布局下结果在控制面板下方，完成后把结果带回视口。 */
-function scrollResultIntoView() {
-  if (!window.matchMedia('(max-width: 960px)').matches) return
-  requestAnimationFrame(() => resultRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
-}
-
 async function loadAll() {
   loading.value = true
   loadError.value = ''
@@ -191,6 +187,7 @@ async function run() {
   if (!target) return
   running.value = true
   runError.value = ''
+  workbench.value?.showResults()
   startTimer()
   try {
     const payload: FingerprintRunRequest = {
@@ -203,7 +200,7 @@ async function run() {
     result.value = detail
     showAllCandidates.value = false
     notify(detail.usedOutputs > 0 ? '指纹检测已完成' : '三条回答都不够有效，请查看样本', detail.usedOutputs > 0 ? 'success' : 'error')
-    scrollResultIntoView()
+    workbench.value?.scrollResults()
   } catch (cause) {
     runError.value = errorMessage(cause)
     notify(runError.value, 'error')
@@ -227,11 +224,6 @@ onBeforeUnmount(stopTimer)
 
 <template>
   <section class="page-stack fingerprint-page" :class="{ 'fingerprint-embedded': mode === 'run' }">
-    <p v-if="mode === 'run'" class="fingerprint-embedded-note">
-      <Icon name="info" :size="14" />
-      每次检测生成三道随机数题并与本地参考库比对；结果代表闭集内的相对相似度，不是确定性的来源鉴定。
-    </p>
-
     <div v-if="loading" class="panel fingerprint-loading">
       <span class="spinner"></span>
       <p>正在加载参考库与可测试模型…</p>
@@ -242,85 +234,90 @@ onBeforeUnmount(stopTimer)
       <button type="button" class="link-button" @click="retryLoad">重试</button>
     </div>
 
-    <div v-else class="fingerprint-layout" :class="{ 'fingerprint-record-mode': recordMode }">
-      <aside v-if="!recordMode" class="fingerprint-control panel">
-        <div class="fingerprint-section">
-          <span class="fingerprint-section-label">检测目标</span>
-          <label v-if="scopedTargets.length" class="field">
-            <span>{{ channel ? '模型' : '渠道与模型' }}</span>
-            <select v-if="channel" v-model="selectedTargetKey" :disabled="running">
-              <option
-                v-for="target in scopedTargets"
-                :key="modelTestTargetKey(target.channelId, target.model)"
-                :value="modelTestTargetKey(target.channelId, target.model)"
-              >
-                {{ target.model }}
-              </option>
-            </select>
-            <select v-else v-model="selectedTargetKey" :disabled="running">
-              <optgroup
-                v-for="group in targetGroups"
-                :key="group.channelId"
-                :label="group.channelEnabled ? group.channelName : `${group.channelName}（已停用）`"
-              >
+    <TestWorkbench v-else ref="workbench" :record-mode="recordMode">
+      <template #configuration>
+        <div class="test-form">
+          <p class="test-form-note">
+            <Icon name="info" :size="14" />
+            结果仅表示与参考库的相似程度，不能确认真实模型来源。
+          </p>
+          <div class="test-form-section">
+            <h3 class="test-form-section-title">检测目标</h3>
+            <label v-if="scopedTargets.length" class="field">
+              <span>{{ channel ? '模型' : '渠道与模型' }}</span>
+              <select v-if="channel" v-model="selectedTargetKey" :disabled="running">
                 <option
-                  v-for="target in group.items"
+                  v-for="target in scopedTargets"
                   :key="modelTestTargetKey(target.channelId, target.model)"
                   :value="modelTestTargetKey(target.channelId, target.model)"
                 >
                   {{ target.model }}
                 </option>
-              </optgroup>
-            </select>
-          </label>
-          <p v-else class="fingerprint-empty-copy">
-            还没有可检测的模型。请先在「渠道」中授权模型，并至少配置一个可用凭据。
-          </p>
+              </select>
+              <select v-else v-model="selectedTargetKey" :disabled="running">
+                <optgroup
+                  v-for="group in targetGroups"
+                  :key="group.channelId"
+                  :label="group.channelEnabled ? group.channelName : `${group.channelName}（已停用）`"
+                >
+                  <option
+                    v-for="target in group.items"
+                    :key="modelTestTargetKey(target.channelId, target.model)"
+                    :value="modelTestTargetKey(target.channelId, target.model)"
+                  >
+                    {{ target.model }}
+                  </option>
+                </optgroup>
+              </select>
+            </label>
+            <p v-else class="fingerprint-empty-copy">
+              还没有可检测的模型。请先在「渠道」中授权模型，并至少配置一个可用凭据。
+            </p>
 
-          <div v-if="selectedTarget" class="fingerprint-target-grid">
-            <label class="field">
-              <span>使用凭据</span>
-              <select v-model="selectedKeyId" :disabled="running">
-                <option v-for="credential in selectedTarget.credentials" :key="credential.id" :value="credential.id">
-                  {{ credential.name }}（优先级 {{ credential.priority }}）
-                </option>
-              </select>
-            </label>
-            <label class="field">
-              <span>协议</span>
-              <select v-model="selectedProtocol" :disabled="running">
-                <option v-for="protocol in selectedTarget.protocols" :key="protocol" :value="protocol">
-                  {{ modelTestProtocolLabel(protocol) }}
-                </option>
-              </select>
-            </label>
+            <div v-if="selectedTarget" class="fingerprint-target-grid">
+              <label class="field">
+                <span>使用凭据</span>
+                <select v-model="selectedKeyId" :disabled="running">
+                  <option v-for="credential in selectedTarget.credentials" :key="credential.id" :value="credential.id">
+                    {{ credential.name }}（优先级 {{ credential.priority }}）
+                  </option>
+                </select>
+              </label>
+              <label class="field">
+                <span>协议</span>
+                <select v-model="selectedProtocol" :disabled="running">
+                  <option v-for="protocol in selectedTarget.protocols" :key="protocol" :value="protocol">
+                    {{ modelTestProtocolLabel(protocol) }}
+                  </option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <p v-if="selectedTarget && !selectedTarget.channelEnabled" class="test-form-note">
+            渠道已停用，仍可用已保存的凭据发起测试。
+          </p>
+          <div class="test-form-section">
+            <h3 class="test-form-section-title">运行说明</h3>
+            <p class="fingerprint-run-note">
+              三条请求并行，通常需要 30–120 秒，最长等待 4 分钟。
+            </p>
+            <details class="test-form-help">
+              <summary>参考库与结果说明</summary>
+              <p v-if="detectorInfo">参考库包含 {{ detectorInfo.modelCount }} 个模型。</p>
+              <p>每次重新生成三道随机数题，在本地比对参考库，不调用外部指纹服务。</p>
+              <p>结果是参考库内的相对相似度，不应用作封禁或计费的唯一依据。</p>
+            </details>
           </div>
         </div>
-
-        <div class="fingerprint-run-card">
-          <span class="fingerprint-section-label">本次检测</span>
-          <ul class="fingerprint-steps">
-            <li><span>1</span>生成三道数字题</li>
-            <li><span>2</span>并行请求同一模型</li>
-            <li><span>3</span>本地比对参考库</li>
-          </ul>
-          <button type="button" class="button primary full fingerprint-run" :disabled="!canRun" @click="run">
-            <Icon :name="running ? 'refresh' : 'fingerprint'" :size="17" :class="{ 'is-spinning': running }" />
-            {{ running ? `正在检测… ${elapsed}s` : '开始指纹检测' }}
-          </button>
-          <p class="fingerprint-run-note">
-            三条请求并行发出，通常需要 30–120 秒；渠道较慢时最长等待 4 分钟。每次运行的题面都重新生成。
-          </p>
-          <p v-if="detectorInfo" class="fingerprint-run-note">
-            参考库包含 {{ detectorInfo.modelCount }} 个模型；指纹比对在本地完成，不调用外部指纹服务。
-          </p>
-        </div>
-
-        <p class="fingerprint-disclaimer">
-          <Icon name="info" :size="14" />
-          检测结果只反映本次回答与参考库的相似程度，无法证明真实部署模型，也不应用作封禁或计费的唯一依据。
-        </p>
-      </aside>
+      </template>
+      <template #actions>
+        <button type="button" class="button primary full fingerprint-run" :disabled="!canRun" @click="run">
+          <Icon :name="running ? 'refresh' : 'fingerprint'" :size="17" :class="{ 'is-spinning': running }" />
+          {{ running ? `正在检测… ${elapsed}s` : '开始指纹检测' }}
+        </button>
+        <p class="test-action-note">三条真实上游请求，可能产生费用；完成后保存记录。</p>
+      </template>
 
       <div class="fingerprint-main">
         <div v-if="runError" class="callout danger fingerprint-run-error">
@@ -341,7 +338,7 @@ onBeforeUnmount(stopTimer)
         </section>
 
         <template v-else-if="result && analysis">
-          <section ref="resultRef" class="panel fingerprint-result">
+          <section class="panel fingerprint-result">
             <header class="fingerprint-result-head">
               <div class="fingerprint-result-title">
                 <span class="badge" :class="decisionTone">{{ fingerprintDecisionLabel(analysis.decision) }}</span>
@@ -503,41 +500,30 @@ onBeforeUnmount(stopTimer)
           </section>
         </template>
 
-        <section v-else-if="!recordMode" class="panel fingerprint-intro">
-          <Icon name="fingerprint" :size="26" />
-          <h3>还没有检测结果</h3>
-          <p>选择检测目标并开始。首次检测会并行发送三条数字题，完成后在这里展示判定与摘要。</p>
-        </section>
+        <TestEmptyState
+          v-else-if="!recordMode"
+          icon="fingerprint"
+          title="还没有检测结果"
+          description="选择检测目标并开始，完成后在这里展示指纹判定与摘要。"
+          :steps="['生成三道数字题', '并行请求同一模型', '本地比对参考库']"
+        />
       </div>
-    </div>
+    </TestWorkbench>
   </section>
 </template>
 
 <style scoped>
 .fingerprint-page {
+  width: 100%;
   max-width: 1360px;
   margin: 0 auto;
 }
 
-.fingerprint-embedded-note {
+.fingerprint-embedded {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.fingerprint-layout {
-  display: grid;
-  grid-template-columns: minmax(280px, 330px) minmax(0, 1fr);
-  align-items: start;
-  gap: 16px;
-}
-
-.fingerprint-layout.fingerprint-record-mode {
-  grid-template-columns: minmax(0, 1fr);
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .fingerprint-compact-hint {
@@ -547,21 +533,6 @@ onBeforeUnmount(stopTimer)
 .fingerprint-result-foot {
   display: flex;
   justify-content: flex-end;
-}
-
-.fingerprint-control {
-  position: sticky;
-  top: 16px;
-  display: grid;
-  gap: 18px;
-  padding: 18px;
-}
-
-.fingerprint-section,
-.fingerprint-run-card {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
 }
 
 .fingerprint-section-label {
@@ -592,34 +563,6 @@ onBeforeUnmount(stopTimer)
   line-height: 1.6;
 }
 
-.fingerprint-steps {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.fingerprint-steps li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 12.5px;
-}
-
-.fingerprint-steps span {
-  display: inline-grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--brand) 12%, transparent);
-  color: var(--brand);
-  font-size: 11px;
-  font-weight: 700;
-}
-
 .fingerprint-run {
   min-height: 42px;
 }
@@ -634,29 +577,17 @@ onBeforeUnmount(stopTimer)
   }
 }
 
-.fingerprint-run-note,
-.fingerprint-disclaimer {
+.fingerprint-run-note {
   margin: 0;
   color: var(--muted);
   font-size: 11.5px;
   line-height: 1.55;
 }
 
-.fingerprint-disclaimer {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding-top: 12px;
-  border-top: 1px solid var(--glass-line);
-}
-
-.fingerprint-disclaimer :deep(svg) {
-  flex: 0 0 auto;
-  margin-top: 1px;
-}
-
 .fingerprint-main {
-  display: grid;
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
   gap: 14px;
   min-width: 0;
 }
@@ -673,27 +604,6 @@ onBeforeUnmount(stopTimer)
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 13px;
-}
-
-.fingerprint-intro {
-  display: grid;
-  place-items: center;
-  gap: 8px;
-  min-height: 260px;
-  padding: 32px;
-  text-align: center;
-}
-
-.fingerprint-intro h3 {
-  margin: 4px 0 0;
-}
-
-.fingerprint-intro p {
-  max-width: 560px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
 }
 
 .fingerprint-result {
@@ -1004,16 +914,6 @@ onBeforeUnmount(stopTimer)
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-@media (max-width: 960px) {
-  .fingerprint-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .fingerprint-control {
-    position: static;
-  }
 }
 
 @media (max-width: 640px) {
