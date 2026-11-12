@@ -129,6 +129,53 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun `http 200 stream with error events reports failure with message`() = runBlocking {
+        val sseBody = listOf(
+            "event: response.output_text.delta",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}",
+            "event: error",
+            "data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"stream boom\"}",
+        ).joinToString("\n")
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/responses") { exchange ->
+            val bytes = sseBody.toByteArray()
+            exchange.responseHeaders.add("Content-Type", "text/event-stream")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val channel = ChannelRecord(
+                id = "provider",
+                name = "provider",
+                baseUrl = "http://127.0.0.1:${server.address.port}",
+                authType = "bearer",
+                protocols = listOf(GatewayProtocol.RESPONSES),
+                enabled = true,
+                createdAt = 0,
+                updatedAt = 0,
+                modelMappings = listOf(ChannelModelRecord("gpt-6-luna")),
+                kind = ChannelKind.PROVIDER,
+                provider = OAuthProvider.CHATGPT,
+            )
+            val result = testOAuthAccountModelConnectivity(
+                channel = channel,
+                accessToken = "access-token",
+                project = null,
+                model = "gpt-6-luna",
+                protocol = GatewayProtocol.RESPONSES,
+                prompt = "say ok",
+                httpClient = HttpClient(Java),
+            )
+            assertFalse(result.success)
+            assertEquals(200, result.statusCode)
+            assertTrue(result.errorMessage!!.contains("stream boom"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `responses stream with standalone error event reports error`() {
         val body = parseResponsesStreamText(
             listOf(

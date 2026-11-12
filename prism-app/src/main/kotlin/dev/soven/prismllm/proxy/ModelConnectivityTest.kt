@@ -205,7 +205,7 @@ private suspend fun runModelConnectivityTest(
                     statusCode = status,
                     latencyMs = latencyMs,
                     responseText = extractModelTestResponseText(protocol, json)?.take(maxResponseChars),
-                    errorMessage = streamError?.let { extractModelTestError(it, bodyText, status) },
+                    errorMessage = streamError?.let { extractModelTestError(json, bodyText, status) },
                     usage = extractModelTestUsage(protocol, json),
                     upstreamReportedModel = extractReportedModel(protocol, json),
                 )
