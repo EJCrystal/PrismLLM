@@ -1492,7 +1492,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
             })
             call.respond(
                 OAuthProviderModelsResponse(
-                    models = entries.map { OAuthProviderModelResponse(it.upstreamModel, it.canonicalModelId) },
+                                        models = entries.map { entry ->
+                        // name 返回目录的展示语义：canonical 家族 id 或上游模型名本身；
+                        // upstream 与 name 相同时置空，避免 UI 出现重复标签。
+                        val name = entry.canonicalModelId?.takeIf { it != entry.upstreamModel }
+                        OAuthProviderModelResponse(entry.upstreamModel, name)
+                    },
                 ),
             )
         }

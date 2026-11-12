@@ -176,6 +176,89 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun `truncated stream without termination event reports failure`() {
+        val body = parseResponsesStreamText(
+            listOf(
+                "event: response.output_text.delta",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}",
+            ).joinToString("\n"),
+        )
+        assertNotNull(body)
+        assertNotNull(body?.get("stream_truncated"))
+        val error = body?.get("error")?.jsonObject
+        assertEquals("上游流式响应未收到终止事件，连接可能中断", error?.get("message")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `terminated stream does not carry truncation marker`() {
+        val body = parseResponsesStreamText(
+            listOf(
+                "event: response.completed",
+                "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"m\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}",
+            ).joinToString("\n"),
+        )
+        assertNotNull(body)
+        assertNull(body?.get("stream_truncated"))
+    }
+
+    @Test
+    fun `truncated 200 stream reports failure via caller`() = runBlocking {
+        val sseBody = listOf(
+            "event: response.output_text.delta",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}",
+        ).joinToString("\n")
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/responses") { exchange ->
+            val bytes = sseBody.toByteArray()
+            exchange.responseHeaders.add("Content-Type", "text/event-stream")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val channel = ChannelRecord(
+                id = "provider",
+                name = "provider",
+                baseUrl = "http://127.0.0.1:${server.address.port}",
+                authType = "bearer",
+                protocols = listOf(GatewayProtocol.RESPONSES),
+                enabled = true,
+                createdAt = 0,
+                updatedAt = 0,
+                modelMappings = listOf(ChannelModelRecord("gpt-6-luna")),
+                kind = ChannelKind.PROVIDER,
+                provider = OAuthProvider.CHATGPT,
+            )
+            val result = testOAuthAccountModelConnectivity(
+                channel = channel,
+                accessToken = "access-token",
+                project = null,
+                model = "gpt-6-luna",
+                protocol = GatewayProtocol.RESPONSES,
+                prompt = "say ok",
+                httpClient = HttpClient(Java),
+            )
+            assertFalse(result.success)
+            assertEquals("上游流式响应未收到终止事件，连接可能中断", result.errorMessage)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `completed stream with error does not report truncation`() {
+        val body = parseResponsesStreamText(
+            listOf(
+                "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"boom\"}}}",
+            ).joinToString("\n"),
+        )
+        assertNotNull(body)
+        assertNull(body?.get("stream_truncated"))
+        assertNotNull(body?.get("error"))
+    }
+
+
+    @Test
     fun `responses stream with standalone error event reports error`() {
         val body = parseResponsesStreamText(
             listOf(

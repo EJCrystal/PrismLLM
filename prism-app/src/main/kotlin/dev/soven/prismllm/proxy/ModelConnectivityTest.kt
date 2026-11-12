@@ -413,6 +413,7 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
     var usage: JsonObject? = null
     var reportedModel: String? = null
     var failedError: JsonObject? = null
+    var terminated = false
     for (line in body.lineSequence()) {
         if (!line.startsWith("data:")) continue
         val payload = line.removePrefix("data:").trim()
@@ -429,11 +430,14 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
         if (type == "error") {
             // 独立 error 事件的 code/message 在事件顶层；归一化成 error 嵌套形状。
             failedError = buildJsonObject { put("error", event) }
+            terminated = true
         }
         if (type.startsWith("response.failed")) {
             failedError = event["response"] as? JsonObject
+            terminated = true
         }
         if (type.startsWith("response.completed")) {
+            terminated = true
             (event["response"] as? JsonObject)?.let { response ->
                 usage = response["usage"] as? JsonObject ?: usage
                 reportedModel = (response["model"] as? JsonPrimitive)?.contentOrNull ?: reportedModel
@@ -462,6 +466,11 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
         usage?.let { put("usage", it) }
         reportedModel?.let { put("model", it) }
         failedError?.let { failed -> put("error", failed["error"] ?: failed) }
+        // 上游或代理可能中途断流：没有终止事件时直接折叠成 error 形状，调用方按失败处理。
+        if (!terminated) {
+            put("stream_truncated", true)
+            put("error", buildJsonObject { put("message", "上游流式响应未收到终止事件，连接可能中断") })
+        }
     }
 }
 
