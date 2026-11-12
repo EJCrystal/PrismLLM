@@ -95,6 +95,16 @@ class UpstreamRequestPolicy(
     private val profile = layers.asReversed().firstNotNullOfOrNull { it.headerProfile } ?: "auto"
 
     fun applyHeaders(builder: HttpRequestBuilder) {
+        resolvedHeaders().forEach { (name, value) ->
+            builder.headers.remove(name)
+            // An explicit empty UA prevents the Java engine from supplying its own default identity.
+            if (name == "user-agent" && value == null) builder.headers.append(name, "")
+            else if (value != null) builder.headers.append(name, value)
+        }
+    }
+
+    /** The resolved header set, including the codex version fabricated from the profile; consumers may read it without sending. */
+    fun resolvedHeaders(): Map<String, String?> {
         val result = linkedMapOf<String, String?>()
         val selectedHeaders = UpstreamHeaderProfiles.headers(profile, protocol, authType, profiles)
         selectedHeaders.forEach { (name, value) ->
@@ -112,12 +122,7 @@ class UpstreamRequestPolicy(
                 if ("version" !in explicit) result["version"] = identity.groupValues[2]
             }
         }
-        result.forEach { (name, value) ->
-            builder.headers.remove(name)
-            // An explicit empty UA prevents the Java engine from supplying its own default identity.
-            if (name == "user-agent" && value == null) builder.headers.append(name, "")
-            else if (value != null) builder.headers.append(name, value)
-        }
+        return result
     }
 
     fun body(original: JsonObject, upstreamModel: String, limitBytes: Long = Long.MAX_VALUE): JsonObject {

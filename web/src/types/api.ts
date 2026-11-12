@@ -565,6 +565,7 @@ export interface RequestLogAttempt {
 
 export interface ChannelModel {
   id: string
+  name: string | null
   ownedBy: string | null
   authorized: boolean
   canonicalModelId: string | null
@@ -1004,7 +1005,7 @@ export interface OAuthProviderInfo {
 
 export interface OAuthProviderModel {
   id: string
-  name: string
+  name: string | null
 }
 
 export interface OAuthProviderModelsResponse {

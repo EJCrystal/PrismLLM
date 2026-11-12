@@ -241,6 +241,7 @@ function addManualModels(): void {
               />
               <span>
                 <code>{{ model.id }}</code>
+                <small v-if="model.name">{{ model.name }}</small>
                 <small v-if="model.ownedBy">上游 owned_by: {{ model.ownedBy }}</small>
               </span>
             </label>

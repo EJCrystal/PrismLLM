@@ -43,7 +43,7 @@ object ProviderEndpoints {
         baseUrl = "https://chatgpt.com/backend-api/codex",
         authType = "bearer",
         protocols = listOf(GatewayProtocol.RESPONSES),
-        models = listOf("gpt-5-codex", "gpt-5", "codex-mini-latest"),
+        models = listOf("gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-luna"),
     )
 
     /**

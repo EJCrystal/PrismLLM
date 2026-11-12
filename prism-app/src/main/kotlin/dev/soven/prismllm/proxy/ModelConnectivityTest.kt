@@ -186,18 +186,26 @@ private suspend fun runModelConnectivityTest(
             val latencyMs = System.currentTimeMillis() - startedAt
             val status = response.status.value
             val parsed = parseJsonObject(bodyText)
+                ?: if (protocol == GatewayProtocol.RESPONSES) parseResponsesStreamText(bodyText) else null
             val json = if (envelope == UpstreamEnvelope.CODE_ASSIST && parsed != null) {
                 CodeAssistEnvelope.unwrap(parsed)
             } else {
                 parsed
             }
+            // Responses 流可能在 HTTP 2xx 后以 response.failed 终止：只要流内带错误，
+            // 即使已收到部分文本也不能报成功。
+            val streamError = if (protocol == GatewayProtocol.RESPONSES && status in 200..299) {
+                json?.get("error") as? JsonObject
+            } else {
+                null
+            }
             if (status in 200..299) {
                 ModelConnectivityTestResult(
-                    success = true,
+                    success = streamError == null,
                     statusCode = status,
                     latencyMs = latencyMs,
                     responseText = extractModelTestResponseText(protocol, json)?.take(maxResponseChars),
-                    errorMessage = null,
+                    errorMessage = streamError?.let { extractModelTestError(json, bodyText, status) },
                     usage = extractModelTestUsage(protocol, json),
                     upstreamReportedModel = extractReportedModel(protocol, json),
                 )
@@ -285,9 +293,21 @@ internal fun buildModelTestBody(
     }.toString()
     GatewayProtocol.RESPONSES -> buildJsonObject {
         put("model", model)
-        put("stream", false)
+        put("stream", true)
         put("max_output_tokens", maxOutputTokens)
-        put("input", prompt)
+        put("input", buildJsonArray {
+            add(buildJsonObject {
+                put("type", "message")
+                put("role", "user")
+                put("content", buildJsonArray {
+                    add(buildJsonObject {
+                        put("type", "input_text")
+                        put("text", prompt)
+                    })
+                })
+            })
+        })
+        put("store", false)
     }.toString()
     GatewayProtocol.MESSAGES -> buildJsonObject {
         put("model", model)
@@ -382,7 +402,96 @@ private fun userMessages(prompt: String) = buildJsonArray {
 private fun parseJsonObject(body: String): JsonObject? =
     runCatching { Json.parseToJsonElement(body) as? JsonObject }.getOrNull()
 
-private fun collectText(element: JsonElement?): String? = when (element) {
+/**
+ * 把 Responses 的 SSE 流（`data: {json}` 行）折成非流式形状：`output_text` 聚合文本，
+ * `output` 保留数组原样，usage 与 reported model 取自最后的完成事件；流以
+ * `response.failed` 终止时记录终止状态与上游错误，供调用方把 2xx 流判为失败。
+ */
+internal fun parseResponsesStreamText(body: String): JsonObject? {
+    var text: String? = null
+    var output: JsonElement? = null
+    var usage: JsonObject? = null
+    var reportedModel: String? = null
+    var failedError: JsonObject? = null
+    var terminated = false
+    for (line in body.lineSequence()) {
+        if (!line.startsWith("data:")) continue
+        val payload = line.removePrefix("data:").trim()
+        if (payload.isEmpty() || payload == "[DONE]") continue
+        val event = parseJsonObject(payload) ?: continue
+        val type = (event["type"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val delta = when {
+            type.startsWith("response.output_text.delta") -> (event["delta"] as? JsonPrimitive)?.contentOrNull
+            else -> null
+        }
+        if (delta != null) {
+            text = (text.orEmpty() + delta).takeIf { it.isNotEmpty() }
+        }
+        if (type == "error") {
+            // 独立 error 事件的 code/message 在事件顶层；归一化成 error 嵌套形状。
+            failedError = buildJsonObject { put("error", event) }
+            terminated = true
+        }
+        if (type.startsWith("response.failed")) {
+            failedError = event["response"] as? JsonObject
+            terminated = true
+        }
+        if (type.startsWith("response.incomplete")) {
+            // 触及输出上限的正常终止：不是断流，折叠成 error 让调用方给出可读结果。
+            terminated = true
+            val details = (event["response"] as? JsonObject)?.get("incomplete_details") as? JsonObject
+            val reason = details?.get("reason")?.let { (it as? JsonPrimitive)?.contentOrNull } ?: "output_token_limit"
+            failedError = buildJsonObject {
+                put("error", buildJsonObject { put("message", "响应因达到输出上限被截断（$reason）") })
+            }
+        }
+        if (type.startsWith("response.completed")) {
+            terminated = true
+            (event["response"] as? JsonObject)?.let { response ->
+                usage = response["usage"] as? JsonObject ?: usage
+                reportedModel = (response["model"] as? JsonPrimitive)?.contentOrNull ?: reportedModel
+                output = response["output"] ?: output
+                val completedText = (response["output"] as? JsonArray)
+                    ?.asSequence()
+                    ?.filterIsInstance<JsonObject>()
+                    ?.mapNotNull { item ->
+                        (item["content"] as? JsonArray)
+                            ?.filterIsInstance<JsonObject>()
+                            ?.mapNotNull { part -> (part["text"] as? JsonPrimitive)?.contentOrNull }
+                            ?.joinToString("")
+                    }
+                    ?.joinToString("")
+                // 完成事件的 output 携带完整文本：有增量时以它为准，避免拼接出重复文本。
+                if (!completedText.isNullOrEmpty()) {
+                    text = completedText
+                }
+            }
+        }
+    }
+    // 空流（例如只收到 response.created 就断开）：没有任何聚合字段也没有终止事件，
+    // 同样按截断失败处理，不能返回 null 让调用方误判成功。
+    if (text == null && usage == null && output == null && failedError == null) {
+        if (terminated) return null
+        return buildJsonObject {
+            put("stream_truncated", true)
+            put("error", buildJsonObject { put("message", "上游流式响应未收到终止事件，连接可能中断") })
+        }
+    }
+    return buildJsonObject {
+        text?.let { put("output_text", it) }
+        output?.let { put("output", it) }
+        usage?.let { put("usage", it) }
+        reportedModel?.let { put("model", it) }
+        failedError?.let { failed -> put("error", failed["error"] ?: failed) }
+        // 上游或代理可能中途断流：没有终止事件时直接折叠成 error 形状，调用方按失败处理。
+        if (!terminated) {
+            put("stream_truncated", true)
+            put("error", buildJsonObject { put("message", "上游流式响应未收到终止事件，连接可能中断") })
+        }
+    }
+}
+
+internal fun collectText(element: JsonElement?): String? = when (element) {
     null -> null
     is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() }
     is JsonArray -> element.mapNotNull(::collectText).joinToString("").takeIf { it.isNotBlank() }
@@ -390,5 +499,5 @@ private fun collectText(element: JsonElement?): String? = when (element) {
     else -> null
 }
 
-private const val MAX_RESPONSE_CHARS = 1_000
+internal const val MAX_RESPONSE_CHARS = 1_000
 private const val MAX_ERROR_CHARS = 500

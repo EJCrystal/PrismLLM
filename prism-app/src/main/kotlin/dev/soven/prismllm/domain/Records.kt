@@ -8,6 +8,7 @@ package dev.soven.prismllm.domain
  */
 data class UpstreamModel(
     val id: String,
+    val name: String? = null,
     val ownedBy: String? = null,
 )
 

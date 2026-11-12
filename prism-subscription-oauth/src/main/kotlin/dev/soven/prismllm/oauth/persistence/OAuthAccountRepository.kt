@@ -18,6 +18,7 @@ import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.isNull
+import org.jetbrains.exposed.v1.core.notInList
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.or
@@ -360,6 +361,7 @@ open class OAuthAccountRepository(
                 else OAuthAccountModelCatalogEntry(
                     upstreamModel = upstreamModel.take(MAX_CATALOG_MODEL_ID),
                     canonicalModelId = entry.canonicalModelId?.trim()?.take(MAX_CATALOG_MODEL_ID),
+                    displayName = entry.displayName?.trim()?.take(MAX_CATALOG_MODEL_ID),
                 )
             }
             .distinctBy { it.upstreamModel }
@@ -395,6 +397,52 @@ open class OAuthAccountRepository(
         replaceModels(accountId, models, now)
         OAuthAccounts.update({ OAuthAccounts.id eq accountId }) { it[OAuthAccounts.updatedAt] = now }
         findDetailedInTransaction(accountId)
+    }
+
+    /**
+     * 目录同步后的授权收敛：在同一事务里读取当前授权行，只删除目录外的行，
+     * 保留管理员在目录抓取期间的并发改动。
+     *
+     * 删除后如果一行不剩，说明「显式授权」的模型全部不在新目录里——这不等于「跟随目录」，
+     * 不能让账号继承整个目录。用一条显式零授权哨兵行（目录里不可能存在的名字）占住
+     * 「models 非空」状态：supports() 只匹配该哨兵，任何真实模型都会被拒绝，
+     * 管理接口的授权勾选也会看到它并允许管理员重新选择。
+     */
+    suspend fun removeModelsOutsideCatalog(
+        accountId: String,
+        catalog: Collection<String>,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean = suspendTransaction(database) {
+        if (OAuthAccounts.selectAll().where { OAuthAccounts.id eq accountId }.empty()) {
+            return@suspendTransaction false
+        }
+        val allowed = catalog.map(String::trim).filter(String::isNotEmpty).toSet()
+        val deleted = OAuthAccountModels.deleteWhere {
+            (OAuthAccountModels.accountId eq accountId) and
+                (OAuthAccountModels.upstreamModel notInList allowed)
+        }
+        val remaining = OAuthAccountModels.selectAll()
+            .where { OAuthAccountModels.accountId eq accountId }
+            .count()
+        // 仅当本轮真的删掉了目录外的行且一行不剩时才写哨兵：管理员并发改成「跟随目录」
+        // （先把 models 清空）时没有行可删，remaining 本来就是 0，不写哨兵。
+        if (deleted > 0 && remaining == 0L) {
+            OAuthAccountModels.insert {
+                it[OAuthAccountModels.accountId] = accountId
+                it[upstreamModel] = EXPLICIT_EMPTY_MODELS_SENTINEL
+                it[createdAt] = now
+            }
+        }
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) { it[OAuthAccounts.updatedAt] = now }
+        true
+    }
+
+    companion object {
+        /**
+         * 「显式授权但目录里已无可用模型」的哨兵行。目录同步只会写入真实模型名，
+         * 且该名字不可能是合法模型 id，因此绝不会与目录或真实授权冲突。
+         */
+        private const val EXPLICIT_EMPTY_MODELS_SENTINEL = "(no models available)"
     }
 
     suspend fun delete(accountId: String): Boolean = suspendTransaction(database) {

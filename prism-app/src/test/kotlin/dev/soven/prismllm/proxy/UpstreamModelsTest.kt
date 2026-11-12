@@ -13,6 +13,7 @@ import io.ktor.server.testing.testApplication
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 
 class UpstreamModelsTest {
@@ -158,6 +159,67 @@ class UpstreamModelsTest {
         val models = fetchUpstreamModels("$UPSTREAM_HOST/v1/", "secret", client, protocol = GatewayProtocol.CHAT_COMPLETIONS)
         assertEquals(listOf("a", "z"), models.map { it.id })
         assertEquals(1, requests)
+    }
+
+    @Test
+    fun `codex models endpoint appends client_version and parses slug visibility and display name`() = testApplication {
+        var requestedClientVersion: String? = null
+        externalServices {
+            hosts(UPSTREAM_HOST) {
+                routing {
+                    get("/backend-api/codex/models") {
+                        requestedClientVersion = call.request.queryParameters["client_version"]
+                        call.respondText(
+                            """{"models":[{"slug":"z-luna","visibility":"list","display_name":"Luna"},{"slug":"a-terra","visibility":"list"},{"slug":"hidden","visibility":"hide"}]}""",
+                            ContentType.Application.Json,
+                        )
+                    }
+                }
+            }
+        }
+        val models = fetchUpstreamModels(
+            "$UPSTREAM_HOST/backend-api/codex", "secret", client, authType = "bearer", protocol = GatewayProtocol.RESPONSES,
+        )
+        assertEquals("0.165.0", requestedClientVersion)
+        assertEquals(listOf("a-terra", "z-luna"), models.map { it.id })
+        assertEquals("Luna", models.first { it.id == "z-luna" }.name)
+    }
+
+    @Test
+    fun `codex models endpoint honors channel version header override`() = testApplication {
+        var requestedClientVersion: String? = null
+        externalServices {
+            hosts(UPSTREAM_HOST) {
+                routing {
+                    get("/backend-api/codex/models") {
+                        requestedClientVersion = call.request.queryParameters["client_version"]
+                        call.respondText("""{"models":[{"slug":"m"}]}""", ContentType.Application.Json)
+                    }
+                }
+            }
+        }
+        fetchUpstreamModels(
+            "$UPSTREAM_HOST/backend-api/codex", "secret", client, authType = "bearer", protocol = GatewayProtocol.RESPONSES,
+            globalOverrides = UpstreamRequestOverrides(userAgent = "codex_cli_rs/0.42.0 (Linux; x86_64)"),
+        )
+        assertEquals("0.42.0", requestedClientVersion)
+    }
+
+    @Test
+    fun `non codex responses endpoint keeps a parameterless models request`() = testApplication {
+        var sawClientVersion = false
+        externalServices {
+            hosts(UPSTREAM_HOST) {
+                routing {
+                    get("/v1/models") {
+                        sawClientVersion = call.request.queryParameters.contains("client_version")
+                        call.respondText("""{"data":[{"id":"m"}]}""", ContentType.Application.Json)
+                    }
+                }
+            }
+        }
+        fetchUpstreamModels("$UPSTREAM_HOST/v1", "secret", client, protocol = GatewayProtocol.RESPONSES)
+        assertFalse(sawClientVersion)
     }
 }
 

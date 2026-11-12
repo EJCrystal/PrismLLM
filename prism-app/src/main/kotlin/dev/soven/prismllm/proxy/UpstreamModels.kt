@@ -70,8 +70,8 @@ suspend fun fetchUpstreamModels(
     channelOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): List<UpstreamModel> {
-    val url = baseUrl.trimEnd('/') + "/models"
     val policy = UpstreamRequestPolicy(globalOverrides, channelOverrides, protocol, authType, headerProfiles, baseUrl)
+    val url = buildModelListUrl(baseUrl, policy.resolvedHeaders()["version"])
     try {
         return withTimeout(MODEL_LIST_TIMEOUT_MS) {
             val models = mutableListOf<UpstreamModel>()
@@ -172,12 +172,15 @@ private fun parseModelList(root: JsonElement?): List<UpstreamModel> {
         when (item) {
             is JsonPrimitive -> item.contentOrNull?.takeIf { it.isNotBlank() }?.let { UpstreamModel(it) }
             is JsonObject -> {
-                val id = (item["id"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
-                    ?: (item["name"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+                if (item.stringField("visibility") == "hide") return@mapNotNull null
+                val id = item.stringField("slug")?.takeIf(String::isNotBlank)
+                    ?: item.stringField("id")?.takeIf(String::isNotBlank)
+                    ?: item.stringField("name")?.takeIf(String::isNotBlank)
                 id?.let {
                     UpstreamModel(
                         id = it,
-                        ownedBy = (item["owned_by"] as? JsonPrimitive)?.contentOrNull,
+                        name = item.stringField("display_name") ?: item.stringField("displayName"),
+                        ownedBy = item.stringField("owned_by"),
                     )
                 }
             }
@@ -185,6 +188,19 @@ private fun parseModelList(root: JsonElement?): List<UpstreamModel> {
         }
     }.distinctBy { it.id }.sortedBy { it.id }
 }
+
+/** Codex 官方后端的列表接口必须带 client_version；其余上游保持无参请求。 */
+internal fun buildModelListUrl(baseUrl: String, versionHeader: String?): String {
+    val base = baseUrl.trimEnd('/')
+    if (!base.endsWith(CODEX_BASE_PATH_SUFFIX)) return base + "/models"
+    val version = versionHeader?.trim().takeUnless { it.isNullOrEmpty() } ?: DEFAULT_CODEX_CLIENT_VERSION
+    return base + "/models?client_version=" + java.net.URLEncoder.encode(version, Charsets.UTF_8)
+}
+
+private fun JsonObject.stringField(name: String): String? = (this[name] as? JsonPrimitive)?.contentOrNull
+
+private const val CODEX_BASE_PATH_SUFFIX = "/backend-api/codex"
+private const val DEFAULT_CODEX_CLIENT_VERSION = "0.165.0"
 
 private const val MODEL_LIST_TIMEOUT_MS = 15_000L
 private const val MODEL_LIST_MAX_BYTES = 2 * 1024 * 1024

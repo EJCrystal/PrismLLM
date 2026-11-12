@@ -44,6 +44,8 @@ enum class OAuthRoutingStrategy(val value: String) {
 data class OAuthAccountModelCatalogEntry(
     val upstreamModel: String,
     val canonicalModelId: String? = null,
+    /** 上游展示名（如 ChatGPT 目录的 display_name）；无展示语义时为 null。 */
+    val displayName: String? = null,
 )
 
 /**

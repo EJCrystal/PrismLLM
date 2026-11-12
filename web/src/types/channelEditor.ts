@@ -3,6 +3,7 @@ import type { ChannelKeyRateLimitDraft } from '../utils/channelKeyRateLimit'
 
 export interface KeyModelOption {
   id: string
+  name?: string | null
   ownedBy?: string | null
   authorized?: boolean
 }
