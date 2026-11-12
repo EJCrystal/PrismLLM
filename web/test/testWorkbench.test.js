@@ -110,7 +110,7 @@ describe('channel test workspace', () => {
     assert.equal(document.querySelector('#run'), null)
   })
 
-  it('fits the mobile workspace above the software keyboard without constraining desktop height', async () => {
+  it('fits the workspace above the software keyboard on narrow and wide viewports', async () => {
     const { state } = await renderWorkbench()
     const originalWindow = globalThis.window
     try {
@@ -121,7 +121,34 @@ describe('channel test workspace', () => {
       globalThis.window.visualViewport.offsetTop = 40
       state.fitVisibleViewport()
       assert.equal(state.availableHeight.value, '324px')
-      globalThis.window.innerWidth = 1366
+      for (const width of [1024, 1366]) {
+        globalThis.window.innerWidth = width
+        state.fitVisibleViewport()
+        assert.equal(state.availableHeight.value, '324px')
+      }
+      globalThis.window.visualViewport.height = 768
+      globalThis.window.visualViewport.offsetTop = 0
+      state.fitVisibleViewport()
+      assert.equal(state.availableHeight.value, '552px')
+    } finally {
+      if (originalWindow === undefined) delete globalThis.window
+      else globalThis.window = originalWindow
+    }
+  })
+
+  it('clears the viewport constraint when the viewport or connected workspace is unavailable', async () => {
+    const { state } = await renderWorkbench()
+    const originalWindow = globalThis.window
+    try {
+      globalThis.window = { visualViewport: { height: 500, offsetTop: 0 } }
+      state.workspace.value = { isConnected: true, getBoundingClientRect: () => ({ top: 200 }) }
+      state.fitVisibleViewport()
+      assert.equal(state.availableHeight.value, '284px')
+      state.workspace.value.isConnected = false
+      state.fitVisibleViewport()
+      assert.equal(state.availableHeight.value, undefined)
+      state.workspace.value.isConnected = true
+      delete globalThis.window.visualViewport
       state.fitVisibleViewport()
       assert.equal(state.availableHeight.value, undefined)
     } finally {

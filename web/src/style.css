@@ -6418,6 +6418,10 @@ textarea:disabled {
   animation: fade-in 0.16s ease both;
 }
 
+.modal-backdrop > [data-headlessui-portal] {
+  position: absolute;
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;

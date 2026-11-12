@@ -11,7 +11,7 @@ const availableHeight = ref<string>()
 function fitVisibleViewport() {
   const viewport = window.visualViewport
   const element = workspace.value
-  availableHeight.value = viewport && element?.isConnected && window.innerWidth <= 1000
+  availableHeight.value = viewport && element?.isConnected
     ? Math.max(0, viewport.height + viewport.offsetTop - element.getBoundingClientRect().top - 16) + 'px'
     : undefined
 }
