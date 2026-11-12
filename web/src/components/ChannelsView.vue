@@ -112,12 +112,14 @@ let listDisposed = false
 const healthWindow: HealthWindow = '24h'
 const healthRefreshMs = ref(30_000)
 const healthReport = ref<ChannelHealthReport | null>(null)
+const healthDisplayReport = ref<ChannelHealthReport | null>(null)
 const healthTarget = ref<Channel | null>(null)
 const healthLoading = ref(false)
 const healthError = ref('')
 let healthRevision = 0
 let healthController: AbortController | null = null
 const healthByChannel = computed(() => new Map(healthReport.value?.window === healthWindow ? healthReport.value.channels.map(row => [row.channelId, row]) : []))
+const healthDisplayByChannel = computed(() => new Map(healthDisplayReport.value?.window === healthWindow ? healthDisplayReport.value.channels.map(row => [row.channelId, row]) : []))
 // 实时占用来自单实例内存计数，独立轮询，避免为了几秒级的在途数反复拉取渠道配置。
 const occupancy = ref<RuntimeOccupancy | null>(null)
 const occupancyRefreshMs = ref(5_000)
@@ -218,12 +220,13 @@ async function loadHealth() {
     const result = await api.getChannelHealth(healthWindow, { signal: controller.signal })
     if (request === healthRevision) {
       healthReport.value = result
+      healthDisplayReport.value = result
       healthError.value = ''
       syncCooldownTimer()
     }
   } catch (cause) {
     if (request === healthRevision) {
-      // 后台轮询失败时保留上一份成功快照，避免成功率和次数在错误提示下跳成 0。
+      healthReport.value = null
       healthError.value = controller.signal.aborted ? '读取渠道健康度超时，请重试' : errorMessage(cause)
       syncCooldownTimer()
     }
@@ -1441,7 +1444,7 @@ onMounted(() => {
               </td>
               <td class="channel-status-cell">
                 <div class="channel-status-stack">
-                  <ChannelHealthSummary :channel="channel" :summary="healthByChannel.get(channel.id)" :loading="healthLoading" :error="healthError" :observed-at="healthReport?.to" @open="healthTarget = channel" />
+                  <ChannelHealthSummary :channel="channel" :summary="healthDisplayByChannel.get(channel.id)" :loading="healthLoading" :error="healthError" :observed-at="healthDisplayReport?.to" @open="healthTarget = channel" />
                   <div
                     v-if="channelConcurrent(channel.id) > 0"
                     class="channel-occupancy"
@@ -1517,7 +1520,7 @@ onMounted(() => {
           </header>
 
           <div class="channel-mobile-status">
-            <ChannelHealthSummary :channel="channel" :summary="healthByChannel.get(channel.id)" :loading="healthLoading" :error="healthError" :observed-at="healthReport?.to" @open="healthTarget = channel" />
+            <ChannelHealthSummary :channel="channel" :summary="healthDisplayByChannel.get(channel.id)" :loading="healthLoading" :error="healthError" :observed-at="healthDisplayReport?.to" @open="healthTarget = channel" />
             <div v-if="channelConcurrent(channel.id) > 0" class="channel-mobile-status-main">
               <div
                 class="channel-occupancy"
