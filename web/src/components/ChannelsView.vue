@@ -60,10 +60,6 @@ import {
   resolveSavedChannel,
 } from '../utils/modelPrice'
 
-const emit = defineEmits<{
-  (event: 'open-test-record', payload: { type: 'iq' | 'fingerprint'; id: number }): void
-}>()
-
 interface RequestOverridesEditorExpose {
   getValue: () => UpstreamRequestOverrides
   getSnapshot: () => string
@@ -753,11 +749,6 @@ function openTestDrawer(channel: Channel, model?: string): void {
 
 function closeTestDrawer(): void {
   testTarget.value = null
-}
-
-function openTestRecord(payload: { type: 'iq' | 'fingerprint'; id: number }): void {
-  testTarget.value = null
-  emit('open-test-record', payload)
 }
 
 const priorityEditingId = ref<string | null>(null)
@@ -1670,7 +1661,6 @@ onMounted(() => {
       :channel="testTarget.channel"
       :initial-model="testTarget.model"
       @close="closeTestDrawer"
-      @open-record="openTestRecord"
     />
 
     <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide roomy mobile-fullscreen @close="closeChannelForm">

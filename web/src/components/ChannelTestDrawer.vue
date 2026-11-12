@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref } from 'vue'
+import { computed, defineAsyncComponent, ref, type Component } from 'vue'
 import type { Channel } from '../types/api'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
+import TestRecordsView from './TestRecordsView.vue'
 
 const props = defineProps<{
   channel: Channel
@@ -10,31 +11,42 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   (event: 'close'): void
-  (event: 'open-record', payload: { type: 'iq' | 'fingerprint'; id: number }): void
 }>()
 
 const tabs = [
   { id: 'connectivity', label: '连通性', icon: 'bolt', summary: '发一条真实请求，确认渠道现在能不能调通' },
   { id: 'iq', label: '智商', icon: 'brain', summary: '鹈鹕与糖果题，观察推理和指令遵循' },
   { id: 'fingerprint', label: '指纹', icon: 'fingerprint', summary: '随机数字序列比对模型指纹参考库' },
+  { id: 'records', label: '记录', icon: 'logs', summary: '本渠道的智商与指纹检测历史' },
 ] as const
 
 type TabId = (typeof tabs)[number]['id']
 
-const components = {
+const components: Record<string, Component> = {
   connectivity: defineAsyncComponent(() => import('./ChannelConnectivityPanel.vue')),
   iq: defineAsyncComponent(() => import('./IqTestView.vue')),
   fingerprint: defineAsyncComponent(() => import('./FingerprintTestView.vue')),
 }
 
 const activeTab = ref<TabId>('connectivity')
-const activeComponent = computed(() => components[activeTab.value])
+const activeComponent = computed(() => (activeTab.value === 'records' ? null : components[activeTab.value]))
 
-/** 智商 / 指纹视图只回传记录 id，这里补上当前页签的类型。 */
+/** 记录页每次重新进入都重读，保证刚跑完的检测立刻出现。 */
+const recordsKey = ref(0)
+const recordTarget = ref<{ type: 'iq' | 'fingerprint'; id: number } | null>(null)
+
+function selectTab(id: TabId) {
+  if (id === activeTab.value) return
+  if (id === 'records') recordsKey.value += 1
+  activeTab.value = id
+}
+
+/** 智商 / 指纹视图只回传记录 id，这里补上当前页签的类型，并切到记录页展示详情。 */
 function openRecord(id: number) {
   const type = activeTab.value
   if (type !== 'iq' && type !== 'fingerprint') return
-  emit('open-record', { type, id })
+  recordTarget.value = { type, id }
+  activeTab.value = 'records'
 }
 </script>
 
@@ -50,7 +62,7 @@ function openRecord(id: number) {
           class="channel-test-tab"
           :class="{ active: activeTab === tab.id }"
           :aria-selected="activeTab === tab.id"
-          @click="activeTab = tab.id"
+          @click="selectTab(tab.id)"
         >
           <Icon :name="tab.icon" :size="17" />
           <span>{{ tab.label }}</span>
@@ -59,8 +71,16 @@ function openRecord(id: number) {
       </div>
     </template>
 
+    <TestRecordsView
+      v-if="activeTab === 'records'"
+      :key="'records-' + recordsKey"
+      :channel-id="channel.id"
+      :initial-record="recordTarget"
+      @record-opened="recordTarget = null"
+    />
     <KeepAlive>
       <component
+        v-if="activeComponent"
         :is="activeComponent"
         :key="activeTab"
         :channel="channel"

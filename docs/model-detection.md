@@ -11,8 +11,9 @@
 三类检测都通过渠道已保存的上游凭据直接请求上游，不经过数据面，也不消耗调用方密钥额度。
 检测结果只代表本次请求，不替代持续的健康检查或线上流量观测。
 
-智商与指纹检测完成后，摘要会留在测试面板内；点击「查看完整记录」会跳到侧边栏的「检测记录」页并
-打开对应详情。检测记录页只展示这两类已落库的结果，不提供发起入口，也不包含连通性记录。
+智商与指纹检测完成后，摘要会留在测试面板内；点击「查看完整记录」会切到面板里的「记录」页签并
+打开对应详情。记录按渠道归属，只会列出当前渠道的智商与指纹结果，可在面板内按类型、模型和结论
+筛选；不提供跨渠道聚合视图，也不包含连通性记录。
 
 ## 连通性检测
 
@@ -30,8 +31,8 @@ HTTP 状态、耗时、上游声明的模型名、token 用量和完整响应文
 ## 智商检测
 
 包含鹈鹕骑行与糖果测试两道内置题，支持可插拔判分器和人工复判，题库可自定义。完整说明见
-[`docs/iq-test.md`](./iq-test.md)。运行结果写入 `iq_test_runs`，并由「检测记录」页按类型、渠道、
-模型和结论筛选展示；仍使用原有的 `/admin/api/iq-tests/*` 接口。
+[`docs/iq-test.md`](./iq-test.md)。运行结果写入 `iq_test_runs`，并在渠道测试面板的「记录」页签
+里按类型、模型和结论筛选展示；仍使用原有的 `/admin/api/iq-tests/*` 接口。
 
 ## 指纹检测
 
@@ -89,7 +90,8 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
   `prism-admin/src/main/kotlin/dev/soven/prismllm/admin/persistence/FingerprintTestRunRepository.kt`
 - 检测器实现：`prism-app/src/main/kotlin/dev/soven/prismllm/proxy/fingerprint/`
 - 前端入口：`web/src/components/ChannelsView.vue`（渠道行「测试」按钮）、
-  `web/src/components/ChannelTestDrawer.vue`（三页签测试面板）、
+  `web/src/components/ChannelTestDrawer.vue`（连通性 / 智商 / 指纹 / 记录四页签测试面板）、
   `web/src/components/ChannelConnectivityPanel.vue`（连通性）
-- 检测记录：`web/src/components/TestRecordsView.vue`、`web/src/utils/testRecords.ts`
+- 检测记录：`web/src/components/TestRecordsView.vue`（`channel-id` 限定渠道）、
+  `web/src/utils/testRecords.ts`
 - 结果详情：`web/src/components/IqTestView.vue`、`web/src/components/FingerprintTestView.vue`
