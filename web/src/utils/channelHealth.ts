@@ -37,6 +37,28 @@ export function healthPercent(rate: number | null | undefined): string {
   if (clamped > 0.999 && clamped < 1) return '>99.9%'
   return `${(clamped * 100).toFixed(1)}%`
 }
+
+export function healthThroughput(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value < 0) return '—'
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
+  if (value >= 10_000) return `${(value / 1_000).toFixed(1)}k`
+  return value.toFixed(1)
+}
+
+export function healthMetricWarnings(
+  state: HealthState,
+  metrics: HealthMetrics,
+  policy: { minimumSamples: number; warningErrorRate: number; slowFirstTokenMs: number; slowP50FirstTokenMs: number },
+): { failureRate: boolean; p95: boolean; p50: boolean } {
+  const eligible = state === 'WARNING' || state === 'CRITICAL'
+  const enoughAttempts = metrics.attempts >= policy.minimumSamples
+  const enoughFirstTokens = metrics.firstTokenSamples >= policy.minimumSamples
+  return {
+    failureRate: eligible && enoughAttempts && metrics.attempts > 0 && metrics.failures / metrics.attempts >= policy.warningErrorRate,
+    p95: eligible && enoughFirstTokens && metrics.p95FirstTokenMs != null && metrics.p95FirstTokenMs > policy.slowFirstTokenMs,
+    p50: eligible && enoughFirstTokens && metrics.p50FirstTokenMs != null && metrics.p50FirstTokenMs > policy.slowP50FirstTokenMs,
+  }
+}
 /**
  * 渠道详情里的缓存命中率只作展示，不参与健康度判定。
  * 口径与用量报表一致：缓存读 token ÷ 输入 token，输入已包含缓存读与缓存写。
