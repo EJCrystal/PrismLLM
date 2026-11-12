@@ -169,7 +169,7 @@ class ModelConnectivityTestTest {
             )
             assertFalse(result.success)
             assertEquals(200, result.statusCode)
-            assertTrue(result.errorMessage!!.contains("stream boom"))
+            assertEquals("stream boom", result.errorMessage)
         } finally {
             server.stop(0)
         }
