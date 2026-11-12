@@ -4,6 +4,18 @@
 
 const formatters = new Map<string, Intl.DateTimeFormat>()
 
+export function formatRelativeTime(value: number | string | Date | null | undefined, now = Date.now()): string {
+  if (value == null || value === '') return '—'
+  const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime()
+  if (!Number.isFinite(timestamp) || !Number.isFinite(now)) return '—'
+  if (timestamp > now + 60_000) return formatTime(value)
+  const elapsed = Math.max(0, now - timestamp)
+  if (elapsed < 60_000) return '刚刚'
+  if (elapsed < 3_600_000) return Math.floor(elapsed / 60_000) + ' 分钟前'
+  if (elapsed < 86_400_000) return Math.floor(elapsed / 3_600_000) + ' 小时前'
+  return Math.floor(elapsed / 86_400_000) + ' 天前'
+}
+
 function getDateTimeFormatter(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
   const key = JSON.stringify(options)
   let formatter = formatters.get(key)

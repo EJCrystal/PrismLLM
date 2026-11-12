@@ -5,6 +5,7 @@ import dev.soven.prismllm.requestlog.domain.ChannelHealthDetail
 import dev.soven.prismllm.requestlog.domain.ChannelHealthDirectory
 import dev.soven.prismllm.requestlog.domain.ChannelHealthReport
 import dev.soven.prismllm.requestlog.domain.ChannelHealthSummary
+import dev.soven.prismllm.requestlog.domain.ChannelHealthSnapshot
 import dev.soven.prismllm.requestlog.domain.HealthAvailability
 import dev.soven.prismllm.requestlog.domain.HealthBreakdown
 import dev.soven.prismllm.requestlog.domain.HealthBucket
@@ -14,6 +15,7 @@ import dev.soven.prismllm.requestlog.domain.HealthError
 import dev.soven.prismllm.requestlog.domain.HealthPolicy
 import dev.soven.prismllm.requestlog.domain.HealthMetrics
 import dev.soven.prismllm.requestlog.domain.HealthRequests
+import dev.soven.prismllm.requestlog.domain.HealthRecentAttempt
 import dev.soven.prismllm.requestlog.domain.healthState
 import dev.soven.prismllm.requestlog.domain.healthWindows
 import org.jetbrains.exposed.v1.core.LongColumnType
@@ -108,20 +110,23 @@ class ChannelHealthRepository(
     ): ChannelHealthReport {
         val from = now - healthWindows.getValue(window)
         val observations = groups(from, now, channelId, "channel_id")
+        val recentFrom = now - 3_600_000L
+        val recentObservations = groups(recentFrom, now, channelId, "channel_id")
+        val recentAttempts = recentAttempts(maxOf(from, now - 86_400_000L), now, channelId)
+        val recentPendingChannels = mutableSetOf<String>()
         val pendingChannels = exec(
-            "select channel_id, attempts_json from request_logs where not health_indexed and created_at >= ? and created_at < ?",
+            "select channel_id, attempts_json, created_at from request_logs where not health_indexed and created_at >= ? and created_at < ?",
             args(from, now),
         ) { rs ->
             buildSet {
                 while (rs.next()) {
-                    val finalChannelId = rs.getString("channel_id")
-                    if (channelId == null || finalChannelId == channelId) finalChannelId?.let(::add)
-                    UpstreamAttemptCodec.decode(rs.getString("attempts_json"))
-                        .asSequence()
-                        .filterNot { it.skipped }
-                        .mapNotNull { it.channelId }
-                        .filter { channelId == null || it == channelId }
-                        .forEach(::add)
+                    val affected = buildSet {
+                        rs.getString("channel_id")?.let(::add)
+                        UpstreamAttemptCodec.decode(rs.getString("attempts_json"))
+                            .filterNot { it.skipped }.mapNotNull { it.channelId }.forEach(::add)
+                    }.filter { channelId == null || it == channelId }
+                    addAll(affected)
+                    if (rs.getLong("created_at") >= recentFrom) recentPendingChannels.addAll(affected)
                 }
             }
         }.orEmpty()
@@ -147,6 +152,9 @@ class ChannelHealthRepository(
                 val cooldown = cooldowns[id]
                 // 无可用凭据是比「历史数据补齐中」更确定的事实，不能被索引进度覆盖。
                 val pendingApplies = pendingChannels.contains(id) && enabled && state != "NO_CREDENTIALS"
+                val recentMetrics = recentObservations[id] ?: HealthMetrics()
+                val (recentState, recentReason) = healthState(recentMetrics, enabled, now, healthPolicy, routableCredentials[id])
+                val recentPending = recentPendingChannels.contains(id) && enabled && recentState != "NO_CREDENTIALS"
                 ChannelHealthSummary(
                     id, metrics, (requests[id] ?: HealthRequests()).copy(legacyRequests = legacy[id] ?: 0),
                     if (pendingApplies) "UNKNOWN" else state,
@@ -155,6 +163,12 @@ class ChannelHealthRepository(
                     cooldownReason = cooldown?.reason,
                     coolingCandidates = cooldown?.coolingCandidates ?: 0,
                     totalCandidates = cooldown?.totalCandidates ?: 0,
+                    recent = ChannelHealthSnapshot(
+                        recentFrom, now, recentMetrics,
+                        if (recentPending) "UNKNOWN" else recentState,
+                        if (recentPending) "历史数据补齐中" else recentReason,
+                    ),
+                    recentAttempts = recentAttempts[id].orEmpty(),
                 )
             },
         )
@@ -210,6 +224,28 @@ class ChannelHealthRepository(
                 lastSuccessAt = rs.nullLong("last_success"), lastFailureAt = rs.nullLong("last_failure"), lastObservedAt = rs.nullLong("last_observed"),
             ))
         } }
+    }.orEmpty()
+
+    private fun JdbcTransaction.recentAttempts(from: Long, to: Long, channelId: String?): Map<String, List<HealthRecentAttempt>> = exec("""
+        select * from (
+            select channel_id, log_id, attempt_index, created_at, outcome, status_code, error_code,
+              upstream_model, elapsed_ms, first_token_ms,
+              row_number() over(partition by channel_id order by created_at desc, log_id desc, attempt_index desc) as rank
+            from request_attempts
+            where created_at >= ? and created_at < ? and outcome <> 'EXCLUDED' ${if (channelId != null) "and channel_id = ?" else ""}
+        ) recent where rank <= 30 order by channel_id, created_at, log_id, attempt_index
+    """.trimIndent(), args(from, to, channelId)) { rs ->
+        val result = mutableMapOf<String, MutableList<HealthRecentAttempt>>()
+        while (rs.next()) {
+            result.getOrPut(rs.getString("channel_id")) { mutableListOf() }.add(HealthRecentAttempt(
+                logId = rs.getLong("log_id"), attemptIndex = rs.getInt("attempt_index"),
+                createdAt = rs.getLong("created_at"), outcome = rs.getString("outcome"),
+                statusCode = rs.nullLong("status_code")?.toInt(), errorCode = rs.getString("error_code"),
+                upstreamModel = rs.getString("upstream_model"), elapsedMs = rs.getLong("elapsed_ms"),
+                firstTokenMs = rs.nullLong("first_token_ms"),
+            ))
+        }
+        result
     }.orEmpty()
 
     private fun args(from: Long, to: Long, channelId: String? = null) =

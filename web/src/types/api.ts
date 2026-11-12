@@ -14,6 +14,13 @@ export interface ChannelHealthSummary {
   requests: { requests: number; successes: number; successRate: number | null; failoverRequests: number; failoverRate: number | null; legacyRequests: number }
   cooldownUntil?: number | null; cooldownReason?: string | null
   coolingCandidates?: number; totalCandidates?: number
+  recent?: { from: number; to: number; metrics: HealthMetrics; state: HealthState; reason: string } | null
+  recentAttempts?: HealthRecentAttempt[]
+}
+export interface HealthRecentAttempt {
+  logId: number; attemptIndex: number; createdAt: number; outcome: 'SUCCESS' | 'FAILURE'
+  statusCode: number | null; errorCode: string | null; upstreamModel: string | null
+  elapsedMs: number; firstTokenMs: number | null
 }
 export interface ChannelHealthReport {
   window: HealthWindow; from: number; to: number; retentionDays: number; indexing: boolean

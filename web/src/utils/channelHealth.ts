@@ -1,5 +1,20 @@
-import type { HealthMetrics, HealthState, HealthWindow, UsageGroup } from '../types/api'
+import type { HealthMetrics, HealthState, HealthWindow, HealthRecentAttempt, UsageGroup } from '../types/api'
 import { usageCacheHitRate, usageGroupLabel } from './usageReport'
+import { formatTime, formatDuration } from './format'
+
+export function healthTrendSlots(attempts: HealthRecentAttempt[] | null | undefined): (HealthRecentAttempt | null)[] {
+  const recent = (attempts ?? []).slice(-30)
+  return [...Array<null>(30 - recent.length).fill(null), ...recent]
+}
+
+export function healthAttemptTitle(attempt: HealthRecentAttempt): string {
+  return [
+    formatTime(attempt.createdAt), attempt.outcome === 'SUCCESS' ? '成功' : '失败',
+    attempt.upstreamModel, attempt.statusCode != null ? 'HTTP ' + attempt.statusCode : null,
+    attempt.errorCode, '耗时 ' + formatDuration(attempt.elapsedMs),
+    attempt.firstTokenMs != null ? '首 token ' + formatDuration(attempt.firstTokenMs) : null,
+  ].filter(Boolean).join(' · ')
+}
 
 export const HEALTH_WINDOWS: { id: HealthWindow; label: string }[] = [
   { id: '24h', label: '24 小时' }, { id: '7d', label: '7 天' }, { id: '15d', label: '15 天' }, { id: '30d', label: '30 天' },

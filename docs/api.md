@@ -213,6 +213,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 ### 5. 冷却可见性与手动解除
 
 - `GET /admin/api/channel-health?window=24h` 的每个渠道摘要包含 `cooldownUntil`、`cooldownReason`、`coolingCandidates` 和 `totalCandidates`，用于渠道列表展示冷却剩余时间与主因。
+- 渠道摘要新增 `recent`（固定近 1 小时的 `from`、`to`、`metrics`、`state`、`reason`）以及 `recentAttempts`（所选窗口与最近 24 小时交集内、每渠道最近 30 次有效上游尝试，按完成时间、日志 ID、尝试序号升序）。客户端取消、跳过及其他排除项不进入趋势；每条包含 `logId`、`attemptIndex`、`createdAt`、`outcome`、`statusCode`、`errorCode`、`upstreamModel`、`elapsedMs`、`firstTokenMs`。原有 `metrics` 和 `state` 仍对应所选窗口，不改变统计口径。
 - `GET /admin/api/channels/<id>/health` 的 `availability` 列表给出每个密钥/模型组合的状态、冷却原因和截止时间。
 - 手动解除冷却：
 

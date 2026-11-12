@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   formatTime,
+  formatRelativeTime,
   formatDuration,
   durationSeconds,
   formatNumber,
@@ -16,6 +17,24 @@ import {
 } from '../src/utils/format'
 
 describe('utils: format 格式化工具函数库', () => {
+  describe('formatRelativeTime', () => {
+    const now = Date.parse('2026-11-12T09:00:00Z')
+    it('按分钟、小时和天展示，并处理精确边界', () => {
+      assert.equal(formatRelativeTime(now, now), '刚刚')
+      assert.equal(formatRelativeTime(now - 59_999, now), '刚刚')
+      assert.equal(formatRelativeTime(now - 60_000, now), '1 分钟前')
+      assert.equal(formatRelativeTime(now - 300_000, now), '5 分钟前')
+      assert.equal(formatRelativeTime(now - 3_600_000, now), '1 小时前')
+      assert.equal(formatRelativeTime(new Date(now - 86_400_000), now), '1 天前')
+      assert.equal(formatRelativeTime(new Date(now - 5 * 86_400_000).toISOString(), now), '5 天前')
+    })
+    it('缺失或无效值不伪装为刚刚，未来时间保留绝对日期', () => {
+      for (const value of [null, undefined, '', 'invalid-date', NaN]) assert.equal(formatRelativeTime(value, now), '—')
+      assert.equal(formatRelativeTime(now, NaN), '—')
+      assert.equal(formatRelativeTime(now + 30_000, now), '刚刚')
+      assert.equal(formatRelativeTime(now + 120_000, now), formatTime(now + 120_000))
+    })
+  })
   describe('formatTime', () => {
     const fixedTs = new Date('2026-10-24T12:30:45Z').getTime()
 

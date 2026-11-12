@@ -1,10 +1,18 @@
 package dev.soven.prismllm.requestlog.domain
 
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class ChannelHealthTest {
+    @Test
+    fun recentAttemptCanBeDecodedWhenNullFieldsAreOmitted() {
+        val attempt = HealthRecentAttempt(1, 1, 1_800_000_000_000L, "SUCCESS", elapsedMs = 100)
+        val compact = Json { explicitNulls = false }.encodeToString(HealthRecentAttempt.serializer(), attempt)
+        assertEquals(attempt, Json.decodeFromString(HealthRecentAttempt.serializer(), compact))
+    }
+
     private val now = 1_800_000_000_000L
 
     private val policy = HealthPolicy(slowFirstTokenMs = 2_000, slowP50FirstTokenMs = 500)
