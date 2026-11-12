@@ -459,7 +459,15 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
             }
         }
     }
-    if (text == null && usage == null && output == null && failedError == null) return null
+    // 空流（例如只收到 response.created 就断开）：没有任何聚合字段也没有终止事件，
+    // 同样按截断失败处理，不能返回 null 让调用方误判成功。
+    if (text == null && usage == null && output == null && failedError == null) {
+        if (terminated) return null
+        return buildJsonObject {
+            put("stream_truncated", true)
+            put("error", buildJsonObject { put("message", "上游流式响应未收到终止事件，连接可能中断") })
+        }
+    }
     return buildJsonObject {
         text?.let { put("output_text", it) }
         output?.let { put("output", it) }

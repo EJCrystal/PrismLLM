@@ -246,6 +246,90 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun `empty stream before any delta reports truncation failure`() = runBlocking {
+        val sseBody = listOf(
+            "event: response.created",
+            "data: {\"type\":\"response.created\"}",
+        ).joinToString("\n")
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/responses") { exchange ->
+            val bytes = sseBody.toByteArray()
+            exchange.responseHeaders.add("Content-Type", "text/event-stream")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val channel = ChannelRecord(
+                id = "provider",
+                name = "provider",
+                baseUrl = "http://127.0.0.1:${server.address.port}",
+                authType = "bearer",
+                protocols = listOf(GatewayProtocol.RESPONSES),
+                enabled = true,
+                createdAt = 0,
+                updatedAt = 0,
+                modelMappings = listOf(ChannelModelRecord("gpt-6-luna")),
+                kind = ChannelKind.PROVIDER,
+                provider = OAuthProvider.CHATGPT,
+            )
+            val result = testOAuthAccountModelConnectivity(
+                channel = channel,
+                accessToken = "access-token",
+                project = null,
+                model = "gpt-6-luna",
+                protocol = GatewayProtocol.RESPONSES,
+                prompt = "say ok",
+                httpClient = HttpClient(Java),
+            )
+            assertFalse(result.success)
+            assertTrue(result.errorMessage!!.contains("未收到终止事件"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `empty response body reports truncation failure`() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/responses") { exchange ->
+            exchange.responseHeaders.add("Content-Type", "text/event-stream")
+            exchange.sendResponseHeaders(200, -1)
+            exchange.responseBody.close()
+        }
+        server.start()
+        try {
+            val channel = ChannelRecord(
+                id = "provider",
+                name = "provider",
+                baseUrl = "http://127.0.0.1:${server.address.port}",
+                authType = "bearer",
+                protocols = listOf(GatewayProtocol.RESPONSES),
+                enabled = true,
+                createdAt = 0,
+                updatedAt = 0,
+                modelMappings = listOf(ChannelModelRecord("gpt-6-luna")),
+                kind = ChannelKind.PROVIDER,
+                provider = OAuthProvider.CHATGPT,
+            )
+            val result = testOAuthAccountModelConnectivity(
+                channel = channel,
+                accessToken = "access-token",
+                project = null,
+                model = "gpt-6-luna",
+                protocol = GatewayProtocol.RESPONSES,
+                prompt = "say ok",
+                httpClient = HttpClient(Java),
+            )
+            assertFalse(result.success)
+            assertTrue(result.errorMessage!!.contains("未收到终止事件"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+
+    @Test
     fun `completed stream with error does not report truncation`() {
         val body = parseResponsesStreamText(
             listOf(
