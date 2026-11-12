@@ -98,6 +98,14 @@ export function filterTestRecords(rows: TestRecordRow[], filters: TestRecordFilt
   )
 }
 
+/** 渠道面板里只看本渠道的记录；channelId 为空表示不限定渠道。 */
+export function scopeTestRecords(
+  rows: TestRecordRow[],
+  channelId: string | null | undefined,
+): TestRecordRow[] {
+  return channelId ? rows.filter((row) => row.channelId === channelId) : rows
+}
+
 /** 渠道选项来自已加载记录，渠道被删除后仍能按当时的名称筛选。 */
 export function testRecordChannelOptions(rows: TestRecordRow[]): Array<{ value: string; label: string }> {
   const channels = new Map<string, string>()

@@ -5,6 +5,7 @@ import {
   EMPTY_TEST_RECORD_FILTERS,
   filterTestRecords,
   mergeTestRecords,
+  scopeTestRecords,
   testRecordChannelOptions,
   testRecordModelOptions,
   testRecordTypeLabel,
@@ -25,8 +26,12 @@ const IqTestView = defineAsyncComponent(() => import('./IqTestView.vue'))
 const FingerprintTestView = defineAsyncComponent(() => import('./FingerprintTestView.vue'))
 
 const props = withDefaults(
-  defineProps<{ initialRecord?: { type: TestRecordType; id: number } | null }>(),
-  { initialRecord: null },
+  defineProps<{
+    initialRecord?: { type: TestRecordType; id: number } | null
+    /** 只看某个渠道的记录；渠道面板内不再需要跨渠道筛选。 */
+    channelId?: string | null
+  }>(),
+  { initialRecord: null, channelId: null },
 )
 const emit = defineEmits<{ (event: 'record-opened'): void }>()
 
@@ -59,15 +64,20 @@ const rows = ref<TestRecordRow[]>([])
 const filters = ref<TestRecordFilters>({ ...EMPTY_TEST_RECORD_FILTERS })
 const activeRecord = ref<{ type: TestRecordType; id: number } | null>(null)
 
+/** 渠道面板里只看本渠道的记录，模型/类型/结论仍可继续筛选。 */
+const scopedRows = computed(() =>
+  scopeTestRecords(rows.value, props.channelId),
+)
+const scoped = computed(() => Boolean(props.channelId))
 const channelOptions = computed(() => [
   { value: '', label: '全部渠道' },
   ...testRecordChannelOptions(rows.value),
 ])
 const modelOptions = computed(() => [
   { value: '', label: '全部模型' },
-  ...testRecordModelOptions(rows.value, filters.value.channelId),
+  ...testRecordModelOptions(scopedRows.value, filters.value.channelId),
 ])
-const visibleRows = computed(() => filterTestRecords(rows.value, filters.value))
+const visibleRows = computed(() => filterTestRecords(scopedRows.value, filters.value))
 const hasFilters = computed(() => Object.values(filters.value).some(Boolean))
 const activeFilterCount = computed(() => Object.values(filters.value).filter(Boolean).length)
 const iqCount = computed(() => visibleRows.value.filter((row) => row.type === 'iq').length)
@@ -166,7 +176,7 @@ watch(
   () => filters.value.channelId,
   (channelId) => {
     if (!filters.value.model) return
-    const available = testRecordModelOptions(rows.value, channelId)
+    const available = testRecordModelOptions(scopedRows.value, channelId)
     if (!available.some((option) => option.value === filters.value.model)) filters.value.model = ''
   },
 )
@@ -202,6 +212,7 @@ onMounted(load)
       <div class="test-records-filters">
         <FilterSelect v-model="filters.type" label="类型" :disabled="loading" :options="typeOptions" />
         <FilterSelect
+          v-if="!scoped"
           v-model="filters.channelId"
           label="渠道"
           searchable
@@ -252,7 +263,9 @@ onMounted(load)
         :desc="
           hasFilters
             ? '调整筛选条件，或清除筛选后查看全部记录。'
-            : '在渠道列表点击「测试」运行智商或指纹检测，完成后记录会出现在这里。'
+            : scoped
+              ? '切换到「智商」或「指纹」页签运行检测，完成后记录会出现在这里。'
+              : '在渠道列表点击「测试」运行智商或指纹检测，完成后记录会出现在这里。'
         "
         :action-text="hasFilters ? '清除筛选' : ''"
         action-icon="close"
@@ -264,7 +277,7 @@ onMounted(load)
             <tr>
               <th>时间</th>
               <th>类型</th>
-              <th>渠道 / 凭据</th>
+              <th>{{ scoped ? '凭据' : '渠道 / 凭据' }}</th>
               <th>模型</th>
               <th>结论</th>
               <th>耗时</th>
@@ -289,8 +302,8 @@ onMounted(load)
                 </span>
               </td>
               <td>
-                <div class="primary-cell">{{ row.channelName }}</div>
-                <div class="muted small">{{ row.channelKeyName || '未记录凭据' }}</div>
+                <div v-if="!scoped" class="primary-cell">{{ row.channelName }}</div>
+                <div :class="scoped ? 'primary-cell' : 'muted small'">{{ row.channelKeyName || '未记录凭据' }}</div>
               </td>
               <td>
                 <div class="mono test-record-model">{{ row.model }}</div>
@@ -338,7 +351,7 @@ onMounted(load)
             <span class="badge" :class="row.tone">{{ row.summary }}</span>
           </div>
           <div class="test-record-card-meta muted small">
-            <span>{{ row.channelName }} · {{ row.channelKeyName || '未记录凭据' }}</span>
+            <span><template v-if="!scoped">{{ row.channelName }} · </template>{{ row.channelKeyName || '未记录凭据' }}</span>
             <span>{{ row.protocol }}</span>
             <span>
               <template v-if="row.statusCode">HTTP {{ row.statusCode }}</template>

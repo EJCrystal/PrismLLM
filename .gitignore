@@ -6,7 +6,7 @@ plugins/*.jar
 .openidea/
 *.iml
 .vscode/
-web/node_modules/
+web/node_modules
 web/dist/
 web/.vite/
 midscene_run/

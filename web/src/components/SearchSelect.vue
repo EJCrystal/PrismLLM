@@ -10,6 +10,8 @@ interface SearchSelectOption {
   hint?: string
   group?: string
   searchText?: string
+  /** 不可选中的选项（例如未授权当前模型的凭据），仅用于说明。 */
+  disabled?: boolean
 }
 
 const props = withDefaults(defineProps<{
@@ -19,17 +21,29 @@ const props = withDefaults(defineProps<{
   placeholder?: string
   disabled?: boolean
   panelWidth?: number
+  /** 选项很少时可以不显示搜索框，避免弹层多占一行高度。 */
+  searchable?: boolean
 }>(), {
   placeholder: '请选择',
   disabled: false,
   panelWidth: 320,
+  searchable: true,
 })
 
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
 const query = ref('')
 const searchInput = ref<HTMLInputElement | null>(null)
-const { anchor, panel, panelStyle, place } = useAnchoredPanel(props.panelWidth, 420)
+/** 选项不多时按实际条目数估算高度，避免弹层因预估过高而整体上翻。 */
+const estimatedPanelHeight = computed(() => {
+  const rows = Math.max(1, props.options.length)
+  return (props.searchable ? 58 : 0) + rows * 48 + 26
+})
+const { anchor, panel, panelStyle, place } = useAnchoredPanel(
+  props.panelWidth,
+  estimatedPanelHeight.value,
+  { preferBelow: true },
+)
 
 const selected = computed(() => props.options.find(option => option.value === props.modelValue) ?? null)
 const triggerHint = computed(() => {
@@ -109,7 +123,7 @@ function choose(value: string, close: () => void) {
     <Teleport to="body">
       <PopoverPanel as="div" focus>
         <div ref="panel" class="search-select-panel" :style="panelStyle" :aria-label="label + '选项'">
-          <label class="search-select-search">
+          <label v-if="searchable" class="search-select-search">
             <Icon name="search" :size="15" />
             <input
               ref="searchInput"
@@ -130,8 +144,10 @@ function choose(value: string, close: () => void) {
                 type="button"
                 role="option"
                 class="search-select-option"
-                :class="{ 'is-selected': option.value === modelValue }"
+                :class="{ 'is-selected': option.value === modelValue, 'is-disabled': option.disabled }"
                 :aria-selected="option.value === modelValue"
+                :aria-disabled="option.disabled ? 'true' : undefined"
+                :disabled="option.disabled"
                 :data-selected="option.value === modelValue ? 'true' : undefined"
                 @click="choose(option.value, close)"
               >
@@ -346,6 +362,16 @@ function choose(value: string, close: () => void) {
 .search-select-option.is-selected {
   background: color-mix(in srgb, var(--brand) 11%, transparent);
   color: var(--brand);
+}
+
+.search-select-option.is-disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.search-select-option.is-disabled:hover {
+  background: transparent;
 }
 
 .search-select-option-copy {

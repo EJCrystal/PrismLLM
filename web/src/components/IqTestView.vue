@@ -22,6 +22,7 @@ import {
   shouldAdoptIqRunResult,
   withIqPreviewCsp,
 } from '../utils/iqTest'
+import { isKeyRoutable } from '../utils/channelForm'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import SearchSelect from './SearchSelect.vue'
@@ -126,11 +127,38 @@ const targetOptions = computed(() => scopedTargets.value.map((target) => ({
   group: target.channelEnabled ? target.channelName : `${target.channelName}（已停用）`,
   searchText: `${target.channelName} ${target.model}`,
 })))
-const credentialOptions = computed(() => (selectedTarget.value?.credentials ?? []).map((credential) => ({
-  value: credential.id,
-  label: credential.name,
-  hint: `优先级 ${credential.priority}`,
-})))
+/** 渠道内只需要选模型，分组标题会重复渠道名，这里保持平铺。 */
+const modelOptions = computed(() => targetOptions.value.map(({ group, ...option }) => option))
+/**
+ * 渠道里的启用密钥；未授权当前模型的置灰列出。
+ * 凭据按模型授权过滤是刻意的路由约束，但只显示可用项会让人误以为密钥丢了。
+ */
+const credentialOptions = computed(() => {
+  const target = selectedTarget.value
+  if (!target) return []
+  const supported = target.credentials.map((credential) => ({
+    value: credential.id,
+    label: credential.name,
+    hint: `优先级 ${credential.priority}`,
+    disabled: false,
+  }))
+  const supportedIds = new Set(supported.map((option) => option.value))
+  const unavailable = (props.channel?.keys ?? [])
+    .filter((key) => !supportedIds.has(key.id) && isKeyRoutable(key) && !key.models.includes(target.model))
+    .sort((left, right) => left.priority - right.priority || left.name.localeCompare(right.name))
+    .map((key) => ({
+      value: key.id,
+      label: key.name,
+      hint: `未授权 ${target.model}`,
+      disabled: true,
+    }))
+  return [...supported, ...unavailable]
+})
+const credentialHint = computed(() => {
+  const unavailable = credentialOptions.value.filter((option) => option.disabled).length
+  if (!unavailable) return ''
+  return `该渠道另有 ${unavailable} 个启用密钥未授权当前模型，切换模型后可选。`
+})
 const canRun = computed(() =>
   !!selectedTarget.value &&
   !!benchmark.value &&
@@ -469,26 +497,18 @@ onBeforeUnmount(stopTicker)
         <div class="iq-section">
           <span class="iq-section-label">检测目标</span>
           <div v-if="scopedTargets.length" class="iq-target">
-            <label v-if="channel" class="field iq-select-field">
-              <span>模型</span>
-              <select v-model="selectedTargetKey">
-                <option v-for="option in targetOptions" :key="option.value" :value="option.value">
-                  {{ option.label }}
-                </option>
-              </select>
-            </label>
-            <div v-else class="field iq-select-field">
-              <span>渠道与模型</span>
+            <div class="field iq-select-field">
+              <span>{{ channel ? '模型' : '渠道与模型' }}</span>
               <SearchSelect
                 v-model="selectedTargetKey"
-                label="渠道与模型"
-                :options="targetOptions"
-                :panel-width="340"
-                placeholder="选择渠道与模型"
+                :label="channel ? '模型' : '渠道与模型'"
+                :options="channel ? modelOptions : targetOptions"
+                :panel-width="channel ? 320 : 340"
+                :placeholder="channel ? '选择模型' : '选择渠道与模型'"
               />
             </div>
-            <div v-if="selectedTarget" class="iq-target-grid">
-              <div class="field iq-select-field iq-credential-field">
+            <template v-if="selectedTarget">
+              <div class="field iq-select-field">
                 <span>使用凭据</span>
                 <SearchSelect
                   v-model="selectedKeyId"
@@ -496,7 +516,9 @@ onBeforeUnmount(stopTicker)
                   :options="credentialOptions"
                   :panel-width="300"
                   placeholder="选择上游凭据"
+                  :searchable="credentialOptions.length > 6"
                 />
+                <small v-if="credentialHint">{{ credentialHint }}</small>
               </div>
               <label class="field">
                 <span>协议</span>
@@ -507,7 +529,7 @@ onBeforeUnmount(stopTicker)
                   </option>
                 </select>
               </label>
-            </div>
+            </template>
             <p v-if="selectedTarget && !selectedTarget.channelEnabled" class="iq-inline-warning">
               <Icon name="info" :size="14" />
               渠道已停用，仍可用已保存的凭据发起测试。
@@ -1071,16 +1093,6 @@ onBeforeUnmount(stopTicker)
   --sd-bg-hover: var(--iq-field-hover);
   --sd-border-hover: color-mix(in srgb, var(--brand) 34%, var(--iq-field-border));
   --sd-radius: 12px;
-}
-
-.iq-target-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.iq-credential-field {
-  grid-column: 1 / -1;
 }
 
 .iq-inline-warning {
@@ -1804,7 +1816,6 @@ onBeforeUnmount(stopTicker)
 }
 
 @media (max-width: 640px) {
-  .iq-target-grid,
   .iq-candy-layout,
   .iq-manual-grid {
     grid-template-columns: 1fr;

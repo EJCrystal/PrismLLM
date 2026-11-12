@@ -6,6 +6,7 @@ import {
   fingerprintTestRecord,
   iqTestRecord,
   mergeTestRecords,
+  scopeTestRecords,
   testRecordChannelOptions,
   testRecordModelOptions,
 } from '../src/utils/testRecords'
@@ -130,6 +131,13 @@ describe('testRecords: 筛选与选项', () => {
 
   it('空筛选返回全部记录', () => {
     assert.equal(filterTestRecords(rows, { ...EMPTY_TEST_RECORD_FILTERS }).length, 3)
+  })
+
+  it('按渠道归属只看本渠道记录', () => {
+    assert.deepEqual(scopeTestRecords(rows, 'a').map((row) => row.id), [1, 3])
+    assert.deepEqual(scopeTestRecords(rows, 'b').map((row) => row.id), [2])
+    assert.equal(scopeTestRecords(rows, null).length, 3)
+    assert.equal(scopeTestRecords(rows, '').length, 3)
   })
 
   it('按类型、渠道、模型和结论组合筛选', () => {
