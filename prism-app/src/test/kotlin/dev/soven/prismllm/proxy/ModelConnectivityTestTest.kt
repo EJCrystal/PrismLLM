@@ -330,6 +330,20 @@ class ModelConnectivityTestTest {
 
 
     @Test
+    fun `response incomplete due to token limit reports readable error`() {
+        val body = parseResponsesStreamText(
+            listOf(
+                "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}",
+            ).joinToString("\n"),
+        )
+        assertNotNull(body)
+        assertNull(body?.get("stream_truncated"))
+        val error = body?.get("error")?.jsonObject
+        assertEquals("响应因达到输出上限被截断（max_output_tokens）", error?.get("message")?.jsonPrimitive?.content)
+    }
+
+
+    @Test
     fun `completed stream with error does not report truncation`() {
         val body = parseResponsesStreamText(
             listOf(

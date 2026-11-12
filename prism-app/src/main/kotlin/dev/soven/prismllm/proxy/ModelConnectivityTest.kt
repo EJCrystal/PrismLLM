@@ -436,6 +436,15 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
             failedError = event["response"] as? JsonObject
             terminated = true
         }
+        if (type.startsWith("response.incomplete")) {
+            // 触及输出上限的正常终止：不是断流，折叠成 error 让调用方给出可读结果。
+            terminated = true
+            val details = (event["response"] as? JsonObject)?.get("incomplete_details") as? JsonObject
+            val reason = details?.get("reason")?.let { (it as? JsonPrimitive)?.contentOrNull } ?: "output_token_limit"
+            failedError = buildJsonObject {
+                put("error", buildJsonObject { put("message", "响应因达到输出上限被截断（$reason）") })
+            }
+        }
         if (type.startsWith("response.completed")) {
             terminated = true
             (event["response"] as? JsonObject)?.let { response ->
