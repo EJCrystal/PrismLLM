@@ -1473,16 +1473,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     retryable = true,
                 )
             }
-            // 目录按账号保存，不同账号可用模型不同；同步后剔除已授权但目录外的模型，
-            // 全部被剔除时置空表示「跟随目录」，避免账号授权列表困住测试与调度。
-            val catalogIds = entries.map { it.upstreamModel }.toSet()
-            val keptModels = account.models.filter { it in catalogIds }
             app.oauthAccountRepository.saveModelCatalog(
                 account.id,
                 entries,
             )
-            if (account.models.isNotEmpty() && keptModels.size != account.models.size) {
-                app.oauthAccountRepository.setModels(account.id, keptModels)
+            // 同步后只删除授权里目录外的行（事务内读当前行，不覆盖并发改动）；
+            // 全部被删时账号回到「跟随目录」语义，不会扩大授权范围。
+            if (account.models.isNotEmpty()) {
+                app.oauthAccountRepository.removeModelsOutsideCatalog(account.id, entries.map { it.upstreamModel })
             }
             // 系统渠道的模型是所有账号目录的并集，供路由前判断模型是否可能存在；
             // 账号级 supports() 再按自己的目录过滤，避免把请求发给没有该模型的账号。

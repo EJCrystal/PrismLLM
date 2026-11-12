@@ -173,9 +173,9 @@ private fun parseModelList(root: JsonElement?): List<UpstreamModel> {
             is JsonPrimitive -> item.contentOrNull?.takeIf { it.isNotBlank() }?.let { UpstreamModel(it) }
             is JsonObject -> {
                 if (item.stringField("visibility") == "hide") return@mapNotNull null
-                val id = item.stringField("slug")
-                    ?: item.stringField("id")
-                    ?: item.stringField("name")
+                val id = item.stringField("slug")?.takeIf(String::isNotBlank)
+                    ?: item.stringField("id")?.takeIf(String::isNotBlank)
+                    ?: item.stringField("name")?.takeIf(String::isNotBlank)
                 id?.let {
                     UpstreamModel(
                         id = it,

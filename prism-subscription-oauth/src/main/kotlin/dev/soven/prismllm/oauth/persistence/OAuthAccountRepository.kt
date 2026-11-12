@@ -18,6 +18,7 @@ import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.isNull
+import org.jetbrains.exposed.v1.core.notInList
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.or
@@ -395,6 +396,27 @@ open class OAuthAccountRepository(
         replaceModels(accountId, models, now)
         OAuthAccounts.update({ OAuthAccounts.id eq accountId }) { it[OAuthAccounts.updatedAt] = now }
         findDetailedInTransaction(accountId)
+    }
+
+    /**
+     * 目录同步后的授权收敛：在同一事务里读取当前授权行，只删除目录外的行，
+     * 保留管理员在目录抓取期间的并发改动；全部被删时账号回到「跟随目录」语义。
+     */
+    suspend fun removeModelsOutsideCatalog(
+        accountId: String,
+        catalog: Collection<String>,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean = suspendTransaction(database) {
+        if (OAuthAccounts.selectAll().where { OAuthAccounts.id eq accountId }.empty()) {
+            return@suspendTransaction false
+        }
+        val allowed = catalog.map(String::trim).filter(String::isNotEmpty).toSet()
+        OAuthAccountModels.deleteWhere {
+            (OAuthAccountModels.accountId eq accountId) and
+                (OAuthAccountModels.upstreamModel notInList allowed)
+        }
+        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) { it[OAuthAccounts.updatedAt] = now }
+        true
     }
 
     suspend fun delete(accountId: String): Boolean = suspendTransaction(database) {

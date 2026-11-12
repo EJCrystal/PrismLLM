@@ -99,6 +99,44 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun `responses stream with completed-only event extracts output array and usage`() {
+        val body = parseResponsesStreamText(
+            listOf(
+                "event: response.completed",
+                "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-terra\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"terra ok\"}]}],\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}",
+            ).joinToString("\n"),
+        )
+        assertNotNull(body)
+        assertEquals("terra ok", collectText(body?.get("output_text")))
+        val output = body?.get("output")?.jsonArray
+        assertEquals(1, output?.size)
+        assertEquals("message", output?.first()?.jsonObject?.get("type")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `responses stream terminated by response failed reports error`() {
+        val body = parseResponsesStreamText(
+            listOf(
+                "event: response.output_text.delta",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}",
+                "event: response.failed",
+                "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"boom\"}}}",
+            ).joinToString("\n"),
+        )
+        assertNotNull(body)
+        val error = body?.get("error")?.jsonObject
+        assertEquals("boom", error?.get("message")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `codex model list skips entries whose slug id and name are all blank`() {
+        val models = parseModelList(
+            """{"models":[{"slug":"","id":"valid"},{"slug":"","id":"  ","name":"blank-name"},{"slug":"kept"}]}""",
+        )
+        assertEquals(listOf("blank-name", "kept", "valid"), models.map { it.id })
+    }
+
+    @Test
     fun `code assist account test wraps the request with project and unwraps the response`() = runBlocking {
         val body = AtomicReference<String>()
         val userAgent = AtomicReference<String>()

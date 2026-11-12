@@ -192,13 +192,20 @@ private suspend fun runModelConnectivityTest(
             } else {
                 parsed
             }
+            // Responses 流可能在 HTTP 2xx 后以 response.failed 终止：只要流内带错误，
+            // 即使已收到部分文本也不能报成功。
+            val streamError = if (protocol == GatewayProtocol.RESPONSES && status in 200..299) {
+                json?.get("error") as? JsonObject
+            } else {
+                null
+            }
             if (status in 200..299) {
                 ModelConnectivityTestResult(
-                    success = true,
+                    success = streamError == null,
                     statusCode = status,
                     latencyMs = latencyMs,
                     responseText = extractModelTestResponseText(protocol, json)?.take(maxResponseChars),
-                    errorMessage = null,
+                    errorMessage = streamError?.let { extractModelTestError(it, bodyText, status) },
                     usage = extractModelTestUsage(protocol, json),
                     upstreamReportedModel = extractReportedModel(protocol, json),
                 )
@@ -397,13 +404,15 @@ private fun parseJsonObject(body: String): JsonObject? =
 
 /**
  * 把 Responses 的 SSE 流（`data: {json}` 行）折成非流式形状：`output_text` 聚合文本，
- * `output` 保留最后一个非 reasoning 项，usage 与 reported model 取自最后的完成事件。
+ * `output` 保留数组原样，usage 与 reported model 取自最后的完成事件；流以
+ * `response.failed` 终止时记录终止状态与上游错误，供调用方把 2xx 流判为失败。
  */
 internal fun parseResponsesStreamText(body: String): JsonObject? {
     var text: String? = null
-    var output: JsonObject? = null
+    var output: JsonElement? = null
     var usage: JsonObject? = null
     var reportedModel: String? = null
+    var failedError: JsonObject? = null
     for (line in body.lineSequence()) {
         if (!line.startsWith("data:")) continue
         val payload = line.removePrefix("data:").trim()
@@ -417,20 +426,37 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
         if (delta != null) {
             text = (text.orEmpty() + delta).takeIf { it.isNotEmpty() }
         }
+        if (type.startsWith("response.failed")) {
+            failedError = event["response"] as? JsonObject
+        }
         if (type.startsWith("response.completed")) {
             (event["response"] as? JsonObject)?.let { response ->
                 usage = response["usage"] as? JsonObject ?: usage
                 reportedModel = (response["model"] as? JsonPrimitive)?.contentOrNull ?: reportedModel
-                output = response["output"] as? JsonObject ?: output
+                output = response["output"] ?: output
+                val completedText = (response["output"] as? JsonArray)
+                    ?.asSequence()
+                    ?.filterIsInstance<JsonObject>()
+                    ?.mapNotNull { item ->
+                        (item["content"] as? JsonArray)
+                            ?.filterIsInstance<JsonObject>()
+                            ?.mapNotNull { part -> (part["text"] as? JsonPrimitive)?.contentOrNull }
+                            ?.joinToString("")
+                    }
+                    ?.joinToString("")
+                if (!completedText.isNullOrEmpty()) {
+                    text = (text.orEmpty() + completedText).takeIf { it.isNotEmpty() }
+                }
             }
         }
     }
-    if (text == null && usage == null && output == null) return null
+    if (text == null && usage == null && output == null && failedError == null) return null
     return buildJsonObject {
         text?.let { put("output_text", it) }
         output?.let { put("output", it) }
         usage?.let { put("usage", it) }
         reportedModel?.let { put("model", it) }
+        failedError?.let { put("error", it["error"] ?: it) }
     }
 }
 
