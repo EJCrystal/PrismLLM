@@ -416,14 +416,16 @@ open class OAuthAccountRepository(
             return@suspendTransaction false
         }
         val allowed = catalog.map(String::trim).filter(String::isNotEmpty).toSet()
-        OAuthAccountModels.deleteWhere {
+        val deleted = OAuthAccountModels.deleteWhere {
             (OAuthAccountModels.accountId eq accountId) and
                 (OAuthAccountModels.upstreamModel notInList allowed)
         }
         val remaining = OAuthAccountModels.selectAll()
             .where { OAuthAccountModels.accountId eq accountId }
             .count()
-        if (remaining == 0L) {
+        // 仅当本轮真的删掉了目录外的行且一行不剩时才写哨兵：管理员并发改成「跟随目录」
+        // （先把 models 清空）时没有行可删，remaining 本来就是 0，不写哨兵。
+        if (deleted > 0 && remaining == 0L) {
             OAuthAccountModels.insert {
                 it[OAuthAccountModels.accountId] = accountId
                 it[upstreamModel] = EXPLICIT_EMPTY_MODELS_SENTINEL
