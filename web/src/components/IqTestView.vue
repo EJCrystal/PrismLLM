@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import type {
@@ -30,6 +30,8 @@ import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 import SearchSelect from './SearchSelect.vue'
 import IqQuestionBankModal from './IqQuestionBankModal.vue'
+import TestWorkbench from './TestWorkbench.vue'
+import TestEmptyState from './TestEmptyState.vue'
 
 interface ActiveRun {
   id: number
@@ -78,6 +80,8 @@ const selectedKeyId = ref('')
 const selectedProtocol = ref('')
 const selectedJudgeId = ref('')
 const promptText = ref('')
+const promptExpanded = ref(false)
+const promptEditorId = useId()
 /** 本次检测的超时覆盖，单位秒；`type="number"` 的 v-model 会写入数字，留空时是空字符串。 */
 const timeoutSeconds = ref<string | number>('')
 const loading = ref(true)
@@ -87,7 +91,7 @@ const previewMode = ref<'preview' | 'source'>('preview')
 const loadError = ref('')
 const runError = ref('')
 const manualSubmitting = ref(false)
-const resultRef = ref<HTMLElement | null>(null)
+const workbench = ref<InstanceType<typeof TestWorkbench> | null>(null)
 const activeRuns = ref<ActiveRun[]>([])
 const nowTick = ref(Date.now())
 /** 用户手动点开历史记录后，后台完成的检测不再抢占详情区。 */
@@ -311,16 +315,6 @@ function resetPrompt() {
   promptText.value = benchmark.value?.prompt ?? ''
 }
 
-const STACKED_LAYOUT_QUERY = '(max-width: 1360px)'
-
-/** 宽屏时历史在独立侧栏，详情始终可见；堆叠布局下才需要把详情滚回视口。 */
-function scrollResultIntoView() {
-  if (!window.matchMedia(STACKED_LAYOUT_QUERY).matches) return
-  requestAnimationFrame(() => {
-    resultRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  })
-}
-
 /** 立即发起一个检测；界面不再锁死，可以连续提交多个目标。 */
 function run() {
   const target = selectedTarget.value
@@ -350,6 +344,7 @@ function run() {
     timeoutMs: timeoutCustomized.value ? effectiveTimeoutMs.value : null,
   }
   activeRuns.value.push(job)
+  workbench.value?.showResults()
   runError.value = ''
   failedRun.value = null
   previewMode.value = 'preview'
@@ -364,7 +359,7 @@ async function executeRun(job: ActiveRun, request: IqTestRunRequest) {
     if (shouldAdoptIqRunResult({ pinned: detailPinned.value, editing: manualDirty.value })) {
       detail.value = result
       syncManualForm(result)
-      scrollResultIntoView()
+      workbench.value?.scrollResults()
     }
     notify(
       `${job.benchmarkLabel} · ${job.channelName} / ${job.model}：${result.verdictLabel}`,
@@ -442,11 +437,6 @@ onBeforeUnmount(stopTicker)
 
 <template>
   <section class="page-stack iq-page" :class="{ 'iq-embedded': mode === 'run' }">
-    <p v-if="mode === 'run'" class="iq-embedded-note">
-      <Icon name="shield" :size="14" />
-      测试通过已保存的渠道凭据直接请求上游，不写入请求日志，也不消耗调用方密钥额度。
-    </p>
-
     <div v-if="loading" class="panel iq-loading">
       <span class="spinner"></span>
       <p>正在读取可用模型与题目…</p>
@@ -457,180 +447,213 @@ onBeforeUnmount(stopTicker)
       <button type="button" class="link-button" @click="retryLoad">重试</button>
     </div>
 
-    <div v-else class="iq-layout" :class="{ 'iq-record-mode': recordMode }">
-      <aside v-if="!recordMode" class="iq-control panel">
-        <div class="iq-section">
-          <span class="iq-section-label">检测题目</span>
-          <div class="iq-benchmark-list">
-            <button
-              v-for="item in benchmarks"
-              :key="item.id"
-              type="button"
-              class="iq-benchmark-card"
-              :class="{ active: selectedBenchmark === item.id }"
-              @click="selectedBenchmark = item.id"
-            >
-              <span class="iq-benchmark-icon">
-                <Icon :name="item.id === 'pelican' ? 'image' : 'candy'" :size="18" />
-              </span>
-              <span class="iq-benchmark-copy">
-                <strong>{{ item.label }}</strong>
-                <small>{{ item.summary }}</small>
-              </span>
-              <span v-if="selectedBenchmark === item.id" class="iq-benchmark-check">
-                <Icon name="check" :size="14" />
-              </span>
-            </button>
-          </div>
-          <div v-if="selectedBenchmark === 'candy'" class="iq-prompt-editor">
-            <div class="iq-section-head"><span class="iq-section-label">随机题库</span><button type="button" class="link-button" @click="showQuestionBank = true">管理题库</button></div>
-            <p class="iq-grading">共 {{ questions.length }} 道题，{{ enabledQuestionCount }} 道已启用。每次运行由服务端随机抽一道。</p>
-            <p v-if="!enabledQuestionCount" class="callout warning">没有启用的题目，请先在题库中添加或启用题目。</p>
-            <p class="iq-prompt-meta">标准答案不会发送给模型；收到 JSON 的 answer 后在本地比较。测试不提供搜索或工具调用。</p>
-          </div>
-          <div v-else-if="benchmark" class="iq-prompt-editor">
-            <div class="iq-section-head">
-              <span class="iq-section-label">提示词</span>
+    <TestWorkbench v-else ref="workbench" :record-mode="recordMode">
+      <template #configuration>
+        <div class="test-form">
+          <p class="test-form-note">
+            <Icon name="shield" :size="14" />
+            通过标准题目对比模型回答与判分结果。
+          </p>
+          <div class="test-form-section">
+            <h3 class="test-form-section-title">检测题目</h3>
+            <div class="iq-benchmark-list">
               <button
+                v-for="item in benchmarks"
+                :key="item.id"
                 type="button"
-                class="link-button"
-                :disabled="!promptCustomized"
-                @click="resetPrompt"
+                class="iq-benchmark-card"
+                :class="{ active: selectedBenchmark === item.id }"
+                @click="selectedBenchmark = item.id"
               >
-                恢复默认
+                <span class="iq-benchmark-icon">
+                  <Icon :name="item.id === 'pelican' ? 'image' : 'candy'" :size="18" />
+                </span>
+                <span class="iq-benchmark-copy">
+                  <strong>{{ item.label }}</strong>
+                  <small>{{ item.summary }}</small>
+                </span>
+                <span v-if="selectedBenchmark === item.id" class="iq-benchmark-check">
+                  <Icon name="check" :size="14" />
+                </span>
               </button>
             </div>
-            <textarea
-              v-model="promptText"
-              class="iq-prompt-input"
-              rows="9"
-              maxlength="20000"
-              spellcheck="false"
-              aria-label="检测提示词"
-            ></textarea>
-            <p class="iq-prompt-meta">
-              {{ promptText.trim().length.toLocaleString() }} 字符
-              · 留空则使用内置默认提示词
-            </p>
-            <p class="iq-grading"><strong>判分：</strong>{{ benchmark.grading }}</p>
-          </div>
-        </div>
-
-        <div class="iq-section">
-          <span class="iq-section-label">检测目标</span>
-          <div v-if="scopedTargets.length" class="iq-target">
-            <div class="field iq-select-field">
-              <span>{{ channel ? '模型' : '渠道与模型' }}</span>
-              <SearchSelect
-                v-model="selectedTargetKey"
-                :label="channel ? '模型' : '渠道与模型'"
-                :options="channel ? modelOptions : targetOptions"
-                :panel-width="channel ? 320 : 340"
-                :placeholder="channel ? '选择模型' : '选择渠道与模型'"
-              />
+            <div v-if="selectedBenchmark === 'candy'" class="iq-prompt-editor">
+              <div class="iq-section-head"><span class="test-form-section-title">随机题库</span><button type="button" class="link-button" @click="showQuestionBank = true">管理题库</button></div>
+              <p class="iq-grading">已启用 {{ enabledQuestionCount }} / {{ questions.length }} 道题，每次随机抽一道。</p>
+              <p v-if="!enabledQuestionCount" class="callout warning">没有启用的题目，请先在题库中添加或启用题目。</p>
+              <details class="test-form-help">
+                <summary>查看判分规则</summary>
+                <p>标准答案不会发送给模型；收到 JSON 的 answer 后在本地比较。测试不提供搜索或工具调用。</p>
+              </details>
             </div>
-            <template v-if="selectedTarget">
-              <div class="field iq-select-field">
-                <span>使用凭据</span>
-                <SearchSelect
-                  v-model="selectedKeyId"
-                  label="上游凭据"
-                  :options="credentialOptions"
-                  :panel-width="300"
-                  placeholder="选择上游凭据"
-                  :searchable="credentialOptions.length > 6"
-                />
-                <small v-if="credentialHint">{{ credentialHint }}</small>
+            <div v-else-if="benchmark" class="iq-prompt-editor">
+              <div class="iq-section-head">
+                <span class="test-form-section-title">提示词</span>
+                <div class="iq-prompt-actions">
+                <button type="button" class="link-button iq-prompt-toggle" :aria-expanded="promptExpanded"
+                  :aria-label="promptExpanded ? '收起提示词编辑区' : '展开编辑提示词'"
+                  :aria-controls="promptEditorId" @click="promptExpanded = !promptExpanded">
+                  {{ promptExpanded ? '收起' : '展开编辑' }}
+                </button>
+                <button
+                  type="button"
+                  class="link-button"
+                  :disabled="!promptCustomized"
+                  @click="resetPrompt"
+                >
+                  恢复默认
+                </button>
+                </div>
               </div>
-              <label class="field">
-                <span>协议</span>
-                <select v-model="selectedProtocol">
-                  <option value="">自动</option>
-                  <option v-for="protocol in selectedTarget.protocols" :key="protocol" :value="protocol">
-                    {{ protocolLabel(protocol) }}
+              <textarea
+                :id="promptEditorId"
+                v-model="promptText"
+                class="iq-prompt-input"
+                :class="{ 'is-expanded': promptExpanded }"
+                :rows="promptExpanded ? 10 : 4"
+                maxlength="20000"
+                spellcheck="false"
+                aria-label="检测提示词"
+              ></textarea>
+              <p class="iq-prompt-meta">
+                {{ promptText.trim().length.toLocaleString() }} 字符
+                · 留空则使用内置默认提示词
+              </p>
+              <details class="test-form-help">
+                <summary>查看判分规则</summary>
+                <p class="iq-grading">{{ benchmark.grading }}</p>
+              </details>
+            </div>
+          </div>
+
+          <div class="test-form-section">
+            <h3 class="test-form-section-title">检测目标</h3>
+            <div v-if="scopedTargets.length" class="iq-target">
+              <div class="field iq-select-field">
+                <span>{{ channel ? '模型' : '渠道与模型' }}</span>
+                <SearchSelect
+                  v-model="selectedTargetKey"
+                  :label="channel ? '模型' : '渠道与模型'"
+                  :options="channel ? modelOptions : targetOptions"
+                  :panel-width="channel ? 320 : 340"
+                  :placeholder="channel ? '选择模型' : '选择渠道与模型'"
+                  compact
+                />
+              </div>
+              <template v-if="selectedTarget">
+                <div class="field iq-select-field">
+                  <span>使用凭据</span>
+                  <SearchSelect
+                    v-model="selectedKeyId"
+                    label="上游凭据"
+                    :options="credentialOptions"
+                    :panel-width="300"
+                    placeholder="选择上游凭据"
+                    :searchable="credentialOptions.length > 6"
+                    compact
+                  />
+                  <small v-if="credentialHint">{{ credentialHint }}</small>
+                </div>
+                <label class="field">
+                  <span>协议</span>
+                  <select v-model="selectedProtocol">
+                    <option value="">自动</option>
+                    <option v-for="protocol in selectedTarget.protocols" :key="protocol" :value="protocol">
+                      {{ protocolLabel(protocol) }}
+                    </option>
+                  </select>
+                </label>
+              </template>
+              <p v-if="selectedTarget && !selectedTarget.channelEnabled" class="iq-inline-warning">
+                <Icon name="info" :size="14" />
+                渠道已停用，仍可用已保存的凭据发起测试。
+              </p>
+            </div>
+            <p v-else class="iq-no-target">
+              还没有可测试的模型。请先在「渠道」中授权模型，并至少配置一个可用凭据。
+            </p>
+          </div>
+
+          <div class="test-form-section">
+            <h3 class="test-form-section-title">判分器</h3>
+            <p v-if="selectedBenchmark === 'candy'" class="iq-judge-description">
+              糖果题只读取模型返回的 JSON 答案，不调用 HTML 判分器。
+            </p>
+            <template v-else>
+              <label v-if="judges.length" class="field">
+                <span>鹈鹕判分器</span>
+                <select v-model="selectedJudgeId">
+                  <option v-for="judge in judges" :key="judge.id" :value="judge.id">
+                    {{ judge.label }}{{ judge.builtIn ? '' : '（插件）' }}
                   </option>
                 </select>
               </label>
+              <details v-if="selectedJudge?.description" class="test-form-help">
+                <summary>查看判分器说明</summary>
+                <p>{{ selectedJudge.description }}</p>
+              </details>
+              <p v-if="selectedJudge?.id === 'manxue'" class="callout warning iq-privacy-warning">
+                选择满血AI 时，生成的 HTML 会发送到 manxue.ai；渠道密钥不会离开本机。
+              </p>
+              <p v-else-if="selectedJudge?.id === 'vision'" class="callout warning iq-privacy-warning">
+                选择视觉判分器时，会把无头浏览器渲染的 6 帧截图发送到网关配置的视觉端点；渠道密钥不会发送。
+              </p>
+              <p v-else-if="selectedJudge && !selectedJudge.builtIn" class="callout warning iq-privacy-warning">
+                外部插件「{{ selectedJudge.label }}」会收到生成的 HTML，并可能发送到其配置的服务；请确认插件来源可信。
+              </p>
+              <details v-if="judgeFailures.length" class="iq-judge-failures">
+                <summary>{{ judgeFailures.length }} 个判分器插件加载失败</summary>
+                <ul>
+                  <li v-for="failure in judgeFailures" :key="failure.source + failure.message">
+                    {{ failure.source }}：{{ failure.message }}
+                  </li>
+                </ul>
+              </details>
+              <p v-if="!judges.length" class="iq-no-target">没有可用判分器，请检查插件目录或配置。</p>
             </template>
-            <p v-if="selectedTarget && !selectedTarget.channelEnabled" class="iq-inline-warning">
-              <Icon name="info" :size="14" />
-              渠道已停用，仍可用已保存的凭据发起测试。
-            </p>
           </div>
-          <p v-else class="iq-no-target">
-            还没有可测试的模型。请先在「渠道」中授权模型，并至少配置一个可用凭据。
-          </p>
-        </div>
 
-        <div class="iq-section">
-          <span class="iq-section-label">判分器</span>
-          <p v-if="selectedBenchmark === 'candy'" class="iq-judge-description">
-            糖果题只读取模型返回的 JSON 答案，不调用 HTML 判分器。
-          </p>
-          <template v-else>
-            <label v-if="judges.length" class="field">
-              <span>鹈鹕判分器</span>
-              <select v-model="selectedJudgeId">
-                <option v-for="judge in judges" :key="judge.id" :value="judge.id">
-                  {{ judge.label }}{{ judge.builtIn ? '' : '（插件）' }}
-                </option>
-              </select>
+          <div class="test-form-section">
+            <h3 class="test-form-section-title">运行设置</h3>
+            <label class="field iq-timeout-field">
+              <span>本次超时（秒）</span>
+              <input
+                v-model="timeoutSeconds"
+                type="number"
+                inputmode="numeric"
+                min="1"
+                :max="benchmark ? Math.max(1, Math.floor(benchmark.maxTimeoutMs / 1000)) : undefined"
+                :placeholder="benchmark ? String(Math.round(benchmark.effectiveTimeoutMs / 1000)) : ''"
+                :aria-invalid="!!timeoutError"
+                aria-label="本次检测超时秒数"
+              />
             </label>
-            <p v-if="selectedJudge?.description" class="iq-judge-description">{{ selectedJudge.description }}</p>
-            <p v-if="selectedJudge?.id === 'manxue'" class="callout warning iq-privacy-warning">
-              选择满血AI 时，生成的 HTML 会发送到 manxue.ai；渠道密钥不会离开本机。
-            </p>
-            <p v-else-if="selectedJudge?.id === 'vision'" class="callout warning iq-privacy-warning">
-              选择视觉判分器时，会把无头浏览器渲染的 6 帧截图发送到网关配置的视觉端点；渠道密钥不会发送。
-            </p>
-            <p v-else-if="selectedJudge && !selectedJudge.builtIn" class="callout warning iq-privacy-warning">
-              外部插件「{{ selectedJudge.label }}」会收到生成的 HTML，并可能发送到其配置的服务；请确认插件来源可信。
-            </p>
-            <details v-if="judgeFailures.length" class="iq-judge-failures">
-              <summary>{{ judgeFailures.length }} 个判分器插件加载失败</summary>
-              <ul>
-                <li v-for="failure in judgeFailures" :key="failure.source + failure.message">
-                  {{ failure.source }}：{{ failure.message }}
-                </li>
-              </ul>
+            <p v-if="timeoutError" class="iq-timeout-error">{{ timeoutError }}</p>
+            <p class="iq-run-note">{{ timeoutHint }}</p>
+            <details class="test-form-help">
+              <summary>超时与请求说明</summary>
+              <p>
+                留空使用默认 {{ benchmark ? Math.round(benchmark.effectiveTimeoutMs / 1000) : '—' }} 秒；上限
+                {{ benchmark ? Math.round(benchmark.maxTimeoutMs / 1000) : '—' }} 秒。
+              </p>
+              <p>使用已保存的渠道凭据直连上游，不写入请求日志，也不消耗调用方密钥额度。</p>
             </details>
-            <p v-if="!judges.length" class="iq-no-target">没有可用判分器，请检查插件目录或配置。</p>
-          </template>
+          </div>
         </div>
-
-        <div class="iq-run-area">
-          <label class="field iq-timeout-field">
-            <span>本次超时（秒）</span>
-            <input
-              v-model="timeoutSeconds"
-              type="number"
-              inputmode="numeric"
-              min="1"
-              :max="benchmark ? Math.max(1, Math.floor(benchmark.maxTimeoutMs / 1000)) : undefined"
-              :placeholder="benchmark ? String(Math.round(benchmark.effectiveTimeoutMs / 1000)) : ''"
-              :aria-invalid="!!timeoutError"
-              aria-label="本次检测超时秒数"
-            />
-          </label>
-          <p v-if="timeoutError" class="iq-timeout-error">{{ timeoutError }}</p>
-          <p class="iq-prompt-meta">
-            留空使用默认 {{ benchmark ? Math.round(benchmark.effectiveTimeoutMs / 1000) : '—' }} 秒；上限
-            {{ benchmark ? Math.round(benchmark.maxTimeoutMs / 1000) : '—' }} 秒。
-          </p>
-          <button type="button" class="button primary full iq-run-button" :disabled="!canRun" @click="run">
-            <Icon name="bolt" :size="17" />
-            开始测试
-          </button>
-          <p class="iq-run-note">
-            {{ timeoutHint }}
-            完成后自动写入检测历史。
-          </p>
-          <p v-if="activeRuns.length" class="iq-run-live">
-            <i class="iq-live-dot"></i>
-            已有 {{ activeRuns.length }} 个检测在后台进行，可继续切换目标开始新的检测。
-          </p>
-        </div>
-      </aside>
+      </template>
+      <template #actions>
+        <button type="button" class="button primary full iq-run-button" :disabled="!canRun" @click="run">
+          <Icon name="bolt" :size="17" />
+          开始测试
+        </button>
+        <p class="test-action-note">
+          真实上游请求，可能产生费用；完成后自动写入检测历史。
+        </p>
+        <p v-if="activeRuns.length" class="iq-run-live">
+          <i class="iq-live-dot"></i>
+          已有 {{ activeRuns.length }} 个检测在后台进行，可继续切换目标开始新的检测。
+        </p>
+      </template>
 
       <div class="iq-main">
         <div class="iq-main-column">
@@ -661,7 +684,7 @@ onBeforeUnmount(stopTicker)
             <p>正在读取检测详情…</p>
           </section>
 
-          <section v-else-if="detail" ref="resultRef" class="panel iq-result">
+          <section v-else-if="detail" class="panel iq-result">
             <header class="iq-result-head">
               <div class="iq-result-title">
                 <span class="badge" :class="iqVerdictTone(detail.verdict)">{{ detail.verdictLabel }}</span>
@@ -852,14 +875,16 @@ onBeforeUnmount(stopTicker)
             </footer>
           </section>
 
-          <section v-else-if="!recordMode && !activeRuns.length" class="panel iq-empty">
-            <div class="iq-empty-icon"><Icon name="brain" :size="30" /></div>
-            <strong>选择模型，运行第一道题</strong>
-            <p>每道题都是一次真实的上游请求。结果会保留最近 200 次，方便横向比较不同模型。</p>
-          </section>
+          <TestEmptyState
+            v-else-if="!recordMode && !activeRuns.length"
+            icon="brain"
+            title="选择模型，运行第一道题"
+            description="每道题都是一次真实的上游请求。结果会保留最近 200 次，方便横向比较不同模型。"
+            :steps="['选择题目与模型', '向上游发起请求', '查看判分与完整记录']"
+          />
         </div>
       </div>
-    </div>
+    </TestWorkbench>
     <IqQuestionBankModal v-if="showQuestionBank" :questions="questions" @change="questions = $event" @close="showQuestionBank = false" />
   </section>
 </template>
@@ -879,9 +904,18 @@ onBeforeUnmount(stopTicker)
   --iq-tile-bg: var(--glass-bg-strong);
   position: relative;
   isolation: isolate;
+  width: 100%;
   max-width: 1520px;
   margin: 0 auto;
   overflow-x: clip;
+}
+
+.iq-embedded {
+  --iq-radius: var(--radius);
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .iq-page > * {
@@ -898,48 +932,8 @@ onBeforeUnmount(stopTicker)
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(155%);
 }
 
-.iq-embedded-note {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.iq-layout {
-  display: grid;
-  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
-  align-items: start;
-  gap: 18px;
-}
-
-.iq-layout.iq-record-mode {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 .iq-compact-hint {
   margin: 0;
-}
-
-.iq-control {
-  position: sticky;
-  top: 16px;
-  display: grid;
-  gap: 20px;
-  padding: 20px;
-}
-
-.iq-section {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
-
-.iq-section + .iq-section {
-  padding-top: 18px;
-  border-top: 1px solid var(--iq-glass-line);
 }
 
 .iq-section-label {
@@ -1065,17 +1059,34 @@ onBeforeUnmount(stopTicker)
 
 .iq-prompt-input {
   width: 100%;
-  min-height: 150px;
+  height: 104px;
+  min-height: 104px;
   max-height: 340px;
   padding: 11px;
   resize: vertical;
   border: 1px solid var(--iq-field-border);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--iq-field-bg);
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
-  line-height: 1.55;
+  line-height: 20px;
+}
+
+.iq-prompt-input.is-expanded {
+  height: 224px;
+}
+
+.iq-prompt-toggle {
+  min-height: 36px;
+  padding: 4px 0;
+}
+
+.iq-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
 }
 
 .iq-prompt-input:focus-visible {
@@ -1168,7 +1179,7 @@ onBeforeUnmount(stopTicker)
 .iq-page .field select,
 .iq-page .field textarea {
   border: 1px solid var(--iq-field-border);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--iq-field-bg);
   color: var(--ink);
 }
@@ -1178,11 +1189,6 @@ onBeforeUnmount(stopTicker)
   border-color: color-mix(in srgb, var(--brand) 55%, var(--iq-field-border));
   outline: none;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 12%, transparent);
-}
-
-.iq-run-area {
-  display: grid;
-  gap: 9px;
 }
 
 .iq-timeout-field {
@@ -1198,26 +1204,6 @@ onBeforeUnmount(stopTicker)
   margin: 0;
   font-size: 12px;
   color: var(--danger);
-}
-
-.iq-run-button {
-  min-height: 46px;
-  border-radius: 14px;
-  font-size: 13px;
-}
-
-.iq-page .button.primary.iq-run-button {
-  border: 1px solid color-mix(in srgb, var(--brand) 68%, white 32%);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0) 48%),
-    linear-gradient(180deg, color-mix(in srgb, var(--brand) 82%, white), var(--brand) 58%, var(--brand-deep));
-  box-shadow:
-    0 16px 30px -16px color-mix(in srgb, var(--brand) 82%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.5);
-}
-
-.iq-page .button.primary.iq-run-button:hover:not(:disabled) {
-  filter: brightness(1.05);
 }
 
 .iq-run-note {
@@ -1261,15 +1247,17 @@ onBeforeUnmount(stopTicker)
 }
 
 .iq-main {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: start;
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
   min-width: 0;
   gap: 18px;
 }
 
 .iq-main-column {
-  display: grid;
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
   min-width: 0;
   gap: 16px;
 }
@@ -1788,48 +1776,6 @@ onBeforeUnmount(stopTicker)
   border-top: 1px solid var(--iq-glass-line);
 }
 
-.iq-empty {
-  display: grid;
-  place-items: center;
-  gap: 8px;
-  padding: 42px 22px;
-  text-align: center;
-}
-
-.iq-empty-icon {
-  display: grid;
-  width: 60px;
-  height: 60px;
-  margin-bottom: 2px;
-  place-items: center;
-  border: 1px solid var(--iq-glass-line);
-  border-radius: 19px;
-  background:
-    radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.7), transparent 60%),
-    color-mix(in srgb, var(--brand) 10%, var(--iq-glass-soft));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
-  color: var(--brand);
-}
-
-[data-theme="dark"] .iq-empty-icon {
-  background:
-    radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.1), transparent 60%),
-    color-mix(in srgb, var(--brand) 18%, var(--iq-glass-soft));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-}
-
-.iq-empty strong {
-  font-size: 15px;
-}
-
-.iq-empty p {
-  max-width: 480px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 12.5px;
-  line-height: 1.6;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .iq-page::before,
   .iq-live-dot,
@@ -1847,26 +1793,8 @@ onBeforeUnmount(stopTicker)
 }
 
 @media (max-width: 1360px) {
-  .iq-layout {
-    grid-template-columns: minmax(290px, 356px) minmax(0, 1fr);
-  }
-
-  .iq-main {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .iq-result-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 1000px) {
-  .iq-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .iq-control {
-    position: static;
   }
 }
 

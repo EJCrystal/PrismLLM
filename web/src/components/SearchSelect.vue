@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
-import { Popover, PopoverButton, PopoverPanel } from '@headlessui/vue'
+import { Popover, PopoverButton, PopoverPanel, Portal } from '@headlessui/vue'
 import { useAnchoredPanel } from '../composables/useAnchoredPanel'
 import Icon from './Icon.vue'
 
@@ -23,11 +23,13 @@ const props = withDefaults(defineProps<{
   panelWidth?: number
   /** 选项很少时可以不显示搜索框，避免弹层多占一行高度。 */
   searchable?: boolean
+  compact?: boolean
 }>(), {
   placeholder: '请选择',
   disabled: false,
   panelWidth: 320,
   searchable: true,
+  compact: false,
 })
 
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
@@ -106,8 +108,10 @@ function choose(value: string, close: () => void) {
         ref="anchor"
         type="button"
         class="search-select-trigger"
+        :class="{ 'is-compact': compact }"
         :disabled="disabled"
-        :aria-label="label + '：' + (selected?.label ?? placeholder)"
+        :aria-label="[label + '：' + (selected?.label ?? placeholder), triggerHint].filter(Boolean).join('，')"
+        :title="compact ? [selected?.label, triggerHint].filter(Boolean).join(' · ') : undefined"
         @click="openPanel"
         @keydown.enter="openPanel"
         @keydown.space="openPanel"
@@ -120,7 +124,7 @@ function choose(value: string, close: () => void) {
         <Icon name="chevron" :size="15" class="search-select-chevron" />
       </button>
     </PopoverButton>
-    <Teleport to="body">
+    <Portal>
       <PopoverPanel as="div" focus>
         <div ref="panel" class="search-select-panel" :style="panelStyle" :aria-label="label + '选项'">
           <label v-if="searchable" class="search-select-search">
@@ -162,7 +166,7 @@ function choose(value: string, close: () => void) {
           </div>
         </div>
       </PopoverPanel>
-    </Teleport>
+    </Portal>
   </Popover>
 </template>
 
@@ -236,6 +240,29 @@ function choose(value: string, close: () => void) {
   flex: 0 0 auto;
   color: var(--muted);
   transition: transform 0.16s ease;
+}
+
+.search-select-trigger.is-compact {
+  height: 44px;
+  font: inherit;
+}
+
+.is-compact .search-select-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.is-compact .search-select-copy strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.is-compact .search-select-copy small {
+  flex: 0 1 42%;
+  min-width: 0;
 }
 
 .search-select-trigger[aria-expanded="true"] .search-select-chevron {

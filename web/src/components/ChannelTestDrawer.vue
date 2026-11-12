@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, type Component } from 'vue'
+import { computed, defineAsyncComponent, nextTick, ref, useId, type Component } from 'vue'
 import type { Channel } from '../types/api'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
@@ -14,10 +14,10 @@ const emit = defineEmits<{
 }>()
 
 const tabs = [
-  { id: 'connectivity', label: '连通性', icon: 'bolt', summary: '发一条真实请求，确认渠道现在能不能调通' },
-  { id: 'iq', label: '智商', icon: 'brain', summary: '鹈鹕与糖果题，观察推理和指令遵循' },
-  { id: 'fingerprint', label: '指纹', icon: 'fingerprint', summary: '随机数字序列比对模型指纹参考库' },
-  { id: 'records', label: '记录', icon: 'logs', summary: '本渠道的智商与指纹检测历史' },
+  { id: 'connectivity', label: '连通性', icon: 'bolt' },
+  { id: 'iq', label: '智商', icon: 'brain' },
+  { id: 'fingerprint', label: '指纹', icon: 'fingerprint' },
+  { id: 'records', label: '记录', icon: 'logs' },
 ] as const
 
 type TabId = (typeof tabs)[number]['id']
@@ -29,6 +29,8 @@ const components: Record<string, Component> = {
 }
 
 const activeTab = ref<TabId>('connectivity')
+const tabId = useId()
+const tabList = ref<HTMLElement | null>(null)
 const activeComponent = computed(() => (activeTab.value === 'records' ? null : components[activeTab.value]))
 
 /** 记录页每次重新进入都重读，保证刚跑完的检测立刻出现。 */
@@ -41,6 +43,22 @@ function selectTab(id: TabId) {
   activeTab.value = id
 }
 
+async function navigateTabs(event: KeyboardEvent, index: number) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  let targetIndex: number
+  switch (event.key) {
+    case 'ArrowRight': targetIndex = (index + 1) % tabs.length; break
+    case 'ArrowLeft': targetIndex = (index - 1 + tabs.length) % tabs.length; break
+    case 'Home': targetIndex = 0; break
+    case 'End': targetIndex = tabs.length - 1; break
+    default: return
+  }
+  event.preventDefault()
+  selectTab(tabs[targetIndex]!.id)
+  await nextTick()
+  tabList.value?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[targetIndex]?.focus()
+}
+
 /** 智商 / 指纹视图只回传记录 id，这里补上当前页签的类型，并切到记录页展示详情。 */
 function openRecord(id: number) {
   const type = activeTab.value
@@ -51,60 +69,73 @@ function openRecord(id: number) {
 </script>
 
 <template>
-  <Modal :title="`模型测试 · ${channel.name}`" eyebrow="检测" full @close="$emit('close')">
+  <Modal :title="`模型测试 · ${channel.name}`" eyebrow="检测" full :body-scrollable="activeTab === 'records'" @close="$emit('close')">
+    <template #title-extra>
+      <span class="badge channel-test-status" :class="channel.enabled ? 'success' : 'neutral'"
+        :aria-label="channel.enabled ? '渠道路由已启用' : '渠道路由已停用，仍可手动测试'">
+        {{ channel.enabled ? '启用中' : '已停用' }}
+      </span>
+    </template>
     <template #subhead>
-      <div class="channel-test-tabs" role="tablist" aria-label="模型测试方式">
+      <div ref="tabList" class="channel-test-tabs" role="tablist" aria-label="模型测试方式">
         <button
-          v-for="tab in tabs"
+          v-for="(tab, index) in tabs"
           :key="tab.id"
+          :id="`${tabId}-${tab.id}`"
           type="button"
           role="tab"
           class="channel-test-tab"
           :class="{ active: activeTab === tab.id }"
           :aria-selected="activeTab === tab.id"
+          :aria-controls="`${tabId}-panel`"
+          :tabindex="activeTab === tab.id ? 0 : -1"
           @click="selectTab(tab.id)"
+          @keydown="navigateTabs($event, index)"
         >
           <Icon :name="tab.icon" :size="17" />
           <span>{{ tab.label }}</span>
-          <small>{{ tab.summary }}</small>
         </button>
       </div>
     </template>
 
-    <TestRecordsView
-      v-if="activeTab === 'records'"
-      :key="'records-' + recordsKey"
-      :channel-id="channel.id"
-      :initial-record="recordTarget"
-      @record-opened="recordTarget = null"
-    />
-    <KeepAlive>
-      <component
-        v-if="activeComponent"
-        :is="activeComponent"
-        :key="activeTab"
-        :channel="channel"
-        :initial-model="initialModel"
-        @open-record="openRecord"
+    <section :id="`${tabId}-panel`" class="channel-test-panel" :class="{ 'is-records': activeTab === 'records' }"
+      role="tabpanel" :aria-labelledby="`${tabId}-${activeTab}`" tabindex="0">
+      <TestRecordsView
+        v-if="activeTab === 'records'"
+        :key="'records-' + recordsKey"
+        :channel-id="channel.id"
+        :initial-record="recordTarget"
+        @record-opened="recordTarget = null"
       />
-    </KeepAlive>
+      <KeepAlive>
+        <component
+          v-if="activeComponent"
+          :is="activeComponent"
+          :key="activeTab"
+          :channel="channel"
+          :initial-model="initialModel"
+          @open-record="openRecord"
+        />
+      </KeepAlive>
+    </section>
   </Modal>
 </template>
 
 <style scoped>
 .channel-test-tabs {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   padding: 8px 0;
 }
 
 .channel-test-tab {
   display: flex;
-  flex: 1 1 180px;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   min-width: 0;
+  min-height: 44px;
   padding: 9px 12px;
   border: 1px solid transparent;
   border-radius: 10px;
@@ -132,22 +163,43 @@ function openRecord(id: number) {
   font-weight: 650;
 }
 
-.channel-test-tab small {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
+.channel-test-status {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
+.channel-test-panel {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.channel-test-panel.is-records {
+  flex: 0 0 auto;
+}
+
+.channel-test-tab:focus-visible,
+.channel-test-panel:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}
+
 @media (max-width: 720px) {
-  .channel-test-tab {
-    flex-basis: 100%;
+  .channel-test-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
   }
 
-  .channel-test-tab small {
-    white-space: normal;
+  .channel-test-tab {
+    justify-content: center;
+    gap: 5px;
+    min-height: 44px;
+    padding: 8px 4px;
   }
+
 }
 
 @media (prefers-reduced-transparency: reduce) {

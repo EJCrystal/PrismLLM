@@ -14,6 +14,8 @@ import {
   normalizeModelTestSettings,
 } from '../utils/modelTest'
 import Icon from './Icon.vue'
+import TestWorkbench from './TestWorkbench.vue'
+import TestEmptyState from './TestEmptyState.vue'
 
 const props = defineProps<{
   channel: Channel
@@ -41,6 +43,7 @@ const loadError = ref('')
 const running = ref(false)
 const batch = ref(false)
 const rows = ref<TestRow[]>([])
+const workbench = ref<InstanceType<typeof TestWorkbench> | null>(null)
 
 const channelTargets = computed(() => targets.value.filter((target) => target.channelId === props.channel.id))
 const models = computed(() => channelTargets.value.map((target) => target.model))
@@ -116,6 +119,7 @@ async function runSingle() {
   const row = createRow(target, keyId)
   rows.value = [row]
   running.value = true
+  workbench.value?.showResults()
   try {
     await execute(row)
     notify(row.error ? row.error : modelTestResultTitle(row.result), row.error || !row.result?.success ? 'error' : 'success')
@@ -130,6 +134,7 @@ async function runBatch() {
   // 队列取 rows.value 里的响应式代理：直接改原始行对象不会触发进度更新。
   const queue = [...rows.value]
   running.value = true
+  workbench.value?.showResults()
   try {
     const workers = Array.from({ length: Math.min(2, queue.length) }, async () => {
       while (queue.length) {
@@ -193,89 +198,104 @@ onMounted(load)
       <button type="button" class="link-button" @click="load">重试</button>
     </div>
 
-    <div v-else-if="!channelTargets.length" class="panel connectivity-empty">
-      <Icon name="bolt" :size="22" />
-      <h3>没有可测试的模型</h3>
-      <p>该渠道还没有授权模型，或所有模型都没有可用凭据。先在渠道中补齐配置后再测试。</p>
-    </div>
+    <TestEmptyState
+      v-else-if="!channelTargets.length"
+      icon="bolt"
+      title="没有可测试的模型"
+      description="该渠道还没有授权模型，或所有模型都没有可用凭据。先在渠道中补齐配置后再测试。"
+    />
 
-    <div v-else class="connectivity-layout">
-      <aside class="panel connectivity-form">
-        <div class="connectivity-channel">
-          <strong>{{ channel.name }}</strong>
-          <span class="badge" :class="channel.enabled ? 'success' : 'neutral'">{{ channel.enabled ? '启用中' : '已停用' }}</span>
-        </div>
-        <p class="connectivity-hint">测试直接请求上游，不经过数据面，也不会写入请求日志。</p>
-
-        <label class="field">
-          <span>测试范围</span>
-          <div class="connectivity-scope">
-            <label class="connectivity-radio">
-              <input v-model="batch" type="radio" :value="false" :disabled="running" />
-              单个模型
+    <TestWorkbench v-else ref="workbench">
+      <template #configuration>
+        <div class="test-form">
+          <p class="test-form-note">
+            <Icon name="info" :size="14" />
+            检查模型能否正常响应，查看耗时与错误详情。
+          </p>
+          <p v-if="!channel.enabled" class="test-form-note">渠道已停用，仍可用已保存的凭据发起测试。</p>
+          <div class="test-form-section">
+            <h3 class="test-form-section-title">检测目标</h3>
+            <label class="field">
+              <span>测试范围</span>
+              <div class="connectivity-scope">
+                <label class="connectivity-radio">
+                  <input v-model="batch" type="radio" :value="false" :disabled="running" />
+                  单个模型
+                </label>
+                <label class="connectivity-radio">
+                  <input v-model="batch" type="radio" :value="true" :disabled="running" />
+                  全部模型（{{ models.length }}）
+                </label>
+              </div>
             </label>
-            <label class="connectivity-radio">
-              <input v-model="batch" type="radio" :value="true" :disabled="running" />
-              全部模型（{{ models.length }}）
+
+            <label v-if="!batch" class="field">
+              <span>模型</span>
+              <select v-model="selectedModel" :disabled="running">
+                <option v-for="model in models" :key="model" :value="model">{{ model }}</option>
+              </select>
+            </label>
+
+            <label v-if="!batch" class="field">
+              <span>使用凭据</span>
+              <select v-model="selectedKeyId" :disabled="running || !credentials.length">
+                <option v-if="!credentials.length" value="">没有可用凭据</option>
+                <option v-for="credential in credentials" :key="credential.id" :value="credential.id">
+                  {{ credential.name }}（优先级 {{ credential.priority }}）
+                </option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>协议</span>
+              <select v-model="selectedProtocol" :disabled="running || batch">
+                <option v-for="protocol in protocols" :key="protocol" :value="protocol">
+                  {{ modelTestProtocolLabel(protocol) }}
+                </option>
+              </select>
+              <small v-if="batch">每个模型使用自己支持的协议；优先使用这里选中的协议。</small>
             </label>
           </div>
-        </label>
-
-        <label v-if="!batch" class="field">
-          <span>模型</span>
-          <select v-model="selectedModel" :disabled="running">
-            <option v-for="model in models" :key="model" :value="model">{{ model }}</option>
-          </select>
-        </label>
-
-        <label v-if="!batch" class="field">
-          <span>使用凭据</span>
-          <select v-model="selectedKeyId" :disabled="running || !credentials.length">
-            <option v-if="!credentials.length" value="">没有可用凭据</option>
-            <option v-for="credential in credentials" :key="credential.id" :value="credential.id">
-              {{ credential.name }}（优先级 {{ credential.priority }}）
-            </option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span>协议</span>
-          <select v-model="selectedProtocol" :disabled="running || batch">
-            <option v-for="protocol in protocols" :key="protocol" :value="protocol">
-              {{ modelTestProtocolLabel(protocol) }}
-            </option>
-          </select>
-          <small v-if="batch">每个模型使用自己支持的协议；优先使用这里选中的协议。</small>
-        </label>
-
-        <label class="field">
-          <span>测试提示词</span>
-          <textarea
-            v-model="prompt"
-            rows="3"
-            maxlength="4000"
-            :disabled="running"
-            spellcheck="false"
-            aria-label="测试提示词"
-          ></textarea>
-          <small>
-            {{ prompt.trim().length }} 字符 · 使用已保存的渠道配置发送一次真实请求，最多 128 输出 token，超时 45 秒。
-            <button type="button" class="link-button" :disabled="running" @click="resetPrompt">恢复默认</button>
-          </small>
-        </label>
-
+          <div class="test-form-section">
+            <h3 class="test-form-section-title">请求内容</h3>
+            <label class="field">
+              <span>测试提示词</span>
+              <textarea
+                v-model="prompt"
+                rows="3"
+                maxlength="4000"
+                :disabled="running"
+                spellcheck="false"
+                aria-label="测试提示词"
+              ></textarea>
+            </label>
+            <div class="test-form-meta">
+              <span>{{ prompt.trim().length }} 字符 · 单次超时 45 秒</span>
+              <button type="button" class="link-button" :disabled="running" @click="resetPrompt">恢复默认</button>
+            </div>
+            <details class="test-form-help">
+              <summary>请求限制与记录说明</summary>
+              <p>使用已保存的渠道配置直连上游，每个模型最多生成 128 个输出 token；不写入请求日志。</p>
+            </details>
+          </div>
+        </div>
+      </template>
+      <template #actions>
         <button type="button" class="button primary full" :disabled="!canRun" @click="run">
           <Icon :name="running ? 'refresh' : 'bolt'" :size="17" :class="{ 'is-spinning': running }" />
           {{ running ? (batch ? '正在逐个测试…' : '正在请求上游…') : (batch ? '测试全部模型' : '开始测试') }}
         </button>
-      </aside>
+        <p class="test-action-note">真实上游请求，可能产生费用；结果仅保留在当前面板。</p>
+      </template>
 
       <div class="connectivity-results">
-        <div v-if="!rows.length" class="panel connectivity-intro">
-          <Icon name="shield" :size="22" />
-          <h3>尚未运行测试</h3>
-          <p>选择模型与凭据后开始。结果只保留在当前面板，关闭后不会写入检测记录。</p>
-        </div>
+        <TestEmptyState
+          v-if="!rows.length"
+          icon="bolt"
+          title="尚未运行测试"
+          description="选择模型与凭据后开始。结果只保留在当前面板，关闭后不会写入检测记录。"
+          :steps="['选择模型与凭据', '向上游发起请求', '查看响应内容与耗时']"
+        />
 
         <article
           v-for="row in rows"
@@ -317,49 +337,26 @@ onMounted(load)
           </template>
         </article>
       </div>
-    </div>
+    </TestWorkbench>
   </section>
 </template>
 
 <style scoped>
 .connectivity-panel,
-.connectivity-layout,
 .connectivity-results {
-  display: grid;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
   gap: 14px;
   min-width: 0;
 }
 
-.connectivity-layout {
-  grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
-  align-items: start;
+.connectivity-panel {
+  min-height: 0;
 }
 
-.connectivity-form {
-  display: grid;
-  gap: 14px;
-  padding: 18px;
-  position: sticky;
-  top: 0;
-}
-
-.connectivity-channel {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.connectivity-channel strong {
-  overflow-wrap: anywhere;
-}
-
-.connectivity-hint {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.55;
+.connectivity-results > .connectivity-result {
+  flex-shrink: 0;
 }
 
 .connectivity-scope {
@@ -405,24 +402,6 @@ onMounted(load)
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.connectivity-empty,
-.connectivity-intro {
-  display: grid;
-  place-items: center;
-  gap: 8px;
-  padding: 36px 24px;
-  text-align: center;
-}
-
-.connectivity-empty p,
-.connectivity-intro p {
-  max-width: 480px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
 }
 
 .connectivity-result {
@@ -539,16 +518,6 @@ onMounted(load)
 @media (prefers-reduced-motion: reduce) {
   .is-spinning {
     animation: none;
-  }
-}
-
-@media (max-width: 960px) {
-  .connectivity-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .connectivity-form {
-    position: static;
   }
 }
 

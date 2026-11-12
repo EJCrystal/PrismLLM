@@ -9,6 +9,7 @@ defineProps({
   roomy: { type: Boolean, default: false },
   mobileFullscreen: { type: Boolean, default: false },
   full: { type: Boolean, default: false },
+  bodyScrollable: { type: Boolean, default: true },
 })
 defineEmits(['close'])
 </script>
@@ -20,7 +21,10 @@ defineEmits(['close'])
         <header class="modal-head">
           <div>
             <p class="eyebrow">{{ eyebrow }}</p>
-            <DialogTitle as="h2">{{ title }}</DialogTitle>
+            <div class="modal-title-row">
+              <DialogTitle as="h2">{{ title }}</DialogTitle>
+              <slot name="title-extra" />
+            </div>
           </div>
           <button class="icon-button" type="button" aria-label="关闭" @click="$emit('close')">
             <Icon name="close" :size="18" />
@@ -29,7 +33,7 @@ defineEmits(['close'])
         <div v-if="$slots.subhead" class="modal-subhead">
           <slot name="subhead" />
         </div>
-        <div class="modal-body">
+        <div class="modal-body" :class="{ 'is-contained': !bodyScrollable }">
           <slot />
         </div>
         <footer v-if="$slots.footer" class="modal-foot">
@@ -39,3 +43,17 @@ defineEmits(['close'])
     </Dialog>
   </Teleport>
 </template>
+
+<style scoped>
+.modal-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.modal-title-row h2 {
+  min-width: 0;
+}
+</style>
