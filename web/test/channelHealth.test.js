@@ -2,8 +2,40 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthBucketState, healthSymbol, channelHealthSuccessRateText, healthCacheHitText, healthCacheRows, channelListHealthState } from '../src/utils/channelHealth'
 import { healthTrendSlots, healthAttemptTitle } from '../src/utils/channelHealth'
+import { healthThroughput, healthMetricWarnings } from '../src/utils/channelHealth'
 
 describe('channel health display', () => {
+  it('formats throughput without splitting long numbers and units', () => {
+    for (const value of [null, undefined, NaN, Infinity, -Infinity, -1]) assert.equal(healthThroughput(value), '—')
+    assert.equal(healthThroughput(0), '0.0')
+    assert.equal(healthThroughput(12.34), '12.3')
+    assert.equal(healthThroughput(9999), '9999.0')
+    assert.equal(healthThroughput(10_000), '10.0k')
+    assert.equal(healthThroughput(22944.4), '22.9k')
+    assert.equal(healthThroughput(1_234_567), '1.23M')
+  })
+
+  const policy = { minimumSamples: 20, warningErrorRate: 0.05, slowFirstTokenMs: 30_000, slowP50FirstTokenMs: 10_000 }
+  const warningMetrics = { attempts: 100, failures: 5, firstTokenSamples: 20, p95FirstTokenMs: 30_001, p50FirstTokenMs: 10_001 }
+  const noWarnings = { failureRate: false, p95: false, p50: false }
+
+  it('only highlights metrics when the reported verdict is a warning or critical', () => {
+    for (const state of ['HEALTHY', 'UNKNOWN', 'DISABLED', 'NO_CREDENTIALS']) {
+      assert.deepEqual(healthMetricWarnings(state, warningMetrics, policy), noWarnings)
+    }
+    for (const state of ['WARNING', 'CRITICAL']) {
+      assert.deepEqual(healthMetricWarnings(state, warningMetrics, policy), { failureRate: true, p95: true, p50: true })
+    }
+  })
+
+  it('requires sufficient samples and uses inclusive failure but strict latency thresholds', () => {
+    assert.deepEqual(healthMetricWarnings('WARNING', { ...warningMetrics, attempts: 19, firstTokenSamples: 19 }, policy), noWarnings)
+    assert.deepEqual(healthMetricWarnings('WARNING', { ...warningMetrics, failures: 4, p95FirstTokenMs: 30_000, p50FirstTokenMs: 10_000 }, policy), noWarnings)
+    assert.deepEqual(healthMetricWarnings('WARNING', { ...warningMetrics, attempts: 0, failures: 0, p95FirstTokenMs: null, p50FirstTokenMs: null }, policy), noWarnings)
+    assert.deepEqual(healthMetricWarnings('WARNING', { ...warningMetrics, firstTokenSamples: 19 }, policy), { failureRate: true, p95: false, p50: false })
+    assert.deepEqual(healthMetricWarnings('WARNING', warningMetrics, { ...policy, minimumSamples: 21, warningErrorRate: 0.06 }), noWarnings)
+  })
+
   it('right-aligns only observed attempts without inventing successful samples', () => {
     assert.deepEqual(healthTrendSlots(undefined), Array(30).fill(null))
     const observed = [{ outcome: 'SUCCESS' }, { outcome: 'FAILURE' }]
