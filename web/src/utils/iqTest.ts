@@ -98,6 +98,22 @@ export function iqTimeoutHint(
   return `${definition.durationHint}，超时 ${seconds} 秒。`
 }
 
+/**
+ * 解析管理台输入的本次超时（秒），换算成毫秒并夹在 1 秒与题目硬上限之间。
+ *
+ * `type="number"` 的 v-model 会把输入直接写成数字，空输入则是空字符串，所以这里同时接受
+ * 两种类型；空值或非法值回落到题目生效默认值，不参与覆盖。
+ */
+export function resolveIqTimeoutOverride(
+  value: string | number,
+  definition: Pick<IqBenchmarkDefinition, 'effectiveTimeoutMs' | 'maxTimeoutMs'>,
+): number {
+  if (value === '') return definition.effectiveTimeoutMs
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds <= 0) return definition.effectiveTimeoutMs
+  return Math.min(Math.max(Math.round(seconds * 1000), 1_000), definition.maxTimeoutMs)
+}
+
 export function formatIqTime(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '—'
   return new Date(value).toLocaleString('zh-CN', {

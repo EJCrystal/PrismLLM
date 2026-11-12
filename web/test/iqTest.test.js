@@ -6,6 +6,7 @@ import {
   iqTargetKey,
   iqTimeoutHint,
   iqVerdictTone,
+  resolveIqTimeoutOverride,
   shouldAdoptIqRunResult,
   withIqPreviewCsp,
 } from '../src/utils/iqTest'
@@ -145,5 +146,21 @@ describe('iqTest: 智商检测展示', () => {
       '图形题通常需要 30–120 秒，超时 90 秒。',
     )
     assert.equal(iqTimeoutHint(null), '')
+  })
+
+  it('本次超时覆盖同时接受数字与字符串输入', () => {
+    const definition = { effectiveTimeoutMs: 180_000, maxTimeoutMs: 600_000 }
+    // type="number" 的 v-model 会把输入写成数字；不能对它调用字符串方法。
+    assert.equal(resolveIqTimeoutOverride(300, definition), 300_000)
+    assert.equal(resolveIqTimeoutOverride('300', definition), 300_000)
+    // 留空或非法值回落到题目生效默认值。
+    assert.equal(resolveIqTimeoutOverride('', definition), 180_000)
+    assert.equal(resolveIqTimeoutOverride(0, definition), 180_000)
+    assert.equal(resolveIqTimeoutOverride(-1, definition), 180_000)
+    assert.equal(resolveIqTimeoutOverride(Number.NaN, definition), 180_000)
+    assert.equal(resolveIqTimeoutOverride('abc', definition), 180_000)
+    // 覆盖值夹在 1 秒与硬上限之间，与服务端同口径。
+    assert.equal(resolveIqTimeoutOverride(0.2, definition), 1_000)
+    assert.equal(resolveIqTimeoutOverride(900, definition), 600_000)
   })
 })

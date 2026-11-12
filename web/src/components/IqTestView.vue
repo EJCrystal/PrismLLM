@@ -20,6 +20,7 @@ import {
   iqTargetKey,
   iqTimeoutHint,
   iqVerdictTone,
+  resolveIqTimeoutOverride,
   shouldAdoptIqRunResult,
   withIqPreviewCsp,
 } from '../utils/iqTest'
@@ -76,8 +77,8 @@ const selectedKeyId = ref('')
 const selectedProtocol = ref('')
 const selectedJudgeId = ref('')
 const promptText = ref('')
-/** 本次检测的超时覆盖，单位秒；留空表示使用题目默认值。 */
-const timeoutSeconds = ref('')
+/** 本次检测的超时覆盖，单位秒；`type="number"` 的 v-model 会写入数字，留空时是空字符串。 */
+const timeoutSeconds = ref<string | number>('')
 const loading = ref(true)
 const detailLoading = ref(false)
 const detail = ref<IqTestRunDetail | null>(null)
@@ -124,13 +125,9 @@ const promptCustomized = computed(() =>
   !!benchmark.value && promptText.value.trim() !== benchmark.value.prompt.trim(),
 )
 /** 本次检测生效的超时：与服务端 resolveTimeoutMs 同口径，覆盖值夹在 1 秒与硬上限之间。 */
-const effectiveTimeoutMs = computed(() => {
-  const item = benchmark.value
-  if (!item) return 0
-  const override = Number(timeoutSeconds.value)
-  if (!timeoutSeconds.value.trim() || !Number.isFinite(override) || override <= 0) return item.effectiveTimeoutMs
-  return Math.min(Math.max(Math.round(override * 1000), 1_000), item.maxTimeoutMs)
-})
+const effectiveTimeoutMs = computed(() => (benchmark.value
+  ? resolveIqTimeoutOverride(timeoutSeconds.value, benchmark.value)
+  : 0))
 const timeoutHint = computed(() => benchmark.value
   ? iqTimeoutHint({ durationHint: benchmark.value.durationHint, effectiveTimeoutMs: effectiveTimeoutMs.value })
   : '')
