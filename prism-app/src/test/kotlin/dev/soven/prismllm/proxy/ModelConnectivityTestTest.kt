@@ -12,6 +12,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -20,6 +21,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Assertions.assertNotNull
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicReference
 
@@ -52,7 +54,16 @@ class ModelConnectivityTestTest {
         ).jsonObject
 
         assertNull(body["reasoning"])
-        assertEquals("say ok", body["input"]?.jsonPrimitive?.content)
+        assertFalse(body.containsKey("store") && body["store"]?.jsonPrimitive?.content == "true")
+        assertEquals(false, body["store"]?.jsonPrimitive?.boolean)
+        val input = body["input"]?.jsonArray
+        assertEquals(1, input?.size)
+        val item = input?.first()?.jsonObject
+        assertEquals("message", item?.get("type")?.jsonPrimitive?.content)
+        assertEquals("user", item?.get("role")?.jsonPrimitive?.content)
+        val content = item?.get("content")?.jsonArray?.first()?.jsonObject
+        assertEquals("input_text", content?.get("type")?.jsonPrimitive?.content)
+        assertEquals("say ok", content?.get("text")?.jsonPrimitive?.content)
     }
 
     @Test
@@ -68,6 +79,23 @@ class ModelConnectivityTestTest {
 
         assertNull(body["reasoning_effort"])
         assertNull(body["reasoning"])
+    }
+
+
+    @Test
+    fun `responses stream test body aggregates sse deltas and completed event`() {
+        val body = parseResponsesStreamText(
+            listOf(
+                "event: response.output_text.delta",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}",
+                "",
+                "event: response.completed",
+                "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-6-luna\"},\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}",
+            ).joinToString("\n"),
+        )
+        assertNotNull(body)
+        assertEquals("OK", collectText(body?.get("output_text")))
+        assertEquals("gpt-6-luna", body?.get("model")?.jsonPrimitive?.content)
     }
 
     @Test

@@ -45,6 +45,7 @@ export function channelModelOptionsForChannel(channel: PriceChannel | null | und
     const mapping = mappings.get(id)
     entries.set(id, {
       id,
+      name: null,
       ownedBy: null,
       authorized: true,
       canonicalModelId: String(mapping?.canonicalModelId ?? '').trim() || null,

@@ -186,6 +186,7 @@ private suspend fun runModelConnectivityTest(
             val latencyMs = System.currentTimeMillis() - startedAt
             val status = response.status.value
             val parsed = parseJsonObject(bodyText)
+                ?: if (protocol == GatewayProtocol.RESPONSES) parseResponsesStreamText(bodyText) else null
             val json = if (envelope == UpstreamEnvelope.CODE_ASSIST && parsed != null) {
                 CodeAssistEnvelope.unwrap(parsed)
             } else {
@@ -285,9 +286,21 @@ internal fun buildModelTestBody(
     }.toString()
     GatewayProtocol.RESPONSES -> buildJsonObject {
         put("model", model)
-        put("stream", false)
+        put("stream", true)
         put("max_output_tokens", maxOutputTokens)
-        put("input", prompt)
+        put("input", buildJsonArray {
+            add(buildJsonObject {
+                put("type", "message")
+                put("role", "user")
+                put("content", buildJsonArray {
+                    add(buildJsonObject {
+                        put("type", "input_text")
+                        put("text", prompt)
+                    })
+                })
+            })
+        })
+        put("store", false)
     }.toString()
     GatewayProtocol.MESSAGES -> buildJsonObject {
         put("model", model)
@@ -382,7 +395,46 @@ private fun userMessages(prompt: String) = buildJsonArray {
 private fun parseJsonObject(body: String): JsonObject? =
     runCatching { Json.parseToJsonElement(body) as? JsonObject }.getOrNull()
 
-private fun collectText(element: JsonElement?): String? = when (element) {
+/**
+ * 把 Responses 的 SSE 流（`data: {json}` 行）折成非流式形状：`output_text` 聚合文本，
+ * `output` 保留最后一个非 reasoning 项，usage 与 reported model 取自最后的完成事件。
+ */
+internal fun parseResponsesStreamText(body: String): JsonObject? {
+    var text: String? = null
+    var output: JsonObject? = null
+    var usage: JsonObject? = null
+    var reportedModel: String? = null
+    for (line in body.lineSequence()) {
+        if (!line.startsWith("data:")) continue
+        val payload = line.removePrefix("data:").trim()
+        if (payload.isEmpty() || payload == "[DONE]") continue
+        val event = parseJsonObject(payload) ?: continue
+        val type = (event["type"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val delta = when {
+            type.startsWith("response.output_text.delta") -> (event["delta"] as? JsonPrimitive)?.contentOrNull
+            else -> null
+        }
+        if (delta != null) {
+            text = (text.orEmpty() + delta).takeIf { it.isNotEmpty() }
+        }
+        if (type.startsWith("response.completed")) {
+            (event["response"] as? JsonObject)?.let { response ->
+                usage = response["usage"] as? JsonObject ?: usage
+                reportedModel = (response["model"] as? JsonPrimitive)?.contentOrNull ?: reportedModel
+                output = response["output"] as? JsonObject ?: output
+            }
+        }
+    }
+    if (text == null && usage == null && output == null) return null
+    return buildJsonObject {
+        text?.let { put("output_text", it) }
+        output?.let { put("output", it) }
+        usage?.let { put("usage", it) }
+        reportedModel?.let { put("model", it) }
+    }
+}
+
+internal fun collectText(element: JsonElement?): String? = when (element) {
     null -> null
     is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() }
     is JsonArray -> element.mapNotNull(::collectText).joinToString("").takeIf { it.isNotBlank() }
@@ -390,5 +442,5 @@ private fun collectText(element: JsonElement?): String? = when (element) {
     else -> null
 }
 
-private const val MAX_RESPONSE_CHARS = 1_000
+internal const val MAX_RESPONSE_CHARS = 1_000
 private const val MAX_ERROR_CHARS = 500

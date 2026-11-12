@@ -311,7 +311,7 @@ describe('oauthAccount: 上游额度展示', () => {
     assert.deepEqual(filterOAuthModels(models, 'claude'), ['claude-opus-5-5-high'])
     assert.deepEqual(filterOAuthModels(models, 'no-match'), [])
     assert.equal(oauthSupportsModelCatalog('antigravity'), true)
-    assert.equal(oauthSupportsModelCatalog('chatgpt'), false)
+    assert.equal(oauthSupportsModelCatalog('chatgpt'), true)
     assert.equal(oauthSupportsModelCatalog('custom'), false)
     // 目录按账号读取：停用账号仍可用自己的凭据同步，待重新授权则不行。
     assert.equal(oauthCanSyncCatalog({ authState: 'ACTIVE' }), true)

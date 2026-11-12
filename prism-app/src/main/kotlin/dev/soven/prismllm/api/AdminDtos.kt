@@ -1080,6 +1080,7 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
 @Serializable
 data class ChannelModelResponse(
     val id: String,
+    val name: String? = null,
     val ownedBy: String? = null,
     val authorized: Boolean = false,
     val canonicalModelId: String? = null,
@@ -1703,7 +1704,7 @@ data class OAuthProviderModelsRequest(
 @Serializable
 data class OAuthProviderModelResponse(
     val id: String,
-    val name: String,
+    val name: String? = null,
 )
 
 @Serializable

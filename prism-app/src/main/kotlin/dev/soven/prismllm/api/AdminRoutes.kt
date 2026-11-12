@@ -36,6 +36,7 @@ import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.pricing.domain.PricingMode
 import dev.soven.prismllm.channel.domain.UpstreamEnvelope
 import dev.soven.prismllm.channel.domain.upstreamEnvelope
+import dev.soven.prismllm.channel.domain.authTypeFor
 import dev.soven.prismllm.oauth.OAuthLoginResult
 import dev.soven.prismllm.oauth.OAuthLoginStartResult
 import dev.soven.prismllm.oauth.OAuthQuotaResult
@@ -528,6 +529,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     val mapping = mappingByUpstream[it.id]
                     ChannelModelResponse(
                         id = it.id,
+                        name = it.name,
                         ownedBy = it.ownedBy,
                         authorized = credential.supports(it.id),
                         canonicalModelId = mapping?.canonicalModelId,
@@ -597,6 +599,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     val mapping = mappingByUpstream[it.id]
                     ChannelModelResponse(
                         id = it.id,
+                        name = it.name,
                         ownedBy = it.ownedBy,
                         authorized = (authorizationCredential?.isOAuth == true && authorizationCredential.models.isEmpty()) || it.id in authorized,
                         canonicalModelId = mapping?.canonicalModelId,
@@ -1379,14 +1382,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     "oauth_provider_not_servable",
                     "该提供方的上游协议尚未实现: " + account.provider.value,
                 )
-            // 模型目录只由 Code Assist 的 fetchAvailableModels 提供，目前仅 Antigravity 具备；
-            // ChatGPT 的目录沿用系统渠道种子模型，走 provider 的 PUT 接口维护。
-            if (app.channelRepository.find(channelId)?.upstreamEnvelope != UpstreamEnvelope.CODE_ASSIST) {
-                throw badRequest(
-                    "model_catalog_not_supported",
-                    "该提供方不支持从上游刷新模型目录: " + account.provider.value,
-                )
-            }
             val token = try {
                 app.oauthTokenService.accessToken(account.id)
             } catch (cause: CancellationException) {
@@ -1406,24 +1401,70 @@ fun Route.adminRoutes(app: GatewayApplication) {
             } catch (cause: OAuthRefreshException) {
                 throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
             }
-            // probe 可能包含一次开通轮询，整体限时，避免上游迟缓时管理请求一直挂着。
-            val catalog = withTimeoutOrNull(MODEL_REFRESH_TIMEOUT_MS) {
-                val probe = app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
-                app.codeAssistModelCatalog.fetchFor(
-                    token.accessToken,
-                    probe.project.orEmpty(),
-                    probe.tiers(),
-                    proxy,
-                )
-            } ?: throw GatewayError(
-                HttpStatusCode.GatewayTimeout,
-                "model_catalog_timeout",
-                "读取上游模型目录超时",
-                "timeout_error",
-                retryable = true,
-            )
-            val models = catalog.models
-            if (models.isEmpty()) {
+            val client = upstreamClient(app, proxy)
+            val entries = mutableListOf<OAuthAccountModelCatalogEntry>()
+            when (account.provider) {
+                OAuthProvider.CHATGPT -> {
+                    val channel = app.channelRepository.find(channelId)
+                        ?: throw notFound("channel_not_found", "系统端点渠道不存在")
+                    val catalog = withTimeoutOrNull(MODEL_REFRESH_TIMEOUT_MS) {
+                        fetchUpstreamModels(
+                            channel.baseUrl, token.accessToken, client, channel.authTypeFor(GatewayProtocol.RESPONSES),
+                            protocol = GatewayProtocol.RESPONSES,
+                            globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                            channelOverrides = channel.requestOverrides,
+                            headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                        )
+                    } ?: throw GatewayError(
+                        HttpStatusCode.GatewayTimeout,
+                        "model_catalog_timeout",
+                        "读取上游模型目录超时",
+                        "timeout_error",
+                        retryable = true,
+                    )
+                    entries.addAll(catalog.map { OAuthAccountModelCatalogEntry(upstreamModel = it.id) })
+                }
+                else -> {
+                    // probe 可能包含一次开通轮询，整体限时，避免上游迟缓时管理请求一直挂着。
+                    val catalog = withTimeoutOrNull(MODEL_REFRESH_TIMEOUT_MS) {
+                        val probe = app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
+                        app.codeAssistModelCatalog.fetchFor(
+                            token.accessToken,
+                            probe.project.orEmpty(),
+                            probe.tiers(),
+                            proxy,
+                        )
+                    } ?: throw GatewayError(
+                        HttpStatusCode.GatewayTimeout,
+                        "model_catalog_timeout",
+                        "读取上游模型目录超时",
+                        "timeout_error",
+                        retryable = true,
+                    )
+                    val models = catalog.models
+                    if (models.isEmpty()) {
+                        throw GatewayError(
+                            HttpStatusCode.BadGateway,
+                            "model_catalog_unavailable",
+                            "上游没有返回可用模型",
+                            "upstream_error",
+                            retryable = true,
+                        )
+                    }
+                    // 目录按账号保存：不同开通方式（Pixel/Jio 优惠与正价）拿到的模型集合不同。
+                    // 渠道登记家族对应的默认变体并保留 canonical 映射，对外仍暴露家族 id。
+                    entries.addAll(
+                        models.map { model ->
+                            val upstream = catalog.upstreamId(model)
+                            OAuthAccountModelCatalogEntry(
+                                upstreamModel = upstream,
+                                canonicalModelId = model.id.takeIf { it != upstream },
+                            )
+                        },
+                    )
+                }
+            }
+            if (entries.isEmpty()) {
                 throw GatewayError(
                     HttpStatusCode.BadGateway,
                     "model_catalog_unavailable",
@@ -1432,29 +1473,28 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     retryable = true,
                 )
             }
-            // 目录按账号保存：不同开通方式（Pixel/Jio 优惠与正价）拿到的模型集合不同。
-            // 渠道登记家族对应的默认变体并保留 canonical 映射，对外仍暴露家族 id。
+            // 目录按账号保存，不同账号可用模型不同；同步后剔除已授权但目录外的模型，
+            // 全部被剔除时置空表示「跟随目录」，避免账号授权列表困住测试与调度。
+            val catalogIds = entries.map { it.upstreamModel }.toSet()
+            val keptModels = account.models.filter { it in catalogIds }
             app.oauthAccountRepository.saveModelCatalog(
                 account.id,
-                models.map { model ->
-                    val upstream = catalog.upstreamId(model)
-                    OAuthAccountModelCatalogEntry(
-                        upstreamModel = upstream,
-                        canonicalModelId = model.id.takeIf { it != upstream },
-                    )
-                },
+                entries,
             )
+            if (account.models.isNotEmpty() && keptModels.size != account.models.size) {
+                app.oauthAccountRepository.setModels(account.id, keptModels)
+            }
             // 系统渠道的模型是所有账号目录的并集，供路由前判断模型是否可能存在；
             // 账号级 supports() 再按自己的目录过滤，避免把请求发给没有该模型的账号。
             app.providerChannelProvisioner.syncModelUnion(account.provider)
             call.markAdminAuditDetails(buildJsonObject {
                 put("accountId", account.id)
                 put("provider", account.provider.value)
-                put("models", models.joinToString(",") { it.id })
+                put("models", entries.joinToString(",") { it.upstreamModel })
             })
             call.respond(
                 OAuthProviderModelsResponse(
-                    models = models.map { OAuthProviderModelResponse(it.id, it.name) },
+                    models = entries.map { OAuthProviderModelResponse(it.upstreamModel, it.canonicalModelId) },
                 ),
             )
         }

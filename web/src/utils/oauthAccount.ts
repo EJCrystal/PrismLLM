@@ -162,11 +162,11 @@ export function oauthProviderProtocols(provider: string): string[] {
 }
 
 /**
- * 支持从上游刷新模型目录的提供方。与后端 `/oauth-providers/{provider}/models/refresh`
- * 的能力保持一致：目前只有走 Code Assist 的 Antigravity 能读取官方目录。
+ * 支持从上游刷新模型目录的提供方。与后端账号级 `/oauth-accounts/{id}/models/refresh`
+ * 的能力保持一致：Antigravity 走 Code Assist，ChatGPT 走 Codex 官方模型列表。
  */
 export function oauthSupportsModelCatalog(provider: string): boolean {
-  return provider === 'antigravity'
+  return provider === 'antigravity' || provider === 'chatgpt'
 }
 
 /**
