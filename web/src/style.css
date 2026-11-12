@@ -5164,8 +5164,10 @@ textarea:disabled {
 }
 
 .channel-model-list {
-  display: grid;
-  gap: 5px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 6px;
   width: 100%;
 }
 
@@ -5272,6 +5274,7 @@ textarea:disabled {
 }
 
 .channels-table {
+  --channel-first-line-height: 32px;
   width: max(100%, 1080px);
   table-layout: fixed;
   border-collapse: separate;
@@ -5280,16 +5283,24 @@ textarea:disabled {
 
 .channels-table th,
 .channels-table td {
-  padding: 11px 12px;
+  padding: 14px 12px;
+  vertical-align: top;
+}
+
+.channels-table .channel-row-lead {
+  display: flex;
+  align-items: center;
+  min-height: var(--channel-first-line-height);
+  line-height: 20px;
 }
 
 .channels-table th.channel-name-col,
 .channels-table td.channel-name-col {
   position: sticky;
   left: 0;
-  width: 164px;
-  min-width: 164px;
-  max-width: 164px;
+  width: 224px;
+  min-width: 224px;
+  max-width: 224px;
   border-right: 1px solid var(--glass-line);
 }
 
@@ -5309,7 +5320,9 @@ textarea:disabled {
 }
 
 .channels-table .channel-id-cell {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  align-items: center;
   width: 100%;
   min-width: 0;
 }
@@ -5322,8 +5335,8 @@ textarea:disabled {
 
 .channels-table th:nth-child(2),
 .channels-table td:nth-child(2) {
-  width: 72px;
-  min-width: 72px;
+  width: 64px;
+  min-width: 64px;
 }
 
 .channels-table th:nth-child(3),
@@ -5334,14 +5347,14 @@ textarea:disabled {
 
 .channels-table th:nth-child(4),
 .channels-table td:nth-child(4) {
-  width: 250px;
-  min-width: 250px;
+  width: 244px;
+  min-width: 244px;
 }
 
 .channels-table th:nth-child(5),
 .channels-table td:nth-child(5) {
-  width: 190px;
-  min-width: 190px;
+  width: 200px;
+  min-width: 200px;
   white-space: normal;
 }
 
@@ -5349,8 +5362,8 @@ textarea:disabled {
   position: sticky;
   right: 0;
   z-index: 2;
-  width: 144px;
-  min-width: 144px;
+  width: 128px;
+  min-width: 128px;
   border-left: 1px solid var(--glass-line);
   background: var(--surface-solid);
   text-align: left;
@@ -5434,8 +5447,8 @@ textarea:disabled {
 
 .channels-table td:nth-child(6),
 .channels-table th:nth-child(6) {
-  width: 150px;
-  min-width: 150px;
+  width: 88px;
+  min-width: 88px;
   white-space: nowrap;
 }
 
@@ -5493,15 +5506,15 @@ textarea:disabled {
 
   .channels-table th.channel-name-col,
   .channels-table td.channel-name-col {
-    width: 150px;
-    min-width: 150px;
-    max-width: 150px;
+    width: 224px;
+    min-width: 224px;
+    max-width: 224px;
   }
 
   .channels-table th:nth-child(2),
   .channels-table td:nth-child(2) {
-    width: 72px;
-    min-width: 72px;
+    width: 64px;
+    min-width: 64px;
   }
 
   .channels-table th:nth-child(3),
@@ -5512,25 +5525,25 @@ textarea:disabled {
 
   .channels-table th:nth-child(4),
   .channels-table td:nth-child(4) {
-    width: 260px;
-    min-width: 260px;
+    width: 220px;
+    min-width: 220px;
   }
 
   .channels-table th:nth-child(5),
   .channels-table td:nth-child(5) {
-    width: 160px;
-    min-width: 160px;
+    width: 200px;
+    min-width: 200px;
   }
 
   .channels-table td:nth-child(6),
   .channels-table th:nth-child(6) {
-    width: 128px;
-    min-width: 128px;
+    width: 88px;
+    min-width: 88px;
   }
 
   .channels-table .actions-col {
-    width: 148px;
-    min-width: 148px;
+    width: 128px;
+    min-width: 128px;
   }
 
   .channels-table .channel-protocol-list {
@@ -5543,11 +5556,11 @@ textarea:disabled {
 }
 
 .channel-model-entry {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .channel-model-name {
@@ -5564,8 +5577,8 @@ textarea:disabled {
   border-radius: 4px;
   background: var(--warning-soft);
   color: var(--warning);
-  font-size: 9px;
-  font-weight: 800;
+  font-size: 10px;
+  font-weight: 600;
   line-height: 1.5;
 }
 
@@ -5573,10 +5586,10 @@ textarea:disabled {
   flex: 0 0 auto;
   padding: 1px 4px;
   border-radius: 4px;
-  background: var(--info-soft);
-  color: var(--brand);
-  font-size: 9px;
-  font-weight: 800;
+  background: var(--glass-field);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
   line-height: 1.5;
 }
 
@@ -5586,13 +5599,13 @@ textarea:disabled {
 }
 
 .channel-model-price-source.is-default {
-  background: var(--info-soft);
-  color: var(--brand);
+  background: var(--glass-field);
+  color: var(--muted);
 }
 
 [data-theme="dark"] .channel-model-price-source,
 [data-theme="dark"] .channel-model-price-source.is-default {
-  color: #93c5fd;
+  color: var(--muted);
 }
 
 .channel-model-price-source.is-mixed {

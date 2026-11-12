@@ -9,7 +9,7 @@ import Modal from './Modal.vue'
 import ErrorState from './ErrorState.vue'
 import { vScrollHint } from '../directives/scrollHint'
 
-const props = defineProps<{ channel: Channel; initialWindow: HealthWindow }>()
+const props = defineProps<{ channel: Channel; initialWindow: HealthWindow; concurrentRequests?: number; lastProbeAt?: number }>()
 const emit = defineEmits<{ close: [changed?: boolean]; changed: [] }>()
 const window = ref<HealthWindow>(props.initialWindow)
 const detail = ref<ChannelHealthDetail | null>(null)
@@ -178,6 +178,10 @@ function tryClose() {
         <button class="button ghost mini" :disabled="loading || Boolean(clearing) || manualRefreshing" @click="handleManualRefresh">刷新</button>
       </div>
       <p class="muted small">真实请求观测 · 不发起额外探测，也不修改路由优先级。所有时间按请求完成时间统计。</p>
+      <dl v-if="concurrentRequests != null || lastProbeAt != null" class="health-runtime-meta">
+        <div v-if="concurrentRequests != null"><dt>实时在途</dt><dd>{{ concurrentRequests }} 个请求</dd></div>
+        <div><dt>最近协议探测</dt><dd>{{ lastProbeAt ? formatTime(lastProbeAt, { style: 'medium' }) : '暂无探测记录' }}</dd></div>
+      </dl>
       <ErrorState v-if="error" :message="error" @retry="load" />
       <p v-if="loading" class="muted" role="status">正在汇总渠道健康度…</p>
       <template v-if="detail && summary && metrics">
@@ -294,6 +298,10 @@ function tryClose() {
 <style scoped>
 .health-detail { display: grid; gap: 16px; }
 .health-detail p, .health-detail h3 { margin: 0; }
+.health-runtime-meta { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 0; font-size: 12px; }
+.health-runtime-meta > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.health-runtime-meta dt { color: var(--muted); }
+.health-runtime-meta dd { margin: 0; overflow-wrap: anywhere; }
 .health-detail-toolbar, .health-verdict { display: flex; align-items: center; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
 .health-verdict { justify-content: flex-start; }
 .health-verdict p { margin-top: 4px; }

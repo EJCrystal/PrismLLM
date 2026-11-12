@@ -96,10 +96,24 @@ data class ChannelHealthSummary(
     val cooldownReason: String? = null,
     val coolingCandidates: Int = 0,
     val totalCandidates: Int = 0,
+    val recent: ChannelHealthSnapshot? = null,
+    val recentAttempts: List<HealthRecentAttempt> = emptyList(),
 )
 
 @Serializable
 data class HealthBucket(val from: Long, val to: Long, val metrics: HealthMetrics)
+
+@Serializable
+data class ChannelHealthSnapshot(
+    val from: Long, val to: Long, val metrics: HealthMetrics, val state: String, val reason: String,
+)
+
+@Serializable
+data class HealthRecentAttempt(
+    val logId: Long, val attemptIndex: Int, val createdAt: Long, val outcome: String,
+    val statusCode: Int? = null, val errorCode: String? = null, val upstreamModel: String? = null,
+    val elapsedMs: Long, val firstTokenMs: Long? = null,
+)
 
 @Serializable
 data class HealthBreakdown(val id: String, val name: String, val metrics: HealthMetrics)

@@ -1,8 +1,32 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { HEALTH_WINDOWS, HEALTH_LABELS, healthPercent, healthBucketState, healthSymbol, channelHealthSuccessRateText, healthCacheHitText, healthCacheRows, channelListHealthState } from '../src/utils/channelHealth'
+import { healthTrendSlots, healthAttemptTitle } from '../src/utils/channelHealth'
 
 describe('channel health display', () => {
+  it('right-aligns only observed attempts without inventing successful samples', () => {
+    assert.deepEqual(healthTrendSlots(undefined), Array(30).fill(null))
+    const observed = [{ outcome: 'SUCCESS' }, { outcome: 'FAILURE' }]
+    const slots = healthTrendSlots(observed)
+    assert.equal(slots.length, 30)
+    assert.deepEqual(slots.slice(0, 28), Array(28).fill(null))
+    assert.deepEqual(slots.slice(-2), observed)
+    const many = Array.from({ length: 45 }, (_, index) => ({ createdAt: index }))
+    assert.deepEqual(healthTrendSlots(many), many.slice(-30))
+    assert.equal(many.length, 45)
+  })
+
+  it('shows terminal stream failure even when the HTTP status is 200', () => {
+    const title = healthAttemptTitle({
+      createdAt: 1_800_000_000_000, outcome: 'FAILURE', statusCode: 200,
+      errorCode: 'responses_failed', upstreamModel: 'deepseek-flash', elapsedMs: 12000, firstTokenMs: 10000,
+    })
+    for (const text of ['失败', 'HTTP 200', 'responses_failed', 'deepseek-flash', '耗时', '首 token']) {
+      assert.ok(title.includes(text))
+    }
+    assert.ok(!healthAttemptTitle({ createdAt: 1_800_000_000_000, outcome: 'SUCCESS', statusCode: null, errorCode: null, upstreamModel: null, elapsedMs: 200, firstTokenMs: null }).includes('null'))
+  })
+
   it('shows unknown rather than zero for missing samples', () => {
     assert.equal(healthPercent(null), '—')
     assert.equal(healthPercent(undefined), '—')

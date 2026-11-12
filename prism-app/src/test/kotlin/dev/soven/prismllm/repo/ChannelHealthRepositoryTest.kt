@@ -456,6 +456,97 @@ class ChannelHealthRepositoryTest {
         assertEquals(longError, health.detail("24h", subject(a), 30, emptyList(), now).errors.single().code)
     }
 
+    @Test
+    fun recentFailuresAreNotHiddenByDaySuccesses() = runBlocking {
+        repeat(80) {
+            logs.insert(log(listOf(attempt("a")), createdAt = now - 7_200_000))
+        }
+        repeat(20) { index ->
+            logs.insert(log(listOf(attempt("a", if (index < 4) 503 else 200)), failed = index < 4))
+        }
+        val summary = health.report("24h", mapOf("a" to true), 30, now).channels.single()
+        assertEquals("HEALTHY", summary.state)
+        assertEquals(0.96, summary.metrics.successRate)
+        val recent = assertNotNull(summary.recent)
+        assertEquals(now - 3_600_000, recent.from)
+        assertEquals(now, recent.to)
+        assertEquals(20, recent.metrics.attempts)
+        assertEquals(4, recent.metrics.failures)
+        assertEquals("CRITICAL", recent.state)
+    }
+
+    @Test
+    fun recentWindowDoesNotReuseDaySamplesOrIgnoreCredentialState() = runBlocking {
+        repeat(25) {
+            logs.insert(log(listOf(attempt("a")), createdAt = now - 7_200_000))
+        }
+        val summary = health.report("24h", mapOf("a" to true), 30, now).channels.single()
+        assertEquals(25, summary.metrics.attempts)
+        assertEquals(0, summary.recent!!.metrics.attempts)
+        assertEquals("UNKNOWN", summary.recent!!.state)
+        assertEquals(25, summary.recentAttempts.size)
+        assertEquals("DISABLED", health.report("24h", mapOf("a" to false), 30, now).channels.single().recent!!.state)
+        assertEquals("NO_CREDENTIALS", health.report(
+            "24h", mapOf("a" to true), 30, now, routableCredentials = mapOf("a" to 0),
+        ).channels.single().recent!!.state)
+    }
+
+    @Test
+    fun recentAttemptsAreBoundedPerChannelAndExcludeCancelledAttempts() = runBlocking {
+        repeat(35) { index ->
+            logs.insert(log(listOf(attempt("a")), createdAt = now - 1000 + index))
+        }
+        repeat(5) { index ->
+            logs.insert(log(listOf(attempt("b")), createdAt = now - 100 + index))
+        }
+        logs.insert(log(listOf(attempt("a").copy(errorCode = "client_cancelled"))))
+        logs.insert(log(listOf(attempt("a", 400))))
+        logs.insert(log(listOf(attempt("a").copy(skipped = true))))
+        val report = health.report("24h", mapOf("a" to true, "b" to true), 30, now)
+        val recent = report.channels.first { it.channelId == "a" }.recentAttempts
+        assertEquals(30, recent.size)
+        assertEquals(now - 995, recent.first().createdAt)
+        assertEquals(now - 966, recent.last().createdAt)
+        assertTrue(recent.all { it.outcome == "SUCCESS" })
+        assertEquals(5, report.channels.first { it.channelId == "b" }.recentAttempts.size)
+        val detail = health.detail("24h", subject(a), 30, emptyList(), now)
+        assertEquals(recent, detail.report.channels.single().recentAttempts)
+    }
+
+    @Test
+    fun recentAttemptsKeepStreamFailuresAndStableOrderWithinARequest() = runBlocking {
+        logs.insert(log(listOf(
+            attempt("a", 503),
+            attempt("a").copy(index = 2, errorCode = "responses_failed"),
+        ), failed = true))
+        val summary = health.report("24h", mapOf("a" to true), 30, now).channels.single()
+        assertEquals(listOf(1, 2), summary.recentAttempts.map { it.attemptIndex })
+        assertEquals(listOf("FAILURE", "FAILURE"), summary.recentAttempts.map { it.outcome })
+        assertEquals(200, summary.recentAttempts.last().statusCode)
+        assertEquals("responses_failed", summary.recentAttempts.last().errorCode)
+        assertEquals(2, summary.recent!!.metrics.failures)
+        assertEquals("UNKNOWN", summary.recent!!.state)
+    }
+
+    @Test
+    fun recentWindowIsHalfOpenAndOldPendingRowsDoNotOverrideIt() = runBlocking {
+        repeat(20) {
+            logs.insert(log(listOf(attempt("a")), createdAt = now - 3_600_000))
+        }
+        logs.insert(log(listOf(attempt("a", 503)), createdAt = now, failed = true))
+        logs.insert(log(listOf(attempt("a", 503)), createdAt = now - 86_400_001, failed = true))
+        logs.insert(log(listOf(attempt("a")), createdAt = now - 7_200_000))
+        sql("update request_logs set health_indexed = false where created_at = " + (now - 7_200_000))
+        val summary = health.report("24h", mapOf("a" to true), 30, now).channels.single()
+        assertEquals("UNKNOWN", summary.state)
+        assertEquals(20, summary.recent!!.metrics.attempts)
+        assertEquals("HEALTHY", summary.recent!!.state)
+        assertEquals(21, summary.recentAttempts.size)
+        assertTrue(summary.recentAttempts.all { it.outcome == "SUCCESS" })
+        sql("update request_logs set health_indexed = false")
+        assertEquals("UNKNOWN", health.report("24h", mapOf("a" to true), 30, now).channels.single().recent!!.state)
+    }
+
     private fun subject(channel: ChannelRecord) = HealthChannelSubject(
         channel.id, channel.enabled, channel.keys.associate { it.id to it.name },
     )
