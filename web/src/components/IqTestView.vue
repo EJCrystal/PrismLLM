@@ -19,6 +19,7 @@ import {
   formatIqTime,
   iqTargetKey,
   iqTimeoutHint,
+  iqTimeoutInputError,
   iqVerdictTone,
   resolveIqTimeoutOverride,
   shouldAdoptIqRunResult,
@@ -124,6 +125,10 @@ const selectedJudge = computed(() =>
 const promptCustomized = computed(() =>
   !!benchmark.value && promptText.value.trim() !== benchmark.value.prompt.trim(),
 )
+/** 输入的本次超时不合法时给出文案并阻止提交，避免越界值被静默截断。 */
+const timeoutError = computed(() => (benchmark.value
+  ? iqTimeoutInputError(timeoutSeconds.value, benchmark.value)
+  : ''))
 /** 本次检测生效的超时：与服务端 resolveTimeoutMs 同口径，覆盖值夹在 1 秒与硬上限之间。 */
 const effectiveTimeoutMs = computed(() => (benchmark.value
   ? resolveIqTimeoutOverride(timeoutSeconds.value, benchmark.value)
@@ -177,6 +182,7 @@ const canRun = computed(() =>
   !!selectedTarget.value &&
   !!benchmark.value &&
   (selectedBenchmark.value === 'candy' ? enabledQuestionCount.value > 0 : !!selectedJudgeId.value) &&
+  !timeoutError.value &&
   !loading.value,
 )
 const passedCheckCount = computed(() => detail.value?.checks.filter((check) => check.passed).length ?? 0)
@@ -602,9 +608,11 @@ onBeforeUnmount(stopTicker)
               min="1"
               :max="benchmark ? Math.max(1, Math.floor(benchmark.maxTimeoutMs / 1000)) : undefined"
               :placeholder="benchmark ? String(Math.round(benchmark.effectiveTimeoutMs / 1000)) : ''"
+              :aria-invalid="!!timeoutError"
               aria-label="本次检测超时秒数"
             />
           </label>
+          <p v-if="timeoutError" class="iq-timeout-error">{{ timeoutError }}</p>
           <p class="iq-prompt-meta">
             留空使用默认 {{ benchmark ? Math.round(benchmark.effectiveTimeoutMs / 1000) : '—' }} 秒；上限
             {{ benchmark ? Math.round(benchmark.maxTimeoutMs / 1000) : '—' }} 秒。
@@ -1184,6 +1192,12 @@ onBeforeUnmount(stopTicker)
 .iq-timeout-field > span {
   font-size: 12px;
   color: var(--muted);
+}
+
+.iq-timeout-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
 }
 
 .iq-run-button {

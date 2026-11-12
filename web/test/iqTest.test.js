@@ -5,6 +5,7 @@ import {
   formatIqLatency,
   iqTargetKey,
   iqTimeoutHint,
+  iqTimeoutInputError,
   iqVerdictTone,
   resolveIqTimeoutOverride,
   shouldAdoptIqRunResult,
@@ -162,5 +163,19 @@ describe('iqTest: 智商检测展示', () => {
     // 覆盖值夹在 1 秒与硬上限之间，与服务端同口径。
     assert.equal(resolveIqTimeoutOverride(0.2, definition), 1_000)
     assert.equal(resolveIqTimeoutOverride(900, definition), 600_000)
+  })
+
+  it('越界的本次超时直接报错而不是静默截断', () => {
+    const definition = { effectiveTimeoutMs: 180_000, maxTimeoutMs: 600_000 }
+    // 合法输入（含留空）不报错，交给 resolveIqTimeoutOverride 换算。
+    assert.equal(iqTimeoutInputError('', definition), '')
+    assert.equal(iqTimeoutInputError(1, definition), '')
+    assert.equal(iqTimeoutInputError('600', definition), '')
+    // 越界或非法输入给出文案，阻止提交，避免实际执行的超时与输入不一致。
+    assert.equal(iqTimeoutInputError(0, definition), '超时需在 1–600 秒之间')
+    assert.equal(iqTimeoutInputError(-1, definition), '超时需在 1–600 秒之间')
+    assert.equal(iqTimeoutInputError('900', definition), '超时需在 1–600 秒之间')
+    assert.equal(iqTimeoutInputError('abc', definition), '请输入有效的秒数')
+    assert.equal(iqTimeoutInputError(Number.NaN, definition), '请输入有效的秒数')
   })
 })
