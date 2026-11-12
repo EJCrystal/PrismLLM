@@ -1,5 +1,6 @@
 package dev.soven.prismllm.proxy
 
+import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.spi.iq.IqJudgeResult
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
 import dev.soven.prismllm.spi.iq.IqStructureCheck
@@ -23,7 +24,10 @@ enum class IqBenchmark(
     val label: String,
     val summary: String,
     val grading: String,
+    /** 题目通常耗时的提示语，供管理台在超时旁展示；超时数值本身由服务端解析。 */
+    val durationHint: String,
     val maxOutputTokens: Int,
+    /** 题目默认超时；实际检测使用 [resolveTimeoutMs]，可能被 IQ_TEST_TIMEOUT_MS 或单次请求覆盖。 */
     val timeoutMs: Long,
 ) {
     PELICAN(
@@ -31,6 +35,7 @@ enum class IqBenchmark(
         label = "鹈鹕骑行",
         summary = "生成可独立运行的 SVG 动画：一只骑自行车的鹈鹕，带连续循环动画。",
         grading = "本地生成 SVG/HTML 后由选中的判分器判定；选择满血AI 时 normal 通过，degraded 未通过，unknown 无法判定。",
+        durationHint = "图形题通常需要 30–120 秒",
         maxOutputTokens = 12_000,
         timeoutMs = 180_000,
     ),
@@ -39,6 +44,7 @@ enum class IqBenchmark(
         label = "糖果测试",
         summary = "从题库随机抽题，返回 JSON 答案，在本地与预设答案比较。",
         grading = "题库模式按抽中题目的预设答案判分；旧接口按 21 判分，不使用 HTML 判分器。",
+        durationHint = "推理题通常需要 10–60 秒",
         maxOutputTokens = 8_192,
         timeoutMs = 120_000,
     ),
@@ -55,6 +61,18 @@ enum class IqBenchmark(
             entries.firstOrNull { it.value == value?.trim()?.lowercase() }
     }
 }
+
+/**
+ * 解析一次检测实际使用的超时。
+ *
+ * 优先级：单次请求覆盖 > 部署配置的默认值（IQ_TEST_TIMEOUT_MS）> 题目自带默认值。
+ * 结果统一截断到 [GatewayConfig.IQ_TEST_TIMEOUT_MAX_MS]，保证再慢的渠道也不会让检测无限期挂着。
+ */
+fun IqBenchmark.resolveTimeoutMs(
+    requestedTimeoutMs: Long? = null,
+    configuredDefaultMs: Long? = null,
+): Long = (requestedTimeoutMs ?: configuredDefaultMs ?: timeoutMs)
+    .coerceIn(1_000L, GatewayConfig.IQ_TEST_TIMEOUT_MAX_MS)
 
 enum class IqVerdict(val value: String) {
     PASSED("passed"),

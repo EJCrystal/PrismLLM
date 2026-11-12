@@ -386,6 +386,14 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             }
             assertEquals(HttpStatusCode.OK, definitions.status)
             assertEquals(2, Json.parseToJsonElement(definitions.bodyAsText()).jsonArray.size)
+            // 超时口径由服务端下发，管理台不再写死 180/120 秒。
+            val pelicanDefinition = Json.parseToJsonElement(definitions.bodyAsText()).jsonArray
+                .map { it.jsonObject }
+                .first { it["id"]?.jsonPrimitive?.content == "pelican" }
+            assertEquals(180_000L, pelicanDefinition["defaultTimeoutMs"]?.jsonPrimitive?.long)
+            // 测试配置未设置 IQ_TEST_TIMEOUT_MS，题目默认值即生效值。
+            assertEquals(180_000L, pelicanDefinition["effectiveTimeoutMs"]?.jsonPrimitive?.long)
+            assertEquals(600_000L, pelicanDefinition["maxTimeoutMs"]?.jsonPrimitive?.long)
 
             val judges = client.get("/admin/api/iq-tests/judges") {
                 header(HttpHeaders.Cookie, sessionCookie)
@@ -443,6 +451,41 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             val detailBody = Json.parseToJsonElement(detail.bodyAsText()).jsonObject
             assertEquals(candyResponse, detailBody["responseText"]?.jsonPrimitive?.content)
             assertEquals(2, detailBody["checks"]?.jsonArray?.size)
+        }
+    }
+
+    @Test
+    fun `admin can override iq test timeout per run and invalid values are rejected`() = runBlocking {
+        val channel = createChannel("iq-test-timeout", "iq-json")
+        val candyResponse =
+            """{"answer":21,"reason":"先取完圆形苹果 7 颗、圆形桃子 9 颗、圆形西瓜 8 颗和五角星形西瓜 4 颗，再取一颗。"}"""
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+
+            suspend fun runWithTimeout(payload: String) = client.post("/admin/api/iq-tests") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody(payload)
+            }
+
+            // 单次覆盖放宽到 5 分钟：请求正常完成，题目默认值不受影响。
+            val accepted = runWithTimeout("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","timeoutMs":300000}""")
+            assertEquals(HttpStatusCode.OK, accepted.status, accepted.bodyAsText())
+            assertEquals("passed", Json.parseToJsonElement(accepted.bodyAsText()).jsonObject["verdict"]?.jsonPrimitive?.content)
+            assertEquals(candyResponse, Json.parseToJsonElement(accepted.bodyAsText()).jsonObject["responseText"]?.jsonPrimitive?.content)
+
+            // 非正值和超过上限的值都直接拒绝，不能悄悄退化成立即超时。
+            for (invalid in listOf(0, -1, 600_001)) {
+                val rejected = runWithTimeout(
+                    """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","timeoutMs":$invalid}""",
+                )
+                assertEquals(HttpStatusCode.BadRequest, rejected.status, "timeoutMs=$invalid: ${rejected.bodyAsText()}")
+                assertTrue(rejected.bodyAsText().contains("invalid_iq_test_timeout"), rejected.bodyAsText())
+            }
         }
     }
 

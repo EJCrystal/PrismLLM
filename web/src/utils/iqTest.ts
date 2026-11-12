@@ -1,4 +1,4 @@
-import type { IqVerdict } from '../types/api'
+import type { IqBenchmarkDefinition, IqVerdict } from '../types/api'
 import { formatDuration } from './format'
 
 const PREVIEW_CSP = [
@@ -81,6 +81,59 @@ function stripPreviewNavigation(document: Document): void {
 export function formatIqLatency(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'
   return formatDuration(ms)
+}
+
+/**
+ * 题目超时提示，例如「图形题通常需要 30–120 秒，超时 180 秒」。
+ *
+ * 超时数值来自服务端下发的题目定义，不在前端写死：IQ_TEST_TIMEOUT_MS 或题目默认值调整后，
+ * 界面提示会自动跟随，避免提示与真实拦截时刻不一致。
+ */
+export function iqTimeoutHint(
+  definition: Pick<IqBenchmarkDefinition, 'durationHint' | 'effectiveTimeoutMs'> | null | undefined,
+): string {
+  if (!definition) return ''
+  if (!Number.isFinite(definition.effectiveTimeoutMs)) return `${definition.durationHint}。`
+  const seconds = Math.max(1, Math.round(definition.effectiveTimeoutMs / 1000))
+  return `${definition.durationHint}，超时 ${seconds} 秒。`
+}
+
+/**
+ * 校验管理台输入的本次超时（秒），返回空字符串表示通过。
+ *
+ * 非空输入换算成毫秒后必须落在 1 秒到题目硬上限之间；越界直接报错并阻止提交，
+ * 不再悄悄截断，避免界面上的输入与实际执行的超时不一致。
+ */
+export function iqTimeoutInputError(
+  value: string | number,
+  definition: Pick<IqBenchmarkDefinition, 'maxTimeoutMs'>,
+): string {
+  if (value === '') return ''
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds)) return '请输入有效的秒数'
+  const timeoutMs = Math.round(seconds * 1000)
+  if (timeoutMs < 1_000 || timeoutMs > definition.maxTimeoutMs) {
+    return `超时需在 1–${Math.floor(definition.maxTimeoutMs / 1000)} 秒之间`
+  }
+  return ''
+}
+
+/**
+ * 解析管理台输入的本次超时（秒），换算成毫秒并夹在 1 秒与题目硬上限之间。
+ *
+ * 提交前会先用 [iqTimeoutInputError] 校验；这里的夹取只是兜底，防止绕过校验的调用方传入越界值。
+ *
+ * `type="number"` 的 v-model 会把输入直接写成数字，空输入则是空字符串，所以这里同时接受
+ * 两种类型；空值或非法值回落到题目生效默认值，不参与覆盖。
+ */
+export function resolveIqTimeoutOverride(
+  value: string | number,
+  definition: Pick<IqBenchmarkDefinition, 'effectiveTimeoutMs' | 'maxTimeoutMs'>,
+): number {
+  if (value === '') return definition.effectiveTimeoutMs
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds <= 0) return definition.effectiveTimeoutMs
+  return Math.min(Math.max(Math.round(seconds * 1000), 1_000), definition.maxTimeoutMs)
 }
 
 export function formatIqTime(value: number): string {

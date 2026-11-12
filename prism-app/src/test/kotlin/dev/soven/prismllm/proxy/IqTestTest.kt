@@ -1,5 +1,6 @@
 package dev.soven.prismllm.proxy
 
+import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.spi.iq.IqJudgeResult
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
 import kotlin.test.Test
@@ -311,5 +312,35 @@ class IqTestTest {
         assertEquals(IqVerdict.FAILED, result.verdict)
         assertEquals("request", result.checks.single().id)
         assertEquals("上游返回 HTTP 500", result.checks.single().detail)
+    }
+
+    @Test
+    fun `benchmark timeout falls back to its own default`() {
+        assertEquals(180_000L, IqBenchmark.PELICAN.resolveTimeoutMs())
+        assertEquals(120_000L, IqBenchmark.CANDY.resolveTimeoutMs())
+    }
+
+    @Test
+    fun `request timeout overrides the default for one run`() {
+        assertEquals(300_000L, IqBenchmark.PELICAN.resolveTimeoutMs(300_000))
+        // 覆盖值只影响单次检测，题目默认值保持不变。
+        assertEquals(180_000L, IqBenchmark.PELICAN.resolveTimeoutMs(null))
+    }
+
+    @Test
+    fun `deployment default replaces the benchmark default until a request overrides it`() {
+        // IQ_TEST_TIMEOUT_MS 显式配置后成为所有题目的默认值。
+        assertEquals(240_000L, IqBenchmark.PELICAN.resolveTimeoutMs(configuredDefaultMs = 240_000))
+        assertEquals(240_000L, IqBenchmark.CANDY.resolveTimeoutMs(configuredDefaultMs = 240_000))
+        // 单次请求仍然优先。
+        assertEquals(90_000L, IqBenchmark.PELICAN.resolveTimeoutMs(90_000, configuredDefaultMs = 240_000))
+    }
+
+    @Test
+    fun `resolved timeout never exceeds the hard ceiling`() {
+        assertEquals(
+            GatewayConfig.IQ_TEST_TIMEOUT_MAX_MS,
+            IqBenchmark.PELICAN.resolveTimeoutMs(GatewayConfig.IQ_TEST_TIMEOUT_MAX_MS + 1),
+        )
     }
 }

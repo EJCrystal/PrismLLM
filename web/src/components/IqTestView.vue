@@ -18,7 +18,10 @@ import {
   formatIqLatency,
   formatIqTime,
   iqTargetKey,
+  iqTimeoutHint,
+  iqTimeoutInputError,
   iqVerdictTone,
+  resolveIqTimeoutOverride,
   shouldAdoptIqRunResult,
   withIqPreviewCsp,
 } from '../utils/iqTest'
@@ -75,6 +78,8 @@ const selectedKeyId = ref('')
 const selectedProtocol = ref('')
 const selectedJudgeId = ref('')
 const promptText = ref('')
+/** 本次检测的超时覆盖，单位秒；`type="number"` 的 v-model 会写入数字，留空时是空字符串。 */
+const timeoutSeconds = ref<string | number>('')
 const loading = ref(true)
 const detailLoading = ref(false)
 const detail = ref<IqTestRunDetail | null>(null)
@@ -120,6 +125,20 @@ const selectedJudge = computed(() =>
 const promptCustomized = computed(() =>
   !!benchmark.value && promptText.value.trim() !== benchmark.value.prompt.trim(),
 )
+/** 输入的本次超时不合法时给出文案并阻止提交，避免越界值被静默截断。 */
+const timeoutError = computed(() => (benchmark.value
+  ? iqTimeoutInputError(timeoutSeconds.value, benchmark.value)
+  : ''))
+/** 本次检测生效的超时：与服务端 resolveTimeoutMs 同口径，覆盖值夹在 1 秒与硬上限之间。 */
+const effectiveTimeoutMs = computed(() => (benchmark.value
+  ? resolveIqTimeoutOverride(timeoutSeconds.value, benchmark.value)
+  : 0))
+const timeoutHint = computed(() => benchmark.value
+  ? iqTimeoutHint({ durationHint: benchmark.value.durationHint, effectiveTimeoutMs: effectiveTimeoutMs.value })
+  : '')
+const timeoutCustomized = computed(() =>
+  effectiveTimeoutMs.value > 0 && effectiveTimeoutMs.value !== (benchmark.value?.effectiveTimeoutMs ?? 0),
+)
 const targetOptions = computed(() => scopedTargets.value.map((target) => ({
   value: iqTargetKey(target.channelId, target.model),
   label: target.model,
@@ -163,6 +182,7 @@ const canRun = computed(() =>
   !!selectedTarget.value &&
   !!benchmark.value &&
   (selectedBenchmark.value === 'candy' ? enabledQuestionCount.value > 0 : !!selectedJudgeId.value) &&
+  !timeoutError.value &&
   !loading.value,
 )
 const passedCheckCount = computed(() => detail.value?.checks.filter((check) => check.passed).length ?? 0)
@@ -326,6 +346,8 @@ function run() {
     judgeId: item.id === 'candy' ? null : judgeId,
     prompt: item.id === 'candy' ? undefined : promptText.value.trim() || undefined,
     useQuestionBank: item.id === 'candy',
+    // 与服务端同口径：填了覆盖值才发送，未填写时交给服务端使用题目默认值。
+    timeoutMs: timeoutCustomized.value ? effectiveTimeoutMs.value : null,
   }
   activeRuns.value.push(job)
   runError.value = ''
@@ -577,12 +599,30 @@ onBeforeUnmount(stopTicker)
         </div>
 
         <div class="iq-run-area">
+          <label class="field iq-timeout-field">
+            <span>本次超时（秒）</span>
+            <input
+              v-model="timeoutSeconds"
+              type="number"
+              inputmode="numeric"
+              min="1"
+              :max="benchmark ? Math.max(1, Math.floor(benchmark.maxTimeoutMs / 1000)) : undefined"
+              :placeholder="benchmark ? String(Math.round(benchmark.effectiveTimeoutMs / 1000)) : ''"
+              :aria-invalid="!!timeoutError"
+              aria-label="本次检测超时秒数"
+            />
+          </label>
+          <p v-if="timeoutError" class="iq-timeout-error">{{ timeoutError }}</p>
+          <p class="iq-prompt-meta">
+            留空使用默认 {{ benchmark ? Math.round(benchmark.effectiveTimeoutMs / 1000) : '—' }} 秒；上限
+            {{ benchmark ? Math.round(benchmark.maxTimeoutMs / 1000) : '—' }} 秒。
+          </p>
           <button type="button" class="button primary full iq-run-button" :disabled="!canRun" @click="run">
             <Icon name="bolt" :size="17" />
             开始测试
           </button>
           <p class="iq-run-note">
-            {{ benchmark?.id === 'pelican' ? '图形题通常需要 30–120 秒，超时 180 秒。' : '推理题通常需要 10–60 秒，超时 120 秒。' }}
+            {{ timeoutHint }}
             完成后自动写入检测历史。
           </p>
           <p v-if="activeRuns.length" class="iq-run-live">
@@ -1143,6 +1183,21 @@ onBeforeUnmount(stopTicker)
 .iq-run-area {
   display: grid;
   gap: 9px;
+}
+
+.iq-timeout-field {
+  gap: 4px;
+}
+
+.iq-timeout-field > span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.iq-timeout-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
 }
 
 .iq-run-button {
