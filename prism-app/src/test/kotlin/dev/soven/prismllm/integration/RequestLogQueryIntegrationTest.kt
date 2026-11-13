@@ -100,9 +100,12 @@ class RequestLogQueryIntegrationTest : GatewayIntegrationTestBase() {
     fun `search resolves current names and treats wildcard characters literally`() = runBlocking {
         val channel = createChannel("Current%_Name", "channel")
         val now = System.currentTimeMillis()
-        app.requestLogRepository.insert(requestLog("archived", now - 86_400_000).copy(channelId = channel.id, channelName = "snapshot", alias = "archived-model"))
+        app.requestLogRepository.insert(requestLog("archived", now - 86_400_000).copy(
+            channelId = channel.id, channelName = "snapshot", alias = "archived-model",
+            clientKeyName = "historical-client-key", channelKeyName = "historical-channel-key",
+        ))
         app.requestLogRepository.insert(requestLog("plain", now).copy(alias = "plain-model"))
-        for (keyword in listOf("CURRENT%_NAME", "%_", "snapshot")) {
+        for (keyword in listOf("CURRENT%_NAME", "%_", "snapshot", "historical-client-key", "historical-channel-key")) {
             assertEquals(listOf("archived"), app.requestLogRepository.listForDisplay(10, filters = RequestLogQuery(keyword = keyword)).map { it.requestId })
         }
         assertTrue(app.requestLogRepository.listForDisplay(10, filters = RequestLogQuery(keyword = "' OR 1=1 --")).isEmpty())

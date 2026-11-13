@@ -29,7 +29,7 @@ describe('request log hierarchy', () => {
   })
   after(async () => { await server?.close() })
 
-  async function render(records, selected = null, storedColumns, inspectState) {
+  async function render(records, selected = null, storedColumns, inspectState, initialError = '') {
     let componentState
     const wrapper = { ...component, setup(props, context) {
       const previousStorage = globalThis.localStorage
@@ -43,6 +43,7 @@ describe('request log hierarchy', () => {
       state.logs.value = records
       state.loading.value = false
       state.selected.value = selected
+      state.error.value = initialError
       componentState = state
       return state
     } }
@@ -153,6 +154,16 @@ describe('request log hierarchy', () => {
       assert.equal(state.logs.value[0].id, 2)
       assert.equal(state.error.value, '')
     })
+  })
+
+  it('only offers detail retry while the selected request belongs to the current query', async () => {
+    const selected = fixture()
+    const missing = await render([fixture({ id: 2 })], selected, undefined, undefined, 'load failed')
+    assert.match(missing.querySelector('.log-detail-navigation').textContent, /当前请求已不在查询结果中/)
+    assert.match(missing.querySelector('.log-detail-error').textContent, /load failed/)
+    assert.equal(missing.querySelector('.log-detail-error button'), null)
+    const present = await render([selected], selected, undefined, undefined, 'load failed')
+    assert.equal(present.querySelector('.log-detail-error button').textContent, '重试')
   })
 
   it('shows total tokens and total latency first without empty optional metrics', async () => {

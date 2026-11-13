@@ -777,7 +777,7 @@ onBeforeUnmount(() => {
             <span class="muted small" role="status">{{ detailIndex >= 0 ? (detailIndex + 1) + ' / ' + logs.length + (hasMore ? '＋' : '') : '当前请求已不在查询结果中' }}</span>
             <button type="button" class="button ghost mini" :disabled="!canNext || navigating || loading || loadingMore" @click="navigateDetail(1)">{{ navigating ? '加载中…' : detailIndex === logs.length - 1 && hasMore ? '下一条 · 加载更早' : '下一条' }}</button>
           </div>
-          <p v-if="error" class="log-detail-error text-danger small" role="alert">{{ error }} <button type="button" class="button ghost mini" :disabled="loading || loadingMore" @click="detailIndex === logs.length - 1 && hasMore ? navigateDetail(1) : refresh()">重试</button></p>
+          <p v-if="error" class="log-detail-error text-danger small" role="alert">{{ error }} <button v-if="detailIndex >= 0" type="button" class="button ghost mini" :disabled="loading || loadingMore" @click="detailIndex === logs.length - 1 && hasMore ? navigateDetail(1) : refresh()">重试</button></p>
 
           <div class="detail-meta-bar" role="group" aria-label="请求标识">
             <div class="detail-meta-item">
