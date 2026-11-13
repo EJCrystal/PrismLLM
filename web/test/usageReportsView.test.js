@@ -65,6 +65,40 @@ describe('usage reports layout and contracts', () => {
     assert.ok(document.querySelector('button[aria-label="复制调用方密钥 ID"]'))
   })
 
+  for (const boundary of ['from', 'to']) {
+    it('preserves the other exact boundary when editing ' + boundary + ' after drilldown', async () => {
+      const exact = {
+        from: new Date(2026, 10, 6, 9, 5, 31, 123).getTime(),
+        to: new Date(2026, 10, 6, 10, 15, 42, 456).getTime(),
+      }
+      const input = boundary === 'from' ? '2026-11-06T09:10' : '2026-11-06T11:15'
+      await render(report(), state => {
+        state.preset.value = ''
+        state.exactRange.value = { ...exact }
+        state.rangeDraft.value = { from: '2026-11-06T09:05', to: '2026-11-06T10:15', [boundary]: input }
+        state.onRangeInput(boundary)
+        assert.deepEqual(state.currentRange(), { ...exact, [boundary]: new Date(input).getTime() })
+      })
+    })
+  }
+
+  it('preserves the unedited preset boundary and only invalidates a cleared input', async () => {
+    await render(report(), state => {
+      const exact = { ...state.exactRange.value }
+      state.rangeDraft.value.to = '2026-11-12T12:00'
+      state.onRangeInput('to')
+      assert.equal(state.preset.value, '')
+      assert.deepEqual(state.currentRange(), { ...exact, to: new Date('2026-11-12T12:00').getTime() })
+      state.rangeDraft.value.to = ''
+      state.onRangeInput('to')
+      assert.equal(state.currentRange().from, exact.from)
+      assert.ok(Number.isNaN(state.currentRange().to))
+      state.rangeDraft.value.to = '2026-11-12T13:00'
+      state.onRangeInput('to')
+      assert.deepEqual(state.currentRange(), { ...exact, to: new Date('2026-11-12T13:00').getTime() })
+    })
+  })
+
   it('does not invent latency for old servers or empty samples, but preserves zero', async () => {
     const old = await render(report({ successfulLatencySamples: undefined, p50TotalMs: undefined, p90TotalMs: undefined, p99TotalMs: undefined }))
     assert.ok(old.querySelector('.usage-latency-note').textContent.includes('请更新后端'))

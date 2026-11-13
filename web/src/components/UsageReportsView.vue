@@ -73,13 +73,14 @@ interface TrendMetric {
   series: TrendSeries[]
 }
 
+const initialRange = usageReportPresetRange('last7d')
 const preset = ref('last7d')
-const rangeDraft = ref<RangeDraft>(createRangeDraft('last7d'))
+const rangeDraft = ref<RangeDraft>(createRangeDraft(initialRange))
 const rangeError = ref('')
 const maxDatetimeLocal = ref(toDatetimeLocalValue(Date.now(), true))
 const filters = ref<UsageFilters>({ clientKeyId: '', channelId: '', model: '', protocol: '' })
 const report = ref<UsageReport | null>(null)
-const exactRange = ref<ExactRange | null>(null)
+const exactRange = ref<ExactRange>(initialRange)
 const previousReport = ref<UsageReport | null>(null)
 const channels = ref<Channel[]>([])
 const clientKeys = ref<ClientKey[]>([])
@@ -331,37 +332,37 @@ const comparisonTitle = computed(() => comparison.value
   ? '较上一周期：' + formatTimeRange(comparison.value.from) + ' — ' + formatTimeRange(comparison.value.to)
   : '上一周期无可用对比数据')
 
-function createRangeDraft(presetId: string, now = Date.now()): RangeDraft {
-  const { from, to } = usageReportPresetRange(presetId, now)
+function createRangeDraft({ from, to }: ExactRange): RangeDraft {
   return { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(to) }
 }
 
 function currentRange(): { from: number; to: number } {
   // 预设使用毫秒精度，避免 datetime-local 截断到分钟而漏掉最后一分钟。
   if (preset.value) return usageReportPresetRange(preset.value)
-  const from = fromDatetimeLocalValue(rangeDraft.value.from)
-  const to = fromDatetimeLocalValue(rangeDraft.value.to)
-  return { from, to }
+  return exactRange.value
 }
 
 function selectPreset(presetId: string) {
   preset.value = presetId
-  exactRange.value = null
-  rangeDraft.value = createRangeDraft(presetId)
+  exactRange.value = usageReportPresetRange(presetId)
+  rangeDraft.value = createRangeDraft(exactRange.value)
   rangeError.value = ''
   load()
 }
 
 function refresh() {
-  if (preset.value) rangeDraft.value = createRangeDraft(preset.value)
+  if (preset.value) {
+    exactRange.value = usageReportPresetRange(preset.value)
+    rangeDraft.value = createRangeDraft(exactRange.value)
+  }
   maxDatetimeLocal.value = toDatetimeLocalValue(Date.now(), true)
   load({ quiet: true })
 }
 
-function onRangeInput() {
+function onRangeInput(boundary: keyof ExactRange) {
   // 手动修改时间后退出快捷项高亮，提交时再统一校验。
   preset.value = ''
-  exactRange.value = null
+  exactRange.value = { ...exactRange.value, [boundary]: fromDatetimeLocalValue(rangeDraft.value[boundary]) }
 }
 
 function onRangeChange() {
@@ -376,7 +377,7 @@ function errorMessage(cause: unknown): string {
 }
 
 async function load({ quiet = false, range }: { quiet?: boolean; range?: ExactRange | null } = {}): Promise<void> {
-  const { from, to } = range ?? exactRange.value ?? currentRange()
+  const { from, to } = range ?? currentRange()
   const message = validateUsageReportRange(from, to)
   rangeError.value = message
   if (message) {
@@ -384,6 +385,8 @@ async function load({ quiet = false, range }: { quiet?: boolean; range?: ExactRa
     refreshing.value = false
     return
   }
+  exactRange.value = { from, to }
+  if (preset.value) rangeDraft.value = createRangeDraft(exactRange.value)
   if (quiet) refreshing.value = true
   else loading.value = true
   error.value = ''
@@ -483,12 +486,12 @@ onMounted(() => {
       <div class="report-custom-range">
         <label class="report-range-field">
           <span>开始</span>
-          <input v-model="rangeDraft.from" type="datetime-local" step="60" :max="rangeDraft.to" @input="onRangeInput" @change="onRangeChange" />
+          <input v-model="rangeDraft.from" type="datetime-local" step="60" :max="rangeDraft.to" @input="onRangeInput('from')" @change="onRangeChange" />
         </label>
         <span class="report-range-sep">—</span>
         <label class="report-range-field">
           <span>结束</span>
-          <input v-model="rangeDraft.to" type="datetime-local" step="60" :min="rangeDraft.from" :max="maxDatetimeLocal" @input="onRangeInput" @change="onRangeChange" />
+          <input v-model="rangeDraft.to" type="datetime-local" step="60" :min="rangeDraft.from" :max="maxDatetimeLocal" @input="onRangeInput('to')" @change="onRangeChange" />
         </label>
       </div>
       <div class="report-range-hint">
