@@ -1,5 +1,7 @@
 package dev.soven.prismllm.api
 
+import dev.soven.prismllm.requestlog.domain.requestOutcome
+
 import dev.soven.prismllm.channel.domain.ChannelQuotaSettings
 import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.channel.domain.ChannelKeyRecord
@@ -978,6 +980,7 @@ data class RequestLogResponse(
     val createdAt: Long,
     val upstreamAttempts: Int?,
     val attempts: List<UpstreamAttemptResponse> = emptyList(),
+    val outcome: String = "other",
 )
 
 /** 单次上游尝试或路由跳过的日志明细。 */
@@ -1005,6 +1008,7 @@ data class UpstreamAttemptResponse(
 )
 
 fun RequestLogRecord.toResponse() = RequestLogResponse(
+    outcome = requestOutcome(),
     id = id,
     requestId = requestId,
     traceId = traceId,

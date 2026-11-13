@@ -202,6 +202,26 @@ export interface AttemptDisplayInput {
   retryable?: boolean
   skipped?: boolean
   skipReason?: string | null
+  elapsedMs?: number | null
+}
+
+export function summarizeAttemptTimings(attempts: AttemptDisplayInput[]) {
+  const calls = attempts.filter(attempt => !attempt.skipped)
+  const durations = calls.map(attempt => attempt.elapsedMs).filter((duration): duration is number =>
+    duration != null && Number.isFinite(duration) && duration >= 0,
+  )
+  return {
+    recordedMs: durations.reduce((total, duration) => total + duration, 0),
+    maxMs: durations.reduce((longest, duration) => Math.max(longest, duration), 0),
+    measuredCount: durations.length,
+    callCount: calls.length,
+  }
+}
+
+export function attemptDurationPercent(attempt: AttemptDisplayInput, maxMs: number): number | null {
+  const duration = attempt.elapsedMs
+  if (attempt.skipped || duration == null || !Number.isFinite(duration) || duration < 0) return null
+  return maxMs > 0 ? Math.min(100, duration / maxMs * 100) : 0
 }
 
 const SKIP_REASON_LABELS: Record<string, string> = {
@@ -227,6 +247,43 @@ export function skipReasonLabel(value: string | null | undefined): string {
 export function attemptHasError(attempt: AttemptDisplayInput | null | undefined): boolean {
   if (attempt?.skipped) return false
   return Boolean(attempt?.errorCode || (attempt?.statusCode ?? 0) >= 400 || (attempt?.upstreamErrorStatusCode ?? 0) >= 400)
+}
+
+export interface RequestLogOutcomeInput {
+  outcome?: 'success' | 'recovered' | 'failed' | 'cancelled' | 'other'
+  statusCode: number
+  errorCode?: string | null
+  upstreamErrorCode?: string | null
+  upstreamAttempts?: number | null
+  attempts?: AttemptDisplayInput[] | null
+}
+
+export function requestLogOutcome(log: RequestLogOutcomeInput): NonNullable<RequestLogOutcomeInput['outcome']> {
+  if (log.outcome) return log.outcome
+  if (log.statusCode === 499 || log.errorCode === 'client_disconnect' || log.errorCode === 'client_cancelled') return 'cancelled'
+  if (log.statusCode >= 400 || log.errorCode || log.upstreamErrorCode) return 'failed'
+  if (log.statusCode < 200 || log.statusCode >= 300) return 'other'
+  if ((log.upstreamAttempts ?? 0) > 1 || (log.attempts?.filter(attempt => !attempt.skipped).length ?? 0) > 1 || log.attempts?.some(attemptHasError)) return 'recovered'
+  return 'success'
+}
+
+export function requestLogTone(log: RequestLogOutcomeInput): 'danger' | 'warning' | 'recovered' | null {
+  const outcome = requestLogOutcome(log)
+  if (outcome === 'cancelled') return 'warning'
+  if (outcome === 'failed') return log.statusCode >= 400 && log.statusCode < 500 ? 'warning' : 'danger'
+  if (outcome === 'recovered') return 'recovered'
+  return null
+}
+
+export function requestLogStatusLabel(log: RequestLogOutcomeInput): string {
+  if (log.errorCode === 'client_disconnect') return '客户端断开'
+  if (log.errorCode === 'client_cancelled') return '客户端取消'
+  if (requestLogOutcome(log) === 'cancelled') return '取消或断开'
+  const tone = requestLogTone(log)
+  if (tone === 'recovered') return '重试成功'
+  if (tone === 'danger') return '请求失败'
+  if (tone === 'warning') return '请求异常'
+  return ''
 }
 
 export function attemptResultLabel(attempt: AttemptDisplayInput | null | undefined, hasFollowingAttempt = false): string {

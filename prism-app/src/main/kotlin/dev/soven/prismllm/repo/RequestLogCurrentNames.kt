@@ -7,10 +7,21 @@ import dev.soven.prismllm.requestlog.persistence.RequestLogNameKind
 import dev.soven.prismllm.requestlog.persistence.RequestLogNameResolver
 import org.jetbrains.exposed.v1.core.Column
 import org.jetbrains.exposed.v1.core.inList
+import org.jetbrains.exposed.v1.core.CustomFunction
+import org.jetbrains.exposed.v1.core.IntegerColumnType
+import org.jetbrains.exposed.v1.core.greater
+import org.jetbrains.exposed.v1.core.lowerCase
+import org.jetbrains.exposed.v1.core.stringParam
 import org.jetbrains.exposed.v1.jdbc.select
 
 /** 在请求日志仓储的事务内查询渠道、密钥与调用方密钥的当前名称。 */
 class RequestLogCurrentNames : RequestLogNameResolver {
+    override fun matchingIds(kind: RequestLogNameKind, keyword: String): Set<String> {
+        val (idColumn, nameColumn) = columns(kind)
+        val position = CustomFunction<Int>("strpos", IntegerColumnType(), nameColumn.lowerCase(), stringParam(keyword.lowercase()))
+        return idColumn.table.select(idColumn).where { position greater 0 }.map { it[idColumn] }.toSet()
+    }
+
     override fun resolve(kind: RequestLogNameKind, ids: Set<String>): Map<String, String> {
         val (idColumn, nameColumn) = columns(kind)
         val distinctIds = ids.asSequence().filter { it.isNotBlank() }.distinct().toList()

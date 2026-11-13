@@ -501,7 +501,10 @@ export interface ModelPriceReference {
   source: string
 }
 
+export type RequestLogOutcome = 'success' | 'recovered' | 'failed' | 'cancelled' | 'other'
+
 export interface RequestLog {
+  outcome?: RequestLogOutcome
   id: number
   requestId: string
   traceId: string | null
@@ -1001,6 +1004,22 @@ export interface AuditLogPageOptions extends PageOptions {
   actor?: string | null
   action?: string | null
   result?: 'success' | 'failure' | null
+}
+
+export interface RequestLogPageOptions extends PageOptions {
+  from?: number | null
+  to?: number | null
+  q?: string
+  channelId?: string
+  model?: string
+  httpStatus?: string
+  outcome?: RequestLogOutcome | 'abnormal' | ''
+}
+
+export interface RequestLogFilterOptions {
+  channels: Array<{ value: string; label: string }>
+  models: Array<{ value: string; label: string }>
+  statuses: Array<{ value: string; label: string }>
 }
 
 export interface UsageReportQuery {

@@ -41,7 +41,7 @@ const meta = {
   },
   logs: {
     title: '请求日志',
-    desc: '查看请求状态、路由、耗时与 token 用量；点击“详情”查看完整上下文。失败请求的错误正文会截断脱敏保存。',
+    desc: '查看请求元数据、路由、用量与失败详情。日志不保存 Prompt 与成功响应正文；失败正文会截断脱敏保存。',
   },
   'usage-reports': {
     title: '用量报表',
@@ -189,14 +189,14 @@ onBeforeUnmount(() => {
           <div class="page-heading">
             <div class="page-title-row">
               <h1>{{ currentMeta.title }}</h1>
-              <div class="page-help">
+              <div class="page-help" :class="{ 'is-visible': view === 'logs' }">
                 <InfoPopover :key="view" :label="currentMeta.title + '说明'">
                   <template #trigger><Icon name="info" :size="16" /></template>
                   <p class="page-help-copy">{{ currentMeta.desc }}</p>
                 </InfoPopover>
               </div>
             </div>
-            <p class="page-desc">{{ currentMeta.desc }}</p>
+            <p v-if="view !== 'logs'" class="page-desc">{{ currentMeta.desc }}</p>
           </div>
         </div>
         <div class="topbar-right">

@@ -2287,7 +2287,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val limit = call.queryInt("limit", default = 100, min = 1, max = 1000)
             val beforeId = call.queryLongOrNull("beforeId")
-            call.respond(app.requestLogRepository.listForDisplay(limit, beforeId).map { it.toResponse() })
+            call.respond(app.requestLogRepository.listForDisplay(limit, beforeId, call.requestLogQuery()).map { it.toResponse() })
+        }
+
+        get("/request-logs/filter-options") {
+            call.requireAdmin(app)
+            call.respond(app.requestLogRepository.filterOptions(call.requestLogQuery()))
         }
 
         get("/usage-report") {
