@@ -315,6 +315,27 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 
 ---
 
+### 8. 请求日志查询
+
+`GET /admin/api/request-logs` 返回按记录 ID 倒序排列的日志数组，需管理员会话。所有筛选先在服务端执行，再应用游标与条数限制：
+
+| 参数 | 语义 |
+| --- | --- |
+| `limit` / `beforeId` | 单页条数与上一页末条 ID；翻页时保持其他查询参数不变 |
+| `from` / `to` | 毫秒时间戳，开始包含、结束不包含；不传表示全部保留日志 |
+| `q` | 不区分大小写的字面子串，最长 2000 字符；覆盖请求与追踪 ID、模型、渠道与密钥名称、错误信息、IP 和 User-Agent；`%` / `_` 不作为通配符 |
+| `channelId` / `model` | 渠道 ID 与请求模型精确匹配；`channelId=__unrouted__` 仅查询未路由请求 |
+| `httpStatus` | 精确 HTTP 状态码、`2xx` 或 `4xx_5xx` |
+| `outcome` | `success`、`recovered`、`failed`、`cancelled`、`other` 或 `abnormal`（失败与取消） |
+
+返回的 `outcome` 区分最终请求结果与 HTTP 状态：HTTP 200 后发生流式错误仍为 `failed`；重试后成功为 `recovered`，冷却跳过不算上游调用；客户端取消或断开为 `cancelled`。
+
+`GET /admin/api/request-logs/filter-options` 返回 `{channels, models, statuses}`，每项为 `{value, label}`。选项仅受 `from` / `to` 限制，覆盖该范围内的全部日志，不限于当前已加载页。名称优先使用当前配置，删除后回退到历史快照。
+
+管理台默认最近 24 小时，并提供最近 15 分钟、1 小时、自定义时间与全部保留日志。自定义结束时间包含所选整分钟，界面显示浏览器本地时区。查看详情时暂停自动刷新，关闭后恢复原间隔。
+
+---
+
 ## 三、调用方密钥生命周期与审计
 
 ### 1. 密钥创建与配额

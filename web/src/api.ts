@@ -1,5 +1,7 @@
 import { ApiError } from './types/api'
 import type {
+  RequestLogPageOptions,
+  RequestLogFilterOptions,
   AdminAuditLog,
   AuditLogPageOptions,
   ApiErrorBody,
@@ -342,10 +344,19 @@ export const api = {
   deleteModelDefaultPrice: (id: string) =>
     request<null>(`/model-default-prices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  listRequestLogs: ({ limit = 100, beforeId = null }: PageOptions = {}) => {
+  listRequestLogs: ({ limit = 100, beforeId = null, ...filters }: RequestLogPageOptions = {}) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (beforeId != null) params.set('beforeId', String(beforeId))
+    for (const [key, value] of Object.entries(filters)) {
+      if (value != null && value !== '') params.set(key, String(value))
+    }
     return requestList<RequestLog>('/request-logs?' + params)
+  },
+  listRequestLogFilterOptions: ({ from, to }: Pick<RequestLogPageOptions, 'from' | 'to'> = {}) => {
+    const params = new URLSearchParams()
+    if (from != null) params.set('from', String(from))
+    if (to != null) params.set('to', String(to))
+    return request<RequestLogFilterOptions>('/request-logs/filter-options?' + params)
   },
   getUsageReport: ({ from, to, clientKeyId = null, channelId = null, model = null, protocol = null, timezoneOffsetMinutes = 0 }: UsageReportQuery, options: RequestOptions = {}) => {
     const params = new URLSearchParams({ from: String(from), to: String(to) })

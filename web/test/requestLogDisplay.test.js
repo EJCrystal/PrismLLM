@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   attemptFailureReason,
+  attemptDurationPercent,
   attemptHasError,
   attemptResultLabel,
   effectiveProtocolEndpoint,
@@ -9,12 +10,44 @@ import {
   protocolEndpoint,
   protocolLabel,
   reportedModelStatus,
+  requestLogStatusLabel,
+  requestLogTone,
   reasoningEffortLabel,
   tokenUsageLabel,
   tokenUsageState,
+  summarizeAttemptTimings,
 } from '../src/utils/requestLogDisplay'
 
 describe('requestLogDisplay: 请求日志状态展示', () => {
+  it('compares only recorded call durations and preserves zero without counting skipped candidates', () => {
+    const attempts = [{ elapsedMs: 100 }, { elapsedMs: 400 }, { elapsedMs: 0 }, { elapsedMs: 9000, skipped: true }, {}, { elapsedMs: -1 }, { elapsedMs: NaN }]
+    assert.deepEqual(summarizeAttemptTimings(attempts), { recordedMs: 500, maxMs: 400, measuredCount: 3, callCount: 6 })
+    assert.equal(attemptDurationPercent(attempts[0], 400), 25)
+    assert.equal(attemptDurationPercent(attempts[2], 400), 0)
+    assert.equal(attemptDurationPercent(attempts[3], 400), null)
+    assert.equal(attemptDurationPercent(attempts[4], 400), null)
+    assert.equal(attemptDurationPercent(attempts[5], 400), null)
+    assert.equal(attemptDurationPercent(attempts[6], 400), null)
+    assert.equal(attemptDurationPercent({ elapsedMs: 0 }, 0), 0)
+    assert.deepEqual(summarizeAttemptTimings([]), { recordedMs: 0, maxMs: 0, measuredCount: 0, callCount: 0 })
+  })
+  it('区分服务端失败、客户端异常、流式错误与重试后成功', () => {
+    assert.equal(requestLogTone({ statusCode: 200 }), null)
+    assert.equal(requestLogTone({ statusCode: 503 }), 'danger')
+    assert.equal(requestLogTone({ statusCode: 429 }), 'warning')
+    assert.equal(requestLogTone({ statusCode: 499, errorCode: 'client_disconnect' }), 'warning')
+    assert.equal(requestLogStatusLabel({ statusCode: 499, errorCode: 'client_disconnect' }), '客户端断开')
+    assert.equal(requestLogStatusLabel({ statusCode: 200, errorCode: 'client_cancelled' }), '客户端取消')
+    assert.equal(requestLogTone({ statusCode: 200, errorCode: 'stream_interrupted' }), 'danger')
+    assert.equal(requestLogTone({ statusCode: 200, upstreamErrorCode: 'upstream_failure' }), 'danger')
+    assert.equal(requestLogStatusLabel({ statusCode: 200, errorCode: 'stream_interrupted' }), '请求失败')
+    assert.equal(requestLogTone({ statusCode: 200, upstreamAttempts: 2 }), 'recovered')
+    assert.equal(requestLogStatusLabel({ statusCode: 200, upstreamAttempts: 2 }), '重试成功')
+    assert.equal(requestLogTone({ statusCode: 200, attempts: [{ statusCode: 503 }, { statusCode: 200 }] }), 'recovered')
+    assert.equal(requestLogTone({ statusCode: 200, attempts: [{ skipped: true, errorCode: 'cooldown' }, { statusCode: 200 }] }), null)
+    assert.equal(requestLogTone({ statusCode: 503, upstreamAttempts: 2 }), 'danger')
+  })
+
   it('把缺省推理强度明确展示为 none，其余档位原样小写展示', () => {
     assert.equal(reasoningEffortLabel(null), 'none')
     assert.equal(reasoningEffortLabel(undefined), 'none')

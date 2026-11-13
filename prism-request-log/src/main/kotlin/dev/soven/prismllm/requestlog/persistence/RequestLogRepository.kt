@@ -4,6 +4,9 @@ import dev.soven.prismllm.requestlog.domain.attemptOutcome
 import dev.soven.prismllm.shared.domain.FailureStage
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.requestlog.domain.RequestLogRecord
+import dev.soven.prismllm.requestlog.domain.RequestLogQuery
+import dev.soven.prismllm.requestlog.domain.RequestLogFilterOption
+import dev.soven.prismllm.requestlog.domain.RequestLogFilterOptions
 import dev.soven.prismllm.requestlog.domain.UpstreamAttemptRecord
 import dev.soven.prismllm.requestlog.infra.UpstreamAttemptCodec
 import dev.soven.prismllm.pricing.domain.PricingMode
@@ -16,6 +19,8 @@ import dev.soven.prismllm.requestlog.domain.UsageTotal
 import dev.soven.prismllm.requestlog.domain.UsageTrendPoint
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.Op
+import org.jetbrains.exposed.v1.core.QueryBuilder
+import org.jetbrains.exposed.v1.core.isNull
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.Case
 import org.jetbrains.exposed.v1.core.Column
@@ -45,6 +50,7 @@ import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.insertIgnore
 import org.jetbrains.exposed.v1.jdbc.update
 import org.jetbrains.exposed.v1.jdbc.Query
+import org.jetbrains.exposed.v1.jdbc.andWhere
 import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -217,8 +223,8 @@ class RequestLogRepository(
             .map(::toRecord)
     }
 
-    suspend fun listForDisplay(limit: Int, beforeId: Long? = null): List<RequestLogRecord> = suspendTransaction(database) {
-        val records = logQuery(beforeId)
+    suspend fun listForDisplay(limit: Int, beforeId: Long? = null, filters: RequestLogQuery = RequestLogQuery()): List<RequestLogRecord> = suspendTransaction(database) {
+        val records = logQuery(beforeId).andWhere { listWhere(filters) }
             .orderBy(RequestLogs.id, org.jetbrains.exposed.v1.core.SortOrder.DESC)
             .limit(limit.coerceIn(1, 500))
             .map(::toRecord)
@@ -241,6 +247,83 @@ class RequestLogRepository(
         val query = RequestLogs.selectAll()
         return if (beforeId != null) query.where { RequestLogs.id less beforeId } else query
     }
+
+    suspend fun filterOptions(filters: RequestLogQuery): RequestLogFilterOptions = suspendTransaction(database) {
+        val where = listWhere(RequestLogQuery(from = filters.from, to = filters.to))
+        val channelRows = RequestLogs.select(RequestLogs.channelId, RequestLogs.channelName).where { where }.withDistinct().toList()
+        val names = nameResolver.resolve(RequestLogNameKind.CHANNEL, channelRows.mapNotNull { it[RequestLogs.channelId] }.toSet())
+        val channels = channelRows.groupBy { it[RequestLogs.channelId] }.map { (id, rows) ->
+            RequestLogFilterOption(id ?: UNASSIGNED_CHANNEL, id?.let { names[it] }
+                ?: rows.firstNotNullOfOrNull { it[RequestLogs.channelName]?.takeIf(String::isNotBlank) }
+                ?: id ?: "未路由到渠道")
+        }
+        val counts = channels.groupingBy { it.label }.eachCount()
+        RequestLogFilterOptions(
+            channels = channels.map { if ((counts[it.label] ?: 0) > 1) it.copy(label = "${it.label} · ${it.value}") else it }.sortedBy { it.label },
+            models = RequestLogs.select(RequestLogs.alias).where { where }.withDistinct().map { it[RequestLogs.alias] }
+                .distinct().sorted().map { RequestLogFilterOption(it, it) },
+            statuses = RequestLogs.select(RequestLogs.statusCode).where { where }.withDistinct().map { it[RequestLogs.statusCode] }
+                .sorted().map { RequestLogFilterOption(it.toString(), "HTTP $it") },
+        )
+    }
+
+    private fun listWhere(filters: RequestLogQuery): Op<Boolean> {
+        val conditions = mutableListOf<Op<Boolean>>()
+        filters.from?.let { conditions += RequestLogs.createdAt greaterEq it }
+        filters.to?.let { conditions += RequestLogs.createdAt less it }
+        filters.channelId?.let { conditions += if (it == UNASSIGNED_CHANNEL) RequestLogs.channelId.isNull() else RequestLogs.channelId eq it }
+        filters.model?.let { conditions += RequestLogs.alias eq it }
+        filters.httpStatus?.let {
+            conditions += when (it) {
+                "2xx" -> (RequestLogs.statusCode greaterEq 200) and (RequestLogs.statusCode less 300)
+                "4xx_5xx" -> (RequestLogs.statusCode greaterEq 400) and (RequestLogs.statusCode less 600)
+                else -> RequestLogs.statusCode eq it.toInt()
+            }
+        }
+        filters.outcome?.let {
+            conditions += if (it == "abnormal") sqlCondition("($outcomeSql) in ('failed', 'cancelled')")
+                else sqlCondition("($outcomeSql) = ?", listOf(it))
+        }
+        filters.keyword?.takeIf { it.isNotEmpty() }?.let { keyword ->
+            val fields = "request_id, trace_id, alias, channel_id, channel_name, channel_key_name, upstream_model, protocol, upstream_protocol, status_code, error_code, error_message, failure_stage, upstream_error_code, reasoning_effort, client_key_name, client_ip, client_user_agent"
+            var matches = sqlCondition("strpos(lower(concat_ws(' ', $fields)), ?) > 0", listOf(keyword.lowercase()))
+            listOf(RequestLogNameKind.CHANNEL to RequestLogs.channelId, RequestLogNameKind.CLIENT_KEY to RequestLogs.clientKeyId,
+                RequestLogNameKind.CHANNEL_KEY to RequestLogs.channelKeyId).forEach { (kind, column) ->
+                val ids = nameResolver.matchingIds(kind, keyword)
+                if (ids.isNotEmpty()) matches = matches or (column inList ids)
+            }
+            conditions += matches
+        }
+        return conditions.reduceOrNull { left, right -> left and right } ?: Op.TRUE
+    }
+
+    private fun sqlCondition(sql: String, arguments: List<String> = emptyList()): Op<Boolean> = object : Op<Boolean>() {
+        override fun toQueryBuilder(queryBuilder: QueryBuilder) {
+            val parts = sql.split('?')
+            parts.forEachIndexed { index, part ->
+                queryBuilder.append(part)
+                if (index < arguments.size) queryBuilder.registerArgument(TextColumnType(), arguments[index])
+            }
+        }
+    }
+
+    private val outcomeSql = """
+        case
+          when status_code = 499 or error_code in ('client_disconnect', 'client_cancelled') then 'cancelled'
+          when status_code >= 400 or coalesce(error_code, '') <> '' or coalesce(upstream_error_code, '') <> '' then 'failed'
+          when status_code not between 200 and 299 then 'other'
+          when coalesce(upstream_attempts, 0) > 1 or exists (
+            select 1 from jsonb_array_elements((case when attempts_json is json array then attempts_json else '[]' end)::jsonb) attempt
+            where coalesce(attempt->>'skipped', 'false') <> 'true'
+            having count(*) > 1 or coalesce(bool_or(
+              coalesce(attempt->>'errorCode', '') <> ''
+              or (jsonb_typeof(attempt->'statusCode') = 'number' and attempt->'statusCode' >= '400'::jsonb)
+              or (jsonb_typeof(attempt->'upstreamErrorStatusCode') = 'number' and attempt->'upstreamErrorStatusCode' >= '400'::jsonb)
+            ), false)
+          ) then 'recovered'
+          else 'success'
+        end
+    """.trimIndent()
 
     suspend fun report(query: UsageReportQuery): UsageReport = suspendTransaction(database) {
         val where = reportWhere(query)

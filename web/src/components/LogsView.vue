@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/vue'
 import { api } from '../api'
 import { notify } from '../toast'
-import type { RequestLog, RequestLogAttempt } from '../types/api'
+import type { RequestLog, RequestLogAttempt, RequestLogFilterOptions, RequestLogPageOptions } from '../types/api'
+import RequestLogListItem from './RequestLogListItem.vue'
 import CopyButton from './CopyButton.vue'
 import CursorLoadMore from './CursorLoadMore.vue'
 import Icon from './Icon.vue'
@@ -20,6 +21,7 @@ import { createCursorPager } from '../utils/cursorPager'
 import { requestModeClass, requestModeLabel } from '../utils/requestMode'
 import {
   attemptFailureReason,
+  attemptDurationPercent,
   attemptHasError,
   attemptResultLabel,
   protocolConversion,
@@ -27,10 +29,15 @@ import {
   protocolLabel,
   reasoningEffortLabel,
   reportedModelStatus,
+  requestLogStatusLabel,
+  requestLogTone,
+  requestLogOutcome,
   tokenUsageLabel,
   tokenUsageState,
+  summarizeAttemptTimings,
 } from '../utils/requestLogDisplay'
-import { filterRequestLogs, requestLogFilterOptions } from '../utils/requestLogSearch'
+import { requestLogCustomRange, requestLogPresetRange, requestLogTimePresets, shouldOpenRequestLog } from '../utils/requestLogQuery'
+import { toDatetimeLocalValue } from '../utils/usageReport'
 import {
   formatTime,
   formatDuration,
@@ -42,13 +49,75 @@ import {
   formatPriceSnapshot,
 } from '../utils/format'
 
+const appliedFilters = ref<RequestLogPageOptions>({ ...requestLogPresetRange('last24h') })
 const { items: logs, pageSize, loading, loadingMore, error, hasMore, load, loadMore, setPageSize } = createCursorPager<RequestLog>({
-  fetchPage: (options) => api.listRequestLogs(options),
+  fetchPage: (options) => api.listRequestLogs({ ...appliedFilters.value, ...options }),
 })
 const query = ref('')
 const channelFilter = ref('')
 const modelFilter = ref('')
 const statusFilter = ref('')
+const outcomeFilter = ref<NonNullable<RequestLogPageOptions['outcome']>>('')
+const timePreset = ref('last24h')
+const initialRange = requestLogPresetRange('last24h')
+const rangeDraft = ref({ from: toDatetimeLocalValue(initialRange.from!), to: toDatetimeLocalValue(initialRange.to!) })
+const rangeError = ref('')
+const filterOptions = ref<RequestLogFilterOptions>({ channels: [], models: [], statuses: [] })
+const optionsError = ref('')
+const wideLayout = ref(false)
+let mediaQuery: MediaQueryList | undefined
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+let filterTimer: ReturnType<typeof setTimeout> | undefined
+let optionsGeneration = 0
+const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+let appliedPreset = 'last24h'
+function keepSelectedOption(options: Array<{ value: string; label: string }>, value: string) {
+  return value && !options.some(option => option.value === value) ? [...options, { value, label: value === '__unrouted__' ? '未路由到渠道' : value }] : options
+}
+const channelOptions = computed(() => keepSelectedOption(filterOptions.value.channels, channelFilter.value))
+const modelOptions = computed(() => keepSelectedOption(filterOptions.value.models, modelFilter.value))
+const statusOptions = computed(() => keepSelectedOption(filterOptions.value.statuses, statusFilter.value))
+async function refreshOptions() {
+  const generation = ++optionsGeneration
+  optionsError.value = ''
+  try {
+    const options = await api.listRequestLogFilterOptions(appliedFilters.value)
+    if (generation === optionsGeneration) filterOptions.value = options
+  } catch (cause) {
+    if (generation === optionsGeneration) optionsError.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+function renewRange() {
+  if (timePreset.value !== 'custom') {
+    appliedFilters.value = { ...appliedFilters.value, from: undefined, to: undefined, ...requestLogPresetRange(timePreset.value) }
+  }
+}
+async function applyFilters() {
+  clearTimeout(searchTimer)
+  closeDetail()
+  const previousRange = [appliedFilters.value.from, appliedFilters.value.to].join(':')
+  if (appliedPreset !== timePreset.value) renewRange()
+  appliedPreset = timePreset.value
+  appliedFilters.value = { from: appliedFilters.value.from, to: appliedFilters.value.to, q: query.value.trim(), channelId: channelFilter.value,
+    model: modelFilter.value, httpStatus: statusFilter.value, outcome: outcomeFilter.value }
+  logs.value = []
+  hasMore.value = false
+  if (previousRange !== [appliedFilters.value.from, appliedFilters.value.to].join(':') || filterOptions.value.models.length === 0) void refreshOptions()
+  await load()
+  await nextTick()
+  tableScroll.value?.scrollTo({ top: 0 })
+}
+function applyCustomRange() {
+  try {
+    const range = requestLogCustomRange(rangeDraft.value.from, rangeDraft.value.to)
+    rangeError.value = ''
+    appliedFilters.value = { ...appliedFilters.value, ...range }
+    void refreshOptions()
+    void applyFilters()
+  } catch (cause) {
+    rangeError.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
 const autoRefreshOptions = [
   { label: '关闭', value: 0 },
   { label: '每 5 秒', value: 5_000 },
@@ -68,12 +137,18 @@ function readAutoRefreshInterval(): number {
 const autoRefreshInterval = ref(readAutoRefreshInterval())
 const autoRefreshing = ref(false)
 const { anchor: refreshMenuAnchor, panelStyle: refreshMenuStyle, place: placeRefreshMenu } = useAnchoredPanel(220, 300)
-const filterOptions = computed(() => requestLogFilterOptions(logs.value))
-const hasFilters = computed(() => Boolean(channelFilter.value || modelFilter.value || statusFilter.value))
+const hasFilters = computed(() => Boolean(query.value || channelFilter.value || modelFilter.value || statusFilter.value || outcomeFilter.value || timePreset.value !== 'last24h'))
 function clearFilters() {
+  query.value = ''
   channelFilter.value = ''
   modelFilter.value = ''
   statusFilter.value = ''
+  outcomeFilter.value = ''
+  timePreset.value = 'last24h'
+  rangeError.value = ''
+  clearTimeout(searchTimer)
+  clearTimeout(filterTimer)
+  filterTimer = setTimeout(() => { void applyFilters() }, 0)
 }
 type LogColumnId = 'time' | 'request' | 'model' | 'channel' | 'clientIp' | 'clientUa' | 'status' | 'latency' | 'usage' | 'cost'
 const logColumns: Array<{ id: LogColumnId; label: string }> = [
@@ -93,7 +168,7 @@ function readLogColumns(): Record<LogColumnId, boolean> {
   try {
     const raw = localStorage.getItem('prism-llm.logs.columns') ?? localStorage.getItem('llm-gateway.logs.columns')
     const parsed = JSON.parse(raw || '{}')
-    return { ...defaultLogColumns, ...Object.fromEntries(logColumns.map(({ id }) => [id, parsed[id] !== false])) } as Record<LogColumnId, boolean>
+    return Object.fromEntries(logColumns.map(({ id }) => [id, typeof parsed[id] === 'boolean' ? parsed[id] : defaultLogColumns[id]])) as Record<LogColumnId, boolean>
   } catch {
     return { ...defaultLogColumns }
   }
@@ -181,14 +256,35 @@ function reportedModelTitle(log: RequestLog): string {
 // 历史日志没有逐次明细（V39 回填为空数组）。不要用汇总字段伪造一条尝试记录：
 // totalMs 是整个请求耗时，upstreamAttempts 也可能是多次调用。
 const selectedAttempts = computed<RequestLogAttempt[]>(() => selected.value?.attempts || [])
+const attemptTimings = computed(() => summarizeAttemptTimings(selectedAttempts.value))
+const selectedReasoningEffort = computed(() => {
+  const effort = reasoningEffortLabel(selected.value?.reasoningEffort)
+  return effort === 'none' ? null : effort
+})
 const hasAttemptDetail = computed(() => selectedAttempts.value.length > 0)
 const skippedAttemptCount = computed(() => selectedAttempts.value.filter((attempt) => attempt.skipped).length)
+const compactSingleAttempt = computed(() => selected.value && requestLogOutcome(selected.value) === 'success' && selectedAttempts.value.length === 1 && !selectedAttempts.value[0].skipped && !attemptHasError(selectedAttempts.value[0]))
+const detailIndex = computed(() => selected.value ? logs.value.findIndex(log => log.id === selected.value!.id) : -1)
+const navigating = ref(false)
+const canNext = computed(() => detailIndex.value >= 0 && (detailIndex.value < logs.value.length - 1 || hasMore.value))
+async function navigateDetail(direction: -1 | 1) {
+  if (navigating.value || loading.value || loadingMore.value || detailIndex.value < 0) return
+  const currentId = selected.value?.id
+  const targetIndex = detailIndex.value + direction
+  if (targetIndex < 0) return
+  if (targetIndex >= logs.value.length && hasMore.value) {
+    navigating.value = true
+    try { await loadMore() } finally { navigating.value = false }
+  }
+  if (selected.value?.id !== currentId) return
+  if (logs.value[targetIndex]) selected.value = logs.value[targetIndex]
+  await nextTick()
+  if (detailDialog.value && !detailDialog.value.contains(document.activeElement)) detailDialog.value.focus()
+}
 
-const filtered = computed(() => {
-  return filterRequestLogs(logs.value, query.value, { channelId: channelFilter.value, model: modelFilter.value, status: statusFilter.value })
-})
+const filtered = computed(() => logs.value)
 
-const errorCount = computed(() => logs.value.filter((log) => log.statusCode >= 400).length)
+const errorCount = computed(() => logs.value.filter((log) => ['danger', 'warning'].includes(requestLogTone(log) || '')).length)
 const averageLatency = computed(() => {
   if (logs.value.length === 0) return '—'
   const total = logs.value.reduce((sum, log) => sum + log.totalMs, 0)
@@ -197,15 +293,19 @@ const averageLatency = computed(() => {
 
 async function refresh() {
   if (loading.value || loadingMore.value) return
+  renewRange()
+  void refreshOptions()
   const loaded = await load()
   await nextTick()
-  tableScroll.value?.scrollTo({ top: 0 })
+  if (selected.value) selected.value = logs.value.find(log => log.id === selected.value!.id) || selected.value
+  else tableScroll.value?.scrollTo({ top: 0 })
   if (loaded) notify('请求日志已刷新')
 }
 
 async function autoRefresh(): Promise<void> {
   autoRefreshing.value = true
   try {
+    renewRange()
     await load()
   } finally {
     autoRefreshing.value = false
@@ -219,16 +319,21 @@ function setAutoRefreshInterval(interval: number): void {
   } catch { /* ignore storage failures */ }
 }
 
-useAutoRefresh(autoRefreshInterval, () => { void autoRefresh() }, () => loading.value || loadingMore.value)
+useAutoRefresh(autoRefreshInterval, () => { void autoRefresh() }, () => loading.value || loadingMore.value || Boolean(selected.value))
 
 watch(pageSize, async () => {
   await nextTick()
   tableScroll.value?.scrollTo({ top: 0 })
 })
 
-watch([query, channelFilter, modelFilter, statusFilter], async () => {
-  await nextTick()
-  tableScroll.value?.scrollTo({ top: 0 })
+watch(query, () => {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => { void applyFilters() }, 300)
+})
+watch([channelFilter, modelFilter, statusFilter, outcomeFilter, timePreset], (values, previous) => {
+  if (values[4] === 'custom' && values.slice(0, 4).every((value, index) => value === previous[index])) return
+  clearTimeout(filterTimer)
+  filterTimer = setTimeout(() => { void applyFilters() }, 0)
 })
 
 function formatCostAmount(log: RequestLog): string | null {
@@ -276,9 +381,15 @@ function statusClass(code: number): string {
   return 'success'
 }
 
-function openDetail(log: RequestLog, event: MouseEvent): void {
+function openDetail(log: RequestLog, event: MouseEvent | KeyboardEvent): void {
   detailTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   selected.value = log
+}
+
+function openRow(log: RequestLog, event: MouseEvent | KeyboardEvent): void {
+  if (!shouldOpenRequestLog(event)) return
+  if ('key' in event) event.preventDefault()
+  openDetail(log, event)
 }
 
 function closeDetail(): void {
@@ -291,7 +402,14 @@ function onDetailKeydown(event: KeyboardEvent): void {
     closeDetail()
     return
   }
-  if (event.key !== 'Tab' || !detailDialog.value) return
+  const target = event.target
+  if (!event.altKey && !event.ctrlKey && !event.metaKey && ['ArrowUp', 'ArrowDown'].includes(event.key)
+    && !(target instanceof Element && target.closest('input, select, textarea, summary, [contenteditable="true"]'))) {
+    event.preventDefault()
+    void navigateDetail(event.key === 'ArrowUp' ? -1 : 1)
+    return
+  }
+  if (wideLayout.value || event.key !== 'Tab' || !detailDialog.value) return
   const focusables = Array.from(
     detailDialog.value.querySelectorAll<HTMLElement>(
       'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
@@ -319,34 +437,61 @@ function onDetailKeydown(event: KeyboardEvent): void {
   }
 }
 
-watch(selected, async (value) => {
+watch(selected, async (value, previous) => {
   if (value) {
     await nextTick()
+    detailDialog.value?.querySelector('.modal-body')?.scrollTo({ top: 0 })
+    if (previous) return
     const autofocus = detailDialog.value?.querySelector<HTMLElement>('[data-autofocus]')
     ;(autofocus || detailDialog.value)?.focus()
     return
   }
   const trigger = detailTrigger
   detailTrigger = null
-  trigger?.focus()
+  await nextTick()
+  const matchingRow = Array.from(document.querySelectorAll<HTMLElement>('[data-request-id]')).find(element => element.dataset.requestId === previous?.requestId && element.offsetParent !== null)
+  if (trigger?.isConnected && trigger.offsetParent !== null) trigger.focus()
+  else (matchingRow || document.querySelector<HTMLElement>('.logs-search input'))?.focus()
 })
 
-onMounted(load)
+watch([selected, wideLayout], async ([value, wide], _previous, onCleanup) => {
+  if (!value || wide || typeof document === 'undefined') return
+  const original = document.body.style.overflow
+  document.body.style.overflow = 'hidden'
+  onCleanup(() => { document.body.style.overflow = original })
+  await nextTick()
+  if (selected.value && !wideLayout.value && detailDialog.value && !detailDialog.value.contains(document.activeElement)) detailDialog.value.focus()
+})
+
+function updateLayout() { wideLayout.value = mediaQuery?.matches ?? false }
+onMounted(() => {
+  mediaQuery = window.matchMedia('(min-width: 1200px)')
+  updateLayout()
+  mediaQuery.addEventListener('change', updateLayout)
+  void refreshOptions()
+  void load()
+})
+onBeforeUnmount(() => {
+  clearTimeout(searchTimer)
+  clearTimeout(filterTimer)
+  optionsGeneration++
+  mediaQuery?.removeEventListener('change', updateLayout)
+})
 </script>
 
 <template>
-  <section class="page-stack page-compact">
+  <section class="page-stack page-compact" :inert="selected && !wideLayout ? true : undefined">
     <div class="logs-overview">
-      <dl class="list-summary logs-summary" aria-label="当前已加载日志统计">
+      <dl class="list-summary logs-summary" aria-label="当前查询已加载日志统计">
         <div><dt>已加载</dt><dd>{{ logs.length }}</dd></div>
-        <div><dt>异常响应</dt><dd :class="errorCount ? 'text-danger' : 'text-success'" title="HTTP 4xx / 5xx / 499">{{ errorCount }}</dd></div>
+        <div><dt>异常响应</dt><dd><button type="button" class="log-summary-filter" :class="errorCount ? 'text-danger' : 'text-success'" :aria-pressed="outcomeFilter === 'abnormal'" title="筛选失败、取消或断开的请求，包含 HTTP 200 流式失败" @click="outcomeFilter = outcomeFilter === 'abnormal' ? '' : 'abnormal'">{{ errorCount }}</button></dd></div>
         <div><dt>平均总耗时</dt><dd title="当前已加载记录的简单平均">{{ averageLatency }}</dd></div>
       </dl>
       <div class="logs-toolbar-meta logs-page-actions">
         <Menu as="div" class="logs-refresh-menu">
           <MenuButton as="template">
             <button ref="refreshMenuAnchor" type="button" class="button ghost refresh-button logs-refresh" :aria-busy="loading" aria-label="请求日志刷新选项" @click="placeRefreshMenu" @keydown.down="placeRefreshMenu" @keydown.up="placeRefreshMenu" @keydown.enter="placeRefreshMenu" @keydown.space="placeRefreshMenu">
-              <Icon name="refresh" :size="16" class="logs-refresh-icon" :class="{ 'is-spinning': autoRefreshInterval > 0 || loading }" />
+              <Icon name="refresh" :size="16" class="logs-refresh-icon" :class="{ 'is-spinning': (autoRefreshInterval > 0 && !selected) || loading }" />
               <span class="logs-refresh-label"><span>{{ loading ? '刷新中…' : '刷新' }}</span><span v-if="autoRefreshInterval" class="logs-refresh-interval">{{ autoRefreshInterval / 1000 }}s</span></span>
               <Icon name="chevron" :size="14" />
             </button>
@@ -367,7 +512,8 @@ onMounted(load)
             </MenuItems>
           </Teleport>
         </Menu>
-        <details class="table-view-menu">
+        <span v-if="selected && autoRefreshInterval" class="logs-refresh-paused muted small" role="status">查看详情时暂停自动刷新</span>
+        <details class="table-view-menu logs-table-settings" v-if="!selected">
           <summary class="button ghost"><Icon name="settings" :size="16" /> 表格视图</summary>
           <div class="table-view-popover">
             <strong>显示列</strong>
@@ -384,7 +530,9 @@ onMounted(load)
     </div>
 
     <ErrorState v-if="error" :message="error" :busy="loading" @retry="refresh" />
+    <ErrorState v-if="optionsError" :message="'筛选选项加载失败：' + optionsError" @retry="refreshOptions" />
 
+    <div class="logs-workspace" :class="{ 'has-detail': selected }">
     <div class="panel table-panel">
       <div class="table-toolbar logs-toolbar">
         <div class="logs-search-group">
@@ -393,20 +541,31 @@ onMounted(load)
             <input
               v-model="query"
               type="search"
-              aria-label="按关键词搜索已加载的请求日志"
+              aria-label="搜索保留期内的请求日志"
               aria-describedby="logs-filter-scope"
               placeholder="搜索请求 ID、错误信息、IP、UA 等"
+              maxlength="2000"
+              @keydown.enter.prevent="applyFilters"
             />
           </label>
         </div>
         <div class="logs-filter-controls" role="group" aria-label="请求日志筛选">
           <span class="logs-filter-label" aria-hidden="true">筛选</span>
-          <FilterSelect v-model="channelFilter" label="渠道" searchable :options="[{ value: '', label: '全部渠道' }, ...filterOptions.channels]" />
-          <FilterSelect v-model="modelFilter" label="请求模型" searchable :options="[{ value: '', label: '全部请求模型' }, ...filterOptions.models]" />
-          <FilterSelect v-model="statusFilter" label="状态" :options="[{ value: '', label: '全部状态' }, { value: 'success', label: 'HTTP 成功（2xx）' }, { value: 'error', label: 'HTTP 异常（4xx / 5xx）' }, ...filterOptions.statuses]" />
+          <FilterSelect v-model="timePreset" label="时间范围" default-value="__none__" :clearable="false" :options="requestLogTimePresets" />
+          <FilterSelect v-model="outcomeFilter" label="请求结果" :options="[{ value: '', label: '全部请求结果' }, { value: 'success', label: '成功（无重试）' }, { value: 'recovered', label: '重试成功' }, { value: 'failed', label: '失败' }, { value: 'cancelled', label: '取消或断开' }, { value: 'other', label: '其他结果' }, { value: 'abnormal', label: '异常（失败＋取消）' }]" />
+          <FilterSelect v-model="channelFilter" label="渠道" searchable :options="[{ value: '', label: '全部渠道' }, ...channelOptions]" />
+          <FilterSelect v-model="modelFilter" label="请求模型" searchable :options="[{ value: '', label: '全部请求模型' }, ...modelOptions]" />
+          <FilterSelect v-model="statusFilter" label="HTTP 状态" :options="[{ value: '', label: '全部 HTTP 状态' }, { value: '2xx', label: 'HTTP 成功（2xx）' }, { value: '4xx_5xx', label: 'HTTP 异常（4xx / 5xx）' }, ...statusOptions]" />
           <button v-if="hasFilters" type="button" class="filter-reset" @click="clearFilters">清除筛选</button>
         </div>
-        <span id="logs-filter-scope" class="muted small logs-filter-scope">仅筛选已加载记录 · 显示 {{ filtered.length }} / {{ logs.length }} 条</span>
+        <form v-if="timePreset === 'custom'" class="logs-time-range" @submit.prevent="applyCustomRange">
+          <label>开始时间<input v-model="rangeDraft.from" type="datetime-local" required :max="rangeDraft.to" /></label>
+          <label>结束时间（含整分钟）<input v-model="rangeDraft.to" type="datetime-local" required :min="rangeDraft.from" /></label>
+          <button type="submit" class="button subtle">应用时间</button>
+          <span class="muted small">本地时区：{{ timezone }}</span>
+          <span v-if="rangeError" class="text-danger small" role="alert">{{ rangeError }}</span>
+        </form>
+        <span id="logs-filter-scope" class="muted small logs-filter-scope">服务端查询 · 当前结果已加载 {{ logs.length }} 条<span v-if="appliedFilters.from != null && appliedFilters.to != null"> · {{ formatTime(appliedFilters.from) }} — {{ formatTime(appliedFilters.to - 1) }}</span><span v-else> · 全部保留日志</span></span>
       </div>
 
       <TablePlaceholder
@@ -415,8 +574,8 @@ onMounted(load)
         loading-text="正在读取请求日志…"
         :empty="logs.length === 0"
         icon="logs"
-        title="还没有请求日志"
-        desc="通过网关发起一次 /v1/chat/completions 请求后，这里会出现记录。"
+        title="当前查询没有请求日志"
+        desc="尝试扩大时间范围、清除筛选，或通过网关发起请求。"
       />
       <TablePlaceholder
         v-else-if="filtered.length === 0"
@@ -436,18 +595,19 @@ onMounted(load)
               <th v-if="logColumnVisible('clientIp')" class="log-col-client-ip">来源 IP</th>
               <th v-if="logColumnVisible('clientUa')" class="log-col-client-ua">User-Agent</th>
               <th v-if="logColumnVisible('status')" class="log-col-status">状态 / 错误</th>
-              <th v-if="logColumnVisible('latency')" class="log-col-latency">首 token / 总耗时</th>
+              <th v-if="logColumnVisible('latency')" class="log-col-latency">总耗时 / 首 token</th>
               <th v-if="logColumnVisible('usage')" class="log-col-usage">Token 用量</th>
               <th v-if="logColumnVisible('cost')" class="log-col-cost">费用</th>
               <th class="actions-col"></th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="log in filtered" :key="log.requestId">
+            <tr v-for="log in filtered" :key="log.requestId" :data-request-id="log.requestId" :class="[requestLogTone(log) ? 'log-row-' + requestLogTone(log) : '', { 'is-selected': selected?.id === log.id }]"
+              tabindex="0" :aria-label="log.alias + '，HTTP ' + log.statusCode" @click="openRow(log, $event)" @keydown="openRow(log, $event)">
               <td v-if="logColumnVisible('time')" class="time-col log-col-time nowrap">
                 <div class="time-cell">
-                  <span class="time-date">{{ formatTime(log.createdAt, { style: 'dateOnly' }) }}</span>
                   <span class="time-clock">{{ formatTime(log.createdAt, { style: 'timeOnly' }) }}</span>
+                  <span class="time-date">{{ formatTime(log.createdAt, { style: 'dateOnly' }) }}</span>
                 </div>
               </td>
               <td v-if="logColumnVisible('request')" class="log-col-request">
@@ -458,18 +618,16 @@ onMounted(load)
               </td>
               <td v-if="logColumnVisible('model')" class="log-col-model">
                 <div class="stacked-cell">
-                  <span class="badge info">{{ log.alias }}</span>
-                  <div class="request-protocol">
+                  <strong class="log-model-name" :title="log.alias">{{ log.alias }}</strong>
+                  <div class="request-meta request-mode-row log-model-meta">
                     <ProtocolEndpoints
                       :inbound="log.protocol"
                       :outbound="log.upstreamProtocol"
                       :stream="log.stream"
                       :upstream-attempts="log.upstreamAttempts"
                     />
-                  </div>
-                  <div class="request-meta request-mode-row">
                     <span class="mode-badge" :class="`mode-${requestModeClass(log.stream)}`">{{ requestModeLabel(log.stream) }}</span>
-                    <span class="reasoning-badge">
+                    <span v-if="log.reasoningEffort && reasoningEffortLabel(log.reasoningEffort) !== 'none'" class="reasoning-badge">
                       推理 {{ reasoningEffortLabel(log.reasoningEffort) }}
                     </span>
                   </div>
@@ -477,10 +635,12 @@ onMounted(load)
               </td>
               <td v-if="logColumnVisible('channel')" class="log-col-channel">
                 <div class="stacked-cell channel-cell">
-                  <div class="channel-name-cell" :title="log.channelName || log.channelId || ''">{{ log.channelName || (log.channelId ? log.channelId.slice(0, 8) : '—') }}</div>
-                  <div v-if="log.channelKeyName" class="channel-key-chip" :title="`上游密钥：${log.channelKeyName}`">
-                    <Icon name="keys" :size="10" />
-                    <span>{{ log.channelKeyName }}</span>
+                  <div class="log-channel-heading">
+                    <div class="channel-name-cell" :title="log.channelName || log.channelId || ''">{{ log.channelName || (log.channelId ? log.channelId.slice(0, 8) : '—') }}</div>
+                    <div v-if="log.channelKeyName" class="channel-key-chip" :title="`上游密钥：${log.channelKeyName}`">
+                      <Icon name="keys" :size="10" />
+                      <span>{{ log.channelKeyName }}</span>
+                    </div>
                   </div>
                   <div class="upstream-model-line">
                     <span class="upstream-model-chip mono" :title="log.upstreamModel || '未记录上游模型'">{{ log.upstreamModel || '—' }}</span>
@@ -502,7 +662,6 @@ onMounted(load)
                       <p v-if="reportedModelStatus(log)?.state === 'unknown'" class="muted small">上游未返回自报模型，或该日志早于此功能。</p>
                     </InfoPopover>
                   </div>
-                  <span v-if="log.upstreamAttempts != null && log.upstreamAttempts > 1" class="badge warning attempt-chip">尝试 {{ log.upstreamAttempts }} 次</span>
                 </div>
               </td>
               <td v-if="logColumnVisible('clientIp')" class="log-col-client-ip">
@@ -515,36 +674,40 @@ onMounted(load)
               <td v-if="logColumnVisible('status')" class="log-col-status">
                 <div class="stacked-cell">
                   <div class="status-head">
-                    <span class="badge" :class="statusClass(log.statusCode)">{{ log.statusCode }}</span>
-                    <span v-if="log.errorCode && log.failureStage" class="stage-chip" :title="`${stageLabel(log.failureStage)}阶段`">{{ stageLabel(log.failureStage) }}阶段</span>
+                    <span class="badge" :class="requestLogTone(log) === 'danger' ? 'danger' : statusClass(log.statusCode)">{{ log.statusCode }}</span>
+                    <span v-if="requestLogStatusLabel(log)" class="log-outcome-label" :class="requestLogTone(log) === 'danger' ? 'text-danger' : 'text-warning'">{{ requestLogStatusLabel(log) }}</span>
                   </div>
-                  <code v-if="log.errorCode" class="error-code" :title="log.errorCode">{{ log.errorCode }}</code>
+                  <code v-if="log.errorCode || log.upstreamErrorCode" class="error-code" :title="log.errorMessage || log.errorCode || log.upstreamErrorCode || ''">{{ log.errorCode || log.upstreamErrorCode }}</code>
+                  <span v-else-if="log.upstreamAttempts != null && log.upstreamAttempts > 1" class="log-attempt-count">尝试 {{ log.upstreamAttempts }} 次</span>
+                  <span v-if="log.errorCode && log.failureStage" class="log-failure-stage">{{ stageLabel(log.failureStage) }}阶段</span>
                 </div>
               </td>
               <td v-if="logColumnVisible('latency')" class="nowrap log-col-latency">
                 <div class="duration-cell">
-                  <span class="duration-row">
-                    <span class="duration-label">首</span>
-                    <span class="duration-value">{{ formatDuration(log.firstTokenMs) }}</span>
-                  </span>
                   <span class="duration-row is-total">
                     <span class="duration-label">总</span>
                     <span class="duration-value">{{ formatDuration(log.totalMs) }}</span>
+                  </span>
+                  <span class="duration-row is-first-token">
+                    <span class="duration-label">首</span>
+                    <span class="duration-value">{{ formatDuration(log.firstTokenMs) }}</span>
                   </span>
                 </div>
               </td>
               <td v-if="logColumnVisible('usage')" class="usage-cell log-col-usage" :class="usageStateClass(log)">
                 <div class="usage-cell-body">
                   <template v-if="log.usageKnown">
-                    <span class="usage-tokens" :title="`输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)} · 总 ${formatTokens(log.totalTokens)}`">
-                      <span><em>输入</em><b>{{ formatTokensCompact(log.inputTokens) }}</b></span>
-                      <span><em>输出</em><b>{{ formatTokensCompact(log.outputTokens) }}</b></span>
-                      <span><em>总</em><b>{{ formatTokensCompact(log.totalTokens) }}</b></span>
+                    <span class="usage-tokens" :title="`总 ${formatTokens(log.totalTokens)} · ${usageDetailTitle(log)}`">
+                      <span><em>总计</em><b>{{ formatTokensCompact(log.totalTokens) }}</b></span>
+                      <span v-if="log.outputTokens != null && log.totalMs > 0" class="usage-throughput">{{ formatThroughput(log) }} tok/s</span>
                     </span>
-                    <span class="usage-detail" :title="usageDetailTitle(log)">
-                      <span><em>推理</em><b>{{ formatTokensCompact(log.reasoningTokens) }}</b></span>
-                      <span><em>速率</em><b>{{ formatThroughput(log) }} tok/s</b></span>
-                      <span><em>缓存</em><b>{{ formatCacheHit(log) }}</b></span>
+                    <span class="usage-detail" :title="`输入 ${formatTokens(log.inputTokens)} · 输出 ${formatTokens(log.outputTokens)}`">
+                      <span><em>入</em><b>{{ formatTokensCompact(log.inputTokens) }}</b></span>
+                      <span><em>出</em><b>{{ formatTokensCompact(log.outputTokens) }}</b></span>
+                    </span>
+                    <span v-if="(log.reasoningTokens ?? 0) > 0 || (log.cachedTokens ?? 0) > 0" class="usage-extras" :title="usageDetailTitle(log)">
+                      <span v-if="(log.reasoningTokens ?? 0) > 0"><em>推理</em><b>{{ formatTokensCompact(log.reasoningTokens) }}</b></span>
+                      <span v-if="(log.cachedTokens ?? 0) > 0"><em>缓存</em><b>{{ formatCacheHit(log) }}</b></span>
                     </span>
                   </template>
                   <span v-else class="usage-state-label">{{ tokenUsageLabel(log) }}</span>
@@ -564,6 +727,9 @@ onMounted(load)
           </tbody>
         </table>
       </div>
+      <div v-if="logs.length && !(loading && !autoRefreshing)" class="logs-card-list" aria-label="请求日志摘要列表">
+        <RequestLogListItem v-for="log in logs" :key="log.id" :log="log" :active="selected?.id === log.id" @open="openDetail(log, $event)" />
+      </div>
       <CursorLoadMore
         :loaded="logs.length"
         :has-more="hasMore"
@@ -571,17 +737,17 @@ onMounted(load)
         :loading-more="loadingMore"
         :page-size="pageSize"
         @load-more="loadMore"
-        @page-size-change="setPageSize"
+        @page-size-change="closeDetail(); setPageSize($event)"
       />
     </div>
 
-    <Teleport to="body">
-      <div v-if="selected" class="modal-backdrop" @click.self="closeDetail">
+    <Teleport to="body" :disabled="wideLayout">
+      <div v-if="selected" class="request-detail-shell" :class="{ 'is-fullscreen': !wideLayout }">
         <div
           ref="detailDialog"
-          class="modal wide"
+          class="modal wide request-detail-panel"
           role="dialog"
-          aria-modal="true"
+          :aria-modal="wideLayout ? undefined : true"
           aria-labelledby="request-detail-title"
           tabindex="-1"
           @keydown="onDetailKeydown"
@@ -590,7 +756,8 @@ onMounted(load)
             <div>
               <div class="detail-title-line">
                 <h2 id="request-detail-title">请求详情</h2>
-                <span class="badge" :class="statusClass(selected.statusCode)">{{ selected.statusCode }}</span>
+                <span class="badge" :class="requestLogTone(selected) === 'danger' ? 'danger' : statusClass(selected.statusCode)">{{ selected.statusCode }}</span>
+                <span v-if="requestLogStatusLabel(selected)" class="small" :class="requestLogTone(selected) === 'danger' ? 'text-danger' : 'text-warning'">{{ requestLogStatusLabel(selected) }}</span>
               </div>
               <p class="muted small">{{ formatTime(selected.createdAt) }}</p>
             </div>
@@ -598,6 +765,13 @@ onMounted(load)
               <Icon name="close" :size="18" />
             </button>
           </div>
+
+          <div class="log-detail-navigation" aria-label="连续浏览请求">
+            <button type="button" class="button ghost mini" :disabled="detailIndex <= 0 || navigating || loading || loadingMore" @click="navigateDetail(-1)">上一条</button>
+            <span class="muted small" role="status">{{ detailIndex >= 0 ? (detailIndex + 1) + ' / ' + logs.length + (hasMore ? '＋' : '') : '当前请求已不在查询结果中' }}</span>
+            <button type="button" class="button ghost mini" :disabled="!canNext || navigating || loading || loadingMore" @click="navigateDetail(1)">{{ navigating ? '加载中…' : detailIndex === logs.length - 1 && hasMore ? '下一条 · 加载更早' : '下一条' }}</button>
+          </div>
+          <p v-if="error" class="log-detail-error text-danger small" role="alert">{{ error }} <button type="button" class="button ghost mini" :disabled="loading || loadingMore" @click="detailIndex === logs.length - 1 && hasMore ? navigateDetail(1) : refresh()">重试</button></p>
 
           <div class="detail-meta-bar" role="group" aria-label="请求标识">
             <div class="detail-meta-item">
@@ -607,7 +781,7 @@ onMounted(load)
                 <CopyButton :text="selected.requestId" title="复制请求 ID" :size="14" />
               </div>
             </div>
-            <div class="detail-meta-item">
+            <div v-if="selected.traceId" class="detail-meta-item">
               <span>Trace ID</span>
               <div class="detail-meta-value">
                 <code :title="selected.traceId || ''">{{ selected.traceId || '—' }}</code>
@@ -646,8 +820,9 @@ onMounted(load)
               <p class="detail-message">{{ selected.errorMessage }}</p>
             </div>
 
-            <div class="detail-grid">
-              <div class="detail-section-title">请求概况</div>
+            <section class="detail-card" aria-labelledby="request-overview-title">
+              <h3 id="request-overview-title" class="detail-card-title">请求概况</h3>
+              <div class="detail-grid">
               <div class="detail-item" :class="{ 'detail-protocol-item': selectedConversion.converted }">
                 <span>协议</span>
                 <template v-if="selectedConversion.converted">
@@ -689,135 +864,141 @@ onMounted(load)
                 <span>模式</span>
                 <strong><span class="mode-badge" :class="`mode-${requestModeClass(selected.stream)}`">{{ requestModeLabel(selected.stream) }}</span></strong>
               </div>
-              <div class="detail-item">
+              <div v-if="selected.failureStage" class="detail-item">
                 <span>失败阶段</span>
                 <strong>{{ stageLabel(selected.failureStage) }}</strong>
               </div>
-              <div class="detail-item">
+              <div v-if="selected.errorCode" class="detail-item">
                 <span>错误码</span>
                 <strong class="mono">{{ selected.errorCode || '—' }}</strong>
               </div>
-              <div class="detail-item">
+              <div v-if="selected.upstreamErrorCode" class="detail-item">
                 <span>上游错误码</span>
                 <strong class="mono">{{ selected.upstreamErrorCode || '—' }}</strong>
               </div>
-              <div class="detail-section-title">路由与渠道</div>
-              <div class="detail-item">
-                <span>请求模型</span>
-                <strong>{{ selected.alias }}</strong>
-              </div>
-              <div class="detail-item">
-                <span>渠道名称</span>
-                <strong>{{ selected.channelName || '—' }}</strong>
-              </div>
-              <div class="detail-item">
-                <span>上游密钥</span>
-                <strong>{{ selected.channelKeyName || '—' }}</strong>
-              </div>
-              <div class="detail-item detail-item-wide">
-                <span>渠道 ID</span>
-                <div v-if="selected.channelId" class="detail-value-copy">
-                  <strong class="mono detail-wrap">{{ selected.channelId }}</strong>
-                  <CopyButton :text="selected.channelId" title="复制渠道 ID" :size="13" />
-                </div>
-                <strong v-else class="muted">—</strong>
-              </div>
-              <div class="detail-item">
-                <span>上游尝试</span>
-                <strong>{{ selected.upstreamAttempts ?? '—' }}</strong>
-              </div>
-              <div class="detail-item">
-                <span>上游模型</span>
-                <strong class="mono detail-wrap">{{ selected.upstreamModel || '—' }}</strong>
-              </div>
-              <div class="detail-item">
-                <span>调用方密钥</span>
-                <strong>{{ selected.clientKeyName || (selected.clientKeyId ? '未命名密钥' : '—') }}</strong>
-              </div>
-              <div class="detail-item detail-item-wide">
-                <span>调用方密钥 ID</span>
-                <div v-if="selected.clientKeyId" class="detail-value-copy">
-                  <strong class="mono detail-wrap">{{ selected.clientKeyId }}</strong>
-                  <CopyButton :text="selected.clientKeyId" title="复制调用方密钥 ID" :size="13" />
-                </div>
-                <strong v-else class="muted">—</strong>
-              </div>
-              <div class="detail-item">
+              <div v-if="selected.clientIp" class="detail-item">
                 <span>来源 IP</span>
-                <strong v-if="selected.clientIp" class="mono detail-wrap" :title="selected.clientIp">{{ selected.clientIp }}</strong>
-                <strong v-else class="muted">—</strong>
+                <strong class="mono detail-wrap" :title="selected.clientIp">{{ selected.clientIp }}</strong>
               </div>
-              <div class="detail-item detail-item-span-2">
+              </div>
+            </section>
+            <section class="detail-card" aria-labelledby="request-route-title">
+              <h3 id="request-route-title" class="detail-card-title">路由与渠道</h3>
+              <div class="detail-grid">
+              <div v-if="selected.channelKeyName" class="detail-item">
+                <span>上游密钥</span>
+                <strong>{{ selected.channelKeyName }}</strong>
+              </div>
+              <div v-if="selected.upstreamAttempts != null" class="detail-item">
+                <span>上游尝试</span>
+                <strong>{{ selected.upstreamAttempts }}</strong>
+              </div>
+              <div v-if="selected.upstreamModel" class="detail-item">
+                <span>上游模型</span>
+                <strong class="mono detail-wrap">{{ selected.upstreamModel }}</strong>
+              </div>
+              <div v-if="selected.clientKeyName || selected.clientKeyId" class="detail-item">
+                <span>调用方密钥</span>
+                <strong>{{ selected.clientKeyName || '未命名密钥' }}</strong>
+              </div>
+              <div v-if="selected.clientUserAgent" class="detail-item detail-item-span-2">
                 <span>User-Agent</span>
-                <strong v-if="selected.clientUserAgent" class="mono detail-wrap" :title="selected.clientUserAgent">{{ selected.clientUserAgent }}</strong>
-                <strong v-else class="muted">—</strong>
+                <strong class="mono detail-wrap" :title="selected.clientUserAgent">{{ selected.clientUserAgent }}</strong>
               </div>
-              <div class="detail-section-title">耗时与用量</div>
-              <div class="detail-item">
+              <p v-if="!selected.channelId && !selected.upstreamModel" class="muted small detail-item-wide">{{ (selected.upstreamAttempts ?? 0) > 0 ? '未记录上游路由信息' : '未路由到上游渠道' }}</p>
+              </div>
+            </section>
+            <section class="detail-card" aria-labelledby="request-usage-title">
+              <h3 id="request-usage-title" class="detail-card-title">耗时与用量</h3>
+              <div class="detail-grid">
+              <div v-if="selected.firstTokenMs != null" class="detail-item">
                 <span>首 token</span>
                 <strong>{{ formatDuration(selected.firstTokenMs) }}</strong>
               </div>
-              <div class="detail-item">
-                <span>总耗时</span>
-                <strong>{{ formatDuration(selected.totalMs) }}</strong>
-              </div>
-              <div class="detail-item">
+              <div v-if="selected.usageKnown" class="detail-item">
                 <span>输入 / 输出</span>
-                <strong v-if="selected.usageKnown">{{ formatTokens(selected.inputTokens) }} / {{ formatTokens(selected.outputTokens) }}</strong>
-                <strong v-else class="muted">{{ tokenUsageLabel(selected) }}</strong>
+                <strong>{{ formatTokens(selected.inputTokens) }} / {{ formatTokens(selected.outputTokens) }}</strong>
               </div>
-              <div class="detail-item">
-                <span>推理 / 总量</span>
-                <strong v-if="selected.usageKnown">{{ formatTokens(selected.reasoningTokens) }} / {{ formatTokens(selected.totalTokens) }}</strong>
-                <strong v-else class="muted">{{ tokenUsageLabel(selected) }}</strong>
+              <div v-else class="detail-item">
+                <span>Token 用量</span>
+                <strong class="muted">{{ tokenUsageLabel(selected) }}</strong>
               </div>
-              <div class="detail-item">
+              <div v-if="selected.usageKnown && selected.totalTokens != null" class="detail-item">
+                <span>总 Token</span>
+                <strong>{{ formatTokens(selected.totalTokens) }}</strong>
+              </div>
+              <div v-if="selected.usageKnown && selected.reasoningTokens != null" class="detail-item">
+                <span>推理 Token</span>
+                <strong>{{ formatTokens(selected.reasoningTokens) }}</strong>
+              </div>
+              <div v-if="selectedReasoningEffort" class="detail-item">
                 <span>推理强度</span>
-                <strong><span class="reasoning-badge">{{ reasoningEffortLabel(selected.reasoningEffort) }}</span></strong>
+                <strong><span class="reasoning-badge">{{ selectedReasoningEffort }}</span></strong>
               </div>
-              <div class="detail-item">
-                <span>缓存命中</span>
+              <div v-if="selected.usageKnown && selected.cachedTokens != null" class="detail-item">
+                <span>缓存读取</span>
                 <strong :title="cacheTitle(selected)">
-                  {{ formatCacheHit(selected) }}
-                  <span v-if="selected.cachedTokens != null" class="muted small">（{{ formatTokens(selected.cachedTokens) }}）</span>
+                  {{ formatTokens(selected.cachedTokens) }}
+                  <span v-if="selected.inputTokens != null && selected.inputTokens > 0" class="muted small">（命中 {{ formatCacheHit(selected) }}）</span>
                 </strong>
               </div>
-              <div class="detail-item">
+              <div v-if="selected.usageKnown && selected.cachedWriteTokens != null" class="detail-item">
+                <span>缓存写入</span>
+                <strong>{{ formatTokens(selected.cachedWriteTokens) }}</strong>
+              </div>
+              <div v-if="selected.usageKnown && selected.outputTokens != null && selected.totalMs > 0" class="detail-item">
                 <span>输出速率</span>
                 <strong>{{ formatThroughput(selected) }} tok/s</strong>
               </div>
-              <div class="detail-item">
-                <span>费用</span>
-                <strong v-if="selected.costAmount != null" class="cost-line detail-cost">
-                  <span class="cost-amount">{{ formatCostAmount(selected) }}</span>
-                </strong>
-                <strong v-else>{{ selected.usageKnown ? '未配置' : '—' }}</strong>
-              </div>
               <div v-if="selected.costAmount != null" class="detail-block detail-price-snapshot">
-                <span>
-                  计费单价快照 · {{ formatPriceSummary(selected) }}
-                </span>
-                <dl class="detail-price-list">
+                <div class="detail-block-head">
+                  <span>计费单价快照</span>
+                  <span class="muted small">{{ selected.pricingMode === 'per_request' ? '按次计费' : selected.pricingMode === 'tiered' ? '阶梯计费' : selected.pricingMode === 'volume' ? '阶梯总量计费' : '按 Token 计费' }}</span>
+                </div>
+                <dl class="detail-price-list" :class="{ 'is-tiered': ['tiered', 'volume'].includes(selected.pricingMode), 'is-per-request': selected.pricingMode === 'per_request' }">
                   <div v-for="item in formatPriceSnapshot(selected)" :key="item.label" class="detail-price-row">
                     <dt>{{ item.label }}</dt>
                     <dd>{{ item.value }}</dd>
                   </div>
                 </dl>
               </div>
-            </div>
+              </div>
+            </section>
 
-            <div class="detail-block">
-              <span v-if="hasAttemptDetail">
+            <details v-if="selected.channelId || selected.clientKeyId" class="detail-card detail-block detail-identifiers">
+              <summary>标识符与追踪信息</summary>
+              <div class="detail-identifiers-grid">
+                <div v-if="selected.channelId" class="detail-item detail-item-wide">
+                  <span>渠道 ID</span>
+                  <div v-if="selected.channelId" class="detail-value-copy"><strong class="mono detail-wrap">{{ selected.channelId }}</strong><CopyButton :text="selected.channelId" title="复制渠道 ID" :size="13" /></div>
+                  <strong v-else class="muted">—</strong>
+                </div>
+                <div v-if="selected.clientKeyId" class="detail-item detail-item-wide">
+                  <span>调用方密钥 ID</span>
+                  <div v-if="selected.clientKeyId" class="detail-value-copy"><strong class="mono detail-wrap">{{ selected.clientKeyId }}</strong><CopyButton :text="selected.clientKeyId" title="复制调用方密钥 ID" :size="13" /></div>
+                  <strong v-else class="muted">—</strong>
+                </div>
+              </div>
+            </details>
+
+            <details :key="selected.requestId" class="detail-card detail-block log-attempt-disclosure" :open="!compactSingleAttempt">
+              <summary v-if="hasAttemptDetail">
                 尝试记录（{{ selectedAttempts.length }} 条<span v-if="skippedAttemptCount"> · 跳过 {{ skippedAttemptCount }}</span> · 上游调用 {{ selected.upstreamAttempts ?? selectedAttempts.filter((attempt) => !attempt.skipped).length }} 次）
-              </span>
-              <span v-else>尝试记录</span>
+                <span v-if="compactSingleAttempt" class="muted small">成功 · {{ selectedAttempts[0].channelName || selected.channelName || '未命名渠道' }} · {{ formatDuration(selectedAttempts[0].elapsedMs) }}</span>
+              </summary>
+              <summary v-else>尝试记录</summary>
               <p v-if="!hasAttemptDetail" class="muted small">无尝试明细</p>
-              <div v-else class="attempt-list">
-                <div
+              <p v-if="attemptTimings.callCount > 1 && attemptTimings.measuredCount" class="attempt-timing-summary">
+                已记录上游调用耗时 <strong>{{ formatDuration(attemptTimings.recordedMs) }}</strong>
+                <span v-if="attemptTimings.measuredCount < attemptTimings.callCount">（{{ attemptTimings.measuredCount }} / {{ attemptTimings.callCount }} 次有记录）</span>
+                <span class="muted small">条形长度按最长单次调用比较，不含路由与退避等待。</span>
+              </p>
+              <ol v-if="hasAttemptDetail" class="attempt-list" aria-label="按发生顺序排列的上游尝试">
+                <li
                   v-for="(attempt, attemptIndex) in selectedAttempts"
                   :key="attempt.index + '-' + attemptIndex"
                   class="attempt-row"
-                  :class="{ 'attempt-row-skipped': attempt.skipped }"
+                  :class="{ 'attempt-row-skipped': attempt.skipped, 'attempt-row-failed': !attempt.skipped && attemptHasError(attempt), 'attempt-row-success': !attempt.skipped && !attemptHasError(attempt) && (attempt.statusCode ?? 0) >= 200 && (attempt.statusCode ?? 0) < 300 }"
                 >
                   <div v-if="attempt.skipped" class="attempt-head">
                     <span class="badge attempt-status neutral" aria-label="路由跳过，未发起上游请求">跳过</span>
@@ -849,7 +1030,10 @@ onMounted(load)
                       >错误状态 {{ attempt.upstreamErrorStatusCode }}</span>
                       <span class="attempt-result" role="status">{{ attemptResultLabel(attempt, attemptIndex < selectedAttempts.length - 1) }}</span>
                       <span class="sr-only">第 {{ attempt.index }} 次尝试</span>
-                      <span class="attempt-duration">{{ formatDuration(attempt.elapsedMs) }}</span>
+                      <span class="attempt-duration">{{ attemptDurationPercent(attempt, attemptTimings.maxMs) == null ? '耗时未记录' : formatDuration(attempt.elapsedMs) }}</span>
+                    </div>
+                    <div v-if="attemptTimings.callCount > 1 && attemptTimings.maxMs > 0 && attemptDurationPercent(attempt, attemptTimings.maxMs) != null" class="attempt-duration-track" aria-hidden="true">
+                      <span :style="{ width: attemptDurationPercent(attempt, attemptTimings.maxMs) + '%' }"></span>
                     </div>
                     <div class="attempt-route">
                       <div class="attempt-field">
@@ -858,11 +1042,11 @@ onMounted(load)
                           {{ attempt.channelName || (attempt.channelId ? attempt.channelId.slice(0, 8) : '—') }}
                         </span>
                       </div>
-                      <div class="attempt-field">
+                      <div v-if="attempt.channelKeyName" class="attempt-field">
                         <span class="attempt-label">密钥</span>
                         <span class="attempt-value" :title="attempt.channelKeyName || ''">{{ attempt.channelKeyName || '—' }}</span>
                       </div>
-                      <div class="attempt-field">
+                      <div v-if="attempt.upstreamModel" class="attempt-field">
                         <span class="attempt-label">上游模型</span>
                         <span class="attempt-value mono" :title="attempt.upstreamModel || ''">{{ attempt.upstreamModel || '—' }}</span>
                       </div>
@@ -872,23 +1056,23 @@ onMounted(load)
                       </div>
                     </div>
                     <div class="attempt-detail">
-                      <div class="attempt-field">
+                      <div v-if="attempt.firstTokenMs != null" class="attempt-field">
                         <span class="attempt-label">首 token</span>
                         <span class="attempt-value">{{ formatDuration(attempt.firstTokenMs) }}</span>
                       </div>
-                      <div class="attempt-field">
+                      <div v-if="attempt.upstreamErrorCode" class="attempt-field">
                         <span class="attempt-label">上游错误码</span>
                         <span class="attempt-value mono">{{ attempt.upstreamErrorCode || '—' }}</span>
                       </div>
-                      <div class="attempt-field attempt-field-wide">
+                      <div v-if="attemptHasError(attempt) || attempt.errorMessage" class="attempt-field attempt-field-wide">
                         <span class="attempt-label">原因</span>
                         <span class="attempt-value">{{ attemptFailureReason(attempt) }}</span>
                       </div>
                     </div>
                   </template>
-                </div>
-              </div>
-            </div>
+                </li>
+              </ol>
+            </details>
 
             <div v-if="selected.upstreamErrorBody" class="detail-block">
               <div class="detail-block-head">
@@ -900,7 +1084,7 @@ onMounted(load)
 
             <details class="detail-hint muted small">
               <summary>字段与计费说明</summary>
-              <p>输出速率为输出 token / 总耗时；缓存命中为 cached / input。费用按渠道 + 上游模型的单价快照计算，推理 token 已包含在输出 token 中。缺失字段显示“—”，不做估算。日志不保存 prompt 与成功响应正文；失败请求的上游错误正文会截断并脱敏后保存。</p>
+              <p>输出速率为输出 token / 总耗时；缓存命中为 cached / input。费用按渠道 + 上游模型的单价快照计算，推理 token 已包含在输出 token 中。未提供的可选字段不展示，已记录的 0 值保留；用量未知或未发起请求会明确标注，不做估算。尝试耗时仅比较已记录的上游调用，不代表请求总耗时。日志不保存 prompt 与成功响应正文；失败请求的上游错误正文会截断并脱敏后保存。</p>
             </details>
           </div>
 
@@ -910,5 +1094,6 @@ onMounted(load)
         </div>
       </div>
     </Teleport>
+    </div>
   </section>
 </template>

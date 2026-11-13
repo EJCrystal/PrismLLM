@@ -13,4 +13,6 @@ enum class RequestLogNameKind {
  */
 fun interface RequestLogNameResolver {
     fun resolve(kind: RequestLogNameKind, ids: Set<String>): Map<String, String>
+
+    fun matchingIds(kind: RequestLogNameKind, keyword: String): Set<String> = emptySet()
 }

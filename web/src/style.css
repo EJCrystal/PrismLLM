@@ -1459,6 +1459,7 @@ input[type="password"]::-ms-clear,
 .page-heading { min-width: 0; }
 .page-title-row { display: flex; align-items: center; gap: 4px; }
 .page-help { display: none; }
+.page-help.is-visible { display: inline-flex; }
 .page-help-copy { margin: 0; color: var(--muted); line-height: 1.65; }
 
 .topbar h1 {
@@ -6036,26 +6037,58 @@ textarea:disabled {
   gap: 14px 18px;
 }
 
-/* 详情弹窗按“概况 / 路由 / 用量”分组，避免二十多个字段平铺难以定位。 */
-.detail-section-title {
-  grid-column: 1 / -1;
-  margin-top: 2px;
-  padding-top: 14px;
-  border-top: 1px solid var(--glass-line);
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
+.request-detail-panel .detail-stack {
+  gap: 12px;
+  background: var(--bg);
 }
 
-.detail-grid > .detail-section-title:first-child {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: 0;
+.detail-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.detail-card-title {
+  margin: 0 0 14px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.detail-card .detail-item > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.detail-card .detail-item strong,
+.attempt-duration,
+.attempt-timing-summary strong {
+  font-variant-numeric: tabular-nums;
 }
 
 .detail-item-wide {
   grid-column: 1 / -1;
+}
+
+.detail-identifiers {
+  min-width: 0;
+}
+
+.detail-identifiers > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.detail-identifiers-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 18px;
+  margin-top: 12px;
 }
 
 .detail-protocol-item {
@@ -6133,17 +6166,25 @@ textarea:disabled {
 .detail-price-snapshot {
   grid-column: 1 / -1;
   min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
 }
 
 .detail-price-list {
   display: grid;
-  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
   margin: 0;
+}
+
+.detail-price-list.is-tiered,
+.detail-price-list.is-per-request {
+  grid-template-columns: 1fr;
 }
 
 .detail-price-row {
   display: grid;
-  grid-template-columns: minmax(110px, 0.35fr) minmax(0, 1fr);
+  align-content: start;
   gap: 5px 14px;
   min-width: 0;
   font-size: 12px;
@@ -6176,10 +6217,15 @@ textarea:disabled {
 /* Per-attempt request log detail */
 .attempt-list {
   display: grid;
-  gap: 8px;
+  gap: 12px;
+  margin: 0;
+  padding: 0 0 0 18px;
+  list-style: none;
 }
 
 .attempt-row {
+  --attempt-accent: var(--muted);
+  position: relative;
   display: grid;
   gap: 5px;
   min-width: 0;
@@ -6187,6 +6233,73 @@ textarea:disabled {
   border: 1px solid var(--glass-line);
   border-radius: 11px;
   background: var(--glass-field);
+}
+
+.attempt-row::before {
+  position: absolute;
+  top: 14px;
+  left: -23px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: var(--attempt-accent);
+  content: '';
+  z-index: 1;
+}
+
+.attempt-row:not(:last-child)::after {
+  position: absolute;
+  top: 24px;
+  bottom: -29px;
+  left: -18px;
+  width: 2px;
+  background: var(--line-strong);
+  content: '';
+}
+
+.attempt-row-failed {
+  --attempt-accent: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+  background: color-mix(in srgb, var(--danger) 5%, var(--panel));
+}
+
+.attempt-row-success {
+  --attempt-accent: var(--success);
+}
+
+.attempt-row-failed .attempt-result,
+.attempt-row-failed .attempt-field-wide .attempt-value {
+  color: var(--danger);
+}
+
+.attempt-row-success .attempt-result {
+  color: var(--success);
+}
+
+.attempt-timing-summary {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.attempt-timing-summary > .small {
+  display: block;
+}
+
+.attempt-duration-track {
+  height: 4px;
+  margin: 3px 0 5px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.attempt-duration-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--attempt-accent);
 }
 
 .attempt-row.attempt-row-skipped {
@@ -6285,7 +6398,7 @@ textarea:disabled {
 .attempt-route,
 .attempt-detail {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px 14px;
   min-width: 0;
 }
@@ -6324,7 +6437,17 @@ textarea:disabled {
   font-size: 11px;
 }
 
+.attempt-field-wide .attempt-value {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 720px) {
+  .detail-price-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .attempt-route,
   .attempt-detail {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -7954,10 +8077,16 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .density-switch button.active { background: var(--glass-field-strong); color: var(--brand); box-shadow: 0 1px 3px color-mix(in srgb, var(--ink) 10%, transparent); }
 .logs-table .log-col-time { width: 144px; min-width: 144px; }
 .logs-table .log-col-request { width: 116px; }
-.logs-table .log-col-model { width: 208px; }
-.logs-table .log-col-channel { width: 184px; }
+.logs-table .log-col-model { width: 196px; }
+.logs-table .log-col-channel { width: 208px; }
 /* 请求日志渠道列：渠道名 → 密钥 → 上游模型逐行对齐，模型用等宽代码块区分标识符。 */
 .logs-table .channel-cell { min-width: 0; max-width: 100%; }
+.logs-table td { vertical-align: top; }
+.logs-table .log-model-name { max-width: 100%; overflow: hidden; font-size: 12.5px; font-weight: 650; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.logs-table .log-model-meta { flex-wrap: wrap; gap: 3px 5px; }
+.logs-table .log-channel-heading { display: flex; align-items: baseline; gap: 6px; width: 100%; min-width: 0; }
+.logs-table .log-channel-heading .channel-name-cell { flex: 1 1 auto; min-width: 0; line-height: 1.5; }
+.logs-table .log-channel-heading .channel-key-chip { flex: 0 1 auto; max-width: 44%; padding: 0; border-radius: 0; background: transparent; font-size: 10px; }
 .logs-table .channel-name-cell {
   max-width: 100%;
   overflow: hidden;
@@ -7986,11 +8115,11 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
   flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
-  padding: 1px 6px;
-  border: 1px solid var(--glass-line);
-  border-radius: 6px;
-  background: var(--glass-field);
-  color: var(--ink);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
   overflow: hidden;
@@ -8005,22 +8134,40 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 /* 请求日志时间列：日期弱化、时刻突出，数字等宽便于纵向扫读。 */
 .logs-table .time-cell { display: grid; gap: 1px; font-variant-numeric: tabular-nums; }
 .logs-table .time-date { color: var(--muted); font-size: 10.5px; line-height: 1.3; }
-.logs-table .time-clock { color: var(--ink); font-size: 12px; font-weight: 600; line-height: 1.35; letter-spacing: 0.01em; }
+.logs-table .time-clock { color: var(--ink); font-size: 12px; font-weight: 600; line-height: 1.5; letter-spacing: 0.01em; }
+.logs-table tbody tr > td:first-child { padding-left: 7px; border-left: 3px solid transparent; }
+.logs-table tbody tr.log-row-danger { --log-row-accent: var(--danger); --log-row-surface: color-mix(in srgb, var(--danger) 6%, var(--surface-solid)); }
+.logs-table tbody tr.log-row-warning { --log-row-accent: var(--warning); --log-row-surface: color-mix(in srgb, var(--warning) 6%, var(--surface-solid)); }
+.logs-table tbody tr.log-row-recovered { --log-row-accent: var(--warning); --log-row-surface: color-mix(in srgb, var(--warning) 3%, var(--surface-solid)); }
+.logs-table tbody tr.log-row-danger:hover { --log-row-surface: color-mix(in srgb, var(--danger) 10%, var(--surface-solid)); }
+.logs-table tbody tr.log-row-warning:hover, .logs-table tbody tr.log-row-recovered:hover { --log-row-surface: color-mix(in srgb, var(--warning) 9%, var(--surface-solid)); }
+.logs-table tbody tr:is(.log-row-danger, .log-row-warning, .log-row-recovered) > td,
+.logs-table tbody tr:is(.log-row-danger, .log-row-warning, .log-row-recovered):hover > td { background: var(--log-row-surface); }
+.logs-table tbody tr:is(.log-row-danger, .log-row-warning, .log-row-recovered) > td:first-child { border-left-color: var(--log-row-accent); }
+.logs-table .log-outcome-label { font-size: 10px; font-weight: 650; white-space: nowrap; }
+.logs-table .log-attempt-count, .logs-table .log-failure-stage { color: var(--muted); font-size: 10.5px; line-height: 1.4; }
+.logs-table .log-row-warning .error-code { color: var(--warning); }
 /* 状态列：HTTP 状态与阶段同行，错误码独占一行，长错误码不再被徽标挤压。 */
 .logs-table .status-head { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .logs-table .stage-chip { flex: 0 0 auto; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 5%, transparent); color: var(--muted); font-size: 10px; line-height: 1.5; white-space: nowrap; }
 .logs-table .error-code { max-width: 100%; overflow: hidden; color: var(--danger); font-size: 10.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 /* 耗时列：标签弱化、数值突出，首 token 与总耗时保持同一基线。 */
-.logs-table .duration-cell { gap: 2px; }
+.logs-table .duration-cell { justify-items: end; gap: 2px; }
 .logs-table .duration-row { display: inline-flex; align-items: baseline; gap: 5px; }
 .logs-table .duration-label { color: var(--muted); font-size: 10px; }
 .logs-table .duration-value { color: var(--ink); font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
-.logs-table .duration-row.is-total .duration-value { font-size: 11.5px; font-weight: 600; }
+.logs-table .duration-row.is-total .duration-value { font-size: 12px; font-weight: 650; }
+.logs-table .duration-row.is-first-token .duration-value { color: var(--muted); font-size: 10.5px; font-weight: 500; }
+.logs-table .log-col-latency, .logs-table .log-col-cost { text-align: right; }
+.logs-table .log-cost { justify-content: flex-end; }
 /* 用量列：标签与数字分层，数字等宽；第二行保持弱化。 */
-.logs-table .usage-tokens, .logs-table .usage-detail { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+.logs-table .usage-tokens, .logs-table .usage-detail, .logs-table .usage-extras { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+.logs-table .usage-tokens { justify-content: space-between; width: 100%; }
+.logs-table .usage-throughput { color: var(--muted); font-size: 10px; }
 .logs-table .usage-cell em { margin-right: 3px; color: var(--muted); font-size: 10px; font-style: normal; }
 .logs-table .usage-tokens b { color: var(--ink); font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .logs-table .usage-detail b { color: var(--muted); font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.logs-table .usage-extras b { color: var(--muted); font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; }
 /* 横向可滚动时给两侧固定列加一层浅阴影，提示被覆盖的内容方向。 */
 .logs-table th.actions-col, .logs-table td.actions-col,
 .logs-table th.time-col, .logs-table td.time-col { transition: box-shadow 0.15s ease; }
@@ -8064,6 +8211,81 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .usage-chart-filter { margin-left: 0; }
 }
 
+.logs-workspace { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1 1 auto; gap: 14px; min-height: 0; min-width: 0; }
+.logs-workspace > .table-panel { min-width: 0; min-height: 0; }
+.log-summary-filter { border: 0; padding: 0 3px; background: transparent; font: inherit; cursor: pointer; border-radius: 4px; }
+.log-summary-filter[aria-pressed='true'] { outline: 2px solid var(--brand); outline-offset: 3px; }
+.logs-time-range { display: flex; flex-wrap: wrap; align-items: flex-end; width: 100%; gap: 10px; }
+.logs-time-range label { display: grid; min-width: 0; flex: 1 1 180px; gap: 5px; color: var(--muted); font-size: 11px; }
+.logs-time-range input { width: 100%; min-width: 0; min-height: 36px; padding: 8px 10px; border: 1px solid var(--glass-line); border-radius: 8px; background: var(--glass-field); color: var(--ink); font: inherit; font-size: 12px; }
+.logs-time-range > .small { flex-basis: 100%; }
+.logs-filter-controls .filter-select { min-width: 0; }
+.logs-table tbody tr { cursor: pointer; }
+.logs-table tbody tr:focus-visible, .log-card:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+.logs-card-list { display: none; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 10px; }
+.log-card { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-surface-strong); cursor: pointer; min-width: 0; }
+.log-card + .log-card { margin-top: 8px; }
+.log-card.log-row-danger { background: color-mix(in srgb, var(--danger) 7%, var(--glass-surface-strong)); border-left: 3px solid var(--danger); }
+.log-card.log-row-warning { background: color-mix(in srgb, var(--warning) 7%, var(--glass-surface-strong)); border-left: 3px solid var(--warning); }
+.log-card.log-row-recovered { background: color-mix(in srgb, var(--success) 6%, var(--glass-surface-strong)); border-left: 3px solid var(--success); }
+.log-card.is-selected { outline: 2px solid var(--brand); outline-offset: -2px; }
+.log-card-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: baseline; gap: 6px; }
+.log-card-model { min-width: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.4; }
+.log-card-result { font-size: 11px; color: var(--muted); }
+.log-row-danger .log-card-result, .log-row-danger .log-card-error { color: var(--danger); }
+.log-row-warning .log-card-result { color: var(--warning); }
+.log-row-recovered .log-card-result { color: var(--success); }
+.log-card-route, .log-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.log-card-route { color: var(--muted); font-size: 10.5px; }
+.log-card-route > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-card-route time { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.log-card-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.log-card-metrics dt { color: var(--muted); font-size: 10px; }
+.log-card-metrics dd { margin: 3px 0 0; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.log-card-metrics > div:last-child { text-align: right; }
+.log-card-error { margin: 0; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.log-card-footer code { color: var(--muted); font-size: 10px; }
+.log-card-footer button { min-height: 32px; }
+.request-detail-shell { display: flex; min-width: 0; min-height: 0; }
+.request-detail-panel.modal.wide { width: 100%; max-width: none; height: 100%; max-height: none; min-width: 0; margin: 0; box-shadow: none; }
+.request-detail-panel .modal-body { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.request-detail-panel .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.request-detail-panel .detail-meta-bar { grid-template-columns: minmax(0, 1fr); }
+.request-detail-panel .detail-protocol-item, .request-detail-panel .detail-item-wide { grid-column: 1 / -1; }
+.request-detail-panel .detail-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.request-detail-shell.is-fullscreen { position: fixed; inset: 0; z-index: 100; padding: 0; background: var(--glass-surface-strong); }
+.request-detail-shell.is-fullscreen .request-detail-panel { border: 0; border-radius: 0; }
+.log-detail-navigation { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--glass-line); }
+.log-detail-navigation button { min-height: 36px; }
+.log-detail-error { margin: 0; padding: 8px 16px; }
+.log-attempt-disclosure > summary { cursor: pointer; font-size: 12px; font-weight: 650; }
+.log-attempt-disclosure > summary > .muted { display: block; margin-top: 6px; font-weight: 400; overflow-wrap: anywhere; }
+.log-attempt-disclosure[open] > summary { margin-bottom: 10px; }
+.logs-refresh-paused { max-width: 180px; }
+@media (min-width: 1200px) {
+  .logs-workspace.has-detail { grid-template-columns: minmax(320px, 1fr) minmax(520px, 640px); }
+  .logs-workspace.has-detail .table-scroll { display: none; }
+  .logs-workspace.has-detail .logs-card-list { display: block; flex: 1 1 auto; }
+  .logs-workspace.has-detail .logs-search-group { max-width: none; flex-basis: 100%; }
+  .logs-workspace.has-detail .logs-filter-controls { justify-content: flex-start; margin-left: 0; }
+  .logs-workspace.has-detail .logs-filter-scope { text-align: left; }
+}
+@media (max-width: 640px) {
+  .logs-workspace .table-scroll, .logs-table-settings { display: none; }
+  .logs-workspace .logs-card-list { display: block; flex: 1 1 auto; }
+  .logs-filter-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .logs-filter-label { display: none; }
+  .logs-filter-controls > * { min-width: 0; max-width: 100%; }
+  .logs-filter-controls button { width: 100%; min-width: 0; }
+  .logs-filter-controls .filter-reset { width: auto; justify-self: start; }
+  .logs-time-range label { flex-basis: 100%; }
+  .logs-filter-scope { line-height: 1.6; overflow-wrap: anywhere; }
+  .request-detail-panel .modal-head { padding: 14px 12px; }
+  .request-detail-panel .modal-body { padding: 14px 12px; }
+  .request-detail-panel .detail-meta-bar { padding: 10px 12px; }
+  .log-detail-navigation { padding: 8px 12px; }
+  .log-card-footer button { min-height: 36px; }
+}
 .logs-overview { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; }
 .logs-page-actions { margin-left: auto; }
 .logs-refresh-menu { display: inline-flex; }
@@ -8307,4 +8529,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .usage-summary-list > div {
     background-color: var(--panel) !important;
   }
+}
+
+@media (max-width: 640px) {
+  .logs-workspace .logs-filter-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .logs-workspace .filter-chip-group { width: 100%; min-width: 0; }
+  .logs-workspace .filter-select { flex: 1; min-width: 0; }
+  .logs-workspace .filter-select-trigger { width: 100%; max-width: 100%; gap: 5px; padding: 5px 8px; font-size: 11px; }
+  .logs-workspace .filter-chip-group.is-active .filter-chip-label { display: none; }
+  .logs-workspace .filter-chip-value { max-width: 100%; border-left: 0; padding: 3px 0; background: transparent; }
+  .logs-workspace .filter-chip-clear { flex-shrink: 0; width: 28px; }
 }
