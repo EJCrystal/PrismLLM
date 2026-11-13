@@ -391,6 +391,10 @@ export interface UsageTotal extends UsageDimensions, UsageCosts {
   failovers: number
   avgFirstTokenMs: number | null
   avgTotalMs: number | null
+  successfulLatencySamples?: number
+  p50TotalMs?: number | null
+  p90TotalMs?: number | null
+  p99TotalMs?: number | null
 }
 
 export interface UsageGroup extends UsageDimensions, UsageCosts {

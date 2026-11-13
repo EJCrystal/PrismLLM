@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import type { Channel, ClientKey, UsageGroup, UsageReport, UsageTotal, UsageTrend } from '../types/api'
 import Icon from './Icon.vue'
+import CopyButton from './CopyButton.vue'
 import FilterPanel from './FilterPanel.vue'
 import { vScrollHint } from '../directives/scrollHint'
 import TablePlaceholder from './TablePlaceholder.vue'
@@ -18,7 +19,10 @@ import {
   validateUsageReportRange,
   reportTimezoneOffset,
   fillTrendBuckets,
-  buildTrendPoints,
+  buildTrendSegments,
+  formatUsageCost,
+  usageErrorRate,
+  usageErrorDistribution,
   usageTrendMax,
   usageModelOptions,
   usagePercent,
@@ -32,7 +36,7 @@ import { usageChartBucketRange, usageChartIndex, usageChartPoint, usageChartScal
 
 type DimensionId = 'clientKey' | 'channel' | 'model' | 'channelKey' | 'protocol' | 'error'
 type DimensionKey = 'byClientKey' | 'byChannel' | 'byModel' | 'byChannelKey' | 'byProtocol' | 'byErrorCode'
-type TrendMetricId = 'requests' | 'tokens' | 'cost'
+type TrendMetricId = 'requests' | 'errorRate' | 'tokens' | 'cost'
 
 interface RangeDraft {
   from: string
@@ -55,12 +59,12 @@ interface DimensionOption {
   key: DimensionKey
 }
 
-type TrendSeriesId = 'requests' | 'errors' | 'input' | 'output' | 'cachedRead' | 'cachedWrite' | 'cost'
+type TrendSeriesId = 'requests' | 'errors' | 'errorRate' | 'input' | 'output' | 'cachedRead' | 'cachedWrite' | 'cost'
 
 interface TrendSeries {
   id: TrendSeriesId
   label: string
-  value: (row: UsageTrend) => number
+  value: (row: UsageTrend) => number | null
 }
 
 interface TrendMetric {
@@ -69,13 +73,14 @@ interface TrendMetric {
   series: TrendSeries[]
 }
 
+const initialRange = usageReportPresetRange('last7d')
 const preset = ref('last7d')
-const rangeDraft = ref<RangeDraft>(createRangeDraft('last7d'))
+const rangeDraft = ref<RangeDraft>(createRangeDraft(initialRange))
 const rangeError = ref('')
 const maxDatetimeLocal = ref(toDatetimeLocalValue(Date.now(), true))
 const filters = ref<UsageFilters>({ clientKeyId: '', channelId: '', model: '', protocol: '' })
 const report = ref<UsageReport | null>(null)
-const exactRange = ref<ExactRange | null>(null)
+const exactRange = ref<ExactRange>(initialRange)
 const previousReport = ref<UsageReport | null>(null)
 const channels = ref<Channel[]>([])
 const clientKeys = ref<ClientKey[]>([])
@@ -103,6 +108,11 @@ const trendMetrics: TrendMetric[] = [
       { id: 'requests', label: '请求', value: (row) => row.requests },
       { id: 'errors', label: '错误', value: (row) => row.errors },
     ],
+  },
+  {
+    id: 'errorRate',
+    label: '错误率',
+    series: [{ id: 'errorRate', label: '错误率', value: usageErrorRate }],
   },
   {
     id: 'tokens',
@@ -164,9 +174,11 @@ const chartRow = computed(() => chartIndex.value == null ? null : trendRows.valu
 const chartSeriesPoints = computed(() => {
   const row = chartRow.value
   if (!row) return []
-  return activeTrendMetric.value.series.map((series, index) => {
-    const point = usageChartPoint(chartIndex.value!, trendRows.value.length, series.value(row), chartScale.value.max)
-    return { id: series.id, x: point.x, y: point.y, className: trendSeriesClass(index) }
+  return activeTrendMetric.value.series.flatMap((series, index) => {
+    const value = series.value(row)
+    if (value == null) return []
+    const point = usageChartPoint(chartIndex.value!, trendRows.value.length, value, chartScale.value.max)
+    return [{ id: series.id, x: point.x, y: point.y, className: trendSeriesClass(index) }]
   })
 })
 function inspectChart(event: PointerEvent) {
@@ -198,7 +210,7 @@ function selectChartBucket(): void {
   if (!range) return
   preset.value = ''
   exactRange.value = range
-  rangeDraft.value = { from: toDatetimeLocalValue(range.from, true), to: toDatetimeLocalValue(range.to, true) }
+  rangeDraft.value = { from: toDatetimeLocalValue(range.from), to: toDatetimeLocalValue(range.to) }
   rangeError.value = ''
   load({ range })
 }
@@ -206,12 +218,13 @@ watch([trendRows, trendMetric], () => { chartIndex.value = null })
 const trendSeriesPoints = computed(() => activeTrendMetric.value.series.map((series, index) => ({
   id: series.id,
   label: series.label,
-  points: buildTrendPoints(trendRows.value, series.value, 640, 150, 8, chartScale.value.max),
-  max: trendSeriesMax.value[index] || 0,
+  segments: buildTrendSegments(trendRows.value, series.value, chartScale.value.max),
+  max: trendMetric.value === 'errorRate' && !trendRows.value.some(row => row.requests > 0) ? null : trendSeriesMax.value[index] || 0,
   className: trendSeriesClass(index),
 })))
 const trendArea = computed(() => {
-  const seriesPoints = trendSeriesPoints.value[0]?.points
+  if (trendMetric.value === 'errorRate') return ''
+  const seriesPoints = trendSeriesPoints.value[0]?.segments[0]
   if (!seriesPoints) return ''
   const lastPoint = seriesPoints.split(' ').at(-1)
   if (!lastPoint) return ''
@@ -232,7 +245,7 @@ function removeFilter(key: keyof UsageFilters) { filters.value[key] = ''; load()
 const filterRangeSummary = computed(() => USAGE_REPORT_PRESETS.find(item => item.id === preset.value)?.label || '自定义时间')
 const rangeLabel = computed(() => report.value ? `${formatTimeRange(report.value.from)} — ${formatTimeRange(report.value.to)}` : '')
 const activePreset = computed(() => preset.value)
-const topError = computed(() => (report.value?.byErrorCode || [])[0] || null)
+const errorDistribution = computed(() => usageErrorDistribution(report.value?.byErrorCode || [], total.value.errors))
 const failoverRate = computed(() => total.value.requests ? `${((total.value.failovers / total.value.requests) * 100).toFixed(1)}%` : '0%')
 function deltaPercent(current: number, previous: number): number | null {
   if (previous === 0) return null
@@ -255,8 +268,11 @@ const comparison = computed(() => {
     requestsTone: usageDeltaTone(total.value.requests, previous.requests),
     errors: deltaText(total.value.errors, previous.errors),
     errorsTone: usageDeltaTone(total.value.errors, previous.errors, true),
-    cost: deltaText(currentCost, previousCost),
-    costTone: usageDeltaTone(currentCost, previousCost, true),
+    tokens: deltaText(total.value.totalTokens, previous.totalTokens),
+    latency: total.value.avgFirstTokenMs != null && previous.avgFirstTokenMs != null ? deltaText(total.value.avgFirstTokenMs, previous.avgFirstTokenMs) : '—',
+    latencyTone: total.value.avgFirstTokenMs != null && previous.avgFirstTokenMs != null ? usageDeltaTone(total.value.avgFirstTokenMs, previous.avgFirstTokenMs, true) : 'neutral',
+    cost: total.value.costUsd != null && previous.costUsd != null ? deltaText(currentCost, previousCost) : '—',
+    costTone: total.value.costUsd != null && previous.costUsd != null ? usageDeltaTone(currentCost, previousCost, true) : 'neutral',
   }
 })
 
@@ -271,9 +287,11 @@ function formatBucket(value: number): string {
   return new Intl.DateTimeFormat('zh-CN', options).format(new Date(value))
 }
 
-function formatTrendValue(value: number): string {
+function formatTrendValue(value: number | null): string {
+  if (value == null) return '—'
+  if (trendMetric.value === 'errorRate') return value.toFixed(1) + '%'
   if (trendMetric.value === 'cost') {
-    return `$${Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 8 })}`
+    return formatUsageCost(value)
   }
   return trendMetric.value === 'requests' ? formatNumber(value) : formatTokensCompact(value)
 }
@@ -285,6 +303,7 @@ function formatCacheHit(row: Pick<UsageTrend, 'inputTokens' | 'cachedTokens'>): 
 
 function displayName(row: UsageGroup): string {
   if (dimension.value === 'protocol') return protocolLabel(row.id)
+  if (['clientKey', 'channel', 'channelKey'].includes(dimension.value) && (!row.name || row.name === row.id)) return dimensionId(row)
   return usageGroupLabel(row)
 }
 
@@ -293,10 +312,10 @@ function protocolLabel(value: string): string {
 }
 
 function costText(row: UsageGroup): string {
-  return row.costUsd != null ? `$${row.costUsd}` : '—'
+  return formatUsageCost(row.costUsd)
 }
 
-function latency(value: number | null): string {
+function latency(value: number | null | undefined): string {
   return value == null ? '—' : formatDuration(value)
 }
 
@@ -304,37 +323,46 @@ function errorRate(row: UsageGroup): string {
   return usagePercent(row.requests, row.errors)
 }
 
-function createRangeDraft(presetId: string, now = Date.now()): RangeDraft {
-  const { from, to } = usageReportPresetRange(presetId, now)
+function dimensionId(row: UsageGroup): string {
+  const value = protocolLabel(row.id)
+  return value.length > 24 ? value.slice(0, 10) + '…' + value.slice(-8) : value
+}
+
+const comparisonTitle = computed(() => comparison.value
+  ? '较上一周期：' + formatTimeRange(comparison.value.from) + ' — ' + formatTimeRange(comparison.value.to)
+  : '上一周期无可用对比数据')
+
+function createRangeDraft({ from, to }: ExactRange): RangeDraft {
   return { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(to) }
 }
 
 function currentRange(): { from: number; to: number } {
   // 预设使用毫秒精度，避免 datetime-local 截断到分钟而漏掉最后一分钟。
   if (preset.value) return usageReportPresetRange(preset.value)
-  const from = fromDatetimeLocalValue(rangeDraft.value.from)
-  const to = fromDatetimeLocalValue(rangeDraft.value.to)
-  return { from, to }
+  return exactRange.value
 }
 
 function selectPreset(presetId: string) {
   preset.value = presetId
-  exactRange.value = null
-  rangeDraft.value = createRangeDraft(presetId)
+  exactRange.value = usageReportPresetRange(presetId)
+  rangeDraft.value = createRangeDraft(exactRange.value)
   rangeError.value = ''
   load()
 }
 
 function refresh() {
-  if (preset.value) rangeDraft.value = createRangeDraft(preset.value)
+  if (preset.value) {
+    exactRange.value = usageReportPresetRange(preset.value)
+    rangeDraft.value = createRangeDraft(exactRange.value)
+  }
   maxDatetimeLocal.value = toDatetimeLocalValue(Date.now(), true)
   load({ quiet: true })
 }
 
-function onRangeInput() {
+function onRangeInput(boundary: keyof ExactRange) {
   // 手动修改时间后退出快捷项高亮，提交时再统一校验。
   preset.value = ''
-  exactRange.value = null
+  exactRange.value = { ...exactRange.value, [boundary]: fromDatetimeLocalValue(rangeDraft.value[boundary]) }
 }
 
 function onRangeChange() {
@@ -349,7 +377,7 @@ function errorMessage(cause: unknown): string {
 }
 
 async function load({ quiet = false, range }: { quiet?: boolean; range?: ExactRange | null } = {}): Promise<void> {
-  const { from, to } = range ?? exactRange.value ?? currentRange()
+  const { from, to } = range ?? currentRange()
   const message = validateUsageReportRange(from, to)
   rangeError.value = message
   if (message) {
@@ -357,6 +385,8 @@ async function load({ quiet = false, range }: { quiet?: boolean; range?: ExactRa
     refreshing.value = false
     return
   }
+  exactRange.value = { from, to }
+  if (preset.value) rangeDraft.value = createRangeDraft(exactRange.value)
   if (quiet) refreshing.value = true
   else loading.value = true
   error.value = ''
@@ -429,7 +459,7 @@ onMounted(() => {
 <template>
   <section class="page-stack usage-report-page">
     <div class="section-head report-head">
-      <p class="report-head-note">费用统一按 USD 汇总。</p>
+      <span class="report-head-note">{{ rangeLabel }} · {{ usageGranularityLabel(report?.granularity) }}</span>
       <div class="report-head-actions">
         <button type="button" class="button ghost refresh-button" :disabled="loading || refreshing" :aria-busy="refreshing" @click="refresh">
           <Icon name="refresh" :size="16" /> {{ refreshing ? '刷新中…' : '刷新' }}
@@ -441,7 +471,8 @@ onMounted(() => {
     </div>
 
     <FilterPanel label="时间与筛选" :summary="filterRangeSummary" :count="filterChips.length">
-    <div class="panel report-range-bar">
+    <div class="panel usage-filter-control">
+    <div class="report-range-bar">
       <div class="report-presets" role="group" aria-label="快捷时间范围">
         <button
           v-for="item in USAGE_REPORT_PRESETS"
@@ -455,12 +486,12 @@ onMounted(() => {
       <div class="report-custom-range">
         <label class="report-range-field">
           <span>开始</span>
-          <input v-model="rangeDraft.from" type="datetime-local" step="0.001" :max="rangeDraft.to" @input="onRangeInput" @change="onRangeChange" />
+          <input v-model="rangeDraft.from" type="datetime-local" step="60" :max="rangeDraft.to" @input="onRangeInput('from')" @change="onRangeChange" />
         </label>
         <span class="report-range-sep">—</span>
         <label class="report-range-field">
           <span>结束</span>
-          <input v-model="rangeDraft.to" type="datetime-local" step="0.001" :min="rangeDraft.from" :max="maxDatetimeLocal" @input="onRangeInput" @change="onRangeChange" />
+          <input v-model="rangeDraft.to" type="datetime-local" step="60" :min="rangeDraft.from" :max="maxDatetimeLocal" @input="onRangeInput('to')" @change="onRangeChange" />
         </label>
       </div>
       <div class="report-range-hint">
@@ -469,7 +500,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="panel report-filter-bar">
+    <div class="report-filter-bar">
       <div class="report-filter-fields">
         <FilterSelect v-model="filters.clientKeyId" label="调用方密钥" searchable :disabled="loading || refreshing" :options="[{ value: '', label: '全部密钥' }, ...clientKeys.map(key => ({ value: key.id, label: key.name + ' · ' + key.keyPrefix }))]" @update:model-value="load()" />
         <FilterSelect v-model="filters.channelId" label="渠道" searchable :disabled="loading || refreshing" :options="[{ value: '', label: '全部渠道' }, ...channels.map(channel => ({ value: channel.id, label: channel.name }))]" @update:model-value="load()" />
@@ -477,7 +508,7 @@ onMounted(() => {
         <FilterSelect v-model="filters.protocol" label="协议" :disabled="loading || refreshing" :options="[{ value: '', label: '全部协议' }, { value: 'chat_completions', label: 'Chat Completions' }, { value: 'responses', label: 'Responses' }, { value: 'messages', label: 'Messages' }]" @update:model-value="load()" />
         <button v-if="hasFilters" type="button" class="button ghost report-reset" @click="resetFilters">清除筛选</button>
       </div>
-      <div class="report-range-copy"><span>{{ rangeLabel }}</span><span>{{ usageGranularityLabel(report?.granularity) }}</span></div>
+    </div>
     </div>
 
     <template #chips>
@@ -492,41 +523,32 @@ onMounted(() => {
       <div class="stat-row four usage-kpis">
         <div class="stat-card">
           <span>请求</span><strong>{{ formatNumber(total.requests) }}</strong>
+          <span class="usage-kpi-delta" :title="comparisonTitle">较上期 <b :class="'text-' + (comparison?.requestsTone || 'neutral')">{{ comparison?.requests || '—' }}</b></span>
           <small>{{ total.errors }} 错误 · 成功率 {{ successRate }}</small>
+          <small :title="comparisonTitle">错误较上期 <b :class="'text-' + (comparison?.errorsTone || 'neutral')">{{ comparison?.errors || '—' }}</b></small>
         </div>
         <div class="stat-card">
           <span>总 token</span><strong>{{ formatTokensCompact(total.totalTokens) }}</strong>
+          <span class="usage-kpi-delta" :title="comparisonTitle">较上期 <b>{{ comparison?.tokens || '—' }}</b></span>
           <small>输入 {{ formatTokensCompact(total.inputTokens) }} · 输出 {{ formatTokensCompact(total.outputTokens) }}</small>
         </div>
         <div class="stat-card accent">
           <span>费用</span>
-          <strong v-if="total.costUsd != null" class="cost-amount report-cost">${{ total.costUsd }}</strong>
+          <strong v-if="total.costUsd != null" class="cost-amount report-cost usage-exact-cost" tabindex="0" :data-exact="total.costUsd + ' USD'" :aria-label="'费用 ' + total.costUsd + ' USD'">{{ formatUsageCost(total.costUsd) }}</strong>
           <strong v-else class="report-cost muted">—</strong>
+          <span class="usage-kpi-delta" :title="comparisonTitle">较上期 <b :class="'text-' + (comparison?.costTone || 'neutral')">{{ comparison?.cost || '—' }}</b></span>
           <small>USD 计费合计</small>
         </div>
         <div class="stat-card">
           <span>平均首 token</span><strong>{{ latency(total.avgFirstTokenMs) }}</strong>
+          <span class="usage-kpi-delta" :title="comparisonTitle">较上期 <b :class="'text-' + (comparison?.latencyTone || 'neutral')">{{ comparison?.latency || '—' }}</b></span>
           <small>平均总耗时 {{ latency(total.avgTotalMs) }}</small>
         </div>
       </div>
-      <div v-if="comparison" class="usage-period-comparison">
-        <div class="usage-period-comparison-copy">
-          <strong>较上一周期</strong>
-          <span>{{ formatTimeRange(comparison.from) }} — {{ formatTimeRange(comparison.to) }}</span>
-        </div>
-        <div class="usage-period-comparison-item"><span>请求</span><b :class="`text-${comparison.requestsTone}`">{{ comparison.requests }}</b></div>
-        <div class="usage-period-comparison-item"><span>错误</span><b :class="`text-${comparison.errorsTone}`">{{ comparison.errors }}</b></div>
-        <div class="usage-period-comparison-item"><span>费用</span><b :class="`text-${comparison.costTone}`">{{ comparison.cost }}</b></div>
-      </div>
-
-      <div class="usage-secondary-kpis">
-        <span><b>{{ formatNumber(total.cachedTokens) }}</b> 缓存读</span>
-        <span><b>{{ formatNumber(total.cachedWriteTokens) }}</b> 缓存写</span>
-        <span title="缓存命中率 = 缓存读 token / 输入 token；上游未返回缓存用量时按 0 统计"><b>{{ cacheHitText }}</b> 缓存命中率</span>
-        <span><b>{{ formatNumber(total.reasoningTokens) }}</b> 推理 token</span>
-        <span><b>{{ total.activeClientKeys }}</b> 活跃调用方密钥</span>
-        <span><b>{{ total.failovers }}</b> 故障转移（{{ failoverRate }}）</span>
-        <span v-if="topError">主要错误 <b>{{ topError.id }}</b> · {{ topError.requests }} 次</span>
+      <div class="usage-support-metrics">
+        <div class="usage-support-group"><span class="usage-support-label">缓存效率</span><strong title="缓存命中率 = 缓存读 token / 输入 token；输入 token 已包含缓存读写">命中率 {{ cacheHitText }}</strong><span>读 {{ formatTokensCompact(total.cachedTokens) }}</span><span>写 {{ formatTokensCompact(total.cachedWriteTokens) }}</span></div>
+        <div class="usage-support-group"><span class="usage-support-label">推理用量</span><strong>{{ formatTokensCompact(total.reasoningTokens) }} token</strong><span>已含在输出用量中</span></div>
+        <div class="usage-support-group"><span class="usage-support-label">路由运行</span><strong>{{ formatNumber(total.failovers) }} 次故障转移</strong><span>{{ failoverRate }} / 请求</span><span>{{ total.activeClientKeys }} 个活跃密钥</span></div>
       </div>
 
       <div class="panel usage-trend-panel">
@@ -543,17 +565,17 @@ onMounted(() => {
         </div>
         <div v-if="!trendRows.length" class="usage-chart-empty">该时间范围没有请求。</div>
         <div v-else class="usage-chart-wrap" @focusout="chartFocusOut">
-          <div class="usage-chart-readout" aria-live="polite" aria-atomic="true">
-            <template v-if="chartRow"><strong>{{ formatTimeRange(chartRow.bucketStart) }}</strong><span v-for="series in activeTrendMetric.series" :key="series.id">{{ series.label }} <b>{{ formatTrendValue(series.value(chartRow)) }}</b></span><span v-if="trendMetric === 'tokens'">缓存命中率 <b>{{ formatCacheHit(chartRow) }}</b></span><button type="button" class="button ghost mini usage-chart-filter" @mousedown.prevent @click="selectChartBucket">只看此时间段</button></template>
-            <span v-else class="muted">悬停或点按曲线查看读数，也可用左右方向键选择。</span>
+          <div class="usage-chart-readout">
+            <div class="usage-chart-values" aria-live="polite" aria-atomic="true"><strong>{{ chartRow ? formatTimeRange(chartRow.bucketStart) : '选择时间点' }}</strong><span v-for="series in activeTrendMetric.series" :key="series.id"><span class="usage-chart-series-label" :title="series.label">{{ series.label }}</span><b>{{ chartRow ? formatTrendValue(series.value(chartRow)) : '—' }}</b></span></div>
+            <button type="button" class="button subtle usage-chart-filter" :disabled="!chartRow" @click="selectChartBucket">只看此时间段</button>
           </div>
           <div class="usage-chart-with-axis">
-          <div class="usage-chart-y-axis" aria-hidden="true"><span v-for="tick in chartScale.ticks" :key="tick" :style="{ top: `${(142 - tick / chartScale.max * 134) / 150 * 100}%` }">{{ trendMetric === 'cost' ? Number(tick.toPrecision(6)).toLocaleString('zh-CN', { maximumFractionDigits: 8 }) : formatTokensCompact(tick) }}</span></div>
-          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? '单位 USD' : trendMetric === 'tokens' ? '单位 token' : '单位 次'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @keydown="chartKey">
+          <div class="usage-chart-y-axis" aria-hidden="true"><span v-for="tick in chartScale.ticks" :key="tick" :style="{ top: `${(142 - tick / chartScale.max * 134) / 150 * 100}%` }">{{ trendMetric === 'errorRate' ? tick + '%' : trendMetric === 'cost' ? Number(tick.toPrecision(6)).toLocaleString('zh-CN', { maximumFractionDigits: 8 }) : formatTokensCompact(tick) }}</span></div>
+          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'errorRate' ? '单位 百分比' : trendMetric === 'cost' ? '单位 USD' : trendMetric === 'tokens' ? '单位 token' : '单位 次'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @keydown="chartKey">
             <defs><linearGradient id="usage-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0.01"/></linearGradient></defs>
             <line v-for="tick in chartScale.ticks" :key="tick" x1="8" :y1="142 - tick / chartScale.max * 134" x2="632" :y2="142 - tick / chartScale.max * 134" class="usage-chart-grid" />
             <polygon v-if="trendArea" :points="trendArea" class="usage-chart-area" />
-            <polyline v-for="series in trendSeriesPoints" :key="series.id" :points="series.points" :class="['usage-chart-line', series.className]" />
+            <template v-for="series in trendSeriesPoints" :key="series.id"><template v-for="(points, index) in series.segments" :key="index"><polyline :points="points" :class="['usage-chart-line', series.className]" /><circle v-if="!points.includes(' ')" :cx="points.split(',')[0]" :cy="points.split(',')[1]" r="3" :class="['usage-chart-point', series.className]" /></template></template>
             <template v-if="chartSeriesPoints.length"><line :x1="chartSeriesPoints[0].x" :x2="chartSeriesPoints[0].x" y1="8" y2="142" class="usage-chart-crosshair" /><circle v-for="point in chartSeriesPoints" :key="point.id" :cx="point.x" :cy="point.y" :r="point.className ? 3.5 : 4" :class="['usage-chart-point', point.className]" /></template>
           </svg>
           </div>
@@ -563,6 +585,7 @@ onMounted(() => {
           <div class="usage-chart-legend">
             <span v-for="series in trendSeriesPoints" :key="series.id"><i :class="['dot', series.className]"></i>{{ series.label }} 最高 {{ formatTrendValue(series.max) }}</span>
             <span v-if="trendMetric === 'tokens'" class="usage-chart-note" title="输入 token 包含缓存读与缓存写；缓存命中率只统计缓存读">缓存读 / 写是输入 token 的子集 · 整体缓存命中率 {{ cacheHitText }}</span>
+            <span v-if="trendMetric === 'errorRate'">错误数 / 请求数 · 无请求的时段不连线</span>
             <span v-if="trendMetric === 'cost'">仅统计 USD 费用</span>
           </div>
         </div>
@@ -599,14 +622,14 @@ onMounted(() => {
             <tbody>
               <tr v-for="row in dimensionRows" :key="row.id">
                 <td class="usage-dimension-name">
-                  <strong>{{ displayName(row) }}</strong>
-                  <small v-if="row.id !== row.name">{{ protocolLabel(row.id) }}</small>
+                  <div class="usage-dimension-title"><strong :title="row.name || row.id">{{ displayName(row) }}</strong><CopyButton v-if="['clientKey', 'channel', 'channelKey'].includes(dimension) && (!row.name || row.name === row.id)" :text="row.id" :title="'复制' + activeDimension.label + ' ID'" /></div>
+                  <div v-if="row.name && row.id !== row.name" class="usage-dimension-id"><code :title="row.id">{{ dimensionId(row) }}</code><CopyButton v-if="['clientKey', 'channel', 'channelKey'].includes(dimension)" :text="row.id" :title="'复制' + activeDimension.label + ' ID'" /></div>
                 </td>
                 <td><strong>{{ formatNumber(row.requests) }}</strong><small class="muted"> / {{ row.errors }} 错误</small></td>
                 <td><span class="badge" :class="row.errors ? 'warning' : 'success'">{{ errorRate(row) }}</span></td>
                 <td>{{ formatTokensCompact(row.totalTokens) }}<small class="muted"> 入 {{ formatTokensCompact(row.inputTokens) }} / 出 {{ formatTokensCompact(row.outputTokens) }}</small></td>
                 <td>{{ latency(row.avgTotalMs) }}<small class="muted"> 首 token {{ latency(row.avgFirstTokenMs) }}</small></td>
-                <td class="small">{{ costText(row) }}</td>
+                <td class="small"><span class="usage-exact-cost" tabindex="0" :data-exact="row.costUsd != null ? row.costUsd + ' USD' : '无计费数据'" :aria-label="row.costUsd != null ? row.costUsd + ' USD' : '无计费数据'">{{ costText(row) }}</span></td>
               </tr>
             </tbody>
           </table>
@@ -618,21 +641,17 @@ onMounted(() => {
           <div class="report-panel-head"><div class="report-panel-title"><h3>错误分布</h3><span class="report-count">{{ report.byErrorCode.length }} 种</span></div></div>
           <div v-if="!report.byErrorCode.length" class="usage-chart-empty">该时间范围没有失败请求。</div>
           <div v-else class="usage-error-list">
-            <div v-for="row in report.byErrorCode.slice(0, 6)" :key="row.id" class="usage-error-row">
-              <div><code>{{ row.id }}</code><span>{{ formatNumber(row.requests) }} 次</span></div>
-              <div class="usage-error-track"><span :style="{ width: `${Math.max(4, (row.requests / report.byErrorCode[0].requests) * 100)}%` }"></span></div>
+            <div v-for="row in errorDistribution" :key="row.id" class="usage-error-row">
+              <div><code :title="row.id">{{ row.id }}</code><span>{{ formatNumber(row.requests) }} 次（{{ row.percent.toFixed(1) }}%）</span></div>
+              <div class="usage-error-track"><span :style="{ width: row.percent + '%' }"></span></div>
             </div>
           </div>
         </div>
-        <div class="panel usage-insight-card">
-          <div class="report-panel-head"><div class="report-panel-title"><h3>运行摘要</h3><span class="report-count">实时聚合</span></div></div>
-          <div class="usage-summary-list">
-            <div><span>成功请求</span><strong>{{ formatNumber(total.requests - total.errors) }}</strong></div>
-            <div><span>失败请求</span><strong>{{ formatNumber(total.errors) }}</strong></div>
-            <div><span>故障转移次数</span><strong>{{ formatNumber(total.failovers) }}</strong></div>
-            <div><span>平均总耗时</span><strong>{{ latency(total.avgTotalMs) }}</strong></div>
-            <div><span>数据粒度</span><strong>{{ usageGranularityLabel(report.granularity) }}</strong></div>
-          </div>
+        <div class="panel usage-insight-card usage-latency-panel">
+          <div class="report-panel-head"><div class="report-panel-title"><h3>成功请求耗时分位</h3><span class="report-count">总耗时</span></div></div>
+          <div class="usage-percentiles"><div><span>P50</span><strong>{{ latency(total.p50TotalMs) }}</strong><small>中位耗时</small></div><div><span>P90</span><strong>{{ latency(total.p90TotalMs) }}</strong><small>90% 请求不超过</small></div><div><span>P99</span><strong>{{ latency(total.p99TotalMs) }}</strong><small>99% 请求不超过</small></div></div>
+          <p class="usage-latency-note" v-if="total.successfulLatencySamples != null">基于 {{ formatNumber(total.successfulLatencySamples) }} 个最终成功请求（含重试成功）；排除失败、取消、中断及负耗时。{{ total.successfulLatencySamples === 0 ? '暂无有效样本。' : '按连续分位数插值计算。' }}</p>
+          <p class="usage-latency-note" v-else>当前接口未提供耗时分位数据，请更新后端；不会使用平均值估算。</p>
         </div>
       </div>
 

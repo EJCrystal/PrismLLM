@@ -331,11 +331,18 @@ class RequestLogRepository(
     suspend fun report(query: UsageReportQuery): UsageReport = suspendTransaction(database) {
         val where = reportWhere(query)
         val totals = totalQuery(where).singleOrNull()?.toUsageTotal() ?: UsageTotal()
+        val latency = latencyQuery(this, query)
         UsageReport(
             from = query.from,
             to = query.to,
             granularity = reportGranularity(query.from, query.to),
-            total = totals.copy(costUsd = costUsd(where)),
+            total = totals.copy(
+                costUsd = costUsd(where),
+                successfulLatencySamples = latency.samples,
+                p50TotalMs = latency.p50,
+                p90TotalMs = latency.p90,
+                p99TotalMs = latency.p99,
+            ),
             trend = trendQuery(this, query),
             byClientKey = groupedQuery(
                 RequestLogs.clientKeyId,
@@ -373,6 +380,35 @@ class RequestLogRepository(
             query.protocol?.let { add(RequestLogs.protocol eq it) }
         }
         return conditions.reduce { left, right -> left and right }
+    }
+
+    private data class LatencyPercentiles(
+        val samples: Long = 0,
+        val p50: Double? = null,
+        val p90: Double? = null,
+        val p99: Double? = null,
+    )
+
+    private fun latencyQuery(transaction: JdbcTransaction, query: UsageReportQuery): LatencyPercentiles {
+        val filter = rawFilter(query)
+        val sql = """
+            select count(*) as samples,
+              percentile_cont(0.5) within group(order by total_ms) as p50,
+              percentile_cont(0.9) within group(order by total_ms) as p90,
+              percentile_cont(0.99) within group(order by total_ms) as p99
+            from request_logs
+            where ${filter.sql} and status_code between 200 and 299
+              and coalesce(error_code, '') = '' and coalesce(upstream_error_code, '') = ''
+              and total_ms >= 0
+        """.trimIndent()
+        return transaction.exec(sql, filter.args) { result ->
+            if (!result.next()) LatencyPercentiles() else LatencyPercentiles(
+                samples = result.getLong("samples"),
+                p50 = result.getDouble("p50").takeUnless { result.wasNull() },
+                p90 = result.getDouble("p90").takeUnless { result.wasNull() },
+                p99 = result.getDouble("p99").takeUnless { result.wasNull() },
+            )
+        } ?: LatencyPercentiles()
     }
 
     private fun reportGranularity(from: Long, to: Long): String {

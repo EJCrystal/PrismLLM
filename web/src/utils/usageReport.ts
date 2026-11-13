@@ -16,6 +16,46 @@ export function usageDeltaTone(current: number, previous: number, inverse = fals
   return (positive !== inverse) ? 'success' : 'warning'
 }
 
+export function formatUsageCost(value: string | number | null | undefined): string {
+  if (value == null || value === '') return '—'
+  const amount = Number(value)
+  if (!Number.isFinite(amount)) return '—'
+  if (amount > 0 && amount < 0.0001) return '<$0.0001'
+  return '$' + amount.toLocaleString('zh-CN', {
+    minimumFractionDigits: Math.abs(amount) >= 1 || amount === 0 ? 2 : 4,
+    maximumFractionDigits: Math.abs(amount) >= 1 ? 2 : 4,
+  })
+}
+
+export function usageErrorRate(row: Pick<UsageTrend, 'requests' | 'errors'>): number | null {
+  return row.requests > 0 ? Math.max(0, Math.min(100, row.errors / row.requests * 100)) : null
+}
+
+export function usageErrorDistribution(rows: UsageGroup[], errors: number) {
+  const visible = rows.slice(0, 6).map(row => ({ id: row.id, requests: row.requests }))
+  const remaining = rows.slice(6).reduce((sum, row) => sum + row.requests, 0)
+  if (remaining > 0) visible.push({ id: '其他', requests: remaining })
+  return visible.map(row => ({ ...row, percent: errors > 0 ? row.requests / errors * 100 : 0 }))
+}
+
+export function buildTrendSegments<T>(rows: T[], value: (row: T) => number | null, maximum: number): string[] {
+  const segments: string[][] = []
+  let segment: string[] = []
+  rows.forEach((row, index) => {
+    const amount = value(row)
+    if (amount == null || !Number.isFinite(amount)) {
+      if (segment.length) segments.push(segment)
+      segment = []
+      return
+    }
+    const x = 8 + (rows.length <= 1 ? 312 : index / (rows.length - 1) * 624)
+    const y = 142 - Math.max(0, amount) / (maximum > 0 ? maximum : 1) * 134
+    segment.push(x.toFixed(1) + ',' + y.toFixed(1))
+  })
+  if (segment.length) segments.push(segment)
+  return segments.map(points => points.join(' '))
+}
+
 export const USAGE_REPORT_MAX_SPAN_MS = 30 * 86_400_000
 
 export const USAGE_REPORT_PRESETS = [

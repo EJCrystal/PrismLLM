@@ -3,6 +3,10 @@ import assert from 'node:assert/strict'
 import { usageChartBucketRange } from '../src/utils/usageChart'
 import {
   usageCostAmount,
+  formatUsageCost,
+  usageErrorRate,
+  usageErrorDistribution,
+  buildTrendSegments,
   usageDeltaTone,
   usageReportPresetRange,
   toDatetimeLocalValue,
@@ -13,6 +17,40 @@ import {
 } from '../src/utils/usageReport'
 
 describe('usageReport: 用量报表展示', () => {
+  it('费用显示保留可读精度，微额费用不被舍入为免费', () => {
+    assert.equal(formatUsageCost('387.92887372'), '$387.93')
+    assert.equal(formatUsageCost('0.01234567'), '$0.0123')
+    assert.equal(formatUsageCost('0.00000001'), '<$0.0001')
+    assert.equal(formatUsageCost('0'), '$0.00')
+    assert.equal(formatUsageCost(null), '—')
+    assert.equal(formatUsageCost(undefined), '—')
+    assert.equal(formatUsageCost('invalid'), '—')
+  })
+
+  it('无请求桶没有错误率，有请求且无错误才是 0%', () => {
+    assert.equal(usageErrorRate({ requests: 0, errors: 0 }), null)
+    assert.equal(usageErrorRate({ requests: 10, errors: 0 }), 0)
+    assert.equal(usageErrorRate({ requests: 10, errors: 2 }), 20)
+    assert.equal(usageErrorRate({ requests: 10, errors: 10 }), 100)
+  })
+
+  it('错误分布分母是全部错误，前六项外汇总其他', () => {
+    const rows = [40, 20, 10, 8, 7, 6, 5, 4].map((requests, index) => ({ id: 'error-' + index, requests }))
+    const distribution = usageErrorDistribution(rows, 100)
+    assert.equal(distribution.length, 7)
+    assert.equal(distribution[0].percent, 40)
+    assert.deepEqual(distribution.at(-1), { id: '其他', requests: 9, percent: 9 })
+    assert.equal(distribution.reduce((sum, row) => sum + row.percent, 0), 100)
+    assert.deepEqual(usageErrorDistribution([], 0), [])
+    assert.equal(usageErrorDistribution(rows.slice(0, 1), 0)[0].percent, 0)
+  })
+
+  it('错误率曲线在无样本处断线并保留孤立时间点', () => {
+    assert.deepEqual(buildTrendSegments([0, null, 100], value => value, 100), ['8.0,142.0', '632.0,8.0'])
+    assert.deepEqual(buildTrendSegments([null, null], value => value, 100), [])
+    assert.deepEqual(buildTrendSegments([0], value => value, 100), ['320.0,142.0'])
+    assert.deepEqual(buildTrendSegments([0, 50, 100], value => value, 100), ['8.0,142.0 320.0,75.0 632.0,8.0'])
+  })
   it('请求增加为成功色，错误和费用增加为警示色', () => {
     assert.equal(usageDeltaTone(120, 100), 'success')
     assert.equal(usageDeltaTone(120, 100, true), 'warning')
