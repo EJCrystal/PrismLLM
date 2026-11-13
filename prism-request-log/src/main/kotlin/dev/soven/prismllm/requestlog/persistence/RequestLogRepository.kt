@@ -313,7 +313,10 @@ class RequestLogRepository(
           when status_code >= 400 or coalesce(error_code, '') <> '' or coalesce(upstream_error_code, '') <> '' then 'failed'
           when status_code not between 200 and 299 then 'other'
           when coalesce(upstream_attempts, 0) > 1 or exists (
-            select 1 from jsonb_array_elements((case when attempts_json is json array then attempts_json else '[]' end)::jsonb) attempt
+            select 1 from jsonb_array_elements((case
+              when attempts_json is json array and pg_input_is_valid(attempts_json, 'jsonb') then attempts_json
+              else '[]'
+            end)::jsonb) attempt
             where coalesce(attempt->>'skipped', 'false') <> 'true'
             having count(*) > 1 or coalesce(bool_or(
               coalesce(attempt->>'errorCode', '') <> ''

@@ -70,7 +70,6 @@ let searchTimer: ReturnType<typeof setTimeout> | undefined
 let filterTimer: ReturnType<typeof setTimeout> | undefined
 let optionsGeneration = 0
 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
-let appliedPreset = 'last24h'
 function keepSelectedOption(options: Array<{ value: string; label: string }>, value: string) {
   return value && !options.some(option => option.value === value) ? [...options, { value, label: value === '__unrouted__' ? '未路由到渠道' : value }] : options
 }
@@ -96,8 +95,7 @@ async function applyFilters() {
   clearTimeout(searchTimer)
   closeDetail()
   const previousRange = [appliedFilters.value.from, appliedFilters.value.to].join(':')
-  if (appliedPreset !== timePreset.value) renewRange()
-  appliedPreset = timePreset.value
+  renewRange()
   appliedFilters.value = { from: appliedFilters.value.from, to: appliedFilters.value.to, q: query.value.trim(), channelId: channelFilter.value,
     model: modelFilter.value, httpStatus: statusFilter.value, outcome: outcomeFilter.value }
   logs.value = []
@@ -291,11 +289,20 @@ const averageLatency = computed(() => {
   return formatDuration(total / logs.value.length)
 })
 
+async function reloadCurrentRange(): Promise<boolean> {
+  const previousFilters = appliedFilters.value
+  renewRange()
+  const requestedFilters = appliedFilters.value
+  const loaded = await load()
+  if (appliedFilters.value !== requestedFilters) return false
+  if (!loaded) appliedFilters.value = previousFilters
+  else await refreshOptions()
+  return loaded
+}
+
 async function refresh() {
   if (loading.value || loadingMore.value) return
-  renewRange()
-  void refreshOptions()
-  const loaded = await load()
+  const loaded = await reloadCurrentRange()
   await nextTick()
   if (selected.value) selected.value = logs.value.find(log => log.id === selected.value!.id) || selected.value
   else tableScroll.value?.scrollTo({ top: 0 })
@@ -305,8 +312,7 @@ async function refresh() {
 async function autoRefresh(): Promise<void> {
   autoRefreshing.value = true
   try {
-    renewRange()
-    await load()
+    await reloadCurrentRange()
   } finally {
     autoRefreshing.value = false
   }

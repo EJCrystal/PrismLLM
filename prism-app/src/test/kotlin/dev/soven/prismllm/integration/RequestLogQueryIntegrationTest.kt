@@ -77,6 +77,26 @@ class RequestLogQueryIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `jsonb incompatible attempt payloads cannot break outcome filters`() = runBlocking {
+        val record = requestLog("escaped-null", System.currentTimeMillis()).copy(
+            upstreamAttempts = 1,
+            attempts = listOf(UpstreamAttemptRecord(index = 1, elapsedMs = 0, errorMessage = "\u0000")),
+        )
+        app.requestLogRepository.insert(record)
+        val successes = app.requestLogRepository.listForDisplay(100, filters = RequestLogQuery(outcome = "success"))
+        assertEquals(listOf(record.requestId), successes.map { it.requestId })
+        assertTrue(app.requestLogRepository.listForDisplay(100, filters = RequestLogQuery(outcome = "recovered")).isEmpty())
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (cookie, _) = client.loginAdmin()
+            val response = client.get("/admin/api/request-logs?outcome=success") { header(HttpHeaders.Cookie, cookie) }
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(record.requestId, Json.parseToJsonElement(response.bodyAsText()).jsonArray.single().jsonObject["requestId"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
     fun `search resolves current names and treats wildcard characters literally`() = runBlocking {
         val channel = createChannel("Current%_Name", "channel")
         val now = System.currentTimeMillis()

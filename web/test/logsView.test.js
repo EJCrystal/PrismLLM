@@ -9,6 +9,7 @@ import { JSDOM } from 'jsdom'
 describe('request log hierarchy', () => {
   let server
   let component
+  let api
   const fixture = (changes = {}) => ({
     id: 1, requestId: 'req-001-1234567890', traceId: 'trace-001', createdAt: 1794555000000,
     alias: 'deepseek-v4.1', channelId: 'channel-001', channelName: '主渠道', channelKeyName: '生产密钥',
@@ -24,6 +25,7 @@ describe('request log hierarchy', () => {
   before(async () => {
     server = await createServer({ configFile: false, plugins: [vue()], optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true }, appType: 'custom' })
     component = (await server.ssrLoadModule('/src/components/LogsView.vue')).default
+    api = (await server.ssrLoadModule('/src/api.ts')).api
   })
   after(async () => { await server?.close() })
 
@@ -49,6 +51,109 @@ describe('request log hierarchy', () => {
     if (inspectState) await inspectState(componentState)
     return new JSDOM(html + (context.teleports?.body || '')).window.document
   }
+
+  it('renews rolling ranges on every filter query and keeps custom ranges fixed', async (context) => {
+    let now = 1_800_000_000_000
+    context.mock.method(Date, 'now', () => now)
+    const requests = []
+    const optionsRequests = []
+    context.mock.method(api, 'listRequestLogs', async options => { requests.push({ ...options }); return [] })
+    context.mock.method(api, 'listRequestLogFilterOptions', async options => {
+      optionsRequests.push({ ...options })
+      return { channels: [], models: [], statuses: [] }
+    })
+    await render([], null, undefined, async state => {
+      const originalEnd = state.appliedFilters.value.to
+      now += 7_200_000
+      state.query.value = 'latest'
+      await state.applyFilters()
+      assert.equal(requests.at(-1).to, now)
+      assert.equal(requests.at(-1).from, now - 86_400_000)
+      assert.equal(requests.at(-1).beforeId, undefined)
+      assert.notEqual(requests.at(-1).to, originalEnd)
+      assert.equal(optionsRequests.at(-1).to, now)
+      state.timePreset.value = 'custom'
+      state.appliedFilters.value = { from: originalEnd - 1000, to: originalEnd }
+      now += 7_200_000
+      await state.applyFilters()
+      assert.equal(requests.at(-1).from, originalEnd - 1000)
+      assert.equal(requests.at(-1).to, originalEnd)
+    })
+  })
+
+  for (const refreshMethod of ['refresh', 'autoRefresh']) {
+    it('keeps the previous range and pagination when ' + refreshMethod + ' fails', async (context) => {
+      let now = 1_800_000_000_000
+      context.mock.method(Date, 'now', () => now)
+      const requests = []
+      context.mock.method(api, 'listRequestLogs', async options => {
+        requests.push({ ...options })
+        if (!options.beforeId) throw new Error('refresh failed')
+        return []
+      })
+      const optionsMock = context.mock.method(api, 'listRequestLogFilterOptions', async () => ({ channels: [], models: [], statuses: [] }))
+      const previousRecords = [fixture({ id: 10 })]
+      await render(previousRecords, null, undefined, async state => {
+        const previousFilters = state.appliedFilters.value
+        state.hasMore.value = true
+        now += 7_200_000
+        await state[refreshMethod]()
+        assert.equal(requests[0].to, now)
+        assert.equal(state.appliedFilters.value, previousFilters)
+        assert.equal(state.logs.value, previousRecords)
+        assert.equal(state.hasMore.value, true)
+        assert.equal(state.error.value, 'refresh failed')
+        assert.equal(optionsMock.mock.callCount(), 0)
+        await state.loadMore()
+        assert.equal(requests[1].beforeId, 10)
+        assert.equal(requests[1].from, previousFilters.from)
+        assert.equal(requests[1].to, previousFilters.to)
+      })
+    })
+  }
+
+  it('refreshes options for the same rolling range as a successful automatic refresh', async (context) => {
+    let now = 1_800_000_000_000
+    context.mock.method(Date, 'now', () => now)
+    const requests = []
+    context.mock.method(api, 'listRequestLogs', async options => { requests.push({ ...options }); return [fixture({ id: 2 })] })
+    const options = { channels: [{ value: 'new-channel', label: '新渠道' }], models: [], statuses: [] }
+    const optionsRequests = []
+    context.mock.method(api, 'listRequestLogFilterOptions', async filters => { optionsRequests.push({ ...filters }); return options })
+    await render([fixture()], null, undefined, async state => {
+      now += 60_000
+      await state.autoRefresh()
+      assert.equal(requests[0].to, now)
+      assert.equal(optionsRequests[0].from, requests[0].from)
+      assert.equal(optionsRequests[0].to, requests[0].to)
+      assert.deepEqual(state.filterOptions.value, options)
+      assert.equal(state.logs.value[0].id, 2)
+      assert.equal(state.autoRefreshing.value, false)
+    })
+  })
+
+  it('does not restore stale filters when a failed refresh is superseded by a new query', async (context) => {
+    let now = 1_800_000_000_000
+    context.mock.method(Date, 'now', () => now)
+    let rejectRefresh
+    context.mock.method(api, 'listRequestLogs', options => options.q === 'new-query'
+      ? Promise.resolve([fixture({ id: 2 })])
+      : new Promise((resolve, reject) => { rejectRefresh = reject }))
+    context.mock.method(api, 'listRequestLogFilterOptions', async () => ({ channels: [], models: [], statuses: [] }))
+    await render([fixture()], null, undefined, async state => {
+      now += 60_000
+      const pendingRefresh = state.autoRefresh()
+      now += 60_000
+      state.query.value = 'new-query'
+      await state.applyFilters()
+      rejectRefresh(new Error('old refresh failed'))
+      await pendingRefresh
+      assert.equal(state.appliedFilters.value.q, 'new-query')
+      assert.equal(state.appliedFilters.value.to, now)
+      assert.equal(state.logs.value[0].id, 2)
+      assert.equal(state.error.value, '')
+    })
+  })
 
   it('shows total tokens and total latency first without empty optional metrics', async () => {
     const document = await render([fixture()])
