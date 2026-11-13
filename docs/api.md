@@ -336,6 +336,23 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 
 ---
 
+### 9. 用量报表
+
+`GET /admin/api/usage-report` 返回 `from` / `to` 毫秒时间戳范围内的请求、token、费用、趋势和维度聚合（当前接口两端均包含，最长 30 天）。可按 `clientKeyId`、`channelId`、`model`（上游模型）、`protocol` 精确筛选，并用 `timezoneOffsetMinutes` 指定趋势桶的本地时区偏移。
+
+响应 `total` 新增：
+
+| 字段 | 语义 |
+| --- | --- |
+| `successfulLatencySamples` | 有效成功总耗时样本数；没有样本时为 `0` |
+| `p50TotalMs` / `p90TotalMs` / `p99TotalMs` | 成功总耗时的连续分位数，单位毫秒，可包含插值小数；没有样本时为空，按现有 JSON 配置省略字段 |
+
+样本仅包含最终 HTTP 2xx、没有网关或上游错误码且总耗时非负的请求，包含重试后成功；失败、取消、中断及其他结果不参与。数据库按当前完整筛选条件聚合，不在前端估算。真实 `0 ms` 不视为空值；既有平均耗时的统计口径不变。
+
+管理台的错误率为每个时间桶的错误数 / 请求数，无请求桶显示为空并断线；错误分布百分比以全部错误数为分母，前六类以外合并为“其他”。费用仍按 USD 返回原始十进制字符串；界面舍入不改变 API 或 CSV 精度，悬停、聚焦或点按金额可查看原始值。
+
+---
+
 ## 三、调用方密钥生命周期与审计
 
 ### 1. 密钥创建与配额

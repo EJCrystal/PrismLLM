@@ -27,6 +27,10 @@ data class UsageTotal(
     val avgTotalMs: Long? = null,
     /** 区间内费用合计（USD）；没有任何可计费请求时为 null。 */
     val costUsd: BigDecimal? = null,
+    val successfulLatencySamples: Long = 0,
+    val p50TotalMs: Double? = null,
+    val p90TotalMs: Double? = null,
+    val p99TotalMs: Double? = null,
 )
 
 data class UsageGroup(

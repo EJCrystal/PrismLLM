@@ -563,6 +563,10 @@ data class UsageTotalResponse(
     val avgTotalMs: Long? = null,
     /** 费用合计（USD）；没有任何可计费请求时为 null。 */
     val costUsd: String? = null,
+    val successfulLatencySamples: Long = 0,
+    val p50TotalMs: Double? = null,
+    val p90TotalMs: Double? = null,
+    val p99TotalMs: Double? = null,
 )
 
 @Serializable
@@ -642,6 +646,10 @@ fun UsageTotal.toResponse() = UsageTotalResponse(
     avgFirstTokenMs = avgFirstTokenMs,
     avgTotalMs = avgTotalMs,
     costUsd = costUsd?.stripTrailingZeros()?.toPlainString(),
+    successfulLatencySamples = successfulLatencySamples,
+    p50TotalMs = p50TotalMs,
+    p90TotalMs = p90TotalMs,
+    p99TotalMs = p99TotalMs,
 )
 
 fun UsageGroup.toResponse() = UsageGroupResponse(
