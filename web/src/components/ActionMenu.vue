@@ -8,7 +8,8 @@ interface ActionMenuItem { id: string; label: string; icon?: string; danger?: bo
 const props = withDefaults(defineProps<{ label: string; items: ActionMenuItem[]; icon?: string; compact?: boolean; disabled?: boolean }>(), { icon: 'more', compact: false, disabled: false })
 const emit = defineEmits<{ select: [id: string] }>()
 const menuId = useId()
-const itemGroups = computed(() => {
+let nextGroupKey = 0
+const itemGroups = computed<{ key: number; label: string; items: ActionMenuItem[] }[]>((previousGroups = []) => {
   const groups: { label: string; items: ActionMenuItem[] }[] = []
   for (const item of props.items) {
     const label = item.group ?? ''
@@ -16,7 +17,15 @@ const itemGroups = computed(() => {
     if (previous?.label === label) previous.items.push(item)
     else groups.push({ label, items: [item] })
   }
-  return groups
+  const previousKeys = new Map(previousGroups.flatMap(group => group.items.map(item => [item.id, group.key] as const)))
+  const reusedKeys = new Set<number>()
+  return groups.map(group => {
+    // Surviving items carry group identity; a split may reuse each previous key only once.
+    const inheritedKey = group.items.map(item => previousKeys.get(item.id)).find(key => key !== undefined && !reusedKeys.has(key))
+    const key = inheritedKey ?? nextGroupKey++
+    reusedKeys.add(key)
+    return { ...group, key }
+  })
 })
 const hasGroups = computed(() => itemGroups.value.some(group => group.label))
 const estimatedPanelHeight = computed(() => props.items.length * 44 + 16
@@ -39,7 +48,7 @@ watch(() => props.items, () => { if (panel.value) void place() }, { deep: true, 
       <MenuItems as="template">
         <div ref="panel" class="floating-menu" :style="panelStyle">
           <template v-if="hasGroups">
-            <template v-for="(group, index) in itemGroups" :key="group.items[0]?.id">
+            <template v-for="(group, index) in itemGroups" :key="group.key">
               <div v-if="index > 0" class="floating-menu-group-divider" role="separator" aria-orientation="horizontal" />
               <div role="group" :aria-labelledby="group.label ? `${menuId}-group-${index}` : undefined">
                 <div v-if="group.label" :id="`${menuId}-group-${index}`" class="floating-menu-group-heading" role="heading" aria-level="3">{{ group.label }}</div>

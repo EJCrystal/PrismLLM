@@ -355,6 +355,126 @@ describe('action menu groups and keyboard interaction', () => {
     assert.equal(panel(), null)
   })
 
+  for (const update of ['splice', 'replace']) {
+    it('preserves keyboard selection when removing a grouped first item with ' + update, async () => {
+      const items = ref([
+        { id: 'a', label: 'First action', group: 'Actions' },
+        { id: 'b', label: 'Remaining action', group: 'Actions' },
+        { id: 'separator-action', label: 'Separate action', group: 'Other' },
+        { id: 'repeated-action', label: 'Repeated group action', group: 'Actions' },
+      ])
+      const { trigger, selected } = await mountMenu(items)
+      trigger.focus()
+      key(trigger, 'ArrowDown')
+      await settle()
+      const menu = panel()
+      key(menu, 'ArrowDown')
+      await settle()
+      const remainingItem = activeItem()
+      assert.equal(remainingItem.textContent, 'Remaining action')
+      const activeId = menu.getAttribute('aria-activedescendant')
+
+      if (update === 'splice') items.value.splice(0, 1)
+      else items.value = items.value.filter(item => item.id !== 'a')
+      await settle()
+      const updatedItem = [...menu.querySelectorAll('[role="menuitem"]')].find(item => item.textContent === 'Remaining action')
+      const updatedActiveId = menu.getAttribute('aria-activedescendant')
+      assert.equal(panel(), menu)
+      assert.equal(document.activeElement, menu)
+      assert.deepEqual([...menu.querySelectorAll('[role="heading"]')].map(heading => heading.textContent), ['Actions', 'Other', 'Actions'])
+      assert.equal(menu.querySelectorAll('[role="separator"]').length, 2)
+      key(menu, 'Enter')
+      await settle()
+
+      assert.deepEqual(selected, ['b'])
+      assert.equal(updatedItem, remainingItem, 'Removing a sibling must not remount the remaining MenuItem')
+      assert.equal(updatedActiveId, activeId)
+      assert.equal(panel(), null)
+      assert.equal(document.activeElement, trigger)
+    })
+  }
+
+  for (const group of ['Repeated', undefined]) {
+    it('preserves a surviving ' + (group ?? 'unnamed') + ' group when an earlier matching group disappears', async () => {
+      const items = ref([
+        { id: 'a', label: 'Earlier action', group },
+        { id: 'other', label: 'Other action', group: 'Other' },
+        { id: 'b', label: 'Remaining action', group },
+      ])
+      const { trigger, selected } = await mountMenu(items)
+      trigger.focus()
+      key(trigger, 'ArrowUp')
+      await settle()
+      const menu = panel()
+      const remainingItem = activeItem()
+      assert.equal(remainingItem.textContent, 'Remaining action')
+      const activeId = menu.getAttribute('aria-activedescendant')
+
+      items.value.shift()
+      await settle()
+      const updatedItem = [...menu.querySelectorAll('[role="menuitem"]')].find(item => item.textContent === 'Remaining action')
+      const updatedActiveId = menu.getAttribute('aria-activedescendant')
+      assert.equal(panel(), menu)
+      assert.equal(document.activeElement, menu)
+      assert.equal(menu.querySelectorAll('[role="group"]').length, 2)
+      key(menu, 'Enter')
+      await settle()
+
+      assert.deepEqual(selected, ['b'])
+      assert.equal(updatedItem, remainingItem)
+      assert.equal(updatedActiveId, activeId)
+      assert.equal(panel(), null)
+      assert.equal(document.activeElement, trigger)
+    })
+  }
+
+  it('preserves keyboard selection when a new first item joins the same group', async () => {
+    const items = ref([{ id: 'b', label: 'Remaining action', group: 'Actions' }])
+    const { trigger, selected } = await mountMenu(items)
+    trigger.focus()
+    key(trigger, 'ArrowDown')
+    await settle()
+    const menu = panel()
+    const remainingItem = activeItem()
+    assert.equal(remainingItem.textContent, 'Remaining action')
+
+    items.value.unshift({ id: 'a', label: 'New first action', group: 'Actions' })
+    await settle()
+    assert.equal(activeItem(), remainingItem)
+    assert.equal(document.activeElement, menu)
+    assert.deepEqual([...menu.querySelectorAll('[role="menuitem"]')].map(item => item.textContent), ['New first action', 'Remaining action'])
+    key(menu, 'Enter')
+    await settle()
+    assert.deepEqual(selected, ['b'])
+    assert.equal(panel(), null)
+  })
+
+  it('keeps split groups distinct without losing the surviving first group selection', async () => {
+    const items = ref([
+      { id: 'a', label: 'First action', group: 'Actions' },
+      { id: 'b', label: 'Middle action', group: 'Actions' },
+      { id: 'c', label: 'Last action', group: 'Actions' },
+    ])
+    const { trigger, selected } = await mountMenu(items)
+    trigger.focus()
+    key(trigger, 'ArrowDown')
+    await settle()
+    const menu = panel()
+    const firstItem = activeItem()
+
+    items.value[1].group = 'Other'
+    await settle()
+    assert.equal(activeItem(), firstItem)
+    assert.deepEqual([...menu.querySelectorAll('[role="menuitem"]')].map(item => item.textContent), ['First action', 'Middle action', 'Last action'])
+    assert.deepEqual([...menu.querySelectorAll('[role="heading"]')].map(heading => heading.textContent), ['Actions', 'Other', 'Actions'])
+    assert.equal(new Set([...menu.querySelectorAll('[role="menuitem"]')].map(item => item.id)).size, 3)
+    assert.equal(menu.querySelectorAll('[role="separator"]').length, 2)
+    key(menu, 'Enter')
+    await settle()
+    assert.deepEqual(selected, ['a'])
+    assert.equal(panel(), null)
+  })
+
   it('keeps ungrouped arrays flat and preserves disabled, title, danger, and emitted IDs', async () => {
     const { trigger, selected } = await mountMenu([
       { id: 'edit', label: 'Edit mock account', icon: 'edit' },
