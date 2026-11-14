@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import type { Channel, OAuthAccount, OAuthLoginStart, OAuthProviderInfo } from '../types/api'
@@ -81,7 +81,6 @@ const testTarget = ref<OAuthAccount | null>(null)
 const showSettings = ref(false)
 const settingsSaving = ref(false)
 const settingsTarget = ref<OAuthAccount | null>(null)
-const settingsModelsRef = ref<HTMLElement | null>(null)
 const settingsForm = reactive({
   name: '',
   priority: 1,
@@ -423,7 +422,7 @@ function openTest(account: OAuthAccount) {
   showTest.value = true
 }
 
-function openSettings(account: OAuthAccount, focusModels = false) {
+function openSettings(account: OAuthAccount) {
   settingsTarget.value = account
   Object.assign(settingsForm, {
     name: account.name,
@@ -438,10 +437,6 @@ function openSettings(account: OAuthAccount, focusModels = false) {
     channelIds: [...account.channelIds],
   })
   showSettings.value = true
-  if (focusModels) {
-    // 「选择模型」直接从模型授权开始，免去用户在大表单里再找一遍。
-    nextTick(() => settingsModelsRef.value?.scrollIntoView({ block: 'center' }))
-  }
 }
 
 /** 全选只作用于当前搜索结果，未匹配的模型保持原状。 */
@@ -528,15 +523,6 @@ function accountActionItems(account: OAuthAccount): OAuthAccountActionItem[] {
     ...(isOAuthAccountCooling(account, now.value)
       ? [{ id: 'clear-cooldown', label: '解除冷却', icon: 'check', group: '日常运维', disabled: busy }]
       : []),
-    {
-      id: 'select-models',
-      label: '账号设置',
-      icon: 'gear',
-      group: '配置管理',
-      title: oauthSupportsModelCatalog(account.provider)
-        ? '打开账号设置，可同步上游模型目录并勾选该账号可调度的模型'
-        : '打开账号设置，勾选该账号可调度的模型',
-    },
     { id: 'policy', label: '调度策略', icon: 'bolt', group: '配置管理' },
     { id: 'reauth', label: '重新授权', icon: 'lock', group: '配置管理' },
     { id: 'delete', label: '删除账号', icon: 'trash', group: '危险操作', danger: true, disabled: busy },
@@ -546,7 +532,6 @@ function accountActionItems(account: OAuthAccount): OAuthAccountActionItem[] {
 function accountAction(id: string, account: OAuthAccount) {
   if (id === 'refresh-token') void refreshToken(account)
   else if (id === 'refresh-quota') void refreshQuota(account)
-  else if (id === 'select-models') openSettings(account, true)
   else if (id === 'policy') openPolicy(account)
   else if (id === 'reauth') openReauth(account)
   else if (id === 'clear-cooldown') void clearCooldown(account)
@@ -922,7 +907,7 @@ onBeforeUnmount(() => {
           </div>
           <small>可选，留空或勾选「清除代理」都表示直连；代理只支持无认证的 HTTP 正向代理。</small>
         </div>
-        <div ref="settingsModelsRef" class="field">
+        <div class="field">
           <span>模型授权</span>
           <div class="oauth-model-picker">
             <div class="oauth-model-picker-toolbar">
