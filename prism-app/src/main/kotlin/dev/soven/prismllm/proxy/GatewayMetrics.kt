@@ -23,6 +23,14 @@ class GatewayMetrics {
         registry.counter("gateway_admin_audit_write_failures_total")
     private val keyAutoDisableFailures =
         registry.counter("gateway_key_auto_disable_write_failures_total")
+    private val requestLogWriteFailures =
+        registry.counter("gateway_request_log_write_failures_total")
+    private val requestLogDropped =
+        registry.counter("gateway_request_log_dropped_total")
+    private val requestSettlementFailures = listOf("pricing", "quota", "metrics", "request_log")
+        .associateWith { stage ->
+            registry.counter("gateway_request_settlement_failures_total", Tags.of("stage", stage))
+        }
 
     init {
         Gauge.builder("gateway_database_ready", databaseReadyValue) { it.get() }
@@ -100,6 +108,18 @@ class GatewayMetrics {
 
     fun quotaRejection(reason: String) {
         registry.counter("gateway_quota_rejections_total", Tags.of("reason", reason)).increment()
+    }
+
+    fun requestSettlementFailed(stage: String) {
+        checkNotNull(requestSettlementFailures[stage]) { "unknown request finalization stage" }.increment()
+    }
+
+    fun requestLogWriteFailed() {
+        requestLogWriteFailures.increment()
+    }
+
+    fun requestLogDropped() {
+        requestLogDropped.increment()
     }
 
     fun protocolConversion(from: String, to: String) {

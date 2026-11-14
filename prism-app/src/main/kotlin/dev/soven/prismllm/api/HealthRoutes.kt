@@ -17,7 +17,7 @@ fun Route.healthRoutes(app: GatewayApplication) {
         call.respondText("ok")
     }
     get("/health/ready") {
-        if (app.shuttingDown.get()) {
+        if (app.shuttingDown) {
             app.metrics.databaseReady(false)
             call.respondText("shutting down", status = HttpStatusCode.ServiceUnavailable)
             return@get

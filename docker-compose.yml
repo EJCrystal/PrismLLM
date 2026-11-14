@@ -21,6 +21,8 @@ services:
   gateway:
     build: .
     restart: unless-stopped
+    # Increase this budget with DRAIN_TIMEOUT_MS; allow extra time for server and queue cleanup.
+    stop_grace_period: 60s
     env_file: .env
     environment:
       DATABASE_URL: jdbc:postgresql://postgres:5432/llm_gateway

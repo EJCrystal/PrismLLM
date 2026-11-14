@@ -3,19 +3,19 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/EJCrystal/PrismLLM/actions/workflows/ci.yml/badge.svg)](https://github.com/EJCrystal/PrismLLM/actions/workflows/ci.yml)
 
-面向现代团队的高性能全能 LLM 网关。支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 Google Gemini 原生透传与**十二个方向无缝跨协议双向转换**，提供密钥池智能容灾、上游分组限流、单请求精确计费与开箱即用的现代化多主题管理控制台。
+面向内部团队的单实例自托管 LLM 网关。支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 Google Gemini 原生透传，以及**四协议、六组双向（共 12 个方向）的有边界跨协议转换**，提供密钥池容灾、上游分组限流、USD 费用快照与多主题管理界面。
 
 ---
 
 ## 核心特性
 
-- 🔀 **全协议互通**：支持 OpenAI Chat Completions、Responses、Anthropic Messages 与 Google Gemini 四大协议，六组双向互转（共 12 个转换方向），流式 SSE 与用量帧零缓冲透传。
+- 🔀 **四协议互通**：支持 OpenAI Chat Completions、Responses、Anthropic Messages 与 Google Gemini，六组双向互转（共 12 个转换方向）；同协议透传，跨协议按 SSE 事件增量转换，存在事件及生命周期状态缓冲，不承诺零缓冲或所有扩展能力无损互转。
 - 🛡️ **智能密钥池容灾**：多密钥优先级分档与同档轮询；支持状态码、错误正则、连续/窗口计数的高灵敏度自动停用规则（临时停用单探测自愈与永久停用人工恢复）。
 - ⚡ **上游主动分组限流**：密钥级独立 RPM 令牌桶与最大并发限制，超限平滑回退至备用候选，避免上游熔断。
 - 🎭 **动态请求伪装与覆盖**：自动模拟 Claude Code、Codex、Google GenAI 客户端请求头及 UA，支持 RFC 7396 请求体补丁，消除第三方客户端调用阻碍。
 - 📊 **Vue 3 现代化管理台**：包含渠道编排、密钥池管理、调用方密钥生命周期（轮换/永久撤销）、操作审计与用量大盘；支持浅色、深色与护眼暖色（Sepia）三主题无缝轮转。
 - 🧠 **统一模型检测**：渠道列表的「测试」入口提供连通性、智商、指纹与记录四个页签。连通性检测用真实请求验证渠道、凭据与协议；智商检测内置鹈鹕骑行与糖果测试，支持可插拔判分器；指纹检测根据随机数字序列在本地参考库中比对 68 个已知模型。智商与指纹结果按渠道归档在「记录」页签，可按类型、模型与结论筛选；三类检测都不写请求日志、不消耗调用方密钥额度，指纹比对完全在本地完成。
-- 💰 **单请求实时计费**：基于 Token 用量快照实时核算输入、输出、缓存与推理费用，提供“渠道覆盖价 > 模型默认价”双层继承与 USD/CNY/EUR 多币种支持。
+- 💰 **单请求 USD 费用快照**：按用量与“渠道覆盖价 > 模型默认价”核算输入、输出及缓存费用，推理 Token 不重复计费；本次请求单次解析价格并计算费用，供每日额度账本与异步请求日志共用，日志消费者不二次算价。每日额度为按 UTC 准入日期归属、请求结束后结算的软预算，不是预授权硬上限。
 - 🔌 **可扩展插件生态**：支持通过 JVM SPI 加载独立的余额与额度查询插件（官方提供 Sub2API / New API 适配器）。
 
 ---
@@ -51,14 +51,16 @@ docker compose up -d --build
 
 启动后访问管理后台：`http://localhost:8080/admin/`，使用 `.env` 中设置的管理员账号密码登录。
 
+以上为本地启动示例；生产环境必须使用 TLS 并设置 `COOKIE_SECURE=true`，将 `/admin/`、`/admin/api/*` 与 `/metrics` 限制在私网或受控运维入口。默认 Compose 给 gateway 设置 `stop_grace_period: 60s`，为默认 30 秒 Drain 及 server、队列清理留出余量；增大 `DRAIN_TIMEOUT_MS` 时必须同步增大容器或编排器的停止预算，这不是完整停机耗时的绝对上界。部署与安全备份要求见 [配置指南](docs/configuration.md)。
+
 ### 方式二：本地运行
 
 本地运行需先确保可访问 PostgreSQL 数据库（可使用 `docker compose up -d postgres` 单独拉起随附数据库，映射至 `127.0.0.1:5432`）。
 默认打包测试阶段会通过 Testcontainers 启动临时容器，构建前需确保本地 Docker 守护进程处于运行状态（如需跳过测试可传入 `-DskipTests`）。
 
 ```bash
-# 1. 构建前端静态资源
-npm --prefix web install
+# 1. 按 web/package-lock.json 安装依赖并构建前端静态资源
+npm --prefix web ci
 npm --prefix web run build
 
 # 2. 构建并运行后端（首次启动会自动通过 Flyway 执行数据库表结构迁移）
@@ -78,7 +80,7 @@ java -jar prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar
 | `ADMIN_USERNAME` | `admin` | 初始管理员用户名 |
 | `ADMIN_PASSWORD` | *(必填)* | 初始管理员密码 |
 | `CONNECT_TIMEOUT_MS` | `30000` | 上游连接超时时间（毫秒） |
-| `FIRST_TOKEN_TIMEOUT_MS` | `120000`| 流式首 Token 超时时间（毫秒） |
+| `FIRST_TOKEN_TIMEOUT_MS` | `120000`| 流式首数据等待超时（毫秒；沿用变量名，不是语义 Token 的保证） |
 
 完整环境变量清单、代理配置与日志保留策略请参阅 [配置指南](docs/configuration.md)。
 
@@ -104,7 +106,10 @@ java -jar prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar
 ## 安全边界
 
 - **凭据单向加密**：调用方密钥仅存储 SHA-256 哈希；上游渠道凭据使用 AES-256-GCM 强加密存储，API 与管理界面均不回显明文。
-- **管理防护**：管理接口要求 `SameSite=Strict` Cookie 与 `X-CSRF-Token` 校验；数据面 Bearer 密钥严格禁止访问管理端点。
+- **管理防护**：管理接口要求 `SameSite=Strict` Cookie 与 `X-CSRF-Token` 校验；数据面 Bearer 密钥严格禁止访问管理端点。管理会话、调用方 RPM/并发、上游密钥 RPM/并发与 OAuth 调度限制以单实例内存为准，不是跨副本共享控制。
+- **故障转移边界**：以首数据触发的响应提交为界，而不是第一个有语义的文本 Token；提交前可对可重试上游错误及 Shape Refusal 回退到候选，提交后不切换或重放响应。
+- **记录可靠性**：请求日志异步 best effort，队列满、写入失败或强制停机可能丢失记录，不是必达财务账本。额度结算失败通过指标、日志与告警处置，不修改或重放已完成响应，不承诺 exactly-once 或自动补账。
+- **恢复准备**：数据库与 `GATEWAY_MASTER_KEY` 必须按版本配套备份，但分开安全存储并验证恢复；只更换环境变量不是主密钥轮换，不能自动重加密已有凭据。
 - **隐私保护**：请求日志默认不落库提示词（Prompt）、成功响应正文或完整流式响应；失败请求额外保存经凭据脱敏并截断至 8 KiB 的上游错误正文或终止性错误事件载荷（上游错误正文可能包含上游回显的输入片段）。
 
 ---

@@ -19,6 +19,7 @@ The included rules cover:
 - complete-request p95 latency above 10 seconds for 10 minutes;
 - sustained quota rejections;
 - management audit persistence failures;
+- pricing/quota settlement failures and lost request logs;
 - per-channel upstream attempt failure rate above 20% for 10 minutes;
 - candidates entering cooldown (per failure reason, fail-over with fail-open fallback).
 
@@ -30,6 +31,9 @@ The thresholds are starting points for an internal gateway. Tune them against no
 - `gateway_request_duration_seconds` measures total request latency.
 - `gateway_quota_rejections_total{reason}` counts `429` responses produced by daily token/cost, per-minute request, or key/team concurrency limits.
 - `gateway_admin_audit_write_failures_total` counts management audit rows that could not be persisted.
+- `gateway_request_settlement_failures_total{stage}` counts pricing, quota settlement or request-finalization failures. A completed response is not replayed; a quota write failure may leave the daily ledger incomplete and requires investigation.
+- `gateway_request_log_write_failures_total` counts request logs that failed to persist; the asynchronous writer continues with the next record without retrying.
+- `gateway_request_log_dropped_total` counts records rejected by the bounded queue, including submissions after it closes. Log-based usage reports are best-effort views, not a guaranteed financial ledger.
 - `gateway_upstream_attempts_total{channel,outcome}` tracks each channel attempt, including retries.
 - `gateway_upstream_errors_total{channel,code}` remains available for detailed upstream error classification.
 - `gateway_upstream_retries_total{from_channel,to_channel,reason}` counts retry and failover transitions.

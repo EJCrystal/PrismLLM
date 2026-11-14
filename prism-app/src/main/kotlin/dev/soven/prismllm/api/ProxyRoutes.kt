@@ -25,7 +25,6 @@ import dev.soven.prismllm.channel.domain.authTypeFor
 import dev.soven.prismllm.domain.effective
 import dev.soven.prismllm.oauth.infra.OAuthAccountDecision
 import dev.soven.prismllm.oauth.infra.OAuthAccountDenyReason
-import dev.soven.prismllm.oauth.infra.OAuthAccountLease
 import dev.soven.prismllm.oauth.infra.OAuthRefreshException
 import dev.soven.prismllm.oauth.OAuthTokenUnavailableException
 import dev.soven.prismllm.oauth.OAuthUnavailableReason
@@ -36,9 +35,7 @@ import java.net.InetSocketAddress
 import java.net.ProxySelector
 import dev.soven.prismllm.proxy.UpstreamRequestPolicy
 import dev.soven.prismllm.proxy.upstreamRequestUrl
-import dev.soven.prismllm.requestlog.domain.BillingCalculator
 import dev.soven.prismllm.quota.infra.RequestLimitLease
-import dev.soven.prismllm.quota.domain.quotaTokensFromUsage
 import dev.soven.prismllm.protocol.ReasoningEffort
 import dev.soven.prismllm.protocol.ShapeRefusal
 import dev.soven.prismllm.shared.domain.TraceContextFactory
@@ -62,9 +59,11 @@ import dev.soven.prismllm.proxy.search.syntheticWebSearchName
 import dev.soven.prismllm.proxy.search.webSearchAllowedDomains
 import dev.soven.prismllm.channel.persistence.KeyAutoDisableRepository
 import dev.soven.prismllm.channel.persistence.KeyAutoDisablePendingException
+import dev.soven.prismllm.channel.persistence.KeyProbeLease
+import dev.soven.prismllm.proxy.CandidateAttemptResources
+import dev.soven.prismllm.proxy.trackResponse
 import dev.soven.prismllm.resilience.CandidateCooldown
 import dev.soven.prismllm.channel.domain.key.ChannelKeyRateLimitDecision
-import dev.soven.prismllm.channel.domain.key.ChannelKeyRateLimitLease
 import dev.soven.prismllm.channel.domain.key.ChannelKeyRateLimitReason
 import dev.soven.prismllm.channel.domain.key.ChannelKeyState
 import dev.soven.prismllm.resilience.CooldownPermit
@@ -106,6 +105,7 @@ import io.ktor.utils.io.core.readBytes
 import io.ktor.utils.io.readRemaining
 import io.ktor.utils.io.readUTF8Line
 import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
@@ -203,6 +203,21 @@ fun Route.proxyRoutes(app: GatewayApplication) {
 }
 
 private suspend fun handleProxy(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    protocol: GatewayProtocol,
+    nativeModel: String? = null,
+    nativeStream: Boolean? = null,
+) {
+    val lease = app.requestDrain.acquire(checkNotNull(currentCoroutineContext()[Job]))
+        ?: throw serviceUnavailable("gateway_shutting_down", "网关正在停止，请稍后重试")
+    lease.use {
+        lease.trackResponse(call)
+        handleProxyRequest(app, call, protocol, nativeModel, nativeStream)
+    }
+}
+
+private suspend fun handleProxyRequest(
     app: GatewayApplication,
     call: ApplicationCall,
     protocol: GatewayProtocol,
@@ -411,13 +426,11 @@ private suspend fun handleProxy(
          */
         suspend fun runAttempt(
             candidate: RouteCandidate,
-            permit: CooldownPermit,
-            rateLimitLease: ChannelKeyRateLimitLease?,
-            oauthLease: OAuthAccountLease?,
-        ): GatewayError? = try {
+            resources: CandidateAttemptResources,
+        ): GatewayError? {
+            val permit = checkNotNull(resources.cooldownPermit)
             val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
             if (remainingMs <= 0) {
-                app.candidateCooldown.release(permit)
                 throw GatewayError(
                     HttpStatusCode.GatewayTimeout,
                     "upstream_timeout",
@@ -492,8 +505,7 @@ private suspend fun handleProxy(
                     retryable = error?.retryable ?: false,
                 )
             }
-            var probeClaimed = false
-            try {
+            return try {
                 app.keyAvailabilityGate.withReader(candidate.credential.id) {
                     // 自动禁用与探测租约只属于静态渠道密钥；订阅账号由自身 authState 与冷却控制。
                     val channelKey = candidate.channelKey
@@ -521,8 +533,10 @@ private suspend fun handleProxy(
                                 probeRequest,
                                 candidate.upstreamModel,
                             )
-                            probeClaimed = app.keyAutoDisableRepository.claimProbe(channelKey, leaseMs = leaseMs)
-                            if (!probeClaimed) throw CandidateUnavailableException()
+                            val probeLease = resources.claimProbe {
+                                app.keyAutoDisableRepository.claimProbe(channelKey, leaseMs = leaseMs)
+                            }
+                            if (probeLease == null) throw CandidateUnavailableException()
                         }
                     }
                     if (searchRuntime != null) {
@@ -572,33 +586,29 @@ private suspend fun handleProxy(
                 )
                 recordAttempt(state.statusCode, null, state.committed, state.errorCode)
                 if (state.errorCode == null) {
-                    app.candidateCooldown.recordSuccess(permit)
+                    resources.recordCooldown { app.candidateCooldown.recordSuccess(it) }
                     app.oauthAccountScheduler.recordSuccess(candidate.credential.id)
-                    recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed)
+                    recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, resources.probeLease)
                 } else {
                     // 首 token 之后才出现的流异常不算凭据失效，只进入渠道冷却。
-                    app.candidateCooldown
-                        .recordFailure(permit, FailureKind.TRANSPORT)
+                    resources.recordCooldown { app.candidateCooldown.recordFailure(it, FailureKind.TRANSPORT) }
                         ?.let { app.metrics.upstreamCooldownStarted(candidate.channel.name, it.reason) }
                 }
                 null
             } catch (_: CandidateUnavailableException) {
                 upstreamAttempts -= 1
-                app.candidateCooldown.release(permit)
                 GatewayError(
                     HttpStatusCode.BadGateway, "no_candidate", "密钥已停用，请尝试其他候选", "api_error",
                     retryable = true,
                 )
             } catch (e: GatewayError) {
                 if (e.code == "client_disconnect") {
-                    app.candidateCooldown.release(permit)
                     recordAttempt(state.statusCode.takeIf { state.committed }, e, state.committed)
                     throw e
                 }
                 try {
                     currentCoroutineContext().ensureActive()
                 } catch (cancelled: CancellationException) {
-                    app.candidateCooldown.release(permit)
                     recordAttempt(state.upstreamStatus ?: state.statusCode.takeIf { state.committed }, null, state.committed, "client_cancelled")
                     throw cancelled
                 }
@@ -618,11 +628,8 @@ private suspend fun handleProxy(
                     app.oauthAccountScheduler.recordRateLimited(oauthAccount, CodeAssistSuspension.REST_MS)
                 }
                 val kind = classifyFailure(e)
-                if (kind == null) {
-                    app.candidateCooldown.release(permit)
-                } else {
-                    app.candidateCooldown
-                        .recordFailure(permit, kind, e.retryAfterMs)
+                if (kind != null) {
+                    resources.recordCooldown { app.candidateCooldown.recordFailure(it, kind, e.retryAfterMs) }
                         ?.let { trigger ->
                             app.metrics.upstreamCooldownStarted(candidate.channel.name, trigger.reason)
                             if (trigger.reason == CandidateCooldown.REASON_AUTH) {
@@ -645,11 +652,10 @@ private suspend fun handleProxy(
                 )
                 val signal = e.toKeyAttemptSignal()
                 if (signal != null) {
-                    recordKeyOutcome(app, candidate, signal, requestId, probeClaimed)
+                    recordKeyOutcome(app, candidate, signal, requestId, resources.probeLease)
                 }
                 e
             } catch (e: ProtocolConversionException) {
-                app.candidateCooldown.release(permit)
                 if (state.upstreamCallStarted) {
                     recordAttempt(
                         state.upstreamStatus,
@@ -661,9 +667,9 @@ private suspend fun handleProxy(
                         state.committed,
                     )
                 }
-                // 上游已返回 2xx 但响应无法转换：说明凭据可用，按成功结算并释放探测租约。
-                if (probeClaimed) {
-                    recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, probeClaimed = true)
+                // 已收到上游 2xx 说明凭据可用；未调用上游的本地转换失败只归还探测。
+                if (resources.probeLease != null && state.upstreamCallStarted && state.upstreamStatus in 200..299) {
+                    recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, resources.probeLease)
                 }
                 if (state.committed) {
                     // 响应已提交后才发生转换失败：保留真实原因，便于和普通流中断区分。
@@ -690,7 +696,6 @@ private suspend fun handleProxy(
                     retryable = true,
                 )
             } catch (e: Throwable) {
-                app.candidateCooldown.release(permit)
                 if (e is CancellationException) {
                     recordAttempt(
                         state.upstreamStatus ?: state.statusCode.takeIf { state.committed },
@@ -707,59 +712,77 @@ private suspend fun handleProxy(
                 )
                 throw e
             }
-        } finally {
-            try {
-                app.channelKeyRateLimiter.release(rateLimitLease)
-            } finally {
-                app.oauthAccountScheduler.release(oauthLease)
-            }
         }
+
+        suspend fun admitAndAttempt(candidate: RouteCandidate, failOpen: Boolean): GatewayError? =
+            CandidateAttemptResources(
+                releaseCooldown = app.candidateCooldown::release,
+                releaseRateLimit = app.channelKeyRateLimiter::release,
+                releaseOAuth = app.oauthAccountScheduler::release,
+                releaseProbe = { app.keyAutoDisableRepository.releaseProbe(it) },
+                onReleaseFailure = { resource, cause ->
+                    proxyLogger.error(
+                        "候选资源归还失败，resource={}, keyId={}, requestId={}, exceptionType={}",
+                        resource, candidate.credential.id, requestId, cause.javaClass.simpleName,
+                    )
+                },
+            ).use { resources ->
+                currentCoroutineContext().ensureActive()
+                val permit = resources.acquireCooldown {
+                    if (failOpen) {
+                        app.candidateCooldown.forceAcquire(candidate.channel.id, candidate.credential.id, candidate.upstreamModel)
+                    } else {
+                        app.candidateCooldown.acquire(candidate.channel.id, candidate.credential.id, candidate.upstreamModel)
+                    }
+                }
+                if (permit == null) {
+                    app.metrics.upstreamCooldownSkipped(candidate.channel.name)
+                    blocked.add(candidate)
+                    markSkipped(candidate, "cooldown")
+                    return@use GatewayError(
+                        HttpStatusCode.BadGateway, "no_candidate", "候选处于冷却，请尝试其他候选", "api_error",
+                        retryable = true,
+                    )
+                }
+                val rateDecision = resources.acquireRateLimit {
+                    candidate.channelKey?.let { app.channelKeyRateLimiter.acquire(it) }
+                        ?: ChannelKeyRateLimitDecision.Allowed(null)
+                }
+                if (rateDecision is ChannelKeyRateLimitDecision.Denied) {
+                    app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, rateDecision.reason.metricValue)
+                    rememberRateLimitDenial(candidate, rateDecision)
+                    return@use GatewayError(
+                        HttpStatusCode.BadGateway, "no_candidate", "密钥准入被限流，请尝试其他候选", "api_error",
+                        retryable = true,
+                    )
+                }
+                val oauthDecision = resources.acquireOAuth {
+                    candidate.oauthAccount?.let { app.oauthAccountScheduler.acquire(it) }
+                        ?: OAuthAccountDecision.Allowed(null)
+                }
+                if (oauthDecision is OAuthAccountDecision.Denied) {
+                    // 账号级限制是硬限制：finally 归还并发，不进入 fail-open；窗口/RPM 不退。
+                    app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, oauthDecision.reason.metricValue)
+                    rememberRateLimitDenial(candidate, oauthDecision)
+                    return@use GatewayError(
+                        HttpStatusCode.BadGateway, "no_candidate", "账号准入被限流，请尝试其他候选", "api_error",
+                        retryable = true,
+                    )
+                }
+                app.upstreamOccupancy.track(candidate.channel.id, candidate.credential.id) {
+                    runAttempt(candidate, resources)
+                }
+            }
 
         var index = 0
         while (index < ordered.size && upstreamAttempts < app.config.maxAttempts) {
-            val candidate = ordered[index]
-            val permit = app.candidateCooldown.acquire(candidate.channel.id, candidate.credential.id, candidate.upstreamModel)
-            if (permit == null) {
-                app.metrics.upstreamCooldownSkipped(candidate.channel.name)
-                blocked.add(candidate)
-                markSkipped(candidate, "cooldown")
-                index++
-                continue
-            }
-            index++
-            val rateDecision = candidate.channelKey
-                ?.let { app.channelKeyRateLimiter.acquire(it) }
-                ?: ChannelKeyRateLimitDecision.Allowed(null)
-            if (rateDecision is ChannelKeyRateLimitDecision.Denied) {
-                app.candidateCooldown.release(permit)
-                app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, rateDecision.reason.metricValue)
-                rememberRateLimitDenial(candidate, rateDecision)
-                continue
-            }
-            val rateLimitLease = (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease
-            val oauthDecision = candidate.oauthAccount
-                ?.let { app.oauthAccountScheduler.acquire(it) }
-                ?: OAuthAccountDecision.Allowed(null)
-            if (oauthDecision is OAuthAccountDecision.Denied) {
-                // 账号级限制是硬限制：归还本地并发额度，但不把候选放进 fail-open 重试。
-                app.channelKeyRateLimiter.release(rateLimitLease)
-                app.candidateCooldown.release(permit)
-                app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, oauthDecision.reason.metricValue)
-                rememberRateLimitDenial(candidate, oauthDecision)
-                continue
-            }
-            val error = app.upstreamOccupancy.track(candidate.channel.id, candidate.credential.id) {
-                runAttempt(
-                    candidate,
-                    permit,
-                    rateLimitLease,
-                    (oauthDecision as OAuthAccountDecision.Allowed).lease,
-                )
-            }
+            val candidate = ordered[index++]
+            val error = admitAndAttempt(candidate, failOpen = false)
             if (error == null) return
             if (error.code != "no_candidate") lastError = error
+            if (state.committed || call.response.isCommitted) throw error
             if (error.code == "no_candidate") continue
-            if (!error.retryable || state.committed || upstreamAttempts >= app.config.maxAttempts) throw error
+            if (!error.retryable || upstreamAttempts >= app.config.maxAttempts) throw error
             retryFrom = candidate.channel.name
             retryReason = error.code
         }
@@ -769,39 +792,12 @@ private suspend fun handleProxy(
         for (candidate in candidates) {
             if (candidate !in blockedSet) continue
             if (upstreamAttempts >= app.config.maxAttempts) break
-            val permit = app.candidateCooldown.forceAcquire(candidate.channel.id, candidate.credential.id, candidate.upstreamModel)
-            val rateDecision = candidate.channelKey
-                ?.let { app.channelKeyRateLimiter.acquire(it) }
-                ?: ChannelKeyRateLimitDecision.Allowed(null)
-            if (rateDecision is ChannelKeyRateLimitDecision.Denied) {
-                app.candidateCooldown.release(permit)
-                app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, rateDecision.reason.metricValue)
-                rememberRateLimitDenial(candidate, rateDecision)
-                continue
-            }
-            val rateLimitLease = (rateDecision as ChannelKeyRateLimitDecision.Allowed).lease
-            val oauthDecision = candidate.oauthAccount
-                ?.let { app.oauthAccountScheduler.acquire(it) }
-                ?: OAuthAccountDecision.Allowed(null)
-            if (oauthDecision is OAuthAccountDecision.Denied) {
-                app.channelKeyRateLimiter.release(rateLimitLease)
-                app.candidateCooldown.release(permit)
-                app.metrics.upstreamKeyRateLimitSkipped(candidate.channel.name, oauthDecision.reason.metricValue)
-                rememberRateLimitDenial(candidate, oauthDecision)
-                continue
-            }
-            val error = app.upstreamOccupancy.track(candidate.channel.id, candidate.credential.id) {
-                runAttempt(
-                    candidate,
-                    permit,
-                    rateLimitLease,
-                    (oauthDecision as OAuthAccountDecision.Allowed).lease,
-                )
-            }
+            val error = admitAndAttempt(candidate, failOpen = true)
             if (error == null) return
             if (error.code != "no_candidate") lastError = error
+            if (state.committed || call.response.isCommitted) throw error
             if (error.code == "no_candidate") continue
-            if (!error.retryable || state.committed || upstreamAttempts >= app.config.maxAttempts) throw error
+            if (!error.retryable || upstreamAttempts >= app.config.maxAttempts) throw error
             retryFrom = candidate.channel.name
             retryReason = error.code
         }
@@ -910,35 +906,10 @@ private suspend fun handleProxy(
             upstreamErrorBody = sanitizeUpstreamErrorBody(state.upstreamErrorBody)
         }
         val usage = state.usage
-        settleRequestLimitOnExit(
-            app = app,
-            lease = requestLimitLease,
-            usage = usage,
-            channelId = channelId,
-            upstreamModel = upstreamModel,
-            pricingModelId = pricingModelId,
-            requestId = requestId,
-            traceId = traceContext.traceId,
-            alias = alias,
-            channelName = channelName,
-            protocol = protocol,
-            statusCode = statusCode,
-            requestSucceeded = statusCode in 200..299 && errorCode == null && state.errorCode == null && failureStage == null,
-            firstTokenMs = state.firstTokenMs,
-            reasoningEffort = reasoningEffort,
-        )
         val totalMs = (System.nanoTime() - startedAt) / 1_000_000
         val finalAttempts = attemptEvents.toList()
-        app.metrics.request(
-            if (channelId == null) "unresolved" else alias,
-            channelId,
-            statusCode,
-            totalMs,
-            failed = statusCode >= 400 || errorCode != null || state.errorCode != null || failureStage != null,
-        )
-        if (usage != null) app.metrics.usage(alias, usage)
-        app.requestLogWriter.submit(
-            RequestLogRecord(
+        app.requestFinalizer.finish(
+            record = RequestLogRecord(
                 requestId = requestId,
                 traceId = traceContext.traceId,
                 clientKeyId = clientKey?.id,
@@ -980,6 +951,8 @@ private suspend fun handleProxy(
                 upstreamAttempts = upstreamAttempts,
                 attempts = finalAttempts,
             ),
+            lease = requestLimitLease,
+            elapsedMs = { (System.nanoTime() - startedAt) / 1_000_000 },
         )
     }
 }
@@ -992,19 +965,19 @@ private suspend fun recordKeyOutcome(
     candidate: RouteCandidate,
     signal: KeyAttemptSignal,
     requestId: String,
-    probeClaimed: Boolean = false,
+    probeLease: KeyProbeLease? = null,
 ) {
     val channelKey = candidate.channelKey ?: return
     currentCoroutineContext().ensureActive()
     try {
         val reason = try {
             app.keyAutoDisableRepository.recordOutcome(
-                channelKey, signal, requestId, allowDisable = false, probeClaimed = probeClaimed,
+                channelKey, signal, requestId, allowDisable = false, probeLease = probeLease,
             )
         } catch (_: KeyAutoDisablePendingException) {
             app.keyAvailabilityGate.withWriter(candidate.credential.id) {
                 app.keyAutoDisableRepository.recordOutcome(
-                    channelKey, signal, requestId, allowDisable = true, probeClaimed = probeClaimed,
+                    channelKey, signal, requestId, allowDisable = true, probeLease = probeLease,
                 )
             }
         }
@@ -1018,11 +991,13 @@ private suspend fun recordKeyOutcome(
     } catch (cause: CancellationException) {
         throw cause
     } catch (cause: Exception) {
-        app.metrics.keyAutoDisableWriteFailed()
-        proxyLogger.error(
-            "密钥自动禁用统计或审计写入失败，keyId={}, requestId={}, exceptionType={}",
-            channelKey.id, requestId, cause.javaClass.simpleName,
-        )
+        runCatching { app.metrics.keyAutoDisableWriteFailed() }
+        runCatching {
+            proxyLogger.error(
+                "密钥自动禁用统计或审计写入失败，keyId={}, requestId={}, exceptionType={}",
+                channelKey.id, requestId, cause.javaClass.simpleName,
+            )
+        }
     }
 }
 
@@ -1073,85 +1048,6 @@ private val QUOTA_REJECTION_CODES = setOf(
     "concurrency_limit_exceeded",
     "key_rate_limit_exceeded",
 )
-
-private suspend fun settleRequestLimitOnExit(
-    app: GatewayApplication,
-    lease: RequestLimitLease?,
-    usage: Usage?,
-    channelId: String?,
-    upstreamModel: String?,
-    pricingModelId: String?,
-    requestId: String,
-    traceId: String?,
-    alias: String,
-    channelName: String?,
-    protocol: GatewayProtocol,
-    statusCode: Int,
-    requestSucceeded: Boolean,
-    firstTokenMs: Long?,
-    reasoningEffort: String?,
-) {
-    if (lease == null) return
-    val calculatedCost = try {
-        if (channelId != null && upstreamModel != null) {
-            try {
-                app.modelPricingService.resolve(channelId, upstreamModel, pricingModelId)?.let { price ->
-                    BillingCalculator.calculate(
-                        RequestLogRecord(
-                            requestId = requestId,
-                            traceId = traceId,
-                            clientKeyId = lease.clientKeyId,
-                            clientKeyName = null,
-                            alias = alias,
-                            channelId = channelId,
-                            channelName = channelName,
-                            upstreamModel = upstreamModel,
-                            pricingModelId = pricingModelId,
-                            protocol = protocol,
-                            statusCode = statusCode,
-                            firstTokenMs = firstTokenMs,
-                            totalMs = 0,
-                            inputTokens = usage?.input,
-                            outputTokens = usage?.output,
-                            cachedTokens = usage?.cached,
-                            cachedWriteTokens = usage?.cacheWrite,
-                            reasoningTokens = usage?.reasoning,
-                            reasoningEffort = reasoningEffort,
-                            totalTokens = usage?.total,
-                            usageKnown = usage?.known ?: false,
-                            costAmount = null,
-                            costCurrency = null,
-                            inputPricePerMillion = null,
-                            outputPricePerMillion = null,
-                            cachedInputPricePerMillion = null,
-                            errorCode = if (requestSucceeded) null else "failed",
-                            failureStage = if (requestSucceeded) null else FailureStage.UPSTREAM,
-                            errorMessage = null,
-                            upstreamErrorCode = null,
-                            createdAt = System.currentTimeMillis(),
-                        ),
-                        price,
-                        requestSucceeded,
-                    )
-                }
-            } catch (cause: CancellationException) {
-                throw cause
-            } catch (cause: Exception) {
-                null
-            }
-        } else {
-            null
-        }
-    } catch (cause: Throwable) {
-        app.requestLimitService.release(lease)
-        throw cause
-    }
-    app.requestLimitService.settle(
-        lease,
-        quotaTokensFromUsage(usage?.total, usage?.input, usage?.output),
-        calculatedCost?.amount ?: java.math.BigDecimal.ZERO,
-    )
-}
 
 private class ProxyState {
     var committed = false

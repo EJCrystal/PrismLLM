@@ -649,6 +649,8 @@ class ChannelKeyPoolIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(ChannelKeyState.ACTIVE, recovered.state)
             assertNull(recovered.probeUntil)
             assertNull(recovered.autoDisableUntil)
+            val audit = app.adminAuditRepository.list(100).single { it.action == "channel_key.auto_recover" }
+            assertEquals("probe_success", audit.details?.get("reason")?.jsonPrimitive?.content)
         }
     }
 }

@@ -96,8 +96,14 @@ class OAuthAccountScheduler(
 
             if (policy.windowLimit != null) state.hits.addLast(nowMs)
             state.activeRequests += 1
-            publishIfDue(account.id, state, nowMs)
-            OAuthAccountDecision.Allowed(OAuthAccountLease(account.id))
+            try {
+                publishIfDue(account.id, state, nowMs)
+                OAuthAccountDecision.Allowed(OAuthAccountLease(account.id))
+            } catch (cause: Throwable) {
+                // 交付 lease 前写透回调失败：只撤销尚无人持有的并发占位，窗口消耗保留。
+                state.activeRequests -= 1
+                throw cause
+            }
         }
     }
 

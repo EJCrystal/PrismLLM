@@ -3,6 +3,8 @@ package dev.soven.prismllm.integration
 import dev.soven.prismllm.api.GatewayApplication
 import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.channel.domain.ChannelKeyRecord
+import dev.soven.prismllm.channel.domain.ChannelKeyRateLimitPolicy
+import dev.soven.prismllm.channel.domain.key.ChannelKeyRateLimitDecision
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.channel.persistence.NewChannelKey
@@ -36,6 +38,11 @@ import io.ktor.server.application.hooks.ResponseBodyReadyForSend
 import io.ktor.server.application.install
 import io.ktor.server.testing.testApplication
 import io.ktor.util.cio.ChannelWriteException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -61,6 +68,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.assertIs
 import kotlin.test.assertFailsWith
 
 /**
@@ -336,9 +344,12 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
         }
         val expired = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
         assertTrue(app.keyAutoDisableRepository.isAvailable(expired))
-        assertTrue(app.keyAutoDisableRepository.claimProbe(expired))
-        assertFalse(app.keyAutoDisableRepository.claimProbe(expired))
+        val lease = assertNotNull(app.keyAutoDisableRepository.claimProbe(expired))
+        assertEquals(expired.stateVersion + 1, lease.stateVersion)
+        assertNull(app.keyAutoDisableRepository.claimProbe(expired))
         val claimed = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+        assertEquals(lease.stateVersion, claimed.stateVersion)
+        assertNull(app.keyAutoDisableRepository.claimProbe(claimed))
         assertFalse(app.keyAutoDisableRepository.isAvailable(claimed))
         assertTrue(
             app.keyAutoDisableRepository.isAvailable(
@@ -346,6 +357,174 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
                 now = assertNotNull(claimed.probeUntil),
             ),
         )
+    }
+
+    @Test
+    fun keyAutoDisableProbeOwnershipRejectsSameDeadlineAbaAndLateExpiredOwner() = runBlocking {
+        val channel = createAutoDisablePool(withBackup = false)
+        val now = System.currentTimeMillis()
+        val expired = expireProbeKey(channel.keys.single(), now)
+        val repository = KeyAutoDisableRepository(app.databaseFactory.database, app.keyStateAudit) { now }
+        val first = assertNotNull(repository.claimProbe(expired, leaseMs = 100, now = now))
+        assertTrue(repository.releaseProbe(first))
+        val secondKey = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+        val second = assertNotNull(repository.claimProbe(secondKey, leaseMs = 100, now = now))
+        assertEquals(first.probeUntil, second.probeUntil, "同毫秒 claim 截止相同仍必须有独立归属")
+        assertTrue(second.stateVersion > first.stateVersion)
+        assertFalse(repository.releaseProbe(first))
+        assertNull(repository.recordOutcome(expired, KeyAttemptSignal.Success, "late-a-success", probeLease = first))
+        assertNull(repository.recordOutcome(expired, KeyAttemptSignal.UpstreamResponse(402, "INSUFFICIENT_BALANCE"), "late-a-failure", probeLease = first))
+        val ownedBySecond = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+        assertEquals(second.probeUntil, ownedBySecond.probeUntil)
+        assertEquals(second.stateVersion, ownedBySecond.stateVersion)
+        assertEquals(ChannelKeyState.AUTO_TEMPORARY, ownedBySecond.state)
+        assertTrue(app.adminAuditRepository.list(100).none { it.action in setOf("channel_key.auto_disable", "channel_key.auto_recover") })
+
+        val third = assertNotNull(repository.claimProbe(ownedBySecond, leaseMs = 100, now = second.probeUntil))
+        assertFalse(repository.releaseProbe(second))
+        assertNull(repository.recordOutcome(secondKey, KeyAttemptSignal.Success, "expired-b-success", probeLease = second))
+        assertNull(repository.recordOutcome(secondKey, KeyAttemptSignal.UpstreamResponse(402, "INSUFFICIENT_BALANCE"), "expired-b-failure", probeLease = second))
+        val thirdKey = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+        assertEquals(third.stateVersion, thirdKey.stateVersion)
+        assertEquals(third.probeUntil, thirdKey.probeUntil)
+        assertTrue(repository.releaseProbe(third))
+    }
+
+    @Test
+    fun keyAutoDisableProbeOutcomeUsesLeaseVersionAndCannotBypassOwnership() = runBlocking {
+        val channel = createAutoDisablePool(withBackup = false)
+        val now = System.currentTimeMillis()
+        val expired = expireProbeKey(channel.keys.single(), now)
+        val repository = app.keyAutoDisableRepository
+        assertNull(repository.recordOutcome(expired, KeyAttemptSignal.Success, "unclaimed-success"))
+        val lease = assertNotNull(repository.claimProbe(expired))
+        val claimed = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+        assertNull(repository.recordOutcome(claimed, KeyAttemptSignal.Success, "missing-lease"))
+        assertEquals(lease.probeUntil, assertNotNull(app.channelRepository.find(channel.id)).keys.single().probeUntil)
+        // 发送时预加载的 key 是 claim 前的版本；成功结算必须采用 lease 自己的新版本。
+        assertNull(repository.recordOutcome(expired, KeyAttemptSignal.Success, "owned-success", probeLease = lease))
+        val recovered = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+        assertEquals(ChannelKeyState.ACTIVE, recovered.state)
+        assertEquals(lease.stateVersion + 1, recovered.stateVersion)
+        assertNull(recovered.probeUntil)
+        assertFalse(repository.releaseProbe(lease))
+        assertEquals(1, app.adminAuditRepository.list(100).count { it.action == "channel_key.auto_recover" })
+    }
+
+    @Test
+    fun keyAutoDisableDisabledPolicyAndUnknownOutcomeReturnOwnedProbe() = runBlocking {
+        val channel = createAutoDisablePool(withBackup = false)
+        val expired = expireProbeKey(channel.keys.single(), System.currentTimeMillis())
+        val repository = app.keyAutoDisableRepository
+        val lease = assertNotNull(repository.claimProbe(expired))
+        repository.saveSettings(KeyAutoDisablePolicy(enabled = false))
+        assertNull(repository.recordOutcome(expired, KeyAttemptSignal.Success, "policy-off", probeLease = lease))
+        val afterOff = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+        assertEquals(ChannelKeyState.AUTO_TEMPORARY, afterOff.state)
+        assertNull(afterOff.probeUntil)
+        repository.saveSettings(KeyAutoDisablePolicy())
+        val next = assertNotNull(repository.claimProbe(afterOff))
+        assertNull(repository.recordOutcome(afterOff, KeyAttemptSignal.UpstreamResponse(400, "request error"), "unknown", probeLease = next))
+        assertNull(assertNotNull(app.channelRepository.find(channel.id)).keys.single().probeUntil)
+        assertTrue(app.adminAuditRepository.list(100).none { it.action == "channel_key.auto_recover" })
+    }
+
+    @Test
+    fun keyAutoDisableProbeFinallyReturnsLeaseWhenOutcomeAuditFails() = runBlocking {
+        val channel = createAutoDisablePool(withBackup = false)
+        expireProbeKey(channel.keys.single(), System.currentTimeMillis())
+        val key = createClientKey()
+        DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use {
+                it.execute("alter table admin_audit_logs add constraint test_auto_disable_audit_failure check (action <> 'channel_key.auto_recover')")
+            }
+        }
+        testApplication {
+            application { app.install(this) }
+            assertEquals(HttpStatusCode.OK, client.sendAutoDisableRequest(key).status)
+            val inconclusive = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+            assertEquals(ChannelKeyState.AUTO_TEMPORARY, inconclusive.state)
+            assertNull(inconclusive.probeUntil)
+            assertEquals(1, fake.requests.size, "统计失败不能重放已经完成的上游")
+        }
+    }
+
+    @Test
+    fun keyAutoDisableServerCancellationReturnsProbeWithoutRecoveryOrFailover() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(firstTokenTimeoutMs = 20_000, totalTimeoutMs = 30_000))
+        val channel = app.channelRepository.create(
+            name = "probe-server-cancel", baseUrl = "${fake.baseUrl}/concurrency-hold/v1",
+            keys = listOf(NewChannelKey("probe", app.credentialCipher.encrypt("probe-secret"), models = listOf("m1"),
+                rateLimit = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1))),
+            authType = "bearer", protocols = GatewayProtocol.default, enabled = true, modelMappings = mappingsOf("m1"),
+        )
+        val expired = expireProbeKey(channel.keys.single(), System.currentTimeMillis())
+        val key = createClientKey()
+        val serverJob = CompletableDeferred<Job>()
+        val release = fake.holdChatRequests()
+        testApplication {
+            application {
+                app.install(this)
+                install(createApplicationPlugin("test-probe-server-cancellation") {
+                    onCall { call ->
+                        if (call.request.headers["X-Request-Id"] == "cancel-owned-probe") {
+                            serverJob.complete(assertNotNull(currentCoroutineContext()[Job]))
+                        }
+                    }
+                })
+            }
+            val pending = async {
+                runCatching {
+                    client.post("/v1/chat/completions") {
+                        header(HttpHeaders.Authorization, "Bearer $key")
+                        header("X-Request-Id", "cancel-owned-probe")
+                        contentType(ContentType.Application.Json)
+                        setBody("""{"model":"m1","stream":true,"messages":[]}""")
+                    }
+                }
+            }
+            try {
+                val servingJob = withTimeout(3_000) { serverJob.await() }
+                awaitCondition("server owns probe and upstream is held") {
+                    app.channelRepository.find(channel.id)?.keys?.single()?.probeUntil != null && fake.requests.size == 1
+                }
+                // 直接取消服务端正在执行的请求 Job；取消 client async 不能证明 handler 真正取消。
+                servingJob.cancel(CancellationException("test server request cancellation"))
+                withTimeout(3_000) { servingJob.join() }
+                assertTrue(servingJob.isCancelled)
+                awaitCondition("cancelled server finally returns probe") {
+                    app.channelRepository.find(channel.id)?.keys?.single()?.probeUntil == null && app.upstreamOccupancy.snapshot().isEmpty()
+                }
+                val after = assertNotNull(app.channelRepository.find(channel.id)).keys.single()
+                assertEquals(ChannelKeyState.AUTO_TEMPORARY, after.state)
+                assertEquals(expired.autoDisableUntil, after.autoDisableUntil)
+                assertTrue(app.adminAuditRepository.list(100).none { it.action == "channel_key.auto_recover" })
+                assertEquals(1, fake.requests.size)
+                val next = assertIs<ChannelKeyRateLimitDecision.Allowed>(app.channelKeyRateLimiter.acquire(after))
+                app.channelKeyRateLimiter.release(next.lease)
+                val probe = assertNotNull(app.keyAutoDisableRepository.claimProbe(after))
+                app.keyAutoDisableRepository.releaseProbe(probe)
+            } finally {
+                release.complete(Unit)
+                pending.cancel()
+                fake.clearChatHold()
+            }
+        }
+    }
+
+    private suspend fun expireProbeKey(key: ChannelKeyRecord, now: Long): ChannelKeyRecord {
+        DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement(
+                "update channel_keys set state = 'AUTO_TEMPORARY', auto_disabled_at = ?, auto_disable_until = ?, probe_until = null where id = ?",
+            ).use { statement ->
+                statement.setLong(1, now - 2)
+                statement.setLong(2, now - 1)
+                statement.setString(3, key.id)
+                statement.executeUpdate()
+            }
+        }
+        return assertNotNull(app.channelRepository.find(key.channelId)).keys.single { it.id == key.id }
     }
 
     @Test
