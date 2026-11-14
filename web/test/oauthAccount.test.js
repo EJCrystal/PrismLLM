@@ -16,6 +16,8 @@ import {
   oauthAccountModelsView,
   oauthCanSyncCatalog,
   oauthAccountStatus,
+  oauthAccountMatchesFilter,
+  oauthAccountMatchesStatus,
   oauthAuthStateBadge,
   oauthAuthStateLabel,
   oauthLoginCallbackError,
@@ -27,6 +29,7 @@ import {
   oauthQuotaErrorLabel,
   oauthQuotaGroupLabel,
   oauthQuotaGroups,
+  oauthQuotaPreview,
   oauthQuotaSummary,
   oauthQuotaTone,
   oauthQuotaWindows,
@@ -36,6 +39,86 @@ import {
 } from '../src/utils/oauthAccount'
 
 const NOW = 1_762_400_000_000
+
+describe('oauthAccount: 列表检索与安全额度预览', () => {
+  const account = {
+    name: '开发账号', accountEmail: 'operator@example.invalid', provider: 'antigravity',
+    enabled: true, authState: 'ACTIVE', channels: [{ id: 'channel', name: '开发渠道' }],
+    runtime: { cooldownUntil: NOW + 60_000, quotaBlockedUntil: NOW + 120_000 },
+  }
+  const filter = { query: '', provider: '', status: 'all' }
+
+  it('凭据就绪不排除冷却和额度阻断，停用不掩盖授权状态', () => {
+    assert.equal(oauthAccountMatchesStatus(account, 'ready', NOW), true)
+    assert.equal(oauthAccountMatchesStatus(account, 'cooling', NOW), true)
+    assert.equal(oauthAccountMatchesStatus(account, 'cooling', NOW + 60_000), false)
+    assert.equal(oauthAccountMatchesStatus({ ...account, enabled: false }, 'ready', NOW), false)
+    assert.equal(oauthAccountMatchesStatus({ ...account, enabled: false, authState: 'REAUTH_REQUIRED' }, 'reauth', NOW), true)
+    assert.equal(oauthAccountMatchesStatus(account, 'reauth', NOW), false)
+  })
+
+  it('检索邮箱、名称、渠道及折叠的完整模型名，条件取交集', () => {
+    const names = ['a-model', 'b-model', 'c-model', 'gemini-4-argon-long-id']
+    for (const query of ['  OPERATOR@EXAMPLE ', '开发账号', '开发渠道', 'GEMINI-4-ARGON']) {
+      assert.equal(oauthAccountMatchesFilter(account, names, { ...filter, query }, NOW), true)
+    }
+    assert.equal(oauthAccountMatchesFilter(account, names, { query: 'argon', provider: 'antigravity', status: 'ready' }, NOW), true)
+    assert.equal(oauthAccountMatchesFilter(account, names, { ...filter, provider: 'chatgpt' }, NOW), false)
+    assert.equal(oauthAccountMatchesFilter(account, names, { ...filter, status: 'reauth' }, NOW), false)
+    assert.equal(oauthAccountMatchesFilter(account, names, { ...filter, query: 'missing' }, NOW), false)
+    assert.equal(oauthAccountMatchesFilter({ ...account, accountEmail: null, channels: [] }, [], { ...filter, query: '   ' }, NOW), true)
+  })
+
+  const window = (usedPercent, seconds = 18_000) => ({
+    usedPercent, remainingPercent: 100 - usedPercent, windowSeconds: seconds, resetsAt: NOW + 3_600_000,
+  })
+  const groupedQuota = {
+    primary: null, secondary: null, allowed: true, error: null,
+    groups: [
+      { name: 'Gemini', windows: [window(5), window(20, 604_800)] },
+      { name: 'Claude', windows: [window(80)] },
+      { name: 'Gemini 4 Argon', windows: [window(100)] },
+      { name: 'Claude and GPT', windows: [window(79.9)] },
+      { name: '低消耗模型', windows: [window(10)] },
+      { name: '另一模型', windows: [window(2)] },
+    ],
+  }
+  const quotaAccount = { quota: groupedQuota, runtime: { quotaBlockedUntil: null } }
+
+  it('所有警告和耗尽组始终可见，额外保留两组最高消耗的正常额度', () => {
+    const result = oauthQuotaPreview(quotaAccount, NOW)
+    assert.deepEqual(result.visible.map((group) => group.label), ['Gemini 4 Argon', 'Claude', 'Claude & GPT', 'Gemini'])
+    assert.deepEqual(result.hidden.map((group) => group.label), ['低消耗模型', '另一模型'])
+    assert.deepEqual(result.visible.at(-1).windows.map((item) => item.label), ['5 小时', '7 天'])
+    assert.equal(result.visible[0].windows[0].resetsAt, NOW + 3_600_000)
+    assert.deepEqual(groupedQuota.groups.map((group) => group.name), ['Gemini', 'Claude', 'Gemini 4 Argon', 'Claude and GPT', '低消耗模型', '另一模型'])
+  })
+
+  it('账号阻断、上游明确拒绝或额度读取错误时不折叠任何组', () => {
+    for (const value of [
+      { ...quotaAccount, runtime: { quotaBlockedUntil: NOW + 1 } },
+      { ...quotaAccount, quota: { ...groupedQuota, allowed: false } },
+      { ...quotaAccount, quota: { ...groupedQuota, error: 'quota_read_timeout' } },
+    ]) {
+      const result = oauthQuotaPreview(value, NOW)
+      assert.equal(result.visible.length, 6)
+      assert.equal(result.hidden.length, 0)
+    }
+    assert.equal(oauthQuotaPreview({ ...quotaAccount, runtime: { quotaBlockedUntil: NOW } }, NOW).hidden.length, 2)
+  })
+
+  it('同消耗保留输入组顺序，无分组账号保持全部窗口，缺失额度返回空列表', () => {
+    const result = oauthQuotaPreview({ ...quotaAccount, quota: {
+      ...groupedQuota, groups: [{ name: 'A', windows: [window(1)] }, { name: 'B', windows: [window(1)] }, { name: 'C', windows: [window(1)] }],
+    } }, NOW)
+    assert.deepEqual(result.visible.map((group) => group.label), ['A', 'B'])
+    assert.deepEqual(result.hidden.map((group) => group.label), ['C'])
+    const flat = oauthQuotaPreview({ ...quotaAccount, quota: { ...groupedQuota, groups: [], primary: window(20), secondary: window(100, 604_800) } }, NOW)
+    assert.deepEqual(flat.visible[0].windows.map((item) => item.usedPercent), [20, 100])
+    assert.equal(flat.hidden.length, 0)
+    assert.deepEqual(oauthQuotaPreview({ ...quotaAccount, quota: null }, NOW), { visible: [], hidden: [] })
+  })
+})
 
 describe('oauthAccount: 订阅账号看板展示', () => {
   it('提供方与授权状态使用可读标签和徽标', () => {

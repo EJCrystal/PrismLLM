@@ -11,6 +11,7 @@ import Modal from './Modal.vue'
 import OAuthModelTestModal from './OAuthModelTestModal.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
+import type { OAuthAccountStatusFilter } from '../utils/oauthAccount'
 import {
   availableOAuthModels,
   buildOAuthModels,
@@ -23,8 +24,10 @@ import {
   isOAuthQuotaBlocked,
   oauthAccountModelOptions,
   oauthAccountModelsView,
+  oauthAccountMatchesFilter,
+  oauthAccountMatchesStatus,
   oauthCanSyncCatalog,
-  oauthAccountStatus,
+  oauthAuthStateBadge,
   oauthAuthStateLabel,
   oauthLoginCallbackError,
   oauthPolicySummary,
@@ -32,10 +35,8 @@ import {
   oauthQuotaCreditsLabel,
   oauthQuotaErrorHint,
   oauthQuotaErrorLabel,
-  oauthQuotaGroups,
+  oauthQuotaPreview,
   oauthQuotaTone,
-  oauthQuotaWindows,
-  oauthRuntimeSummary,
   oauthSupportsModelCatalog,
   oauthTestModels,
 } from '../utils/oauthAccount'
@@ -93,9 +94,17 @@ const settingsForm = reactive({
   channelIds: [] as string[],
 })
 
-const activeCount = computed(() => accounts.value.filter((item) => item.enabled && item.authState === 'ACTIVE').length)
-const reauthCount = computed(() => accounts.value.filter((item) => item.authState === 'REAUTH_REQUIRED').length)
-const coolingCount = computed(() => accounts.value.filter((item) => isOAuthAccountCooling(item, now.value)).length)
+const activeCount = computed(() => accounts.value.filter((item) => oauthAccountMatchesStatus(item, 'ready', now.value)).length)
+const reauthCount = computed(() => accounts.value.filter((item) => oauthAccountMatchesStatus(item, 'reauth', now.value)).length)
+const coolingCount = computed(() => accounts.value.filter((item) => oauthAccountMatchesStatus(item, 'cooling', now.value)).length)
+const listQuery = ref('')
+const providerFilter = ref('')
+const statusFilter = ref<OAuthAccountStatusFilter>('all')
+const expandedModels = ref(new Set<string>())
+const expandedQuotas = ref(new Set<string>())
+const hasListFilters = computed(() => !!listQuery.value.trim() || !!providerFilter.value || statusFilter.value !== 'all')
+const listProviderOptions = computed(() => [...new Set([...providers.value.map((item) => item.id), ...accounts.value.map((item) => item.provider)])]
+  .sort((a, b) => oauthProviderLabel(a).localeCompare(oauthProviderLabel(b))))
 const configuredProviders = computed(() => providers.value.filter((item) => item.configured))
 const channelOptions = computed(() => [...channels.value].sort((a, b) => a.name.localeCompare(b.name)))
 /** 模型授权可选项：优先用账号自己的目录，未同步时退回所关联渠道的模型。 */
@@ -134,6 +143,36 @@ const accountModelViews = computed(() =>
 
 function accountModelView(account: OAuthAccount) {
   return accountModelViews.value.get(account.id) ?? oauthAccountModelsView(account, channels.value)
+}
+
+const filteredAccounts = computed(() => accounts.value.filter((account) => oauthAccountMatchesFilter(
+  account, accountModelView(account).names,
+  { query: listQuery.value, provider: providerFilter.value, status: statusFilter.value }, now.value,
+)))
+const accountQuotaViews = computed(() => new Map(accounts.value.map((account) => [account.id, oauthQuotaPreview(account, now.value)])))
+
+function accountQuotaView(account: OAuthAccount) {
+  return accountQuotaViews.value.get(account.id) ?? oauthQuotaPreview(account, now.value)
+}
+
+function visibleQuotaGroups(account: OAuthAccount) {
+  const view = accountQuotaView(account)
+  return expandedQuotas.value.has(account.id) ? [...view.visible, ...view.hidden] : view.visible
+}
+
+function toggleStatusFilter(value: OAuthAccountStatusFilter) {
+  statusFilter.value = statusFilter.value === value ? 'all' : value
+}
+
+function resetListFilters() {
+  listQuery.value = ''
+  providerFilter.value = ''
+  statusFilter.value = 'all'
+}
+
+function toggleDetails(set: Set<string>, id: string) {
+  if (set.has(id)) set.delete(id)
+  else set.add(id)
 }
 
 /** access token 是短期凭据，表格不再展示它的倒计时，只保留授权时间供核对。 */
@@ -470,6 +509,7 @@ interface OAuthAccountActionItem {
   danger?: boolean
   disabled?: boolean
   title?: string
+  group?: string
 }
 
 /** 低频与破坏性操作收进更多菜单，行内只保留测试、设置与更多。 */
@@ -480,24 +520,26 @@ function accountActionItems(account: OAuthAccount): OAuthAccountActionItem[] {
       id: 'refresh-token',
       label: '刷新 token',
       icon: 'refresh',
+      group: '日常运维',
       disabled: busy,
       title: '用 refresh token 换取新的 access token；正常调用时网关会自动续期',
     },
-    { id: 'refresh-quota', label: '刷新额度', icon: 'chart', disabled: busy },
+    { id: 'refresh-quota', label: '刷新额度', icon: 'chart', group: '日常运维', disabled: busy },
+    ...(isOAuthAccountCooling(account, now.value)
+      ? [{ id: 'clear-cooldown', label: '解除冷却', icon: 'check', group: '日常运维', disabled: busy }]
+      : []),
     {
       id: 'select-models',
       label: '账号设置',
-      icon: 'models',
+      icon: 'gear',
+      group: '配置管理',
       title: oauthSupportsModelCatalog(account.provider)
         ? '打开账号设置，可同步上游模型目录并勾选该账号可调度的模型'
         : '打开账号设置，勾选该账号可调度的模型',
     },
-    { id: 'policy', label: '调度策略', icon: 'bolt' },
-    { id: 'reauth', label: '重新授权', icon: 'lock' },
-    ...(account.runtime.cooldownUntil && account.runtime.cooldownUntil > now.value
-      ? [{ id: 'clear-cooldown', label: '解除冷却', icon: 'check', disabled: busy }]
-      : []),
-    { id: 'delete', label: '删除账号', icon: 'trash', danger: true, disabled: busy },
+    { id: 'policy', label: '调度策略', icon: 'bolt', group: '配置管理' },
+    { id: 'reauth', label: '重新授权', icon: 'lock', group: '配置管理' },
+    { id: 'delete', label: '删除账号', icon: 'trash', group: '危险操作', danger: true, disabled: busy },
   ]
 }
 
@@ -524,42 +566,45 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="page-stack page-compact">
-    <div class="page-overview">
-      <div class="section-head page-actions">
-        <button type="button" class="button primary" @click="openImport">
-          <Icon name="plus" :size="17" />
-          新建账号
-        </button>
-      </div>
+  <section class="page-stack page-compact oauth-accounts-page">
+    <div class="stat-row four oauth-account-stats" aria-label="订阅账号状态筛选">
+      <button type="button" class="stat-card" :class="{ 'is-selected': statusFilter === 'all' }" :aria-pressed="statusFilter === 'all'" @click="toggleStatusFilter('all')">
+        <span>订阅账号</span><strong>{{ accounts.length }}</strong><small>全部账号 · 独立凭据</small>
+      </button>
+      <button type="button" class="stat-card" :class="{ 'is-selected': statusFilter === 'ready' }" :aria-pressed="statusFilter === 'ready'" title="已启用且凭据有效；未排除冷却、额度阻断或并发限制，不等于实时可调度" @click="toggleStatusFilter('ready')">
+        <span>凭据就绪</span><strong class="text-success">{{ activeCount }}</strong><small>启用且有效 · 非实时可调度</small>
+      </button>
+      <button type="button" class="stat-card" :class="{ 'is-selected': statusFilter === 'reauth' }" :aria-pressed="statusFilter === 'reauth'" @click="toggleStatusFilter('reauth')">
+        <span>需重新授权</span><strong :class="reauthCount > 0 ? 'text-danger' : ''">{{ reauthCount }}</strong><small>含已停用的失效凭据</small>
+      </button>
+      <button type="button" class="stat-card" :class="{ 'is-selected': statusFilter === 'cooling' }" :aria-pressed="statusFilter === 'cooling'" @click="toggleStatusFilter('cooling')">
+        <span>冷却中</span><strong>{{ coolingCount }}</strong><small>429 限流后暂停调度</small>
+      </button>
+    </div>
 
-      <div class="stat-row four">
-        <div class="stat-card">
-          <span>订阅账号</span>
-          <strong>{{ accounts.length }}</strong>
-          <small>独立凭据，可关联多个渠道</small>
-        </div>
-        <div class="stat-card">
-          <span>可用</span>
-          <strong class="text-success">{{ activeCount }}</strong>
-          <small>已启用且凭据可自动续期</small>
-        </div>
-        <div class="stat-card">
-          <span>需重新授权</span>
-          <strong :class="reauthCount > 0 ? 'text-danger' : ''">{{ reauthCount }}</strong>
-          <small>refresh token 失效</small>
-        </div>
-        <div class="stat-card">
-          <span>冷却中</span>
-          <strong>{{ coolingCount }}</strong>
-          <small>429 限流后暂停调度</small>
-        </div>
-      </div>
+    <div class="oauth-accounts-toolbar">
+      <label class="oauth-account-search">
+        <Icon name="search" :size="17" />
+        <input v-model="listQuery" type="search" aria-label="搜索订阅账号" placeholder="搜索邮箱、账号、渠道或模型" />
+      </label>
+      <label class="oauth-provider-filter">
+        <span class="small muted">提供方</span>
+        <select v-model="providerFilter" aria-label="筛选提供方">
+          <option value="">全部提供方</option>
+          <option v-for="provider in listProviderOptions" :key="provider" :value="provider">{{ oauthProviderLabel(provider) }}</option>
+        </select>
+      </label>
+      <span class="oauth-filter-count small muted" role="status">展示 {{ filteredAccounts.length }} / 共 {{ accounts.length }}</span>
+      <button v-if="hasListFilters" type="button" class="button ghost mini" @click="resetListFilters">重置筛选</button>
+      <button type="button" class="button primary oauth-create-account" @click="openImport">
+        <Icon name="plus" :size="17" />新建账号
+      </button>
     </div>
 
     <ErrorState v-if="error" :message="error" :busy="loading" @retry="load" />
 
-    <div class="panel table-panel">
+    <p v-if="!loading && !error && filteredAccounts.length" class="oauth-accounts-scroll-hint small muted">左右滚动可查看额度、调度及操作。</p>
+    <div v-if="loading || !error || accounts.length" class="panel table-panel">
       <TablePlaceholder
         v-if="loading || accounts.length === 0"
         :loading="loading"
@@ -571,12 +616,21 @@ onBeforeUnmount(() => {
         action-text="新建账号"
         @action="openImport"
       />
-      <div v-else class="table-scroll">
+      <TablePlaceholder
+        v-else-if="filteredAccounts.length === 0"
+        :empty="true"
+        icon="search"
+        title="没有匹配的订阅账号"
+        desc="调整搜索、提供方或状态筛选；账号配置和模型授权不会受筛选影响。"
+        action-text="重置筛选"
+        @action="resetListFilters"
+      />
+      <div v-else class="table-scroll" role="region" aria-label="订阅账号列表，可左右滚动" tabindex="0">
         <table class="data-table oauth-accounts-table">
+          <colgroup><col class="oauth-account-col" /><col class="oauth-state-col" /><col class="oauth-quota-col" /><col class="oauth-schedule-col" /><col class="oauth-refreshed-col" /><col class="oauth-actions-col" /></colgroup>
           <thead>
             <tr>
               <th>账号</th>
-              <th>提供方</th>
               <th>状态</th>
               <th>上游额度</th>
               <th>调度</th>
@@ -585,15 +639,18 @@ onBeforeUnmount(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="account in accounts" :key="account.id">
+            <tr v-for="account in filteredAccounts" :key="account.id" :data-account-id="account.id">
               <td>
                 <div class="primary-cell" :title="account.accountEmail || account.name">
                   {{ account.accountEmail || account.name }}
                 </div>
-                <div class="channel-id-cell">
-                  <span class="muted small">{{ channelSummary(account) }}</span>
+                <div v-if="account.accountEmail && account.accountEmail !== account.name" class="oauth-account-name small muted" :title="account.name">{{ account.name }}</div>
+                <div class="oauth-account-meta">
+                  <span class="badge neutral small">{{ oauthProviderLabel(account.provider) }}</span>
+                  <span v-if="account.accountPlan" class="small muted">{{ account.accountPlan }}</span>
                   <span class="badge neutral small">优先级 {{ account.priority }}</span>
                 </div>
+                <div class="oauth-account-channels small muted" :title="channelSummary(account)">渠道：{{ channelSummary(account) }}</div>
                 <div
                   v-if="account.proxyUrl"
                   class="oauth-account-proxy mono small muted"
@@ -610,19 +667,21 @@ onBeforeUnmount(() => {
                       class="badge info small oauth-model-badge"
                       :title="model"
                     >{{ model }}</span>
-                    <span
-                      v-if="accountModelView(account).hidden.length"
-                      class="badge neutral small"
-                      :title="accountModelView(account).hidden.join('\n')"
-                    >+{{ accountModelView(account).hidden.length }}</span>
+                    <button
+                      type="button"
+                      class="badge neutral small oauth-models-toggle"
+                      :aria-label="`${expandedModels.has(account.id) ? '收起' : '查看'} ${account.name} 的完整模型列表`"
+                      :aria-expanded="expandedModels.has(account.id)"
+                      :aria-controls="`oauth-models-${account.id}`"
+                      @click="toggleDetails(expandedModels, account.id)"
+                    >{{ expandedModels.has(account.id) ? '收起模型' : accountModelView(account).hidden.length ? '+' + accountModelView(account).hidden.length : '查看模型' }}</button>
                     <span v-if="accountModelView(account).inherited" class="oauth-model-inherited muted small">全部模型</span>
                   </template>
                   <span v-else class="muted small">暂无模型</span>
                 </div>
-              </td>
-              <td>
-                <span class="badge neutral">{{ oauthProviderLabel(account.provider) }}</span>
-                <div v-if="account.accountPlan" class="small muted">{{ account.accountPlan }}</div>
+                <ul v-if="expandedModels.has(account.id)" :id="`oauth-models-${account.id}`" class="oauth-full-models" :aria-label="account.name + '的完整模型列表'">
+                  <li v-for="model in accountModelView(account).names" :key="model" class="mono small">{{ model }}</li>
+                </ul>
               </td>
               <td>
                 <button
@@ -640,75 +699,55 @@ onBeforeUnmount(() => {
                   <span class="oauth-status-label">{{ account.enabled ? '启用' : '停用' }}</span>
                 </button>
                 <div class="oauth-auth-state">
-                  <span class="badge" :class="account.enabled ? oauthAccountStatus(account).tone : 'neutral'">
-                    {{ account.enabled ? oauthAuthStateLabel(account.authState) : '凭据状态 ' + oauthAuthStateLabel(account.authState) }}
+                  <span class="badge" :class="oauthAuthStateBadge(account.authState)">
+                    {{ account.authState === 'ACTIVE' ? '凭据正常' : oauthAuthStateLabel(account.authState) }}
                   </span>
                 </div>
                 <div
-                  v-if="account.enabled && account.authState === 'REAUTH_REQUIRED' && account.lastRefreshError"
-                  class="small text-danger"
+                  v-if="account.lastRefreshError"
+                  class="oauth-refresh-error small text-danger"
                 >
                   {{ account.lastRefreshError }}
                 </div>
               </td>
               <td class="oauth-quota-cell">
-                <template v-if="account.quota">
-                  <div v-if="oauthQuotaGroups(account.quota).length" class="quota-groups">
-                    <div v-for="group in oauthQuotaGroups(account.quota)" :key="group.key" class="quota-group">
-                      <div class="quota-group-label">{{ group.label }}</div>
-                      <div v-for="window in group.windows" :key="window.key" class="quota-window">
-                        <div class="quota-row">
-                          <span class="quota-label">{{ window.label }}</span>
-                          <span class="quota-track">
-                            <span
-                              class="quota-fill"
-                              :class="'is-' + oauthQuotaTone(window.usedPercent)"
-                              :style="{ width: window.usedPercent + '%' }"
-                            ></span>
-                          </span>
-                          <span class="quota-value small muted">已用 {{ formatUsedPercent(window.usedPercent) }}%</span>
-                        </div>
-                        <div v-if="formatQuotaReset(window.resetsAt, now)" class="quota-reset small muted">
-                          {{ formatQuotaReset(window.resetsAt, now) }}
-                        </div>
+                <div v-if="accountQuotaView(account).visible.length" :id="`oauth-quotas-${account.id}`" class="oauth-quota-groups">
+                  <div v-for="group in visibleQuotaGroups(account)" :key="group.key" class="oauth-quota-group">
+                    <div v-if="group.label" class="oauth-quota-group-label">{{ group.label }}</div>
+                    <div v-for="window in group.windows" :key="window.key" class="oauth-quota-window">
+                      <div class="oauth-quota-window-head">
+                        <span class="small">{{ window.label }}</span>
+                        <span class="small" :class="'text-' + oauthQuotaTone(window.usedPercent)">已用 {{ formatUsedPercent(window.usedPercent) }}%</span>
+                      </div>
+                      <div class="oauth-quota-window-detail">
+                        <span class="quota-track"><span class="quota-fill" :class="'is-' + oauthQuotaTone(window.usedPercent)" :style="{ width: window.usedPercent + '%' }"></span></span>
+                        <span v-if="formatQuotaReset(window.resetsAt, now)" class="small muted" :title="formatTime(window.resetsAt!)">{{ formatQuotaReset(window.resetsAt, now) }}</span>
                       </div>
                     </div>
                   </div>
-                  <template v-else>
-                    <div v-for="window in oauthQuotaWindows(account.quota)" :key="window.key" class="quota-window">
-                      <div class="quota-row">
-                        <span class="quota-label">{{ window.label }}</span>
-                        <span class="quota-track">
-                          <span
-                            class="quota-fill"
-                            :class="'is-' + oauthQuotaTone(window.usedPercent)"
-                            :style="{ width: window.usedPercent + '%' }"
-                          ></span>
-                        </span>
-                        <span class="quota-value small muted">已用 {{ formatUsedPercent(window.usedPercent) }}%</span>
-                      </div>
-                      <div v-if="formatQuotaReset(window.resetsAt, now)" class="quota-reset small muted">
-                        {{ formatQuotaReset(window.resetsAt, now) }}
-                      </div>
-                    </div>
-                  </template>
-                  <div v-if="oauthQuotaCreditsLabel(account.quota) || isOAuthQuotaBlocked(account, now)" class="small muted">
-                    <span v-if="oauthQuotaCreditsLabel(account.quota)">{{ oauthQuotaCreditsLabel(account.quota) }}</span>
-                    <span v-if="isOAuthQuotaBlocked(account, now)" class="text-danger">额度用尽</span>
-                  </div>
-                  <div v-if="account.quota.error" class="small text-danger">
-                    {{ oauthQuotaErrorLabel(account.quota.error) }}
-                  </div>
-                  <div v-if="oauthQuotaErrorHint(account.quota.error)" class="small muted">
-                    {{ oauthQuotaErrorHint(account.quota.error) }}
-                  </div>
-                  <span v-if="!oauthQuotaWindows(account.quota).length && !account.quota.error" class="muted small">暂无读数</span>
-                </template>
-                <span v-else class="muted small">暂无读数</span>
+                </div>
+                <button
+                  v-if="accountQuotaView(account).hidden.length"
+                  type="button"
+                  class="oauth-quota-toggle"
+                  :aria-expanded="expandedQuotas.has(account.id)"
+                  :aria-controls="`oauth-quotas-${account.id}`"
+                  :aria-label="`${expandedQuotas.has(account.id) ? '收起' : '展开'} ${account.name} 的更多额度`"
+                  @click="toggleDetails(expandedQuotas, account.id)"
+                >{{ expandedQuotas.has(account.id) ? '收起更多额度' : '+' + accountQuotaView(account).hidden.length + ' 更多额度' }}</button>
+                <div v-if="isOAuthQuotaBlocked(account, now)" class="oauth-quota-notice small text-danger">
+                  额度阻断 · {{ formatCooldownRemaining(account.runtime.quotaBlockedUntil, now) }}后恢复
+                </div>
+                <div v-else-if="account.quota?.allowed === false" class="oauth-quota-notice small text-danger">上游额度不可用</div>
+                <div v-if="oauthQuotaCreditsLabel(account.quota)" class="oauth-quota-notice small muted">{{ oauthQuotaCreditsLabel(account.quota) }}</div>
+                <div v-if="account.quota?.error" class="oauth-quota-notice small text-danger">{{ oauthQuotaErrorLabel(account.quota.error) }}</div>
+                <div v-if="oauthQuotaErrorHint(account.quota?.error)" class="oauth-quota-notice small muted">{{ oauthQuotaErrorHint(account.quota?.error) }}</div>
+                <span v-if="!accountQuotaView(account).visible.length && !account.quota?.error" class="muted small">暂无读数</span>
               </td>
-              <td>
+              <td class="oauth-schedule-cell">
                 <div class="small">{{ oauthPolicySummary(account.policy) }}</div>
-                <div class="small muted">{{ oauthRuntimeSummary(account, now) }}</div>
+                <div v-if="account.policy.windowLimit != null" class="small muted">窗口 {{ account.runtime.windowUsed }}/{{ account.policy.windowLimit }}</div>
+                <div class="small muted">当前并发 {{ account.runtime.activeRequests }}/{{ account.policy.maxConcurrentRequests }}</div>
                 <div v-if="formatCooldownRemaining(account.runtime.cooldownUntil, now)" class="small text-warning">
                   冷却剩余 {{ formatCooldownRemaining(account.runtime.cooldownUntil, now) }}
                 </div>
@@ -731,7 +770,7 @@ onBeforeUnmount(() => {
                     :aria-label="'设置 ' + account.name"
                     @click="openSettings(account)"
                   >
-                    <Icon name="settings" :size="16" />
+                    <Icon name="gear" :size="16" />
                   </button>
                   <ActionMenu
                     :label="account.name + '的更多操作'"
