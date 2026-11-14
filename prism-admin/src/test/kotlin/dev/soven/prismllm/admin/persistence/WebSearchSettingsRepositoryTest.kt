@@ -1,11 +1,9 @@
-package dev.soven.prismllm.repo
+package dev.soven.prismllm.admin.persistence
 
 import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
-import dev.soven.prismllm.admin.persistence.WebSearchSettings
-import dev.soven.prismllm.admin.persistence.WebSearchSettingsRepository
-import dev.soven.prismllm.config.GatewayConfig
-import dev.soven.prismllm.db.DatabaseFactory
 import dev.soven.prismllm.shared.crypto.CredentialCipher
+import dev.soven.prismllm.testsupport.db.SharedPostgres
+import dev.soven.prismllm.testsupport.db.TestDatabase
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.v1.jdbc.deleteAll
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -15,8 +13,6 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.TestInstance
-import org.testcontainers.containers.PostgreSQLContainer
-import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -27,25 +23,14 @@ import kotlin.test.assertTrue
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("component")
 class WebSearchSettingsRepositoryTest {
-    private lateinit var postgres: PostgreSQLContainer<*>
-    private lateinit var factory: DatabaseFactory
+    private lateinit var factory: TestDatabase
     private lateinit var repository: WebSearchSettingsRepository
 
     @BeforeAll
     fun start() {
-        postgres = PostgreSQLContainer("postgres:16-alpine").apply { start() }
-        factory = DatabaseFactory(
-            GatewayConfig.fromEnv(
-                mapOf(
-                    "DATABASE_URL" to postgres.jdbcUrl,
-                    "DATABASE_USER" to postgres.username,
-                    "DATABASE_PASSWORD" to postgres.password,
-                    "GATEWAY_MASTER_KEY" to Base64.getEncoder().encodeToString(ByteArray(32) { 7 }),
-                    "ADMIN_PASSWORD" to "test-password",
-                ),
-            ),
-        )
-        factory.migrate()
+        val postgres = SharedPostgres.container
+        val databaseUrl = SharedPostgres.newDatabase()
+        factory = TestDatabase(databaseUrl, postgres.username, postgres.password)
         repository = WebSearchSettingsRepository(
             factory.database,
             CredentialCipher(ByteArray(32) { 7 }),
@@ -63,7 +48,6 @@ class WebSearchSettingsRepositoryTest {
     @AfterAll
     fun stop() {
         if (::factory.isInitialized) factory.close()
-        if (::postgres.isInitialized) postgres.stop()
     }
 
     @Test

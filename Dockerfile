@@ -10,6 +10,8 @@ RUN npm run build
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /app
 COPY pom.xml ./
+COPY prism-db-migrations ./prism-db-migrations
+COPY prism-test-support ./prism-test-support
 COPY prism-shared ./prism-shared
 COPY prism-protocol ./prism-protocol
 COPY prism-channel ./prism-channel

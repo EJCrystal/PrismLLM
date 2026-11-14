@@ -13,10 +13,12 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from ci_test_modules import CHANGE_FLAGS, boolean_from_env, changes_from_env, resolve_modules
+from ci_test_modules import ALL_UPSTREAM_MODULES, CHANGE_FLAGS, boolean_from_env, changes_from_env, resolve_modules
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
+NAMESPACE = {"m": "http://maven.apache.org/POM/4.0.0"}
+# Existing filter flags are deliberately separate from the complete reactor graph.
 MODULE_PATHS = {
     "shared": "prism-shared",
     "protocol": "prism-protocol",
@@ -30,10 +32,19 @@ MODULE_PATHS = {
     "admin": "prism-admin",
     "app": "prism-app",
 }
+INFRA_MODULES = ("prism-db-migrations", "prism-test-support")
+REACTOR_MODULES = (*INFRA_MODULES, *MODULE_PATHS.values())
+# The sole no-test exception is enforced as resources-only below. Support is a
+# normal jar with executable pure contract tests, not another no-test exception.
+NO_TEST_MODULES = {"prism-db-migrations"}
+RUNNABLE_MODULES = tuple(module for module in REACTOR_MODULES if module not in NO_TEST_MODULES)
 ALL_UPSTREAM = (
-    "prism-shared,prism-protocol,prism-channel,prism-routing,prism-resilience,"
+    "prism-test-support,prism-shared,prism-protocol,prism-channel,prism-routing,prism-resilience,"
     "prism-subscription-oauth,prism-quota,prism-pricing,prism-request-log,prism-admin"
 )
+MOVED_COMPONENT_OWNERS = {
+    "prism-request-log", "prism-admin", "prism-quota", "prism-subscription-oauth",
+}
 PROTOCOL_CHANNEL_CASES = (
     (("protocol",), "prism-protocol,prism-routing,prism-request-log", "protocol"),
     (("channel",), "prism-channel,prism-routing", "channel"),
@@ -74,6 +85,45 @@ def ordered_modules(modules):
     return ",".join(module for module in ALL_UPSTREAM.split(",") if module in modules)
 
 
+def reactor_modules():
+    return tuple(element.text for element in ET.parse(ROOT / "pom.xml").findall("m:modules/m:module", NAMESPACE))
+
+
+def module_dependency_scopes(module):
+    """Read all direct internal dependencies, including test-scoped graph edges."""
+    pom = ET.parse(ROOT / module / "pom.xml")
+    return {
+        dependency.findtext("m:artifactId", namespaces=NAMESPACE): dependency.findtext(
+            "m:scope", default="compile", namespaces=NAMESPACE
+        )
+        for dependency in pom.findall("m:dependencies/m:dependency", NAMESPACE)
+        if dependency.findtext("m:groupId", namespaces=NAMESPACE) == "dev.soven"
+    }
+
+
+def dependency_closure(roots, graph, downstream=False):
+    reached = set(roots)
+    while True:
+        expanded = reached | (
+            {module for module, dependencies in graph.items() if dependencies & reached}
+            if downstream else {dependency for module in reached for dependency in graph[module]}
+        )
+        if expanded == reached:
+            return reached
+        reached = expanded
+
+
+def test_sources(module):
+    """Static runnable-source check; JVM discovery remains the Kotlin contract's job."""
+    sources = (ROOT / module / "src/test").rglob("*")
+    return tuple(
+        path for path in sources
+        if path.suffix in (".kt", ".java")
+        and re.fullmatch(r"(?:Test.+|.+Tests?|.+TestCase)", path.stem)
+        and re.search(r"@(?:[\w.]+\.)?(?:Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\b", path.read_text(encoding="utf-8"))
+    )
+
+
 class ModuleSelectionTests(unittest.TestCase):
     def assert_selection(self, flags, modules, app_tests="true", app_tags="", full_regression=False):
         self.assertEqual(
@@ -100,11 +150,29 @@ class ModuleSelectionTests(unittest.TestCase):
                 with self.subTest(flags=flags, mixed=mixed):
                     self.assert_selection((*flags, *mixed), ALL_UPSTREAM)
 
-    def test_full_upstream_list_matches_reactor_without_app(self):
-        namespace = {"m": "http://maven.apache.org/POM/4.0.0"}
-        modules = [element.text for element in ET.parse(ROOT / "pom.xml").findall("m:modules/m:module", namespace)]
-        self.assertEqual(ALL_UPSTREAM.split(","), [module for module in modules if module != "prism-app"])
+    def test_full_upstream_list_is_runnable_partition_not_complete_reactor(self):
+        self.assertEqual(REACTOR_MODULES, reactor_modules())
+        self.assertEqual(tuple(ALL_UPSTREAM.split(",")), ALL_UPSTREAM_MODULES)
+        self.assertEqual(
+            ALL_UPSTREAM_MODULES,
+            tuple(module for module in RUNNABLE_MODULES if module != "prism-app"),
+        )
+        self.assertEqual(ALL_UPSTREAM_MODULES[0], "prism-test-support")
+        self.assertNotIn("prism-db-migrations", ALL_UPSTREAM_MODULES)
         self.assert_selection(("build",), ALL_UPSTREAM)
+
+    def test_app_only_does_not_rerun_moved_components_or_support(self):
+        self.assert_selection(("app",), "")
+        for flags, modules, tags in PROTOCOL_CHANNEL_CASES:
+            with self.subTest(flags=flags):
+                result = resolve_modules({flag: True for flag in flags})
+                selected = set(result["modules"].split(","))
+                # Protocol genuinely affects request-log's existing test edge;
+                # channel does not affect any moved component owner.
+                expected_owners = {"prism-request-log"} if "protocol" in flags else set()
+                self.assertEqual(selected & MOVED_COMPONENT_OWNERS, expected_owners)
+                self.assertNotIn("prism-test-support", selected)
+                self.assert_selection(flags, modules, app_tags=tags)
 
     def test_protocol_channel_keep_original_app_tag_selection(self):
         for flags, modules, tags in PROTOCOL_CHANNEL_CASES:
@@ -163,31 +231,76 @@ class ModuleSelectionTests(unittest.TestCase):
                     self.assertEqual(result["app_tests"], "true")
                     self.assertEqual(result["app_tags"], "")
 
-    def test_selection_covers_transitive_production_and_test_pom_dependencies(self):
-        namespace = {"m": "http://maven.apache.org/POM/4.0.0"}
-        dependencies = {}
-        for module in MODULE_PATHS.values():
-            pom = ET.parse(ROOT / module / "pom.xml")
-            dependencies[module] = {
-                dependency.findtext("m:artifactId", namespaces=namespace)
-                for dependency in pom.findall("m:dependencies/m:dependency", namespace)
-                if dependency.findtext("m:groupId", namespaces=namespace) == "dev.soven"
-            } & set(MODULE_PATHS.values())
-        for flag, module in MODULE_PATHS.items():
-            affected = {module}
-            while True:
-                expanded = affected | {
-                    downstream for downstream, upstreams in dependencies.items() if upstreams & affected
-                }
-                if expanded == affected:
-                    break
-                affected = expanded
-            selection = resolve_modules({flag: True})
+    def test_selection_matches_actual_production_and_test_pom_closure(self):
+        modules = set(reactor_modules())
+        self.assertEqual(modules, set(REACTOR_MODULES))
+        dependencies = {module: set(module_dependency_scopes(module)) for module in REACTOR_MODULES}
+        for module, upstreams in dependencies.items():
+            with self.subTest(module=module):
+                self.assertTrue(upstreams <= modules, f"Unregistered internal dependencies: {upstreams - modules}")
+        runnable = set(RUNNABLE_MODULES)
+        for values in itertools.product((False, True), repeat=len(CHANGE_FLAGS)):
+            changes = dict(zip(CHANGE_FLAGS, values))
+            if changes["build"] or changes["shared"]:
+                expected = runnable
+            else:
+                changed_modules = {module for flag, module in MODULE_PATHS.items() if changes[flag]}
+                expected = dependency_closure(changed_modules, dependencies, downstream=True) & runnable
+            selection = resolve_modules(changes)
             selected = set(filter(None, selection["modules"].split(",")))
             if selection["app_tests"] == "true":
                 selected.add("prism-app")
+            with self.subTest(changes=changes):
+                self.assertEqual(selected, expected)
+        # Infra changes do not get new CHANGED_* inputs. Each maps to build,
+        # whose full runnable selection must include all actual consumers.
+        for module in INFRA_MODULES:
+            affected = dependency_closure({module}, dependencies, downstream=True) & runnable
+            selection = resolve_modules({"build": True})
+            selected = set(selection["modules"].split(",")) | {"prism-app"}
             with self.subTest(changed=module):
-                self.assertTrue(affected <= selected, f"Missing downstream tests: {sorted(affected - selected)}")
+                self.assertTrue(affected <= selected, f"Missing infra consumer tests: {affected - selected}")
+                self.assertIn("prism-test-support", affected)
+                self.assertTrue(MOVED_COMPONENT_OWNERS | {"prism-app"} <= affected)
+
+    def test_infra_scopes_keep_support_out_of_production_closure(self):
+        self.assertEqual(module_dependency_scopes("prism-db-migrations"), {})
+        self.assertEqual(module_dependency_scopes("prism-test-support"), {"prism-db-migrations": "compile"})
+        for module in (*MOVED_COMPONENT_OWNERS, "prism-app"):
+            with self.subTest(module=module):
+                self.assertEqual(module_dependency_scopes(module).get("prism-test-support"), "test")
+        self.assertEqual(module_dependency_scopes("prism-app").get("prism-db-migrations"), "compile")
+        self.assertEqual(module_dependency_scopes("prism-request-log").get("prism-protocol"), "test")
+        production = {
+            module: {dependency for dependency, scope in module_dependency_scopes(module).items() if scope in ("compile", "runtime")}
+            for module in REACTOR_MODULES
+        }
+        closure = dependency_closure({"prism-app"}, production)
+        self.assertIn("prism-db-migrations", closure)
+        self.assertNotIn("prism-test-support", closure)
+
+    def test_migrations_resources_only_and_support_has_real_tests(self):
+        migrations = ROOT / "prism-db-migrations"
+        self.assertTrue(tuple((migrations / "src/main/resources/db/migration").glob("V*__*.sql")))
+        self.assertFalse(tuple(path for path in (migrations / "src/test").rglob("*") if path.is_file()))
+        self.assertFalse(tuple(path for path in (migrations / "src").rglob("*") if path.suffix in (".java", ".kt")))
+        for module in REACTOR_MODULES:
+            with self.subTest(module=module):
+                self.assertEqual(bool(test_sources(module)), module in RUNNABLE_MODULES)
+        support_pom = ET.parse(ROOT / "prism-test-support/pom.xml")
+        self.assertEqual(support_pom.findtext("m:packaging", default="jar", namespaces=NAMESPACE), "jar")
+        self.assertTrue(tuple((ROOT / "prism-test-support/src/main/kotlin").rglob("*.kt")))
+        for module in (*MOVED_COMPONENT_OWNERS, "prism-app"):
+            pom = ET.parse(ROOT / module / "pom.xml")
+            support = [
+                dependency for dependency in pom.findall("m:dependencies/m:dependency", NAMESPACE)
+                if dependency.findtext("m:artifactId", namespaces=NAMESPACE) == "prism-test-support"
+            ]
+            with self.subTest(module=module):
+                self.assertEqual(len(support), 1)
+                self.assertEqual(support[0].findtext("m:type", default="jar", namespaces=NAMESPACE), "jar")
+                self.assertIsNone(support[0].findtext("m:classifier", namespaces=NAMESPACE))
+        self.assertFalse((ROOT / "prism-app/src/main/resources/db/migration").exists())
 
     def test_environment_requires_literal_booleans(self):
         self.assertEqual(set(CHANGE_FLAGS), {"build", *MODULE_PATHS})
@@ -228,6 +341,28 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn("      build: ${{ steps.filter.outputs.build }}", outputs)
         self.assertIn("      backend: ${{ steps.filter.outputs.backend }}", outputs)
         self.assertIn("    if: needs.changes.outputs.backend == 'true'", self.backend)
+
+    def test_infra_paths_trigger_backend_and_build_without_new_flags(self):
+        outputs = yaml_block(self.changes, "    outputs:")
+        environment = yaml_block(self.resolver, "        env:")
+        for module in INFRA_MODULES:
+            for header in ("            backend:", "            build:"):
+                with self.subTest(module=module, header=header):
+                    self.assertIn(f"- '{module}/**'", yaml_block(self.filters, header))
+            self.assertNotIn(f"            {module}:", self.filters)
+            self.assertNotIn(module, outputs)
+            self.assertNotIn(module, environment)
+        self.assertEqual(set(re.findall(r"^            (\w+):$", self.filters, re.M)), {
+            "frontend", "backend", *CHANGE_FLAGS, "extensions", "monitoring", "deps", "ci",
+        })
+
+    def test_docker_build_copies_every_reactor_module(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        build_stage = dockerfile.split("FROM maven:", 1)[1].split("\nFROM ", 1)[0]
+        copies = re.findall(r"^COPY (prism-[\w-]+) \./(prism-[\w-]+)$", build_stage, re.M)
+        self.assertEqual(copies, [(module, module) for module in reactor_modules()])
+        self.assertIn("COPY pom.xml ./", build_stage)
+        self.assertIn("-DskipTests -pl prism-app -am package", build_stage)
 
     def test_ci_execution_changes_trigger_backend_and_full_regression(self):
         for header in ("            backend:", "            build:"):

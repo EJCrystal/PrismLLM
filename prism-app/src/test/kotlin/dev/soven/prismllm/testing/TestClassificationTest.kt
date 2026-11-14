@@ -5,23 +5,18 @@ import dev.soven.prismllm.testing.classificationfixtures.EmptyFixture
 import dev.soven.prismllm.testing.classificationfixtures.MissingFixture
 import dev.soven.prismllm.testing.classificationfixtures.MissingTemplatesFixture
 import dev.soven.prismllm.testing.classificationfixtures.ValidShapesFixture
+import dev.soven.prismllm.testsupport.TestClassification.assertClassified
+import dev.soven.prismllm.testsupport.TestClassification.classificationTargets
+import dev.soven.prismllm.testsupport.TestClassification.classifications
+import dev.soven.prismllm.testsupport.TestClassification.discover
+import dev.soven.prismllm.testsupport.TestClassification.discoverModule
+import dev.soven.prismllm.testsupport.TestClassification.identifiers
 import org.junit.jupiter.api.Tag
-import org.junit.platform.engine.DiscoverySelector
-import org.junit.platform.engine.discovery.ClassNameFilter
 import org.junit.platform.engine.discovery.DiscoverySelectors.selectClass
-import org.junit.platform.engine.discovery.DiscoverySelectors.selectClasspathRoots
-import org.junit.platform.engine.discovery.PackageNameFilter
 import org.junit.platform.engine.support.descriptor.ClassSource
 import org.junit.platform.engine.support.descriptor.MethodSource
-import org.junit.platform.launcher.EngineFilter
 import org.junit.platform.launcher.TestIdentifier
 import org.junit.platform.launcher.TestPlan
-import org.junit.platform.launcher.core.LauncherConfig
-import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder
-import org.junit.platform.launcher.core.LauncherFactory
-import org.junit.platform.launcher.listeners.discovery.LauncherDiscoveryListeners
-import java.nio.file.Files
-import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -96,51 +91,7 @@ class TestClassificationTest {
         assertTrue(error.message.orEmpty().contains("No Jupiter tests discovered"))
     }
 
-    private fun discoverAppTests(): TestPlan {
-        // Use this module's compiled test directory, not dependency jars, source text, or Surefire's filtered plan.
-        val root = Path.of(javaClass.protectionDomain.codeSource.location.toURI())
-        assertTrue(Files.isDirectory(root), "Expected a compiled test classes directory: $root")
-        return discover(*selectClasspathRoots(setOf(root)).toTypedArray(), excludeFixtures = true)
-    }
-
-    private fun discover(vararg selectors: DiscoverySelector, excludeFixtures: Boolean = false): TestPlan {
-        val request = LauncherDiscoveryRequestBuilder.request()
-            .selectors(*selectors)
-            .filters(EngineFilter.includeEngines("junit-jupiter"), ClassNameFilter.includeClassNamePatterns(".*"))
-            .enableImplicitConfigurationParameters(false)
-            .listeners(LauncherDiscoveryListeners.abortOnFailure())
-        if (excludeFixtures) request.filters(PackageNameFilter.excludePackageNames(FIXTURE_PACKAGE))
-        val launcher = LauncherFactory.create(
-            LauncherConfig.builder()
-                .enableLauncherSessionListenerAutoRegistration(false)
-                .enableLauncherDiscoveryListenerAutoRegistration(false)
-                .enableTestExecutionListenerAutoRegistration(false)
-                .enablePostDiscoveryFilterAutoRegistration(false)
-                .build(),
-        )
-        // Never execute this plan: constructors, lifecycle methods, parameter providers and factories stay untouched.
-        return launcher.discover(request.build())
-    }
-
-    private fun identifiers(plan: TestPlan): List<TestIdentifier> =
-        plan.roots.flatMap { listOf(it) + plan.getDescendants(it) }
-
-    private fun classificationTargets(plan: TestPlan): List<TestIdentifier> = identifiers(plan).filter {
-        it.isTest || it.source.orElse(null) is MethodSource
-    }
-
-    private fun classifications(identifier: TestIdentifier): Set<String> =
-        identifier.tags.map { it.name }.toSet().intersect(CLASSIFICATIONS)
-
-    private fun assertClassified(plan: TestPlan) {
-        val targets = classificationTargets(plan)
-        assertTrue(targets.isNotEmpty(), "No Jupiter tests discovered; classification coverage must not be empty")
-        // Jupiter's effective descriptor tags already include superclass, enclosing @Nested class and method tags.
-        val failures = targets.filter { classifications(it).size != 1 }
-        assertTrue(failures.isEmpty(), failures.joinToString("\n") {
-            "${it.uniqueId}: classifications=${classifications(it).sorted()}, tags=${it.tags.map { tag -> tag.name }.sorted()}"
-        })
-    }
+    private fun discoverAppTests(): TestPlan = discoverModule(javaClass, excludePackages = setOf(FIXTURE_PACKAGE))
 
     private fun assertIntegrationScopes(classes: List<TestIdentifier>) {
         val byName = classes.associateBy { (it.source.orElse(null) as ClassSource).className }
@@ -159,7 +110,6 @@ class TestClassificationTest {
         .filter { it == "integration" || it == "channel" || it == "protocol" || it.startsWith("shard-") }.toSet()
 
     private companion object {
-        val CLASSIFICATIONS = setOf("unit", "component", "browser", "integration")
         const val FIXTURE_PACKAGE = "dev.soven.prismllm.testing.classificationfixtures"
         val INTEGRATION_SCOPES = mapOf(
             "AdminChannelIntegrationTest" to setOf("shard-4", "channel"),
