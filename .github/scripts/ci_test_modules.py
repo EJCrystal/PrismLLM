@@ -32,7 +32,10 @@ DIRECT_MODULES = (
     ("requestlog", "prism-request-log"),
     ("admin", "prism-admin"),
 )
+# Runnable upstream test modules, not the complete reactor. The resources-only
+# migrations module is compiled/installed but has no tests; support has contracts.
 ALL_UPSTREAM_MODULES = (
+    "prism-test-support",
     "prism-shared",
     "prism-protocol",
     "prism-channel",
@@ -62,6 +65,8 @@ def resolve_modules(changes: Mapping[str, bool], full_regression: bool = False) 
         if changed & {"pricing", "protocol"}:
             selected.add("prism-request-log")
         modules = [module for module in ALL_UPSTREAM_MODULES if module in selected]
+        # App-only changes do not rerun component tests moved to domain owners.
+        # Support also runs only for shared/build/full changes, not every consumer.
         app_tests = bool(modules) or "app" in changed
         # All non-integration tests still run. Added downstream tests do not
         # broaden or narrow the existing pure channel/protocol app selection.

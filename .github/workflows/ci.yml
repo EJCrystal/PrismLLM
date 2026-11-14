@@ -59,6 +59,8 @@ jobs:
               - 'web/**'
               - 'Dockerfile'
             backend:
+              - 'prism-db-migrations/**'
+              - 'prism-test-support/**'
               - 'prism-shared/**'
               - 'prism-protocol/**'
               - 'prism-channel/**'
@@ -101,6 +103,8 @@ jobs:
             app:
               - 'prism-app/**'
             build:
+              - 'prism-db-migrations/**'
+              - 'prism-test-support/**'
               - 'pom.xml'
               - 'Dockerfile'
               - '.github/workflows/ci.yml'
