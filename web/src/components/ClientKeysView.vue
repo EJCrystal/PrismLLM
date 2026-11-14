@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
-import type { ClientKey, RuntimeOccupancy } from '../types/api'
+import type { ClientKey, ClientKeyAccessPolicy, RuntimeOccupancy } from '../types/api'
 import { useAutoRefresh } from '../composables/useAutoRefresh'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
@@ -11,10 +11,12 @@ import { vScrollHint } from '../directives/scrollHint'
 import Modal from './Modal.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
+import ClientKeyAccessFields from './ClientKeyAccessFields.vue'
 import { formatTime } from '../utils/format'
 import { buildClientKeyPayload, concurrencySummary, quotaSummary } from '../utils/clientKeyQuota'
 import { useClientKeyActions } from '../utils/clientKeyActions'
 import { useSecretReveal } from '../utils/secretReveal'
+import { clientKeyAccessSummary, createUnrestrictedAccessPolicy, normalizeClientKeyAccessPolicy } from '../utils/clientKeyAccess'
 
 interface ClientKeyForm {
   name: string
@@ -24,6 +26,7 @@ interface ClientKeyForm {
   dailyUsdLimit: number | string | null
   maxConcurrentRequests: number | string | null
   requestsPerMinute: number | string | null
+  accessPolicy: ClientKeyAccessPolicy
 }
 
 const keys = ref<ClientKey[]>([])
@@ -67,6 +70,7 @@ const form = reactive<ClientKeyForm>({
   dailyUsdLimit: '',
   maxConcurrentRequests: '',
   requestsPerMinute: '',
+  accessPolicy: createUnrestrictedAccessPolicy(),
 })
 
 const enabledCount = computed(() => keys.value.filter((item) => item.enabled).length)
@@ -98,6 +102,7 @@ function openCreate() {
     dailyUsdLimit: '',
     maxConcurrentRequests: '',
     requestsPerMinute: '',
+    accessPolicy: createUnrestrictedAccessPolicy(),
   })
   showForm.value = true
 }
@@ -113,6 +118,7 @@ function openEdit(key: ClientKey) {
     dailyUsdLimit: key.dailyUsdLimit ?? '',
     maxConcurrentRequests: key.maxConcurrentRequests ?? '',
     requestsPerMinute: key.requestsPerMinute ?? '',
+    accessPolicy: normalizeClientKeyAccessPolicy(key.accessPolicy),
   })
   showForm.value = true
 }
@@ -124,7 +130,10 @@ async function save() {
   }
   saving.value = true
   try {
-    const payload = buildClientKeyPayload(form, fromLocalInput(form.expiresAt))
+    const payload = {
+      ...buildClientKeyPayload(form, fromLocalInput(form.expiresAt)),
+      accessPolicy: normalizeClientKeyAccessPolicy(form.accessPolicy),
+    }
     if (editingId.value) {
       await api.updateClientKey(editingId.value, payload)
       notify('调用方密钥已更新')
@@ -257,6 +266,7 @@ onMounted(() => {
                   <span class="mono muted small" :title="key.id">{{ key.id }}</span>
                   <CopyButton :text="key.id" title="复制密钥 ID" variant="list" :size="12" />
                 </div>
+                <div class="client-key-access-summary muted small">{{ clientKeyAccessSummary(key.accessPolicy) }}</div>
               </td>
               <td><code class="key-prefix" :title="key.keyPrefix">{{ key.keyPrefix }}…</code></td>
               <td>
@@ -358,6 +368,7 @@ onMounted(() => {
             <small>停用后立即拒绝新的请求。</small>
           </span>
         </label>
+        <ClientKeyAccessFields v-model="form.accessPolicy" />
       </form>
       <template #footer>
         <button type="button" class="button ghost" @click="showForm = false">取消</button>
@@ -393,6 +404,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.client-key-access-summary { max-width: 280px; margin-top: 5px; white-space: normal; overflow-wrap: anywhere; }
 .client-key-occupancy {
   display: inline-flex;
   align-items: center;

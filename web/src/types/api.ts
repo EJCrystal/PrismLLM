@@ -340,6 +340,32 @@ export interface RuntimeOccupancy {
   clientKeys: ClientKeyOccupancy[]
 }
 
+/** 白名单为空时拒绝该维度的所有对象；不限制模式使用空数组。 */
+export type ClientKeyAccessMode = 'unrestricted' | 'allowlist'
+
+export interface ClientKeyIdScope {
+  mode: ClientKeyAccessMode
+  ids: string[]
+}
+
+/** 静态渠道密钥身份，不包含 OAuth 账号或上游凭据明文。 */
+export interface ClientKeyAllowedChannelKey {
+  channelId: string
+  keyId: string
+}
+
+export interface ClientKeyChannelKeysScope {
+  mode: ClientKeyAccessMode
+  keys: ClientKeyAllowedChannelKey[]
+}
+
+/** 同维度取并集，三个维度取交集；模型 ID 精确匹配。 */
+export interface ClientKeyAccessPolicy {
+  channels: ClientKeyIdScope
+  channelKeys: ClientKeyChannelKeysScope
+  models: ClientKeyIdScope
+}
+
 export interface ClientKey {
   id: string
   name: string
@@ -354,6 +380,7 @@ export interface ClientKey {
   createdAt: number
   rotatedAt: number | null
   revokedAt: number | null
+  accessPolicy: ClientKeyAccessPolicy
 }
 
 export interface ClientKeyRequest {
@@ -364,6 +391,8 @@ export interface ClientKeyRequest {
   dailyUsdLimit?: string | null
   maxConcurrentRequests?: number | null
   requestsPerMinute?: number | null
+  /** 更新省略或传 null 时保留已有范围；完整对象原子替换三个维度。 */
+  accessPolicy?: ClientKeyAccessPolicy | null
 }
 
 export interface ClientKeyCreated extends Omit<ClientKey, 'quotaUsage'> {
