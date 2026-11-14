@@ -7,6 +7,7 @@ import dev.soven.prismllm.channel.persistence.ChannelRepository
 import dev.soven.prismllm.protocol.ProtocolConversion
 import dev.soven.prismllm.routing.domain.candidate.CandidateSet
 import dev.soven.prismllm.routing.domain.candidate.RouteCandidate
+import dev.soven.prismllm.routing.domain.candidate.RoutingAccessScope
 import dev.soven.prismllm.routing.domain.ordering.OrderingRules
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 
@@ -20,7 +21,7 @@ data class DirectModel(
     val channel: ChannelRecord,
 )
 
-/** 启用渠道里的一条模型映射，凭据可用性由调用方按需判断。 */
+/** 配置快照里的一条模型映射，授权与可用性分别判断。 */
 private data class ConfiguredModel(val channel: ChannelRecord, val mapping: ChannelModelRecord)
 
 /**
@@ -33,9 +34,13 @@ class UpstreamModelCatalog(
     private val channelRepository: ChannelRepository,
     private val oauthAccounts: OAuthAccountDirectory,
 ) {
-    suspend fun listDirectModels(): List<DirectModel> =
-        directExposureChannels().flatMap { channel ->
-            channel.modelMappings.filter { mapping -> channel.credentialsFor(mapping.upstreamModel).isNotEmpty() }.map { mapping ->
+    /** 列出授权范围内具有当前可路由凭据的启用渠道模型，保留原生协议供调用方筛选。 */
+    suspend fun listDirectModels(scope: RoutingAccessScope = RoutingAccessScope()): List<DirectModel> =
+        directExposureChannels().filter { scope.allowsChannel(it.id) }.flatMap { channel ->
+            channel.modelMappings.filter { mapping ->
+                scope.allowsModel(mapping.publicModelId) && channel.credentialsFor(mapping.upstreamModel)
+                    .any { scope.allowsCredential(channel.id, it) }
+            }.map { mapping ->
                 DirectModel(
                     publicId = mapping.publicModelId,
                     upstreamModel = mapping.upstreamModel,
@@ -66,31 +71,56 @@ class UpstreamModelCatalog(
             .let(OrderingRules::initialOrder)
 
     /**
-     * 解析模型在当前协议下的可用性。所有分支都基于 [configuredModels] 的单次快照。
+     * 解析模型在当前协议下的授权与可用性，所有诊断及候选基于一次完整配置读取。
+     *
+     * 不限制范围继续只识别启用渠道。受限范围先以包含停用对象的配置判断授权，再计算
+     * 协议与当前可路由凭据；不存在模型保留原有不存在语义，只有已配置模型才分类授权拒绝。
+     * 范围外渠道、密钥不会参与候选或恢复时间提示。
+     *
+     * @param model 请求中的对外模型 ID。
+     * @param protocol 调用方协议，可使用授权渠道支持的协议转换。
+     * @param now 本次凭据可用性与恢复诊断共用的时间点。
+     * @param scope 本次请求固定的访问范围快照。
      */
-    suspend fun resolve(model: String, protocol: GatewayProtocol, now: Long = System.currentTimeMillis()): CandidateSet {
-        val configured = configuredModels(model)
+    suspend fun resolve(
+        model: String,
+        protocol: GatewayProtocol,
+        now: Long = System.currentTimeMillis(),
+        scope: RoutingAccessScope = RoutingAccessScope(),
+    ): CandidateSet {
+        val channels = configurationChannels()
+        val globallyConfigured = configuredModels(model, if (scope.isUnrestricted) channels.filter { it.enabled } else channels)
+        val configured = globallyConfigured.filter { entry ->
+            scope.allowsModel(model) && scope.allowsChannel(entry.channel.id) &&
+                (scope.allowedChannelKeys == null || (entry.channel.keys + entry.channel.oauthAccounts).any { credential ->
+                    credential.supports(entry.mapping.upstreamModel) && scope.allowsCredential(entry.channel.id, credential)
+                })
+        }
+        val modelAccessDenied = globallyConfigured.isNotEmpty() && !scope.allowsModel(model)
+        val accessDenied = globallyConfigured.isNotEmpty() && configured.isEmpty()
         val protocolEntries = configured.filter { entry ->
             protocol in entry.channel.protocols ||
                 entry.channel.protocols.any { ProtocolConversion.supports(protocol, it) }
         }
-        val allCandidates = protocolEntries.flatMap { entry ->
-            entry.channel.credentialsFor(entry.mapping.upstreamModel, now).map { credential ->
-                RouteCandidate(
-                    channel = entry.channel,
-                    credential = credential,
-                    upstreamModel = entry.mapping.upstreamModel,
-                    position = entry.channel.priority,
-                )
-            }
+        val allCandidates = protocolEntries.filter { it.channel.enabled }.flatMap { entry ->
+            entry.channel.credentialsFor(entry.mapping.upstreamModel, now)
+                .filter { scope.allowsCredential(entry.channel.id, it) }.map { credential ->
+                    RouteCandidate(
+                        channel = entry.channel,
+                        credential = credential,
+                        upstreamModel = entry.mapping.upstreamModel,
+                        position = entry.channel.priority,
+                    )
+                }
         }.let(OrderingRules::initialOrder)
         val candidates = OrderingRules.nativeProtocolFirst(allCandidates, protocol)
         // 临时停用到期的密钥会自行恢复，用最早的恢复时间告诉调用方何时重试；
         // 人工或永久停用不会自动恢复，不参与重试提示。
-        val retryAt = protocolEntries.asSequence()
+        val retryAt = protocolEntries.asSequence().filter { it.channel.enabled }
             .flatMap { (channel, mapping) ->
                 channel.keys.asSequence().filter { key ->
-                    key.state == ChannelKeyState.AUTO_TEMPORARY && key.supports(mapping.upstreamModel)
+                    key.state == ChannelKeyState.AUTO_TEMPORARY && key.supports(mapping.upstreamModel) &&
+                        scope.allowsCredential(channel.id, key)
                 }
             }
             .mapNotNull { key -> key.recoveryAt(now) }
@@ -100,6 +130,8 @@ class UpstreamModelCatalog(
             configured = configured.isNotEmpty(),
             protocolReachable = protocolEntries.isNotEmpty(),
             retryAt = retryAt,
+            accessDenied = accessDenied,
+            modelAccessDenied = modelAccessDenied,
         )
     }
 
@@ -110,16 +142,23 @@ class UpstreamModelCatalog(
      * 「模型不存在」。匹配口径为 [ChannelModelRecord.publicModelId] 精确相等。
      */
     private suspend fun configuredModels(model: String): List<ConfiguredModel> =
-        directExposureChannels().flatMap { channel ->
+        configuredModels(model, directExposureChannels())
+
+    /** 在给定快照内按对外模型 ID 精确匹配映射，不重复读取配置。 */
+    private fun configuredModels(model: String, channels: List<ChannelRecord>): List<ConfiguredModel> =
+        channels.flatMap { channel ->
             channel.modelMappings
                 .filter { it.publicModelId == model }
                 .map { mapping -> ConfiguredModel(channel, mapping) }
         }
 
-    private suspend fun directExposureChannels(): List<ChannelRecord> {
+    /** 原有目录入口只曝光启用渠道，保留不限制调用方的行为。 */
+    private suspend fun directExposureChannels(): List<ChannelRecord> = configurationChannels().filter { it.enabled }
+
+    /** 读取包含停用渠道、静态密钥与订阅凭据的完整配置，供一次解析共用。 */
+    private suspend fun configurationChannels(): List<ChannelRecord> {
         val accountsByChannel = oauthAccounts.listByChannel()
         return channelRepository.list()
-            .filter { it.enabled }
             .map { channel -> channel.copy(oauthAccounts = accountsByChannel[channel.id].orEmpty()) }
     }
 }

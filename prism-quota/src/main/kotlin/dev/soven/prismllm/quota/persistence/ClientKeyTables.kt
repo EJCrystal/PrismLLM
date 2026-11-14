@@ -23,6 +23,9 @@ object ClientKeys : Table("client_keys") {
     val createdAt = long("created_at")
     val rotatedAt = long("rotated_at").nullable()
     val revokedAt = long("revoked_at").nullable()
+    val accessChannelsRestricted = bool("access_channels_restricted").default(false)
+    val accessChannelKeysRestricted = bool("access_channel_keys_restricted").default(false)
+    val accessModelsRestricted = bool("access_models_restricted").default(false)
 
     override val primaryKey = PrimaryKey(id)
 }

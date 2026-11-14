@@ -761,6 +761,7 @@ class GatewayApplication(
             exposeHeader("traceparent")
             exposeHeader("X-Trace-Id")
             exposeHeader("X-Request-Id")
+            exposeHeader("X-Prism-Error-Code")
             config.corsOrigins.forEach { origin ->
                 val uri = runCatching { URI(origin) }.getOrNull() ?: return@forEach
                 val host = uri.host ?: return@forEach

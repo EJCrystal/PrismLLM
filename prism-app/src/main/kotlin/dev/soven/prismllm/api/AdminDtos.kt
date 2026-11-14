@@ -428,6 +428,7 @@ data class ClientKeyRequest(
     val dailyUsdLimit: String? = null,
     val maxConcurrentRequests: Int? = null,
     val requestsPerMinute: Int? = null,
+    val accessPolicy: ClientKeyAccessPolicyDto? = null,
 )
 
 /**
@@ -451,8 +452,10 @@ data class ClientKeyResponse(
     val createdAt: Long,
     val rotatedAt: Long?,
     val revokedAt: Long?,
+    val accessPolicy: ClientKeyAccessPolicyDto,
 )
 
+/** 映射调用方密钥的完整管理读响应，尚未加载额度时使用默认用量。 */
 fun ClientKeyRecord.toResponse() = ClientKeyResponse(
     id = id,
     name = name,
@@ -467,8 +470,10 @@ fun ClientKeyRecord.toResponse() = ClientKeyResponse(
     createdAt = createdAt,
     rotatedAt = rotatedAt,
     revokedAt = revokedAt,
+    accessPolicy = accessPolicy.toDto(),
 )
 
+/** 映射调用方密钥的完整管理读响应及已加载的额度用量。 */
 fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyResponse(
     id = id,
     name = name,
@@ -483,6 +488,7 @@ fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyRe
     createdAt = createdAt,
     rotatedAt = rotatedAt,
     revokedAt = revokedAt,
+    accessPolicy = accessPolicy.toDto(),
 )
 
 fun quotaUsageResponse(usage: ClientKeyQuotaUsage) = ClientKeyQuotaUsageResponse(
@@ -713,8 +719,10 @@ data class ClientKeyCreatedResponse(
     val createdAt: Long,
     val rotatedAt: Long?,
     val revokedAt: Long?,
+    val accessPolicy: ClientKeyAccessPolicyDto,
 )
 
+/** 创建或轮换时一次性回显凭据与完整访问范围。 */
 fun ClientKeyRecord.toCreatedResponse(rawKey: String) = ClientKeyCreatedResponse(
     id = id,
     name = name,
@@ -729,6 +737,7 @@ fun ClientKeyRecord.toCreatedResponse(rawKey: String) = ClientKeyCreatedResponse
     createdAt = createdAt,
     rotatedAt = rotatedAt,
     revokedAt = revokedAt,
+    accessPolicy = accessPolicy.toDto(),
 )
 
 /**

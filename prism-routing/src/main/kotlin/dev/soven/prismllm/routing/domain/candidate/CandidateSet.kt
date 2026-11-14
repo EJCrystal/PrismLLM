@@ -5,9 +5,11 @@ package dev.soven.prismllm.routing.domain.candidate
  * 避免候选查询与诊断查询之间凭据恢复（临时停用到期、人工启用）导致自相矛盾的结论。
  *
  * @param candidates        当前协议下可用的路由候选（含协议转换）。
- * @param configured        全协议下模型已配置的渠道条目，与凭据是否可路由无关。
- * @param protocolReachable 是否存在任一渠道能原生支持或转换出当前协议。
+ * @param configured        授权范围内全协议下模型已配置的渠道条目，与凭据是否可路由无关。
+ * @param protocolReachable 授权范围内是否存在任一渠道能原生支持或转换出当前协议。
  * @param retryAt           凭据全部不可路由时的最早自动恢复时间；没有临时停用密钥时为 null。
+ * @param accessDenied      已配置模型或其渠道/凭据不属于本次访问范围；不存在模型不会被标为拒绝。
+ * @param modelAccessDenied 已配置模型的对外 ID 不在模型名单内，用于区分模型与路由授权拒绝。
  * @author 文杰
  * @since 2026-11-09
  */
@@ -16,4 +18,6 @@ data class CandidateSet(
     val configured: Boolean,
     val protocolReachable: Boolean,
     val retryAt: Long?,
+    val accessDenied: Boolean = false,
+    val modelAccessDenied: Boolean = false,
 )

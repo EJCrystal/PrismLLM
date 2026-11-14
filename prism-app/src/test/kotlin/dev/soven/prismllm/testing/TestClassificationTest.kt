@@ -99,7 +99,7 @@ class TestClassificationTest {
             .map { (it.source.orElse(null) as ClassSource).className }.toSet()
         val expectedNames = INTEGRATION_SCOPES.keys.map { "dev.soven.prismllm.integration.$it" }.toSet() +
             "dev.soven.prismllm.api.ProxyAttemptLoggingIntegrationTest"
-        assertEquals(expectedNames, integrationNames, "Keep the original 20 integration classes classified as integration")
+        assertEquals(expectedNames, integrationNames, "Keep all gateway integration classes classified as integration")
         INTEGRATION_SCOPES.forEach { (name, scopes) ->
             assertEquals(scopes + "integration", protectedTags(byName.getValue("dev.soven.prismllm.integration.$name")), name)
         }
@@ -116,6 +116,8 @@ class TestClassificationTest {
             "AdminConsoleIntegrationTest" to setOf("shard-3"),
             "ChannelKeyPoolIntegrationTest" to setOf("shard-1", "channel"),
             "ChannelQuotaIntegrationTest" to setOf("shard-1", "channel"),
+            "ClientKeyAccessPolicyIntegrationTest" to setOf("shard-1", "channel"),
+            "ClientKeyRoutingAccessIntegrationTest" to setOf("shard-1", "channel", "protocol"),
             "GeminiNativeIntegrationTest" to setOf("shard-3", "protocol"),
             "GracefulShutdownIntegrationTest" to setOf("shard-4"),
             "IqQuestionBankIntegrationTest" to setOf("shard-3"),

@@ -77,6 +77,7 @@ import dev.soven.prismllm.channel.domain.key.requireSavable
 import dev.soven.prismllm.channel.domain.key.toKeyDisablePolicy
 import dev.soven.prismllm.channel.domain.key.KeyAutoDisablePolicy
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
+import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
 import dev.soven.prismllm.quota.domain.parseDailyCostLimit
 import dev.soven.prismllm.requestlog.domain.ChannelCooldownSummary
 import dev.soven.prismllm.requestlog.domain.healthWindows
@@ -1953,6 +1954,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 throw badRequest("invalid_client_key", "过期时间必须晚于当前时间")
             }
             val quotas = validateClientKeyQuotas(request)
+            val accessPolicy = request.accessPolicy?.let { validateClientKeyAccessPolicy(it, app) }
+                ?: ClientKeyAccessPolicy()
             val generated = ClientKeyHasher.generate()
             val record = app.clientKeyRepository.create(
                 name = request.name,
@@ -1961,6 +1964,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 enabled = request.enabled,
                 expiresAt = request.expiresAt,
                 quotas = quotas,
+                accessPolicy = accessPolicy,
             )
             call.response.headers.append("Cache-Control", "no-store")
             call.respond(
@@ -1983,12 +1987,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (existing.revokedAt != null) {
                 throw conflict("client_key_revoked", "调用方密钥已撤销，不能重新启用或修改")
             }
+            val accessPolicy = request.accessPolicy?.let { validateClientKeyAccessPolicy(it, app) }
             val record = app.clientKeyRepository.update(
                 id = id,
                 name = request.name,
                 enabled = request.enabled,
                 expiresAt = request.expiresAt,
                 quotas = quotas,
+                accessPolicy = accessPolicy,
             ) ?: run {
                 val current = app.clientKeyRepository.find(id)
                     ?: throw notFound("client_key_not_found", "调用方密钥不存在")

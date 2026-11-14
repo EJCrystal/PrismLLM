@@ -140,8 +140,8 @@ private val USER_AGENT_WHITESPACE = Regex("[\\r\\n\\t]+")
  */
 fun Route.proxyRoutes(app: GatewayApplication) {
     get("/v1/models") {
-        authenticate(call, app)
-        val models = listExposedModelIds(app)
+        val clientKey = authenticate(call, app)
+        val models = listExposedModelIds(app, scope = clientKey.accessPolicy.toRoutingAccessScope())
         call.respond(
             buildJsonObject {
                 put("object", "list")
@@ -171,8 +171,8 @@ fun Route.proxyRoutes(app: GatewayApplication) {
         }
     }
     get("/v1beta/models") {
-        authenticate(call, app, GatewayProtocol.GEMINI)
-        val models = listExposedModelIds(app, GatewayProtocol.GEMINI)
+        val clientKey = authenticate(call, app, GatewayProtocol.GEMINI)
+        val models = listExposedModelIds(app, GatewayProtocol.GEMINI, clientKey.accessPolicy.toRoutingAccessScope())
         call.respond(buildJsonObject {
             put("models", buildJsonArray {
                 models.forEach { model ->
@@ -280,6 +280,7 @@ private suspend fun handleProxyRequest(
             ?.content
             ?.takeIf { it.isNotBlank() }
             ?: throw badRequest("invalid_model", "model 必须是非空字符串")
+        val accessScope = clientKey.accessPolicy.toRoutingAccessScope()
         val streamElement = requestJson["stream"]
         val stream = nativeStream ?: when (streamElement) {
             null -> false
@@ -291,6 +292,32 @@ private suspend fun handleProxyRequest(
         }
         streamMode = stream
         phase = FailureStage.ROUTING
+        // 路由与「为什么不可用」的判定共用一次目录快照：分开查询会在凭据恢复的瞬间
+        // 得出「无候选却又查不出原因」的自相矛盾结论，进而把已配置的模型误报成 404。
+        val availability = app.modelCatalog.resolve(alias, protocol, scope = accessScope)
+        if (availability.accessDenied) {
+            val code = if (availability.modelAccessDenied) "model_access_denied" else "route_access_denied"
+            val message = if (availability.modelAccessDenied) "调用方密钥无权访问模型 $alias"
+                else "调用方密钥无权使用模型 $alias 的渠道或密钥"
+            call.response.header("X-Prism-Error-Code", code)
+            throw GatewayError(HttpStatusCode.Forbidden, code, message, "permission_error")
+        }
+        val candidates = availability.candidates
+        if (candidates.isEmpty()) {
+            // 当前协议本来就没有路可走（渠道既不原生支持也无法转换）时优先报协议错误，
+            // 否则会把「换个协议就能用」误导成「凭据暂时不可用」。
+            if (!availability.protocolReachable) {
+                if (!availability.configured) throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
+                throw protocolNotSupported(alias, protocol)
+            }
+            // 模型已配置但凭据全部停用时，客户端重试或等自动恢复就能成功，不能用 404 通知其改配置。
+            throw serviceUnavailable(
+                "model_credentials_unavailable",
+                "模型 $alias 已配置，但当前没有可用的上游凭据",
+                availability.retryAt?.let { it - System.currentTimeMillis() }?.takeIf { it > 0 },
+            )
+        }
+        // 搜索准备只在目录已完成存在性和授权分类、且存在授权候选后执行。
         // 搜索设置每次请求读取一次：管理台保存后立即生效，未保存时沿用环境变量默认值。
         // 读取失败只代表搜索不可用，不能影响本来可以透传的请求；也不回退环境变量，避免意外重新开启搜索。
         val webSearchRuntime = if (protocol == GatewayProtocol.RESPONSES && hasBuiltInWebSearch(requestJson)) {
@@ -306,24 +333,6 @@ private suspend fun handleProxyRequest(
             }
         } else {
             null
-        }
-        // 路由与「为什么不可用」的判定共用一次目录快照：分开查询会在凭据恢复的瞬间
-        // 得出「无候选却又查不出原因」的自相矛盾结论，进而把已配置的模型误报成 404。
-        val availability = app.modelCatalog.resolve(alias, protocol)
-        val candidates = availability.candidates
-        if (candidates.isEmpty()) {
-            // 当前协议本来就没有路可走（渠道既不原生支持也无法转换）时优先报协议错误，
-            // 否则会把「换个协议就能用」误导成「凭据暂时不可用」。
-            if (!availability.protocolReachable) {
-                if (!availability.configured) throw notFound("model_not_found", "模型 $alias 不存在或没有可用渠道")
-                throw protocolNotSupported(alias, protocol)
-            }
-            // 模型已配置但凭据全部停用时，客户端重试或等自动恢复就能成功，不能用 404 通知其改配置。
-            throw serviceUnavailable(
-                "model_credentials_unavailable",
-                "模型 $alias 已配置，但当前没有可用的上游凭据",
-                availability.retryAt?.let { it - System.currentTimeMillis() }?.takeIf { it > 0 },
-            )
         }
         val globalOverrides = app.upstreamRequestSettingsRepository.load().overrides
         val headerProfiles = app.upstreamHeaderCatalogService.profiles()
