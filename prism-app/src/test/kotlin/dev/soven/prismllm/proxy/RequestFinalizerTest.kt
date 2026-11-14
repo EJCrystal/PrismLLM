@@ -1,6 +1,8 @@
 package dev.soven.prismllm.proxy
 
 import dev.soven.prismllm.pricing.domain.ModelPriceSource
+import dev.soven.prismllm.pricing.domain.ModelPriceTier
+import dev.soven.prismllm.pricing.domain.PricingMode
 import dev.soven.prismllm.pricing.domain.ResolvedModelPrice
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaUsage
@@ -19,6 +21,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.EnumSource
 import java.math.BigDecimal
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -75,6 +79,45 @@ class RequestFinalizerTest {
         assertEquals(BigDecimal.ZERO, charged)
         assertNull(logs.single().costAmount)
         assertNull(logs.single().costCurrency)
+    }
+
+    @ParameterizedTest(name = "pricingMode={0}")
+    @EnumSource(PricingMode::class)
+    fun `non USD price cannot enter quota settlement in any pricing mode`(mode: PricingMode) = runBlocking {
+        val unsupportedPrice = price("1").copy(
+            currency = "EUR",
+            pricingMode = mode,
+            perRequestPrice = BigDecimal.ONE,
+            priceTiers = listOf(ModelPriceTier(null, BigDecimal.ONE, BigDecimal.ONE)),
+        )
+        var lookups = 0
+        var settlements = 0
+        var tokens = 0L
+        var charged: BigDecimal? = null
+        val failures = mutableListOf<String>()
+        val logs = mutableListOf<RequestLogRecord>()
+        val measured = mutableListOf<RequestLogRecord>()
+        RequestFinalizer(
+            resolvePrice = { lookups++; unsupportedPrice },
+            settleUsage = { _, value, cost -> settlements++; tokens = value; charged = cost },
+            recordMetrics = measured::add,
+            submitRecord = logs::add,
+            onFailure = { _, stage, _ -> failures += stage },
+        ).finish(record(), lease())
+
+        assertEquals(1, lookups)
+        assertEquals(1, settlements)
+        assertEquals(2_000_000L, tokens)
+        assertEquals(BigDecimal.ZERO, charged)
+        assertEquals(emptyList(), failures)
+        assertEquals(200, logs.single().statusCode)
+        assertNull(logs.single().errorCode)
+        assertNull(logs.single().costAmount)
+        assertNull(logs.single().costCurrency)
+        assertNull(logs.single().inputPricePerMillion)
+        assertNull(logs.single().perRequestPrice)
+        assertEquals(emptyList(), logs.single().priceTiers)
+        assertEquals(measured.single(), logs.single())
     }
 
     @Test

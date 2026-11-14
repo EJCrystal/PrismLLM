@@ -9,7 +9,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.math.BigDecimal
 
-/** 请求结束后只计算一次费用；结算故障不改变响应，也不阻止日志与指标收尾。 */
+/** 未计价的请求结束记录只计算一次 USD 费用；结算故障不改变响应，也不阻止日志与指标收尾。 */
 internal class RequestFinalizer(
     private val resolvePrice: suspend (RequestLogRecord) -> ResolvedModelPrice?,
     private val settleUsage: suspend (RequestLimitLease, Long, BigDecimal) -> Unit,
@@ -59,6 +59,7 @@ internal class RequestFinalizer(
 
     private suspend fun withCost(record: RequestLogRecord): RequestLogRecord {
         val price = resolvePrice(record) ?: return record
+        // BillingCalculator 的统一计价入口拒绝非 USD 价格；新请求保持费用未知，不把原币金额当美元结算。
         val cost = BillingCalculator.calculate(record, price) ?: return record
         return record.copy(
             costAmount = cost.amount,
