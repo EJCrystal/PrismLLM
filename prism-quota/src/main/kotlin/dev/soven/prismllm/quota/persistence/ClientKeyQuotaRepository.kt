@@ -34,6 +34,8 @@ class ClientKeyQuotaRepository(private val database: Database) {
     ): Unit = suspendTransaction(database) {
         // 结算不是幂等操作；数据库异常直接交给调用方，不能自动重试累加。
         maxAttempts = 1
+        // 收尾不响应协程取消；仅限制本事务的语句（含锁等待），避免卡住后续日志与许可归还。
+        exec("SET LOCAL statement_timeout = '3s'")
         val args = listOf<Pair<IColumnType<*>, Any?>>(
             TextColumnType() to clientKeyId,
             LongColumnType() to period,

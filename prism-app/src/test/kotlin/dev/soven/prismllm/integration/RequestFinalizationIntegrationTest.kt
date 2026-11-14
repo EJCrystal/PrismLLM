@@ -92,6 +92,73 @@ class RequestFinalizationIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `quota lock timeout preserves the response log and metrics and releases concurrency while the lock remains held`() = runBlocking {
+        val primary = createChannel("finalization-quota-lock", "key-health")
+        val backup = createChannelWithBaseUrl("finalization-lock-backup", "${fake.baseUrl}/ok/v1", priority = 1)
+        exposeAsModel(MODEL, primary to UPSTREAM_MODEL, backup to UPSTREAM_MODEL)
+        createPrice(primary, UPSTREAM_MODEL, input = "1", output = "2")
+        val key = createClientKey(ClientKeyQuotaLimits(maxConcurrentRequests = 1))
+        val keyId = app.clientKeyRepository.list().single().id
+        val period = dailyQuotaPeriod(System.currentTimeMillis())
+        val initialUsd = BigDecimal("0.001")
+        app.clientKeyQuotaRepository.addUsage(keyId, period, 7L, initialUsd)
+        val requestId = UUID.randomUUID().toString()
+
+        testApplication {
+            application { app.install(this) }
+            startApplication()
+            // 仅锁本类克隆库的目标账本行；普通准入查询仍可读取已提交用量。
+            DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { lock ->
+                lock.autoCommit = false
+                try {
+                    lock.prepareStatement("select 1 from client_key_quota_usage where client_key_id = ? and period = ? for update").use { statement ->
+                        statement.queryTimeout = 2
+                        statement.setString(1, keyId)
+                        statement.setLong(2, period)
+                        statement.executeQuery().use { rows -> assertTrue(rows.next()) }
+                    }
+                    coroutineScope {
+                        val release = fake.holdChatRequests()
+                        val pending = async { client.send(key, requestId, stream = false) }
+                        try {
+                            awaitCondition("upstream in flight before locked quota settlement") {
+                                fake.requests.size == 1 && app.requestLimitService.clientKeyOccupancy()[keyId] == 1
+                            }
+                            app.beginShutdown()
+                            release.complete(Unit)
+                            // 锁尚未释放，停机 Drain 仍须完成，不能依赖关池打断结算才提交日志。
+                            assertTrue(app.requestDrain.awaitDrained(5_000))
+                            val response = withTimeout(10_000) { pending.await() }
+                            val body = response.bodyAsText()
+                            assertEquals(HttpStatusCode.OK, response.status, body)
+                            assertTrue(body.contains("Hello!"), body)
+                            val log = awaitRequestLog()
+                            assertSuccessfulPricedLog(log, requestId)
+                            assertEquals(primary.id, log.channelId)
+                            assertEquals(1, fake.requests.size, "a quota timeout must not replay the upstream or send to the backup")
+                            assertEquals(1, scalarInt("select count(*) from request_logs"))
+                            assertQuotaFailureMetric(client)
+                            val usage = app.clientKeyQuotaService.currentUsage(keyId)
+                            assertEquals(7L, usage.dailyTokens)
+                            assertEquals(0, initialUsd.compareTo(usage.dailyUsdCost))
+                            assertEquals(0, usage.concurrentRequests)
+                            assertTrue(app.requestLimitService.clientKeyOccupancy().isEmpty())
+                        } finally {
+                            // 回归失败也先解除 JDBC 锁，避免结构化并发等待非取消结算时卡住清理。
+                            lock.rollback()
+                            release.complete(Unit)
+                            pending.cancel()
+                            fake.clearChatHold()
+                        }
+                    }
+                } finally {
+                    lock.rollback()
+                }
+            }
+        }
+    }
+
+    @Test
     fun `quota failure does not replace the original upstream stream error or replay it on a backup`() = runBlocking {
         val primary = createChannelWithBaseUrl(
             name = "finalization-original-error",

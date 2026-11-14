@@ -1,5 +1,7 @@
 package dev.soven.prismllm.repo
 
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.db.DatabaseFactory
 import dev.soven.prismllm.integration.IntegrationPostgres
@@ -14,6 +16,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteAll
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
@@ -22,24 +26,31 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.TestInstance
 import java.math.BigDecimal
+import java.sql.Connection
+import java.sql.DriverManager
+import java.sql.SQLException
 import java.util.Base64
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ClientKeyQuotaRepositoryTest {
     private lateinit var factory: DatabaseFactory
     private lateinit var otherFactory: DatabaseFactory
+    private lateinit var databaseUrl: String
     private lateinit var repositories: List<ClientKeyQuotaRepository>
     private val period = 20_011L
 
     @BeforeAll
     fun start() {
         val postgres = IntegrationPostgres.container
+        databaseUrl = IntegrationPostgres.newDatabase()
         val config = GatewayConfig.fromEnv(
             mapOf(
-                "DATABASE_URL" to IntegrationPostgres.newDatabase(),
+                "DATABASE_URL" to databaseUrl,
                 "DATABASE_USER" to postgres.username,
                 "DATABASE_PASSWORD" to postgres.password,
                 "GATEWAY_MASTER_KEY" to Base64.getEncoder().encodeToString(ByteArray(32) { 7 }),
@@ -146,6 +157,157 @@ class ClientKeyQuotaRepositoryTest {
         assertUsage(clientKeyId, period, ClientKeyQuotaUsage(9, BigDecimal("1.12345679")))
         assertEquals(1L, rowCount())
     }
+
+    @Test
+    fun `locked settlement times out once without increments and restores the pooled timeout after rollback`() = runBlocking {
+        val clientKeyId = createKey()
+        val initial = ClientKeyQuotaUsage(7, BigDecimal("0.00100000"))
+        repositories.first().addUsage(clientKeyId, period, initial.dailyTokens, initial.dailyUsdCost)
+
+        singleConnectionPool().use { pool ->
+            val repository = ClientKeyQuotaRepository(Database.connect(pool))
+            val originalSettings = sessionSettings(pool, initializeTimeout = true)
+            withCountedQuotaWrites {
+                testConnection().use { locker ->
+                    locker.autoCommit = false
+                    coroutineScope {
+                        try {
+                            locker.prepareStatement(
+                                "select client_key_id from client_key_quota_usage where client_key_id = ? and period = ? for update",
+                            ).use { statement ->
+                                statement.queryTimeout = 2
+                                statement.setString(1, clientKeyId)
+                                statement.setLong(2, period)
+                                statement.executeQuery().use { result ->
+                                    assertTrue(result.next(), "the existing ledger row must be locked before settlement starts")
+                                }
+                            }
+                            val pending = async(Dispatchers.IO) {
+                                runCatching { repository.addUsage(clientKeyId, period, 13, BigDecimal("0.00001600")) }
+                            }
+                            // 只限时等待 worker；回归失败时先解除 JDBC 锁，再让作用域等待 worker 退出。
+                            val result = withTimeout(10_000) { pending.await() }
+                            val failure = assertNotNull(result.exceptionOrNull(), "settlement must fail while the row remains locked")
+                            val timeout = assertNotNull(
+                                generateSequence(failure) { it.cause }
+                                    .filterIsInstance<SQLException>()
+                                    .firstOrNull { it.sqlState == "57014" },
+                                "settlement must fail with PostgreSQL query cancellation, not a coroutine watchdog: $failure",
+                            )
+                            assertTrue(timeout.message.orEmpty().contains("statement timeout"), timeout.toString())
+                            assertEquals(1, quotaWriteAttempts(), "a timed out non-idempotent settlement must not be retried")
+                            assertUsage(clientKeyId, period, initial)
+                            assertEquals(1L, rowCount())
+                            assertEquals(originalSettings, sessionSettings(pool), "rollback must restore the same pooled session's timeout")
+                        } finally {
+                            locker.rollback()
+                        }
+                    }
+                }
+            }
+        }
+        assertUsage(clientKeyId, period, initial)
+    }
+
+    @Test
+    fun `successful settlement restores the statement timeout in the same single connection pool`() = runBlocking {
+        val clientKeyId = createKey()
+        singleConnectionPool().use { pool ->
+            val repository = ClientKeyQuotaRepository(Database.connect(pool))
+            val originalSettings = sessionSettings(pool, initializeTimeout = true)
+
+            repository.addUsage(clientKeyId, period, 13, BigDecimal("0.00001600"))
+
+            assertEquals(originalSettings, sessionSettings(pool), "commit must restore the same pooled session's timeout")
+        }
+        assertUsage(clientKeyId, period, ClientKeyQuotaUsage(13, BigDecimal("0.00001600")))
+        assertEquals(1L, rowCount())
+    }
+
+    private fun singleConnectionPool(): HikariDataSource {
+        val postgres = IntegrationPostgres.container
+        return HikariDataSource(HikariConfig().apply {
+            jdbcUrl = databaseUrl
+            username = postgres.username
+            password = postgres.password
+            maximumPoolSize = 1
+            minimumIdle = 1
+            connectionTimeout = 2_000
+            validationTimeout = 1_000
+        })
+    }
+
+    private fun sessionSettings(pool: HikariDataSource, initializeTimeout: Boolean = false): SessionSettings =
+        pool.connection.use { connection ->
+            connection.autoCommit = false
+            connection.createStatement().use { statement ->
+                statement.queryTimeout = 2
+                if (initializeTimeout) statement.execute("set statement_timeout = '17s'")
+                val backendPid = statement.executeQuery("select pg_backend_pid()").use { result ->
+                    check(result.next())
+                    result.getInt(1)
+                }
+                val statementTimeout = statement.executeQuery("show statement_timeout").use { result ->
+                    check(result.next())
+                    result.getString(1)
+                }
+                connection.commit()
+                SessionSettings(backendPid, statementTimeout)
+            }
+        }
+
+    private suspend fun withCountedQuotaWrites(block: suspend () -> Unit) {
+        try {
+            executeTestSql(
+                "create sequence quota_settlement_write_attempts",
+                """
+                    create function quota_count_write_attempt() returns trigger language plpgsql as ${'$'}counter${'$'}
+                    begin
+                        perform nextval('quota_settlement_write_attempts');
+                        return null;
+                    end;
+                    ${'$'}counter${'$'}
+                """.trimIndent(),
+                // INSERT 语句级触发器先于 UPSERT 的冲突行锁等待执行；UPDATE 触发器执行时已取得锁。
+                "create trigger quota_count_write_attempt before insert on client_key_quota_usage for each statement execute function quota_count_write_attempt()",
+            )
+            block()
+        } finally {
+            executeTestSql(
+                "drop trigger if exists quota_count_write_attempt on client_key_quota_usage",
+                "drop function if exists quota_count_write_attempt()",
+                "drop sequence if exists quota_settlement_write_attempts",
+            )
+        }
+    }
+
+    private fun quotaWriteAttempts(): Int = testConnection().use { connection ->
+        connection.createStatement().use { statement ->
+            statement.queryTimeout = 2
+            statement.executeQuery("select case when is_called then last_value else 0 end from quota_settlement_write_attempts").use { result ->
+                check(result.next())
+                result.getInt(1)
+            }
+        }
+    }
+
+    private fun executeTestSql(vararg statements: String) {
+        testConnection().use { connection ->
+            connection.createStatement().use { statement ->
+                statement.queryTimeout = 2
+                statements.forEach { statement.execute(it) }
+            }
+        }
+    }
+
+    private fun testConnection(): Connection {
+        val databaseName = databaseUrl.substringBefore('?').substringAfterLast('/')
+        require(databaseName.matches(Regex("prism_test_[0-9]+"))) { "quota fault injection requires this class's PostgreSQL clone" }
+        val postgres = IntegrationPostgres.container
+        return DriverManager.getConnection(databaseUrl, postgres.username, postgres.password)
+    }
+
+    private data class SessionSettings(val backendPid: Int, val statementTimeout: String)
 
     private suspend fun createKey(): String = ClientKeyRepository(factory.database).create(
         name = "quota-test",
