@@ -494,13 +494,47 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.deepEqual([...document.getElementById(toggle.getAttribute('aria-controls')).querySelectorAll('li')].map(text), ['gemini-4-argon'])
   })
 
+  for (const id of [IDS.groupedHealthy, IDS.disabledReauth]) {
+    it('keeps account settings in a single inline entry for ' + id, async () => {
+      await mount()
+      const name = account(mock.fixture, id).name
+      const settingsButtons = [...row(id).querySelectorAll('.row-actions button')].filter(button => button.getAttribute('aria-label') === '设置 ' + name)
+      assert.equal(settingsButtons.length, 1)
+      const settingsButton = settingsButtons[0]
+      assert.equal(settingsButton.title, '设置 ' + name)
+
+      const panel = await openMenu(id)
+      const actions = [...panel.querySelectorAll('[role="menuitem"]')].map(text)
+      assert.equal(actions.includes('账号设置'), false)
+      assert.ok(actions.includes('调度策略'))
+      assert.ok(actions.includes('重新授权'))
+      panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+      await settle()
+      assert.equal(document.querySelector('.floating-menu'), null)
+
+      settingsButton.click()
+      await settle()
+      const dialog = document.querySelector('[role="dialog"]')
+      assert.ok(dialog)
+      assert.equal(text(dialog.querySelector('h2')), '账号设置')
+      assert.equal(dialog.querySelector('input[autocomplete="off"]').value, name)
+      assert.match(text(dialog), /账号代理/)
+      assert.match(text(dialog), /模型授权/)
+      assert.ok(dialog.querySelector('.oauth-model-picker'))
+      assert.equal(mock.requests.length, 3, 'Opening settings must not start authorization or upstream requests')
+      dialog.querySelector('button[aria-label="关闭"]').click()
+      await settle()
+      assert.equal(document.querySelector('[role="dialog"]'), null)
+    })
+  }
+
   it('renders grouped real menu actions and clears cooldown through the in-memory API', async () => {
     await mount()
     const panel = await openMenu(IDS.groupedWarning)
     assert.equal(panel.getAttribute('role'), 'menu')
     assert.deepEqual([...panel.querySelectorAll('[role="heading"]')].map(text), ['日常运维', '配置管理', '危险操作'])
     assert.equal(panel.querySelectorAll('[role="separator"]').length, 2)
-    assert.deepEqual([...panel.querySelectorAll('[role="menuitem"]')].map(text), ['刷新 token', '刷新额度', '解除冷却', '账号设置', '调度策略', '重新授权', '删除账号'])
+    assert.deepEqual([...panel.querySelectorAll('[role="menuitem"]')].map(text), ['刷新 token', '刷新额度', '解除冷却', '调度策略', '重新授权', '删除账号'])
     assert.equal(buttonNamed(panel, '删除账号').classList.contains('danger'), true)
     buttonNamed(panel, '解除冷却').click()
     await settle()
