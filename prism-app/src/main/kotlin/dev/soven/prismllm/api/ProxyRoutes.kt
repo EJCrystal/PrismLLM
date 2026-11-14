@@ -140,8 +140,8 @@ private val USER_AGENT_WHITESPACE = Regex("[\\r\\n\\t]+")
  */
 fun Route.proxyRoutes(app: GatewayApplication) {
     get("/v1/models") {
-        authenticate(call, app)
-        val models = listExposedModelIds(app)
+        val clientKey = authenticate(call, app)
+        val models = listExposedModelIds(app, scope = clientKey.accessPolicy.toRoutingAccessScope())
         call.respond(
             buildJsonObject {
                 put("object", "list")
@@ -171,8 +171,8 @@ fun Route.proxyRoutes(app: GatewayApplication) {
         }
     }
     get("/v1beta/models") {
-        authenticate(call, app, GatewayProtocol.GEMINI)
-        val models = listExposedModelIds(app, GatewayProtocol.GEMINI)
+        val clientKey = authenticate(call, app, GatewayProtocol.GEMINI)
+        val models = listExposedModelIds(app, GatewayProtocol.GEMINI, clientKey.accessPolicy.toRoutingAccessScope())
         call.respond(buildJsonObject {
             put("models", buildJsonArray {
                 models.forEach { model ->
@@ -280,6 +280,11 @@ private suspend fun handleProxyRequest(
             ?.content
             ?.takeIf { it.isNotBlank() }
             ?: throw badRequest("invalid_model", "model 必须是非空字符串")
+        val accessScope = clientKey.accessPolicy.toRoutingAccessScope()
+        if (!accessScope.allowsModel(alias)) {
+            call.response.header("X-Prism-Error-Code", "model_access_denied")
+            throw GatewayError(HttpStatusCode.Forbidden, "model_access_denied", "调用方密钥无权访问模型 $alias", "permission_error")
+        }
         val streamElement = requestJson["stream"]
         val stream = nativeStream ?: when (streamElement) {
             null -> false
@@ -309,7 +314,11 @@ private suspend fun handleProxyRequest(
         }
         // 路由与「为什么不可用」的判定共用一次目录快照：分开查询会在凭据恢复的瞬间
         // 得出「无候选却又查不出原因」的自相矛盾结论，进而把已配置的模型误报成 404。
-        val availability = app.modelCatalog.resolve(alias, protocol)
+        val availability = app.modelCatalog.resolve(alias, protocol, scope = accessScope)
+        if (availability.accessDenied) {
+            call.response.header("X-Prism-Error-Code", "route_access_denied")
+            throw GatewayError(HttpStatusCode.Forbidden, "route_access_denied", "调用方密钥无权使用模型 $alias 的渠道或密钥", "permission_error")
+        }
         val candidates = availability.candidates
         if (candidates.isEmpty()) {
             // 当前协议本来就没有路可走（渠道既不原生支持也无法转换）时优先报协议错误，
