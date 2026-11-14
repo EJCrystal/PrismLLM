@@ -4,6 +4,7 @@ import dev.soven.prismllm.spi.iq.IqJudge
 import dev.soven.prismllm.spi.iq.IqJudgeRequest
 import dev.soven.prismllm.spi.iq.IqJudgeResult
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -12,6 +13,7 @@ import java.util.jar.JarOutputStream
 import javax.tools.ToolProvider
 import kotlin.test.*
 
+@Tag("component")
 class IqJudgeRegistryTest {
     @TempDir lateinit var directory: Path
 

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.soven</groupId>
+        <artifactId>prism-llm-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>prism-db-migrations</artifactId>
+    <name>PrismLLM :: Database Migrations</name>
+    <description>网关数据库迁移的唯一资源来源，供应用运行和真实 PostgreSQL 测试共同使用。</description>
+</project>

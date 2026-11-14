@@ -2,11 +2,13 @@ package dev.soven.prismllm.api
 
 import dev.soven.prismllm.config.WebSearchConfig
 import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
+@Tag("unit")
 class WebSearchSettingsDtosTest {
     private val defaults = WebSearchConfig(
         enabled = false,

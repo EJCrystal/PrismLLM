@@ -2453,143 +2453,139 @@ input[type="password"]::-ms-clear,
   background: color-mix(in srgb, var(--brand) 7%, transparent);
 }
 
-/* 订阅账号上游额度：按模型家族分组，窗口使用率进度条。 */
-.oauth-quota-cell {
-  min-width: 190px;
+/* 订阅账号：组合筛选只改变列表展示，统计仍保持全量口径。 */
+.oauth-account-stats .stat-card {
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .16s ease, background .16s ease;
 }
 
-/* 订阅账号模型：直接显示具体模型名，超出部分折叠成 +N。 */
-.oauth-account-models {
+.oauth-account-stats .stat-card:hover,
+.oauth-account-stats .stat-card.is-selected {
+  border-color: color-mix(in srgb, var(--brand) 55%, var(--glass-line));
+  background: var(--glass-surface-strong);
+}
+
+.oauth-account-stats .stat-card.is-selected > span { color: var(--brand); }
+
+.oauth-accounts-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  max-width: 220px;
-  margin-top: 6px;
+  gap: 8px 12px;
 }
 
-.oauth-model-badge {
-  display: inline-block;
+.oauth-account-search {
+  display: flex;
+  flex: 1 1 280px;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
-  max-width: 100%;
-  padding: 3px 7px;
-  overflow: hidden;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: 460px;
+  padding: 0 10px;
+  border: 1px solid var(--glass-line);
+  border-radius: 8px;
+  background: var(--glass-field);
+  color: var(--muted);
 }
 
-.oauth-model-inherited {
-  font-size: 10px;
-}
-
-/* 订阅账号表：账号与额度是多行内容，统一顶对齐后各行阅读起点一致。 */
-.oauth-accounts-table td {
-  vertical-align: top;
-}
-
-.oauth-accounts-table td:first-child {
-  min-width: 224px;
-}
-
-/* 订阅账号：列表内直接启停，和渠道列表一致；凭据状态另起一行展示。 */
-.oauth-status-toggle {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 7px;
-  min-width: max-content;
-  padding: 2px 0;
+.oauth-account-search:focus-within { border-color: var(--brand); }
+.oauth-account-search > svg { flex: 0 0 auto; }
+.oauth-account-search input {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 0;
   border: 0;
+  border-radius: 0;
   background: transparent;
-  color: var(--ink);
-  font: inherit;
+  box-shadow: none;
   font-size: 12px;
-  font-weight: 650;
-  white-space: nowrap;
-  cursor: pointer;
 }
+.oauth-account-search input:focus { outline: none; box-shadow: none; }
+.oauth-provider-filter { display: inline-flex; align-items: center; gap: 8px; }
+.oauth-provider-filter select { width: auto; min-height: 38px; padding-top: 8px; padding-bottom: 8px; font-size: 12px; }
+.oauth-filter-count { white-space: nowrap; }
+.oauth-create-account { margin-left: auto; min-height: 38px; white-space: nowrap; }
+.oauth-accounts-scroll-hint { display: none; margin: 0; }
 
+/* 固定列宽避免长邮箱撑开表格；额度保留窗口边界，宽屏两列、窄屏单列。 */
+.oauth-accounts-table { table-layout: fixed; min-width: 1040px; }
+.oauth-account-col { width: 26%; }
+.oauth-state-col { width: 116px; }
+.oauth-schedule-col { width: 130px; }
+.oauth-refreshed-col { width: 132px; }
+.oauth-actions-col { width: 164px; }
+.oauth-accounts-table th { padding: 12px; }
+.oauth-accounts-table td { padding: 12px; vertical-align: top; }
+.oauth-accounts-table .primary-cell,
+.oauth-account-name,
+.oauth-account-channels { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oauth-account-name { margin-top: 3px; }
+.oauth-account-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 5px; }
+.oauth-account-channels { margin-top: 5px; }
+
+/* 模型标签沿用 +N；完整列表可键盘展开并换行读取长模型名。 */
+.oauth-account-models { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+.oauth-model-badge { display: inline-block; min-width: 0; max-width: 100%; padding: 3px 7px; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.oauth-models-toggle { border: 1px solid var(--glass-line); background: var(--glass-field); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+.oauth-model-inherited { font-size: 10px; }
+.oauth-full-models { display: grid; gap: 4px; margin: 8px 0 0; padding: 8px 8px 8px 22px; border: 1px solid var(--glass-line); border-radius: 8px; background: var(--glass-field); }
+.oauth-full-models li { overflow-wrap: anywhere; }
+.oauth-account-proxy { margin-top: 4px; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+
+.oauth-quota-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 10px 12px; }
+.oauth-quota-group { min-width: 0; }
+.oauth-quota-group-label { margin-bottom: 4px; font-size: 11px; font-weight: 650; overflow-wrap: anywhere; }
+.oauth-quota-window + .oauth-quota-window { margin-top: 6px; }
+.oauth-quota-window-head,
+.oauth-quota-window-detail { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.oauth-quota-window-head .small,
+.oauth-quota-window-detail .small { font-size: 11px; white-space: nowrap; }
+.oauth-quota-window-head > :first-child { color: var(--muted); }
+.oauth-quota-window-detail { margin-top: 3px; }
+.oauth-quota-window-detail .quota-track { min-width: 20px; }
+.oauth-quota-window-detail > .small { flex: 0 0 auto; }
+.oauth-quota-toggle { margin-top: 8px; padding: 3px 0; border: 0; background: transparent; color: var(--brand); font: inherit; font-size: 11px; cursor: pointer; }
+.oauth-quota-notice { margin-top: 6px; overflow-wrap: anywhere; }
+
+/* 启停和凭据状态独立：停用是中性状态，不掩盖授权失效。 */
+.oauth-status-toggle { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 7px; padding: 2px 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; cursor: pointer; }
 .oauth-status-label { flex: 0 0 auto; white-space: nowrap; }
-
-.oauth-status-track {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  width: 34px;
-  height: 20px;
-  flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--danger-fill) 58%, var(--line-strong));
-  border-radius: 999px;
-  background: var(--danger-soft);
-  transition: background .16s ease, border-color .16s ease;
-}
-
-.oauth-status-track > span {
-  position: absolute;
-  left: 3px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 3px rgba(16, 24, 40, .2);
-  transition: transform .16s ease;
-}
-
+.oauth-status-track { position: relative; display: inline-flex; align-items: center; width: 34px; height: 20px; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: 999px; background: color-mix(in srgb, var(--muted) 45%, var(--panel)); transition: background .16s ease, border-color .16s ease; }
+.oauth-status-track > span { position: absolute; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(16, 24, 40, .2); transition: transform .16s ease; }
 .oauth-status-toggle.is-enabled .oauth-status-track { border-color: var(--success); background: var(--success); }
 .oauth-status-toggle.is-enabled .oauth-status-track > span { transform: translateX(14px); }
 .oauth-status-toggle.is-enabled .oauth-status-label { color: var(--success); }
-.oauth-status-toggle.is-disabled .oauth-status-track { border-color: var(--danger); background: var(--danger); }
-.oauth-status-toggle.is-disabled .oauth-status-label { color: var(--danger); }
+.oauth-status-toggle.is-disabled .oauth-status-label { color: var(--muted); }
 .oauth-status-toggle:disabled { opacity: .55; cursor: wait; }
 .oauth-status-toggle:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; border-radius: 4px; }
-
 .oauth-auth-state { margin-top: 6px; }
+.oauth-auth-state .badge { font-size: 11px; }
+.oauth-refresh-error { margin-top: 6px; overflow-wrap: anywhere; }
+.oauth-schedule-cell { overflow-wrap: anywhere; }
+.oauth-schedule-cell > div + div { margin-top: 3px; }
+.oauth-refresh-cell { overflow-wrap: anywhere; }
+.oauth-refresh-cell .muted { margin-top: 3px; font-size: 11px; }
 
-.oauth-account-proxy {
-  max-width: 220px;
-  margin-top: 4px;
-  overflow: hidden;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* 横向滚动时保留操作入口；手机不固定，避免遮住主要内容。 */
+.oauth-accounts-table .actions-col { position: sticky; right: 0; z-index: 2; width: 164px; border-left: 1px solid var(--glass-line); background: var(--surface-solid); }
+.oauth-accounts-table .row-actions { gap: 4px; flex-wrap: nowrap; }
+.oauth-accounts-table th.actions-col { z-index: 5; background: var(--surface-head); }
+.oauth-accounts-table tbody tr:hover > td.actions-col { background: color-mix(in srgb, var(--brand) 7%, var(--surface-solid)); }
 
-.oauth-refresh-cell {
-  min-width: 128px;
-  white-space: nowrap;
-}
-
-.oauth-refresh-cell .muted {
-  margin-top: 3px;
-  font-size: 11px;
-}
-
-/* 窄屏横向滚动时操作列保持可见，和渠道、调用方密钥表一致。 */
-.oauth-accounts-table .actions-col {
-  position: sticky;
-  right: 0;
-  z-index: 2;
-  width: 168px;
-  min-width: 168px;
-  border-left: 1px solid var(--glass-line);
-  background: var(--surface-solid);
-}
-
-.oauth-accounts-table th.actions-col {
-  z-index: 5;
-  background: var(--surface-head);
-}
-
-.oauth-accounts-table tbody tr:hover > td.actions-col {
-  background: color-mix(in srgb, var(--brand) 7%, var(--surface-solid));
+@media (max-width: 1100px) {
+  .oauth-quota-groups { grid-template-columns: minmax(0, 1fr); }
+  .oauth-accounts-table th.actions-col,
+  .oauth-accounts-table td.actions-col { position: static; }
+  .oauth-accounts-scroll-hint { display: block; }
 }
 
 @media (max-width: 640px) {
-  .oauth-accounts-table th.actions-col,
-  .oauth-accounts-table td.actions-col {
-    position: static;
-  }
+  .oauth-account-search { flex-basis: 100%; max-width: none; }
+  .oauth-provider-filter { flex: 1 1 auto; }
 }
 
 .quota-group + .quota-group {
@@ -7995,6 +7991,8 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .more-button { border-color: var(--glass-line); color: var(--ink); }
 .floating-menu, .info-popover { z-index: 1200; border: 1px solid var(--glass-border); border-radius: 14px; background: var(--glass-surface-strong); box-shadow: var(--glass-shadow), var(--glass-inset); color: var(--ink); overflow-y: auto; overscroll-behavior: contain; backdrop-filter: blur(22px) saturate(160%); -webkit-backdrop-filter: blur(22px) saturate(160%); }
 .floating-menu { padding: 6px; outline: none; }
+.floating-menu-group-heading { display: flex; align-items: center; min-height: 28px; padding: 4px 12px; color: var(--muted); font-size: 11px; font-weight: 650; }
+.floating-menu-group-divider { height: 1px; margin: 4px 0; background: var(--glass-line); }
 .floating-menu-item { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 42px; padding: 9px 12px; border: 0; border-radius: 7px; background: transparent; color: var(--ink); text-align: left; font-size: 13px; cursor: pointer; }
 .floating-menu-item.active, .floating-menu-item:hover { background: var(--info-soft); }
 .floating-menu-item.danger { color: var(--danger); }

@@ -1,5 +1,6 @@
 package dev.soven.prismllm.proxy
 
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.nio.file.Files
 import java.nio.file.Path
@@ -11,6 +12,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
+@Tag("browser")
 class BrowserScreenshotRendererTest {
     private fun renderer(maxWidth: Int = 320): BrowserScreenshotRenderer {
         val executable = BrowserScreenshotRenderer.resolveExecutable()

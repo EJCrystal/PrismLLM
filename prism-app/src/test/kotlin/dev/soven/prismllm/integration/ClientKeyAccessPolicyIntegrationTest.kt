@@ -27,6 +27,7 @@ import org.jetbrains.exposed.v1.core.SqlLogger
 import org.jetbrains.exposed.v1.core.Transaction
 import org.jetbrains.exposed.v1.core.statements.StatementContext
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -34,6 +35,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /** 使用真实 PostgreSQL 验证调用方访问范围的管理契约与生命周期。 */
+@Tag("integration")
+@Tag("shard-1")
+@Tag("channel")
 class ClientKeyAccessPolicyIntegrationTest : GatewayIntegrationTestBase() {
     /** 完整的不限制策略，用于显式清除已有授权限制。 */
     private val unrestricted = """{"channels":{"mode":"unrestricted","ids":[]},"channelKeys":{"mode":"unrestricted","keys":[]},"models":{"mode":"unrestricted","ids":[]}}"""

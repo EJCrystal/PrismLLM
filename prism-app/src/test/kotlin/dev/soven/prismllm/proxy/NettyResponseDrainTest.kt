@@ -30,6 +30,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
@@ -48,6 +49,7 @@ import kotlin.test.assertTrue
 
 /** 本机真实 Netty 输出管道；屏障持有末帧和原始 promise，而非 handler/Job 完成事件。 */
 @Timeout(20)
+@Tag("component")
 class NettyResponseDrainTest {
     @ParameterizedTest(name = "stream={0}")
     @ValueSource(booleans = [false, true])

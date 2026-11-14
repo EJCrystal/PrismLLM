@@ -1,9 +1,11 @@
 package dev.soven.prismllm.oauth
 
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
+@Tag("unit")
 class OAuthLoginCallbackTest {
     @Test
     fun `callback parser accepts full urls bare queries and fragments`() {

@@ -4,10 +4,12 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
+@Tag("unit")
 class AdminSessionsTest {
     @Test
     fun `username lock serializes password changes and session issuance`() = runBlocking {

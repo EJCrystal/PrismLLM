@@ -43,6 +43,8 @@ import kotlin.test.assertTrue
 /** 使用真实持久化、请求准入和假上游验证调用方访问范围的硬性边界。 */
 @Tag("integration")
 @Tag("shard-1")
+@Tag("channel")
+@Tag("protocol")
 class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
     @Test
     fun `access denial precedes all four protocols Gemini versions and search preparation`() = runBlocking {

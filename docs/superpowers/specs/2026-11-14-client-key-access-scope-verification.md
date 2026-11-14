@@ -47,6 +47,18 @@
 8. 稳定授权码由统一响应头传递，并暴露给 CORS：保持 Messages/Gemini 原生错误体；成本是其客户端需读取响应头，文档与真实请求测试明确覆盖。
 9. 错误优先级按设计修正为不存在先返回 404、已配置对象才判 403：解决计划措辞较窄的问题；成本是调用方需按存在性分类错误，候选授权不会扩大。
 
-## 后续集成
+## 初次交付状态
 
 本轮只在独立分支本地提交，没有推送、创建 PR、合并 main 或部署服务。原工作区持续由其他任务使用，本功能没有切换或修改它。后续集成当前 main 时需对合并结果验证，不能把并行 main 的变更算入本次交付证据。
+
+## PR 集成验证（2026-11-14）
+
+用户随后要求提交改动并创建 PR。功能分支已同步 `origin/main` 的 `a8d4b61`，保留主干的 CI、测试基础设施与订阅账号界面改动。V68 迁移随主干移动至 `prism-db-migrations/src/main/resources/db/migration/`，SQL Git blob 仍为 `ae5f82aeaa6ee12bea60a5f1cf2aa05e1db416e0`，没有修改迁移内容。
+
+两项新增访问范围集成测试补齐 shard/channel/protocol 标签，并进入主干 `TestClassificationTest` 的显式名单；既有分类检查和原集成测试标签保持。
+
+- 后端：WSL 原生镜像执行 `clean test`，150 suites、1391 项总计、1385 通过、0 失败/错误、6 项浏览器条件跳过；日志 `backend-20261114-222347.log`，XML 汇总 `pr-backend-summary.json`。本次清理后重新编译和运行，不混用旧测试类产物。
+- 前端：全量 590/590 通过，0 失败/跳过，类型检查与生产构建通过；日志 `pr-frontend-test.log`、`pr-typecheck.log`、`pr-build.log`。
+- 六项跳过仍均属 `BrowserScreenshotRendererTest`，原因是 WSL 缺少 Chrome/Chromium；构建保留既有 bundle 大小提示。
+
+上述新增证据保留在本工作树 `.superpowers/sdd/2026-11-14-client-key-access-scope/`，不属于先前交付的 `evidence.zip`。本次仅同步、验证并准备推送功能分支及创建 PR；没有将功能合入 main 或部署。

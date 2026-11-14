@@ -3,6 +3,7 @@ package dev.soven.prismllm.proxy
 import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.spi.iq.IqJudgeResult
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -11,6 +12,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** 验证智商检测的 HTML 提取、结构检查与糖果题判分。 */
+@Tag("unit")
 class IqTestTest {
     @Test
     fun `extracts html from markdown fence`() {

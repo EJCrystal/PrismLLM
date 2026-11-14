@@ -8,10 +8,12 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
+@Tag("unit")
 class UpstreamOccupancyTest {
     @Test
     fun `snapshot aggregates in-flight attempts by channel and key`() = runBlocking {

@@ -6,12 +6,14 @@ import dev.soven.prismllm.protocol.MAX_PROTOCOL_EVENT_BYTES
 import io.ktor.http.HttpStatusCode
 import io.ktor.utils.io.ByteReadChannel
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 
+@Tag("unit")
 class ProtocolLineReadTest {
     @Test
     fun boundedReadsClassifyOversizedLinesWithoutLeakingTheirContents() = runBlocking {

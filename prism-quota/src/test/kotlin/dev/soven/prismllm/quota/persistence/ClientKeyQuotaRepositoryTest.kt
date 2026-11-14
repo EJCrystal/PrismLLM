@@ -1,15 +1,10 @@
-package dev.soven.prismllm.repo
+package dev.soven.prismllm.quota.persistence
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
-import dev.soven.prismllm.config.GatewayConfig
-import dev.soven.prismllm.db.DatabaseFactory
-import dev.soven.prismllm.integration.IntegrationPostgres
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaUsage
-import dev.soven.prismllm.quota.persistence.ClientKeyQuotaRepository
-import dev.soven.prismllm.quota.persistence.ClientKeyQuotaUsages
-import dev.soven.prismllm.quota.persistence.ClientKeyRepository
-import dev.soven.prismllm.quota.persistence.ClientKeys
+import dev.soven.prismllm.testsupport.db.SharedPostgres
+import dev.soven.prismllm.testsupport.db.TestDatabase
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -21,6 +16,7 @@ import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteAll
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -29,7 +25,6 @@ import java.math.BigDecimal
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.SQLException
-import java.util.Base64
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -37,29 +32,21 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Tag("component")
 class ClientKeyQuotaRepositoryTest {
-    private lateinit var factory: DatabaseFactory
-    private lateinit var otherFactory: DatabaseFactory
+    private lateinit var factory: TestDatabase
+    private lateinit var otherFactory: TestDatabase
     private lateinit var databaseUrl: String
     private lateinit var repositories: List<ClientKeyQuotaRepository>
     private val period = 20_011L
 
     @BeforeAll
     fun start() {
-        val postgres = IntegrationPostgres.container
-        databaseUrl = IntegrationPostgres.newDatabase()
-        val config = GatewayConfig.fromEnv(
-            mapOf(
-                "DATABASE_URL" to databaseUrl,
-                "DATABASE_USER" to postgres.username,
-                "DATABASE_PASSWORD" to postgres.password,
-                "GATEWAY_MASTER_KEY" to Base64.getEncoder().encodeToString(ByteArray(32) { 7 }),
-                "ADMIN_PASSWORD" to "test-password",
-            ),
-        )
+        val postgres = SharedPostgres.container
+        databaseUrl = SharedPostgres.newDatabase()
         // 模板库已经迁移；独立连接池模拟多个网关实例共用同一 PostgreSQL 账本。
-        factory = DatabaseFactory(config)
-        otherFactory = DatabaseFactory(config)
+        factory = TestDatabase(databaseUrl, postgres.username, postgres.password)
+        otherFactory = TestDatabase(databaseUrl, postgres.username, postgres.password)
         repositories = listOf(factory.database, factory.database, otherFactory.database, otherFactory.database)
             .map(::ClientKeyQuotaRepository)
     }
@@ -78,7 +65,7 @@ class ClientKeyQuotaRepositoryTest {
     fun stop() {
         if (::otherFactory.isInitialized) otherFactory.close()
         if (::factory.isInitialized) factory.close()
-        // IntegrationPostgres 的共享容器由整个测试 JVM 持有，不在此处停止。
+        // SharedPostgres 的共享容器由整个测试 JVM 持有，不在此处停止。
     }
 
     @Test
@@ -225,7 +212,7 @@ class ClientKeyQuotaRepositoryTest {
     }
 
     private fun singleConnectionPool(): HikariDataSource {
-        val postgres = IntegrationPostgres.container
+        val postgres = SharedPostgres.container
         return HikariDataSource(HikariConfig().apply {
             jdbcUrl = databaseUrl
             username = postgres.username
@@ -303,7 +290,7 @@ class ClientKeyQuotaRepositoryTest {
     private fun testConnection(): Connection {
         val databaseName = databaseUrl.substringBefore('?').substringAfterLast('/')
         require(databaseName.matches(Regex("prism_test_[0-9]+"))) { "quota fault injection requires this class's PostgreSQL clone" }
-        val postgres = IntegrationPostgres.container
+        val postgres = SharedPostgres.container
         return DriverManager.getConnection(databaseUrl, postgres.username, postgres.password)
     }
 

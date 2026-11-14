@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.jetbrains.exposed.v1.jdbc.Database
+import org.junit.jupiter.api.Tag
 import java.net.InetSocketAddress
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
@@ -28,6 +29,7 @@ import kotlin.test.assertTrue
  * loadCodeAssist / onboardUser 的请求体：tier 传给上游前必须经过 JSON 序列化，
  * 并且开通后要把 project 回写到账号缓存。
  */
+@Tag("component")
 class CodeAssistProjectResolverTest {
     private val json = Json { ignoreUnknownKeys = true }
 

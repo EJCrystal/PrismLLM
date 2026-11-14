@@ -33,6 +33,7 @@ class DatabaseFactory(config: GatewayConfig) : AutoCloseable {
         val result = Flyway.configure()
             .dataSource(dataSource)
             .locations("classpath:db/migration")
+            .failOnMissingLocations(true)
             .load()
             .migrate()
         return result.migrations.mapNotNull { it.version }.toSet()

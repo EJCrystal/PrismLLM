@@ -1,5 +1,6 @@
 package dev.soven.prismllm.config
 
+import org.junit.jupiter.api.Tag
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -8,6 +9,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+@Tag("unit")
 class GatewayConfigTest {
     private val requiredEnv = mapOf(
         "GATEWAY_MASTER_KEY" to Base64.getEncoder().encodeToString(ByteArray(32) { 7 }),

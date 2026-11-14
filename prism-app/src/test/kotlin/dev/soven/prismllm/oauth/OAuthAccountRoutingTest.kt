@@ -14,9 +14,11 @@ import dev.soven.prismllm.oauth.infra.OAuthRoutingHint
 import dev.soven.prismllm.routing.domain.candidate.RouteCandidate
 import dev.soven.prismllm.channel.domain.key.ChannelKeyState
 import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
+@Tag("unit")
 class OAuthAccountRoutingTest {
     private val now = 1_762_400_000_000L
 

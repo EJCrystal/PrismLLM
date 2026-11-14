@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpServer
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Tag
 import java.net.InetSocketAddress
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
@@ -14,6 +15,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** retrieveUserQuotaSummary 的解析：5h 与 weekly 两个窗口。 */
+@Tag("component")
 class CodeAssistQuotaClientTest {
     private val client = CodeAssistQuotaClient(HttpClient())
 

@@ -12,6 +12,15 @@
     <dependencies>
         <dependency>
             <groupId>dev.soven</groupId>
+            <artifactId>prism-db-migrations</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.soven</groupId>
+            <artifactId>prism-test-support</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.soven</groupId>
             <artifactId>prism-shared</artifactId>
         </dependency>
         <dependency>

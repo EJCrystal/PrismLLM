@@ -5,9 +5,11 @@ import dev.soven.prismllm.spi.iq.IqJudgeRequest
 import dev.soven.prismllm.spi.iq.IqJudgeResult
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
+@Tag("unit")
 class IqJudgeServiceTest {
     @Test
     fun `returns judge result`() = runBlocking {

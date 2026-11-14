@@ -3,9 +3,11 @@ package dev.soven.prismllm.plugin.iq
 import dev.soven.prismllm.proxy.analyzePelicanStructure
 import dev.soven.prismllm.spi.iq.IqJudgeRequest
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
+@Tag("unit")
 class LocalStructureIqJudgeTest {
     private val judge = LocalStructureIqJudge()
 

@@ -20,6 +20,8 @@
     </licenses>
 
     <modules>
+        <module>prism-db-migrations</module>
+        <module>prism-test-support</module>
         <module>prism-shared</module>
         <module>prism-protocol</module>
         <module>prism-channel</module>
@@ -65,6 +67,16 @@
                 <version>${junit.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>dev.soven</groupId>
+                <artifactId>prism-db-migrations</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.soven</groupId>
+                <artifactId>prism-test-support</artifactId>
+                <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>dev.soven</groupId>

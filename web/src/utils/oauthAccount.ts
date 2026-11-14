@@ -39,6 +39,37 @@ export function oauthAccountStatus(
   return { label: oauthAuthStateLabel(account.authState), tone: oauthAuthStateBadge(account.authState) }
 }
 
+export type OAuthAccountStatusFilter = 'all' | 'ready' | 'reauth' | 'cooling'
+
+export interface OAuthAccountListFilter {
+  query: string
+  provider: string
+  status: OAuthAccountStatusFilter
+}
+
+/** 凭据就绪不等于实时可调度；冷却、额度与并发准入仍由后台判断。 */
+export function oauthAccountMatchesStatus(account: OAuthAccount, status: OAuthAccountStatusFilter, now: number): boolean {
+  if (status === 'ready') return account.enabled && account.authState === 'ACTIVE'
+  if (status === 'reauth') return account.authState === 'REAUTH_REQUIRED'
+  if (status === 'cooling') return isOAuthAccountCooling(account, now)
+  return true
+}
+
+/** 搜索完整模型列表，不受表格标签折叠影响；搜索、提供方与状态条件取交集。 */
+export function oauthAccountMatchesFilter(
+  account: OAuthAccount,
+  modelNames: string[],
+  filter: OAuthAccountListFilter,
+  now: number,
+): boolean {
+  if (filter.provider && account.provider !== filter.provider) return false
+  if (!oauthAccountMatchesStatus(account, filter.status, now)) return false
+  const query = filter.query.trim().toLowerCase()
+  if (!query) return true
+  return [account.name, account.accountEmail ?? '', ...account.channels.map((channel) => channel.name), ...modelNames]
+    .some((value) => value.toLowerCase().includes(query))
+}
+
 /** 把秒数转成易读时长；非整单位时退回秒数。 */
 export function formatWindowSeconds(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return '—'
@@ -149,6 +180,32 @@ export function oauthQuotaGroups(quota: OAuthQuota | null | undefined): OAuthQuo
         .filter((window): window is OAuthQuotaWindowView => window != null),
     }))
     .filter((group) => group.windows.length > 0)
+}
+
+export interface OAuthQuotaPreview {
+  visible: OAuthQuotaGroupView[]
+  hidden: OAuthQuotaGroupView[]
+}
+
+/** 高消耗先展示；警告/耗尽不折叠，账号阻断或读数错误时展开全部，避免隐藏未知归属的风险。 */
+export function oauthQuotaPreview(account: Pick<OAuthAccount, 'quota' | 'runtime'>, now: number): OAuthQuotaPreview {
+  const grouped = oauthQuotaGroups(account.quota)
+  const windows = oauthQuotaWindows(account.quota)
+  const groups = grouped.length ? grouped : windows.length ? [{ key: 'account', label: '', windows }] : []
+  const peakUsage = (group: OAuthQuotaGroupView) => Math.max(...group.windows.map((window) => window.usedPercent))
+  const sorted = [...groups].sort((a, b) => peakUsage(b) - peakUsage(a))
+  if (isOAuthQuotaBlocked(account, now) || account.quota?.allowed === false || account.quota?.error) {
+    return { visible: sorted, hidden: [] }
+  }
+  let healthy = 0
+  const visible: OAuthQuotaGroupView[] = []
+  const hidden: OAuthQuotaGroupView[] = []
+  for (const group of sorted) {
+    if (oauthQuotaTone(peakUsage(group)) !== 'success') visible.push(group)
+    else if (healthy < 2) { visible.push(group); healthy++ }
+    else hidden.push(group)
+  }
+  return { visible, hidden }
 }
 
 const PROVIDER_PROTOCOLS: Record<string, string[]> = {

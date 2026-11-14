@@ -3,6 +3,7 @@ package dev.soven.prismllm.proxy.codeassist
 import com.sun.net.httpserver.HttpServer
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Tag
 import java.net.InetSocketAddress
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.AfterTest
@@ -15,6 +16,7 @@ import kotlin.test.assertNull
  * 账号配置了代理时，Code Assist 的目录、额度与 project 请求都要经该代理发出，
  * 不能落到网关的直连出口。
  */
+@Tag("component")
 class CodeAssistEgressTest {
     private val servers = mutableListOf<HttpServer>()
 

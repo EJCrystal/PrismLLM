@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -32,6 +33,7 @@ import kotlin.test.assertTrue
  * 订阅账号只服务官方端点：provider 渠道由系统置备，账号导入后自动收敛过去。
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Tag("component")
 class ProviderChannelProvisionerTest {
     private lateinit var postgres: PostgreSQLContainer<*>
     private lateinit var factory: DatabaseFactory

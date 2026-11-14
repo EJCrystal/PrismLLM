@@ -1,11 +1,13 @@
 package dev.soven.prismllm.proxy
 
+import org.junit.jupiter.api.Tag
 import kotlin.math.roundToInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+@Tag("unit")
 class SvgRenderSupportTest {
     @Test
     fun `extracts first inline svg from fenced output`() {

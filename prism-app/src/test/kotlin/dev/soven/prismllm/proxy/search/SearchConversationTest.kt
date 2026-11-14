@@ -7,10 +7,12 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
+@Tag("unit")
 class SearchConversationTest {
     private val hit = SearchHit("Go downloads", "https://go.dev/dl/", "Go 1.27.1 is the latest release.")
     private val searchService = WebSearchService(listOf(

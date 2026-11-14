@@ -22,6 +22,7 @@ import dev.soven.prismllm.requestlog.persistence.RequestLogRepository
 import dev.soven.prismllm.channel.domain.key.ChannelKeyState
 import dev.soven.prismllm.shared.crypto.CredentialCipher
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -40,6 +41,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Tag("component")
 class ChannelHealthRepositoryTest {
     private lateinit var postgres: PostgreSQLContainer<*>
     private lateinit var factory: DatabaseFactory

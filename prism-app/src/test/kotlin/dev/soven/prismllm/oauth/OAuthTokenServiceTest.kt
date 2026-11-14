@@ -21,6 +21,7 @@ import dev.soven.prismllm.repo.OAuthProviderChannelLookup
 import dev.soven.prismllm.oauth.persistence.OAuthAccountCredentialUpdate
 import dev.soven.prismllm.shared.crypto.CredentialCipher
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -41,6 +42,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Tag("component")
 class OAuthTokenServiceTest {
     private lateinit var postgres: PostgreSQLContainer<*>
     private lateinit var factory: DatabaseFactory

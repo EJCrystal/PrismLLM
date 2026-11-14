@@ -1,11 +1,13 @@
 package dev.soven.prismllm.config
 
 import dev.soven.prismllm.oauth.domain.OAuthRoutingStrategy
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
+@Tag("unit")
 class OAuthConfigTest {
     @Test
     fun `chatgpt login defaults are usable out of the box`() {

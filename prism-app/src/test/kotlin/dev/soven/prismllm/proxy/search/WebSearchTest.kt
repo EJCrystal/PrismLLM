@@ -8,6 +8,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
 import kotlin.test.assertEquals
@@ -15,6 +16,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+@Tag("component")
 class WebSearchTest {
     @Test
     fun `falls back to the next backend when the first finds nothing`() = runBlocking {

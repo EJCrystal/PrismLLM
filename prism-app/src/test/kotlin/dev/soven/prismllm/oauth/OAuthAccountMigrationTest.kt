@@ -2,6 +2,7 @@ package dev.soven.prismllm.oauth
 
 import org.flywaydb.core.Flyway
 import org.flywaydb.core.api.MigrationVersion
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -14,6 +15,7 @@ import kotlin.test.assertEquals
  * V52 迁移回归：旧 OAuth 密钥必须完整搬到独立账号，并从 channel_keys 中删除。
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Tag("component")
 class OAuthAccountMigrationTest {
     private lateinit var postgres: PostgreSQLContainer<*>
 
