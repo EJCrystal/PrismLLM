@@ -10,6 +10,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -20,6 +21,7 @@ import kotlin.test.assertTrue
  * @author 文杰
  * @since 2026-10-24
  */
+@Tag("component")
 class CallExtensionsTest {
 
     @Test

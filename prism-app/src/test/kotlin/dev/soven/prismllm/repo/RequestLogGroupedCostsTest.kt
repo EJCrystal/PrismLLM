@@ -7,6 +7,7 @@ import dev.soven.prismllm.requestlog.domain.UsageReportQuery
 import dev.soven.prismllm.requestlog.persistence.RequestLogRepository
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -22,6 +23,7 @@ import kotlin.test.assertEquals
  * 映射到同一个 unassigned 哨兵后必须累加，不能用 toMap 覆盖（PR #220 review 发现的回归）。
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Tag("component")
 class RequestLogGroupedCostsTest {
     private lateinit var postgres: PostgreSQLContainer<*>
     private lateinit var factory: DatabaseFactory

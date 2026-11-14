@@ -1,9 +1,11 @@
 package dev.soven.prismllm.proxy
 
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
+@Tag("unit")
 class UpstreamHeaderCatalogServiceTest {
     @Test
     fun `parses npm package versions`() {

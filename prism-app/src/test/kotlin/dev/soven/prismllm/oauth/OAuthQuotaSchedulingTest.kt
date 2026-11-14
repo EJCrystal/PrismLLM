@@ -12,6 +12,7 @@ import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.repo.OAuthProviderChannelLookup
 import dev.soven.prismllm.shared.crypto.CredentialCipher
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -28,6 +29,7 @@ import kotlin.test.assertTrue
  * 账号数超过一轮扫描上限时会把健康账号的额度刷新饿死。
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Tag("component")
 class OAuthQuotaSchedulingTest {
     private lateinit var postgres: PostgreSQLContainer<*>
     private lateinit var factory: DatabaseFactory

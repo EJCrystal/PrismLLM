@@ -1,8 +1,10 @@
 package dev.soven.prismllm.proxy
 
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
+@Tag("unit")
 class GatewayMetricsTest {
     @Test
     fun `exports request outcomes latency quota and upstream health`() {

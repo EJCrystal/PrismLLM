@@ -7,6 +7,7 @@ import dev.soven.prismllm.shared.domain.GatewayProtocol
 import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -14,6 +15,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+@Tag("unit")
 class NativeUpstreamRequestTest {
     @Test
     fun `Gemini encodes the model within the path and uses the native SSE action`() {

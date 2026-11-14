@@ -116,6 +116,8 @@ java -jar prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar
 
 ## 测试
 
+后端测试分类、CI 增量选择、编译产物复用和报告口径见 [测试执行指南](docs/testing.md)。
+
 ```bash
 # 后端测试套件（含基于 Testcontainers 的全链路测试）
 mvn test

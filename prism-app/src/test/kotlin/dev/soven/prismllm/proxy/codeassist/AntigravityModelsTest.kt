@@ -1,9 +1,11 @@
 package dev.soven.prismllm.proxy.codeassist
 
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /** Antigravity 模型家族与思考等级变体的映射。 */
+@Tag("unit")
 class AntigravityModelsTest {
     private val raw = listOf(
         AntigravityModels.Model("gemini-3.7-flash", "Gemini 3.7 Flash"),

@@ -2,11 +2,13 @@ package dev.soven.prismllm.proxy
 
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
 import io.ktor.client.HttpClient
+import org.junit.jupiter.api.Tag
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
+@Tag("unit")
 class VisionAssessorTest {
     private val client = HttpClient()
     private val assessor = OpenAiVisionAssessor(client, "http://localhost:1", model = "vision-test")

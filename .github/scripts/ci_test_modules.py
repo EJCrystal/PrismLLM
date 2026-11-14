@@ -22,7 +22,6 @@ CHANGE_FLAGS = (
     "app",
 )
 
-# Keep the existing affected-module order; routing is added after its upstreams.
 DIRECT_MODULES = (
     ("protocol", "prism-protocol"),
     ("channel", "prism-channel"),
@@ -48,44 +47,51 @@ ALL_UPSTREAM_MODULES = (
 FULL_APP_FLAGS = {"app", "routing", "resilience", "oauth", "quota", "pricing", "requestlog", "admin"}
 
 
-def resolve_modules(changes: Mapping[str, bool]) -> dict[str, str]:
+def resolve_modules(changes: Mapping[str, bool], full_regression: bool = False) -> dict[str, str]:
     changed = {flag for flag in CHANGE_FLAGS if changes.get(flag, False)}
     app_tags = ""
-    # Shared kernel and root build changes test every upstream and the full app.
-    if changed & {"build", "shared"}:
+    # Main's backend baseline and shared/root build changes test the whole reactor.
+    if full_regression or changed & {"build", "shared"}:
         modules = list(ALL_UPSTREAM_MODULES)
         app_tests = True
     else:
-        modules = [module for flag, module in DIRECT_MODULES if flag in changed]
-        # Channel/protocol changes also affect routing compilation and tests.
+        selected = {module for flag, module in DIRECT_MODULES if flag in changed}
         if changed & {"channel", "protocol", "routing"}:
-            modules.append("prism-routing")
+            selected.add("prism-routing")
+        # Request-log consumes pricing in production and protocol in its tests.
+        if changed & {"pricing", "protocol"}:
+            selected.add("prism-request-log")
+        modules = [module for module in ALL_UPSTREAM_MODULES if module in selected]
         app_tests = bool(modules) or "app" in changed
-        # Unit tests always run in full. Only pure channel/protocol changes may
-        # trim integration tests; admin (including mixed changes) needs all app tests.
+        # All non-integration tests still run. Added downstream tests do not
+        # broaden or narrow the existing pure channel/protocol app selection.
         if not changed & FULL_APP_FLAGS:
             app_tags = "|".join(flag for flag in ("channel", "protocol") if flag in changed)
     return {
         "modules": ",".join(modules),
         "app_tests": "true" if app_tests else "false",
         "app_tags": app_tags,
+        "full_regression": "true" if full_regression else "false",
     }
 
 
+def boolean_from_env(environment: Mapping[str, str], name: str) -> bool:
+    value = environment.get(name)
+    if value not in ("true", "false"):
+        # Fail closed on missing/malformed filter outputs, without echoing input.
+        raise ValueError(f"{name} must be 'true' or 'false'")
+    return value == "true"
+
+
 def changes_from_env(environment: Mapping[str, str]) -> dict[str, bool]:
-    changes = {}
-    for flag in CHANGE_FLAGS:
-        name = f"CHANGED_{flag.upper()}"
-        value = environment.get(name)
-        if value not in ("true", "false"):
-            # Fail closed on missing/malformed filter outputs, without echoing input.
-            raise ValueError(f"{name} must be 'true' or 'false'")
-        changes[flag] = value == "true"
-    return changes
+    return {flag: boolean_from_env(environment, f"CHANGED_{flag.upper()}") for flag in CHANGE_FLAGS}
 
 
 def main() -> int:
-    outputs = resolve_modules(changes_from_env(os.environ))
+    outputs = resolve_modules(
+        changes_from_env(os.environ),
+        full_regression=boolean_from_env(os.environ, "FULL_REGRESSION"),
+    )
     output_path = os.environ.get("GITHUB_OUTPUT")
     if not output_path:
         raise ValueError("GITHUB_OUTPUT is required")
@@ -94,6 +100,7 @@ def main() -> int:
             handle.write(f"{key}={value}\n")
     print(f"Affected upstream test modules: {outputs['modules'] or 'none'}")
     print(f"App tests: {outputs['app_tests']} (tags: {outputs['app_tags'] or 'all'})")
+    print(f"Full regression: {outputs['full_regression']}")
     return 0
 
 

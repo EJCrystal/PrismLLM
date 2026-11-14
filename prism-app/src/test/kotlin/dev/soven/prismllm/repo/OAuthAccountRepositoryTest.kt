@@ -21,6 +21,7 @@ import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -38,6 +39,7 @@ import kotlin.test.assertTrue
  * 否则前面的不可用账号会把后面的正常账号挤出 limit。
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Tag("component")
 class OAuthAccountRepositoryTest {
     private lateinit var postgres: PostgreSQLContainer<*>
     private lateinit var factory: DatabaseFactory
