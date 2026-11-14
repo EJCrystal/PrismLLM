@@ -4,11 +4,13 @@ import dev.soven.prismllm.shared.domain.OAuthProvider
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 
+@Tag("unit")
 class OAuthLoginSessionTest {
     @Test
     fun `a completed session cannot be bound twice`(): Unit = runBlocking {

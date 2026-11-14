@@ -2,9 +2,11 @@ package dev.soven.prismllm.api
 
 import dev.soven.prismllm.config.TrustedProxyNetwork
 import io.ktor.http.Headers
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
+@Tag("unit")
 class GatewayAccessLogTest {
 
     @Test

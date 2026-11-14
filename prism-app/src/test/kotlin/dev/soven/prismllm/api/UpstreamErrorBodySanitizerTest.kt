@@ -1,5 +1,6 @@
 package dev.soven.prismllm.api
 
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -7,6 +8,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+@Tag("unit")
 class UpstreamErrorBodySanitizerTest {
 
     @Test

@@ -1,10 +1,12 @@
 package dev.soven.prismllm.proxy
 
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 
+@Tag("unit")
 class ReasoningCarryCacheTest {
     @Test
     fun `payloads are keyed by a sixteen character hash and expire when unused`() {

@@ -3,12 +3,14 @@ package dev.soven.prismllm.proxy.fingerprint
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.nio.charset.StandardCharsets
 
+@Tag("unit")
 class FingerprintDetectorTest {
     private val detector = FingerprintDetector.loadDefault()
 

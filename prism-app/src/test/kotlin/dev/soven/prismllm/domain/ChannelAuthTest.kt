@@ -7,9 +7,11 @@ import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.domain.effectiveAuthType
 
 import dev.soven.prismllm.proxy.modelListProtocol
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
+@Tag("unit")
 class ChannelAuthTest {
     @Test
     fun `protocol override wins and missing entries inherit legacy channel auth`() {

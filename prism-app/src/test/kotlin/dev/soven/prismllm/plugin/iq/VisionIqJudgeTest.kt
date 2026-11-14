@@ -15,6 +15,7 @@ import dev.soven.prismllm.spi.iq.IqJudgeRequest
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
 import dev.soven.prismllm.spi.iq.IqStructureCheck
 import dev.soven.prismllm.spi.iq.IqStructureSummary
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -32,6 +33,7 @@ private val CSS_ONLY_SVG = """
     </svg>
 """.trimIndent()
 
+@Tag("unit")
 class VisionIqJudgeTest {
     private val structure = IqStructureSummary(
         checks = listOf(IqStructureCheck("html", "包含 HTML", true)),

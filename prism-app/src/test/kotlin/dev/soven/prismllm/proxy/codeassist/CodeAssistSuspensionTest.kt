@@ -1,10 +1,12 @@
 package dev.soven.prismllm.proxy.codeassist
 
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** Antigravity 封禁账号的识别。 */
+@Tag("unit")
 class CodeAssistSuspensionTest {
     @Test
     fun detectsTheSuspensionBody() {

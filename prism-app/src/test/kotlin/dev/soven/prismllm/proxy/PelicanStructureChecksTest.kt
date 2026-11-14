@@ -1,6 +1,7 @@
 package dev.soven.prismllm.proxy
 
 import dev.soven.prismllm.spi.iq.IqStructureCheck
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -8,6 +9,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /** 验证鹈鹕作品的离线结构检查：只否决能用结构证明的失真，没打标记的项退化为提示。 */
+@Tag("unit")
 class PelicanStructureChecksTest {
 
     @Test

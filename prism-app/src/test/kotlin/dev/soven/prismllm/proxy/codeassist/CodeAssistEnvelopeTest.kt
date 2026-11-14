@@ -5,12 +5,14 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** Code Assist 信封与 Antigravity 提示词兼容层的回归测试。 */
+@Tag("unit")
 class CodeAssistEnvelopeTest {
     private val json = Json { ignoreUnknownKeys = true }
 

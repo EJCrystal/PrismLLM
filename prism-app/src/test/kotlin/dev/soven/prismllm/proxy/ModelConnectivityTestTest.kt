@@ -16,6 +16,7 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicReference
 
+@Tag("component")
 class ModelConnectivityTestTest {
     @Test
     fun `builds chat body with prompt and no reasoning effort`() {

@@ -5,6 +5,7 @@ import dev.soven.prismllm.admin.domain.normalizeIqAnswer
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import org.junit.jupiter.api.Tag
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -12,6 +13,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+@Tag("unit")
 class IqQuestionTestTest {
     private fun question(id: Long, enabled: Boolean = true) = IqQuestion(id, "题$id", "请给出结果", "text", "SECRET_ANSWER", enabled, 0)
 

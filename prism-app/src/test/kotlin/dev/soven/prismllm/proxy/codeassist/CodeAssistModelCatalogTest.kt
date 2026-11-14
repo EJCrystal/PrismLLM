@@ -1,10 +1,12 @@
 package dev.soven.prismllm.proxy.codeassist
 
 import io.ktor.client.HttpClient
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /** fetchAvailableModels 的解析与过滤：禁用、内部与隐藏模型都不进目录。 */
+@Tag("unit")
 class CodeAssistModelCatalogTest {
     private val catalog = CodeAssistModelCatalog(HttpClient())
 

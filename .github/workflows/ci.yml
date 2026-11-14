@@ -73,6 +73,11 @@ jobs:
               - 'extensions/**'
               - 'pom.xml'
               - 'Dockerfile'
+              - '.github/workflows/ci.yml'
+              - '.github/scripts/ci_test_modules.py'
+              - '.github/scripts/test_ci_test_modules.py'
+              - '.github/scripts/ci_test_report.py'
+              - '.github/scripts/test_ci_test_report.py'
             shared:
               - 'prism-shared/**'
             protocol:
@@ -98,6 +103,11 @@ jobs:
             build:
               - 'pom.xml'
               - 'Dockerfile'
+              - '.github/workflows/ci.yml'
+              - '.github/scripts/ci_test_modules.py'
+              - '.github/scripts/test_ci_test_modules.py'
+              - '.github/scripts/ci_test_report.py'
+              - '.github/scripts/test_ci_test_report.py'
             extensions:
               - 'extensions/**'
             monitoring:
@@ -143,6 +153,8 @@ jobs:
         run: |
           python3 -m py_compile .github/scripts/ci_test_modules.py
           python3 .github/scripts/test_ci_test_modules.py
+          python3 -m py_compile .github/scripts/ci_test_report.py
+          python3 .github/scripts/test_ci_test_report.py
 
       - name: Validate review bot config
         run: |
@@ -218,16 +230,22 @@ jobs:
           CHANGED_REQUESTLOG: ${{ needs.changes.outputs.requestlog }}
           CHANGED_ADMIN: ${{ needs.changes.outputs.admin }}
           CHANGED_APP: ${{ needs.changes.outputs.app }}
+          FULL_REGRESSION: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: python3 .github/scripts/ci_test_modules.py
 
       - name: Compile backend and install plugin SPI
-        run: mvn --batch-mode -DskipTests install
+        run: >-
+          python3 .github/scripts/ci_test_report.py run compile --
+          mvn --batch-mode --no-transfer-progress -DskipTests install
 
       - name: Test affected upstream modules
         if: steps.modules.outputs.modules != ''
         env:
           TEST_MODULES: ${{ steps.modules.outputs.modules }}
-        run: mvn --batch-mode -pl "$TEST_MODULES" test
+        run: >-
+          python3 .github/scripts/ci_test_report.py run upstream --
+          mvn --batch-mode --no-transfer-progress -pl "$TEST_MODULES" surefire:test
+          -DfailIfNoTests=true
 
       - name: Test app module
         if: steps.modules.outputs.app_tests == 'true'
@@ -235,7 +253,8 @@ jobs:
           APP_TAGS: ${{ steps.modules.outputs.app_tags }}
         run: |
           if [ -z "$APP_TAGS" ]; then
-            mvn --batch-mode -pl prism-app test
+            python3 .github/scripts/ci_test_report.py run app -- \
+              mvn --batch-mode --no-transfer-progress -pl prism-app surefire:test -DfailIfNoTests=true
           else
             # 只接受本 workflow 自己生成的两个标签组合，避免把输出直接拼进表达式。
             case "$APP_TAGS" in
@@ -246,17 +265,35 @@ jobs:
                 exit 1
                 ;;
             esac
-            # 单元测试全量执行；只排除与本次上游模块无关的集成测试。
-            # 必须和单元测试放在同一个 Maven 进程里，避免二次启动 Testcontainers
-            # 反而比全量套件更慢。
-            mvn --batch-mode -pl prism-app test \
+            # unit/component/browser 全量执行；只保留相关 integration。
+            # 复用本次 install 已编译的产物，并在同一进程复用 Testcontainers。
+            python3 .github/scripts/ci_test_report.py run app -- \
+              mvn --batch-mode --no-transfer-progress -pl prism-app surefire:test \
               -DexcludedGroups="$excluded" \
               -DfailIfNoTests=true
           fi
 
       - name: Test optional quota providers
-        if: needs.changes.outputs.extensions == 'true' || needs.changes.outputs.shared == 'true' || needs.changes.outputs.build == 'true'
-        run: mvn --batch-mode -f extensions/quota-providers/pom.xml verify
+        if: steps.modules.outputs.full_regression == 'true' || needs.changes.outputs.extensions == 'true' || needs.changes.outputs.shared == 'true' || needs.changes.outputs.build == 'true'
+        run: >-
+          python3 .github/scripts/ci_test_report.py run extensions --
+          mvn --batch-mode --no-transfer-progress -f extensions/quota-providers/pom.xml verify
+
+      - name: Summarize backend tests
+        if: always()
+        run: python3 .github/scripts/ci_test_report.py summary
+
+      - name: Preserve backend test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-reports
+          path: |
+            target/ci-test-report.json
+            target/ci-test-timings.json
+            target/ci-sanitized-reports/
+          if-no-files-found: warn
+          retention-days: 7
 
   dependency-scan:
     name: Scan dependencies
