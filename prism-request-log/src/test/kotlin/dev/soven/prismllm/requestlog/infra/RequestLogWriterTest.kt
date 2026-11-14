@@ -80,6 +80,34 @@ class RequestLogWriterTest {
     }
 
     @Test
+    fun `continues writing when the failure callback throws`() = runBlocking {
+        val failures = AtomicInteger()
+        val records = mutableListOf<RequestLogRecord>()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val writer = RequestLogWriter(
+                scope = scope,
+                insertRecord = {
+                    if (it.requestId == "first") error("database unavailable")
+                    records += it
+                },
+                onWriteFailure = {
+                    failures.incrementAndGet()
+                    error("failure metric unavailable")
+                },
+            )
+            writer.submit(requestRecord("first"))
+            writer.submit(requestRecord("second"))
+            writer.closeAndDrain(5_000)
+
+            assertEquals(1, failures.get())
+            assertEquals("second", records.single().requestId)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun `counts records dropped by a full queue and after close`() = runBlocking {
         val entered = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
@@ -104,6 +132,28 @@ class RequestLogWriterTest {
             writer.closeAndDrain(5_000)
             writer.submit(requestRecord("closed"))
             assertEquals(2, dropped.get())
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `does not propagate a dropped record callback failure`() = runBlocking {
+        val dropped = AtomicInteger()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val writer = RequestLogWriter(
+                scope = scope,
+                insertRecord = {},
+                onDropped = {
+                    dropped.incrementAndGet()
+                    error("drop metric unavailable")
+                },
+            )
+            writer.closeAndDrain(5_000)
+            writer.submit(requestRecord("closed"))
+
+            assertEquals(1, dropped.get())
         } finally {
             scope.cancel()
         }

@@ -30,7 +30,7 @@ class RequestLogWriter(
             } catch (cause: CancellationException) {
                 throw cause
             } catch (cause: Throwable) {
-                onWriteFailure()
+                runCatching { onWriteFailure() }
                 logger.error("request log write failed, requestId={}", record.requestId, cause)
             }
         }
@@ -38,7 +38,7 @@ class RequestLogWriter(
 
     fun submit(record: RequestLogRecord) {
         if (!queue.trySend(record).isSuccess) {
-            onDropped()
+            runCatching { onDropped() }
             logger.warn("request log queue unavailable, dropped requestId={}", record.requestId)
         }
     }
