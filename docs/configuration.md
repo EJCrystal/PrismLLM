@@ -20,10 +20,10 @@ openssl rand -base64 32
 | `DATABASE_URL` | `jdbc:postgresql://localhost:5432/llm_gateway` | PostgreSQL JDBC 连接 URL。注意：默认 Compose 模式下已固定连接容器内 `postgres`，修改需同步调整 `docker-compose.yml` |
 | `DATABASE_USER` | `llm_gateway` | 数据库用户名（Compose 模式下需与 `postgres` 容器配置同步修改） |
 | `DATABASE_PASSWORD` | `llm_gateway` | 数据库密码（Compose 模式下需与 `postgres` 容器配置同步修改） |
-| `GATEWAY_MASTER_KEY` | *(无)* | Base64 编码的 32 字节 AES 密钥（必填，用于加密存储渠道上游凭据） |
+| `GATEWAY_MASTER_KEY` | *(无)* | Base64 编码的 32 字节 AES 密钥（必填，用于加密上游密钥、OAuth token 与保存的搜索 API 密钥；须与数据库配套备份，更换变量不等于轮换） |
 | `ADMIN_USERNAME` | `admin` | 首次启动创建的管理员用户名 |
 | `ADMIN_PASSWORD` | *(无)* | 首次启动创建的管理员密码（必填；后续修改以数据库为准） |
-| `COOKIE_SECURE` | `false` | 管理面 Session Cookie 是否只走 HTTPS；生产环境应设为 `true` |
+| `COOKIE_SECURE` | `false` | 管理面 Session Cookie 是否只走 HTTPS；生产环境必须设为 `true` 并提供 TLS |
 | `CORS_ORIGINS` | 空 | 允许的跨域浏览器来源（逗号分隔） |
 | `TRUSTED_PROXY_CIDRS` | 空 | 可信反向代理 IP/CIDR（逗号分隔）；仅来自这些网段的连接会采用转发头。`X-Forwarded-For` 和 `Forwarded` 从右向左跳过可信代理地址 |
 | `STATIC_DIR` | `web/dist` | 管理界面静态资源目录 |
@@ -34,11 +34,13 @@ openssl rand -base64 32
 | :--- | :--- | :--- |
 | `REQUEST_BODY_LIMIT_BYTES` | `10485760` | 请求体体积上限（默认 10 MB） |
 | `CONNECT_TIMEOUT_MS` | `30000` | 连接上游超时时间（毫秒，默认 30 秒） |
-| `FIRST_TOKEN_TIMEOUT_MS` | `120000` | 流式请求首 Token 超时时间（默认 120 秒） |
+| `FIRST_TOKEN_TIMEOUT_MS` | `120000` | 流式首数据等待超时（默认 120 秒；变量名沿用，不是等待有语义的文本 Token） |
 | `IDLE_TIMEOUT_MS` | `60000` | 流式传输空闲帧超时时间（默认 60 秒） |
 | `TOTAL_TIMEOUT_MS` | `600000` | 单请求总耗时上限（默认 10 分钟） |
-| `MAX_ATTEMPTS` | `2` | 首 Token 返回前最多尝试的候选上游数量 |
-| `DRAIN_TIMEOUT_MS` | `30000` | 优雅停机 Drain 等待时间（默认 30 秒） |
+| `MAX_ATTEMPTS` | `2` | 响应提交前最多尝试的候选上游数量；首数据触发提交后不再回退 |
+| `DRAIN_TIMEOUT_MS` | `30000` | 优雅停机的在途请求 Drain 等待预算（默认 30 秒；不含完整 server/队列/资源关闭耗时） |
+
+流式故障转移以**首数据触发的响应提交**为边界，而不是第一个有语义的文本 Token。跨协议转换可能缓存单个 SSE 事件与协议生命周期状态，不是零缓冲；四协议、12 个方向的能力边界见 [协议转换](protocol-conversion.md)。
 
 ### 故障冷却与自动恢复
 
@@ -50,10 +52,10 @@ openssl rand -base64 32
 | `COOLDOWN_RATE_LIMIT_MAX_MS` | `60000` | 上游 429 冷却上限（遵循 `Retry-After` 但封顶 60 秒） |
 | `COOLDOWN_AUTH_FAILURE_MS` | `600000` | 401/403 鉴权失败时的密钥级冷却时长 |
 | `KEY_AUTO_RECOVERY_INTERVAL_MS`| `30000` | 自动临时停用密钥的到期扫描与恢复清理间隔 |
-| `TTFT_SLOW_THRESHOLD_MS` | `10000` | 流式请求首 Token 耗时软阈值（毫秒） |
-| `TTFT_SLOW_STREAK` | `3` | 首 Token 连续超过软阈值的次数，达到后触发候选临时冷却 |
-| `HEALTH_SLOW_FIRST_TOKEN_MS` | `30000` | 渠道健康度用首 Token P95 判定阈值（毫秒）；只影响「需关注」提示，不触发冷却 |
-| `HEALTH_SLOW_P50_FIRST_TOKEN_MS` | `10000` | 渠道健康度用首 Token P50 提示阈值（毫秒）；需不大于 P95 阈值，只影响「需关注」提示 |
+| `TTFT_SLOW_THRESHOLD_MS` | `10000` | 流式首数据耗时软阈值（毫秒；沿用 TTFT 名称，不代表语义 Token） |
+| `TTFT_SLOW_STREAK` | `3` | 首数据连续超过软阈值的次数，达到后触发候选临时冷却 |
+| `HEALTH_SLOW_FIRST_TOKEN_MS` | `30000` | 渠道健康度用首数据 P95 判定阈值（毫秒）；只影响「需关注」提示，不触发冷却 |
+| `HEALTH_SLOW_P50_FIRST_TOKEN_MS` | `10000` | 渠道健康度用首数据 P50 提示阈值（毫秒）；需不大于 P95 阈值，只影响「需关注」提示 |
 
 ### 上游请求预设与插件
 
@@ -104,7 +106,7 @@ openssl rand -base64 32
 
 携带 API 密钥的搜索地址必须使用 HTTPS，本机回环地址（`localhost`、`127.0.0.1`、`::1`）保留 HTTP 例外；SearXNG 不携带密钥，可以使用 HTTP。切换搜索后端时需要重新填写该后端的密钥，网关不会把旧后端的密钥发给新后端。
 
-搜索 API 密钥在数据库中使用 AES-256-GCM 加密，管理台只显示是否已配置，不返回密钥内容。若主密钥更换导致已保存的密钥无法解密，管理台会提示重新填写，不影响页面读取和关闭开关；留空保存其他设置会保留原密文，只有重新填写密钥或勾选清除才会替换或删除。搜索 API 的费用由对应供应商单独计费，网关只把多轮模型调用的 token 用量计入请求日志；搜索查询默认不写入请求日志。
+搜索 API 密钥在数据库中使用 AES-256-GCM 加密，管理台只显示是否已配置，不返回密钥内容。若部署使用的主密钥与现有密文不匹配导致已保存的密钥无法解密，管理台会提示重新填写，不影响页面读取和关闭开关；留空保存其他设置会保留原密文，只有重新填写密钥或勾选清除才会替换或删除。这个局部重新填写行为不是主密钥轮换，不能迁移其它加密凭据。搜索 API 的费用由对应供应商单独计费，网关只把多轮模型调用的 token 用量计入请求日志；搜索查询默认不写入请求日志。
 
 对应接口为 `GET/PUT /admin/api/web-search-settings`，仅管理员会话可访问。
 
@@ -153,7 +155,24 @@ JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=proxy.example -Dhttp.proxyPort=8080 -Dhttps.p
 | `REQUEST_LOG_CLEANUP_BATCH_SIZE` | `5000` | 单批次清理删除的最大记录数 |
 
 - 管理端可通过 `GET /admin/api/request-log-retention` 查看，`PUT /admin/api/request-log-retention` 动态开关。
-- 每日额度账本（`client_key_quota_usage`）不受日志保留期影响，独立安全存储。
+- 每日额度账本（`client_key_quota_usage`）不受日志保留期影响，独立持久化；每日 Token 与费用按 UTC 准入日期归属，费用统一 USD，准入检查已结算用量、请求结束后结算，是可超出的软预算。
+- 本次请求单次解析价格、计算费用并固定快照，额度账本与请求日志共用，日志消费者不重新读取价格或二次算价。请求日志使用异步 best effort 队列，满队列、写入失败或强制停机可能丢失记录，不是必达财务账本；用量报表可能因此不完整。
+- 额度结算失败通过指标、日志和告警交给运维处置，不修改已完成的响应，也不重放上游请求；不承诺 exactly-once 或自动补账。
+
+---
+
+## 生产部署与恢复边界
+
+- **TLS 与访问面隔离**：生产环境必须通过受控反向代理等入口提供 TLS，并设置 `COOKIE_SECURE=true`；将 `/admin/`、`/admin/api/*` 与 `/metrics` 限制在私网或经过认证的运维入口。默认 Compose 的公开 `8080:8080` 映射不提供 TLS 或访问隔离；Cookie/CSRF 校验不能代替网络边界，`/metrics` 不应直接暴露到公网。只为实际反向代理设置 `TRUSTED_PROXY_CIDRS`。
+- **单实例限制**：管理会话、OAuth 登录流程、调用方 RPM 固定分钟窗口、上游密钥 RPM 令牌桶和并发计数均为进程内状态。OAuth 调度窗口、冷却、亲和与 token 刷新互斥也不跨实例协调；部分异步快照仅用于重启恢复。共用 PostgreSQL 或简单增加副本不能实现共享会话、全局 RPM/并发或安全的跨副本 token 刷新。
+- **数据库与主密钥备份**：备份 PostgreSQL 数据库（包括额度账本、加密凭据和配置）并保留对应版本的 `GATEWAY_MASTER_KEY`，建立配套恢复记录；数据库备份和主密钥应分开安全存储、限制访问，并验证恢复。数据库备份不能代替主密钥备份，丢失匹配密钥将无法解密既有凭据。
+- **不是环境变量轮换**：仅替换 `GATEWAY_MASTER_KEY` 后重启不会重新加密数据库中的密文，不是受支持的主密钥轮换流程，反而会使旧凭据无法解密。需要变更时必须安排受控迁移，保留旧密钥与数据库配套备份并验证恢复，不要把“重新填写某个搜索密钥”等同于迁移所有凭据。
+
+### 优雅停机预算
+
+收到停止信号后由单一停机入口原子关闭新数据面准入，使 readiness 不再就绪；在 server 仍运行时显式等待请求终结、日志提交和 Netty 下游响应末帧写入，而不是把 Netty 的 quiet period 当成 Drain。末帧写入完成只表示服务端传输写入结束，不保证客户端已消费数据；当前网关监听 HTTP/1，TLS/HTTP2 由入口反向代理处理。`DRAIN_TIMEOUT_MS` 默认 `30000`，只表示在途请求的等待预算；超预算后取消尚未终结的请求，再给非取消结算与收尾最多 5 秒（不继续等待慢客户端输出），随后关闭 server、排空后台写入队列并释放资源。完整停机还需引擎、日志/冷却/OAuth 队列和数据库资源关闭的余量，**30 秒不是绝对停机上界**。
+
+默认 `docker-compose.yml` 的 gateway 使用 `stop_grace_period: 60s`，给默认 30 秒 Drain 及上述清理留出运维余量。**增大 `DRAIN_TIMEOUT_MS` 时，必须同步增大 Compose 或编排器的停止预算，并保留额外清理余量**；60 秒也不是所有环境的严格完成保证。超过容器停止预算可能被强制终止，不能依靠优雅停机保证日志必达或自动补账。
 
 ---
 

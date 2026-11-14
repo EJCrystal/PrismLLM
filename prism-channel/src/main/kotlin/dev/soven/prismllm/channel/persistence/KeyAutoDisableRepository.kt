@@ -63,6 +63,14 @@ data class ChannelKeyDisablePolicyChange(
     val override: KeyDisablePolicy?,
 )
 
+/** 探测归属凭证。版本由 claim 原子递增，截止时间相同也不会发生 ABA。 */
+data class KeyProbeLease internal constructor(
+    val channelId: String,
+    val keyId: String,
+    val stateVersion: Long,
+    val probeUntil: Long,
+)
+
 /** 事务已算出需要停用，但调用方尚未取得密钥写锁；回滚计数后由写锁路径重放。 */
 class KeyAutoDisablePendingException : RuntimeException(null, null, false, false)
 
@@ -214,30 +222,38 @@ class KeyAutoDisableRepository(
     }
 
     /**
-     * 原子抢占一次到期探测。只有临时停用、已到期且没有有效探测租约的密钥能抢到；
-     * 同一密钥的并发请求只有一个会返回 true，其余应立即换候选。
+     * 原子抢占一次到期探测，同时推进现有状态版本；同毫秒释放再抢也有独立归属。
+     * 返回的版本属于 lease，预加载的 key 仍携带 claim 前的版本，不能用于探测结算。
      */
     suspend fun claimProbe(
         key: ChannelKeyRecord,
         leaseMs: Long = PROBE_LEASE_MS,
         now: Long = nowMs(),
-    ): Boolean = suspendTransaction(database) {
-        ChannelKeys.update({
+    ): KeyProbeLease? = suspendTransaction(database) {
+        require(leaseMs > 0) { "探测租约时长必须为正数" }
+        val version = Math.addExact(key.stateVersion, 1L)
+        val until = Math.addExact(now, leaseMs)
+        val updated = ChannelKeys.update({
             (ChannelKeys.id eq key.id) and
+                (ChannelKeys.channelId eq key.channelId) and
                 (ChannelKeys.stateVersion eq key.stateVersion) and
                 (ChannelKeys.state eq ChannelKeyState.AUTO_TEMPORARY.value) and
                 (ChannelKeys.autoDisableUntil lessEq now) and
                 ((ChannelKeys.probeUntil.isNull()) or (ChannelKeys.probeUntil lessEq now))
         }) {
-            it[probeUntil] = now + leaseMs
-        } == 1
+            it[stateVersion] = version
+            it[probeUntil] = until
+        }
+        if (updated == 1) KeyProbeLease(key.channelId, key.id, version, until) else null
     }
 
-    /** 请求转换失败等未产生上游结果的情况：只释放探测租约，不改变停用状态。 */
-    suspend fun releaseProbe(key: ChannelKeyRecord): Boolean = suspendTransaction(database) {
+    /** 无有效结果时只归还自己的探测占位；迟到的旧 lease 不能清除新探测。 */
+    suspend fun releaseProbe(lease: KeyProbeLease): Boolean = suspendTransaction(database) {
         ChannelKeys.update({
-            (ChannelKeys.id eq key.id) and
-                (ChannelKeys.stateVersion eq key.stateVersion) and
+            (ChannelKeys.id eq lease.keyId) and
+                (ChannelKeys.channelId eq lease.channelId) and
+                (ChannelKeys.stateVersion eq lease.stateVersion) and
+                (ChannelKeys.probeUntil eq lease.probeUntil) and
                 (ChannelKeys.state eq ChannelKeyState.AUTO_TEMPORARY.value)
         }) {
             it[probeUntil] = null
@@ -300,30 +316,47 @@ class KeyAutoDisableRepository(
         signal: KeyAttemptSignal,
         requestId: String,
         allowDisable: Boolean = true,
-        probeClaimed: Boolean = false,
+        probeLease: KeyProbeLease? = null,
     ): String? = suspendTransaction(database) {
         val row = ChannelKeys.selectAll().where { ChannelKeys.id eq key.id }.forUpdate().singleOrNull()
             ?: return@suspendTransaction null
         val currentState = ChannelKeyState.fromValue(row[ChannelKeys.state])
             ?: return@suspendTransaction null
         val now = nowMs()
-        val probeLeaseActive = row[ChannelKeys.probeUntil]?.let { it > now } == true
-        // 只有正常密钥和已到期的临时停用密钥可以继续记账；后者承担探测角色。
-        val routable = currentState == ChannelKeyState.ACTIVE ||
-            (currentState == ChannelKeyState.AUTO_TEMPORARY &&
-                row[ChannelKeys.autoDisableUntil]?.let { it <= now } == true &&
-                (!probeLeaseActive || probeClaimed))
-        if (!routable || row[ChannelKeys.stateVersion] != key.stateVersion) return@suspendTransaction null
+        val expectedVersion = probeLease?.stateVersion ?: key.stateVersion
+        if (row[ChannelKeys.stateVersion] != expectedVersion || row[ChannelKeys.channelId] != key.channelId) {
+            return@suspendTransaction null
+        }
+        if (probeLease == null) {
+            // 临时停用无论租约是否到期都必须提供归属，不能用普通结果绕过 claim。
+            if (currentState != ChannelKeyState.ACTIVE) return@suspendTransaction null
+        } else if (
+            probeLease.keyId != key.id || probeLease.channelId != key.channelId ||
+            currentState != ChannelKeyState.AUTO_TEMPORARY ||
+            row[ChannelKeys.probeUntil] != probeLease.probeUntil ||
+            row[ChannelKeys.autoDisableUntil]?.let { it <= now } != true
+        ) {
+            return@suspendTransaction null
+        }
+        // 行锁串行检查与写入，写入仍带归属 CAS，旧结果不能改写释放或重新 claim 后的新状态。
+        fun ownedKey() = ((ChannelKeys.id eq key.id) and
+            (ChannelKeys.channelId eq key.channelId) and
+            (ChannelKeys.stateVersion eq expectedVersion)).let { owned ->
+            if (probeLease == null) owned and (ChannelKeys.state eq ChannelKeyState.ACTIVE.value)
+            else owned and (ChannelKeys.state eq ChannelKeyState.AUTO_TEMPORARY.value) and
+                (ChannelKeys.probeUntil eq probeLease.probeUntil)
+        }
 
         val resolved = resolvePolicyInTransaction(key.channelId)
         if (!resolved.policy.enabled) {
             ChannelKeyHealth.deleteWhere { ChannelKeyHealth.keyId eq key.id }
+            if (probeLease != null) ChannelKeys.update({ ownedKey() }) { it[probeUntil] = null }
             return@suspendTransaction null
         }
 
         // 到期后的首次成功即完成恢复：回到 ACTIVE、清空自动停用元数据与计数。
         if (signal == KeyAttemptSignal.Success && currentState == ChannelKeyState.AUTO_TEMPORARY) {
-            ChannelKeys.update({ ChannelKeys.id eq key.id }) {
+            ChannelKeys.update({ ownedKey() }) {
                 it[state] = ChannelKeyState.ACTIVE.value
                 it[stateVersion] = row[ChannelKeys.stateVersion] + 1
                 it[autoDisabledAt] = null
@@ -346,10 +379,10 @@ class KeyAutoDisableRepository(
 
         // 探测失败不等待常规阈值：命中哪条规则就按该规则的动作重新计时/永久停用。
         // 未命中规则的响应（如 400）视为探测不确定，只释放租约，让下一次请求再试。
-        if (probeClaimed) {
+        if (probeLease != null) {
             val rule = resolved.policy.rules.firstOrNull { it.match(signal) != null }
             if (rule == null) {
-                ChannelKeys.update({ ChannelKeys.id eq key.id }) { it[probeUntil] = null }
+                ChannelKeys.update({ ownedKey() }) { it[probeUntil] = null }
                 return@suspendTransaction null
             }
             if (!allowDisable) throw KeyAutoDisablePendingException()
@@ -368,7 +401,7 @@ class KeyAutoDisableRepository(
                 action = rule.action,
                 disableUntil = disableUntil,
             )
-            ChannelKeys.update({ ChannelKeys.id eq key.id }) {
+            ChannelKeys.update({ ownedKey() }) {
                 it[state] = targetState.value
                 it[stateVersion] = row[ChannelKeys.stateVersion] + 1
                 it[autoDisabledAt] = now
@@ -415,7 +448,7 @@ class KeyAutoDisableRepository(
             KeyDisableAction.PERMANENT -> ChannelKeyState.AUTO_PERMANENT
         }
         val message = "${decision.ruleName} ${decision.count} 次".take(40)
-        ChannelKeys.update({ ChannelKeys.id eq key.id }) {
+        ChannelKeys.update({ ownedKey() }) {
             it[state] = targetState.value
             it[stateVersion] = row[ChannelKeys.stateVersion] + 1
             it[autoDisabledAt] = now
@@ -438,8 +471,8 @@ class KeyAutoDisableRepository(
         httpStatus: Int? = null,
         errorCode: String? = null,
         allowDisable: Boolean = true,
-        probeClaimed: Boolean = false,
-    ): String? = recordOutcome(key, outcome.toSignal(httpStatus, errorCode), requestId, allowDisable, probeClaimed)
+        probeLease: KeyProbeLease? = null,
+    ): String? = recordOutcome(key, outcome.toSignal(httpStatus, errorCode), requestId, allowDisable, probeLease)
 
     private fun auditDisable(
         key: ChannelKeyRecord,

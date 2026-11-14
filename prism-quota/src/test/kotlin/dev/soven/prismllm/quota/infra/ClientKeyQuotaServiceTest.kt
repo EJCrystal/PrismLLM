@@ -7,6 +7,9 @@ import dev.soven.prismllm.shared.error.GatewayError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.math.BigDecimal
 import kotlin.test.Test
@@ -80,6 +83,85 @@ class ClientKeyQuotaServiceTest {
         val error = assertFailsWith<GatewayError> { service.acquire(key) }
         assertEquals("daily_token_quota_exceeded", error.code)
         assertTrue(storage.usage[key.id]!!.dailyTokens == 5L)
+    }
+
+    @Test
+    fun `in flight requests can settle beyond soft daily limits`() = runBlocking {
+        val service = InMemoryUsageRepository().service()
+        val key = key(ClientKeyQuotaLimits(dailyTokens = 5, dailyUsdLimit = BigDecimal("1")))
+        val first = service.acquire(key)
+        val second = service.acquire(key)
+
+        service.settle(first, tokens = 4, usdCost = BigDecimal("0.75"))
+        service.settle(second, tokens = 4, usdCost = BigDecimal("0.75"))
+
+        val usage = service.currentUsage(key.id)
+        assertEquals(8L, usage.dailyTokens)
+        assertEquals(BigDecimal("1.50"), usage.dailyUsdCost)
+        assertEquals(0, usage.concurrentRequests)
+        assertEquals("daily_token_quota_exceeded", assertFailsWith<GatewayError> { service.acquire(key) }.code)
+    }
+
+    @Test
+    fun `settlement after UTC midnight uses the acquisition lease period`() = runBlocking {
+        val midnight = 86_400_000L * 20_011
+        var current = midnight - 1
+        val usage = mutableMapOf<Pair<String, Long>, ClientKeyQuotaUsage>()
+        val service = ClientKeyQuotaService(
+            usageReader = { id, period -> usage[id to period] ?: ClientKeyQuotaUsage() },
+            usageWriter = { id, period, tokens, usdCost ->
+                val previous = usage[id to period] ?: ClientKeyQuotaUsage()
+                usage[id to period] = ClientKeyQuotaUsage(
+                    dailyTokens = previous.dailyTokens + tokens,
+                    dailyUsdCost = previous.dailyUsdCost + usdCost,
+                )
+            },
+            now = { current },
+        )
+        val key = key(ClientKeyQuotaLimits(dailyTokens = 5, maxConcurrentRequests = 2))
+        val beforeMidnight = service.acquire(key)
+        assertEquals(20_010L, beforeMidnight.period)
+
+        current = midnight
+        val afterMidnight = service.acquire(key)
+        assertEquals(20_011L, afterMidnight.period)
+        service.settle(beforeMidnight, tokens = 7, usdCost = BigDecimal("0.25"))
+
+        assertEquals(ClientKeyQuotaUsage(7, BigDecimal("0.25")), usage[key.id to beforeMidnight.period])
+        assertEquals(ClientKeyQuotaUsage(concurrentRequests = 1), service.currentUsage(key.id))
+
+        service.settle(afterMidnight, tokens = 3, usdCost = BigDecimal("0.50"))
+        assertEquals(ClientKeyQuotaUsage(3, BigDecimal("0.50")), service.currentUsage(key.id))
+        assertEquals(ClientKeyQuotaUsage(7, BigDecimal("0.25")), usage[key.id to beforeMidnight.period])
+    }
+
+    @Test
+    fun `releases concurrency when usage write is cancelled`() = runBlocking {
+        val writing = CompletableDeferred<Unit>()
+        var writes = 0
+        val service = ClientKeyQuotaService(
+            usageReader = { _, _ -> ClientKeyQuotaUsage() },
+            usageWriter = { _, _, _, _ ->
+                writes++
+                writing.complete(Unit)
+                awaitCancellation()
+            },
+            now = { 1L },
+        )
+        val key = key(ClientKeyQuotaLimits(maxConcurrentRequests = 1))
+        val lease = service.acquire(key)
+        val job = launch { service.settle(lease, tokens = 10, usdCost = BigDecimal("0.25")) }
+        writing.await()
+        assertEquals(1, service.currentUsage(key.id).concurrentRequests)
+
+        job.cancelAndJoin()
+
+        assertTrue(job.isCancelled)
+        assertEquals(1, writes)
+        assertEquals(ClientKeyQuotaUsage(), service.currentUsage(key.id))
+        val next = service.acquire(key)
+        service.release(next)
+        assertEquals(0, service.currentUsage(key.id).concurrentRequests)
     }
 
     @Test

@@ -18,6 +18,9 @@ import dev.soven.prismllm.proxy.BrowserScreenshotRenderer
 import dev.soven.prismllm.proxy.GatewayMetrics
 import dev.soven.prismllm.proxy.HtmlImageRenderer
 import dev.soven.prismllm.proxy.ReasoningCarryCache
+import dev.soven.prismllm.proxy.RequestFinalizer
+import dev.soven.prismllm.proxy.RequestDrain
+import dev.soven.prismllm.shared.domain.Usage
 import dev.soven.prismllm.proxy.UnavailableBrowserRenderer
 import dev.soven.prismllm.proxy.isGeminiRequestPath
 import dev.soven.prismllm.requestlog.infra.RequestLogWriter
@@ -292,7 +295,9 @@ class GatewayApplication(
     private val closed = AtomicBoolean(false)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    val shuttingDown = AtomicBoolean(false)
+    internal val requestDrain = RequestDrain()
+    val shuttingDown: Boolean
+        get() = requestDrain.shuttingDown
     /** 跨协议携带的 Responses 密封推理，按内容哈希暂存在进程内。 */
     val reasoningCarryCache = ReasoningCarryCache()
     val databaseFactory = DatabaseFactory(config)
@@ -354,12 +359,48 @@ class GatewayApplication(
     )
     val tierSharing = TierSharing()
     val metrics = GatewayMetrics()
-val requestLogWriter = RequestLogWriter(
+    val requestLogWriter = RequestLogWriter(
         insertRecord = requestLogRepository::insert,
-        resolvePrice = { record ->
-            modelPricingService.resolve(record.channelId, record.upstreamModel, record.pricingModelId)
-        },
         scope = scope,
+        onWriteFailure = metrics::requestLogWriteFailed,
+        onDropped = metrics::requestLogDropped,
+    )
+    internal val requestFinalizer = RequestFinalizer(
+        resolvePrice = { record ->
+            if (record.channelId == null || record.upstreamModel == null) null
+            else modelPricingService.resolve(record.channelId, record.upstreamModel, record.pricingModelId)
+        },
+        settleUsage = requestLimitService::settle,
+        recordMetrics = { record ->
+            metrics.request(
+                if (record.channelId == null) "unresolved" else record.alias,
+                record.channelId,
+                record.statusCode,
+                record.totalMs,
+                failed = record.statusCode >= 400 || record.errorCode != null || record.failureStage != null,
+            )
+            if (record.usageKnown) {
+                metrics.usage(
+                    record.alias,
+                    Usage(
+                        input = record.inputTokens,
+                        output = record.outputTokens,
+                        cached = record.cachedTokens,
+                        cacheWrite = record.cachedWriteTokens,
+                        reasoning = record.reasoningTokens,
+                        total = record.totalTokens,
+                    ),
+                )
+            }
+        },
+        submitRecord = requestLogWriter::submit,
+        onFailure = { record, stage, cause ->
+            metrics.requestSettlementFailed(stage)
+            logger.error(
+                "request finalization failed, requestId={}, stage={}, exceptionType={}",
+                record.requestId, stage, cause.javaClass.simpleName,
+            )
+        },
     )
     val logRetentionService = LogRetentionService(requestLogRepository::deleteOlderThan, config.retention)
     private val logRetentionJob = java.util.concurrent.atomic.AtomicReference<Job?>(null)
@@ -761,7 +802,16 @@ val requestLogWriter = RequestLogWriter(
     }
 
     fun beginShutdown() {
-        shuttingDown.set(true)
+        requestDrain.beginShutdown()
+    }
+
+    suspend fun drainRequests(timeoutMs: Long) {
+        if (requestDrain.awaitDrained(timeoutMs)) return
+        logger.warn("request drain timed out, timeoutMs={}", timeoutMs)
+        requestDrain.cancelRemaining()
+        if (!requestDrain.awaitFinalized(5_000)) {
+            logger.warn("cancelled request finalization timed out")
+        }
     }
 
     suspend fun updateLogCleanupEnabled(enabled: Boolean) = logRetentionMutex.withLock {
@@ -821,7 +871,7 @@ val requestLogWriter = RequestLogWriter(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        shuttingDown.set(true)
+        beginShutdown()
         runBlocking { requestLogWriter.closeAndDrain(5_000) }
         runBlocking { cooldownStateWriter.closeAndDrain(1_000) }
         runBlocking {

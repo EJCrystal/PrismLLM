@@ -27,6 +27,10 @@ import io.ktor.server.application.hooks.ResponseBodyReadyForSend
 import io.ktor.server.application.install
 import io.ktor.server.testing.testApplication
 import io.ktor.util.cio.ChannelWriteException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -663,6 +667,62 @@ class RateLimitIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `server request cancellation returns channel concurrency without refunding RPM`() = runBlocking {
+        rebuildApp(config(firstTokenTimeoutMs = 20_000, totalTimeoutMs = 30_000))
+        val policy = ChannelKeyRateLimitPolicy(enabled = true, requestsPerMinute = 1, maxConcurrentRequests = 1)
+        val channel = app.channelRepository.create(
+            name = "server-cancel-concurrency", baseUrl = "${fake.baseUrl}/concurrency-hold/v1",
+            keys = listOf(NewChannelKey("group", app.credentialCipher.encrypt("cancel-secret"), models = listOf("m1"), rateLimit = policy)),
+            authType = "bearer", protocols = GatewayProtocol.default, enabled = true, modelMappings = mappingsOf("m1"),
+        )
+        exposeAsModel("server-cancel-concurrency", channel to "m1")
+        val key = createClientKey()
+        val serverJob = CompletableDeferred<Job>()
+        val release = fake.holdChatRequests()
+        testApplication {
+            application {
+                app.install(this)
+                install(createApplicationPlugin("test-rate-limit-server-cancel") {
+                    onCall { call ->
+                        if (call.request.headers["X-Request-Id"] == "cancel-rate-limit-owner") {
+                            serverJob.complete(assertNotNull(currentCoroutineContext()[Job]))
+                        }
+                    }
+                })
+            }
+            val pending = async {
+                runCatching {
+                    client.post("/v1/chat/completions") {
+                        header(HttpHeaders.Authorization, "Bearer $key")
+                        header("X-Request-Id", "cancel-rate-limit-owner")
+                        contentType(ContentType.Application.Json)
+                        setBody("""{"model":"server-cancel-concurrency","stream":true,"messages":[]}""")
+                    }
+                }
+            }
+            try {
+                val servingJob = withTimeout(3_000) { serverJob.await() }
+                awaitCondition("server owns concurrency before cancellation") { fake.requests.size == 1 }
+                servingJob.cancel(CancellationException("test server cancellation"))
+                withTimeout(3_000) { servingJob.join() }
+                assertTrue(servingJob.isCancelled)
+                awaitCondition("cancelled request exits upstream occupancy") { app.upstreamOccupancy.snapshot().isEmpty() }
+                assertIs<ChannelKeyRateLimitDecision.Denied>(app.channelKeyRateLimiter.acquire(channel.keys.single()))
+                // 仅为检查并发归还重置 RPM；在途计数必须仍受新策略保护。
+                app.channelKeyRateLimiter.updatePolicy(channel.id, channel.keys.single().id, policy.copy(requestsPerMinute = null))
+                val next = assertIs<ChannelKeyRateLimitDecision.Allowed>(app.channelKeyRateLimiter.acquire(channel.keys.single()))
+                app.channelKeyRateLimiter.release(next.lease)
+                assertEquals(1, fake.requests.size, "取消后不能转发另一个候选")
+                assertEquals(0, scalarInt("select count(*) from channel_key_health"))
+            } finally {
+                release.complete(Unit)
+                pending.cancel()
+                fake.clearChatHold()
+            }
+        }
+    }
+
+    @Test
     fun `retries next candidate on rate limit before first token`() = runBlocking {
         val primary = createChannel("limited", "429")
         val secondary = createChannel("secondary", "ok")
@@ -832,6 +892,8 @@ class RateLimitIntegrationTest : GatewayIntegrationTestBase() {
                 setBody("""{"model":"fast-chat","stream":true,"messages":[]}""")
             }
 
+            // 并发屏障只计请求准入，不把测试宿主的懒启动与迁移校验算入两秒预算。
+            startApplication()
             val first = async(Dispatchers.Default) { send() }
             val clientKeyId = app.clientKeyRepository.list().single().id
             awaitCondition("第一个请求占用并发槽位", timeoutMs = 2_000) {

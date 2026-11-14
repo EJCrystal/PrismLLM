@@ -2,7 +2,9 @@
 
 ## 入口与方向
 
-`ProtocolConversion` 保留代理层调用入口，跨协议时由 `ProtocolConverterRegistry` 按 `(inbound, outbound)` 精确选择转换器。同协议不经过注册表：请求只保留原有模型改写逻辑，响应和 SSE 继续透传。
+支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 Google Gemini **四协议、六组双向（共 12 个有向请求方向）**的直接转换。这里的“互通”仅限下述可映射能力，不代表所有供应商扩展、思考签名或状态功能无损互转。
+
+`ProtocolConversion` 保留代理层调用入口，跨协议时由 `ProtocolConverterRegistry` 按 `(inbound, outbound)` 精确选择转换器。同协议不经过注册表：请求保留原有模型改写与显式请求覆盖逻辑，响应和 SSE 保持原生透传。跨协议流按事件增量转换，存在事件与协议生命周期状态缓冲，不承诺零缓冲。
 
 | 转换器 | 调用方请求 | 上游请求 | 返回给调用方 |
 | --- | --- | --- | --- |
@@ -25,7 +27,7 @@
 
 - `ProtocolConverter` 声明 `inbound`、`outbound`，提供 `convertRequest(request, upstreamModel)`、`convertResponse(response, model)`、`streamConverter(model)`。
 - 请求转换使用实际上游模型名；跨协议响应使用调用方的对外模型 ID。转换只操作 JSON，不发网络请求，也不选择渠道。
-- 每次调用 `streamConverter` 都创建独立会话，使用 `feed(line)` 输入 SSE 行，最后调用 `finish()` 冲刷尚无空行分隔的末尾事件。结束后再次输入或结束均不重复输出终止事件。
+- 每次调用 `streamConverter` 都创建独立会话，使用 `feed(line)` 输入 SSE 行，按空行分隔的完整事件解析，最后调用 `finish()` 冲刷尚无空行分隔的末尾事件；事件级缓冲、工具参数/生命周期状态与末尾用量处理不等于整流攒完后回放，也不是零缓冲。结束后再次输入或结束均不重复输出终止事件。
 - 流式解析器与编码器按协议分别实现，共享协议中立的 `StreamEvent`、`FinishReason`、`TokenUsage`，不使用 Chat Completions JSON 或 Chat 事件作为中间协议。Messages ↔ Responses 的普通请求和响应也直接映射。
 - 转换后的 Chat 工具索引按首次出现顺序连续编号；Responses 输出完整的项与内容生命周期，增量和完成事件复用稳定的项 ID，并提供递增事件序号。流式失败通过 `response.failed.response.error` 返回。
 - 跨协议 SSE 单个事件最多累计 1 MiB UTF-8 数据（含多行数据间的换行）；上游行读取也有长度限制。超长行返回不可重试的 upstream_event_too_large；响应已提交时先通过流转换器的 fail(message) 输出调用方协议的失败帧，再关闭流，不伪造成功完成。fail、finish 与后续 feed 在会话结束后均不重复输出终止事件。原生透传不受本次限制变更影响。
@@ -33,6 +35,13 @@
 - 流转换器通过只读的 failed 状态区分正常结束与失败。代理在前缀、增量输入及 EOF 冲刷后检查失败状态并停止继续读取；优先保留已识别的上游错误（如 messages_failed、responses_failed）及诊断，仅在没有具体错误时记录 protocol_conversion_failed，不被后来的正常终止行或 stream_interrupted 覆盖。
 - 流式工具调用从未收到非空参数时，在结束前补齐 {} 增量，确保客户端累计结果与完成快照一致；Responses 项初始 arguments 仍为空，不提前伪造参数。上游流错误文本最多保留 2048 个字符。
 - Responses 转 Messages 时忽略空文本消息，避免生成空 text 块；非空文本和工具调用、结果仍按原始顺序转换。
+
+## 响应提交与失败边界
+
+- 流式故障转移以**首数据触发的响应提交**为边界，而不是第一个有语义的文本 Token。首数据可能是角色、工具、思考或协议生命周期事件；即使转换器尚在缓冲事件、调用方还没有看到文本，响应一旦提交就不再切换候选或重放响应。
+- 提交前的可重试上游失败可按代理规则回退；上游 Shape Refusal（422 或错误文本命中词表的 400）可换候选，但不触发故障冷却。常规参数错误、本地不支持的转换字段和超大事件等不可重试错误不做无条件回退。
+- 提交后发生转换失败或流中断时，尽力输出调用方协议的失败事件或关闭流，不伪造成功终止；HTTP 状态与流内失败分开记录。末尾事件去重只保证当前转换会话的终止输出，不代表请求、日志或计费的 exactly-once。
+- 转换会话和密封推理携带缓存均属单实例状态，不能因数据库共享而跨副本续接。日志异步 best effort，不是必达财务账本；每日额度按 UTC 准入日期归属、请求结束后使用单次取价费用快照结算，日志消费者不二次算价，结算失败只通过指标/日志/告警处置，不重放已完成响应或自动补账，详见 [计费与用量核算](billing.md)。
 
 ## 支持边界
 
@@ -65,4 +74,4 @@
 
 ## 验证
 
-`ProtocolConversionTest` 保留既有回归；`ProtocolConversionContractTest` 覆盖十二方向接口、透传、末帧、错误、异常 EOF 和会话隔离；`MessagesResponsesConversionTest` 覆盖直转顺序、工具参数、缓存用量与不支持字段；`ReasoningCarryTest` 覆盖密封推理在调用 ID 上的跨轮往返（含流式）、`include` 注入时机与 key 丢失后的降级；`MessagesThinkingNormalizerTest` 覆盖 DeepSeek 工具轮占位 thinking 与其它厂商的逐字节不变；`ToolImageConversionTest` 覆盖工具结果图片的重定位、并行工具结果、历史轮次与各协议间图片映射；`AdditionalToolsTest` 覆盖 `additional_tools` 抬升、namespace 平铺、去重与 Responses→Chat/Messages/Gemini 全链路。数据面集成测试覆盖六方向的普通和流式请求、实际出站端点及尝试日志。
+`ProtocolConversionTest` 保留既有回归；`ProtocolConversionContractTest` 覆盖十二方向接口、透传、末帧、错误、异常 EOF 和会话隔离；`MessagesResponsesConversionTest` 覆盖直转顺序、工具参数、缓存用量与不支持字段；`ReasoningCarryTest` 覆盖密封推理在调用 ID 上的跨轮往返（含流式）、`include` 注入时机与 key 丢失后的降级；`MessagesThinkingNormalizerTest` 覆盖 DeepSeek 工具轮占位 thinking 与其它厂商的逐字节不变；`ToolImageConversionTest` 覆盖工具结果图片的重定位、并行工具结果、历史轮次与各协议间图片映射；`AdditionalToolsTest` 覆盖 `additional_tools` 抬升、namespace 平铺、去重与 Responses→Chat/Messages/Gemini 全链路。`ProtocolConversionIntegrationTest` 覆盖非 Gemini 三协议间六方向的普通和流式请求、实际出站端点及尝试日志；`GeminiNativeIntegrationTest` 另覆盖 Gemini 原生流和 Chat ↔ Gemini 数据面转换。四协议 12 个方向的接口契约覆盖不等同于每个方向都有完整数据面集成测试。

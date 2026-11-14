@@ -67,6 +67,27 @@ groups:
           summary: PrismLLM failed to persist a management audit record
           description: At least one management write completed without its audit record; inspect gateway logs and database health immediately.
 
+      - alert: PrismLlmRequestSettlementFailures
+        expr: sum(increase(gateway_request_settlement_failures_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: PrismLLM failed to finalize request accounting
+          description: Pricing or quota settlement failed; completed responses are not replayed. Inspect gateway logs and reconcile affected usage before trusting the ledger.
+
+      - alert: PrismLlmRequestLogLoss
+        expr: |
+          (sum(increase(gateway_request_log_write_failures_total[5m])) > 0)
+          or
+          (sum(increase(gateway_request_log_dropped_total[5m])) > 0)
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: PrismLLM lost request log records
+          description: The asynchronous request log writer rejected or failed to persist records. Log-based usage and health reports may be incomplete; inspect database health and queue pressure.
+
       - alert: PrismLlmUpstreamUnhealthy
         expr: |
           (

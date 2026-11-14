@@ -10,6 +10,7 @@ import dev.soven.prismllm.oauth.domain.OAuthQuotaWindow
 import dev.soven.prismllm.oauth.domain.OAuthStoredWindowState
 import dev.soven.prismllm.oauth.domain.OAuthWindowSnapshot
 import dev.soven.prismllm.oauth.domain.parseRateLimitResetMs
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import java.time.Instant
 import kotlin.test.Test
@@ -18,6 +19,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class OAuthAccountSchedulerTest {
@@ -115,6 +118,33 @@ class OAuthAccountSchedulerTest {
 
         scheduler.release((first as OAuthAccountDecision.Allowed).lease)
         assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(key))
+    }
+
+    @Test
+    fun `snapshot failure before lease delivery returns concurrency but preserves window consumption`() = runTest {
+        val failure = IllegalStateException("snapshot queue failed")
+        val scheduler = OAuthAccountScheduler(now = { clock }, onSnapshot = { throw failure })
+        val policy = OAuthAccountPolicy(windowLimit = 2, maxConcurrentRequests = 1)
+        val account = key(policy)
+        assertSame(failure, assertFailsWith<IllegalStateException> { scheduler.acquire(account) })
+        val state = assertNotNull(scheduler.runtimeState(account.id, policy))
+        assertEquals(0, state.activeRequests)
+        assertEquals(1, state.windowUsed)
+        val next = assertIs<OAuthAccountDecision.Allowed>(scheduler.acquire(account))
+        scheduler.release(next.lease)
+        assertEquals(OAuthAccountDenyReason.WINDOW, assertIs<OAuthAccountDecision.Denied>(scheduler.acquire(account)).reason)
+    }
+
+    @Test
+    fun `snapshot cancellation before lease delivery cannot strand concurrency`() = runTest {
+        val failure = CancellationException("snapshot callback cancelled")
+        val scheduler = OAuthAccountScheduler(now = { clock }, onSnapshot = { throw failure })
+        val policy = OAuthAccountPolicy(windowLimit = 2, maxConcurrentRequests = 1)
+        val account = key(policy)
+        assertSame(failure, assertFailsWith<CancellationException> { scheduler.acquire(account) })
+        val state = assertNotNull(scheduler.runtimeState(account.id, policy))
+        assertEquals(0, state.activeRequests)
+        assertEquals(1, state.windowUsed)
     }
 
     @Test
