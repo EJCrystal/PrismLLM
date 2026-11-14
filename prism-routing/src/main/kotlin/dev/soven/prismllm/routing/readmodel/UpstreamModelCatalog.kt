@@ -74,7 +74,8 @@ class UpstreamModelCatalog(
      * 解析模型在当前协议下的授权与可用性，所有诊断及候选基于一次完整配置读取。
      *
      * 不限制范围继续只识别启用渠道。受限范围先以包含停用对象的配置判断授权，再计算
-     * 协议与当前可路由凭据；范围外渠道、密钥不会参与候选或恢复时间提示。
+     * 协议与当前可路由凭据；不存在模型保留原有不存在语义，只有已配置模型才分类授权拒绝。
+     * 范围外渠道、密钥不会参与候选或恢复时间提示。
      *
      * @param model 请求中的对外模型 ID。
      * @param protocol 调用方协议，可使用授权渠道支持的协议转换。
@@ -95,7 +96,8 @@ class UpstreamModelCatalog(
                     credential.supports(entry.mapping.upstreamModel) && scope.allowsCredential(entry.channel.id, credential)
                 })
         }
-        val accessDenied = !scope.allowsModel(model) || globallyConfigured.isNotEmpty() && configured.isEmpty()
+        val modelAccessDenied = globallyConfigured.isNotEmpty() && !scope.allowsModel(model)
+        val accessDenied = globallyConfigured.isNotEmpty() && configured.isEmpty()
         val protocolEntries = configured.filter { entry ->
             protocol in entry.channel.protocols ||
                 entry.channel.protocols.any { ProtocolConversion.supports(protocol, it) }
@@ -129,6 +131,7 @@ class UpstreamModelCatalog(
             protocolReachable = protocolEntries.isNotEmpty(),
             retryAt = retryAt,
             accessDenied = accessDenied,
+            modelAccessDenied = modelAccessDenied,
         )
     }
 

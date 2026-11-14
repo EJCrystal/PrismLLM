@@ -281,10 +281,6 @@ private suspend fun handleProxyRequest(
             ?.takeIf { it.isNotBlank() }
             ?: throw badRequest("invalid_model", "model 必须是非空字符串")
         val accessScope = clientKey.accessPolicy.toRoutingAccessScope()
-        if (!accessScope.allowsModel(alias)) {
-            call.response.header("X-Prism-Error-Code", "model_access_denied")
-            throw GatewayError(HttpStatusCode.Forbidden, "model_access_denied", "调用方密钥无权访问模型 $alias", "permission_error")
-        }
         val streamElement = requestJson["stream"]
         val stream = nativeStream ?: when (streamElement) {
             null -> false
@@ -296,28 +292,15 @@ private suspend fun handleProxyRequest(
         }
         streamMode = stream
         phase = FailureStage.ROUTING
-        // 搜索设置每次请求读取一次：管理台保存后立即生效，未保存时沿用环境变量默认值。
-        // 读取失败只代表搜索不可用，不能影响本来可以透传的请求；也不回退环境变量，避免意外重新开启搜索。
-        val webSearchRuntime = if (protocol == GatewayProtocol.RESPONSES && hasBuiltInWebSearch(requestJson)) {
-            val settings = try {
-                app.webSearchSettingsRepository.load().effective(app.config.webSearch)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                null
-            }
-            settings?.let {
-                WebSearchRuntime(WebSearchService.fromConfig(it, app.searchHttpClient), it.maxRounds)
-            }
-        } else {
-            null
-        }
         // 路由与「为什么不可用」的判定共用一次目录快照：分开查询会在凭据恢复的瞬间
         // 得出「无候选却又查不出原因」的自相矛盾结论，进而把已配置的模型误报成 404。
         val availability = app.modelCatalog.resolve(alias, protocol, scope = accessScope)
         if (availability.accessDenied) {
-            call.response.header("X-Prism-Error-Code", "route_access_denied")
-            throw GatewayError(HttpStatusCode.Forbidden, "route_access_denied", "调用方密钥无权使用模型 $alias 的渠道或密钥", "permission_error")
+            val code = if (availability.modelAccessDenied) "model_access_denied" else "route_access_denied"
+            val message = if (availability.modelAccessDenied) "调用方密钥无权访问模型 $alias"
+                else "调用方密钥无权使用模型 $alias 的渠道或密钥"
+            call.response.header("X-Prism-Error-Code", code)
+            throw GatewayError(HttpStatusCode.Forbidden, code, message, "permission_error")
         }
         val candidates = availability.candidates
         if (candidates.isEmpty()) {
@@ -333,6 +316,23 @@ private suspend fun handleProxyRequest(
                 "模型 $alias 已配置，但当前没有可用的上游凭据",
                 availability.retryAt?.let { it - System.currentTimeMillis() }?.takeIf { it > 0 },
             )
+        }
+        // 搜索准备只在目录已完成存在性和授权分类、且存在授权候选后执行。
+        // 搜索设置每次请求读取一次：管理台保存后立即生效，未保存时沿用环境变量默认值。
+        // 读取失败只代表搜索不可用，不能影响本来可以透传的请求；也不回退环境变量，避免意外重新开启搜索。
+        val webSearchRuntime = if (protocol == GatewayProtocol.RESPONSES && hasBuiltInWebSearch(requestJson)) {
+            val settings = try {
+                app.webSearchSettingsRepository.load().effective(app.config.webSearch)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            settings?.let {
+                WebSearchRuntime(WebSearchService.fromConfig(it, app.searchHttpClient), it.maxRounds)
+            }
+        } else {
+            null
         }
         val globalOverrides = app.upstreamRequestSettingsRepository.load().overrides
         val headerProfiles = app.upstreamHeaderCatalogService.profiles()

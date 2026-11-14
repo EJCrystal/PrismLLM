@@ -1,6 +1,9 @@
 package dev.soven.prismllm.integration
 
 import dev.soven.prismllm.api.GatewayApplication
+import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
+import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
+import dev.soven.prismllm.shared.crypto.ClientKeyHasher
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -15,6 +18,8 @@ import io.ktor.server.application.install
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
 import kotlin.test.Test
@@ -92,6 +97,65 @@ class RequestAuthenticationIntegrationTest : GatewayIntegrationTestBase() {
             val exposed = actual.headers[HttpHeaders.AccessControlExposeHeaders].orEmpty()
             assertTrue(exposed.contains("traceparent"))
             assertTrue(exposed.contains("X-Trace-Id"))
+        }
+    }
+
+    @Test
+    fun `CORS exposes both access denial codes while preserving native protocol errors`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(corsOrigins = listOf("https://console.example.com")))
+        val channel = createChannelWithBaseUrl("openai", "${fake.baseUrl}/ok/v1", protocols = GatewayProtocol.entries.toList())
+        exposeAsModel("fast-chat", channel to "gpt-4o-mini")
+        val policies = listOf(
+            ClientKeyAccessPolicy(allowedModelIds = emptySet()) to "model_access_denied",
+            ClientKeyAccessPolicy(allowedChannelIds = emptySet()) to "route_access_denied",
+        )
+        val requests = listOf(
+            "/v1/chat/completions" to """{"model":"fast-chat","messages":[]}""",
+            "/v1/responses" to """{"model":"fast-chat","input":"hi"}""",
+            "/v1/messages" to """{"model":"fast-chat","max_tokens":8,"messages":[]}""",
+            "/v1beta/models/fast-chat:generateContent" to """{"contents":[]}""",
+            "/v1/models/fast-chat:generateContent" to """{"contents":[]}""",
+        )
+        testApplication {
+            application { app.install(this) }
+            policies.forEach { (policy, code) ->
+                val generated = ClientKeyHasher.generate()
+                app.clientKeyRepository.create("cors-scoped", generated.hash, generated.prefix, true, null,
+                    ClientKeyQuotaLimits(maxConcurrentRequests = 1), policy)
+                requests.forEach { (path, body) ->
+                    val response = client.post(path) {
+                        header(HttpHeaders.Origin, "https://console.example.com")
+                        header(HttpHeaders.Authorization, "Bearer ${generated.raw}")
+                        contentType(ContentType.Application.Json)
+                        setBody(body)
+                    }
+                    assertEquals(HttpStatusCode.Forbidden, response.status, response.bodyAsText())
+                    assertEquals("https://console.example.com", response.headers[HttpHeaders.AccessControlAllowOrigin])
+                    assertEquals(code, response.headers["X-Prism-Error-Code"])
+                    val exposed = response.headers[HttpHeaders.AccessControlExposeHeaders].orEmpty().split(',').map { it.trim() }
+                    assertTrue(exposed.any { it.equals("X-Prism-Error-Code", ignoreCase = true) }, "未暴露授权错误头：$exposed")
+                    val root = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+                    val error = root["error"]!!.jsonObject
+                    when {
+                        path == "/v1/messages" -> {
+                            assertEquals(setOf("type", "error"), root.keys)
+                            assertEquals(setOf("type", "message"), error.keys)
+                            assertEquals("error", root["type"]!!.jsonPrimitive.content)
+                            assertEquals("permission_error", error["type"]!!.jsonPrimitive.content)
+                        }
+                        path.contains(":generateContent") -> {
+                            assertEquals(setOf("error"), root.keys)
+                            assertEquals(setOf("code", "message", "status"), error.keys)
+                            assertEquals("403", error["code"]!!.jsonPrimitive.content)
+                            assertEquals("PERMISSION_DENIED", error["status"]!!.jsonPrimitive.content)
+                        }
+                        else -> assertEquals(code, error["code"]!!.jsonPrimitive.content)
+                    }
+                }
+            }
+            assertEquals(0, fake.requests.size)
+            assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
         }
     }
 

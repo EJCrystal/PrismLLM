@@ -134,6 +134,33 @@ describe('真实调用方访问范围配置组件', () => {
     assert.equal(document.querySelector('input:checked')?.closest('label').textContent.includes('deleted-model'), true)
   })
 
+  for (const { label, scope, selection } of [
+    { label: '渠道', scope: 'channels', selection: { ids: ['deleted-channel'] } },
+    { label: '渠道密钥', scope: 'channelKeys', selection: { keys: [{ channelId: 'deleted-channel', keyId: 'deleted-key' }] } },
+    { label: '模型', scope: 'models', selection: { ids: ['deleted-model'] } },
+  ]) {
+    it(`${label}失效选择切换为不限制时隐藏警告，切回白名单恢复选择与警告`, async () => {
+      await mount({ ...unrestricted(), [scope]: { mode: 'allowlist', ...selection } })
+      assert.match(document.body.textContent, /部分已选目标已删除或不存在/)
+      assert.match(document.body.textContent, /无授权目标/)
+      assert.equal(document.querySelectorAll('input:checked').length, 1)
+
+      await mode(label, 'unrestricted')
+      assert.doesNotMatch(document.body.textContent, /部分已选目标已删除或不存在/)
+      assert.doesNotMatch(document.body.textContent, /无授权目标/)
+      assert.equal(document.querySelectorAll('input[type="checkbox"]').length, 0)
+      assert.deepEqual(state.value[scope], { mode: 'unrestricted', ...selection })
+
+      await mode(label, 'allowlist')
+      assert.match(document.body.textContent, /部分已选目标已删除或不存在/)
+      assert.match(document.body.textContent, /无授权目标/)
+      assert.equal(document.querySelectorAll('input:checked').length, 1)
+      assert.match(document.querySelector('input:checked').closest('label').textContent, /deleted-/)
+      assert.deepEqual(state.value[scope], { mode: 'allowlist', ...selection })
+      assert.equal(requests.length, 1)
+    })
+  }
+
   it('渠道名单缩小时保留冲突密钥并提示调整，选项不回显任何凭据明文', async () => {
     const data = structuredClone(catalog)
     data[0].keys[0].credential = 'UPSTREAM_SECRET_MUST_NOT_RENDER'

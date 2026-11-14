@@ -41,9 +41,12 @@ const keyOptions = computed(() => channels.value.flatMap(channel => channel.keys
 const modelOptions = computed(() => [...new Set(channels.value.flatMap(channel => channel.modelMappings.map(mapping =>
   mapping.canonicalModelId ?? mapping.upstreamModel,
 )))].sort())
-const missingChannels = computed(() => props.modelValue.channels.ids.filter(id => !channelOptions.value.some(option => option.id === id)))
-const missingKeys = computed(() => props.modelValue.channelKeys.keys.filter(pair => !keyOptions.value.some(option => sameKey(pair, option))))
-const missingModels = computed(() => props.modelValue.models.ids.filter(id => !modelOptions.value.includes(id)))
+const missingChannels = computed(() => props.modelValue.channels.mode === 'allowlist'
+  ? props.modelValue.channels.ids.filter(id => !channelOptions.value.some(option => option.id === id)) : [])
+const missingKeys = computed(() => props.modelValue.channelKeys.mode === 'allowlist'
+  ? props.modelValue.channelKeys.keys.filter(pair => !keyOptions.value.some(option => sameKey(pair, option))) : [])
+const missingModels = computed(() => props.modelValue.models.mode === 'allowlist'
+  ? props.modelValue.models.ids.filter(id => !modelOptions.value.includes(id)) : [])
 const unavailableLabel = computed(() => error.value ? '目录读取失败，保留原选择' : !loaded.value ? '目录加载中，保留原选择' : '已删除或不存在')
 const conflictingKeys = computed(() => props.modelValue.channels.mode === 'allowlist' && props.modelValue.channelKeys.mode === 'allowlist'
   ? props.modelValue.channelKeys.keys.filter(pair => !props.modelValue.channels.ids.includes(pair.channelId)) : [])

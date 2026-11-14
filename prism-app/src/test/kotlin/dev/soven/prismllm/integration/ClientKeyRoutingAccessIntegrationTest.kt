@@ -83,6 +83,34 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `unknown model outside model allowlist stays not found across all protocols`() = runBlocking {
+        accessChannel("known", models = listOf("allowed"), protocols = GatewayProtocol.entries.toList())
+        val key = scopedKey(ClientKeyAccessPolicy(allowedModelIds = setOf("allowed")))
+        testApplication {
+            application { app.install(this) }
+            missingModelRequests("typo").forEach { (path, body) ->
+                assertMissing(client.send(key, path, body), key)
+            }
+            assertEquals(7, app.requestLogRepository.list(30).size)
+        }
+    }
+
+    @Test
+    fun `deleted model outside model allowlist stays not found across all protocols`() = runBlocking {
+        accessChannel("known", models = listOf("allowed"), protocols = GatewayProtocol.entries.toList())
+        val deleted = accessChannel("removed", models = listOf("deleted"), protocols = GatewayProtocol.entries.toList())
+        val key = scopedKey(ClientKeyAccessPolicy(allowedModelIds = setOf("allowed")))
+        app.channelRepository.delete(deleted.id)
+        testApplication {
+            application { app.install(this) }
+            missingModelRequests("deleted").forEach { (path, body) ->
+                assertMissing(client.send(key, path, body), key)
+            }
+            assertEquals(7, app.requestLogRepository.list(30).size)
+        }
+    }
+
+    @Test
     fun `channel key and public model intersection filters routing and both listings`() = runBlocking {
         val first = accessChannel("first", models = listOf("raw-first", "first-only"), priority = 0)
         val second = accessChannel("second", models = listOf("raw-second", "second-only"), priority = 1,
@@ -143,6 +171,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
         val other = accessChannel("other", models = listOf("m1", "other-model"))
         val unrelated = accessChannel("unrelated", models = listOf("other-model"))
         val denied = scopedKey(ClientKeyAccessPolicy(allowedChannelIds = setOf(unrelated.id)))
+        val modelDenied = scopedKey(ClientKeyAccessPolicy(allowedModelIds = setOf("other-model")))
         val authorized = scopedKey(ClientKeyAccessPolicy(allowedChannelIds = setOf(disabled.id)))
         val unrestricted = scopedKey(ClientKeyAccessPolicy())
         testApplication {
@@ -156,6 +185,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.OK, legacy.status)
             assertEquals(1, fake.requests.size)
             app.channelRepository.delete(other.id)
+            assertRejected(client.chat(modelDenied), "model_access_denied")
             val disabledOnly = client.chat(unrestricted)
             assertEquals(HttpStatusCode.NotFound, disabledOnly.status)
             assertTrue(disabledOnly.bodyAsText().contains("model_not_found"))
@@ -231,7 +261,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `allowed missing model and protocol conversion keep original behavior`() = runBlocking {
-        val channel = accessChannel("chat-only", protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS))
+        val channel = accessChannel("chat-only", models = listOf("m1", "M1"), protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS))
         val key = scopedKey(ClientKeyAccessPolicy(allowedChannelIds = setOf(channel.id), allowedModelIds = setOf("m1", "missing")))
         testApplication {
             application { app.install(this) }
@@ -424,6 +454,47 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
         header(HttpHeaders.Authorization, "Bearer $key")
         contentType(ContentType.Application.Json)
         setBody(body)
+    }
+
+    /** 构造四种协议及两个 Gemini 版本的不存在模型请求，URL 模型优先于合法 body 模型。 */
+    private fun missingModelRequests(model: String): List<Pair<String, String>> = listOf(
+        "/v1/chat/completions" to """{"model":"$model","messages":[]}""",
+        "/v1/responses" to """{"model":"$model","input":"hi","tools":[{"type":"web_search"}]}""",
+        "/v1/messages" to """{"model":"$model","max_tokens":8,"messages":[]}""",
+        "/v1beta/models/$model:generateContent" to """{"model":"allowed","contents":[]}""",
+        "/v1beta/models/$model:streamGenerateContent" to """{"contents":[]}""",
+        "/v1/models/$model:generateContent" to """{"model":"allowed","contents":[]}""",
+        "/v1/models/$model:streamGenerateContent" to """{"contents":[]}""",
+    )
+
+    /** 保留各协议原生不存在响应，并确认零上游尝试及调用方租约释放。 */
+    private suspend fun assertMissing(response: HttpResponse, key: String) {
+        val body = response.bodyAsText()
+        assertEquals(HttpStatusCode.NotFound, response.status, body)
+        assertNull(response.headers["X-Prism-Error-Code"])
+        val root = Json.parseToJsonElement(body).jsonObject
+        val error = root["error"]!!.jsonObject
+        when {
+            root["type"]?.jsonPrimitive?.content == "error" -> assertEquals("not_found_error", error["type"]!!.jsonPrimitive.content)
+            error["status"] != null -> {
+                assertEquals("NOT_FOUND", error["status"]!!.jsonPrimitive.content)
+                assertEquals("404", error["code"]!!.jsonPrimitive.content)
+            }
+            else -> assertEquals("model_not_found", error["code"]!!.jsonPrimitive.content)
+        }
+        val requestId = assertNotNull(response.headers["X-Request-Id"])
+        awaitCondition("不存在模型请求日志") { app.requestLogRepository.list(30).any { it.requestId == requestId } }
+        val log = app.requestLogRepository.list(30).single { it.requestId == requestId }
+        assertEquals("model_not_found", log.errorCode)
+        assertEquals(0, log.upstreamAttempts)
+        assertTrue(log.attempts.isEmpty())
+        assertEquals(0, fake.requests.size)
+        assertEquals(0, fake.tokenRequests.size)
+        assertEquals(0, fake.quotaRequests.size)
+        assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
+        val record = assertNotNull(app.clientKeyRepository.findByHash(ClientKeyHasher.hash(key)))
+        val callerLease = app.requestLimitService.acquire(record)
+        app.requestLimitService.release(callerLease)
     }
 
     /** 断言跨协议稳定错误码、原生错误体、零上游日志，以及调用方并发占位释放。 */
