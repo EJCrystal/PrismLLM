@@ -1,4 +1,4 @@
-import type { Channel, ClientKeyAccessMode, ClientKeyAccessPolicy, ClientKeyAllowedChannelKey } from '../types/api'
+import type { Channel, ChannelKeyState, ClientKeyAccessMode, ClientKeyAccessPolicy, ClientKeyAllowedChannelKey } from '../types/api'
 
 /**
  * 「渠道与密钥」合并卡片的双向映射。
@@ -42,6 +42,9 @@ export function mergedAccessMode(policy: ClientKeyAccessPolicy): ClientKeyAccess
  * - 白名单 + 密钥维度未启用：渠道在名单中即全选（子密钥随渠道放行）。
  * - 白名单 + 密钥维度已启用：全部子密钥在名单中为全选，部分为半选。
  * - 黑名单：渠道在名单中即整渠道排除，子密钥随渠道排除。
+ *
+ * 分支一律按合并卡片的展示模式派发：渠道维度未限制、密钥维度受限的旧策略
+ * 也按其实际卡片模式（黑名单）渲染与操作，避免把排除名单当放行名单使用。
  */
 export function channelCheckInfo(policy: ClientKeyAccessPolicy, channel: Channel | undefined): ChannelCheckInfo {
   const keys = channel?.keys ?? []
@@ -50,8 +53,9 @@ export function channelCheckInfo(policy: ClientKeyAccessPolicy, channel: Channel
     ? 0
     : keys.filter(key => policy.channelKeys.keys.some(pair => sameAccessKey(pair, { channelId: channel!.id, keyId: key.id }))).length
   const channelSelected = policy.channels.ids.includes(channel?.id ?? '')
+  const merged = mergedAccessMode(policy)
 
-  if (policy.channels.mode === 'allowlist') {
+  if (merged === 'allowlist') {
     if (!channelSelected) return { state: selectedKeys > 0 ? 'indeterminate' : 'unchecked', selectedKeys, totalKeys }
     if (policy.channelKeys.mode === 'unrestricted') return { state: 'checked', selectedKeys, totalKeys }
     if (selectedKeys === 0) return { state: 'unchecked', selectedKeys, totalKeys }
@@ -66,7 +70,7 @@ export function channelCheckInfo(policy: ClientKeyAccessPolicy, channel: Channel
 /** 子密钥行是否勾选：在密钥名单中，或渠道级选中（白名单 + 密钥维度未启用）时随渠道勾选。 */
 export function keyChecked(policy: ClientKeyAccessPolicy, channel: Channel | undefined, keyId: string): boolean {
   if (policy.channelKeys.keys.some(pair => sameAccessKey(pair, { channelId: channel?.id ?? '', keyId }))) return true
-  if (policy.channels.mode === 'allowlist' && policy.channelKeys.mode === 'unrestricted') {
+  if (mergedAccessMode(policy) === 'allowlist' && policy.channelKeys.mode === 'unrestricted') {
     return policy.channels.ids.includes(channel?.id ?? '')
   }
   return false
@@ -80,7 +84,7 @@ function channelInScope(policy: ClientKeyAccessPolicy, channelId: string): boole
 
 /** 二级 OAuth 行是否可勾选：只有白名单 + 密钥维度未启用时勾选才有意义（等同勾选渠道）。 */
 export function oauthRowInteractive(policy: ClientKeyAccessPolicy): boolean {
-  return policy.channels.mode === 'allowlist' && policy.channelKeys.mode === 'unrestricted'
+  return mergedAccessMode(policy) === 'allowlist' && policy.channelKeys.mode === 'unrestricted'
 }
 
 function withKeys(policy: ClientKeyAccessPolicy, keys: ClientKeyAllowedChannelKey[]): ClientKeyAccessPolicy {
@@ -98,12 +102,15 @@ export function toggleChannelSelection(
   channelId: string,
 ): ClientKeyAccessPolicy {
   const channel = channels.find(item => item.id === channelId)
+  if (channel == null) {
+    // 目录中已不存在的失效渠道：取消勾选时直接移除；树不会展示未勾选的失效项，无重新勾选路径。
+    return { ...policy, channels: { ...policy.channels, ids: policy.channels.ids.filter(id => id !== channelId) } }
+  }
   const info = channelCheckInfo(policy, channel)
   const ids = policy.channels.ids.filter(id => id !== channelId)
   if (info.state === 'checked') {
-    const keys = policy.channelKeys.mode === 'unrestricted'
-      ? policy.channelKeys.keys
-      : policy.channelKeys.keys.filter(pair => pair.channelId !== channelId)
+    // 取消整渠道：移除渠道及其全部子密钥名单；密钥维度是否解除由 withKeys 统一裁定。
+    const keys = policy.channelKeys.keys.filter(pair => pair.channelId !== channelId)
     const next = withKeys(policy, keys)
     return { ...next, channels: { ...next.channels, ids } }
   }
@@ -116,11 +123,16 @@ function selectChannel(
   channels: Channel[],
   channelId: string,
 ): ClientKeyAccessPolicy {
+  const merged = mergedAccessMode(policy)
   const withChannel: ClientKeyAccessPolicy = {
     ...policy,
-    channels: { ...policy.channels, ids: [...new Set([...policy.channels.ids, channelId])] },
+    // 渠道维度尚未限制时提升为卡片模式（黑名单勾父=排除该渠道），否则勾选不会生效。
+    channels: {
+      mode: policy.channels.mode === 'unrestricted' ? merged : policy.channels.mode,
+      ids: [...new Set([...policy.channels.ids, channelId])],
+    },
   }
-  if (policy.channels.mode === 'allowlist') {
+  if (merged === 'allowlist') {
     if (policy.channelKeys.mode === 'unrestricted') return withChannel
     const channel = channels.find(item => item.id === channelId)
     const expanded = (channel?.keys ?? []).map(key => ({ channelId, keyId: key.id }))
@@ -150,12 +162,14 @@ export function toggleKeySelection(
   pair: ClientKeyAllowedChannelKey,
   checked: boolean,
 ): ClientKeyAccessPolicy {
+  const merged = mergedAccessMode(policy)
   const exists = policy.channelKeys.keys.some(item => sameAccessKey(item, pair))
-  if (policy.channels.mode === 'denylist') {
+  if (merged === 'denylist') {
     if (!checked) return withKeys(policy, policy.channelKeys.keys.filter(item => !sameAccessKey(item, pair)))
     // 所属渠道已被排除时子密钥冗余，直接忽略。
     if (policy.channels.ids.includes(pair.channelId)) return policy
-    return withKeys(policy, [...policy.channelKeys.keys, pair])
+    // 显式落入黑名单模式：渠道维度尚未限制（如刚切换模式）时，仅加入名单不会产生排除效果。
+    return { ...policy, channelKeys: { mode: 'denylist', keys: [...policy.channelKeys.keys, pair] } }
   }
   if (!checked) {
     // 覆盖态（随渠道勾选但不在名单中）的子密钥取消勾选：先按已勾选渠道展开再排除该项。
@@ -166,15 +180,21 @@ export function toggleKeySelection(
           return (channel?.keys ?? []).map(key => ({ channelId: id, keyId: key.id }))
         }).filter(item => !sameAccessKey(item, pair))
     const deduped = dedupeKeys(keys)
+    // 取消子密钥后，同步移除“没有任何选中子密钥”的目录内渠道，保证树状态与策略一致：
+    // 避免零选中渠道以渠道级语义残留，重新放行已被逐个取消的密钥。
+    const selectedChannels = new Set(deduped.map(item => item.channelId))
+    const survivors = policy.channels.ids.filter(id => {
+      const channel = channels.find(item => item.id === id)
+      return channel == null || channel.keys.length === 0 || selectedChannels.has(id)
+    })
     if (deduped.length === 0) {
-      // 密钥维度解除启用；该渠道没有任何选中子密钥时一并取消渠道勾选（与原型树语义一致）。
       return {
         ...policy,
-        channels: { ...policy.channels, ids: policy.channels.ids.filter(id => id !== pair.channelId) },
+        channels: { ...policy.channels, ids: survivors },
         channelKeys: { mode: 'unrestricted', keys: [] },
       }
     }
-    return { ...policy, channelKeys: { mode: 'allowlist', keys: deduped } }
+    return { ...policy, channels: { ...policy.channels, ids: survivors }, channelKeys: { mode: 'allowlist', keys: deduped } }
   }
   // 白名单：自动把所属渠道补进渠道名单；密钥维度首次启用时仅展开此前已勾选的渠道，
   // 点选密钥的渠道只入选当前密钥，保持“已选 1/N”的半选语义。
@@ -202,9 +222,13 @@ export function toggleOAuthSelection(
 
 /** 全选：白名单选中全部渠道（密钥维度已启用时展开全部子密钥），黑名单排除全部渠道。 */
 export function selectAllChannels(policy: ClientKeyAccessPolicy, channels: Channel[]): ClientKeyAccessPolicy {
+  const merged = mergedAccessMode(policy)
   const ids = channels.map(channel => channel.id)
-  const base: ClientKeyAccessPolicy = { ...policy, channels: { ...policy.channels, ids } }
-  if (policy.channels.mode === 'allowlist') {
+  const base: ClientKeyAccessPolicy = {
+    ...policy,
+    channels: { mode: policy.channels.mode === 'unrestricted' ? merged : policy.channels.mode, ids },
+  }
+  if (merged === 'allowlist') {
     if (policy.channelKeys.mode === 'unrestricted') return base
     const keys = channels.flatMap(channel => channel.keys.map(key => ({ channelId: channel.id, keyId: key.id })))
     return { ...base, channelKeys: { mode: 'allowlist', keys } }
@@ -288,16 +312,33 @@ export function staticKeyEffective(policy: ClientKeyAccessPolicy, pair: ClientKe
   return policy.channelKeys.mode === 'allowlist' ? listed : !listed
 }
 
+/**
+ * 与后端 `ChannelKeyState.isRoutableAt` 对齐的静态密钥可路由判定：
+ * ACTIVE 直接可用；临时停用到期且探测租约结束才恢复；人工/永久停用永不参与路由。
+ */
+export function keyRoutable(
+  key: { state: ChannelKeyState; autoDisableUntil: number | null; probeUntil: number | null },
+  now: number = Date.now(),
+): boolean {
+  if (key.state === 'ACTIVE') return true
+  if (key.state === 'AUTO_TEMPORARY') {
+    return key.autoDisableUntil != null && now >= key.autoDisableUntil &&
+      (key.probeUntil == null || now >= key.probeUntil)
+  }
+  return false
+}
+
 /** OAuth 凭据是否生效：跟随渠道维度；密钥白名单会整体排除 OAuth 候选。 */
 export function oauthEffective(policy: ClientKeyAccessPolicy, channelId: string): boolean {
   if (!channelAllowedByPolicy(policy, channelId)) return false
   return policy.channelKeys.mode !== 'allowlist'
 }
 
-/** 当前策略下生效的静态密钥总数；停用渠道的密钥不可路由，不计入。 */
+/** 当前策略下生效的静态密钥总数；停用渠道与不可路由密钥（人工停用、冷却中）不计入。 */
 export function effectiveStaticKeyCount(policy: ClientKeyAccessPolicy, channels: Channel[]): number {
+  const now = Date.now()
   return channels.filter(channel => channel.enabled).reduce((count, channel) => count + channel.keys.filter(key =>
-    staticKeyEffective(policy, { channelId: channel.id, keyId: key.id })).length, 0)
+    keyRoutable(key, now) && staticKeyEffective(policy, { channelId: channel.id, keyId: key.id })).length, 0)
 }
 
 export interface ModelAvailability {
@@ -310,8 +351,11 @@ export interface ModelAvailability {
 /**
  * 计算对外模型 ID 的可用性：数据面以 canonical ?? upstream 作为对外 ID，
  * 模型生效要求存在生效渠道上的生效凭据支撑其任一上游映射。
+ * 静态密钥按后端路由契约排除不可路由密钥；OAuth 账号按映射逐一判断
+ * `models` 覆盖（空列表表示支持全部，与后端 supports 一致）。
  */
 export function modelAvailabilityMap(policy: ClientKeyAccessPolicy, channels: Channel[]): Map<string, ModelAvailability> {
+  const now = Date.now()
   const availability = new Map<string, ModelAvailability>()
   const record = (publicId: string, supported: boolean, staticKeyCount: number): void => {
     const current = availability.get(publicId) ?? { supported: false, staticKeyCount: 0 }
@@ -323,12 +367,13 @@ export function modelAvailabilityMap(policy: ClientKeyAccessPolicy, channels: Ch
   for (const channel of channels) {
     if (!channel.enabled) continue
     if (!channelAllowedByPolicy(policy, channel.id)) continue
-    const oauthReady = (channel.oauthAccounts ?? []).some(account =>
-      account.enabled && oauthEffective(policy, channel.id))
+    const routableKeys = channel.keys.filter(key => keyRoutable(key, now))
     for (const mapping of channel.modelMappings) {
       const publicId = mapping.canonicalModelId ?? mapping.upstreamModel
-      const keyCount = channel.keys.filter(key =>
+      const keyCount = routableKeys.filter(key =>
         key.models.includes(mapping.upstreamModel) && staticKeyEffective(policy, { channelId: channel.id, keyId: key.id })).length
+      const oauthReady = oauthEffective(policy, channel.id) && (channel.oauthAccounts ?? []).some(account =>
+        account.enabled && (account.models.length === 0 || account.models.includes(mapping.upstreamModel)))
       record(publicId, keyCount > 0 || oauthReady, keyCount)
     }
   }

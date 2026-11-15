@@ -302,6 +302,18 @@ describe('真实调用方访问范围配置组件', () => {
     assert.equal(channelRow('渠道 A').querySelector('input[type="checkbox"]').checked, true)
   })
 
+  it('失效渠道取消勾选直接移除该 ID，正常渠道选择不受影响', async () => {
+    await mount({ ...unrestricted(), channels: { mode: 'allowlist', ids: ['channel-a', 'deleted-channel'] } })
+    assert.match(document.body.textContent, /已删除或不存在/)
+    assert.match(document.body.textContent, /deleted-channel/)
+    const staleRow = document.querySelector('.tree-row.is-stale input[aria-label="已失效渠道 deleted-channel"]')
+    assert.ok(staleRow, '缺少失效渠道行')
+    staleRow.click(); await settle()
+    assert.deepEqual(state.value.channels.ids, ['channel-a'])
+    assert.equal(document.querySelector('.tree-row.is-stale input[aria-label="已失效渠道 deleted-channel"]'), null)
+    assert.equal(requests.length, 1)
+  })
+
   it('受限模式往返不限制时保留草稿选择', async () => {
     await mount()
     await cardMode('allowlist')
