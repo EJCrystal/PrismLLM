@@ -1,6 +1,6 @@
 # 调用方密钥黑名单 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 三维访问范围支持与白名单互斥的黑名单，所有数据面入口保持一致边界。
 
@@ -34,10 +34,10 @@
 
 **Interfaces:** 新增 `deniedChannelIds: Set<String>?`、`deniedChannelKeys: Set<ClientKeyAllowedChannelKey>?`、`deniedModelIds: Set<String>?`；DTO 保持格式，新增 mode `denylist`。
 
-- [ ] 先新增真实管理 API 黑名单往返、空名单保留、模式切换和生命周期测试。
-- [ ] 执行 `ClientKeyAccessPolicyIntegrationTest`，确认未知 denylist 导致行为断言失败。
-- [ ] 扩展领域、V69、三表、批量快照读写、DTO 与校验；同维度互斥。
-- [ ] 执行受影响持久化/API/迁移回归，确认全部通过并提交。
+- [x] 先新增真实管理 API 黑名单往返、空名单保留、模式切换和生命周期测试。
+- [x] 执行 `ClientKeyAccessPolicyIntegrationTest`，确认未知 denylist 导致行为断言失败。
+- [x] 扩展领域、V69、三表、批量快照读写、DTO 与校验；同维度互斥。
+- [x] 执行受影响持久化/API/迁移回归，确认全部通过并提交。
 
 ### Task 2: 路由授权
 
@@ -45,10 +45,10 @@
 
 **Interfaces:** 路由快照新增同名三个 denied 集合（Key 为 RoutingAllowedChannelKey）；现有 allowsModel/allowsChannel/allowsCredential 保持签名。
 
-- [ ] 新增管理策略已保存但数据面尚未过滤的真实请求测试，确认越权成功导致断言失败。
-- [ ] 扩展统一谓词、快照转换和目录授权诊断；黑名单不得影响 OAuth 身份。
-- [ ] 验证四协议拒绝、授权请求、列表、重试/兜底、无凭据、空名单、恢复提示回归。
-- [ ] 回归通过后提交。
+- [x] 新增管理策略已保存但数据面尚未过滤的真实请求测试，确认越权成功导致断言失败。
+- [x] 扩展统一谓词、快照转换和目录授权诊断；黑名单不得影响 OAuth 身份。
+- [x] 验证四协议拒绝、授权请求、列表、重试/兜底、无凭据、空名单、恢复提示回归。
+- [x] 回归通过后提交。
 
 ### Task 3: 管理台与交付
 
@@ -56,7 +56,7 @@
 
 **Interfaces:** `ClientKeyAccessMode` 增加 `denylist`，payload 仍为三个 `{mode, ids/keys}`。
 
-- [ ] 新增真实 helper/DOM 的黑名单保存、摘要、切换、目录失败和空名单测试，确认行为 RED。
-- [ ] 扩展三模式选择、多选、说明、摘要和失效提示；更新使用文档。
-- [ ] 前端全量、typecheck/build 与后端全量通过；核对测试镜像源码资源一致。
-- [ ] 独立整分支审阅；必要修复按 RED→GREEN 验证；记录证据并提交。
+- [x] 新增真实 helper/DOM 的黑名单保存、摘要、切换、目录失败和空名单测试，确认行为 RED。
+- [x] 扩展三模式选择、多选、说明、摘要和失效提示；更新使用文档。
+- [x] 前端全量、typecheck/build 与后端全量通过；核对测试镜像源码资源一致。
+- [x] 独立整分支审阅；必要修复按 RED→GREEN 验证；记录证据并提交。
