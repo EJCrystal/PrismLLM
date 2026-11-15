@@ -18,9 +18,9 @@ export function normalizeClientKeyAccessPolicy(policy: ClientKeyAccessPolicy): C
     keys.set(JSON.stringify([pair.channelId, pair.keyId]), pair)
   }
   return {
-    channels: { mode: policy.channels.mode, ids: policy.channels.mode === 'allowlist' ? ids(policy.channels.ids) : [] },
-    channelKeys: { mode: policy.channelKeys.mode, keys: policy.channelKeys.mode === 'allowlist' ? [...keys.values()] : [] },
-    models: { mode: policy.models.mode, ids: policy.models.mode === 'allowlist' ? ids(policy.models.ids) : [] },
+    channels: { mode: policy.channels.mode, ids: policy.channels.mode !== 'unrestricted' ? ids(policy.channels.ids) : [] },
+    channelKeys: { mode: policy.channelKeys.mode, keys: policy.channelKeys.mode !== 'unrestricted' ? [...keys.values()] : [] },
+    models: { mode: policy.models.mode, ids: policy.models.mode !== 'unrestricted' ? ids(policy.models.ids) : [] },
   }
 }
 
@@ -34,5 +34,6 @@ export function clientKeyAccessSummary(policy: ClientKeyAccessPolicy): string {
   if (dimensions.every(scope => scope.mode === 'unrestricted')) return '不限制访问范围'
   return dimensions.map(scope => scope.mode === 'unrestricted'
     ? `${scope.label}不限制`
+    : scope.mode === 'denylist' ? `${scope.label}黑名单 ${scope.count} 项`
     : scope.count === 0 ? `${scope.label}无授权目标` : `${scope.label} ${scope.count} 项`).join(' · ')
 }

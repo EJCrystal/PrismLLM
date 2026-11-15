@@ -341,7 +341,7 @@ export interface RuntimeOccupancy {
 }
 
 /** 白名单为空时拒绝该维度的所有对象；不限制模式使用空数组。 */
-export type ClientKeyAccessMode = 'unrestricted' | 'allowlist'
+export type ClientKeyAccessMode = 'unrestricted' | 'allowlist' | 'denylist'
 
 export interface ClientKeyIdScope {
   mode: ClientKeyAccessMode

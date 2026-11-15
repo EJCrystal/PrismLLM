@@ -67,6 +67,42 @@ describe('真实调用方访问范围配置组件', () => {
     assert.equal(requests.length, 0)
   })
 
+  it('三维黑名单可多选并在三模式往返时保留草稿，空名单不显示拒绝全部', async () => {
+    await mount()
+    for (const name of ['渠道', '渠道密钥', '模型']) {
+      const select = document.querySelector('select[aria-label="' + name + '模式"]')
+      assert.ok([...select.options].some(option => option.value === 'denylist'))
+      await mode(name, 'denylist')
+    }
+    assert.doesNotMatch(document.body.textContent, /无授权目标/)
+    await choose('渠道', 'channel-a')
+    await choose('渠道密钥', 'channel-a / key-1')
+    await choose('模型', 'Model-A')
+    assert.deepEqual(state.value, {
+      channels: { mode: 'denylist', ids: ['channel-a'] },
+      channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-a', keyId: 'key-1' }] },
+      models: { mode: 'denylist', ids: ['Model-A'] },
+    })
+    assert.match(document.body.textContent, /OAuth/)
+    for (const name of ['渠道', '渠道密钥', '模型']) {
+      await mode(name, 'allowlist'); await mode(name, 'unrestricted'); await mode(name, 'denylist')
+    }
+    assert.equal(document.querySelectorAll('input:checked').length, 3)
+    assert.equal(requests.length, 1)
+  })
+
+  it('黑名单回显失效模型时保留排除 ID，不显示无授权目标', async () => {
+    const policy = unrestricted()
+    policy.models = { mode: 'denylist', ids: ['deleted-model'] }
+    await mount(policy)
+    assert.equal(requests.length, 1)
+    assert.match(document.body.textContent, /deleted-model/)
+    assert.doesNotMatch(document.body.textContent, /无授权目标/)
+    assert.deepEqual(state.value.models.ids, ['deleted-model'])
+    await choose('模型', 'deleted-model')
+    assert.deepEqual(state.value.models.ids, [])
+  })
+
   it('模式切换保留多选草稿，密钥必须使用渠道与密钥 ID 成对选择', async () => {
     await mount()
     await mode('渠道', 'allowlist')

@@ -9,7 +9,7 @@ const channels = ref<Channel[]>([])
 const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
-const needsCatalog = computed(() => Object.values(props.modelValue).some(scope => scope.mode === 'allowlist'))
+const needsCatalog = computed(() => Object.values(props.modelValue).some(scope => scope.mode !== 'unrestricted'))
 
 /** 按需读取管理目录；失败保留已有目录及名单，不自动改变授权。 */
 async function loadCatalog(): Promise<void> {
@@ -41,15 +41,17 @@ const keyOptions = computed(() => channels.value.flatMap(channel => channel.keys
 const modelOptions = computed(() => [...new Set(channels.value.flatMap(channel => channel.modelMappings.map(mapping =>
   mapping.canonicalModelId ?? mapping.upstreamModel,
 )))].sort())
-const missingChannels = computed(() => props.modelValue.channels.mode === 'allowlist'
+const missingChannels = computed(() => props.modelValue.channels.mode !== 'unrestricted'
   ? props.modelValue.channels.ids.filter(id => !channelOptions.value.some(option => option.id === id)) : [])
-const missingKeys = computed(() => props.modelValue.channelKeys.mode === 'allowlist'
+const missingKeys = computed(() => props.modelValue.channelKeys.mode !== 'unrestricted'
   ? props.modelValue.channelKeys.keys.filter(pair => !keyOptions.value.some(option => sameKey(pair, option))) : [])
-const missingModels = computed(() => props.modelValue.models.mode === 'allowlist'
+const missingModels = computed(() => props.modelValue.models.mode !== 'unrestricted'
   ? props.modelValue.models.ids.filter(id => !modelOptions.value.includes(id)) : [])
 const unavailableLabel = computed(() => error.value ? '目录读取失败，保留原选择' : !loaded.value ? '目录加载中，保留原选择' : '已删除或不存在')
-const conflictingKeys = computed(() => props.modelValue.channels.mode === 'allowlist' && props.modelValue.channelKeys.mode === 'allowlist'
-  ? props.modelValue.channelKeys.keys.filter(pair => !props.modelValue.channels.ids.includes(pair.channelId)) : [])
+const conflictingKeys = computed(() => props.modelValue.channelKeys.mode === 'allowlist'
+  ? props.modelValue.channelKeys.keys.filter(pair => props.modelValue.channels.mode === 'allowlist'
+    ? !props.modelValue.channels.ids.includes(pair.channelId)
+    : props.modelValue.channels.mode === 'denylist' && props.modelValue.channels.ids.includes(pair.channelId)) : [])
 const emptyScopes = computed(() => [
   props.modelValue.channels.mode === 'allowlist' && props.modelValue.channels.ids.length === 0 ? '渠道' : '',
   props.modelValue.channelKeys.mode === 'allowlist' && props.modelValue.channelKeys.keys.length === 0 ? '渠道密钥' : '',
@@ -89,7 +91,7 @@ function changeKey(pair: ClientKeyAllowedChannelKey, event: Event): void {
   <div class="client-key-access-fields">
     <div class="access-intro">
       <strong>访问范围</strong>
-      <p class="muted small">同一维度内可多选，三个维度共同限定可调用的目标。白名单为空表示不允许任何目标。</p>
+      <p class="muted small">三个维度共同限定可调用的目标。白名单只允许所选项，空名单拒绝全部；黑名单排除所选项，空名单不额外限制。</p>
     </div>
     <div v-if="needsCatalog && (loading || error)" class="access-catalog-state" role="status">
       <span v-if="loading">正在读取渠道、静态密钥与模型目录…</span>
@@ -106,11 +108,13 @@ function changeKey(pair: ClientKeyAllowedChannelKey, event: Event): void {
         <select aria-label="渠道模式" :value="modelValue.channels.mode" @change="changeMode('channels', $event)">
           <option value="unrestricted">不限制</option>
           <option value="allowlist">白名单</option>
+          <option value="denylist">黑名单</option>
         </select>
       </label>
       <p v-if="modelValue.channels.mode === 'unrestricted'" class="muted small">允许满足其他规则的渠道。</p>
       <template v-else>
-        <div class="access-options" aria-label="渠道白名单">
+        <p v-if="modelValue.channels.mode === 'denylist'" class="muted small">禁止选中渠道及其静态密钥与 OAuth 订阅账号；其他渠道按其余规则使用。</p>
+        <div class="access-options" :aria-label="modelValue.channels.mode === 'denylist' ? '渠道黑名单' : '渠道白名单'">
           <label v-for="option in channelOptions" :key="option.id" class="access-option">
             <input type="checkbox" :checked="modelValue.channels.ids.includes(option.id)" @change="changeId('channels', option.id, $event)" />
             <span><strong>{{ option.name }}</strong><code>{{ option.id }}</code><small v-if="option.hint">{{ option.hint }}</small></span>
@@ -131,11 +135,12 @@ function changeKey(pair: ClientKeyAllowedChannelKey, event: Event): void {
         <select aria-label="渠道密钥模式" :value="modelValue.channelKeys.mode" @change="changeMode('channelKeys', $event)">
           <option value="unrestricted">不限制</option>
           <option value="allowlist">白名单（仅静态密钥）</option>
+          <option value="denylist">黑名单（仅静态密钥）</option>
         </select>
       </label>
-      <p class="muted small">{{ modelValue.channelKeys.mode === 'unrestricted' ? '沿用静态密钥与 OAuth 订阅账号的候选规则。' : '只允许选中的静态密钥，OAuth 订阅账号不参与候选。' }}</p>
-      <template v-if="modelValue.channelKeys.mode === 'allowlist'">
-        <div class="access-options" aria-label="渠道密钥白名单">
+      <p class="muted small">{{ modelValue.channelKeys.mode === 'unrestricted' ? '沿用静态密钥与 OAuth 订阅账号的候选规则。' : modelValue.channelKeys.mode === 'denylist' ? '只排除选中的静态密钥，OAuth 订阅账号仍按其他规则参与候选。' : '只允许选中的静态密钥，OAuth 订阅账号不参与候选。' }}</p>
+      <template v-if="modelValue.channelKeys.mode !== 'unrestricted'">
+        <div class="access-options" :aria-label="modelValue.channelKeys.mode === 'denylist' ? '渠道密钥黑名单' : '渠道密钥白名单'">
           <label v-for="option in keyOptions" :key="JSON.stringify([option.channelId, option.keyId])" class="access-option">
             <input type="checkbox" :checked="modelValue.channelKeys.keys.some(pair => sameKey(pair, option))" @change="changeKey(option, $event)" />
             <span><strong>{{ option.name }}</strong><code>{{ option.channelId }} / {{ option.keyId }}</code><small v-if="option.hint">{{ option.hint }}</small></span>
@@ -146,7 +151,7 @@ function changeKey(pair: ClientKeyAllowedChannelKey, event: Event): void {
           </label>
         </div>
         <p v-if="loaded && keyOptions.length === 0" class="muted small">暂无可选择的静态密钥。</p>
-        <p v-if="conflictingKeys.length" class="access-warning" role="status">已选密钥 {{ conflictingKeys.map(pair => `${pair.channelId} / ${pair.keyId}`).join('、') }} 不在渠道白名单中，请调整后保存。</p>
+        <p v-if="conflictingKeys.length" class="access-warning" role="status">已选密钥 {{ conflictingKeys.map(pair => `${pair.channelId} / ${pair.keyId}`).join('、') }} {{ modelValue.channels.mode === 'allowlist' ? '不在渠道白名单中' : '被渠道黑名单排除' }}，请调整后保存。</p>
       </template>
     </fieldset>
 
@@ -157,11 +162,13 @@ function changeKey(pair: ClientKeyAllowedChannelKey, event: Event): void {
         <select aria-label="模型模式" :value="modelValue.models.mode" @change="changeMode('models', $event)">
           <option value="unrestricted">不限制</option>
           <option value="allowlist">白名单</option>
+          <option value="denylist">黑名单</option>
         </select>
       </label>
       <p class="muted small">按调用请求中的对外模型 ID 精确匹配，区分大小写，不支持通配符。</p>
-      <template v-if="modelValue.models.mode === 'allowlist'">
-        <div class="access-options" aria-label="模型白名单">
+      <p v-if="modelValue.models.mode === 'denylist'" class="muted small">禁止选中的对外模型 ID；其他已配置模型按其余规则使用。</p>
+      <template v-if="modelValue.models.mode !== 'unrestricted'">
+        <div class="access-options" :aria-label="modelValue.models.mode === 'denylist' ? '模型黑名单' : '模型白名单'">
           <label v-for="id in modelOptions" :key="id" class="access-option">
             <input type="checkbox" :checked="modelValue.models.ids.includes(id)" @change="changeId('models', id, $event)" />
             <span><code>{{ id }}</code></span>
@@ -177,7 +184,7 @@ function changeKey(pair: ClientKeyAllowedChannelKey, event: Event): void {
 
     <p v-if="emptyScopes.length" class="access-warning" role="status">无授权目标：{{ emptyScopes.join('、') }}白名单为空，保存后该调用方密钥不能调用任何模型。</p>
     <p v-if="missingScopes.length" class="access-warning" role="status">无授权目标：当前目录中找不到所选{{ missingScopes.join('、') }}，原 ID 与受限模式已保留。</p>
-    <p v-if="loaded && (missingChannels.length || missingKeys.length || missingModels.length)" class="access-warning" role="status">部分已选目标已删除或不存在，请明确取消或重新选择；原模式与名单不会自动放开。</p>
+    <p v-if="loaded && (missingChannels.length || missingKeys.length || missingModels.length)" class="access-warning" role="status">部分已选目标已删除或不存在，请明确取消或重新选择；原模式与名单已保留。</p>
   </div>
 </template>
 

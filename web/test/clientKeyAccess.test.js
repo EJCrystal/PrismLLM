@@ -73,4 +73,27 @@ describe('调用方访问范围 helper', () => {
     assert.match(summary, /无授权目标/)
     assert.match(summary, /模型.*1/)
   })
+
+  it('黑名单规范化保留排除项并复制草稿，空黑名单不误报无授权目标', async () => {
+    const { normalizeClientKeyAccessPolicy, clientKeyAccessSummary } = await helpers()
+    const policy = {
+      channels: { mode: 'denylist', ids: [' channel-a ', 'channel-a'] },
+      channelKeys: { mode: 'denylist', keys: [{ channelId: ' channel-a ', keyId: ' key-1 ' }] },
+      models: { mode: 'denylist', ids: [' Model-A ', 'Model-A', 'model-a'] },
+    }
+    const normalized = normalizeClientKeyAccessPolicy(policy)
+    assert.deepEqual(normalized, {
+      channels: { mode: 'denylist', ids: ['channel-a'] },
+      channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-a', keyId: 'key-1' }] },
+      models: { mode: 'denylist', ids: ['Model-A', 'model-a'] },
+    })
+    assert.match(clientKeyAccessSummary(normalized), /黑名单|禁止|排除/)
+    const empty = clientKeyAccessSummary({
+      channels: { mode: 'denylist', ids: [] }, channelKeys: { mode: 'denylist', keys: [] }, models: { mode: 'denylist', ids: [] },
+    })
+    assert.doesNotMatch(empty, /无授权目标/)
+    assert.match(empty, /黑名单|禁止|排除/)
+    normalized.models.ids.push('other')
+    assert.equal(policy.models.ids.length, 3)
+  })
 })
