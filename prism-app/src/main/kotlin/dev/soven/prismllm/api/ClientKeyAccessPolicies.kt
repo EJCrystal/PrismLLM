@@ -19,6 +19,10 @@ suspend fun validateClientKeyAccessPolicy(request: ClientKeyAccessPolicyDto, app
             allowedChannelKeys = if (request.channelKeys.mode == "allowlist") request.channelKeys.keys
                 .map { ClientKeyAllowedChannelKey(it.channelId, it.keyId) }.toSet() else null,
             allowedModelIds = if (request.models.mode == "allowlist") request.models.ids.toSet() else null,
+            deniedChannelIds = if (request.channels.mode == "denylist") request.channels.ids.toSet() else null,
+            deniedChannelKeys = if (request.channelKeys.mode == "denylist") request.channelKeys.keys
+                .map { ClientKeyAllowedChannelKey(it.channelId, it.keyId) }.toSet() else null,
+            deniedModelIds = if (request.models.mode == "denylist") request.models.ids.toSet() else null,
         ).normalized()
     } catch (cause: IllegalArgumentException) {
         throw badRequest("invalid_client_key_access_policy", cause.message ?: "访问范围 ID 无效")
@@ -27,21 +31,22 @@ suspend fun validateClientKeyAccessPolicy(request: ClientKeyAccessPolicyDto, app
 
     val channels = app.channelRepository.list().associateBy { it.id }
     val allowedChannels = policy.allowedChannelIds
-    if (policy.allowedChannelIds.orEmpty().any { it !in channels }) {
+    if ((policy.allowedChannelIds.orEmpty() + policy.deniedChannelIds.orEmpty()).any { it !in channels }) {
         throw badRequest("invalid_client_key_access_policy", "访问范围中的渠道不存在")
     }
-    for (key in policy.allowedChannelKeys.orEmpty()) {
+    for (key in policy.allowedChannelKeys.orEmpty() + policy.deniedChannelKeys.orEmpty()) {
         val channel = channels[key.channelId]
             ?: throw badRequest("invalid_client_key_access_policy", "渠道密钥所属渠道不存在")
         if (channel.keys.none { it.id == key.keyId }) {
             throw badRequest("invalid_client_key_access_policy", "渠道密钥不存在或不属于指定渠道")
         }
-        if (allowedChannels != null && key.channelId !in allowedChannels) {
+        if (key in policy.allowedChannelKeys.orEmpty() &&
+            ((allowedChannels != null && key.channelId !in allowedChannels) || key.channelId in policy.deniedChannelIds.orEmpty())) {
             throw badRequest("invalid_client_key_access_policy", "渠道密钥必须属于允许的渠道")
         }
     }
     val configuredModels = channels.values.flatMap { channel -> channel.modelMappings.map { it.publicModelId } }.toSet()
-    if (policy.allowedModelIds.orEmpty().any { it !in configuredModels }) {
+    if ((policy.allowedModelIds.orEmpty() + policy.deniedModelIds.orEmpty()).any { it !in configuredModels }) {
         throw badRequest("invalid_client_key_access_policy", "访问范围中的对外模型 ID 不存在")
     }
     return policy
@@ -49,10 +54,10 @@ suspend fun validateClientKeyAccessPolicy(request: ClientKeyAccessPolicyDto, app
 
 /** 验证显式模式，以及不限制模式的空数组约束。 */
 private fun validateMode(mode: String, empty: Boolean) {
-    if (mode != "unrestricted" && mode != "allowlist") {
-        throw badRequest("invalid_client_key_access_policy", "访问范围模式必须为 unrestricted 或 allowlist")
+    if (mode != "unrestricted" && mode != "allowlist" && mode != "denylist") {
+        throw badRequest("invalid_client_key_access_policy", "访问范围模式必须为 unrestricted、allowlist 或 denylist")
     }
     if (mode == "unrestricted" && !empty) {
-        throw badRequest("invalid_client_key_access_policy", "不限制模式的白名单必须为空")
+        throw badRequest("invalid_client_key_access_policy", "不限制模式的名单必须为空")
     }
 }
