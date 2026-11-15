@@ -479,6 +479,21 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
         }
     }
 
+    /** 空凭据映射不得掩盖其他渠道全部支持凭据被排除的权限拒绝。 */
+    @Test
+    fun `all supporting keys denied stays forbidden with another empty credential mapping`() = runBlocking {
+        val channel = accessChannel("denied-with-empty")
+        app.channelRepository.create("empty-mapping", "${fake.baseUrl}/ok/v1", emptyList(), "bearer",
+            GatewayProtocol.default, enabled = true, modelMappings = mappingsOf("m1"))
+        val key = scopedKey(ClientKeyAccessPolicy(deniedChannelKeys = setOf(ClientKeyAllowedChannelKey(channel.id, channel.keys.single().id))))
+        testApplication {
+            application { app.install(this) }
+            missingModelRequests("m1").forEach { (path, body) -> assertRejected(client.send(key, path, body), "route_access_denied") }
+            assertEquals(0, fake.requests.size)
+            assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
+        }
+    }
+
     @Test
     fun `empty denylist behaves as unrestricted including unavailable credentials and disabled channels`() = runBlocking {
         val empty = ClientKeyAccessPolicy(deniedChannelIds = emptySet(), deniedChannelKeys = emptySet(), deniedModelIds = emptySet())

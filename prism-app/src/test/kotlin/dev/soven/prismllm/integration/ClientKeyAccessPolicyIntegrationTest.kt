@@ -459,6 +459,55 @@ class ClientKeyAccessPolicyIntegrationTest : GatewayIntegrationTestBase() {
         }
     }
 
+    /** 完整编辑保留已有模型排除规则，但不接受尚未配置的新模型 ID。 */
+    @Test
+    fun `full update preserves deleted model denylist and rejects new unknown exclusions`() = runBlocking {
+        val channel = createChannel("retained-deny", "ok")
+        testApplication {
+            application { app.install(this) }
+            val auth = client.loginAdmin()
+            val original = unrestricted.replace("\"models\":{\"mode\":\"unrestricted\",\"ids\":[]}",
+                "\"models\":{\"mode\":\"denylist\",\"ids\":[\"m1\"]}")
+            val created = client.create(auth, original)
+            assertTrue(app.channelRepository.delete(channel.id))
+            val retained = original.replace("\"channels\":{\"mode\":\"unrestricted\",\"ids\":[]}",
+                "\"channels\":{\"mode\":\"denylist\",\"ids\":[]}")
+            val updated = client.put("/admin/api/client-keys/${created.id()}") {
+                authenticate(auth)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"renamed","dailyTokenLimit":12,"accessPolicy":$retained}""")
+            }.objectBody(HttpStatusCode.OK)
+            assertEquals(Json.parseToJsonElement(retained), updated["accessPolicy"])
+            assertEquals("renamed", updated["name"]!!.jsonPrimitive.content)
+            assertEquals(ClientKeyQuotaLimits(dailyTokens = 12), assertNotNull(app.clientKeyRepository.find(created.id())).quotas)
+            for (invalid in listOf(retained.replace("[\"m1\"]", "[\"m1\",\"unknown\"]"),
+                retained.replace("[\"m1\"]", "[\"M1\"]"))) {
+                val rejected = client.put("/admin/api/client-keys/${created.id()}") {
+                    authenticate(auth)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"name":"must-not-change","accessPolicy":$invalid}""")
+                }
+                assertEquals(HttpStatusCode.BadRequest, rejected.status, rejected.bodyAsText())
+                assertEquals(setOf("m1"), assertNotNull(app.clientKeyRepository.find(created.id())).accessPolicy.deniedModelIds)
+            }
+            val newKey = client.post("/admin/api/client-keys") {
+                authenticate(auth)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"new-key","accessPolicy":$original}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, newKey.status, newKey.bodyAsText())
+            createChannel("recreated-model", "ok")
+            val denied = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer ${created["key"]!!.jsonPrimitive.content}")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"m1","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.Forbidden, denied.status, denied.bodyAsText())
+            assertEquals("model_access_denied", denied.headers["X-Prism-Error-Code"])
+            assertTrue(fake.requests.isEmpty())
+        }
+    }
+
     /** 生成独立预期的完整访问范围 JSON。 */
     private fun scoped(channelId: String, keyId: String, modelId: String): String =
         """{"channels":{"mode":"allowlist","ids":["$channelId"]},"channelKeys":{"mode":"allowlist","keys":[{"channelId":"$channelId","keyId":"$keyId"}]},"models":{"mode":"allowlist","ids":["$modelId"]}}"""

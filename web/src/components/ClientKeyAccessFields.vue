@@ -184,7 +184,8 @@ function changeKey(pair: ClientKeyAllowedChannelKey, event: Event): void {
 
     <p v-if="emptyScopes.length" class="access-warning" role="status">无授权目标：{{ emptyScopes.join('、') }}白名单为空，保存后该调用方密钥不能调用任何模型。</p>
     <p v-if="missingScopes.length" class="access-warning" role="status">无授权目标：当前目录中找不到所选{{ missingScopes.join('、') }}，原 ID 与受限模式已保留。</p>
-    <p v-if="loaded && (missingChannels.length || missingKeys.length || missingModels.length)" class="access-warning" role="status">部分已选目标已删除或不存在，请明确取消或重新选择；原模式与名单已保留。</p>
+    <p v-if="loaded && (missingChannels.length || missingKeys.length || (modelValue.models.mode === 'allowlist' && missingModels.length))" class="access-warning" role="status">部分已选目标已删除或不存在，请明确取消或重新选择；原模式与名单已保留。</p>
+    <p v-if="loaded && modelValue.models.mode === 'denylist' && missingModels.length" class="access-warning" role="status">可保留已有的模型黑名单 ID；同 ID 模型重新配置后仍禁止，也可明确取消排除规则。</p>
   </div>
 </template>
 

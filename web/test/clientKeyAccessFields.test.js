@@ -99,6 +99,8 @@ describe('真实调用方访问范围配置组件', () => {
     assert.match(document.body.textContent, /deleted-model/)
     assert.doesNotMatch(document.body.textContent, /无授权目标/)
     assert.deepEqual(state.value.models.ids, ['deleted-model'])
+    assert.match(document.body.textContent, /可保留.*模型黑名单.*重新配置.*仍禁止/)
+    assert.doesNotMatch(document.body.textContent, /请明确取消或重新选择/)
     await choose('模型', 'deleted-model')
     assert.deepEqual(state.value.models.ids, [])
   })

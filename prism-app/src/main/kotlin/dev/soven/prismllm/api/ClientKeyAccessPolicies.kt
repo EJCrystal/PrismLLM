@@ -8,8 +8,17 @@ import dev.soven.prismllm.shared.error.badRequest
  * 规范化并校验完整访问范围；停用的配置对象仍可作为授权目标。
  *
  * 校验全部成功后才把策略交给仓储写入，非法对象不会产生部分更新。
+ * 更新允许保留已有模型黑名单 ID，避免删除映射后丢失同 ID 重新配置时的排除规则。
+ *
+ * @param request 完整的三维访问策略。
+ * @param app 用于读取配置目录的应用服务。
+ * @param existing 更新前策略；创建时为空，新增模型 ID 必须存在于配置目录。
  */
-suspend fun validateClientKeyAccessPolicy(request: ClientKeyAccessPolicyDto, app: GatewayApplication): ClientKeyAccessPolicy {
+suspend fun validateClientKeyAccessPolicy(
+    request: ClientKeyAccessPolicyDto,
+    app: GatewayApplication,
+    existing: ClientKeyAccessPolicy? = null,
+): ClientKeyAccessPolicy {
     validateMode(request.channels.mode, request.channels.ids.isEmpty())
     validateMode(request.channelKeys.mode, request.channelKeys.keys.isEmpty())
     validateMode(request.models.mode, request.models.ids.isEmpty())
@@ -46,7 +55,8 @@ suspend fun validateClientKeyAccessPolicy(request: ClientKeyAccessPolicyDto, app
         }
     }
     val configuredModels = channels.values.flatMap { channel -> channel.modelMappings.map { it.publicModelId } }.toSet()
-    if ((policy.allowedModelIds.orEmpty() + policy.deniedModelIds.orEmpty()).any { it !in configuredModels }) {
+    val newlyDeniedModels = policy.deniedModelIds.orEmpty() - existing?.deniedModelIds.orEmpty()
+    if ((policy.allowedModelIds.orEmpty() + newlyDeniedModels).any { it !in configuredModels }) {
         throw badRequest("invalid_client_key_access_policy", "访问范围中的对外模型 ID 不存在")
     }
     return policy
