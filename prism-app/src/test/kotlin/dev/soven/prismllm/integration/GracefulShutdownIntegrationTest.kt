@@ -130,7 +130,6 @@ class GracefulShutdownIntegrationTest : GatewayIntegrationTestBase() {
                 drainTimeoutMs = DRAIN_TIMEOUT_MS,
                 staticDir = childDirectory.resolve("static"),
                 manxueEnabled = false,
-                iqVisionEnabled = false,
             )
             val process = startChild(childConfig, childOutput)
             child = process
@@ -315,13 +314,11 @@ class GracefulShutdownIntegrationTest : GatewayIntegrationTestBase() {
                     "STATIC_DIR" to config.staticDir.toAbsolutePath().toString(),
                     "QUOTA_PLUGIN_DIR" to config.quotaPluginDir.toAbsolutePath().toString(),
                     "IQ_JUDGE_PLUGIN_DIR" to config.iqJudgePluginDir.toAbsolutePath().toString(),
-                    "IQ_VISION_BROWSER_PATH" to childDirectory.resolve("no-test-browser").toAbsolutePath().toString(),
                     "COOKIE_SECURE" to "false",
                     "REQUEST_LOG_CLEANUP_ENABLED" to "false",
                     "UPSTREAM_HEADER_REFRESH_ENABLED" to "false",
                     "KEY_AUTO_RECOVERY_INTERVAL_MS" to config.keyAutoRecoveryIntervalMs.toString(),
                     "MANXUE_ENABLED" to "false",
-                    "IQ_VISION_ENABLED" to "false",
                     "WEB_SEARCH_ENABLED" to "false",
                 ),
             )

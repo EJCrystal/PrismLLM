@@ -262,7 +262,7 @@ describe('channel test workspace', () => {
     assert.match(help.textContent, /不写入请求日志，也不消耗调用方密钥额度/)
   })
 
-  for (const [id, expected] of [['manxue', /manxue.ai/], ['vision', /6 帧截图/], ['custom', /请确认插件来源可信/]]) {
+  for (const [id, expected] of [['manxue', /manxue.ai/], ['custom', /请确认插件来源可信/]]) {
     it('keeps ' + id + ' privacy warnings outside collapsed judge documentation', async () => {
       const document = await renderPanel('IqTestView', (state) => {
         state.judges.value = [{ id, label: '测试判分器', builtIn: id !== 'custom', description: '详细判分器介绍' }]

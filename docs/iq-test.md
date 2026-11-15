@@ -36,7 +36,7 @@
 
 图层顺序只在能离线确认时判定：远侧比最靠后的远侧图元与最靠前的自行车图元，近侧比最靠前的近侧图元与最靠后的鹈鹕图元；
 `<defs>`/`<symbol>` 等只存定义、不直接绘制的内容不参与比较。没打可辨认标记、或两侧图元互为嵌套容器的作品记为「提示」项
-（`decisive=false`），只展示、不否决，跨骑遮挡交给视觉判分或人工确认。
+（`decisive=false`），只展示、不否决，跨骑遮挡交给人工确认。
 
 ### 糖果测试题库（candy）
 
@@ -97,7 +97,6 @@
 | :--- | :--- | :--- | :--- |
 | `local` | 本地结构 + 人工 | 检查 HTML/SVG/动画/外部资源、单场景与图层顺序；结构通过后标记为待人工评分 | 否 |
 | `manxue` | 满血AI HTML 分类 | 调用 `manxue.ai` 的 `benchmark=html` 分类接口 | 是 |
-| `vision` | 无头浏览器截图 + 视觉模型 | 用无头浏览器在动画周期内采样 6 帧并逐项检查，再调用 `IQ_VISION_BASE_URL` 配置的多模态模型评分 | 截图发送到配置的端点 |
 
 `local` 的判定：
 
@@ -106,49 +105,6 @@
 - 有参与判定的结构检查未通过：`incorrect`。
 
 `manxue` 的判定：`normal → passed`、`degraded → incorrect`、`unknown → review`。
-
-`vision` 的判定：
-
-- 用无头 Chrome/Chromium 把模型输出中的第一段内联 SVG 在动画周期内均匀采样 6 帧，逐帧截图为 PNG；
-  周期从 SMIL `dur` 或 CSS `animation-duration` 估算，未声明时按 2 秒处理。每个时间点都会：
-  - 用 Web Animations API 暂停并把所有 CSS 动画的 `currentTime` 定位到目标时刻；
-  - 调用 SVG 的 `pauseAnimations()` / `setCurrentTime()` 推进 SMIL 时间线；
-  - 再截取固定尺寸的画面。因此 CSS `@keyframes` 与 SMIL 都能被真实采样，不执行模型提供的脚本，
-    也不加载外部资源；
-- 六张截图按时间顺序交给多模态模型，要求逐项检查五个维度并分别返回 `passed` / `failed` / `unknown`
-  与中文描述：
-  1. **鹈鹕特征**：同一只白色长颈鸟，头颈与躯干连贯，长宽喙、橙色喉囊、冠羽和眼睛清楚；
-  2. **自行车结构**：前后两个带辐条的轮子，连续双三角车架，车座、前叉、车把、链条和曲柄位置合理；
-  3. **骑行关系**：鹈鹕坐在车座上，双腿连续到脚并落在踏板，翅膀末端接触车把握把，踏板面保持水平；
-  4. **动画连贯性**：逐帧比较轮辐、腿脚、曲柄和踏板位置，确认存在连续运动，脚未脱离踏板，
-     脚踏点没有偏离曲柄圆周，身体起伏时大腿根部没有与躯干脱节；
-  5. **画面完成度**：主体完整居中，轮廓清楚，无裁切、漂浮、错误重叠、缺失、错位或结构碰撞，
-     跨骑透视正确（远侧肢体被车架局部遮挡属正常，远近关系画反或近侧大腿根部被躯干遮住才算错）。
-- 任一项 `failed` → `incorrect`（疑似降智）；没有失败项但有 `unknown` → `review`；五项全部通过 → `passed`。
-  逐项结果与顶层 `verdict` 冲突时以逐项结果为准，失败项优先；
-  模型未返回 `aspects` 时五项均按 `unknown` 处理，不能只凭自报的 `verdict` 或分数通过；
-- **动画连贯性不再停留在 `unknown`**：六帧完全相同说明没有可见动态效果，直接判 `failed`；
-  模型自己返回 `unknown` 时也按 `failed` 处理。其他维度仍可 `unknown` 并进入人工确认；
-- 明确失败条件：部件漂浮、错误重叠、缺失、错位、画面截断；鹈鹕没有坐在车座上；脚没有在踏板上；
-  翅膀没有握住车把；自行车结构不合理；缺少两个轮子、车架、车把、踏板或链条；
-- 找不到内联 SVG、渲染失败或模型调用失败时返回 `review`，不会把基础设施故障算成模型失败；
-- 视觉判分只使用无头 Chrome/Chromium；未找到浏览器时直接返回 `review`（需人工查看），
-  不会降级到其他渲染器，也不会阻止网关启动；
-- 浏览器进程隔离：网关以非 root 运行时保留 Chrome 自己的沙箱；以 root 运行时先用
-  `setpriv` 把浏览器降到 `nobody`，再关闭在 root 下无法启动的沙箱，并清空进程环境，
-  避免浏览器被恶意作品攻破后拿到网关权限、数据库地址或判分密钥。root 下找不到
-  `setpriv` 时不会退回 root 无沙箱运行，而是返回 `review`（需人工查看）；
-  输出目录交给 `nobody` 独占，清理时按目录句柄逐项删除且不跟随符号链接；
-- Docker x86_64 镜像已经预装 Chrome；其他架构或本机运行时可通过 `IQ_VISION_BROWSER_PATH` 指定浏览器；
-- 只渲染第一段内联 SVG；完全用 HTML/CSS 绘制、没有内联 SVG 的输出仍会返回 `review`。
-
-`vision` 判分器始终注册，是否真正调用模型由「系统配置 → 智商检测视觉判分」里的开关决定；
-未保存过页面配置时使用 `IQ_VISION_ENABLED` / `IQ_VISION_BASE_URL` / `IQ_VISION_MODEL` 等环境变量默认值。
-端点使用 OpenAI 兼容的 `/chat/completions` 协议；`IQ_VISION_BASE_URL` 可以直接指向本机 PrismLLM 网关，
-这样截图不会离开自己的部署。
-
-页面配置保存后立即生效，不需要重启网关。可热切换的是启用开关、模型端点、模型名、API 密钥和视觉模型超时；
-渲染宽度、单帧浏览器超时、浏览器路径属于进程级绑定，仍需通过环境变量调整并重启。
 
 ### 外部 JAR 判分器
 
@@ -164,16 +120,8 @@
 - `local` 判分不出本机。
 - 选择 `manxue` 时，鹈鹕题生成的 HTML 会发送到 `manxue.ai`；糖果题不调用判分器，不会发送任何输出。
   渠道地址、渠道密钥和调用方密钥不会发送。
-- 选择 `vision` 时，只会把渲染出的 6 帧 PNG 截图发送到当前生效的视觉模型端点，不发送原始 HTML 或渠道信息。
-  端点指向本机网关时截图不出部署。
-- 视觉模型 API 密钥不会回显到管理台。页面保存的密钥与渠道凭据一样加密存储；环境变量里的
-  `IQ_VISION_API_KEY` 只存在于网关进程内。密钥与端点绑定：页面端点与环境变量端点一致时留空会沿用环境变量密钥，
-  端点被改成别的服务后必须重新填写或明确清除，否则保存会被拒绝。
-- 保存过的密钥无法解密（主密钥轮换或密文损坏）时**不会**回退到环境变量密钥，接口返回
-  `apiKeyUnreadable`，系统配置卡片与弹窗都会提示重新填写。静默换成另一个账号的凭据只会在 401 时暴露。
 - 外部 JAR 判分器属于受信代码，会收到 HTML 与本地结构摘要；部署前应自行审查插件内容。
-- 如果部署环境不允许访问第三方服务，设置 `MANXUE_ENABLED=false`，`manxue` 就不会出现在判分器列表中；
-  `vision` 判分器始终在列表里，关闭页面配置里的开关（或保持环境变量 `IQ_VISION_ENABLED=false`）即可不调用任何外部模型。
+- 如果部署环境不允许访问第三方服务，设置 `MANXUE_ENABLED=false`，`manxue` 就不会出现在判分器列表中。
 
 ## 满血 API 接入
 
@@ -205,21 +153,12 @@ curl https://manxue.ai/api/v1/tests/<id>
 | 变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `IQ_DEFAULT_JUDGE` | `local` | 默认判分器 ID；不存在时退回 `local`，再退回第一个可用判分器。 |
-| `IQ_JUDGE_TIMEOUT_MS` | `60000` | 单次判分的总超时，1000–300000；启用 `vision` 且未显式配置时自动提高到 6×浏览器单帧超时+视觉超时（最多 300000）。 |
+| `IQ_JUDGE_TIMEOUT_MS` | `60000` | 单次判分的总超时，1000–300000。 |
 | `IQ_JUDGE_PLUGIN_DIR` | `plugins/iq-judges` | 外部判分器 JAR 目录；不存在时视为空目录。 |
 | `IQ_TEST_TIMEOUT_MS` | 空 | 单次检测等待上游的默认超时，1000–600000；留空时使用题目默认值（图形题 180 秒、推理题 120 秒）。单次请求的 `timeoutMs` 可再覆盖，但所有来源都不超过 600000 毫秒。 |
 | `MANXUE_ENABLED` | `true` | 是否注册 `manxue` 判分器。 |
 | `MANXUE_API_BASE_URL` | `https://manxue.ai` | 满血 API 基础地址。 |
 | `MANXUE_TIMEOUT_MS` | `60000` | POST + 轮询的总超时。 |
-| `IQ_VISION_ENABLED` | `false` | 未保存页面配置时，视觉判分是否启用。 |
-| `IQ_VISION_BASE_URL` | 空 | OpenAI 兼容端点的基础地址；启用时必填，需以 `http://` 或 `https://` 开头。 |
-| `IQ_VISION_API_KEY` | 空 | 可选的 Bearer 令牌，只存在于网关进程内；端点与之一致时供页面配置回退使用。 |
-| `IQ_VISION_MODEL` | 空 | 多模态模型名；启用时必填。 |
-| `IQ_VISION_TIMEOUT_MS` | `60000` | 单次视觉评分超时，1000–300000。 |
-| `IQ_VISION_RENDER_WIDTH` | `1024` | 单帧截图宽度上限，256–2048；多帧判分时单帧最大 640。 |
-| `IQ_VISION_MAX_IMAGE_BYTES` | `4000000` | 单帧截图大小上限，100000–20000000；超过时返回 `review`。 |
-| `IQ_VISION_BROWSER_PATH` | 空 | Chrome/Chromium 可执行文件或 PATH 命令名；为空时自动探测。 |
-| `IQ_VISION_BROWSER_TIMEOUT_MS` | `15000` | 单帧浏览器渲染超时，1000–60000。 |
 
 ## 管理面 API
 
@@ -263,30 +202,6 @@ curl -b cookies.txt http://localhost:8080/admin/api/iq-tests/targets
 
 按「渠道 × 已授权模型」返回可用凭据与协议。没有可路由凭据的组合不会出现。
 
-### 视觉判分配置
-
-```bash
-curl -b cookies.txt http://localhost:8080/admin/api/iq-vision-settings
-```
-
-返回当前生效的 `enabled`、`baseUrl`、`model`、`timeoutMs`，以及 `apiKeySet` / `apiKeySource`
-（`settings`、`environment`、`none`）、`source`（配置来自页面还是环境变量）、`browserAvailable`。
-另外附带 `browserTimeoutMs` 与 `judgeTimeoutMs`，用于判断「6×单帧渲染 + 视觉调用」是否超过判分总超时
-（`worstCaseBudgetMs`）。响应从不包含密钥明文。
-
-```bash
-curl -b cookies.txt -X PUT http://localhost:8080/admin/api/iq-vision-settings \
-  -H "X-CSRF-Token: <csrf>" -H "Content-Type: application/json" \
-  -d '{"enabled":true,"baseUrl":"http://127.0.0.1:8080/v1","model":"gpt-6.1-sol","apiKey":"...","timeoutMs":60000}'
-```
-
-`apiKey` 留空表示沿用已保存的密钥；`clearApiKey=true` 表示显式清除。端点变化时如果不填新密钥也不勾选清除，
-接口返回 `400`，避免把旧服务的凭据发给新端点。端点必须是带主机名的 `http://` / `https://` 地址，
-显式端口需在 1..65535 之间；不合法时同样返回 `400`。保存后立即生效。
-
-读取配置本身失败时接口返回 `503`，而不是假装「从未保存过配置」；判分侧遇到同样的读库失败会直接
-转人工确认，不会回退到环境变量里的端点和启用状态。
-
 ### 运行检测
 
 ```bash
@@ -327,3 +242,4 @@ curl -b cookies.txt http://localhost:8080/admin/api/iq-tests/<id>
 
 历史上限由服务端固定为最近 200 次；列表只返回摘要，详情返回完整响应与结构检查。管理台在渠道
 测试面板的「记录」页签里一次读取全部保留记录，过滤到当前渠道后在前端按类型、模型和结论筛选。
+已移除的 `vision`（无头浏览器截图 + 视觉模型）判分器产生的历史记录仍按保存时的结果展示。
