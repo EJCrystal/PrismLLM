@@ -26,23 +26,23 @@ data class ClientKeyAccessPolicy(
     /**
      * 去除 ID 首尾空白、去重并验证持久化长度，保留各维度原有模式。
      *
-     * @throws IllegalArgumentException ID 为空或超出数据库列的长度上限。
+     * @throws IllegalArgumentException 同维度模式冲突，或 ID 为空/超出数据库列的长度上限。
      */
     fun normalized(): ClientKeyAccessPolicy {
         require(allowedChannelIds == null || deniedChannelIds == null) { "渠道白名单与黑名单不能同时启用" }
         require(allowedChannelKeys == null || deniedChannelKeys == null) { "渠道密钥白名单与黑名单不能同时启用" }
         require(allowedModelIds == null || deniedModelIds == null) { "模型白名单与黑名单不能同时启用" }
         return copy(
-        allowedChannelIds = allowedChannelIds?.map { normalizeId(it, 36) }?.toSet(),
-        allowedChannelKeys = allowedChannelKeys?.map {
-            ClientKeyAllowedChannelKey(normalizeId(it.channelId, 36), normalizeId(it.keyId, 36))
-        }?.toSet(),
-        allowedModelIds = allowedModelIds?.map { normalizeId(it, 200) }?.toSet(),
-        deniedChannelIds = deniedChannelIds?.map { normalizeId(it, 36) }?.toSet(),
-        deniedChannelKeys = deniedChannelKeys?.map {
-            ClientKeyAllowedChannelKey(normalizeId(it.channelId, 36), normalizeId(it.keyId, 36))
-        }?.toSet(),
-        deniedModelIds = deniedModelIds?.map { normalizeId(it, 200) }?.toSet(),
+            allowedChannelIds = allowedChannelIds?.map { normalizeId(it, 36) }?.toSet(),
+            allowedChannelKeys = allowedChannelKeys?.map {
+                ClientKeyAllowedChannelKey(normalizeId(it.channelId, 36), normalizeId(it.keyId, 36))
+            }?.toSet(),
+            allowedModelIds = allowedModelIds?.map { normalizeId(it, 200) }?.toSet(),
+            deniedChannelIds = deniedChannelIds?.map { normalizeId(it, 36) }?.toSet(),
+            deniedChannelKeys = deniedChannelKeys?.map {
+                ClientKeyAllowedChannelKey(normalizeId(it.channelId, 36), normalizeId(it.keyId, 36))
+            }?.toSet(),
+            deniedModelIds = deniedModelIds?.map { normalizeId(it, 200) }?.toSet(),
         )
     }
 

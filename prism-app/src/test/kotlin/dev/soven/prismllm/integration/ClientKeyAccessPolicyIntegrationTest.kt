@@ -375,7 +375,7 @@ class ClientKeyAccessPolicyIntegrationTest : GatewayIntegrationTestBase() {
             application { app.install(this) }
             val auth = client.loginAdmin()
             val policy = scoped(channel.id, channel.keys.single().id, "m1").replace("allowlist", "denylist")
-            val created = client.create(auth, policy)
+            val created = client.create(auth, policy.replace(channel.id, " ${channel.id} ").replace("m1", " m1 "))
             assertEquals(Json.parseToJsonElement(policy), created["accessPolicy"])
             val record = assertNotNull(app.clientKeyRepository.find(created.id()))
             assertEquals(record, app.clientKeyRepository.findByHash(record.keyHash))

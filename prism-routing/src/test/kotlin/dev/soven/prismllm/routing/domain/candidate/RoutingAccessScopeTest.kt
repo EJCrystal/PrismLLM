@@ -62,6 +62,31 @@ class RoutingAccessScopeTest {
         assertFalse(RoutingAccessScope(allowedModelIds = setOf("*")).allowsModel("PublicModel"))
     }
 
+    /** 验证黑名单不会将 OAuth 身份当作同 ID 的静态密钥。 */
+    @Test
+    fun `denylist matches static channel key pair without excluding OAuth sharing the ID`() {
+        val scope = RoutingAccessScope(deniedChannelKeys = setOf(RoutingAllowedChannelKey("A", "shared-key")))
+        assertFalse(scope.allowsCredential("A", staticKey("A", "shared-key")))
+        assertTrue(scope.allowsCredential("B", staticKey("B", "shared-key")))
+        assertTrue(scope.allowsCredential("A", OAuthCredential("shared-key")))
+        assertTrue(scope.allowsCredential("A", staticKey("A", "other")))
+        assertFalse(RoutingAccessScope(deniedChannelIds = setOf("A")).allowsCredential("A", OAuthCredential("shared-key")))
+    }
+
+    @Test
+    fun `denylist preserves exact model identity and intersects with a different whitelist dimension`() {
+        val scope = RoutingAccessScope(allowedChannelIds = setOf("A"), deniedModelIds = setOf("Model-A"))
+        assertFalse(scope.allowsModel("Model-A"))
+        assertTrue(scope.allowsModel("model-a"))
+        assertTrue(scope.allowsModel("new-model"))
+        assertFalse(scope.allowsCredential("B", staticKey("B", "one")))
+        assertTrue(scope.allowsCredential("A", staticKey("A", "one")))
+        val empty = RoutingAccessScope(deniedChannelIds = emptySet(), deniedChannelKeys = emptySet(), deniedModelIds = emptySet())
+        assertTrue(empty.isUnrestricted)
+        assertTrue(empty.allowsModel("new-model"))
+        assertTrue(empty.allowsCredential("A", staticKey("A", "one")))
+    }
+
     /** 创建不依赖数据库的真实静态渠道密钥记录。 */
     private fun staticKey(channelId: String, id: String): ChannelKeyRecord = ChannelKeyRecord(
         id = id, channelId = channelId, name = id, credentialCiphertext = "cipher", credentialNonce = "nonce",
