@@ -29,13 +29,13 @@ const record = () => ({
   createdAt: 1700000000000, rotatedAt: null, revokedAt: null, accessPolicy: structuredClone(policy),
 })
 const catalog = [
-  { id: 'channel-a', name: '渠道 A', enabled: true, keys: [{ id: 'key-a', name: '凭据 A', state: 'ACTIVE', credentialSet: true }], models: ['upstream-a'], modelMappings: [{ upstreamModel: 'upstream-a', canonicalModelId: 'Model-A' }] },
-  { id: 'channel-b', name: '渠道 B', enabled: true, keys: [{ id: 'key-b', name: '凭据 B', state: 'ACTIVE', credentialSet: true }], models: ['upstream-b'], modelMappings: [{ upstreamModel: 'upstream-b', canonicalModelId: 'model-b' }] },
+  { id: 'channel-a', name: '渠道 A', enabled: true, keys: [{ id: 'key-a', name: '凭据 A', state: 'ACTIVE', credentialSet: true, models: ['upstream-a'] }], models: ['upstream-a'], modelMappings: [{ upstreamModel: 'upstream-a', canonicalModelId: 'Model-A' }] },
+  { id: 'channel-b', name: '渠道 B', enabled: true, keys: [{ id: 'key-b', name: '凭据 B', state: 'ACTIVE', credentialSet: true, models: ['upstream-b'] }], models: ['upstream-b'], modelMappings: [{ upstreamModel: 'upstream-b', canonicalModelId: 'model-b' }] },
 ]
 for (const channel of catalog) {
   Object.assign(channel, { baseUrl: 'https://fixture.invalid', authType: 'bearer', protocolAuthTypes: {}, protocols: ['chat_completions'], credentialSet: true, createdAt: 1, updatedAt: 1, priority: 0, kind: 'custom', provider: null, requestOverrides: { inheritGlobal: true, headerProfile: null, userAgent: null, headers: {}, body: {}, protocols: {} }, quota: { providerId: '', config: {} } })
   channel.modelMappings.forEach(mapping => { mapping.mappingSource = null })
-  channel.keys.forEach(key => Object.assign(key, { priority: 0, models: [...channel.models], rateLimit: { enabled: false, requestsPerMinute: null, maxConcurrentRequests: null }, stateVersion: 0, autoDisableUntil: null, probeUntil: null, autoDisableReason: null }))
+  channel.keys.forEach(key => Object.assign(key, { priority: 0, rateLimit: { enabled: false, requestsPerMinute: null, maxConcurrentRequests: null }, stateVersion: 0, autoDisableUntil: null, probeUntil: null, autoDisableReason: null }))
 }
 
 describe('真实调用方密钥视图访问范围行为', () => {
@@ -51,7 +51,13 @@ describe('真实调用方密钥视图访问范围行为', () => {
     const icon = await component('Icon')
     const overrides = { Icon: icon }
     for (const name of ['Modal', 'CopyButton', 'ActionMenu', 'TablePlaceholder', 'ErrorState']) overrides[name] = await component(name, { Icon: icon })
-    if (existsSync(new URL('../src/components/ClientKeyAccessFields.vue', import.meta.url))) overrides.ClientKeyAccessFields = await component('ClientKeyAccessFields')
+    for (const name of ['AccessModeToggle', 'ClientKeyAccessTree']) overrides[name] = await component(name, { Icon: icon })
+    if (existsSync(new URL('../src/components/ClientKeyAccessFields.vue', import.meta.url))) {
+      overrides.ClientKeyAccessFields = await component('ClientKeyAccessFields', {
+        Icon: icon, CopyButton: overrides.CopyButton,
+        AccessModeToggle: overrides.AccessModeToggle, ClientKeyAccessTree: overrides.ClientKeyAccessTree,
+      })
+    }
     view = await component('ClientKeysView', overrides)
   })
   afterEach(async () => { app?.unmount(); app = null; await settle(); document.body.innerHTML = ''; globalThis.fetch = originalFetch })
@@ -80,13 +86,34 @@ describe('真实调用方密钥视图访问范围行为', () => {
   }
   function button(text) { return [...document.querySelectorAll('button')].find(node => node.textContent.trim() === text) }
   async function edit() { document.querySelector('button[aria-label="编辑调用方密钥"]').click(); await settle() }
-  async function mode(label, value) {
-    const select = document.querySelector('select[aria-label="' + label + '模式"]')
-    assert.ok(select, '缺少' + label + '模式')
-    select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); await settle()
+  async function pickMode(groupLabel, value) {
+    const group = document.querySelector('.modal [role="radiogroup"][aria-label="' + groupLabel + '"]')
+    assert.ok(group, '缺少分段控制器：' + groupLabel)
+    const input = [...group.querySelectorAll('input[type="radio"]')].find(node => node.value === value)
+    assert.ok(input, '缺少模式选项：' + value)
+    input.click(); await settle()
   }
+  const cardMode = value => pickMode('渠道与密钥模式', value)
+  const modelMode = value => pickMode('模型模式', value)
+  function channelRow(name) {
+    const row = [...document.querySelectorAll('.modal .tree-row.is-channel')].find(node => node.textContent.includes(name))
+    assert.ok(row, '缺少渠道行：' + name)
+    return row
+  }
+  async function chooseChannel(name) { channelRow(name).querySelector('input[type="checkbox"]').click(); await settle() }
+  async function expandAll() {
+    const trigger = [...document.querySelectorAll('.modal .tree-action')].find(node => /展开全部|收起全部/.test(node.textContent))
+    assert.ok(trigger, '缺少展开全部按钮')
+    trigger.click(); await settle()
+  }
+  async function chooseModel(id) {
+    const row = [...document.querySelectorAll('.modal .access-option')].find(node => node.textContent.includes(id))
+    assert.ok(row, '缺少模型行：' + id)
+    row.querySelector('input').click(); await settle()
+  }
+  const checkedCount = () => document.querySelectorAll('.modal fieldset input[type="checkbox"]:checked').length
 
-  it('列表展示范围摘要，目录仅在打开白名单编辑表单后加载', async () => {
+  it('列表展示范围摘要，打开编辑表单后加载一次目录', async () => {
     await mount()
     assert.match(document.querySelector('tbody').textContent, /渠道.*2.*模型.*2/)
     assert.equal(calls.includes('/admin/api/channels'), false)
@@ -94,35 +121,36 @@ describe('真实调用方密钥视图访问范围行为', () => {
     assert.equal(calls.filter(url => url === '/admin/api/channels').length, 1)
   })
 
-  it('编辑回显三维多选，保存完整范围和原有额度字段', async () => {
-    await mount(); await edit()
-    assert.equal(document.querySelectorAll('.modal select').length, 3)
-    assert.equal(document.querySelectorAll('.modal fieldset input:checked').length, 6)
+  it('编辑回显树形勾选，保存完整范围和原有额度字段', async () => {
+    await mount(); await edit(); await expandAll()
+    assert.equal(document.querySelectorAll('.modal select').length, 0)
+    assert.equal(checkedCount(), 6)
+    assert.equal(document.querySelectorAll('.modal [role="radiogroup"]').length, 2)
+    assert.match(document.querySelector('.modal').textContent, /最终可调用的模型与密钥取以上两个维度的交集/)
     button('保存修改').click(); await settle()
     assert.deepEqual(writes[0].accessPolicy, policy)
     assert.equal(writes[0].enabled, true)
     assert.equal(writes[0].dailyTokenLimit, null)
-    assert.equal(document.querySelector('select[aria-label="模型模式"]'), null)
   })
 
   it('显式切换不限制时提交空数组，不通过省略字段清除访问范围', async () => {
     await mount(); await edit()
-    await mode('渠道', 'unrestricted'); await mode('渠道密钥', 'unrestricted'); await mode('模型', 'unrestricted')
+    await cardMode('unrestricted'); await modelMode('unrestricted')
     button('保存修改').click(); await settle()
     assert.deepEqual(writes[0].accessPolicy, {
       channels: { mode: 'unrestricted', ids: [] }, channelKeys: { mode: 'unrestricted', keys: [] }, models: { mode: 'unrestricted', ids: [] },
     })
   })
 
-  it('切换三维黑名单后保存完整排除项，保存失败重试及启停均保留黑名单', async () => {
+  it('切换合并卡片与模型为黑名单后保存完整排除项，失败重试及启停均保留', async () => {
     await mount(); await edit()
-    for (const name of ['渠道', '渠道密钥', '模型']) await mode(name, 'denylist')
+    await cardMode('denylist'); await modelMode('denylist')
     const expected = structuredClone(policy)
     for (const scope of Object.values(expected)) scope.mode = 'denylist'
     failSave = true
     button('保存修改').click(); await settle()
     assert.deepEqual(writes[0].accessPolicy, expected)
-    assert.equal(document.querySelectorAll('.modal fieldset input:checked').length, 6)
+    assert.equal(checkedCount(), 4)
     failSave = false
     button('保存修改').click(); await settle()
     assert.deepEqual(writes[1].accessPolicy, expected)
@@ -130,13 +158,13 @@ describe('真实调用方密钥视图访问范围行为', () => {
     button('停用').click(); await settle()
     assert.deepEqual(saved.accessPolicy, expected)
     await edit()
-    assert.equal(document.querySelectorAll('.modal fieldset input:checked').length, 6)
+    assert.equal(checkedCount(), 4)
   })
 
   it('保存失败保留表单和选择，重试仍提交原有授权', async () => {
     await mount(); await edit(); failSave = true
     button('保存修改').click(); await settle()
-    assert.equal(document.querySelectorAll('.modal fieldset input:checked').length, 6)
+    assert.equal(checkedCount(), 4)
     assert.deepEqual(writes[0].accessPolicy, policy)
     failSave = false
     button('保存修改').click(); await settle()
@@ -149,33 +177,47 @@ describe('真实调用方密钥视图访问范围行为', () => {
     assert.equal(saved.enabled, false)
     assert.deepEqual(saved.accessPolicy, policy)
     await edit()
-    assert.equal(document.querySelectorAll('.modal fieldset input:checked').length, 6)
+    assert.equal(checkedCount(), 4)
   })
 
-  it('创建默认不限制，可明确保存空模型白名单，并在创建响应后显示一次性密钥', async () => {
+  it('创建时空模型白名单拦截保存，选择模型后可创建并显示一次性密钥', async () => {
     await mount(); button('新建密钥').click(); await settle()
     const name = document.querySelector('.modal input[autocomplete="off"]')
     name.value = '新调用方'; name.dispatchEvent(new Event('input', { bubbles: true }))
-    await mode('模型', 'allowlist')
-    assert.match(document.querySelector('.modal').textContent, /无授权目标/)
+    await modelMode('allowlist')
+    assert.match(document.querySelector('.modal').textContent, /模型白名单不能为空/)
+    assert.equal(button('创建密钥').disabled, true)
+    assert.match(document.querySelector('.modal').textContent, /存在未勾选的空名单，请先完成选择/)
+    await chooseModel('Model-A')
+    assert.equal(button('创建密钥').disabled, false)
     button('创建密钥').click(); await settle()
     assert.deepEqual(writes[0].accessPolicy, {
-      channels: { mode: 'unrestricted', ids: [] }, channelKeys: { mode: 'unrestricted', keys: [] }, models: { mode: 'allowlist', ids: [] },
+      channels: { mode: 'unrestricted', ids: [] }, channelKeys: { mode: 'unrestricted', keys: [] }, models: { mode: 'allowlist', ids: ['Model-A'] },
     })
     assert.match(document.querySelector('.secret-value').textContent, /prism_fixture_only/)
   })
 
-  it('渠道白名单缩小导致密钥冲突时禁用保存，恢复渠道后可保存', async () => {
-    await mount(); await edit()
+  it('父渠道级联取消同时收窄渠道与子密钥，全部清空后禁用保存', async () => {
+    await mount(); await edit(); await expandAll()
     assert.equal(button('保存修改').disabled, false)
-    const group = document.querySelector('fieldset[aria-label="渠道访问范围"]')
-    const label = [...group.querySelectorAll('label')].find(node => node.textContent.includes('channel-b') && node.querySelector('input[type="checkbox"]'))
-    label.querySelector('input').click(); await settle()
+    await chooseChannel('渠道 B')
+    assert.equal(writes.length, 0)
+    button('保存修改').click(); await settle()
+    assert.deepEqual(writes[0].accessPolicy, {
+      channels: { mode: 'allowlist', ids: ['channel-a'] },
+      channelKeys: { mode: 'allowlist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] },
+      models: { mode: 'allowlist', ids: ['Model-A', 'model-b'] },
+    })
+    await edit(); await expandAll()
+    await chooseChannel('渠道 A')
     assert.equal(button('保存修改').disabled, true)
-    assert.match(document.querySelector('.modal').textContent, /不在渠道白名单/)
-    label.querySelector('input').click(); await settle()
+    assert.match(document.querySelector('.modal').textContent, /存在未勾选的空名单，请先完成选择/)
+    assert.match(document.querySelector('.modal').textContent, /白名单模式下请至少勾选 1 个渠道或密钥/)
+    button('保存修改').click(); await settle()
+    assert.equal(writes.length, 1)
+    await cardMode('unrestricted')
     assert.equal(button('保存修改').disabled, false)
     button('保存修改').click(); await settle()
-    assert.deepEqual(writes[0].accessPolicy, policy)
+    assert.deepEqual(writes[1].accessPolicy.channels.mode, 'unrestricted')
   })
 })

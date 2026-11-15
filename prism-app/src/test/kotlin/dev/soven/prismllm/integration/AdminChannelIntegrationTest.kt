@@ -2,7 +2,9 @@ package dev.soven.prismllm.integration
 
 import dev.soven.prismllm.api.GatewayApplication
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
+import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.shared.domain.GatewayProtocol
+import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.channel.persistence.NewChannelKey
 import io.ktor.client.request.header
 import io.ktor.client.request.get
@@ -116,6 +118,38 @@ class AdminChannelIntegrationTest : GatewayIntegrationTestBase() {
                 assertEquals(HttpStatusCode.BadRequest, response.status)
                 assertTrue(response.bodyAsText().contains("invalid_channel"))
             }
+        }
+    }
+
+    @Test
+    fun `channels listing includes oauth account summaries`() = runBlocking {
+        val session = app.sessions.create("admin")
+        val channel = createChannel("oauth-summary", "ok")
+        app.oauthAccountRepository.create(
+            NewOAuthAccount(
+                name = "team@example.com",
+                provider = OAuthProvider.CHATGPT,
+                refreshToken = app.credentialCipher.encrypt("refresh-secret"),
+                accessToken = app.credentialCipher.encrypt("access-secret"),
+                accessTokenExpiresAt = System.currentTimeMillis() + 3_600_000,
+                channelIds = listOf(channel.id),
+                models = listOf("gpt-6.1-sol"),
+            ),
+        )
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.get("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val payload = Json.parseToJsonElement(response.bodyAsText()).jsonArray.map { it.jsonObject }
+            val target = payload.first { it["id"]!!.jsonPrimitive.content == channel.id }
+            val accounts = target["oauthAccounts"]!!.jsonArray.map { it.jsonObject }
+            assertEquals(1, accounts.size)
+            assertEquals("team@example.com", accounts[0]["name"]!!.jsonPrimitive.content)
+            assertEquals(true, accounts[0]["enabled"]!!.jsonPrimitive.content.toBooleanStrict())
+            assertEquals(listOf("gpt-6.1-sol"), accounts[0]["models"]!!.jsonArray.map { it.jsonPrimitive.content })
         }
     }
 

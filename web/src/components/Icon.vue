@@ -97,6 +97,14 @@ const paths = {
     'M10 1v3',
     'M14 1v3',
   ],
+  unlock: ['M6 10h12v10H6z', 'M9 10V7a3 3 0 0 1 5.8-1'],
+  'shield-check': ['M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z', 'M9 11.5l2 2 4-4.5'],
+  'shield-ban': ['M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z', 'M5.5 5.5l13 13'],
+  layers: ['M12 3l9 5-9 5-9-5 9-5z', 'M3 13l9 5 9-5'],
+  cpu: [
+    'M8 8h8v8H8z',
+    'M4 10h4M4 14h4M16 10h4M16 14h4M10 4v4M14 4v4M10 16v4M14 16v4',
+  ],
 }
 
 const iconPaths = computed(() => paths[props.name as keyof typeof paths] || paths.channels)

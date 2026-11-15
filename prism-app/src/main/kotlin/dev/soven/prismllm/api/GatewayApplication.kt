@@ -505,10 +505,9 @@ class GatewayApplication(
         clients = codeAssistClients,
         userAgent = antigravityUserAgent,
     )
-    val modelCatalog = UpstreamModelCatalog(
-        channelRepository,
-        OAuthAccountDirectory { oauthAccountRepository.listByChannel() },
-    )
+    /** 渠道 → 可路由订阅账号投影；路由读模型与管理面渠道列表共用。 */
+    val oauthAccountDirectory = OAuthAccountDirectory { oauthAccountRepository.listByChannel() }
+    val modelCatalog = UpstreamModelCatalog(channelRepository, oauthAccountDirectory)
     val oauthTokenProviders = OAuthTokenProviderRegistry(buildOAuthTokenProviders(config.oauth))
     val oauthTokenService = OAuthTokenService(oauthAccountRepository, credentialCipher, oauthTokenProviders, config.oauth)
     /** 交互式 OAuth 登录：PKCE 会话只保存在内存，单次使用。 */

@@ -21,6 +21,7 @@ import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.domain.OAuthAccountRuntimeState
 import dev.soven.prismllm.oauth.domain.OAuthQuotaSnapshot
 import dev.soven.prismllm.oauth.domain.OAuthQuotaWindow
+import dev.soven.prismllm.shared.domain.UpstreamCredential
 import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
 import dev.soven.prismllm.channel.domain.UpstreamRequestSettingsRecord
 import dev.soven.prismllm.channel.domain.UpstreamHeaderCatalogSnapshot
@@ -213,6 +214,29 @@ data class ChannelResponse(
     val keyDisablePolicySet: Boolean = false,
     /** inherit、custom 或 disabled，供渠道列表直接展示。 */
     val keyDisableMode: String = "inherit",
+    /** 渠道下订阅账号摘要，供访问范围树展示；不含任何凭据。 */
+    val oauthAccounts: List<ChannelOAuthAccountResponse> = emptyList(),
+)
+
+/**
+ * 渠道订阅账号摘要。只含展示字段，凭据与令牌永不出管理面。
+ *
+ * @author 文杰
+ * @since 2026-11-15
+ */
+@Serializable
+data class ChannelOAuthAccountResponse(
+    val id: String,
+    val name: String,
+    val enabled: Boolean,
+    val models: List<String> = emptyList(),
+)
+
+fun UpstreamCredential.toOAuthAccountResponse() = ChannelOAuthAccountResponse(
+    id = id,
+    name = name,
+    enabled = enabled,
+    models = models,
 )
 
 @Serializable
@@ -333,7 +357,7 @@ data class ChannelModelMappingResponse(
     val mappingSource: String? = null,
 )
 
-fun ChannelRecord.toResponse() = ChannelResponse(
+fun ChannelRecord.toResponse(oauthAccounts: List<UpstreamCredential> = emptyList()) = ChannelResponse(
     id = id,
     name = name,
     baseUrl = baseUrl,
@@ -354,6 +378,7 @@ fun ChannelRecord.toResponse() = ChannelResponse(
     },
     priority = priority,
     keys = keys.map { it.toResponse() },
+    oauthAccounts = oauthAccounts.map { it.toOAuthAccountResponse() },
     requestOverrides = requestOverrides,
     quota = ChannelQuotaSettingsResponse(quota.providerId, quota.config, quota.credentialSource, quotaCredential != null),
     kind = kind.value,

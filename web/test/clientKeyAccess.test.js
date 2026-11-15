@@ -110,3 +110,192 @@ describe('调用方访问范围 helper', () => {
     assert.equal(policy.models.ids.length, 3)
   })
 })
+
+describe('渠道与密钥合并卡片映射', () => {
+  async function tree() { return import('../src/utils/clientKeyAccessTree') }
+  const unrestricted = () => ({
+    channels: { mode: 'unrestricted', ids: [] },
+    channelKeys: { mode: 'unrestricted', keys: [] },
+    models: { mode: 'unrestricted', ids: [] },
+  })
+  const channelA = {
+    id: 'channel-a', name: '渠道 A', enabled: true,
+    keys: [{ id: 'key-a', name: 'keyA', state: 'ACTIVE', credentialSet: true, models: ['upstream-a'] }],
+    modelMappings: [{ upstreamModel: 'upstream-a', canonicalModelId: 'Model-A' }],
+    oauthAccounts: [{ id: 'oauth-a', name: 'oauth-a@example.com', enabled: true, models: ['upstream-a'] }],
+  }
+  const channelB = {
+    id: 'channel-b', name: '渠道 B', enabled: false,
+    keys: [{ id: 'key-b', name: 'keyB', state: 'ACTIVE', credentialSet: true, models: ['upstream-b'] }],
+    modelMappings: [{ upstreamModel: 'upstream-b', canonicalModelId: null }],
+    oauthAccounts: [],
+  }
+  const channels = [channelA, channelB]
+  for (const channel of channels) {
+    Object.assign(channel, { baseUrl: '', authType: 'bearer', protocolAuthTypes: {}, protocols: ['chat_completions'], credentialSet: true, createdAt: 1, updatedAt: 1, priority: 0, kind: 'custom', provider: null, requestOverrides: { inheritGlobal: true, headerProfile: null, userAgent: null, headers: {}, body: {}, protocols: {} }, quota: { providerId: '', config: {} } })
+    channel.modelMappings.forEach(mapping => { mapping.mappingSource = null })
+    channel.keys.forEach(key => Object.assign(key, { priority: 0, rateLimit: { enabled: false, requestsPerMinute: null, maxConcurrentRequests: null }, stateVersion: 0, autoDisableUntil: null, probeUntil: null, autoDisableReason: null }))
+  }
+
+  it('短 ID 去掉连字符取前六位，合并模式以受限渠道维度优先', async () => {
+    const { shortId, mergedAccessMode } = await tree()
+    assert.equal(shortId('df418129-c1fd-40cc-aeb0-ac6b37819796'), '#df4181')
+    assert.equal(mergedAccessMode(unrestricted()), 'unrestricted')
+    assert.equal(mergedAccessMode({ ...unrestricted(), channels: { mode: 'denylist', ids: [] } }), 'denylist')
+    assert.equal(mergedAccessMode({ ...unrestricted(), channelKeys: { mode: 'allowlist', keys: [] } }), 'allowlist')
+    assert.equal(mergedAccessMode({ channels: { mode: 'allowlist', ids: [] }, channelKeys: { mode: 'denylist', keys: [] }, models: unrestricted().models }), 'allowlist')
+  })
+
+  it('渠道行三态：渠道级全选、部分子密钥半选、黑名单整渠道排除', async () => {
+    const { channelCheckInfo } = await tree()
+    const allowChannelOnly = { ...unrestricted(), channels: { mode: 'allowlist', ids: ['channel-a'] } }
+    assert.deepEqual(channelCheckInfo(allowChannelOnly, channelA), { state: 'checked', selectedKeys: 0, totalKeys: 1 })
+    assert.equal(channelCheckInfo(allowChannelOnly, channelB).state, 'unchecked')
+    const allowWithKeys = { ...unrestricted(), channels: { mode: 'allowlist', ids: ['channel-a'] }, channelKeys: { mode: 'allowlist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }
+    assert.equal(channelCheckInfo(allowWithKeys, channelA).state, 'checked')
+    const partial = { ...allowWithKeys, channelKeys: { mode: 'allowlist', keys: [] } }
+    assert.equal(channelCheckInfo(partial, channelA).state, 'unchecked')
+    const denyChannel = { ...unrestricted(), channels: { mode: 'denylist', ids: ['channel-a'] } }
+    assert.equal(channelCheckInfo(denyChannel, channelA).state, 'checked')
+    const denyKeys = { ...unrestricted(), channels: { mode: 'denylist', ids: [] }, channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }
+    assert.equal(channelCheckInfo(denyKeys, channelA).state, 'indeterminate')
+  })
+
+  it('白名单勾选父渠道保持渠道级语义，仅在密钥维度启用时展开子密钥', async () => {
+    const { toggleChannelSelection } = await tree()
+    const allowBase = () => ({ ...unrestricted(), channels: { mode: 'allowlist', ids: [] } })
+    const checked = toggleChannelSelection(allowBase(), channels, 'channel-a')
+    assert.deepEqual(checked.channels.ids, ['channel-a'])
+    assert.equal(checked.channelKeys.mode, 'unrestricted')
+    assert.deepEqual(checked.channelKeys.keys, [])
+    const engaged = { ...checked, channelKeys: { mode: 'allowlist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }
+    const rechecked = toggleChannelSelection({ ...engaged, channels: { mode: 'allowlist', ids: [] } }, channels, 'channel-a')
+    assert.deepEqual(rechecked.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-a' }])
+    const unchecked = toggleChannelSelection(checked, channels, 'channel-a')
+    assert.deepEqual(unchecked.channels.ids, [])
+  })
+
+  it('黑名单勾选父渠道覆盖子密钥名单，取消后子项恢复', async () => {
+    const { toggleChannelSelection, toggleKeySelection } = await tree()
+    const denyBase = () => ({ ...unrestricted(), channels: { mode: 'denylist', ids: [] }, channelKeys: { mode: 'denylist', keys: [] } })
+    const denyKey = toggleKeySelection(denyBase(), channels, { channelId: 'channel-a', keyId: 'key-a' }, true)
+    assert.deepEqual(denyKey.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-a' }])
+    assert.deepEqual(denyKey.channels.ids, [])
+    const denyChannel = toggleChannelSelection(denyKey, channels, 'channel-a')
+    assert.deepEqual(denyChannel.channels.ids, ['channel-a'])
+    assert.deepEqual(denyChannel.channelKeys.keys, [])
+    const restored = toggleChannelSelection(denyChannel, channels, 'channel-a')
+    assert.deepEqual(restored.channels.ids, [])
+    assert.deepEqual(restored.channelKeys.keys, [])
+  })
+
+  it('白名单勾选子密钥自动补渠道并首次启用时展开已勾选渠道', async () => {
+    const { toggleChannelSelection, toggleKeySelection } = await tree()
+    const checkedA = toggleChannelSelection(unrestricted(), channels, 'channel-a')
+    const checkedB = toggleChannelSelection(checkedA, channels, 'channel-b')
+    const keyed = toggleKeySelection({ ...checkedB, channels: { mode: 'allowlist', ids: ['channel-a'] } }, channels, { channelId: 'channel-b', keyId: 'key-b' }, true)
+    assert.deepEqual(keyed.channels.ids, ['channel-a', 'channel-b'])
+    assert.deepEqual(keyed.channelKeys.keys, [
+      { channelId: 'channel-a', keyId: 'key-a' },
+      { channelId: 'channel-b', keyId: 'key-b' },
+    ])
+  })
+
+  it('取消覆盖态子密钥展开渠道名单并排除该项，唯一子密钥取消时随渠道一并取消', async () => {
+    const { toggleChannelSelection, toggleKeySelection } = await tree()
+    const checkedA = toggleChannelSelection(unrestricted(), channels, 'channel-a')
+    const uncheckedChild = toggleKeySelection(checkedA, channels, { channelId: 'channel-a', keyId: 'key-a' }, false)
+    assert.deepEqual(uncheckedChild.channels.ids, [])
+    assert.deepEqual(uncheckedChild.channelKeys, { mode: 'unrestricted', keys: [] })
+    const multi = toggleChannelSelection(checkedA, channels, 'channel-b')
+    const partial = toggleKeySelection({ ...multi, channels: { mode: 'allowlist', ids: ['channel-a', 'channel-b'] } }, channels, { channelId: 'channel-b', keyId: 'key-b' }, false)
+    assert.deepEqual(partial.channels.ids, ['channel-a', 'channel-b'])
+    assert.deepEqual(partial.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-a' }])
+  })
+
+  it('黑名单子密钥在所属渠道已被排除时不可再排除', async () => {
+    const { toggleChannelSelection, toggleKeySelection } = await tree()
+    const denyBase = () => ({ ...unrestricted(), channels: { mode: 'denylist', ids: [] }, channelKeys: { mode: 'denylist', keys: [] } })
+    const denyChannel = toggleChannelSelection(denyBase(), channels, 'channel-a')
+    const ignored = toggleKeySelection(denyChannel, channels, { channelId: 'channel-a', keyId: 'key-a' }, true)
+    assert.deepEqual(ignored, denyChannel)
+  })
+
+  it('全选与清空保留受限模式，白名单全选在密钥维度启用时展开全部子密钥', async () => {
+    const { selectAllChannels, clearChannelSelection } = await tree()
+    const allowAll = selectAllChannels(unrestricted(), channels)
+    assert.deepEqual(allowAll.channels.ids, ['channel-a', 'channel-b'])
+    assert.equal(allowAll.channelKeys.mode, 'unrestricted')
+    const engagedBase = { ...unrestricted(), channels: { mode: 'allowlist', ids: [] }, channelKeys: { mode: 'allowlist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }
+    const expandAll = selectAllChannels(engagedBase, channels)
+    assert.deepEqual(expandAll.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-a' }, { channelId: 'channel-b', keyId: 'key-b' }])
+    const denyAll = selectAllChannels({ ...unrestricted(), channels: { mode: 'denylist', ids: [] }, channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }, channels)
+    assert.deepEqual(denyAll.channels.ids, ['channel-a', 'channel-b'])
+    assert.deepEqual(denyAll.channelKeys.keys, [])
+    const cleared = clearChannelSelection({ ...unrestricted(), channels: { mode: 'denylist', ids: ['channel-a'] }, channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } })
+    assert.deepEqual(cleared.channels.ids, [])
+    assert.deepEqual(cleared.channelKeys.keys, [])
+    assert.equal(cleared.channels.mode, 'denylist')
+  })
+
+  it('模式切换保留草稿：切白名单补齐密钥所属渠道，黑名单沿用名单', async () => {
+    const { changeMergedMode } = await tree()
+    const draft = { ...unrestricted(), channels: { mode: 'unrestricted', ids: ['channel-a'] }, channelKeys: { mode: 'unrestricted', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }
+    const unrestrictedBack = changeMergedMode(draft, 'unrestricted')
+    assert.equal(unrestrictedBack.channels.mode, 'unrestricted')
+    assert.deepEqual(unrestrictedBack.channels.ids, ['channel-a'])
+    assert.deepEqual(unrestrictedBack.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-a' }])
+    const allow = changeMergedMode({ ...unrestricted(), channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-b', keyId: 'key-b' }] } }, 'allowlist')
+    assert.deepEqual(allow.channels.ids, ['channel-b'])
+    assert.deepEqual(allow.channelKeys.keys, [{ channelId: 'channel-b', keyId: 'key-b' }])
+    const denyEmpty = changeMergedMode(unrestricted(), 'denylist')
+    assert.equal(denyEmpty.channelKeys.mode, 'unrestricted')
+    assert.deepEqual(denyEmpty.channelKeys.keys, [])
+  })
+
+  it('跨维度混合模式统一为渠道模式并清空密钥名单，渠道未限制的组合不视为混合', async () => {
+    const { unifyMixedModePolicy } = await tree()
+    const mixed = { channels: { mode: 'allowlist', ids: ['channel-a'] }, channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-b', keyId: 'key-b' }] }, models: unrestricted().models }
+    const unified = unifyMixedModePolicy(mixed)
+    assert.equal(unified.unified, true)
+    assert.equal(unified.policy.channelKeys.mode, 'unrestricted')
+    assert.deepEqual(unified.policy.channelKeys.keys, [])
+    assert.deepEqual(unified.policy.channels.ids, ['channel-a'])
+    const keysOnly = { channels: { mode: 'unrestricted', ids: [] }, channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] }, models: unrestricted().models }
+    assert.equal(unifyMixedModePolicy(keysOnly).unified, false)
+    assert.equal(unifyMixedModePolicy(unrestricted()).unified, false)
+  })
+
+  it('模型可用性按启用渠道与生效凭据计算，OAuth 仅受渠道与白名单密钥维度约束', async () => {
+    const { modelAvailabilityMap, effectiveStaticKeyCount, staticKeyEffective, oauthEffective } = await tree()
+    const all = modelAvailabilityMap(unrestricted(), channels)
+    assert.deepEqual(all.get('Model-A'), { supported: true, staticKeyCount: 1 })
+    assert.equal(all.has('upstream-b'), false)
+    const allowA = modelAvailabilityMap({ ...unrestricted(), channels: { mode: 'allowlist', ids: ['channel-a'] } }, channels)
+    assert.deepEqual(allowA.get('Model-A'), { supported: true, staticKeyCount: 1 })
+    const keysDenyA = { ...unrestricted(), channels: { mode: 'denylist', ids: [] }, channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }
+    assert.deepEqual(modelAvailabilityMap(keysDenyA, channels).get('Model-A'), { supported: true, staticKeyCount: 0 })
+    const keysAllowEmpty = { ...unrestricted(), channels: { mode: 'unrestricted', ids: [] }, channelKeys: { mode: 'allowlist', keys: [] } }
+    assert.equal(modelAvailabilityMap(keysAllowEmpty, channels).get('Model-A').supported, false)
+    // 渠道黑名单排除 key-a 后，唯一启用的渠道 A 无生效密钥；停用渠道 B 的密钥不可路由不计入。
+    assert.equal(effectiveStaticKeyCount(keysDenyA, channels), 0)
+    assert.equal(effectiveStaticKeyCount(unrestricted(), channels), 1)
+    assert.equal(oauthEffective(keysDenyA, 'channel-a'), true)
+    assert.equal(oauthEffective({ ...unrestricted(), channelKeys: { mode: 'allowlist', keys: [] } }, 'channel-a'), false)
+    assert.equal(staticKeyEffective(keysDenyA, { channelId: 'channel-a', keyId: 'key-a' }), false)
+    assert.equal(staticKeyEffective(keysDenyA, { channelId: 'channel-b', keyId: 'key-b' }), true)
+  })
+
+  it('空名单维度判定覆盖合并卡片两种受限模式', async () => {
+    const { emptyAccessDimensionLabels } = await tree()
+    assert.deepEqual(emptyAccessDimensionLabels(unrestricted()), [])
+    assert.deepEqual(emptyAccessDimensionLabels({ ...unrestricted(), channels: { mode: 'allowlist', ids: [] } }), ['渠道与密钥'])
+    assert.deepEqual(emptyAccessDimensionLabels({ ...unrestricted(), channelKeys: { mode: 'denylist', keys: [] } }), ['渠道与密钥'])
+    assert.deepEqual(emptyAccessDimensionLabels({
+      ...unrestricted(),
+      channels: { mode: 'denylist', ids: [] },
+      channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] },
+    }), [])
+    assert.deepEqual(emptyAccessDimensionLabels({ ...unrestricted(), models: { mode: 'allowlist', ids: [] } }), ['模型'])
+  })
+})
