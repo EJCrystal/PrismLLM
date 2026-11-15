@@ -121,6 +121,7 @@ class TestClassificationTest {
             "GeminiNativeIntegrationTest" to setOf("shard-3", "protocol"),
             "GracefulShutdownIntegrationTest" to setOf("shard-4"),
             "IqQuestionBankIntegrationTest" to setOf("shard-3"),
+            "IqTestJobPersistenceIntegrationTest" to setOf("shard-3"),
             "KeyAutoDisableIntegrationTest" to setOf("shard-3", "channel"),
             "PricingIntegrationTest" to setOf("shard-4"),
             "ProtocolConversionIntegrationTest" to setOf("shard-2", "protocol"),
