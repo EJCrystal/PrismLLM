@@ -1355,6 +1355,15 @@ data class IqTestRunRequest(
     val timeoutMs: Long? = null,
 )
 
+/** 智商检测已受理；前端凭 jobId 轮询后台任务状态。 */
+@Serializable
+data class IqTestJobResponse(
+    val jobId: String,
+    val status: String,
+    val runId: Long? = null,
+    val error: String? = null,
+)
+
 @Serializable
 data class IqTestCheckResponse(
     val id: String,

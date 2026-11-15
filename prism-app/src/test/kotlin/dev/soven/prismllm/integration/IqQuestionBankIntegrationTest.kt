@@ -63,12 +63,11 @@ class IqQuestionBankIntegrationTest : GatewayIntegrationTestBase() {
             }
             assertEquals(HttpStatusCode.Created, create.status, create.bodyAsText())
             val questionId = Json.parseToJsonElement(create.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
-            val run = client.post("/admin/api/iq-tests") {
-                header(HttpHeaders.Cookie, "gw_session=${session.token}")
-                header("X-CSRF-Token", session.session.csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","useQuestionBank":true}""")
-            }
+            val run = client.runIqTestJob(
+                "gw_session=${session.token}",
+                session.session.csrf,
+                """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","useQuestionBank":true}""",
+            )
             assertEquals(HttpStatusCode.OK, run.status, run.bodyAsText())
             val body = Json.parseToJsonElement(run.bodyAsText()).jsonObject
             assertEquals("passed", body["verdict"]!!.jsonPrimitive.content)
@@ -140,15 +139,11 @@ class IqQuestionBankIntegrationTest : GatewayIntegrationTestBase() {
             for (protocol in GatewayProtocol.entries) {
                 val channel = createChannelWithBaseUrl("isolated-${protocol.value}", "${fake.baseUrl}/ok/v1", listOf(protocol),
                     requestOverrides = UpstreamRequestOverrides(body = injection))
-                val run = client.post("/admin/api/iq-tests") {
-                    header(HttpHeaders.Cookie, "gw_session=${session.token}")
-                    header("X-CSRF-Token", session.session.csrf)
-                    contentType(ContentType.Application.Json)
-                    setBody(buildJsonObject {
-                        put("channelId", channel.id); put("model", "gpt-4o-mini"); put("benchmark", "candy")
-                        put("useQuestionBank", true); put("protocol", protocol.value)
-                    }.toString())
-                }
+                val payload = buildJsonObject {
+                    put("channelId", channel.id); put("model", "gpt-4o-mini"); put("benchmark", "candy")
+                    put("useQuestionBank", true); put("protocol", protocol.value)
+                }.toString()
+                val run = client.runIqTestJob("gw_session=${session.token}", session.session.csrf, payload)
                 assertEquals(HttpStatusCode.OK, run.status, run.bodyAsText())
                 val sent = fake.requests.last().body
                 assertTrue(sent.contains("question only"), protocol.value)

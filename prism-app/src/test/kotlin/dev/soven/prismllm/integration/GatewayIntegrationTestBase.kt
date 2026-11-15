@@ -27,6 +27,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -268,6 +269,41 @@ abstract class GatewayIntegrationTestBase {
         val sessionCookie = setCookies.first { it.startsWith("gw_session=") }.substringBefore(";")
         val csrf = setCookies.first { it.startsWith("gw_csrf=") }.substringAfter("=").substringBefore(";")
         return sessionCookie to csrf
+    }
+
+    /** 发起智商检测并等待后台任务完成，返回与旧同步接口相同的完整记录响应。 */
+    protected suspend fun HttpClient.runIqTestJob(
+        sessionCookie: String,
+        csrf: String,
+        payload: String,
+    ): HttpResponse {
+        val accepted = post("/admin/api/iq-tests") {
+            header(HttpHeaders.Cookie, sessionCookie)
+            header("X-CSRF-Token", csrf)
+            contentType(ContentType.Application.Json)
+            setBody(payload)
+        }
+        assertEquals(HttpStatusCode.Accepted, accepted.status, accepted.bodyAsText())
+        val jobId = Json.parseToJsonElement(accepted.bodyAsText()).jsonObject["jobId"]!!.jsonPrimitive.content
+        val deadline = System.currentTimeMillis() + 30_000
+        while (System.currentTimeMillis() < deadline) {
+            val status = get("/admin/api/iq-tests/jobs/$jobId") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, status.status, status.bodyAsText())
+            val body = Json.parseToJsonElement(status.bodyAsText()).jsonObject
+            when (body["status"]?.jsonPrimitive?.content) {
+                "completed" -> {
+                    val runId = body["runId"]!!.jsonPrimitive.content
+                    return get("/admin/api/iq-tests/$runId") {
+                        header(HttpHeaders.Cookie, sessionCookie)
+                    }
+                }
+                "failed" -> error("IQ test job failed: ${body["error"]?.jsonPrimitive?.content}")
+            }
+            delay(20)
+        }
+        error("IQ test job did not complete")
     }
 
     protected suspend fun HttpClient.assertAdminRequestLogStream(requestId: String, expected: Boolean) {

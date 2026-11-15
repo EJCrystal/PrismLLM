@@ -295,6 +295,13 @@ class GatewayApplication(
     private val closed = AtomicBoolean(false)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /** 智商检测后台任务登记表；随进程生命周期存在。 */
+    internal val iqTestJobs = IqTestJobRegistry()
+
+    internal fun launchBackground(block: suspend CoroutineScope.() -> Unit) {
+        scope.launch(block = block)
+    }
+
     internal val requestDrain = RequestDrain()
     val shuttingDown: Boolean
         get() = requestDrain.shuttingDown

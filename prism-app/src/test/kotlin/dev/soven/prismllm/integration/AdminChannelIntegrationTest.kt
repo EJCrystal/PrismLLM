@@ -367,14 +367,11 @@ class AdminChannelIntegrationTest : GatewayIntegrationTestBase() {
             val (sessionCookie, csrf) = client.loginAdmin()
 
             val customPrompt = "自定义：画一只戴墨镜的鹈鹕骑自行车。"
-            val run = client.post("/admin/api/iq-tests") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody(
-                    """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"pelican","judgeId":"local","prompt":"$customPrompt"}""",
-                )
-            }
+            val run = client.runIqTestJob(
+                sessionCookie,
+                csrf,
+                """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"pelican","judgeId":"local","prompt":"$customPrompt"}""",
+            )
             assertEquals(HttpStatusCode.OK, run.status)
             val body = Json.parseToJsonElement(run.bodyAsText()).jsonObject
             assertEquals("review", body["verdict"]?.jsonPrimitive?.content)

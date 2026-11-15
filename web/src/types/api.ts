@@ -940,6 +940,14 @@ export interface IqTestRunRequest {
   timeoutMs?: number | null
 }
 
+/** 后台检测任务状态；完成后用 runId 读取完整检测记录。 */
+export interface IqTestJob {
+  jobId: string
+  status: 'running' | 'completed' | 'failed'
+  runId: number | null
+  error: string | null
+}
+
 export interface IqTestCheck {
   id: string
   label: string

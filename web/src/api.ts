@@ -32,6 +32,7 @@ import type {
   IqQuestionInput,
   IqJudgesResponse,
   IqTestRunDetail,
+  IqTestJob,
   IqTestRunRequest,
   IqTestManualVerdictRequest,
   IqTestRunSummary,
@@ -256,7 +257,8 @@ export const api = {
   listIqRuns: (limit = 50) => requestList<IqTestRunSummary>(`/iq-tests?limit=${limit}`),
   getIqRun: (id: number) => request<IqTestRunDetail>(`/iq-tests/${id}`),
   runIqTest: (payload: IqTestRunRequest) =>
-    request<IqTestRunDetail>('/iq-tests', { method: 'POST', body: JSON.stringify(payload) }),
+    request<IqTestJob>('/iq-tests', { method: 'POST', body: JSON.stringify(payload) }),
+  getIqTestJob: (jobId: string) => request<IqTestJob>('/iq-tests/jobs/' + jobId),
   submitIqManualVerdict: (id: number, payload: IqTestManualVerdictRequest) =>
     request<IqTestRunDetail>(`/iq-tests/${id}/manual-verdict`, {
       method: 'PUT',

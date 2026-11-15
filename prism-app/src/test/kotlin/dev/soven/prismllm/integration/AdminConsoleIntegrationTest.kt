@@ -411,12 +411,11 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.OK, targets.status)
             assertTrue(targets.bodyAsText().contains(channel.id), targets.bodyAsText())
 
-            val run = client.post("/admin/api/iq-tests") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","judgeId":"local"}""")
-            }
+            val run = client.runIqTestJob(
+                sessionCookie,
+                csrf,
+                """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","judgeId":"local"}""",
+            )
             assertEquals(HttpStatusCode.OK, run.status)
             val body = Json.parseToJsonElement(run.bodyAsText()).jsonObject
             assertEquals("candy", body["benchmark"]?.jsonPrimitive?.content)
@@ -473,7 +472,11 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             }
 
             // 单次覆盖放宽到 5 分钟：请求正常完成，题目默认值不受影响。
-            val accepted = runWithTimeout("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","timeoutMs":300000}""")
+            val accepted = client.runIqTestJob(
+                sessionCookie,
+                csrf,
+                """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","timeoutMs":300000}""",
+            )
             assertEquals(HttpStatusCode.OK, accepted.status, accepted.bodyAsText())
             assertEquals("passed", Json.parseToJsonElement(accepted.bodyAsText()).jsonObject["verdict"]?.jsonPrimitive?.content)
             assertEquals(candyResponse, Json.parseToJsonElement(accepted.bodyAsText()).jsonObject["responseText"]?.jsonPrimitive?.content)
@@ -554,12 +557,11 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             val client = jsonClient()
             val (sessionCookie, csrf) = client.loginAdmin()
 
-            val response = client.post("/admin/api/iq-tests") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","judgeId":"local"}""")
-            }
+            val response = client.runIqTestJob(
+                sessionCookie,
+                csrf,
+                """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy","judgeId":"local"}""",
+            )
             assertEquals(HttpStatusCode.OK, response.status)
             val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
             assertEquals("failed", body["verdict"]?.jsonPrimitive?.content)
@@ -578,12 +580,11 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             val (sessionCookie, csrf) = client.loginAdmin()
 
             suspend fun run(benchmark: String): kotlinx.serialization.json.JsonObject {
-                val response = client.post("/admin/api/iq-tests") {
-                    header(HttpHeaders.Cookie, sessionCookie)
-                    header("X-CSRF-Token", csrf)
-                    contentType(ContentType.Application.Json)
-                    setBody("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"$benchmark","judgeId":"manxue"}""")
-                }
+                val response = client.runIqTestJob(
+                    sessionCookie,
+                    csrf,
+                    """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"$benchmark","judgeId":"manxue"}""",
+                )
                 assertEquals(HttpStatusCode.OK, response.status)
                 return Json.parseToJsonElement(response.bodyAsText()).jsonObject
             }
@@ -613,12 +614,11 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
                 ?.map { it.jsonObject["id"]?.jsonPrimitive?.content }
             assertTrue(judgeIds?.contains("vision") == true, judges.bodyAsText())
 
-            val response = client.post("/admin/api/iq-tests") {
-                header(HttpHeaders.Cookie, sessionCookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"pelican","judgeId":"vision"}""")
-            }
+            val response = client.runIqTestJob(
+                sessionCookie,
+                csrf,
+                """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"pelican","judgeId":"vision"}""",
+            )
             assertEquals(HttpStatusCode.OK, response.status)
             val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
             assertEquals("passed", body["verdict"]?.jsonPrimitive?.content)
@@ -638,6 +638,24 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             assertTrue(visionRequest.body.contains("data:image/png;base64,"))
             assertEquals(6, Regex("data:image/png;base64,").findAll(visionRequest.body).count())
             assertNull(visionRequest.authorization)
+        }
+    }
+
+    @Test
+    fun `iq test job status requires admin and reports unknown jobs`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, _) = client.loginAdmin()
+
+            val unauthenticated = client.get("/admin/api/iq-tests/jobs/unknown")
+            assertEquals(HttpStatusCode.Unauthorized, unauthenticated.status)
+
+            val missing = client.get("/admin/api/iq-tests/jobs/unknown") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.NotFound, missing.status)
+            assertTrue(missing.bodyAsText().contains("iq_test_job_not_found"), missing.bodyAsText())
         }
     }
 

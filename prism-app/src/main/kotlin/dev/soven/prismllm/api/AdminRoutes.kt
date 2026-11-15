@@ -10,6 +10,7 @@ import dev.soven.prismllm.shared.error.serviceUnavailable
 import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.admin.domain.IqVisionSettingsRecord
 import dev.soven.prismllm.admin.domain.NewIqTestRun
+import dev.soven.prismllm.admin.domain.IqQuestion
 import dev.soven.prismllm.admin.domain.NewFingerprintTestRun
 import dev.soven.prismllm.admin.persistence.IqVisionSettingsUpdate
 import dev.soven.prismllm.admin.domain.sameVisionEndpoint
@@ -56,6 +57,7 @@ import dev.soven.prismllm.proxy.extractHtmlDocument
 import dev.soven.prismllm.spi.iq.IqJudgeRequest
 import dev.soven.prismllm.spi.iq.IqJudgeResult
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
+import dev.soven.prismllm.spi.iq.IqJudge
 import dev.soven.prismllm.proxy.fetchUpstreamModels
 import dev.soven.prismllm.proxy.fingerprint.FingerprintChallengeGenerator
 import dev.soven.prismllm.proxy.fingerprint.FingerprintOutput
@@ -121,6 +123,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
+import org.slf4j.LoggerFactory
 
 /**
  * 管理面 API。所有写操作要求会话 Cookie 与 CSRF Token 同时有效。
@@ -997,6 +1000,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
             )
         }
 
+        get("/iq-tests/jobs/{jobId}") {
+            call.requireAdmin(app)
+            val jobId = call.requiredParam("jobId", "缺少检测任务 id")
+            val job = app.iqTestJobs.find(jobId)
+                ?: throw notFound("iq_test_job_not_found", "检测任务不存在或已过期")
+            call.respond(job.toResponse())
+        }
+
         get("/iq-tests/{id}") {
             call.requireAdmin(app)
             val id = call.requiredParam("id", "缺少检测记录 id").toLongOrNull()
@@ -1063,92 +1074,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 }
             }
             val timeoutMs = benchmark.resolveTimeoutMs(request.timeoutMs, app.config.iqTestTimeoutMs)
-            val result = testChannelModelConnectivity(
-                channel = channel,
-                credentialRef = credential,
-                model = model,
-                protocol = protocol,
-                prompt = prompt,
-                credentials = app.oauthTokenService,
-                httpClient = app.httpClient,
-                timeoutMs = timeoutMs,
-                maxOutputTokens = benchmark.maxOutputTokens,
-                maxResponseChars = IQ_TEST_MAX_RESPONSE_CHARS,
-                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
-                isolatedIqRequest = benchmark == IqBenchmark.CANDY,
-            )
-            val html = if (benchmark == IqBenchmark.PELICAN) extractHtmlDocument(result.responseText) else null
-            val structure = if (benchmark == IqBenchmark.PELICAN) {
-                analyzePelicanStructure(result.responseText)
-            } else {
-                null
-            }
-            val judgeResult = when {
-                judge == null || !result.success -> null
-                html == null -> IqJudgeResult(
-                    verdict = IqJudgeVerdict.FAILED,
-                    label = "无法判定",
-                    reason = "模型未返回可识别的 HTML",
-                )
-                else -> app.iqJudgeService.judge(
-                    judgeId = judge.id,
-                    request = IqJudgeRequest(
-                        benchmark = benchmark.value,
-                        html = html,
-                        model = model,
-                        structure = checkNotNull(structure),
-                    ),
-                )
-            }
-            val evaluation = evaluateIqTest(
-                benchmark = benchmark,
-                success = result.success,
-                responseText = result.responseText,
-                errorMessage = result.errorMessage,
-                structure = structure,
-                judgeResult = judgeResult,
-                answerType = question?.answerType,
-                expectedAnswerValue = question?.expectedAnswer,
-            )
-            val record = app.iqTestRunRepository.insert(
-                NewIqTestRun(
-                    benchmark = benchmark.value,
-                    channelId = channel.id,
-                    channelName = channel.name.take(100),
-                    channelKeyId = credential.id,
-                    channelKeyName = credential.name.take(100),
-                    model = model,
-                    upstreamModel = model,
-                    protocol = protocol.value,
-                    success = result.success,
-                    statusCode = result.statusCode,
-                    latencyMs = result.latencyMs,
-                    verdict = evaluation.verdict.value,
-                    prompt = prompt,
-                    responseText = result.responseText,
-                    expectedAnswer = evaluation.expectedAnswer,
-                    matchedAnswer = evaluation.matchedAnswer,
-                    questionId = question?.id,
-                    questionTitle = question?.title,
-                    answerType = question?.answerType,
-                    expectedAnswerValue = question?.expectedAnswer,
-                    actualAnswer = evaluation.actualAnswer,
-                    errorMessage = result.errorMessage,
-                    usage = result.usage,
-                    upstreamReportedModel = result.upstreamReportedModel?.take(200),
-                    judgeId = judge?.id,
-                    judgeLabel = judge?.displayName?.take(120),
-                    judgeVerdict = judgeResult?.verdict?.value,
-                    judgeResultLabel = judgeResult?.label?.take(120),
-                    judgeReason = judgeResult?.reason,
-                    judgeScore = judgeResult?.score,
-                    judgeDetails = judgeResult?.details?.takeIf { it.isNotEmpty() }?.let { details ->
-                        buildJsonObject { details.forEach { (key, value) -> put(key, value) } }.toString()
-                    },
-                    judgeCheckedAt = judgeResult?.let { System.currentTimeMillis() },
-                ),
-            )
+            val jobId = app.iqTestJobs.create()
             call.markAdminAuditDetails(
                 buildJsonObject {
                     put("channelId", channel.id)
@@ -1157,10 +1083,28 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     put("keyId", credential.id)
                     put("protocol", protocol.value)
                     put("judgeId", judge?.id ?: "none")
-                    put("judgeVerdict", judgeResult?.verdict?.value ?: "none")
+                    put("jobId", jobId)
                 },
             )
-            call.respond(record.toResponse(includeDetail = true))
+            // 长检测放到后台任务，管理台请求立即返回，避免边缘代理在 100 秒处截断。
+            call.respond(HttpStatusCode.Accepted, IqTestJobResponse(jobId, IqTestJobStatus.RUNNING.value))
+            app.launchBackground {
+                executeIqTestJob(
+                    app = app,
+                    jobId = jobId,
+                    spec = IqTestJobSpec(
+                        benchmark = benchmark,
+                        channel = channel,
+                        credential = credential,
+                        model = model,
+                        protocol = protocol,
+                        prompt = prompt,
+                        question = question,
+                        judge = judge,
+                        timeoutMs = timeoutMs,
+                    ),
+                )
+            }
         }
 
         put("/iq-tests/{id}/manual-verdict") {
@@ -3197,3 +3141,120 @@ private const val MAX_OAUTH_CALLBACK_CHARS = 4_096
 private const val MAX_MODEL_SUGGESTIONS = 500
 private const val MAPPING_SOURCE_MANUAL = "manual"
 private val MAPPING_SOURCES = setOf(MAPPING_SOURCE_MANUAL, "models_dev")
+
+private val iqTestLogger = LoggerFactory.getLogger("dev.soven.prismllm.api.IqTestJob")
+
+private data class IqTestJobSpec(
+    val benchmark: IqBenchmark,
+    val channel: ChannelRecord,
+    val credential: UpstreamCredential,
+    val model: String,
+    val protocol: GatewayProtocol,
+    val prompt: String,
+    val question: IqQuestion?,
+    val judge: IqJudge?,
+    val timeoutMs: Long,
+)
+
+private suspend fun executeIqTestJob(app: GatewayApplication, jobId: String, spec: IqTestJobSpec) {
+    try {
+        val record = runIqTest(app, spec)
+        app.iqTestJobs.complete(jobId, record.id)
+    } catch (cause: CancellationException) {
+        app.iqTestJobs.fail(jobId, "检测任务已取消")
+        throw cause
+    } catch (cause: Throwable) {
+        iqTestLogger.warn("iq test job {} failed", jobId, cause)
+        app.iqTestJobs.fail(jobId, cause.message?.take(300) ?: "检测任务失败")
+    }
+}
+
+private suspend fun runIqTest(app: GatewayApplication, spec: IqTestJobSpec): IqTestRunResponse {
+    val result = testChannelModelConnectivity(
+        channel = spec.channel,
+        credentialRef = spec.credential,
+        model = spec.model,
+        protocol = spec.protocol,
+        prompt = spec.prompt,
+        credentials = app.oauthTokenService,
+        httpClient = app.httpClient,
+        timeoutMs = spec.timeoutMs,
+        maxOutputTokens = spec.benchmark.maxOutputTokens,
+        maxResponseChars = IQ_TEST_MAX_RESPONSE_CHARS,
+        globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+        headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+        isolatedIqRequest = spec.benchmark == IqBenchmark.CANDY,
+    )
+    val html = if (spec.benchmark == IqBenchmark.PELICAN) extractHtmlDocument(result.responseText) else null
+    val structure = if (spec.benchmark == IqBenchmark.PELICAN) {
+        analyzePelicanStructure(result.responseText)
+    } else {
+        null
+    }
+    val judgeResult = when {
+        spec.judge == null || !result.success -> null
+        html == null -> IqJudgeResult(
+            verdict = IqJudgeVerdict.FAILED,
+            label = "无法判定",
+            reason = "模型未返回可识别的 HTML",
+        )
+        else -> app.iqJudgeService.judge(
+            judgeId = spec.judge.id,
+            request = IqJudgeRequest(
+                benchmark = spec.benchmark.value,
+                html = html,
+                model = spec.model,
+                structure = checkNotNull(structure),
+            ),
+        )
+    }
+    val evaluation = evaluateIqTest(
+        benchmark = spec.benchmark,
+        success = result.success,
+        responseText = result.responseText,
+        errorMessage = result.errorMessage,
+        structure = structure,
+        judgeResult = judgeResult,
+        answerType = spec.question?.answerType,
+        expectedAnswerValue = spec.question?.expectedAnswer,
+    )
+    val record = app.iqTestRunRepository.insert(
+        NewIqTestRun(
+            benchmark = spec.benchmark.value,
+            channelId = spec.channel.id,
+            channelName = spec.channel.name.take(100),
+            channelKeyId = spec.credential.id,
+            channelKeyName = spec.credential.name.take(100),
+            model = spec.model,
+            upstreamModel = spec.model,
+            protocol = spec.protocol.value,
+            success = result.success,
+            statusCode = result.statusCode,
+            latencyMs = result.latencyMs,
+            verdict = evaluation.verdict.value,
+            prompt = spec.prompt,
+            responseText = result.responseText,
+            expectedAnswer = evaluation.expectedAnswer,
+            matchedAnswer = evaluation.matchedAnswer,
+            questionId = spec.question?.id,
+            questionTitle = spec.question?.title,
+            answerType = spec.question?.answerType,
+            expectedAnswerValue = spec.question?.expectedAnswer,
+            actualAnswer = evaluation.actualAnswer,
+            errorMessage = result.errorMessage,
+            usage = result.usage,
+            upstreamReportedModel = result.upstreamReportedModel?.take(200),
+            judgeId = spec.judge?.id,
+            judgeLabel = spec.judge?.displayName?.take(120),
+            judgeVerdict = judgeResult?.verdict?.value,
+            judgeResultLabel = judgeResult?.label?.take(120),
+            judgeReason = judgeResult?.reason,
+            judgeScore = judgeResult?.score,
+            judgeDetails = judgeResult?.details?.takeIf { it.isNotEmpty() }?.let { details ->
+                buildJsonObject { details.forEach { (key, value) -> put(key, value) } }.toString()
+            },
+            judgeCheckedAt = judgeResult?.let { System.currentTimeMillis() },
+        ),
+    )
+    return record.toResponse(includeDetail = true)
+}

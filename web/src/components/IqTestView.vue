@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
-import { ApiError } from '../types/api'
 import type {
   Channel,
   IqBenchmarkDefinition,
@@ -112,8 +111,6 @@ const manualForm = reactive<{
 })
 let runSeq = 0
 let tickTimer: ReturnType<typeof setInterval> | null = null
-/** 边缘代理在长请求超时后返回的状态；此时服务端通常仍在执行并会写入检测记录。 */
-const EDGE_TIMEOUT_STATUSES = new Set([520, 521, 522, 523, 524])
 
 const recordMode = computed(() => props.mode === 'record')
 const compact = computed(() => props.mode === 'run')
@@ -358,7 +355,8 @@ function run() {
 
 async function executeRun(job: ActiveRun, request: IqTestRunRequest) {
   try {
-    const result = await api.runIqTest(request)
+    const started = await api.runIqTest(request)
+    const result = await waitForIqTestJob(started.jobId, request)
     if (shouldAdoptIqRunResult({ pinned: detailPinned.value, editing: manualDirty.value })) {
       detail.value = result
       syncManualForm(result)
@@ -369,23 +367,6 @@ async function executeRun(job: ActiveRun, request: IqTestRunRequest) {
       result.verdict === 'passed' ? 'success' : result.verdict === 'failed' ? 'error' : 'warning',
     )
   } catch (cause) {
-    // Cloudflare 等边缘代理会在 100 秒处截断长请求；服务端仍会跑完并写入记录，
-    // 因此按目标轮询检测历史，避免把已经完成的任务显示成失败。
-    if (cause instanceof ApiError && EDGE_TIMEOUT_STATUSES.has(cause.status)) {
-      const recovered = await recoverRunFromHistory(job, request)
-      if (recovered) {
-        if (shouldAdoptIqRunResult({ pinned: detailPinned.value, editing: manualDirty.value })) {
-          detail.value = recovered
-          syncManualForm(recovered)
-          workbench.value?.scrollResults()
-        }
-        notify(
-          `${job.benchmarkLabel} · ${job.channelName} / ${job.model}：${recovered.verdictLabel}（已从检测记录恢复）`,
-          recovered.verdict === 'passed' ? 'success' : recovered.verdict === 'failed' ? 'error' : 'warning',
-        )
-        return
-      }
-    }
     runError.value = `${job.model}：${errorMessage(cause)}`
     failedRun.value = { job, request }
     notify(runError.value, 'error')
@@ -395,25 +376,19 @@ async function executeRun(job: ActiveRun, request: IqTestRunRequest) {
   }
 }
 
-/** 等待后台检测写入记录；只认本次启动之后创建、目标完全一致的那一条。 */
-async function recoverRunFromHistory(job: ActiveRun, request: IqTestRunRequest): Promise<IqTestRunDetail | null> {
-  const deadline = Date.now() + Math.max(180_000, request.timeoutMs ?? 0) + 120_000
+/** 轮询后台任务；完成后读取完整检测记录。 */
+async function waitForIqTestJob(jobId: string, request: IqTestRunRequest): Promise<IqTestRunDetail> {
+  const deadline = Date.now() + Math.max(180_000, request.timeoutMs ?? 0) + 180_000
   while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 3_000))
-    try {
-      const runs = await api.listIqRuns(20)
-      const match = runs.find((run) =>
-        run.channelId === request.channelId
-        && run.model === request.model
-        && run.benchmark === request.benchmark
-        && run.createdAt >= job.startedAt,
-      )
-      if (match) return await api.getIqRun(match.id)
-    } catch {
-      // 轮询期间的网络抖动不覆盖原始错误，继续等到预算耗尽。
+    const job = await api.getIqTestJob(jobId)
+    if (job.status === 'completed') {
+      if (job.runId == null) throw new Error('检测任务未返回记录 id')
+      return api.getIqRun(job.runId)
     }
+    if (job.status === 'failed') throw new Error(job.error || '检测任务失败')
+    await new Promise((resolve) => setTimeout(resolve, 2_000))
   }
-  return null
+  throw new Error('检测任务等待超时')
 }
 
 /** 用失败任务的请求快照重试，配置切换后也不会误测当前选中的目标。 */
