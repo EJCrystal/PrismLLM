@@ -106,13 +106,19 @@ export function createOAuthFixtureFetch({ fixture = createOAuthAccountsFixture()
         if (body.clearProxy) account.proxyUrl = null
         else if ('proxyUrl' in body) account.proxyUrl = body.proxyUrl || null
         if ('models' in body) account.models = [...new Set(body.models)]
+        // Mirror the backend contract: only a real shared-state change advances the revision,
+        // so re-submitting the same mode/canonical/source must not trigger spurious 409s.
+        let mappingsChanged = false
         for (const change of normalized) {
           const mapping = resource.mappings.find(item => item.upstreamModel === change.upstreamModel)
-          mapping.mappingSource = change.mode === 'auto' ? null : 'manual'
-          mapping.canonicalModelId = change.mode === 'manual' ? change.canonicalModelId : change.mode === 'auto' ? mapping.automaticCanonicalModelId : null
+          const nextSource = change.mode === 'auto' ? null : 'manual'
+          const nextCanonical = change.mode === 'manual' ? change.canonicalModelId : change.mode === 'auto' ? mapping.automaticCanonicalModelId : null
+          if (mapping.mappingSource !== nextSource || mapping.canonicalModelId !== nextCanonical) mappingsChanged = true
+          mapping.mappingSource = nextSource
+          mapping.canonicalModelId = nextCanonical
           effective(mapping)
         }
-        if (normalized.length) resource.revision++
+        if (mappingsChanged) resource.revision++
         if (fixture.controls.failMappingAfterSave) { fixture.controls.failMappingAfterSave = false; fixture.controls.failMappingReads++ }
       } else if (action === 'policy') {
         if (Object.entries(body).some(([key, value]) => !(key === 'windowLimit' && value === null) && (!Number.isInteger(value) || value < 1))) return error('Invalid policy')

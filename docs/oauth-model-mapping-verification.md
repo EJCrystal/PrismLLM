@@ -34,7 +34,7 @@
 | provider、OAuth HTTP、availability、health、迁移及调用方范围交叉定向测试 | 120/120；fail/error/skip=0；编译与测试退出 0 |
 | 完整 upstream / app / extensions | 1,488/1,488（upstream 622 / app 844 / extensions 22）；fail/error/skip=0；各阶段退出 0 |
 | 架构与分类门禁 | 34 / 13 项通过，包含于完整回归，不重复计数 |
-| 前端 tests / typecheck / 默认 production build | 631/631，90 suites；fail/cancel/skip/todo=0；全部退出 0 |
+| 前端 tests / typecheck / 默认 production build | 632/632，90 suites；fail/cancel/skip/todo=0；全部退出 0 |
 | 整合影响路径的隔离 GUI | 冲突确认门禁、桌面/手机浅色弹窗、平板与桌面深色、手机深色列表及候选搜索 Escape 焦点返回通过；确认后的提交与手机深色弹窗因滚动工具超时未执行，不计通过 |
 | 动态迁移及 shaded JAR 校验 | 71 份资源各一次、字节一致；main 70 份历史 SQL 未改；测试依赖未泄漏 |
 | Docker 后端 build 阶段及导出 JAR | build / create / copy / remove 退出 0；容器未启动；同一迁移和依赖校验通过 |
@@ -43,7 +43,7 @@
 第三次整合后的完整回归用例身份与数量一致，120 项定向身份全部包含于 1,488 项完整执行。相对第二次整合的 1,491 项：本功能两条迁移用例因 V71 改名重命名；main 自行以 1 条持久化集成测试替换 4 条内存注册表单测（`IqTestJobRegistryTest` → `IqTestJobPersistenceIntegrationTest`），已在身份审计中逐条归因为主线自身改动，覆盖移除 0、新增 1。前两轮对原基准 a8d4b610 的 3 条 availability 加强重命名与二次整合的审计仍然有效。`BrowserScreenshotRendererTest` 的 11 项实际执行且无跳过。
 
 - 第三次整合后完整回归阶段耗时：compile 42.370s、upstream 51.719s、app 217.657s、extensions 5.470s、summary 0.163s；不把冒烟编译及 focused 重复计入完整回归总数。
-- 第三次整合后验证源码指纹（排除文档等非编译输入）：`7ce2d58356ffeda77cbce62d9228cde5ebe1a90f3796d4d641011fd6d982a7ef`。因验证期间发现另一工作树的并发构建反复覆盖共享 Maven 仓库（同机 `~/.m2`），最终整轮验证改用独立私有仓库副本执行，本表与指纹对应最终状态。
+- 第三次整合后验证源码指纹（排除文档等非编译输入）：`0a800376738f3a7aaf618fee37eabf2cfde8552b22bfdc5db18c0e7824204e7f`。因验证期间发现另一工作树的并发构建反复覆盖共享 Maven 仓库（同机 `~/.m2`），后端整轮验证改用独立私有仓库副本执行；PR 评审意见修复后重跑前端三件套，本表与指纹对应最终状态。评审修复仅涉及 web 测试 fixture 与其回归，后端源码字节与 1,488 全绿运行完全一致。
 - 本地 shaded JAR SHA-256：`4cda18d9a6cb639dd75ce47c386eb793777b72b923a8e261de8b14ad0ad6b974`。
 - Docker build 导出 JAR SHA-256：`f7d751d4eb8ef297d66d54324078d09458151f99f14d902d521e262345260361`。分别校验资源，不要求两个不同构建的 JAR 全文件可复现一致。
 
@@ -105,6 +105,7 @@ npm --prefix web run build
 - 发布核对发现 main 前移且 V69 重号后：功能迁移改名 V70（第三次整合再改 V71），升级路径测试覆盖 V68→V69→V70→V71，迁移用例随之重命名并逐轮纳入一对一身份审计；黑名单 scope 与本功能 `catalogActive`/canonical 组合经重新读取合并结果核对——inactive 仍走 404 语义，黑名单只作用于 active 条目。二次整合首次重跑暴露两条迁移用例在 V68 阶段的 Exposed 读写与主线扩展后的表定义不兼容，重写为与主线黑名单用例一致的原生 JDBC 播种后通过。
 - 二次整合 Standards 复核给出 5 条 P3：恒真断言与冗余断言已修复，UpstreamModelCatalog KDoc 补充 inactive 前置条件；fixture 行 ID 前缀与播种风格两条为纯外观/风格判断，记录理由后接受。Spec 复核 0/0/0，并注明 denylist×inactive 组合由 catalogActive 先于 scope 判定的结构保证。
 - 三次整合发现主线 `IqTestJobPersistenceIntegrationTest` 带 integration 标签但未登记分类与 shard，完整回归的分类门禁因此失败；按既有 IQ 测试归属补登记 shard-3 并给类补标签（main 自身遗漏，非本功能问题）。同轮完整回归的 app 阶段曾出现缺列与 NoSuchMethodError 混合失败，定位为同机另一工作树的并发 Maven 构建反复覆盖共享 `~/.m2` 构件；改用独立私有仓库副本后全量转绿，该干扰与产品无关。
+- PR-Agent 评审指出模拟 fixture 收到任何非空映射增量都会递增版本，与"仅真实变化递增"的版本契约不符（重复保存同值映射会使另一弹窗遭遇 409）。以同文件红绿修复：红 50/51（新回归恰为唯一失败），fixture 改为比对修改前后 mode/canonical/来源并仅在真实变化时递增；绿 51/51，前端全量 632/632，重复提交同值不再推进版本而真实变化仍递增。
 - 本轮前端日志保留 HMR 24678 端口占用警告；tests 全部通过。默认 production 主 JS 609.69 kB（gzip 195.39 kB），仍有超过 500 kB 警告。Maven shade 的重复依赖资源及测试宿主的 Micrometer 警告保留，资源唯一性另行实测，不以构建退出 0 隐藏警告。
 - 两轴最终复核曾因 provider TLS 连接中断未完成，随后在原代理上下文恢复只读复核；中断不作为通过。仓库未配置技能建议的 issue tracker；本轮复核以用户提供的完整规格和批准计划为依据，未新增外部 issue 或改动技能配置。
 - 原始测试日志、XML、截图、浏览器记录、恢复检查点与构建产物仅保留本地，不作为公开附件、不上传外部服务。本文件只发布可复核的范围、命令与结果摘要，不依赖本机绝对路径或 `target` 链接。

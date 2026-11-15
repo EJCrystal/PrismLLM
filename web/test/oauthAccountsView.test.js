@@ -660,6 +660,32 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(mapping('antigravity', 'gemini-3-flash').mappingSource, 'models_dev')
   })
 
+  it('fixture does not advance the shared revision when a mapping change repeats the current shared values', async () => {
+    await mount()
+    const read = async provider => (await mock.fetch(`/admin/api/oauth-providers/${provider}/model-mappings`)).json()
+    const put = async body => mock.fetch(`/admin/api/oauth-accounts/${IDS.groupedHealthy}/settings`, { method: 'PUT', body: JSON.stringify(body) })
+    let resource = await read('antigravity')
+    const model = 'gemini-3-pro'
+    // 每种模式先提交一次真实变化，再原样重复提交；同值重复不得递增版本，否则另一个弹窗会遭遇 409。
+    const cycle = [
+      { upstreamModel: model, mode: 'manual', canonicalModelId: 'custom/repeat' },
+      { upstreamModel: model, mode: 'upstream' },
+      { upstreamModel: model, mode: 'auto' },
+    ]
+    for (const change of cycle) {
+      assert.equal((await put({ modelMappingChanges: [change], expectedModelMappingRevision: resource.revision })).status, 200)
+      resource = await read('antigravity')
+      const revision = resource.revision
+      assert.equal((await put({ modelMappingChanges: [change], expectedModelMappingRevision: resource.revision })).status, 200)
+      const latest = await read('antigravity')
+      assert.equal(latest.revision, revision, `Repeat ${change.mode} submission must not advance the shared revision`)
+      resource = latest
+    }
+    // 真实变化仍然递增版本，两种行为并存才与生产端 mappingsChanged 契约一致。
+    assert.equal((await put({ modelMappingChanges: [{ upstreamModel: model, mode: 'manual', canonicalModelId: 'custom/repeat-2' }], expectedModelMappingRevision: resource.revision })).status, 200)
+    assert.equal((await read('antigravity')).revision, resource.revision + 1)
+  })
+
   it('edits mappings with allModels on, keeps model search enabled, and separates checkbox labels from mapping controls', async () => {
     await mount()
     await openSettings(IDS.groupedHealthy)
