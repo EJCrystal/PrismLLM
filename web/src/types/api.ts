@@ -137,6 +137,8 @@ export interface Channel {
   modelMappings: ChannelModelMapping[]
   priority: number
   keys: ChannelKey[]
+  /** 渠道下订阅账号摘要，仅展示字段；访问范围树用它渲染 OAuth 行。 */
+  oauthAccounts?: ChannelOAuthAccount[]
   requestOverrides: UpstreamRequestOverrides
   quota: ChannelQuotaSettings
   kind: 'custom' | 'provider'
@@ -145,6 +147,14 @@ export interface Channel {
   keyDisablePolicySet?: boolean
   /** 渠道策略形态：inherit（继承）、custom（自定义，未命中回落全局）、disabled（关闭）。 */
   keyDisableMode?: ChannelKeyDisableMode
+}
+
+/** 渠道订阅账号摘要；不含任何凭据。 */
+export interface ChannelOAuthAccount {
+  id: string
+  name: string
+  enabled: boolean
+  models: string[]
 }
 
 export interface ChannelQuotaSettings {

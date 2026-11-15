@@ -17,6 +17,7 @@ import { buildClientKeyPayload, concurrencySummary, quotaSummary } from '../util
 import { useClientKeyActions } from '../utils/clientKeyActions'
 import { useSecretReveal } from '../utils/secretReveal'
 import { clientKeyAccessSummary, conflictingClientKeyAccessKeys, createUnrestrictedAccessPolicy, normalizeClientKeyAccessPolicy } from '../utils/clientKeyAccess'
+import { emptyAccessDimensionLabels } from '../utils/clientKeyAccessTree'
 
 interface ClientKeyForm {
   name: string
@@ -77,6 +78,8 @@ const enabledCount = computed(() => keys.value.filter((item) => item.enabled).le
 const revokedCount = computed(() => keys.value.filter((item) => item.revokedAt != null).length)
 // 密钥白名单与渠道范围冲突时禁止保存；后端同样校验，这里把失败前移到表单内。
 const accessConflicts = computed(() => conflictingClientKeyAccessKeys(form.accessPolicy))
+// 白/黑名单模式下没有任何目标时禁止保存，避免“空白名单拒绝全部”的线上误封锁。
+const emptyAccessScopes = computed(() => emptyAccessDimensionLabels(form.accessPolicy))
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
@@ -132,6 +135,10 @@ async function save() {
   }
   if (accessConflicts.value.length) {
     notify('已选渠道密钥与渠道访问范围冲突，请调整后保存', 'error')
+    return
+  }
+  if (emptyAccessScopes.value.length) {
+    notify('白名单/黑名单模式下请至少勾选 1 个目标；如需全部放行请选择「不限制」', 'error')
     return
   }
   saving.value = true
@@ -327,7 +334,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <Modal v-if="showForm" :title="editingId ? '编辑调用方密钥' : '新建调用方密钥'" @close="showForm = false">
+    <Modal v-if="showForm" :title="editingId ? '编辑调用方密钥' : '新建调用方密钥'" wide @close="showForm = false">
       <form class="form-grid" @submit.prevent="save">
         <label class="field">
           <span>名称</span>
@@ -377,8 +384,11 @@ onMounted(() => {
         <ClientKeyAccessFields v-model="form.accessPolicy" />
       </form>
       <template #footer>
+        <span class="access-footer-status" :class="{ 'is-error': emptyAccessScopes.length > 0 }" role="status">
+          {{ emptyAccessScopes.length > 0 ? '存在未勾选的空名单，请先完成选择' : '最终可调用的模型与密钥取以上两个维度的交集' }}
+        </span>
         <button type="button" class="button ghost" @click="showForm = false">取消</button>
-        <button type="button" class="button primary" :disabled="saving || accessConflicts.length > 0" @click="save">
+        <button type="button" class="button primary" :disabled="saving || accessConflicts.length > 0 || emptyAccessScopes.length > 0" @click="save">
           {{ saving ? '保存中…' : editingId ? '保存修改' : '创建密钥' }}
         </button>
       </template>
@@ -430,5 +440,17 @@ onMounted(() => {
 .client-key-occupancy.is-active .client-key-occupancy-dot {
   background: var(--success-fill);
   box-shadow: 0 0 0 3px var(--success-soft);
+}
+/* 访问范围弹窗底部左侧状态：正常为灰色说明，空名单未完成时转红。 */
+.access-footer-status {
+  flex: 1 1 auto;
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.access-footer-status.is-error {
+  color: var(--danger);
+  font-weight: 500;
 }
 </style>

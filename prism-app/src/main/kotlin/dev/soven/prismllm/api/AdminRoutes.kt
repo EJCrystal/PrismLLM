@@ -343,7 +343,10 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/channels") {
             call.requireAdmin(app)
-            call.respond(app.channelRepository.list().map { it.toResponse() })
+            val oauthByChannel = app.oauthAccountDirectory.listByChannel()
+            call.respond(app.channelRepository.list().map { channel ->
+                channel.toResponse(oauthByChannel[channel.id].orEmpty())
+            })
         }
 
         get("/quota-providers") {
