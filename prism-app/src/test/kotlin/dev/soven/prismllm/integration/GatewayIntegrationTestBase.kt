@@ -14,8 +14,6 @@ import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
 import dev.soven.prismllm.fake.FakeUpstream
 import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
-import dev.soven.prismllm.proxy.HtmlImageRenderer
-import dev.soven.prismllm.proxy.SvgRenderResult
 import dev.soven.prismllm.shared.crypto.ClientKeyHasher
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
 import dev.soven.prismllm.requestlog.domain.RetentionPolicy
@@ -119,7 +117,7 @@ abstract class GatewayIntegrationTestBase {
         fake.resetOAuthToken()
         fake.clearChatHold()
         consumedRequestIds.clear()
-        app = GatewayApplication(config(), visionRendererOverride = TestVisionRenderer())
+        app = GatewayApplication(config())
         app.databaseFactory.migrate()
         truncateAll()
     }
@@ -128,27 +126,6 @@ abstract class GatewayIntegrationTestBase {
     fun tearDown() {
         // close() 幂等：测试内重建应用时已经关闭过的实例再次关闭不会产生副作用。
         if (::app.isInitialized) app.close()
-    }
-
-    protected class TestVisionRenderer : HtmlImageRenderer {
-        override val label: String = "测试渲染器"
-
-        override fun render(html: String): SvgRenderResult =
-            SvgRenderResult.Success(byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte()), 512, 320)
-
-        override fun renderFrames(html: String, times: List<Float>): List<SvgRenderResult> = times.mapIndexed { index, _ ->
-            SvgRenderResult.Success(
-                byteArrayOf(
-                    0x89.toByte(),
-                    'P'.code.toByte(),
-                    'N'.code.toByte(),
-                    'G'.code.toByte(),
-                    index.toByte(),
-                ),
-                512,
-                320,
-            )
-        }
     }
 
     protected suspend fun assertOversizedSearchResponseRejected(scenario: String) {
@@ -358,11 +335,6 @@ abstract class GatewayIntegrationTestBase {
         iqDefaultJudge = "local",
         iqJudgeTimeoutMs = 5_000,
         iqJudgePluginDir = iqJudgePluginDirectory,
-        iqVisionEnabled = true,
-        iqVisionBaseUrl = fake.baseUrl + "/vision/v1",
-        iqVisionModel = "vision-test",
-        iqVisionTimeoutMs = 5_000,
-        iqVisionRenderWidth = 512,
         cookieSecure = false,
         retention = RetentionPolicy(cleanupEnabled = false),
         cooldown = CooldownPolicy(

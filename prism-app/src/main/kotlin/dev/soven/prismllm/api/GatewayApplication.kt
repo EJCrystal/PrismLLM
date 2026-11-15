@@ -14,14 +14,11 @@ import dev.soven.prismllm.shared.error.toGeminiEnvelope
 import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.config.TrustedProxyNetwork
 import dev.soven.prismllm.db.DatabaseFactory
-import dev.soven.prismllm.proxy.BrowserScreenshotRenderer
 import dev.soven.prismllm.proxy.GatewayMetrics
-import dev.soven.prismllm.proxy.HtmlImageRenderer
 import dev.soven.prismllm.proxy.ReasoningCarryCache
 import dev.soven.prismllm.proxy.RequestFinalizer
 import dev.soven.prismllm.proxy.RequestDrain
 import dev.soven.prismllm.shared.domain.Usage
-import dev.soven.prismllm.proxy.UnavailableBrowserRenderer
 import dev.soven.prismllm.proxy.isGeminiRequestPath
 import dev.soven.prismllm.requestlog.infra.RequestLogWriter
 import dev.soven.prismllm.proxy.UpstreamOccupancy
@@ -283,8 +280,6 @@ private fun escapeLogValue(value: String, maxLength: Int): String {
  */
 class GatewayApplication(
     val config: GatewayConfig,
-    /** 测试可注入渲染器；生产环境留空，自动使用无头浏览器。 */
-    private val visionRendererOverride: HtmlImageRenderer? = null,
 ) : AutoCloseable {
     init {
         // 协议组合缺失只会在对应请求到达时才暴露，放到启动阶段拦截。
@@ -444,27 +439,7 @@ class GatewayApplication(
         baseUrl = config.manxueApiBaseUrl,
         timeoutMs = config.manxueTimeoutMs,
     )
-    /** 部署默认值；管理台未保存配置时使用，也用于判断密钥是否来自环境变量。 */
-    val iqVisionDefaults = dev.soven.prismllm.admin.domain.IqVisionConfig(
-        enabled = config.iqVisionEnabled,
-        baseUrl = config.iqVisionBaseUrl,
-        model = config.iqVisionModel,
-        apiKey = config.iqVisionApiKey.takeIf { it.isNotBlank() },
-        timeoutMs = config.iqVisionTimeoutMs,
-    )
-    val iqVisionSettingsRepository = dev.soven.prismllm.admin.persistence.IqVisionSettingsRepository(
-        database = databaseFactory.database,
-        credentialCipher = credentialCipher,
-    )
-    /** 浏览器在启动期解析；管理台据此提示「视觉判分不可用」。 */
-    private val visionRenderer: HtmlImageRenderer = visionRendererOverride ?: createVisionRenderer()
-    val iqVisionBrowserAvailable: Boolean
-        get() = visionRenderer.available
-    /**
-     * 视觉判分器始终注册：是否真正调用模型由「系统配置」里的开关决定，
-     * 这样管理员不必为改一个模型名重启网关。浏览器仍在启动期解析，
-     * 更换浏览器路径需要重启。
-     */
+    /** 判分器列表可由插件目录扩展；内置保留本地结构检查与满血分类。 */
     val iqJudgeRegistry = dev.soven.prismllm.plugin.iq.IqJudgeRegistry(
         pluginDirectory = config.iqJudgePluginDir,
         builtIns = buildList {
@@ -472,58 +447,12 @@ class GatewayApplication(
             if (config.manxueEnabled) {
                 add(dev.soven.prismllm.plugin.iq.ManxueIqJudge(manxueHtmlClassifier))
             }
-            add(
-                dev.soven.prismllm.plugin.iq.VisionIqJudge(
-                    renderer = visionRenderer,
-                    // 每次判分重新读取，管理台保存后立即生效；读库失败时返回不可用而不是回退到环境变量。
-                    settings = { iqVisionSettingsRepository.loadBlocking(iqVisionDefaults) },
-                    assessorFactory = { resolved ->
-                        dev.soven.prismllm.proxy.OpenAiVisionAssessor(
-                            httpClient = httpClient,
-                            baseUrl = resolved.baseUrl,
-                            apiKey = resolved.apiKey,
-                            model = resolved.model,
-                            timeoutMs = resolved.timeoutMs,
-                        )
-                    },
-                ),
-            )
         },
     )
     val iqJudgeService = dev.soven.prismllm.plugin.iq.IqJudgeService(
         registry = iqJudgeRegistry,
         timeoutMs = config.iqJudgeTimeoutMs,
     )
-
-    private fun createVisionRenderer(): HtmlImageRenderer {
-        val visionBudgetMs = 6 * config.iqVisionBrowserTimeoutMs + config.iqVisionTimeoutMs
-        if (config.iqJudgeTimeoutMs < visionBudgetMs) {
-            logger.warn(
-                "IQ_JUDGE_TIMEOUT_MS={}ms 小于视觉判分最坏预算 {}ms（6 帧渲染 + 视觉模型），" +
-                    "判分可能提前超时并转为需人工查看",
-                config.iqJudgeTimeoutMs,
-                visionBudgetMs,
-            )
-        }
-        val executable = BrowserScreenshotRenderer.resolveExecutable(config.iqVisionBrowserPath)
-        if (executable == null) {
-            if (config.iqVisionBrowserPath.isNotBlank()) {
-                logger.warn("IQ_VISION_BROWSER_PATH 指向的浏览器不可执行：{}", config.iqVisionBrowserPath)
-            }
-            logger.warn(
-                "未找到无头浏览器，IQ 视觉判分将返回需人工查看；" +
-                    "请安装 Chrome/Chromium 或设置 IQ_VISION_BROWSER_PATH。",
-            )
-            return UnavailableBrowserRenderer
-        }
-        logger.info("IQ 视觉判分使用无头浏览器：{}", executable)
-        return BrowserScreenshotRenderer(
-            executable = executable,
-            maxWidth = config.iqVisionRenderWidth,
-            maxImageBytes = config.iqVisionMaxImageBytes,
-            timeoutMs = config.iqVisionBrowserTimeoutMs,
-        )
-    }
 
     val modelPriceReferenceService = ModelPriceReferenceService(httpClient)
     val upstreamHeaderCatalogService = UpstreamHeaderCatalogService(

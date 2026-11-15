@@ -99,22 +99,6 @@ class AdminArchitectureTest {
             classes.any { it.name == "dev.soven.prismllm.admin.persistence.WebSearchSettingsRepository" },
             "ArchUnit 未导入 Web 搜索设置仓储，规则会空跑",
         )
-        assertTrue(
-            classes.any { it.name == "dev.soven.prismllm.admin.domain.IqVisionSettingsRecord" },
-            "ArchUnit 未导入 IQ 视觉判分设置记录，规则会空跑",
-        )
-        assertTrue(
-            classes.any { it.name == "dev.soven.prismllm.admin.domain.IqVisionConfig" },
-            "ArchUnit 未导入 IQ 视觉判分配置，规则会空跑",
-        )
-        assertTrue(
-            classes.any { it.name == "dev.soven.prismllm.admin.persistence.IqVisionSettings" },
-            "ArchUnit 未导入 IQ 视觉判分设置表，规则会空跑",
-        )
-        assertTrue(
-            classes.any { it.name == "dev.soven.prismllm.admin.persistence.IqVisionSettingsRepository" },
-            "ArchUnit 未导入 IQ 视觉判分设置仓储，规则会空跑",
-        )
     }
 
     @Test

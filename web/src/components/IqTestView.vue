@@ -611,9 +611,6 @@ onBeforeUnmount(stopTicker)
               <p v-if="selectedJudge?.id === 'manxue'" class="callout warning iq-privacy-warning">
                 选择满血AI 时，生成的 HTML 会发送到 manxue.ai；渠道密钥不会离开本机。
               </p>
-              <p v-else-if="selectedJudge?.id === 'vision'" class="callout warning iq-privacy-warning">
-                选择视觉判分器时，会把无头浏览器渲染的 6 帧截图发送到网关配置的视觉端点；渠道密钥不会发送。
-              </p>
               <p v-else-if="selectedJudge && !selectedJudge.builtIn" class="callout warning iq-privacy-warning">
                 外部插件「{{ selectedJudge.label }}」会收到生成的 HTML，并可能发送到其配置的服务；请确认插件来源可信。
               </p>
@@ -748,7 +745,6 @@ onBeforeUnmount(stopTicker)
               <details
                 v-if="!compact && Object.keys(detail.judgeResult.details).length"
                 class="iq-judge-details"
-                :open="detail.judgeResult.judgeId === 'vision'"
               >
                 <summary>逐项检测</summary>
                 <dl>
