@@ -15,6 +15,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
@@ -26,6 +27,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.slf4j.LoggerFactory
 import java.util.Base64
 
 data class VisionFrame(
@@ -95,58 +97,100 @@ class OpenAiVisionAssessor(
         }
         return try {
             withTimeout(timeoutMs) {
-                val response = httpClient.post("$baseUrl/chat/completions") {
-                    header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-                    apiKey?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }
-                    setBody(
-                        TextContent(
-                            buildJsonObject {
-                                put("model", model)
-                                put("temperature", 0)
-                                put("max_tokens", 3_000)
-                                putJsonArray("messages") {
-                                    addJsonObject {
-                                        put("role", "system")
-                                        put("content", "你是图形作品评审，只输出一个 JSON 对象，不要 Markdown。")
+                var previousText: String? = null
+                repeat(2) { attempt ->
+                    val response = httpClient.post("$baseUrl/chat/completions") {
+                        header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                        apiKey?.takeIf { it.isNotBlank() }?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+                        setBody(
+                            TextContent(
+                                buildJsonObject {
+                                    put("model", model)
+                                    put("temperature", 0)
+                                    put("max_tokens", 3_000)
+                                    putJsonObject("response_format") {
+                                        put("type", "json_object")
                                     }
-                                    addJsonObject {
-                                        put("role", "user")
-                                        putJsonArray("content") {
-                                            addJsonObject {
-                                                put("type", "text")
-                                                put("text", prompt(request))
-                                            }
-                                            request.frames.forEachIndexed { index, frame ->
+                                    putJsonArray("messages") {
+                                        addJsonObject {
+                                            put("role", "system")
+                                            put(
+                                                "content",
+                                                "你是图形作品评审。只输出符合用户消息末尾固定结构的 JSON 对象；必须包含 aspects 对象内全部五个维度，不得改用 items、数组或省略维度。",
+                                            )
+                                        }
+                                        addJsonObject {
+                                            put("role", "user")
+                                            putJsonArray("content") {
                                                 addJsonObject {
                                                     put("type", "text")
-                                                    put("text", "第 ${index + 1} 帧（t=${frame.timeSeconds}s）")
+                                                    put("text", prompt(request))
                                                 }
-                                                addJsonObject {
-                                                    put("type", "image_url")
-                                                    putJsonObject("image_url") {
-                                                        put(
-                                                            "url",
-                                                            "data:image/png;base64," +
-                                                                Base64.getEncoder().encodeToString(frame.png),
-                                                        )
+                                                request.frames.forEachIndexed { index, frame ->
+                                                    addJsonObject {
+                                                        put("type", "text")
+                                                        put("text", "第 ${index + 1} 帧（t=${frame.timeSeconds}s）")
+                                                    }
+                                                    addJsonObject {
+                                                        put("type", "image_url")
+                                                        putJsonObject("image_url") {
+                                                            put(
+                                                                "url",
+                                                                "data:image/png;base64," +
+                                                                    Base64.getEncoder().encodeToString(frame.png),
+                                                            )
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
+                                        previousText?.let { previous ->
+                                            addJsonObject {
+                                                put("role", "assistant")
+                                                put("content", previous.take(12_000))
+                                            }
+                                            addJsonObject {
+                                                put("role", "user")
+                                                put(
+                                                    "content",
+                                                    "上一次响应未按固定格式提供完整的五项结果。请重新比较原始截图并返回完整 JSON，" +
+                                                        "必须包含 aspects 对象及鹈鹕特征、自行车结构、骑行关系、动画连贯性、画面完成度五个键，" +
+                                                        "每项均有 status 和 detail；不要只在 reason 或 summary 中概述，不得依据分数或摘要补造通过结果。" +
+                                                        "无法判断时如实返回 unknown；动画无法确认连续运动时返回 failed。",
+                                                )
+                                            }
+                                        }
                                     }
-                                }
-                            }.toString(),
-                            ContentType.Application.Json,
-                        ),
+                                }.toString(),
+                                ContentType.Application.Json,
+                            ),
+                        )
+                    }
+                    val body = response.bodyAsText()
+                    if (response.status.value !in 200..299) {
+                        return@withTimeout failure("视觉模型返回 HTTP ${response.status.value}：${body.take(300)}")
+                    }
+                    val text = extractContent(body)
+                        ?: return@withTimeout failure("视觉模型返回了无法解析的响应")
+                    val assessment = parseAssessment(text)
+                    val missing = missingAspectResults(text)
+                    if (missing.isEmpty() || assessment.verdict == IqJudgeVerdict.INCORRECT) {
+                        return@withTimeout assessment
+                    }
+                    logger.warn(
+                        "vision assessment incomplete: model={} attempt={} missing={} shape={}",
+                        model, attempt + 1, missing, assessmentShape(text),
                     )
+                    if (attempt == 1) {
+                        return@withTimeout assessment.copy(
+                            verdict = IqJudgeVerdict.REVIEW,
+                            reason = ("视觉模型补问后仍缺少完整逐项结果：${missing.joinToString("、")}。" +
+                                assessment.reason.orEmpty()).take(500),
+                        )
+                    }
+                    previousText = text
                 }
-                val body = response.bodyAsText()
-                if (response.status.value !in 200..299) {
-                    return@withTimeout failure("视觉模型返回 HTTP ${response.status.value}：${body.take(300)}")
-                }
-                val text = extractContent(body)
-                    ?: return@withTimeout failure("视觉模型返回了无法解析的响应")
-                parseAssessment(text)
+                failure("视觉模型未返回完整逐项结果")
             }
         } catch (cause: TimeoutCancellationException) {
             failure("视觉模型调用超时（${timeoutMs / 1000} 秒）")
@@ -214,10 +258,11 @@ class OpenAiVisionAssessor(
                 "远侧肢体画在车架前面、盖住车架，或近侧大腿根部被躯干遮住。",
         )
         appendLine(
-            "动画连贯性只能标记 passed 或 failed，不得标记 unknown；其他项目无法判断时可标记 unknown；" +
-                "没有明确失败时 verdict 为 review。",
+            "动画连贯性只能标记 passed 或 failed，不得标记 unknown；其他项目无法判断时可标记 unknown。" +
+                "判定必须与五项状态一致：任一项 failed 则 verdict 为 incorrect；五项全部 passed 则 verdict 为 passed；" +
+                "任何一项为 unknown 或未提供完整逐项结果则 verdict 为 review。不得仅凭分数通过。",
         )
-        appendLine("只返回一个 JSON 对象，不要 Markdown。格式：")
+        appendLine("只返回一个 JSON 对象，不要 Markdown。aspects 必须是对象而不是数组，且必须逐字使用以下五个键，不得省略或改名；每项必须包含 status 和 detail。格式：")
         append(
             """{"aspects":{"鹈鹕特征":{"status":"passed|failed|unknown","detail":"中文描述"},"自行车结构":{"status":"passed|failed|unknown","detail":"中文描述"},"骑行关系":{"status":"passed|failed|unknown","detail":"中文描述"},"动画连贯性":{"status":"passed|failed|unknown","detail":"中文描述"},"画面完成度":{"status":"passed|failed|unknown","detail":"中文描述"}},"verdict":"passed|incorrect|review","score":0-100,"reason":"不超过 120 字"}""",
         )
@@ -238,24 +283,30 @@ class OpenAiVisionAssessor(
     }
 
     internal fun parseAssessment(text: String): VisionAssessment {
-        val start = text.indexOf('{')
-        val end = text.lastIndexOf('}')
-        if (start < 0 || end <= start) return failure("视觉模型未返回 JSON 评分")
-        val json = runCatching {
-            Json.parseToJsonElement(text.substring(start, end + 1)).jsonObject
-        }.getOrNull() ?: return failure("视觉模型返回的 JSON 无法解析")
+        val json = extractJsonObject(text)
+            ?: if (text.contains('{') && text.contains('}')) {
+                return failure("视觉模型返回的 JSON 无法解析")
+            } else {
+                return failure("视觉模型未返回 JSON 评分")
+            }
         val aspects = parseAspects(json)
         val score = (json["score"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()?.coerceIn(0.0, 100.0)
         val explicit = parseVerdict((json["verdict"] as? JsonPrimitive)?.contentOrNull)
-        val reason = (json["reason"] as? JsonPrimitive)?.contentOrNull?.take(500)
+        val reason = listOf("reason", "summary")
+            .firstNotNullOfOrNull { key ->
+                (json[key] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+            }
+            ?.take(500)
         val hasFailed = aspects.any { it.status == VisionAspectStatus.FAILED }
         val hasUnknown = aspects.any { it.status == VisionAspectStatus.UNKNOWN }
+        val allPassed = aspects.size == ASPECT_KEYS.size && aspects.all { it.status == VisionAspectStatus.PASSED }
         val verdict = when {
             hasFailed -> IqJudgeVerdict.INCORRECT
             explicit == IqJudgeVerdict.INCORRECT -> IqJudgeVerdict.INCORRECT
             // 五项必检维度缺失时，不能只凭模型自报 passed 或分数自动通过。
             aspects.isEmpty() -> IqJudgeVerdict.REVIEW
             hasUnknown -> IqJudgeVerdict.REVIEW
+            allPassed -> IqJudgeVerdict.PASSED
             explicit != null -> explicit
             else -> IqJudgeVerdict.PASSED
         }
@@ -263,22 +314,103 @@ class OpenAiVisionAssessor(
     }
 
     private fun parseAspects(json: JsonObject): List<VisionAspect> {
-        val aspects = json["aspects"] as? JsonObject ?: return emptyList()
+        val aspects = aspectEntries(json) ?: return emptyList()
         return ASPECT_KEYS.map { key ->
-            val entry = aspects.entries.firstOrNull { (name, _) -> name == key || name.contains(key) }
-                ?.value as? JsonObject
-            if (entry == null) {
-                VisionAspect(key, VisionAspectStatus.UNKNOWN, "模型未返回该项检测结果。")
-            } else {
-                val detail = listOf("detail", "reason", "text")
-                    .firstNotNullOfOrNull { field ->
-                        (entry[field] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
-                    }
-                    ?: "模型未提供描述。"
-                VisionAspect(key, parseAspectStatus((entry["status"] as? JsonPrimitive)?.contentOrNull), detail.take(600))
+            val entries = aspectEntriesForKey(aspects, key)
+            val results = entries.map { entry -> parseAspect(key, entry) }
+            results.firstOrNull { it.status == VisionAspectStatus.FAILED } ?: when (results.size) {
+                0 -> VisionAspect(key, VisionAspectStatus.UNKNOWN, "模型未返回该项检测结果。")
+                1 -> results.single()
+                else -> VisionAspect(key, VisionAspectStatus.UNKNOWN, "模型返回了重复的该项检测结果。")
             }
         }
     }
+
+    private fun parseAspect(key: String, entry: JsonObject): VisionAspect {
+        val rawStatus = ASPECT_STATUS_FIELDS.firstNotNullOfOrNull { field ->
+            (entry[field] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+        }
+        val booleanStatus = (entry["passed"] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull()
+        val status = when {
+            rawStatus != null -> parseAspectStatus(rawStatus)
+            booleanStatus == true -> VisionAspectStatus.PASSED
+            booleanStatus == false -> VisionAspectStatus.FAILED
+            else -> VisionAspectStatus.UNKNOWN
+        }
+        val detail = ASPECT_DETAIL_FIELDS.firstNotNullOfOrNull { field ->
+            (entry[field] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+        } ?: "模型未提供描述。"
+        return VisionAspect(key, status, detail.take(600))
+    }
+
+    private fun aspectEntries(json: JsonObject): List<Pair<String, JsonObject>>? {
+        val containers = listOf("aspects", "items").mapNotNull { key ->
+            json[key]?.takeIf { it is JsonObject || it is JsonArray }
+        }
+        val topLevelEntries = json.entries.mapNotNull { (name, value) ->
+            (value as? JsonObject)?.let { name to it }
+        }
+        val hasTopLevelAspects = ASPECT_KEYS.any { key -> aspectEntriesForKey(topLevelEntries, key).isNotEmpty() }
+        if (containers.isEmpty() && !hasTopLevelAspects) return null
+        return (if (hasTopLevelAspects) topLevelEntries else emptyList()) + containers.flatMap { container ->
+            when (container) {
+                is JsonObject -> container.entries.mapNotNull { (name, value) ->
+                    (value as? JsonObject)?.let { name to it }
+                }
+                is JsonArray -> container.mapNotNull { item ->
+                    val entry = item as? JsonObject ?: return@mapNotNull null
+                    val name = ASPECT_NAME_FIELDS.firstNotNullOfOrNull { field ->
+                        (entry[field] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+                    } ?: return@mapNotNull null
+                    name to entry
+                }
+                else -> emptyList()
+            }
+        }
+    }
+
+    private fun aspectEntriesForKey(aspects: List<Pair<String, JsonObject>>, key: String): List<JsonObject> {
+        val aliases = ASPECT_ALIASES[key].orEmpty()
+        val acceptedNames = (aliases + key).map(::normalizeAspectName).toSet()
+        return aspects.filter { (name, _) -> normalizeAspectName(name).trimStart(Char::isDigit) in acceptedNames }
+            .map { it.second }
+    }
+
+    private fun missingAspectResults(text: String): List<String> {
+        val json = extractJsonObject(text) ?: return ASPECT_KEYS
+        val entries = aspectEntries(json) ?: return ASPECT_KEYS
+        return ASPECT_KEYS.filter { key ->
+            val matching = aspectEntriesForKey(entries, key)
+            if (matching.size != 1) return@filter true
+            val entry = matching.single()
+            val hasStatus = ASPECT_STATUS_FIELDS.any { field ->
+                (entry[field] as? JsonPrimitive)?.contentOrNull?.isNotBlank() == true
+            } || (entry["passed"] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() != null
+            val hasDetail = ASPECT_DETAIL_FIELDS.any { field ->
+                (entry[field] as? JsonPrimitive)?.contentOrNull?.isNotBlank() == true
+            }
+            !hasStatus || !hasDetail
+        }
+    }
+
+    private fun assessmentShape(text: String): String {
+        val json = extractJsonObject(text) ?: return "invalid-json"
+        fun shape(element: JsonElement, depth: Int): String = when (element) {
+            is JsonObject -> if (depth >= 2) {
+                "object"
+            } else {
+                element.entries.take(12).joinToString(prefix = "{", postfix = "}") { (key, value) ->
+                    "${key.filter { it.isLetterOrDigit() || it == '_' }.take(48)}:${shape(value, depth + 1)}"
+                }
+            }
+            is JsonArray -> "array(${element.size}):${element.firstOrNull()?.let { shape(it, depth) } ?: "empty"}"
+            is JsonPrimitive -> if (element.isString) "string" else "primitive"
+        }
+        return shape(json, 0)
+    }
+
+    private fun normalizeAspectName(name: String): String =
+        name.lowercase().filter(Char::isLetterOrDigit)
 
     private fun parseAspectStatus(raw: String?): VisionAspectStatus {
         val value = raw?.trim()?.lowercase().orEmpty()
@@ -304,7 +436,18 @@ class OpenAiVisionAssessor(
     )
 
     private companion object {
+        val logger = LoggerFactory.getLogger(OpenAiVisionAssessor::class.java)
         val ASPECT_KEYS = listOf("鹈鹕特征", "自行车结构", "骑行关系", "动画连贯性", "画面完成度")
+        val ASPECT_STATUS_FIELDS = listOf("status", "result", "verdict")
+        val ASPECT_DETAIL_FIELDS = listOf("detail", "reason", "text", "description", "observation", "evidence")
+        val ASPECT_NAME_FIELDS = listOf("key", "name", "aspect", "dimension", "criterion", "id", "label")
+        val ASPECT_ALIASES = mapOf(
+            "鹈鹕特征" to setOf("pelican_features", "pelican feature", "pelican"),
+            "自行车结构" to setOf("bicycle_structure", "bicycle structure", "bicycle", "bike_structure"),
+            "骑行关系" to setOf("riding_relationship", "riding relationship", "riding", "rider_bicycle_relationship"),
+            "动画连贯性" to setOf("animation_continuity", "animation continuity", "animation", "motion_continuity"),
+            "画面完成度" to setOf("composition_completeness", "composition completeness", "composition", "frame_completeness"),
+        )
         val NEGATIVE_ASPECT_PATTERN = Regex(
             "fail|incorrect|not\\s+(?:fully\\s+|yet\\s+)?pass(?:ed)?|" +
                 "(?:does|did|is|was|has|have|had)\\s+not\\s+pass(?:ed)?|" +
