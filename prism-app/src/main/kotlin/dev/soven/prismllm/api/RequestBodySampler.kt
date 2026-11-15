@@ -30,6 +30,26 @@ internal object RequestBodySampler {
     /** 字符串值仅限已知枚举/名称类控制字段，不含任何用户正文。 */
     private val STRING_KEYS = listOf("model", "reasoning_effort", "truncation", "service_tier")
 
+    /**
+     * 枚举类控制字段的合法取值（按输出字段名索引）。
+     *
+     * SAFE_TOKEN 只能保证「无空格的 token 形态」，挡不住调用方把无空格的敏感串
+     * （密钥、base64、token）塞进 reasoning_effort / truncation 这类字段里外泄；
+     * 这些字段在四个协议里都是有限枚举，未知值视为不可信内容直接丢弃。
+     * model 是自由命名的模型标识，不参与枚举校验。
+     */
+    private val ENUM_VALUES = mapOf(
+        "reasoning_effort" to setOf("minimal", "low", "medium", "high", "xhigh"),
+        "truncation" to setOf("auto", "disabled"),
+        "service_tier" to setOf("auto", "default", "flex", "scale", "priority", "on_demand"),
+        "thinking_type" to setOf("enabled", "disabled"),
+        "response_format_type" to setOf("text", "json_object", "json_schema"),
+        "tool_choice" to setOf(
+            "auto", "none", "required", "any", "function", "tool",
+            "allowed_tools", "custom", "hosted",
+        ),
+    )
+
     /** 数值类控制字段；覆盖各协议的输出上限、采样与随机性参数。 */
     private val NUMBER_KEYS = listOf(
         "max_tokens", "max_output_tokens", "max_completion_tokens",
@@ -46,7 +66,7 @@ internal object RequestBodySampler {
     fun sample(request: JsonObject): Map<String, Any?> {
         val result = LinkedHashMap<String, Any?>()
 
-        STRING_KEYS.forEach { key -> string(request[key])?.let { result[key] = it } }
+        STRING_KEYS.forEach { key -> string(key, request[key])?.let { result[key] = it } }
         NUMBER_KEYS.forEach { key -> number(request[key])?.let { result[key] = it } }
         BOOLEAN_KEYS.forEach { key ->
             (request[key] as? JsonPrimitive)?.booleanOrNull?.let { result[key] = it }
@@ -54,10 +74,10 @@ internal object RequestBodySampler {
 
         // Responses 的 reasoning / Messages 的 thinking：只取档位与预算，不取内容。
         (request["reasoning"] as? JsonObject)?.let { reasoning ->
-            string(reasoning["effort"])?.let { result["reasoning_effort"] = it }
+            string("reasoning_effort", reasoning["effort"])?.let { result["reasoning_effort"] = it }
         }
         (request["thinking"] as? JsonObject)?.let { thinking ->
-            string(thinking["type"])?.let { result["thinking_type"] = it }
+            string("thinking_type", thinking["type"])?.let { result["thinking_type"] = it }
             number(thinking["budget_tokens"])?.let { result["thinking_budget_tokens"] = it }
         }
 
@@ -88,11 +108,11 @@ internal object RequestBodySampler {
         }
 
         (request["response_format"] as? JsonObject)?.let { format ->
-            string(format["type"])?.let { result["response_format_type"] = it }
+            string("response_format_type", format["type"])?.let { result["response_format_type"] = it }
         }
         when (val choice = request["tool_choice"]) {
-            is JsonPrimitive -> string(choice)?.let { result["tool_choice"] = it }
-            is JsonObject -> string(choice["type"])?.let { result["tool_choice"] = it }
+            is JsonPrimitive -> string("tool_choice", choice)?.let { result["tool_choice"] = it }
+            is JsonObject -> string("tool_choice", choice["type"])?.let { result["tool_choice"] = it }
             else -> Unit
         }
         if (request["web_search_options"] != null) result["web_search_options_present"] = true
@@ -105,7 +125,12 @@ internal object RequestBodySampler {
             ?.contentOrNull
             ?.takeIf { it.length <= MAX_VALUE_LENGTH }
 
-    private fun string(element: JsonElement?): String? = text(element)?.takeIf(SAFE_TOKEN::matches)
+    /** 枚举字段超出合法取值的值与自由文本一样丢弃；model 等自由命名字段只做 token 校验。 */
+    private fun string(outputKey: String, element: JsonElement?): String? {
+        val value = text(element)?.takeIf(SAFE_TOKEN::matches) ?: return null
+        val allowed = ENUM_VALUES[outputKey] ?: return value
+        return value.lowercase().takeIf { it in allowed }
+    }
 
     /** 同时兼容 JSON 数字和调用方误传的数字字符串。 */
     private fun number(element: JsonElement?): Number? {

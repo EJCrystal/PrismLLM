@@ -82,6 +82,21 @@ class RequestBodySamplerTest {
     }
 
     @Test
+    fun `enum control fields reject unknown values that could smuggle secrets`() {
+        // 无空格的敏感串能通过 SAFE_TOKEN，枚举字段必须按合法取值白名单丢弃。
+        assertNull(sample("""{"reasoning_effort":"SECRET_SYSTEM_PROMPT"}""")["reasoning_effort"])
+        assertNull(sample("""{"truncation":"please-send-secret"}""")["truncation"])
+        assertNull(sample("""{"thinking":{"type":"exfiltrate"}}""")["thinking_type"])
+        assertNull(sample("""{"tool_choice":"sk-live-abc123"}""")["tool_choice"])
+
+        assertEquals("high", sample("""{"reasoning":{"effort":"high"}}""")["reasoning_effort"])
+        assertEquals("enabled", sample("""{"thinking":{"type":"ENABLED"}}""")["thinking_type"])
+        assertEquals("auto", sample("""{"truncation":"auto"}""")["truncation"])
+        assertEquals("json_object", sample("""{"response_format":{"type":"json_object"}}""")["response_format_type"])
+        assertEquals("required", sample("""{"tool_choice":"required"}""")["tool_choice"])
+    }
+
+    @Test
     fun `accepts numeric strings but ignores non numeric values`() {
         val result = sample("""{"max_output_tokens":"160","temperature":"not-a-number"}""")
         assertEquals(160L, result["max_output_tokens"])
