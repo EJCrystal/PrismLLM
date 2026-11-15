@@ -453,4 +453,11 @@ onMounted(() => {
   color: var(--danger);
   font-weight: 500;
 }
+@media (max-width: 640px) {
+  /* 手机端状态文字独占一行，取消/保存按钮落到下一行，避免窄屏挤压。 */
+  .access-footer-status {
+    flex: 1 1 100%;
+    margin-right: 0;
+  }
+}
 </style>

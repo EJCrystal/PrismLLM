@@ -317,7 +317,12 @@ function channelStatLabel(info: ReturnType<typeof channelCheckInfo>): string {
 .tree-stale-title { margin: 0; color: var(--warning); font-size: 11px; }
 .tree-row.is-stale { border-bottom: 0; padding: 4px 2px; }
 @media (max-width: 640px) {
-  .tree-row { min-height: 44px; flex-wrap: wrap; }
+  /* 手机端单行渲染：行不再换行（名称省略号兜底），复制胶囊去掉图标，子密钥行
+     的“关联模型”统计隐藏；停用/失效等 hint 保留，警告信息优先于名称完整度。 */
   .tree-toolbar { flex-wrap: wrap; }
+  .tree-row { flex-wrap: nowrap; min-height: 44px; }
+  .tree-row.is-key { padding-left: 24px; }
+  .tree-row.is-key:not(.is-stale) .tree-stat { display: none; }
+  .tree-id-pill svg { display: none; }
 }
 </style>

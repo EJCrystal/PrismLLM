@@ -92,7 +92,8 @@ const options: Array<{ value: ClientKeyAccessMode; label: string; sub: string; i
 .mode-segment.is-active.is-allowlist .mode-sub,
 .mode-segment.is-active.is-denylist .mode-sub { color: rgba(255, 255, 255, 0.82); }
 @media (max-width: 640px) {
-  .access-mode-toggle { grid-template-columns: 1fr; }
-  .mode-segment { justify-content: flex-start; }
+  /* 手机保持水平分段：隐藏括号内副文案，避免纵向堆叠占据大量空间。 */
+  .mode-segment { padding: 7px 4px; gap: 3px; }
+  .mode-segment .mode-sub { display: none; }
 }
 </style>
