@@ -258,7 +258,8 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 订阅凭据只能用于提供方自己的官方端点，因此端点由代码常量固定：网关为每个已实现上游协议的 provider 置备一条 kind=provider 的系统渠道，账号登录后自动关联到它，用户不再手工选择渠道。这类渠道不可编辑、不可删除，也不出现在渠道列表里。详细语义见 ADR 0016。
 
 - 查看可用的 OAuth 提供方：`GET /admin/api/oauth-providers`，返回 `id`、`label`、`configured` 与 `managedChannel`。`configured` 表示网关已注册该提供方的 token 刷新器；`chatgpt` 与 `antigravity` 都内置公开客户端参数，默认即为 `true`，不需要部署方预先申请。两者也都内置授权端点与回调地址，可以直接发起浏览器登录；`managedChannel=true` 表示账号的端点渠道由系统维护。
-- 维护官方模型列表：`PUT /admin/api/oauth-providers/{provider}/models`，请求体 `{"models":["..."]}`；整体替换系统端点渠道的模型映射，用于官方模型变更。
+- 维护官方模型列表：`PUT /admin/api/oauth-providers/{provider}/models`，请求体 `{"models":["..."]}`；更新系统端点渠道的活跃模型集合。已有手工 Canonical 映射保留，退出活跃集合的手工映射保留为休眠配置，不参与路由；旧列表保存不会直接重新激活已休眠的手工映射。
+- 查看共享模型映射：`GET /admin/api/oauth-providers/{provider}/model-mappings`，返回提供方共享的映射、版本与受影响账号数；只读取本地配置，不请求上游模型目录，也不创建尚不存在的系统渠道。配置入口位于「订阅账号 → 账号设置 → 模型授权与映射」，详细契约见下文。
 - 刷新账号自己的模型目录：`POST /admin/api/oauth-accounts/{id}/models/refresh`，目录按账号隔离并写回 `modelCatalog`，随后把系统端点渠道的模型收敛为各账号目录的并集。Antigravity 走 Code Assist 的 fetchAvailableModels（按当前 tier 与 `allowedTiers` 逐个尝试），ChatGPT 走 Codex 官方模型列表（`/backend-api/codex/models?client_version=...`，只保留 `visibility=list` 的模型）。目录请求与项目发现、额度查询一样经该账号的出口代理发出；账号代理无效时返回 `invalid_oauth_proxy`，账号没有可用 access token 时返回 `oauth_credential_unavailable`，上游没有返回可用模型时返回 `model_catalog_unavailable`。返回 `{"models":[{"id","name"}]}`。
 - 账号看板：`GET /admin/api/oauth-accounts`，返回账号 `id` / `name`、provider、授权状态、是否启用、优先级、授权模型、关联渠道（`channelIds` 与 `channels[{id,name}]`）、token 到期时间、上游额度读数、调度策略与实时状态。响应不包含任何 token，且禁止缓存。
   - `models` 为空表示继承所关联渠道的全部模型。
@@ -292,10 +293,64 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
   - 换取 token 失败返回 `502 oauth_login_failed`；提供方未配置授权参数返回 `400 oauth_login_unsupported`；邮箱已存在返回 `409 oauth_account_email_exists`，删除原账号后可用同一 `loginId` 重试，不会再次请求 token 端点。
   - 成功后账号立即写入关联渠道并清空冷却；响应不包含 token，长期凭据只以密文落库。
 
-- 修改账号设置：`PUT /admin/api/oauth-accounts/<account-id>/settings`，请求体 `{name, priority, enabled, proxyUrl, clearProxy}`；`enabled=false` 后账号不再参与路由，管理台列表内可直接切换。
+- 修改账号设置：`PUT /admin/api/oauth-accounts/<account-id>/settings`，原有 `{name, priority, enabled, proxyUrl, clearProxy}` 字段保持兼容；可同时提交可选 `models`、`modelMappingChanges` 和 `expectedModelMappingRevision`，一次事务保存账号设置、授权及提供方共享映射。省略的字段保持原值；`enabled=false` 后账号不再参与路由，管理台列表内可直接切换。
 - 调整关联渠道：`PUT /admin/api/oauth-accounts/<account-id>/channels`，请求体 `{"channelIds":["..."]}`；整体替换关联集合。`managedChannel=true` 的提供方返回 `400 oauth_account_channel_managed`，关联由系统维护。
 - 调整模型授权：`PUT /admin/api/oauth-accounts/<account-id>/models`，请求体 `{"models":["..."]}`；传空数组表示继承所关联渠道的全部模型。
-- 删除账号：`DELETE /admin/api/oauth-accounts/<account-id>`；token、额度与调度状态一并删除，不影响渠道或静态密钥。
+- 删除账号：`DELETE /admin/api/oauth-accounts/<account-id>`；token、额度与调度状态一并删除，不影响渠道或静态密钥，并重算该提供方的活跃模型并集，保留手工映射配置。
+
+#### 提供方共享的 Canonical 映射
+
+`GET /admin/api/oauth-providers/{provider}/model-mappings` 的响应示例：
+
+```json
+{
+  "provider": "chatgpt",
+  "scope": "provider",
+  "revision": 3,
+  "affectedAccountCount": 2,
+  "mappings": [
+    {
+      "upstreamModel": "upstream-model",
+      "canonicalModelId": "team-chat",
+      "publicModelId": "team-chat",
+      "automaticCanonicalModelId": null,
+      "mode": "manual",
+      "mappingSource": "manual",
+      "catalogActive": true
+    }
+  ]
+}
+```
+
+- 映射身份是提供方端点渠道内的上游模型 ID。同提供方账号共享映射，但各自的目录和模型授权仍独立；不同上游模型共用同一个 Canonical ID 是合法的路由聚合。
+- `publicModelId` 是实际对外请求和模型列表使用的 ID。设置 canonical 后，该映射不再接受原上游名作为对外请求 ID，转发仍使用 `upstreamModel`。
+- `automaticCanonicalModelId` 表示目录的自动默认，null 表示自动沿用上游 ID。`mode` 是 `auto`、`manual` 或 `upstream`；`mappingSource` 表示来源，不替代模式。已有 `models_dev` 来源是显式确认的覆盖，不因同步或无关保存转换为自动；恢复自动后来源为 null。
+- `catalogActive=false` 的手工配置仅为休眠映射，不参与模型曝光、路由或模型测试。再次同步发现相同上游 ID 后恢复原映射。
+- 调用方密钥的模型白名单仍精确匹配当前对外 ID，并与渠道、静态密钥范围及账号自己的上游授权取交集。改变 Canonical 或切换映射模式不会自动改写调用方白名单；旧 ID 消失后返回 404，新 ID 未获准时返回 403。静态密钥白名单不包含 OAuth 账号；休眠映射不会因白名单或未同步账号重新开放。
+- 账号响应中的 `modelCatalog` 继续为上游 ID 字符串数组；刷新目录响应的 `name` 是展示名，不是 Canonical 配置字段。
+
+通过账号 settings 接口保存增量映射，可与账号授权和其他设置一起原子提交：
+
+```json
+{
+  "models": ["upstream-model"],
+  "expectedModelMappingRevision": 3,
+  "modelMappingChanges": [
+    {
+      "upstreamModel": "upstream-model",
+      "mode": "manual",
+      "canonicalModelId": "team-chat"
+    }
+  ]
+}
+```
+
+- `modelMappingChanges` 只更新列出的模型；省略、null 或空数组不替换整个提供方目录，也不删除其他账号的模型。省略 `models` 不修改账号授权；显式 `models=[]` 仍表示全部。
+- `mode=manual` 要求 trimmed Canonical ID 长度为 1..200；`mode=upstream` 强制使用上游 ID，`mode=auto` 恢复自动，这两种模式不能同时提交 canonical。
+- 上游 ID 长度为 1..200，只能编辑已发现或已保存的映射；重复上游 ID、非法模式或未知模型会被拒绝，不能用映射编辑创建任意可路由模型。
+- 共享映射变更要求提供 GET 返回的 revision；保存时版本不符返回 HTTP 409 `model_mapping_revision_changed`，账号设置、授权与映射全部回滚。客户端应保留草稿，刷新共享状态并核对后再提交，不自动重试覆盖。
+- 成功响应保持为账号详情；重新 GET 共享映射取得最新 revision。模型目录同步保留手工映射，只更新自动默认及活跃状态。目录外显式授权仍按既有规则清理，全部落空时保留显式零授权状态，不扩大为全部模型。
+- Canonical 候选可复用 `POST /admin/api/model-suggestions` 的 `canonicalId`，也可以自由输入；参考目录不可用或未收录该 ID 不阻止保存。
 
 - 编辑调度策略：
 

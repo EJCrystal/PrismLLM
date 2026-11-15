@@ -4,6 +4,9 @@ import type {
   OAuthAccountPolicyRequest,
   OAuthQuota,
   OAuthQuotaWindow,
+  OAuthModelMappingChange,
+  OAuthModelMappingMode,
+  OAuthProviderModelMapping,
 } from '../types/api'
 
 /**
@@ -323,6 +326,36 @@ export function availableOAuthModels(
     }
   }
   return [...models].sort()
+}
+
+export interface OAuthMappingDraft {
+  mode: OAuthModelMappingMode
+  canonicalModelId: string
+}
+
+/** 初始化尊重服务端 mode/public ID，models_dev 等来源不是客户端的模式默认值。 */
+export function oauthMappingDraft(mapping?: OAuthProviderModelMapping): OAuthMappingDraft {
+  return {
+    mode: mapping?.mode ?? 'auto',
+    canonicalModelId: mapping?.publicModelId ?? mapping?.upstreamModel ?? '',
+  }
+}
+
+/** 手工选中与自动相同的值仍是 manual；来源不能用来推断编辑模式。 */
+export function oauthMappingDraftEquals(a: OAuthMappingDraft, b: OAuthMappingDraft): boolean {
+  return a.mode === b.mode && (a.mode !== 'manual' || a.canonicalModelId.trim() === b.canonicalModelId.trim())
+}
+
+export function buildOAuthMappingChanges(drafts: Record<string, OAuthMappingDraft>, dirty: Iterable<string>): OAuthModelMappingChange[] {
+  return [...dirty].sort().map((upstreamModel) => {
+    const draft = drafts[upstreamModel]!
+    if (draft.mode !== 'manual') return { upstreamModel, mode: draft.mode }
+    const canonicalModelId = draft.canonicalModelId.trim()
+    if (!canonicalModelId || [...canonicalModelId].length > 200) {
+      throw new Error(`「${upstreamModel}」的手工对外 ID 必须在 1..200 个字符之间`)
+    }
+    return { upstreamModel, mode: 'manual', canonicalModelId }
+  })
 }
 
 /** 保存时的模型授权：授权全部（空数组）或勾选 + 自定义模型去重。 */

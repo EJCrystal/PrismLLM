@@ -38,8 +38,8 @@ class UpstreamModelCatalog(
     suspend fun listDirectModels(scope: RoutingAccessScope = RoutingAccessScope()): List<DirectModel> =
         directExposureChannels().filter { scope.allowsChannel(it.id) }.flatMap { channel ->
             channel.modelMappings.filter { mapping ->
-                scope.allowsModel(mapping.publicModelId) && channel.credentialsFor(mapping.upstreamModel)
-                    .any { scope.allowsCredential(channel.id, it) }
+                mapping.catalogActive && scope.allowsModel(mapping.publicModelId) &&
+                    channel.credentialsFor(mapping.upstreamModel).any { scope.allowsCredential(channel.id, it) }
             }.map { mapping ->
                 DirectModel(
                     publicId = mapping.publicModelId,
@@ -151,7 +151,8 @@ class UpstreamModelCatalog(
      * 对外模型 ID 到渠道映射的唯一匹配入口。
      *
      * 路由、曝光与「不可用」诊断共用这一份规则，避免某个入口认得的 ID 在另一个入口变成
-     * 「模型不存在」。匹配口径为 [ChannelModelRecord.publicModelId] 精确相等。
+     * 「模型不存在」。仅 inactive（[ChannelModelRecord.catalogActive] 为假）的映射一律视为
+     * 未配置。匹配口径为 [ChannelModelRecord.publicModelId] 精确相等。
      */
     private suspend fun configuredModels(model: String): List<ConfiguredModel> =
         configuredModels(model, directExposureChannels())
@@ -160,7 +161,7 @@ class UpstreamModelCatalog(
     private fun configuredModels(model: String, channels: List<ChannelRecord>): List<ConfiguredModel> =
         channels.flatMap { channel ->
             channel.modelMappings
-                .filter { it.publicModelId == model }
+                .filter { it.catalogActive && it.publicModelId == model }
                 .map { mapping -> ConfiguredModel(channel, mapping) }
         }
 

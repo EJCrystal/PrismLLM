@@ -60,7 +60,7 @@ class ChannelHealthDirectoryRepository(private val database: Database) : Channel
             // 渠道模型目录：订阅账号没有显式模型时继承这里，有显式模型时必须与它相交。
             val modelsByChannel = ChannelModels
                 .select(ChannelModels.channelId, ChannelModels.upstreamModel)
-                .where { ChannelModels.channelId inList channelIds }
+                .where { (ChannelModels.channelId inList channelIds) and (ChannelModels.catalogActive eq true) }
                 .groupBy { it[ChannelModels.channelId] }
                 .mapValues { (_, models) -> models.map { it[ChannelModels.upstreamModel] }.toSet() }
             val keysByChannel = keyRows.groupBy { it[ChannelKeys.channelId] }.mapValues { (channelId, keys) ->

@@ -37,7 +37,7 @@ function toggleTheme() {
           <button type="button" class="icon-button mobile-menu" aria-label="打开导航" @click="navOpen = true"><Icon name="menu" :size="20" /></button>
           <div class="page-heading">
             <div class="page-title-row"><h1>订阅账号</h1></div>
-            <p class="page-desc">统一管理 ChatGPT / Antigravity 订阅账号的授权、模型与调度；凭据自动续期，可关联多个渠道，并统一处理上游额度、滑动窗口与 429 冷却。</p>
+            <p class="page-desc">统一管理 ChatGPT / Antigravity 订阅账号；同提供方共享端点与对外模型映射，每个账号独立授权模型，并处理额度、滑动窗口与 429 冷却。</p>
           </div>
         </div>
         <div class="topbar-right">

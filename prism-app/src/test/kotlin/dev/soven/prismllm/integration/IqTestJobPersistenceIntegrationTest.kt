@@ -13,6 +13,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 @Tag("integration")
+@Tag("shard-3")
 class IqTestJobPersistenceIntegrationTest : GatewayIntegrationTestBase() {
     @Test
     fun `persisted running job is recovered on application restart`() = runBlocking {

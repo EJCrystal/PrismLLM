@@ -535,7 +535,7 @@ class GatewayApplication(
     )
     /** 订阅账号 access token 解析与后台轮换；未配置任何 Provider 时后台任务不扫描。 */
     val oauthAccountRepository = OAuthAccountRepository(databaseFactory.database, OAuthProviderChannelLookup())
-    /** 订阅账号的官方端点渠道：按 provider 置备，账号导入时自动挂上。 */
+    /** 同一 Database 的共享写入编排：父 channel 锁 → account，目录和授权事务内协调。 */
     val providerChannelProvisioner = ProviderChannelProvisioner(channelRepository, oauthAccountRepository)
     /**
      * Code Assist 的账号出口连接池：project 发现、目录与额度共用，

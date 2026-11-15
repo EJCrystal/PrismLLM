@@ -1181,12 +1181,42 @@ export interface OAuthLoginCompleteRequest {
   callbackUrl: string
 }
 
+export type OAuthModelMappingMode = 'auto' | 'manual' | 'upstream'
+
+export interface OAuthProviderModelMapping {
+  upstreamModel: string
+  canonicalModelId: string | null
+  publicModelId: string
+  automaticCanonicalModelId: string | null
+  mode: OAuthModelMappingMode
+  mappingSource: string | null
+  catalogActive: boolean
+}
+
+/** 映射按提供方共享，账号自己的 modelCatalog 与 models 仍是 upstream id。 */
+export interface OAuthProviderModelMappingsResponse {
+  provider: string
+  scope: 'provider'
+  revision: number
+  affectedAccountCount: number
+  mappings: OAuthProviderModelMapping[]
+}
+
+export interface OAuthModelMappingChange {
+  upstreamModel: string
+  mode: OAuthModelMappingMode
+  canonicalModelId?: string
+}
+
 export interface OAuthAccountSettingsRequest {
   name?: string | null
   priority?: number
   enabled?: boolean
   proxyUrl?: string | null
   clearProxy?: boolean
+  models?: string[]
+  modelMappingChanges?: OAuthModelMappingChange[]
+  expectedModelMappingRevision?: number
 }
 
 export interface OAuthAccountChannelsRequest {

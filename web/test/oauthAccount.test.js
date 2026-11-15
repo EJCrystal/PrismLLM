@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import {
   availableOAuthModels,
   buildOAuthModels,
+  buildOAuthMappingChanges,
+  oauthMappingDraft,
+  oauthMappingDraftEquals,
   buildOAuthPolicyPayload,
   filterOAuthModels,
   formatCooldownRemaining,
@@ -376,6 +379,24 @@ describe('oauthAccount: 上游额度展示', () => {
       'gpt-5',
     ])
     assert.deepEqual(buildOAuthModels(false, [], ''), [])
+  })
+
+  it('映射增量区分模式和来源，auto/upstream省略canonical，manual trim 1..200', () => {
+    const automatic = { upstreamModel: 'm', publicModelId: 'vendor/m', mode: 'auto', canonicalModelId: 'vendor/m', automaticCanonicalModelId: 'vendor/m', mappingSource: null }
+    const preserved = { ...automatic, mode: 'manual', publicModelId: 'legacy/m', canonicalModelId: 'legacy/m', mappingSource: 'models_dev' }
+    assert.deepEqual(oauthMappingDraft(preserved), { mode: 'manual', canonicalModelId: 'legacy/m' })
+    assert.deepEqual(oauthMappingDraft({ ...automatic, mode: 'upstream', publicModelId: 'm', canonicalModelId: null, mappingSource: 'models_dev' }), { mode: 'upstream', canonicalModelId: 'm' })
+    assert.deepEqual(oauthMappingDraft(automatic), { mode: 'auto', canonicalModelId: 'vendor/m' })
+    assert.equal(oauthMappingDraftEquals({ mode: 'manual', canonicalModelId: 'vendor/m' }, oauthMappingDraft(automatic)), false)
+    assert.equal(oauthMappingDraftEquals({ mode: 'manual', canonicalModelId: ' vendor/m ' }, { mode: 'manual', canonicalModelId: 'vendor/m' }), true)
+    assert.equal(oauthMappingDraftEquals({ mode: 'auto', canonicalModelId: 'old' }, { mode: 'auto', canonicalModelId: 'new' }), true)
+    const drafts = { m: { mode: 'manual', canonicalModelId: ' vendor/m ' }, a: { mode: 'auto', canonicalModelId: 'ignore' }, u: { mode: 'upstream', canonicalModelId: 'ignore' }, unchanged: { mode: 'manual', canonicalModelId: 'same' } }
+    assert.deepEqual(buildOAuthMappingChanges(drafts, new Set(['u', 'm', 'a'])), [
+      { upstreamModel: 'a', mode: 'auto' }, { upstreamModel: 'm', mode: 'manual', canonicalModelId: 'vendor/m' }, { upstreamModel: 'u', mode: 'upstream' },
+    ])
+    assert.deepEqual(buildOAuthMappingChanges(drafts, []), [])
+    for (const value of ['', '  ', 'x'.repeat(201)]) assert.throws(() => buildOAuthMappingChanges({ m: { mode: 'manual', canonicalModelId: value } }, ['m']), /1\.\.200/)
+    assert.equal(buildOAuthMappingChanges({ m: { mode: 'manual', canonicalModelId: 'x'.repeat(200) } }, ['m'])[0].canonicalModelId.length, 200)
   })
 
   it('模型选择器支持搜索过滤，目录同步只对 Code Assist 提供方开放', () => {
