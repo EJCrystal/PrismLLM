@@ -551,7 +551,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("69", result.getString(1))
+                        assertEquals("70", result.getString(1))
                     }
                     // V67 只对清洁库生效：USD 历史行原样保留，仅加 CHECK 约束（非 USD 数据由独立用例验证会被拒迁）。
                     statement.executeQuery(
