@@ -120,6 +120,7 @@ class TestClassificationTest {
             "ClientKeyRoutingAccessIntegrationTest" to setOf("shard-1", "channel", "protocol"),
             "GeminiNativeIntegrationTest" to setOf("shard-3", "protocol"),
             "GracefulShutdownIntegrationTest" to setOf("shard-4"),
+            "IqTestJobPersistenceIntegrationTest" to setOf("shard-3"),
             "IqQuestionBankIntegrationTest" to setOf("shard-3"),
             "KeyAutoDisableIntegrationTest" to setOf("shard-3", "channel"),
             "PricingIntegrationTest" to setOf("shard-4"),
