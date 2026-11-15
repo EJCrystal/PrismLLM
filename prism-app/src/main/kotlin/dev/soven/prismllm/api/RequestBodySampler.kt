@@ -103,7 +103,7 @@ internal object RequestBodySampler {
         (element as? JsonPrimitive)
             ?.takeUnless { it == JsonNull }
             ?.contentOrNull
-            ?.take(MAX_VALUE_LENGTH)
+            ?.takeIf { it.length <= MAX_VALUE_LENGTH }
 
     private fun string(element: JsonElement?): String? = text(element)?.takeIf(SAFE_TOKEN::matches)
 

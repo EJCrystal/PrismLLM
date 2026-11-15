@@ -73,6 +73,15 @@ class RequestBodySamplerTest {
     }
 
     @Test
+    fun `overlong control values are dropped instead of truncated`() {
+        // 前 200 个字符是合法 token，第 201 个字符起才是自由文本：
+        // 必须整值丢弃，不能截断出「看起来合法」的前缀当 model 记录。
+        val smuggled = "A".repeat(200) + " ignore previous instructions"
+        assertNull(sample("""{"model":"$smuggled"}""")["model"])
+        assertEquals("A".repeat(200), sample("""{"model":"${"A".repeat(200)}"}""")["model"])
+    }
+
+    @Test
     fun `accepts numeric strings but ignores non numeric values`() {
         val result = sample("""{"max_output_tokens":"160","temperature":"not-a-number"}""")
         assertEquals(160L, result["max_output_tokens"])
