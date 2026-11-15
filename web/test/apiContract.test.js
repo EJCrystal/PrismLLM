@@ -111,6 +111,29 @@ describe('API 契约的运行时形状', () => {
     assert.deepEqual(JSON.parse(calls[1].body), { windowLimit: 5 })
   })
 
+  it('共享OAuth映射GET编码provider，settings原子携带增量而保留旧账号响应', async (t) => {
+    const originalFetch = globalThis.fetch
+    const originalDocument = globalThis.document
+    const calls = []
+    t.after(() => { globalThis.fetch = originalFetch; globalThis.document = originalDocument })
+    globalThis.document = { cookie: '' }
+    const shared = { provider: 'provider/a', scope: 'provider', revision: 7, affectedAccountCount: 2, mappings: [{ upstreamModel: 'upstream', canonicalModelId: null, publicModelId: 'upstream', automaticCanonicalModelId: 'vendor/auto', mode: 'upstream', mappingSource: 'manual', catalogActive: true }] }
+    const account = { id: 'account/a', models: ['upstream'], modelCatalog: ['upstream'] }
+    globalThis.fetch = async (input, init = {}) => {
+      calls.push({ url: String(input), method: init.method, body: init.body })
+      return new Response(JSON.stringify(init.method === 'GET' ? shared : account), { status: 200 })
+    }
+    assert.deepEqual(await api.getOAuthProviderModelMappings('provider/a'), shared)
+    const payload = { name: 'A', models: ['upstream'], modelMappingChanges: [{ upstreamModel: 'upstream', mode: 'manual', canonicalModelId: 'custom/id' }], expectedModelMappingRevision: 7 }
+    assert.deepEqual(await api.updateOAuthAccountSettings('account/a', payload), account)
+    assert.deepEqual(calls.map(call => [call.method, call.url]), [
+      ['GET', '/admin/api/oauth-providers/provider%2Fa/model-mappings'],
+      ['PUT', '/admin/api/oauth-accounts/account%2Fa/settings'],
+    ])
+    assert.deepEqual(JSON.parse(calls[1].body), payload)
+    assert.deepEqual(account.modelCatalog, ['upstream'], 'Old modelCatalog stays string[]')
+  })
+
   it('Web 搜索设置接口使用约定路径与方法', async (t) => {
     const originalFetch = globalThis.fetch
     const originalDocument = globalThis.document

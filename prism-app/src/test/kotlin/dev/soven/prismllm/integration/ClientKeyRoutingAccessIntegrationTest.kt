@@ -8,15 +8,20 @@ import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.channel.domain.key.ChannelKeyRateLimitDecision
 import dev.soven.prismllm.channel.domain.key.ChannelKeyState
 import dev.soven.prismllm.channel.persistence.NewChannelKey
+import dev.soven.prismllm.oauth.ProviderModelMappingChange
+import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
+import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
 import dev.soven.prismllm.quota.domain.ClientKeyAllowedChannelKey
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
 import dev.soven.prismllm.shared.crypto.ClientKeyHasher
 import dev.soven.prismllm.shared.domain.GatewayProtocol
+import dev.soven.prismllm.shared.domain.OAuthProvider
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
@@ -35,6 +40,7 @@ import java.net.InetSocketAddress
 import java.sql.DriverManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -197,13 +203,16 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `only authorized temporary keys contribute retry time and disabled keys stay unavailable`() = runBlocking {
+    fun `only authorized temporary keys on active mappings contribute retry time and disabled keys stay unavailable`() = runBlocking {
         val channel = app.channelRepository.create(
             name = "states", baseUrl = "${fake.baseUrl}/ok/v1", authType = "bearer",
-            protocols = GatewayProtocol.default, enabled = true, modelMappings = mappingsOf("m1"),
+            protocols = GatewayProtocol.default, enabled = true, modelMappings = listOf(
+                ChannelModelRecord("m1"), ChannelModelRecord("inactive-upstream", "m1", "manual"),
+            ),
             keys = listOf(
                 NewChannelKey("temporary", app.credentialCipher.encrypt("temporary"), ChannelKeyState.AUTO_TEMPORARY, models = listOf("m1")),
                 NewChannelKey("outside", app.credentialCipher.encrypt("outside"), ChannelKeyState.AUTO_TEMPORARY, models = listOf("m1")),
+                NewChannelKey("inactive", app.credentialCipher.encrypt("inactive"), ChannelKeyState.AUTO_TEMPORARY, models = listOf("inactive-upstream")),
                 NewChannelKey("permanent", app.credentialCipher.encrypt("permanent"), ChannelKeyState.AUTO_PERMANENT, models = listOf("m1")),
                 NewChannelKey("manual", app.credentialCipher.encrypt("manual"), ChannelKeyState.MANUAL_DISABLED, models = listOf("m1")),
                 NewChannelKey("active-outside", app.credentialCipher.encrypt("active-outside"), models = listOf("m1")),
@@ -211,11 +220,23 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
         )
         setRecovery(channel.keys.first { it.name == "temporary" }.id, System.currentTimeMillis() + 120_000)
         setRecovery(channel.keys.first { it.name == "outside" }.id, System.currentTimeMillis() + 20_000)
+        val inactive = channel.keys.first { it.name == "inactive" }
+        setRecovery(inactive.id, System.currentTimeMillis() + 60_000)
+        // 保留遗留凭据的模型授权，确保是目录 active 判定而非授权裁剪排除更早的恢复时间。
+        DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
+            connection.prepareStatement("update channel_models set catalog_active = false where channel_id = ? and upstream_model = ?").use { statement ->
+                statement.setString(1, channel.id)
+                statement.setString(2, "inactive-upstream")
+                assertEquals(1, statement.executeUpdate())
+            }
+        }
         testApplication {
             application { app.install(this) }
             listOf("temporary", "permanent", "manual").forEach { name ->
                 val selected = channel.keys.first { it.name == name }
-                val key = scopedKey(ClientKeyAccessPolicy(allowedChannelKeys = setOf(ClientKeyAllowedChannelKey(channel.id, selected.id))))
+                val allowedKeys = setOf(ClientKeyAllowedChannelKey(channel.id, selected.id)) +
+                    if (name == "temporary") setOf(ClientKeyAllowedChannelKey(channel.id, inactive.id)) else emptySet()
+                val key = scopedKey(ClientKeyAccessPolicy(allowedChannelKeys = allowedKeys))
                 val response = client.chat(key)
                 assertEquals(HttpStatusCode.ServiceUnavailable, response.status, response.bodyAsText())
                 assertTrue(response.bodyAsText().contains("model_credentials_unavailable"))
@@ -301,27 +322,200 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `static key allowlist excludes OAuth before refresh and upstream calls`() = runBlocking {
+    fun `static key allowlist excludes canonical OAuth routes before refresh and upstream calls`() = runBlocking {
         val channel = app.channelRepository.create(
             name = "oauth-only", baseUrl = "${fake.baseUrl}/ok/v1",
             keys = listOf(NewChannelKey("static", app.credentialCipher.encrypt("static"), models = listOf("m2"))), authType = "bearer",
             protocols = GatewayProtocol.default, enabled = true, modelMappings = mappingsOf("m1", "m2"),
         )
         createOAuthAccount(channel, "scope@example.test")
-        val key = scopedKey(ClientKeyAccessPolicy(allowedChannelKeys = setOf(ClientKeyAllowedChannelKey(channel.id, channel.keys.single().id))))
+        exposeAsModel("oauth-public", channel to "m1")
+        val key = scopedKey(ClientKeyAccessPolicy(
+            allowedChannelIds = setOf(channel.id),
+            allowedChannelKeys = setOf(ClientKeyAllowedChannelKey(channel.id, channel.keys.single().id)),
+            allowedModelIds = setOf("oauth-public", "m2"),
+        ))
         testApplication {
             application { app.install(this) }
-            assertRejected(client.chat(key), "route_access_denied")
+            assertMissing(client.chat(key, "m1"), key)
+            assertRejected(client.chat(key, "oauth-public"), "route_access_denied")
             assertEquals(0, fake.requests.size)
             assertEquals(0, fake.tokenRequests.size)
             assertEquals(0, fake.quotaRequests.size)
-            val visible = client.get("/v1/models") { header(HttpHeaders.Authorization, "Bearer $key") }
-            assertEquals(listOf("m2"), Json.parseToJsonElement(visible.bodyAsText()).jsonObject["data"]!!.jsonArray
-                .map { it.jsonObject["id"]!!.jsonPrimitive.content })
+            assertEquals(listOf("m2"), client.publicModels(key))
             val unrestricted = scopedKey(ClientKeyAccessPolicy())
-            val global = client.get("/v1/models") { header(HttpHeaders.Authorization, "Bearer $unrestricted") }
-            assertEquals(listOf("m1", "m2"), Json.parseToJsonElement(global.bodyAsText()).jsonObject["data"]!!.jsonArray
-                .map { it.jsonObject["id"]!!.jsonPrimitive.content })
+            assertEquals(listOf("m2", "oauth-public"), client.publicModels(unrestricted))
+        }
+    }
+
+    @Test
+    fun `inactive OAuth mapping is not found in every caller scope and restoration keeps disabled authorization diagnostics`() = runBlocking {
+        val channelId = assertNotNull(app.providerChannelProvisioner.ensure(OAuthProvider.CHATGPT))
+        val channel = assertNotNull(app.channelRepository.find(channelId))
+        app.channelRepository.update(channel.id, channel.name, "${fake.baseUrl}/ok/v1", authType = channel.authType, enabled = true)
+        val account = app.oauthAccountRepository.create(NewOAuthAccount(
+            name = "unsynchronized", provider = OAuthProvider.CHATGPT,
+            refreshToken = app.credentialCipher.encrypt("refresh-secret"),
+            accessToken = app.credentialCipher.encrypt("access-secret"),
+            accessTokenExpiresAt = System.currentTimeMillis() + 3_600_000, channelIds = listOf(channel.id),
+        ))
+        assertTrue(app.providerChannelProvisioner.setProviderModels(OAuthProvider.CHATGPT, listOf("upstream-variant")))
+        app.providerChannelProvisioner.updateSettings(account.id,
+            modelMappingChanges = listOf(ProviderModelMappingChange("upstream-variant", "manual", "canonical-family")),
+            expectedModelMappingRevision = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).revision)
+        val unrestricted = scopedKey(ClientKeyAccessPolicy())
+        val authorized = scopedKey(ClientKeyAccessPolicy(allowedChannelIds = setOf(channel.id), allowedModelIds = setOf("canonical-family")))
+        val modelDenied = scopedKey(ClientKeyAccessPolicy(allowedChannelIds = setOf(channel.id), allowedModelIds = emptySet()))
+        val routeDenied = scopedKey(ClientKeyAccessPolicy(allowedChannelIds = emptySet(), allowedModelIds = setOf("canonical-family")))
+        val callers = listOf(unrestricted, authorized, modelDenied, routeDenied)
+        testApplication {
+            application { app.install(this) }
+            assertEquals(listOf("canonical-family"), client.publicModels(authorized))
+            // 宿主已完成启动对账；未知账号支持上游名，但不能复活之后休眠的人工映射。
+            assertTrue(app.providerChannelProvisioner.setProviderModels(OAuthProvider.CHATGPT, emptyList()))
+            val unknown = assertNotNull(app.oauthAccountRepository.findDetailed(account.id))
+            assertNull(unknown.modelCatalog)
+            assertTrue(unknown.supports("upstream-variant"))
+            val dormant = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).mappings.single().mapping
+            assertFalse(dormant.catalogActive)
+            assertEquals("canonical-family", dormant.publicModelId)
+            callers.forEach { caller ->
+                assertTrue(client.publicModels(caller).isEmpty())
+                assertMissing(client.responses(caller, "canonical-family"), caller)
+            }
+            assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id,
+                listOf(OAuthAccountModelCatalogEntry("upstream-variant", "automatic-family"))))
+            assertTrue(app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).mappings.single().mapping.catalogActive)
+            assertEquals(listOf("canonical-family"), client.publicModels(authorized))
+            assertEquals(listOf("canonical-family"), client.publicModels(unrestricted))
+            assertTrue(client.publicModels(modelDenied).isEmpty())
+            assertTrue(client.publicModels(routeDenied).isEmpty())
+            assertMissing(client.responses(authorized, "upstream-variant"), authorized)
+            assertRejected(client.responses(modelDenied, "canonical-family"), "model_access_denied")
+            assertRejected(client.responses(routeDenied, "canonical-family"), "route_access_denied")
+            val restored = client.responses(authorized, "canonical-family")
+            assertEquals(HttpStatusCode.OK, restored.status, restored.bodyAsText())
+            assertEquals("upstream-variant", Json.parseToJsonElement(fake.requests.single().body).jsonObject["model"]!!.jsonPrimitive.content)
+            assertEquals("Bearer access-secret", fake.requests.single().authorization)
+            assertNotNull(app.providerChannelProvisioner.updateSettings(account.id, enabled = false))
+            listOf(unrestricted, authorized).forEach { caller ->
+                val unavailable = client.responses(caller, "canonical-family")
+                assertEquals(HttpStatusCode.ServiceUnavailable, unavailable.status, unavailable.bodyAsText())
+                assertTrue(unavailable.bodyAsText().contains("model_credentials_unavailable"))
+                assertNull(unavailable.headers[HttpHeaders.RetryAfter])
+            }
+            assertRejected(client.responses(modelDenied, "canonical-family"), "model_access_denied")
+            assertRejected(client.responses(routeDenied, "canonical-family"), "route_access_denied")
+            callers.forEach { assertTrue(client.publicModels(it).isEmpty()) }
+            assertEquals(1, fake.requests.size)
+            assertEquals(0, fake.tokenRequests.size)
+            assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
+        }
+    }
+
+    @Test
+    fun `shared OAuth mapping mode changes require explicit caller grants and rejected admin edits roll back after policy roundtrip`() = runBlocking {
+        val channelId = assertNotNull(app.providerChannelProvisioner.ensure(OAuthProvider.CHATGPT))
+        val channel = assertNotNull(app.channelRepository.find(channelId))
+        app.channelRepository.update(channel.id, channel.name, "${fake.baseUrl}/ok/v1", authType = channel.authType, enabled = true)
+        val accounts = listOf("upstream-a", "upstream-b").map { upstream ->
+            app.oauthAccountRepository.create(NewOAuthAccount(
+                name = upstream, provider = OAuthProvider.CHATGPT,
+                refreshToken = app.credentialCipher.encrypt("refresh-$upstream"),
+                accessToken = app.credentialCipher.encrypt("access-$upstream"),
+                accessTokenExpiresAt = System.currentTimeMillis() + 3_600_000,
+                channelIds = listOf(channel.id), models = listOf(upstream),
+            ))
+        }
+        val catalog = listOf("upstream-a", "upstream-b").map { OAuthAccountModelCatalogEntry(it, "automatic-family") }
+        accounts.forEach { assertTrue(app.providerChannelProvisioner.syncModelCatalog(it.id, catalog)) }
+        app.providerChannelProvisioner.updateSettings(accounts.first().id,
+            modelMappingChanges = catalog.map { ProviderModelMappingChange(it.upstreamModel, "manual", "shared-public") },
+            expectedModelMappingRevision = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).revision)
+        val outside = accessChannel("outside-scope", models = listOf("outside-upstream"), protocols = listOf(GatewayProtocol.RESPONSES))
+        exposeAsModel("shared-public", outside to "outside-upstream")
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            fun policy(model: String) = """{"channels":{"mode":"allowlist","ids":["${channel.id}"]},"channelKeys":{"mode":"unrestricted","keys":[]},"models":{"mode":"allowlist","ids":["$model"]}}"""
+            val initialPolicy = policy("shared-public")
+            val createdResponse = client.post("/admin/api/client-keys") {
+                header(HttpHeaders.Cookie, cookie); header("X-CSRF-Token", csrf); contentType(ContentType.Application.Json)
+                setBody("""{"name":"oauth-caller","maxConcurrentRequests":1,"accessPolicy":$initialPolicy}""")
+            }
+            assertEquals(HttpStatusCode.Created, createdResponse.status, createdResponse.bodyAsText())
+            val created = Json.parseToJsonElement(createdResponse.bodyAsText()).jsonObject
+            val keyId = created["id"]!!.jsonPrimitive.content
+            val key = created["key"]!!.jsonPrimitive.content
+            assertEquals(Json.parseToJsonElement(initialPolicy), created["accessPolicy"])
+            val listed = client.get("/admin/api/client-keys") { header(HttpHeaders.Cookie, cookie) }
+            assertEquals(HttpStatusCode.OK, listed.status, listed.bodyAsText())
+            assertEquals(created["accessPolicy"], Json.parseToJsonElement(listed.bodyAsText()).jsonArray.single().jsonObject["accessPolicy"])
+            assertEquals(listOf("shared-public"), client.publicModels(key))
+            val beforeAccount = assertNotNull(app.oauthAccountRepository.findDetailed(accounts.first().id))
+            val beforeMappings = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT)
+            val beforeKey = assertNotNull(app.clientKeyRepository.find(keyId))
+            val rejectedEdits = listOf(
+                beforeMappings.revision to """[{"upstreamModel":"upstream-a","mode":"manual","canonicalModelId":" "}]""",
+                (beforeMappings.revision - 1) to """[{"upstreamModel":"upstream-a","mode":"manual","canonicalModelId":"must-not-save"}]""",
+            )
+            rejectedEdits.forEachIndexed { index, (revision, changes) ->
+                val rejected = client.put("/admin/api/oauth-accounts/${accounts.first().id}/settings") {
+                    header(HttpHeaders.Cookie, cookie); header("X-CSRF-Token", csrf); contentType(ContentType.Application.Json)
+                    setBody("""{"name":"must-not-save","priority":999,"enabled":false,"models":[],"expectedModelMappingRevision":$revision,"modelMappingChanges":$changes}""")
+                }
+                assertEquals(if (index == 0) HttpStatusCode.BadRequest else HttpStatusCode.Conflict, rejected.status, rejected.bodyAsText())
+                if (index == 1) assertTrue(rejected.bodyAsText().contains("model_mapping_revision_changed"))
+                assertEquals(beforeAccount, app.oauthAccountRepository.findDetailed(accounts.first().id))
+                assertEquals(beforeMappings, app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT))
+                assertEquals(beforeKey, app.clientKeyRepository.find(keyId))
+            }
+            listOf("upstream-a", "upstream-b").forEach { assertMissing(client.responses(key, it), key) }
+            suspend fun assertForwarded(model: String) {
+                val count = fake.requests.size
+                val response = client.responses(key, model)
+                assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+                assertEquals(count + 1, fake.requests.size)
+                val request = fake.requests.last()
+                val authorizedUpstream = mapOf("Bearer access-upstream-a" to "upstream-a", "Bearer access-upstream-b" to "upstream-b")
+                val upstream = Json.parseToJsonElement(request.body).jsonObject["model"]!!.jsonPrimitive.content
+                assertEquals(assertNotNull(authorizedUpstream[assertNotNull(request.authorization)]), upstream)
+                if (model == "upstream-a") assertEquals(model, upstream)
+            }
+            assertForwarded("shared-public")
+            assertTrue(app.channelRepository.delete(outside.id))
+            var previousId = "shared-public"
+            listOf("upstream" to "upstream-a", "auto" to "automatic-family", "manual" to "renamed-public").forEach { (mode, publicId) ->
+                val previousPolicy = assertNotNull(app.clientKeyRepository.find(keyId)).accessPolicy
+                assertNotNull(app.providerChannelProvisioner.updateSettings(accounts.first().id,
+                    modelMappingChanges = catalog.map { ProviderModelMappingChange(it.upstreamModel, mode, if (mode == "manual") publicId else null) },
+                    expectedModelMappingRevision = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).revision))
+                assertEquals(previousPolicy, assertNotNull(app.clientKeyRepository.find(keyId)).accessPolicy)
+                assertTrue(client.publicModels(key).isEmpty())
+                val count = fake.requests.size
+                val obsolete = client.responses(key, previousId)
+                assertEquals(HttpStatusCode.NotFound, obsolete.status, obsolete.bodyAsText())
+                assertTrue(obsolete.bodyAsText().contains("model_not_found"))
+                assertRejected(client.responses(key, publicId), "model_access_denied")
+                assertEquals(count, fake.requests.size)
+                val updated = client.put("/admin/api/client-keys/$keyId") {
+                    header(HttpHeaders.Cookie, cookie); header("X-CSRF-Token", csrf); contentType(ContentType.Application.Json)
+                    setBody("""{"name":"oauth-caller","maxConcurrentRequests":1,"accessPolicy":${policy(publicId)}}""")
+                }
+                assertEquals(HttpStatusCode.OK, updated.status, updated.bodyAsText())
+                assertEquals(Json.parseToJsonElement(policy(publicId)), Json.parseToJsonElement(updated.bodyAsText()).jsonObject["accessPolicy"])
+                assertEquals(listOf(publicId), client.publicModels(key))
+                assertForwarded(publicId)
+                previousId = publicId
+            }
+            accounts.forEach { account ->
+                val current = assertNotNull(app.oauthAccountRepository.findDetailed(account.id))
+                assertEquals(account.models, current.models)
+                assertFalse(current.supports(if (account.models.single() == "upstream-a") "upstream-b" else "upstream-a"))
+            }
+            assertEquals(0, fake.tokenRequests.size)
+            assertEquals(0, fake.modelRequests.size)
+            assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
         }
     }
 
@@ -617,6 +811,18 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
     /** 发送普通聊天请求，使用对外模型 ID。 */
     private suspend fun HttpClient.chat(key: String, model: String = "m1"): HttpResponse =
         send(key, "/v1/chat/completions", """{"model":"$model","messages":[]}""")
+
+    /** 使用 provider 原生 Responses 协议验证 OAuth 映射与转发。 */
+    private suspend fun HttpClient.responses(key: String, model: String): HttpResponse =
+        send(key, "/v1/responses", """{"model":"$model","stream":false,"input":"ping"}""")
+
+    /** 读取调用方可见的聚合后对外模型 ID。 */
+    private suspend fun HttpClient.publicModels(key: String): List<String> {
+        val response = get("/v1/models") { header(HttpHeaders.Authorization, "Bearer $key") }
+        assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+        return Json.parseToJsonElement(response.bodyAsText()).jsonObject["data"]!!.jsonArray
+            .map { it.jsonObject["id"]!!.jsonPrimitive.content }
+    }
 
     /** 发送带调用方鉴权的原生请求。 */
     private suspend fun HttpClient.send(key: String, path: String, body: String): HttpResponse = post(path) {

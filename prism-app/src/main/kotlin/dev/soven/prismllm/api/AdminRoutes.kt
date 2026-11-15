@@ -39,6 +39,8 @@ import dev.soven.prismllm.channel.domain.UpstreamEnvelope
 import dev.soven.prismllm.channel.domain.upstreamEnvelope
 import dev.soven.prismllm.channel.domain.authTypeFor
 import dev.soven.prismllm.oauth.OAuthLoginResult
+import dev.soven.prismllm.oauth.ProviderModelMappingChange
+import dev.soven.prismllm.oauth.ModelMappingRevisionChangedException
 import dev.soven.prismllm.oauth.OAuthLoginStartResult
 import dev.soven.prismllm.oauth.OAuthQuotaResult
 import dev.soven.prismllm.oauth.infra.OAuthRefreshException
@@ -121,6 +123,12 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
@@ -624,18 +632,24 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val credential = resolveChannelCredential(channel, request.keyId)
             val globalOverrides = app.upstreamRequestSettingsRepository.load().overrides
             val headerProfiles = app.upstreamHeaderCatalogService.profiles()
-            val model = request.model?.takeIf { it.isNotBlank() } ?: run {
+            val model = request.model?.takeIf { it.isNotBlank() }?.trim() ?: if (channel.isProviderChannel) {
+                channel.models.firstOrNull { credential.supports(it) }
+                    ?: throw badRequest("model_not_authorized", "系统端点渠道或账号没有可探测的 active 模型")
+            } else run {
                 val models = fetchUpstreamModels(
                     channel, credential, app.oauthTokenService, app.httpClient,
                     globalOverrides = globalOverrides,
                     headerProfiles = headerProfiles,
                 )
-                models.firstOrNull()?.id ?: throw GatewayError(
+                models.firstOrNull { !channel.isProviderChannel || (it.id in channel.models && credential.supports(it.id)) }?.id ?: throw GatewayError(
                     HttpStatusCode.BadGateway,
                     "no_upstream_models",
                     "上游没有返回模型，无法探测协议",
                     "api_error",
                 )
+            }
+            if (channel.isProviderChannel && (model !in channel.models || !credential.supports(model))) {
+                throw badRequest("model_not_authorized", "系统端点渠道或账号未授权该 active 模型")
             }
             val results = probeUpstreamProtocols(
                 channel, credential, model, app.oauthTokenService, app.httpClient,
@@ -1304,26 +1318,47 @@ fun Route.adminRoutes(app: GatewayApplication) {
             )
         }
 
+        get("/oauth-providers/{provider}/model-mappings") {
+            call.requireAdmin(app)
+            val provider = OAuthProvider.fromValue(call.requiredParam("provider", "缺少 provider").trim().lowercase())
+                ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
+            val shared = app.providerChannelProvisioner.modelMappings(provider)
+            call.response.headers.append("Cache-Control", "no-store")
+            // 网关全局省略 null；共享资源的三个 nullable 字段却是合同中的必有键。
+            call.respond(kotlinx.serialization.json.Json { encodeDefaults = true; explicitNulls = true }.encodeToJsonElement(OAuthProviderModelMappingsResponse(
+                provider = provider.value,
+                revision = shared.revision,
+                affectedAccountCount = shared.affectedAccountCount,
+                mappings = shared.mappings.map { row ->
+                    OAuthProviderModelMappingResponse(
+                        upstreamModel = row.mapping.upstreamModel,
+                        canonicalModelId = row.mapping.canonicalModelId,
+                        publicModelId = row.mapping.publicModelId,
+                        automaticCanonicalModelId = row.automaticCanonicalModelId,
+                        mode = row.mode,
+                        mappingSource = row.mapping.mappingSource,
+                        catalogActive = row.mapping.catalogActive,
+                    )
+                },
+            )))
+        }
+
         put("/oauth-providers/{provider}/models") {
             call.requireAdmin(app)
             val provider = OAuthProvider.fromValue(
                 call.requiredParam("provider", "缺少 provider").trim().lowercase(),
             ) ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
             val request = call.receive<OAuthProviderModelsRequest>()
-            val mappings = request.models
-                .map(String::trim)
-                .filter(String::isNotEmpty)
-                .distinct()
-                .map { ChannelModelRecord(upstreamModel = it) }
-            // 先校验请求体再置备渠道，避免非法请求在库里留下系统渠道。
-            val channelId = app.providerChannelProvisioner.ensure(provider)
-                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
-            if (!app.channelRepository.replaceModels(channelId, mappings)) {
-                throw notFound("channel_not_found", "系统端点渠道不存在")
+            val models = request.models.map(String::trim).filter(String::isNotEmpty).distinct()
+            val stored = try {
+                app.providerChannelProvisioner.setProviderModels(provider, models)
+            } catch (cause: IllegalArgumentException) {
+                throw badRequest("invalid_oauth_models", cause.message ?: "模型目录无效")
             }
+            if (!stored) throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
             call.markAdminAuditDetails(buildJsonObject {
                 put("provider", provider.value)
-                put("models", mappings.joinToString(",") { it.upstreamModel })
+                put("modelCount", models.size)
             })
             call.respond(HttpStatusCode.NoContent)
         }
@@ -1438,18 +1473,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     retryable = true,
                 )
             }
-            app.oauthAccountRepository.saveModelCatalog(
-                account.id,
-                entries,
-            )
-            // 同步后只删除授权里目录外的行（事务内读当前行，不覆盖并发改动）；
-            // 显式授权全部落空时写入哨兵行，保持「显式零授权」，不扩大为继承目录。
-            if (account.models.isNotEmpty()) {
-                app.oauthAccountRepository.removeModelsOutsideCatalog(account.id, entries.map { it.upstreamModel })
+            if (!app.providerChannelProvisioner.syncModelCatalog(account.id, entries)) {
+                throw notFound("oauth_account_not_found", "订阅账号不存在")
             }
-            // 系统渠道的模型是所有账号目录的并集，供路由前判断模型是否可能存在；
-            // 账号级 supports() 再按自己的目录过滤，避免把请求发给没有该模型的账号。
-            app.providerChannelProvisioner.syncModelUnion(account.provider)
             call.markAdminAuditDetails(buildJsonObject {
                 put("accountId", account.id)
                 put("provider", account.provider.value)
@@ -1489,7 +1515,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val accountId = call.requiredParam("id", "缺少账号 id")
             val existing = app.oauthAccountRepository.findDetailed(accountId)
                 ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
-            if (!app.oauthAccountRepository.delete(accountId)) {
+            if (!app.providerChannelProvisioner.deleteAccount(accountId)) {
                 throw notFound("oauth_account_not_found", "订阅账号不存在")
             }
             clearOAuthAccountCooldown(app, existing)
@@ -1500,7 +1526,20 @@ fun Route.adminRoutes(app: GatewayApplication) {
         put("/oauth-accounts/{id}/settings") {
             call.requireAdmin(app)
             val accountId = call.requiredParam("id", "缺少账号 id")
-            val request = call.receive<OAuthAccountSettingsRequest>()
+            // 保留字段是否实际出现：auto/upstream 连显式 null canonical 字段也不接受。
+            val payload = call.receive<JsonObject>()
+            val request = try {
+                GatewayApplication.gatewayJson.decodeFromJsonElement<OAuthAccountSettingsRequest>(payload)
+            } catch (cause: kotlinx.serialization.SerializationException) {
+                throw badRequest("invalid_oauth_settings", "账号设置请求格式无效")
+            }
+            payload["modelMappingChanges"]?.takeIf { it != JsonNull }?.jsonArray?.forEach { value ->
+                val change = value.jsonObject
+                val mode = change["mode"]?.jsonPrimitive?.content
+                if (mode in setOf("auto", "upstream") && "canonicalModelId" in change) {
+                    throw badRequest("invalid_oauth_model_mapping", "auto/upstream 模式不能指定 canonicalModelId")
+                }
+            }
             if (request.priority != null && request.priority !in 1..1000) {
                 throw badRequest("invalid_oauth_priority", "账号优先级必须在 1..1000 之间")
             }
@@ -1512,19 +1551,32 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 throw badRequest("invalid_oauth_proxy", "不能同时更换和清除账号代理")
             }
             validateOAuthProxyUrl(app, proxyUrl)
-            val account = app.oauthAccountRepository.updateSettings(
-                accountId = accountId,
-                name = request.name?.trim()?.takeIf { it.isNotEmpty() },
-                priority = request.priority,
-                enabled = request.enabled,
-                proxyUrl = proxyUrl,
-                clearProxy = request.clearProxy,
-            ) ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            val account = try {
+                app.providerChannelProvisioner.updateSettings(
+                    accountId = accountId,
+                    name = request.name?.trim()?.takeIf { it.isNotEmpty() },
+                    priority = request.priority,
+                    enabled = request.enabled,
+                    proxyUrl = proxyUrl,
+                    clearProxy = request.clearProxy,
+                    models = request.models,
+                    modelMappingChanges = request.modelMappingChanges?.map {
+                        ProviderModelMappingChange(it.upstreamModel, it.mode, it.canonicalModelId)
+                    },
+                    expectedModelMappingRevision = request.expectedModelMappingRevision,
+                )
+            } catch (cause: ModelMappingRevisionChangedException) {
+                throw conflict("model_mapping_revision_changed", cause.message ?: "共享模型映射已变化")
+            } catch (cause: IllegalArgumentException) {
+                throw badRequest("invalid_oauth_settings", cause.message ?: "账号设置无效")
+            } ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
             call.markAdminAuditDetails(buildJsonObject {
                 put("accountId", accountId)
                 request.name?.let { put("name", it) }
                 request.priority?.let { put("priority", it) }
                 request.enabled?.let { put("enabled", it) }
+                request.models?.let { put("modelCount", it.size) }
+                request.modelMappingChanges?.let { put("modelMappingChangeCount", it.size) }
             })
             call.respond(oauthAccountResponse(app, account))
         }
@@ -1569,8 +1621,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val accountId = call.requiredParam("id", "缺少账号 id")
             val request = call.receive<OAuthAccountModelsRequest>()
             val models = request.models.map(String::trim).filter(String::isNotEmpty).distinct()
-            val account = app.oauthAccountRepository.setModels(accountId, models)
-                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            val account = try {
+                app.providerChannelProvisioner.updateSettings(accountId, models = models)
+            } catch (cause: IllegalArgumentException) {
+                throw badRequest("invalid_oauth_models", cause.message ?: "模型授权无效")
+            } ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
             call.markAdminAuditDetails(buildJsonObject {
                 put("accountId", accountId)
                 put("modelCount", models.size)
@@ -3089,15 +3144,7 @@ private suspend fun attachProviderChannel(
     app: GatewayApplication,
     account: dev.soven.prismllm.oauth.domain.OAuthAccountRecord,
 ): dev.soven.prismllm.oauth.domain.OAuthAccountRecord {
-    val channelId = app.providerChannelProvisioner.ensure(account.provider) ?: return account
-    val attached = if (account.channelIds == setOf(channelId)) {
-        account
-    } else {
-        app.oauthAccountRepository.setChannels(account.id, listOf(channelId)) ?: account
-    }
-    // 关联成功后再清标记；若进程在此前退出，启动对账会重新搬迁。
-    app.oauthAccountRepository.markProviderChannelSettled(account.id)
-    return attached
+    return app.providerChannelProvisioner.attachAccount(account.id) ?: account
 }
 
 private suspend fun clearOAuthAccountCooldown(

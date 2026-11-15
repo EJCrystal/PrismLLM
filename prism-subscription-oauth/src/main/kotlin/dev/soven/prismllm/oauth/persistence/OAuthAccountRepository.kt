@@ -27,6 +27,7 @@ import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
 import org.jetbrains.exposed.v1.jdbc.update
 import java.util.UUID
 
@@ -94,10 +95,30 @@ open class OAuthAccountRepository(
             ?.let { toRecord(it, emptyList(), emptySet()) }
     }
 
+    /** 应用层显式跨仓储事务必须连接同一 Database 实例。 */
+    private fun requireTransaction() {
+        check(TransactionManager.current().db === database) { "oauth repository transaction database mismatch" }
+    }
+
+    fun findDetailedInTransaction(id: String, lock: Boolean = false): OAuthAccountRecord? {
+        requireTransaction()
+        val query = OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }
+        if (lock) query.forUpdate()
+        return loadRelations(query.toList()).singleOrNull()
+    }
+
+    /** 完整 provider 目录，无管理列表分页上限；默认以创建时间、id 决定而非更新时间。 */
+    fun listProviderInTransaction(provider: OAuthProvider): List<OAuthAccountRecord> {
+        requireTransaction()
+        return loadRelations(
+            OAuthAccounts.selectAll().where { OAuthAccounts.provider eq provider.value }
+                .orderBy(OAuthAccounts.createdAt to SortOrder.ASC, OAuthAccounts.id to SortOrder.ASC).toList(),
+        )
+    }
+
     /** 管理面详情：同时加载账号授权的模型和关联渠道。 */
     suspend fun findDetailed(id: String): OAuthAccountRecord? = suspendTransaction(database) {
-        val rows = OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }.toList()
-        loadRelations(rows).singleOrNull()
+        findDetailedInTransaction(id)
     }
 
     /** 管理面账号看板：按最近变更倒序返回全部订阅账号。 */
@@ -131,7 +152,12 @@ open class OAuthAccountRepository(
 
     /** 账号已改挂到系统渠道；与改挂分开提交，重试时幂等。 */
     suspend fun markProviderChannelSettled(accountId: String): Boolean = suspendTransaction(database) {
-        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+        markProviderChannelSettledInTransaction(accountId)
+    }
+
+    fun markProviderChannelSettledInTransaction(accountId: String): Boolean {
+        requireTransaction()
+        return OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
             it[providerChannelPending] = false
         } > 0
     }
@@ -320,6 +346,19 @@ open class OAuthAccountRepository(
         clearProxy: Boolean = false,
         now: Long = System.currentTimeMillis(),
     ): OAuthAccountRecord? = suspendTransaction(database) {
+        updateSettingsInTransaction(accountId, name, priority, enabled, proxyUrl, clearProxy, now)
+    }
+
+    fun updateSettingsInTransaction(
+        accountId: String,
+        name: String? = null,
+        priority: Int? = null,
+        enabled: Boolean? = null,
+        proxyUrl: String? = null,
+        clearProxy: Boolean = false,
+        now: Long = System.currentTimeMillis(),
+    ): OAuthAccountRecord? {
+        requireTransaction()
         require(!(clearProxy && proxyUrl != null))
         val changed = OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
             name?.let { value -> it[OAuthAccounts.name] = value.take(100) }
@@ -329,7 +368,7 @@ open class OAuthAccountRepository(
             proxyUrl?.let { value -> it[OAuthAccounts.proxyUrl] = value }
             it[OAuthAccounts.updatedAt] = now
         }
-        if (changed == 0) null else findDetailedInTransaction(accountId)
+        return if (changed == 0) null else findDetailedInTransaction(accountId)
     }
 
     suspend fun updatePolicy(
@@ -354,6 +393,15 @@ open class OAuthAccountRepository(
         catalog: List<OAuthAccountModelCatalogEntry>,
         now: Long = System.currentTimeMillis(),
     ): Boolean = suspendTransaction(database) {
+        saveModelCatalogInTransaction(accountId, catalog, now)
+    }
+
+    fun saveModelCatalogInTransaction(
+        accountId: String,
+        catalog: List<OAuthAccountModelCatalogEntry>,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean {
+        requireTransaction()
         val entries = catalog
             .mapNotNull { entry ->
                 val upstreamModel = entry.upstreamModel.trim()
@@ -366,7 +414,7 @@ open class OAuthAccountRepository(
             }
             .distinctBy { it.upstreamModel }
             .take(MAX_CATALOG_MODELS)
-        OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+        return OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
             it[modelCatalog] = quotaJson.encodeToString(entries)
             it[modelCatalogSyncedAt] = now
             it[OAuthAccounts.updatedAt] = now
@@ -378,12 +426,19 @@ open class OAuthAccountRepository(
         channelIds: Collection<String>,
         now: Long = System.currentTimeMillis(),
     ): OAuthAccountRecord? = suspendTransaction(database) {
-        if (OAuthAccounts.selectAll().where { OAuthAccounts.id eq accountId }.empty()) {
-            return@suspendTransaction null
-        }
+        setChannelsInTransaction(accountId, channelIds, now)
+    }
+
+    fun setChannelsInTransaction(
+        accountId: String,
+        channelIds: Collection<String>,
+        now: Long = System.currentTimeMillis(),
+    ): OAuthAccountRecord? {
+        requireTransaction()
+        if (findDetailedInTransaction(accountId, lock = true) == null) return null
         replaceChannels(accountId, channelIds, now)
         OAuthAccounts.update({ OAuthAccounts.id eq accountId }) { it[OAuthAccounts.updatedAt] = now }
-        findDetailedInTransaction(accountId)
+        return findDetailedInTransaction(accountId)
     }
 
     suspend fun setModels(
@@ -391,12 +446,19 @@ open class OAuthAccountRepository(
         models: Collection<String>,
         now: Long = System.currentTimeMillis(),
     ): OAuthAccountRecord? = suspendTransaction(database) {
-        if (OAuthAccounts.selectAll().where { OAuthAccounts.id eq accountId }.empty()) {
-            return@suspendTransaction null
-        }
+        setModelsInTransaction(accountId, models, now)
+    }
+
+    fun setModelsInTransaction(
+        accountId: String,
+        models: Collection<String>,
+        now: Long = System.currentTimeMillis(),
+    ): OAuthAccountRecord? {
+        requireTransaction()
+        if (findDetailedInTransaction(accountId, lock = true) == null) return null
         replaceModels(accountId, models, now)
         OAuthAccounts.update({ OAuthAccounts.id eq accountId }) { it[OAuthAccounts.updatedAt] = now }
-        findDetailedInTransaction(accountId)
+        return findDetailedInTransaction(accountId)
     }
 
     /**
@@ -413,9 +475,16 @@ open class OAuthAccountRepository(
         catalog: Collection<String>,
         now: Long = System.currentTimeMillis(),
     ): Boolean = suspendTransaction(database) {
-        if (OAuthAccounts.selectAll().where { OAuthAccounts.id eq accountId }.empty()) {
-            return@suspendTransaction false
-        }
+        removeModelsOutsideCatalogInTransaction(accountId, catalog, now)
+    }
+
+    fun removeModelsOutsideCatalogInTransaction(
+        accountId: String,
+        catalog: Collection<String>,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean {
+        requireTransaction()
+        if (findDetailedInTransaction(accountId, lock = true) == null) return false
         val allowed = catalog.map(String::trim).filter(String::isNotEmpty).toSet()
         val deleted = OAuthAccountModels.deleteWhere {
             (OAuthAccountModels.accountId eq accountId) and
@@ -434,7 +503,7 @@ open class OAuthAccountRepository(
             }
         }
         OAuthAccounts.update({ OAuthAccounts.id eq accountId }) { it[OAuthAccounts.updatedAt] = now }
-        true
+        return true
     }
 
     companion object {
@@ -446,7 +515,12 @@ open class OAuthAccountRepository(
     }
 
     suspend fun delete(accountId: String): Boolean = suspendTransaction(database) {
-        OAuthAccounts.deleteWhere { OAuthAccounts.id eq accountId } > 0
+        deleteInTransaction(accountId)
+    }
+
+    fun deleteInTransaction(accountId: String): Boolean {
+        requireTransaction()
+        return OAuthAccounts.deleteWhere { OAuthAccounts.id eq accountId } > 0
     }
 
     /** 读取一次刷新所需的全部输入。 */
@@ -644,11 +718,6 @@ open class OAuthAccountRepository(
             it[quotaError] = sanitizeQuotaError(errorCode)
             it[quotaAttemptedAt] = now
         } > 0
-    }
-
-    private fun findDetailedInTransaction(accountId: String): OAuthAccountRecord? {
-        val rows = OAuthAccounts.selectAll().where { OAuthAccounts.id eq accountId }.toList()
-        return loadRelations(rows).singleOrNull()
     }
 
     private fun loadRelations(rows: List<ResultRow>): List<OAuthAccountRecord> {

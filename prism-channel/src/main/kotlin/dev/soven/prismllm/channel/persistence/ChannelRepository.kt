@@ -6,6 +6,7 @@ import dev.soven.prismllm.channel.domain.ChannelKind
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.channel.domain.ChannelQuotaSettings
 import dev.soven.prismllm.channel.domain.ChannelRecord
+import dev.soven.prismllm.channel.domain.ProviderEndpoints
 import dev.soven.prismllm.channel.domain.key.ChannelKeyDisableMode
 import dev.soven.prismllm.channel.domain.key.ChannelKeyDisablePolicyCodec
 import dev.soven.prismllm.channel.domain.key.ChannelKeyState
@@ -28,6 +29,7 @@ import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
 import org.jetbrains.exposed.v1.jdbc.update
 import java.util.UUID
 
@@ -92,12 +94,68 @@ class ChannelRepository(private val database: Database, private val credentialCi
         Channels.selectAll().where { Channels.id eq id }.singleOrNull()?.let(::toRecordWithRelations)
     }
 
-    /** 按订阅 provider 查找系统置备的渠道。 */
-    suspend fun findProviderChannel(provider: OAuthProvider): ChannelRecord? = suspendTransaction(database) {
-        Channels.selectAll()
+    /** 应用层跨仓储协调的唯一事务边界；InTransaction 方法不再开启嵌套事务。 */
+    suspend fun <T> inTransaction(block: () -> T): T = suspendTransaction(database) { block() }
+
+    private fun requireTransaction() {
+        check(TransactionManager.current().db === database) { "channel repository transaction database mismatch" }
+    }
+
+    fun findInTransaction(id: String): ChannelRecord? {
+        requireTransaction()
+        return Channels.selectAll().where { Channels.id eq id }.singleOrNull()?.let(::toRecordWithRelations)
+    }
+
+    fun findProviderChannelInTransaction(provider: OAuthProvider, lock: Boolean = false): ChannelRecord? {
+        requireTransaction()
+        val query = Channels.selectAll()
             .where { (Channels.kind eq ChannelKind.PROVIDER.value) and (Channels.provider eq provider.value) }
-            .singleOrNull()
-            ?.let(::toRecordWithRelations)
+        if (lock) query.forUpdate()
+        return query.singleOrNull()?.let(::toRecordWithRelations)
+    }
+
+    /** PostgreSQL 事务锁解决跨实例首次置备；后续写入统一先锁 channel 父行。 */
+    fun ensureProviderChannelInTransaction(provider: OAuthProvider): ChannelRecord? {
+        requireTransaction()
+        val endpoint = ProviderEndpoints.of(provider)
+        if (!endpoint.servable) return null
+        TransactionManager.current().exec("SELECT pg_advisory_xact_lock(1347570253, ${provider.value.hashCode()})") {
+            it.next()
+        }
+        findProviderChannelInTransaction(provider, lock = true)?.let { return it }
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        Channels.insert {
+            it[Channels.id] = id
+            it[name] = endpoint.channelName
+            it[baseUrl] = endpoint.baseUrl
+            it[authType] = endpoint.authType
+            it[protocols] = endpoint.protocols.joinToString(",") { protocol -> protocol.value }
+            it[enabled] = true
+            it[priority] = 1
+            it[kind] = ChannelKind.PROVIDER.value
+            it[Channels.provider] = provider.value
+            it[createdAt] = now
+            it[updatedAt] = now
+        }
+        saveModels(id, endpoint.models.map { ChannelModelRecord(it) }, now)
+        return requireNotNull(findProviderChannelInTransaction(provider, lock = true))
+    }
+
+    fun saveModelMappingsInTransaction(
+        channelId: String,
+        mappings: List<ChannelModelRecord>,
+        automaticDefaultsChanged: Boolean = false,
+    ): ChannelRecord {
+        requireTransaction()
+        check(Channels.selectAll().where { Channels.id eq channelId }.forUpdate().singleOrNull() != null)
+        saveModels(channelId, mappings, System.currentTimeMillis(), automaticDefaultsChanged)
+        return requireNotNull(findInTransaction(channelId))
+    }
+
+    /** 按订阅 provider 查找系统置备的渠道。 */
+    suspend fun findProviderChannel(provider: OAuthProvider): ChannelRecord? = inTransaction {
+        findProviderChannelInTransaction(provider)
     }
 
     suspend fun findByName(name: String): ChannelRecord? = suspendTransaction(database) {
@@ -172,10 +230,13 @@ class ChannelRepository(private val database: Database, private val credentialCi
         protocolAuthTypes: Map<String, String>? = null,
     ): ChannelRecord? = suspendTransaction(database) {
         val now = System.currentTimeMillis()
-        Channels.selectAll()
+        val existingChannel = Channels.selectAll()
             .where { Channels.id eq id }
             .forUpdate()
             .singleOrNull() ?: return@suspendTransaction null
+        require(modelMappings == null || existingChannel[Channels.kind] != ChannelKind.PROVIDER.value) {
+            "provider models require shared write boundary"
+        }
         val updated = Channels.update({ Channels.id eq id }) {
             it[Channels.name] = name
             it[Channels.baseUrl] = baseUrl
@@ -202,12 +263,13 @@ class ChannelRepository(private val database: Database, private val credentialCi
         }
     }
 
-    /** 只替换渠道的模型映射；系统置备渠道用它维护官方模型列表。 */
+    /** 普通渠道可替换目录；provider 必须经应用层共享写入边界保留人工覆盖。 */
     suspend fun replaceModels(id: String, modelMappings: List<ChannelModelRecord>): Boolean = suspendTransaction(database) {
-        if (Channels.selectAll().where { Channels.id eq id }.empty()) return@suspendTransaction false
-        val now = System.currentTimeMillis()
-        saveModels(id, modelMappings, now)
-        Channels.update({ Channels.id eq id }) { it[updatedAt] = now } > 0
+        val channel = Channels.selectAll().where { Channels.id eq id }.forUpdate().singleOrNull()
+            ?: return@suspendTransaction false
+        require(channel[Channels.kind] != ChannelKind.PROVIDER.value) { "provider models require shared write boundary" }
+        saveModels(id, modelMappings, System.currentTimeMillis())
+        true
     }
 
     suspend fun delete(id: String): Boolean = suspendTransaction(database) {
@@ -230,7 +292,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
 
     suspend fun modelsFor(channelId: String): Set<String> = suspendTransaction(database) {
         ChannelModels.selectAll()
-            .where { ChannelModels.channelId eq channelId }
+            .where { (ChannelModels.channelId eq channelId) and (ChannelModels.catalogActive eq true) }
             .map { it[ChannelModels.upstreamModel] }
             .toSet()
     }
@@ -267,18 +329,47 @@ class ChannelRepository(private val database: Database, private val credentialCi
         toRecordWithRelations(channel).copy(updatedAt = now)
     }
 
-    private fun saveModels(channelId: String, modelMappings: List<ChannelModelRecord>, now: Long) {
-        ChannelModels.deleteWhere { ChannelModels.channelId eq channelId }
-        modelMappings.distinctBy { it.upstreamModel }.forEach { mapping ->
-            ChannelModels.insert {
-                it[ChannelModels.channelId] = channelId
-                it[upstreamModel] = mapping.upstreamModel
-                it[canonicalModelId] = mapping.canonicalModelId
-                it[mappingSource] = mapping.mappingSource
-                it[createdAt] = now
+    private fun saveModels(
+        channelId: String,
+        modelMappings: List<ChannelModelRecord>,
+        now: Long,
+        automaticDefaultsChanged: Boolean = false,
+    ) {
+        val previous = modelsForInTransaction(channelId).associateBy { it.upstreamModel }
+        val desired = modelMappings.distinctBy { it.upstreamModel }.associateBy { it.upstreamModel }
+        val mappingsChanged = previous != desired
+        if (!mappingsChanged && !automaticDefaultsChanged) return
+        (previous.keys - desired.keys).forEach { model ->
+            ChannelModels.deleteWhere {
+                (ChannelModels.channelId eq channelId) and (ChannelModels.upstreamModel eq model)
             }
         }
-        pruneKeyModels(channelId, modelMappings.map { it.upstreamModel }.toSet())
+        desired.values.forEach { mapping ->
+            if (previous[mapping.upstreamModel] == mapping) return@forEach
+            fun UpdateBuilder<*>.setMapping() {
+                this[ChannelModels.canonicalModelId] = mapping.canonicalModelId
+                this[ChannelModels.mappingSource] = mapping.mappingSource
+                this[ChannelModels.catalogActive] = mapping.catalogActive
+            }
+            if (mapping.upstreamModel in previous) {
+                ChannelModels.update({
+                    (ChannelModels.channelId eq channelId) and (ChannelModels.upstreamModel eq mapping.upstreamModel)
+                }) { it.setMapping() }
+            } else {
+                ChannelModels.insert {
+                    it[ChannelModels.channelId] = channelId
+                    it[upstreamModel] = mapping.upstreamModel
+                    it.setMapping()
+                    it[createdAt] = now
+                }
+            }
+        }
+        val revision = Channels.selectAll().where { Channels.id eq channelId }.single()[Channels.modelMappingRevision]
+        Channels.update({ Channels.id eq channelId }) {
+            it[modelMappingRevision] = revision + 1
+            it[updatedAt] = now
+        }
+        pruneKeyModels(channelId, desired.values.filter { it.catalogActive }.map { it.upstreamModel }.toSet())
     }
 
     /** 渠道目录收缩时同步清理密钥上已不存在的模型引用。 */
@@ -304,7 +395,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
             .orderBy(ChannelKeys.id).forUpdate()
             .associateBy { it[ChannelKeys.id] }
         val allowedModels = ChannelModels.selectAll()
-            .where { ChannelModels.channelId eq channelId }
+            .where { (ChannelModels.channelId eq channelId) and (ChannelModels.catalogActive eq true) }
             .map { it[ChannelModels.upstreamModel] }
             .toSet()
         val keptIds = mutableSetOf<String>()
@@ -428,6 +519,7 @@ class ChannelRepository(private val database: Database, private val credentialCi
             EncryptedCredential(it, row[Channels.quotaCredentialNonce], row[Channels.quotaCredentialKeyVersion])
         },
         keyDisableMode = ChannelKeyDisableMode.of(ChannelKeyDisablePolicyCodec.decode(row[Channels.keyDisablePolicy])),
+        modelMappingRevision = row[Channels.modelMappingRevision],
     )
 
     private fun UpdateBuilder<*>.setQuotaCredential(credential: EncryptedCredential?, clear: Boolean) {
@@ -454,6 +546,7 @@ internal fun loadChannelModelMappingsInTransaction(
                     upstreamModel = it[ChannelModels.upstreamModel],
                     canonicalModelId = it[ChannelModels.canonicalModelId],
                     mappingSource = it[ChannelModels.mappingSource],
+                    catalogActive = it[ChannelModels.catalogActive],
                 )
             }.sortedBy { it.upstreamModel }
         }

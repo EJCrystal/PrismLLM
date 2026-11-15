@@ -213,6 +213,28 @@ class ChannelHealthRepositoryTest {
     }
 
     @Test
+    fun overviewExcludesDormantProviderMappingsForUnsynchronizedAccounts() = runBlocking {
+        val cipher = CredentialCipher(ByteArray(32) { 7 })
+        val channels = ChannelRepository(factory.database, cipher)
+        val channel = channels.create(
+            name = "dormant-model", baseUrl = "https://example.invalid/v1",
+            keys = emptyList(), authType = "bearer", enabled = true,
+            modelMappings = listOf(ChannelModelRecord("m1", "canonical-m1", "manual", catalogActive = false)),
+        )
+        val accounts = OAuthAccountRepository(factory.database, OAuthProviderChannelLookup())
+        accounts.create(NewOAuthAccount(
+            name = "unsynchronized", provider = OAuthProvider.CHATGPT,
+            refreshToken = cipher.encrypt("refresh-token"), channelIds = listOf(channel.id),
+        ))
+
+        assertEquals(0, health.listHealthChannelOverviews().single().routableCredentials)
+        assertEquals(0, channels.find(channel.id)!!.copy(oauthAccounts = accounts.listByChannel()[channel.id].orEmpty())
+            .routableCredentialCount())
+        assertTrue(channels.replaceModels(channel.id, listOf(ChannelModelRecord("m1", "canonical-m1", "manual"))))
+        assertEquals(1, health.listHealthChannelOverviews().single().routableCredentials)
+    }
+
+    @Test
     fun failoverExclusionsAndStreamFailuresAreAggregatedIndependently() = runBlocking {
         logs.insert(log(listOf(
             attempt("a", 429).copy(index = 1, upstreamErrorCode = "rate_limit"),

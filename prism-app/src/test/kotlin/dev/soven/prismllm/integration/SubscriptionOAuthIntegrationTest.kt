@@ -2,6 +2,20 @@ package dev.soven.prismllm.integration
 
 import dev.soven.prismllm.config.OAuthConfig
 import dev.soven.prismllm.channel.domain.ChannelRecord
+import dev.soven.prismllm.channel.domain.ChannelModelRecord
+import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
+import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
+import dev.soven.prismllm.oauth.ProviderModelMappingChange
+import dev.soven.prismllm.oauth.ProviderChannelProvisioner
+import dev.soven.prismllm.channel.persistence.ChannelRepository
+import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
+import dev.soven.prismllm.repo.OAuthProviderChannelLookup
+import kotlinx.serialization.json.JsonObject
+import dev.soven.prismllm.channel.persistence.ChannelModels
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.jdbc.update
+import kotlinx.serialization.json.JsonNull
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.oauth.domain.OAuthAccountPolicy
 import dev.soven.prismllm.shared.domain.OAuthProvider
@@ -55,6 +69,280 @@ import kotlin.test.assertTrue
 @Tag("shard-2")
 @Tag("channel")
 class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
+
+    @Test
+    fun `shared mappings GET is authenticated provider scoped and never provisions or calls upstream`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/admin/api/oauth-providers/chatgpt/model-mappings").status)
+            val (cookie, _) = client.loginAdmin()
+            val response = client.get("/admin/api/oauth-providers/chatgpt/model-mappings") { header(HttpHeaders.Cookie, cookie) }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("chatgpt", body["provider"]!!.jsonPrimitive.content)
+            assertEquals("provider", body["scope"]!!.jsonPrimitive.content)
+            assertEquals(0, body["revision"]!!.jsonPrimitive.long)
+            assertEquals(0, body["affectedAccountCount"]!!.jsonPrimitive.int)
+            assertTrue(body["mappings"]!!.jsonArray.isEmpty())
+            assertEquals("no-store", response.headers["Cache-Control"])
+            assertEquals(0, scalarInt("select count(*) from channels where kind = 'provider'"))
+            val invalid = client.get("/admin/api/oauth-providers/not-a-provider/model-mappings") { header(HttpHeaders.Cookie, cookie) }
+            assertEquals(HttpStatusCode.BadRequest, invalid.status)
+        }
+        assertTrue(fake.requests.isEmpty())
+        assertTrue(fake.modelRequests.isEmpty())
+    }
+
+    @Test
+    fun `settings mapping increments are shared without expanding account authorization or other providers`() = runBlocking {
+        val a = mappingAccount("a", models = listOf("a"))
+        val b = mappingAccount("b", models = listOf("b"))
+        val other = mappingAccount("other", OAuthProvider.ANTIGRAVITY)
+        app.providerChannelProvisioner.syncModelCatalog(a.id, listOf(OAuthAccountModelCatalogEntry("a", "family-a")))
+        app.providerChannelProvisioner.syncModelCatalog(b.id, listOf(OAuthAccountModelCatalogEntry("b", "family-b")))
+        app.providerChannelProvisioner.syncModelCatalog(other.id, listOf(OAuthAccountModelCatalogEntry("other", "other-family")))
+        val oldOther = app.providerChannelProvisioner.modelMappings(OAuthProvider.ANTIGRAVITY)
+        val originalA = app.oauthAccountRepository.findDetailed(a.id)!!
+        val originalB = app.oauthAccountRepository.findDetailed(b.id)!!
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            suspend fun shared() = Json.parseToJsonElement(client.get("/admin/api/oauth-providers/chatgpt/model-mappings") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()).jsonObject
+            suspend fun save(account: String, payload: String) = client.put("/admin/api/oauth-accounts/$account/settings") {
+                header(HttpHeaders.Cookie, cookie); header("X-CSRF-Token", csrf); contentType(ContentType.Application.Json); setBody(payload)
+            }
+            val initial = shared()
+            assertEquals(2, initial["affectedAccountCount"]!!.jsonPrimitive.int)
+            assertEquals(setOf("a", "b"), initial["mappings"]!!.jsonArray.map { it.jsonObject["upstreamModel"]!!.jsonPrimitive.content }.toSet())
+            val revision = initial["revision"]!!.jsonPrimitive.long
+            val frozen = save(a.id, """{"expectedModelMappingRevision":$revision,"modelMappingChanges":[{"upstreamModel":"a","mode":"manual","canonicalModelId":"  family-a  "}]}""")
+            assertEquals(HttpStatusCode.OK, frozen.status)
+            val returned = Json.parseToJsonElement(frozen.bodyAsText()).jsonObject
+            assertEquals(setOf("a"), returned["models"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
+            assertEquals(listOf("a"), returned["modelCatalog"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertFalse("modelMappings" in returned)
+            assertFalse("revision" in returned)
+            assertFalse(frozen.bodyAsText().contains("refresh-secret"))
+            val changed = shared()
+            assertEquals(revision + 1, changed["revision"]!!.jsonPrimitive.long)
+            val row = changed["mappings"]!!.jsonArray.first { it.jsonObject["upstreamModel"]!!.jsonPrimitive.content == "a" }.jsonObject
+            assertEquals("manual", row["mode"]!!.jsonPrimitive.content)
+            assertEquals("family-a", row["automaticCanonicalModelId"]!!.jsonPrimitive.content)
+            assertEquals("manual", row["mappingSource"]!!.jsonPrimitive.content)
+            assertTrue(row["catalogActive"]!!.jsonPrimitive.boolean)
+            val upstream = save(b.id, """{"expectedModelMappingRevision":${revision + 1},"modelMappingChanges":[{"upstreamModel":"b","mode":"upstream"}]}""")
+            assertEquals(HttpStatusCode.OK, upstream.status)
+            val rows = shared()["mappings"]!!.jsonArray.associate { it.jsonObject["upstreamModel"]!!.jsonPrimitive.content to it.jsonObject }
+            assertEquals("manual", rows.getValue("a")["mode"]!!.jsonPrimitive.content, "dirty update must not replace unrelated rows")
+            assertEquals("upstream", rows.getValue("b")["mode"]!!.jsonPrimitive.content)
+            assertEquals(JsonNull, rows.getValue("b")["canonicalModelId"])
+            assertEquals("b", rows.getValue("b")["publicModelId"]!!.jsonPrimitive.content)
+            val noopRevision = shared()["revision"]!!.jsonPrimitive.long
+            assertEquals(HttpStatusCode.OK, save(a.id, """{"models":null,"modelMappingChanges":[],"expectedModelMappingRevision":0}""").status)
+            assertEquals(noopRevision, shared()["revision"]!!.jsonPrimitive.long)
+            val restore = save(a.id, """{"expectedModelMappingRevision":$noopRevision,"modelMappingChanges":[{"upstreamModel":"a","mode":"auto"}]}""")
+            assertEquals(HttpStatusCode.OK, restore.status)
+            val automatic = shared()["mappings"]!!.jsonArray.first { it.jsonObject["upstreamModel"]!!.jsonPrimitive.content == "a" }.jsonObject
+            assertEquals("auto", automatic["mode"]!!.jsonPrimitive.content)
+            assertEquals(JsonNull, automatic["mappingSource"])
+            assertEquals(originalA.models, app.oauthAccountRepository.findDetailed(a.id)!!.models)
+            assertEquals(originalB.models, app.oauthAccountRepository.findDetailed(b.id)!!.models)
+            assertFalse(app.oauthAccountRepository.findDetailed(a.id)!!.supports("b"))
+            assertFalse(app.oauthAccountRepository.findDetailed(b.id)!!.supports("a"))
+            assertEquals(oldOther, app.providerChannelProvisioner.modelMappings(OAuthProvider.ANTIGRAVITY))
+        }
+        assertTrue(fake.requests.isEmpty())
+        assertTrue(fake.modelRequests.isEmpty())
+    }
+
+    @Test
+    fun `invalid settings noauth csrf and revision conflicts leave entire account and mappings unchanged`() = runBlocking {
+        val account = mappingAccount("validation", models = listOf("m"))
+        app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry("m", "family")))
+        val beforeAccount = app.oauthAccountRepository.findDetailed(account.id)!!
+        val before = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT)
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            suspend fun save(payload: String, auth: Boolean = true, csrfToken: String? = csrf) = client.put("/admin/api/oauth-accounts/${account.id}/settings") {
+                if (auth) header(HttpHeaders.Cookie, cookie)
+                csrfToken?.let { header("X-CSRF-Token", it) }
+                contentType(ContentType.Application.Json); setBody(payload)
+            }
+            val valid = """{"name":"changed","models":[],"expectedModelMappingRevision":${before.revision},"modelMappingChanges":[{"upstreamModel":"m","mode":"manual","canonicalModelId":"changed"}]}"""
+            assertEquals(HttpStatusCode.Unauthorized, save(valid, auth = false).status)
+            assertEquals(HttpStatusCode.Forbidden, save(valid, csrfToken = null).status)
+            val invalidRows = listOf(
+                """[{"upstreamModel":"m","mode":"manual"}]""",
+                """[{"upstreamModel":"m","mode":"manual","canonicalModelId":"   "}]""",
+                """[{"upstreamModel":"m","mode":"manual","canonicalModelId":"${"x".repeat(201)}"}]""",
+                """[{"upstreamModel":"m","mode":"unknown"}]""",
+                """[{"upstreamModel":"m","mode":"upstream","canonicalModelId":"bad"}]""",
+                """[{"upstreamModel":"m","mode":"auto","canonicalModelId":null}]""",
+                """[{"upstreamModel":"m","mode":"auto"},{"upstreamModel":" m ","mode":"upstream"}]""",
+                """[{"upstreamModel":"unknown","mode":"manual","canonicalModelId":"bad"}]""",
+                """[{"upstreamModel":"${"x".repeat(201)}","mode":"upstream"}]""",
+            )
+            invalidRows.forEach { rows ->
+                val response = save("""{"name":"changed","models":[],"expectedModelMappingRevision":${before.revision},"modelMappingChanges":$rows}""")
+                assertEquals(HttpStatusCode.BadRequest, response.status, response.bodyAsText())
+                assertEquals(beforeAccount, app.oauthAccountRepository.findDetailed(account.id))
+                assertEquals(before, app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT))
+            }
+            assertEquals(HttpStatusCode.BadRequest, save("""{"modelMappingChanges":[{"upstreamModel":"m","mode":"upstream"}]}""").status)
+            val conflict = save(valid.replace("\"expectedModelMappingRevision\":${before.revision}", "\"expectedModelMappingRevision\":${before.revision - 1}"))
+            assertEquals(HttpStatusCode.Conflict, conflict.status, conflict.bodyAsText())
+            assertTrue(conflict.bodyAsText().contains("model_mapping_revision_changed"))
+            assertEquals(beforeAccount, app.oauthAccountRepository.findDetailed(account.id))
+            assertEquals(before, app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT))
+        }
+        assertTrue(fake.requests.isEmpty())
+        assertTrue(fake.modelRequests.isEmpty())
+    }
+
+    @Test
+    fun `provider HTTP catalog exposes canonical only and sends upstream model while raw requests are rejected`() = runBlocking {
+        val account = mappingAccount("forward", models = listOf("upstream-model"))
+        app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry("upstream-model")))
+        val channel = app.channelRepository.findProviderChannel(OAuthProvider.CHATGPT)!!
+        // 测试自己的 provider 端点指向本机 fake，不外访官方端点。
+        app.channelRepository.update(channel.id, channel.name, fake.baseUrl + "/ok/v1", authType = channel.authType, enabled = true)
+        app.providerChannelProvisioner.updateSettings(account.id, modelMappingChanges = listOf(ProviderModelMappingChange("upstream-model", "manual", "public-model")), expectedModelMappingRevision = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).revision)
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val listing = client.get("/v1/models") { header(HttpHeaders.Authorization, "Bearer $key") }
+            assertEquals(HttpStatusCode.OK, listing.status)
+            assertEquals(listOf("public-model"), Json.parseToJsonElement(listing.bodyAsText()).jsonObject["data"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content })
+            suspend fun send(model: String) = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key"); contentType(ContentType.Application.Json)
+                setBody("""{"model":"$model","stream":false,"input":"ping"}""")
+            }
+            val raw = send("upstream-model")
+            assertEquals(HttpStatusCode.NotFound, raw.status, raw.bodyAsText())
+            assertTrue(fake.requests.isEmpty())
+            val canonical = send("public-model")
+            assertEquals(HttpStatusCode.OK, canonical.status, canonical.bodyAsText())
+            assertEquals("upstream-model", Json.parseToJsonElement(fake.requests.single().body).jsonObject["model"]!!.jsonPrimitive.content)
+            assertEquals("Bearer access-secret", fake.requests.single().authorization)
+        }
+    }
+
+    @Test
+    fun `shared GET and routing fall back to upstream when last known catalog is deleted with an unknown account`() = runBlocking<Unit> {
+        assertUnknownCatalogFallbackOverHttp(deleteKnownAccount = true)
+    }
+
+    @Test
+    fun `shared GET and routing fall back to upstream when last known catalog is cleared with an unknown account`() = runBlocking<Unit> {
+        assertUnknownCatalogFallbackOverHttp(deleteKnownAccount = false)
+    }
+
+    private suspend fun assertUnknownCatalogFallbackOverHttp(deleteKnownAccount: Boolean) {
+        val known = mappingAccount("known", models = listOf("m"))
+        app.providerChannelProvisioner.syncModelCatalog(known.id, listOf(OAuthAccountModelCatalogEntry("m", "family")))
+        val unknown = mappingAccount("unknown", models = listOf("m"))
+        val other = ProviderChannelProvisioner(
+            ChannelRepository(app.databaseFactory.database, app.credentialCipher),
+            OAuthAccountRepository(app.databaseFactory.database, OAuthProviderChannelLookup()),
+        )
+        val channel = app.channelRepository.findProviderChannel(OAuthProvider.CHATGPT)!!
+        app.channelRepository.update(channel.id, channel.name, fake.baseUrl + "/ok/v1", authType = channel.authType, enabled = true)
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            suspend fun shared(): JsonObject {
+                val response = client.get("/admin/api/oauth-providers/chatgpt/model-mappings") { header(HttpHeaders.Cookie, cookie) }
+                assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+                return Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            }
+            suspend fun assertPublicModels(model: String) {
+                val response = client.get("/v1/models") { header(HttpHeaders.Authorization, "Bearer $key") }
+                assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+                assertEquals(listOf(model), Json.parseToJsonElement(response.bodyAsText()).jsonObject["data"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content })
+            }
+            val before = shared()
+            val revision = before["revision"]!!.jsonPrimitive.long
+            assertEquals("family", before["mappings"]!!.jsonArray.single().jsonObject["publicModelId"]!!.jsonPrimitive.content)
+            assertPublicModels("family")
+            if (deleteKnownAccount) {
+                val response = client.delete("/admin/api/oauth-accounts/${known.id}") {
+                    header(HttpHeaders.Cookie, cookie); header("X-CSRF-Token", csrf)
+                }
+                assertEquals(HttpStatusCode.NoContent, response.status, response.bodyAsText())
+            } else {
+                // 可信已知空目录走存储编排；不取消上游 refresh HTTP 的空目录 502 防护。
+                assertTrue(other.syncModelCatalog(known.id, emptyList()))
+            }
+            val after = shared()
+            assertEquals(revision + 1, after["revision"]!!.jsonPrimitive.long)
+            assertEquals(if (deleteKnownAccount) 1 else 2, after["affectedAccountCount"]!!.jsonPrimitive.int)
+            val row = after["mappings"]!!.jsonArray.single().jsonObject
+            assertEquals("m", row["upstreamModel"]!!.jsonPrimitive.content)
+            assertEquals("m", row["publicModelId"]!!.jsonPrimitive.content)
+            assertEquals("auto", row["mode"]!!.jsonPrimitive.content)
+            assertEquals(JsonNull, row["canonicalModelId"])
+            assertEquals(JsonNull, row["automaticCanonicalModelId"])
+            assertEquals(JsonNull, row["mappingSource"])
+            assertTrue(row["catalogActive"]!!.jsonPrimitive.boolean)
+            assertPublicModels("m")
+            other.syncModelUnion(OAuthProvider.CHATGPT)
+            app.providerChannelProvisioner.syncModelUnion(OAuthProvider.CHATGPT)
+            if (!deleteKnownAccount) assertTrue(other.syncModelCatalog(known.id, emptyList()))
+            assertEquals(after, shared(), "same-state sync must not advance revision")
+            assertNull(app.oauthAccountRepository.findDetailed(unknown.id)!!.modelCatalog)
+            assertEquals(listOf("m"), app.oauthAccountRepository.findDetailed(unknown.id)!!.models)
+            assertTrue(fake.requests.isEmpty())
+            assertTrue(fake.modelRequests.isEmpty())
+            suspend fun send(model: String) = client.post("/v1/responses") {
+                header(HttpHeaders.Authorization, "Bearer $key"); contentType(ContentType.Application.Json)
+                setBody("""{"model":"$model","stream":false,"input":"ping"}""")
+            }
+            val obsolete = send("family")
+            assertEquals(HttpStatusCode.NotFound, obsolete.status, obsolete.bodyAsText())
+            assertTrue(fake.requests.isEmpty())
+            val upstream = send("m")
+            assertEquals(HttpStatusCode.OK, upstream.status, upstream.bodyAsText())
+            assertEquals("m", Json.parseToJsonElement(fake.requests.single().body).jsonObject["model"]!!.jsonPrimitive.content)
+            assertEquals("Bearer access-secret", fake.requests.single().authorization)
+        }
+    }
+
+    @Test
+    fun `legacy provider models keeps dormant mappings and provider probes reject inactive before external requests`() = runBlocking {
+        val account = mappingAccount("probe")
+        app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry("m", "family")))
+        app.providerChannelProvisioner.updateSettings(account.id, modelMappingChanges = listOf(ProviderModelMappingChange("m", "manual", "frozen")), expectedModelMappingRevision = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).revision)
+        val channel = app.channelRepository.findProviderChannel(OAuthProvider.CHATGPT)!!
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            val update = client.put("/admin/api/oauth-providers/chatgpt/models") {
+                header(HttpHeaders.Cookie, cookie); header("X-CSRF-Token", csrf); contentType(ContentType.Application.Json); setBody("""{"models":[]}""")
+            }
+            assertEquals(HttpStatusCode.NoContent, update.status)
+            val stored = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).mappings.single().mapping
+            assertFalse(stored.catalogActive)
+            assertEquals("frozen", stored.canonicalModelId)
+            val probe = client.post("/admin/api/channels/${channel.id}/probe-protocols") {
+                header(HttpHeaders.Cookie, cookie); header("X-CSRF-Token", csrf); contentType(ContentType.Application.Json); setBody("""{"model":"m","keyId":"${account.id}"}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, probe.status, probe.bodyAsText())
+            assertTrue(probe.bodyAsText().contains("model_not_authorized"))
+            val test = client.post("/admin/api/oauth-accounts/${account.id}/model-test") {
+                header(HttpHeaders.Cookie, cookie); header("X-CSRF-Token", csrf); contentType(ContentType.Application.Json); setBody("""{"model":"m","protocol":"responses"}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, test.status)
+        }
+        assertTrue(fake.requests.isEmpty())
+        assertTrue(fake.modelRequests.isEmpty())
+    }
+
+    private suspend fun mappingAccount(name: String, provider: OAuthProvider = OAuthProvider.CHATGPT, models: List<String> = emptyList()): OAuthAccountRecord {
+        val channelId = app.providerChannelProvisioner.ensure(provider)!!
+        return app.oauthAccountRepository.create(NewOAuthAccount(name = name, provider = provider, refreshToken = app.credentialCipher.encrypt("refresh-secret"), accessToken = app.credentialCipher.encrypt("access-secret"), accessTokenExpiresAt = System.currentTimeMillis() + 3_600_000, channelIds = listOf(channelId), models = models))
+    }
 
     @Test
     fun `subscription account window skips the candidate without calling upstream`() = runBlocking {
