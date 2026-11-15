@@ -114,6 +114,25 @@ describe('真实调用方密钥视图访问范围行为', () => {
     })
   })
 
+  it('切换三维黑名单后保存完整排除项，保存失败重试及启停均保留黑名单', async () => {
+    await mount(); await edit()
+    for (const name of ['渠道', '渠道密钥', '模型']) await mode(name, 'denylist')
+    const expected = structuredClone(policy)
+    for (const scope of Object.values(expected)) scope.mode = 'denylist'
+    failSave = true
+    button('保存修改').click(); await settle()
+    assert.deepEqual(writes[0].accessPolicy, expected)
+    assert.equal(document.querySelectorAll('.modal fieldset input:checked').length, 6)
+    failSave = false
+    button('保存修改').click(); await settle()
+    assert.deepEqual(writes[1].accessPolicy, expected)
+    assert.match(document.querySelector('tbody').textContent, /黑名单|排除|禁止/)
+    button('停用').click(); await settle()
+    assert.deepEqual(saved.accessPolicy, expected)
+    await edit()
+    assert.equal(document.querySelectorAll('.modal fieldset input:checked').length, 6)
+  })
+
   it('保存失败保留表单和选择，重试仍提交原有授权', async () => {
     await mount(); await edit(); failSave = true
     button('保存修改').click(); await settle()

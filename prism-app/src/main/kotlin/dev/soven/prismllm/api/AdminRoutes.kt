@@ -1987,7 +1987,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (existing.revokedAt != null) {
                 throw conflict("client_key_revoked", "调用方密钥已撤销，不能重新启用或修改")
             }
-            val accessPolicy = request.accessPolicy?.let { validateClientKeyAccessPolicy(it, app) }
+            val accessPolicy = request.accessPolicy?.let { validateClientKeyAccessPolicy(it, app, existing.accessPolicy) }
             val record = app.clientKeyRepository.update(
                 id = id,
                 name = request.name,

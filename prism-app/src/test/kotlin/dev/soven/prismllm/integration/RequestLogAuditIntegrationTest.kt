@@ -551,7 +551,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("68", result.getString(1))
+                        assertEquals("69", result.getString(1))
                     }
                     // V67 只对清洁库生效：USD 历史行原样保留，仅加 CHECK 约束（非 USD 数据由独立用例验证会被拒迁）。
                     statement.executeQuery(
@@ -1142,6 +1142,36 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
     private val databaseNamePattern = Regex("[A-Za-z0-9_]+")
 
     /** 迁移用例需要独立数据库；名称由固定前缀和 nanoTime 生成，仍校验字符集后再拼 DDL。 */
+    /** 验证升级不会将旧白名单改成黑名单或丢失关联。 */
+    @Test
+    fun `v69 preserves v68 caller policy modes and whitelist rows`() {
+        val databaseName = createMigrationDatabase("migration_v69")
+        val url = migrationDatabaseUrl(databaseName)
+        try {
+            migrateTo(url, "68")
+            DriverManager.getConnection(url, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeUpdate("INSERT INTO client_keys (id,name,key_hash,key_prefix,enabled,created_at,access_models_restricted) VALUES ('legacy','legacy','legacy-hash','prefix',true,1,true)")
+                    statement.executeUpdate("INSERT INTO client_key_allowed_models (client_key_id,model_id) VALUES ('legacy','Model-A')")
+                }
+            }
+            migrateTo(url)
+            DriverManager.getConnection(url, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("SELECT access_models_restricted, access_channels_denied, access_channel_keys_denied, access_models_denied FROM client_keys WHERE id='legacy'").use { result ->
+                        assertTrue(result.next()); assertTrue(result.getBoolean(1))
+                        for (index in 2..4) assertFalse(result.getBoolean(index))
+                    }
+                    statement.executeQuery("SELECT model_id FROM client_key_allowed_models WHERE client_key_id='legacy'").use { result ->
+                        assertTrue(result.next()); assertEquals("Model-A", result.getString(1))
+                    }
+                }
+            }
+        } finally {
+            dropDatabaseQuietly(databaseName)
+        }
+    }
+
     private fun createMigrationDatabase(prefix: String): String {
         val name = "${prefix}_${System.nanoTime()}"
         require(name.matches(databaseNamePattern)) { "unsafe database name: $name" }

@@ -327,10 +327,13 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `search internal model rounds reuse the selected authorized candidate`() = runBlocking {
-        accessChannel("outside-search", priority = 0)
+        val outside = accessChannel("outside-search", priority = 0)
         val allowed = createChannelWithBaseUrl("selected-search", "${fake.baseUrl}/web-search/v1",
             modelMappings = mappingsOf("m1"), priority = 1)
-        val key = scopedKey(ClientKeyAccessPolicy(allowedChannelIds = setOf(allowed.id)))
+        val keys = listOf(
+            scopedKey(ClientKeyAccessPolicy(allowedChannelIds = setOf(allowed.id))),
+            scopedKey(ClientKeyAccessPolicy(deniedChannelIds = setOf(outside.id))),
+        )
         val searchServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         searchServer.createContext("/search") { exchange ->
             val bytes = """{"results":[{"title":"Result","url":"https://example.test","content":"Answer"}]}""".toByteArray()
@@ -346,12 +349,16 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
             ))
             testApplication {
                 application { app.install(this) }
-                val response = client.send(key, "/v1/responses",
-                    """{"model":"m1","input":"latest?","tools":[{"type":"web_search"}]}""")
-                assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
-                assertEquals(2, fake.requests.size)
-                assertTrue(fake.requests.all { it.scenario == "web-search" })
-                assertTrue(fake.requests.none { it.authorization == "Bearer outside-search-secret" })
+                keys.forEach { key ->
+                    // 假上游只在首个 web-search 请求返回工具调用，每种权限单独重置回合。
+                    fake.requests.clear()
+                    val response = client.send(key, "/v1/responses",
+                        """{"model":"m1","input":"latest?","tools":[{"type":"web_search"}]}""")
+                    assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+                    assertEquals(2, fake.requests.size)
+                    assertTrue(fake.requests.all { it.scenario == "web-search" })
+                    assertTrue(fake.requests.none { it.authorization == "Bearer outside-search-secret" })
+                }
                 assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
             }
         } finally {
@@ -391,6 +398,9 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
             ClientKeyAccessPolicy(allowedModelIds = emptySet()) to "model_access_denied",
             ClientKeyAccessPolicy(allowedChannelIds = emptySet()) to "route_access_denied",
             ClientKeyAccessPolicy(allowedChannelKeys = emptySet()) to "route_access_denied",
+            ClientKeyAccessPolicy(deniedModelIds = setOf("m1")) to "model_access_denied",
+            ClientKeyAccessPolicy(deniedChannelIds = setOf(channel.id)) to "route_access_denied",
+            ClientKeyAccessPolicy(deniedChannelKeys = setOf(ClientKeyAllowedChannelKey(channel.id, upstreamKey.id))) to "route_access_denied",
         )
         testApplication {
             application { app.install(this) }
@@ -424,6 +434,163 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
             assertRejected(client.chat(key), "route_access_denied")
             assertEquals(0, fake.requests.size)
             assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
+        }
+    }
+
+    /** 验证黑名单与已存在的协议入口、候选及错误合同一致。 */
+    @Test
+    fun `model denylist rejects all protocols and hides only excluded public models`() = runBlocking {
+        accessChannel("deny-model", models = listOf("m1", "M1"), protocols = GatewayProtocol.entries.toList())
+        val key = scopedKey(ClientKeyAccessPolicy(deniedModelIds = setOf("m1")))
+        testApplication {
+            application { app.install(this) }
+            missingModelRequests("m1").forEach { (path, body) -> assertRejected(client.send(key, path, body), "model_access_denied") }
+            assertEquals(0, fake.requests.size)
+            assertEquals(HttpStatusCode.NotFound, client.chat(key, "missing").status)
+            for ((path, field) in listOf("/v1/models" to "data", "/v1beta/models" to "models")) {
+                val response = client.get(path) { header(HttpHeaders.Authorization, "Bearer $key") }
+                val models = Json.parseToJsonElement(response.bodyAsText()).jsonObject[field]!!.jsonArray
+                assertEquals(1, models.size)
+                assertTrue(models.single().toString().contains("M1"))
+                assertTrue(models.none { it.toString().contains("m1") })
+            }
+            assertEquals(HttpStatusCode.OK, client.chat(key, "M1").status)
+            assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
+        }
+    }
+
+    @Test
+    fun `channel and static key denylist refuse routes when all configured targets are excluded`() = runBlocking {
+        val channel = accessChannel("denied-route")
+        val policies = listOf(
+            ClientKeyAccessPolicy(deniedChannelIds = setOf(channel.id)),
+            ClientKeyAccessPolicy(deniedChannelKeys = setOf(ClientKeyAllowedChannelKey(channel.id, channel.keys.single().id))),
+        )
+        testApplication {
+            application { app.install(this) }
+            for (policy in policies) {
+                val key = scopedKey(policy)
+                missingModelRequests("m1").forEach { (path, body) -> assertRejected(client.send(key, path, body), "route_access_denied") }
+                val models = client.get("/v1/models") { header(HttpHeaders.Authorization, "Bearer $key") }
+                assertTrue(Json.parseToJsonElement(models.bodyAsText()).jsonObject["data"]!!.jsonArray.isEmpty())
+            }
+            assertEquals(0, fake.requests.size)
+            assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
+        }
+    }
+
+    /** 空凭据映射不得掩盖其他渠道全部支持凭据被排除的权限拒绝。 */
+    @Test
+    fun `all supporting keys denied stays forbidden with another empty credential mapping`() = runBlocking {
+        val channel = accessChannel("denied-with-empty")
+        app.channelRepository.create("empty-mapping", "${fake.baseUrl}/ok/v1", emptyList(), "bearer",
+            GatewayProtocol.default, enabled = true, modelMappings = mappingsOf("m1"))
+        val key = scopedKey(ClientKeyAccessPolicy(deniedChannelKeys = setOf(ClientKeyAllowedChannelKey(channel.id, channel.keys.single().id))))
+        testApplication {
+            application { app.install(this) }
+            missingModelRequests("m1").forEach { (path, body) -> assertRejected(client.send(key, path, body), "route_access_denied") }
+            assertEquals(0, fake.requests.size)
+            assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
+        }
+    }
+
+    @Test
+    fun `empty denylist behaves as unrestricted including unavailable credentials and disabled channels`() = runBlocking {
+        val empty = ClientKeyAccessPolicy(deniedChannelIds = emptySet(), deniedChannelKeys = emptySet(), deniedModelIds = emptySet())
+        val noKeys = app.channelRepository.create("empty-deny", "${fake.baseUrl}/ok/v1", emptyList(), "bearer", GatewayProtocol.default,
+            enabled = true, modelMappings = mappingsOf("m1"))
+        accessChannel("disabled-deny", models = listOf("disabled-model"), enabled = false)
+        val excludedOther = accessChannel("irrelevant-deny", models = listOf("other"))
+        testApplication {
+            application { app.install(this) }
+            for (policy in listOf(empty, ClientKeyAccessPolicy(deniedChannelKeys = setOf(ClientKeyAllowedChannelKey(excludedOther.id, excludedOther.keys.single().id))))) {
+                val key = scopedKey(policy)
+                val response = client.chat(key)
+                assertEquals(HttpStatusCode.ServiceUnavailable, response.status, response.bodyAsText())
+                assertTrue(response.bodyAsText().contains("model_credentials_unavailable"))
+            }
+            val key = scopedKey(empty)
+            assertEquals(HttpStatusCode.NotFound, client.chat(key, "disabled-model").status)
+            assertEquals(0, fake.requests.size)
+            assertTrue(noKeys.keys.isEmpty())
+        }
+    }
+
+    @Test
+    fun `static denylist keeps OAuth candidates but channel denylist excludes both credential kinds`() = runBlocking {
+        val channel = accessChannel("oauth-deny")
+        createOAuthAccount(channel, "deny@example.test")
+        val static = ClientKeyAllowedChannelKey(channel.id, channel.keys.single().id)
+        testApplication {
+            application { app.install(this) }
+            val key = scopedKey(ClientKeyAccessPolicy(deniedChannelKeys = setOf(static)))
+            val response = client.get("/v1/models") { header(HttpHeaders.Authorization, "Bearer $key") }
+            assertEquals(listOf("m1"), Json.parseToJsonElement(response.bodyAsText()).jsonObject["data"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content })
+            val denied = scopedKey(ClientKeyAccessPolicy(deniedChannelIds = setOf(channel.id)))
+            assertRejected(client.chat(denied), "route_access_denied")
+            assertEquals(0, fake.requests.size)
+            assertEquals(0, fake.tokenRequests.size)
+            assertEquals(0, fake.quotaRequests.size)
+        }
+    }
+
+    @Test
+    fun `denylist normal retries and all cooling fallback never use excluded static keys`() = runBlocking {
+        val channel = app.channelRepository.create("deny-pool", "${fake.baseUrl}/key-health/v1",
+            listOf("bad", "backup", "outside").mapIndexed { index, name -> NewChannelKey(name, app.credentialCipher.encrypt(name), priority = index, models = listOf("m1")) },
+            "bearer", GatewayProtocol.default, true, modelMappings = mappingsOf("m1"))
+        fake.keyStatuses["Bearer bad"] = 500
+        val bad = channel.keys.first { it.name == "bad" }
+        val backup = channel.keys.first { it.name == "backup" }
+        val outside = channel.keys.first { it.name == "outside" }
+        val onlyBad = scopedKey(ClientKeyAccessPolicy(deniedChannelKeys = setOf(
+            ClientKeyAllowedChannelKey(channel.id, backup.id), ClientKeyAllowedChannelKey(channel.id, outside.id))))
+        val withBackup = scopedKey(ClientKeyAccessPolicy(deniedChannelKeys = setOf(ClientKeyAllowedChannelKey(channel.id, outside.id))))
+        testApplication {
+            application { app.install(this) }
+            repeat(2) {
+                val response = client.chat(onlyBad)
+                assertTrue(response.status.value >= 500, response.bodyAsText())
+                assertEquals(it + 1, fake.requests.size)
+                assertTrue(fake.requests.all { request -> request.authorization == "Bearer bad" })
+            }
+            app.candidateCooldown.clearKey(channel.id, bad.id)
+            assertEquals(HttpStatusCode.OK, client.chat(withBackup).status)
+            assertEquals(listOf("Bearer bad", "Bearer bad", "Bearer bad", "Bearer backup"), fake.requests.map { it.authorization })
+            assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
+        }
+    }
+
+    @Test
+    fun `denylist removes higher priority channels while allowing protocol conversion`() = runBlocking {
+        val outside = accessChannel("outside-deny", priority = 0)
+        val allowed = accessChannel("allowed-deny", protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS), priority = 1)
+        val key = scopedKey(ClientKeyAccessPolicy(deniedChannelIds = setOf(outside.id), allowedModelIds = setOf("m1")))
+        testApplication {
+            application { app.install(this) }
+            val converted = client.send(key, "/v1beta/models/m1:generateContent", """{"contents":[]}""")
+            assertEquals(HttpStatusCode.OK, converted.status, converted.bodyAsText())
+            assertEquals(listOf("Bearer allowed-deny-secret"), fake.requests.map { it.authorization })
+            assertTrue(allowed.enabled)
+        }
+    }
+
+    @Test
+    fun `excluded temporary key does not contribute an earlier retry hint`() = runBlocking {
+        val channel = app.channelRepository.create("deny-recovery", "${fake.baseUrl}/ok/v1",
+            listOf("allowed", "denied").map { name -> NewChannelKey(name, app.credentialCipher.encrypt(name), ChannelKeyState.AUTO_TEMPORARY, models = listOf("m1")) },
+            "bearer", GatewayProtocol.default, true, modelMappings = mappingsOf("m1"))
+        val allowed = channel.keys.first { it.name == "allowed" }
+        val denied = channel.keys.first { it.name == "denied" }
+        setRecovery(allowed.id, System.currentTimeMillis() + 120_000)
+        setRecovery(denied.id, System.currentTimeMillis() + 20_000)
+        val key = scopedKey(ClientKeyAccessPolicy(deniedChannelKeys = setOf(ClientKeyAllowedChannelKey(channel.id, denied.id))))
+        testApplication {
+            application { app.install(this) }
+            val response = client.chat(key)
+            assertEquals(HttpStatusCode.ServiceUnavailable, response.status, response.bodyAsText())
+            assertTrue(assertNotNull(response.headers[HttpHeaders.RetryAfter]).toLong() in 100..125)
+            assertEquals(0, fake.requests.size)
         }
     }
 

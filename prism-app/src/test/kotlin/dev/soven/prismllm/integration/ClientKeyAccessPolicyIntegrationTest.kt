@@ -306,6 +306,208 @@ class ClientKeyAccessPolicyIntegrationTest : GatewayIntegrationTestBase() {
         }
     }
 
+    /** 验证黑名单管理契约、快照读取及密钥生命周期。 */
+    @Test
+    fun `denylist foreign key and mutually exclusive modes reject atomic writes`() = runBlocking {
+        val first = createChannel("deny-first", "ok")
+        val second = createChannel("deny-second", "ok")
+        assertTrue(runCatching {
+            app.clientKeyRepository.create("invalid-deny", "hash", "prefix", true, null,
+                accessPolicy = ClientKeyAccessPolicy(deniedChannelKeys = setOf(ClientKeyAllowedChannelKey(first.id, second.keys.single().id))))
+        }.isFailure)
+        assertTrue(app.clientKeyRepository.list().isEmpty())
+        val saved = app.clientKeyRepository.create("mutex", "hash", "prefix", true, null,
+            accessPolicy = ClientKeyAccessPolicy(allowedChannelIds = emptySet(), allowedChannelKeys = emptySet(), allowedModelIds = emptySet()))
+        java.sql.DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
+            for (column in listOf("access_channels_denied", "access_channel_keys_denied", "access_models_denied")) {
+                assertTrue(runCatching { connection.createStatement().use { it.executeUpdate("UPDATE client_keys SET $column = true WHERE id = '${saved.id}'") } }.isFailure)
+            }
+        }
+        assertEquals(saved, app.clientKeyRepository.find(saved.id))
+        assertTrue(runCatching {
+            app.clientKeyRepository.update(saved.id, "invalid", enabled = false, expiresAt = null,
+                accessPolicy = ClientKeyAccessPolicy(allowedModelIds = emptySet(), deniedModelIds = emptySet()))
+        }.isFailure)
+        assertEquals(saved, app.clientKeyRepository.find(saved.id))
+    }
+
+    @Test
+    fun `denylist associations use the same snapshot as base modes in every lookup`() = runBlocking {
+        val saved = app.clientKeyRepository.create("deny-snapshot", "deny-hash", "prefix", true, null,
+            accessPolicy = ClientKeyAccessPolicy(deniedModelIds = setOf("Model-A")))
+        for (lookup in listOf("find", "hash", "list")) {
+            app.clientKeyRepository.update(saved.id, "deny-snapshot", enabled = true, expiresAt = null,
+                accessPolicy = ClientKeyAccessPolicy(deniedModelIds = setOf("Model-A")))
+            suspendTransaction(app.databaseFactory.database) {
+                var changed = false
+                addLogger(object : SqlLogger {
+                    override fun log(context: StatementContext, transaction: Transaction) {
+                        val sql = context.statement.prepareSQL(transaction).lowercase()
+                        if (!changed && sql.startsWith("select") && "from client_keys" in sql) {
+                            changed = true
+                            java.sql.DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
+                                connection.autoCommit = false
+                                connection.createStatement().use { statement ->
+                                    statement.executeUpdate("UPDATE client_keys SET access_models_denied = false WHERE id = '${saved.id}'")
+                                    statement.executeUpdate("DELETE FROM client_key_denied_models WHERE client_key_id = '${saved.id}'")
+                                }
+                                connection.commit()
+                            }
+                        }
+                    }
+                })
+                val current = when (lookup) {
+                    "find" -> app.clientKeyRepository.find(saved.id)
+                    "hash" -> app.clientKeyRepository.findByHash("deny-hash")
+                    else -> app.clientKeyRepository.list().single()
+                }
+                assertTrue(changed)
+                assertEquals(setOf("Model-A"), assertNotNull(current).accessPolicy.deniedModelIds)
+            }
+        }
+    }
+
+    /** 验证黑名单管理契约、快照读取及密钥生命周期。 */
+    @Test
+    fun `denylist policy round trips through all repository reads and lifecycle updates`() = runBlocking {
+        val channel = createChannel("denylist", "ok")
+        testApplication {
+            application { app.install(this) }
+            val auth = client.loginAdmin()
+            val policy = scoped(channel.id, channel.keys.single().id, "m1").replace("allowlist", "denylist")
+            val created = client.create(auth, policy.replace(channel.id, " ${channel.id} ").replace("m1", " m1 "))
+            assertEquals(Json.parseToJsonElement(policy), created["accessPolicy"])
+            val record = assertNotNull(app.clientKeyRepository.find(created.id()))
+            assertEquals(record, app.clientKeyRepository.findByHash(record.keyHash))
+            assertEquals(record, app.clientKeyRepository.list().single())
+            val listed = client.get("/admin/api/client-keys") { authenticate(auth) }.json().jsonArray.single().jsonObject
+            assertEquals(created["accessPolicy"], listed["accessPolicy"])
+            for (extra in listOf("", ",\"accessPolicy\":null")) {
+                val updated = client.put("/admin/api/client-keys/${created.id()}") {
+                    authenticate(auth)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"name":"denylist-updated","enabled":false$extra}""")
+                }.objectBody(HttpStatusCode.OK)
+                assertEquals(created["accessPolicy"], updated["accessPolicy"])
+            }
+            val rotated = client.post("/admin/api/client-keys/${created.id()}/rotate") { authenticate(auth) }.objectBody(HttpStatusCode.OK)
+            assertEquals(created["accessPolicy"], rotated["accessPolicy"])
+            assertEquals(null, app.clientKeyRepository.findByHash(record.keyHash))
+        }
+    }
+
+    @Test
+    fun `empty denylist retains mode and switching replaces old whitelist associations`() = runBlocking {
+        val channel = createChannel("switch", "ok")
+        testApplication {
+            application { app.install(this) }
+            val auth = client.loginAdmin()
+            val created = client.create(auth, scoped(channel.id, channel.keys.single().id, "m1"))
+            val policies = listOf(
+                scoped(channel.id, channel.keys.single().id, "m1").replace("allowlist", "denylist"),
+                unrestricted.replace("unrestricted", "denylist"),
+                scoped(channel.id, channel.keys.single().id, "m1"),
+                unrestricted,
+            )
+            for (policy in policies) {
+                val updated = client.put("/admin/api/client-keys/${created.id()}") {
+                    authenticate(auth)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"name":"switch","accessPolicy":$policy}""")
+                }.objectBody(HttpStatusCode.OK)
+                assertEquals(Json.parseToJsonElement(policy), updated["accessPolicy"])
+                assertEquals(updated["accessPolicy"], client.get("/admin/api/client-keys") { authenticate(auth) }.json().jsonArray.single().jsonObject["accessPolicy"])
+                val tablePrefix = if (policy.contains("denylist")) "allowed" else "denied"
+                java.sql.DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
+                    for (suffix in listOf("channels", "channel_keys", "models")) {
+                        connection.createStatement().use { statement ->
+                            statement.executeQuery("SELECT count(*) FROM client_key_${tablePrefix}_$suffix WHERE client_key_id = '${created.id()}'").use { result ->
+                                assertTrue(result.next())
+                                assertEquals(0, result.getInt(1))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `deleted denylist targets retain mode and model identity`() = runBlocking {
+        val channel = createChannel("deleted-deny", "ok")
+        testApplication {
+            application { app.install(this) }
+            val auth = client.loginAdmin()
+            val created = client.create(auth, scoped(channel.id, channel.keys.single().id, "m1").replace("allowlist", "denylist"))
+            app.channelRepository.delete(channel.id)
+            val policy = client.get("/admin/api/client-keys") { authenticate(auth) }.json().jsonArray.single().jsonObject["accessPolicy"]!!.jsonObject
+            assertEquals("denylist", policy["channels"]!!.jsonObject["mode"]!!.jsonPrimitive.content)
+            assertEquals("denylist", policy["channelKeys"]!!.jsonObject["mode"]!!.jsonPrimitive.content)
+            assertTrue(policy["channels"]!!.jsonObject["ids"]!!.jsonArray.isEmpty())
+            assertTrue(policy["channelKeys"]!!.jsonObject["keys"]!!.jsonArray.isEmpty())
+            assertEquals("m1", policy["models"]!!.jsonObject["ids"]!!.jsonArray.single().jsonPrimitive.content)
+            assertEquals(HttpStatusCode.NoContent, client.delete("/admin/api/client-keys/${created.id()}") { authenticate(auth) }.status)
+            java.sql.DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
+                for (suffix in listOf("channels", "channel_keys", "models")) {
+                    connection.createStatement().use { statement ->
+                        statement.executeQuery("SELECT count(*) FROM client_key_denied_$suffix").use { result ->
+                            assertTrue(result.next()); assertEquals(0, result.getInt(1))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** 完整编辑保留已有模型排除规则，但不接受尚未配置的新模型 ID。 */
+    @Test
+    fun `full update preserves deleted model denylist and rejects new unknown exclusions`() = runBlocking {
+        val channel = createChannel("retained-deny", "ok")
+        testApplication {
+            application { app.install(this) }
+            val auth = client.loginAdmin()
+            val original = unrestricted.replace("\"models\":{\"mode\":\"unrestricted\",\"ids\":[]}",
+                "\"models\":{\"mode\":\"denylist\",\"ids\":[\"m1\"]}")
+            val created = client.create(auth, original)
+            assertTrue(app.channelRepository.delete(channel.id))
+            val retained = original.replace("\"channels\":{\"mode\":\"unrestricted\",\"ids\":[]}",
+                "\"channels\":{\"mode\":\"denylist\",\"ids\":[]}")
+            val updated = client.put("/admin/api/client-keys/${created.id()}") {
+                authenticate(auth)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"renamed","dailyTokenLimit":12,"accessPolicy":$retained}""")
+            }.objectBody(HttpStatusCode.OK)
+            assertEquals(Json.parseToJsonElement(retained), updated["accessPolicy"])
+            assertEquals("renamed", updated["name"]!!.jsonPrimitive.content)
+            assertEquals(ClientKeyQuotaLimits(dailyTokens = 12), assertNotNull(app.clientKeyRepository.find(created.id())).quotas)
+            for (invalid in listOf(retained.replace("[\"m1\"]", "[\"m1\",\"unknown\"]"),
+                retained.replace("[\"m1\"]", "[\"M1\"]"))) {
+                val rejected = client.put("/admin/api/client-keys/${created.id()}") {
+                    authenticate(auth)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"name":"must-not-change","accessPolicy":$invalid}""")
+                }
+                assertEquals(HttpStatusCode.BadRequest, rejected.status, rejected.bodyAsText())
+                assertEquals(setOf("m1"), assertNotNull(app.clientKeyRepository.find(created.id())).accessPolicy.deniedModelIds)
+            }
+            val newKey = client.post("/admin/api/client-keys") {
+                authenticate(auth)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"new-key","accessPolicy":$original}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, newKey.status, newKey.bodyAsText())
+            createChannel("recreated-model", "ok")
+            val denied = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer ${created["key"]!!.jsonPrimitive.content}")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"m1","messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.Forbidden, denied.status, denied.bodyAsText())
+            assertEquals("model_access_denied", denied.headers["X-Prism-Error-Code"])
+            assertTrue(fake.requests.isEmpty())
+        }
+    }
+
     /** 生成独立预期的完整访问范围 JSON。 */
     private fun scoped(channelId: String, keyId: String, modelId: String): String =
         """{"channels":{"mode":"allowlist","ids":["$channelId"]},"channelKeys":{"mode":"allowlist","keys":[{"channelId":"$channelId","keyId":"$keyId"}]},"models":{"mode":"allowlist","ids":["$modelId"]}}"""

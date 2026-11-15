@@ -90,11 +90,23 @@ class UpstreamModelCatalog(
     ): CandidateSet {
         val channels = configurationChannels()
         val globallyConfigured = configuredModels(model, if (scope.isUnrestricted) channels.filter { it.enabled } else channels)
-        val configured = globallyConfigured.filter { entry ->
-            scope.allowsModel(model) && scope.allowsChannel(entry.channel.id) &&
-                (scope.allowedChannelKeys == null || (entry.channel.keys + entry.channel.oauthAccounts).any { credential ->
-                    credential.supports(entry.mapping.upstreamModel) && scope.allowsCredential(entry.channel.id, credential)
-                })
+        val scopedEntries = globallyConfigured.filter { scope.allowsModel(model) && scope.allowsChannel(it.channel.id) }
+        val supportingByEntry = scopedEntries.associateWith { entry ->
+            (entry.channel.keys + entry.channel.oauthAccounts).filter { it.supports(entry.mapping.upstreamModel) }
+        }
+        // 以授权渠道交集中的全部支持凭据判断排除，空凭据映射不能掩盖全排除的权限拒绝。
+        val allSupportingDenied = !scope.deniedChannelKeys.isNullOrEmpty() &&
+            supportingByEntry.values.any { it.isNotEmpty() } && supportingByEntry.none { (entry, credentials) ->
+                credentials.any { scope.allowsCredential(entry.channel.id, it) }
+            }
+        val configured = if (allSupportingDenied) emptyList() else scopedEntries.filter { entry ->
+            val supportingCredentials = supportingByEntry.getValue(entry)
+            when {
+                scope.allowedChannelKeys != null -> supportingCredentials.any { scope.allowsCredential(entry.channel.id, it) }
+                scope.deniedChannelKeys.isNullOrEmpty() -> true
+                // 黑名单只能禁止已配置的凭据；没有支持凭据仍是不可用，而非权限拒绝。
+                else -> supportingCredentials.isEmpty() || supportingCredentials.any { scope.allowsCredential(entry.channel.id, it) }
+            }
         }
         val modelAccessDenied = globallyConfigured.isNotEmpty() && !scope.allowsModel(model)
         val accessDenied = globallyConfigured.isNotEmpty() && configured.isEmpty()

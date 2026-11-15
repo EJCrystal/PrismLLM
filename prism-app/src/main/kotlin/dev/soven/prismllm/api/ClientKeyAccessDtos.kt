@@ -11,11 +11,11 @@ data class ClientKeyAccessPolicyDto(
     val models: ClientKeyIdScopeDto,
 )
 
-/** 渠道或模型的授权维度；不限制模式必须提供空 ID 数组。 */
+/** 渠道或模型的三模式授权维度；不限制模式必须提供空 ID 数组。 */
 @Serializable
 data class ClientKeyIdScopeDto(val mode: String, val ids: List<String>)
 
-/** 静态渠道密钥的授权维度；不限制模式必须提供空密钥数组。 */
+/** 静态渠道密钥的三模式授权维度；不限制模式必须提供空密钥数组。 */
 @Serializable
 data class ClientKeyChannelKeysScopeDto(val mode: String, val keys: List<ClientKeyAllowedChannelKeyDto>)
 
@@ -25,11 +25,18 @@ data class ClientKeyAllowedChannelKeyDto(val channelId: String, val keyId: Strin
 
 /** 将领域策略转换为完整、排序稳定的管理响应。 */
 fun ClientKeyAccessPolicy.toDto(): ClientKeyAccessPolicyDto = ClientKeyAccessPolicyDto(
-    channels = ClientKeyIdScopeDto(if (allowedChannelIds == null) "unrestricted" else "allowlist", allowedChannelIds.orEmpty().sorted()),
+    channels = ClientKeyIdScopeDto(accessMode(allowedChannelIds, deniedChannelIds), (allowedChannelIds ?: deniedChannelIds).orEmpty().sorted()),
     channelKeys = ClientKeyChannelKeysScopeDto(
-        if (allowedChannelKeys == null) "unrestricted" else "allowlist",
-        allowedChannelKeys.orEmpty().sortedWith(compareBy({ it.channelId }, { it.keyId }))
+        accessMode(allowedChannelKeys, deniedChannelKeys),
+        (allowedChannelKeys ?: deniedChannelKeys).orEmpty().sortedWith(compareBy({ it.channelId }, { it.keyId }))
             .map { ClientKeyAllowedChannelKeyDto(it.channelId, it.keyId) },
     ),
-    models = ClientKeyIdScopeDto(if (allowedModelIds == null) "unrestricted" else "allowlist", allowedModelIds.orEmpty().sorted()),
+    models = ClientKeyIdScopeDto(accessMode(allowedModelIds, deniedModelIds), (allowedModelIds ?: deniedModelIds).orEmpty().sorted()),
 )
+
+/** 从互斥的集合标记还原模式，保留非 null 空黑名单。 */
+private fun accessMode(allowed: Set<*>?, denied: Set<*>?): String = when {
+    allowed != null -> "allowlist"
+    denied != null -> "denylist"
+    else -> "unrestricted"
+}

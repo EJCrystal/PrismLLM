@@ -24,3 +24,25 @@ object ClientKeyAllowedModels : Table("client_key_allowed_models") {
     val modelId = varchar("model_id", 200)
     override val primaryKey = PrimaryKey(clientKeyId, modelId)
 }
+
+/** 渠道黑名单关联；删除失效对象不改变调用方已选模式。 */
+object ClientKeyDeniedChannels : Table("client_key_denied_channels") {
+    val clientKeyId = varchar("client_key_id", 36).references(ClientKeys.id, onDelete = ReferenceOption.CASCADE)
+    val channelId = varchar("channel_id", 36)
+    override val primaryKey = PrimaryKey(clientKeyId, channelId)
+}
+
+/** 静态密钥黑名单关联；复合外键保证渠道归属，不包含 OAuth 身份。 */
+object ClientKeyDeniedChannelKeys : Table("client_key_denied_channel_keys") {
+    val clientKeyId = varchar("client_key_id", 36).references(ClientKeys.id, onDelete = ReferenceOption.CASCADE)
+    val channelId = varchar("channel_id", 36)
+    val keyId = varchar("key_id", 36)
+    override val primaryKey = PrimaryKey(clientKeyId, channelId, keyId)
+}
+
+/** 对外模型黑名单关联；模型映射删除后保留 ID，防止同 ID 重新配置绕过禁止。 */
+object ClientKeyDeniedModels : Table("client_key_denied_models") {
+    val clientKeyId = varchar("client_key_id", 36).references(ClientKeys.id, onDelete = ReferenceOption.CASCADE)
+    val modelId = varchar("model_id", 200)
+    override val primaryKey = PrimaryKey(clientKeyId, modelId)
+}

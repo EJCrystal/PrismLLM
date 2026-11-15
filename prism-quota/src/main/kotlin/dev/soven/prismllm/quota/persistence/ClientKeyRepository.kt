@@ -154,13 +154,19 @@ class ClientKeyRepository(private val database: Database) {
         statement[ClientKeys.accessChannelsRestricted] = policy.allowedChannelIds != null
         statement[ClientKeys.accessChannelKeysRestricted] = policy.allowedChannelKeys != null
         statement[ClientKeys.accessModelsRestricted] = policy.allowedModelIds != null
+        statement[ClientKeys.accessChannelsDenied] = policy.deniedChannelIds != null
+        statement[ClientKeys.accessChannelKeysDenied] = policy.deniedChannelKeys != null
+        statement[ClientKeys.accessModelsDenied] = policy.deniedModelIds != null
     }
 
-    /** 在当前事务中完整替换三项白名单，不限制模式不保存授权关联。 */
+    /** 在当前事务中完整替换三维白名单与黑名单，模式切换不残留旧关联。 */
     private fun saveAccessPolicy(id: String, policy: ClientKeyAccessPolicy) {
         ClientKeyAllowedChannels.deleteWhere { clientKeyId eq id }
         ClientKeyAllowedChannelKeys.deleteWhere { clientKeyId eq id }
         ClientKeyAllowedModels.deleteWhere { clientKeyId eq id }
+        ClientKeyDeniedChannels.deleteWhere { clientKeyId eq id }
+        ClientKeyDeniedChannelKeys.deleteWhere { clientKeyId eq id }
+        ClientKeyDeniedModels.deleteWhere { clientKeyId eq id }
         policy.allowedChannelIds.orEmpty().forEach { channel ->
             ClientKeyAllowedChannels.insert {
                 it[clientKeyId] = id
@@ -180,6 +186,25 @@ class ClientKeyRepository(private val database: Database) {
                 it[modelId] = model
             }
         }
+        policy.deniedChannelIds.orEmpty().forEach { channel ->
+            ClientKeyDeniedChannels.insert {
+                it[clientKeyId] = id
+                it[channelId] = channel
+            }
+        }
+        policy.deniedChannelKeys.orEmpty().forEach { key ->
+            ClientKeyDeniedChannelKeys.insert {
+                it[clientKeyId] = id
+                it[channelId] = key.channelId
+                it[keyId] = key.keyId
+            }
+        }
+        policy.deniedModelIds.orEmpty().forEach { model ->
+            ClientKeyDeniedModels.insert {
+                it[clientKeyId] = id
+                it[modelId] = model
+            }
+        }
     }
 
     /** 从当前事务快照批量读取受限维度，仅查存在限制标记的密钥。 */
@@ -187,6 +212,9 @@ class ClientKeyRepository(private val database: Database) {
         val channelIds = rows.filter { it[ClientKeys.accessChannelsRestricted] }.map { it[ClientKeys.id] }
         val keyIds = rows.filter { it[ClientKeys.accessChannelKeysRestricted] }.map { it[ClientKeys.id] }
         val modelIds = rows.filter { it[ClientKeys.accessModelsRestricted] }.map { it[ClientKeys.id] }
+        val deniedChannelIds = rows.filter { it[ClientKeys.accessChannelsDenied] }.map { it[ClientKeys.id] }
+        val deniedKeyIds = rows.filter { it[ClientKeys.accessChannelKeysDenied] }.map { it[ClientKeys.id] }
+        val deniedModelIds = rows.filter { it[ClientKeys.accessModelsDenied] }.map { it[ClientKeys.id] }
         val channels = if (channelIds.isEmpty()) emptyMap() else ClientKeyAllowedChannels.selectAll()
             .where { ClientKeyAllowedChannels.clientKeyId inList channelIds }
             .groupBy({ it[ClientKeyAllowedChannels.clientKeyId] }, { it[ClientKeyAllowedChannels.channelId] })
@@ -198,12 +226,26 @@ class ClientKeyRepository(private val database: Database) {
         val models = if (modelIds.isEmpty()) emptyMap() else ClientKeyAllowedModels.selectAll()
             .where { ClientKeyAllowedModels.clientKeyId inList modelIds }
             .groupBy({ it[ClientKeyAllowedModels.clientKeyId] }, { it[ClientKeyAllowedModels.modelId] })
+        val deniedChannels = if (deniedChannelIds.isEmpty()) emptyMap() else ClientKeyDeniedChannels.selectAll()
+            .where { ClientKeyDeniedChannels.clientKeyId inList deniedChannelIds }
+            .groupBy({ it[ClientKeyDeniedChannels.clientKeyId] }, { it[ClientKeyDeniedChannels.channelId] })
+        val deniedKeys = if (deniedKeyIds.isEmpty()) emptyMap() else ClientKeyDeniedChannelKeys.selectAll()
+            .where { ClientKeyDeniedChannelKeys.clientKeyId inList deniedKeyIds }
+            .groupBy({ it[ClientKeyDeniedChannelKeys.clientKeyId] }, {
+                ClientKeyAllowedChannelKey(it[ClientKeyDeniedChannelKeys.channelId], it[ClientKeyDeniedChannelKeys.keyId])
+            })
+        val deniedModels = if (deniedModelIds.isEmpty()) emptyMap() else ClientKeyDeniedModels.selectAll()
+            .where { ClientKeyDeniedModels.clientKeyId inList deniedModelIds }
+            .groupBy({ it[ClientKeyDeniedModels.clientKeyId] }, { it[ClientKeyDeniedModels.modelId] })
         return rows.map { row ->
             val id = row[ClientKeys.id]
             toRecord(row, ClientKeyAccessPolicy(
                 allowedChannelIds = if (row[ClientKeys.accessChannelsRestricted]) channels[id].orEmpty().toSet() else null,
                 allowedChannelKeys = if (row[ClientKeys.accessChannelKeysRestricted]) keys[id].orEmpty().toSet() else null,
                 allowedModelIds = if (row[ClientKeys.accessModelsRestricted]) models[id].orEmpty().toSet() else null,
+                deniedChannelIds = if (row[ClientKeys.accessChannelsDenied]) deniedChannels[id].orEmpty().toSet() else null,
+                deniedChannelKeys = if (row[ClientKeys.accessChannelKeysDenied]) deniedKeys[id].orEmpty().toSet() else null,
+                deniedModelIds = if (row[ClientKeys.accessModelsDenied]) deniedModels[id].orEmpty().toSet() else null,
             ))
         }
     }

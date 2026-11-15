@@ -26,6 +26,9 @@ object ClientKeys : Table("client_keys") {
     val accessChannelsRestricted = bool("access_channels_restricted").default(false)
     val accessChannelKeysRestricted = bool("access_channel_keys_restricted").default(false)
     val accessModelsRestricted = bool("access_models_restricted").default(false)
+    val accessChannelsDenied = bool("access_channels_denied").default(false)
+    val accessChannelKeysDenied = bool("access_channel_keys_denied").default(false)
+    val accessModelsDenied = bool("access_models_denied").default(false)
 
     override val primaryKey = PrimaryKey(id)
 }
