@@ -19,7 +19,7 @@ const ANTIGRAVITY_MODELS = ['claude-sonnet-4-5', 'claude-opus-4-5-thinking', 'ge
 
 export function createMockOAuthProviders() {
   return [
-    { id: 'chatgpt', label: 'ChatGPT', configured: true, managedChannel: false },
+    { id: 'chatgpt', label: 'ChatGPT', configured: true, managedChannel: true },
     { id: 'antigravity', label: 'Antigravity', configured: true, managedChannel: true },
   ]
 }
@@ -120,5 +120,24 @@ export function createMockOAuthAccounts(now = FIXTURE_NOW) {
 
 // Each call returns fresh nested data so DOM tests and browser mutations cannot leak state.
 export function createOAuthAccountsFixture(now = FIXTURE_NOW) {
-  return { now, accounts: createMockOAuthAccounts(now), providers: createMockOAuthProviders(), channels: createMockOAuthChannels(now) }
+  const accounts = createMockOAuthAccounts(now)
+  const channels = createMockOAuthChannels(now)
+  const providerMappings = Object.fromEntries(['chatgpt', 'antigravity'].map(provider => [provider, {
+    provider, scope: 'provider', revision: 1,
+    affectedAccountCount: accounts.filter(item => item.provider === provider).length,
+    mappings: channels.find(item => item.provider === provider).models.map((upstreamModel) => {
+      const automaticCanonicalModelId = `${provider === 'chatgpt' ? 'openai' : upstreamModel.startsWith('claude') ? 'anthropic' : 'google'}/${upstreamModel}`
+      // models_dev is a preserved explicit override, not an automatic-mode source.
+      const legacyOverride = upstreamModel === 'gemini-3-flash'
+      const mode = upstreamModel === 'claude-opus-4-5-thinking' || legacyOverride ? 'manual' : upstreamModel === 'gpt-5-nano' ? 'upstream' : 'auto'
+      const canonicalModelId = upstreamModel === 'claude-opus-4-5-thinking' ? 'custom/opus' : mode === 'upstream' ? null : automaticCanonicalModelId
+      const mappingSource = legacyOverride ? 'models_dev' : mode === 'auto' ? null : 'manual'
+      return { upstreamModel, automaticCanonicalModelId, canonicalModelId, publicModelId: canonicalModelId ?? upstreamModel, mode, mappingSource, catalogActive: true }
+    }),
+  }]))
+  return {
+    now, accounts, channels, providers: createMockOAuthProviders(), providerMappings,
+    syncCatalogs: {}, automaticMappings: {},
+    controls: { failSuggestions: false, failMappingReads: 0, conflictNextSave: false, failMappingAfterSave: false, syncConflict: null },
+  }
 }

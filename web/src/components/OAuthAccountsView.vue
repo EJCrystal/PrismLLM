@@ -2,7 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
-import type { Channel, OAuthAccount, OAuthLoginStart, OAuthProviderInfo } from '../types/api'
+import { ApiError } from '../types/api'
+import type { Channel, OAuthAccount, OAuthAccountSettingsRequest, OAuthLoginStart, OAuthProviderInfo, OAuthProviderModelMappingsResponse, OAuthModelMappingMode, ModelSuggestionsResponse } from '../types/api'
+import { createLatestRequestGuard } from '../utils/latestRequest'
+import OAuthMappingInput from './OAuthMappingInput.vue'
 import ActionMenu from './ActionMenu.vue'
 import CopyButton from './CopyButton.vue'
 import ErrorState from './ErrorState.vue'
@@ -11,10 +14,13 @@ import Modal from './Modal.vue'
 import OAuthModelTestModal from './OAuthModelTestModal.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
 import { formatTime } from '../utils/format'
-import type { OAuthAccountStatusFilter } from '../utils/oauthAccount'
+import type { OAuthAccountStatusFilter, OAuthMappingDraft } from '../utils/oauthAccount'
 import {
   availableOAuthModels,
   buildOAuthModels,
+  buildOAuthMappingChanges,
+  oauthMappingDraft,
+  oauthMappingDraftEquals,
   buildOAuthPolicyPayload,
   filterOAuthModels,
   formatCooldownRemaining,
@@ -80,7 +86,24 @@ const testTarget = ref<OAuthAccount | null>(null)
 
 const showSettings = ref(false)
 const settingsSaving = ref(false)
+const settingsWriteInFlight = ref(false)
 const settingsTarget = ref<OAuthAccount | null>(null)
+const settingsBaseline = ref<OAuthAccount | null>(null)
+const mappingBaseline = ref<OAuthProviderModelMappingsResponse | null>(null)
+const mappingDrafts = reactive<Record<string, OAuthMappingDraft>>({})
+const dirtyMappings = reactive(new Set<string>())
+const mappingLoading = ref(false)
+const mappingError = ref('')
+const mappingCandidateError = ref('')
+const mappingSuggestions = ref<ModelSuggestionsResponse | null>(null)
+const settingsNotice = ref('')
+const conflictingMappings = reactive(new Set<string>())
+const mappingConflict = computed(() => conflictingMappings.size > 0)
+const conflictConfirmed = ref(false)
+const settingsSyncing = ref(false)
+let settingsGeneration = 0
+const mappingRequests = createLatestRequestGuard()
+const listRequests = createLatestRequestGuard()
 const settingsForm = reactive({
   name: '',
   priority: 1,
@@ -107,16 +130,103 @@ const listProviderOptions = computed(() => [...new Set([...providers.value.map((
 const configuredProviders = computed(() => providers.value.filter((item) => item.configured))
 const channelOptions = computed(() => [...channels.value].sort((a, b) => a.name.localeCompare(b.name)))
 /** 模型授权可选项：优先用账号自己的目录，未同步时退回所关联渠道的模型。 */
-const settingsModelOptions = computed(() =>
-  oauthAccountModelOptions(
-    settingsTarget.value,
-    availableOAuthModels(channels.value, settingsForm.channelIds),
-  ),
-)
+const settingsModelOptions = computed(() => [...new Set([
+  ...oauthAccountModelOptions(settingsTarget.value, availableOAuthModels(channels.value, settingsForm.channelIds)),
+  ...settingsForm.selectedModels,
+  ...buildOAuthModels(false, [], settingsForm.customModels),
+  ...dirtyMappings,
+])].sort())
+
+const baselineMappingByModel = computed(() => new Map(mappingBaseline.value?.mappings.map(item => [item.upstreamModel, item]) ?? []))
+const settingsOperationBusy = computed(() => settingsWriteInFlight.value || settingsSaving.value || settingsSyncing.value || mappingLoading.value)
+const invalidMappingDrafts = computed(() => mappingBaseline.value ? [...dirtyMappings].filter(model => !baselineMappingByModel.value.has(model)) : [])
+const savableMappingDrafts = computed(() => [...dirtyMappings].filter(model => !mappingBaseline.value || baselineMappingByModel.value.has(model)))
+
+function discardMappingDraft(model: string) {
+  dirtyMappings.delete(model)
+  conflictingMappings.delete(model)
+  mappingDrafts[model] = oauthMappingDraft(baselineMappingByModel.value.get(model))
+  conflictConfirmed.value = false
+}
+
+/** Automatic defaults alone may change behind explicit overrides; compare actual shared policy/value. */
+function sharedMappingChanged(previous: OAuthProviderModelMappingsResponse['mappings'][number], next: OAuthProviderModelMappingsResponse['mappings'][number]) {
+  return previous.mode !== next.mode || previous.canonicalModelId !== next.canonicalModelId
+    || previous.publicModelId !== next.publicModelId || previous.mappingSource !== next.mappingSource
+    || previous.catalogActive !== next.catalogActive
+}
+
+function dirtyMappingConflicts(model: string, previous: OAuthProviderModelMappingsResponse['mappings'][number], next: OAuthProviderModelMappingsResponse['mappings'][number]) {
+  return sharedMappingChanged(previous, next)
+    || (mappingDraftFor(model).mode === 'auto' && previous.automaticCanonicalModelId !== next.automaticCanonicalModelId)
+}
+
+/** 候选仅使用已经可获得的对外 ID 和当前批量建议，不强制加载价格目录。 */
+const mappingCandidates = computed(() => {
+  const candidates = new Map<string, Set<string>>()
+  const add = (value: string | null | undefined, hint: string) => {
+    if (!value?.trim()) return
+    const id = value.trim()
+    if (!candidates.has(id)) candidates.set(id, new Set())
+    candidates.get(id)!.add(hint)
+  }
+  for (const mapping of mappingBaseline.value?.mappings ?? []) {
+    if (mapping.catalogActive) add(mapping.publicModelId, '当前提供方有效对外 ID')
+  }
+  for (const channel of channels.value) {
+    const mapped = new Map(channel.modelMappings.map(item => [item.upstreamModel, item]))
+    for (const model of channel.models) add(mapped.get(model)?.canonicalModelId ?? model, `已有对外 ID · ${channel.name}`)
+  }
+  for (const suggestion of mappingSuggestions.value?.data ?? []) {
+    for (const candidate of suggestion.candidates) add(candidate.canonicalId, `目录建议 · ${candidate.provider} · ${candidate.developer}`)
+  }
+  for (const [model, draft] of Object.entries(mappingDrafts)) add(draft.canonicalModelId, `当前值 / 草稿 · ${model}`)
+  return [...candidates].sort(([a], [b]) => a.localeCompare(b)).map(([value, hints]) => ({
+    value, label: value, hint: [...hints].join('；'), searchText: `${value} ${[...hints].join(' ')}`,
+  }))
+})
+
+function mappingDraftFor(model: string): OAuthMappingDraft {
+  return mappingDrafts[model] ?? oauthMappingDraft(baselineMappingByModel.value.get(model))
+}
+
+function setMappingDraft(model: string, draft: OAuthMappingDraft) {
+  mappingDrafts[model] = draft
+  const baseline = oauthMappingDraft(baselineMappingByModel.value.get(model))
+  if (oauthMappingDraftEquals(draft, baseline)) {
+    dirtyMappings.delete(model)
+    conflictingMappings.delete(model)
+  } else dirtyMappings.add(model)
+  conflictConfirmed.value = false
+}
+
+function changeMappingMode(model: string, mode: OAuthModelMappingMode) {
+  const baseline = baselineMappingByModel.value.get(model)
+  const draft = mappingDraftFor(model)
+  setMappingDraft(model, { mode, canonicalModelId: draft.canonicalModelId || baseline?.automaticCanonicalModelId || model })
+}
+
+function changeManualMapping(model: string, canonicalModelId: string) {
+  setMappingDraft(model, { mode: 'manual', canonicalModelId })
+}
+
+function mappingPublicId(model: string): string {
+  const baseline = baselineMappingByModel.value.get(model)
+  const draft = mappingDraftFor(model)
+  if (!dirtyMappings.has(model) && baseline) return baseline.publicModelId
+  if (draft.mode === 'manual') return draft.canonicalModelId.trim() || '未填写'
+  if (draft.mode === 'upstream') return model
+  return baseline?.automaticCanonicalModelId ?? model
+}
+
+function mappingSource(model: string): string {
+  if (dirtyMappings.has(model)) return '待保存；当前来源：' + (baselineMappingByModel.value.get(model)?.mappingSource ?? '无')
+  return baselineMappingByModel.value.get(model)?.mappingSource ?? '无'
+}
 
 /** 搜索只影响可见列表，已勾选但被过滤掉的模型保持选中。 */
 const filteredSettingsModels = computed(() =>
-  filterOAuthModels(settingsModelOptions.value, settingsForm.modelQuery),
+  settingsModelOptions.value.filter(model => filterOAuthModels([model, mappingPublicId(model)], settingsForm.modelQuery).length > 0),
 )
 
 const selectedModelCount = computed(() => new Set(settingsForm.selectedModels).size)
@@ -183,18 +293,85 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [nextAccounts, nextProviders, nextChannels] = await Promise.all([
-      api.listOAuthAccounts(),
-      api.listOAuthProviders(),
-      api.listChannels(),
-    ])
+    const result = await listRequests.run(() => Promise.all([
+      api.listOAuthAccounts(), api.listOAuthProviders(), api.listChannels(),
+    ]))
+    if (!result.isLatest) return false
+    const [nextAccounts, nextProviders, nextChannels] = result.value
     accounts.value = nextAccounts
     providers.value = nextProviders
     channels.value = nextChannels
+    return true
   } catch (cause) {
-    error.value = errorMessage(cause)
+    if ((cause as { isLatest?: boolean }).isLatest !== false) error.value = errorMessage(cause)
+    return false
   } finally {
-    loading.value = false
+    if (!listRequests.hasActive()) loading.value = false
+  }
+}
+
+function settingsContext() {
+  const target = settingsTarget.value
+  return target ? { id: target.id, provider: target.provider, generation: settingsGeneration } : null
+}
+
+function settingsContextCurrent(context: NonNullable<ReturnType<typeof settingsContext>>) {
+  return showSettings.value && context.generation === settingsGeneration
+    && settingsTarget.value?.id === context.id && settingsTarget.value?.provider === context.provider
+}
+
+/** 刷新 baseline，不改授权/名称/代理/搜索，保留全部 dirty 映射（包括目录外草稿）。 */
+async function loadSettingsMappings(context = settingsContext()): Promise<boolean> {
+  if (!context || !settingsContextCurrent(context)) return false
+  mappingLoading.value = true
+  mappingError.value = ''
+  try {
+    const models = [...settingsModelOptions.value]
+    const result = await mappingRequests.run(async () => {
+      const [mapping, suggestions] = await Promise.allSettled([
+        api.getOAuthProviderModelMappings(context.provider), api.getModelSuggestions(models),
+      ])
+      return { mapping, suggestions }
+    })
+    if (!result.isLatest || !settingsContextCurrent(context)) return false
+    const { mapping, suggestions } = result.value
+    if (suggestions.status === 'fulfilled') {
+      mappingSuggestions.value = suggestions.value
+      mappingCandidateError.value = suggestions.value.error || (!suggestions.value.loaded ? '目录候选暂不可用，仍可手工输入对外 ID。' : '')
+    } else {
+      mappingSuggestions.value = null
+      mappingCandidateError.value = '目录候选读取失败，仍可手工输入并保存对外 ID。'
+    }
+    if (mapping.status === 'rejected') throw mapping.reason
+    if (mapping.value.provider !== context.provider || mapping.value.scope !== 'provider' || !Number.isInteger(mapping.value.revision)) {
+      throw new Error('共享映射响应与当前提供方不匹配')
+    }
+    const previousRows = baselineMappingByModel.value
+    const nextRows = new Map(mapping.value.mappings.map(item => [item.upstreamModel, item]))
+    for (const model of dirtyMappings) {
+      const previous = previousRows.get(model)
+      const next = nextRows.get(model)
+      if (!next) {
+        conflictingMappings.delete(model)
+        continue // Missing shared rows are invalid drafts, not an administrator-approved creation.
+      }
+      // 无可信旧共享行的 dirty 草稿也必须核对，不能给旧草稿直接挂上首次读取的新版本。
+      if (!previous || dirtyMappingConflicts(model, previous, next)) {
+        conflictingMappings.add(model)
+        conflictConfirmed.value = false
+      }
+    }
+    mappingBaseline.value = mapping.value
+    const rows = new Set([...settingsModelOptions.value, ...mapping.value.mappings.map(item => item.upstreamModel)])
+    for (const model of rows) {
+      if (!dirtyMappings.has(model)) mappingDrafts[model] = oauthMappingDraft(nextRows.get(model))
+    }
+    return true
+  } catch (cause) {
+    if (settingsContextCurrent(context) && (cause as { isLatest?: boolean }).isLatest !== false) mappingError.value = errorMessage(cause)
+    return false
+  } finally {
+    if (settingsContextCurrent(context) && !mappingRequests.hasActive()) mappingLoading.value = false
   }
 }
 
@@ -207,31 +384,36 @@ function providerManagesChannel(providerId: string): boolean {
  * 模型集合不同，所以目录按账号保存，不能互相覆盖。
  */
 async function syncAccountModels(account: OAuthAccount): Promise<OAuthAccount | null> {
-  if (syncingId.value) return null
+  if (syncingId.value || settingsWriteInFlight.value || settingsSaving.value || mappingLoading.value) return null
+  const context = showSettings.value && settingsTarget.value?.id === account.id ? settingsContext() : null
   syncingId.value = account.id
   try {
     const result = await api.refreshOAuthAccountModels(account.id)
-    notify(`已同步 ${result.models.length} 个模型`)
     await load()
     const refreshed = accounts.value.find((item) => item.id === account.id) ?? null
-    // 设置弹窗里的同步要立即刷新同一个模型列表，而不是让用户关掉弹窗再看表格。
-    if (refreshed && showSettings.value && settingsTarget.value?.id === account.id) {
+    if (context && !settingsContextCurrent(context)) return refreshed
+    notify(`已同步 ${result.models.length} 个模型`)
+    if (refreshed && context) {
       settingsTarget.value = refreshed
+      await loadSettingsMappings(context)
     }
     return refreshed
   } catch (cause) {
-    notify(errorMessage(cause), 'error')
+    if (!context || settingsContextCurrent(context)) notify(errorMessage(cause), 'error')
     return null
   } finally {
     syncingId.value = null
   }
 }
 
-/** 模型授权面板内的同步入口：同步目录后直接在同一列表里勾选。 */
+/** 同步和保存互斥；同步只更新目录/映射 baseline，不重置任何草稿字段。 */
 async function syncSettingsModels() {
   const target = settingsTarget.value
-  if (!target) return
-  await syncAccountModels(target)
+  const context = settingsContext()
+  if (!target || !context || settingsOperationBusy.value || syncingId.value) return
+  settingsSyncing.value = true
+  try { await syncAccountModels(target) }
+  finally { if (settingsContextCurrent(context)) settingsSyncing.value = false }
 }
 
 const importChannelsManaged = computed(() => providerManagesChannel(importForm.provider))
@@ -423,7 +605,21 @@ function openTest(account: OAuthAccount) {
 }
 
 function openSettings(account: OAuthAccount) {
+  settingsGeneration++
+  mappingRequests.invalidate()
   settingsTarget.value = account
+  settingsBaseline.value = account
+  mappingBaseline.value = null
+  mappingSuggestions.value = null
+  mappingError.value = ''
+  mappingCandidateError.value = ''
+  settingsNotice.value = ''
+  conflictingMappings.clear()
+  conflictConfirmed.value = false
+  settingsSaving.value = false
+  settingsSyncing.value = false
+  dirtyMappings.clear()
+  for (const model of Object.keys(mappingDrafts)) delete mappingDrafts[model]
   Object.assign(settingsForm, {
     name: account.name,
     priority: account.priority,
@@ -437,6 +633,16 @@ function openSettings(account: OAuthAccount) {
     channelIds: [...account.channelIds],
   })
   showSettings.value = true
+  void loadSettingsMappings()
+}
+
+function closeSettings() {
+  showSettings.value = false
+  settingsSaving.value = false
+  settingsSyncing.value = false
+  mappingLoading.value = false
+  settingsGeneration++
+  mappingRequests.invalidate()
 }
 
 /** 全选只作用于当前搜索结果，未匹配的模型保持原状。 */
@@ -450,36 +656,117 @@ function clearSelectedModels() {
   settingsForm.selectedModels = []
 }
 
+function acceptSavedSettings(account: OAuthAccount, submittedChanges: OAuthAccountSettingsRequest['modelMappingChanges']) {
+  settingsBaseline.value = account
+  settingsTarget.value = account
+  for (const change of submittedChanges ?? []) {
+    dirtyMappings.delete(change.upstreamModel)
+    conflictingMappings.delete(change.upstreamModel)
+  }
+}
+
 async function saveSettings() {
-  if (!settingsTarget.value) return
+  const context = settingsContext()
+  const baseline = settingsBaseline.value
+  if (!context || !baseline || settingsOperationBusy.value || syncingId.value) return
+  if (mappingConflict.value && !conflictConfirmed.value) {
+    notify('共享映射已变化或草稿尚未核对，请先确认冲突再保存。', 'error')
+    return
+  }
   const models = buildOAuthModels(settingsForm.allModels, settingsForm.selectedModels, settingsForm.customModels)
   if (!settingsForm.allModels && models.length === 0) {
     notify('请至少选择一个模型，或勾选「全部模型」', 'error')
     return
   }
-  settingsSaving.value = true
+  let payload: OAuthAccountSettingsRequest
+  const channelIds = [...settingsForm.channelIds]
+  const channelChanged = !settingsChannelsManaged.value && !sameModels(channelIds, baseline.channelIds)
   try {
-    const proxyUrl = settingsForm.proxyUrl.trim() || null
-    // 勾选「清除代理」时输入框已禁用，以勾选为准：残留的旧地址不应阻止清除。
-    const clearProxy = settingsForm.clearProxy || (proxyUrl == null && settingsTarget.value.proxyUrl != null)
-    await api.updateOAuthAccountSettings(settingsTarget.value.id, {
-      name: settingsForm.name.trim() || null,
-      priority: Number(settingsForm.priority),
-      proxyUrl: clearProxy ? null : proxyUrl,
-      clearProxy,
-    })
-    await api.updateOAuthAccountModels(settingsTarget.value.id, { models })
-    if (!settingsChannelsManaged.value) {
-      await api.updateOAuthAccountChannels(settingsTarget.value.id, { channelIds: [...settingsForm.channelIds] })
+    payload = {}
+    const name = settingsForm.name.trim() || null
+    if (name !== baseline.name) payload.name = name
+    if (Number(settingsForm.priority) !== baseline.priority) payload.priority = Number(settingsForm.priority)
+    const proxyUrl = settingsForm.clearProxy ? null : settingsForm.proxyUrl.trim() || null
+    if (proxyUrl !== baseline.proxyUrl) {
+      payload.proxyUrl = proxyUrl
+      payload.clearProxy = proxyUrl === null
     }
-    notify('账号设置已更新')
-    showSettings.value = false
-    await load()
+    if (!sameModels(models, baseline.models)) payload.models = models
+    const changes = buildOAuthMappingChanges(mappingDrafts, savableMappingDrafts.value)
+    if (changes.length) {
+      if (!mappingBaseline.value || mappingError.value) throw new Error('请先重新读取共享映射，确认版本后再保存映射草稿。')
+      payload.modelMappingChanges = changes
+      payload.expectedModelMappingRevision = mappingBaseline.value.revision
+    }
   } catch (cause) {
     notify(errorMessage(cause), 'error')
-  } finally {
-    settingsSaving.value = false
+    return
   }
+  if (!Object.keys(payload).length && !channelChanged) {
+    if (invalidMappingDrafts.value.length) {
+      settingsNotice.value = '存在无共享映射的草稿，尚未保存；请丢弃该映射草稿或同步恢复共享模型。'
+      return
+    }
+    closeSettings()
+    return
+  }
+  settingsSaving.value = true
+  settingsWriteInFlight.value = true
+  settingsNotice.value = ''
+  let settingsSaved = false
+  let savedAccount = baseline
+  let channelSaved = !channelChanged
+  try {
+    // 授权、共享映射和原账号设置一次原子 PUT；不再调用独立 models endpoint。
+    savedAccount = Object.keys(payload).length ? await api.updateOAuthAccountSettings(context.id, payload) : baseline
+    settingsSaved = true
+    if (channelChanged) {
+      savedAccount = await api.updateOAuthAccountChannels(context.id, { channelIds })
+      channelSaved = true
+    }
+    if (!settingsContextCurrent(context)) { await load(); return }
+    acceptSavedSettings(savedAccount, payload.modelMappingChanges)
+    conflictConfirmed.value = false
+    const mappingRefreshed = await loadSettingsMappings(context)
+    const listRefreshed = await load()
+    if (!settingsContextCurrent(context)) return
+    if (!mappingRefreshed || !listRefreshed) {
+      settingsNotice.value = '账号设置已保存成功，但刷新失败。请重新读取共享映射/账号列表，不要重复提交。'
+      notify(settingsNotice.value, 'warning')
+      return
+    }
+    if (dirtyMappings.size || conflictingMappings.size) {
+      settingsNotice.value = invalidMappingDrafts.value.length
+        ? '账号设置与授权已保存成功；无共享行的映射草稿未提交，仍已保留。请丢弃该草稿或同步恢复模型。'
+        : '账号设置与授权已保存成功；还有未提交的映射草稿待核对，已保留。请核对最新共享映射并确认后再保存映射草稿。'
+      notify(settingsNotice.value, 'warning')
+      return
+    }
+    notify('账号设置已更新')
+    closeSettings()
+  } catch (cause) {
+    if (!settingsContextCurrent(context)) return
+    if (cause instanceof ApiError && cause.status === 409 && !settingsSaved) {
+      for (const change of payload.modelMappingChanges ?? []) conflictingMappings.add(change.upstreamModel)
+      conflictConfirmed.value = false
+      settingsNotice.value = '共享映射发生版本冲突，本次账号设置和授权均未保存。已保留全部草稿；请核对最新映射并由管理员确认后再保存。'
+      await loadSettingsMappings(context)
+      notify(settingsNotice.value, 'warning')
+    } else if (settingsSaved && !channelSaved) {
+      settingsNotice.value = '账号设置已保存成功，但关联渠道更新失败。请核对后只重试渠道变更。'
+      // 非托管渠道仍兼容旧接口；已成功部分推进 baseline，避免重复 partial 写入。
+      acceptSavedSettings(savedAccount, payload.modelMappingChanges)
+      await loadSettingsMappings(context)
+      notify(settingsNotice.value, 'warning')
+    } else notify(errorMessage(cause), 'error')
+  } finally {
+    settingsWriteInFlight.value = false
+    if (settingsContextCurrent(context)) settingsSaving.value = false
+  }
+}
+
+function sameModels(a: string[], b: string[]) {
+  return JSON.stringify([...new Set(a)].sort()) === JSON.stringify([...new Set(b)].sort())
 }
 
 async function deleteAccount(account: OAuthAccount) {
@@ -546,6 +833,9 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  settingsGeneration++
+  mappingRequests.invalidate()
+  listRequests.invalidate()
   if (clock != null) window.clearInterval(clock)
 })
 </script>
@@ -880,8 +1170,8 @@ onBeforeUnmount(() => {
       @close="showTest = false"
     />
 
-    <Modal v-if="showSettings && settingsTarget" title="账号设置" @close="showSettings = false">
-      <form class="form-grid" @submit.prevent="saveSettings">
+    <Modal v-if="showSettings && settingsTarget" title="账号设置" wide @close="closeSettings">
+      <form class="form-grid oauth-account-settings" @submit.prevent="saveSettings">
         <label class="field">
           <span>账号名称</span>
           <input v-model="settingsForm.name" autocomplete="off" />
@@ -908,98 +1198,93 @@ onBeforeUnmount(() => {
           <small>可选，留空或勾选「清除代理」都表示直连；代理只支持无认证的 HTTP 正向代理。</small>
         </div>
         <div class="field">
-          <span>模型授权</span>
+          <span>模型授权与映射</span>
+          <p class="oauth-shared-mapping-hint small">
+            对外 ID 映射由同一提供方 {{ oauthProviderLabel(settingsTarget.provider) }} 的账号共享
+            <template v-if="mappingBaseline"> · 受影响账号 {{ mappingBaseline.affectedAccountCount }} 个 · 版本 {{ mappingBaseline.revision }}</template>。
+            修改映射不会增加其他账号的模型授权；授权勾选只作用于当前账号。
+          </p>
+          <p v-if="mappingLoading" class="muted small" role="status">正在读取共享映射与候选…</p>
+          <div v-if="mappingError" class="oauth-mapping-error small" role="alert">
+            共享映射读取失败：{{ mappingError }}。账号设置与授权仍可保存；映射需重新读取版本。
+            <button type="button" class="link-button" :disabled="settingsOperationBusy" @click="loadSettingsMappings()">重新读取共享映射</button>
+          </div>
+          <p v-if="mappingCandidateError" class="muted small" role="status">{{ mappingCandidateError }}</p>
+          <div v-if="settingsNotice || mappingConflict" class="oauth-settings-notice small" role="alert">
+            {{ settingsNotice }}
+            <p v-if="mappingConflict">共享映射冲突：{{ conflictingMappings.size }} 个草稿行的共享值已变化或首次读取后尚未核对。草稿已保留，请核对最新值，管理员确认后才可保存。</p>
+            <label v-if="mappingConflict" class="checkbox-row">
+              <input v-model="conflictConfirmed" type="checkbox" :disabled="mappingLoading || !!mappingError" />
+              <span>我已核对最新共享映射，确认将草稿应用到当前版本</span>
+            </label>
+          </div>
+          <p v-if="invalidMappingDrafts.length" class="oauth-mapping-error small" role="alert">{{ invalidMappingDrafts.length }} 个映射草稿没有共享目录行，将不会提交；账号授权仍可保存。请丢弃该映射草稿或同步模型恢复共享行。</p>
+          <button v-if="mappingBaseline && !mappingError" type="button" class="link-button small" :disabled="settingsOperationBusy" @click="loadSettingsMappings()">刷新共享映射</button>
           <div class="oauth-model-picker">
             <div class="oauth-model-picker-toolbar">
-              <label class="oauth-model-search" :class="{ 'is-disabled': settingsForm.allModels }">
+              <label class="oauth-model-search">
                 <Icon name="search" :size="15" />
                 <input
                   v-model="settingsForm.modelQuery"
                   autocomplete="off"
-                  :disabled="settingsForm.allModels"
-                  placeholder="搜索模型"
+                  aria-label="搜索模型授权与映射"
+                  placeholder="搜索上游模型或对外 ID"
                 />
               </label>
               <span class="muted small">
-                {{
-                  settingsForm.allModels
-                    ? `全部 ${settingsModelOptions.length} 个模型`
-                    : `已选 ${selectedModelCount} / ${settingsModelOptions.length}`
-                }}
+                {{ settingsForm.allModels ? `全部 ${settingsModelOptions.length} 个模型` : `已选 ${selectedModelCount} / ${settingsModelOptions.length}` }}
               </span>
             </div>
-            <div class="oauth-model-list" :class="{ 'is-disabled': settingsForm.allModels }">
-              <label
-                v-for="model in filteredSettingsModels"
-                :key="model"
-                class="oauth-model-option"
-                :class="{ 'is-disabled': settingsForm.allModels }"
-              >
-                <input
-                  v-model="settingsForm.selectedModels"
-                  type="checkbox"
-                  :value="model"
-                  :disabled="settingsForm.allModels"
-                />
-                <span class="mono">{{ model }}</span>
-                <span
-                  v-if="settingsModelOutsideCatalog(model)"
-                  class="badge warning small oauth-model-outside"
-                  title="该模型不在账号当前套餐的目录里，调用会被上游拒绝；重新同步目录后可取消勾选"
-                >目录外</span>
-              </label>
-              <span v-if="settingsModelOptions.length === 0" class="oauth-model-empty muted small">
-                {{
-                  settingsTarget && oauthSupportsModelCatalog(settingsTarget.provider)
-                    ? '该账号还没有可选模型。点「同步模型」读取该账号自己的目录。'
-                    : '该账号暂无可选模型，请先为关联渠道配置模型，或在下方补充列表外的模型。'
-                }}
-              </span>
-              <span v-else-if="filteredSettingsModels.length === 0" class="oauth-model-empty muted small">
-                没有匹配「{{ settingsForm.modelQuery }}」的模型。
-              </span>
+            <div class="oauth-model-list oauth-mapping-list">
+              <div class="oauth-mapping-head small" aria-hidden="true">
+                <span>授权 / 上游模型</span><span>对外 ID / public ID</span><span>映射模式</span><span>映射来源</span>
+              </div>
+              <div v-for="model in filteredSettingsModels" :key="model" class="oauth-mapping-row" :data-upstream-model="model">
+                <div class="oauth-mapping-upstream">
+                  <label class="oauth-model-option">
+                    <input v-model="settingsForm.selectedModels" type="checkbox" :value="model" :disabled="settingsForm.allModels" :aria-label="'授权 ' + model" />
+                    <span class="mono">{{ model }}</span>
+                  </label>
+                  <span v-if="settingsModelOutsideCatalog(model)" class="badge warning small oauth-model-outside" title="不在当前账号目录中；保留草稿不会增加上游套餐权限">目录外</span>
+                </div>
+                <div class="oauth-mapping-public">
+                  <span class="mono small" :title="mappingPublicId(model)">{{ mappingPublicId(model) }}</span>
+                  <OAuthMappingInput
+                    v-if="mappingDraftFor(model).mode === 'manual'"
+                    :model-value="mappingDraftFor(model).canonicalModelId"
+                    :upstream-model="model"
+                    :options="mappingCandidates"
+                    :disabled="settingsOperationBusy"
+                    @update:model-value="changeManualMapping(model, $event)"
+                  />
+                  <span v-if="conflictingMappings.has(model)" class="small oauth-conflict-baseline">最新共享值：{{ baselineMappingByModel.get(model)?.publicModelId ?? model }}（{{ baselineMappingByModel.get(model)?.mode ?? 'auto' }}；来源 {{ baselineMappingByModel.get(model)?.mappingSource ?? '无' }}；{{ baselineMappingByModel.get(model)?.catalogActive ? '有效' : '目录休眠' }}；自动默认 {{ baselineMappingByModel.get(model)?.automaticCanonicalModelId ?? model }}）</span>
+                  <div v-if="invalidMappingDrafts.includes(model)" class="small oauth-conflict-baseline">
+                    无共享映射：此草稿不会提交，可保留账号授权。同步模型恢复共享行后再核对，或
+                    <button type="button" class="link-button small" :disabled="settingsOperationBusy" @click="discardMappingDraft(model)">丢弃此映射草稿</button>
+                  </div>
+                </div>
+                <div class="oauth-mapping-mode">
+                  <select :value="mappingDraftFor(model).mode" :aria-label="model + ' 映射模式'" :disabled="settingsOperationBusy" @change="changeMappingMode(model, ($event.target as HTMLSelectElement).value as OAuthModelMappingMode)">
+                    <option value="auto">自动</option><option value="manual">手工</option><option value="upstream">使用上游 ID</option>
+                  </select>
+                  <button v-if="mappingDraftFor(model).mode !== 'auto'" type="button" class="link-button small" :disabled="settingsOperationBusy" @click="changeMappingMode(model, 'auto')">恢复自动</button>
+                </div>
+                <span class="oauth-mapping-source muted small">{{ mappingSource(model) }}</span>
+              </div>
+              <span v-if="settingsModelOptions.length === 0" class="oauth-model-empty muted small">该账号还没有可选模型。同步模型或补充列表外的模型。</span>
+              <span v-else-if="filteredSettingsModels.length === 0" class="oauth-model-empty muted small">没有匹配「{{ settingsForm.modelQuery }}」的模型。</span>
             </div>
             <p v-if="settingsForm.allModels" class="oauth-model-all-hint muted small">
-              {{ settingsTarget?.modelCatalog ? '当前使用该账号目录里的全部模型；' : '当前继承所关联渠道的全部模型；' }}取消勾选「全部模型」后可只调度勾选的模型。
+              {{ settingsTarget?.modelCatalog ? '当前使用该账号目录里的全部模型；' : '当前继承所关联渠道的全部模型；' }}取消勾选「全部模型」后可只调度勾选的模型。全部模式不限制映射编辑。
             </p>
             <div class="oauth-model-picker-actions">
-              <button
-                v-if="!settingsForm.allModels"
-                type="button"
-                class="link-button"
-                @click="selectVisibleModels"
-              >
-                {{ settingsForm.modelQuery.trim() ? '全选搜索结果' : '全选' }}
-              </button>
-              <button v-if="!settingsForm.allModels" type="button" class="link-button" @click="clearSelectedModels">
-                清空
-              </button>
-              <button
-                v-if="settingsTarget && oauthSupportsModelCatalog(settingsTarget.provider)"
-                type="button"
-                class="link-button"
-                :disabled="syncingId === settingsTarget.id || !oauthCanSyncCatalog(settingsTarget) || settingsSaving"
-                :title="
-                  oauthCanSyncCatalog(settingsTarget)
-                    ? '从上游重新读取该账号自己的模型目录，并立即刷新下方可选模型'
-                    : '账号需要重新授权后才能读取上游模型目录'
-                "
-                @click="syncSettingsModels"
-              >
-                {{ syncingId === settingsTarget.id ? '同步中…' : '同步模型' }}
-              </button>
+              <button v-if="!settingsForm.allModels" type="button" class="link-button" @click="selectVisibleModels">{{ settingsForm.modelQuery.trim() ? '全选搜索结果' : '全选' }}</button>
+              <button v-if="!settingsForm.allModels" type="button" class="link-button" @click="clearSelectedModels">清空</button>
+              <button v-if="oauthSupportsModelCatalog(settingsTarget.provider)" type="button" class="link-button" :disabled="!!syncingId || settingsOperationBusy || !oauthCanSyncCatalog(settingsTarget)" :title="oauthCanSyncCatalog(settingsTarget) ? '同步账号目录和共享映射；保留未保存草稿' : '账号需要重新授权后才能读取上游模型目录'" @click="syncSettingsModels">{{ settingsSyncing ? '同步中…' : '同步模型' }}</button>
               <span class="oauth-model-picker-spacer"></span>
-              <label class="checkbox-row small">
-                <input v-model="settingsForm.allModels" type="checkbox" />
-                <span>全部模型</span>
-              </label>
+              <label class="checkbox-row small"><input v-model="settingsForm.allModels" type="checkbox" /><span>全部模型</span></label>
             </div>
-            <input
-              v-model="settingsForm.customModels"
-              autocomplete="off"
-              :disabled="settingsForm.allModels"
-              placeholder="补充列表外的模型，多个用逗号分隔"
-            />
+            <input v-model="settingsForm.customModels" autocomplete="off" :disabled="settingsForm.allModels" aria-label="补充列表外的模型" placeholder="补充列表外的模型，多个用逗号分隔" />
           </div>
           <small v-if="settingsTarget?.modelCatalog">
             来自该账号自己的模型目录 · {{ settingsTarget.modelCatalogSyncedAt ? formatTime(settingsTarget.modelCatalogSyncedAt) : '同步时间未知' }}；不同账号的可用模型可能不同。
@@ -1025,10 +1310,54 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="form-actions">
-          <button type="button" class="button" @click="showSettings = false">取消</button>
-          <button type="submit" class="button primary" :disabled="settingsSaving">{{ settingsSaving ? '保存中…' : '保存' }}</button>
+          <button type="button" class="button" @click="closeSettings">取消</button>
+          <button type="submit" class="button primary" :disabled="settingsOperationBusy || !!syncingId || (mappingConflict && !conflictConfirmed) || (savableMappingDrafts.length > 0 && (!mappingBaseline || !!mappingError))">{{ settingsSaving ? '保存中…' : '保存' }}</button>
         </div>
       </form>
     </Modal>
   </section>
 </template>
+
+<style scoped>
+.oauth-shared-mapping-hint, .oauth-settings-notice, .oauth-mapping-error {
+  margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--info-soft); line-height: 1.6;
+}
+.oauth-settings-notice, .oauth-mapping-error { background: var(--warning-soft); }
+.oauth-settings-notice .checkbox-row { margin-top: 8px; }
+.oauth-mapping-list {
+  --oauth-mapping-columns: minmax(150px, 1.1fr) minmax(220px, 1.5fr) minmax(130px, .8fr) minmax(90px, .6fr);
+  --oauth-mapping-min-width: 660px;
+  min-width: 0;
+  max-width: 100%;
+  max-height: 440px;
+  overflow: auto;
+}
+.oauth-mapping-head, .oauth-mapping-row {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: var(--oauth-mapping-columns);
+  min-width: var(--oauth-mapping-min-width);
+  gap: 10px; align-items: start; padding: 10px;
+}
+.oauth-mapping-head { position: sticky; top: 0; z-index: 1; background: var(--panel); color: var(--muted); }
+.oauth-mapping-row + .oauth-mapping-row { border-top: 1px solid var(--line); }
+.oauth-mapping-upstream, .oauth-mapping-public, .oauth-mapping-mode {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  max-width: 100%;
+  gap: 6px;
+}
+.oauth-mapping-upstream .oauth-model-option { min-width: 0; padding: 0; align-items: start; }
+.oauth-mapping-upstream .mono, .oauth-mapping-public > .mono, .oauth-mapping-source { min-width: 0; overflow-wrap: anywhere; }
+.oauth-mapping-mode select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; }
+.oauth-mapping-mode .link-button { justify-self: start; }
+.oauth-conflict-baseline { color: var(--warning); overflow-wrap: anywhere; }
+@media (max-width: 680px) {
+  .oauth-mapping-list { --oauth-mapping-columns: minmax(0, 1fr); --oauth-mapping-min-width: 0; }
+  .oauth-mapping-head { display: none; }
+  .oauth-mapping-row { gap: 12px; }
+  .oauth-mapping-source::before { content: '映射来源：'; }
+}
+</style>

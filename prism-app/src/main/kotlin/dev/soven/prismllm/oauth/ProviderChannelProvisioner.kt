@@ -1,22 +1,47 @@
 package dev.soven.prismllm.oauth
 
-import dev.soven.prismllm.channel.domain.ChannelKind
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
-import dev.soven.prismllm.shared.domain.OAuthProvider
+import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.channel.domain.ProviderEndpoints
 import dev.soven.prismllm.channel.persistence.ChannelRepository
+import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
+import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
+import dev.soven.prismllm.shared.domain.OAuthProvider
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 
+/** 仅包含管理员本次修改的行，不替换整个 provider 目录。 */
+data class ProviderModelMappingChange(
+    val upstreamModel: String,
+    val mode: String,
+    val canonicalModelId: String? = null,
+)
+
+data class ProviderModelMapping(
+    val mapping: ChannelModelRecord,
+    val automaticCanonicalModelId: String?,
+) {
+    val mode: String get() = when {
+        mapping.mappingSource == null -> "auto"
+        mapping.canonicalModelId == null -> "upstream"
+        else -> "manual"
+    }
+}
+
+data class ProviderModelMappings(
+    val provider: OAuthProvider,
+    val revision: Long,
+    val affectedAccountCount: Int,
+    val mappings: List<ProviderModelMapping>,
+)
+
+class ModelMappingRevisionChangedException : RuntimeException("共享模型映射已变化，请刷新后再保存")
+
 /**
- * 订阅账号只服务官方端点，因此每个 provider 对应一条系统置备的隐藏渠道。
- * 置备器负责按需创建这条渠道，并把账号收敛到它上面。
- *
- * @author 文杰
- * @since 2026-11-06
+ * 每个 provider 共用模型映射，账号目录与授权仍然独立。
+ * 所有共享写入在一个显式事务内先锁 channel 父行、再锁 account；不依赖进程 Mutex，
+ * 也不假设不同仓储的嵌套 suspendTransaction 能提供原子性。
  */
 class ProviderChannelProvisioner(
     private val channels: ChannelRepository,
@@ -24,95 +49,218 @@ class ProviderChannelProvisioner(
 ) {
     private val logger = LoggerFactory.getLogger(ProviderChannelProvisioner::class.java)
 
-    /** 单实例部署下串行化「查不到就创建」，避免并发首次导入各建一条渠道。 */
-    private val ensureMutex = Mutex()
+    suspend fun ensure(provider: OAuthProvider): String? = channels.inTransaction {
+        channels.ensureProviderChannelInTransaction(provider)?.id
+    }
 
-    /**
-     * 串行化目录并集重算。两个账号并发同步时，若一个先读到旧目录、另一个已完成
-     * 更新，最后写回的并集可能不含新模型；同一提供方的读取与替换必须成对执行。
-     */
-    private val unionMutex = Mutex()
-
-    /** 找到或创建 provider 渠道；网关尚未实现该 provider 的上游协议时返回 null。 */
-    suspend fun ensure(provider: OAuthProvider): String? = ensureMutex.withLock {
-        val endpoint = ProviderEndpoints.of(provider)
-        if (!endpoint.servable) return null
-        channels.findProviderChannel(provider)?.let { return it.id }
-        val created = channels.create(
-            name = endpoint.channelName,
-            baseUrl = endpoint.baseUrl,
-            keys = emptyList(),
-            authType = endpoint.authType,
-            protocols = endpoint.protocols,
-            enabled = true,
-            modelMappings = endpoint.models.map { ChannelModelRecord(upstreamModel = it) },
-            priority = 1,
-            kind = ChannelKind.PROVIDER,
+    /** 只读，不置备、不抓取上游；父行锁保证 revision 与默认目录来自同一快照。 */
+    suspend fun modelMappings(provider: OAuthProvider): ProviderModelMappings = channels.inTransaction {
+        val channel = channels.findProviderChannelInTransaction(provider, lock = true)
+        val providerAccounts = accounts.listProviderInTransaction(provider)
+        val defaults = automaticDefaults(providerAccounts)
+        ProviderModelMappings(
             provider = provider,
+            revision = channel?.modelMappingRevision ?: 0,
+            affectedAccountCount = providerAccounts.size,
+            mappings = channel?.modelMappings.orEmpty().map { ProviderModelMapping(it, defaults[it.upstreamModel]) },
         )
-        logger.info(
-            "provisioned provider channel, provider={}, channelId={}",
-            provider.value,
-            created.id,
-        )
-        return created.id
     }
 
-    /**
-     * 把各账号自己的模型目录合并回系统渠道。渠道模型是所有账号目录的并集，
-     * 供路由前判断模型是否可能存在；账号级 supports() 再按自己的目录过滤。
-     *
-     * 仍有账号未同步目录时保留渠道原有映射，避免把未同步账号能调度的模型摘掉；
-     * 全部账号同步后渠道目录收敛为并集，上游已下线的模型会随之移除。
-     */
-    suspend fun syncModelUnion(provider: OAuthProvider): Int = unionMutex.withLock {
-        val channelId = ensure(provider) ?: return@withLock 0
-        val providerAccounts = accounts.listAll().filter { it.provider == provider }
-        val union = LinkedHashMap<String, ChannelModelRecord>()
-        if (providerAccounts.any { it.modelCatalog == null }) {
-            channels.find(channelId)?.modelMappings?.forEach { union[it.upstreamModel] = it }
-        }
-        providerAccounts.forEach { account ->
-            account.modelCatalog?.forEach { entry ->
-                union.putIfAbsent(
-                    entry.upstreamModel,
-                    ChannelModelRecord(
-                        upstreamModel = entry.upstreamModel,
-                        canonicalModelId = entry.canonicalModelId,
-                    ),
-                )
+    suspend fun updateSettings(
+        accountId: String,
+        name: String? = null,
+        priority: Int? = null,
+        enabled: Boolean? = null,
+        proxyUrl: String? = null,
+        clearProxy: Boolean = false,
+        models: List<String>? = null,
+        modelMappingChanges: List<ProviderModelMappingChange>? = null,
+        expectedModelMappingRevision: Long? = null,
+    ): OAuthAccountRecord? {
+        val changes = validateChanges(modelMappingChanges.orEmpty())
+        val normalizedModels = models?.let(::validateModels)
+        require(priority == null || priority in 1..1000) { "账号优先级必须在 1..1000 之间" }
+        require(!(clearProxy && proxyUrl != null)) { "不能同时更换和清除账号代理" }
+        require(expectedModelMappingRevision == null || expectedModelMappingRevision >= 0) { "映射版本不能为负数" }
+        require(changes.isEmpty() || expectedModelMappingRevision != null) { "修改共享模型映射必须提供版本" }
+        return channels.inTransaction {
+            val existing = accounts.findDetailedInTransaction(accountId) ?: return@inTransaction null
+            val channel = channels.ensureProviderChannelInTransaction(existing.provider)
+            val current = accounts.findDetailedInTransaction(accountId, lock = true) ?: return@inTransaction null
+            if (changes.isNotEmpty()) {
+                requireNotNull(channel) { "该提供方的上游协议尚未实现" }
+                if (expectedModelMappingRevision != channel.modelMappingRevision) throw ModelMappingRevisionChangedException()
+                val defaults = automaticDefaults(accounts.listProviderInTransaction(current.provider))
+                val byUpstream = channel.modelMappings.associateBy { it.upstreamModel }.toMutableMap()
+                changes.forEach { change ->
+                    val previous = requireNotNull(byUpstream[change.upstreamModel]) { "共享目录不存在模型: ${change.upstreamModel}" }
+                    byUpstream[change.upstreamModel] = previous.copy(
+                        canonicalModelId = when (change.mode) {
+                            "manual" -> change.canonicalModelId
+                            "upstream" -> null
+                            else -> defaults[change.upstreamModel]
+                        },
+                        mappingSource = if (change.mode == "auto") null else "manual",
+                    )
+                }
+                channels.saveModelMappingsInTransaction(channel.id, byUpstream.values.sortedBy { it.upstreamModel })
             }
+            if (normalizedModels != null) accounts.setModelsInTransaction(accountId, normalizedModels)
+            if (name != null || priority != null || enabled != null || proxyUrl != null || clearProxy) {
+                accounts.updateSettingsInTransaction(accountId, name, priority, enabled, proxyUrl, clearProxy)
+            }
+            accounts.findDetailedInTransaction(accountId)
         }
-        if (union.isEmpty()) return@withLock 0
-        channels.replaceModels(channelId, union.values.toList())
-        union.size
     }
 
-    /**
-     * 把 V54 标记为待搬迁的历史账号挂到各自的 provider 渠道。
-     * 每个账号成功后清除标记，中途失败的下次启动继续；协议未实现的 provider 保持待搬迁。
-     */
+    /** 上游抓取在调用方完成；目录、当前授权裁剪和共享并集同一事务提交。 */
+    suspend fun syncModelCatalog(
+        accountId: String,
+        catalog: List<OAuthAccountModelCatalogEntry>,
+    ): Boolean = channels.inTransaction {
+        val existing = accounts.findDetailedInTransaction(accountId) ?: return@inTransaction false
+        val channel = channels.ensureProviderChannelInTransaction(existing.provider) ?: return@inTransaction false
+        val current = accounts.findDetailedInTransaction(accountId, lock = true) ?: return@inTransaction false
+        val oldDefaults = automaticDefaults(accounts.listProviderInTransaction(current.provider))
+        if (!accounts.saveModelCatalogInTransaction(accountId, catalog)) return@inTransaction false
+        val saved = requireNotNull(accounts.findDetailedInTransaction(accountId))
+        // 无条件读当前授权；空列表继续表示全部，显式授权落空仍保留原有哨兵语义。
+        accounts.removeModelsOutsideCatalogInTransaction(accountId, saved.modelCatalog.orEmpty().map { it.upstreamModel })
+        val providerAccounts = accounts.listProviderInTransaction(current.provider)
+        saveUnion(channel, providerAccounts, oldDefaults)
+        true
+    }
+
+    suspend fun syncModelUnion(provider: OAuthProvider): Int = channels.inTransaction {
+        val channel = channels.ensureProviderChannelInTransaction(provider) ?: return@inTransaction 0
+        saveUnion(channel, accounts.listProviderInTransaction(provider)).models.size
+    }
+
+    /** 旧 provider/models 写入仍可维护目录，但不能抹掉人工覆盖或复活休眠行。 */
+    suspend fun setProviderModels(provider: OAuthProvider, models: List<String>): Boolean {
+        val normalized = validateModels(models)
+        return channels.inTransaction {
+            val channel = channels.ensureProviderChannelInTransaction(provider) ?: return@inTransaction false
+            val defaults = automaticDefaults(accounts.listProviderInTransaction(provider))
+            val existing = channel.modelMappings.associateBy { it.upstreamModel }
+            val desired = normalized.map { model ->
+                existing[model]
+                    ?: ChannelModelRecord(model, defaults[model])
+            } + channel.modelMappings.filter { it.upstreamModel !in normalized && it.mappingSource != null }
+                .map { it.copy(catalogActive = false) }
+            channels.saveModelMappingsInTransaction(channel.id, desired)
+            true
+        }
+    }
+
+    suspend fun deleteAccount(accountId: String): Boolean = channels.inTransaction {
+        val existing = accounts.findDetailedInTransaction(accountId) ?: return@inTransaction false
+        val channel = channels.findProviderChannelInTransaction(existing.provider, lock = true)
+        val current = accounts.findDetailedInTransaction(accountId, lock = true) ?: return@inTransaction false
+        val oldDefaults = automaticDefaults(accounts.listProviderInTransaction(current.provider))
+        if (!accounts.deleteInTransaction(accountId)) return@inTransaction false
+        if (channel != null) {
+            val remaining = accounts.listProviderInTransaction(current.provider)
+            saveUnion(channel, remaining, oldDefaults)
+        }
+        true
+    }
+
+    suspend fun attachAccount(accountId: String): OAuthAccountRecord? = channels.inTransaction {
+        val existing = accounts.findDetailedInTransaction(accountId) ?: return@inTransaction null
+        val channel = channels.ensureProviderChannelInTransaction(existing.provider) ?: return@inTransaction existing
+        val current = accounts.findDetailedInTransaction(accountId, lock = true) ?: return@inTransaction null
+        if (current.channelIds != setOf(channel.id)) accounts.setChannelsInTransaction(accountId, listOf(channel.id))
+        accounts.markProviderChannelSettledInTransaction(accountId)
+        saveUnion(channel, accounts.listProviderInTransaction(current.provider))
+        accounts.findDetailedInTransaction(accountId)
+    }
+
+    /** 启动搬迁与并集对账可重试，已就位的账号不改基础配置。 */
     suspend fun reconcile(): Int {
         var moved = 0
         val servable = OAuthProvider.entries.filter { ProviderEndpoints.of(it).servable }
         for (account in accounts.listPendingProviderChannel(servable)) {
             try {
-                val channelId = ensure(account.provider) ?: continue
-                if (account.channelIds != setOf(channelId)) {
-                    accounts.setChannels(account.id, listOf(channelId))
-                    moved++
-                }
-                accounts.markProviderChannelSettled(account.id)
+                val attached = attachAccount(account.id) ?: continue
+                if (attached.channelIds != account.channelIds) moved++
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // 单个账号失败不阻塞其余账号；标记仍在，下次启动重试。
                 logger.warn("failed to move subscription account onto provider channel, accountId={}", account.id, e)
             }
         }
-        if (moved > 0) {
-            logger.info("moved {} subscription accounts onto provider channels", moved)
+        for (provider in servable) {
+            channels.inTransaction {
+                val existing = channels.findProviderChannelInTransaction(provider, lock = true)
+                val providerAccounts = accounts.listProviderInTransaction(provider)
+                if (existing != null || providerAccounts.isNotEmpty()) {
+                    val channel = existing ?: channels.ensureProviderChannelInTransaction(provider) ?: return@inTransaction
+                    saveUnion(channel, providerAccounts)
+                }
+            }
         }
         return moved
     }
+
+    private fun saveUnion(
+        channel: ChannelRecord,
+        providerAccounts: List<OAuthAccountRecord>,
+        previousDefaults: Map<String, String?>? = null,
+    ): ChannelRecord {
+        val defaults = automaticDefaults(providerAccounts)
+        val active = defaults.keys.toMutableSet()
+        if (providerAccounts.any { it.modelCatalog == null }) {
+            // 未知目录仅保留旧 active，不把人工休眠行当作未知账号的可调用模型。
+            active += channel.models
+        }
+        val previous = channel.modelMappings.associateBy { it.upstreamModel }
+        val desired = active.map { model ->
+            val old = previous[model]
+            when {
+                old?.mappingSource != null -> old.copy(catalogActive = true)
+                // unknown 只保留 active 集合；auto 仍服从当前默认，无默认时沿用上游名。
+                else -> ChannelModelRecord(model, defaults[model])
+            }
+        } + channel.modelMappings.filter { it.upstreamModel !in active && it.mappingSource != null }
+            .map { it.copy(catalogActive = false) }
+        // 缺失默认与 null 都显示为沿用上游；只比较旧共享行的有效默认（含人工覆盖）。
+        // 目录成员与 active 变化由仓储的 mappingsChanged 判定，不能因 Map 键变化额外推进版本。
+        val defaultsChanged = previousDefaults != null && channel.modelMappings.any {
+            previousDefaults[it.upstreamModel] != defaults[it.upstreamModel]
+        }
+        // 全部已知且并集为空也提交：auto 删除，manual 休眠保留。
+        return channels.saveModelMappingsInTransaction(channel.id, desired.sortedBy { it.upstreamModel }, defaultsChanged)
+    }
+
+    private fun automaticDefaults(providerAccounts: List<OAuthAccountRecord>): Map<String, String?> {
+        val defaults = linkedMapOf<String, String?>()
+        providerAccounts.sortedWith(compareBy({ it.createdAt }, { it.id })).forEach { account ->
+            account.modelCatalog.orEmpty().forEach { entry ->
+                // null 是有效默认（自动沿用上游），不能用 putIfAbsent 的 null 覆盖语义。
+                if (entry.upstreamModel !in defaults) defaults[entry.upstreamModel] = entry.canonicalModelId
+            }
+        }
+        return defaults
+    }
+
+    private fun validateChanges(changes: List<ProviderModelMappingChange>): List<ProviderModelMappingChange> {
+        val normalized = changes.map { change ->
+            val upstream = change.upstreamModel.trim()
+            require(upstream.length in 1..200) { "模型名长度必须在 1..200 之间" }
+            require(change.mode in setOf("auto", "manual", "upstream")) { "映射模式无效" }
+            val canonical = change.canonicalModelId?.trim()
+            if (change.mode == "manual") {
+                require(canonical != null && canonical.length in 1..200) { "人工模型 ID 长度必须在 1..200 之间" }
+            } else {
+                require(change.canonicalModelId == null) { "auto/upstream 模式不能指定 canonicalModelId" }
+            }
+            change.copy(upstreamModel = upstream, canonicalModelId = canonical)
+        }
+        require(normalized.map { it.upstreamModel }.distinct().size == normalized.size) { "不能重复提交同一上游模型" }
+        return normalized
+    }
+
+    private fun validateModels(models: List<String>): List<String> = models.map(String::trim).filter(String::isNotEmpty)
+        .distinct().also { values -> require(values.all { it.length <= 200 }) { "模型名长度不能超过 200" } }
 }

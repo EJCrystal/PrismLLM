@@ -30,6 +30,7 @@ object Channels : Table("channels") {
     val keyDisablePolicy = text("key_disable_policy").nullable()
     /** 渠道策略版本；每次写入递增，用于让该渠道下的旧计数失效。 */
     val keyDisablePolicyRevision = long("key_disable_policy_revision").default(0)
+    val modelMappingRevision = long("model_mapping_revision").default(0)
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
 
@@ -135,6 +136,7 @@ object ChannelModels : Table("channel_models") {
     val upstreamModel = varchar("upstream_model", 200)
     val canonicalModelId = varchar("canonical_model_id", 200).nullable()
     val mappingSource = varchar("mapping_source", 32).nullable()
+    val catalogActive = bool("catalog_active").default(true)
     val createdAt = long("created_at")
 
     override val primaryKey = PrimaryKey(channelId, upstreamModel)

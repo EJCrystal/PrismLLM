@@ -1644,6 +1644,37 @@ data class OAuthAccountSettingsRequest(
     val enabled: Boolean? = null,
     val proxyUrl: String? = null,
     val clearProxy: Boolean = false,
+    /** null/省略保持原授权；[] 仍然表示全部目录。 */
+    val models: List<String>? = null,
+    val modelMappingChanges: List<OAuthModelMappingChangeRequest>? = null,
+    val expectedModelMappingRevision: Long? = null,
+)
+
+@Serializable
+data class OAuthModelMappingChangeRequest(
+    val upstreamModel: String,
+    val mode: String,
+    val canonicalModelId: String? = null,
+)
+
+@Serializable
+data class OAuthProviderModelMappingResponse(
+    val upstreamModel: String,
+    val canonicalModelId: String?,
+    val publicModelId: String,
+    val automaticCanonicalModelId: String?,
+    val mode: String,
+    val mappingSource: String?,
+    val catalogActive: Boolean,
+)
+
+@Serializable
+data class OAuthProviderModelMappingsResponse(
+    val provider: String,
+    val scope: String = "provider",
+    val revision: Long,
+    val affectedAccountCount: Int,
+    val mappings: List<OAuthProviderModelMappingResponse>,
 )
 
 @Serializable

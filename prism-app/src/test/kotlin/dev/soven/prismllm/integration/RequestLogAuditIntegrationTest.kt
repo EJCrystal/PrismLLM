@@ -3,6 +3,14 @@ package dev.soven.prismllm.integration
 import dev.soven.prismllm.channel.domain.key.KeyDisableAction
 import dev.soven.prismllm.channel.domain.key.KeyDisablePolicy
 import dev.soven.prismllm.channel.domain.key.KeyDisableRule
+import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
+import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
+import dev.soven.prismllm.quota.domain.ClientKeyAllowedChannelKey
+import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
+import dev.soven.prismllm.quota.domain.ClientKeyRecord
+import dev.soven.prismllm.quota.persistence.ClientKeyRepository
+import dev.soven.prismllm.repo.OAuthProviderChannelLookup
+import dev.soven.prismllm.testsupport.db.TestDatabase
 import io.ktor.client.request.header
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -551,7 +559,15 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("70", result.getString(1))
+                        assertEquals("71", result.getString(1))
+                    }
+                    statement.executeQuery("select model_mapping_revision from channels where id = 'migration-channel'").use { result ->
+                        assertTrue(result.next())
+                        assertEquals(0L, result.getLong(1), "V71 应为历史渠道初始化独立映射版本")
+                    }
+                    statement.executeQuery("select catalog_active from channel_models").use { result ->
+                        assertTrue(result.next())
+                        assertTrue(result.getBoolean(1), "V71 不应停用历史模型映射")
                     }
                     // V67 只对清洁库生效：USD 历史行原样保留，仅加 CHECK 约束（非 USD 数据由独立用例验证会被拒迁）。
                     statement.executeQuery(
@@ -983,6 +999,319 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                         assertTrue(result.next())
                         assertEquals(0, result.getBigDecimal(1).compareTo(BigDecimal("7")), "中止迁移不得改写历史费用")
                         assertEquals("CNY", result.getString(2))
+                    }
+                }
+            }
+        } finally {
+            dropDatabaseQuietly(databaseName)
+        }
+    }
+
+    @Test
+    @Timeout(300)
+    fun `v68 through v71 migrations keep legacy client keys unrestricted`() = runBlocking {
+        val databaseName = createMigrationDatabase("migration_v68_v71_legacy")
+        val migrationUrl = migrationDatabaseUrl(databaseName)
+        try {
+            migrateTo(migrationUrl, "67")
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into client_keys (id, name, key_hash, key_prefix, enabled, expires_at, daily_token_limit,
+                            daily_usd_limit, max_concurrent_requests, requests_per_minute, created_at, rotated_at)
+                        values ('legacy-client', 'legacy-client', 'legacy-hash', 'legacy-prefix', true, 1000, 123,
+                            1.25, 2, 7, 1, 2)
+                        """.trimIndent(),
+                    )
+                }
+            }
+
+            // 必须先应用主线的访问范围迁移，不能把 feature 的映射状态迁移占用到 V68。
+            migrateTo(migrationUrl, "68")
+            // V68 阶段 client_keys 还没有黑名单列，而 Exposed 表定义已随主线扩展；该阶段用原生 SQL 校验。
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery(
+                        "select access_channels_restricted, access_channel_keys_restricted, access_models_restricted from client_keys where id = 'legacy-client'",
+                    ).use { result ->
+                        assertTrue(result.next())
+                        for (index in 1..3) assertFalse(result.getBoolean(index), "V68 应让旧 caller 三个维度均不限制")
+                        assertFalse(result.next())
+                    }
+                }
+            }
+
+            migrateTo(migrationUrl, "71")
+
+            val legacy = ClientKeyRecord(
+                id = "legacy-client",
+                name = "legacy-client",
+                keyHash = "legacy-hash",
+                keyPrefix = "legacy-prefix",
+                enabled = true,
+                expiresAt = 1000L,
+                quotas = ClientKeyQuotaLimits(
+                    dailyTokens = 123,
+                    dailyUsdLimit = BigDecimal("1.25000000"),
+                    maxConcurrentRequests = 2,
+                    requestsPerMinute = 7,
+                ),
+                createdAt = 1L,
+                rotatedAt = 2L,
+            )
+            TestDatabase(migrationUrl, postgres.username, postgres.password).use { database ->
+                val clients = ClientKeyRepository(database.database)
+                val found = assertNotNull(clients.find(legacy.id), "V69/V70/V71 不应重置旧 caller 的策略或其它字段")
+                assertEquals(ClientKeyAccessPolicy(), found.accessPolicy, "V69/V70/V71 不应把旧 caller 改成任何名单模式")
+                assertTrue(found.accessPolicy.isUnrestricted)
+                assertEquals(legacy, found)
+                assertEquals(legacy, clients.findByHash("legacy-hash"))
+                assertEquals(listOf(legacy), clients.list())
+            }
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery(
+                        "select version, script from flyway_schema_history where success and version in ('67', '68', '69', '70', '71') order by installed_rank",
+                    ).use { result ->
+                        for ((version, script) in listOf(
+                            "67" to "V67__usd_only_billing_currency.sql",
+                            "68" to "V68__client_key_access_scope.sql",
+                            "69" to "V69__client_key_access_denylist.sql",
+                            "70" to "V70__iq_test_jobs.sql",
+                            "71" to "V71__provider_model_mapping_state.sql",
+                        )) {
+                            assertTrue(result.next())
+                            assertEquals(version, result.getString(1))
+                            assertEquals(script, result.getString(2), "主线 V68/V69/V70 与 feature V71 应按顺序执行")
+                        }
+                        assertFalse(result.next())
+                    }
+                }
+            }
+        } finally {
+            dropDatabaseQuietly(databaseName)
+        }
+    }
+
+    @Test
+    @Timeout(300)
+    fun `v71 migration preserves v68 client scopes mappings and upstream authorizations`() = runBlocking {
+        val databaseName = createMigrationDatabase("migration_v71_scopes")
+        val migrationUrl = migrationDatabaseUrl(databaseName)
+        try {
+            migrateTo(migrationUrl, "68")
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into channels (id, name, base_url, auth_type, enabled, kind, provider,
+                            key_disable_policy_revision, created_at, updated_at)
+                        values ('v69-static', 'v69-static', 'https://static.example.com/v1', 'bearer', true, 'custom', null, 7, 1, 2),
+                               ('v69-provider', 'v69-provider', 'https://provider.example.com/v1', 'bearer', true, 'provider', 'chatgpt', 7, 1, 2)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into channel_models (channel_id, upstream_model, canonical_model_id, mapping_source, created_at)
+                        values ('v69-static', 'Static-Upstream', 'Public-Static', 'manual', 1),
+                               ('v69-provider', 'Account-Upstream', 'Public-Account', 'manual', 1),
+                               ('v69-provider', 'Suggested-Upstream', 'Public-Suggested', 'models_dev', 1),
+                               ('v69-provider', 'Fallback-Upstream', null, null, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into channel_keys (id, channel_id, name, credential_ciphertext, credential_nonce,
+                            credential_key_version, state, created_at, updated_at)
+                        values ('v69-static-key', 'v69-static', 'v69-static-key', 'cipher', 'nonce', 1, 'ACTIVE', 1, 2)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        "insert into channel_key_models (key_id, upstream_model, created_at) values ('v69-static-key', 'Static-Upstream', 1)",
+                    )
+                    statement.execute(
+                        """
+                        insert into oauth_accounts (id, name, provider, refresh_token_ciphertext, refresh_token_nonce,
+                            refresh_token_key_version, created_at, updated_at, authorized_at, model_catalog, model_catalog_synced_at)
+                        values ('v69-oauth-all', 'all', 'chatgpt', 'cipher', 'nonce', 1, 1, 2, 1, null, null),
+                               ('v69-oauth-restricted', 'restricted', 'chatgpt', 'cipher', 'nonce', 1, 1, 2, 1,
+                                '[{"upstreamModel":"Account-Upstream","canonicalModelId":"Public-Account"},{"upstreamModel":"Suggested-Upstream","canonicalModelId":"Public-Suggested"}]', 2),
+                               ('v69-oauth-none', 'none', 'chatgpt', 'cipher', 'nonce', 1, 1, 2, 1, null, null)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into oauth_account_channels (account_id, channel_id, managed, created_at)
+                        values ('v69-oauth-all', 'v69-provider', true, 1),
+                               ('v69-oauth-restricted', 'v69-provider', true, 1),
+                               ('v69-oauth-none', 'v69-provider', true, 1)
+                        """.trimIndent(),
+                    )
+                    // OAuth 授权无行表示 models=[] 跟随目录；显式零授权必须保留哨兵，不能变成无行。
+                    statement.execute(
+                        """
+                        insert into oauth_account_models (account_id, upstream_model, created_at)
+                        values ('v69-oauth-restricted', 'Account-Upstream', 1),
+                               ('v69-oauth-none', '(no models available)', 1)
+                        """.trimIndent(),
+                    )
+                }
+            }
+
+            // V68 阶段 client_keys 还没有黑名单列，Exposed 表定义已随主线扩展；caller 与关联都用原生 SQL 播种。
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    for (index in 0..4) {
+                        val channelsRestricted = index == 0 || index == 1 || index == 2
+                        val channelKeysRestricted = index == 0 || index == 1 || index == 3
+                        val modelsRestricted = index == 0 || index == 1 || index == 4
+                        statement.execute(
+                            """
+                            insert into client_keys (id, name, key_hash, key_prefix, enabled, expires_at, daily_token_limit,
+                                daily_usd_limit, max_concurrent_requests, requests_per_minute, created_at,
+                                access_channels_restricted, access_channel_keys_restricted, access_models_restricted)
+                            values ('v69-client-$index', 'v69-client-$index', 'v69-hash-$index', 'v69-prefix-$index', ${index != 1},
+                                ${1000 + index}, 123, 1.25, 2, 7, ${100 + index}, $channelsRestricted, $channelKeysRestricted, $modelsRestricted)
+                            """.trimIndent(),
+                        )
+                    }
+                    statement.execute(
+                        """
+                        insert into client_key_allowed_channels (client_key_id, channel_id)
+                        values ('v69-client-0', 'v69-static'), ('v69-client-0', 'v69-provider')
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        "insert into client_key_allowed_channel_keys (client_key_id, channel_id, key_id) values ('v69-client-0', 'v69-static', 'v69-static-key')",
+                    )
+                    statement.execute(
+                        """
+                        insert into client_key_allowed_models (client_key_id, model_id)
+                        values ('v69-client-0', 'Public-Static'), ('v69-client-0', 'Public-Account'),
+                               ('v69-client-0', 'Public-Suggested'), ('v69-client-0', 'Fallback-Upstream')
+                        """.trimIndent(),
+                    )
+                }
+            }
+
+            // 账号表不在黑名单迁移范围内，Exposed 可在 V68 阶段安全读取，用于升级前后对比。
+            val savedAccounts = TestDatabase(migrationUrl, postgres.username, postgres.password).use { database ->
+                OAuthAccountRepository(database.database, OAuthProviderChannelLookup()).listAll().associateBy { it.id }
+            }
+
+            migrateTo(migrationUrl, "71")
+
+            val policies = listOf(
+                ClientKeyAccessPolicy(
+                    allowedChannelIds = setOf("v69-static", "v69-provider"),
+                    allowedChannelKeys = setOf(ClientKeyAllowedChannelKey("v69-static", "v69-static-key")),
+                    allowedModelIds = setOf("Public-Static", "Public-Account", "Public-Suggested", "Fallback-Upstream"),
+                ),
+                ClientKeyAccessPolicy(emptySet(), emptySet(), emptySet()),
+                ClientKeyAccessPolicy(allowedChannelIds = emptySet()),
+                ClientKeyAccessPolicy(allowedChannelKeys = emptySet()),
+                ClientKeyAccessPolicy(allowedModelIds = emptySet()),
+            )
+            val savedClients = policies.mapIndexed { index, policy ->
+                ClientKeyRecord(
+                    id = "v69-client-$index",
+                    name = "v69-client-$index",
+                    keyHash = "v69-hash-$index",
+                    keyPrefix = "v69-prefix-$index",
+                    enabled = index != 1,
+                    expiresAt = 1000L + index,
+                    quotas = ClientKeyQuotaLimits(
+                        dailyTokens = 123,
+                        dailyUsdLimit = BigDecimal("1.25000000"),
+                        maxConcurrentRequests = 2,
+                        requestsPerMinute = 7,
+                    ),
+                    createdAt = 100L + index,
+                    accessPolicy = policy,
+                )
+            }
+            TestDatabase(migrationUrl, postgres.username, postgres.password).use { database ->
+                val clients = ClientKeyRepository(database.database)
+                val accounts = OAuthAccountRepository(database.database, OAuthProviderChannelLookup())
+
+                assertEquals(savedClients.associateBy { it.id }, clients.list().associateBy { it.id })
+                savedClients.forEach { saved ->
+                    val current = assertNotNull(clients.find(saved.id))
+                    assertEquals(saved, current, "完整策略与调用方字段都应保留")
+                    assertEquals(saved, clients.findByHash(saved.keyHash))
+                    assertFalse(current.accessPolicy.isUnrestricted, "caller 空白名单仍是 deny-all，不是 OAuth models=[] 的跟随语义")
+                }
+                val migratedAccounts = accounts.listAll().associateBy { it.id }
+                assertEquals(savedAccounts, migratedAccounts, "账号的 upstream 授权、目录与关联不得改写")
+                savedAccounts.forEach { (id, saved) -> assertEquals(saved, accounts.findDetailed(id)) }
+                val all = migratedAccounts.getValue("v69-oauth-all")
+                val restricted = migratedAccounts.getValue("v69-oauth-restricted")
+                val none = migratedAccounts.getValue("v69-oauth-none")
+                assertTrue(all.models.isEmpty())
+                assertNull(all.modelCatalog)
+                assertEquals(listOf("Account-Upstream"), restricted.models)
+                assertTrue(restricted.supports("Account-Upstream"))
+                assertFalse(restricted.supports("Public-Account"), "账号授权仍以 upstream ID 匹配，不应改成 canonical ID")
+                assertFalse(restricted.supports("Suggested-Upstream"), "共享渠道映射不能放宽账号自己的显式授权")
+                assertEquals(listOf("(no models available)"), none.models)
+                for (upstream in listOf("Account-Upstream", "Suggested-Upstream", "Fallback-Upstream")) {
+                    assertTrue(all.supports(upstream), "OAuth models=[] 应继续跟随渠道全部模型")
+                    assertFalse(none.supports(upstream), "显式零授权哨兵不能被迁移清空后放权")
+                }
+            }
+
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
+                        assertTrue(result.next())
+                        assertEquals("71", result.getString(1))
+                    }
+                    statement.executeQuery("select id, model_mapping_revision, key_disable_policy_revision, updated_at from channels order by id").use { result ->
+                        for (id in listOf("v69-provider", "v69-static")) {
+                            assertTrue(result.next())
+                            assertEquals(id, result.getString(1))
+                            assertEquals(0L, result.getLong(2), "映射版本应独立初始化，不复用密钥策略版本")
+                            assertEquals(7L, result.getLong(3))
+                            assertEquals(2L, result.getLong(4), "新增映射状态不应重写渠道更新时间")
+                        }
+                        assertFalse(result.next())
+                    }
+                    statement.executeQuery("select channel_id, upstream_model, canonical_model_id, mapping_source, catalog_active, created_at from channel_models").use { result ->
+                        val mappings = buildMap {
+                            while (result.next()) {
+                                put(result.getString(1) to result.getString(2), result.getString(3) to result.getString(4))
+                                assertTrue(result.getBoolean(5), "历史普通与 provider 映射都应保持 active")
+                                assertEquals(1L, result.getLong(6))
+                            }
+                        }
+                        assertEquals(
+                            mapOf(
+                                ("v69-static" to "Static-Upstream") to ("Public-Static" to "manual"),
+                                ("v69-provider" to "Account-Upstream") to ("Public-Account" to "manual"),
+                                ("v69-provider" to "Suggested-Upstream") to ("Public-Suggested" to "models_dev"),
+                                ("v69-provider" to "Fallback-Upstream") to (null to null),
+                            ),
+                            mappings,
+                            "canonical ID 和 manual/models_dev/null 来源必须原样保留",
+                        )
+                    }
+                    statement.executeQuery("select key_id, upstream_model, created_at from channel_key_models").use { result ->
+                        assertTrue(result.next())
+                        assertEquals("v69-static-key", result.getString(1))
+                        assertEquals("Static-Upstream", result.getString(2), "静态密钥授权仍是 upstream ID")
+                        assertEquals(1L, result.getLong(3))
+                        assertFalse(result.next())
+                    }
+                    statement.executeQuery("select account_id, channel_id, managed, created_at from oauth_account_channels order by account_id").use { result ->
+                        for (id in listOf("v69-oauth-all", "v69-oauth-none", "v69-oauth-restricted")) {
+                            assertTrue(result.next())
+                            assertEquals(id, result.getString(1))
+                            assertEquals("v69-provider", result.getString(2))
+                            assertTrue(result.getBoolean(3), "托管关联不得被迁移重建为普通关联")
+                            assertEquals(1L, result.getLong(4))
+                        }
+                        assertFalse(result.next())
                     }
                 }
             }

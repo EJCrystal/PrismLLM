@@ -18,6 +18,8 @@ data class ChannelModelRecord(
     val upstreamModel: String,
     val canonicalModelId: String? = null,
     val mappingSource: String? = null,
+    /** 休眠的人工映射保留在目录中，但不能参与路由。 */
+    val catalogActive: Boolean = true,
 ) {
     /**
      * 对外暴露、也是数据面请求匹配的模型 ID。
@@ -133,12 +135,14 @@ data class ChannelRecord(
     val provider: OAuthProvider? = null,
     /** 渠道级密钥自动禁用策略的形态：继承全局、自定义（未命中回落全局）或关闭。 */
     val keyDisableMode: ChannelKeyDisableMode = ChannelKeyDisableMode.INHERIT,
+    /** 共享模型映射的独立乐观锁版本，不受渠道基础配置更新影响。 */
+    val modelMappingRevision: Long = 0,
 ) {
     /** 是否配置了渠道级策略；只有继承全局时为 false。 */
     val keyDisablePolicySet: Boolean get() = keyDisableMode != ChannelKeyDisableMode.INHERIT
 
     val isProviderChannel: Boolean get() = kind == ChannelKind.PROVIDER
-    val models: List<String> get() = modelMappings.map { it.upstreamModel }
+    val models: List<String> get() = modelMappings.filter { it.catalogActive }.map { it.upstreamModel }
 
     /**
      * 支持指定上游模型的可路由密钥，按密钥优先级、名称和 id 稳定排序。
