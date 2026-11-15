@@ -61,6 +61,19 @@ describe('调用方访问范围 helper', () => {
     assert.equal(saved.channelKeys.keys[0].keyId, 'key-1')
   })
 
+  it('冲突密钥只按密钥白名单计算，密钥黑名单与渠道范围组合不视为冲突', async () => {
+    const { conflictingClientKeyAccessKeys } = await helpers()
+    const allowlist = {
+      channels: { mode: 'allowlist', ids: ['channel-a'] },
+      channelKeys: { mode: 'allowlist', keys: [{ channelId: 'channel-a', keyId: 'key-1' }, { channelId: 'channel-b', keyId: 'key-1' }] },
+      models: { mode: 'unrestricted', ids: [] },
+    }
+    assert.deepEqual(conflictingClientKeyAccessKeys(allowlist), [{ channelId: 'channel-b', keyId: 'key-1' }])
+    assert.deepEqual(conflictingClientKeyAccessKeys({ ...allowlist, channels: { mode: 'unrestricted', ids: [] } }), [])
+    assert.deepEqual(conflictingClientKeyAccessKeys({ ...allowlist, channels: { mode: 'denylist', ids: ['channel-b'] } }), [{ channelId: 'channel-b', keyId: 'key-1' }])
+    assert.deepEqual(conflictingClientKeyAccessKeys({ ...allowlist, channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-b', keyId: 'key-1' }] } }), [])
+  })
+
   it('列表摘要区分不限制、多项授权与空白名单', async () => {
     const { clientKeyAccessSummary } = await helpers()
     assert.match(clientKeyAccessSummary({

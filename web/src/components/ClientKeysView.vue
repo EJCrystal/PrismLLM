@@ -16,7 +16,7 @@ import { formatTime } from '../utils/format'
 import { buildClientKeyPayload, concurrencySummary, quotaSummary } from '../utils/clientKeyQuota'
 import { useClientKeyActions } from '../utils/clientKeyActions'
 import { useSecretReveal } from '../utils/secretReveal'
-import { clientKeyAccessSummary, createUnrestrictedAccessPolicy, normalizeClientKeyAccessPolicy } from '../utils/clientKeyAccess'
+import { clientKeyAccessSummary, conflictingClientKeyAccessKeys, createUnrestrictedAccessPolicy, normalizeClientKeyAccessPolicy } from '../utils/clientKeyAccess'
 
 interface ClientKeyForm {
   name: string
@@ -75,6 +75,8 @@ const form = reactive<ClientKeyForm>({
 
 const enabledCount = computed(() => keys.value.filter((item) => item.enabled).length)
 const revokedCount = computed(() => keys.value.filter((item) => item.revokedAt != null).length)
+// 密钥白名单与渠道范围冲突时禁止保存；后端同样校验，这里把失败前移到表单内。
+const accessConflicts = computed(() => conflictingClientKeyAccessKeys(form.accessPolicy))
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
@@ -126,6 +128,10 @@ function openEdit(key: ClientKey) {
 async function save() {
   if (!form.name.trim()) {
     notify('请填写密钥名称', 'error')
+    return
+  }
+  if (accessConflicts.value.length) {
+    notify('已选渠道密钥与渠道访问范围冲突，请调整后保存', 'error')
     return
   }
   saving.value = true
@@ -372,7 +378,7 @@ onMounted(() => {
       </form>
       <template #footer>
         <button type="button" class="button ghost" @click="showForm = false">取消</button>
-        <button type="button" class="button primary" :disabled="saving" @click="save">
+        <button type="button" class="button primary" :disabled="saving || accessConflicts.length > 0" @click="save">
           {{ saving ? '保存中…' : editingId ? '保存修改' : '创建密钥' }}
         </button>
       </template>
