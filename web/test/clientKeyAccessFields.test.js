@@ -212,4 +212,46 @@ describe('真实调用方访问范围配置组件', () => {
     assert.match(document.body.textContent, /不在渠道白名单/)
     assert.equal(document.body.innerHTML.includes('UPSTREAM_SECRET_MUST_NOT_RENDER'), false)
   })
+
+  it('渠道白名单级联过滤密钥候选，未选渠道的密钥不出现', async () => {
+    await mount()
+    await mode('渠道', 'allowlist')
+    await choose('渠道', 'channel-a')
+    await mode('渠道密钥', 'allowlist')
+    let group = document.querySelector('fieldset[aria-label="渠道密钥访问范围"]')
+    assert.match(group.textContent, /channel-a \/ key-1/)
+    assert.doesNotMatch(group.textContent, /channel-b \/ key-1/)
+    await choose('渠道', 'channel-b')
+    group = document.querySelector('fieldset[aria-label="渠道密钥访问范围"]')
+    assert.match(group.textContent, /channel-b \/ key-1/)
+    assert.equal(requests.length, 1)
+  })
+
+  it('渠道白名单缩小后保留已选外部渠道密钥，明确提示冲突且可取消', async () => {
+    await mount({
+      channels: { mode: 'allowlist', ids: ['channel-a', 'channel-b'] },
+      channelKeys: { mode: 'allowlist', keys: [{ channelId: 'channel-a', keyId: 'key-1' }, { channelId: 'channel-b', keyId: 'key-1' }] },
+      models: { mode: 'unrestricted', ids: [] },
+    })
+    await choose('渠道', 'channel-b')
+    assert.deepEqual(state.value.channels.ids, ['channel-a'])
+    assert.deepEqual(state.value.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-1' }, { channelId: 'channel-b', keyId: 'key-1' }])
+    const group = document.querySelector('fieldset[aria-label="渠道密钥访问范围"]')
+    assert.match(group.textContent, /不在渠道白名单中/)
+    const blocked = [...group.querySelectorAll('label')].find(node => node.textContent.includes('channel-b / key-1'))
+    assert.equal(blocked.querySelector('input').checked, true)
+    blocked.querySelector('input').click(); await settle()
+    assert.deepEqual(state.value.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-1' }])
+  })
+
+  it('密钥黑名单候选不随渠道白名单过滤，可排除未选渠道的密钥', async () => {
+    await mount()
+    await mode('渠道', 'allowlist')
+    await choose('渠道', 'channel-a')
+    await mode('渠道密钥', 'denylist')
+    const group = document.querySelector('fieldset[aria-label="渠道密钥访问范围"]')
+    assert.match(group.textContent, /channel-b \/ key-1/)
+    await choose('渠道密钥', 'channel-b / key-1')
+    assert.deepEqual(state.value.channelKeys.keys, [{ channelId: 'channel-b', keyId: 'key-1' }])
+  })
 })
