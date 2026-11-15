@@ -559,15 +559,15 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("70", result.getString(1))
+                        assertEquals("71", result.getString(1))
                     }
                     statement.executeQuery("select model_mapping_revision from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
-                        assertEquals(0L, result.getLong(1), "V70 应为历史渠道初始化独立映射版本")
+                        assertEquals(0L, result.getLong(1), "V71 应为历史渠道初始化独立映射版本")
                     }
                     statement.executeQuery("select catalog_active from channel_models").use { result ->
                         assertTrue(result.next())
-                        assertTrue(result.getBoolean(1), "V70 不应停用历史模型映射")
+                        assertTrue(result.getBoolean(1), "V71 不应停用历史模型映射")
                     }
                     // V67 只对清洁库生效：USD 历史行原样保留，仅加 CHECK 约束（非 USD 数据由独立用例验证会被拒迁）。
                     statement.executeQuery(
@@ -1009,8 +1009,8 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     @Timeout(300)
-    fun `v68 through v70 migrations keep legacy client keys unrestricted`() = runBlocking {
-        val databaseName = createMigrationDatabase("migration_v68_v70_legacy")
+    fun `v68 through v71 migrations keep legacy client keys unrestricted`() = runBlocking {
+        val databaseName = createMigrationDatabase("migration_v68_v71_legacy")
         val migrationUrl = migrationDatabaseUrl(databaseName)
         try {
             migrateTo(migrationUrl, "67")
@@ -1042,7 +1042,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 }
             }
 
-            migrateTo(migrationUrl, "70")
+            migrateTo(migrationUrl, "71")
 
             val legacy = ClientKeyRecord(
                 id = "legacy-client",
@@ -1062,8 +1062,8 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
             )
             TestDatabase(migrationUrl, postgres.username, postgres.password).use { database ->
                 val clients = ClientKeyRepository(database.database)
-                val found = assertNotNull(clients.find(legacy.id), "V69/V70 不应重置旧 caller 的策略或其它字段")
-                assertEquals(ClientKeyAccessPolicy(), found.accessPolicy, "V69/V70 不应把旧 caller 改成任何名单模式")
+                val found = assertNotNull(clients.find(legacy.id), "V69/V70/V71 不应重置旧 caller 的策略或其它字段")
+                assertEquals(ClientKeyAccessPolicy(), found.accessPolicy, "V69/V70/V71 不应把旧 caller 改成任何名单模式")
                 assertTrue(found.accessPolicy.isUnrestricted)
                 assertEquals(legacy, found)
                 assertEquals(legacy, clients.findByHash("legacy-hash"))
@@ -1072,17 +1072,18 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
             DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                 connection.createStatement().use { statement ->
                     statement.executeQuery(
-                        "select version, script from flyway_schema_history where success and version in ('67', '68', '69', '70') order by installed_rank",
+                        "select version, script from flyway_schema_history where success and version in ('67', '68', '69', '70', '71') order by installed_rank",
                     ).use { result ->
                         for ((version, script) in listOf(
                             "67" to "V67__usd_only_billing_currency.sql",
                             "68" to "V68__client_key_access_scope.sql",
                             "69" to "V69__client_key_access_denylist.sql",
-                            "70" to "V70__provider_model_mapping_state.sql",
+                            "70" to "V70__iq_test_jobs.sql",
+                            "71" to "V71__provider_model_mapping_state.sql",
                         )) {
                             assertTrue(result.next())
                             assertEquals(version, result.getString(1))
-                            assertEquals(script, result.getString(2), "主线 V68/V69 与 feature V70 应按顺序执行")
+                            assertEquals(script, result.getString(2), "主线 V68/V69/V70 与 feature V71 应按顺序执行")
                         }
                         assertFalse(result.next())
                     }
@@ -1095,8 +1096,8 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     @Timeout(300)
-    fun `v70 migration preserves v68 client scopes mappings and upstream authorizations`() = runBlocking {
-        val databaseName = createMigrationDatabase("migration_v70_scopes")
+    fun `v71 migration preserves v68 client scopes mappings and upstream authorizations`() = runBlocking {
+        val databaseName = createMigrationDatabase("migration_v71_scopes")
         val migrationUrl = migrationDatabaseUrl(databaseName)
         try {
             migrateTo(migrationUrl, "68")
@@ -1199,7 +1200,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 OAuthAccountRepository(database.database, OAuthProviderChannelLookup()).listAll().associateBy { it.id }
             }
 
-            migrateTo(migrationUrl, "70")
+            migrateTo(migrationUrl, "71")
 
             val policies = listOf(
                 ClientKeyAccessPolicy(
@@ -1264,7 +1265,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 connection.createStatement().use { statement ->
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("70", result.getString(1))
+                        assertEquals("71", result.getString(1))
                     }
                     statement.executeQuery("select id, model_mapping_revision, key_disable_policy_revision, updated_at from channels order by id").use { result ->
                         for (id in listOf("v69-provider", "v69-static")) {
