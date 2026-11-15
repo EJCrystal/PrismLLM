@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { api } from '../api'
+import { conflictingClientKeyAccessKeys } from '../utils/clientKeyAccess'
 import type { Channel, ClientKeyAccessMode, ClientKeyAccessPolicy, ClientKeyAllowedChannelKey } from '../types/api'
 
 const props = defineProps<{ modelValue: ClientKeyAccessPolicy }>()
@@ -48,10 +49,29 @@ const missingKeys = computed(() => props.modelValue.channelKeys.mode !== 'unrest
 const missingModels = computed(() => props.modelValue.models.mode !== 'unrestricted'
   ? props.modelValue.models.ids.filter(id => !modelOptions.value.includes(id)) : [])
 const unavailableLabel = computed(() => error.value ? '目录读取失败，保留原选择' : !loaded.value ? '目录加载中，保留原选择' : '已删除或不存在')
-const conflictingKeys = computed(() => props.modelValue.channelKeys.mode === 'allowlist'
-  ? props.modelValue.channelKeys.keys.filter(pair => props.modelValue.channels.mode === 'allowlist'
-    ? !props.modelValue.channels.ids.includes(pair.channelId)
-    : props.modelValue.channels.mode === 'denylist' && props.modelValue.channels.ids.includes(pair.channelId)) : [])
+const conflictingKeys = computed(() => conflictingClientKeyAccessKeys(props.modelValue))
+/** 密钥白名单候选随渠道范围级联过滤；密钥黑名单不限制候选，排除任何密钥都合法。 */
+const selectableKeyOptions = computed(() => props.modelValue.channelKeys.mode === 'denylist'
+  ? keyOptions.value
+  : keyOptions.value.filter(option => inChannelScope(option.channelId)))
+/** 已勾选但不在候选中的密钥：渠道范围冲突或目录中已不存在，保留勾选并明确提示，不静默清除。 */
+const blockedKeyEntries = computed(() => props.modelValue.channelKeys.mode === 'unrestricted'
+  ? []
+  : props.modelValue.channelKeys.keys
+    .filter(pair => !selectableKeyOptions.value.some(option => sameKey(pair, option)))
+    .map(pair => {
+      const option = keyOptions.value.find(option => sameKey(pair, option))
+      return option
+        ? { pair, name: option.name, hint: props.modelValue.channels.mode === 'denylist' ? '被渠道黑名单排除' : '不在渠道白名单中' }
+        : { pair, name: unavailableLabel.value, hint: '' }
+    }))
+
+function inChannelScope(channelId: string): boolean {
+  const scope = props.modelValue.channels
+  if (scope.mode === 'unrestricted') return true
+  const selected = scope.ids.includes(channelId)
+  return scope.mode === 'allowlist' ? selected : !selected
+}
 const emptyScopes = computed(() => [
   props.modelValue.channels.mode === 'allowlist' && props.modelValue.channels.ids.length === 0 ? '渠道' : '',
   props.modelValue.channelKeys.mode === 'allowlist' && props.modelValue.channelKeys.keys.length === 0 ? '渠道密钥' : '',
@@ -138,19 +158,21 @@ function changeKey(pair: ClientKeyAllowedChannelKey, event: Event): void {
           <option value="denylist">黑名单（仅静态密钥）</option>
         </select>
       </label>
-      <p class="muted small">{{ modelValue.channelKeys.mode === 'unrestricted' ? '沿用静态密钥与 OAuth 订阅账号的候选规则。' : modelValue.channelKeys.mode === 'denylist' ? '只排除选中的静态密钥，OAuth 订阅账号仍按其他规则参与候选。' : '只允许选中的静态密钥，OAuth 订阅账号不参与候选。' }}</p>
+      <p class="muted small">{{ modelValue.channelKeys.mode === 'unrestricted' ? '沿用静态密钥与 OAuth 订阅账号的候选规则。' : modelValue.channelKeys.mode === 'denylist' ? '只排除选中的静态密钥，OAuth 订阅账号仍按其他规则参与候选。' : '只允许选中的静态密钥，OAuth 订阅账号不参与候选；候选随上方渠道范围级联过滤。' }}</p>
       <template v-if="modelValue.channelKeys.mode !== 'unrestricted'">
         <div class="access-options" :aria-label="modelValue.channelKeys.mode === 'denylist' ? '渠道密钥黑名单' : '渠道密钥白名单'">
-          <label v-for="option in keyOptions" :key="JSON.stringify([option.channelId, option.keyId])" class="access-option">
+          <label v-for="option in selectableKeyOptions" :key="JSON.stringify([option.channelId, option.keyId])" class="access-option">
             <input type="checkbox" :checked="modelValue.channelKeys.keys.some(pair => sameKey(pair, option))" @change="changeKey(option, $event)" />
             <span><strong>{{ option.name }}</strong><code>{{ option.channelId }} / {{ option.keyId }}</code><small v-if="option.hint">{{ option.hint }}</small></span>
           </label>
-          <label v-for="pair in missingKeys" :key="JSON.stringify([pair.channelId, pair.keyId])" class="access-option is-unavailable">
-            <input type="checkbox" checked @change="changeKey(pair, $event)" />
-            <span><strong>{{ unavailableLabel }}</strong><code>{{ pair.channelId }} / {{ pair.keyId }}</code></span>
+          <label v-for="entry in blockedKeyEntries" :key="JSON.stringify([entry.pair.channelId, entry.pair.keyId])" class="access-option is-unavailable">
+            <input type="checkbox" checked @change="changeKey(entry.pair, $event)" />
+            <span><strong>{{ entry.name }}</strong><code>{{ entry.pair.channelId }} / {{ entry.pair.keyId }}</code><small v-if="entry.hint">{{ entry.hint }}</small></span>
           </label>
         </div>
-        <p v-if="loaded && keyOptions.length === 0" class="muted small">暂无可选择的静态密钥。</p>
+        <p v-if="loaded && selectableKeyOptions.length === 0 && blockedKeyEntries.length === 0" class="muted small">
+          {{ modelValue.channels.mode === 'allowlist' && modelValue.channels.ids.length === 0 ? '渠道白名单为空，没有可候选的静态密钥。' : '暂无可选择的静态密钥。' }}
+        </p>
         <p v-if="conflictingKeys.length" class="access-warning" role="status">已选密钥 {{ conflictingKeys.map(pair => `${pair.channelId} / ${pair.keyId}`).join('、') }} {{ modelValue.channels.mode === 'allowlist' ? '不在渠道白名单中' : '被渠道黑名单排除' }}，请调整后保存。</p>
       </template>
     </fieldset>

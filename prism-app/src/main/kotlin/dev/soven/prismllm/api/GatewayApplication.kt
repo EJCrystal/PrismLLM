@@ -295,9 +295,6 @@ class GatewayApplication(
     private val closed = AtomicBoolean(false)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** 智商检测后台任务登记表；随进程生命周期存在。 */
-    internal val iqTestJobs = IqTestJobRegistry()
-
     internal fun launchBackground(block: suspend CoroutineScope.() -> Unit) {
         scope.launch(block = block)
     }
@@ -347,6 +344,10 @@ class GatewayApplication(
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
     val iqTestRunRepository = dev.soven.prismllm.admin.persistence.IqTestRunRepository(databaseFactory.database)
+    internal val iqTestJobRepository = dev.soven.prismllm.admin.persistence.IqTestJobRepository(databaseFactory.database)
+
+    /** 智商检测后台任务登记表；状态持久化在 PostgreSQL。 */
+    internal val iqTestJobs = IqTestJobRegistry(iqTestJobRepository)
     val fingerprintTestRunRepository = dev.soven.prismllm.admin.persistence.FingerprintTestRunRepository(databaseFactory.database)
     val fingerprintDetector: FingerprintDetector? = runCatching { FingerprintDetector.loadDefault() }
         .onFailure { logger.warn("指纹检测参考库加载失败，相关接口将返回 503", it) }
@@ -627,6 +628,7 @@ class GatewayApplication(
         runBlocking { providerChannelProvisioner.reconcile() }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
         runBlocking { oauthAccountScheduler.restore(oauthWindowRepository.loadAll()) }
+        val resumedJobs = runBlocking { iqTestJobs.running() }
         runBlocking {
             // 上次运行留下的额度读数立即恢复，重启后不必等第一轮扫描才能拦截已用尽账号。
             oauthAccountRepository.listAll().forEach { account ->
@@ -807,10 +809,19 @@ class GatewayApplication(
         oauthTokenService.start(scope)
         oauthQuotaService.start(scope)
         runBlocking { syncLogRetentionJob() }
+        resumeIqTestJobs(resumedJobs)
     }
 
     fun beginShutdown() {
         requestDrain.beginShutdown()
+    }
+
+    internal fun resumeIqTestJobs(jobs: List<IqTestJobSnapshot>) {
+        if (jobs.isEmpty()) return
+        logger.info("resuming {} unfinished iq test jobs", jobs.size)
+        jobs.forEach { job ->
+            launchBackground { resumeIqTestJob(this@GatewayApplication, job) }
+        }
     }
 
     suspend fun drainRequests(timeoutMs: Long) {

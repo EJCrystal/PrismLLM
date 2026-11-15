@@ -1,77 +1,68 @@
 package dev.soven.prismllm.api
 
+import dev.soven.prismllm.admin.persistence.IqTestJobRecord
+import dev.soven.prismllm.admin.persistence.IqTestJobRepository
+import dev.soven.prismllm.admin.persistence.NewIqTestJob
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 internal enum class IqTestJobStatus(val value: String) {
     RUNNING("running"),
     COMPLETED("completed"),
     FAILED("failed"),
+    ;
+
+    companion object {
+        fun fromValue(value: String): IqTestJobStatus =
+            entries.firstOrNull { it.value == value } ?: FAILED
+    }
 }
 
 internal data class IqTestJobSnapshot(
     val jobId: String,
     val status: IqTestJobStatus,
+    val requestJson: String,
+    val prompt: String,
+    val questionId: Long?,
+    val questionTitle: String?,
+    val answerType: String?,
+    val expectedAnswerValue: String?,
+    val judgeId: String?,
     val runId: Long? = null,
     val error: String? = null,
-)
-
-/**
- * 管理台智商检测的后台任务登记表。
- *
- * 任务只在进程内保留一段时间供前端轮询；进程重启后未完成任务会丢失，
- * 已经写入的检测记录不受影响。
- */
-internal class IqTestJobRegistry(
-    private val maxAgeMs: Long = 30 * 60_000,
-    private val maxEntries: Int = 200,
-    private val now: () -> Long = System::currentTimeMillis,
 ) {
-    private data class Entry(
-        val createdAt: Long,
-        val status: IqTestJobStatus,
-        val runId: Long? = null,
-        val error: String? = null,
-    )
+    companion object {
+        fun from(record: IqTestJobRecord) = IqTestJobSnapshot(
+            jobId = record.jobId,
+            status = IqTestJobStatus.fromValue(record.status),
+            requestJson = record.requestJson,
+            prompt = record.prompt,
+            questionId = record.questionId,
+            questionTitle = record.questionTitle,
+            answerType = record.answerType,
+            expectedAnswerValue = record.expectedAnswerValue,
+            judgeId = record.judgeId,
+            runId = record.runId,
+            error = record.error,
+        )
+    }
+}
 
-    private val jobs = ConcurrentHashMap<String, Entry>()
-
-    fun create(): String {
-        prune()
-        val jobId = UUID.randomUUID().toString()
-        jobs[jobId] = Entry(now(), IqTestJobStatus.RUNNING)
-        return jobId
+/** 智商检测任务状态落库，重启后仍可查询并恢复未完成任务。 */
+internal class IqTestJobRegistry(private val repository: IqTestJobRepository) {
+    suspend fun create(newJob: NewIqTestJob): String {
+        repository.create(newJob)
+        return newJob.jobId
     }
 
-    fun complete(jobId: String, runId: Long) {
-        jobs.computeIfPresent(jobId) { _, entry ->
-            entry.copy(status = IqTestJobStatus.COMPLETED, runId = runId, error = null)
-        }
-    }
+    suspend fun complete(jobId: String, runId: Long) = repository.complete(jobId, runId)
 
-    fun fail(jobId: String, error: String) {
-        jobs.computeIfPresent(jobId) { _, entry ->
-            entry.copy(status = IqTestJobStatus.FAILED, runId = null, error = error.take(300))
-        }
-    }
+    suspend fun fail(jobId: String, error: String) = repository.fail(jobId, error)
 
-    fun find(jobId: String): IqTestJobSnapshot? {
-        prune()
-        val entry = jobs[jobId] ?: return null
-        return IqTestJobSnapshot(jobId, entry.status, entry.runId, entry.error)
-    }
+    suspend fun find(jobId: String): IqTestJobSnapshot? = repository.find(jobId)?.let(IqTestJobSnapshot::from)
 
-    private fun prune() {
-        val cutoff = now() - maxAgeMs
-        jobs.entries.removeIf { it.value.createdAt < cutoff }
-        val overflow = jobs.size - maxEntries
-        if (overflow <= 0) return
-        jobs.entries
-            .filter { it.value.status != IqTestJobStatus.RUNNING }
-            .sortedBy { it.value.createdAt }
-            .take(overflow)
-            .forEach { jobs.remove(it.key) }
-    }
+    suspend fun running(): List<IqTestJobSnapshot> = repository.running().map(IqTestJobSnapshot::from)
+
+    fun newJobId(): String = UUID.randomUUID().toString()
 }
 
 internal fun IqTestJobSnapshot.toResponse() = IqTestJobResponse(

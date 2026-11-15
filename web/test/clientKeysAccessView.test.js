@@ -164,4 +164,18 @@ describe('真实调用方密钥视图访问范围行为', () => {
     })
     assert.match(document.querySelector('.secret-value').textContent, /prism_fixture_only/)
   })
+
+  it('渠道白名单缩小导致密钥冲突时禁用保存，恢复渠道后可保存', async () => {
+    await mount(); await edit()
+    assert.equal(button('保存修改').disabled, false)
+    const group = document.querySelector('fieldset[aria-label="渠道访问范围"]')
+    const label = [...group.querySelectorAll('label')].find(node => node.textContent.includes('channel-b') && node.querySelector('input[type="checkbox"]'))
+    label.querySelector('input').click(); await settle()
+    assert.equal(button('保存修改').disabled, true)
+    assert.match(document.querySelector('.modal').textContent, /不在渠道白名单/)
+    label.querySelector('input').click(); await settle()
+    assert.equal(button('保存修改').disabled, false)
+    button('保存修改').click(); await settle()
+    assert.deepEqual(writes[0].accessPolicy, policy)
+  })
 })

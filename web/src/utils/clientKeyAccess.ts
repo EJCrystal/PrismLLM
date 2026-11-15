@@ -1,4 +1,4 @@
-import type { ClientKeyAccessPolicy } from '../types/api'
+import type { ClientKeyAccessPolicy, ClientKeyAllowedChannelKey } from '../types/api'
 
 /** 为新表单创建独立的默认访问范围。 */
 export function createUnrestrictedAccessPolicy(): ClientKeyAccessPolicy {
@@ -22,6 +22,14 @@ export function normalizeClientKeyAccessPolicy(policy: ClientKeyAccessPolicy): C
     channelKeys: { mode: policy.channelKeys.mode, keys: policy.channelKeys.mode !== 'unrestricted' ? [...keys.values()] : [] },
     models: { mode: policy.models.mode, ids: policy.models.mode !== 'unrestricted' ? ids(policy.models.ids) : [] },
   }
+}
+
+/** 密钥白名单中所属渠道不在渠道白名单（或被渠道黑名单排除）的密钥；后端会拒绝保存该组合。 */
+export function conflictingClientKeyAccessKeys(policy: ClientKeyAccessPolicy): ClientKeyAllowedChannelKey[] {
+  if (policy.channelKeys.mode !== 'allowlist') return []
+  return policy.channelKeys.keys.filter(pair => policy.channels.mode === 'allowlist'
+    ? !policy.channels.ids.includes(pair.channelId)
+    : policy.channels.mode === 'denylist' && policy.channels.ids.includes(pair.channelId))
 }
 
 /** 展示保存的模式与数量，不将空白名单误报为不限制。 */
