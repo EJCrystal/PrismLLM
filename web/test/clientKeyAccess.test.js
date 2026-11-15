@@ -379,4 +379,24 @@ describe('渠道与密钥合并卡片映射', () => {
     const disabledAccount = { ...withOAuth, oauthAccounts: [{ id: 'oauth-a', name: 'oauth-a@example.com', enabled: false, models: [] }] }
     assert.equal(modelAvailabilityMap(unrestricted(), [disabledAccount]).get('Model-A')?.supported, false)
   })
+
+  it('密钥维度启用时取消父渠道，零选中渠道同步移出名单；纯渠道级操作不受影响', async () => {
+    const { toggleChannelSelection, staticKeyEffective } = await tree()
+    const base = {
+      ...unrestricted(),
+      channels: { mode: 'allowlist', ids: ['channel-a', 'channel-b'] },
+      channelKeys: { mode: 'allowlist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] },
+    }
+    // 渠道白名单 [A,B] + 密钥白名单仅 A：取消 A 的父渠道后密钥维度解除，B 不得以渠道级语义复活。
+    const removed = toggleChannelSelection(base, channels, 'channel-a')
+    assert.deepEqual(removed.channels.ids, [])
+    assert.deepEqual(removed.channelKeys, { mode: 'unrestricted', keys: [] })
+    assert.equal(staticKeyEffective(removed, { channelId: 'channel-b', keyId: 'key-b' }), false)
+    // 纯渠道级操作（密钥维度未启用）不清理，其余渠道保持父勾选的渠道级放行。
+    const channelOnly = { ...unrestricted(), channels: { mode: 'allowlist', ids: ['channel-a', 'channel-b'] } }
+    const kept = toggleChannelSelection(channelOnly, channels, 'channel-a')
+    assert.deepEqual(kept.channels.ids, ['channel-b'])
+    assert.equal(kept.channelKeys.mode, 'unrestricted')
+    assert.equal(staticKeyEffective(kept, { channelId: 'channel-b', keyId: 'key-b' }), true)
+  })
 })

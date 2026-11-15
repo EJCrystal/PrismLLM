@@ -112,6 +112,17 @@ export function toggleChannelSelection(
     // 取消整渠道：移除渠道及其全部子密钥名单；密钥维度是否解除由 withKeys 统一裁定。
     const keys = policy.channelKeys.keys.filter(pair => pair.channelId !== channelId)
     const next = withKeys(policy, keys)
+    // 与子密钥取消路径一致：密钥白名单维度收窄或解除时，移除零选中子密钥的目录内渠道，
+    // 避免其余渠道以渠道级语义重新放行已被取消的密钥。纯渠道级操作（密钥维度未启用）
+    // 不清理，保留其他渠道的父勾选意图。
+    if (policy.channelKeys.mode === 'allowlist') {
+      const selectedChannels = new Set(keys.map(item => item.channelId))
+      const survivors = ids.filter(id => {
+        const other = channels.find(item => item.id === id)
+        return other == null || other.keys.length === 0 || selectedChannels.has(id)
+      })
+      return { ...next, channels: { ...next.channels, ids: survivors } }
+    }
     return { ...next, channels: { ...next.channels, ids } }
   }
   // 勾选（含半选转全选）与全选动作一致。
