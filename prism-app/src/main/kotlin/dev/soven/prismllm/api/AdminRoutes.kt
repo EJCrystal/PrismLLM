@@ -11,6 +11,7 @@ import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.admin.domain.IqVisionSettingsRecord
 import dev.soven.prismllm.admin.domain.NewIqTestRun
 import dev.soven.prismllm.admin.domain.IqQuestion
+import dev.soven.prismllm.admin.persistence.NewIqTestJob
 import dev.soven.prismllm.admin.domain.NewFingerprintTestRun
 import dev.soven.prismllm.admin.persistence.IqVisionSettingsUpdate
 import dev.soven.prismllm.admin.domain.sameVisionEndpoint
@@ -1020,91 +1021,23 @@ fun Route.adminRoutes(app: GatewayApplication) {
         post("/iq-tests") {
             call.requireAdmin(app)
             val request = call.receive<IqTestRunRequest>()
-            val benchmark = IqBenchmark.fromValue(request.benchmark)
-                ?: throw badRequest("invalid_iq_benchmark", "智商检测题目无效")
-            val channelId = request.channelId.trim()
-            if (channelId.isEmpty()) throw badRequest("invalid_iq_test", "缺少渠道 id")
-            val channel = app.channelRepository.find(channelId)?.let { channelWithCredentials(app, it) }
-                ?: throw notFound("channel_not_found", "渠道不存在")
-            val model = request.model.trim()
-            if (model.isEmpty() || model.length > 200) {
-                throw badRequest("invalid_iq_test", "模型名长度必须在 1..200 之间")
-            }
-            if (request.useQuestionBank && benchmark != IqBenchmark.CANDY) {
-                throw badRequest("invalid_iq_test", "题库仅用于糖果测试")
-            }
-            if (request.useQuestionBank && !request.prompt.isNullOrBlank()) {
-                throw badRequest("invalid_iq_test", "题库模式不能同时提交自定义提示词，请在题库中编辑题干")
-            }
-            val question = if (request.useQuestionBank) {
-                selectIqQuestion(app.iqQuestionRepository.enabled())
-                    ?: throw badRequest("iq_question_bank_empty", "没有启用的题目，请先添加或启用题目")
-            } else null
-            val prompt = question?.let(::iqQuestionPrompt)
-                ?: request.prompt?.trim()?.takeIf { it.isNotEmpty() } ?: benchmark.prompt
-            if (prompt.length > IQ_TEST_MAX_PROMPT_CHARS && question == null) {
-                throw badRequest("invalid_iq_test", "提示词长度不能超过 $IQ_TEST_MAX_PROMPT_CHARS 个字符")
-            }
-            if (model !in channel.models) {
-                throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
-            }
-            val credential = resolveChannelCredentialForModel(channel, model, request.keyId)
-            val protocol = request.protocol?.trim()?.takeIf { it.isNotEmpty() }?.let {
-                GatewayProtocol.fromValue(it) ?: throw badRequest("invalid_iq_test_protocol", "检测协议无效")
-            } ?: preferredProbeProtocol(channel)
-            if (protocol !in channel.protocols) {
-                throw badRequest("iq_test_protocol_unsupported", "渠道未启用协议 ${protocol.value}")
-            }
-            // 糖果题只读取 JSON 答案，不调用 HTML 判分器。
-            val judge = if (benchmark == IqBenchmark.PELICAN) {
-                val judgeId = request.judgeId?.trim()?.takeIf { it.isNotEmpty() }
-                    ?: app.effectiveIqDefaultJudge()
-                app.iqJudgeRegistry.find(judgeId)
-                    ?: throw badRequest("iq_judge_not_found", "判分器「$judgeId」不存在")
-            } else {
-                null
-            }
-            // 单次覆盖必须落在合法区间；越界直接拒绝，避免悄悄截断后与管理台输入不一致。
-            request.timeoutMs?.let { requested ->
-                if (requested !in 1_000..GatewayConfig.IQ_TEST_TIMEOUT_MAX_MS) {
-                    throw badRequest(
-                        "invalid_iq_test_timeout",
-                        "检测超时必须在 1000..${GatewayConfig.IQ_TEST_TIMEOUT_MAX_MS} 毫秒之间",
-                    )
-                }
-            }
-            val timeoutMs = benchmark.resolveTimeoutMs(request.timeoutMs, app.config.iqTestTimeoutMs)
-            val jobId = app.iqTestJobs.create()
+            val spec = iqTestJobSpec(app, request, persisted = null)
+            val jobId = app.iqTestJobs.newJobId()
+            app.iqTestJobs.create(persistedIqTestJob(jobId, spec))
             call.markAdminAuditDetails(
                 buildJsonObject {
-                    put("channelId", channel.id)
-                    put("model", model)
-                    put("benchmark", benchmark.value)
-                    put("keyId", credential.id)
-                    put("protocol", protocol.value)
-                    put("judgeId", judge?.id ?: "none")
+                    put("channelId", spec.channel.id)
+                    put("model", spec.model)
+                    put("benchmark", spec.benchmark.value)
+                    put("keyId", spec.credential.id)
+                    put("protocol", spec.protocol.value)
+                    put("judgeId", spec.judge?.id ?: "none")
                     put("jobId", jobId)
                 },
             )
             // 长检测放到后台任务，管理台请求立即返回，避免边缘代理在 100 秒处截断。
             call.respond(HttpStatusCode.Accepted, IqTestJobResponse(jobId, IqTestJobStatus.RUNNING.value))
-            app.launchBackground {
-                executeIqTestJob(
-                    app = app,
-                    jobId = jobId,
-                    spec = IqTestJobSpec(
-                        benchmark = benchmark,
-                        channel = channel,
-                        credential = credential,
-                        model = model,
-                        protocol = protocol,
-                        prompt = prompt,
-                        question = question,
-                        judge = judge,
-                        timeoutMs = timeoutMs,
-                    ),
-                )
-            }
+            app.launchBackground { executeIqTestJob(app, jobId, spec) }
         }
 
         put("/iq-tests/{id}/manual-verdict") {
@@ -3145,6 +3078,7 @@ private val MAPPING_SOURCES = setOf(MAPPING_SOURCE_MANUAL, "models_dev")
 private val iqTestLogger = LoggerFactory.getLogger("dev.soven.prismllm.api.IqTestJob")
 
 private data class IqTestJobSpec(
+    val request: IqTestRunRequest,
     val benchmark: IqBenchmark,
     val channel: ChannelRecord,
     val credential: UpstreamCredential,
@@ -3161,13 +3095,122 @@ private suspend fun executeIqTestJob(app: GatewayApplication, jobId: String, spe
         val record = runIqTest(app, spec)
         app.iqTestJobs.complete(jobId, record.id)
     } catch (cause: CancellationException) {
-        app.iqTestJobs.fail(jobId, "检测任务已取消")
+        iqTestLogger.warn("iq test job {} cancelled", jobId)
         throw cause
     } catch (cause: Throwable) {
+        if (cause is VirtualMachineError) throw cause
         iqTestLogger.warn("iq test job {} failed", jobId, cause)
-        app.iqTestJobs.fail(jobId, cause.message?.take(300) ?: "检测任务失败")
+        runCatching { app.iqTestJobs.fail(jobId, cause.message?.take(300) ?: "检测任务失败") }
+            .onFailure { iqTestLogger.error("iq test job {} status persistence failed", jobId, it) }
     }
 }
+
+internal suspend fun resumeIqTestJob(app: GatewayApplication, job: IqTestJobSnapshot) {
+    val request = runCatching {
+        GatewayApplication.gatewayJson.decodeFromString(IqTestRunRequest.serializer(), job.requestJson)
+    }.getOrElse { cause ->
+        iqTestLogger.warn("iq test job {} has invalid request payload", job.jobId, cause)
+        app.iqTestJobs.fail(job.jobId, "任务参数无法恢复")
+        return
+    }
+    val spec = runCatching { iqTestJobSpec(app, request, persisted = job) }.getOrElse { cause ->
+        if (cause is CancellationException) throw cause
+        val reason = (cause as? GatewayError)?.message ?: cause.message ?: "任务目标无法恢复"
+        iqTestLogger.warn("iq test job {} cannot be resumed", job.jobId, cause)
+        app.iqTestJobs.fail(job.jobId, reason)
+        return
+    }
+    executeIqTestJob(app, job.jobId, spec)
+}
+
+private suspend fun iqTestJobSpec(
+    app: GatewayApplication,
+    request: IqTestRunRequest,
+    persisted: IqTestJobSnapshot?,
+): IqTestJobSpec {
+    val benchmark = IqBenchmark.fromValue(request.benchmark)
+        ?: throw badRequest("invalid_iq_benchmark", "智商检测题目无效")
+    val channelId = request.channelId.trim()
+    if (channelId.isEmpty()) throw badRequest("invalid_iq_test", "缺少渠道 id")
+    val channel = app.channelRepository.find(channelId)?.let { channelWithCredentials(app, it) }
+        ?: throw notFound("channel_not_found", "渠道不存在")
+    val model = request.model.trim()
+    if (model.isEmpty() || model.length > 200) {
+        throw badRequest("invalid_iq_test", "模型名长度必须在 1..200 之间")
+    }
+    if (request.useQuestionBank && benchmark != IqBenchmark.CANDY) {
+        throw badRequest("invalid_iq_test", "题库仅用于糖果测试")
+    }
+    if (request.useQuestionBank && !request.prompt.isNullOrBlank()) {
+        throw badRequest("invalid_iq_test", "题库模式不能同时提交自定义提示词，请在题库中编辑题干")
+    }
+    if (model !in channel.models) {
+        throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
+    }
+    val credential = resolveChannelCredentialForModel(channel, model, request.keyId)
+    val protocol = request.protocol?.trim()?.takeIf { it.isNotEmpty() }?.let {
+        GatewayProtocol.fromValue(it) ?: throw badRequest("invalid_iq_test_protocol", "检测协议无效")
+    } ?: preferredProbeProtocol(channel)
+    if (protocol !in channel.protocols) {
+        throw badRequest("iq_test_protocol_unsupported", "渠道未启用协议 ${protocol.value}")
+    }
+    val judge = resolveIqTestJudge(app, benchmark, persisted?.judgeId ?: request.judgeId)
+    request.timeoutMs?.let { requested ->
+        if (requested !in 1_000..GatewayConfig.IQ_TEST_TIMEOUT_MAX_MS) {
+            throw badRequest(
+                "invalid_iq_test_timeout",
+                "检测超时必须在 1000..${GatewayConfig.IQ_TEST_TIMEOUT_MAX_MS} 毫秒之间",
+            )
+        }
+    }
+    val timeoutMs = benchmark.resolveTimeoutMs(request.timeoutMs, app.config.iqTestTimeoutMs)
+    val selectedQuestion = if (persisted == null && request.useQuestionBank) {
+        selectIqQuestion(app.iqQuestionRepository.enabled())
+            ?: throw badRequest("iq_question_bank_empty", "没有启用的题目，请先添加或启用题目")
+    } else null
+    val prompt = persisted?.prompt ?: run {
+        val text = selectedQuestion?.let(::iqQuestionPrompt)
+            ?: request.prompt?.trim()?.takeIf { it.isNotEmpty() } ?: benchmark.prompt
+        if (text.length > IQ_TEST_MAX_PROMPT_CHARS && selectedQuestion == null) {
+            throw badRequest("invalid_iq_test", "提示词长度不能超过 $IQ_TEST_MAX_PROMPT_CHARS 个字符")
+        }
+        text
+    }
+    val question = persisted?.let { snapshot ->
+        if (snapshot.questionId == null) null else IqQuestion(
+            id = snapshot.questionId,
+            title = snapshot.questionTitle.orEmpty(),
+            prompt = prompt,
+            answerType = snapshot.answerType.orEmpty(),
+            expectedAnswer = snapshot.expectedAnswerValue.orEmpty(),
+            enabled = true,
+            updatedAt = 0,
+        )
+    } ?: selectedQuestion
+    return IqTestJobSpec(request, benchmark, channel, credential, model, protocol, prompt, question, judge, timeoutMs)
+}
+
+private fun resolveIqTestJudge(
+    app: GatewayApplication,
+    benchmark: IqBenchmark,
+    judgeId: String?,
+): IqJudge? {
+    if (benchmark != IqBenchmark.PELICAN) return null
+    val selected = judgeId?.trim()?.takeIf { it.isNotEmpty() } ?: app.effectiveIqDefaultJudge()
+    return app.iqJudgeRegistry.find(selected)
+        ?: throw badRequest("iq_judge_not_found", "判分器「$selected」不存在")
+}
+
+private fun persistedIqTestJob(jobId: String, spec: IqTestJobSpec) = NewIqTestJob(
+    jobId = jobId,
+    requestJson = GatewayApplication.gatewayJson.encodeToString(IqTestRunRequest.serializer(), spec.request),
+    prompt = spec.prompt,
+    questionId = spec.question?.id,
+    questionTitle = spec.question?.title,
+    answerType = spec.question?.answerType,
+    expectedAnswerValue = spec.question?.expectedAnswer,
+    judgeId = spec.judge?.id,
+)
 
 private suspend fun runIqTest(app: GatewayApplication, spec: IqTestJobSpec): IqTestRunResponse {
     val result = testChannelModelConnectivity(

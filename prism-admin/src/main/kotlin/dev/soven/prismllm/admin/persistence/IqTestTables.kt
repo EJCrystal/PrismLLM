@@ -53,3 +53,26 @@ object IqTestRuns : Table("iq_test_runs") {
         index(false, createdAt)
     }
 }
+
+/** 智商检测后台任务；request_json 保存通过校验的原始请求，不含上游密钥。 */
+object IqTestJobs : Table("iq_test_jobs") {
+    val jobId = varchar("job_id", 36)
+    val status = varchar("status", 20)
+    val requestJson = text("request_json")
+    val prompt = text("prompt")
+    val questionId = long("question_id").nullable()
+    val questionTitle = varchar("question_title", 120).nullable()
+    val answerType = varchar("answer_type", 10).nullable()
+    val expectedAnswerValue = text("expected_answer_value").nullable()
+    val judgeId = varchar("judge_id", 64).nullable()
+    val runId = long("run_id").nullable()
+    val error = text("error").nullable()
+    val createdAt = long("created_at")
+    val completedAt = long("completed_at").nullable()
+
+    override val primaryKey = PrimaryKey(jobId)
+
+    init {
+        index(false, status, createdAt)
+    }
+}
