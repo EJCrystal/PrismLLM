@@ -323,6 +323,7 @@ function channelStatLabel(info: ReturnType<typeof channelCheckInfo>): string {
   .tree-row { flex-wrap: nowrap; min-height: 44px; }
   .tree-row.is-key { padding-left: 24px; }
   .tree-row.is-key:not(.is-stale) .tree-stat { display: none; }
-  .tree-id-pill svg { display: none; }
+  /* 复制图标渲染在子组件 CopyButton 内部，scoped 选择器需 :deep() 才能命中其后代 SVG。 */
+  .tree-id-pill :deep(svg) { display: none; }
 }
 </style>
