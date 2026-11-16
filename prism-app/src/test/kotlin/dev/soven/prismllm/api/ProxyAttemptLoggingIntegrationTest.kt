@@ -10,6 +10,8 @@ import dev.soven.prismllm.requestlog.domain.RetentionPolicy
 import dev.soven.prismllm.requestlog.domain.ChannelHealthReport
 import dev.soven.prismllm.requestlog.domain.ChannelHealthDetail
 import dev.soven.prismllm.resilience.FailureKind
+import dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity
+import dev.soven.prismllm.routing.readmodel.CredentialRouteType
 import dev.soven.prismllm.shared.crypto.ClientKeyHasher
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
@@ -422,19 +424,23 @@ class ProxyAttemptLoggingIntegrationTest {
     @Test
     fun `skipped events keep route order between upstream attempts`() = runBlocking {
         val modelId = "cooldown-order"
-        val credential = app.credentialCipher.encrypt("upstream-secret")
-        app.channelRepository.create(
+        val credential = app.credentialCipher.encrypt(UUID.randomUUID().toString())
+        val channel = app.channelRepository.create(
             name = "1-$modelId",
             baseUrl = "${fake.baseUrl}/500/v1",
             keys = listOf(
                 NewChannelKey("key-a", credential, priority = 1, models = listOf(modelId)),
-                NewChannelKey("key-b", credential, priority = 2, models = listOf(modelId)),
+                NewChannelKey("key-b", credential, priority = 1, models = listOf(modelId)),
             ),
             authType = "bearer",
             protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
             enabled = true,
             modelMappings = listOf(ChannelModelRecord(modelId)),
             priority = 1,
+        )
+        app.modelCredentialRouteRepository.save(
+            modelId, 0,
+            channel.keys.sortedBy { it.name }.map { CredentialRouteIdentity(channel.id, CredentialRouteType.STATIC, it.id) },
         )
         createChannel(modelId, "${fake.baseUrl}/ok/v1", priority = 2)
         testApplication {
@@ -665,8 +671,8 @@ class ProxyAttemptLoggingIntegrationTest {
         priority: Int = 1,
         models: List<String> = listOf(modelId),
     ) {
-        val credential = app.credentialCipher.encrypt("upstream-secret")
-        app.channelRepository.create(
+        val credential = app.credentialCipher.encrypt(UUID.randomUUID().toString())
+        val channel = app.channelRepository.create(
             name = "$priority-$modelId",
             baseUrl = baseUrl,
             keys = listOf(NewChannelKey(
@@ -679,6 +685,12 @@ class ProxyAttemptLoggingIntegrationTest {
             enabled = true,
             modelMappings = listOf(ChannelModelRecord(modelId)),
             priority = priority,
+        )
+        val route = app.modelCredentialRouteRepository.find(modelId)
+        app.modelCredentialRouteRepository.save(
+            modelId,
+            route?.revision ?: 0,
+            route?.entries.orEmpty() + CredentialRouteIdentity(channel.id, CredentialRouteType.STATIC, channel.keys.single().id),
         )
     }
 

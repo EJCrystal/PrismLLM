@@ -24,7 +24,7 @@ data class OAuthConfig(
     val quotaIntervalMs: Long = 300_000,
     /** 额度读数的有效期；过期读数只展示，不参与准入拦截。 */
     val quotaMaxAgeMs: Long = 900_000,
-    /** 同一渠道、同一密钥优先级内订阅账号的排序策略；不影响静态密钥。 */
+    /** 兼容保留的账号排序配置；模型请求始终使用已保存的模型路由顺序。 */
     val routing: OAuthRoutingStrategy = OAuthRoutingStrategy.ROUND_ROBIN,
     /**
      * 允许作为账号代理出口的主机。回环地址（127.0.0.1、localhost、::1）始终允许，

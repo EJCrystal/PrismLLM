@@ -1,5 +1,58 @@
 export type ProtocolId = 'chat_completions' | 'responses' | 'messages' | 'gemini'
 
+export type ModelRouteCredentialType = 'static' | 'oauth'
+
+/** A credential is ordered once, even when it supports several upstream aliases. */
+export interface ModelRouteIdentity {
+  channelId: string
+  credentialType: ModelRouteCredentialType
+  credentialId: string
+}
+
+export interface ModelRouteCredential extends ModelRouteIdentity {
+  channelName: string
+  credentialName: string
+  upstreamModels: string[]
+  protocols: string[]
+  selectable: boolean
+  reason: string | null
+}
+
+export interface ModelRouteSummary {
+  modelId: string
+  configured: boolean
+  entryCount: number
+  availableCount: number
+  revision: number
+}
+
+export interface ModelRouteListOptions {
+  q?: string
+  offset?: number
+  limit?: number
+}
+
+export interface ModelRoutePage {
+  items: ModelRouteSummary[]
+  total: number
+  offset: number
+  limit: number
+}
+
+export interface ModelRouteDetail {
+  modelId: string
+  revision: number
+  configured: boolean
+  entries: ModelRouteCredential[]
+  availableCredentials: ModelRouteCredential[]
+}
+
+export interface ModelRouteUpdateRequest {
+  modelId: string
+  expectedRevision: number
+  entries: ModelRouteIdentity[]
+}
+
 export type HealthWindow = '24h' | '7d' | '15d' | '30d'
 export type HealthState = 'HEALTHY' | 'WARNING' | 'CRITICAL' | 'UNKNOWN' | 'DISABLED' | 'NO_CREDENTIALS'
 export interface HealthMetrics {

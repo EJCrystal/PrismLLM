@@ -157,6 +157,7 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
+        configureModelRoute("m1", channel to channel.keys.single())
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -459,6 +460,7 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
                 rateLimit = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1))),
             authType = "bearer", protocols = GatewayProtocol.default, enabled = true, modelMappings = mappingsOf("m1"),
         )
+        configureModelRoute("m1", channel to channel.keys.single())
         val expired = expireProbeKey(channel.keys.single(), System.currentTimeMillis())
         val key = createClientKey()
         val serverJob = CompletableDeferred<Job>()
@@ -742,6 +744,7 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
             enabled = true,
             modelMappings = mappingsOf("gpt-4o-mini"),
         )
+        configureModelRoute("gpt-4o-mini", channel to channel.keys.single())
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -814,6 +817,7 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
                 statement.executeUpdate()
             }
         }
+        configureModelRoute("gpt-4o-mini", channel to channel.keys.single())
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -841,6 +845,7 @@ class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
             ),
             modelMappings = listOf(ChannelModelRecord("m1", "shared"), ChannelModelRecord("m2", "shared")),
         )
+        configureModelRoute("shared", *listOf("primary", "backup").map { name -> channel to channel.keys.single { it.name == name } }.toTypedArray())
         fake.keyStatuses["Bearer key-primary"] = 401
         val key = createClientKey()
         testApplication {

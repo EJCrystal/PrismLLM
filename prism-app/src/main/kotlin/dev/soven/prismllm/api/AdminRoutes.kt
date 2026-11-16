@@ -139,6 +139,7 @@ import org.slf4j.LoggerFactory
 fun Route.adminRoutes(app: GatewayApplication) {
     val channelUpdateMutex = Mutex()
     route("/admin/api") {
+        modelCredentialRoutes(app)
         notificationRoutes(app)
         post("/login") {
             val request = call.receive<LoginRequest>()

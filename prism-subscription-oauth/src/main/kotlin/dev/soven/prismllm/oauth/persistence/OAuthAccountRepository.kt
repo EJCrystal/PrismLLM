@@ -164,14 +164,20 @@ open class OAuthAccountRepository(
 
     /** 数据面候选：按渠道加载关联账号，包含停用账号，由路由阶段过滤。 */
     suspend fun listByChannel(limit: Int = 20_000): Map<String, List<OAuthAccountRecord>> = suspendTransaction(database) {
+        listByChannelInTransaction(limit)
+    }
+
+    /** 跨上下文配置快照读取；关联、账号与授权均使用调用方事务。 */
+    fun listByChannelInTransaction(limit: Int = 20_000): Map<String, List<OAuthAccountRecord>> {
+        requireTransaction()
         val links = OAuthAccountChannels.selectAll()
             .limit(limit.coerceIn(1, 100_000))
             .toList()
-        if (links.isEmpty()) return@suspendTransaction emptyMap()
+        if (links.isEmpty()) return emptyMap()
         val accountIds = links.map { it[OAuthAccountChannels.accountId] }.distinct()
         val rows = OAuthAccounts.selectAll().where { OAuthAccounts.id inList accountIds }.toList()
         val accounts = loadRelations(rows).associateBy { it.id }
-        links.groupBy { it[OAuthAccountChannels.channelId] }.mapValues { (_, channelLinks) ->
+        return links.groupBy { it[OAuthAccountChannels.channelId] }.mapValues { (_, channelLinks) ->
             channelLinks.mapNotNull { accounts[it[OAuthAccountChannels.accountId]] }
         }
     }

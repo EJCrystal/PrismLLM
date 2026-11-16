@@ -1,4 +1,4 @@
-# 独立订阅账号：OAuth 凭据、刷新与账号级调度
+# 独立订阅账号：OAuth 凭据、刷新与账号级资格控制
 
 ## 背景
 
@@ -20,8 +20,8 @@
 
 ### 数据面接入
 
-- 数据面候选从「渠道密钥」扩展为 `UpstreamCredential`：`ChannelKeyRecord` 与 `OAuthAccountRecord` 都实现该接口。`RouteCandidate` 持有凭据而不是密钥，静态密钥与订阅账号共享渠道优先级、轮候、冷却与并发占用。
-- `ChannelRecord.credentialsFor(model)` 合并静态密钥与关联账号，按 `priority`、名称与 id 稳定排序。账号的 `models` 为空时匹配所关联渠道的全部模型。
+- 数据面候选从「渠道密钥」扩展为 `UpstreamCredential`：`ChannelKeyRecord` 与 `OAuthAccountRecord` 都实现该接口。`RouteCandidate` 持有凭据而不是密钥，静态密钥与订阅账号都从公共模型的显式路由身份列表展开，共用候选冷却与并发占用。
+- 模型路由身份是 `(channelId, credentialType, credentialId)`，`credentialType=oauth` 表示订阅账号。运行时只按保存顺序展开同一账号的稳定、连续上游别名；账号授权与目录继续限定支持哪些上游模型，不能因路由选择而扩大。
 - 自动禁用、密钥级主动限流、探测租约等静态密钥专属能力只对 `ChannelKeyRecord` 生效；订阅账号由 `auth_state`、账号级窗口/并发/429 冷却与上游额度控制。
 - `OAuthTokenService.resolveCredential` 是解析上游凭据的唯一入口：静态密钥解密 `credential_*`，订阅账号按账号 id 读取 access token。账号不可用时绝不回退到 refresh token。
 - 已接入的路径：数据面转发（`ProxyRoutes` 的流式与非流式请求）、上游模型列表、协议探测、渠道模型连通性测试、管理面模型发现，以及额度插件查询。
@@ -41,7 +41,9 @@
 - 账号级窗口/并发/冷却属于硬限制，不进入 fail-open。当全部候选都被账号级限制拦下时返回 429 `subscription_account_rate_limited`，并带上最早可重试的 `Retry-After`。
 - 内存态是权威来源，`oauth_account_windows` 只保存重启恢复所需的快照（窗口命中、冷却截止时间、连续 429 次数）。快照按账号合并写透，最多每秒发布一次；关闭时强制刷新。
 - 修改窗口策略不会重置已有命中；窗口缩小后旧命中按时间自然滑出，期间可能持续拒绝。
-- 账号级排序在同一渠道、同一优先级档位内进行，支持 `round_robin`、`drain`、`least_used` 与 `pace`。静态密钥保持原有位置；客户端提供 `prompt_cache_key` 时保持亲和顺序。
+- `oauth_accounts.priority` 和对应 API 字段继续保留以兼容旧客户端，但不影响模型请求顺序。`OAUTH_ROUTING` 已弃用，仍接受 `round_robin`、`drain`、`least_used` 与 `pace`，不再触发任何运行时重排。`prompt_cache_key` 只作为请求字段转发；OAuth 身份与静态身份严格按管理员保存的模型路由列表尝试。
+- 账号级窗口、并发、额度与鉴权控制继续生效；候选冷却的 fail-open 只限该模型显式选择的身份，不能引入未配置账号。未配置模型路由显示 revision `0`、空 `entries`，不做运行时回退；保存空 `entries` 会停止该模型。
+- V73 只对迁移时启用渠道的当前模型及符合资格的静态/OAuth 凭据做一次性 seed，后续新增账号、凭据和模型必须显式选入模型路由。
 
 ### 上游额度观测
 
@@ -104,7 +106,7 @@
 ## Consequences
 
 - 订阅账号可以跨渠道复用，删除渠道不再删除账号；账号池调度、额度与代理都按账号聚合。
-- 账号不再继承静态密钥的自动禁用规则与密钥级主动限流；账号可用性由 `auth_state`、账号级窗口/并发/429 冷却与上游额度控制。
+- 数据面 OAuth 凭据须通过该账号授权、账号级窗口/并发/429 冷却与上游额度控制；账号优先级仅保留为兼容字段，不影响模型路由。
 - 数据面每个 OAuth 请求仍会读取一次账号行以获取最新 `auth_state` 与 token 到期时间；静态密钥不受影响。若账号数量增长到数据库往返成为瓶颈，可在此基础上增加短 TTL 缓存。
 - 账号级调度状态仍是单实例内存态，多副本部署需要改为共享计数或按账号分片。
 - 额度观测依赖上游私有接口。接口不可用或返回结构变化时解析失败，只影响额度展示与拦截，不影响 token 刷新与正常转发。

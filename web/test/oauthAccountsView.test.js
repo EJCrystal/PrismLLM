@@ -760,14 +760,14 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     const target = account(mock.fixture, IDS.quotaError)
     await openSettings(target.id)
     await input(field('账号名称'), '新的合成账号名称')
-    await input(field('优先级'), '8')
+    assert.equal(field('优先级'), undefined, 'Legacy priority is not editable')
     await input(dialog().querySelector('.oauth-proxy-row > input'), 'http://127.0.0.1:7890')
     modelRow('gemini-3-flash').querySelector('input[type="checkbox"]').click(); await settle()
     await manual('gemini-3-pro', 'custom/atomic')
     await save()
     assert.equal(writes().length, 1)
     assert.deepEqual(writes()[0].body, {
-      name: '新的合成账号名称', priority: 8, proxyUrl: 'http://127.0.0.1:7890', clearProxy: false,
+      name: '新的合成账号名称', proxyUrl: 'http://127.0.0.1:7890', clearProxy: false,
       models: ['gemini-3-flash', 'gemini-3-pro'],
       modelMappingChanges: [{ upstreamModel: 'gemini-3-pro', mode: 'manual', canonicalModelId: 'custom/atomic' }], expectedModelMappingRevision: 1,
     })
