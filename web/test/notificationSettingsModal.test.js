@@ -276,7 +276,7 @@ describe('notification settings modal interactions', () => {
     savedTargets[0].credentials = { ...savedTargets[0].credentials, urlConfigured: false, urlUnreadable: true }
     await mount()
     assert.match(targetRow().textContent, /URL 无法解密，请重填/)
-    assert.match(targetRow().textContent, /无法解密，请在编辑器中重新填写接收端 URL/)
+    assert.match(targetRow().textContent, /目标凭据无法解密，请在编辑器中重新填写/)
     assert.equal(button('发送测试', targetRow()).disabled, true)
   })
 

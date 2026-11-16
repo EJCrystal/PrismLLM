@@ -20,6 +20,7 @@ import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.notification.NotificationSendResult
 import dev.soven.prismllm.notification.NotificationTransport
 import dev.soven.prismllm.notification.notificationEvent
+import dev.soven.prismllm.shared.crypto.CredentialCipher
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -373,6 +374,41 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
 
             val persisted = assertNotNull(app.notificationRepository.findTarget(configured.id))
             assertEquals(firstSaved, persisted)
+        }
+    }
+
+    @Test
+    fun `test delivery is rejected when any stored credential cannot be decrypted`() = runBlocking {
+        replaceApp()
+        app.notificationRuntime.updateSettings(true, 2)
+        val session = app.sessions.create("admin")
+        val created = app.notificationRepository.saveTarget(NotificationTarget(
+            id = UUID.randomUUID().toString(), name = "无法解密目标", type = "webhook", revision = 0,
+        ))
+        val foreignCipher = CredentialCipher(ByteArray(32) { 11 })
+        val configured = app.notificationRepository.saveTarget(
+            created,
+            NotificationCredentialUpdate(
+                url = app.credentialCipher.encrypt(
+                    "https://hooks.example.test/notify",
+                    NotificationCredentialFields.aad(created.id, NotificationCredentialFields.URL),
+                ),
+                bearerToken = foreignCipher.encrypt(
+                    "foreign-token",
+                    NotificationCredentialFields.aad(created.id, NotificationCredentialFields.BEARER),
+                ),
+            ),
+        )
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/admin/api/notification-targets/${configured.id}/test") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status, response.bodyAsText())
+            assertTrue(response.bodyAsText().contains("notification_credentials_unreadable"))
+            assertEquals(0L, app.notificationRepository.deliveries(configured.id).total)
         }
     }
 }

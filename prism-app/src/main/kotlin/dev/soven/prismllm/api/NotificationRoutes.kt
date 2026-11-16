@@ -213,7 +213,7 @@ internal fun Route.notificationRoutes(app: GatewayApplication) {
         val id = call.requiredParam("id")
         val configured = repository.findTarget(id) ?: throw notFound("notification_target_not_found", "通知目标不存在")
         val credentials = app.notificationCredentials.status(configured)
-        if (credentials.urlUnreadable) {
+        if (credentials.urlUnreadable || credentials.bearerTokenUnreadable || credentials.signingSecretUnreadable) {
             throw badRequest("notification_credentials_unreadable", "目标凭据无法解密，请在管理台重新填写")
         }
         if (!credentials.urlConfigured) {

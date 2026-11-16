@@ -71,6 +71,14 @@ describe('notification settings validation and display', () => {
       notificationTestDisabledReason(baseSettings, { ...configuredTarget, credentials: { ...configuredTarget.credentials, urlUnreadable: true } }),
       /无法解密/,
     )
+    assert.match(
+      notificationTestDisabledReason(baseSettings, { ...configuredTarget, credentials: { ...configuredTarget.credentials, bearerTokenUnreadable: true } }),
+      /无法解密/,
+    )
+    assert.match(
+      notificationTestDisabledReason(baseSettings, { ...configuredTarget, credentials: { ...configuredTarget.credentials, signingSecretUnreadable: true } }),
+      /无法解密/,
+    )
     assert.equal(notificationTestDisabledReason(baseSettings, { ...configuredTarget, enabled: true }), '')
   })
 

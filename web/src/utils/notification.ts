@@ -70,8 +70,11 @@ export function notificationCredentialSecretError(value: string, label: string):
 export function notificationTestDisabledReason(settings: NotificationSettings | null, target: NotificationTargetResponse): string {
   if (!settings?.enabled) return '请先启用并保存全局通知设置。'
   if (!target.enabled) return '请先启用并保存此通知目标。'
-  if (target.credentials?.urlUnreadable) return '目标凭据无法解密，请在编辑器中重新填写接收端 URL。'
-  if (!target.credentials?.urlConfigured) return '请先在编辑器中填写接收端 URL，再刷新目标状态。'
+  const credentials = target.credentials
+  if (credentials?.urlUnreadable || credentials?.bearerTokenUnreadable || credentials?.signingSecretUnreadable) {
+    return '目标凭据无法解密，请在编辑器中重新填写。'
+  }
+  if (!credentials?.urlConfigured) return '请先在编辑器中填写接收端 URL，再刷新目标状态。'
   return ''
 }
 
