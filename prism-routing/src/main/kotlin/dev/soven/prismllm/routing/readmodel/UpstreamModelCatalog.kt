@@ -47,13 +47,14 @@ class UpstreamModelCatalog(
         val snapshot = configuration.read(null)
         val channels = snapshot.channels.filter { it.enabled && scope.allowsChannel(it.id) && it.protocols.isNotEmpty() }
         val routes = snapshot.routes.filter { it.configured }.associateBy { it.modelId }
+        val credentials = credentialIndex(snapshot.channels)
         val now = System.currentTimeMillis()
         return channels.flatMap { channel ->
             channel.modelMappings.mapNotNull { mapping ->
                 if (!mapping.catalogActive || !scope.allowsModel(mapping.publicModelId)) return@mapNotNull null
                 val protocols = routes[mapping.publicModelId]?.entries.orEmpty().asSequence()
                     .filter { it.channelId == channel.id }
-                    .mapNotNull { credentialFor(channel, it) }
+                    .mapNotNull { credentials[it] }
                     .filter { it.isRoutable(now) && it.supports(mapping.upstreamModel) && scope.allowsCredential(channel.id, it) }
                     .flatMap { credentialProtocols(channel, it, snapshot).asSequence() }
                     .toSet()
@@ -76,7 +77,13 @@ class UpstreamModelCatalog(
     suspend fun findCandidates(model: String, protocol: GatewayProtocol?): List<RouteCandidate> {
         val snapshot = configuration.read(model)
         val route = snapshot.routes.firstOrNull { it.modelId == model && it.configured } ?: return emptyList()
-        return routeCandidates(model, route, snapshot, protocol, System.currentTimeMillis(), RoutingAccessScope())
+        return routeCandidates(
+            model = model,
+            routeCredentials = configuredRouteCredentials(model, route, snapshot),
+            protocol = protocol,
+            now = System.currentTimeMillis(),
+            scope = RoutingAccessScope(),
+        )
     }
 
     /**
@@ -122,8 +129,7 @@ class UpstreamModelCatalog(
         }
         val candidates = if (route == null || accessDenied) emptyList() else routeCandidates(
             model = model,
-            route = route,
-            snapshot = snapshot,
+            routeCredentials = routeCredentials,
             protocol = protocol,
             now = now,
             scope = scope,
@@ -151,12 +157,11 @@ class UpstreamModelCatalog(
 
     private fun routeCandidates(
         model: String,
-        route: ModelCredentialRouteSnapshot,
-        snapshot: RoutingConfigurationSnapshot,
+        routeCredentials: List<ConfiguredRouteCredential>,
         protocol: GatewayProtocol?,
         now: Long,
         scope: RoutingAccessScope,
-    ): List<RouteCandidate> = configuredRouteCredentials(model, route, snapshot).mapNotNull { entry ->
+    ): List<RouteCandidate> = routeCredentials.mapNotNull { entry ->
         if (!entry.channel.enabled || entry.protocols.isEmpty() || !entry.credential.isRoutable(now) ||
             !scope.allowsModel(model) || !scope.allowsCredential(entry.channel.id, entry.credential)
         ) return@mapNotNull null
@@ -176,9 +181,10 @@ class UpstreamModelCatalog(
         snapshot: RoutingConfigurationSnapshot,
     ): List<ConfiguredRouteCredential> {
         val channelsById = snapshot.channels.associateBy { it.id }
+        val credentials = credentialIndex(snapshot.channels)
         return route.entries.flatMapIndexed { position, identity ->
             val channel = channelsById[identity.channelId] ?: return@flatMapIndexed emptyList()
-            val credential = credentialFor(channel, identity) ?: return@flatMapIndexed emptyList()
+            val credential = credentials[identity] ?: return@flatMapIndexed emptyList()
             val protocols = credentialProtocols(channel, credential, snapshot)
             channel.modelMappings.asSequence()
                 .filter { it.catalogActive && it.publicModelId == model && credential.supports(it.upstreamModel) }
@@ -202,11 +208,14 @@ class UpstreamModelCatalog(
     private fun supportsProtocol(requested: GatewayProtocol, available: List<GatewayProtocol>): Boolean =
         requested in available || available.any { ProtocolConversion.supports(requested, it) }
 
-    private fun credentialFor(channel: ChannelRecord, identity: CredentialRouteIdentity): UpstreamCredential? =
-        (channel.keys + channel.oauthAccounts).firstOrNull { credential ->
-            credential.id == identity.credentialId &&
-                credential.isOAuth == (identity.credentialType == CredentialRouteType.OAUTH)
+    private fun credentialIndex(channels: List<ChannelRecord>): Map<CredentialRouteIdentity, UpstreamCredential> {
+        val index = HashMap<CredentialRouteIdentity, UpstreamCredential>()
+        channels.forEach { channel ->
+            channel.keys.forEach { index[CredentialRouteIdentity(channel.id, CredentialRouteType.STATIC, it.id)] = it }
+            channel.oauthAccounts.forEach { index[CredentialRouteIdentity(channel.id, CredentialRouteType.OAUTH, it.id)] = it }
         }
+        return index
+    }
 
     /** 对外模型 ID 精确匹配规范 ID；只有 active 映射参与路由。 */
     private fun configuredModels(model: String, channels: List<ChannelRecord>): List<ConfiguredModel> =

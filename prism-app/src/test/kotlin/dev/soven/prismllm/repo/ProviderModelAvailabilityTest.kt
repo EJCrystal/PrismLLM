@@ -446,6 +446,27 @@ class ProviderModelAvailabilityTest {
         )
     }
 
+    @Test
+    fun `many credentials on one channel resolve in saved order`() = runBlocking {
+        resetStorage()
+        val model = "scale/static"
+        val keys = (0 until 300).map { index ->
+            NewChannelKey("key-$index", cipher.encrypt("scale-static-secret"), models = listOf("u1"))
+        }
+        val channel = channel(
+            mappings = listOf(ChannelModelRecord("u1", model, "manual")),
+            name = "scale-static",
+            keys = keys,
+            protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
+            kind = ChannelKind.CUSTOM,
+        )
+        val entries = channel.keys.map { CredentialRouteIdentity(channel.id, CredentialRouteType.STATIC, it.id) }
+        routes.save(model, 0, entries)
+
+        assertEquals(entries.map { it.credentialId }, catalog.resolve(model, GatewayProtocol.CHAT_COMPLETIONS).candidates.map { it.credential.id })
+        assertEquals(entries.map { it.credentialId }, catalog.findCandidates(model, GatewayProtocol.CHAT_COMPLETIONS).map { it.credential.id })
+    }
+
     private suspend fun resetStorage() = suspendTransaction(factory.database) {
         ModelCredentialRouteEntries.deleteAll()
         ModelCredentialRoutes.deleteAll()

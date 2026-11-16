@@ -65,7 +65,7 @@ with candidates as (
 ), ordered as (
     select *, row_number() over (
         partition by model_id
-        order by credential_priority, channel_priority, channel_name collate "C",
+        order by channel_priority, channel_name collate "C", credential_priority,
                  credential_name collate "C", credential_id collate "C", upstream_model collate "C",
                  credential_type collate "C", channel_id collate "C"
     ) - 1 as position

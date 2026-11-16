@@ -1335,7 +1335,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                         values ('route-a', 'route-a', 'https://example.invalid/v1', 'responses', true, 20, 1, 1),
                                ('route-b', 'route-b', 'https://example.invalid/v1', 'responses', true, 10, 1, 1),
                                ('route-disabled', 'route-disabled', 'https://example.invalid/v1', 'responses', false, 1, 1, 1),
-                               ('route-gemini', 'route-gemini', 'https://example.invalid/v1', 'gemini', true, 1, 1, 1),
+                               ('route-gemini', 'route-gemini', 'https://example.invalid/v1', 'gemini', true, 10, 1, 1),
                                ('route-protocol', 'route-protocol', 'https://example.invalid/v1', 'unknown', true, 1, 1, 1),
                                ('route-empty', 'route-empty', 'https://example.invalid/v1', 'responses', true, 1, 1, 1)
                         """.trimIndent(),
@@ -1406,12 +1406,12 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
             }
             migrateTo(migrationUrl, "73")
             val expected = listOf(
-                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.STATIC, "key-first"),
                 dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-b", dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH, "shared-id"),
-                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH, "shared-id"),
                 dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-b", dev.soven.prismllm.routing.readmodel.CredentialRouteType.STATIC, "key-b"),
-                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.STATIC, "shared-id"),
                 dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-gemini", dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH, "oauth-gemini"),
+                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.STATIC, "key-first"),
+                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH, "shared-id"),
+                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.STATIC, "shared-id"),
                 dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH, "oauth-inherited"),
                 dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.STATIC, "key-last"),
             )
