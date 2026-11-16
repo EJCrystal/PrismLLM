@@ -66,12 +66,14 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
 
     private suspend fun channel(): ChannelRecord {
         upstreamCredential = UUID.randomUUID().toString()
-        return app.channelRepository.create(
+        val created = app.channelRepository.create(
             name = "通知测试渠道", baseUrl = "${fake.baseUrl}/key-health/v1",
             keys = listOf(NewChannelKey("测试密钥", app.credentialCipher.encrypt(upstreamCredential), models = listOf("m1"))),
             authType = "bearer", protocols = GatewayProtocol.default, enabled = true,
             modelMappings = listOf(ChannelModelRecord("m1")),
         )
+        configureModelRoute("m1", created to created.keys.single())
+        return created
     }
 
     private suspend fun target(events: List<String>): NotificationTarget {
