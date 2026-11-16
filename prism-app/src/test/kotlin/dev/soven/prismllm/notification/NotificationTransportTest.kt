@@ -95,6 +95,27 @@ class NotificationTransportTest {
     }
 
     @Test
+    fun `credential read failures are retryable while cancellation propagates`() = runBlocking<Unit> {
+        val failing = NotificationCredentials({ throw IllegalStateException("database unavailable") }, credentialCipher)
+        val result = transport(
+            failing,
+            NotificationHttpExecutor { _, _, _, _ -> NotificationHttpResponse(200, null, ByteArray(0), false) },
+        ).send(target("webhook"), event())
+
+        assertFalse(result.success)
+        assertTrue(result.retryable)
+        assertEquals("credential_read_failed", result.errorCode)
+
+        val cancelled = NotificationCredentials({ throw CancellationException("cancelled") }, credentialCipher)
+        assertFailsWith<CancellationException> {
+            transport(
+                cancelled,
+                NotificationHttpExecutor { _, _, _, _ -> NotificationHttpResponse(200, null, ByteArray(0), false) },
+            ).send(target("webhook"), event())
+        }
+    }
+
+    @Test
     fun `URL policy blocks local special numeric and reserved IPv6 destinations`() {
         val credential = generatedSecret()
         val blocked = listOf(

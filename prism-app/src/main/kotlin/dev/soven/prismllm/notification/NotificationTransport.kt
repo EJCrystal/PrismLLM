@@ -99,8 +99,11 @@ class SafeNotificationTransport internal constructor(
             credentials.resolve(target)
         } catch (_: NotificationCredentialUnreadable) {
             return permanent("credential_unreadable")
+        } catch (failure: CancellationException) {
+            throw failure
         } catch (_: Exception) {
-            return permanent("invalid_configuration")
+            // 数据库或连接异常是临时的；交给交付重试，避免一次读取失败就让事件永久失败。
+            return retryable("credential_read_failed")
         }
         environment.bearerToken?.let { token ->
             if (token.any { it.code !in 0x21..0x7e }) return permanent("invalid_configuration")
