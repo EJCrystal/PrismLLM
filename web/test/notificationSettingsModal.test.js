@@ -202,6 +202,7 @@ describe('notification settings modal interactions', () => {
     create.click(); create.click(); await settle()
     assert.equal(writes().length, 1)
     assert.deepEqual(writes()[0].body, { name: '新值班群', type: 'feishu', enabled: false, events: ['channel.unhealthy'], channelIds: ['channel-one'], environmentPrefix: 'PRISM_NOTIFY_NEW' })
+    assert.equal(Object.hasOwn(writes()[0].body, 'revision'), false)
     assert.equal(document.querySelector('.notification-target-editor'), null)
     assert.equal(document.querySelectorAll('.notification-target-row').length, 3)
     assert.equal(calls.some(call => call.url.endsWith('/test')), false)
@@ -224,6 +225,7 @@ describe('notification settings modal interactions', () => {
     assert.equal(writes()[0].method, 'PUT')
     assert.equal(writes()[0].url, '/admin/api/notification-targets/target-one')
     assert.equal(writes()[0].body.name, '修改后的值班群')
+    assert.equal(writes()[0].body.revision, fixtureTarget().revision)
     assert.match(targetRow().textContent, /修改后的值班群/)
     assert.equal(calls.some(call => call.url.endsWith('/test')), false)
   })
@@ -308,6 +310,31 @@ describe('notification settings modal interactions', () => {
     assert.match(document.querySelector('.notification-test-result').textContent, /投递失败.*2 次尝试.*HTTP 502.*delivery_failed/s)
     assert.equal([...timers.values()].filter(timer => timer.ms === 1200).length, 0)
     assert.equal(document.querySelector('.notification-status').dataset.status, 'failed')
+  })
+
+  it('keeps a polled terminal delivery when an older pending history response arrives later', async () => {
+    savedSettings.enabled = true
+    const pending = fixtureDelivery(1, { updatedAt: 1_800_000_000_002 })
+    const succeeded = fixtureDelivery(1, { status: 'succeeded', attempts: 1, updatedAt: 1_800_000_000_002 })
+    let finishHistory
+    let reads = 0
+    handler = call => {
+      if (!call.url.includes('notification-deliveries')) return undefined
+      reads += 1
+      if (reads === 1) return new Promise(resolve => { finishHistory = resolve })
+      return response({ items: [succeeded], total: 1, page: 1, pageSize: 20 })
+    }
+    await mount()
+    button('发送测试', targetRow()).click(); await settle()
+    assert.equal(typeof finishHistory, 'function')
+    await tickPoll()
+    assert.equal(state.testDelivery.value.status, 'succeeded')
+    finishHistory(response({ items: [pending], total: 1, page: 1, pageSize: 20 }))
+    await settle()
+    assert.equal(state.testDelivery.value.status, 'succeeded')
+    assert.match(document.querySelector('.notification-test-result').textContent, /测试通知投递成功/)
+    assert.equal(document.querySelector('.notification-status').dataset.status, 'succeeded')
+    assert.match(targetRow().querySelector('.notification-latest-delivery').textContent, /投递成功/)
   })
 
   it('bounds automatic polling and leaves the queued event available for manual refresh', async () => {

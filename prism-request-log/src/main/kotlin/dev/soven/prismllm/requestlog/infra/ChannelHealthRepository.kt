@@ -60,6 +60,7 @@ class ChannelHealthRepository(
     suspend fun recentHealth(now: Long = System.currentTimeMillis()): List<ChannelHealthSummary> {
         val channels = directory.overviews(now)
         return suspendTransaction(database) {
+            exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             val from = now - 3_600_000L
             val observations = groups(from, now, null, "channel_id")
             val pending = exec(

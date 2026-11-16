@@ -94,12 +94,12 @@ curl "http://localhost:8080/v1beta/models/gemini-2.5-flash:streamGenerateContent
 | `PUT /admin/api/notification-settings` | 完整保存全局开关和连续失败阈值（1..100） |
 | `GET /admin/api/notification-targets` | 列出目标、环境变量齐备标志和最近投递结果 |
 | `POST /admin/api/notification-targets` | 新建目标，返回 201 |
-| `PUT /admin/api/notification-targets/{id}` | 完整替换目标非敏感配置 |
+| `PUT /admin/api/notification-targets/{id}` | 完整替换目标非敏感配置；必须携带此前 GET 返回的 `revision`，版本冲突返回 409 |
 | `DELETE /admin/api/notification-targets/{id}` | 删除目标，取消待投递任务，保留历史，返回 204 |
 | `POST /admin/api/notification-targets/{id}/test` | 在全局及目标启用时排队测试通知，返回 202 `{deliveryId,eventId}` |
 | `GET /admin/api/notification-deliveries?targetId=&page=1&pageSize=20` | 可选目标筛选，返回 `{items,total,page,pageSize}`；pageSize 上限 100 |
 
-目标输入包含 `name`（最多 100 字符）、`type`（webhook/feishu）、`enabled`、`events`（非空事件类型列表）、`channelIds`（最多 100 个；空列表为全部）和 `environmentPrefix`。不接受凭据值。输出增加 `id`、`revision`、`updatedAt`、`credentials`（`urlConfigured`、`bearerTokenConfigured`、`signingSecretConfigured`）和 `latestDelivery`。投递状态为 pending、in_flight、succeeded、failed、cancelled。
+目标输入包含 `name`（最多 100 字符）、`type`（webhook/feishu）、`enabled`、`events`（非空事件类型列表）、`channelIds`（最多 100 个；空列表为全部）和 `environmentPrefix`。不接受凭据值。创建无需提交 `revision`；更新必须提交编辑时读取的正整数 `revision`，缺省或非正数返回 400，版本已变化返回 409 `notification_target_changed`，不覆盖当前配置。发生冲突时保留草稿，重新读取并核对配置后再保存。输出增加 `id`、`revision`、`updatedAt`、`credentials`（`urlConfigured`、`bearerTokenConfigured`、`signingSecretConfigured`）和 `latestDelivery`。投递状态为 pending、in_flight、succeeded、failed、cancelled。
 
 所有接口要求管理员会话，写接口要求 CSRF。测试通知会实际发送消息；保存配置本身不发送测试消息，测试按钮不可盲目重试。完整事件与签名契约见 [通知指南](notifications.md)。
 

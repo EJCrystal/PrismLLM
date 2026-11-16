@@ -32,7 +32,8 @@ describe('notification admin API contract', () => {
       channelIds: [], environmentPrefix: 'PRISM_NOTIFY_ONCALL',
     }
     await api.createNotificationTarget(targetPayload)
-    await api.updateNotificationTarget('target/one', targetPayload)
+    const updateTargetPayload = { ...targetPayload, revision: target.revision }
+    await api.updateNotificationTarget('target/one', updateTargetPayload)
     await api.deleteNotificationTarget('target/one')
 
     assert.deepEqual(calls.map(({ method, url }) => [method, url]), [
@@ -45,7 +46,8 @@ describe('notification admin API contract', () => {
     ])
     assert.deepEqual(JSON.parse(calls[1].body), settingsPayload)
     assert.deepEqual(JSON.parse(calls[3].body), targetPayload)
-    assert.deepEqual(JSON.parse(calls[4].body), targetPayload)
+    assert.equal(Object.hasOwn(JSON.parse(calls[3].body), 'revision'), false)
+    assert.deepEqual(JSON.parse(calls[4].body), updateTargetPayload)
     assert.deepEqual(calls.filter(call => call.method !== 'GET').map(call => call.csrf), Array(4).fill('notify-csrf'))
   })
 

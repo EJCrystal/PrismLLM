@@ -7,6 +7,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -313,10 +314,15 @@ class NotificationTransportTest {
         callbackSeen.await()
         requestSeen.await()
 
-        transport.close()
-        send.cancelAndJoin()
+        try {
+            transport.close()
+            withTimeout(5_000L) { send.join() }
 
-        assertTrue(cancelCount.get() > 0)
+            assertTrue(send.isCancelled)
+            assertTrue(cancelCount.get() > 0)
+        } finally {
+            send.cancelAndJoin()
+        }
     }
 
     private fun transport(env: Map<String, String>, http: NotificationHttpExecutor) = SafeNotificationTransport(

@@ -706,6 +706,7 @@ export interface NotificationTargetRequest {
   channelIds: string[]
   /** 只保存 PRISM_NOTIFY_ 开头的变量前缀，不包含 URL 或密钥。 */
   environmentPrefix: string
+  revision?: number
 }
 
 export interface NotificationCredentials {

@@ -32,6 +32,7 @@ internal data class NotificationTargetRequest(
     val events: List<String> = NotificationEvents.subscriptions,
     val channelIds: List<String> = emptyList(),
     val environmentPrefix: String,
+    val revision: Long? = null,
 )
 
 @Serializable
@@ -124,8 +125,11 @@ internal fun Route.notificationRoutes(app: GatewayApplication) {
     put("/notification-targets/{id}") {
         call.requireAdmin(app)
         val id = call.requiredParam("id")
-        val existing = repository.findTarget(id) ?: throw notFound("notification_target_not_found", "通知目标不存在")
-        val updated = target(call.receive(), id).copy(revision = existing.revision)
+        repository.findTarget(id) ?: throw notFound("notification_target_not_found", "通知目标不存在")
+        val request = call.receive<NotificationTargetRequest>()
+        val revision = request.revision?.takeIf { it > 0 }
+            ?: throw badRequest("invalid_notification_revision", "通知目标版本无效，请刷新后重试")
+        val updated = target(request, id).copy(revision = revision)
         val saved = saveTarget(updated)
         call.markAdminAuditDetails(buildJsonObject { put("targetId", saved.id); put("enabled", saved.enabled) })
         call.respond(response(saved))

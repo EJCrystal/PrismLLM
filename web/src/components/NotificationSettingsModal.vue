@@ -57,6 +57,8 @@ const historyHasNext = computed(() => historyPage.value * pageSize < historyTota
 let requestedHistoryPage = 1
 let historyController: AbortController | null = null
 let historyGeneration = 0
+// History and test polling can return snapshots of the same delivery out of order.
+const observedDeliveries = new Map<string, NotificationDelivery>()
 
 const testingTargetId = ref<string | null>(null)
 const testTargetName = ref('')
@@ -117,7 +119,10 @@ async function loadTargets(): Promise<void> {
   try {
     const result = await api.listNotificationTargets({ signal: lifetimeController.signal })
     if (disposed) return
-    targets.value = result
+    targets.value = result.map(target => ({
+      ...target,
+      latestDelivery: target.latestDelivery ? observeDelivery(target.latestDelivery) : null,
+    }))
     if (selectedHistoryTargetId.value && !result.some(target => target.id === selectedHistoryTargetId.value)) clearHistorySelection()
   } catch (cause) {
     if (!disposed) targetsError.value = errorMessage(cause)
@@ -142,6 +147,7 @@ function closeEditor(): void {
 }
 
 function onTargetSaved(target: NotificationTargetResponse): void {
+  if (target.latestDelivery) target.latestDelivery = observeDelivery(target.latestDelivery)
   const index = targets.value.findIndex(item => item.id === target.id)
   if (index >= 0) targets.value.splice(index, 1, target)
   else targets.value.push(target)
@@ -178,11 +184,41 @@ function clearHistorySelection(): void {
   historyLoading.value = false
 }
 
-function updateTestDelivery(delivery: NotificationDelivery): void {
-  testDelivery.value = delivery
-  testMessage.value = `测试通知${notificationDeliveryStatusLabel(delivery.status)}。`
-  const target = targets.value.find(item => item.id === delivery.targetId)
-  if (target && (!target.latestDelivery || target.latestDelivery.createdAt <= delivery.createdAt)) target.latestDelivery = delivery
+function mergeDelivery(current: NotificationDelivery | null, incoming: NotificationDelivery): NotificationDelivery {
+  if (!current || current.id !== incoming.id) return incoming
+  if (incoming.updatedAt < current.updatedAt) return current
+  if (notificationDeliveryFinished(current.status) && !notificationDeliveryFinished(incoming.status)) return current
+  return incoming
+}
+
+function observeDelivery(delivery: NotificationDelivery): NotificationDelivery {
+  const observed = mergeDelivery(observedDeliveries.get(delivery.id) ?? null, delivery)
+  observedDeliveries.set(observed.id, observed)
+  return observed
+}
+
+function updateTestDelivery(delivery: NotificationDelivery): NotificationDelivery {
+  const observed = observeDelivery(delivery)
+  if (observed.id === testDeliveryId.value) {
+    testDelivery.value = observed
+    testMessage.value = `测试通知${notificationDeliveryStatusLabel(observed.status)}。`
+  }
+  const target = targets.value.find(item => item.id === observed.targetId)
+  if (target) {
+    const latest = target.latestDelivery
+    target.latestDelivery = latest?.id === observed.id
+      ? mergeDelivery(latest, observed)
+      : !latest || latest.createdAt <= observed.createdAt ? observed : latest
+  }
+  return observed
+}
+
+function mergeHistoryItems(items: NotificationDelivery[]): NotificationDelivery[] {
+  return items.map(item => {
+    const observed = observeDelivery(item)
+    if (observed.id === testDeliveryId.value) updateTestDelivery(observed)
+    return observed
+  })
 }
 
 async function loadHistory(page = requestedHistoryPage): Promise<void> {
@@ -198,11 +234,10 @@ async function loadHistory(page = requestedHistoryPage): Promise<void> {
   try {
     const result = await api.listNotificationDeliveries({ targetId, page, pageSize }, { signal: controller.signal })
     if (controller.signal.aborted || generation !== historyGeneration || disposed) return
-    history.value = result.items
+    const items = mergeHistoryItems(result.items)
+    history.value = items
     historyTotal.value = result.total
     historyPage.value = result.page
-    const testResult = result.items.find(item => item.id === testDeliveryId.value)
-    if (testResult) updateTestDelivery(testResult)
   } catch (cause) {
     if (!controller.signal.aborted && generation === historyGeneration && !disposed) historyError.value = errorMessage(cause)
   } finally {
@@ -267,15 +302,13 @@ async function testTarget(target: NotificationTargetResponse): Promise<void> {
       if (controller.signal.aborted || disposed) return
       const result = await api.listNotificationDeliveries({ targetId: target.id, page: 1, pageSize }, { signal: controller.signal })
       if (controller.signal.aborted || disposed) return
+      const items = mergeHistoryItems(result.items)
       if (selectedHistoryTargetId.value === target.id && historyPage.value === 1 && !historyLoading.value) {
-        history.value = result.items
+        history.value = items
         historyTotal.value = result.total
       }
-      const delivery = result.items.find(item => item.id === queued.deliveryId)
-      if (delivery) {
-        updateTestDelivery(delivery)
-        if (notificationDeliveryFinished(delivery.status)) return
-      }
+      const delivery = items.find(item => item.id === queued.deliveryId)
+      if (delivery && notificationDeliveryFinished(delivery.status)) return
     }
     testMessage.value = '测试通知已入队，已停止自动查询；请刷新投递记录查看后续结果。'
   } catch (cause) {

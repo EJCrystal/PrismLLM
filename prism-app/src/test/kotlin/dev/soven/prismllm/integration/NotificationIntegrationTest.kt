@@ -259,7 +259,7 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
                 header("X-CSRF-Token", session.session.csrf)
                 contentType(ContentType.Application.Json)
-                setBody("""{"name":"created target","type":"webhook","enabled":false,"events":["key.disabled"],"channelIds":[],"environmentPrefix":"PRISM_NOTIFY_TEST"}""")
+                setBody("""{"name":"created target","type":"webhook","enabled":false,"events":["key.disabled"],"channelIds":[],"environmentPrefix":"PRISM_NOTIFY_TEST","revision":99}""")
             }
             assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
             val createdJson = Json.parseToJsonElement(created.bodyAsText()).jsonObject
@@ -270,7 +270,7 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
                 header("X-CSRF-Token", session.session.csrf)
                 contentType(ContentType.Application.Json)
-                setBody("""{"name":"updated target","type":"webhook","enabled":false,"events":["key.disabled"],"channelIds":[],"environmentPrefix":"PRISM_NOTIFY_TEST"}""")
+                setBody("""{"name":"updated target","type":"webhook","enabled":false,"events":["key.disabled"],"channelIds":[],"environmentPrefix":"PRISM_NOTIFY_TEST","revision":$revision}""")
             }
             assertEquals(HttpStatusCode.OK, updated.status, updated.bodyAsText())
             assertEquals("updated target", Json.parseToJsonElement(updated.bodyAsText()).jsonObject.getValue("name").jsonPrimitive.content)
@@ -287,6 +287,68 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
             val eventId = Json.parseToJsonElement(test.bodyAsText()).jsonObject.getValue("eventId").jsonPrimitive.content
             awaitCondition("test notification delivered") { sent.any { it.eventId == eventId } }
             assertEquals(NotificationEvents.TEST, sent.single { it.eventId == eventId }.eventType)
+        }
+    }
+
+    @Test
+    fun `notification target updates require the current positive revision`() = runBlocking {
+        replaceApp()
+        val configured = target(listOf(NotificationEvents.KEY_DISABLED))
+        val session = app.sessions.create("admin")
+        val baseBody = """{"name":"edited target","type":"webhook","enabled":false,"events":["key.disabled"],"channelIds":[],"environmentPrefix":"PRISM_NOTIFY_TEST"}"""
+
+        testApplication {
+            application { app.install(this) }
+            val missingRevision = client.put("/admin/api/notification-targets/${configured.id}") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(baseBody)
+            }
+            assertEquals(HttpStatusCode.BadRequest, missingRevision.status)
+
+            listOf(0L, -1L).forEach { revision ->
+                val invalidRevision = client.put("/admin/api/notification-targets/${configured.id}") {
+                    header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                    header("X-CSRF-Token", session.session.csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(baseBody.dropLast(1) + ",\"revision\":$revision}")
+                }
+                assertEquals(HttpStatusCode.BadRequest, invalidRevision.status)
+            }
+
+            val missingTarget = client.put("/admin/api/notification-targets/${UUID.randomUUID()}") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(baseBody)
+            }
+            assertEquals(HttpStatusCode.NotFound, missingTarget.status)
+            assertEquals(configured, app.notificationRepository.findTarget(configured.id))
+
+            val initialRevision = configured.revision
+            val firstEdit = client.put("/admin/api/notification-targets/${configured.id}") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(baseBody.dropLast(1) + ",\"revision\":$initialRevision}")
+            }
+            assertEquals(HttpStatusCode.OK, firstEdit.status, firstEdit.bodyAsText())
+            val firstJson = Json.parseToJsonElement(firstEdit.bodyAsText()).jsonObject
+            assertEquals("edited target", firstJson.getValue("name").jsonPrimitive.content)
+            assertEquals(initialRevision + 1, firstJson.getValue("revision").jsonPrimitive.content.toLong())
+            val firstSaved = assertNotNull(app.notificationRepository.findTarget(configured.id))
+
+            val staleEdit = client.put("/admin/api/notification-targets/${configured.id}") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"stale edit","type":"webhook","enabled":true,"events":["key.disabled"],"channelIds":[],"environmentPrefix":"PRISM_NOTIFY_TEST","revision":$initialRevision}""")
+            }
+            assertEquals(HttpStatusCode.Conflict, staleEdit.status)
+
+            val persisted = assertNotNull(app.notificationRepository.findTarget(configured.id))
+            assertEquals(firstSaved, persisted)
         }
     }
 }

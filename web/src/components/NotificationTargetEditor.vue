@@ -24,6 +24,7 @@ const draft = reactive<NotificationTargetRequest>({
   events: [...(props.target?.events ?? notificationEventOptions.map(event => event.value))],
   channelIds: [...(props.target?.channelIds ?? [])],
   environmentPrefix: props.target?.environmentPrefix ?? '',
+  revision: props.target?.revision,
 })
 const allChannels = ref(draft.channelIds.length === 0)
 const channels = ref<Pick<Channel, 'id' | 'name' | 'enabled'>[]>([])
@@ -56,6 +57,7 @@ function payload(): NotificationTargetRequest {
     events: [...draft.events],
     channelIds: allChannels.value ? [] : [...draft.channelIds],
     environmentPrefix: draft.environmentPrefix.trim(),
+    ...(draft.revision === undefined ? {} : { revision: draft.revision }),
   }
 }
 
