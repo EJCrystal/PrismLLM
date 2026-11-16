@@ -185,10 +185,10 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 - `entries` 只提交身份：`channelId`、`credentialType`（严格为 `static` 或 `oauth`）和 `credentialId`。同一三元组不能重复；静态/OAuth 的同名 ID 是不同身份。不要回传名称、上游别名、协议或可用性元数据。
 - `modelId` 长度 `1..200`，不得有首尾空白或控制字符；`expectedRevision` 必须是有效非负版本。首次配置使用详情返回的 revision `0`。并发保存版本冲突返回 HTTP 409 `model_route_revision_changed`；应保留草稿、刷新状态并由管理员核对，不能自动覆盖。
 - 新选入的身份必须仍在该模型当前目录中且 `selectable=true`，否则返回 `400 invalid_model_route_credential`。已保存后停用、删除或失去模型资格的身份继续展示为不可用，可保留或移除；不会自动替换成其他凭据。
-- 当前目录模型尚未配置路由时返回 `configured=false`、revision `0`、`entries=[]`；读取不会创建路由，数据面也不回退到旧候选发现。显式保存 `entries=[]` 表示停止该模型，保留 `configured=true` 和新的 revision，不代表“全部凭据”。V73 seed 的已配置路由也可能为 revision `0`，应结合 `configured` 判断。
+- 当前目录模型尚未配置路由时返回 `configured=false`、revision `0`、`entries=[]`；读取不会创建路由，数据面也不回退到旧候选发现。显式保存 `entries=[]` 表示停止该模型，保留 `configured=true` 和新的 revision，不代表“全部凭据”。V74 seed 的已配置路由也可能为 revision `0`，应结合 `configured` 判断。
 - 列表顺序就是运行时尝试顺序，转换候选可以排在原生候选之前。同一身份的多个上游别名稳定、连续展开。渠道/凭据 `priority`、轮询、HRW、OAuth 策略都不重排；`prompt_cache_key` 只转发。
 - 渠道与凭据启停、OAuth 鉴权、模型目录/授权、调用方访问范围、额度、账号级窗口/并发与冷却控制继续生效。故障转移和候选冷却 fail-open 只限已配置身份，不能补入未选择的凭据。
-- V73 一次性为迁移时启用渠道的活跃公共模型建立路由，只 seed 当时已启用且满足模型/账号资格的凭据；后续新模型、新密钥和新 OAuth 账号都必须显式选择。优先级 API/存储字段仍兼容保留，运行时不使用它们排序。
+- V74 一次性为迁移时启用渠道的活跃公共模型建立路由，只 seed 当时已启用且满足模型/账号资格的凭据；后续新模型、新密钥和新 OAuth 账号都必须显式选择。优先级 API/存储字段仍兼容保留，运行时不使用它们排序。
 
 ### 3. 模型发现与协议探测
 
@@ -414,7 +414,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
   - `POST /admin/api/oauth-accounts/<account-id>/refresh`：允许对 `REAUTH_REQUIRED` 账号再试一次；失败返回 `502 oauth_refresh_failed`。
   - `POST /admin/api/oauth-accounts/<account-id>/cooldown/clear`：清除账号级冷却，并清理该账号在所有关联渠道下的候选冷却。
 - 以上写操作分别写入审计动作 `oauth_account.delete`、`oauth_account.settings.update`、`oauth_account.login.start`、`oauth_account.login`、`oauth_account.policy.update`、`oauth_account.quota.refresh`、`oauth_account.refresh` 与 `oauth_account.cooldown.clear`，只记录账号 id、provider、策略参数、渠道 id 与操作结果。
-- V73 为迁移时当前模型和符合资格的凭据做一次性有序路由初始化；后续新增模型、静态密钥和 OAuth 账号都需在模型路由中显式选择。`OAUTH_ROUTING` 已弃用但仍接受原值，不再产生运行时效果。
+- V74 为迁移时当前模型和符合资格的凭据做一次性有序路由初始化；后续新增模型、静态密钥和 OAuth 账号都需在模型路由中显式选择。`OAUTH_ROUTING` 已弃用但仍接受原值，不再产生运行时效果。
 
 ---
 

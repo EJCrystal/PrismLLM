@@ -494,7 +494,7 @@ class GatewayApplication(
     val providerChannelProvisioner = ProviderChannelProvisioner(channelRepository, oauthAccountRepository)
 
     init {
-        databaseFactory.beforeMigration("73") {
+        databaseFactory.beforeMigration("74") {
             runBlocking { providerChannelProvisioner.reconcileBeforeModelCredentialRouteMigration() }
         }
     }

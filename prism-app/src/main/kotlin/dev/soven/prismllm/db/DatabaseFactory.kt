@@ -52,7 +52,7 @@ class DatabaseFactory(config: GatewayConfig) : AutoCloseable {
 
         override fun handle(event: Event, context: Context) {
             // Use another connection/transaction. The callback connection is not enlisted, so the
-            // provisioning changes commit before V73 starts and never wait on Flyway history locks.
+            // provisioning changes commit before V74 starts and never wait on Flyway history locks.
             action()
         }
 
