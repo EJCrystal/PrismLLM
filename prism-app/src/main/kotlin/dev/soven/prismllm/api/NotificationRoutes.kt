@@ -1,11 +1,14 @@
 package dev.soven.prismllm.api
 
+import dev.soven.prismllm.admin.domain.NotificationCredentialFields
+import dev.soven.prismllm.admin.domain.NotificationCredentialUpdate
 import dev.soven.prismllm.admin.domain.NotificationDelivery
 import dev.soven.prismllm.admin.domain.NotificationEvent
 import dev.soven.prismllm.admin.domain.NotificationEvents
 import dev.soven.prismllm.admin.domain.NotificationTarget
 import dev.soven.prismllm.notification.NotificationCredentialStatus
-import dev.soven.prismllm.notification.NotificationSecrets
+import dev.soven.prismllm.notification.NotificationUrlPolicy
+import dev.soven.prismllm.notification.NotificationUrlRejected
 import dev.soven.prismllm.shared.error.badRequest
 import dev.soven.prismllm.shared.error.notFound
 import io.ktor.http.HttpStatusCode
@@ -24,6 +27,17 @@ import java.util.UUID
 @Serializable
 internal data class NotificationSettingsRequest(val enabled: Boolean, val consecutiveFailureThreshold: Int = 5)
 
+/** Write-only credentials; empty fields keep the stored value and clear flags delete it. */
+@Serializable
+internal data class NotificationCredentialWrite(
+    val url: String? = null,
+    val bearerToken: String? = null,
+    val signingSecret: String? = null,
+    val clearUrl: Boolean = false,
+    val clearBearerToken: Boolean = false,
+    val clearSigningSecret: Boolean = false,
+)
+
 @Serializable
 internal data class NotificationTargetRequest(
     val name: String,
@@ -31,7 +45,7 @@ internal data class NotificationTargetRequest(
     val enabled: Boolean = true,
     val events: List<String> = NotificationEvents.subscriptions,
     val channelIds: List<String> = emptyList(),
-    val environmentPrefix: String,
+    val credentials: NotificationCredentialWrite? = null,
     val revision: Long? = null,
 )
 
@@ -43,7 +57,6 @@ internal data class NotificationTargetResponse(
     val enabled: Boolean,
     val events: List<String>,
     val channelIds: List<String>,
-    val environmentPrefix: String,
     val revision: Long,
     val updatedAt: Long,
     val credentials: NotificationCredentialStatus,
@@ -56,12 +69,15 @@ internal data class NotificationTestResponse(val deliveryId: String, val eventId
 internal fun Route.notificationRoutes(app: GatewayApplication) {
     val repository = app.notificationRepository
     suspend fun response(target: NotificationTarget): NotificationTargetResponse = NotificationTargetResponse(
-        target.id, target.name, target.type, target.enabled, target.events, target.channelIds, target.environmentPrefix,
-        target.revision, target.updatedAt, app.notificationSecrets.status(target.environmentPrefix),
+        target.id, target.name, target.type, target.enabled, target.events, target.channelIds,
+        target.revision, target.updatedAt, app.notificationCredentials.status(target),
         repository.deliveries(targetId = target.id, pageSize = 1).items.firstOrNull(),
     )
-    suspend fun saveTarget(value: NotificationTarget): NotificationTarget = try {
-        repository.saveTarget(value)
+    suspend fun saveTarget(
+        value: NotificationTarget,
+        credentials: NotificationCredentialUpdate?,
+    ): NotificationTarget = try {
+        repository.saveTarget(value, credentials)
     } catch (cause: IllegalArgumentException) {
         when (cause.message) {
             "notification_target_not_found" -> throw notFound("notification_target_not_found", "通知目标不存在")
@@ -72,15 +88,55 @@ internal fun Route.notificationRoutes(app: GatewayApplication) {
             else -> throw cause
         }
     }
-    suspend fun target(request: NotificationTargetRequest, id: String): NotificationTarget {
+    fun credentialText(raw: String?, label: String, maxLength: Int): String? {
+        val value = raw?.takeIf { it.isNotBlank() } ?: return null
+        if (value.length > maxLength) throw badRequest("invalid_notification_credentials", "$label 不能超过 $maxLength 个字符")
+        if (value.any { it.isISOControl() }) throw badRequest("invalid_notification_credentials", "$label 不能包含控制字符")
+        return value
+    }
+    fun credentialUpdate(request: NotificationCredentialWrite?, targetId: String): NotificationCredentialUpdate? {
+        if (request == null) return null
+        val url = credentialText(request.url, "接收端 URL", 2_048)?.trim()
+        val bearerToken = credentialText(request.bearerToken, "Bearer 令牌", 4_096)
+        val signingSecret = credentialText(request.signingSecret, "签名密钥", 4_096)
+        if (url != null && request.clearUrl) throw badRequest("invalid_notification_credentials", "URL 不能同时填写并清除")
+        if (bearerToken != null && request.clearBearerToken) throw badRequest("invalid_notification_credentials", "Bearer 令牌不能同时填写并清除")
+        if (signingSecret != null && request.clearSigningSecret) throw badRequest("invalid_notification_credentials", "签名密钥不能同时填写并清除")
+        if (bearerToken != null && bearerToken.any { it.code !in 0x21..0x7e }) {
+            throw badRequest("invalid_notification_credentials", "Bearer 令牌只能包含可打印 ASCII 字符")
+        }
+        if (signingSecret != null && signingSecret.any { it.code !in 0x21..0x7e }) {
+            throw badRequest("invalid_notification_credentials", "签名密钥只能包含可打印 ASCII 字符")
+        }
+        if (url != null) {
+            try {
+                NotificationUrlPolicy.parse(url)
+            } catch (_: NotificationUrlRejected) {
+                throw badRequest("invalid_notification_url", "接收端 URL 仅支持 HTTP/HTTPS 公网地址，且不能包含账号、片段或本机地址")
+            }
+        }
+        val update = NotificationCredentialUpdate(
+            url = url?.let {
+                app.credentialCipher.encrypt(it, NotificationCredentialFields.aad(targetId, NotificationCredentialFields.URL))
+            },
+            bearerToken = bearerToken?.let {
+                app.credentialCipher.encrypt(it, NotificationCredentialFields.aad(targetId, NotificationCredentialFields.BEARER))
+            },
+            signingSecret = signingSecret?.let {
+                app.credentialCipher.encrypt(it, NotificationCredentialFields.aad(targetId, NotificationCredentialFields.SIGNATURE))
+            },
+            clearUrl = request.clearUrl,
+            clearBearerToken = request.clearBearerToken,
+            clearSigningSecret = request.clearSigningSecret,
+        )
+        return update.takeIf { it.changesAnything }
+    }
+    suspend fun target(request: NotificationTargetRequest): NotificationTarget {
         val name = request.name.trim()
         if (name.isEmpty() || name.length > 100 || name.any { it.isISOControl() }) {
             throw badRequest("invalid_notification_name", "通知目标名称需要 1..100 个字符")
         }
         if (request.type !in setOf("webhook", "feishu")) throw badRequest("invalid_notification_type", "通知类型仅支持 webhook 或 feishu")
-        if (!NotificationSecrets.isValidPrefix(request.environmentPrefix)) {
-            throw badRequest("invalid_notification_environment", "请填写 PRISM_NOTIFY_ 开头的环境变量前缀，后接 1..48 位大写字母、数字或下划线，首位须为字母")
-        }
         if (request.events.isEmpty() || request.events.size > NotificationEvents.subscriptions.size || request.events.any { it !in NotificationEvents.subscriptions }) {
             throw badRequest("invalid_notification_events", "请至少选择一种有效通知事件")
         }
@@ -90,8 +146,8 @@ internal fun Route.notificationRoutes(app: GatewayApplication) {
         val existing = app.channelRepository.listNames().keys
         if (request.channelIds.any { it !in existing }) throw badRequest("invalid_notification_channels", "所选渠道不存在")
         return NotificationTarget(
-            id = id, name = name, type = request.type, enabled = request.enabled,
-            events = request.events.distinct(), channelIds = request.channelIds.distinct(), environmentPrefix = request.environmentPrefix,
+            id = "", name = name, type = request.type, enabled = request.enabled,
+            events = request.events.distinct(), channelIds = request.channelIds.distinct(),
         )
     }
 
@@ -118,8 +174,15 @@ internal fun Route.notificationRoutes(app: GatewayApplication) {
     post("/notification-targets") {
         call.requireAdmin(app)
         if (repository.listTargets().size >= 20) throw badRequest("notification_target_limit", "最多配置 20 个通知目标")
-        val saved = saveTarget(target(call.receive(), UUID.randomUUID().toString()).copy(revision = 0))
-        call.markAdminAuditDetails(buildJsonObject { put("targetId", saved.id); put("type", saved.type) })
+        val request = call.receive<NotificationTargetRequest>()
+        val id = UUID.randomUUID().toString()
+        val credentials = credentialUpdate(request.credentials, id)
+        val saved = saveTarget(target(request).copy(id = id, revision = 0), credentials)
+        call.markAdminAuditDetails(buildJsonObject {
+            put("targetId", saved.id)
+            put("type", saved.type)
+            put("credentialsChanged", credentials != null)
+        })
         call.respond(HttpStatusCode.Created, response(saved))
     }
     put("/notification-targets/{id}") {
@@ -129,9 +192,13 @@ internal fun Route.notificationRoutes(app: GatewayApplication) {
         val request = call.receive<NotificationTargetRequest>()
         val revision = request.revision?.takeIf { it > 0 }
             ?: throw badRequest("invalid_notification_revision", "通知目标版本无效，请刷新后重试")
-        val updated = target(request, id).copy(revision = revision)
-        val saved = saveTarget(updated)
-        call.markAdminAuditDetails(buildJsonObject { put("targetId", saved.id); put("enabled", saved.enabled) })
+        val credentials = credentialUpdate(request.credentials, id)
+        val saved = saveTarget(target(request).copy(id = id, revision = revision), credentials)
+        call.markAdminAuditDetails(buildJsonObject {
+            put("targetId", saved.id)
+            put("enabled", saved.enabled)
+            put("credentialsChanged", credentials != null)
+        })
         call.respond(response(saved))
     }
     delete("/notification-targets/{id}") {
@@ -145,8 +212,12 @@ internal fun Route.notificationRoutes(app: GatewayApplication) {
         call.requireAdmin(app)
         val id = call.requiredParam("id")
         val configured = repository.findTarget(id) ?: throw notFound("notification_target_not_found", "通知目标不存在")
-        if (!app.notificationSecrets.status(configured.environmentPrefix).urlConfigured) {
-            throw badRequest("notification_url_missing", "目标 URL 环境变量尚未配置")
+        val credentials = app.notificationCredentials.status(configured)
+        if (credentials.urlUnreadable) {
+            throw badRequest("notification_credentials_unreadable", "目标凭据无法解密，请在管理台重新填写")
+        }
+        if (!credentials.urlConfigured) {
+            throw badRequest("notification_url_missing", "请先在管理台填写接收端 URL")
         }
         val event = NotificationEvent(
             eventId = UUID.randomUUID().toString(), eventType = NotificationEvents.TEST,

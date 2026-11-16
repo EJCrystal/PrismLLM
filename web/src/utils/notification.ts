@@ -7,8 +7,6 @@ import type {
   NotificationTargetResponse,
 } from '../types/api'
 
-export const notificationEnvironmentPrefixPattern = /^PRISM_NOTIFY_[A-Z][A-Z0-9_]{0,47}$/
-
 export const notificationEventOptions: { value: NotificationEventType; label: string; description: string }[] = [
   { value: 'channel.unhealthy', label: '渠道异常', description: '渠道健康状态转为异常。' },
   { value: 'channel.recovered', label: '渠道恢复', description: '异常渠道恢复可用。' },
@@ -33,9 +31,6 @@ export function notificationTargetError(
     return '目标名称需为 1 到 100 个字符，且不含控制字符。'
   }
   if (payload.type !== 'webhook' && payload.type !== 'feishu') return '请选择 Webhook 或飞书机器人。'
-  if (!notificationEnvironmentPrefixPattern.test(payload.environmentPrefix)) {
-    return '环境变量前缀须以 PRISM_NOTIFY_ 开头，后接 1 到 48 位大写字母、数字或下划线，且首位为字母。'
-  }
   const supported = new Set<string>(notificationEventOptions.map(event => event.value))
   if (!payload.events.length || payload.events.length > notificationEventOptions.length || payload.events.some(event => !supported.has(event))) {
     return '请至少选择一种有效的通知事件。'
@@ -49,10 +44,34 @@ export function notificationTargetError(
   return ''
 }
 
+export function notificationCredentialUrlError(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  if (trimmed.length > 2048) return '接收端 URL 不能超过 2048 个字符。'
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    return '请填写完整的 HTTP 或 HTTPS 地址。'
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '接收端 URL 仅支持 HTTP 或 HTTPS。'
+  if (parsed.username || parsed.password) return '接收端 URL 不能包含账号或密码。'
+  return ''
+}
+
+export function notificationCredentialSecretError(value: string, label: string): string {
+  if (!value) return ''
+  if (value.length > 4096) return `${label}不能超过 4096 个字符。`
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(value)) return `${label}不能包含控制字符。`
+  if (/[^\x21-\x7e]/.test(value)) return `${label}只能包含可打印 ASCII 字符。`
+  return ''
+}
+
 export function notificationTestDisabledReason(settings: NotificationSettings | null, target: NotificationTargetResponse): string {
   if (!settings?.enabled) return '请先启用并保存全局通知设置。'
   if (!target.enabled) return '请先启用并保存此通知目标。'
-  if (!target.credentials?.urlConfigured) return `请先配置 ${target.environmentPrefix}_URL，再刷新目标状态。`
+  if (target.credentials?.urlUnreadable) return '目标凭据无法解密，请在编辑器中重新填写接收端 URL。'
+  if (!target.credentials?.urlConfigured) return '请先在编辑器中填写接收端 URL，再刷新目标状态。'
   return ''
 }
 

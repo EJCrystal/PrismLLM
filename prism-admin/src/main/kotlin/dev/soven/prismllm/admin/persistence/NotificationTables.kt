@@ -1,5 +1,6 @@
 package dev.soven.prismllm.admin.persistence
 
+import org.jetbrains.exposed.v1.core.ReferenceOption
 import org.jetbrains.exposed.v1.core.Table
 
 object NotificationSettingsTable : Table("notification_settings") {
@@ -18,11 +19,28 @@ object NotificationTargets : Table("notification_targets") {
     val enabled = bool("enabled")
     val events = text("events")
     val channelIds = text("channel_ids")
-    val environmentPrefix = varchar("environment_prefix", 64)
     val revision = long("revision")
     val updatedAt = long("updated_at")
 
     override val primaryKey = PrimaryKey(id)
+}
+
+/** 通知目标接收端凭据的 AES-256-GCM 密文；随目标删除级联清理。 */
+object NotificationTargetCredentials : Table("notification_target_credentials") {
+    val targetId = varchar("target_id", 36)
+        .references(NotificationTargets.id, onDelete = ReferenceOption.CASCADE)
+    val urlCiphertext = text("url_ciphertext").default("")
+    val urlNonce = text("url_nonce").default("")
+    val urlKeyVersion = integer("url_key_version").default(1)
+    val bearerTokenCiphertext = text("bearer_token_ciphertext").default("")
+    val bearerTokenNonce = text("bearer_token_nonce").default("")
+    val bearerTokenKeyVersion = integer("bearer_token_key_version").default(1)
+    val signingSecretCiphertext = text("signing_secret_ciphertext").default("")
+    val signingSecretNonce = text("signing_secret_nonce").default("")
+    val signingSecretKeyVersion = integer("signing_secret_key_version").default(1)
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(targetId)
 }
 
 object NotificationAlertStates : Table("notification_alert_states") {

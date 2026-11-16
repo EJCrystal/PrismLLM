@@ -2,13 +2,15 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
-import type { Channel, NotificationTargetRequest, NotificationTargetResponse } from '../types/api'
+import type { Channel, NotificationCredentialWrite, NotificationTargetRequest, NotificationTargetResponse } from '../types/api'
 import {
-  notificationEnvironmentPrefixPattern,
+  notificationCredentialSecretError,
+  notificationCredentialUrlError,
   notificationEventOptions,
   notificationTargetError,
 } from '../utils/notification'
 import Icon from './Icon.vue'
+import SecretInput from './SecretInput.vue'
 
 const props = defineProps<{ target: NotificationTargetResponse | null }>()
 const emit = defineEmits<{
@@ -23,8 +25,15 @@ const draft = reactive<NotificationTargetRequest>({
   enabled: props.target?.enabled ?? true,
   events: [...(props.target?.events ?? notificationEventOptions.map(event => event.value))],
   channelIds: [...(props.target?.channelIds ?? [])],
-  environmentPrefix: props.target?.environmentPrefix ?? '',
   revision: props.target?.revision,
+})
+const credentialDraft = reactive({
+  url: '',
+  bearerToken: '',
+  signingSecret: '',
+  clearUrl: false,
+  clearBearerToken: false,
+  clearSigningSecret: false,
 })
 const allChannels = ref(draft.channelIds.length === 0)
 const channels = ref<Pick<Channel, 'id' | 'name' | 'enabled'>[]>([])
@@ -35,35 +44,53 @@ const saving = ref(false)
 const error = ref('')
 let disposed = false
 
-const prefixIsValid = computed(() => notificationEnvironmentPrefixPattern.test(draft.environmentPrefix.trim()))
-const environmentNamePrefix = computed(() => prefixIsValid.value ? draft.environmentPrefix.trim() : 'PRISM_NOTIFY_ONCALL')
-const credentials = computed(() => props.target?.environmentPrefix === draft.environmentPrefix.trim()
-  ? props.target.credentials
-  : null)
-const credentialRows = computed(() => [
-  { suffix: '_URL', configured: credentials.value?.urlConfigured, required: true },
-  { suffix: '_BEARER_TOKEN', configured: credentials.value?.bearerTokenConfigured, required: false },
-  { suffix: '_SIGNING_SECRET', configured: credentials.value?.signingSecretConfigured, required: false },
-])
+const credentials = computed(() => props.target?.credentials ?? null)
+const urlState = computed(() => credentialState(credentials.value?.urlConfigured, credentials.value?.urlUnreadable, true))
+const bearerState = computed(() => credentialState(credentials.value?.bearerTokenConfigured, credentials.value?.bearerTokenUnreadable))
+const signingState = computed(() => credentialState(credentials.value?.signingSecretConfigured, credentials.value?.signingSecretUnreadable))
 const staleChannelIds = computed(() => channelsLoaded.value
   ? draft.channelIds.filter(id => !channels.value.some(channel => channel.id === id))
   : [])
 
+function credentialState(configured: boolean | undefined, unreadable: boolean | undefined, required = false) {
+  if (unreadable) return { label: '无法解密，请重新填写', className: 'is-missing' }
+  if (configured) return { label: '已保存，留空保持不变', className: 'is-configured' }
+  return { label: required ? '未配置（必需）' : '未配置（可选）', className: required ? 'is-missing' : 'is-optional' }
+}
+
+function credentialsPayload(): NotificationCredentialWrite | undefined {
+  const payload: NotificationCredentialWrite = {}
+  if (credentialDraft.url.trim()) payload.url = credentialDraft.url.trim()
+  if (credentialDraft.bearerToken.trim()) payload.bearerToken = credentialDraft.bearerToken.trim()
+  if (credentialDraft.signingSecret.trim()) payload.signingSecret = credentialDraft.signingSecret.trim()
+  if (credentialDraft.clearUrl) payload.clearUrl = true
+  if (credentialDraft.clearBearerToken) payload.clearBearerToken = true
+  if (credentialDraft.clearSigningSecret) payload.clearSigningSecret = true
+  return Object.keys(payload).length ? payload : undefined
+}
+
 function payload(): NotificationTargetRequest {
+  const credentials = credentialsPayload()
   return {
     name: draft.name.trim(),
     type: draft.type,
     enabled: draft.enabled,
     events: [...draft.events],
     channelIds: allChannels.value ? [] : [...draft.channelIds],
-    environmentPrefix: draft.environmentPrefix.trim(),
+    ...(credentials ? { credentials } : {}),
     ...(draft.revision === undefined ? {} : { revision: draft.revision }),
   }
 }
 
+const credentialError = computed(() =>
+  notificationCredentialUrlError(credentialDraft.url) ||
+  notificationCredentialSecretError(credentialDraft.bearerToken, 'Bearer 令牌') ||
+  notificationCredentialSecretError(credentialDraft.signingSecret, '签名密钥'))
+
 const validationError = computed(() => {
   const result = notificationTargetError(payload(), channelsLoaded.value ? channels.value : undefined, allChannels.value)
   if (result) return result
+  if (credentialError.value) return credentialError.value
   if (!allChannels.value && !channelsLoaded.value) return '请先成功读取渠道列表，再保存指定渠道范围。'
   return ''
 })
@@ -133,33 +160,65 @@ onBeforeUnmount(() => { disposed = true })
             <option value="feishu">飞书机器人</option>
           </select>
         </label>
-        <label class="field notification-prefix-field">
-          <span>环境变量前缀</span>
-          <input
-            v-model="draft.environmentPrefix" type="text" maxlength="61" required autocomplete="off"
-            spellcheck="false" placeholder="PRISM_NOTIFY_ONCALL" :disabled="saving"
-            :aria-invalid="draft.environmentPrefix.length > 0 && !prefixIsValid"
-          />
-          <small>以 PRISM_NOTIFY_ 开头，后接 1 到 48 位大写字母、数字或下划线，首位须为字母。</small>
-        </label>
       </div>
       <label class="switch-row">
         <input v-model="draft.enabled" type="checkbox" :disabled="saving" />
         <span class="switch"></span>
-        <span><strong>启用此目标</strong><small>可先停用并保存目标，配置环境变量后再启用。</small></span>
+        <span><strong>启用此目标</strong><small>可先停用并保存目标，配置凭据后再启用。</small></span>
       </label>
 
-      <div class="notification-env-names">
-        <p>在部署环境中配置以下变量。地址为必需项，认证和签名按接收端要求配置；此处不填写或展示变量值。</p>
-        <div v-for="row in credentialRows" :key="row.suffix" class="notification-env-row">
-          <code>{{ environmentNamePrefix }}{{ row.suffix }}</code>
-          <span v-if="credentials" :class="row.configured ? 'is-configured' : row.required ? 'is-missing' : 'is-optional'">
-            <Icon :name="row.configured ? 'check' : row.required ? 'close' : 'info'" :size="12" />
-            {{ row.configured ? '已配置' : row.required ? '未配置（必需）' : '未配置（可选）' }}
-          </span>
-          <span v-else class="is-optional">{{ row.required ? '必需' : '可选' }} · 保存后读取状态</span>
+      <fieldset class="notification-credential-group" :disabled="saving">
+        <legend>接收端凭据</legend>
+        <p>凭据以 AES-256-GCM 加密保存在数据库，保存后不再回显；留空表示保持不变。清除已保存的值后，该字段变为未配置。</p>
+        <div class="notification-credential-row">
+          <label class="field">
+            <span>接收端 URL</span>
+            <input
+              v-model="credentialDraft.url" type="url" maxlength="2048" autocomplete="off" spellcheck="false"
+              placeholder="https://example.com/hooks/prism" :disabled="saving || credentialDraft.clearUrl"
+            />
+          </label>
+          <div class="notification-credential-meta">
+            <span class="notification-credential-state" :class="urlState.className">{{ urlState.label }}</span>
+            <label class="notification-clear">
+              <input v-model="credentialDraft.clearUrl" type="checkbox" :disabled="saving || credentialDraft.url.trim().length > 0" />
+              <span>清除</span>
+            </label>
+          </div>
         </div>
-      </div>
+        <div class="notification-credential-row">
+          <label class="field">
+            <span>Bearer 令牌</span>
+            <SecretInput
+              v-model="credentialDraft.bearerToken" :disabled="saving || credentialDraft.clearBearerToken"
+              autocomplete="new-password" placeholder="可选，留空保持不变"
+            />
+          </label>
+          <div class="notification-credential-meta">
+            <span class="notification-credential-state" :class="bearerState.className">{{ bearerState.label }}</span>
+            <label class="notification-clear">
+              <input v-model="credentialDraft.clearBearerToken" type="checkbox" :disabled="saving || credentialDraft.bearerToken.length > 0" />
+              <span>清除</span>
+            </label>
+          </div>
+        </div>
+        <div class="notification-credential-row">
+          <label class="field">
+            <span>签名密钥</span>
+            <SecretInput
+              v-model="credentialDraft.signingSecret" :disabled="saving || credentialDraft.clearSigningSecret"
+              autocomplete="new-password" placeholder="可选，Webhook 用于 HMAC 签名；飞书填写机器人签名密钥"
+            />
+          </label>
+          <div class="notification-credential-meta">
+            <span class="notification-credential-state" :class="signingState.className">{{ signingState.label }}</span>
+            <label class="notification-clear">
+              <input v-model="credentialDraft.clearSigningSecret" type="checkbox" :disabled="saving || credentialDraft.signingSecret.length > 0" />
+              <span>清除</span>
+            </label>
+          </div>
+        </div>
+      </fieldset>
 
       <fieldset class="notification-choice-group" :disabled="saving">
         <legend>订阅事件</legend>
@@ -223,15 +282,18 @@ onBeforeUnmount(() => { disposed = true })
 .notification-channel-list > p { margin: 4px 0 10px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .notification-target-form { display: grid; gap: 16px; }
 .notification-editor-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, .7fr); align-items: start; gap: 12px 16px; }
-.notification-prefix-field { grid-column: 1 / -1; }
-.notification-env-names { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--glass-line); border-radius: 8px; background: var(--glass-field); }
-.notification-env-names > p { margin: 0 0 2px; color: var(--muted); font-size: 11px; line-height: 1.6; }
-.notification-env-row { display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
-.notification-env-row code { min-width: 0; overflow-wrap: anywhere; font-size: 11px; }
-.notification-env-row > span { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
-.notification-env-row .is-configured { color: var(--success); }
-.notification-env-row .is-missing { color: var(--danger); }
-.notification-env-row .is-optional { color: var(--muted); }
+.notification-credential-group { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; gap: 10px; }
+.notification-credential-group legend { margin-bottom: 7px; font-size: 13px; font-weight: 650; }
+.notification-credential-group > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.notification-credential-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px 12px; padding: 10px; border: 1px solid var(--glass-line); border-radius: 8px; background: var(--glass-field); }
+.notification-credential-row .field { min-width: 0; }
+.notification-credential-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding-bottom: 6px; }
+.notification-credential-state { font-size: 11px; }
+.notification-credential-state.is-configured { color: var(--success); }
+.notification-credential-state.is-missing { color: var(--danger); }
+.notification-credential-state.is-optional { color: var(--muted); }
+.notification-clear { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; cursor: pointer; }
+.notification-clear input { flex: 0 0 auto; width: 15px; height: 15px; margin: 0; }
 .notification-choice-group { min-width: 0; margin: 0; padding: 0; border: 0; }
 .notification-choice-group legend { margin-bottom: 7px; font-size: 13px; font-weight: 650; }
 .notification-event-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; }
@@ -252,8 +314,9 @@ onBeforeUnmount(() => { disposed = true })
 @media (max-width: 640px) {
   .notification-editor-grid,
   .notification-event-grid,
+  .notification-credential-row,
   .notification-channel-list { grid-template-columns: minmax(0, 1fr); }
-  .notification-prefix-field { grid-column: 1; }
+  .notification-credential-meta { padding-bottom: 0; }
   .notification-channel-choice { min-height: 44px; }
   .notification-editor-actions > .button { min-height: 44px; }
 }

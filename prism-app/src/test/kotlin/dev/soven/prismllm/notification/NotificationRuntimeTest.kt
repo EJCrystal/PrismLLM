@@ -200,7 +200,7 @@ class NotificationRuntimeTest {
 
     private fun task(attempts: Int): NotificationDeliveryTask {
         val event = NotificationEvent(eventId = "event", eventType = NotificationEvents.TEST, occurredAt = 1_000, severity = "info")
-        val target = NotificationTarget(id = "target", name = "目标", type = "webhook", environmentPrefix = "PRISM_NOTIFY_TEST")
+        val target = NotificationTarget(id = "target", name = "目标", type = "webhook")
         return NotificationDeliveryTask(
             NotificationDelivery("delivery", event.eventId, target.id, target.name, event.eventType, "in_flight", attempts, 31_000, 1_000, 1_000),
             target, event, "lease",

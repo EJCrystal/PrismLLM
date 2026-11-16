@@ -697,6 +697,16 @@ export type NotificationEventType =
   | 'attempt.consecutive_failures' | 'attempt.recovered'
 export type NotificationDeliveryStatus = 'pending' | 'in_flight' | 'succeeded' | 'failed' | 'cancelled'
 
+/** 只写凭据：留空表示保持不变，clear 标记表示删除。 */
+export interface NotificationCredentialWrite {
+  url?: string
+  bearerToken?: string
+  signingSecret?: string
+  clearUrl?: boolean
+  clearBearerToken?: boolean
+  clearSigningSecret?: boolean
+}
+
 export interface NotificationTargetRequest {
   name: string
   type: NotificationTargetType
@@ -704,8 +714,8 @@ export interface NotificationTargetRequest {
   events: NotificationEventType[]
   /** 空数组订阅全部渠道，包括今后新增的渠道。 */
   channelIds: string[]
-  /** 只保存 PRISM_NOTIFY_ 开头的变量前缀，不包含 URL 或密钥。 */
-  environmentPrefix: string
+  /** 凭据由管理台录入并加密保存；响应不会回显明文。 */
+  credentials?: NotificationCredentialWrite
   revision?: number
 }
 
@@ -713,10 +723,18 @@ export interface NotificationCredentials {
   urlConfigured: boolean
   bearerTokenConfigured: boolean
   signingSecretConfigured: boolean
+  urlUnreadable: boolean
+  bearerTokenUnreadable: boolean
+  signingSecretUnreadable: boolean
 }
 
-export interface NotificationTargetResponse extends NotificationTargetRequest {
+export interface NotificationTargetResponse {
   id: string
+  name: string
+  type: NotificationTargetType
+  enabled: boolean
+  events: NotificationEventType[]
+  channelIds: string[]
   revision: number
   updatedAt: number
   credentials: NotificationCredentials

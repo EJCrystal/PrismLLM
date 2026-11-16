@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  notificationCredentialSecretError,
+  notificationCredentialUrlError,
   notificationDeliveryFinished,
   notificationDeliveryStatusLabel,
-  notificationEnvironmentPrefixPattern,
   notificationEventLabel,
   notificationTargetError,
   notificationTestDisabledReason,
@@ -12,12 +13,16 @@ import {
 
 const baseTarget = {
   name: '值班群', type: 'webhook', enabled: false,
-  events: ['channel.unhealthy'], channelIds: [], environmentPrefix: 'PRISM_NOTIFY_ONCALL',
+  events: ['channel.unhealthy'], channelIds: [],
 }
 const baseSettings = { enabled: true, consecutiveFailureThreshold: 5, updatedAt: 1 }
 const configuredTarget = {
   ...baseTarget, enabled: true, id: 'target-1', revision: 1, updatedAt: 1,
-  credentials: { urlConfigured: true, bearerTokenConfigured: false, signingSecretConfigured: false }, latestDelivery: null,
+  credentials: {
+    urlConfigured: true, bearerTokenConfigured: false, signingSecretConfigured: false,
+    urlUnreadable: false, bearerTokenUnreadable: false, signingSecretUnreadable: false,
+  },
+  latestDelivery: null,
 }
 
 describe('notification settings validation and display', () => {
@@ -26,14 +31,20 @@ describe('notification settings validation and display', () => {
     for (const value of [0, 101, 1.5, Number.NaN, '5', null]) assert.match(notificationThresholdError(value), /整数/)
   })
 
-  it('enforces the backend prefix regex and allowed target values', () => {
-    assert.equal(notificationEnvironmentPrefixPattern.test('PRISM_NOTIFY_A'), true)
-    assert.equal(notificationEnvironmentPrefixPattern.test('PRISM_NOTIFY_A'.padEnd('PRISM_NOTIFY_'.length + 48, 'Z')), true)
-    assert.equal(notificationEnvironmentPrefixPattern.test('PRISM_NOTIFY_A'.padEnd('PRISM_NOTIFY_'.length + 49, 'Z')), false)
-    for (const prefix of ['PRISM_NOTIFY_', 'PRISM_NOTIFY_1BAD', 'prism_NOTIFY_A', 'PRISM_NOTIFY_A-B', 'PRISM_NOTIFY_A_'.padEnd(62, 'A')]) {
-      assert.equal(notificationEnvironmentPrefixPattern.test(prefix), false, prefix)
-      assert.match(notificationTargetError({ ...baseTarget, environmentPrefix: prefix }), /环境变量前缀/)
-    }
+  it('validates credential URLs and secret character sets before saving', () => {
+    assert.equal(notificationCredentialUrlError(''), '')
+    assert.equal(notificationCredentialUrlError(' https://hooks.example.test/notify '), '')
+    assert.match(notificationCredentialUrlError('ftp://hooks.example.test/notify'), /HTTP 或 HTTPS/)
+    assert.match(notificationCredentialUrlError('not-a-url'), /完整的 HTTP 或 HTTPS/)
+    assert.match(notificationCredentialUrlError('https://user@hooks.example.test/'), /账号或密码/)
+    assert.match(notificationCredentialUrlError(`https://hooks.example.test/${'a'.repeat(2048)}`), /2048/)
+    assert.equal(notificationCredentialSecretError('', 'Bearer 令牌'), '')
+    assert.equal(notificationCredentialSecretError('abcDEF123-_', 'Bearer 令牌'), '')
+    assert.match(notificationCredentialSecretError('has space', 'Bearer 令牌'), /可打印 ASCII/)
+    assert.match(notificationCredentialSecretError('bad\u0000secret', '签名密钥'), /控制字符/)
+    assert.match(notificationCredentialSecretError('x'.repeat(4097), '签名密钥'), /4096/)
+
+    assert.equal(notificationTargetError(baseTarget), '')
     assert.equal(notificationTargetError({ ...baseTarget, type: 'slack' }), '请选择 Webhook 或飞书机器人。')
     assert.match(notificationTargetError({ ...baseTarget, name: 'x'.repeat(101) }), /100 个字符/)
     assert.match(notificationTargetError({ ...baseTarget, name: 'bad\u0000name' }), /控制字符/)
@@ -55,7 +66,11 @@ describe('notification settings validation and display', () => {
     assert.match(notificationTestDisabledReason(null, configuredTarget), /全局通知设置/)
     assert.match(notificationTestDisabledReason({ ...baseSettings, enabled: false }, configuredTarget), /全局通知设置/)
     assert.match(notificationTestDisabledReason(baseSettings, { ...configuredTarget, enabled: false }), /启用并保存此通知目标/)
-    assert.match(notificationTestDisabledReason(baseSettings, { ...configuredTarget, credentials: { ...configuredTarget.credentials, urlConfigured: false } }), /PRISM_NOTIFY_ONCALL_URL/)
+    assert.match(notificationTestDisabledReason(baseSettings, { ...configuredTarget, credentials: { ...configuredTarget.credentials, urlConfigured: false } }), /填写接收端 URL/)
+    assert.match(
+      notificationTestDisabledReason(baseSettings, { ...configuredTarget, credentials: { ...configuredTarget.credentials, urlUnreadable: true } }),
+      /无法解密/,
+    )
     assert.equal(notificationTestDisabledReason(baseSettings, { ...configuredTarget, enabled: true }), '')
   })
 

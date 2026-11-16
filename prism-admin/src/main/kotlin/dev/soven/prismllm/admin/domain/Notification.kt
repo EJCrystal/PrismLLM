@@ -1,5 +1,6 @@
 package dev.soven.prismllm.admin.domain
 
+import dev.soven.prismllm.shared.crypto.EncryptedCredential
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
@@ -33,10 +34,43 @@ data class NotificationTarget(
     val enabled: Boolean = true,
     val events: List<String> = NotificationEvents.subscriptions,
     val channelIds: List<String> = emptyList(),
-    val environmentPrefix: String,
     val revision: Long = 1,
     val updatedAt: Long = 0,
 )
+
+/** 通知凭据字段标识；同时用于把密文绑定到目标与字段的 AAD。 */
+object NotificationCredentialFields {
+    const val URL = "url"
+    const val BEARER = "bearerToken"
+    const val SIGNATURE = "signingSecret"
+
+    fun aad(targetId: String, field: String): ByteArray =
+        "prism-notification:$targetId:$field".toByteArray(Charsets.UTF_8)
+}
+
+/** 通知目标已加密保存的接收端凭据；只以密文形式存在。 */
+data class NotificationStoredCredentials(
+    val url: EncryptedCredential? = null,
+    val bearerToken: EncryptedCredential? = null,
+    val signingSecret: EncryptedCredential? = null,
+)
+
+/**
+ * 管理台提交的凭据变更。字段为 null 表示保持原值；clear 标记表示删除。
+ * 加密在路由层完成，仓储只接收密文。
+ */
+data class NotificationCredentialUpdate(
+    val url: EncryptedCredential? = null,
+    val bearerToken: EncryptedCredential? = null,
+    val signingSecret: EncryptedCredential? = null,
+    val clearUrl: Boolean = false,
+    val clearBearerToken: Boolean = false,
+    val clearSigningSecret: Boolean = false,
+) {
+    val changesAnything: Boolean
+        get() = url != null || bearerToken != null || signingSecret != null ||
+            clearUrl || clearBearerToken || clearSigningSecret
+}
 
 @Serializable
 data class NotificationEvent(

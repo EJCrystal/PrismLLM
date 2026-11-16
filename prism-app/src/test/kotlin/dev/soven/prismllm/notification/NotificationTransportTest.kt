@@ -1,7 +1,10 @@
 package dev.soven.prismllm.notification
 
+import dev.soven.prismllm.admin.domain.NotificationCredentialFields
 import dev.soven.prismllm.admin.domain.NotificationEvent
+import dev.soven.prismllm.admin.domain.NotificationStoredCredentials
 import dev.soven.prismllm.admin.domain.NotificationTarget
+import dev.soven.prismllm.shared.crypto.CredentialCipher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -43,37 +46,52 @@ import kotlin.test.assertFailsWith
 
 @Tag("unit")
 class NotificationTransportTest {
-    private val prefix = "PRISM_NOTIFY_TEST"
     private val publicIpv4 = address("93.184.216.34")
 
     @Test
-    fun `credential status exposes configured flags only and prefix follows exact contract`() {
+    fun `credential status exposes configured flags only and reports unreadable fields`() = runBlocking {
         val bearer = generatedSecret()
         val signing = generatedSecret()
-        val values = mapOf(
-            "${prefix}_URL" to "https://hooks.example.test/path",
-            "${prefix}_BEARER_TOKEN" to bearer,
-            "${prefix}_SIGNING_SECRET" to signing,
-        )
-        val status = NotificationSecrets(values::get).status(prefix)
+        val status = credentials(
+            url = "https://hooks.example.test/path", bearerToken = bearer, signingSecret = signing,
+        ).status(target("webhook"))
 
         assertTrue(status.urlConfigured)
         assertTrue(status.bearerTokenConfigured)
         assertTrue(status.signingSecretConfigured)
-        assertTrue(NotificationSecrets.isValidPrefix("PRISM_NOTIFY_A"))
-        assertTrue(NotificationSecrets.isValidPrefix("PRISM_NOTIFY_A_2"))
-        assertTrue(NotificationSecrets.isValidPrefix("PRISM_NOTIFY_${"A".repeat(48)}"))
-        assertFalse(NotificationSecrets.isValidPrefix("prism_NOTIFY_A"))
-        assertFalse(NotificationSecrets.isValidPrefix("PRISM_NOTIFY_"))
-        assertFalse(NotificationSecrets.isValidPrefix("PRISM_NOTIFY_${"A".repeat(49)}"))
-
-        val invalidStatus = NotificationSecrets { error("invalid prefix must not read environment") }
-            .status("PRISM_NOTIFY_BAD-NAME")
-        assertFalse(invalidStatus.urlConfigured)
-        assertFalse(invalidStatus.bearerTokenConfigured)
-        assertFalse(invalidStatus.signingSecretConfigured)
+        assertFalse(status.urlUnreadable)
         assertNotEquals(bearer, status.toString())
         assertNotEquals(signing, status.toString())
+
+        val missing = credentials().status(target("webhook"))
+        assertFalse(missing.urlConfigured)
+        assertFalse(missing.bearerTokenConfigured)
+
+        val unreadable = unreadableCredentials(CredentialCipher(ByteArray(32) { 7 }))
+            .status(target("webhook"))
+        assertFalse(unreadable.urlConfigured)
+        assertTrue(unreadable.urlUnreadable)
+    }
+
+    @Test
+    fun `unreadable stored credentials fail permanently without DNS or HTTP`() = runBlocking {
+        var dnsCalls = 0
+        var httpCalls = 0
+        val transport = SafeNotificationTransport(
+            unreadableCredentials(CredentialCipher(ByteArray(32) { 7 })),
+            NotificationDnsResolver { dnsCalls++; listOf(publicIpv4) },
+            NotificationHttpExecutor { _, _, _, _ ->
+                httpCalls++
+                NotificationHttpResponse(200, null, ByteArray(0), false)
+            },
+        )
+        val result = transport.send(target("webhook"), event())
+
+        assertFalse(result.success)
+        assertFalse(result.retryable)
+        assertEquals("credential_unreadable", result.errorCode)
+        assertEquals(0, dnsCalls)
+        assertEquals(0, httpCalls)
     }
 
     @Test
@@ -133,11 +151,6 @@ class NotificationTransportTest {
         val capturedHeaders = linkedMapOf<String, String>()
         var capturedBody = ""
         var resolverCalls = 0
-        val env = mapOf(
-            "${prefix}_URL" to "https://hooks.example.test/notify?key=${generatedSecret()}",
-            "${prefix}_BEARER_TOKEN" to bearer,
-            "${prefix}_SIGNING_SECRET" to signing,
-        )
         val http = NotificationHttpExecutor { url, dns, headers, body ->
             assertEquals("hooks.example.test", url.host)
             assertEquals(publicIpv4, dns.lookup(url.host).single())
@@ -146,7 +159,12 @@ class NotificationTransportTest {
             NotificationHttpResponse(204, null, ByteArray(0), false)
         }
         val transport = SafeNotificationTransport(
-            NotificationSecrets(env::get), NotificationDnsResolver { resolverCalls++; listOf(publicIpv4) }, http, { now },
+            credentials(
+                url = "https://hooks.example.test/notify?key=${generatedSecret()}",
+                bearerToken = bearer,
+                signingSecret = signing,
+            ),
+            NotificationDnsResolver { resolverCalls++; listOf(publicIpv4) }, http, { now },
         )
         val event = event()
         val result = transport.send(target("webhook"), event)
@@ -169,9 +187,9 @@ class NotificationTransportTest {
         val signing = generatedSecret()
         val now = 1_800_000_456L
         var capturedBody = ""
-        val env = mapOf("${prefix}_URL" to "https://hooks.example.test/feishu", "${prefix}_SIGNING_SECRET" to signing)
         val transport = SafeNotificationTransport(
-            NotificationSecrets(env::get), NotificationDnsResolver { listOf(publicIpv4) },
+            credentials(url = "https://hooks.example.test/feishu", signingSecret = signing),
+            NotificationDnsResolver { listOf(publicIpv4) },
             NotificationHttpExecutor { _, _, _, body ->
                 capturedBody = body.toString(Charsets.UTF_8)
                 NotificationHttpResponse(200, null, """{"code":19001,"msg":"rejected"}""".toByteArray(), false)
@@ -201,14 +219,14 @@ class NotificationTransportTest {
     fun `Feishu only accepts numeric zero code`() = runBlocking {
         listOf("""{"code":"0"}""", """{"code":false}""", """{"code":1}""", "not-json").forEach { body ->
             val result = transport(
-                mapOf("${prefix}_URL" to "https://hooks.example.test/notify"),
+                credentials(url = "https://hooks.example.test/notify"),
                 NotificationHttpExecutor { _, _, _, _ -> NotificationHttpResponse(200, null, body.toByteArray(), false) },
             ).send(target("feishu"), event())
             assertFalse(result.success, body)
             assertEquals("feishu_rejected", result.errorCode)
         }
         val accepted = transport(
-            mapOf("${prefix}_URL" to "https://hooks.example.test/notify"),
+            credentials(url = "https://hooks.example.test/notify"),
             NotificationHttpExecutor { _, _, _, _ -> NotificationHttpResponse(200, null, """{"code":0}""".toByteArray(), false) },
         ).send(target("feishu"), event())
         assertTrue(accepted.success)
@@ -216,7 +234,7 @@ class NotificationTransportTest {
 
     @Test
     fun `rate limit and network failures are retryable with capped retry delay`() = runBlocking {
-        val env = mapOf("${prefix}_URL" to "https://hooks.example.test/notify")
+        val env = credentials(url = "https://hooks.example.test/notify")
         val limited = transport(env, NotificationHttpExecutor { _, _, _, _ ->
             NotificationHttpResponse(429, "999999999999999999999999", ByteArray(0), false)
         }).send(target("webhook"), event())
@@ -237,7 +255,7 @@ class NotificationTransportTest {
         var dnsCalls = 0
         var httpCalls = 0
         val badUrlTransport = SafeNotificationTransport(
-            NotificationSecrets { name -> if (name == "${prefix}_URL") "http://127.0.0.1/" else null },
+            credentials(url = "http://127.0.0.1/"),
             NotificationDnsResolver { dnsCalls++; listOf(publicIpv4) },
             NotificationHttpExecutor { _, _, _, _ -> httpCalls++; NotificationHttpResponse(200, null, ByteArray(0), false) },
         )
@@ -245,7 +263,7 @@ class NotificationTransportTest {
         assertFalse(badUrl.success)
         assertFalse(badUrl.retryable)
         assertEquals("unsafe_url", badUrl.errorCode)
-        val missing = transport(emptyMap(), NotificationHttpExecutor { _, _, _, _ ->
+        val missing = transport(credentials(), NotificationHttpExecutor { _, _, _, _ ->
             httpCalls++
             NotificationHttpResponse(200, null, ByteArray(0), false)
         }).send(target("webhook"), event())
@@ -306,7 +324,7 @@ class NotificationTransportTest {
             FakeCall(request, callbackSeen, cancelCount)
         }
         val transport = SafeNotificationTransport(
-            NotificationSecrets { name -> if (name == "${prefix}_URL") "https://hooks.example.test/notify" else null },
+            credentials(url = "https://hooks.example.test/notify"),
             NotificationDnsResolver { listOf(publicIpv4) },
             executor,
         )
@@ -325,12 +343,47 @@ class NotificationTransportTest {
         }
     }
 
-    private fun transport(env: Map<String, String>, http: NotificationHttpExecutor) = SafeNotificationTransport(
-        NotificationSecrets(env::get), NotificationDnsResolver { listOf(publicIpv4) }, http, { 1_800_000_000L },
+    private val credentialCipher = CredentialCipher(ByteArray(32) { 9 })
+
+    private fun credentials(
+        url: String? = null,
+        bearerToken: String? = null,
+        signingSecret: String? = null,
+        targetId: String = "target-id",
+        cipher: CredentialCipher = credentialCipher,
+    ): NotificationCredentials {
+        val stored = NotificationStoredCredentials(
+            url = url?.let {
+                cipher.encrypt(it, NotificationCredentialFields.aad(targetId, NotificationCredentialFields.URL))
+            },
+            bearerToken = bearerToken?.let {
+                cipher.encrypt(it, NotificationCredentialFields.aad(targetId, NotificationCredentialFields.BEARER))
+            },
+            signingSecret = signingSecret?.let {
+                cipher.encrypt(it, NotificationCredentialFields.aad(targetId, NotificationCredentialFields.SIGNATURE))
+            },
+        )
+        return NotificationCredentials({ stored }, cipher)
+    }
+
+    /** Encrypts with a different master key so the resolver reports the field as unreadable. */
+    private fun unreadableCredentials(encryptingCipher: CredentialCipher): NotificationCredentials {
+        val targetId = "target-id"
+        val stored = NotificationStoredCredentials(
+            url = encryptingCipher.encrypt(
+                "https://hooks.example.test/notify",
+                NotificationCredentialFields.aad(targetId, NotificationCredentialFields.URL),
+            ),
+        )
+        return NotificationCredentials({ stored }, credentialCipher)
+    }
+
+    private fun transport(credentials: NotificationCredentials, http: NotificationHttpExecutor) = SafeNotificationTransport(
+        credentials, NotificationDnsResolver { listOf(publicIpv4) }, http, { 1_800_000_000L },
     )
 
     private fun target(type: String) = NotificationTarget(
-        id = "target-id", name = "test target", type = type, environmentPrefix = prefix,
+        id = "target-id", name = "test target", type = type,
     )
 
     private fun event() = NotificationEvent(

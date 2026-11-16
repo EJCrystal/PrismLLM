@@ -261,6 +261,11 @@ function testDisabledReason(target: NotificationTargetResponse): string {
   return notificationTestDisabledReason(settings.value, target)
 }
 
+function credentialLabel(configured: boolean, unreadable: boolean, required = false): string {
+  if (unreadable) return '无法解密，请重填'
+  return configured ? '已配置' : required ? '未配置（必需）' : '未配置（可选）'
+}
+
 function waitForPoll(signal: AbortSignal): Promise<void> {
   return new Promise(resolve => {
     const finish = () => {
@@ -408,11 +413,10 @@ onBeforeUnmount(() => {
                 <span class="notification-target-state" :class="target.enabled ? 'is-enabled' : 'is-disabled'">{{ target.enabled ? '已启用' : '已停用' }}</span>
               </div>
               <p class="notification-target-scope">{{ target.channelIds.length ? `指定 ${target.channelIds.length} 个渠道` : '全部渠道' }} · {{ target.events.length }} 种事件</p>
-              <code class="notification-target-prefix">{{ target.environmentPrefix }}</code>
-              <div class="notification-credentials" :aria-label="`${target.name} 的环境变量配置状态`">
-                <span :class="target.credentials.urlConfigured ? 'is-configured' : 'is-missing'">_URL {{ target.credentials.urlConfigured ? '已配置' : '未配置（必需）' }}</span>
-                <span :class="{ 'is-configured': target.credentials.bearerTokenConfigured }">_BEARER_TOKEN {{ target.credentials.bearerTokenConfigured ? '已配置' : '未配置（可选）' }}</span>
-                <span :class="{ 'is-configured': target.credentials.signingSecretConfigured }">_SIGNING_SECRET {{ target.credentials.signingSecretConfigured ? '已配置' : '未配置（可选）' }}</span>
+              <div class="notification-credentials" :aria-label="`${target.name} 的凭据状态`">
+                <span :class="target.credentials.urlConfigured ? 'is-configured' : 'is-missing'">URL {{ credentialLabel(target.credentials.urlConfigured, target.credentials.urlUnreadable, true) }}</span>
+                <span :class="{ 'is-configured': target.credentials.bearerTokenConfigured }">Bearer 令牌 {{ credentialLabel(target.credentials.bearerTokenConfigured, target.credentials.bearerTokenUnreadable) }}</span>
+                <span :class="{ 'is-configured': target.credentials.signingSecretConfigured }">签名密钥 {{ credentialLabel(target.credentials.signingSecretConfigured, target.credentials.signingSecretUnreadable) }}</span>
               </div>
               <p class="notification-latest-delivery">
                 <template v-if="target.latestDelivery">最近投递：{{ notificationDeliveryStatusLabel(target.latestDelivery.status) }} · {{ notificationEventLabel(target.latestDelivery.eventType) }} · {{ formatTime(target.latestDelivery.updatedAt) }}</template>
@@ -506,7 +510,6 @@ onBeforeUnmount(() => {
 .notification-status[data-status='failed'] { color: var(--danger); background: var(--danger-soft); }
 .notification-target-scope,
 .notification-latest-delivery { margin: 6px 0; color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
-.notification-target-prefix { display: block; overflow-wrap: anywhere; font-size: 11px; }
 .notification-credentials { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .notification-credentials .is-configured { color: var(--success); }
 .notification-credentials .is-missing { color: var(--danger); }

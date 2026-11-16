@@ -10,8 +10,13 @@ describe('notification admin API contract', () => {
     globalThis.document = { cookie: 'gw_csrf=notify-csrf' }
     const target = {
       id: 'target/one', name: '值班群', type: 'feishu', enabled: false,
-      events: ['channel.unhealthy'], channelIds: [], environmentPrefix: 'PRISM_NOTIFY_ONCALL',
-      revision: 2, updatedAt: 100, credentials: { urlConfigured: false, bearerTokenConfigured: false, signingSecretConfigured: true }, latestDelivery: null,
+      events: ['channel.unhealthy'], channelIds: [],
+      revision: 2, updatedAt: 100,
+      credentials: {
+        urlConfigured: true, bearerTokenConfigured: false, signingSecretConfigured: true,
+        urlUnreadable: false, bearerTokenUnreadable: false, signingSecretUnreadable: false,
+      },
+      latestDelivery: null,
     }
     const calls = []
     globalThis.fetch = async (input, init = {}) => {
@@ -29,7 +34,8 @@ describe('notification admin API contract', () => {
     await api.listNotificationTargets()
     const targetPayload = {
       name: '值班群', type: 'feishu', enabled: false, events: ['channel.unhealthy'],
-      channelIds: [], environmentPrefix: 'PRISM_NOTIFY_ONCALL',
+      channelIds: [],
+      credentials: { url: 'https://hooks.example.test/notify', bearerToken: globalThis.crypto.randomUUID() },
     }
     await api.createNotificationTarget(targetPayload)
     const updateTargetPayload = { ...targetPayload, revision: target.revision }

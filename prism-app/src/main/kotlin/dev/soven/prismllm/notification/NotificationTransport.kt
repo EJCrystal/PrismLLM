@@ -61,9 +61,9 @@ data class NotificationSendResult(
     val retryAfterMs: Long? = null,
 )
 
-/** Environment credentials, isolated connections and stable error codes; never logs endpoints. */
+/** Database credentials, isolated connections and stable error codes; never logs endpoints. */
 class SafeNotificationTransport internal constructor(
-    private val secrets: NotificationSecrets,
+    private val credentials: NotificationCredentials,
     private val resolver: NotificationDnsResolver,
     private val httpExecutor: NotificationHttpExecutor,
     private val epochSeconds: () -> Long = { Instant.now().epochSecond },
@@ -72,8 +72,8 @@ class SafeNotificationTransport internal constructor(
     private val activeSends = mutableSetOf<Job>()
     private var closed = false
 
-    constructor(secrets: NotificationSecrets) : this(
-        secrets,
+    constructor(credentials: NotificationCredentials) : this(
+        credentials,
         SystemNotificationDnsResolver,
         OkHttpNotificationExecutor(),
     )
@@ -95,15 +95,17 @@ class SafeNotificationTransport internal constructor(
         if (event.eventId.isEmpty() || event.eventId.length > 256 || event.eventId.any { it.code !in 0x21..0x7e }) {
             return permanent("invalid_payload")
         }
-        val credentials = try {
-            secrets.resolve(target.environmentPrefix) ?: return permanent("missing_configuration")
+        val environment = try {
+            credentials.resolve(target)
+        } catch (_: NotificationCredentialUnreadable) {
+            return permanent("credential_unreadable")
         } catch (_: Exception) {
             return permanent("invalid_configuration")
         }
-        credentials.bearerToken?.let { token ->
+        environment.bearerToken?.let { token ->
             if (token.any { it.code !in 0x21..0x7e }) return permanent("invalid_configuration")
         }
-        val configuredUrl = credentials.url ?: return permanent("missing_configuration")
+        val configuredUrl = environment.url ?: return permanent("missing_configuration")
         if (target.type != "webhook" && target.type != "feishu") return permanent("unsupported_target_type")
         val url = try {
             NotificationUrlPolicy.parse(configuredUrl)
@@ -124,7 +126,7 @@ class SafeNotificationTransport internal constructor(
 
         val now = epochSeconds()
         val payload = try {
-            if (target.type == "feishu") feishuPayload(event, now, credentials.signingSecret)
+            if (target.type == "feishu") feishuPayload(event, now, environment.signingSecret)
             else EVENT_JSON.encodeToString(event).toByteArray(Charsets.UTF_8)
         } catch (_: Exception) {
             return permanent("invalid_payload")
@@ -134,8 +136,8 @@ class SafeNotificationTransport internal constructor(
             "Content-Type" to "application/json; charset=utf-8",
             "X-Prism-Event-Id" to event.eventId,
         )
-        credentials.bearerToken?.let { headers["Authorization"] = "Bearer $it" }
-        if (target.type == "webhook") credentials.signingSecret?.let { secret ->
+        environment.bearerToken?.let { headers["Authorization"] = "Bearer $it" }
+        if (target.type == "webhook") environment.signingSecret?.let { secret ->
             headers["X-Prism-Timestamp"] = now.toString()
             headers["X-Prism-Signature"] = webhookSignature(secret, now, payload.toString(Charsets.UTF_8))
         }
