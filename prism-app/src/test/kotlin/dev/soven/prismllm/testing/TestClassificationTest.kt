@@ -124,6 +124,7 @@ class TestClassificationTest {
             "IqTestJobPersistenceIntegrationTest" to setOf("shard-3"),
             "KeyAutoDisableIntegrationTest" to setOf("shard-3", "channel"),
             "ModelCredentialRoutesIntegrationTest" to setOf("shard-4", "channel"),
+            "NotificationIntegrationTest" to setOf("shard-4", "channel"),
             "PricingIntegrationTest" to setOf("shard-4"),
             "ProtocolConversionIntegrationTest" to setOf("shard-2", "protocol"),
             "RateLimitIntegrationTest" to setOf("shard-1", "channel"),

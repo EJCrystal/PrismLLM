@@ -140,7 +140,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
     val channelUpdateMutex = Mutex()
     route("/admin/api") {
         modelCredentialRoutes(app)
-
+        notificationRoutes(app)
         post("/login") {
             val request = call.receive<LoginRequest>()
             val (user, issued) = app.sessions.withUsernameLock(request.username) {

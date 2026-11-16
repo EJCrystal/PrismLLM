@@ -99,6 +99,18 @@ class AdminArchitectureTest {
             classes.any { it.name == "dev.soven.prismllm.admin.persistence.WebSearchSettingsRepository" },
             "ArchUnit 未导入 Web 搜索设置仓储，规则会空跑",
         )
+        assertTrue(
+            classes.any { it.name == "dev.soven.prismllm.admin.domain.NotificationEvent" },
+            "ArchUnit 未导入通知事件，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.prismllm.admin.persistence.NotificationRepository" },
+            "ArchUnit 未导入通知仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.prismllm.admin.persistence.NotificationDeliveries" },
+            "ArchUnit 未导入通知投递表，规则会空跑",
+        )
     }
 
     @Test
