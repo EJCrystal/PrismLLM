@@ -428,7 +428,7 @@ class ProxyAttemptLoggingIntegrationTest {
             baseUrl = "${fake.baseUrl}/500/v1",
             keys = listOf(
                 NewChannelKey("key-a", credential, priority = 1, models = listOf(modelId)),
-                NewChannelKey("key-b", credential, priority = 2, models = listOf(modelId)),
+                NewChannelKey("key-b", credential, priority = 1, models = listOf(modelId)),
             ),
             authType = "bearer",
             protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),

@@ -13,13 +13,13 @@ interface RouteCandidateOrderingView {
     val channelId: String
     val channelName: String
 
-    /** 渠道优先级档位，数值越小越优先。 */
+    /** 凭据优先级相同时比较的渠道档位，数值越小越优先。 */
     val channelPriority: Int
 
     val credentialId: String
     val credentialName: String
 
-    /** 同一渠道内的凭据优先级档位，数值越小越优先。 */
+    /** 同一模型和协议组内跨渠道比较的凭据档位，数值越小越优先。 */
     val credentialPriority: Int
 
     val upstreamModel: String

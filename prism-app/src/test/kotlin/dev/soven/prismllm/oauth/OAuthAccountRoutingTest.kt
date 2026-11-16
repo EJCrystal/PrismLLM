@@ -12,6 +12,7 @@ import dev.soven.prismllm.oauth.domain.OAuthQuotaWindow
 import dev.soven.prismllm.oauth.domain.OAuthRoutingStrategy
 import dev.soven.prismllm.oauth.infra.OAuthRoutingHint
 import dev.soven.prismllm.routing.domain.candidate.RouteCandidate
+import dev.soven.prismllm.resilience.TierSharing
 import dev.soven.prismllm.channel.domain.key.ChannelKeyState
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Tag
@@ -47,6 +48,32 @@ class OAuthAccountRoutingTest {
         assertEquals(ids("a", "b", "c", "d"), order(routing, a, b, c, d))
         assertEquals(ids("b", "d"), order(routing, b, d))
         assertEquals(ids("b", "a", "d", "c"), order(routing, a, b, c, d))
+    }
+
+    @Test
+    fun `oauth account strategy stays inside same channel and credential priority pool`() = runTest {
+        val strategy = routing(
+            OAuthRoutingStrategy.LEAST_USED,
+            mapOf(
+                "welfare" to OAuthRoutingHint(quota = quota(primary = 90.0)),
+                "welfare-next" to OAuthRoutingHint(quota = quota(primary = 10.0)),
+                "peer" to OAuthRoutingHint(quota = quota(primary = 99.0)),
+                "primary" to OAuthRoutingHint(quota = quota(primary = 0.0)),
+            ),
+        )
+        val candidates = listOf(
+            candidate(key("primary", priority = 100)).copy(position = 1),
+            candidate(key("welfare", priority = 1)).copy(channel = channel().copy(id = "welfare-channel"), position = 20),
+            candidate(key("welfare-next", priority = 1)).copy(channel = channel().copy(id = "welfare-channel"), position = 20),
+            candidate(key("peer", priority = 1)).copy(position = 1),
+        )
+
+        val orderedByPriority = TierSharing().order("shared-model", candidates)
+        assertEquals(ids("peer", "welfare", "welfare-next", "primary"), orderedByPriority.map { it.credential.id })
+        assertEquals(
+            ids("peer", "welfare-next", "welfare", "primary"),
+            strategy.order(orderedByPriority, affinityApplied = false).map { it.credential.id },
+        )
     }
 
     @Test

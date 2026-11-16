@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
 import java.io.IOException
 import java.math.BigDecimal
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -538,6 +539,211 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
             val logs = app.requestLogRepository.list(10)
             assertEquals(setOf("backup"), logs.map { it.channelKeyName }.toSet())
             assertEquals(listOf(1, 2), logs.mapNotNull { it.upstreamAttempts }.sorted())
+        }
+    }
+
+    @Test
+    fun `welfare key wins over higher priority ordinary channel for both public models`() = runBlocking {
+        val ordinaryCredential = UUID.randomUUID().toString()
+        val welfareCredential = UUID.randomUUID().toString()
+        app.channelRepository.create(
+            name = "ordinary-channel",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(NewChannelKey(
+                name = "ordinary",
+                credential = app.credentialCipher.encrypt(ordinaryCredential),
+                priority = 100,
+                models = listOf("ordinary-a", "ordinary-b"),
+            )),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = listOf(
+                ChannelModelRecord("ordinary-a", "model-a", "manual"),
+                ChannelModelRecord("ordinary-b", "model-b", "manual"),
+            ),
+            priority = 1,
+        )
+        val welfare = app.channelRepository.create(
+            name = "welfare-channel",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(NewChannelKey(
+                name = "welfare",
+                credential = app.credentialCipher.encrypt(welfareCredential),
+                priority = 1,
+                models = listOf("welfare-a", "welfare-b"),
+            )),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = listOf(
+                ChannelModelRecord("welfare-a", "model-a", "manual"),
+                ChannelModelRecord("welfare-b", "model-b", "manual"),
+            ),
+            priority = 20,
+        )
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            for (stream in listOf(false, true)) {
+                for ((model, upstreamModel) in listOf("model-a" to "welfare-a", "model-b" to "welfare-b")) {
+                    val requestCount = fake.requests.size
+                    val response = client.post("/v1/chat/completions") {
+                        header(HttpHeaders.Authorization, "Bearer $key")
+                        contentType(ContentType.Application.Json)
+                        setBody("""{"model":"$model","stream":$stream,"messages":[]}""")
+                    }
+                    val body = response.bodyAsText()
+                    assertEquals(HttpStatusCode.OK, response.status, body)
+                    if (stream) assertTrue(body.contains("[DONE]"), body)
+                    assertEquals(requestCount + 1, fake.requests.size)
+                    val upstream = fake.requests.last()
+                    assertEquals("Bearer $welfareCredential", upstream.authorization)
+                    assertEquals(upstreamModel, Json.parseToJsonElement(upstream.body).jsonObject["model"]!!.jsonPrimitive.content)
+
+                    val log = awaitRequestLog()
+                    assertEquals(model, log.alias)
+                    assertEquals(welfare.id, log.channelId)
+                    assertEquals(welfare.keys.single().id, log.channelKeyId)
+                    assertEquals(upstreamModel, log.upstreamModel)
+                    assertEquals(stream, log.stream)
+                    assertEquals(1, log.upstreamAttempts)
+                    assertEquals(welfare.keys.single().id, log.attempts.single().channelKeyId)
+                    assertEquals(upstreamModel, log.attempts.single().upstreamModel)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `retries credentials globally as A key1 then B key10 then A key100`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(maxAttempts = 3))
+        val firstCredential = UUID.randomUUID().toString()
+        val middleCredential = UUID.randomUUID().toString()
+        val lastCredential = UUID.randomUUID().toString()
+        val channelA = app.channelRepository.create(
+            name = "channel-a",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(
+                NewChannelKey("key-1", app.credentialCipher.encrypt(firstCredential), priority = 1, models = listOf("upstream-a")),
+                NewChannelKey("key-100", app.credentialCipher.encrypt(lastCredential), priority = 100, models = listOf("upstream-a")),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("upstream-a"),
+            priority = 20,
+        )
+        val channelB = app.channelRepository.create(
+            name = "channel-b",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(NewChannelKey(
+                "key-10", app.credentialCipher.encrypt(middleCredential), priority = 10, models = listOf("upstream-b"),
+            )),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("upstream-b"),
+            priority = 1,
+        )
+        exposeAsModel("global-key-retry", channelA to "upstream-a", channelB to "upstream-b")
+        fake.keyStatuses["Bearer $firstCredential"] = 429
+        fake.keyStatuses["Bearer $middleCredential"] = 429
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"global-key-retry","stream":true,"messages":[]}""")
+            }
+            val body = response.bodyAsText()
+            assertEquals(HttpStatusCode.OK, response.status, body)
+            assertTrue(body.contains("[DONE]"), body)
+            assertEquals(
+                listOf("Bearer $firstCredential", "Bearer $middleCredential", "Bearer $lastCredential"),
+                fake.requests.map { it.authorization },
+            )
+            val expectedModels = listOf("upstream-a", "upstream-b", "upstream-a")
+            assertEquals(expectedModels, fake.requests.map { Json.parseToJsonElement(it.body).jsonObject["model"]!!.jsonPrimitive.content })
+
+            val log = awaitRequestLog()
+            val lastKey = channelA.keys.single { it.name == "key-100" }
+            assertEquals(channelA.id, log.channelId)
+            assertEquals(lastKey.id, log.channelKeyId)
+            assertEquals(3, log.upstreamAttempts)
+            assertEquals(listOf(1, 2, 3), log.attempts.map { it.index })
+            assertEquals(listOf(channelA.id, channelB.id, channelA.id), log.attempts.map { it.channelId })
+            assertEquals(
+                listOf(channelA.keys.single { it.name == "key-1" }.id, channelB.keys.single().id, lastKey.id),
+                log.attempts.map { it.channelKeyId },
+            )
+            assertEquals(expectedModels, log.attempts.map { it.upstreamModel })
+            assertEquals(listOf(429, 429, 200), log.attempts.map { it.statusCode })
+            assertTrue(log.attempts.take(2).all { it.retryable })
+            assertTrue(log.attempts.last().committed)
+        }
+    }
+
+    @Test
+    fun `all cooled fail-open still prefers key priority over channel priority`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(maxAttempts = 1))
+        val ordinaryCredential = UUID.randomUUID().toString()
+        val welfareCredential = UUID.randomUUID().toString()
+        val ordinary = app.channelRepository.create(
+            name = "cooled-ordinary",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(NewChannelKey(
+                "ordinary", app.credentialCipher.encrypt(ordinaryCredential), priority = 100, models = listOf("ordinary-upstream"),
+            )),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("ordinary-upstream"),
+            priority = 1,
+        )
+        val welfare = app.channelRepository.create(
+            name = "cooled-welfare",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(NewChannelKey(
+                "welfare", app.credentialCipher.encrypt(welfareCredential), priority = 1, models = listOf("welfare-upstream"),
+            )),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("welfare-upstream"),
+            priority = 20,
+        )
+        exposeAsModel("cooled-key-priority", ordinary to "ordinary-upstream", welfare to "welfare-upstream")
+        for ((channel, model) in listOf(ordinary to "ordinary-upstream", welfare to "welfare-upstream")) {
+            val channelKey = channel.keys.single()
+            val permit = app.candidateCooldown.forceAcquire(channel.id, channelKey.id, model)
+            app.candidateCooldown.recordFailure(permit, FailureKind.RATE_LIMITED, retryAfterMs = 60_000)
+            assertTrue(app.candidateCooldown.isBlocked(channel.id, channelKey.id, model))
+        }
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"cooled-key-priority","stream":false,"messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val upstream = fake.requests.single()
+            assertEquals("Bearer $welfareCredential", upstream.authorization)
+            assertEquals("welfare-upstream", Json.parseToJsonElement(upstream.body).jsonObject["model"]!!.jsonPrimitive.content)
+            val log = awaitRequestLog()
+            assertEquals(welfare.id, log.channelId)
+            assertEquals(welfare.keys.single().id, log.channelKeyId)
+            assertEquals("welfare-upstream", log.upstreamModel)
+            assertEquals(1, log.upstreamAttempts)
+            assertEquals(welfare.keys.single().id, log.attempts.single { !it.skipped }.channelKeyId)
         }
     }
 

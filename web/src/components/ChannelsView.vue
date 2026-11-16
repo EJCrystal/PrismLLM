@@ -1311,7 +1311,7 @@ onMounted(() => {
           <input v-model="channelNameFilter" type="search" aria-label="按渠道名称筛选" placeholder="按名称筛选渠道" autocomplete="off" />
         </label>
         <div class="channel-list-filters" role="group" aria-label="渠道筛选">
-          <span class="channel-sort-note">数字越小，路由优先级越高</span>
+          <span class="channel-sort-note">凭据同级时，渠道数字越小越优先</span>
           <FilterSelect v-model="channelStatusFilter" label="状态" default-value="all" :options="channelStatusOptions.map(option => ({ value: option.id, label: option.label + '（' + option.count + '）' }))" />
           <FilterSelect v-model="channelModelFilter" label="模型" searchable :options="[{ value: '', label: '全部模型' }, ...channelModelOptions.map(model => ({ value: model, label: model }))]" />
           <button v-if="hasChannelFilters" type="button" class="filter-reset" @click="channelStatusFilter = 'all'; channelModelFilter = ''; channelNameFilter = ''">清除筛选</button>
@@ -1411,8 +1411,8 @@ onMounted(() => {
                     v-if="priorityEditingId === channel.id"
                     v-model.number="priorityDraft"
                     class="priority-input"
-                    aria-label="渠道优先级，数值越小越优先"
-                    title="数值越小越优先；Enter 保存，Esc 取消"
+                    aria-label="渠道优先级，凭据优先级相同时数值越小越优先"
+                    title="同一协议组内，凭据优先级相同时数值越小越优先；Enter 保存，Esc 取消"
                     type="number"
                     min="1"
                     max="1000"
@@ -1880,7 +1880,7 @@ onMounted(() => {
               <button type="button" class="button ghost channel-key-add" @click="addKey">＋ 添加密钥</button>
             </div>
 
-            <p class="channel-form-note">同一模型可以配置在多个密钥上；低优先级密钥只在高优先级密钥失败、冷却或不可用时启用。</p>
+            <p class="channel-form-note">同一模型可以配置在多个密钥上；同一协议组内，静态密钥与 OAuth 账号按凭据优先级跨渠道比较，同级再比较渠道优先级；两级相同则先轮询渠道，再轮询渠道内凭据。</p>
           </section>
 
           <section
@@ -1987,13 +1987,13 @@ onMounted(() => {
             aria-labelledby="channel-form-tab-routing"
           >
             <div class="channel-form-section-head">
-              <div><h3>路由状态</h3><p>优先级越小越优先；停用后不参与路由。</p></div>
+              <div><h3>路由状态</h3><p>原生协议候选优先；凭据优先级跨渠道比较，同级再比较渠道优先级。停用后不参与路由。</p></div>
             </div>
             <div class="channel-form-row channel-form-row-two">
               <label class="field">
                 <span>渠道优先级</span>
                 <input v-model.number="form.priority" type="number" min="1" max="1000" step="1" />
-                <small>1..1000，越小越优先；同级轮询。</small>
+                <small>1..1000，凭据同级时越小越优先；两级都相同则先轮询渠道，再轮询渠道内凭据。</small>
               </label>
               <div class="field channel-enabled-field">
                 <span>渠道状态</span>

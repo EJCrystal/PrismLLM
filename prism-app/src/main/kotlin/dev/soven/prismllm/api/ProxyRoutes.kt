@@ -420,7 +420,7 @@ private suspend fun handleProxyRequest(
             ?.content
             ?.takeIf { it.isNotBlank() }
             ?: call.request.headers["X-Prompt-Cache-Key"]?.takeIf { it.isNotBlank() }
-        // 每个 scope 每请求只推进一次轮询计数，避免同档两渠道时起点固定；提供 prompt_cache_key 时同档按亲和性路由。
+        // 各协议组的每个凭据/渠道档位每请求只推进一次轮询计数；提供 prompt_cache_key 时同档按亲和性路由。
         // 订阅账号可再按 drain / least_used / pace 重排，但亲和优先，避免打散 prompt cache。
         val ordered = app.oauthAccountRouting.order(
             app.tierSharing.order(alias, eligibleNative, promptCacheKey),
@@ -795,7 +795,7 @@ private suspend fun handleProxyRequest(
             retryFrom = candidate.channel.name
             retryReason = error.code
         }
-        // fail-open：仍有尝试预算时，被冷却跳过的候选按原档位顺序照常尝试，绝不因冷却状态拒绝服务。
+        // fail-open：仍有尝试预算时，被冷却跳过的候选按原生协议组、凭据档位、渠道档位顺序照常尝试。
         // 重新按候选原始顺序遍历：预分拣与 acquire 之间被拦下的候选应插回原位，而不是追加到尾部。
         val blockedSet = blocked.toHashSet()
         for (candidate in candidates) {

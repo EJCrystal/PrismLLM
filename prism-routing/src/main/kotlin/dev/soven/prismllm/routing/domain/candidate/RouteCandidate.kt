@@ -17,7 +17,7 @@ data class RouteCandidate(
     val channel: ChannelRecord,
     val credential: UpstreamCredential,
     override val upstreamModel: String,
-    /** 选路档位：直连候选取渠道优先级，数值越小越优先。 */
+    /** 渠道档位：凭据优先级相同时比较，直连候选取渠道优先级，数值越小越优先。 */
     val position: Int,
 ) : RouteCandidateOrderingView {
     override val channelId: String get() = channel.id

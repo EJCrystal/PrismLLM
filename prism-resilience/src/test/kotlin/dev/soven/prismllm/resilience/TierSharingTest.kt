@@ -41,7 +41,7 @@ class TierSharingTest {
     }
 
     @Test
-    fun `key priority is scoped to one channel and never outranks channel priority`() {
+    fun `credential priority is compared across channels before channel priority`() {
         val sharing = TierSharing()
         val candidates = listOf(
             candidate(1, "primary-channel", keyName = "low-priority-key", keyPriority = 999),
@@ -50,19 +50,94 @@ class TierSharingTest {
 
         repeat(4) {
             assertEquals(
-                "low-priority-key",
-                sharing.order("shared-model", candidates).first().credentialName,
-                "跨渠道时渠道档位优先，低档渠道的密钥优先级 1 不应越过高档渠道的密钥优先级 999",
+                listOf("high-priority-key", "low-priority-key"),
+                sharing.order("shared-model", candidates).map { it.credentialName },
+                "跨渠道先比较凭据档位，渠道优先级不能压过更高优先级凭据",
             )
+        }
+    }
+
+    @Test
+    fun `channel priority breaks ties between credential priority tiers`() {
+        val sharing = TierSharing()
+        val candidates = listOf(
+            candidate(20, "later-channel", keyName = "same-priority", keyPriority = 10),
+            candidate(1, "earlier-channel", keyName = "same-priority", keyPriority = 10),
+            candidate(0, "lower-credential-tier", keyName = "backup", keyPriority = 20),
+        )
+
+        val ordered = sharing.order("shared-model", candidates)
+        assertEquals(
+            listOf("earlier-channel" to 10, "later-channel" to 10, "lower-credential-tier" to 20),
+            ordered.map { it.channelName to it.credentialPriority },
+        )
+    }
+
+    @Test
+    fun `credential tiers interleave channels while keeping each credential upstream aliases together`() {
+        val sharing = TierSharing()
+        val candidates = listOf(
+            candidate(1, "a", keyName = "backup", keyPriority = 100),
+            candidate(1, "a", keyName = "primary", keyPriority = 1, upstreamModel = "alias-a"),
+            candidate(1, "a", keyName = "primary", keyPriority = 1, upstreamModel = "alias-b"),
+            candidate(20, "b", keyName = "middle", keyPriority = 10),
+        )
+
+        repeat(4) {
+            assertEquals(
+                listOf("a/primary/alias-a", "a/primary/alias-b", "b/middle/m", "a/backup/m"),
+                sharing.order("shared-model", candidates).map { "${it.channelName}/${it.credentialName}/${it.upstreamModel}" },
+            )
+        }
+    }
+
+    @Test
+    fun `rotation counters are isolated by credential and channel priority tiers`() {
+        val sharing = TierSharing()
+        val credentialTier = listOf(
+            candidate(1, "a", keyPriority = 1),
+            candidate(1, "b", keyPriority = 1),
+        )
+        val channelTier = listOf(
+            candidate(20, "c", keyPriority = 1),
+            candidate(20, "d", keyPriority = 1),
+        )
+        val fallbackTier = listOf(
+            candidate(1, "e", keyPriority = 10),
+            candidate(1, "f", keyPriority = 10),
+        )
+
+        sharing.order("shared-model", credentialTier)
+        val ordered = sharing.order("shared-model", credentialTier + channelTier + fallbackTier)
+
+        assertEquals(listOf("b", "a", "c", "d", "e", "f"), ordered.map { it.channelName })
+        assertEquals(
+            listOf("a", "b", "c", "d", "e", "f"),
+            sharing.order("other-model", credentialTier + channelTier + fallbackTier).map { it.channelName },
+        )
+    }
+
+    @Test
+    fun `affinity never moves a lower credential tier ahead of a higher credential tier`() {
+        val sharing = TierSharing()
+        val candidates = listOf(
+            candidate(1, "a", keyName = "backup", keyPriority = 100),
+            candidate(20, "b", keyName = "welfare-a", keyPriority = 1),
+            candidate(20, "c", keyName = "welfare-b", keyPriority = 1),
+        )
+
+        repeat(20) { index ->
+            val ordered = sharing.order("shared-model", candidates, "cache-$index")
+            assertEquals(listOf(1, 1, 100), ordered.map { it.credentialPriority })
         }
     }
 
     @Test
     fun `same tier channels rotate before their same priority keys rotate`() {
         val sharing = TierSharing()
-        val candidates = channelCandidates(1, "c1", listOf("k1a" to 1, "k1b" to 1)) +
-            channelCandidates(1, "c2", listOf("k2a" to 1, "k2b" to 1)) +
-            channelCandidates(20, "c5", listOf("k5a" to 1))
+        val candidates = channelCandidates(1, "c1", listOf("k1a" to 10, "k1b" to 10)) +
+            channelCandidates(1, "c2", listOf("k2a" to 10, "k2b" to 10)) +
+            channelCandidates(20, "c5", listOf("k5a" to 10))
 
         val heads = (1..4).map {
             sharing.order("shared-model", candidates).first().let { "${it.channelName}/${it.credentialName}" }
@@ -150,8 +225,8 @@ class TierSharingTest {
     fun `lower priority keys stay behind higher priority keys in one channel`() {
         val sharing = TierSharing()
         val candidates = listOf(
-            candidate(0, "a", keyName = "primary", keyPriority = 1),
-            candidate(0, "a", keyName = "backup", keyPriority = 2),
+            candidate(0, "a", keyName = "primary", keyPriority = 10),
+            candidate(0, "a", keyName = "backup", keyPriority = 20),
         )
 
         repeat(4) {

@@ -1099,7 +1099,7 @@ onBeforeUnmount(() => {
         <label class="field">
           <span>优先级</span>
           <input v-model.number="importForm.priority" type="number" min="1" max="1000" />
-          <small>数值越小越优先；只影响账号之间的排序，不改变渠道优先级。</small>
+          <small>1..1000，同一协议组内与所有渠道的静态密钥和 OAuth 账号统一比较，越小越优先；同级再比较渠道优先级。</small>
         </label>
 
         <div class="field">
@@ -1179,7 +1179,7 @@ onBeforeUnmount(() => {
         <label class="field">
           <span>优先级</span>
           <input v-model.number="settingsForm.priority" type="number" min="1" max="1000" />
-          <small>数值越小越优先；只影响账号之间的排序，不改变渠道优先级。</small>
+          <small>1..1000，同一协议组内与所有渠道的静态密钥和 OAuth 账号统一比较，越小越优先；同级再比较渠道优先级。</small>
         </label>
         <div class="field">
           <span>账号代理</span>

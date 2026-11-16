@@ -109,9 +109,9 @@ function addManualModels(): void {
           min="1"
           max="1000"
           step="1"
-          title="1..1000，数值越小越优先"
+          title="1..1000，同一协议组内与所有渠道的静态密钥和 OAuth 账号统一比较，越小越优先；同级再比渠道优先级"
         />
-        <small>1..1000，越小越优先；同级轮询。</small>
+        <small>1..1000，凭据跨渠道比较；越小越优先，同级再比渠道优先级。</small>
       </label>
       <div class="channel-key-editor-status">
         <span>状态</span>

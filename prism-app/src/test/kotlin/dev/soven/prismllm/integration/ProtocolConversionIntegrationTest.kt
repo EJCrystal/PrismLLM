@@ -3,6 +3,7 @@ package dev.soven.prismllm.integration
 import com.sun.net.httpserver.HttpServer
 import dev.soven.prismllm.api.GatewayApplication
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
+import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.shared.domain.FailureStage
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
@@ -651,20 +652,28 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `native protocol candidate wins over higher priority conversion candidate`() = runBlocking {
-        val conversion = createChannelWithBaseUrl(
+        val credential = app.credentialCipher.encrypt("upstream-secret")
+        val conversion = app.channelRepository.create(
             name = "conversion-first",
             baseUrl = fake.baseUrl + "/ok/v1",
+            keys = listOf(NewChannelKey("conversion-key", credential, priority = 1, models = listOf("claude-sonnet-4-5"))),
             protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
+            enabled = true,
+            priority = 1,
         )
-        val native = createChannelWithBaseUrl(
+        val native = app.channelRepository.create(
             name = "native-second",
             baseUrl = fake.baseUrl + "/500/v1",
+            keys = listOf(NewChannelKey("native-key", credential, priority = 100, models = listOf("gpt-4o-mini"))),
             protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
             modelMappings = listOf(ChannelModelRecord("gpt-4o-mini")),
+            authType = "bearer",
+            enabled = true,
+            priority = 20,
         )
-        // 转换候选放在 position 0，原生候选放在 position 1；原生协议仍应先尝试。
+        // 转换候选的渠道和密钥档位都更优；原生协议仍应先尝试。
         exposeAsModel("native-priority", conversion to "claude-sonnet-4-5", native to "gpt-4o-mini")
         val key = createClientKey()
 
@@ -688,6 +697,12 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
             )
             val log = awaitRequestLog()
             assertEquals(2, log.upstreamAttempts)
+            assertEquals(listOf(native.id, conversion.id), log.attempts.map { it.channelId })
+            assertEquals(
+                listOf(native.keys.single().id, conversion.keys.single().id),
+                log.attempts.map { it.channelKeyId },
+            )
+            assertEquals(listOf(500, 200), log.attempts.map { it.statusCode })
             assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.protocol)
             assertEquals(GatewayProtocol.MESSAGES, log.upstreamProtocol)
 

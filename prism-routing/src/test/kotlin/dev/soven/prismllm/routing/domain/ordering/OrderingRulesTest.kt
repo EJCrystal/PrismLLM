@@ -51,18 +51,34 @@ class OrderingRulesTest {
     )
 
     @Test
-    fun `initial order follows position then channel credential and upstream model`() {
+    fun `initial order follows credential priority then channel and stable fields`() {
         val candidates = listOf(
-            candidate("b", position = 1, priority = 0),
-            candidate("a", position = 0, priority = 2, credentialName = "z"),
-            candidate("a", position = 0, priority = 1, credentialName = "b", upstreamModel = "z"),
-            candidate("a", position = 0, priority = 1, credentialName = "a", upstreamModel = "z"),
-            candidate("a", position = 0, priority = 1, credentialName = "a", upstreamModel = "a"),
+            candidate("b", position = 20, priority = 0),
+            candidate("a", position = 1, priority = 2, credentialName = "z"),
+            candidate("a", position = 20, priority = 1, credentialName = "b", upstreamModel = "z"),
+            candidate("a", position = 1, priority = 1, credentialName = "a", upstreamModel = "z"),
+            candidate("a", position = 1, priority = 1, credentialName = "a", upstreamModel = "a"),
         )
 
         assertEquals(
-            listOf("a/a/a", "a/a/z", "a/b/z", "a/z/m", "b/key/m"),
+            listOf("b/key/m", "a/a/a", "a/a/z", "a/b/z", "a/z/m"),
             OrderingRules.initialOrder(candidates).map { "${it.channel.name}/${it.credential.name}/${it.upstreamModel}" },
+        )
+    }
+
+    @Test
+    fun `credential priority outranks channel names and channel priority breaks credential ties`() {
+        val candidates = listOf(
+            candidate("a", position = 1, priority = 100),
+            candidate("z", position = 20, priority = 1),
+            candidate("y", position = 1, priority = 10),
+            candidate("b", position = 20, priority = 10),
+            candidate("c", position = 1, priority = 10),
+        )
+
+        assertEquals(
+            listOf("z", "c", "y", "b", "a"),
+            OrderingRules.initialOrder(candidates).map { it.channel.id },
         )
     }
 

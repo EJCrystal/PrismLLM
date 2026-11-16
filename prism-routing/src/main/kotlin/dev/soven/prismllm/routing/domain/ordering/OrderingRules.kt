@@ -14,15 +14,15 @@ import dev.soven.prismllm.shared.domain.GatewayProtocol
  */
 object OrderingRules {
     private val initialComparator = compareBy<RouteCandidate>(
+        { it.credential.priority },
         { it.position },
         { it.channel.name },
-        { it.credential.priority },
         { it.credential.name },
         { it.credential.id },
         { it.upstreamModel },
     )
 
-    /** 按渠道档位、渠道名、凭据档位、凭据名、凭据 ID 和上游模型做稳定排序。 */
+    /** 按凭据档位、渠道档位、渠道名、凭据名、凭据 ID 和上游模型做稳定排序。 */
     fun initialOrder(candidates: List<RouteCandidate>): List<RouteCandidate> =
         candidates.sortedWith(initialComparator)
 
