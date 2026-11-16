@@ -46,21 +46,23 @@ import kotlin.test.assertTrue
 class AdminChannelIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
-    fun `higher priority key wins when canonical id maps to a different upstream model name`() = runBlocking {
-        app.channelRepository.create(
+    fun `configured key order wins when canonical id maps to a different upstream model name`() = runBlocking {
+        val welfareCredential = java.util.UUID.randomUUID().toString()
+        val ordinaryCredential = java.util.UUID.randomUUID().toString()
+        val channel = app.channelRepository.create(
             name = "canonical-priority",
             baseUrl = "${fake.baseUrl}/ok/v1",
             keys = listOf(
                 NewChannelKey(
                     name = "welfare",
-                    credential = app.credentialCipher.encrypt("key-welfare"),
-                    priority = 10,
+                    credential = app.credentialCipher.encrypt(welfareCredential),
+                    priority = 100,
                     models = listOf("deepseek-v4.1-flash"),
                 ),
                 NewChannelKey(
                     name = "guomo",
-                    credential = app.credentialCipher.encrypt("key-guomo"),
-                    priority = 100,
+                    credential = app.credentialCipher.encrypt(ordinaryCredential),
+                    priority = 1,
                     models = listOf("deepseek-flash"),
                 ),
             ),
@@ -73,6 +75,11 @@ class AdminChannelIntegrationTest : GatewayIntegrationTestBase() {
             ),
             priority = 1,
         )
+        configureModelRoute(
+            "deepseek-flash",
+            channel to channel.keys.single { it.name == "welfare" },
+            channel to channel.keys.single { it.name == "guomo" },
+        )
         val key = createClientKey()
 
         testApplication {
@@ -83,7 +90,7 @@ class AdminChannelIntegrationTest : GatewayIntegrationTestBase() {
                 setBody("""{"model":"deepseek-flash","messages":[]}""")
             }
             assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
-            assertEquals(listOf("Bearer key-welfare"), fake.requests.map { it.authorization })
+            assertEquals(listOf("Bearer $welfareCredential"), fake.requests.map { it.authorization })
 
             val log = awaitRequestLog()
             assertEquals("welfare", log.channelKeyName)
@@ -260,6 +267,8 @@ class AdminChannelIntegrationTest : GatewayIntegrationTestBase() {
             val duplicateBody = duplicate.bodyAsText()
             assertTrue(duplicateBody.contains("gpt-4o-mini"), "BODY=[$duplicateBody]")
             assertTrue(duplicateBody.contains("deepseek-chat"), "BODY=[$duplicateBody]")
+            val mappedChannel = app.channelRepository.find(channel.id)!!
+            configureModelRoute("same-id", mappedChannel to mappedChannel.keys.single())
             val sharedCandidates = app.modelCatalog.findCandidates("same-id", GatewayProtocol.CHAT_COMPLETIONS)
             assertEquals(
                 listOf("deepseek-chat", "gpt-4o-mini"),
@@ -493,7 +502,9 @@ class AdminChannelIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.Created, createdChannel.status)
             val channelId = Json.parseToJsonElement(createdChannel.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
 
-            // 渠道授权的上游模型直接对外暴露，不再需要别名层。
+            assertFalse(app.modelCatalog.listEnabledModels().contains("gpt-4o-mini"))
+            val selectedChannel = app.channelRepository.find(channelId)!!
+            configureModelRoute("gpt-4o-mini", selectedChannel to selectedChannel.keys.single())
             assertTrue(app.modelCatalog.listEnabledModels().contains("gpt-4o-mini"))
 
             val createdKey = client.post("/admin/api/client-keys") {

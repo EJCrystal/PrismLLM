@@ -101,18 +101,6 @@ function addManualModels(): void {
         <span>密钥名称</span>
         <input v-model="channelKey.name" placeholder="例如 primary" autocomplete="off" />
       </label>
-      <label class="field">
-        <span>优先级</span>
-        <input
-          v-model.number="channelKey.priority"
-          type="number"
-          min="1"
-          max="1000"
-          step="1"
-          title="1..1000，数值越小越优先"
-        />
-        <small>1..1000，越小越优先；同级轮询。</small>
-      </label>
       <div class="channel-key-editor-status">
         <span>状态</span>
         <div class="channel-key-status-row">
@@ -269,7 +257,7 @@ function addManualModels(): void {
 
 .channel-key-editor-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px 160px;
+  grid-template-columns: minmax(0, 1fr) 160px;
   align-items: start;
   gap: 12px;
 }
@@ -425,11 +413,7 @@ function addManualModels(): void {
 
 @media (max-width: 900px) {
   .channel-key-editor-head {
-    grid-template-columns: minmax(0, 1fr) 120px;
-  }
-
-  .channel-key-editor-status {
-    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -445,20 +429,8 @@ function addManualModels(): void {
   }
 
   .channel-key-editor-head {
-    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 12px;
-  }
-
-  .channel-key-editor-head > .field:first-child {
-    grid-column: 1 / -1;
-  }
-
-  .channel-key-editor-head > .field:nth-child(2) {
-    grid-column: 1;
-  }
-
-  .channel-key-editor-status {
-    grid-column: 2;
   }
 
   .channel-key-status-row {

@@ -7,6 +7,7 @@ import ToastStack from './components/ToastStack.vue'
 import LoginView from './components/LoginView.vue'
 import ChannelsView from './components/ChannelsView.vue'
 import OAuthAccountsView from './components/OAuthAccountsView.vue'
+import ModelRoutesView from './components/ModelRoutesView.vue'
 import ClientKeysView from './components/ClientKeysView.vue'
 import LogsView from './components/LogsView.vue'
 import UsageReportsView from './components/UsageReportsView.vue'
@@ -19,6 +20,7 @@ import InfoPopover from './components/InfoPopover.vue'
 const navItems = [
   { id: 'channels', label: '渠道', icon: 'channels' },
   { id: 'oauth-accounts', label: '订阅账号', icon: 'users' },
+  { id: 'model-routes', label: '模型路由', icon: 'list' },
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
   { id: 'usage-reports', label: '用量报表', icon: 'chart' },
@@ -34,6 +36,10 @@ const meta = {
   'oauth-accounts': {
     title: '订阅账号',
     desc: '统一管理 ChatGPT / Antigravity 订阅账号的授权、模型与调度；凭据自动续期，可关联多个渠道，并统一处理上游额度、滑动窗口与 429 冷却。',
+  },
+  'model-routes': {
+    title: '模型路由',
+    desc: '按对外模型设置跨渠道凭据顺序，统一管理静态密钥与订阅账号。新增模型需要先添加路由凭据。',
   },
   'client-keys': {
     title: '调用方密钥',
@@ -62,6 +68,7 @@ const user = ref<MeResponse | null>(null)
 const view = ref<keyof typeof meta>('channels')
 const navOpen = ref(false)
 const accountOpen = ref(false)
+const modelRoutesView = ref<InstanceType<typeof ModelRoutesView> | null>(null)
 const currentMeta = computed(() => meta[view.value] || meta.channels)
 const isDataView = computed(() => view.value === 'channels' || view.value === 'logs' || view.value === 'audit-logs')
 /** 列表型页面：手机上统一成「工具条钉住 + 表格内部滚动」，避免列表末尾留下空白。 */
@@ -82,6 +89,10 @@ async function restoreSession() {
   }
 }
 
+function canLeaveCurrentView(): boolean {
+  return view.value !== 'model-routes' || modelRoutesView.value?.canLeave() !== false
+}
+
 function onAuthenticated(authenticatedUser: MeResponse) {
   user.value = authenticatedUser
   view.value = 'channels'
@@ -89,11 +100,13 @@ function onAuthenticated(authenticatedUser: MeResponse) {
 }
 
 function selectView(id: keyof typeof meta) {
+  if (id !== view.value && !canLeaveCurrentView()) return
   view.value = id
   navOpen.value = false
 }
 
 async function logout() {
+  if (!canLeaveCurrentView()) return
   try {
     await api.logout()
   } catch {
@@ -225,6 +238,7 @@ onBeforeUnmount(() => {
       <main class="content" :class="{ 'content-data': isDataView, 'content-fill': isListView }">
         <ChannelsView v-if="view === 'channels'" />
         <OAuthAccountsView v-else-if="view === 'oauth-accounts'" />
+        <ModelRoutesView v-else-if="view === 'model-routes'" ref="modelRoutesView" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
         <LogsView v-else-if="view === 'logs'" />
         <UsageReportsView v-else-if="view === 'usage-reports'" />

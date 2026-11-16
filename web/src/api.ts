@@ -48,6 +48,10 @@ import type {
   ModelPriceReference,
   ModelPriceRequest,
   ModelSuggestionsResponse,
+  ModelRouteDetail,
+  ModelRouteListOptions,
+  ModelRoutePage,
+  ModelRouteUpdateRequest,
   ModelTestSettings,
   ModelTestTarget,
   NotificationDeliveryPage,
@@ -164,6 +168,16 @@ export const api = {
     request<MeResponse>('/account/avatar', { method: 'PUT', body: JSON.stringify(payload) }),
   changePassword: (payload: ChangePasswordRequest) =>
     request<null>('/account/password', { method: 'PUT', body: JSON.stringify(payload) }),
+
+  listModelRoutes: (options: ModelRouteListOptions = {}) => {
+    const params = new URLSearchParams({ offset: String(options.offset ?? 0), limit: String(options.limit ?? 100) })
+    if (options.q?.trim()) params.set('q', options.q.trim())
+    return request<ModelRoutePage>('/model-routes?' + params)
+  },
+  getModelRoute: (modelId: string) =>
+    request<ModelRouteDetail>('/model-routes/detail?' + new URLSearchParams({ modelId })),
+  updateModelRoute: (payload: ModelRouteUpdateRequest) =>
+    request<ModelRouteDetail>('/model-routes', { method: 'PUT', body: JSON.stringify(payload) }),
 
   listChannels: () => requestList<Channel>('/channels'),
   getOccupancy: () => request<RuntimeOccupancy>('/occupancy'),

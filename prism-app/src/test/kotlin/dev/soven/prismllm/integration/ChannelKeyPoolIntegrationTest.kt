@@ -79,6 +79,7 @@ class ChannelKeyPoolIntegrationTest : GatewayIntegrationTestBase() {
                     statement.executeUpdate()
                 }
         }
+        configureModelRoutes()
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -159,6 +160,7 @@ class ChannelKeyPoolIntegrationTest : GatewayIntegrationTestBase() {
             enabled = true,
             modelMappings = listOf(ChannelModelRecord("Qwen3.8-Flash", "qwen3.8-flash", "manual")),
         )
+        configureModelRoutes()
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -209,6 +211,7 @@ class ChannelKeyPoolIntegrationTest : GatewayIntegrationTestBase() {
                 statement.executeUpdate()
             }
         }
+        configureModelRoutes()
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -332,6 +335,7 @@ class ChannelKeyPoolIntegrationTest : GatewayIntegrationTestBase() {
             enabled = true,
             modelMappings = mappingsOf("gpt-4o-mini", "deepseek-chat"),
         )
+        configureModelRoutes()
         val key = createClientKey()
 
         testApplication {

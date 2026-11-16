@@ -279,7 +279,7 @@ onBeforeUnmount(stopTimer)
                 <span>使用凭据</span>
                 <select v-model="selectedKeyId" :disabled="running">
                   <option v-for="credential in selectedTarget.credentials" :key="credential.id" :value="credential.id">
-                    {{ credential.name }}（优先级 {{ credential.priority }}）
+                    {{ credential.name }}
                   </option>
                 </select>
               </label>

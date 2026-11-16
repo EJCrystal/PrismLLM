@@ -177,19 +177,32 @@ class ProviderChannelProvisioner(
     }
 
     /** 启动搬迁与并集对账可重试，已就位的账号不改基础配置。 */
-    suspend fun reconcile(): Int {
+    suspend fun reconcile(): Int = reconcile(strict = false)
+
+    /** V73 首次 seed 前必须完成搬迁；失败要中止迁移，不能留下旧渠道身份。 */
+    suspend fun reconcileBeforeModelCredentialRouteMigration(): Int = reconcile(strict = true)
+
+    private suspend fun reconcile(strict: Boolean): Int {
         var moved = 0
         val servable = OAuthProvider.entries.filter { ProviderEndpoints.of(it).servable }
-        for (account in accounts.listPendingProviderChannel(servable)) {
-            try {
-                val attached = attachAccount(account.id) ?: continue
-                if (attached.channelIds != account.channelIds) moved++
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.warn("failed to move subscription account onto provider channel, accountId={}", account.id, e)
+        do {
+            val pending = accounts.listPendingProviderChannel(servable)
+            for (account in pending) {
+                try {
+                    val attached = attachAccount(account.id) ?: continue
+                    if (attached.channelIds != account.channelIds) moved++
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    logger.warn("failed to move subscription account onto provider channel, accountId={}", account.id, e)
+                    if (strict) throw IllegalStateException(
+                        "Unable to reconcile pending subscription account ${account.id} before V73 migration",
+                        e,
+                    )
+                }
             }
-        }
+            // Ordinary startup retries one bounded batch; migration must settle every batch first.
+        } while (strict && pending.isNotEmpty())
         for (provider in servable) {
             channels.inTransaction {
                 val existing = channels.findProviderChannelInTransaction(provider, lock = true)

@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
 import java.io.IOException
 import java.math.BigDecimal
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -402,11 +403,12 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `direct routing prefers channel priority and skips cooled high priority`() = runBlocking {
+    fun `direct routing follows configured order and skips a cooled first credential`() = runBlocking {
         app.close()
         app = GatewayApplication(config(cooldownTransientBaseMs = 60_000))
-        val preferred = createChannelWithBaseUrl("preferred", "${fake.baseUrl}/500/v1", priority = 1)
-        val backup = createChannelWithBaseUrl("backup", "${fake.baseUrl}/ok/v1", priority = 2)
+        val preferred = createChannelWithBaseUrl("preferred", "${fake.baseUrl}/500/v1", priority = 100)
+        val backup = createChannelWithBaseUrl("backup", "${fake.baseUrl}/ok/v1", priority = 1)
+        configureModelRoute("gpt-4o-mini", preferred to preferred.keys.single(), backup to backup.keys.single())
         val key = createClientKey()
 
         testApplication {
@@ -417,13 +419,13 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
                 setBody("""{"model":"gpt-4o-mini","messages":[]}""")
             }
 
-            // 高优先级渠道 500：当次请求内故障转移到低优先级渠道，高优先级进入冷却
+            // 列表首项 500：当次请求内按保存顺序故障转移，忽略相反的渠道优先级。
             assertEquals(HttpStatusCode.OK, send().status)
             val firstLog = awaitRequestLog()
             assertEquals(backup.id, firstLog.channelId)
             assertEquals(2, firstLog.upstreamAttempts)
 
-            // 后续请求预分拣直接跳过冷却中的高优先级渠道
+            // 后续请求预分拣直接跳过列表首项的冷却凭据。
             assertEquals(HttpStatusCode.OK, send().status)
             awaitRequestLogCount(2)
             val secondLog = app.requestLogRepository.list(10).first()
@@ -434,11 +436,12 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `direct routing spreads same-priority channels`() = runBlocking {
+    fun `direct routing keeps the first configured credential across repeated requests`() = runBlocking {
         app.close()
         app = GatewayApplication(config())
         val first = createChannelWithBaseUrl("first", "${fake.baseUrl}/ok/v1")
         val second = createChannelWithBaseUrl("second", "${fake.baseUrl}/ok/v1")
+        configureModelRoute("gpt-4o-mini", first to first.keys.single(), second to second.keys.single())
         val key = createClientKey()
 
         testApplication {
@@ -454,8 +457,91 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
             awaitRequestLogCount(2)
             val logs = app.requestLogRepository.list(10)
             assertEquals(2, logs.size)
-            assertEquals(setOf(first.id, second.id), logs.map { it.channelId }.toSet())
+            assertEquals(listOf(first.id, first.id), logs.map { it.channelId })
+            assertEquals(2, fake.requests.size)
             logs.forEach { assertEquals(1, it.upstreamAttempts) }
+        }
+    }
+
+    @Test
+    fun `omitted credentials are never attempted during retries or fail open`() = runBlocking {
+        val selectedCredential = UUID.randomUUID().toString()
+        val omittedKeyCredential = UUID.randomUUID().toString()
+        val selected = app.channelRepository.create(
+            name = "selected-identity", baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(
+                NewChannelKey("selected", app.credentialCipher.encrypt(selectedCredential), priority = 100, models = listOf("selected-upstream")),
+                NewChannelKey("omitted-key", app.credentialCipher.encrypt(omittedKeyCredential), priority = 1, models = listOf("selected-upstream")),
+            ),
+            authType = "bearer", protocols = GatewayProtocol.default, enabled = true,
+            modelMappings = listOf(ChannelModelRecord("selected-upstream", "selected-only")),
+        )
+        val omitted = app.channelRepository.create(
+            name = "omitted-channel", baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(NewChannelKey("omitted", app.credentialCipher.encrypt(UUID.randomUUID().toString()), models = listOf("omitted-upstream"))),
+            authType = "bearer", protocols = GatewayProtocol.default, enabled = true,
+            modelMappings = listOf(ChannelModelRecord("omitted-upstream", "selected-only")),
+        )
+        val selectedKey = selected.keys.single { it.name == "selected" }
+        configureModelRoute("selected-only", selected to selectedKey)
+        fake.keyStatuses["Bearer $selectedCredential"] = 500
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            repeat(2) { index ->
+                val response = client.post("/v1/chat/completions") {
+                    header(HttpHeaders.Authorization, "Bearer $key")
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"model":"selected-only","messages":[]}""")
+                }
+                assertEquals(HttpStatusCode.BadGateway, response.status, response.bodyAsText())
+                val log = awaitRequestLog()
+                assertEquals(1, log.upstreamAttempts)
+                assertEquals(listOf(selectedKey.id), log.attempts.filterNot { it.skipped }.map { it.channelKeyId })
+                assertTrue(log.attempts.none { it.channelId == omitted.id || it.channelKeyName == "omitted-key" })
+                assertEquals(index + 1, fake.requests.size)
+                assertTrue(fake.requests.all { it.authorization == "Bearer $selectedCredential" })
+                assertTrue(app.candidateCooldown.isBlocked(selected.id, selectedKey.id, "selected-upstream"))
+            }
+        }
+    }
+
+    @Test
+    fun `mapped models with absent or empty routes never forward to available credentials`() = runBlocking {
+        val models = listOf("unconfigured-route", "empty-route")
+        app.channelRepository.create(
+            name = "available-but-unselected", baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(NewChannelKey("available", app.credentialCipher.encrypt(UUID.randomUUID().toString()), models = models)),
+            authType = "bearer", protocols = GatewayProtocol.default, enabled = true,
+            modelMappings = mappingsOf(*models.toTypedArray()),
+        )
+        configureModelRoute("empty-route")
+        assertNull(app.modelCredentialRouteRepository.find("unconfigured-route"))
+        assertTrue(assertNotNull(app.modelCredentialRouteRepository.find("empty-route")).entries.isEmpty())
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            for (model in models) {
+                for (stream in listOf(false, true)) {
+                    val response = client.post("/v1/chat/completions") {
+                        header(HttpHeaders.Authorization, "Bearer $key")
+                        contentType(ContentType.Application.Json)
+                        setBody("""{"model":"$model","stream":$stream,"messages":[]}""")
+                    }
+                    assertEquals(HttpStatusCode.ServiceUnavailable, response.status, response.bodyAsText())
+                    assertTrue(response.bodyAsText().contains("model_credentials_unavailable"))
+                    val log = awaitRequestLog()
+                    assertEquals(0, log.upstreamAttempts)
+                    assertTrue(log.attempts.isEmpty())
+                }
+            }
+            val listing = client.get("/v1/models") { header(HttpHeaders.Authorization, "Bearer $key") }
+            assertEquals(HttpStatusCode.OK, listing.status, listing.bodyAsText())
+            assertTrue(Json.parseToJsonElement(listing.bodyAsText()).jsonObject["data"]!!.jsonArray.isEmpty())
+            assertTrue(fake.requests.isEmpty())
+            assertTrue(fake.tokenRequests.isEmpty())
         }
     }
 
@@ -494,21 +580,23 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `same channel keys fail over by key priority and record key name`() = runBlocking {
-        app.channelRepository.create(
+    fun `same channel keys fail over in configured order and record key name`() = runBlocking {
+        val primaryCredential = UUID.randomUUID().toString()
+        val backupCredential = UUID.randomUUID().toString()
+        val channel = app.channelRepository.create(
             name = "key-priority",
-            baseUrl = "${fake.baseUrl}/key-route/v1",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
             keys = listOf(
                 NewChannelKey(
                     name = "primary",
-                    credential = app.credentialCipher.encrypt("key-primary"),
-                    priority = 1,
+                    credential = app.credentialCipher.encrypt(primaryCredential),
+                    priority = 100,
                     models = listOf("gpt-4o-mini"),
                 ),
                 NewChannelKey(
                     name = "backup",
-                    credential = app.credentialCipher.encrypt("key-backup"),
-                    priority = 2,
+                    credential = app.credentialCipher.encrypt(backupCredential),
+                    priority = 1,
                     models = listOf("gpt-4o-mini"),
                 ),
             ),
@@ -518,6 +606,12 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
             modelMappings = mappingsOf("gpt-4o-mini"),
             priority = 1,
         )
+        configureModelRoute(
+            "gpt-4o-mini",
+            channel to channel.keys.single { it.name == "primary" },
+            channel to channel.keys.single { it.name == "backup" },
+        )
+        fake.keyStatuses["Bearer $primaryCredential"] = 401
         val key = createClientKey()
 
         testApplication {
@@ -531,13 +625,237 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.OK, send().status)
             assertEquals(HttpStatusCode.OK, send().status)
             assertEquals(
-                listOf("Bearer key-primary", "Bearer key-backup", "Bearer key-backup"),
+                listOf("Bearer $primaryCredential", "Bearer $backupCredential", "Bearer $backupCredential"),
                 fake.requests.map { it.authorization },
             )
             awaitRequestLogCount(2)
             val logs = app.requestLogRepository.list(10)
             assertEquals(setOf("backup"), logs.map { it.channelKeyName }.toSet())
             assertEquals(listOf(1, 2), logs.mapNotNull { it.upstreamAttempts }.sorted())
+        }
+    }
+
+    @Test
+    fun `public models have independent configured credential orders`() = runBlocking {
+        val ordinaryCredential = UUID.randomUUID().toString()
+        val welfareCredential = UUID.randomUUID().toString()
+        val ordinary = app.channelRepository.create(
+            name = "ordinary-channel",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(NewChannelKey(
+                name = "ordinary",
+                credential = app.credentialCipher.encrypt(ordinaryCredential),
+                priority = 100,
+                models = listOf("ordinary-a", "ordinary-b"),
+            )),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = listOf(
+                ChannelModelRecord("ordinary-a", "model-a", "manual"),
+                ChannelModelRecord("ordinary-b", "model-b", "manual"),
+            ),
+            priority = 1,
+        )
+        val welfare = app.channelRepository.create(
+            name = "welfare-channel",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(NewChannelKey(
+                name = "welfare",
+                credential = app.credentialCipher.encrypt(welfareCredential),
+                priority = 1,
+                models = listOf("welfare-a", "welfare-b"),
+            )),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = listOf(
+                ChannelModelRecord("welfare-a", "model-a", "manual"),
+                ChannelModelRecord("welfare-b", "model-b", "manual"),
+            ),
+            priority = 20,
+        )
+        configureModelRoute("model-a", ordinary to ordinary.keys.single(), welfare to welfare.keys.single())
+        configureModelRoute("model-b", welfare to welfare.keys.single(), ordinary to ordinary.keys.single())
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            for (stream in listOf(false, true)) {
+                for ((model, expectedChannel, upstreamModel) in listOf(
+                    Triple("model-a", ordinary, "ordinary-a"),
+                    Triple("model-b", welfare, "welfare-b"),
+                )) {
+                    val expectedCredential = if (model == "model-a") ordinaryCredential else welfareCredential
+                    val requestCount = fake.requests.size
+                    val response = client.post("/v1/chat/completions") {
+                        header(HttpHeaders.Authorization, "Bearer $key")
+                        contentType(ContentType.Application.Json)
+                        setBody("""{"model":"$model","stream":$stream,"messages":[]}""")
+                    }
+                    val body = response.bodyAsText()
+                    assertEquals(HttpStatusCode.OK, response.status, body)
+                    if (stream) assertTrue(body.contains("[DONE]"), body)
+                    assertEquals(requestCount + 1, fake.requests.size)
+                    val upstream = fake.requests.last()
+                    assertEquals("Bearer $expectedCredential", upstream.authorization)
+                    assertEquals(upstreamModel, Json.parseToJsonElement(upstream.body).jsonObject["model"]!!.jsonPrimitive.content)
+
+                    val log = awaitRequestLog()
+                    assertEquals(model, log.alias)
+                    assertEquals(expectedChannel.id, log.channelId)
+                    assertEquals(expectedChannel.keys.single().id, log.channelKeyId)
+                    assertEquals(upstreamModel, log.upstreamModel)
+                    assertEquals(stream, log.stream)
+                    assertEquals(1, log.upstreamAttempts)
+                    assertEquals(expectedChannel.keys.single().id, log.attempts.single().channelKeyId)
+                    assertEquals(upstreamModel, log.attempts.single().upstreamModel)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `retries credentials in the configured interleaved channel order`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(maxAttempts = 3))
+        val firstCredential = UUID.randomUUID().toString()
+        val middleCredential = UUID.randomUUID().toString()
+        val lastCredential = UUID.randomUUID().toString()
+        val channelA = app.channelRepository.create(
+            name = "channel-a",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(
+                NewChannelKey("key-1", app.credentialCipher.encrypt(firstCredential), priority = 100, models = listOf("upstream-a")),
+                NewChannelKey("key-100", app.credentialCipher.encrypt(lastCredential), priority = 1, models = listOf("upstream-a")),
+            ),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("upstream-a"),
+            priority = 20,
+        )
+        val channelB = app.channelRepository.create(
+            name = "channel-b",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(NewChannelKey(
+                "key-10", app.credentialCipher.encrypt(middleCredential), priority = 10, models = listOf("upstream-b"),
+            )),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("upstream-b"),
+            priority = 1,
+        )
+        exposeAsModel("global-key-retry", channelA to "upstream-a", channelB to "upstream-b")
+        // 通过显式路由交错两个渠道的所有密钥，验证失败重试只沿保存顺序推进。
+        configureModelRoute(
+            "global-key-retry",
+            channelA to channelA.keys.first { it.name == "key-1" },
+            channelB to channelB.keys.single(),
+            channelA to channelA.keys.first { it.name == "key-100" },
+        )
+        fake.keyStatuses["Bearer $firstCredential"] = 429
+        fake.keyStatuses["Bearer $middleCredential"] = 429
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"global-key-retry","stream":true,"messages":[]}""")
+            }
+            val body = response.bodyAsText()
+            assertEquals(HttpStatusCode.OK, response.status, body)
+            assertTrue(body.contains("[DONE]"), body)
+            assertEquals(
+                listOf("Bearer $firstCredential", "Bearer $middleCredential", "Bearer $lastCredential"),
+                fake.requests.map { it.authorization },
+            )
+            val expectedModels = listOf("upstream-a", "upstream-b", "upstream-a")
+            assertEquals(expectedModels, fake.requests.map { Json.parseToJsonElement(it.body).jsonObject["model"]!!.jsonPrimitive.content })
+
+            val log = awaitRequestLog()
+            val lastKey = channelA.keys.single { it.name == "key-100" }
+            assertEquals(channelA.id, log.channelId)
+            assertEquals(lastKey.id, log.channelKeyId)
+            assertEquals(3, log.upstreamAttempts)
+            assertEquals(listOf(1, 2, 3), log.attempts.map { it.index })
+            assertEquals(listOf(channelA.id, channelB.id, channelA.id), log.attempts.map { it.channelId })
+            assertEquals(
+                listOf(channelA.keys.single { it.name == "key-1" }.id, channelB.keys.single().id, lastKey.id),
+                log.attempts.map { it.channelKeyId },
+            )
+            assertEquals(expectedModels, log.attempts.map { it.upstreamModel })
+            assertEquals(listOf(429, 429, 200), log.attempts.map { it.statusCode })
+            assertTrue(log.attempts.take(2).all { it.retryable })
+            assertTrue(log.attempts.last().committed)
+        }
+    }
+
+    @Test
+    fun `all cooled fail-open retries only in configured credential order`() = runBlocking {
+        app.close()
+        app = GatewayApplication(config(maxAttempts = 2))
+        val ordinaryCredential = UUID.randomUUID().toString()
+        val welfareCredential = UUID.randomUUID().toString()
+        val ordinary = app.channelRepository.create(
+            name = "cooled-ordinary",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(NewChannelKey(
+                "ordinary", app.credentialCipher.encrypt(ordinaryCredential), priority = 100, models = listOf("ordinary-upstream"),
+            )),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("ordinary-upstream"),
+            priority = 1,
+        )
+        val welfare = app.channelRepository.create(
+            name = "cooled-welfare",
+            baseUrl = "${fake.baseUrl}/key-health/v1",
+            keys = listOf(NewChannelKey(
+                "welfare", app.credentialCipher.encrypt(welfareCredential), priority = 200, models = listOf("welfare-upstream"),
+            )),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = mappingsOf("welfare-upstream"),
+            priority = 20,
+        )
+        exposeAsModel("cooled-key-priority", ordinary to "ordinary-upstream", welfare to "welfare-upstream")
+        // 路由顺序故意与渠道/密钥优先级相反；fail-open 仍只按已保存顺序尝试。
+        configureModelRoute("cooled-key-priority", welfare to welfare.keys.single(), ordinary to ordinary.keys.single())
+        fake.keyStatuses["Bearer $welfareCredential"] = 429
+        for ((channel, model) in listOf(ordinary to "ordinary-upstream", welfare to "welfare-upstream")) {
+            val channelKey = channel.keys.single()
+            val permit = app.candidateCooldown.forceAcquire(channel.id, channelKey.id, model)
+            app.candidateCooldown.recordFailure(permit, FailureKind.RATE_LIMITED, retryAfterMs = 60_000)
+            assertTrue(app.candidateCooldown.isBlocked(channel.id, channelKey.id, model))
+        }
+        val key = createClientKey()
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/v1/chat/completions") {
+                header(HttpHeaders.Authorization, "Bearer $key")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"cooled-key-priority","stream":false,"messages":[]}""")
+            }
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            assertEquals(listOf("Bearer $welfareCredential", "Bearer $ordinaryCredential"), fake.requests.map { it.authorization })
+            assertEquals(listOf("welfare-upstream", "ordinary-upstream"), fake.requests.map {
+                Json.parseToJsonElement(it.body).jsonObject["model"]!!.jsonPrimitive.content
+            })
+            val log = awaitRequestLog()
+            assertEquals(ordinary.id, log.channelId)
+            assertEquals(ordinary.keys.single().id, log.channelKeyId)
+            assertEquals("ordinary-upstream", log.upstreamModel)
+            assertEquals(2, log.upstreamAttempts)
+            val attempted = log.attempts.filterNot { it.skipped }
+            assertEquals(listOf(welfare.keys.single().id, ordinary.keys.single().id), attempted.map { it.channelKeyId })
+            assertEquals(listOf(429, 200), attempted.map { it.statusCode })
         }
     }
 
@@ -572,7 +890,7 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `spreads requests across same-tier candidates`() = runBlocking {
+    fun `same priority candidates remain in their configured order`() = runBlocking {
         val primary = createChannel("primary", "ok")
         val secondary = createChannel("secondary", "ok")
         exposeUnderCanonicalIdInOrder("fast-chat", Triple(primary, "m1", 0), Triple(secondary, "m2", 0))
@@ -591,8 +909,10 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
             awaitRequestLogCount(2)
             val logs = app.requestLogRepository.list(10)
             assertEquals(2, logs.size)
-            // 同档两个候选各承接一次请求
-            assertEquals(setOf(primary.id, secondary.id), logs.map { it.channelId }.toSet())
+            assertEquals(listOf(primary.id, primary.id), logs.map { it.channelId })
+            assertEquals(listOf("m1", "m1"), fake.requests.map {
+                Json.parseToJsonElement(it.body).jsonObject["model"]!!.jsonPrimitive.content
+            })
             logs.forEach { assertEquals(1, it.upstreamAttempts) }
         }
     }
@@ -696,7 +1016,7 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `shared public id rotates across channels without duplicating the public model`() = runBlocking {
+    fun `shared public id keeps configured first channel without duplicating the public model`() = runBlocking {
         val first = createChannelWithBaseUrl(
             name = "shared-channel-a",
             baseUrl = "${fake.baseUrl}/ok/v1",
@@ -709,6 +1029,7 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
             modelMappings = listOf(ChannelModelRecord("upstream-b", "shared-channel-model", "manual")),
             priority = 1,
         )
+        configureModelRoute("shared-channel-model", first to first.keys.single(), second to second.keys.single())
         val key = createClientKey()
 
         testApplication {
@@ -724,7 +1045,8 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
             awaitRequestLogCount(2)
 
             val logs = app.requestLogRepository.list(10)
-            assertEquals(setOf(first.id, second.id), logs.map { it.channelId }.toSet())
+            assertEquals(listOf(first.id, first.id), logs.map { it.channelId })
+            assertEquals(2, fake.requests.size)
             logs.forEach { assertEquals(1, it.upstreamAttempts) }
             assertEquals(1, app.modelCatalog.listEnabledModels().count { it == "shared-channel-model" })
         }
@@ -742,7 +1064,7 @@ class RoutingFailoverIntegrationTest : GatewayIntegrationTestBase() {
                 ttftSlowStreak = 2,
             ),
         )
-        // 直连档位来自渠道优先级：慢渠道必须排在前面，等价于旧别名里 position 0/1 的主备顺序。
+        // 把慢渠道显式配置在首位，以验证首 token 冷却后使用下一个凭据。
         val primary = createChannelWithBaseUrl("slow", "${fake.baseUrl}/slow/v1", priority = 0)
         val secondary = createChannelWithBaseUrl("secondary", "${fake.baseUrl}/ok/v1", priority = 10)
         exposeAsModel("fast-chat", primary to "m1", secondary to "m2")

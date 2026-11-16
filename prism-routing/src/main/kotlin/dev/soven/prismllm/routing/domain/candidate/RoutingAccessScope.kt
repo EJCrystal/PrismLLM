@@ -42,7 +42,11 @@ data class RoutingAccessScope(
 
     /** 判断渠道与凭据交集；OAuth 不匹配静态黑名单，但受渠道限制和静态白名单约束。 */
     fun allowsCredential(channelId: String, credential: UpstreamCredential): Boolean =
+        allowsCredential(channelId, credential.id, credential.isOAuth)
+
+    /** 身份授权不依赖凭据是否仍存在或启用，供已保存路由的不可用诊断使用。 */
+    fun allowsCredential(channelId: String, credentialId: String, isOAuth: Boolean): Boolean =
         allowsChannel(channelId) && (allowedChannelKeys?.let { keys ->
-            !credential.isOAuth && RoutingAllowedChannelKey(channelId, credential.id) in keys
-        } ?: true) && (credential.isOAuth || RoutingAllowedChannelKey(channelId, credential.id) !in deniedChannelKeys.orEmpty())
+            !isOAuth && RoutingAllowedChannelKey(channelId, credentialId) in keys
+        } ?: true) && (isOAuth || RoutingAllowedChannelKey(channelId, credentialId) !in deniedChannelKeys.orEmpty())
 }

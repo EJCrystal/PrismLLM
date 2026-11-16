@@ -1,6 +1,8 @@
 package dev.soven.prismllm.integration
 
+import dev.soven.prismllm.api.GatewayApplication
 import dev.soven.prismllm.config.OAuthConfig
+import dev.soven.prismllm.oauth.domain.OAuthRoutingStrategy
 import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
@@ -208,6 +210,7 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
         // 测试自己的 provider 端点指向本机 fake，不外访官方端点。
         app.channelRepository.update(channel.id, channel.name, fake.baseUrl + "/ok/v1", authType = channel.authType, enabled = true)
         app.providerChannelProvisioner.updateSettings(account.id, modelMappingChanges = listOf(ProviderModelMappingChange("upstream-model", "manual", "public-model")), expectedModelMappingRevision = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).revision)
+        configureModelRoute("public-model", channel to account)
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -248,6 +251,7 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
         )
         val channel = app.channelRepository.findProviderChannel(OAuthProvider.CHATGPT)!!
         app.channelRepository.update(channel.id, channel.name, fake.baseUrl + "/ok/v1", authType = channel.authType, enabled = true)
+        configureModelRoute("family", channel to known, channel to unknown)
         val key = createClientKey()
         testApplication {
             application { app.install(this) }
@@ -286,6 +290,8 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(JsonNull, row["automaticCanonicalModelId"])
             assertEquals(JsonNull, row["mappingSource"])
             assertTrue(row["catalogActive"]!!.jsonPrimitive.boolean)
+            // 目录的公开 ID 变化不会自动迁移凭据路由；测试显式配置新的公开模型。
+            configureModelRoute("m", channel to unknown)
             assertPublicModels("m")
             other.syncModelUnion(OAuthProvider.CHATGPT)
             app.providerChannelProvisioner.syncModelUnion(OAuthProvider.CHATGPT)
@@ -345,6 +351,63 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `legacy OAUTH_ROUTING strategies never reorder saved OAuth identities`() = runBlocking {
+        for (strategy in OAuthRoutingStrategy.entries) {
+            app.close()
+            val base = config()
+            app = GatewayApplication(base.copy(oauth = base.oauth.copy(routing = strategy)))
+            val model = "oauth-order-${strategy.value}"
+            val channel = app.channelRepository.create(
+                name = model, baseUrl = "${fake.baseUrl}/ok/v1", keys = emptyList(), authType = "bearer",
+                protocols = listOf(GatewayProtocol.RESPONSES), enabled = true, modelMappings = mappingsOf(model),
+            )
+            suspend fun account(name: String): Pair<OAuthAccountRecord, String> {
+                val accessToken = java.util.UUID.randomUUID().toString()
+                val saved = app.oauthAccountRepository.create(NewOAuthAccount(
+                    name = name, provider = OAuthProvider.CHATGPT,
+                    refreshToken = app.credentialCipher.encrypt(java.util.UUID.randomUUID().toString()),
+                    accessToken = app.credentialCipher.encrypt(accessToken),
+                    accessTokenExpiresAt = System.currentTimeMillis() + 3_600_000,
+                    channelIds = listOf(channel.id), models = listOf(model),
+                ))
+                app.oauthAccountRepository.updatePolicy(saved.id, OAuthAccountPolicy(windowLimit = 100, windowSeconds = 3_600))
+                return saved to accessToken
+            }
+            val (first, firstToken) = account("first-${strategy.value}")
+            val (second, secondToken) = account("second-${strategy.value}")
+            val (omitted, _) = account("omitted-${strategy.value}")
+            configureModelRoute(model, channel to second, channel to first)
+            val key = createClientKey()
+            val before = fake.requests.size
+            testApplication {
+                application { app.install(this) }
+                suspend fun send(expectedAccount: OAuthAccountRecord, expectedToken: String) {
+                    val response = client.post("/v1/responses") {
+                        header(HttpHeaders.Authorization, "Bearer $key")
+                        contentType(ContentType.Application.Json)
+                        setBody("""{"model":"$model","input":"hi"}""")
+                    }
+                    assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+                    assertEquals("Bearer $expectedToken", fake.requests.last().authorization)
+                    val log = awaitRequestLog()
+                    assertEquals(expectedAccount.id, log.channelKeyId)
+                    assertEquals(1, log.upstreamAttempts)
+                    assertEquals(listOf(expectedAccount.id), log.attempts.map { it.channelKeyId })
+                    assertTrue(log.attempts.none { it.channelKeyId == omitted.id })
+                }
+                send(second, secondToken)
+                // 使用量发生变化后，least_used/pace 和轮询也不能把另一个账号移到前面。
+                send(second, secondToken)
+                configureModelRoute(model, channel to first, channel to second)
+                // drain 不能保留旧首选；新的显式顺序在下一次请求立即生效。
+                send(first, firstToken)
+            }
+            assertEquals(before + 3, fake.requests.size)
+            assertTrue(fake.tokenRequests.isEmpty())
+        }
+    }
+
+    @Test
     fun `subscription account window skips the candidate without calling upstream`() = runBlocking {
         val channel = app.channelRepository.create(
             name = "oauth-window",
@@ -357,7 +420,7 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
                 ),
             ),
             authType = "bearer",
-            protocols = GatewayProtocol.default,
+            protocols = listOf(GatewayProtocol.RESPONSES),
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
@@ -411,7 +474,7 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
                 ),
             ),
             authType = "bearer",
-            protocols = GatewayProtocol.default,
+            protocols = listOf(GatewayProtocol.RESPONSES),
             enabled = true,
             modelMappings = mappingsOf("m1"),
         )
@@ -992,7 +1055,7 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
         val conflictingAccount = createOAuthAccount(
             conflicting,
             "login@example.com",
-            refreshToken = "conflict-refresh-token",
+            refreshToken = "test-only-conflict-refresh-token",
         )
 
         testApplication {

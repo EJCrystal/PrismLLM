@@ -10,6 +10,9 @@ import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.requestlog.domain.RequestLogRecord
 import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
+import dev.soven.prismllm.shared.domain.UpstreamCredential
+import dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity
+import dev.soven.prismllm.routing.readmodel.CredentialRouteType
 import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
 import dev.soven.prismllm.fake.FakeUpstream
 import dev.soven.prismllm.channel.persistence.NewChannelKey
@@ -410,7 +413,7 @@ abstract class GatewayIntegrationTestBase {
             if (withBackup) listOf(NewChannelKey("backup", app.credentialCipher.encrypt("key-backup"), priority = 2, models = listOf("m1", "m2")))
             else emptyList(),
         authType = "bearer", protocols = GatewayProtocol.entries.toList(), enabled = true, modelMappings = mappingsOf("m1", "m2"),
-    )
+    ).also { appendToModelRoutes(it, it.keys) }
 
     protected suspend fun HttpClient.sendAutoDisableRequest(
         key: String,
@@ -454,7 +457,7 @@ abstract class GatewayIntegrationTestBase {
             modelMappings = modelMappings,
             priority = priority,
             requestOverrides = requestOverrides,
-        )
+        ).also { appendToModelRoutes(it, it.keys) }
     }
 
     protected fun mappingsOf(vararg models: String): List<ChannelModelRecord> =
@@ -473,7 +476,7 @@ abstract class GatewayIntegrationTestBase {
             refreshToken = app.credentialCipher.encrypt(refreshToken),
             channelIds = listOf(channel.id),
         ),
-    )
+    ).also { appendToModelRoutes(channel, listOf(it)) }
 
     protected suspend fun createChannelWithProtocols(
         name: String,
@@ -481,19 +484,62 @@ abstract class GatewayIntegrationTestBase {
         protocols: List<GatewayProtocol>,
     ): ChannelRecord = createChannelWithBaseUrl(name, "${fake.baseUrl}/$scenario/v1", protocols)
 
-    /**
-     * 把给定渠道的上游模型映射到同一个对外模型 ID，等价于旧测试里“建一个同名别名”。
-     * 现在只有直连暴露，跨渠道聚合靠渠道模型映射的 canonical ID。
-     */
+    /** 显式保存本用例的模型凭据顺序，包含不可用身份时用于验证停用后的保留行为。 */
+    protected suspend fun configureModelRoute(
+        modelId: String,
+        vararg credentials: Pair<ChannelRecord, UpstreamCredential>,
+    ) {
+        saveModelRoute(modelId, credentials.map { (channel, credential) -> routeIdentity(channel, credential) }.distinct())
+    }
 
+    /** 测试显式初始化已有目录；生产代码不会自动配置新增模型或凭据。 */
+    protected suspend fun configureModelRoutes() {
+        val accountsByChannel = app.oauthAccountRepository.listByChannel()
+        val channels = app.channelRepository.list().sortedWith(compareBy({ it.createdAt }, { it.name }, { it.id }))
+        val models = channels.flatMap { channel ->
+            channel.modelMappings.filter { it.catalogActive }.map { it.publicModelId }
+        }.distinct()
+        models.forEach { modelId ->
+            val entries = channels.flatMap { channel ->
+                val upstreamModels = channel.modelMappings.filter { it.catalogActive && it.publicModelId == modelId }
+                    .map { it.upstreamModel }
+                (channel.keys + accountsByChannel[channel.id].orEmpty())
+                    .filter { credential -> upstreamModels.any(credential::supports) }
+                    .map { credential -> routeIdentity(channel, credential) }
+            }.distinct()
+            saveModelRoute(modelId, entries)
+        }
+    }
+
+    private suspend fun appendToModelRoutes(channel: ChannelRecord, credentials: List<UpstreamCredential>) {
+        val currentChannel = assertNotNull(app.channelRepository.find(channel.id))
+        currentChannel.modelMappings.filter { it.catalogActive }.groupBy { it.publicModelId }.forEach { (modelId, mappings) ->
+            val selected = credentials.filter { credential -> mappings.any { credential.supports(it.upstreamModel) } }
+                .map { routeIdentity(currentChannel, it) }
+            val current = app.modelCredentialRouteRepository.find(modelId)
+            app.modelCredentialRouteRepository.save(modelId, current?.revision ?: 0, (current?.entries.orEmpty() + selected).distinct())
+        }
+    }
+
+    private fun routeIdentity(channel: ChannelRecord, credential: UpstreamCredential) = CredentialRouteIdentity(
+        channelId = channel.id,
+        credentialType = if (credential.isOAuth) CredentialRouteType.OAUTH else CredentialRouteType.STATIC,
+        credentialId = credential.id,
+    )
+
+    private suspend fun saveModelRoute(modelId: String, entries: List<CredentialRouteIdentity>) {
+        val current = app.modelCredentialRouteRepository.find(modelId)
+        app.modelCredentialRouteRepository.save(modelId, current?.revision ?: 0, entries)
+    }
+
+    /** 把上游模型映射到同一个公开 ID，并按传入渠道顺序保存该模型路由。 */
     protected suspend fun exposeAsModel(publicId: String, vararg candidates: Pair<ChannelRecord, String>) {
         exposeUnderCanonicalId(publicId, candidates.map { it.first.id to it.second })
     }
 
-    /** 同 [exposeAsModel]；档位由渠道优先级决定，候选里的 position 不再生效。 */
-
+    /** 按用例给定的位置生成明确的模型路由顺序。 */
     protected suspend fun exposeUnderCanonicalIdInOrder(publicId: String, vararg candidates: Triple<ChannelRecord, String, Int>) {
-        exposeUnderCanonicalId(publicId, candidates.map { it.first.id to it.second })
+        exposeUnderCanonicalId(publicId, candidates.sortedBy { it.third }.map { it.first.id to it.second })
     }
 
     protected suspend fun exposeUnderCanonicalId(publicId: String, mappings: List<Pair<String, String>>) {
@@ -515,6 +561,14 @@ abstract class GatewayIntegrationTestBase {
                 priority = channel.priority,
             )
         }
+        val accountsByChannel = app.oauthAccountRepository.listByChannel()
+        val entries = byChannel.flatMap { (channelId, upstreamModels) ->
+            val channel = assertNotNull(app.channelRepository.find(channelId))
+            (channel.keys + accountsByChannel[channelId].orEmpty())
+                .filter { credential -> upstreamModels.any(credential::supports) }
+                .map { credential -> routeIdentity(channel, credential) }
+        }.distinct()
+        saveModelRoute(publicId, entries)
     }
 
     protected suspend fun createClientKey(

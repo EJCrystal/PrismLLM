@@ -13,6 +13,8 @@ import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
 import dev.soven.prismllm.quota.domain.ClientKeyAllowedChannelKey
+import dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity
+import dev.soven.prismllm.routing.readmodel.CredentialRouteType
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
 import dev.soven.prismllm.shared.crypto.ClientKeyHasher
 import dev.soven.prismllm.shared.domain.GatewayProtocol
@@ -195,8 +197,8 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
             app.channelRepository.delete(other.id)
             assertRejected(client.chat(modelDenied), "model_access_denied")
             val disabledOnly = client.chat(unrestricted)
-            assertEquals(HttpStatusCode.NotFound, disabledOnly.status)
-            assertTrue(disabledOnly.bodyAsText().contains("model_not_found"))
+            assertEquals(HttpStatusCode.ServiceUnavailable, disabledOnly.status)
+            assertTrue(disabledOnly.bodyAsText().contains("model_credentials_unavailable"))
             assertEquals(1, fake.requests.size)
             assertEquals(0, app.requestLimitService.clientKeyOccupancy().values.sum())
         }
@@ -218,6 +220,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
                 NewChannelKey("active-outside", app.credentialCipher.encrypt("active-outside"), models = listOf("m1")),
             ),
         )
+        configureModelRoute("m1", *channel.keys.map { channel to it }.toTypedArray())
         setRecovery(channel.keys.first { it.name == "temporary" }.id, System.currentTimeMillis() + 120_000)
         setRecovery(channel.keys.first { it.name == "outside" }.id, System.currentTimeMillis() + 20_000)
         val inactive = channel.keys.first { it.name == "inactive" }
@@ -258,6 +261,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
                     models = listOf("m1"), rateLimit = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1))
             },
         )
+        configureModelRoute("m1", *listOf("bad", "backup", "outside").map { name -> channel to channel.keys.single { it.name == name } }.toTypedArray())
         fake.keyStatuses["Bearer bad"] = 500
         val bad = channel.keys.first { it.name == "bad" }
         val backup = channel.keys.first { it.name == "backup" }
@@ -326,10 +330,11 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
         val channel = app.channelRepository.create(
             name = "oauth-only", baseUrl = "${fake.baseUrl}/ok/v1",
             keys = listOf(NewChannelKey("static", app.credentialCipher.encrypt("static"), models = listOf("m2"))), authType = "bearer",
-            protocols = GatewayProtocol.default, enabled = true, modelMappings = mappingsOf("m1", "m2"),
+            protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES), enabled = true, modelMappings = mappingsOf("m1", "m2"),
         )
         createOAuthAccount(channel, "scope@example.test")
         exposeAsModel("oauth-public", channel to "m1")
+        configureModelRoute("m2", channel to channel.keys.single())
         val key = scopedKey(ClientKeyAccessPolicy(
             allowedChannelIds = setOf(channel.id),
             allowedChannelKeys = setOf(ClientKeyAllowedChannelKey(channel.id, channel.keys.single().id)),
@@ -363,6 +368,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
         app.providerChannelProvisioner.updateSettings(account.id,
             modelMappingChanges = listOf(ProviderModelMappingChange("upstream-variant", "manual", "canonical-family")),
             expectedModelMappingRevision = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).revision)
+        configureModelRoute("canonical-family", channel to account)
         val unrestricted = scopedKey(ClientKeyAccessPolicy())
         val authorized = scopedKey(ClientKeyAccessPolicy(allowedChannelIds = setOf(channel.id), allowedModelIds = setOf("canonical-family")))
         val modelDenied = scopedKey(ClientKeyAccessPolicy(allowedChannelIds = setOf(channel.id), allowedModelIds = emptySet()))
@@ -434,6 +440,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
             expectedModelMappingRevision = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).revision)
         val outside = accessChannel("outside-scope", models = listOf("outside-upstream"), protocols = listOf(GatewayProtocol.RESPONSES))
         exposeAsModel("shared-public", outside to "outside-upstream")
+        configureModelRoute("shared-public", *accounts.map { channel to it }.toTypedArray(), outside to outside.keys.single())
         testApplication {
             application { app.install(this) }
             val (cookie, csrf) = client.loginAdmin()
@@ -491,6 +498,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
                     modelMappingChanges = catalog.map { ProviderModelMappingChange(it.upstreamModel, mode, if (mode == "manual") publicId else null) },
                     expectedModelMappingRevision = app.providerChannelProvisioner.modelMappings(OAuthProvider.CHATGPT).revision))
                 assertEquals(previousPolicy, assertNotNull(app.clientKeyRepository.find(keyId)).accessPolicy)
+                configureModelRoutes()
                 assertTrue(client.publicModels(key).isEmpty())
                 val count = fake.requests.size
                 val obsolete = client.responses(key, previousId)
@@ -586,6 +594,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
             keys = listOf(NewChannelKey("probe", app.credentialCipher.encrypt("probe"), state = ChannelKeyState.AUTO_TEMPORARY,
                 models = listOf("m1"), rateLimit = ChannelKeyRateLimitPolicy(enabled = true, maxConcurrentRequests = 1))),
         )
+        configureModelRoute("m1", channel to channel.keys.single())
         val upstreamKey = channel.keys.single()
         setRecovery(upstreamKey.id, System.currentTimeMillis() - 60_000)
         val policies = listOf(
@@ -704,7 +713,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
                 assertTrue(response.bodyAsText().contains("model_credentials_unavailable"))
             }
             val key = scopedKey(empty)
-            assertEquals(HttpStatusCode.NotFound, client.chat(key, "disabled-model").status)
+            assertEquals(HttpStatusCode.ServiceUnavailable, client.chat(key, "disabled-model").status)
             assertEquals(0, fake.requests.size)
             assertTrue(noKeys.keys.isEmpty())
         }
@@ -712,7 +721,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `static denylist keeps OAuth candidates but channel denylist excludes both credential kinds`() = runBlocking {
-        val channel = accessChannel("oauth-deny")
+        val channel = accessChannel("oauth-deny", protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES))
         createOAuthAccount(channel, "deny@example.test")
         val static = ClientKeyAllowedChannelKey(channel.id, channel.keys.single().id)
         testApplication {
@@ -733,6 +742,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
         val channel = app.channelRepository.create("deny-pool", "${fake.baseUrl}/key-health/v1",
             listOf("bad", "backup", "outside").mapIndexed { index, name -> NewChannelKey(name, app.credentialCipher.encrypt(name), priority = index, models = listOf("m1")) },
             "bearer", GatewayProtocol.default, true, modelMappings = mappingsOf("m1"))
+        configureModelRoute("m1", *listOf("bad", "backup", "outside").map { name -> channel to channel.keys.single { it.name == name } }.toTypedArray())
         fake.keyStatuses["Bearer bad"] = 500
         val bad = channel.keys.first { it.name == "bad" }
         val backup = channel.keys.first { it.name == "backup" }
@@ -774,6 +784,7 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
         val channel = app.channelRepository.create("deny-recovery", "${fake.baseUrl}/ok/v1",
             listOf("allowed", "denied").map { name -> NewChannelKey(name, app.credentialCipher.encrypt(name), ChannelKeyState.AUTO_TEMPORARY, models = listOf("m1")) },
             "bearer", GatewayProtocol.default, true, modelMappings = mappingsOf("m1"))
+        configureModelRoute("m1", *channel.keys.map { channel to it }.toTypedArray())
         val allowed = channel.keys.first { it.name == "allowed" }
         val denied = channel.keys.first { it.name == "denied" }
         setRecovery(allowed.id, System.currentTimeMillis() + 120_000)
@@ -806,7 +817,13 @@ class ClientKeyRoutingAccessIntegrationTest : GatewayIntegrationTestBase() {
     ): ChannelRecord = app.channelRepository.create(
         name, "${fake.baseUrl}/ok/v1", listOf(NewChannelKey(name, app.credentialCipher.encrypt("$name-secret"), models = models)),
         "bearer", protocols, enabled, modelMappings = models.map { ChannelModelRecord(it) }, priority = priority,
-    )
+    ).also { channel ->
+        for (modelId in models) {
+            val route = app.modelCredentialRouteRepository.find(modelId)
+            val identity = CredentialRouteIdentity(channel.id, CredentialRouteType.STATIC, channel.keys.single().id)
+            app.modelCredentialRouteRepository.save(modelId, route?.revision ?: 0, route?.entries.orEmpty() + identity)
+        }
+    }
 
     /** 发送普通聊天请求，使用对外模型 ID。 */
     private suspend fun HttpClient.chat(key: String, model: String = "m1"): HttpResponse =

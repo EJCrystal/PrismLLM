@@ -11,8 +11,8 @@ import kotlin.test.assertTrue
 /**
  * 弹性模块的依赖边界：只允许共享内核、协程、日志门面与冷却快照持久化，禁止反向引用渠道、路由或应用层。
  *
- * 排序器通过 [dev.soven.prismllm.shared.domain.RouteCandidateOrderingView] 认识候选，
- * 冷却与密钥准入通过端口与上层交互；一旦直接依赖 channel/routing/app，模块拆分就重新变成环。
+ * 冷却与密钥准入通过标量身份和端口与上层交互；
+ * 一旦直接依赖 channel/routing/app，模块拆分就重新变成环。
  *
  * @author 文杰
  * @since 2026-11-09
@@ -36,7 +36,7 @@ class ResilienceArchitectureTest {
     @Test
     fun `import covers the resilience module`() {
         assertTrue(
-            classes.any { it.name == "dev.soven.prismllm.resilience.TierSharing" },
+            classes.any { it.name == "dev.soven.prismllm.resilience.CandidateCooldown" },
             "ArchUnit 未导入弹性模块类，规则会空跑",
         )
         assertTrue(
