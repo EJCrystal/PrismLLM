@@ -56,6 +56,39 @@ class ChannelHealthRepository(
             buildReport(window, channels, retentionDays, now, cooldowns = cooldowns, routableCredentials = routableCredentials)
         }
 
+    /** 告警只读取最近一小时的聚合，不加载图表、明细及长窗口统计。 */
+    suspend fun recentHealth(now: Long = System.currentTimeMillis()): List<ChannelHealthSummary> {
+        val channels = directory.overviews(now)
+        return suspendTransaction(database) {
+            exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            val from = now - 3_600_000L
+            val observations = groups(from, now, null, "channel_id")
+            val pending = exec(
+                "select channel_id, attempts_json from request_logs where not health_indexed and created_at >= ? and created_at < ?",
+                args(from, now),
+            ) { rs ->
+                buildSet {
+                    while (rs.next()) {
+                        rs.getString("channel_id")?.let(::add)
+                        UpstreamAttemptCodec.decode(rs.getString("attempts_json"))
+                            .filterNot { it.skipped }.mapNotNull { it.channelId }.forEach(::add)
+                    }
+                }
+            }.orEmpty()
+            channels.map { channel ->
+                val metrics = observations[channel.id] ?: HealthMetrics()
+                val (state, reason) = healthState(metrics, channel.enabled, now, healthPolicy, channel.routableCredentials)
+                val indexing = channel.id in pending && state !in setOf("DISABLED", "NO_CREDENTIALS")
+                ChannelHealthSummary(
+                    channelId = channel.id,
+                    metrics = metrics,
+                    state = if (indexing) "UNKNOWN" else state,
+                    reason = if (indexing) "历史数据补齐中" else reason,
+                )
+            }
+        }
+    }
+
     suspend fun detail(
         window: String,
         channel: HealthChannelSubject,

@@ -681,6 +681,81 @@ export interface ModelTestSettings {
   updatedAt: number
 }
 
+export interface NotificationSettingsRequest {
+  enabled: boolean
+  consecutiveFailureThreshold: number
+}
+
+export interface NotificationSettings extends NotificationSettingsRequest {
+  updatedAt: number
+}
+
+export type NotificationTargetType = 'webhook' | 'feishu'
+export type NotificationEventType =
+  | 'channel.unhealthy' | 'channel.recovered'
+  | 'key.disabled' | 'key.recovered'
+  | 'attempt.consecutive_failures' | 'attempt.recovered'
+export type NotificationDeliveryStatus = 'pending' | 'in_flight' | 'succeeded' | 'failed' | 'cancelled'
+
+export interface NotificationTargetRequest {
+  name: string
+  type: NotificationTargetType
+  enabled: boolean
+  events: NotificationEventType[]
+  /** 空数组订阅全部渠道，包括今后新增的渠道。 */
+  channelIds: string[]
+  /** 只保存 PRISM_NOTIFY_ 开头的变量前缀，不包含 URL 或密钥。 */
+  environmentPrefix: string
+  revision?: number
+}
+
+export interface NotificationCredentials {
+  urlConfigured: boolean
+  bearerTokenConfigured: boolean
+  signingSecretConfigured: boolean
+}
+
+export interface NotificationTargetResponse extends NotificationTargetRequest {
+  id: string
+  revision: number
+  updatedAt: number
+  credentials: NotificationCredentials
+  latestDelivery: NotificationDelivery | null
+}
+
+export interface NotificationDelivery {
+  id: string
+  eventId: string
+  targetId: string
+  targetName: string
+  eventType: string
+  status: NotificationDeliveryStatus
+  attempts: number
+  nextAttemptAt: number
+  createdAt: number
+  updatedAt: number
+  lastStatusCode: number | null
+  errorCode: string | null
+}
+
+export interface NotificationDeliveryPage {
+  items: NotificationDelivery[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface NotificationDeliveryPageOptions {
+  targetId?: string
+  page?: number
+  pageSize?: number
+}
+
+export interface NotificationTestResponse {
+  deliveryId: string
+  eventId: string
+}
+
 export type WebSearchApiKeySource = 'settings' | 'environment' | 'none'
 export type WebSearchBaseUrlSource = 'settings' | 'environment' | 'none'
 export type WebSearchSettingsSource = 'settings' | 'environment'

@@ -78,6 +78,12 @@ openssl rand -base64 32
 | `MANXUE_API_BASE_URL` | `https://manxue.ai` | 满血 API 基础地址 |
 | `MANXUE_TIMEOUT_MS` | `60000` | 满血 POST + 轮询的总超时（毫秒） |
 
+### Webhook 与飞书通知
+
+管理台「系统配置 → 通知」可配置多个通用 Webhook 或飞书机器人目标，默认关闭。目标仅保存 `PRISM_NOTIFY_<名称>` 环境变量前缀；真实 URL、Bearer 令牌和签名密钥分别从 `<前缀>_URL`、`<前缀>_BEARER_TOKEN`、`<前缀>_SIGNING_SECRET` 读取。自定义环境变量须显式传入网关进程或容器，修改后重启。通知仅允许公网 HTTP/HTTPS 地址，不跟随重定向或继承代理。
+
+触发规则、环境注入、签名协议及重试边界见 [通知指南](notifications.md)。
+
 ### Web 搜索代理
 
 启用后，网关会把 Responses 请求里的内置 `web_search` 改写成普通 `web_search` 函数工具，由网关调用搜索 API 代跑搜索，再以 `web_search_call` 返回给调用方。同时支持原生 Responses 与 Chat 的渠道也会改走该代理，保证配置搜索后端后内置 `web_search` 一定被执行；只支持 Responses 的渠道保持透传。`filters.allowed_domains` 会传给搜索后端并再次过滤结果；上游的 `refusal` 会保留为 Responses 拒绝内容项；流式请求在搜索和文本产出时增量发送事件。未启用时保留原有协议转换行为。
@@ -109,6 +115,7 @@ openssl rand -base64 32
 - **上游请求**：请求头预设与全局覆盖。
 - **Web 搜索**：内置 `web_search` 的搜索后端、密钥与调用参数。
 - **密钥自动禁用**：渠道密钥失败保护规则。
+- **通知**：多目标 Webhook / 飞书通知、连续失败阈值、测试投递及记录。
 - **请求日志保留**：自动清理开关与立即清理操作。
 
 模型默认价属于渠道价格配置，仍在「渠道」页管理。部署级环境变量不在管理台展示，需修改部署配置并重启网关后生效。

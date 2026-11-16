@@ -4,6 +4,7 @@ import { api } from '../api'
 import type {
   KeyAutoDisableSettingsResponse,
   ModelTestSettings,
+  NotificationSettings,
   RetentionPolicy,
   UpstreamRequestSettings,
   WebSearchApiKeySource,
@@ -15,6 +16,7 @@ import { clearAllUpstreamModelCache } from '../upstreamModelCache'
 import Icon from './Icon.vue'
 import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ModelTestSettingsModal from './ModelTestSettingsModal.vue'
+import NotificationSettingsModal from './NotificationSettingsModal.vue'
 import RetentionSettingsModal from './RetentionSettingsModal.vue'
 import UpstreamRequestSettingsModal from './UpstreamRequestSettingsModal.vue'
 import WebSearchSettingsModal from './WebSearchSettingsModal.vue'
@@ -26,6 +28,7 @@ const cards = reactive({
   upstream: { loading: true, error: '', data: null as UpstreamRequestSettings | null },
   webSearch: { loading: true, error: '', data: null as WebSearchSettings | null },
   autoDisable: { loading: true, error: '', data: null as KeyAutoDisableSettingsResponse | null },
+  notification: { loading: true, error: '', data: null as NotificationSettings | null },
   retention: { loading: true, error: '', data: null as RetentionPolicy | null },
 })
 
@@ -33,6 +36,7 @@ const showModelTest = ref(false)
 const showUpstream = ref(false)
 const showWebSearch = ref(false)
 const showAutoDisable = ref(false)
+const showNotification = ref(false)
 const showRetention = ref(false)
 
 interface SettingRow {
@@ -102,6 +106,18 @@ async function loadAutoDisable() {
   }
 }
 
+async function loadNotification() {
+  cards.notification.loading = true
+  cards.notification.error = ''
+  try {
+    cards.notification.data = await api.getNotificationSettings()
+  } catch (cause) {
+    cards.notification.error = errorMessage(cause)
+  } finally {
+    cards.notification.loading = false
+  }
+}
+
 async function loadRetention() {
   cards.retention.loading = true
   cards.retention.error = ''
@@ -121,6 +137,7 @@ async function loadAll(refresh = false) {
     loadUpstream(),
     loadWebSearch(),
     loadAutoDisable(),
+    loadNotification(),
     loadRetention(),
   ])
   refreshing.value = false
@@ -147,6 +164,7 @@ const settingRows = computed<SettingRow[]>(() => {
   const upstream = cards.upstream
   const webSearch = cards.webSearch
   const autoDisable = cards.autoDisable
+  const notification = cards.notification
   const retention = cards.retention
   return [
     {
@@ -221,6 +239,22 @@ const settingRows = computed<SettingRow[]>(() => {
       alert: '',
       onAction: () => { showAutoDisable.value = true },
       onRetry: loadAutoDisable,
+    },
+    {
+      id: 'notifications',
+      title: '运行通知',
+      description: '渠道、密钥及连续失败事件的通知目标',
+      icon: 'info',
+      loading: notification.loading,
+      error: notification.error,
+      value: notification.data
+        ? `${notification.data.enabled ? '已启用' : '已关闭'} · ${notification.data.consecutiveFailureThreshold} 次连续失败阈值`
+        : '',
+      valueTitle: '',
+      meta: notification.data ? updatedLabel(notification.data.updatedAt) : '',
+      alert: '',
+      onAction: () => { showNotification.value = true },
+      onRetry: loadNotification,
     },
     {
       id: 'retention',
@@ -306,6 +340,11 @@ onMounted(() => { void loadAll() })
     <UpstreamRequestSettingsModal v-if="showUpstream" @close="showUpstream = false" @saved="onUpstreamSaved" />
     <WebSearchSettingsModal v-if="showWebSearch" @close="showWebSearch = false" @saved="loadWebSearch" />
     <KeyAutoDisableSettingsModal v-if="showAutoDisable" @close="showAutoDisable = false" @saved="loadAutoDisable" />
+    <NotificationSettingsModal
+      v-if="showNotification"
+      @close="showNotification = false"
+      @saved="loadNotification"
+    />
     <RetentionSettingsModal
       v-if="showRetention && cards.retention.data"
       :policy="cards.retention.data"

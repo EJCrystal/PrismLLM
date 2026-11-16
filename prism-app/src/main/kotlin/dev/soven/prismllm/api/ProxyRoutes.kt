@@ -494,7 +494,7 @@ private suspend fun handleProxyRequest(
                 upstreamProtocol = attemptProtocol
                 val upstreamError = state.streamError ?: error
                 recordedAttempts += 1
-                attemptEvents += UpstreamAttemptRecord(
+                val attempt = UpstreamAttemptRecord(
                     index = recordedAttempts,
                     channelId = candidate.channel.id,
                     channelName = candidate.channel.name,
@@ -513,6 +513,8 @@ private suspend fun handleProxyRequest(
                     committed = committed,
                     retryable = error?.retryable ?: false,
                 )
+                attemptEvents += attempt
+                app.notificationRuntime.observe(attempt)
             }
             return try {
                 app.keyAvailabilityGate.withReader(candidate.credential.id) {

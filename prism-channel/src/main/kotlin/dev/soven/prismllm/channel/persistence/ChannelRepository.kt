@@ -70,11 +70,19 @@ class ChannelKeyStateChangedException : RuntimeException("密钥状态已变化�
  * @author 文杰
  * @since 2026-10-21
  */
-class ChannelRepository(private val database: Database, private val credentialCipher: CredentialCipher) {
+class ChannelRepository(
+    private val database: Database,
+    private val credentialCipher: CredentialCipher,
+    private val keyStateObserver: KeyStateObserver = KeyStateObserver {},
+) {
     /** Health overview needs only channel identities and enabled state, never credentials or relations. */
     suspend fun listHealthChannels(): Map<String, Boolean> = suspendTransaction(database) {
         Channels.select(Channels.id, Channels.enabled).toList()
             .associate { row -> row[Channels.id] to row[Channels.enabled] }
+    }
+
+    suspend fun listNames(): Map<String, String> = suspendTransaction(database) {
+        Channels.select(Channels.id, Channels.name).associate { it[Channels.id] to it[Channels.name] }
     }
 
     suspend fun list(): List<ChannelRecord> = suspendTransaction(database) {
@@ -444,6 +452,13 @@ class ChannelRepository(private val database: Database, private val credentialCi
                     }
                 }
                 if (resetHealth) ChannelKeyHealth.deleteWhere { ChannelKeyHealth.keyId eq keyId }
+                if (stateChanged) {
+                    val channelName = Channels.select(Channels.name).where { Channels.id eq channelId }.single()[Channels.name]
+                    keyStateObserver.changed(KeyStateChange(
+                        channelId, channelName, keyId, key.name, previousState, targetState,
+                        if (targetState == ChannelKeyState.ACTIVE) "manual_recovery" else "manual_disable", now,
+                    ))
+                }
             } else {
                 val credential = key.credential
                     ?: throw IllegalArgumentException("new channel key requires credential")

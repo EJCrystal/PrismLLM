@@ -50,6 +50,13 @@ import type {
   ModelSuggestionsResponse,
   ModelTestSettings,
   ModelTestTarget,
+  NotificationDeliveryPage,
+  NotificationDeliveryPageOptions,
+  NotificationSettings,
+  NotificationSettingsRequest,
+  NotificationTargetRequest,
+  NotificationTargetResponse,
+  NotificationTestResponse,
   WebSearchSettings,
   WebSearchSettingsRequest,
   OAuthAccount,
@@ -288,6 +295,23 @@ export const api = {
     }),
   updateModelTestSettings: (payload: { defaultPrompt: string }) =>
     request<ModelTestSettings>('/model-test-settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  getNotificationSettings: (options: RequestOptions = {}) => request<NotificationSettings>('/notification-settings', options),
+  updateNotificationSettings: (payload: NotificationSettingsRequest) =>
+    request<NotificationSettings>('/notification-settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  listNotificationTargets: (options: RequestOptions = {}) => requestList<NotificationTargetResponse>('/notification-targets', options),
+  createNotificationTarget: (payload: NotificationTargetRequest) =>
+    request<NotificationTargetResponse>('/notification-targets', { method: 'POST', body: JSON.stringify(payload) }),
+  updateNotificationTarget: (id: string, payload: NotificationTargetRequest) =>
+    request<NotificationTargetResponse>(`/notification-targets/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteNotificationTarget: (id: string) =>
+    request<null>(`/notification-targets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testNotificationTarget: (id: string, options: RequestOptions = {}) =>
+    request<NotificationTestResponse>(`/notification-targets/${encodeURIComponent(id)}/test`, { ...options, method: 'POST' }),
+  listNotificationDeliveries: ({ targetId, page = 1, pageSize = 20 }: NotificationDeliveryPageOptions = {}, options: RequestOptions = {}) => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+    if (targetId) params.set('targetId', targetId)
+    return request<NotificationDeliveryPage>('/notification-deliveries?' + params, options)
+  },
   getWebSearchSettings: () => request<WebSearchSettings>('/web-search-settings'),
   updateWebSearchSettings: (payload: WebSearchSettingsRequest) =>
     request<WebSearchSettings>('/web-search-settings', { method: 'PUT', body: JSON.stringify(payload) }),

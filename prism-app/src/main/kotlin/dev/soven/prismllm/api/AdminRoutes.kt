@@ -139,6 +139,7 @@ import org.slf4j.LoggerFactory
 fun Route.adminRoutes(app: GatewayApplication) {
     val channelUpdateMutex = Mutex()
     route("/admin/api") {
+        notificationRoutes(app)
         post("/login") {
             val request = call.receive<LoginRequest>()
             val (user, issued) = app.sessions.withUsernameLock(request.username) {
@@ -2241,7 +2242,7 @@ private fun CandidateCooldown.channelCooldownSummary(
     return ChannelCooldownSummary(earliest, reason, cooling, total)
 }
 
-private fun ApplicationCall.requireAdmin(app: GatewayApplication): AdminSessions.Session {
+internal fun ApplicationCall.requireAdmin(app: GatewayApplication): AdminSessions.Session {
     val token = request.cookies["gw_session"] ?: run {
         markAdminAuditError("admin_session_missing")
         throw adminUnauthorized("管理面未登录")

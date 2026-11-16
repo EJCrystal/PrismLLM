@@ -56,6 +56,13 @@ import dev.soven.prismllm.oauth.infra.OAuthWindowStateWriter
 import dev.soven.prismllm.oauth.buildOAuthTokenProviders
 import dev.soven.prismllm.channel.persistence.ModelTestSettingsRepository
 import dev.soven.prismllm.admin.persistence.WebSearchSettingsRepository
+import dev.soven.prismllm.admin.persistence.NotificationRepository
+import dev.soven.prismllm.channel.persistence.KeyStateObserver
+import dev.soven.prismllm.notification.NotificationRuntime
+import dev.soven.prismllm.notification.NotificationSecrets
+import dev.soven.prismllm.notification.NotificationTransport
+import dev.soven.prismllm.notification.SafeNotificationTransport
+import dev.soven.prismllm.notification.notificationEvent
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.oauth.persistence.OAuthWindowRepository
 import dev.soven.prismllm.channel.persistence.UpstreamRequestSettingsRepository
@@ -280,6 +287,8 @@ private fun escapeLogValue(value: String, maxLength: Int): String {
  */
 class GatewayApplication(
     val config: GatewayConfig,
+    val notificationSecrets: NotificationSecrets = NotificationSecrets(),
+    notificationTransport: NotificationTransport? = null,
 ) : AutoCloseable {
     init {
         // 协议组合缺失只会在对应请求到达时才暴露，放到启动阶段拦截。
@@ -301,7 +310,11 @@ class GatewayApplication(
     val reasoningCarryCache = ReasoningCarryCache()
     val databaseFactory = DatabaseFactory(config)
     val credentialCipher = CredentialCipher(config.masterKey)
-    val channelRepository = ChannelRepository(databaseFactory.database, credentialCipher)
+    val notificationRepository = NotificationRepository(databaseFactory.database)
+    private val notificationKeyObserver = KeyStateObserver { change ->
+        notificationRepository.enqueueInTransaction(change.notificationEvent())
+    }
+    val channelRepository = ChannelRepository(databaseFactory.database, credentialCipher, notificationKeyObserver)
     val clientKeyRepository = ClientKeyRepository(databaseFactory.database)
     val clientKeyQuotaRepository = ClientKeyQuotaRepository(databaseFactory.database)
     val clientKeyQuotaService = ClientKeyQuotaService(
@@ -324,7 +337,9 @@ class GatewayApplication(
             details = details,
         )
     }
-    val keyAutoDisableRepository = KeyAutoDisableRepository(databaseFactory.database, keyStateAudit)
+    val keyAutoDisableRepository = KeyAutoDisableRepository(
+        databaseFactory.database, keyStateAudit, keyStateObserver = notificationKeyObserver,
+    )
     val keyAvailabilityGate = KeyAvailabilityGate()
     val channelKeyRateLimiter = ChannelKeyRateLimiter()
     val upstreamOccupancy = UpstreamOccupancy()
@@ -362,6 +377,17 @@ class GatewayApplication(
     )
     val tierSharing = TierSharing()
     val metrics = GatewayMetrics()
+    private val notificationSender = notificationTransport ?: SafeNotificationTransport(notificationSecrets)
+    val notificationRuntime = NotificationRuntime(
+        repository = notificationRepository,
+        transport = notificationSender,
+        scope = scope,
+        healthSnapshot = { channelHealthRepository.recentHealth() },
+        channelNames = channelRepository::listNames,
+        onDropped = metrics::notificationObservationDropped,
+        onFailure = metrics::notificationFailed,
+        onDelivery = metrics::notificationDelivery,
+    )
     val requestLogWriter = RequestLogWriter(
         insertRecord = requestLogRepository::insert,
         scope = scope,
@@ -734,6 +760,7 @@ class GatewayApplication(
         modelPriceReferenceService.start(scope)
         if (config.upstreamHeaderRefreshEnabled) upstreamHeaderCatalogService.start(scope)
         startKeyAutoRecovery()
+        runBlocking { notificationRuntime.start() }
         oauthTokenService.start(scope)
         oauthQuotaService.start(scope)
         runBlocking { syncLogRetentionJob() }
@@ -827,6 +854,8 @@ class GatewayApplication(
         }
         runBlocking { logRetentionJob.getAndSet(null)?.cancelAndJoin() }
         runBlocking { keyAutoRecoveryJob.getAndSet(null)?.cancelAndJoin() }
+        runBlocking { notificationRuntime.closeAndDrain() }
+        (notificationSender as? AutoCloseable)?.close()
         runBlocking { channelHealthIndexJob?.cancelAndJoin() }
         oauthQuotaService.close()
         oauthTokenService.close()
