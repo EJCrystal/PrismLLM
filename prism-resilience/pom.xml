@@ -12,7 +12,7 @@
 
     <artifactId>prism-resilience</artifactId>
     <name>PrismLLM :: Resilience</name>
-    <description>弹性上下文：候选冷却、密钥准入、档位轮转与冷却状态持久化，只依赖共享内核。</description>
+    <description>弹性上下文：候选冷却、密钥准入与冷却状态持久化，只依赖共享内核。</description>
 
     <dependencies>
         <dependency>

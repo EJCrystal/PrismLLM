@@ -78,11 +78,17 @@ class ChannelRepository(private val database: Database, private val credentialCi
     }
 
     suspend fun list(): List<ChannelRecord> = suspendTransaction(database) {
+        listInTransaction()
+    }
+
+    /** 跨上下文配置快照读取；沿用调用方事务，不开启嵌套事务。 */
+    fun listInTransaction(): List<ChannelRecord> {
+        requireTransaction()
         val rows = Channels.selectAll().orderBy(Channels.name).toList()
         val ids = rows.map { it[Channels.id] }
         val modelsByChannel = loadChannelModelMappingsInTransaction(ids)
         val keysByChannel = loadChannelKeysInTransaction(ids)
-        rows.map { row ->
+        return rows.map { row ->
             toRecord(row).copy(
                 modelMappings = modelsByChannel[row[Channels.id]].orEmpty(),
                 keys = keysByChannel[row[Channels.id]].orEmpty(),

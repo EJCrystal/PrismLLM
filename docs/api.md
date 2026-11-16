@@ -65,20 +65,20 @@ curl "http://localhost:8080/v1beta/models/gemini-2.5-flash:streamGenerateContent
 
 ### 5. 可用模型发现
 
-- `GET /v1/models`：以 OpenAI 标准格式返回当前已启用渠道所暴露的对外模型 ID，附带 `owned_by: "PrismLLM"`。
+- `GET /v1/models`：以 OpenAI 标准格式返回符合路由、授权及目录规则的对外模型 ID，附带 `owned_by: "PrismLLM"`。
 - `GET /v1beta/models`：以 Gemini 格式返回模型列表。
 
-模型只有在**至少一条可路由凭据**（密钥或订阅账号）支持它时才会被列出并接受直连请求。渠道被停用、或该模型的密钥与账号全部停用后，模型会从列表中消失。
+模型只有在**已保存路由中至少一条可路由凭据**（静态密钥或订阅账号）支持其活跃映射，且符合调用方访问范围及列表端点的原生协议规则时才会被列出。只有渠道映射、不配置路由或保存空路由都不会使模型进入列表；未选中的其他可用凭据也不会补入。模型列出后，请求仍需通过额度、账号窗口/并发等准入检查。
 
 请求一个未列出的模型时，按原因返回不同状态：
 
 | 场景 | 状态码 | 错误码 |
 | :--- | :--- | :--- |
-| 模型未配置在任何启用渠道中，或只以非对外 ID 的形式配置 | `404` | `model_not_found` |
-| 模型已配置，但支持它的凭据全部停用 | `503` | `model_credentials_unavailable` |
-| 模型存在，但当前协议没有可用候选（渠道不支持且无法转换） | `400` | `protocol_not_supported` |
+| 模型在当前配置范围内不存在，或请求使用未对外暴露的上游 ID | `404` | `model_not_found` |
+| 模型已配置且协议可达，但尚未保存路由、路由为空，或已选凭据均不可用 | `503` | `model_credentials_unavailable` |
+| 模型已配置，但当前协议不受支持且无法转换 | `400` | `protocol_not_supported` |
 
-`model_credentials_unavailable` 表示请求本身有效，凭据恢复或密钥临时停用到期后重试即可。只有存在临时停用的密钥时才会返回 `Retry-After`，取这些密钥中最早的可路由时间；密钥被探测租约占用时，重试提示同样等到租约结束。人工与永久停用不会自行恢复，因此不给出重试提示。
+`model_credentials_unavailable` 不表示可以使用未选凭据兜底。缺少路由或路由为空时需由管理员显式选择凭据；凭据停用时需等待自动恢复或人工处理。只有路由中存在符合本次授权及协议范围的临时停用静态密钥时才会返回 `Retry-After`，取这些密钥中最早的可路由时间；密钥被探测租约占用时，重试提示同样等到租约结束。人工与永久停用不会自行恢复，因此不给出重试提示。
 
 ---
 
@@ -141,6 +141,37 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
   - **客户端可提交状态**：`ACTIVE`（正常启用）、`MANUAL_DISABLED`（人工停用）。
   - **接口可返回的状态**：包含上述人工状态，以及由网关容灾规则自动触发的 `AUTO_TEMPORARY`（自动临时停用，到期后通过单探测抢占租约自愈）与 `AUTO_PERMANENT`（自动永久停用，需管理员人工重新启用）。客户端提交 `AUTO_*` 自动状态会被拒绝。
 - 凭据加密：网关入库前使用 `GATEWAY_MASTER_KEY` 进行 AES-256-GCM 加密，前端界面和读取接口永不回显明文。
+
+### 2.1. 模型路由（公共模型凭据顺序）
+
+模型路由以对外模型 ID（Canonical / public ID）为键，保存显式、有序的凭据身份列表。它与渠道模型映射及调用方访问范围分别配置：映射决定真实上游模型名，访问范围及凭据资格决定可否调用，路由列表决定尝试顺序。
+
+| 方法与路径 | 参数与响应 |
+| --- | --- |
+| `GET /admin/api/model-routes?q=&offset=&limit=` | `q` 为去除首尾空白后、不区分大小写的模型 ID 子串，最长 200 字符；`offset` 默认 `0`，`limit` 默认 `100`、范围 `1..500`。返回 `{items, total, offset, limit}`；每项含 `modelId`、`configured`、`revision`、`entryCount`、`availableCount`。列表包含当前模型目录与历史保存路由的并集。 |
+| `GET /admin/api/model-routes/detail?modelId=` | 精确读取公共模型 ID。返回 `modelId`、`configured`、`revision`、已保存顺序的 `entries` 和当前目录的 `availableCredentials`。 |
+| `PUT /admin/api/model-routes` | 完整替换一个模型的列表，要求管理员会话与 CSRF；请求必须包含 `modelId`、`expectedRevision` 和 `entries`。成功返回最新详情，revision 递增。 |
+
+模型 ID 位于查询参数或 JSON 字段中，不作为路径段；含 `/` 等字符时用查询参数编码。详情中的每个凭据包含三个身份字段，以及只读的 `channelName`、`credentialName`、`upstreamModels`、`protocols`、`selectable` 与不可用原因 `reason`；没有凭据或 token 明文。`availableCount` 是目录中当前可选择的身份数，不是已选条目数；`availableCredentials` 的目录排序不改变已保存 `entries`。
+
+```json
+{
+  "modelId": "team/chat",
+  "expectedRevision": 3,
+  "entries": [
+    { "channelId": "channel-b", "credentialType": "oauth", "credentialId": "account-1" },
+    { "channelId": "channel-a", "credentialType": "static", "credentialId": "key-1" }
+  ]
+}
+```
+
+- `entries` 只提交身份：`channelId`、`credentialType`（严格为 `static` 或 `oauth`）和 `credentialId`。同一三元组不能重复；静态/OAuth 的同名 ID 是不同身份。不要回传名称、上游别名、协议或可用性元数据。
+- `modelId` 长度 `1..200`，不得有首尾空白或控制字符；`expectedRevision` 必须是有效非负版本。首次配置使用详情返回的 revision `0`。并发保存版本冲突返回 HTTP 409 `model_route_revision_changed`；应保留草稿、刷新状态并由管理员核对，不能自动覆盖。
+- 新选入的身份必须仍在该模型当前目录中且 `selectable=true`，否则返回 `400 invalid_model_route_credential`。已保存后停用、删除或失去模型资格的身份继续展示为不可用，可保留或移除；不会自动替换成其他凭据。
+- 当前目录模型尚未配置路由时返回 `configured=false`、revision `0`、`entries=[]`；读取不会创建路由，数据面也不回退到旧候选发现。显式保存 `entries=[]` 表示停止该模型，保留 `configured=true` 和新的 revision，不代表“全部凭据”。V73 seed 的已配置路由也可能为 revision `0`，应结合 `configured` 判断。
+- 列表顺序就是运行时尝试顺序，转换候选可以排在原生候选之前。同一身份的多个上游别名稳定、连续展开。渠道/凭据 `priority`、轮询、HRW、OAuth 策略都不重排；`prompt_cache_key` 只转发。
+- 渠道与凭据启停、OAuth 鉴权、模型目录/授权、调用方访问范围、额度、账号级窗口/并发与冷却控制继续生效。故障转移和候选冷却 fail-open 只限已配置身份，不能补入未选择的凭据。
+- V73 一次性为迁移时启用渠道的活跃公共模型建立路由，只 seed 当时已启用且满足模型/账号资格的凭据；后续新模型、新密钥和新 OAuth 账号都必须显式选择。优先级 API/存储字段仍兼容保留，运行时不使用它们排序。
 
 ### 3. 模型发现与协议探测
 
@@ -252,7 +283,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 
 ### 7. 订阅账号（OAuth）
 
-订阅账号是独立的上游凭据实体：账号拥有自己的 id、refresh/access token、代理、优先级、模型授权、调度策略与额度，**不再依附于任何渠道密钥**。
+订阅账号是独立的上游凭据实体：账号拥有自己的 id、refresh/access token、代理、兼容性优先级字段、模型授权、账号级窗口/并发策略与额度，**不再依附于任何渠道密钥**。账号优先级不改变模型请求顺序；数据面按公共模型的显式路由列表选择账号。
 
 订阅凭据只能用于提供方自己的官方端点，因此端点由代码常量固定：网关为每个已实现上游协议的 provider 置备一条 kind=provider 的系统渠道，账号登录后自动关联到它，用户不再手工选择渠道。这类渠道不可编辑、不可删除，也不出现在渠道列表里。详细语义见 ADR 0016。
 
@@ -260,7 +291,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 - 维护官方模型列表：`PUT /admin/api/oauth-providers/{provider}/models`，请求体 `{"models":["..."]}`；更新系统端点渠道的活跃模型集合。已有手工 Canonical 映射保留，退出活跃集合的手工映射保留为休眠配置，不参与路由；旧列表保存不会直接重新激活已休眠的手工映射。
 - 查看共享模型映射：`GET /admin/api/oauth-providers/{provider}/model-mappings`，返回提供方共享的映射、版本与受影响账号数；只读取本地配置，不请求上游模型目录，也不创建尚不存在的系统渠道。配置入口位于「订阅账号 → 账号设置 → 模型授权与映射」，详细契约见下文。
 - 刷新账号自己的模型目录：`POST /admin/api/oauth-accounts/{id}/models/refresh`，目录按账号隔离并写回 `modelCatalog`，随后把系统端点渠道的模型收敛为各账号目录的并集。Antigravity 走 Code Assist 的 fetchAvailableModels（按当前 tier 与 `allowedTiers` 逐个尝试），ChatGPT 走 Codex 官方模型列表（`/backend-api/codex/models?client_version=...`，只保留 `visibility=list` 的模型）。目录请求与项目发现、额度查询一样经该账号的出口代理发出；账号代理无效时返回 `invalid_oauth_proxy`，账号没有可用 access token 时返回 `oauth_credential_unavailable`，上游没有返回可用模型时返回 `model_catalog_unavailable`。返回 `{"models":[{"id","name"}]}`。
-- 账号看板：`GET /admin/api/oauth-accounts`，返回账号 `id` / `name`、provider、授权状态、是否启用、优先级、授权模型、关联渠道（`channelIds` 与 `channels[{id,name}]`）、token 到期时间、上游额度读数、调度策略与实时状态。响应不包含任何 token，且禁止缓存。
+- 账号看板：`GET /admin/api/oauth-accounts`，返回账号 `id` / `name`、provider、授权状态、是否启用、兼容性优先级、授权模型、关联渠道（`channelIds` 与 `channels[{id,name}]`）、token 到期时间、上游额度读数、账号级窗口/并发策略与实时资格状态。响应不包含任何 token，且禁止缓存。优先级不决定模型路由顺序；路由顺序由「模型路由」管理。
   - `models` 为空表示继承所关联渠道的全部模型。
   - `authState=REAUTH_REQUIRED` 的账号仍保留为候选，但凭据解析会返回 `subscription_account_unavailable` 并继续尝试其他候选；不会把 refresh token 发给上游。
   - `quota`：最近一次成功读取的上游额度快照，包含 5 小时与每周窗口的 `usedPercent` / `remainingPercent` / `windowSeconds` / `resetsAt`、`allowed`、credits 余额与可重置次数、`checkedAt` 与最近一次失败错误码。
@@ -284,7 +315,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
   - `provider` 仅支持 `chatgpt` 与 `antigravity`；两者的客户端参数都内置，直接可登录。
   - 新建账号时不要传 `accountId`；对已有账号重新授权时传 `accountId`，可附带新的 `name` 与 `channelIds`。
   - `channelIds` 通常不需要传：新建账号登录后自动关联系统端点渠道。启动时仍会校验提交的每个 ID 必须存在，不存在返回 `400 invalid_oauth_channels`；`managedChannel=true` 的提供方在登录完成后的关联处理里忽略该字段。
-  - `priority` 取值 1..1000（在「账号设置」里修改），数值越小越优先；只影响同渠道内账号之间的排序。
+  - `priority` 取值仍为 `1..1000`，默认 `1`，API 与存储继续兼容保留；它不参与模型请求排序，需通过「模型路由」调整已选择凭据的顺序。
   - `proxyUrl` 可在「账号设置」里配置，只支持无认证的 `http://主机:端口`；目标主机默认为本机回环地址，其他主机需要服务端配置 `OAUTH_PROXY_ALLOWED_HOSTS`，否则返回 `400 invalid_oauth_proxy`。重新授权时不改动已有代理。
   - `callbackUrl` 支持完整 URL、裸查询串或 `?查询串`，最长 4096 字符；必须是浏览器登录后真实产生的地址，不要手工拼接。
   - 登录会话只存在于内存，10 分钟有效；授权码只能交换一次，绑定成功后会话立即失效。过期或重复提交返回 `400 oauth_login_expired`，`state` 不匹配返回 `400 oauth_login_invalid_callback`。
@@ -351,7 +382,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 - 成功响应保持为账号详情；重新 GET 共享映射取得最新 revision。模型目录同步保留手工映射，只更新自动默认及活跃状态。目录外显式授权仍按既有规则清理，全部落空时保留显式零授权状态，不扩大为全部模型。
 - Canonical 候选可复用 `POST /admin/api/model-suggestions` 的 `canonicalId`，也可以自由输入；参考目录不可用或未收录该 ID 不阻止保存。
 
-- 编辑调度策略：
+- 编辑账号级窗口/并发策略（资格限制，继续生效，不重排路由）：
 
   ```bash
   curl -b cookies.txt -X PUT http://localhost:8080/admin/api/oauth-accounts/<account-id>/policy \
@@ -366,6 +397,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
   - `POST /admin/api/oauth-accounts/<account-id>/refresh`：允许对 `REAUTH_REQUIRED` 账号再试一次；失败返回 `502 oauth_refresh_failed`。
   - `POST /admin/api/oauth-accounts/<account-id>/cooldown/clear`：清除账号级冷却，并清理该账号在所有关联渠道下的候选冷却。
 - 以上写操作分别写入审计动作 `oauth_account.delete`、`oauth_account.settings.update`、`oauth_account.login.start`、`oauth_account.login`、`oauth_account.policy.update`、`oauth_account.quota.refresh`、`oauth_account.refresh` 与 `oauth_account.cooldown.clear`，只记录账号 id、provider、策略参数、渠道 id 与操作结果。
+- V73 为迁移时当前模型和符合资格的凭据做一次性有序路由初始化；后续新增模型、静态密钥和 OAuth 账号都需在模型路由中显式选择。`OAUTH_ROUTING` 已弃用但仍接受原值，不再产生运行时效果。
 
 ---
 

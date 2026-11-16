@@ -651,30 +651,31 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `native protocol candidate wins over higher priority conversion candidate`() = runBlocking {
-        val credential = app.credentialCipher.encrypt("upstream-secret")
+    fun `configured conversion credential is attempted before native protocol credential`() = runBlocking {
+        val conversionCredential = app.credentialCipher.encrypt(java.util.UUID.randomUUID().toString())
+        val nativeCredential = app.credentialCipher.encrypt(java.util.UUID.randomUUID().toString())
         val conversion = app.channelRepository.create(
             name = "conversion-first",
-            baseUrl = fake.baseUrl + "/ok/v1",
-            keys = listOf(NewChannelKey("conversion-key", credential, priority = 1, models = listOf("claude-sonnet-4-5"))),
+            baseUrl = fake.baseUrl + "/500/v1",
+            keys = listOf(NewChannelKey("conversion-key", conversionCredential, priority = 100, models = listOf("claude-sonnet-4-5"))),
             protocols = listOf(GatewayProtocol.MESSAGES),
             modelMappings = listOf(ChannelModelRecord("claude-sonnet-4-5")),
             authType = "anthropic",
             enabled = true,
-            priority = 1,
+            priority = 20,
         )
         val native = app.channelRepository.create(
             name = "native-second",
-            baseUrl = fake.baseUrl + "/500/v1",
-            keys = listOf(NewChannelKey("native-key", credential, priority = 100, models = listOf("gpt-4o-mini"))),
+            baseUrl = fake.baseUrl + "/ok/v1",
+            keys = listOf(NewChannelKey("native-key", nativeCredential, priority = 1, models = listOf("gpt-4o-mini"))),
             protocols = listOf(GatewayProtocol.CHAT_COMPLETIONS),
             modelMappings = listOf(ChannelModelRecord("gpt-4o-mini")),
             authType = "bearer",
             enabled = true,
-            priority = 20,
+            priority = 1,
         )
-        // 转换候选的渠道和密钥档位都更优；原生协议仍应先尝试。
-        exposeAsModel("native-priority", conversion to "claude-sonnet-4-5", native to "gpt-4o-mini")
+        // 保存的凭据顺序先于原生协议偏好、渠道优先级和密钥优先级。
+        exposeAsModel("configured-conversion-first", conversion to "claude-sonnet-4-5", native to "gpt-4o-mini")
         val key = createClientKey()
 
         testApplication {
@@ -682,12 +683,12 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
             suspend fun send() = client.post("/v1/chat/completions") {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
-                setBody("""{"model":"native-priority","messages":[{"role":"user","content":"hi"}],"max_tokens":32}""")
+                setBody("""{"model":"configured-conversion-first","messages":[{"role":"user","content":"hi"}],"max_tokens":32}""")
             }
             val response = send()
             assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
             assertEquals(
-                listOf("/500/v1/chat/completions", "/ok/v1/messages"),
+                listOf("/500/v1/messages", "/ok/v1/chat/completions"),
                 fake.requests.map { it.path },
             )
             val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
@@ -697,22 +698,27 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
             )
             val log = awaitRequestLog()
             assertEquals(2, log.upstreamAttempts)
-            assertEquals(listOf(native.id, conversion.id), log.attempts.map { it.channelId })
+            assertEquals(listOf(conversion.id, native.id), log.attempts.map { it.channelId })
             assertEquals(
-                listOf(native.keys.single().id, conversion.keys.single().id),
+                listOf(conversion.keys.single().id, native.keys.single().id),
                 log.attempts.map { it.channelKeyId },
             )
             assertEquals(listOf(500, 200), log.attempts.map { it.statusCode })
+            assertEquals(listOf(GatewayProtocol.MESSAGES, GatewayProtocol.CHAT_COMPLETIONS), log.attempts.map { it.upstreamProtocol })
             assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.protocol)
-            assertEquals(GatewayProtocol.MESSAGES, log.upstreamProtocol)
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, log.upstreamProtocol)
 
-            // 原生候选进入冷却后，后续请求直接走转换候选，不再产生一次无效尝试。
+            // 转换候选进入冷却后，后续请求跳过它并使用列表中的原生候选。
             val second = send()
             assertEquals(HttpStatusCode.OK, second.status, second.bodyAsText())
-            awaitRequestLogCount(2)
-            val secondLog = app.requestLogRepository.list(10).first()
+            val secondLog = awaitRequestLog()
             assertEquals(1, secondLog.upstreamAttempts)
-            assertEquals(GatewayProtocol.MESSAGES, secondLog.upstreamProtocol)
+            assertEquals(native.id, secondLog.channelId)
+            assertEquals(GatewayProtocol.CHAT_COMPLETIONS, secondLog.upstreamProtocol)
+            assertEquals(
+                listOf("/500/v1/messages", "/ok/v1/chat/completions", "/ok/v1/chat/completions"),
+                fake.requests.map { it.path },
+            )
         }
     }
 
@@ -934,7 +940,7 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `responses with prompt_cache_key and client_metadata converts to messages and preserves affinity`() = runBlocking {
+    fun `responses cache metadata converts to messages without reordering configured credentials`() = runBlocking {
         val channel1 = createChannelWithBaseUrl(
             name = "responses-to-messages-ch1",
             baseUrl = fake.baseUrl + "/ok/v1",
@@ -950,6 +956,7 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
             authType = "anthropic",
         )
         exposeAsModel("affinity-model", channel1 to "claude-sonnet-4-5", channel2 to "claude-sonnet-4-5")
+        configureModelRoute("affinity-model", channel2 to channel2.keys.single(), channel1 to channel1.keys.single())
         val key = createClientKey()
 
         testApplication {
@@ -971,9 +978,10 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
             assertFalse(upstreamRequest.containsKey("prompt_cache_key"), "上游 messages 请求中不应含有 prompt_cache_key")
             assertFalse(upstreamRequest.containsKey("client_metadata"), "上游 messages 请求中不应含有 client_metadata")
             val log1 = awaitRequestLog()
-            val firstChannel = log1.channelName
+            assertEquals(channel2.id, log1.channelId)
 
-            // 再次发送相同 prompt_cache_key 的请求，必须保持路由亲和性（命中同一 channel）
+            // 修改已保存的顺序后，相同缓存键不能把请求固定到旧的首选渠道。
+            configureModelRoute("affinity-model", channel1 to channel1.keys.single(), channel2 to channel2.keys.single())
             val response2 = client.post("/v1/responses") {
                 header(HttpHeaders.Authorization, "Bearer $key")
                 contentType(ContentType.Application.Json)
@@ -988,7 +996,10 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.OK, response2.status, response2.bodyAsText())
             awaitRequestLogCount(2)
             val log2 = awaitRequestLog()
-            assertEquals(firstChannel, log2.channelName, "相同 prompt_cache_key 请求应保持渠道路由亲和性")
+            assertEquals(channel1.id, log2.channelId)
+            assertEquals(1, log1.upstreamAttempts)
+            assertEquals(1, log2.upstreamAttempts)
+            assertEquals(2, fake.requests.size)
         }
     }
 

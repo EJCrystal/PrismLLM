@@ -559,7 +559,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("71", result.getString(1))
+                        assertEquals("73", result.getString(1))
                     }
                     statement.executeQuery("select model_mapping_revision from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -1314,6 +1314,260 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                         assertFalse(result.next())
                     }
                 }
+            }
+        } finally {
+            dropDatabaseQuietly(databaseName)
+        }
+    }
+
+    @Test
+    @Timeout(300)
+    fun `v73 initializes active public models once using eligible legacy credential order`() = runBlocking {
+        val databaseName = createMigrationDatabase("migration_v73_routes")
+        val migrationUrl = migrationDatabaseUrl(databaseName)
+        try {
+            migrateTo(migrationUrl, "71")
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into channels (id, name, base_url, protocols, enabled, priority, created_at, updated_at)
+                        values ('route-a', 'route-a', 'https://example.invalid/v1', 'responses', true, 20, 1, 1),
+                               ('route-b', 'route-b', 'https://example.invalid/v1', 'responses', true, 10, 1, 1),
+                               ('route-disabled', 'route-disabled', 'https://example.invalid/v1', 'responses', false, 1, 1, 1),
+                               ('route-gemini', 'route-gemini', 'https://example.invalid/v1', 'gemini', true, 1, 1, 1),
+                               ('route-protocol', 'route-protocol', 'https://example.invalid/v1', 'unknown', true, 1, 1, 1),
+                               ('route-empty', 'route-empty', 'https://example.invalid/v1', 'responses', true, 1, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into channel_models (channel_id, upstream_model, canonical_model_id, catalog_active, created_at)
+                        values ('route-a', 'alias-a', 'public/family', true, 1),
+                               ('route-a', 'alias-b', 'public/family', true, 1),
+                               ('route-a', 'dormant', 'public/dormant', false, 1),
+                               ('route-b', 'alias-b', 'public/family', true, 1),
+                               ('route-disabled', 'alias-a', 'public/disabled', true, 1),
+                               ('route-gemini', 'alias-a', 'public/family', true, 1),
+                               ('route-protocol', 'alias-a', 'protocol/empty', true, 1),
+                               ('route-empty', 'empty', 'public/empty', true, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into channel_keys (id, channel_id, name, credential_ciphertext, credential_nonce,
+                            credential_key_version, state, priority, created_at, updated_at)
+                        values ('key-first', 'route-a', 'first', 'fixture-cipher', 'fixture-nonce', 1, 'ACTIVE', 1, 1, 1),
+                               ('shared-id', 'route-a', 'static-shared', 'fixture-cipher', 'fixture-nonce', 1, 'ACTIVE', 3, 1, 1),
+                               ('key-last', 'route-a', 'last', 'fixture-cipher', 'fixture-nonce', 1, 'ACTIVE', 9, 1, 1),
+                               ('key-b', 'route-b', 'key-b', 'fixture-cipher', 'fixture-nonce', 1, 'ACTIVE', 3, 1, 1),
+                               ('key-disabled', 'route-a', 'disabled', 'fixture-cipher', 'fixture-nonce', 1, 'MANUAL_DISABLED', 1, 1, 1),
+                               ('key-temporary', 'route-a', 'temporary', 'fixture-cipher', 'fixture-nonce', 1, 'AUTO_TEMPORARY', 1, 1, 1),
+                               ('key-no-model', 'route-a', 'no-model', 'fixture-cipher', 'fixture-nonce', 1, 'ACTIVE', 1, 1, 1),
+                               ('key-disabled-channel', 'route-disabled', 'disabled-channel', 'fixture-cipher', 'fixture-nonce', 1, 'ACTIVE', 1, 1, 1),
+                               ('key-no-protocol', 'route-protocol', 'no-protocol', 'fixture-cipher', 'fixture-nonce', 1, 'ACTIVE', 1, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into channel_key_models (key_id, upstream_model, created_at)
+                        select id, 'alias-a', 1 from channel_keys where id not in ('key-b', 'key-no-model');
+                        insert into channel_key_models (key_id, upstream_model, created_at)
+                        values ('key-first', 'alias-b', 1), ('shared-id', 'alias-b', 1),
+                               ('key-last', 'alias-b', 1), ('key-b', 'alias-b', 1), ('key-no-model', 'unrelated', 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into oauth_accounts (id, name, provider, refresh_token_ciphertext, refresh_token_nonce,
+                            refresh_token_key_version, enabled, auth_state, priority, model_catalog, created_at, updated_at, authorized_at)
+                        values ('shared-id', 'oauth-shared', 'chatgpt', 'fixture-cipher', 'fixture-nonce', 1, true, 'ACTIVE', 2,
+                                    '[{"upstreamModel":"alias-a"},{"upstreamModel":"alias-b"}]', 1, 1, 1),
+                               ('oauth-inherited', 'inherited', 'chatgpt', 'fixture-cipher', 'fixture-nonce', 1, true, 'ACTIVE', 5, null, 1, 1, 1),
+                               ('oauth-gemini', 'gemini', 'antigravity', 'fixture-cipher', 'fixture-nonce', 1, true, 'ACTIVE', 4, null, 1, 1, 1),
+                               ('oauth-disabled', 'disabled', 'chatgpt', 'fixture-cipher', 'fixture-nonce', 1, false, 'ACTIVE', 1, null, 1, 1, 1),
+                               ('oauth-reauth', 'reauth', 'chatgpt', 'fixture-cipher', 'fixture-nonce', 1, true, 'REAUTH_REQUIRED', 1, null, 1, 1, 1),
+                               ('oauth-no-model', 'no-model', 'chatgpt', 'fixture-cipher', 'fixture-nonce', 1, true, 'ACTIVE', 1, null, 1, 1, 1),
+                               ('oauth-no-catalog', 'no-catalog', 'chatgpt', 'fixture-cipher', 'fixture-nonce', 1, true, 'ACTIVE', 1, '[]', 1, 1, 1),
+                               ('oauth-no-protocol', 'no-protocol', 'antigravity', 'fixture-cipher', 'fixture-nonce', 1, true, 'ACTIVE', 1, null, 1, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into oauth_account_channels (account_id, channel_id, created_at)
+                        select id, 'route-a', 1 from oauth_accounts where id <> 'oauth-gemini';
+                        insert into oauth_account_channels (account_id, channel_id, created_at)
+                        values ('shared-id', 'route-b', 1), ('oauth-gemini', 'route-gemini', 1);
+                        insert into oauth_account_models (account_id, upstream_model, created_at)
+                        values ('shared-id', 'alias-a', 1), ('shared-id', 'alias-b', 1), ('oauth-no-model', 'unrelated', 1)
+                        """.trimIndent(),
+                    )
+                }
+            }
+            migrateTo(migrationUrl, "73")
+            val expected = listOf(
+                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.STATIC, "key-first"),
+                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-b", dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH, "shared-id"),
+                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH, "shared-id"),
+                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-b", dev.soven.prismllm.routing.readmodel.CredentialRouteType.STATIC, "key-b"),
+                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.STATIC, "shared-id"),
+                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-gemini", dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH, "oauth-gemini"),
+                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH, "oauth-inherited"),
+                dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-a", dev.soven.prismllm.routing.readmodel.CredentialRouteType.STATIC, "key-last"),
+            )
+            TestDatabase(migrationUrl, postgres.username, postgres.password).use { database ->
+                val repository = dev.soven.prismllm.repo.ModelCredentialRouteRepository(database.database)
+                val route = assertNotNull(repository.find("public/family"))
+                assertEquals(0L, route.revision)
+                assertTrue(route.configured)
+                assertEquals(expected, route.entries, "aliases collapse within channel/type/ID; legacy priority is preserved only at migration")
+                assertEquals(setOf("public/family", "public/empty", "protocol/empty"), repository.list().map { it.modelId }.toSet())
+                assertTrue(assertNotNull(repository.find("public/empty")).entries.isEmpty())
+                assertTrue(assertNotNull(repository.find("protocol/empty")).entries.isEmpty())
+                DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                    connection.createStatement().use { statement ->
+                        statement.execute(
+                            """
+                            insert into channel_models (channel_id, upstream_model, canonical_model_id, catalog_active, created_at)
+                            values ('route-a', 'post-upstream', 'post/model', true, 2);
+                            insert into channel_keys (id, channel_id, name, credential_ciphertext, credential_nonce,
+                                credential_key_version, state, priority, created_at, updated_at)
+                            values ('post-key', 'route-a', 'post-key', 'fixture-cipher', 'fixture-nonce', 1, 'ACTIVE', 1, 2, 2);
+                            insert into channel_key_models (key_id, upstream_model, created_at)
+                            values ('post-key', 'alias-a', 2), ('post-key', 'post-upstream', 2)
+                            """.trimIndent(),
+                        )
+                    }
+                }
+                migrateTo(migrationUrl, "73")
+                assertNull(repository.find("post/model"), "migration reruns and reads never populate later models")
+                assertEquals(expected, assertNotNull(repository.find("public/family")).entries, "new credentials require an explicit save")
+                val empty = repository.save("public/family", 0, emptyList())
+                assertEquals(1L, empty.revision, "migration revision zero is the first editable revision")
+                assertTrue(assertNotNull(repository.find("public/family")).entries.isEmpty())
+            }
+        } finally {
+            dropDatabaseQuietly(databaseName)
+        }
+    }
+
+    @Test
+    @Timeout(300)
+    fun `gateway reconciles pending oauth channel before v73 seeds credential routes`() = runBlocking {
+        val databaseName = createMigrationDatabase("migration_v73_pending_oauth")
+        val migrationUrl = migrationDatabaseUrl(databaseName)
+        val originalId = "legacy-oauth"
+        val publicModel = "migration-public/model"
+        val upstreamModel = "migration-upstream"
+        try {
+            migrateTo(migrationUrl, "71")
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        """
+                        insert into channels (id, name, base_url, protocols, enabled, created_at, updated_at)
+                        values ('legacy-oauth-channel', 'legacy-oauth-channel', 'https://example.invalid/v1', 'responses', true, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into oauth_accounts (id, name, provider, refresh_token_ciphertext, refresh_token_nonce,
+                            refresh_token_key_version, enabled, auth_state, priority, model_catalog,
+                            provider_channel_pending, created_at, updated_at, authorized_at)
+                        values ('$originalId', 'legacy-pending', 'chatgpt', 'fixture-ciphertext', 'fixture-nonce', 1,
+                            true, 'ACTIVE', 1,
+                            '[{"upstreamModel":"$upstreamModel","canonicalModelId":"$publicModel"}]',
+                            true, 1, 1, 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into oauth_account_channels (account_id, channel_id, created_at)
+                        values ('$originalId', 'legacy-oauth-channel', 1)
+                        """.trimIndent(),
+                    )
+                    statement.execute(
+                        """
+                        insert into oauth_account_models (account_id, upstream_model, created_at)
+                        values ('$originalId', '$upstreamModel', 1)
+                        """.trimIndent(),
+                    )
+                }
+            }
+
+            val upgrade = dev.soven.prismllm.api.GatewayApplication(config().copy(databaseUrl = migrationUrl))
+            try {
+                DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                    connection.createStatement().use { statement ->
+                        statement.execute("alter table oauth_account_channels add constraint migration_v73_test_guard check (channel_id = 'legacy-oauth-channel')")
+                    }
+                }
+                assertTrue(runCatching { upgrade.databaseFactory.migrate() }.isFailure, "a reconciliation failure must block V73")
+                DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                    connection.createStatement().use { statement ->
+                        statement.executeQuery("select to_regclass('model_credential_routes')").use { result ->
+                            assertTrue(result.next())
+                            assertNull(result.getString(1), "the route seed must not run after a failed prerequisite")
+                        }
+                        statement.execute("alter table oauth_account_channels drop constraint migration_v73_test_guard")
+                    }
+                }
+                testApplication {
+                    application { upgrade.install(this) }
+                    startApplication()
+                    val providerChannel = assertNotNull(upgrade.channelRepository.findProviderChannel(dev.soven.prismllm.shared.domain.OAuthProvider.CHATGPT))
+                    val account = assertNotNull(upgrade.oauthAccountRepository.findDetailed(originalId))
+                    assertEquals(setOf(providerChannel.id), account.channelIds, "pending legacy association must be moved before route bootstrap")
+                    DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                        connection.createStatement().use { statement ->
+                            statement.executeQuery("select provider_channel_pending from oauth_accounts where id = '$originalId'").use { result ->
+                                assertTrue(result.next())
+                                assertFalse(result.getBoolean(1))
+                            }
+                        }
+                    }
+                    val route = assertNotNull(upgrade.modelCredentialRouteRepository.find(publicModel))
+                    val identity = dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity(
+                        providerChannel.id,
+                        dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH,
+                        originalId,
+                    )
+                    assertEquals(listOf(identity), route.entries, "V73 must seed the final provider-channel identity")
+                    val candidates = upgrade.modelCatalog.findCandidates(publicModel, dev.soven.prismllm.shared.domain.GatewayProtocol.RESPONSES)
+                    assertEquals(listOf(identity.channelId), candidates.map { it.channel.id })
+                    assertEquals(listOf(upstreamModel), candidates.map { it.upstreamModel })
+
+                    val laterAccount = upgrade.oauthAccountRepository.create(
+                        dev.soven.prismllm.oauth.persistence.NewOAuthAccount(
+                            name = "later-account",
+                            provider = dev.soven.prismllm.shared.domain.OAuthProvider.CHATGPT,
+                            refreshToken = upgrade.credentialCipher.encrypt(java.util.UUID.randomUUID().toString()),
+                            channelIds = listOf(providerChannel.id),
+                            models = listOf(upstreamModel),
+                        ),
+                    )
+                    assertEquals(listOf(identity), upgrade.modelCredentialRouteRepository.find(publicModel)!!.entries)
+
+                    val restarted = dev.soven.prismllm.api.GatewayApplication(config().copy(databaseUrl = migrationUrl))
+                    try {
+                        testApplication {
+                            application { restarted.install(this) }
+                            startApplication()
+                            val persisted = assertNotNull(restarted.modelCredentialRouteRepository.find(publicModel))
+                            assertEquals(listOf(identity), persisted.entries, "an already-applied V73 must not append later credentials on restart")
+                            assertFalse(persisted.entries.any { it.credentialId == laterAccount.id })
+                            val restartedCandidates = restarted.modelCatalog.findCandidates(
+                                publicModel,
+                                dev.soven.prismllm.shared.domain.GatewayProtocol.RESPONSES,
+                            )
+                            assertEquals(listOf(originalId), restartedCandidates.map { it.credential.id })
+                        }
+                    } finally {
+                        restarted.close()
+                    }
+                }
+            } finally {
+                upgrade.close()
             }
         } finally {
             dropDatabaseQuietly(databaseName)

@@ -122,6 +122,7 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "PUT" && path == "/admin/api/account/avatar" -> "account.avatar.update"
     method == "PUT" && path == "/admin/api/account/password" -> "account.password.update"
     method == "POST" && path == "/admin/api/model-suggestions" -> "admin.model_suggestions"
+    method == "PUT" && path == "/admin/api/model-routes" -> "model_route.update"
     method == "POST" && path == "/admin/api/channels/model-discovery" -> "channel.discover_models"
     method == "POST" && CHANNEL_PROBE_PATTERN.matches(path) -> "channel.probe_protocols"
     method == "POST" && CHANNEL_MODEL_TEST_PATTERN.matches(path) -> "channel.model_test"

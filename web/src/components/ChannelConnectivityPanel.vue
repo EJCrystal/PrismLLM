@@ -241,7 +241,7 @@ onMounted(load)
               <select v-model="selectedKeyId" :disabled="running || !credentials.length">
                 <option v-if="!credentials.length" value="">没有可用凭据</option>
                 <option v-for="credential in credentials" :key="credential.id" :value="credential.id">
-                  {{ credential.name }}（优先级 {{ credential.priority }}）
+                  {{ credential.name }}
                 </option>
               </select>
             </label>

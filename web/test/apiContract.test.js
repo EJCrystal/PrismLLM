@@ -134,6 +134,54 @@ describe('API 契约的运行时形状', () => {
     assert.deepEqual(account.modelCatalog, ['upstream'], 'Old modelCatalog stays string[]')
   })
 
+  it('模型路由列表分页搜索、详情查询安全编码对外模型 ID，保存仅发送凭据身份', async (t) => {
+    const originalFetch = globalThis.fetch
+    const originalDocument = globalThis.document
+    const calls = []
+    t.after(() => { globalThis.fetch = originalFetch; globalThis.document = originalDocument })
+    globalThis.document = { cookie: 'gw_csrf=synthetic-csrf' }
+    const modelId = 'vendor/model + 中文?#'
+    const page = { items: [{ modelId, configured: true, entryCount: 1, availableCount: 2, revision: 7 }], total: 101, offset: 100, limit: 100 }
+    const detail = { modelId, revision: 7, entries: [], availableCredentials: [] }
+    globalThis.fetch = async (input, init = {}) => {
+      calls.push({ url: String(input), ...init })
+      return new Response(JSON.stringify(String(input).includes('/detail?') || init.method === 'PUT' ? detail : page))
+    }
+    assert.deepEqual(await api.listModelRoutes(), page)
+    assert.deepEqual(await api.listModelRoutes({ q: ' vendor/model + 中文 ', offset: 100, limit: 25 }), page)
+    assert.deepEqual(await api.getModelRoute(modelId), detail)
+    const payload = { modelId, expectedRevision: 7, entries: [{ channelId: 'channel/a', credentialType: 'static', credentialId: 'key/a' }, { channelId: 'channel/b', credentialType: 'oauth', credentialId: 'account/b' }] }
+    assert.deepEqual(await api.updateModelRoute(payload), detail)
+    assert.equal(calls[0].url, '/admin/api/model-routes?offset=0&limit=100')
+    const listUrl = new URL(calls[1].url, 'http://localhost')
+    assert.equal(listUrl.pathname, '/admin/api/model-routes')
+    assert.equal(listUrl.searchParams.get('q'), 'vendor/model + 中文')
+    assert.equal(listUrl.searchParams.get('offset'), '100')
+    assert.equal(listUrl.searchParams.get('limit'), '25')
+    const detailUrl = new URL(calls[2].url, 'http://localhost')
+    assert.equal(detailUrl.pathname, '/admin/api/model-routes/detail')
+    assert.equal(detailUrl.searchParams.get('modelId'), modelId)
+    assert.equal(calls[3].url, '/admin/api/model-routes')
+    assert.equal(calls[3].method, 'PUT')
+    assert.deepEqual(JSON.parse(calls[3].body), payload)
+    assert.equal(calls[3].headers.get('X-CSRF-Token'), 'synthetic-csrf')
+    assert.equal(calls[3].credentials, 'include')
+  })
+
+  it('模型路由保存保留 revision conflict 状态与错误码', async (t) => {
+    const originalFetch = globalThis.fetch
+    const originalDocument = globalThis.document
+    t.after(() => { globalThis.fetch = originalFetch; globalThis.document = originalDocument })
+    globalThis.document = { cookie: '' }
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: 'model_route_revision_conflict', message: '路由版本已更新' } }), { status: 409 })
+    await assert.rejects(api.updateModelRoute({ modelId: 'model', expectedRevision: 1, entries: [] }), error => {
+      assert.equal(error instanceof ApiError, true)
+      assert.equal(error.status, 409)
+      assert.equal(error.code, 'model_route_revision_conflict')
+      return true
+    })
+  })
+
   it('Web 搜索设置接口使用约定路径与方法', async (t) => {
     const originalFetch = globalThis.fetch
     const originalDocument = globalThis.document

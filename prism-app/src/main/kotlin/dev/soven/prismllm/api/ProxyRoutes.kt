@@ -389,11 +389,9 @@ private suspend fun handleProxyRequest(
             }
         }
 
-        // 先按冷却与账号级调度分拣：可尝试的候选进同档轮询，冷却中的保序作为 fail-open 兜底，
-        // 轮询份额只在可尝试候选间分摊，不被冷却候选扭曲。
-        // 账号级窗口/并发/冷却属于硬限制，不进入 fail-open。
-        val eligibleNative = mutableListOf<RouteCandidate>()
-        val eligibleConversion = mutableListOf<RouteCandidate>()
+        // 过滤硬限制时保持模型路由的相对顺序，冷却候选保序留给 fail-open。
+        // 账号级窗口、并发与冷却是硬限制，不进入 fail-open。
+        val ordered = mutableListOf<RouteCandidate>()
         val blocked = mutableListOf<RouteCandidate>()
         for (candidate in candidates) {
             if (app.candidateCooldown.isBlocked(candidate.channel.id, candidate.credential.id, candidate.upstreamModel)) {
@@ -409,26 +407,8 @@ private suspend fun handleProxyRequest(
                 markSkipped(candidate, oauthDenial.reason.metricValue)
                 continue
             }
-            if (protocol in candidate.channel.protocols) {
-                eligibleNative.add(candidate)
-            } else {
-                eligibleConversion.add(candidate)
-            }
+            ordered.add(candidate)
         }
-        val promptCacheKey = (requestJson["prompt_cache_key"] as? JsonPrimitive)
-            ?.takeIf { it.isString }
-            ?.content
-            ?.takeIf { it.isNotBlank() }
-            ?: call.request.headers["X-Prompt-Cache-Key"]?.takeIf { it.isNotBlank() }
-        // 各协议组的每个凭据/渠道档位每请求只推进一次轮询计数；提供 prompt_cache_key 时同档按亲和性路由。
-        // 订阅账号可再按 drain / least_used / pace 重排，但亲和优先，避免打散 prompt cache。
-        val ordered = app.oauthAccountRouting.order(
-            app.tierSharing.order(alias, eligibleNative, promptCacheKey),
-            affinityApplied = promptCacheKey != null,
-        ) + app.oauthAccountRouting.order(
-            app.tierSharing.order("$alias|conversion", eligibleConversion, promptCacheKey),
-            affinityApplied = promptCacheKey != null,
-        )
 
         /**
          * 尝试单个候选并把结果记入冷却。返回 null 表示响应已完成，返回异常交由外层决定是否继续。
@@ -795,7 +775,7 @@ private suspend fun handleProxyRequest(
             retryFrom = candidate.channel.name
             retryReason = error.code
         }
-        // fail-open：仍有尝试预算时，被冷却跳过的候选按原生协议组、凭据档位、渠道档位顺序照常尝试。
+        // 冷却 fail-open 只重试本模型已配置的候选，严格沿用列表顺序。
         // 重新按候选原始顺序遍历：预分拣与 acquire 之间被拦下的候选应插回原位，而不是追加到尾部。
         val blockedSet = blocked.toHashSet()
         for (candidate in candidates) {

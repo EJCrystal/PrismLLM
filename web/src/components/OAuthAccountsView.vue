@@ -106,7 +106,6 @@ const mappingRequests = createLatestRequestGuard()
 const listRequests = createLatestRequestGuard()
 const settingsForm = reactive({
   name: '',
-  priority: 1,
   proxyUrl: '',
   clearProxy: false,
   allModels: false,
@@ -622,7 +621,6 @@ function openSettings(account: OAuthAccount) {
   for (const model of Object.keys(mappingDrafts)) delete mappingDrafts[model]
   Object.assign(settingsForm, {
     name: account.name,
-    priority: account.priority,
     proxyUrl: account.proxyUrl ?? '',
     clearProxy: false,
     // 如实反映当前配置：空列表在后端表示“全部模型”。列表常驻可见，取消勾选即可改为只调度子集。
@@ -685,7 +683,6 @@ async function saveSettings() {
     payload = {}
     const name = settingsForm.name.trim() || null
     if (name !== baseline.name) payload.name = name
-    if (Number(settingsForm.priority) !== baseline.priority) payload.priority = Number(settingsForm.priority)
     const proxyUrl = settingsForm.clearProxy ? null : settingsForm.proxyUrl.trim() || null
     if (proxyUrl !== baseline.proxyUrl) {
       payload.proxyUrl = proxyUrl
@@ -923,7 +920,6 @@ onBeforeUnmount(() => {
                 <div class="oauth-account-meta">
                   <span class="badge neutral small">{{ oauthProviderLabel(account.provider) }}</span>
                   <span v-if="account.accountPlan" class="small muted">{{ account.accountPlan }}</span>
-                  <span class="badge neutral small">优先级 {{ account.priority }}</span>
                 </div>
                 <div class="oauth-account-channels small muted" :title="channelSummary(account)">渠道：{{ channelSummary(account) }}</div>
                 <div
@@ -1096,12 +1092,6 @@ onBeforeUnmount(() => {
           <small>同一账号可以关联多个渠道；不关联时账号保留，但不会参与任何路由。</small>
         </div>
 
-        <label class="field">
-          <span>优先级</span>
-          <input v-model.number="importForm.priority" type="number" min="1" max="1000" />
-          <small>1..1000，同一协议组内与所有渠道的静态密钥和 OAuth 账号统一比较，越小越优先；同级再比较渠道优先级。</small>
-        </label>
-
         <div class="field">
           <span>授权方式</span>
           <p class="muted small">只能通过浏览器登录授权：网关走提供方的官方授权页换取并加密保存 token，无需手动复制凭据。</p>
@@ -1176,11 +1166,7 @@ onBeforeUnmount(() => {
           <span>账号名称</span>
           <input v-model="settingsForm.name" autocomplete="off" />
         </label>
-        <label class="field">
-          <span>优先级</span>
-          <input v-model.number="settingsForm.priority" type="number" min="1" max="1000" />
-          <small>1..1000，同一协议组内与所有渠道的静态密钥和 OAuth 账号统一比较，越小越优先；同级再比较渠道优先级。</small>
-        </label>
+        <p class="muted small">凭据的模型调度顺序在「模型路由」页统一配置。</p>
         <div class="field">
           <span>账号代理</span>
           <div class="oauth-proxy-row">

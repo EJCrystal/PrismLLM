@@ -36,13 +36,14 @@ import dev.soven.prismllm.repo.ChannelHealthDirectoryRepository
 import dev.soven.prismllm.repo.OAuthProviderChannelLookup
 import dev.soven.prismllm.repo.PricingChannelNames
 import dev.soven.prismllm.repo.RequestLogCurrentNames
+import dev.soven.prismllm.repo.ModelCredentialRouteRepository
+import dev.soven.prismllm.repo.RoutingConfigurationSnapshotRepository
 import dev.soven.prismllm.channel.persistence.ChannelRepository
 import dev.soven.prismllm.quota.persistence.ClientKeyRepository
 import dev.soven.prismllm.quota.persistence.ClientKeyQuotaRepository
 import dev.soven.prismllm.resilience.persistence.CooldownStateRepository
 import dev.soven.prismllm.requestlog.persistence.RequestLogRepository
 import dev.soven.prismllm.requestlog.persistence.RetentionSettingsRepository
-import dev.soven.prismllm.oauth.OAuthAccountRouting
 import dev.soven.prismllm.oauth.infra.OAuthAccountScheduler
 import dev.soven.prismllm.oauth.OAuthLoginService
 import dev.soven.prismllm.oauth.OAuthQuotaService
@@ -76,7 +77,6 @@ import dev.soven.prismllm.channel.infra.quota.ChannelQuotaService
 import dev.soven.prismllm.resilience.CandidateCooldown
 import dev.soven.prismllm.resilience.CooldownStateWriter
 import dev.soven.prismllm.resilience.KeyAvailabilityGate
-import dev.soven.prismllm.resilience.TierSharing
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
 import io.ktor.client.plugins.HttpTimeout
@@ -302,6 +302,7 @@ class GatewayApplication(
     val databaseFactory = DatabaseFactory(config)
     val credentialCipher = CredentialCipher(config.masterKey)
     val channelRepository = ChannelRepository(databaseFactory.database, credentialCipher)
+    val modelCredentialRouteRepository = ModelCredentialRouteRepository(databaseFactory.database)
     val clientKeyRepository = ClientKeyRepository(databaseFactory.database)
     val clientKeyQuotaRepository = ClientKeyQuotaRepository(databaseFactory.database)
     val clientKeyQuotaService = ClientKeyQuotaService(
@@ -360,7 +361,6 @@ class GatewayApplication(
         policy = config.cooldown,
         onChange = cooldownStateWriter::submit,
     )
-    val tierSharing = TierSharing()
     val metrics = GatewayMetrics()
     val requestLogWriter = RequestLogWriter(
         insertRecord = requestLogRepository::insert,
@@ -466,6 +466,13 @@ class GatewayApplication(
     val oauthAccountRepository = OAuthAccountRepository(databaseFactory.database, OAuthProviderChannelLookup())
     /** 同一 Database 的共享写入编排：父 channel 锁 → account，目录和授权事务内协调。 */
     val providerChannelProvisioner = ProviderChannelProvisioner(channelRepository, oauthAccountRepository)
+
+    init {
+        databaseFactory.beforeMigration("73") {
+            runBlocking { providerChannelProvisioner.reconcileBeforeModelCredentialRouteMigration() }
+        }
+    }
+
     /**
      * Code Assist 的账号出口连接池：project 发现、目录与额度共用，
      * 由应用统一关闭，避免关闭网关后遗留代理客户端。
@@ -505,9 +512,16 @@ class GatewayApplication(
         clients = codeAssistClients,
         userAgent = antigravityUserAgent,
     )
-    /** 渠道 → 可路由订阅账号投影；路由读模型与管理面渠道列表共用。 */
+    /** 渠道 → 订阅账号投影，供管理面渠道列表使用。 */
     val oauthAccountDirectory = OAuthAccountDirectory { oauthAccountRepository.listByChannel() }
-    val modelCatalog = UpstreamModelCatalog(channelRepository, oauthAccountDirectory)
+    val modelCatalog = UpstreamModelCatalog(
+        RoutingConfigurationSnapshotRepository(
+            databaseFactory.database,
+            channelRepository,
+            oauthAccountRepository,
+            modelCredentialRouteRepository,
+        ),
+    )
     val oauthTokenProviders = OAuthTokenProviderRegistry(buildOAuthTokenProviders(config.oauth))
     val oauthTokenService = OAuthTokenService(oauthAccountRepository, credentialCipher, oauthTokenProviders, config.oauth)
     /** 交互式 OAuth 登录：PKCE 会话只保存在内存，单次使用。 */
@@ -527,11 +541,6 @@ class GatewayApplication(
         maxCooldownMs = config.oauth.rateLimitMaxMs,
         quotaMaxAgeMs = config.oauth.quotaMaxAgeMs,
         onSnapshot = oauthWindowStateWriter::submit,
-    )
-    /** 订阅账号在候选池内的排序策略；只重排同一渠道同一优先级内的账号。 */
-    val oauthAccountRouting = OAuthAccountRouting(
-        strategy = config.oauth.routing,
-        hints = oauthAccountScheduler::routingHints,
     )
     /** 上游额度观测：定时读取 ChatGPT 用量，同步给调度器做额度准入。 */
     val oauthQuotaService = OAuthQuotaService(

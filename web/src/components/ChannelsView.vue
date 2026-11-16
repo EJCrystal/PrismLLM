@@ -314,7 +314,6 @@ const channelStatusFilter = ref<ChannelStatusFilter>('all')
 const channelModelFilter = ref('')
 const channelNameFilter = ref('')
 const hasChannelFilters = computed(() => channelStatusFilter.value !== 'all' || !!channelModelFilter.value || !!channelNameFilter.value.trim())
-const prioritySortDirection = ref<'asc' | 'desc'>('asc')
 const channelToggleSavingIds = ref<string[]>([])
 const showForm = ref(false)
 const saving = ref(false)
@@ -419,10 +418,7 @@ watch(channelModelOptions, (models) => {
 })
 const displayedChannels = computed(() => channels.value
   .filter((channel) => channelMatchesFilters(channel, channelStatusFilter.value, channelModelFilter.value, channelNameFilter.value))
-  .sort((left, right) => {
-    const comparison = (left.priority ?? 1) - (right.priority ?? 1)
-    return prioritySortDirection.value === 'asc' ? comparison : -comparison
-  }))
+  .sort((left, right) => left.name.localeCompare(right.name)))
 const priceSummaries = computed(() => channelPriceSummaries(channels.value, prices.value, defaultPrices.value))
 const pricePrompt = computed(() => {
   const channelId = pricePromptChannelId.value
@@ -478,16 +474,7 @@ const selectedChannelKey = computed(() => (
   || null
 ))
 
-function channelKeyPriority(key: ChannelKeyEditorDraft): number {
-  const value = Number(key.priority)
-  return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY
-}
-
-const defaultChannelKey = computed(() => (
-  channelKeys.value.reduce<ChannelKeyEditorDraft | null>((best, key) => (
-    !best || channelKeyPriority(key) < channelKeyPriority(best) ? key : best
-  ), null)
-))
+const defaultChannelKey = computed(() => channelKeys.value[0] || null)
 
 const visibleMappingModels = computed(() => {
   const query = mappingSearch.value.trim().toLowerCase()
@@ -742,55 +729,7 @@ function closeTestDrawer(): void {
   testTarget.value = null
 }
 
-const priorityEditingId = ref<string | null>(null)
-const priorityDraft = ref<number | string>(1)
-let prioritySaving = false
 const channelUpdateSavingIds = ref<string[]>([])
-
-function startPriorityEdit(channel: Channel): void {
-  if (prioritySaving || channelUpdateSavingIds.value.includes(channel.id)) {
-    notify('该渠道正在保存修改，请稍候', 'warning')
-    return
-  }
-  priorityEditingId.value = channel.id
-  priorityDraft.value = channel.priority ?? 1
-  nextTick(() => {
-    const input = document.querySelector('.priority-input') as HTMLInputElement | null
-    input?.focus()
-    input?.select()
-  })
-}
-
-function cancelPriorityEdit(): void {
-  priorityEditingId.value = null
-}
-
-async function commitPriorityEdit(channel: Channel): Promise<void> {
-  if (prioritySaving || channelUpdateSavingIds.value.includes(channel.id)) return
-  if (priorityEditingId.value !== channel.id) return
-  const next = Number(priorityDraft.value)
-  priorityEditingId.value = null
-  if (!Number.isInteger(next) || next < 1 || next > 1000) {
-    notify('优先级必须是 1..1000 的整数', 'warning')
-    return
-  }
-  if (next === (channel.priority ?? 1)) return
-  prioritySaving = true
-  channelUpdateSavingIds.value = [...channelUpdateSavingIds.value, channel.id]
-  try {
-    await api.updateChannel(channel.id, buildPriorityUpdatePayload(channel, next))
-    listRevision++
-    loading.value = false
-    channel.priority = next
-    notify('渠道优先级已更新', 'success')
-  } catch (cause) {
-    notify(errorMessage(cause), 'error')
-    await load()
-  } finally {
-    prioritySaving = false
-    channelUpdateSavingIds.value = channelUpdateSavingIds.value.filter((id) => id !== channel.id)
-  }
-}
 
 async function toggleChannelEnabled(channel: Channel): Promise<void> {
   if (channelUpdateSavingIds.value.includes(channel.id)) return
@@ -1143,11 +1082,6 @@ async function save(): Promise<void> {
       return
     }
     names.add(name)
-    if (!Number.isInteger(Number(key.priority)) || Number(key.priority) < 1 || Number(key.priority) > 1000) {
-      focusChannelKeyInForm(key)
-      notify('密钥优先级必须是 1..1000 的整数', 'error')
-      return
-    }
     if (!key.id && !key.credential.trim()) {
       focusChannelKeyInForm(key)
       notify(`新建密钥「${name}」必须提供上游凭据`, 'error')
@@ -1311,7 +1245,6 @@ onMounted(() => {
           <input v-model="channelNameFilter" type="search" aria-label="按渠道名称筛选" placeholder="按名称筛选渠道" autocomplete="off" />
         </label>
         <div class="channel-list-filters" role="group" aria-label="渠道筛选">
-          <span class="channel-sort-note">凭据同级时，渠道数字越小越优先</span>
           <FilterSelect v-model="channelStatusFilter" label="状态" default-value="all" :options="channelStatusOptions.map(option => ({ value: option.id, label: option.label + '（' + option.count + '）' }))" />
           <FilterSelect v-model="channelModelFilter" label="模型" searchable :options="[{ value: '', label: '全部模型' }, ...channelModelOptions.map(model => ({ value: model, label: model }))]" />
           <button v-if="hasChannelFilters" type="button" class="filter-reset" @click="channelStatusFilter = 'all'; channelModelFilter = ''; channelNameFilter = ''">清除筛选</button>
@@ -1335,17 +1268,6 @@ onMounted(() => {
           <thead>
             <tr>
               <th class="channel-name-col">名称</th>
-              <th :aria-sort="prioritySortDirection === 'asc' ? 'ascending' : 'descending'">
-                <button
-                  type="button"
-                  class="channel-priority-sort"
-                  :aria-label="prioritySortDirection === 'asc' ? '优先级升序，点击切换为降序' : '优先级降序，点击切换为升序'"
-                  :title="prioritySortDirection === 'asc' ? '点击按优先级降序排列；双击数值可修改优先级' : '点击按优先级升序排列；双击数值可修改优先级'"
-                  @click="prioritySortDirection = prioritySortDirection === 'asc' ? 'desc' : 'asc'"
-                >
-                  优先级 <span class="channel-sort-arrow" aria-hidden="true">{{ prioritySortDirection === 'asc' ? '↑' : '↓' }}</span>
-                </button>
-              </th>
               <th class="channel-protocols-col">协议</th>
               <th>授权模型</th>
               <th>健康观测</th>
@@ -1355,7 +1277,7 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr v-if="!displayedChannels.length">
-              <td colspan="7" class="channel-filter-empty muted">当前筛选条件下没有渠道</td>
+              <td colspan="6" class="channel-filter-empty muted">当前筛选条件下没有渠道</td>
             </tr>
             <tr v-for="channel in displayedChannels" :key="channel.id">
               <td class="channel-name-col">
@@ -1396,34 +1318,6 @@ onMounted(() => {
                   {{ channel.keys.filter((key) => key.state === 'AUTO_PERMANENT' || key.state === 'AUTO_TEMPORARY').length }} 个自动禁用
                 </div>
                 <span v-if="channelRoutingHint(channel)" class="badge warning channel-status-hint" :title="channel.name + '：' + channelRoutingHint(channel)">{{ channelRoutingHint(channel) }}</span>
-              </td>
-              <td
-                class="priority-cell"
-                tabindex="0"
-                role="button"
-                aria-label="双击或按 Enter 编辑渠道优先级"
-                title="双击编辑优先级"
-                @dblclick="startPriorityEdit(channel)"
-                @keyup.enter.self="startPriorityEdit(channel)"
-              >
-                <div class="channel-row-lead">
-                  <input
-                    v-if="priorityEditingId === channel.id"
-                    v-model.number="priorityDraft"
-                    class="priority-input"
-                    aria-label="渠道优先级，凭据优先级相同时数值越小越优先"
-                    title="同一协议组内，凭据优先级相同时数值越小越优先；Enter 保存，Esc 取消"
-                    type="number"
-                    min="1"
-                    max="1000"
-                    step="1"
-                    @keyup.enter.stop="commitPriorityEdit(channel)"
-                    @dblclick.stop
-                    @keyup.esc="cancelPriorityEdit"
-                    @blur="commitPriorityEdit(channel)"
-                  />
-                  <span v-else class="badge neutral">{{ channel.priority ?? 1 }}</span>
-                </div>
               </td>
               <td class="channel-protocols-col">
                 <div class="channel-row-lead"><ChannelProtocols :protocols="channel.protocols" /></div>
@@ -1537,7 +1431,6 @@ onMounted(() => {
           </div>
 
           <div class="channel-mobile-meta">
-            <span class="channel-mobile-priority" :title="`优先级 ${channel.priority ?? 1}`">P{{ channel.priority ?? 1 }}</span>
             <ChannelProtocols :protocols="channel.protocols" :size="20" />
             <span class="channel-mobile-updated" :title="formatTime(channel.updatedAt, { style: 'medium' })">{{ formatRelativeTime(channel.updatedAt, relativeNow) }}</span>
           </div>
@@ -1577,10 +1470,6 @@ onMounted(() => {
               <div class="channel-mobile-detail-item">
                 <span>更新时间</span>
                 <strong>{{ formatTime(channel.updatedAt) }}</strong>
-              </div>
-              <div class="channel-mobile-detail-item">
-                <span>优先级</span>
-                <strong>{{ channel.priority ?? 1 }}</strong>
               </div>
             </div>
 
@@ -1799,14 +1688,14 @@ onMounted(() => {
                     :aria-selected="selectedChannelKey?.localId === key.localId"
                     :aria-controls="selectedChannelKey?.localId === key.localId ? 'channel-key-panel-' + key.localId : undefined"
                     :tabindex="selectedChannelKey?.localId === key.localId ? 0 : -1"
-                    :title="keyStateBadge(key.state).label + ' · ' + key.models.length + ' 个模型 · 优先级 ' + key.priority"
+                    :title="keyStateBadge(key.state).label + ' · ' + key.models.length + ' 个模型'"
                     @click="selectedChannelKeyId = key.localId"
                     @keydown="handleChannelKeyTabKeydown($event, index)"
                   >
                     <span class="channel-key-nav-dot" :class="'is-' + keyStateTone(key.state)" aria-hidden="true"></span>
                     <span class="channel-key-nav-body">
                       <span class="channel-key-nav-name">{{ key.name.trim() || `密钥 ${index + 1}` }}</span>
-                      <span class="channel-key-nav-meta">{{ keyStateBadge(key.state).label }} · {{ key.models.length }} 个模型 · 优先级 {{ key.priority }}</span>
+                      <span class="channel-key-nav-meta">{{ keyStateBadge(key.state).label }} · {{ key.models.length }} 个模型</span>
                     </span>
                     <span
                       v-if="channelKeyConcurrent(editingId, key.id) > 0"
@@ -1848,13 +1737,13 @@ onMounted(() => {
                   class="channel-key-accordion-head"
                   :aria-expanded="expandedChannelKeyId === key.localId"
                   :aria-controls="expandedChannelKeyId === key.localId ? 'channel-key-panel-' + key.localId : undefined"
-                  :title="keyStateBadge(key.state).label + ' · ' + key.models.length + ' 个模型 · 优先级 ' + key.priority"
+                  :title="keyStateBadge(key.state).label + ' · ' + key.models.length + ' 个模型'"
                   @click="toggleKeyAccordion(key)"
                 >
                   <span class="channel-key-nav-dot" :class="'is-' + keyStateTone(key.state)" aria-hidden="true"></span>
                   <span class="channel-key-nav-body">
                     <span class="channel-key-nav-name">{{ key.name.trim() || `密钥 ${index + 1}` }}</span>
-                    <span class="channel-key-nav-meta">{{ keyStateBadge(key.state).label }} · {{ key.models.length }} 个模型 · 优先级 {{ key.priority }}</span>
+                    <span class="channel-key-nav-meta">{{ keyStateBadge(key.state).label }} · {{ key.models.length }} 个模型</span>
                   </span>
                   <span
                     v-if="channelKeyConcurrent(editingId, key.id) > 0"
@@ -1880,7 +1769,7 @@ onMounted(() => {
               <button type="button" class="button ghost channel-key-add" @click="addKey">＋ 添加密钥</button>
             </div>
 
-            <p class="channel-form-note">同一模型可以配置在多个密钥上；同一协议组内，静态密钥与 OAuth 账号按凭据优先级跨渠道比较，同级再比较渠道优先级；两级相同则先轮询渠道，再轮询渠道内凭据。</p>
+            <p class="channel-form-note">同一模型可以添加多个跨渠道凭据；具体顺序请在「模型路由」页统一配置。</p>
           </section>
 
           <section
@@ -1987,14 +1876,9 @@ onMounted(() => {
             aria-labelledby="channel-form-tab-routing"
           >
             <div class="channel-form-section-head">
-              <div><h3>路由状态</h3><p>原生协议候选优先；凭据优先级跨渠道比较，同级再比较渠道优先级。停用后不参与路由。</p></div>
+              <div><h3>路由状态</h3><p>停用后不参与路由。凭据顺序在「模型路由」页统一配置。</p></div>
             </div>
-            <div class="channel-form-row channel-form-row-two">
-              <label class="field">
-                <span>渠道优先级</span>
-                <input v-model.number="form.priority" type="number" min="1" max="1000" step="1" />
-                <small>1..1000，凭据同级时越小越优先；两级都相同则先轮询渠道，再轮询渠道内凭据。</small>
-              </label>
+            <div class="channel-form-row">
               <div class="field channel-enabled-field">
                 <span>渠道状态</span>
                 <button
@@ -2065,16 +1949,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.priority-cell {
-  cursor: default;
-}
-
-.priority-input {
-  width: 72px;
-  padding: 4px 6px;
-  font: inherit;
-}
-
 .channel-enabled-field { align-items: flex-start; }
 .channel-status-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; max-width: 100%; }
 .channel-status-stack > .channel-status-toggle,
@@ -2244,7 +2118,6 @@ onMounted(() => {
   .channel-mobile-id :deep(.icon-button) { width: 40px; min-width: 40px; height: 40px; }
   .channel-mobile-id .channel-id-text { min-width: 0; }
   .channel-mobile-keys { line-height: 1.5; }
-  .channel-mobile-priority { flex: 0 0 auto; padding: 1px 5px; border-radius: 4px; background: var(--glass-field); color: var(--muted); font-size: 10px; font-weight: 650; font-variant-numeric: tabular-nums; }
   .channel-mobile-head .channel-status-toggle { flex: 0 0 auto; }
   .channel-mobile-status { display: grid; gap: 6px; }
   .channel-mobile-status-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
@@ -2353,7 +2226,6 @@ onMounted(() => {
   }
 
   .channel-form-tab-count,
-  .channel-mobile-priority,
   .protocol-order-actions .icon-button {
     background: var(--bg);
   }

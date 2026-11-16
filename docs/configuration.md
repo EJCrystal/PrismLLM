@@ -66,6 +66,14 @@ openssl rand -base64 32
 | `UPSTREAM_HEADER_CATALOG_URL` | 空 | 可选的 HTTPS Manifest 链接，用于自定义覆盖全局请求头模板 |
 | `QUOTA_PLUGIN_DIR` | `plugins` | 渠道额度插件 JAR 所在目录；目录不存在时不加载扩展 |
 
+### OAuth 路由兼容配置
+
+| 变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `OAUTH_ROUTING` | `round_robin` | 已弃用，仅保留配置兼容性。仍接受 `round_robin`、`drain`、`least_used`、`pace`，但没有运行时排序效果；模型请求严格使用保存的有序凭据身份列表。 |
+
+账号级窗口、并发、429 冷却、上游额度与 token 鉴权仍然控制资格，不因路由策略弃用而取消。渠道、静态密钥和 OAuth 账号的 `priority` API/存储字段同样保留，但不重排模型请求；`prompt_cache_key` 只转发。模型路由通过管理台和 [模型路由 API](api.md#21-模型路由公共模型凭据顺序) 配置，不由环境变量生成。
+
 ### 智商检测
 
 | 变量 | 默认值 | 说明 |
@@ -170,7 +178,7 @@ JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=proxy.example -Dhttp.proxyPort=8080 -Dhttps.p
 ## 生产部署与恢复边界
 
 - **TLS 与访问面隔离**：生产环境必须通过受控反向代理等入口提供 TLS，并设置 `COOKIE_SECURE=true`；将 `/admin/`、`/admin/api/*` 与 `/metrics` 限制在私网或经过认证的运维入口。默认 Compose 的公开 `8080:8080` 映射不提供 TLS 或访问隔离；Cookie/CSRF 校验不能代替网络边界，`/metrics` 不应直接暴露到公网。只为实际反向代理设置 `TRUSTED_PROXY_CIDRS`。
-- **单实例限制**：管理会话、OAuth 登录流程、调用方 RPM 固定分钟窗口、上游密钥 RPM 令牌桶和并发计数均为进程内状态。OAuth 调度窗口、冷却、亲和与 token 刷新互斥也不跨实例协调；部分异步快照仅用于重启恢复。共用 PostgreSQL 或简单增加副本不能实现共享会话、全局 RPM/并发或安全的跨副本 token 刷新。
+- **单实例限制**：管理会话、OAuth 登录流程、调用方 RPM 固定分钟窗口、上游密钥 RPM 令牌桶和并发计数均为进程内状态。OAuth 调度窗口、冷却与 token 刷新互斥也不跨实例协调；部分异步快照仅用于重启恢复。共用 PostgreSQL 或简单增加副本不能实现共享会话、全局 RPM/并发或安全的跨副本 token 刷新。
 - **数据库与主密钥备份**：备份 PostgreSQL 数据库（包括额度账本、加密凭据和配置）并保留对应版本的 `GATEWAY_MASTER_KEY`，建立配套恢复记录；数据库备份和主密钥应分开安全存储、限制访问，并验证恢复。数据库备份不能代替主密钥备份，丢失匹配密钥将无法解密既有凭据。
 - **不是环境变量轮换**：仅替换 `GATEWAY_MASTER_KEY` 后重启不会重新加密数据库中的密文，不是受支持的主密钥轮换流程，反而会使旧凭据无法解密。需要变更时必须安排受控迁移，保留旧密钥与数据库配套备份并验证恢复，不要把“重新填写某个搜索密钥”等同于迁移所有凭据。
 

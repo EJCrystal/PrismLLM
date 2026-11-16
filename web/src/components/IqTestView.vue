@@ -162,13 +162,13 @@ const credentialOptions = computed(() => {
   const supported = target.credentials.map((credential) => ({
     value: credential.id,
     label: credential.name,
-    hint: `优先级 ${credential.priority}`,
+    hint: '已授权当前模型',
     disabled: false,
   }))
   const supportedIds = new Set(supported.map((option) => option.value))
   const unavailable = (props.channel?.keys ?? [])
     .filter((key) => !supportedIds.has(key.id) && isKeyRoutable(key) && !key.models.includes(target.model))
-    .sort((left, right) => left.priority - right.priority || left.name.localeCompare(right.name))
+    .sort((left, right) => left.name.localeCompare(right.name))
     .map((key) => ({
       value: key.id,
       label: key.name,
