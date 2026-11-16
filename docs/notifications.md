@@ -1,0 +1,70 @@
+# Webhook 与飞书通知
+
+在管理台「系统配置 → 通知」启用通知并添加目标。每个目标可选择通用 Webhook 或飞书群机器人，订阅事件并限制渠道范围；空渠道列表表示所有渠道。最多配置 20 个目标。全局开关默认关闭，连续失败阈值默认 5，可设置为 1–100。
+
+## 配置凭据
+
+真实地址与凭据仅从网关进程的环境变量读取。管理台填写引用前缀，例如 `PRISM_NOTIFY_OPERATIONS`，后台读取：
+
+| 变量 | 用途 |
+| --- | --- |
+| `PRISM_NOTIFY_OPERATIONS_URL` | 完整接收端 URL；飞书填写完整机器人 webhook URL |
+| `PRISM_NOTIFY_OPERATIONS_BEARER_TOKEN` | 可选的通用 Webhook Bearer 令牌 |
+| `PRISM_NOTIFY_OPERATIONS_SIGNING_SECRET` | 可选的通用 HMAC 密钥或飞书机器人签名密钥 |
+
+前缀必须匹配 `PRISM_NOTIFY_[A-Z][A-Z0-9_]{0,47}`。数据库仅保存引用前缀、订阅范围与非敏感设置。界面显示配置是否齐备，不提供实际凭据输入框，也不返回原始地址。
+
+通过部署平台的受保护环境配置注入值；Docker Compose 需显式把这些自定义变量传入 gateway 容器，只有宿主机 `.env` 中存在变量不会自动传入进程。更新进程环境变量后重启 gateway；编辑通知开关、目标或订阅不需要重启。保存配置不发送消息，点击「发送测试通知」才创建一次测试投递。
+
+只允许 HTTP/HTTPS 目标。生产接收端应使用 HTTPS。目标必须解析为公网地址，localhost、环回、私有、链路本地、组播、保留地址以及混合公网/私网解析均被拒绝。每次投递使用重新验证过的 DNS 地址完成实际连接；不跟随重定向，不继承上游代理或系统代理，正常验证 TLS 证书。
+
+## 触发规则
+
+| 事件类型 | 触发条件 |
+| --- | --- |
+| `channel.unhealthy` | 每 60 秒计算最近一小时的健康状态，进入 WARNING、CRITICAL、NO_CREDENTIALS，或超过本次异常已通知的最高严重程度 |
+| `channel.recovered` | 已产生健康告警后重新达到 HEALTHY |
+| `key.disabled` | 静态上游密钥发生人工、自动临时或自动永久停用状态变化 |
+| `key.recovered` | 已停用静态上游密钥恢复 ACTIVE，包括人工恢复、探测成功和到期清理 |
+| `attempt.consecutive_failures` | 同一渠道、凭据和上游模型的真实尝试连续失败达到阈值 |
+| `attempt.recovered` | 连续失败告警后的首次成功尝试 |
+| `notification.test` | 管理员点击测试按钮；不受目标事件及渠道筛选限制 |
+
+健康判定与管理台最近一小时一致：至少 20 次有效尝试；失败率 ≥5% 为 WARNING，≥20% 为 CRITICAL；首 token 延迟使用 `HEALTH_SLOW_FIRST_TOKEN_MS` / `HEALTH_SLOW_P50_FIRST_TOKEN_MS`。启用渠道没有可路由凭据时立即判定 NO_CREDENTIALS，无需样本。UNKNOWN、样本不足和历史索引未完成都不是恢复；主动关闭渠道会停止其健康告警。
+
+连续失败按完成后的观测顺序统计，支持静态密钥和 OAuth 凭据。路由跳过、客户端取消、本地协议转换错误和不应归咎于上游的无效参数既不累计，也不清零。成功清零并允许下一段失败重新告警；持续失败只告警一次。此计数不修改路由冷却或密钥自动停用规则。
+
+密钥事件范围为上游静态渠道密钥，调用方密钥的禁用、撤销以及 OAuth 账号授权状态不产生 `key.*` 事件。测试、模型检测不会计入真实模型请求连续失败。
+
+## 通用 Webhook 契约
+
+接收 `POST`、`Content-Type: application/json`。载荷字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `schemaVersion` | 当前为 1 |
+| `eventId` | 稳定事件 ID，同一事件所有重试均不变化 |
+| `eventType`、`occurredAt`、`severity` | 事件类型、Unix 毫秒、info/warning/critical |
+| `channelId`、`channelName` | 渠道标识与名称，相关事件提供 |
+| `credentialId`、`credentialName`、`upstreamModel` | 凭据或模型维度，相关事件提供 |
+| `previousState`、`state`、`reasonCode` | 前后状态和稳定原因码 |
+| `consecutiveFailures` | 连续失败次数，恢复为 0 |
+| `metrics` | 健康事件的聚合样本、失败率及延迟数据 |
+
+没有请求正文、密钥值或原始上游错误正文。接收端应允许增加字段并按 `eventId` 去重。所有请求携带 `X-Prism-Event-Id`。配置 Bearer 令牌时携带 `Authorization`。
+
+配置签名密钥时提供 `X-Prism-Timestamp`（Unix 秒）及 `X-Prism-Signature`（`sha256=` 加小写十六进制摘要）。摘要为 `HMAC-SHA256(secret, timestamp + "." + rawBody)`，UTF-8 编码，rawBody 必须为接收的原始字节；验证时同时限制时间差并去重 eventId。每次重试重新生成时间与签名，事件本身不变。
+
+飞书使用 `msg_type=text` 的中文文本消息，包含 PrismLLM 标识、事件、渠道/密钥、状态与事件 ID；签名遵循飞书自定义机器人协议。成功同时要求 HTTP 成功和飞书业务响应码成功，HTTP 200 下的业务拒绝会记录为失败。
+
+## 可靠性与排查
+
+密钥状态与 outbox 事件在同一数据库事务提交或回滚。健康与连续失败的告警状态及事件也同事务保存。网络请求由后台执行，不占用原事务；数据库中待投递任务在重启后可恢复，租约避免多个 worker 重复领取。同一目标按事件入队顺序投递，恢复通知会等待前面的告警完成或最终失败；不同目标最多并行投递 4 条，一个目标失败不阻塞其他目标。
+
+网络错误、超时、429 和可重试服务端错误最多尝试 5 次，退避为 5 秒、30 秒、2 分钟、10 分钟；Retry-After 上限 60 秒，与当前退避取较大值。单次投递总超时 10 秒（DNS 最多 3 秒、连接最多 3 秒），请求体上限 64 KiB，响应体上限 8 KiB。永久错误直接失败。任务租约到期会重新领取，最多尝试次数包含已领取但进程中断的任务。投递可能在接收成功、保存结果前中断，所以重试可能导致重复，不能保证 exactly-once 或必达。
+
+实时尝试观测使用有界非阻塞队列，进程崩溃或队列满可能丢失未入库观测。检测到断档时重置连续次数；重启也从零累计，保留已告警状态以避免重复刷屏。健康数据仍依赖现有 best-effort 请求日志。全局关闭期间不产生新事件，重新启用不补发历史事件。
+
+禁用、删除或更改目标配置会取消旧配置的待投递记录。已经发出的网络请求可能仍然到达接收端。投递详情可查看状态、尝试次数、HTTP 状态和脱敏错误码，终态记录默认保留 30 天。通知失败不会再次触发通知，以免形成循环。
+
+相关 Prometheus 指标见 [监控指南](../monitoring/README.md)。

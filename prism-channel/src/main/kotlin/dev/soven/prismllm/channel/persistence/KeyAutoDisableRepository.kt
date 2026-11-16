@@ -81,6 +81,7 @@ class KeyAutoDisablePendingException : RuntimeException(null, null, false, false
 class KeyAutoDisableRepository(
     private val database: Database,
     private val audit: KeyStateAudit,
+    private val keyStateObserver: KeyStateObserver = KeyStateObserver {},
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
     private val logger = LoggerFactory.getLogger(KeyAutoDisableRepository::class.java)
@@ -411,7 +412,7 @@ class KeyAutoDisableRepository(
                 it[updatedAt] = now
             }
             ChannelKeyHealth.deleteWhere { ChannelKeyHealth.keyId eq key.id }
-            auditDisable(key, row[ChannelKeys.name], targetState, decision, signal, requestId)
+            auditDisable(key, row[ChannelKeys.name], currentState, targetState, decision, signal, requestId)
             return@suspendTransaction rule.id
         }
 
@@ -459,7 +460,7 @@ class KeyAutoDisableRepository(
         }
         // 停用后重新计数：到期探测或人工恢复都从空计数开始。
         ChannelKeyHealth.deleteWhere { ChannelKeyHealth.keyId eq key.id }
-        auditDisable(key, row[ChannelKeys.name], targetState, decision, signal, requestId)
+        auditDisable(key, row[ChannelKeys.name], currentState, targetState, decision, signal, requestId)
         decision.ruleId
     }
 
@@ -477,6 +478,7 @@ class KeyAutoDisableRepository(
     private fun auditDisable(
         key: ChannelKeyRecord,
         keyName: String,
+        previousState: ChannelKeyState,
         targetState: ChannelKeyState,
         decision: dev.soven.prismllm.channel.domain.key.KeyDisableDecision,
         signal: KeyAttemptSignal,
@@ -514,6 +516,13 @@ class KeyAutoDisableRepository(
                 upstreamCode?.let { put("upstreamErrorCode", it) }
             },
         )
+        if (previousState != targetState) {
+            keyStateObserver.changed(KeyStateChange(
+                key.channelId, channelName, key.id, keyName, previousState, targetState,
+                if (targetState == ChannelKeyState.AUTO_PERMANENT) "auto_permanent_disable" else "auto_temporary_disable",
+                nowMs(),
+            ))
+        }
     }
 
     private fun auditRecovery(
@@ -545,6 +554,10 @@ class KeyAutoDisableRepository(
                 put("reason", reason)
             },
         )
+        keyStateObserver.changed(KeyStateChange(
+            channelId, channelName, keyId, keyName, checkNotNull(ChannelKeyState.fromValue(previousState)),
+            ChannelKeyState.ACTIVE, reason, nowMs(),
+        ))
     }
 
     private fun ensureSettingsRow() {

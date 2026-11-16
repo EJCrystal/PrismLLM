@@ -86,6 +86,23 @@ curl "http://localhost:8080/v1beta/models/gemini-2.5-flash:streamGenerateContent
 
 管理面接口均挂载在 `/admin/api/*`，由会话 Cookie 与 CSRF 令牌保护。
 
+### 通知管理
+
+| 方法与路径 | 行为 |
+| --- | --- |
+| `GET /admin/api/notification-settings` | 返回 `enabled`、`consecutiveFailureThreshold`、`updatedAt` |
+| `PUT /admin/api/notification-settings` | 完整保存全局开关和连续失败阈值（1..100） |
+| `GET /admin/api/notification-targets` | 列出目标、环境变量齐备标志和最近投递结果 |
+| `POST /admin/api/notification-targets` | 新建目标，返回 201 |
+| `PUT /admin/api/notification-targets/{id}` | 完整替换目标非敏感配置 |
+| `DELETE /admin/api/notification-targets/{id}` | 删除目标，取消待投递任务，保留历史，返回 204 |
+| `POST /admin/api/notification-targets/{id}/test` | 在全局及目标启用时排队测试通知，返回 202 `{deliveryId,eventId}` |
+| `GET /admin/api/notification-deliveries?targetId=&page=1&pageSize=20` | 可选目标筛选，返回 `{items,total,page,pageSize}`；pageSize 上限 100 |
+
+目标输入包含 `name`（最多 100 字符）、`type`（webhook/feishu）、`enabled`、`events`（非空事件类型列表）、`channelIds`（最多 100 个；空列表为全部）和 `environmentPrefix`。不接受凭据值。输出增加 `id`、`revision`、`updatedAt`、`credentials`（`urlConfigured`、`bearerTokenConfigured`、`signingSecretConfigured`）和 `latestDelivery`。投递状态为 pending、in_flight、succeeded、failed、cancelled。
+
+所有接口要求管理员会话，写接口要求 CSRF。测试通知会实际发送消息；保存配置本身不发送测试消息，测试按钮不可盲目重试。完整事件与签名契约见 [通知指南](notifications.md)。
+
 ### 1. 登录与 CSRF 机制
 
 ```bash

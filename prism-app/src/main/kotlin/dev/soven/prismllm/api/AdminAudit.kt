@@ -160,6 +160,11 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "PUT" && path == "/admin/api/model-test-settings" -> "model_test_settings.update"
     method == "PUT" && path == "/admin/api/upstream-request-settings" -> "upstream_request_settings.update"
     method == "PUT" && path == "/admin/api/key-auto-disable-settings" -> "key_auto_disable_settings.update"
+    method == "PUT" && path == "/admin/api/notification-settings" -> "notification.settings.update"
+    method == "POST" && path == "/admin/api/notification-targets" -> "notification.target.create"
+    method == "PUT" && NOTIFICATION_TARGET_PATTERN.matches(path) -> "notification.target.update"
+    method == "DELETE" && NOTIFICATION_TARGET_PATTERN.matches(path) -> "notification.target.delete"
+    method == "POST" && NOTIFICATION_TEST_PATTERN.matches(path) -> "notification.test"
     method == "PUT" && CHANNEL_KEY_DISABLE_POLICY_PATTERN.matches(path) -> "channel.key_disable_policy.update"
     else -> "admin.write"
 }
@@ -176,6 +181,8 @@ private fun sanitizeRequestId(value: String?): String {
     }
 }
 
+private val NOTIFICATION_TARGET_PATTERN = Regex("^/admin/api/notification-targets/[^/]+$")
+private val NOTIFICATION_TEST_PATTERN = Regex("^/admin/api/notification-targets/[^/]+/test$")
 private val CHANNEL_PROBE_PATTERN = Regex("^/admin/api/channels/[^/]+/probe-protocols$")
 private val CHANNEL_MODEL_TEST_PATTERN = Regex("^/admin/api/channels/[^/]+/model-test$")
 private val IQ_TEST_MANUAL_VERDICT_PATTERN = Regex("^/admin/api/iq-tests/[^/]+/manual-verdict$")

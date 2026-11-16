@@ -571,6 +571,31 @@ class ChannelHealthRepositoryTest {
         assertEquals("UNKNOWN", health.report("24h", mapOf("a" to true), 30, now).channels.single().recent!!.state)
     }
 
+    @Test
+    fun notificationSnapshotMatchesRecentHealthAndPreservesPendingIndexSemantics() = runBlocking {
+        val cipher = CredentialCipher(java.security.SecureRandom().generateSeed(32))
+        val channels = ChannelRepository(factory.database, cipher)
+        val channel = channels.create(
+            name = "notification-health", baseUrl = "https://example.invalid/v1",
+            keys = listOf(NewChannelKey("key", cipher.encrypt(UUID.randomUUID().toString()), models = listOf("m1"))),
+            authType = "bearer", enabled = true, modelMappings = listOf(ChannelModelRecord("m1")),
+        )
+        val sample = attempt(channel.id).copy(channelKeyId = channel.keys.single().id, upstreamModel = "m1")
+        repeat(80) { logs.insert(log(listOf(sample), createdAt = now - 7_200_000)) }
+        repeat(20) { index -> logs.insert(log(listOf(sample.copy(statusCode = if (index < 4) 503 else 200)), failed = index < 4)) }
+        val recent = health.report("24h", mapOf(channel.id to true), 30, now).channels.single().recent!!
+        val notification = health.recentHealth(now).single()
+        assertEquals(recent.metrics, notification.metrics)
+        assertEquals("CRITICAL", notification.state)
+        assertTrue(notification.recentAttempts.isEmpty())
+        sql("update request_logs set health_indexed = false")
+        assertEquals("UNKNOWN", health.recentHealth(now).single().state)
+        sql("update channel_keys set state = 'MANUAL_DISABLED'")
+        assertEquals("NO_CREDENTIALS", health.recentHealth(now).single().state)
+        sql("update channels set enabled = false")
+        assertEquals("DISABLED", health.recentHealth(now).single().state)
+    }
+
     private fun subject(channel: ChannelRecord) = HealthChannelSubject(
         channel.id, channel.enabled, channel.keys.associate { it.id to it.name },
     )

@@ -122,6 +122,18 @@ class GatewayMetrics {
         requestLogDropped.increment()
     }
 
+    fun notificationObservationDropped() {
+        registry.counter("gateway_notification_observations_dropped_total").increment()
+    }
+
+    fun notificationFailed(stage: String) {
+        registry.counter("gateway_notification_failures_total", Tags.of("stage", stage)).increment()
+    }
+
+    fun notificationDelivery(status: String) {
+        registry.counter("gateway_notification_deliveries_total", Tags.of("status", status)).increment()
+    }
+
     fun protocolConversion(from: String, to: String) {
         registry.counter(
             "gateway_protocol_conversions_total",

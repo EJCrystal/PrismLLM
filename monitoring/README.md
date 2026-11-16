@@ -25,6 +25,16 @@ The included rules cover:
 
 The thresholds are starting points for an internal gateway. Tune them against normal traffic, and route Alertmanager notifications to the owning team.
 
+## Built-in Webhook and Feishu notifications
+
+PrismLLM can deliver channel-health, upstream-key disable/recovery and consecutive-attempt failure notifications directly. Configure multiple targets in the admin system settings. Credentials are read only from target-specific environment variables. See the [notification guide](../docs/notifications.md) for event semantics, signatures, public-address restrictions and delivery guarantees.
+
+- `gateway_notification_observations_dropped_total` counts real-attempt observations dropped by the bounded queue; a gap resets failure streak counts.
+- `gateway_notification_failures_total{stage}` counts observation, health or delivery worker failures; raw exceptions and target URLs are not included.
+- `gateway_notification_deliveries_total{status}` counts persisted send results: pending (retry scheduled), succeeded or failed.
+
+Delivery history is available in the admin UI and retained for 30 days. Monitor the counters using an independent monitoring path, since a broken notification destination cannot report its own failure through the same destination.
+
 ## Metrics
 
 - `gateway_requests_total{outcome,status,alias,channel}` counts completed requests. Streaming failures carry `outcome="error"` even when HTTP headers were already committed as 200.
