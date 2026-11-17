@@ -386,11 +386,25 @@ function dropEntry(event: DragEvent, target: ModelRouteIdentity) {
   void focusEntry(sourceKey, 'up')
 }
 
+function isCompactWorkspace(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1180px)').matches
+}
+
 function addEntry(entry: ModelRouteCredential) {
   if (editorBusy.value || perspectiveActive.value || !entry.selectable || selectedKeys.value.has(entryKey(entry))) return
+  const addIndex = availableCredentials.value.findIndex(item => entryKey(item) === entryKey(entry))
   entries.value.push(...cloneEntries([entry]))
   changed()
   announcement.value = `已添加 ${credentialLabel(entry)}，位于第 ${entries.value.length} 位。`
+  if (isCompactWorkspace() && mobilePane.value === 'add') {
+    void nextTick(() => {
+      const buttons = [...(root.value?.querySelectorAll<HTMLButtonElement>('[data-available-credential] button:not(:disabled)') ?? [])]
+      const target = buttons[Math.min(Math.max(addIndex, 0), buttons.length - 1)]
+        ?? root.value?.querySelector<HTMLInputElement>('[aria-label="搜索可添加凭据"]')
+      target?.focus()
+    })
+    return
+  }
   void focusEntry(entryKey(entry), 'up')
 }
 
@@ -402,8 +416,17 @@ function removeEntry(target: ModelRouteIdentity) {
   changed()
   announcement.value = `已移除 ${credentialLabel(entry)}。`
   const next = entries.value[Math.min(index, entries.value.length - 1)]
-  if (next) void focusEntry(entryKey(next), 'remove')
-  else nextTick(() => root.value?.querySelector<HTMLInputElement>('[aria-label="搜索可添加凭据"]')?.focus())
+  if (next) {
+    void focusEntry(entryKey(next), 'remove')
+    return
+  }
+  void nextTick(() => {
+    if (isCompactWorkspace() && mobilePane.value === 'selected') {
+      root.value?.querySelectorAll<HTMLButtonElement>('.route-mobile-tab')[1]?.focus()
+      return
+    }
+    root.value?.querySelector<HTMLInputElement>('[aria-label="搜索可添加凭据"]')?.focus()
+  })
 }
 
 function resetDraft() {

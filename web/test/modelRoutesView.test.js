@@ -623,4 +623,27 @@ describe('ModelRoutesView mounted credential-order editor', () => {
     assert.equal(host.querySelector('.route-selected-pane').classList.contains('is-mobile-hidden'), true)
     assert.equal(host.querySelector('.route-add-section').classList.contains('is-mobile-hidden'), false)
   })
+
+  it('keeps keyboard focus on visible controls in compact tab layout when adding or clearing entries', async () => {
+    const originalMatchMedia = window.matchMedia
+    window.matchMedia = query => ({ matches: query.includes('1180px'), media: query, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false } })
+    try {
+      await mount()
+      const tabs = [...host.querySelectorAll('.route-mobile-tab')]
+      tabs[1].click()
+      await settle()
+      availableRow(keyFor(staticC)).querySelector('button').click()
+      await settle()
+      assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索可添加凭据')
+      assert.equal(host.querySelector('.route-add-section').classList.contains('is-mobile-hidden'), false)
+
+      tabs[0].click()
+      await settle()
+      for (const item of [...entries()]) item.querySelector('button[data-action="remove"]').click()
+      await settle()
+      assert.equal(document.activeElement, tabs[1])
+    } finally {
+      window.matchMedia = originalMatchMedia
+    }
+  })
 })
