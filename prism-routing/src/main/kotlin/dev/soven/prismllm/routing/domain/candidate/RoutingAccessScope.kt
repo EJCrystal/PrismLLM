@@ -2,8 +2,12 @@ package dev.soven.prismllm.routing.domain.candidate
 
 import dev.soven.prismllm.shared.domain.UpstreamCredential
 
-/** 访问名单中的静态渠道密钥，身份由渠道 ID 与密钥 ID 共同确定。 */
-data class RoutingAllowedChannelKey(val channelId: String, val keyId: String)
+/** 访问名单中的渠道凭据；身份由渠道、类型与凭据 ID 共同确定。 */
+data class RoutingAllowedChannelKey(
+    val channelId: String,
+    val keyId: String,
+    val isOAuth: Boolean = false,
+)
 
 /**
  * 路由上下文自己的只读访问范围，不依赖调用方密钥或配额上下文。
@@ -45,8 +49,9 @@ data class RoutingAccessScope(
         allowsCredential(channelId, credential.id, credential.isOAuth)
 
     /** 身份授权不依赖凭据是否仍存在或启用，供已保存路由的不可用诊断使用。 */
-    fun allowsCredential(channelId: String, credentialId: String, isOAuth: Boolean): Boolean =
-        allowsChannel(channelId) && (allowedChannelKeys?.let { keys ->
-            !isOAuth && RoutingAllowedChannelKey(channelId, credentialId) in keys
-        } ?: true) && (isOAuth || RoutingAllowedChannelKey(channelId, credentialId) !in deniedChannelKeys.orEmpty())
+    fun allowsCredential(channelId: String, credentialId: String, isOAuth: Boolean): Boolean {
+        val identity = RoutingAllowedChannelKey(channelId, credentialId, isOAuth)
+        return allowsChannel(channelId) && (allowedChannelKeys?.let { identity in it } ?: true) &&
+            identity !in deniedChannelKeys.orEmpty()
+    }
 }

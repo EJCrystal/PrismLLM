@@ -39,6 +39,20 @@ class RoutingAccessScopeTest {
     }
 
     @Test
+    fun `oauth credential identity can be allowlisted and denylisted without matching static keys`() {
+        val oauthAllowed = RoutingAccessScope(allowedChannelKeys = setOf(
+            RoutingAllowedChannelKey("A", "shared", isOAuth = true),
+        ))
+        assertTrue(oauthAllowed.allowsCredential("A", OAuthCredential("shared")))
+        assertFalse(oauthAllowed.allowsCredential("A", staticKey("A", "shared")))
+        val oauthDenied = RoutingAccessScope(deniedChannelKeys = setOf(
+            RoutingAllowedChannelKey("A", "shared", isOAuth = true),
+        ))
+        assertFalse(oauthDenied.allowsCredential("A", OAuthCredential("shared")))
+        assertTrue(oauthDenied.allowsCredential("A", staticKey("A", "shared")))
+    }
+
+    @Test
     fun `configured disabled key stays authorized independently of availability`() {
         val key = staticKey("A", "disabled").copy(state = ChannelKeyState.AUTO_PERMANENT)
         assertFalse(key.isRoutable(100))

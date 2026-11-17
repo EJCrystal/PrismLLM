@@ -17,12 +17,13 @@ class ClientKeyAccessPolicyTest {
     }
 
     @Test
-    fun `channel key identity includes its owning channel`() {
+    fun `channel credential identity includes channel, type and id`() {
         val keys = setOf(
             ClientKeyAllowedChannelKey("channel-a", "key"),
             ClientKeyAllowedChannelKey("channel-b", "key"),
             ClientKeyAllowedChannelKey("channel-a", "key"),
+            ClientKeyAllowedChannelKey("channel-a", "key", ClientKeyCredentialType.OAUTH),
         )
-        assertEquals(2, keys.size)
+        assertEquals(3, keys.size)
     }
 }

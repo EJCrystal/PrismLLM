@@ -79,8 +79,13 @@ const unavailableLabel = computed(() => error.value ? '目录读取失败，保�
 const staleChannels = computed(() => props.modelValue.channels.mode !== 'unrestricted'
   ? props.modelValue.channels.ids.filter(id => !channels.value.some(channel => channel.id === id)) : [])
 const staleKeys = computed(() => props.modelValue.channelKeys.mode !== 'unrestricted'
-  ? props.modelValue.channelKeys.keys.filter(pair => !channels.value.some(channel =>
-      channel.id === pair.channelId && channel.keys.some(key => key.id === pair.keyId))) : [])
+  ? props.modelValue.channelKeys.keys.filter(pair => {
+      const channel = channels.value.find(item => item.id === pair.channelId)
+      if (!channel) return true
+      return pair.credentialType === 'oauth'
+        ? !(channel.oauthAccounts ?? []).some(account => account.id === pair.keyId)
+        : !channel.keys.some(key => key.id === pair.keyId)
+    }) : [])
 const catalogModelIds = computed(() => routeOptions.value.map(route => route.modelId).sort())
 const missingModels = computed(() => props.modelValue.models.mode !== 'unrestricted'
   ? props.modelValue.models.ids.filter(id => !catalogModelIds.value.includes(id)) : [])
@@ -197,7 +202,7 @@ function routePreview(modelId: string): RoutePreviewItem[] {
       const account = (channel.oauthAccounts ?? []).find(item => item.id === entry.credentialId)
       if (!account) reason = '订阅账号已删除'
       else if (!account.enabled) reason = '订阅账号已停用'
-      else if (!oauthEffective(props.modelValue, channel.id)) reason = '密钥白名单不包含 OAuth 账号'
+      else if (!oauthEffective(props.modelValue, channel.id, entry.credentialId)) reason = '凭据白名单不包含该 OAuth 账号'
       else available = true
     }
     return {
@@ -225,8 +230,8 @@ function onToggleChannel(channelId: string): void {
 function onToggleKey(pair: { channelId: string; keyId: string }, checked: boolean): void {
   emit('update:modelValue', toggleKeySelection(props.modelValue, channels.value, pair, checked))
 }
-function onToggleOAuth(channelId: string): void {
-  emit('update:modelValue', toggleOAuthSelection(props.modelValue, channels.value, channelId))
+function onToggleOAuth(pair: { channelId: string; accountId: string }, checked: boolean): void {
+  emit('update:modelValue', toggleOAuthSelection(props.modelValue, channels.value, pair, checked))
 }
 function onSelectAll(): void {
   emit('update:modelValue', selectAllChannels(props.modelValue, channels.value))

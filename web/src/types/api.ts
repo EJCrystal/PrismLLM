@@ -427,10 +427,13 @@ export interface ClientKeyIdScope {
   ids: string[]
 }
 
-/** 静态渠道密钥身份，不包含 OAuth 账号或上游凭据明文。 */
+export type ClientKeyCredentialType = 'static' | 'oauth'
+
+/** 渠道凭据身份；旧数据省略类型时按静态密钥处理。 */
 export interface ClientKeyAllowedChannelKey {
   channelId: string
   keyId: string
+  credentialType?: ClientKeyCredentialType
 }
 
 export interface ClientKeyChannelKeysScope {

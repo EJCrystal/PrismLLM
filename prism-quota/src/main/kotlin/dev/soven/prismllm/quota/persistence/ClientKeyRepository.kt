@@ -4,6 +4,7 @@ import dev.soven.prismllm.quota.domain.ClientKeyRecord
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
 import dev.soven.prismllm.quota.domain.ClientKeyAllowedChannelKey
+import dev.soven.prismllm.quota.domain.ClientKeyCredentialType
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
@@ -163,9 +164,11 @@ class ClientKeyRepository(private val database: Database) {
     private fun saveAccessPolicy(id: String, policy: ClientKeyAccessPolicy) {
         ClientKeyAllowedChannels.deleteWhere { clientKeyId eq id }
         ClientKeyAllowedChannelKeys.deleteWhere { clientKeyId eq id }
+        ClientKeyAllowedOAuthAccounts.deleteWhere { clientKeyId eq id }
         ClientKeyAllowedModels.deleteWhere { clientKeyId eq id }
         ClientKeyDeniedChannels.deleteWhere { clientKeyId eq id }
         ClientKeyDeniedChannelKeys.deleteWhere { clientKeyId eq id }
+        ClientKeyDeniedOAuthAccounts.deleteWhere { clientKeyId eq id }
         ClientKeyDeniedModels.deleteWhere { clientKeyId eq id }
         policy.allowedChannelIds.orEmpty().forEach { channel ->
             ClientKeyAllowedChannels.insert {
@@ -174,10 +177,18 @@ class ClientKeyRepository(private val database: Database) {
             }
         }
         policy.allowedChannelKeys.orEmpty().forEach { key ->
-            ClientKeyAllowedChannelKeys.insert {
-                it[clientKeyId] = id
-                it[channelId] = key.channelId
-                it[keyId] = key.keyId
+            if (key.credentialType == ClientKeyCredentialType.OAUTH) {
+                ClientKeyAllowedOAuthAccounts.insert {
+                    it[clientKeyId] = id
+                    it[accountId] = key.keyId
+                    it[channelId] = key.channelId
+                }
+            } else {
+                ClientKeyAllowedChannelKeys.insert {
+                    it[clientKeyId] = id
+                    it[channelId] = key.channelId
+                    it[keyId] = key.keyId
+                }
             }
         }
         policy.allowedModelIds.orEmpty().forEach { model ->
@@ -193,10 +204,18 @@ class ClientKeyRepository(private val database: Database) {
             }
         }
         policy.deniedChannelKeys.orEmpty().forEach { key ->
-            ClientKeyDeniedChannelKeys.insert {
-                it[clientKeyId] = id
-                it[channelId] = key.channelId
-                it[keyId] = key.keyId
+            if (key.credentialType == ClientKeyCredentialType.OAUTH) {
+                ClientKeyDeniedOAuthAccounts.insert {
+                    it[clientKeyId] = id
+                    it[accountId] = key.keyId
+                    it[channelId] = key.channelId
+                }
+            } else {
+                ClientKeyDeniedChannelKeys.insert {
+                    it[clientKeyId] = id
+                    it[channelId] = key.channelId
+                    it[keyId] = key.keyId
+                }
             }
         }
         policy.deniedModelIds.orEmpty().forEach { model ->
@@ -218,22 +237,44 @@ class ClientKeyRepository(private val database: Database) {
         val channels = if (channelIds.isEmpty()) emptyMap() else ClientKeyAllowedChannels.selectAll()
             .where { ClientKeyAllowedChannels.clientKeyId inList channelIds }
             .groupBy({ it[ClientKeyAllowedChannels.clientKeyId] }, { it[ClientKeyAllowedChannels.channelId] })
-        val keys = if (keyIds.isEmpty()) emptyMap() else ClientKeyAllowedChannelKeys.selectAll()
+        val staticKeys = if (keyIds.isEmpty()) emptyMap() else ClientKeyAllowedChannelKeys.selectAll()
             .where { ClientKeyAllowedChannelKeys.clientKeyId inList keyIds }
             .groupBy({ it[ClientKeyAllowedChannelKeys.clientKeyId] }, {
                 ClientKeyAllowedChannelKey(it[ClientKeyAllowedChannelKeys.channelId], it[ClientKeyAllowedChannelKeys.keyId])
             })
+        val oauthKeys = if (keyIds.isEmpty()) emptyMap() else ClientKeyAllowedOAuthAccounts.selectAll()
+            .where { ClientKeyAllowedOAuthAccounts.clientKeyId inList keyIds }
+            .groupBy({ it[ClientKeyAllowedOAuthAccounts.clientKeyId] }, {
+                ClientKeyAllowedChannelKey(
+                    it[ClientKeyAllowedOAuthAccounts.channelId],
+                    it[ClientKeyAllowedOAuthAccounts.accountId],
+                    ClientKeyCredentialType.OAUTH,
+                )
+            })
+        val keys = (staticKeys.keys + oauthKeys.keys).associateWith { staticKeys[it].orEmpty() + oauthKeys[it].orEmpty() }
         val models = if (modelIds.isEmpty()) emptyMap() else ClientKeyAllowedModels.selectAll()
             .where { ClientKeyAllowedModels.clientKeyId inList modelIds }
             .groupBy({ it[ClientKeyAllowedModels.clientKeyId] }, { it[ClientKeyAllowedModels.modelId] })
         val deniedChannels = if (deniedChannelIds.isEmpty()) emptyMap() else ClientKeyDeniedChannels.selectAll()
             .where { ClientKeyDeniedChannels.clientKeyId inList deniedChannelIds }
             .groupBy({ it[ClientKeyDeniedChannels.clientKeyId] }, { it[ClientKeyDeniedChannels.channelId] })
-        val deniedKeys = if (deniedKeyIds.isEmpty()) emptyMap() else ClientKeyDeniedChannelKeys.selectAll()
+        val deniedStaticKeys = if (deniedKeyIds.isEmpty()) emptyMap() else ClientKeyDeniedChannelKeys.selectAll()
             .where { ClientKeyDeniedChannelKeys.clientKeyId inList deniedKeyIds }
             .groupBy({ it[ClientKeyDeniedChannelKeys.clientKeyId] }, {
                 ClientKeyAllowedChannelKey(it[ClientKeyDeniedChannelKeys.channelId], it[ClientKeyDeniedChannelKeys.keyId])
             })
+        val deniedOAuthKeys = if (deniedKeyIds.isEmpty()) emptyMap() else ClientKeyDeniedOAuthAccounts.selectAll()
+            .where { ClientKeyDeniedOAuthAccounts.clientKeyId inList deniedKeyIds }
+            .groupBy({ it[ClientKeyDeniedOAuthAccounts.clientKeyId] }, {
+                ClientKeyAllowedChannelKey(
+                    it[ClientKeyDeniedOAuthAccounts.channelId],
+                    it[ClientKeyDeniedOAuthAccounts.accountId],
+                    ClientKeyCredentialType.OAUTH,
+                )
+            })
+        val deniedKeys = (deniedStaticKeys.keys + deniedOAuthKeys.keys).associateWith {
+            deniedStaticKeys[it].orEmpty() + deniedOAuthKeys[it].orEmpty()
+        }
         val deniedModels = if (deniedModelIds.isEmpty()) emptyMap() else ClientKeyDeniedModels.selectAll()
             .where { ClientKeyDeniedModels.clientKeyId inList deniedModelIds }
             .groupBy({ it[ClientKeyDeniedModels.clientKeyId] }, { it[ClientKeyDeniedModels.modelId] })

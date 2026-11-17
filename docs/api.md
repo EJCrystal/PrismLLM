@@ -374,7 +374,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 - `publicModelId` 是实际对外请求和模型列表使用的 ID。设置 canonical 后，该映射不再接受原上游名作为对外请求 ID，转发仍使用 `upstreamModel`。
 - `automaticCanonicalModelId` 表示目录的自动默认，null 表示自动沿用上游 ID。`mode` 是 `auto`、`manual` 或 `upstream`；`mappingSource` 表示来源，不替代模式。已有 `models_dev` 来源是显式确认的覆盖，不因同步或无关保存转换为自动；恢复自动后来源为 null。
 - `catalogActive=false` 的手工配置仅为休眠映射，不参与模型曝光、路由或模型测试。再次同步发现相同上游 ID 后恢复原映射。
-- 调用方密钥的模型白名单仍精确匹配当前对外 ID，并与渠道、静态密钥范围及账号自己的上游授权取交集。改变 Canonical 或切换映射模式不会自动改写调用方白名单；旧 ID 消失后返回 404，新 ID 未获准时返回 403。静态密钥白名单不包含 OAuth 账号；休眠映射不会因白名单或未同步账号重新开放。
+- 调用方密钥的模型白名单仍精确匹配当前对外 ID，并与渠道、凭据范围及账号自己的上游授权取交集。改变 Canonical 或切换映射模式不会自动改写调用方白名单；旧 ID 消失后返回 404，新 ID 未获准时返回 403。凭据维度使用 `credentialType` 区分静态密钥与 OAuth 账号，旧名单默认按静态密钥解释；休眠映射不会因白名单或未同步账号重新开放。
 - 账号响应中的 `modelCatalog` 继续为上游 ID 字符串数组；刷新目录响应的 `name` 是展示名，不是 Canonical 配置字段。
 
 通过账号 settings 接口保存增量映射，可与账号授权和其他设置一起原子提交：

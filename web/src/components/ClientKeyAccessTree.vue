@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import {
   channelCheckInfo,
   keyChecked,
-  oauthRowInteractive,
+  oauthChecked,
   shortId,
 } from '../utils/clientKeyAccessTree'
 import CopyButton from './CopyButton.vue'
@@ -32,7 +32,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'toggle-channel': [channelId: string]
   'toggle-key': [pair: ClientKeyAllowedChannelKey, checked: boolean]
-  'toggle-oauth': [channelId: string]
+  'toggle-oauth': [pair: { channelId: string; accountId: string }, checked: boolean]
   'select-all': []
   'clear': []
 }>()
@@ -97,20 +97,35 @@ function onKeyChange(channel: Channel, keyId: string, event: Event): void {
   emit('toggle-key', { channelId: channel.id, keyId }, target.checked)
 }
 
-function oauthHint(channel: Channel): string {
-  if (props.mode === 'denylist') return 'OAuth 账号仅随渠道整体排除'
-  return '密钥白名单下 OAuth 账号不参与候选'
+function onOAuthChange(channel: Channel, accountId: string, event: Event): void {
+  const target = event.target as HTMLInputElement
+  emit('toggle-oauth', { channelId: channel.id, accountId }, target.checked)
 }
 
-/** 右侧选中统计：全部密钥 / 已选 x/N 密钥；黑名单语境改为“排除”。 */
-function channelStatLabel(info: ReturnType<typeof channelCheckInfo>): string {
-  if (info.totalKeys === 0) return ''
-  const excluded = props.mode === 'denylist'
-  if (info.state === 'checked') return excluded ? `排除整渠道 (${info.totalKeys})` : `全部密钥 (${info.totalKeys})`
-  if (info.state === 'indeterminate') {
-    return excluded ? `已排除 ${info.selectedKeys}/${info.totalKeys} 密钥` : `已选 ${info.selectedKeys}/${info.totalKeys} 密钥`
+/** 失效凭据按类型走对应删除路径，避免 OAuth 被误当成同 ID 静态密钥。 */
+function removeStaleCredential(pair: ClientKeyAllowedChannelKey): void {
+  if (pair.credentialType === 'oauth') {
+    emit('toggle-oauth', { channelId: pair.channelId, accountId: pair.keyId }, false)
+  } else {
+    emit('toggle-key', pair, false)
   }
-  return `0/${info.totalKeys} 密钥`
+}
+
+function oauthHint(channel: Channel): string {
+  return props.mode === 'denylist' && props.policy.channels.ids.includes(channel.id) ? '渠道已被整体排除' : ''
+}
+
+/** 右侧选中统计：全部凭据 / 已选 x/N 凭据；黑名单语境改为“排除”。 */
+function channelStatLabel(info: ReturnType<typeof channelCheckInfo>): string {
+  if (info.totalCredentials === 0) return ''
+  const excluded = props.mode === 'denylist'
+  if (info.state === 'checked') return excluded ? `排除整渠道 (${info.totalCredentials})` : `全部凭据 (${info.totalCredentials})`
+  if (info.state === 'indeterminate') {
+    return excluded
+      ? `已排除 ${info.selectedCredentials}/${info.totalCredentials} 凭据`
+      : `已选 ${info.selectedCredentials}/${info.totalCredentials} 凭据`
+  }
+  return `0/${info.totalCredentials} 凭据`
 }
 </script>
 
@@ -198,19 +213,19 @@ function channelStatLabel(info: ReturnType<typeof channelCheckInfo>): string {
             v-for="account in channel.oauthAccounts ?? []"
             :key="account.id"
             class="tree-row is-key is-oauth"
-            :class="{ 'is-selected': oauthRowInteractive(policy) && channelCheckInfo(policy, channel).state === 'checked' }"
+            :class="{ 'is-selected': oauthChecked(policy, channel, account.id), 'is-disabled': keyDisabled(channel.id) }"
           >
             <input
-              v-if="oauthRowInteractive(policy)"
               type="checkbox"
-              :checked="channelCheckInfo(policy, channel).state === 'checked'"
-              :aria-label="`OAuth 账号 ${account.name}`"
-              @change="emit('toggle-oauth', channel.id)"
+              :checked="oauthChecked(policy, channel, account.id)"
+              :disabled="keyDisabled(channel.id)"
+              :aria-label="`OAuth 账号 ${channel.name} / ${account.name}`"
+              @change="onOAuthChange(channel, account.id, $event)"
             />
-            <Icon v-else name="lock" :size="13" />
+            <Icon name="lock" :size="13" />
             <span class="tree-name">{{ account.name }}</span>
             <span class="tree-tag is-oauth-tag">OAuth 订阅</span>
-            <small class="tree-hint">{{ oauthHint(channel) }}</small>
+            <small v-if="oauthHint(channel)" class="tree-hint">{{ oauthHint(channel) }}</small>
             <span class="tree-stat is-plain">关联 {{ account.models.length }} 个模型</span>
           </label>
         </div>
@@ -235,10 +250,11 @@ function channelStatLabel(info: ReturnType<typeof channelCheckInfo>): string {
         <input
           type="checkbox"
           checked
-          :aria-label="`已失效渠道密钥 ${pair.channelId} / ${pair.keyId}`"
-          @change="emit('toggle-key', pair, false)"
+          :aria-label="`已失效渠道凭据 ${pair.channelId} / ${pair.keyId}`"
+          @change="removeStaleCredential(pair)"
         />
         <span class="tree-name">{{ unavailableLabel }}</span>
+        <span class="tree-tag">{{ pair.credentialType === 'oauth' ? 'OAuth' : '静态' }}</span>
         <code>{{ pair.channelId }} / {{ pair.keyId }}</code>
       </label>
     </div>

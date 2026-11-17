@@ -4,6 +4,7 @@ import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
 import dev.soven.prismllm.quota.domain.ClientKeyAllowedChannelKey
+import dev.soven.prismllm.quota.domain.ClientKeyCredentialType
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import io.ktor.client.HttpClient
@@ -557,9 +558,49 @@ class ClientKeyAccessPolicyIntegrationTest : GatewayIntegrationTestBase() {
         }
     }
 
+    /** OAuth 账号与静态密钥共用凭据维度，但按类型区分身份。 */
+    @Test
+    fun `oauth account identity round trips and cannot be paired with another channel`() = runBlocking {
+        val channel = createChannel("oauth-access", "ok")
+        val account = createOAuthAccount(channel, "access@example.com")
+        val other = createChannel("oauth-other", "ok")
+        val otherAccount = createOAuthAccount(other, "other@example.com")
+        val allowed = """{"channels":{"mode":"allowlist","ids":["${channel.id}"]},"channelKeys":{"mode":"allowlist","keys":[{"channelId":"${channel.id}","keyId":"${account.id}","credentialType":"oauth"}]},"models":{"mode":"allowlist","ids":["m1"]}}"""
+        val denied = """{"channels":{"mode":"unrestricted","ids":[]},"channelKeys":{"mode":"denylist","keys":[{"channelId":"${channel.id}","keyId":"${account.id}","credentialType":"oauth"}]},"models":{"mode":"unrestricted","ids":[]}}"""
+        testApplication {
+            application { app.install(this) }
+            val auth = client.loginAdmin()
+            val created = client.create(auth, allowed)
+            assertEquals(Json.parseToJsonElement(allowed), created["accessPolicy"])
+            val saved = assertNotNull(app.clientKeyRepository.find(created.id()))
+            assertEquals(
+                setOf(ClientKeyAllowedChannelKey(channel.id, account.id, ClientKeyCredentialType.OAUTH)),
+                saved.accessPolicy.allowedChannelKeys,
+            )
+            val updated = client.put("/admin/api/client-keys/${created.id()}") {
+                authenticate(auth)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"oauth-denied","accessPolicy":$denied}""")
+            }.objectBody(HttpStatusCode.OK)
+            assertEquals(Json.parseToJsonElement(denied), updated["accessPolicy"])
+            assertEquals(
+                setOf(ClientKeyAllowedChannelKey(channel.id, account.id, ClientKeyCredentialType.OAUTH)),
+                assertNotNull(app.clientKeyRepository.find(created.id())).accessPolicy.deniedChannelKeys,
+            )
+            val mismatched = allowed.replace(account.id, otherAccount.id)
+            val rejected = client.post("/admin/api/client-keys") {
+                authenticate(auth)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"mismatched","accessPolicy":$mismatched}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, rejected.status, rejected.bodyAsText())
+            assertTrue(rejected.bodyAsText().contains("渠道凭据不存在或不属于指定渠道"))
+        }
+    }
+
     /** 生成独立预期的完整访问范围 JSON。 */
     private fun scoped(channelId: String, keyId: String, modelId: String): String =
-        """{"channels":{"mode":"allowlist","ids":["$channelId"]},"channelKeys":{"mode":"allowlist","keys":[{"channelId":"$channelId","keyId":"$keyId"}]},"models":{"mode":"allowlist","ids":["$modelId"]}}"""
+        """{"channels":{"mode":"allowlist","ids":["$channelId"]},"channelKeys":{"mode":"allowlist","keys":[{"channelId":"$channelId","keyId":"$keyId","credentialType":"static"}]},"models":{"mode":"allowlist","ids":["$modelId"]}}"""
 
     /** 给管理请求附加当前会话和 CSRF 令牌。 */
     private fun io.ktor.client.request.HttpRequestBuilder.authenticate(auth: Pair<String, String>) {
