@@ -37,6 +37,25 @@ for (const channel of catalog) {
   channel.keys.forEach(key => Object.assign(key, { priority: 0, rateLimit: { enabled: false, requestsPerMinute: null, maxConcurrentRequests: null }, stateVersion: 0, autoDisableUntil: null, probeUntil: null, autoDisableReason: null }))
 }
 
+const modelRoutes = {
+  models: [
+    {
+      modelId: 'Model-A', revision: 1,
+      entries: [
+        { channelId: 'channel-a', credentialType: 'static', credentialId: 'key-1', selectable: true, reason: null },
+        { channelId: 'channel-a', credentialType: 'static', credentialId: 'key-2', selectable: true, reason: null },
+        { channelId: 'channel-a', credentialType: 'oauth', credentialId: 'oauth-1', selectable: true, reason: null },
+      ],
+    },
+    {
+      modelId: 'model-b', revision: 1,
+      entries: [
+        { channelId: 'channel-b', credentialType: 'static', credentialId: 'key-1', selectable: false, reason: 'channel_disabled' },
+      ],
+    },
+  ],
+}
+
 describe('真实调用方访问范围配置组件', () => {
   let server, parts, app, state, requests
   async function settle() { await nextTick(); await delay(35); await nextTick() }
@@ -54,13 +73,19 @@ describe('真实调用方访问范围配置组件', () => {
   afterEach(() => { app?.unmount(); app = null; document.body.innerHTML = ''; globalThis.fetch = originalFetch })
   after(async () => { await server?.close(); dom.window.close() })
 
-  async function mount(policy = unrestricted(), fetchCatalog = () => catalog) {
+  async function mount(policy = unrestricted(), fetchCatalog = () => catalog, fetchRoutes = () => modelRoutes) {
     requests = []
     globalThis.fetch = async (url) => {
       requests.push(url)
-      assert.equal(url, '/admin/api/channels', '只能读取静态渠道目录，不能请求 OAuth 账号或数据面目录')
-      const data = await fetchCatalog()
-      return new Response(JSON.stringify(data), { status: 200 })
+      if (url === '/admin/api/channels') {
+        const data = await fetchCatalog()
+        return new Response(JSON.stringify(data), { status: 200 })
+      }
+      if (url === '/admin/api/model-routes/options') {
+        const data = await fetchRoutes()
+        return new Response(JSON.stringify(data), { status: 200 })
+      }
+      assert.fail('意外的目录请求：' + url)
     }
     const fields = await component('ClientKeyAccessFields', {
       AccessModeToggle: parts.AccessModeToggle,
@@ -112,10 +137,10 @@ describe('真实调用方访问范围配置组件', () => {
 
   it('默认三维度不限制，打开默认表单时加载目录并渲染统计', async () => {
     await mount()
-    assert.equal(requests.length, 1)
+    assert.equal(requests.length, 2)
     assert.equal(document.querySelectorAll('select').length, 0)
     assert.equal(document.querySelectorAll('[role="radiogroup"]').length, 2)
-    assert.match(document.body.textContent, /路由范围与对外模型取交集生效/)
+    assert.match(document.body.textContent, /模型来自已保存的模型路由/)
     assert.match(document.body.textContent, /默认允许所有可用渠道/)
     assert.match(document.body.textContent, /当前生效密钥：2\/2/)
     assert.equal(document.querySelector('.access-tree'), null)
@@ -125,7 +150,7 @@ describe('真实调用方访问范围配置组件', () => {
   it('切换白名单后懒加载目录一次，渠道行渲染短 ID 胶囊与统计', async () => {
     await mount()
     await cardMode('allowlist')
-    assert.equal(requests.length, 1)
+    assert.equal(requests.length, 2)
     const rowA = channelRow('渠道 A')
     const pill = rowA.querySelector('.tree-id-pill')
     assert.match(pill.textContent, /#channe/)
@@ -228,16 +253,16 @@ describe('真实调用方访问范围配置组件', () => {
     assert.ok([...document.querySelectorAll('.tree-row.is-key:not(.is-stale)')].some(node => node.textContent.includes('静态凭据 B')))
     await searchTree('')
     assert.equal(document.querySelectorAll('.tree-row.is-channel').length, 2)
-    assert.equal(requests.length, 1)
+    assert.equal(requests.length, 2)
   })
 
   it('模型联动提示随卡片一勾选实时重算', async () => {
     await mount()
-    assert.match(document.body.textContent, /基于上方生效的 2 个渠道密钥，当前共关联 1 个可调用模型/)
+    assert.match(document.body.textContent, /基于上方生效的 2 个渠道密钥，当前范围可调用 1 个已配置路由的模型/)
     assert.match(document.body.textContent, /可调用模型池：1 个/)
     await cardMode('denylist')
     await chooseChannel('渠道 A')
-    assert.match(document.body.textContent, /基于上方生效的 0 个渠道密钥，当前共关联 0 个可调用模型/)
+    assert.match(document.body.textContent, /基于上方生效的 0 个渠道密钥，当前范围可调用 0 个已配置路由的模型/)
     assert.match(document.body.textContent, /可调用模型池：0 个/)
   })
 
@@ -248,22 +273,56 @@ describe('真实调用方访问范围配置组件', () => {
     await modelMode('allowlist')
     await chooseModel('Model-A')
     assert.deepEqual(state.value.models.ids, ['Model-A'])
-    assert.match(document.body.textContent, /渠道 A\s*·\s*关联 2 个静态密钥/)
+    assert.match(document.body.textContent, /渠道 A\s*·\s*路由 3 条\s*·\s*当前范围可用 3 个凭据/)
     await chooseChannel('渠道 A')
     assert.deepEqual(state.value.models.ids, ['Model-A'])
     const conflictRow = [...document.querySelectorAll('.access-option')].find(node => node.textContent.includes('Model-A'))
-    assert.match(conflictRow.textContent, /当前所选渠道\/密钥不支持此模型/)
+    assert.match(conflictRow.textContent, /当前范围或模型路由没有可用凭据/)
     assert.match(document.body.textContent, /无法路由到这些模型/)
     assert.match(document.body.textContent, /至少勾选 1 个渠道或密钥/)
     conflictRow.querySelector('input').click(); await settle()
     assert.deepEqual(state.value.models.ids, [])
   })
 
+  it('模型选项只来自已保存的模型路由，渠道里未建路由的模型不可选', async () => {
+    const data = structuredClone(catalog)
+    data[0].modelMappings.push({ upstreamModel: 'no-route', canonicalModelId: 'No-Route', mappingSource: null })
+    await mount(unrestricted(), () => data)
+    await modelMode('allowlist')
+    assert.match(document.body.textContent, /Model-A/)
+    assert.doesNotMatch(document.body.textContent, /No-Route/)
+  })
+
+  it('没有已保存路由时提示先配置模型路由，且模型池为空', async () => {
+    await mount(unrestricted(), () => catalog, () => ({ models: [] }))
+    await modelMode('allowlist')
+    assert.match(document.body.textContent, /还没有已保存的模型路由/)
+    assert.match(document.body.textContent, /可调用模型池：0 个/)
+    assert.equal(document.querySelectorAll('.access-option.is-model').length, 0)
+  })
+
+  it('已选但未配置路由的模型保留为失效项', async () => {
+    const stale = unrestricted()
+    stale.models = { mode: 'allowlist', ids: ['Deleted-Model'] }
+    await mount(stale)
+    assert.match(document.body.textContent, /Deleted-Model/)
+    assert.match(document.body.textContent, /未配置模型路由或不存在/)
+  })
+
+  it('已保存但空路由的模型标记无可用凭据', async () => {
+    const emptyRoute = { models: [{ modelId: 'Model-A', revision: 1, entries: [] }] }
+    await mount({ ...unrestricted(), models: { mode: 'allowlist', ids: ['Model-A'] } }, () => catalog, () => emptyRoute)
+    const row = [...document.querySelectorAll('.access-option')].find(node => node.textContent.includes('Model-A'))
+    assert.ok(row)
+    assert.match(row.textContent, /路由 0 条/)
+    assert.match(row.textContent, /没有可用凭据/)
+  })
+
   it('模型黑名单失效 ID 保留展示，清空后触发空名单拦截', async () => {
     const policy = unrestricted()
     policy.models = { mode: 'denylist', ids: ['deleted-model'] }
     await mount(policy)
-    assert.equal(requests.length, 1)
+    assert.equal(requests.length, 2)
     assert.match(document.body.textContent, /deleted-model/)
     assert.match(document.body.textContent, /可保留.*模型黑名单.*重新配置.*仍禁止/)
     assert.doesNotMatch(document.body.textContent, /模型黑名单不能为空/)
@@ -311,7 +370,7 @@ describe('真实调用方访问范围配置组件', () => {
     staleRow.click(); await settle()
     assert.deepEqual(state.value.channels.ids, ['channel-a'])
     assert.equal(document.querySelector('.tree-row.is-stale input[aria-label="已失效渠道 deleted-channel"]'), null)
-    assert.equal(requests.length, 1)
+    assert.equal(requests.length, 2)
   })
 
   it('受限模式往返不限制时保留草稿选择', async () => {
@@ -323,7 +382,7 @@ describe('真实调用方访问范围配置组件', () => {
     assert.equal(document.querySelector('.access-tree'), null)
     await cardMode('allowlist')
     assert.equal(channelRow('渠道 A').querySelector('input[type="checkbox"]').checked, true)
-    assert.equal(requests.length, 1)
+    assert.equal(requests.length, 2)
   })
 
   it('渠道选项不回显任何凭据明文', async () => {

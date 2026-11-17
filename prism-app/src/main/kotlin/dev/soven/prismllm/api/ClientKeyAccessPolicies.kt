@@ -9,6 +9,7 @@ import dev.soven.prismllm.shared.error.badRequest
  *
  * 校验全部成功后才把策略交给仓储写入，非法对象不会产生部分更新。
  * 更新允许保留已有模型黑名单 ID，避免删除映射后丢失同 ID 重新配置时的排除规则。
+ * 新增模型 ID 必须已有模型路由；已有选择即使路由后来失效也保留，避免阻止其他维度修改。
  *
  * @param request 完整的三维访问策略。
  * @param app 用于读取配置目录的应用服务。
@@ -54,10 +55,11 @@ suspend fun validateClientKeyAccessPolicy(
             throw badRequest("invalid_client_key_access_policy", "渠道密钥必须属于允许的渠道")
         }
     }
-    val configuredModels = channels.values.flatMap { channel -> channel.modelMappings.map { it.publicModelId } }.toSet()
-    val newlyDeniedModels = policy.deniedModelIds.orEmpty() - existing?.deniedModelIds.orEmpty()
-    if ((policy.allowedModelIds.orEmpty() + newlyDeniedModels).any { it !in configuredModels }) {
-        throw badRequest("invalid_client_key_access_policy", "访问范围中的对外模型 ID 不存在")
+    val routedModels = app.modelCredentialRouteRepository.list().mapTo(mutableSetOf()) { it.modelId }
+    val newModelIds = (policy.allowedModelIds.orEmpty() - existing?.allowedModelIds.orEmpty()) +
+        (policy.deniedModelIds.orEmpty() - existing?.deniedModelIds.orEmpty())
+    if (newModelIds.any { it !in routedModels }) {
+        throw badRequest("invalid_client_key_access_policy", "访问范围新增的对外模型 ID 没有已保存的模型路由")
     }
     return policy
 }

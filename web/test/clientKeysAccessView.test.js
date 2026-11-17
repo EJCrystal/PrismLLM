@@ -38,6 +38,13 @@ for (const channel of catalog) {
   channel.keys.forEach(key => Object.assign(key, { priority: 0, rateLimit: { enabled: false, requestsPerMinute: null, maxConcurrentRequests: null }, stateVersion: 0, autoDisableUntil: null, probeUntil: null, autoDisableReason: null }))
 }
 
+const modelRoutes = {
+  models: [
+    { modelId: 'Model-A', revision: 1, entries: [{ channelId: 'channel-a', credentialType: 'static', credentialId: 'key-a', selectable: true, reason: null }] },
+    { modelId: 'model-b', revision: 1, entries: [{ channelId: 'channel-b', credentialType: 'static', credentialId: 'key-b', selectable: true, reason: null }] },
+  ],
+}
+
 describe('真实调用方密钥视图访问范围行为', () => {
   let server, view, app, saved, writes, failSave, calls
   async function settle() { await nextTick(); await delay(45); await nextTick() }
@@ -69,6 +76,7 @@ describe('真实调用方密钥视图访问范围行为', () => {
       calls.push(url)
       if (url === '/admin/api/occupancy') return new Response(JSON.stringify({ sampledAt: 1, channels: [], clientKeys: [] }))
       if (url === '/admin/api/channels') return new Response(JSON.stringify(catalog))
+      if (url === '/admin/api/model-routes/options') return new Response(JSON.stringify(modelRoutes))
       if (url === '/admin/api/client-keys' && options.method === 'GET') return new Response(JSON.stringify([saved]))
       if (url === '/admin/api/client-keys/client-1' || (url === '/admin/api/client-keys' && options.method === 'POST')) {
         const payload = JSON.parse(options.body); writes.push(payload)

@@ -15,6 +15,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.put
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 
 /** Mounted inside /admin/api; model IDs remain query/body values because canonical IDs may contain '/'. */
 internal fun Route.modelCredentialRoutes(app: GatewayApplication) {
@@ -43,6 +44,34 @@ internal fun Route.modelCredentialRoutes(app: GatewayApplication) {
         }
         call.response.headers.append("Cache-Control", "no-store")
         call.respond(ModelCredentialRouteListResponse(items, modelIds.size, offset, limit))
+    }
+
+    /** Compact route identities for the caller-access editor; never returns credential material. */
+    get("/model-routes/options") {
+        call.requireAdmin(app)
+        val models = suspendTransaction(app.databaseFactory.database) {
+            val current = directory.loadInTransaction()
+            app.modelCredentialRouteRepository.listInTransaction()
+                .sortedBy { it.modelId }
+                .map { route ->
+                    ModelRouteAccessOptionResponse(
+                        modelId = route.modelId,
+                        revision = route.revision,
+                        entries = route.entries.map { identity ->
+                            val metadata = current.metadata(route.modelId, identity)
+                            ModelRouteAccessEntryResponse(
+                                channelId = identity.channelId,
+                                credentialType = identity.credentialType.value,
+                                credentialId = identity.credentialId,
+                                selectable = metadata.selectable,
+                                reason = metadata.reason,
+                            )
+                        },
+                    )
+                }
+        }
+        call.response.headers.append("Cache-Control", "no-store")
+        call.respond(ModelRouteAccessOptionsResponse(models))
     }
 
     get("/model-routes/detail") {

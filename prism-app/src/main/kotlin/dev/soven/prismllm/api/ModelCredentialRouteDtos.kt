@@ -60,6 +60,26 @@ data class ModelCredentialRouteListResponse(
     val limit: Int,
 )
 
+/** 调用方访问范围模型选项：只暴露路由身份与可选择性，不包含凭据名称或明文。 */
+@Serializable
+data class ModelRouteAccessEntryResponse(
+    val channelId: String,
+    val credentialType: String,
+    val credentialId: String,
+    val selectable: Boolean,
+    val reason: String? = null,
+)
+
+@Serializable
+data class ModelRouteAccessOptionResponse(
+    val modelId: String,
+    val revision: Long,
+    val entries: List<ModelRouteAccessEntryResponse>,
+)
+
+@Serializable
+data class ModelRouteAccessOptionsResponse(val models: List<ModelRouteAccessOptionResponse>)
+
 internal fun ModelRouteCredentialMetadata.toResponse() = ModelCredentialRouteCredentialResponse(
     channelId = identity.channelId,
     credentialType = identity.credentialType.value,

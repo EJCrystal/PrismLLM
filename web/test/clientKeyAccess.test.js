@@ -131,6 +131,21 @@ describe('渠道与密钥合并卡片映射', () => {
     oauthAccounts: [],
   }
   const channels = [channelA, channelB]
+  const routes = [
+    {
+      modelId: 'Model-A', revision: 1,
+      entries: [
+        { channelId: 'channel-a', credentialType: 'static', credentialId: 'key-a', selectable: true, reason: null },
+        { channelId: 'channel-a', credentialType: 'oauth', credentialId: 'oauth-a', selectable: true, reason: null },
+      ],
+    },
+    {
+      modelId: 'upstream-b', revision: 1,
+      entries: [
+        { channelId: 'channel-b', credentialType: 'static', credentialId: 'key-b', selectable: true, reason: 'channel_disabled' },
+      ],
+    },
+  ]
   for (const channel of channels) {
     Object.assign(channel, { baseUrl: '', authType: 'bearer', protocolAuthTypes: {}, protocols: ['chat_completions'], credentialSet: true, createdAt: 1, updatedAt: 1, priority: 0, kind: 'custom', provider: null, requestOverrides: { inheritGlobal: true, headerProfile: null, userAgent: null, headers: {}, body: {}, protocols: {} }, quota: { providerId: '', config: {} } })
     channel.modelMappings.forEach(mapping => { mapping.mappingSource = null })
@@ -272,17 +287,19 @@ describe('渠道与密钥合并卡片映射', () => {
     assert.equal(unifyMixedModePolicy(unrestricted()).unified, false)
   })
 
-  it('模型可用性按启用渠道与生效凭据计算，OAuth 仅受渠道与白名单密钥维度约束', async () => {
+  it('模型可用性按已保存路由、启用渠道与生效凭据计算，OAuth 仅受渠道与白名单密钥维度约束', async () => {
     const { modelAvailabilityMap, effectiveStaticKeyCount, staticKeyEffective, oauthEffective } = await tree()
-    const all = modelAvailabilityMap(unrestricted(), channels)
-    assert.deepEqual(all.get('Model-A'), { supported: true, staticKeyCount: 1 })
-    assert.equal(all.has('upstream-b'), false)
-    const allowA = modelAvailabilityMap({ ...unrestricted(), channels: { mode: 'allowlist', ids: ['channel-a'] } }, channels)
-    assert.deepEqual(allowA.get('Model-A'), { supported: true, staticKeyCount: 1 })
+    const all = modelAvailabilityMap(unrestricted(), channels, routes)
+    assert.deepEqual(all.get('Model-A'), { supported: true, staticKeyCount: 1, routeEntryCount: 2, availableCredentialCount: 2 })
+    assert.equal(all.get('upstream-b')?.supported, false)
+    const allowA = modelAvailabilityMap({ ...unrestricted(), channels: { mode: 'allowlist', ids: ['channel-a'] } }, channels, routes)
+    assert.deepEqual(allowA.get('Model-A'), { supported: true, staticKeyCount: 1, routeEntryCount: 2, availableCredentialCount: 2 })
     const keysDenyA = { ...unrestricted(), channels: { mode: 'denylist', ids: [] }, channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }
-    assert.deepEqual(modelAvailabilityMap(keysDenyA, channels).get('Model-A'), { supported: true, staticKeyCount: 0 })
+    assert.deepEqual(modelAvailabilityMap(keysDenyA, channels, routes).get('Model-A'), { supported: true, staticKeyCount: 0, routeEntryCount: 2, availableCredentialCount: 1 })
     const keysAllowEmpty = { ...unrestricted(), channels: { mode: 'unrestricted', ids: [] }, channelKeys: { mode: 'allowlist', keys: [] } }
-    assert.equal(modelAvailabilityMap(keysAllowEmpty, channels).get('Model-A').supported, false)
+    assert.equal(modelAvailabilityMap(keysAllowEmpty, channels, routes).get('Model-A').supported, false)
+    // 未保存路由的模型即使渠道映射存在也不可用。
+    assert.equal(modelAvailabilityMap(unrestricted(), channels, []).get('Model-A'), undefined)
     // 渠道黑名单排除 key-a 后，唯一启用的渠道 A 无生效密钥；停用渠道 B 的密钥不可路由不计入。
     assert.equal(effectiveStaticKeyCount(keysDenyA, channels), 0)
     assert.equal(effectiveStaticKeyCount(unrestricted(), channels), 1)
@@ -353,12 +370,12 @@ describe('渠道与密钥合并卡片映射', () => {
     const recovered = { ...channelA, keys: [{ ...channelA.keys[0], state: 'AUTO_TEMPORARY', autoDisableUntil: Date.now() - 60_000, probeUntil: null }] }
     assert.equal(effectiveStaticKeyCount(unrestricted(), [cooling, channelB]), 0)
     assert.equal(effectiveStaticKeyCount(unrestricted(), [recovered, channelB]), 1)
-    const availability = modelAvailabilityMap(unrestricted(), [cooling])
+    const availability = modelAvailabilityMap(unrestricted(), [cooling], routes)
     assert.equal(availability.get('Model-A')?.supported, false)
     assert.equal(availability.get('Model-A')?.staticKeyCount, 0)
   })
 
-  it('OAuth 可用性按映射模型判断：models 为空表示全部支持，非空须覆盖上游模型', async () => {
+  it('OAuth 可用性按已保存路由与启用账号判断', async () => {
     const { modelAvailabilityMap } = await tree()
     const withOAuth = {
       ...channelA,
@@ -369,15 +386,20 @@ describe('渠道与密钥合并卡片映射', () => {
       keys: [],
       oauthAccounts: [{ id: 'oauth-a', name: 'oauth-a@example.com', enabled: true, models: ['upstream-a'] }],
     }
-    const availability = modelAvailabilityMap(unrestricted(), [withOAuth])
-    assert.deepEqual(availability.get('Model-A'), { supported: true, staticKeyCount: 0 })
+    const oauthRoutes = [
+      { modelId: 'Model-A', revision: 1, entries: [{ channelId: 'channel-a', credentialType: 'oauth', credentialId: 'oauth-a', selectable: true, reason: null }] },
+      { modelId: 'upstream-extra', revision: 1, entries: [{ channelId: 'channel-a', credentialType: 'oauth', credentialId: 'oauth-a', selectable: false, reason: 'model_unsupported' }] },
+    ]
+    const availability = modelAvailabilityMap(unrestricted(), [withOAuth], oauthRoutes)
+    assert.deepEqual(availability.get('Model-A'), { supported: true, staticKeyCount: 0, routeEntryCount: 1, availableCredentialCount: 1 })
     assert.equal(availability.get('upstream-extra')?.supported, false)
+    const openRoutes = oauthRoutes.map(route => ({ ...route, entries: route.entries.map(entry => ({ ...entry, selectable: true, reason: null })) }))
     const openAccount = { ...withOAuth, oauthAccounts: [{ id: 'oauth-a', name: 'oauth-a@example.com', enabled: true, models: [] }] }
-    const openAvailability = modelAvailabilityMap(unrestricted(), [openAccount])
-    assert.deepEqual(openAvailability.get('Model-A'), { supported: true, staticKeyCount: 0 })
+    const openAvailability = modelAvailabilityMap(unrestricted(), [openAccount], openRoutes)
+    assert.deepEqual(openAvailability.get('Model-A'), { supported: true, staticKeyCount: 0, routeEntryCount: 1, availableCredentialCount: 1 })
     assert.equal(openAvailability.get('upstream-extra')?.supported, true)
     const disabledAccount = { ...withOAuth, oauthAccounts: [{ id: 'oauth-a', name: 'oauth-a@example.com', enabled: false, models: [] }] }
-    assert.equal(modelAvailabilityMap(unrestricted(), [disabledAccount]).get('Model-A')?.supported, false)
+    assert.equal(modelAvailabilityMap(unrestricted(), [disabledAccount], openRoutes).get('Model-A')?.supported, false)
   })
 
   it('密钥维度启用时取消父渠道，零选中渠道同步移出名单；纯渠道级操作不受影响', async () => {

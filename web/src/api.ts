@@ -48,6 +48,7 @@ import type {
   ModelPriceReference,
   ModelPriceRequest,
   ModelSuggestionsResponse,
+  ModelRouteAccessOptionsResponse,
   ModelRouteDetail,
   ModelRouteListOptions,
   ModelRoutePage,
@@ -176,6 +177,8 @@ export const api = {
   },
   getModelRoute: (modelId: string) =>
     request<ModelRouteDetail>('/model-routes/detail?' + new URLSearchParams({ modelId })),
+  listModelRouteAccessOptions: () =>
+    request<ModelRouteAccessOptionsResponse>('/model-routes/options'),
   updateModelRoute: (payload: ModelRouteUpdateRequest) =>
     request<ModelRouteDetail>('/model-routes', { method: 'PUT', body: JSON.stringify(payload) }),
 

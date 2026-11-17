@@ -166,10 +166,11 @@ curl -c cookies.txt -X POST http://localhost:8080/admin/api/login \
 | 方法与路径 | 参数与响应 |
 | --- | --- |
 | `GET /admin/api/model-routes?q=&offset=&limit=` | `q` 为去除首尾空白后、不区分大小写的模型 ID 子串，最长 200 字符；`offset` 默认 `0`，`limit` 默认 `100`、范围 `1..500`。返回 `{items, total, offset, limit}`；每项含 `modelId`、`configured`、`revision`、`entryCount`、`availableCount`。列表包含当前模型目录与历史保存路由的并集。 |
+| `GET /admin/api/model-routes/options` | 调用方访问范围编辑器使用的紧凑路由目录，返回 `{models:[{modelId, revision, entries:[{channelId, credentialType, credentialId, selectable, reason?}]}]}`；不包含凭据名称、密文或明文。 |
 | `GET /admin/api/model-routes/detail?modelId=` | 精确读取公共模型 ID。返回 `modelId`、`configured`、`revision`、已保存顺序的 `entries` 和当前目录的 `availableCredentials`。 |
 | `PUT /admin/api/model-routes` | 完整替换一个模型的列表，要求管理员会话与 CSRF；请求必须包含 `modelId`、`expectedRevision` 和 `entries`。成功返回最新详情，revision 递增。 |
 
-模型 ID 位于查询参数或 JSON 字段中，不作为路径段；含 `/` 等字符时用查询参数编码。详情中的每个凭据包含三个身份字段，以及只读的 `channelName`、`credentialName`、`upstreamModels`、`protocols`、`selectable` 与不可用原因 `reason`；没有凭据或 token 明文。`availableCount` 是目录中当前可选择的身份数，不是已选条目数；`availableCredentials` 的目录排序不改变已保存 `entries`。
+模型 ID 位于查询参数或 JSON 字段中，不作为路径段；含 `/` 等字符时用查询参数编码。详情中的每个凭据包含三个身份字段，以及只读的 `channelName`、`credentialName`、`upstreamModels`、`protocols`、`selectable` 与不可用原因 `reason`；没有凭据或 token 明文。`availableCount` 是目录中当前可选择的身份数，不是已选条目数；`availableCredentials` 的目录排序不改变已保存 `entries`。调用方访问范围的新增模型白名单/黑名单 ID 必须已有模型路由；已有选择在路由移除后保留并标记失效，不阻塞其他字段保存。
 
 ```json
 {

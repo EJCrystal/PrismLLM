@@ -3,7 +3,6 @@ import { computed, ref, watch } from 'vue'
 import { api } from '../api'
 import {
   changeMergedMode,
-  channelAllowedByPolicy,
   clearChannelSelection,
   effectiveStaticKeyCount,
   mergedAccessMode,
@@ -19,7 +18,7 @@ import {
 import AccessModeToggle from './AccessModeToggle.vue'
 import ClientKeyAccessTree from './ClientKeyAccessTree.vue'
 import Icon from './Icon.vue'
-import type { Channel, ClientKeyAccessMode, ClientKeyAccessPolicy } from '../types/api'
+import type { Channel, ClientKeyAccessMode, ClientKeyAccessPolicy, ModelRouteAccessOption } from '../types/api'
 
 /**
  * 调用方密钥访问范围编辑字段：两张卡片（渠道与密钥合并树、对外模型 ID）。
@@ -31,17 +30,23 @@ import type { Channel, ClientKeyAccessMode, ClientKeyAccessPolicy } from '../typ
 const props = defineProps<{ modelValue: ClientKeyAccessPolicy }>()
 const emit = defineEmits<{ 'update:modelValue': [value: ClientKeyAccessPolicy] }>()
 const channels = ref<Channel[]>([])
+const routeOptions = ref<ModelRouteAccessOption[]>([])
 const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
 
-/** 按需读取管理目录；失败保留已有目录及名单，不自动改变授权。 */
+/** 按需读取管理目录与已保存模型路由；失败保留已有目录及名单，不自动改变授权。 */
 async function loadCatalog(): Promise<void> {
   if (loading.value) return
   loading.value = true
   error.value = ''
   try {
-    channels.value = await api.listChannels()
+    const [channelCatalog, modelRoutes] = await Promise.all([
+      api.listChannels(),
+      api.listModelRouteAccessOptions(),
+    ])
+    channels.value = channelCatalog
+    routeOptions.value = modelRoutes.models
     loaded.value = true
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
@@ -65,28 +70,25 @@ const staleChannels = computed(() => props.modelValue.channels.mode !== 'unrestr
 const staleKeys = computed(() => props.modelValue.channelKeys.mode !== 'unrestricted'
   ? props.modelValue.channelKeys.keys.filter(pair => !channels.value.some(channel =>
       channel.id === pair.channelId && channel.keys.some(key => key.id === pair.keyId))) : [])
-const catalogModelIds = computed(() => [...new Set(channels.value.flatMap(channel =>
-  channel.modelMappings.map(mapping => mapping.canonicalModelId ?? mapping.upstreamModel)))].sort())
+const catalogModelIds = computed(() => routeOptions.value.map(route => route.modelId).sort())
 const missingModels = computed(() => props.modelValue.models.mode !== 'unrestricted'
   ? props.modelValue.models.ids.filter(id => !catalogModelIds.value.includes(id)) : [])
 
 /** 模型可用性随第一卡片的勾选实时重算；未加载目录时保持空表。 */
-const availability = computed(() => loaded.value ? modelAvailabilityMap(props.modelValue, channels.value) : new Map())
+const availability = computed(() => loaded.value ? modelAvailabilityMap(props.modelValue, channels.value, routeOptions.value) : new Map())
 const effectiveKeys = computed(() => loaded.value ? effectiveStaticKeyCount(props.modelValue, channels.value) : 0)
 const totalKeys = computed(() => channels.value.filter(channel => channel.enabled).reduce((count, channel) => count + channel.keys.length, 0))
 const availableModelCount = computed(() => [...availability.value.values()].filter(item => item.supported).length)
-/** 模型 → 提供它的生效渠道名列表，用于模型行的渠道归属标注。 */
+/** 模型 → 模型路由中的渠道名列表，用于模型行的来源标注。 */
 const modelChannelNames = computed(() => {
+  const channelsById = new Map(channels.value.map(channel => [channel.id, channel]))
   const map = new Map<string, string[]>()
-  if (!loaded.value) return map
-  for (const channel of channels.value) {
-    if (!channel.enabled || !channelAllowedByPolicy(props.modelValue, channel.id)) continue
-    for (const mapping of channel.modelMappings) {
-      const publicId = mapping.canonicalModelId ?? mapping.upstreamModel
-      const names = map.get(publicId) ?? []
-      if (!names.includes(channel.name)) names.push(channel.name)
-      map.set(publicId, names)
-    }
+  for (const route of routeOptions.value) {
+    const names = route.entries
+      .map(entry => channelsById.get(entry.channelId)?.name)
+      .filter((name): name is string => Boolean(name))
+      .filter((name, index, all) => all.indexOf(name) === index)
+    map.set(route.modelId, names)
   }
   return map
 })
@@ -161,10 +163,10 @@ const missingScopes = computed(() => loaded.value ? [
   <div class="client-key-access-fields">
     <div class="access-intro">
       <strong>访问范围</strong>
-      <p class="muted small">路由范围与对外模型取交集生效，未限制的维度默认允许全部。</p>
+      <p class="muted small">模型来自已保存的模型路由；渠道与密钥用于进一步收窄该路由的候选凭据。</p>
     </div>
     <div v-if="loading || error" class="access-catalog-state" role="status">
-      <span v-if="loading">正在读取渠道、静态密钥与模型目录…</span>
+      <span v-if="loading">正在读取渠道、静态密钥与模型路由…</span>
       <template v-else>
         <span>目录读取失败：{{ error }}。已有选择保留。</span>
         <button type="button" class="button mini" @click="loadCatalog">重试目录</button>
@@ -224,8 +226,11 @@ const missingScopes = computed(() => loaded.value ? [
         @update:model-value="onModelModeChange"
       />
       <p class="access-link-hint" role="status">
-        基于上方生效的 <strong>{{ effectiveKeys }}</strong> 个渠道密钥，当前共关联
-        <strong>{{ availableModelCount }}</strong> 个可调用模型。
+        基于上方生效的 <strong>{{ effectiveKeys }}</strong> 个渠道密钥，当前范围可调用
+        <strong>{{ availableModelCount }}</strong> 个已配置路由的模型。
+      </p>
+      <p v-if="loaded && !routeOptions.length" class="access-warning" role="status">
+        还没有已保存的模型路由；调用方目前不能授权任何模型，请先在「模型路由」中配置。
       </p>
       <p v-if="modelValue.models.mode === 'unrestricted'" class="muted small">
         按调用请求中的对外模型 ID 精确匹配，区分大小写，不支持通配符。
@@ -256,15 +261,17 @@ const missingScopes = computed(() => loaded.value ? [
             <span class="access-model-id"><code>{{ id }}</code></span>
             <span class="access-model-stat">
               {{ (modelChannelNames.get(id) ?? []).join('、') }}
-              <template v-if="(availability.get(id)?.staticKeyCount ?? 0) > 0">
-                · 关联 {{ availability.get(id)?.staticKeyCount ?? 0 }} 个静态密钥
+              · 路由 {{ availability.get(id)?.routeEntryCount ?? 0 }} 条
+              <template v-if="(availability.get(id)?.availableCredentialCount ?? 0) > 0">
+                · 当前范围可用 {{ availability.get(id)?.availableCredentialCount }} 个凭据
               </template>
             </span>
           </label>
           <label v-for="id in visibleUnsupportedModels" :key="id" class="access-option is-model is-conflict">
             <input type="checkbox" checked @change="changeModelId(id, $event)" />
             <span class="access-model-id"><code>{{ id }}</code></span>
-            <span class="access-model-conflict">⚠️ 当前所选渠道/密钥不支持此模型</span>
+            <span class="access-model-stat">路由 {{ availability.get(id)?.routeEntryCount ?? 0 }} 条</span>
+            <span class="access-model-conflict">⚠️ 当前范围或模型路由没有可用凭据</span>
           </label>
           <label v-for="id in visibleStaleModels" :key="id" class="access-option is-model is-unavailable">
             <input type="checkbox" checked @change="changeModelId(id, $event)" />
@@ -272,10 +279,10 @@ const missingScopes = computed(() => loaded.value ? [
           </label>
         </div>
         <p v-if="loaded && visibleSupportedModels.length === 0 && visibleUnsupportedModels.length === 0 && visibleStaleModels.length === 0" class="muted small">
-          {{ modelSearch ? '没有匹配搜索条件的模型。' : '当前所选渠道/密钥下暂无可调用的模型。' }}
+          {{ modelSearch ? '没有匹配搜索条件的模型。' : routeOptions.length ? '当前所选渠道/密钥与模型路由下暂无可调用模型。' : '还没有已保存的模型路由，请先在「模型路由」中配置。' }}
         </p>
         <p v-if="conflictingModels.length" class="access-notice" role="status">
-          检测到 {{ conflictingModels.length }} 个已勾选模型（{{ conflictingModels.join('、') }}）不在上方生效的渠道/密钥支持范围内，保存后实际调用时无法路由到这些模型。
+          检测到 {{ conflictingModels.length }} 个已勾选模型（{{ conflictingModels.join('、') }}）在当前渠道/密钥范围或模型路由下没有可用凭据，保存后实际调用时无法路由到这些模型。
         </p>
         <p v-if="modelEmpty" class="access-error" role="alert">
           模型{{ modelValue.models.mode === 'allowlist' ? '白' : '黑' }}名单不能为空：请至少勾选 1 个模型，或切换为「不限制」。
@@ -283,8 +290,8 @@ const missingScopes = computed(() => loaded.value ? [
       </template>
     </fieldset>
 
-    <p v-if="missingScopes.length" class="access-warning" role="status">无授权目标：当前目录中找不到所选{{ missingScopes.join('、') }}，原 ID 与受限模式已保留。</p>
-    <p v-if="loaded && (staleChannels.length || staleKeys.length || (modelValue.models.mode === 'allowlist' && missingModels.length))" class="access-warning" role="status">部分已选目标已删除或不存在，请明确取消或重新选择；原模式与名单已保留。</p>
+    <p v-if="missingScopes.length" class="access-warning" role="status">无授权目标：当前配置或模型路由中找不到所选{{ missingScopes.join('、') }}，原 ID 与受限模式已保留。</p>
+    <p v-if="loaded && (staleChannels.length || staleKeys.length || (modelValue.models.mode === 'allowlist' && missingModels.length))" class="access-warning" role="status">部分已选目标已删除、未配置模型路由或不存在，请明确取消或重新选择；原模式与名单已保留。</p>
     <p v-if="loaded && modelValue.models.mode === 'denylist' && missingModels.length" class="access-warning" role="status">可保留已有的模型黑名单 ID；同 ID 模型重新配置后仍禁止，也可明确取消排除规则。</p>
   </div>
 </template>
