@@ -164,9 +164,15 @@ describe('渠道与密钥合并卡片映射', () => {
   it('渠道行三态：渠道级全选、部分子密钥半选、黑名单整渠道排除', async () => {
     const { channelCheckInfo } = await tree()
     const allowChannelOnly = { ...unrestricted(), channels: { mode: 'allowlist', ids: ['channel-a'] } }
-    assert.deepEqual(channelCheckInfo(allowChannelOnly, channelA), { state: 'checked', selectedKeys: 0, totalKeys: 1 })
+    assert.deepEqual(channelCheckInfo(allowChannelOnly, channelA), {
+      state: 'checked', selectedKeys: 0, totalKeys: 1,
+      selectedOAuth: 0, totalOAuth: 1, selectedCredentials: 0, totalCredentials: 2,
+    })
     assert.equal(channelCheckInfo(allowChannelOnly, channelB).state, 'unchecked')
-    const allowWithKeys = { ...unrestricted(), channels: { mode: 'allowlist', ids: ['channel-a'] }, channelKeys: { mode: 'allowlist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }
+    const allowWithKeys = { ...unrestricted(), channels: { mode: 'allowlist', ids: ['channel-a'] }, channelKeys: { mode: 'allowlist', keys: [
+      { channelId: 'channel-a', keyId: 'key-a' },
+      { channelId: 'channel-a', keyId: 'oauth-a', credentialType: 'oauth' },
+    ] } }
     assert.equal(channelCheckInfo(allowWithKeys, channelA).state, 'checked')
     const partial = { ...allowWithKeys, channelKeys: { mode: 'allowlist', keys: [] } }
     assert.equal(channelCheckInfo(partial, channelA).state, 'unchecked')
@@ -185,7 +191,10 @@ describe('渠道与密钥合并卡片映射', () => {
     assert.deepEqual(checked.channelKeys.keys, [])
     const engaged = { ...checked, channelKeys: { mode: 'allowlist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }
     const rechecked = toggleChannelSelection({ ...engaged, channels: { mode: 'allowlist', ids: [] } }, channels, 'channel-a')
-    assert.deepEqual(rechecked.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-a' }])
+    assert.deepEqual(rechecked.channelKeys.keys, [
+      { channelId: 'channel-a', keyId: 'key-a' },
+      { channelId: 'channel-a', keyId: 'oauth-a', credentialType: 'oauth' },
+    ])
     const unchecked = toggleChannelSelection(checked, channels, 'channel-a')
     assert.deepEqual(unchecked.channels.ids, [])
   })
@@ -212,24 +221,33 @@ describe('渠道与密钥合并卡片映射', () => {
     assert.deepEqual(keyed.channels.ids, ['channel-a', 'channel-b'])
     assert.deepEqual(keyed.channelKeys.keys, [
       { channelId: 'channel-a', keyId: 'key-a' },
+      { channelId: 'channel-a', keyId: 'oauth-a', credentialType: 'oauth' },
       { channelId: 'channel-b', keyId: 'key-b' },
     ])
   })
 
-  it('取消覆盖态子密钥展开渠道名单并排除该项，零选中渠道同步取消勾选', async () => {
-    const { toggleChannelSelection, toggleKeySelection } = await tree()
+  it('取消覆盖态凭据展开渠道名单并排除该项，零选中渠道同步取消勾选', async () => {
+    const { toggleChannelSelection, toggleKeySelection, toggleOAuthSelection } = await tree()
     const allowBase = () => ({ ...unrestricted(), channels: { mode: 'allowlist', ids: [] } })
     const checkedA = toggleChannelSelection(allowBase(), channels, 'channel-a')
-    const uncheckedChild = toggleKeySelection(checkedA, channels, { channelId: 'channel-a', keyId: 'key-a' }, false)
-    assert.deepEqual(uncheckedChild.channels.ids, [])
-    assert.deepEqual(uncheckedChild.channelKeys, { mode: 'unrestricted', keys: [] })
+    const uncheckedKey = toggleKeySelection(checkedA, channels, { channelId: 'channel-a', keyId: 'key-a' }, false)
+    // 取消唯一静态密钥后 OAuth 仍在白名单中，渠道不能移除。
+    assert.deepEqual(uncheckedKey.channels.ids, ['channel-a'])
+    assert.deepEqual(uncheckedKey.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'oauth-a', credentialType: 'oauth' }])
+    const emptiedA = toggleOAuthSelection(uncheckedKey, channels, { channelId: 'channel-a', accountId: 'oauth-a' }, false)
+    assert.deepEqual(emptiedA.channels.ids, [])
+    assert.deepEqual(emptiedA.channelKeys, { mode: 'unrestricted', keys: [] })
     const multi = toggleChannelSelection(checkedA, channels, 'channel-b')
     const partial = toggleKeySelection({ ...multi, channels: { mode: 'allowlist', ids: ['channel-a', 'channel-b'] } }, channels, { channelId: 'channel-b', keyId: 'key-b' }, false)
-    // 渠道 B 的唯一子密钥被取消后零选中，随树状态一并移出渠道名单。
+    // 渠道 B 的唯一凭据被取消后零选中，随树状态一并移出渠道名单。
     assert.deepEqual(partial.channels.ids, ['channel-a'])
-    assert.deepEqual(partial.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-a' }])
-    // 继续取消渠道 A 的子密钥后名单清空，两个渠道都不能因渠道级残留而重新放行。
-    const emptied = toggleKeySelection(partial, channels, { channelId: 'channel-a', keyId: 'key-a' }, false)
+    assert.deepEqual(partial.channelKeys.keys, [
+      { channelId: 'channel-a', keyId: 'key-a' },
+      { channelId: 'channel-a', keyId: 'oauth-a', credentialType: 'oauth' },
+    ])
+    // 继续取消渠道 A 的全部凭据后名单清空，两个渠道都不能因渠道级残留而重新放行。
+    const noKey = toggleKeySelection(partial, channels, { channelId: 'channel-a', keyId: 'key-a' }, false)
+    const emptied = toggleOAuthSelection(noKey, channels, { channelId: 'channel-a', accountId: 'oauth-a' }, false)
     assert.deepEqual(emptied.channels.ids, [])
     assert.deepEqual(emptied.channelKeys, { mode: 'unrestricted', keys: [] })
   })
@@ -249,7 +267,11 @@ describe('渠道与密钥合并卡片映射', () => {
     assert.equal(allowAll.channelKeys.mode, 'unrestricted')
     const engagedBase = { ...unrestricted(), channels: { mode: 'allowlist', ids: [] }, channelKeys: { mode: 'allowlist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }
     const expandAll = selectAllChannels(engagedBase, channels)
-    assert.deepEqual(expandAll.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-a' }, { channelId: 'channel-b', keyId: 'key-b' }])
+    assert.deepEqual(expandAll.channelKeys.keys, [
+      { channelId: 'channel-a', keyId: 'key-a' },
+      { channelId: 'channel-a', keyId: 'oauth-a', credentialType: 'oauth' },
+      { channelId: 'channel-b', keyId: 'key-b' },
+    ])
     const denyAll = selectAllChannels({ ...unrestricted(), channels: { mode: 'denylist', ids: [] }, channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] } }, channels)
     assert.deepEqual(denyAll.channels.ids, ['channel-a', 'channel-b'])
     assert.deepEqual(denyAll.channelKeys.keys, [])
@@ -407,9 +429,12 @@ describe('渠道与密钥合并卡片映射', () => {
     const base = {
       ...unrestricted(),
       channels: { mode: 'allowlist', ids: ['channel-a', 'channel-b'] },
-      channelKeys: { mode: 'allowlist', keys: [{ channelId: 'channel-a', keyId: 'key-a' }] },
+      channelKeys: { mode: 'allowlist', keys: [
+        { channelId: 'channel-a', keyId: 'key-a' },
+        { channelId: 'channel-a', keyId: 'oauth-a', credentialType: 'oauth' },
+      ] },
     }
-    // 渠道白名单 [A,B] + 密钥白名单仅 A：取消 A 的父渠道后密钥维度解除，B 不得以渠道级语义复活。
+    // 渠道白名单 [A,B] + 凭据白名单仅 A：取消 A 的父渠道后凭据维度解除，B 不得以渠道级语义复活。
     const removed = toggleChannelSelection(base, channels, 'channel-a')
     assert.deepEqual(removed.channels.ids, [])
     assert.deepEqual(removed.channelKeys, { mode: 'unrestricted', keys: [] })

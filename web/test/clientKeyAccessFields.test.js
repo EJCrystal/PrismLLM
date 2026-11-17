@@ -173,7 +173,7 @@ describe('真实调用方访问范围配置组件', () => {
     const pill = rowA.querySelector('.tree-id-pill')
     assert.match(pill.textContent, /#channe/)
     assert.match(pill.getAttribute('title'), /channel-a/)
-    assert.match(channelRow('渠道 B').textContent, /0\/1 密钥/)
+    assert.match(channelRow('渠道 B').textContent, /0\/1 凭据/)
     await expandChannel('渠道 A')
     assert.match(document.body.textContent, /OAuth 订阅/)
   })
@@ -188,7 +188,7 @@ describe('真实调用方访问范围配置组件', () => {
     await expandChannel('渠道 A')
     const selectedChildren = [...document.querySelectorAll('.tree-row.is-key:not(.is-stale):not(.is-oauth) input')].filter(node => node.checked).length
     assert.equal(selectedChildren, 2)
-    assert.match(channelRow('渠道 A').textContent, /全部密钥 \(2\)/)
+    assert.match(channelRow('渠道 A').textContent, /全部凭据 \(3\)/)
   })
 
   it('勾选子密钥自动补渠道并呈半选，父勾选展开其余子密钥', async () => {
@@ -200,15 +200,15 @@ describe('真实调用方访问范围配置组件', () => {
     assert.deepEqual(state.value.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-2' }])
     const parentInput = channelRow('渠道 A').querySelector('input[type="checkbox"]')
     assert.equal(parentInput.indeterminate, true)
-    assert.match(channelRow('渠道 A').textContent, /已选 1\/2 密钥/)
+    assert.match(channelRow('渠道 A').textContent, /已选 1\/3 凭据/)
     await chooseChannel('渠道 A')
-    assert.deepEqual(state.value.channelKeys.keys.map(pair => pair.keyId).sort(), ['key-1', 'key-2'])
-    assert.match(channelRow('渠道 A').textContent, /全部密钥 \(2\)/)
+    assert.deepEqual(state.value.channelKeys.keys.map(pair => pair.keyId).sort(), ['key-1', 'key-2', 'oauth-1'])
+    assert.match(channelRow('渠道 A').textContent, /全部凭据 \(3\)/)
     await chooseKey('静态凭据 A2', true)
-    assert.deepEqual(state.value.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'key-1' }])
+    assert.deepEqual(state.value.channelKeys.keys.map(pair => pair.keyId).sort(), ['key-1', 'oauth-1'])
     assert.equal(channelRow('渠道 A').querySelector('input[type="checkbox"]').indeterminate, true)
     await chooseChannel('渠道 A')
-    assert.deepEqual(state.value.channelKeys.keys.map(pair => pair.keyId).sort(), ['key-1', 'key-2'])
+    assert.deepEqual(state.value.channelKeys.keys.map(pair => pair.keyId).sort(), ['key-1', 'key-2', 'oauth-1'])
     await chooseChannel('渠道 A')
     assert.deepEqual(state.value.channels.ids, [])
     assert.deepEqual(state.value.channelKeys, { mode: 'unrestricted', keys: [] })
@@ -231,19 +231,37 @@ describe('真实调用方访问范围配置组件', () => {
     assert.match(document.body.textContent, /渠道已被整体排除/)
   })
 
-  it('OAuth 行在渠道级白名单下等同勾选渠道，密钥维度启用后仅提示不可勾选', async () => {
+  it('OAuth 行可单独勾选并参与凭据白名单', async () => {
     await mount()
     await cardMode('allowlist')
     await expandChannel('渠道 A')
     const oauthRow = [...document.querySelectorAll('.tree-row.is-key.is-oauth')].find(node => node.textContent.includes('oauth-a@example.com'))
     assert.ok(oauthRow, '缺少 OAuth 订阅行')
-    oauthRow.querySelector('input[type="checkbox"]').click(); await settle()
+    const oauthInput = oauthRow.querySelector('input[type="checkbox"]')
+    assert.equal(oauthInput.checked, false)
+    oauthInput.click(); await settle()
     assert.deepEqual(state.value.channels.ids, ['channel-a'])
-    await chooseKey('静态凭据 A', true)
-    assert.notEqual(state.value.channelKeys.mode, 'unrestricted')
-    const engagedRow = [...document.querySelectorAll('.tree-row.is-key.is-oauth')].find(node => node.textContent.includes('oauth-a@example.com'))
-    assert.equal(engagedRow.querySelector('input[type="checkbox"]'), null)
-    assert.match(engagedRow.textContent, /OAuth 账号不参与候选/)
+    assert.deepEqual(state.value.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'oauth-1', credentialType: 'oauth' }])
+    await chooseKey('静态凭据 A', false)
+    assert.deepEqual(
+      state.value.channelKeys.keys.map(pair => `${pair.credentialType ?? 'static'}:${pair.keyId}`).sort(),
+      ['oauth:oauth-1', 'static:key-1'],
+    )
+    assert.equal(channelRow('渠道 A').querySelector('input[type="checkbox"]').indeterminate, true)
+  })
+
+  it('OAuth 行可在黑名单中单独排除', async () => {
+    await mount()
+    await cardMode('denylist')
+    await expandChannel('渠道 A')
+    const oauthRow = [...document.querySelectorAll('.tree-row.is-key.is-oauth')].find(node => node.textContent.includes('oauth-a@example.com'))
+    assert.ok(oauthRow)
+    oauthRow.querySelector('input[type="checkbox"]').click(); await settle()
+    assert.deepEqual(state.value.channels.ids, [])
+    assert.deepEqual(state.value.channelKeys.keys, [{ channelId: 'channel-a', keyId: 'oauth-1', credentialType: 'oauth' }])
+    const staticInput = [...document.querySelectorAll('.tree-row.is-key:not(.is-oauth)')]
+      .find(node => node.textContent.includes('静态凭据 A'))?.querySelector('input[type="checkbox"]')
+    assert.equal(staticInput?.checked, false)
   })
 
   it('全选与清空保持受限模式，清空后显示空名单拦截', async () => {
@@ -374,6 +392,22 @@ describe('真实调用方访问范围配置组件', () => {
     assert.match(rows[2].textContent, /调用方范围排除了渠道/)
   })
 
+  it('失效静态密钥与 OAuth 账号同 ID 时分别渲染', async () => {
+    const policy = unrestricted()
+    policy.channels = { mode: 'allowlist', ids: ['deleted-channel'] }
+    policy.channelKeys = {
+      mode: 'allowlist',
+      keys: [
+        { channelId: 'deleted-channel', keyId: 'same-id' },
+        { channelId: 'deleted-channel', keyId: 'same-id', credentialType: 'oauth' },
+      ],
+    }
+    await mount(policy)
+    const rows = [...document.querySelectorAll('.tree-row.is-stale')].filter(node => node.textContent.includes('same-id'))
+    assert.equal(rows.length, 2)
+    assert.match(rows.map(node => node.textContent).join(' '), /OAuth/)
+  })
+
   it('模型黑名单失效 ID 保留展示，清空后触发空名单拦截', async () => {
     const policy = unrestricted()
     policy.models = { mode: 'denylist', ids: ['deleted-model'] }
@@ -398,7 +432,7 @@ describe('真实调用方访问范围配置组件', () => {
     assert.equal(state.value.channelKeys.mode, 'unrestricted')
     assert.deepEqual(state.value.channelKeys.keys, [])
     assert.deepEqual(state.value.channels.ids, ['channel-a'])
-    assert.match(document.body.textContent, /全部密钥 \(2\)/)
+    assert.match(document.body.textContent, /全部凭据 \(3\)/)
   })
 
   it('目录失败及重试期间保留已有选择，成功后回显原授权', async () => {

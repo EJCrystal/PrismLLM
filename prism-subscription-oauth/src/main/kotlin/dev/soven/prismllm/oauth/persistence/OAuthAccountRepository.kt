@@ -747,15 +747,30 @@ open class OAuthAccountRepository(
     }
 
     private fun replaceChannels(accountId: String, channelIds: Collection<String>, now: Long) {
-        OAuthAccountChannels.deleteWhere { OAuthAccountChannels.accountId eq accountId }
         val ids = channelIds.map(String::trim).filter(String::isNotEmpty).distinct()
-        // 托管标记决定账号是否受 provider 渠道约束；只有挂在系统渠道上才算托管。
-        val managedIds = if (ids.isEmpty()) {
-            emptySet()
-        } else {
-            providerChannels.managedChannelIds(ids)
+        // 只删除被取消的关联：V76 调用方凭据规则通过 (account_id, channel_id) 外键级联，
+        // 全量删除再插入会误清保留渠道上的允许/排除规则。
+        if (ids.isEmpty()) {
+            OAuthAccountChannels.deleteWhere { OAuthAccountChannels.accountId eq accountId }
+            return
         }
-        ids.forEach { channelId ->
+        OAuthAccountChannels.deleteWhere {
+            (OAuthAccountChannels.accountId eq accountId) and (OAuthAccountChannels.channelId notInList ids)
+        }
+        val retainedIds = OAuthAccountChannels.selectAll()
+            .where { OAuthAccountChannels.accountId eq accountId }
+            .map { it[OAuthAccountChannels.channelId] }
+            .toSet()
+        // 托管标记决定账号是否受 provider 渠道约束；只有挂在系统渠道上才算托管。
+        val managedIds = providerChannels.managedChannelIds(ids)
+        retainedIds.forEach { channelId ->
+            OAuthAccountChannels.update({
+                (OAuthAccountChannels.accountId eq accountId) and (OAuthAccountChannels.channelId eq channelId)
+            }) {
+                it[managed] = channelId in managedIds
+            }
+        }
+        ids.filterNot { it in retainedIds }.forEach { channelId ->
             OAuthAccountChannels.insert {
                 it[OAuthAccountChannels.accountId] = accountId
                 it[OAuthAccountChannels.channelId] = channelId

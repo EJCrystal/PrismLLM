@@ -19,17 +19,21 @@ data class ClientKeyIdScopeDto(val mode: String, val ids: List<String>)
 @Serializable
 data class ClientKeyChannelKeysScopeDto(val mode: String, val keys: List<ClientKeyAllowedChannelKeyDto>)
 
-/** 管理接口中的渠道密钥身份，不包含凭据明文。 */
+/** 管理接口中的渠道凭据身份，不包含凭据明文；旧客户端省略类型时按静态密钥处理。 */
 @Serializable
-data class ClientKeyAllowedChannelKeyDto(val channelId: String, val keyId: String)
+data class ClientKeyAllowedChannelKeyDto(
+    val channelId: String,
+    val keyId: String,
+    val credentialType: String = "static",
+)
 
 /** 将领域策略转换为完整、排序稳定的管理响应。 */
 fun ClientKeyAccessPolicy.toDto(): ClientKeyAccessPolicyDto = ClientKeyAccessPolicyDto(
     channels = ClientKeyIdScopeDto(accessMode(allowedChannelIds, deniedChannelIds), (allowedChannelIds ?: deniedChannelIds).orEmpty().sorted()),
     channelKeys = ClientKeyChannelKeysScopeDto(
         accessMode(allowedChannelKeys, deniedChannelKeys),
-        (allowedChannelKeys ?: deniedChannelKeys).orEmpty().sortedWith(compareBy({ it.channelId }, { it.keyId }))
-            .map { ClientKeyAllowedChannelKeyDto(it.channelId, it.keyId) },
+        (allowedChannelKeys ?: deniedChannelKeys).orEmpty().sortedWith(compareBy({ it.channelId }, { it.credentialType.value }, { it.keyId }))
+            .map { ClientKeyAllowedChannelKeyDto(it.channelId, it.keyId, it.credentialType.value) },
     ),
     models = ClientKeyIdScopeDto(accessMode(allowedModelIds, deniedModelIds), (allowedModelIds ?: deniedModelIds).orEmpty().sorted()),
 )

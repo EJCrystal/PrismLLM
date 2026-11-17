@@ -1,6 +1,7 @@
 package dev.soven.prismllm.api
 
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
+import dev.soven.prismllm.quota.domain.ClientKeyCredentialType
 import dev.soven.prismllm.routing.domain.candidate.RoutingAccessScope
 import dev.soven.prismllm.routing.domain.candidate.RoutingAllowedChannelKey
 
@@ -10,9 +11,13 @@ import dev.soven.prismllm.routing.domain.candidate.RoutingAllowedChannelKey
  */
 fun ClientKeyAccessPolicy.toRoutingAccessScope(): RoutingAccessScope = RoutingAccessScope(
     allowedChannelIds = allowedChannelIds?.toSet(),
-    allowedChannelKeys = allowedChannelKeys?.map { RoutingAllowedChannelKey(it.channelId, it.keyId) }?.toSet(),
+    allowedChannelKeys = allowedChannelKeys?.map {
+        RoutingAllowedChannelKey(it.channelId, it.keyId, it.credentialType == ClientKeyCredentialType.OAUTH)
+    }?.toSet(),
     allowedModelIds = allowedModelIds?.toSet(),
     deniedChannelIds = deniedChannelIds?.toSet(),
-    deniedChannelKeys = deniedChannelKeys?.map { RoutingAllowedChannelKey(it.channelId, it.keyId) }?.toSet(),
+    deniedChannelKeys = deniedChannelKeys?.map {
+        RoutingAllowedChannelKey(it.channelId, it.keyId, it.credentialType == ClientKeyCredentialType.OAUTH)
+    }?.toSet(),
     deniedModelIds = deniedModelIds?.toSet(),
 )

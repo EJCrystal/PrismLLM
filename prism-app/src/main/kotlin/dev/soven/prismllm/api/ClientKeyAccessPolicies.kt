@@ -2,6 +2,7 @@ package dev.soven.prismllm.api
 
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
 import dev.soven.prismllm.quota.domain.ClientKeyAllowedChannelKey
+import dev.soven.prismllm.quota.domain.ClientKeyCredentialType
 import dev.soven.prismllm.shared.error.badRequest
 
 /**
@@ -27,11 +28,11 @@ suspend fun validateClientKeyAccessPolicy(
         ClientKeyAccessPolicy(
             allowedChannelIds = if (request.channels.mode == "allowlist") request.channels.ids.toSet() else null,
             allowedChannelKeys = if (request.channelKeys.mode == "allowlist") request.channelKeys.keys
-                .map { ClientKeyAllowedChannelKey(it.channelId, it.keyId) }.toSet() else null,
+                .map { it.toDomain() }.toSet() else null,
             allowedModelIds = if (request.models.mode == "allowlist") request.models.ids.toSet() else null,
             deniedChannelIds = if (request.channels.mode == "denylist") request.channels.ids.toSet() else null,
             deniedChannelKeys = if (request.channelKeys.mode == "denylist") request.channelKeys.keys
-                .map { ClientKeyAllowedChannelKey(it.channelId, it.keyId) }.toSet() else null,
+                .map { it.toDomain() }.toSet() else null,
             deniedModelIds = if (request.models.mode == "denylist") request.models.ids.toSet() else null,
         ).normalized()
     } catch (cause: IllegalArgumentException) {
@@ -40,19 +41,24 @@ suspend fun validateClientKeyAccessPolicy(
     if (policy.isUnrestricted) return policy
 
     val channels = app.channelRepository.list().associateBy { it.id }
+    val oauthAccountsByChannel = app.oauthAccountRepository.listByChannel()
     val allowedChannels = policy.allowedChannelIds
     if ((policy.allowedChannelIds.orEmpty() + policy.deniedChannelIds.orEmpty()).any { it !in channels }) {
         throw badRequest("invalid_client_key_access_policy", "访问范围中的渠道不存在")
     }
     for (key in policy.allowedChannelKeys.orEmpty() + policy.deniedChannelKeys.orEmpty()) {
         val channel = channels[key.channelId]
-            ?: throw badRequest("invalid_client_key_access_policy", "渠道密钥所属渠道不存在")
-        if (channel.keys.none { it.id == key.keyId }) {
-            throw badRequest("invalid_client_key_access_policy", "渠道密钥不存在或不属于指定渠道")
+            ?: throw badRequest("invalid_client_key_access_policy", "渠道凭据所属渠道不存在")
+        val exists = when (key.credentialType) {
+            ClientKeyCredentialType.STATIC -> channel.keys.any { it.id == key.keyId }
+            ClientKeyCredentialType.OAUTH -> oauthAccountsByChannel[key.channelId].orEmpty().any { it.id == key.keyId }
+        }
+        if (!exists) {
+            throw badRequest("invalid_client_key_access_policy", "渠道凭据不存在或不属于指定渠道")
         }
         if (key in policy.allowedChannelKeys.orEmpty() &&
             ((allowedChannels != null && key.channelId !in allowedChannels) || key.channelId in policy.deniedChannelIds.orEmpty())) {
-            throw badRequest("invalid_client_key_access_policy", "渠道密钥必须属于允许的渠道")
+            throw badRequest("invalid_client_key_access_policy", "渠道凭据必须属于允许的渠道")
         }
     }
     val routedModels = app.modelCredentialRouteRepository.list().mapTo(mutableSetOf()) { it.modelId }
@@ -65,6 +71,12 @@ suspend fun validateClientKeyAccessPolicy(
 }
 
 /** 验证显式模式，以及不限制模式的空数组约束。 */
+private fun ClientKeyAllowedChannelKeyDto.toDomain(): ClientKeyAllowedChannelKey {
+    val type = ClientKeyCredentialType.fromValue(credentialType)
+        ?: throw badRequest("invalid_client_key_access_policy", "渠道凭据类型必须为 static 或 oauth")
+    return ClientKeyAllowedChannelKey(channelId, keyId, type)
+}
+
 private fun validateMode(mode: String, empty: Boolean) {
     if (mode != "unrestricted" && mode != "allowlist" && mode != "denylist") {
         throw badRequest("invalid_client_key_access_policy", "访问范围模式必须为 unrestricted、allowlist 或 denylist")

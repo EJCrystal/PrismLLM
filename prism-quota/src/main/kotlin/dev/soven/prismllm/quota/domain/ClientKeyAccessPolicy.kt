@@ -1,7 +1,22 @@
 package dev.soven.prismllm.quota.domain
 
-/** 访问名单中的静态渠道密钥；渠道与密钥 ID 共同构成身份。 */
-data class ClientKeyAllowedChannelKey(val channelId: String, val keyId: String)
+/** 调用方凭据类型；旧 API/数据缺省为静态渠道密钥。 */
+enum class ClientKeyCredentialType(val value: String) {
+    STATIC("static"),
+    OAUTH("oauth"),
+    ;
+
+    companion object {
+        fun fromValue(value: String): ClientKeyCredentialType? = entries.firstOrNull { it.value == value }
+    }
+}
+
+/** 访问名单中的渠道凭据；渠道、类型与凭据 ID 共同构成身份。 */
+data class ClientKeyAllowedChannelKey(
+    val channelId: String,
+    val keyId: String,
+    val credentialType: ClientKeyCredentialType = ClientKeyCredentialType.STATIC,
+)
 
 /**
  * 调用方密钥的访问范围，只保存对象 ID，不依赖渠道或路由类型。
@@ -35,12 +50,12 @@ data class ClientKeyAccessPolicy(
         return copy(
             allowedChannelIds = allowedChannelIds?.map { normalizeId(it, 36) }?.toSet(),
             allowedChannelKeys = allowedChannelKeys?.map {
-                ClientKeyAllowedChannelKey(normalizeId(it.channelId, 36), normalizeId(it.keyId, 36))
+                ClientKeyAllowedChannelKey(normalizeId(it.channelId, 36), normalizeId(it.keyId, 36), it.credentialType)
             }?.toSet(),
             allowedModelIds = allowedModelIds?.map { normalizeId(it, 200) }?.toSet(),
             deniedChannelIds = deniedChannelIds?.map { normalizeId(it, 36) }?.toSet(),
             deniedChannelKeys = deniedChannelKeys?.map {
-                ClientKeyAllowedChannelKey(normalizeId(it.channelId, 36), normalizeId(it.keyId, 36))
+                ClientKeyAllowedChannelKey(normalizeId(it.channelId, 36), normalizeId(it.keyId, 36), it.credentialType)
             }?.toSet(),
             deniedModelIds = deniedModelIds?.map { normalizeId(it, 200) }?.toSet(),
         )
