@@ -115,6 +115,22 @@ function createFixture() {
           models: { mode: 'unrestricted', ids: [] },
         },
       },
+      {
+        id: 'caller-expiring', name: '调用方 即将过期', keyPrefix: 'prism_expiring', enabled: true, expiresAt: Date.now() + 300, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'unrestricted', ids: [] },
+          channelKeys: { mode: 'unrestricted', keys: [] },
+          models: { mode: 'unrestricted', ids: [] },
+        },
+      },
+      {
+        id: 'caller-expiring-selected', name: '调用方 已选即将过期', keyPrefix: 'prism_expiring_selected', enabled: true, expiresAt: Date.now() + 1200, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'unrestricted', ids: [] },
+          channelKeys: { mode: 'unrestricted', keys: [] },
+          models: { mode: 'unrestricted', ids: [] },
+        },
+      },
     ],
     writes: [],
     requests: [],
@@ -325,6 +341,25 @@ describe('ModelRoutesView mounted credential-order editor', () => {
 
     await selectPerspective('')
     assert.deepEqual(entryIds(), [keyFor(oauthB), keyFor(staticA)])
+  })
+
+  it('removes a caller key from the perspective selector when it expires after loading', async () => {
+    await mount()
+    assert.ok(host.querySelector('select[aria-label="调用方视角"] option[value="caller-expiring"]'))
+    await delay(450)
+    await settle()
+    assert.equal(host.querySelector('select[aria-label="调用方视角"] option[value="caller-expiring"]'), null)
+  })
+
+  it('clears the active perspective when the selected caller key expires', async () => {
+    await mount()
+    await selectPerspective('caller-expiring-selected')
+    assert.match(text(host.querySelector('.route-perspective')), /只读视角/)
+    await delay(1100)
+    await settle()
+    assert.doesNotMatch(text(host.querySelector('.route-perspective')), /只读视角/)
+    assert.match(text(host.querySelector('.route-perspective')), /全局模式/)
+    assert.equal(host.querySelector('select[aria-label="调用方视角"] option[value="caller-expiring-selected"]'), null)
   })
 
   it('searches and sorts public model IDs, and renders unavailable stored entries with reasons', async () => {

@@ -35,6 +35,8 @@ const clientKeys = ref<ClientKey[]>([])
 const clientKeysLoading = ref(true)
 const clientKeysError = ref('')
 const perspectiveKeyId = ref('')
+const now = ref(Date.now())
+let expiryTimer: ReturnType<typeof setTimeout> | undefined
 let listGeneration = 0
 let detailGeneration = 0
 let disposed = false
@@ -76,15 +78,34 @@ function modelStatus(model: ModelRouteSummary): string {
 }
 
 /** 调用方视角只影响展示，仍以全局模型路由为数据源。 */
-const perspectiveKey = computed(() => clientKeys.value.find(key => key.id === perspectiveKeyId.value) ?? null)
+const perspectiveKey = computed(() => {
+  const key = clientKeys.value.find(item => item.id === perspectiveKeyId.value)
+  return key && isPreviewableClientKey(key) ? key : null
+})
 const perspectivePolicy = computed<ClientKeyAccessPolicy | null>(() => perspectiveKey.value?.accessPolicy ?? null)
 const perspectiveActive = computed(() => perspectivePolicy.value != null)
-function isPreviewableClientKey(key: ClientKey): boolean {
-  return key.revokedAt == null && key.enabled && (key.expiresAt == null || key.expiresAt > Date.now())
+function isPreviewableClientKey(key: ClientKey, at: number = now.value): boolean {
+  return key.revokedAt == null && key.enabled && (key.expiresAt == null || key.expiresAt > at)
 }
 const selectableClientKeys = computed(() => clientKeys.value
-  .filter(isPreviewableClientKey)
+  .filter(key => isPreviewableClientKey(key))
   .sort((a, b) => a.name.localeCompare(b.name) || a.keyPrefix.localeCompare(b.keyPrefix)))
+
+/** 到期不是响应式变化；在最近的密钥到期时刷新过滤并清除已失效视角。 */
+function scheduleNextExpiry(): void {
+  clearTimeout(expiryTimer)
+  const current = Date.now()
+  now.value = current
+  const expiries = clientKeys.value
+    .map(key => key.expiresAt)
+    .filter((value): value is number => value != null && value > current)
+  const next = expiries.length ? Math.min(...expiries) : null
+  if (next == null) return
+  expiryTimer = setTimeout(() => {
+    now.value = Date.now()
+    scheduleNextExpiry()
+  }, Math.max(next - current + 20, 20))
+}
 
 function modelScopeReason(modelId: string): string {
   const policy = perspectivePolicy.value
@@ -121,7 +142,15 @@ const perspectiveUsableCount = computed(() =>
   viewEntries.value.filter(entry => entry.selectable && !credentialScopeReason(entry)).length)
 
 function onPerspectiveSelect(event: Event): void {
-  perspectiveKeyId.value = (event.target as HTMLSelectElement).value
+  const select = event.target as HTMLSelectElement
+  if (select.value) {
+    const key = clientKeys.value.find(item => item.id === select.value)
+    if (!key || !isPreviewableClientKey(key)) {
+      select.value = perspectiveKeyId.value
+      return
+    }
+  }
+  perspectiveKeyId.value = select.value
 }
 
 async function loadClientKeys() {
@@ -131,6 +160,7 @@ async function loadClientKeys() {
     const value = await api.listClientKeys()
     if (disposed) return
     clientKeys.value = value
+    scheduleNextExpiry()
     if (perspectiveKeyId.value && !value.some(key => key.id === perspectiveKeyId.value && isPreviewableClientKey(key))) {
       perspectiveKeyId.value = ''
     }
@@ -400,6 +430,9 @@ function beforeUnload(event: BeforeUnloadEvent) {
 
 watch(editorBusy, busy => { if (busy) clearDrag() })
 watch(perspectiveKeyId, () => clearDrag())
+watch(perspectiveKey, key => {
+  if (!key && perspectiveKeyId.value) perspectiveKeyId.value = ''
+})
 watch(query, () => {
   clearTimeout(searchTimer)
   // Invalidate a previous page immediately, including during the debounce interval.
@@ -418,6 +451,7 @@ onBeforeUnmount(() => {
   listGeneration++
   detailGeneration++
   clearTimeout(searchTimer)
+  clearTimeout(expiryTimer)
   window.removeEventListener('beforeunload', beforeUnload)
 })
 </script>
