@@ -19,6 +19,23 @@ object NotificationEvents {
     )
 }
 
+/** Variables accepted in per-target Feishu card templates. */
+object NotificationTemplateVariables {
+    val names = linkedSetOf(
+        "eventType", "severity", "channel", "credential", "model",
+        "previousState", "state", "reason", "consecutiveFailures",
+        "occurredAt", "eventId", "metrics",
+    )
+
+    private val pattern = Regex("\\{\\{\\s*([A-Za-z][A-Za-z0-9]*)\\s*\\}\\}")
+
+    fun unknown(template: String): Set<String> =
+        pattern.findAll(template).map { it.groupValues[1] }.filter { it !in names }.toSet()
+
+    fun render(template: String, values: Map<String, String>): String =
+        pattern.replace(template) { match -> values[match.groupValues[1]] ?: match.value }
+}
+
 @Serializable
 data class NotificationSettings(
     val enabled: Boolean = false,
@@ -34,6 +51,8 @@ data class NotificationTarget(
     val enabled: Boolean = true,
     val events: List<String> = NotificationEvents.subscriptions,
     val channelIds: List<String> = emptyList(),
+    val templateTitle: String? = null,
+    val templateBody: String? = null,
     val revision: Long = 1,
     val updatedAt: Long = 0,
 )

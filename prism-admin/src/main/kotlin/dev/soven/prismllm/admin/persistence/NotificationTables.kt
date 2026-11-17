@@ -19,6 +19,8 @@ object NotificationTargets : Table("notification_targets") {
     val enabled = bool("enabled")
     val events = text("events")
     val channelIds = text("channel_ids")
+    val templateTitle = text("template_title").nullable()
+    val templateBody = text("template_body").nullable()
     val revision = long("revision")
     val updatedAt = long("updated_at")
 

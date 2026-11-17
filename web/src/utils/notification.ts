@@ -16,6 +16,29 @@ export const notificationEventOptions: { value: NotificationEventType; label: st
   { value: 'attempt.recovered', label: '连续失败恢复', description: '连续失败后再次出现成功尝试。' },
 ]
 
+export const notificationTemplateVariables = [
+  'eventType', 'severity', 'channel', 'credential', 'model',
+  'previousState', 'state', 'reason', 'consecutiveFailures',
+  'occurredAt', 'eventId', 'metrics',
+] as const
+
+const templateVariablePattern = /\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*\}\}/g
+
+export function notificationTemplateError(title: string, body: string): string {
+  if (title.length > 100) return '模板标题不能超过 100 个字符。'
+  if (/[\u0000-\u001f\u007f]/.test(title)) return '模板标题不能包含控制字符或换行。'
+  if (body.length > 4096) return '模板正文不能超过 4096 个字符。'
+  if (/[\u0000-\u0009\u000b-\u001f\u007f]/.test(body)) return '模板正文不能包含除换行外的控制字符。'
+  const unknown = new Set<string>()
+  for (const text of [title, body]) {
+    for (const match of text.matchAll(templateVariablePattern)) {
+      if (!(notificationTemplateVariables as readonly string[]).includes(match[1])) unknown.add(match[1])
+    }
+  }
+  if (unknown.size) return `未知模板变量：${[...unknown].join('、')}。`
+  return ''
+}
+
 export function notificationThresholdError(value: unknown): string {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 100
     ? ''

@@ -219,21 +219,52 @@ class NotificationTransportTest {
         val event = event().copy(channelName = "core\nchannel")
         val result = transport.send(target("feishu"), event)
         val payload = Json.parseToJsonElement(capturedBody).jsonObject
-        val text = payload.getValue("content").jsonObject.getValue("text").jsonPrimitive.content
+        val card = payload.getValue("card").jsonObject
+        val cardText = card.toString()
+        val header = card.getValue("header").jsonObject
 
         assertFalse(result.success)
         assertFalse(result.retryable)
         assertEquals(200, result.statusCode)
         assertEquals("feishu_rejected", result.errorCode)
-        assertEquals("text", payload.getValue("msg_type").jsonPrimitive.content)
-        assertTrue(text.contains("渠道异常"))
-        assertTrue(text.contains("警告"))
-        assertTrue(text.contains("上游请求超时"))
-        assertTrue(text.contains(event.eventId))
-        assertTrue(text.contains("core channel"))
-        assertTrue(text.contains("2027-01-15T08:00:00Z"))
+        assertEquals("interactive", payload.getValue("msg_type").jsonPrimitive.content)
+        assertEquals("渠道异常", header.getValue("title").jsonObject.getValue("content").jsonPrimitive.content)
+        assertEquals("orange", header.getValue("template").jsonPrimitive.content)
+        assertTrue(cardText.contains("渠道异常"))
+        assertTrue(cardText.contains("警告"))
+        assertTrue(cardText.contains("上游请求超时"))
+        assertTrue(cardText.contains(event.eventId))
+        assertTrue(cardText.contains("core channel"))
+        assertTrue(cardText.contains("2027-01-15T08:00:00Z"))
         assertEquals(now.toString(), payload.getValue("timestamp").jsonPrimitive.content)
         assertEquals(independentFeishuSignature(signing, now), payload.getValue("sign").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `Feishu card renders per-target templates and keeps event footer`() = runBlocking {
+        var capturedBody = ""
+        val transport = SafeNotificationTransport(
+            credentials(url = "https://hooks.example.test/feishu"),
+            NotificationDnsResolver { listOf(publicIpv4) },
+            NotificationHttpExecutor { _, _, _, body ->
+                capturedBody = body.toString(Charsets.UTF_8)
+                NotificationHttpResponse(200, null, """{"code":0}""".toByteArray(), false)
+            }, { 1_800_000_456L },
+        )
+        val event = event().copy(channelName = "core\nchannel")
+        val target = target("feishu").copy(
+            templateTitle = "【{{severity}}】{{channel}}",
+            templateBody = "**渠道** {{channel}}\n原因：{{reason}}\n事件 {{eventId}}",
+        )
+
+        assertTrue(transport.send(target, event).success)
+        val card = Json.parseToJsonElement(capturedBody).jsonObject.getValue("card").jsonObject
+        val title = card.getValue("header").jsonObject.getValue("title").jsonObject.getValue("content").jsonPrimitive.content
+        val cardText = card.toString()
+        assertEquals("【警告】core channel", title)
+        assertTrue(cardText.contains("**渠道** core channel"))
+        assertTrue(cardText.contains("原因：上游请求超时"))
+        assertTrue(cardText.contains(event.eventId))
     }
 
     @Test

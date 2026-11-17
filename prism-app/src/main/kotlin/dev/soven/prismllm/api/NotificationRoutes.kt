@@ -6,6 +6,7 @@ import dev.soven.prismllm.admin.domain.NotificationDelivery
 import dev.soven.prismllm.admin.domain.NotificationEvent
 import dev.soven.prismllm.admin.domain.NotificationEvents
 import dev.soven.prismllm.admin.domain.NotificationTarget
+import dev.soven.prismllm.admin.domain.NotificationTemplateVariables
 import dev.soven.prismllm.notification.NotificationCredentialStatus
 import dev.soven.prismllm.notification.NotificationUrlPolicy
 import dev.soven.prismllm.notification.NotificationUrlRejected
@@ -45,6 +46,8 @@ internal data class NotificationTargetRequest(
     val enabled: Boolean = true,
     val events: List<String> = NotificationEvents.subscriptions,
     val channelIds: List<String> = emptyList(),
+    val templateTitle: String? = null,
+    val templateBody: String? = null,
     val credentials: NotificationCredentialWrite? = null,
     val revision: Long? = null,
 )
@@ -57,6 +60,8 @@ internal data class NotificationTargetResponse(
     val enabled: Boolean,
     val events: List<String>,
     val channelIds: List<String>,
+    val templateTitle: String? = null,
+    val templateBody: String? = null,
     val revision: Long,
     val updatedAt: Long,
     val credentials: NotificationCredentialStatus,
@@ -70,6 +75,7 @@ internal fun Route.notificationRoutes(app: GatewayApplication) {
     val repository = app.notificationRepository
     suspend fun response(target: NotificationTarget): NotificationTargetResponse = NotificationTargetResponse(
         target.id, target.name, target.type, target.enabled, target.events, target.channelIds,
+        target.templateTitle, target.templateBody,
         target.revision, target.updatedAt, app.notificationCredentials.status(target),
         repository.deliveries(targetId = target.id, pageSize = 1).items.firstOrNull(),
     )
@@ -131,6 +137,21 @@ internal fun Route.notificationRoutes(app: GatewayApplication) {
         )
         return update.takeIf { it.changesAnything }
     }
+    fun templateText(raw: String?, label: String, maxLength: Int, allowNewlines: Boolean): String? {
+        val text = raw?.takeIf { it.isNotBlank() } ?: return null
+        if (text.length > maxLength) throw badRequest("invalid_notification_template", "$label 不能超过 $maxLength 个字符")
+        val forbidden = if (allowNewlines) {
+            Regex("[\\u0000-\\u0009\\u000b-\\u001f\\u007f]")
+        } else {
+            Regex("[\\u0000-\\u001f\\u007f]")
+        }
+        if (forbidden.containsMatchIn(text)) throw badRequest("invalid_notification_template", "$label 不能包含控制字符")
+        val unknown = NotificationTemplateVariables.unknown(text)
+        if (unknown.isNotEmpty()) {
+            throw badRequest("invalid_notification_template", "未知模板变量: ${unknown.joinToString(", ")}")
+        }
+        return text
+    }
     suspend fun target(request: NotificationTargetRequest): NotificationTarget {
         val name = request.name.trim()
         if (name.isEmpty() || name.length > 100 || name.any { it.isISOControl() }) {
@@ -148,6 +169,8 @@ internal fun Route.notificationRoutes(app: GatewayApplication) {
         return NotificationTarget(
             id = "", name = name, type = request.type, enabled = request.enabled,
             events = request.events.distinct(), channelIds = request.channelIds.distinct(),
+            templateTitle = templateText(request.templateTitle, "模板标题", 100, allowNewlines = false),
+            templateBody = templateText(request.templateBody, "模板正文", 4_096, allowNewlines = true),
         )
     }
 

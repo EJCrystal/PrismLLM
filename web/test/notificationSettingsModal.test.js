@@ -24,6 +24,7 @@ const events = ['channel.unhealthy', 'channel.recovered', 'key.disabled', 'key.r
 const fixtureTarget = (id = 'target-one', extra = {}) => ({
   id, name: id === 'target-one' ? '值班群' : '飞书备用', type: 'webhook', enabled: true,
   events: [...events], channelIds: [], revision: 1, updatedAt: 1,
+  templateTitle: null, templateBody: null,
   credentials: {
     urlConfigured: true, bearerTokenConfigured: false, signingSecretConfigured: false,
     urlUnreadable: false, bearerTokenUnreadable: false, signingSecretUnreadable: false,
@@ -44,7 +45,7 @@ function button(text, scope = document) { return [...scope.querySelectorAll('but
 function targetRow(id = 'target-one') { return document.querySelector('[data-target-id="' + id + '"]') }
 async function input(element, value) { assert.ok(element); element.value = value; element.dispatchEvent(new Event('input', { bubbles: true })); await settle() }
 async function changeSelect(element, value) { element.value = value; element.dispatchEvent(new Event('change', { bubbles: true })); await settle() }
-function fieldInput(label, scope = document) { return [...scope.querySelectorAll('label.field')].find(node => node.querySelector('span')?.textContent === label)?.querySelector('input,select') }
+function fieldInput(label, scope = document) { return [...scope.querySelectorAll('label.field')].find(node => node.querySelector('span')?.textContent === label)?.querySelector('input,select,textarea') }
 
 describe('notification settings modal interactions', () => {
   let server, modal, systemView, app, state, editorState, calls, savedSettings, savedTargets, historyItems, handler, emitted
@@ -216,6 +217,8 @@ describe('notification settings modal interactions', () => {
     const editor = document.querySelector('.notification-target-editor')
     await input(fieldInput('目标名称', editor), '  新值班群  ')
     await changeSelect(fieldInput('目标类型', editor), 'feishu')
+    await input(fieldInput('卡片标题', editor), '【{{severity}}】{{channel}}')
+    await input(fieldInput('卡片正文', editor), '**渠道** {{channel}}\n原因：{{reason}}')
     editor.querySelector('.switch-row input').click()
     for (const event of [...editor.querySelectorAll('.notification-event-grid input')].slice(1)) { event.click(); await settle() }
     editor.querySelector('.notification-all-channels input').click(); await settle()
@@ -224,7 +227,10 @@ describe('notification settings modal interactions', () => {
     assert.equal(create.disabled, false)
     create.click(); create.click(); await settle()
     assert.equal(writes().length, 1)
-    assert.deepEqual(writes()[0].body, { name: '新值班群', type: 'feishu', enabled: false, events: ['channel.unhealthy'], channelIds: ['channel-one'] })
+    assert.deepEqual(writes()[0].body, {
+      name: '新值班群', type: 'feishu', enabled: false, events: ['channel.unhealthy'], channelIds: ['channel-one'],
+      templateTitle: '【{{severity}}】{{channel}}', templateBody: '**渠道** {{channel}}\n原因：{{reason}}',
+    })
     assert.equal(Object.hasOwn(writes()[0].body, 'revision'), false)
     assert.equal(document.querySelector('.notification-target-editor'), null)
     assert.equal(document.querySelectorAll('.notification-target-row').length, 3)

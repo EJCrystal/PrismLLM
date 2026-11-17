@@ -8,6 +8,7 @@ import {
   notificationEventLabel,
   notificationTargetError,
   notificationTestDisabledReason,
+  notificationTemplateError,
   notificationThresholdError,
 } from '../src/utils/notification'
 
@@ -60,6 +61,17 @@ describe('notification settings validation and display', () => {
     assert.match(notificationTargetError({ ...baseTarget, channelIds: ['x'.repeat(101)] }, undefined, false), /渠道 ID/)
     assert.match(notificationTargetError({ ...baseTarget, channelIds: Array.from({ length: 101 }, (_, index) => `c-${index}`) }, undefined, false), /最多选择 100 个渠道/)
     assert.equal(notificationTargetError({ ...baseTarget, channelIds: ['deleted-channel'] }, undefined, true), '')
+  })
+
+  it('validates optional Feishu card templates and their variables', () => {
+    assert.equal(notificationTemplateError('', ''), '')
+    assert.equal(notificationTemplateError('【{{severity}}】{{channel}}', '**渠道** {{channel}}\n原因：{{reason}}'), '')
+    assert.match(notificationTemplateError('x'.repeat(101), ''), /100/)
+    assert.match(notificationTemplateError('bad\ntitle', ''), /控制字符或换行/)
+    assert.match(notificationTemplateError('', 'x'.repeat(4097)), /4096/)
+    assert.match(notificationTemplateError('', 'bad\u0000body'), /控制字符/)
+    assert.match(notificationTemplateError('{{unknown}}', ''), /未知模板变量/)
+    assert.match(notificationTemplateError('', '{{eventType}} {{channel}} {{nope}}'), /nope/)
   })
 
   it('only enables test enqueue when globally and locally enabled and URL is configured', () => {

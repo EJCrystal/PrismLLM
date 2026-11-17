@@ -106,6 +106,8 @@ class NotificationRepository(
                 it[enabled] = created.enabled
                 it[events] = json.encodeToString(created.events)
                 it[channelIds] = json.encodeToString(created.channelIds)
+                it[templateTitle] = created.templateTitle
+                it[templateBody] = created.templateBody
                 it[revision] = created.revision
                 it[updatedAt] = created.updatedAt
             }
@@ -124,6 +126,8 @@ class NotificationRepository(
                 it[enabled] = updated.enabled
                 it[events] = json.encodeToString(updated.events)
                 it[channelIds] = json.encodeToString(updated.channelIds)
+                it[templateTitle] = updated.templateTitle
+                it[templateBody] = updated.templateBody
                 it[revision] = updated.revision
                 it[updatedAt] = updated.updatedAt
             }
@@ -534,6 +538,8 @@ class NotificationRepository(
         enabled = row[NotificationTargets.enabled],
         events = json.decodeFromString(row[NotificationTargets.events]),
         channelIds = json.decodeFromString(row[NotificationTargets.channelIds]),
+        templateTitle = row[NotificationTargets.templateTitle],
+        templateBody = row[NotificationTargets.templateBody],
         revision = row[NotificationTargets.revision],
         updatedAt = row[NotificationTargets.updatedAt],
     )
@@ -643,7 +649,7 @@ class NotificationRepository(
 
     private fun sameConfiguration(a: NotificationTarget, b: NotificationTarget) =
         a.name == b.name && a.type == b.type && a.enabled == b.enabled && a.events == b.events &&
-            a.channelIds == b.channelIds
+            a.channelIds == b.channelIds && a.templateTitle == b.templateTitle && a.templateBody == b.templateBody
 
     private companion object {
         const val SINGLETON_ID = 1
