@@ -2,7 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { ApiError } from '../types/api'
-import type { ModelRouteCredential, ModelRouteDetail, ModelRouteIdentity, ModelRouteSummary } from '../types/api'
+import type { ClientKey, ClientKeyAccessPolicy, ModelRouteCredential, ModelRouteDetail, ModelRouteIdentity, ModelRouteSummary } from '../types/api'
+import { channelAllowedByPolicy, oauthEffective, staticKeyEffective } from '../utils/clientKeyAccessTree'
 import { notify } from '../toast'
 import ErrorState from './ErrorState.vue'
 import Icon from './Icon.vue'
@@ -30,6 +31,10 @@ const conflictLoading = ref(false)
 const conflictError = ref('')
 const draggedEntryKey = ref('')
 const dragOverEntryKey = ref('')
+const clientKeys = ref<ClientKey[]>([])
+const clientKeysLoading = ref(true)
+const clientKeysError = ref('')
+const perspectiveKeyId = ref('')
 let listGeneration = 0
 let detailGeneration = 0
 let disposed = false
@@ -70,6 +75,72 @@ function modelStatus(model: ModelRouteSummary): string {
   return model.entryCount ? '已配置' : '无路由凭据'
 }
 
+/** 调用方视角只影响展示，仍以全局模型路由为数据源。 */
+const perspectiveKey = computed(() => clientKeys.value.find(key => key.id === perspectiveKeyId.value) ?? null)
+const perspectivePolicy = computed<ClientKeyAccessPolicy | null>(() => perspectiveKey.value?.accessPolicy ?? null)
+const perspectiveActive = computed(() => perspectivePolicy.value != null)
+function isPreviewableClientKey(key: ClientKey): boolean {
+  return key.revokedAt == null && key.enabled && (key.expiresAt == null || key.expiresAt > Date.now())
+}
+const selectableClientKeys = computed(() => clientKeys.value
+  .filter(isPreviewableClientKey)
+  .sort((a, b) => a.name.localeCompare(b.name) || a.keyPrefix.localeCompare(b.keyPrefix)))
+
+function modelScopeReason(modelId: string): string {
+  const policy = perspectivePolicy.value
+  if (!policy) return ''
+  if (policy.models.mode === 'allowlist' && !policy.models.ids.includes(modelId)) return '调用方未允许该模型'
+  if (policy.models.mode === 'denylist' && policy.models.ids.includes(modelId)) return '调用方模型黑名单'
+  return ''
+}
+
+function credentialScopeReason(entry: ModelRouteCredential): string {
+  const policy = perspectivePolicy.value
+  if (!policy) return ''
+  const modelReason = modelScopeReason(selectedModelId.value)
+  if (modelReason) return modelReason
+  if (!channelAllowedByPolicy(policy, entry.channelId)) {
+    return policy.channels.mode === 'allowlist' ? '调用方未允许该渠道' : '调用方渠道黑名单'
+  }
+  if (entry.credentialType === 'static') {
+    if (staticKeyEffective(policy, { channelId: entry.channelId, keyId: entry.credentialId })) return ''
+    return policy.channelKeys.mode === 'allowlist' ? '调用方未允许该静态密钥' : '调用方静态密钥黑名单'
+  }
+  if (oauthEffective(policy, entry.channelId, entry.credentialId)) return ''
+  return policy.channelKeys.mode === 'allowlist' ? '调用方未允许该 OAuth 账号' : '调用方 OAuth 账号黑名单'
+}
+
+/** 视角预览读取已保存路由；若已拉取冲突最新版则优先使用，避免把旧版本标成“全局”。 */
+const viewEntries = computed(() => {
+  if (!perspectiveActive.value) return entries.value
+  if (conflict.value && conflictLatest.value) return conflictLatest.value.entries
+  return detail.value?.entries ?? []
+})
+
+const perspectiveUsableCount = computed(() =>
+  viewEntries.value.filter(entry => entry.selectable && !credentialScopeReason(entry)).length)
+
+function onPerspectiveSelect(event: Event): void {
+  perspectiveKeyId.value = (event.target as HTMLSelectElement).value
+}
+
+async function loadClientKeys() {
+  clientKeysLoading.value = true
+  clientKeysError.value = ''
+  try {
+    const value = await api.listClientKeys()
+    if (disposed) return
+    clientKeys.value = value
+    if (perspectiveKeyId.value && !value.some(key => key.id === perspectiveKeyId.value && isPreviewableClientKey(key))) {
+      perspectiveKeyId.value = ''
+    }
+  } catch (cause) {
+    if (!disposed) clientKeysError.value = errorMessage(cause)
+  } finally {
+    if (!disposed) clientKeysLoading.value = false
+  }
+}
+
 const sortedModels = computed(() => [...models.value].sort((a, b) => a.modelId.localeCompare(b.modelId)))
 const dirty = computed(() => !!detail.value && orderSnapshot(entries.value) !== orderSnapshot(detail.value.entries))
 const editorBusy = computed(() => detailLoading.value || saving.value || conflictLoading.value)
@@ -81,7 +152,7 @@ const availableCredentials = computed(() => {
     .filter(entry => !search || [entry.channelName, entry.credentialName, entry.channelId, entry.credentialId, ...entry.upstreamModels, ...entry.protocols].join(' ').toLowerCase().includes(search))
 })
 const remainingCount = computed(() => (detail.value?.availableCredentials ?? []).filter(entry => !selectedKeys.value.has(entryKey(entry))).length)
-const canSave = computed(() => !!detail.value && (dirty.value || !detail.value.configured) && !editorBusy.value && !conflict.value)
+const canSave = computed(() => !!detail.value && !perspectiveActive.value && (dirty.value || !detail.value.configured) && !editorBusy.value && !conflict.value)
 
 function clearDrag() {
   draggedEntryKey.value = ''
@@ -169,7 +240,7 @@ async function focusEntry(key: string, action: string) {
 }
 
 function moveEntry(target: ModelRouteIdentity, delta: -1 | 1) {
-  if (editorBusy.value) return
+  if (editorBusy.value || perspectiveActive.value) return
   const index = entries.value.findIndex(entry => entryKey(entry) === entryKey(target))
   if (index < 0) return
   const destination = index + delta
@@ -182,7 +253,7 @@ function moveEntry(target: ModelRouteIdentity, delta: -1 | 1) {
 }
 
 function dragStart(event: DragEvent, target: ModelRouteIdentity) {
-  if (editorBusy.value) {
+  if (editorBusy.value || perspectiveActive.value) {
     event.preventDefault()
     return
   }
@@ -196,14 +267,14 @@ function dragStart(event: DragEvent, target: ModelRouteIdentity) {
 }
 
 function dragOver(event: DragEvent, target: ModelRouteIdentity) {
-  if (editorBusy.value || !draggedEntryKey.value) return
+  if (editorBusy.value || perspectiveActive.value || !draggedEntryKey.value) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
   dragOverEntryKey.value = entryKey(target)
 }
 
 function dropEntry(event: DragEvent, target: ModelRouteIdentity) {
-  if (editorBusy.value) {
+  if (editorBusy.value || perspectiveActive.value) {
     clearDrag()
     return
   }
@@ -223,7 +294,7 @@ function dropEntry(event: DragEvent, target: ModelRouteIdentity) {
 }
 
 function addEntry(entry: ModelRouteCredential) {
-  if (editorBusy.value || !entry.selectable || selectedKeys.value.has(entryKey(entry))) return
+  if (editorBusy.value || perspectiveActive.value || !entry.selectable || selectedKeys.value.has(entryKey(entry))) return
   entries.value.push(...cloneEntries([entry]))
   changed()
   announcement.value = `已添加 ${credentialLabel(entry)}，位于第 ${entries.value.length} 位。`
@@ -231,7 +302,7 @@ function addEntry(entry: ModelRouteCredential) {
 }
 
 function removeEntry(target: ModelRouteIdentity) {
-  if (editorBusy.value) return
+  if (editorBusy.value || perspectiveActive.value) return
   const index = entries.value.findIndex(entry => entryKey(entry) === entryKey(target))
   if (index < 0) return
   const [entry] = entries.value.splice(index, 1)
@@ -243,7 +314,7 @@ function removeEntry(target: ModelRouteIdentity) {
 }
 
 function resetDraft() {
-  if (!detail.value || editorBusy.value) return
+  if (!detail.value || editorBusy.value || perspectiveActive.value) return
   if (dirty.value && !window.confirm('丢弃当前未保存的路由修改？')) return
   entries.value = cloneEntries(detail.value.entries)
   changed()
@@ -328,6 +399,7 @@ function beforeUnload(event: BeforeUnloadEvent) {
 }
 
 watch(editorBusy, busy => { if (busy) clearDrag() })
+watch(perspectiveKeyId, () => clearDrag())
 watch(query, () => {
   clearTimeout(searchTimer)
   // Invalidate a previous page immediately, including during the debounce interval.
@@ -338,6 +410,7 @@ watch(query, () => {
 })
 onMounted(() => {
   void loadModels()
+  void loadClientKeys()
   window.addEventListener('beforeunload', beforeUnload)
 })
 onBeforeUnmount(() => {
@@ -351,6 +424,33 @@ onBeforeUnmount(() => {
 
 <template>
   <section ref="root" class="model-routes-view" aria-label="模型路由配置">
+    <div class="panel route-perspective" role="group" aria-label="调用方视角预览">
+      <label class="route-perspective-select">
+        <span>查看视角</span>
+        <select :value="perspectiveKeyId" aria-label="调用方视角" :disabled="clientKeysLoading" @change="onPerspectiveSelect">
+          <option value="">全局模型路由（可编辑）</option>
+          <option v-for="key in selectableClientKeys" :key="key.id" :value="key.id">
+            {{ key.name }} · {{ key.keyPrefix }}
+          </option>
+        </select>
+      </label>
+      <button type="button" class="icon-button" aria-label="刷新调用方密钥" :disabled="clientKeysLoading" @click="loadClientKeys"><Icon name="refresh" :size="14" /></button>
+      <span v-if="clientKeysLoading" class="muted small" role="status">正在读取调用方密钥…</span>
+      <template v-else-if="clientKeysError">
+        <span class="text-danger small">{{ clientKeysError }}</span>
+        <button type="button" class="button ghost mini" @click="loadClientKeys">重试</button>
+      </template>
+      <template v-else-if="perspectiveActive">
+        <span class="badge warning">只读视角</span>
+        <span class="route-perspective-summary small" aria-live="polite">
+          {{ selectedModelId
+            ? `${selectedModelId}：全局 ${viewEntries.length} 条，当前视角可用 ${perspectiveUsableCount} 条`
+            : '选择一个模型，查看该调用方实际可用的路由凭据' }}
+        </span>
+      </template>
+      <span v-else class="route-perspective-summary muted small" aria-live="polite">全局模式：保存会修改所有调用方共用的模型路由。</span>
+    </div>
+
     <aside class="panel route-models" aria-labelledby="route-models-heading">
       <div class="route-panel-head">
         <div><h2 id="route-models-heading">对外模型</h2><p class="muted small">规范 ID 与自定义对外 ID</p></div>
@@ -366,9 +466,13 @@ onBeforeUnmount(() => {
         <p v-if="!models.length" class="route-empty muted" role="status">{{ query.trim() ? '没有匹配的模型，请调整搜索。' : '还没有对外模型，请先在渠道或订阅账号中授权模型。' }}</p>
         <ul v-else class="route-model-list" aria-label="对外模型列表">
           <li v-for="model in sortedModels" :key="model.modelId">
-            <button type="button" class="route-model" :class="{ 'is-selected': selectedModelId === model.modelId }" :aria-current="selectedModelId === model.modelId ? 'true' : undefined" :disabled="saving || conflictLoading" :data-model-id="model.modelId" @click="selectModel(model.modelId)">
+            <button type="button" class="route-model" :class="{ 'is-selected': selectedModelId === model.modelId, 'is-scope-denied': !!modelScopeReason(model.modelId) }" :aria-current="selectedModelId === model.modelId ? 'true' : undefined" :disabled="saving || conflictLoading" :data-model-id="model.modelId" @click="selectModel(model.modelId)">
               <strong>{{ model.modelId }}</strong>
-              <span class="route-model-meta"><span class="badge" :class="!model.configured || !model.entryCount ? 'warning' : 'neutral'">{{ modelStatus(model) }}</span><span>{{ model.entryCount }} 个已选 · {{ model.availableCount }} 个可选</span></span>
+              <span class="route-model-meta">
+                <span class="badge" :class="!model.configured || !model.entryCount ? 'warning' : 'neutral'">{{ modelStatus(model) }}</span>
+                <span v-if="modelScopeReason(model.modelId)" class="badge warning">调用方拒绝</span>
+                <span>{{ model.entryCount }} 个已选 · {{ perspectiveActive ? `全局 ${model.availableCount} 个可选` : `${model.availableCount} 个可选` }}</span>
+              </span>
             </button>
           </li>
         </ul>
@@ -388,7 +492,12 @@ onBeforeUnmount(() => {
       <p v-else-if="detailLoading" class="route-empty muted" role="status">正在读取路由配置…</p>
       <ErrorState v-else-if="detailError" title="路由配置读取失败" :message="detailError" @retry="loadDetail(selectedModelId)" />
       <template v-else-if="detail">
-        <div v-if="conflict" class="callout warning route-conflict" role="alert">
+        <div v-if="perspectiveActive" class="callout route-perspective-note" role="status">
+          <strong>调用方视角：只读预览</strong>
+          <p>当前显示「{{ perspectiveKey?.name }}」的访问范围；被排除的凭据保留全局位置并标注原因。排序、添加、移除和保存已禁用，切回全局视角后编辑。</p>
+          <p v-if="conflict" class="route-scope-reason">服务器已有更新版本 {{ conflictLatest?.revision ?? '未知' }}；当前预览使用{{ conflictLatest ? '已拉取的最新版本' : '本地旧版本' }}，请切回全局视角处理冲突。</p>
+        </div>
+        <div v-if="conflict && !perspectiveActive" class="callout warning route-conflict" role="alert">
           <strong>路由配置已被其他管理员更新，本次未保存。</strong>
           <p>你的草稿已保留。请核对服务器最新顺序，再选择载入最新配置或保留草稿后重试。</p>
           <p v-if="conflictLoading" role="status">正在读取最新版本…</p>
@@ -402,24 +511,28 @@ onBeforeUnmount(() => {
           <button v-else-if="!conflictLoading" type="button" class="button ghost mini" @click="loadConflictLatest">重新读取最新版本</button>
         </div>
 
-        <div class="route-section-head"><h3>已选凭据 <span class="muted small">{{ entries.length }} 个</span></h3><span v-if="dirty" class="badge warning">未保存</span></div>
-        <p id="route-order-help" class="muted small">使用上移、下移按钮或拖动条目调整顺序。不可用凭据会保留位置，可移除或调整。可用表示配置就绪，请求仍受冷却、额度和并发限制。</p>
-        <div v-if="!entries.length" class="route-empty route-empty-order">
+        <div class="route-section-head"><h3>已选凭据 <span class="muted small">{{ viewEntries.length }} 个</span></h3><span v-if="dirty && !perspectiveActive" class="badge warning">未保存</span></div>
+        <p v-if="perspectiveActive" class="muted small">只读视角：全局路由共 {{ viewEntries.length }} 条，当前调用方可用 {{ perspectiveUsableCount }} 条。未保存草稿会保留，切回全局后可继续编辑。</p>
+        <p v-else id="route-order-help" class="muted small">使用上移、下移按钮或拖动条目调整顺序。不可用凭据会保留位置，可移除或调整。可用表示配置就绪，请求仍受冷却、额度和并发限制。</p>
+        <div v-if="!viewEntries.length" class="route-empty route-empty-order">
           <Icon name="list" :size="25" />
-          <strong>{{ !detail.configured ? '待配置，请添加凭据' : '尚未选择路由凭据' }}</strong>
-          <p>从下方添加凭据。空列表不会自动使用其他凭据，模型将无法接收请求。</p>
+          <strong>{{ perspectiveActive
+            ? (detail.configured ? '该模型没有全局路由凭据' : '该模型尚未配置路由')
+            : (!detail.configured ? '待配置，请添加凭据' : '尚未选择路由凭据') }}</strong>
+          <p>{{ perspectiveActive ? '该模型当前没有全局路由凭据。' : '从下方添加凭据。空列表不会自动使用其他凭据，模型将无法接收请求。' }}</p>
         </div>
-        <ol v-else class="route-entry-list" aria-label="已选凭据顺序" aria-describedby="route-order-help">
-          <li v-for="(entry, index) in entries" :key="entryKey(entry)" class="route-entry" :class="{ 'is-unavailable': !entry.selectable, 'is-dragging': draggedEntryKey === entryKey(entry), 'is-drag-over': dragOverEntryKey === entryKey(entry) && draggedEntryKey !== entryKey(entry) }" :data-route-entry="entryKey(entry)" :draggable="!editorBusy" @dragstart="dragStart($event, entry)" @dragover="dragOver($event, entry)" @drop="dropEntry($event, entry)" @dragend="clearDrag">
+        <ol v-else class="route-entry-list" aria-label="已选凭据顺序" :aria-describedby="perspectiveActive ? undefined : 'route-order-help'">
+          <li v-for="(entry, index) in viewEntries" :key="entryKey(entry)" class="route-entry" :class="{ 'is-unavailable': !entry.selectable, 'is-scope-denied': !!credentialScopeReason(entry), 'is-dragging': draggedEntryKey === entryKey(entry), 'is-drag-over': dragOverEntryKey === entryKey(entry) && draggedEntryKey !== entryKey(entry) }" :data-route-entry="entryKey(entry)" :draggable="!editorBusy && !perspectiveActive" @dragstart="dragStart($event, entry)" @dragover="dragOver($event, entry)" @drop="dropEntry($event, entry)" @dragend="clearDrag">
             <span class="route-position" aria-hidden="true">{{ index + 1 }}</span>
             <div class="route-credential-copy">
-              <div class="route-credential-title"><strong>{{ entry.credentialName || entry.credentialId }}</strong><span class="badge neutral">{{ entry.credentialType === 'oauth' ? '订阅账号' : '静态密钥' }}</span><span class="badge" :class="entry.selectable ? 'success' : 'warning'">{{ entry.selectable ? '可用' : '不可用' }}</span></div>
+              <div class="route-credential-title"><strong>{{ entry.credentialName || entry.credentialId }}</strong><span class="badge neutral">{{ entry.credentialType === 'oauth' ? '订阅账号' : '静态密钥' }}</span><span class="badge" :class="entry.selectable ? 'success' : 'warning'">{{ entry.selectable ? '可用' : '不可用' }}</span><span v-if="perspectiveActive && credentialScopeReason(entry)" class="badge warning">调用方排除</span></div>
               <p class="muted small">{{ entry.channelName || entry.channelId }}</p>
               <p class="route-upstream small">上游模型：{{ entry.upstreamModels.join('、') || '无授权模型' }}</p>
               <p class="muted small">协议：{{ entry.protocols.join(' / ') || '未配置' }}</p>
               <p v-if="!entry.selectable" class="route-reason small">{{ unavailableReason(entry) }}</p>
+              <p v-if="perspectiveActive && credentialScopeReason(entry)" class="route-scope-reason small">调用方范围：{{ credentialScopeReason(entry) }}</p>
             </div>
-            <div class="route-entry-actions" :aria-label="credentialLabel(entry) + '的排序与移除操作'" role="group">
+            <div v-if="!perspectiveActive" class="route-entry-actions" :aria-label="credentialLabel(entry) + '的排序与移除操作'" role="group">
               <button type="button" class="icon-button" data-action="up" :aria-label="'上移 ' + credentialLabel(entry)" title="上移" :disabled="editorBusy || index === 0" @click="moveEntry(entry, -1)"><Icon name="up" :size="18" /></button>
               <button type="button" class="icon-button" data-action="down" :aria-label="'下移 ' + credentialLabel(entry)" title="下移" :disabled="editorBusy || index === entries.length - 1" @click="moveEntry(entry, 1)"><Icon name="down" :size="18" /></button>
               <button type="button" class="icon-button danger" data-action="remove" :aria-label="'移除 ' + credentialLabel(entry)" title="移除" :disabled="editorBusy" @click="removeEntry(entry)"><Icon name="trash" :size="16" /></button>
@@ -427,7 +540,7 @@ onBeforeUnmount(() => {
           </li>
         </ol>
 
-        <div class="route-add-section">
+        <div v-if="!perspectiveActive" class="route-add-section">
           <div class="route-section-head"><h3>添加凭据 <span class="muted small">{{ remainingCount }} 个未选择</span></h3></div>
           <label class="search-box route-credential-search"><Icon name="search" :size="16" /><input v-model="credentialQuery" type="search" aria-label="搜索可添加凭据" placeholder="搜索渠道、凭据或上游模型" autocomplete="off" /></label>
           <p v-if="!availableCredentials.length" class="muted small" role="status">{{ credentialQuery.trim() ? '没有匹配的凭据。' : remainingCount ? '没有匹配的凭据。' : '没有更多凭据。可在渠道或订阅账号中配置并授权此模型。' }}</p>
@@ -445,11 +558,11 @@ onBeforeUnmount(() => {
           </ul>
         </div>
 
-        <div v-if="saveError" class="callout danger" role="alert">{{ saveError }} 草稿已保留，可重试保存。</div>
-        <div v-if="!entries.length && (dirty || !detail.configured)" class="callout warning" role="status">保存空列表后，该模型将停止接收请求。请确认不选择任何凭据。</div>
+        <div v-if="saveError && !perspectiveActive" class="callout danger" role="alert">{{ saveError }} 草稿已保留，可重试保存。</div>
+        <div v-if="!perspectiveActive && !entries.length && (dirty || !detail.configured)" class="callout warning" role="status">保存空列表后，该模型将停止接收请求。请确认不选择任何凭据。</div>
         <div class="route-save-bar">
-          <span class="small" role="status">{{ savedNotice || (dirty ? '有未保存修改' : !detail.configured ? '模型待配置，可添加凭据或保存空列表' : '当前配置未修改') }}</span>
-          <div class="route-inline-actions"><button type="button" class="button ghost" :disabled="!dirty || editorBusy || conflict" @click="resetDraft">撤销修改</button><button type="button" class="button primary" :disabled="!canSave" @click="save">{{ saving ? '保存中…' : '保存路由' }}</button></div>
+          <span class="small" role="status">{{ perspectiveActive ? '调用方视角为只读预览，切回全局视角后编辑' : savedNotice || (dirty ? '有未保存修改' : !detail.configured ? '模型待配置，可添加凭据或保存空列表' : '当前配置未修改') }}</span>
+          <div class="route-inline-actions"><button type="button" class="button ghost" :disabled="perspectiveActive || !dirty || editorBusy || conflict" @click="resetDraft">撤销修改</button><button type="button" class="button primary" :disabled="perspectiveActive || !canSave" @click="save">{{ saving ? '保存中…' : '保存路由' }}</button></div>
         </div>
       </template>
     </section>
@@ -461,6 +574,15 @@ onBeforeUnmount(() => {
 .model-routes-view { display: grid; grid-template-columns: minmax(230px, 300px) minmax(0, 1fr); align-items: start; gap: 18px; min-width: 0; }
 .route-models, .route-editor { min-width: 0; padding: 18px; }
 .route-models { position: sticky; top: 18px; }
+.route-perspective { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 14px; }
+.route-perspective-select { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.route-perspective-select select { min-width: 180px; max-width: min(320px, 60vw); padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--glass-field); color: var(--ink); font: inherit; }
+.route-perspective-summary { margin-left: auto; overflow-wrap: anywhere; }
+.route-perspective-note { margin-bottom: 18px; }
+.route-perspective-note p { margin: 5px 0 0; line-height: 1.7; }
+.route-model.is-scope-denied { opacity: .7; }
+.route-entry.is-scope-denied { border-left: 3px solid var(--warning); padding-left: 10px; }
+.route-scope-reason { color: var(--danger); }
 .route-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; margin-bottom: 16px; }
 .route-panel-head > div { min-width: 0; }
 .route-panel-head h2 { margin: 0 0 5px; font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
@@ -489,7 +611,7 @@ onBeforeUnmount(() => {
 .route-entry:active { cursor: grabbing; }
 .route-entry.is-dragging { opacity: .58; }
 .route-entry.is-drag-over { border-color: var(--brand); box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 20%, transparent); }
-.route-entry.is-unavailable { border-left: 3px solid var(--warning); padding-left: 10px; }
+.route-entry.is-unavailable:not(.is-scope-denied) { border-left: 3px solid var(--warning); padding-left: 10px; }
 .route-position { display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid var(--glass-line); border-radius: 50%; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .route-credential-copy { min-width: 0; }
 .route-credential-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 26px; }
@@ -514,6 +636,6 @@ onBeforeUnmount(() => {
 .route-entry[draggable="false"] { cursor: default; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 1000px) { .model-routes-view { grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 12px; } .route-entry { grid-template-columns: 26px minmax(0, 1fr); } .route-entry-actions { grid-column: 2; justify-self: end; } }
-@media (max-width: 760px) { .model-routes-view { grid-template-columns: minmax(0, 1fr); } .route-models { position: static; } .route-model-list { max-height: 250px; } .route-models, .route-editor { padding: 14px; } .route-save-bar { align-items: stretch; } .route-save-bar > .route-inline-actions { margin-left: auto; } .route-entry-actions .icon-button, .route-available > .button { min-width: 40px; min-height: 40px; } }
+@media (max-width: 760px) { .model-routes-view { grid-template-columns: minmax(0, 1fr); } .route-models { position: static; } .route-model-list { max-height: 250px; } .route-models, .route-editor { padding: 14px; } .route-perspective-summary { flex-basis: 100%; margin-left: 0; } .route-save-bar { align-items: stretch; } .route-save-bar > .route-inline-actions { margin-left: auto; } .route-entry-actions .icon-button, .route-available > .button { min-width: 40px; min-height: 40px; } }
 @media (prefers-reduced-transparency: reduce) { .route-model:hover, .route-model.is-selected, .route-entry { background: var(--panel); } }
 </style>
