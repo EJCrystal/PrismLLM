@@ -567,4 +567,60 @@ describe('ModelRoutesView mounted credential-order editor', () => {
     assert.equal(fixture.writes.length, 2)
     assert.deepEqual(fixture.writes[1], fixture.writes[0])
   })
+
+  it('supports double-click position editing with auto-shift, top button, and selectable-only filter', async () => {
+    await mount()
+    availableRow(keyFor(staticC)).querySelector('button').click()
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(staticA), keyFor(oauthB), keyFor(staticC)])
+
+    // Double-click position 3 -> input 1 -> Enter moves staticC to #1 and shifts others down
+    const posBadge = entryRow(keyFor(staticC)).querySelector('.route-position')
+    posBadge.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    await settle()
+    const posInput = entryRow(keyFor(staticC)).querySelector('input[data-action="position-input"]')
+    assert.ok(posInput, '双击序号后应显示位次输入框')
+    posInput.value = '1'
+    posInput.dispatchEvent(new Event('input', { bubbles: true }))
+    posInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(staticC), keyFor(staticA), keyFor(oauthB)])
+    assert.equal(text(entryRow(keyFor(staticC)).querySelector('.route-position')), '1')
+    assert.equal(text(entryRow(keyFor(staticA)).querySelector('.route-position')), '2')
+    assert.equal(text(entryRow(keyFor(oauthB)).querySelector('.route-position')), '3')
+
+    // Escape cancels editing without changing order
+    entryRow(keyFor(oauthB)).querySelector('.route-position').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    await settle()
+    const cancelInput = entryRow(keyFor(oauthB)).querySelector('input[data-action="position-input"]')
+    cancelInput.value = '1'
+    cancelInput.dispatchEvent(new Event('input', { bubbles: true }))
+    cancelInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(staticC), keyFor(staticA), keyFor(oauthB)])
+
+    // Top button moves oauthB to #1
+    entryButton('top', keyFor(oauthB)).click()
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(oauthB), keyFor(staticC), keyFor(staticA)])
+
+    // Selectable-only checkbox hides unavailable oauthD from available list
+    assert.ok(availableRow(keyFor(oauthD)))
+    const filterCheckbox = host.querySelector('.route-available-filter input[type="checkbox"]')
+    assert.ok(filterCheckbox)
+    filterCheckbox.checked = true
+    filterCheckbox.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    assert.equal(availableRow(keyFor(oauthD)), undefined)
+
+    // Narrow/mobile tabs toggle between selected pane and add pane
+    const tabs = [...host.querySelectorAll('.route-mobile-tab')]
+    assert.equal(tabs.length, 2)
+    assert.equal(host.querySelector('.route-selected-pane').classList.contains('is-mobile-hidden'), false)
+    assert.equal(host.querySelector('.route-add-section').classList.contains('is-mobile-hidden'), true)
+    tabs[1].click()
+    await settle()
+    assert.equal(host.querySelector('.route-selected-pane').classList.contains('is-mobile-hidden'), true)
+    assert.equal(host.querySelector('.route-add-section').classList.contains('is-mobile-hidden'), false)
+  })
 })

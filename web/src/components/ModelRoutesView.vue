@@ -31,12 +31,18 @@ const conflictLoading = ref(false)
 const conflictError = ref('')
 const draggedEntryKey = ref('')
 const dragOverEntryKey = ref('')
+const editingPositionKey = ref('')
+const editingPositionValue = ref<string | number>('')
+const recentlyMovedKey = ref('')
+const onlySelectableAvailable = ref(false)
+const mobilePane = ref<'selected' | 'add'>('selected')
 const clientKeys = ref<ClientKey[]>([])
 const clientKeysLoading = ref(true)
 const clientKeysError = ref('')
 const perspectiveKeyId = ref('')
 const now = ref(Date.now())
 let expiryTimer: ReturnType<typeof setTimeout> | undefined
+let highlightTimer: ReturnType<typeof setTimeout> | undefined
 let listGeneration = 0
 let detailGeneration = 0
 let disposed = false
@@ -179,9 +185,11 @@ const availableCredentials = computed(() => {
   const search = credentialQuery.value.trim().toLowerCase()
   return (detail.value?.availableCredentials ?? [])
     .filter(entry => !selectedKeys.value.has(entryKey(entry)))
+    .filter(entry => !onlySelectableAvailable.value || entry.selectable)
     .filter(entry => !search || [entry.channelName, entry.credentialName, entry.channelId, entry.credentialId, ...entry.upstreamModels, ...entry.protocols].join(' ').toLowerCase().includes(search))
 })
 const remainingCount = computed(() => (detail.value?.availableCredentials ?? []).filter(entry => !selectedKeys.value.has(entryKey(entry))).length)
+const unavailableRemainingCount = computed(() => (detail.value?.availableCredentials ?? []).filter(entry => !selectedKeys.value.has(entryKey(entry)) && !entry.selectable).length)
 const canSave = computed(() => !!detail.value && !perspectiveActive.value && (dirty.value || !detail.value.configured) && !editorBusy.value && !conflict.value)
 
 function clearDrag() {
@@ -189,8 +197,23 @@ function clearDrag() {
   dragOverEntryKey.value = ''
 }
 
+function clearPositionEdit() {
+  editingPositionKey.value = ''
+  editingPositionValue.value = ''
+}
+
+function markRecentlyMoved(key: string) {
+  clearTimeout(highlightTimer)
+  recentlyMovedKey.value = key
+  highlightTimer = setTimeout(() => {
+    recentlyMovedKey.value = ''
+  }, 1400)
+}
+
 function acceptDetail(value: ModelRouteDetail) {
   clearDrag()
+  clearPositionEdit()
+  recentlyMovedKey.value = ''
   detail.value = value
   entries.value = cloneEntries(value.entries)
   conflict.value = false
@@ -239,6 +262,9 @@ async function selectModel(modelId: string) {
   if (saving.value || conflictLoading.value || selectedModelId.value === modelId) return
   if (dirty.value && !window.confirm('当前模型的路由顺序尚未保存，切换模型将丢弃修改。确定切换吗？')) return
   clearDrag()
+  clearPositionEdit()
+  recentlyMovedKey.value = ''
+  mobilePane.value = 'selected'
   selectedModelId.value = modelId
   detail.value = null
   entries.value = []
@@ -261,25 +287,62 @@ function changed() {
   savedNotice.value = ''
 }
 
-async function focusEntry(key: string, action: string) {
+async function focusEntry(key: string, action: string, scroll = false) {
   await nextTick()
   const row = [...(root.value?.querySelectorAll<HTMLElement>('[data-route-entry]') ?? [])].find(node => node.dataset.routeEntry === key)
+  if (scroll) row?.scrollIntoView({ block: 'nearest' })
+  const fallbackAction = action === 'down' ? 'up' : action === 'up' ? 'down' : ''
   const button = row?.querySelector<HTMLButtonElement>(`button[data-action="${action}"]:not(:disabled)`)
+    ?? (fallbackAction ? row?.querySelector<HTMLButtonElement>(`button[data-action="${fallbackAction}"]:not(:disabled)`) : null)
     ?? row?.querySelector<HTMLButtonElement>('button:not(:disabled)')
   button?.focus()
 }
 
-function moveEntry(target: ModelRouteIdentity, delta: -1 | 1) {
-  if (editorBusy.value || perspectiveActive.value) return
-  const index = entries.value.findIndex(entry => entryKey(entry) === entryKey(target))
+function moveToPosition(target: ModelRouteIdentity, targetPosition: number, focusAction = 'up', scroll = false) {
+  if (editorBusy.value || perspectiveActive.value || entries.value.length < 2) return
+  const key = entryKey(target)
+  const index = entries.value.findIndex(entry => entryKey(entry) === key)
   if (index < 0) return
-  const destination = index + delta
-  if (destination < 0 || destination >= entries.value.length) return
+  const clampedPosition = Math.max(1, Math.min(entries.value.length, Math.trunc(targetPosition)))
+  const destination = clampedPosition - 1
+  if (destination === index) return
   const [entry] = entries.value.splice(index, 1)
   entries.value.splice(destination, 0, entry)
   changed()
-  announcement.value = `${credentialLabel(entry)} 已移至第 ${destination + 1} 位，共 ${entries.value.length} 个凭据。`
-  void focusEntry(entryKey(entry), delta === -1 ? 'up' : 'down')
+  markRecentlyMoved(key)
+  announcement.value = `${credentialLabel(entry)} 已移至第 ${clampedPosition} 位，共 ${entries.value.length} 个凭据。`
+  void focusEntry(key, focusAction, scroll)
+}
+
+function moveEntry(target: ModelRouteIdentity, delta: -1 | 1) {
+  const index = entries.value.findIndex(entry => entryKey(entry) === entryKey(target))
+  if (index < 0) return
+  moveToPosition(target, index + 1 + delta, delta === -1 ? 'up' : 'down')
+}
+
+async function startPositionEdit(target: ModelRouteIdentity, index: number) {
+  if (editorBusy.value || perspectiveActive.value || entries.value.length < 2) return
+  const key = entryKey(target)
+  editingPositionKey.value = key
+  editingPositionValue.value = String(index + 1)
+  await nextTick()
+  const row = [...(root.value?.querySelectorAll<HTMLElement>('[data-route-entry]') ?? [])].find(node => node.dataset.routeEntry === key)
+  const input = row?.querySelector<HTMLInputElement>('input[data-action="position-input"]')
+  input?.focus()
+  input?.select()
+}
+
+function cancelPositionEdit() {
+  clearPositionEdit()
+}
+
+function commitPositionEdit(target: ModelRouteIdentity) {
+  const key = entryKey(target)
+  if (editingPositionKey.value !== key) return
+  const parsed = Number.parseInt(String(editingPositionValue.value).trim(), 10)
+  clearPositionEdit()
+  if (!Number.isFinite(parsed)) return
+  moveToPosition(target, parsed, 'up', true)
 }
 
 function dragStart(event: DragEvent, target: ModelRouteIdentity) {
@@ -346,6 +409,7 @@ function removeEntry(target: ModelRouteIdentity) {
 function resetDraft() {
   if (!detail.value || editorBusy.value || perspectiveActive.value) return
   if (dirty.value && !window.confirm('丢弃当前未保存的路由修改？')) return
+  clearPositionEdit()
   entries.value = cloneEntries(detail.value.entries)
   changed()
   announcement.value = '已恢复读取时的路由顺序。'
@@ -428,8 +492,17 @@ function beforeUnload(event: BeforeUnloadEvent) {
   event.returnValue = ''
 }
 
-watch(editorBusy, busy => { if (busy) clearDrag() })
-watch(perspectiveKeyId, () => clearDrag())
+watch(editorBusy, busy => {
+  if (busy) {
+    clearDrag()
+    clearPositionEdit()
+  }
+})
+watch(perspectiveKeyId, () => {
+  clearDrag()
+  clearPositionEdit()
+  if (perspectiveKeyId.value) mobilePane.value = 'selected'
+})
 watch(perspectiveKey, key => {
   if (!key && perspectiveKeyId.value) perspectiveKeyId.value = ''
 })
@@ -452,6 +525,7 @@ onBeforeUnmount(() => {
   detailGeneration++
   clearTimeout(searchTimer)
   clearTimeout(expiryTimer)
+  clearTimeout(highlightTimer)
   window.removeEventListener('beforeunload', beforeUnload)
 })
 </script>
@@ -545,51 +619,105 @@ onBeforeUnmount(() => {
           <button v-else-if="!conflictLoading" type="button" class="button ghost mini" @click="loadConflictLatest">重新读取最新版本</button>
         </div>
 
-        <div class="route-section-head"><h3>已选凭据 <span class="muted small">{{ viewEntries.length }} 个</span></h3><span v-if="dirty && !perspectiveActive" class="badge warning">未保存</span></div>
-        <p v-if="perspectiveActive" class="muted small">只读视角：全局路由共 {{ viewEntries.length }} 条，当前调用方可用 {{ perspectiveUsableCount }} 条。未保存草稿会保留，切回全局后可继续编辑。</p>
-        <p v-else id="route-order-help" class="muted small">使用上移、下移按钮或拖动条目调整顺序。不可用凭据会保留位置，可移除或调整。可用表示配置就绪，请求仍受冷却、额度和并发限制。</p>
-        <div v-if="!viewEntries.length" class="route-empty route-empty-order">
-          <Icon name="list" :size="25" />
-          <strong>{{ perspectiveActive
-            ? (detail.configured ? '该模型没有全局路由凭据' : '该模型尚未配置路由')
-            : (!detail.configured ? '待配置，请添加凭据' : '尚未选择路由凭据') }}</strong>
-          <p>{{ perspectiveActive ? '该模型当前没有全局路由凭据。' : '从下方添加凭据。空列表不会自动使用其他凭据，模型将无法接收请求。' }}</p>
+        <div v-if="!perspectiveActive" class="route-mobile-tabs" role="tablist" aria-label="切换已选凭据与添加凭据">
+          <button type="button" role="tab" :aria-selected="mobilePane === 'selected'" class="route-mobile-tab" :class="{ 'is-active': mobilePane === 'selected' }" @click="mobilePane = 'selected'">
+            已选凭据 <span class="badge neutral">{{ viewEntries.length }}</span>
+          </button>
+          <button type="button" role="tab" :aria-selected="mobilePane === 'add'" class="route-mobile-tab" :class="{ 'is-active': mobilePane === 'add' }" @click="mobilePane = 'add'">
+            添加凭据 <span class="badge neutral">{{ remainingCount }}</span>
+          </button>
         </div>
-        <ol v-else class="route-entry-list" aria-label="已选凭据顺序" :aria-describedby="perspectiveActive ? undefined : 'route-order-help'">
-          <li v-for="(entry, index) in viewEntries" :key="entryKey(entry)" class="route-entry" :class="{ 'is-unavailable': !entry.selectable, 'is-scope-denied': !!credentialScopeReason(entry), 'is-dragging': draggedEntryKey === entryKey(entry), 'is-drag-over': dragOverEntryKey === entryKey(entry) && draggedEntryKey !== entryKey(entry) }" :data-route-entry="entryKey(entry)" :draggable="!editorBusy && !perspectiveActive" @dragstart="dragStart($event, entry)" @dragover="dragOver($event, entry)" @drop="dropEntry($event, entry)" @dragend="clearDrag">
-            <span class="route-position" aria-hidden="true">{{ index + 1 }}</span>
-            <div class="route-credential-copy">
-              <div class="route-credential-title"><strong>{{ entry.credentialName || entry.credentialId }}</strong><span class="badge neutral">{{ entry.credentialType === 'oauth' ? '订阅账号' : '静态密钥' }}</span><span class="badge" :class="entry.selectable ? 'success' : 'warning'">{{ entry.selectable ? '可用' : '不可用' }}</span><span v-if="perspectiveActive && credentialScopeReason(entry)" class="badge warning">调用方排除</span></div>
-              <p class="muted small">{{ entry.channelName || entry.channelId }}</p>
-              <p class="route-upstream small">上游模型：{{ entry.upstreamModels.join('、') || '无授权模型' }}</p>
-              <p class="muted small">协议：{{ entry.protocols.join(' / ') || '未配置' }}</p>
-              <p v-if="!entry.selectable" class="route-reason small">{{ unavailableReason(entry) }}</p>
-              <p v-if="perspectiveActive && credentialScopeReason(entry)" class="route-scope-reason small">调用方范围：{{ credentialScopeReason(entry) }}</p>
-            </div>
-            <div v-if="!perspectiveActive" class="route-entry-actions" :aria-label="credentialLabel(entry) + '的排序与移除操作'" role="group">
-              <button type="button" class="icon-button" data-action="up" :aria-label="'上移 ' + credentialLabel(entry)" title="上移" :disabled="editorBusy || index === 0" @click="moveEntry(entry, -1)"><Icon name="up" :size="18" /></button>
-              <button type="button" class="icon-button" data-action="down" :aria-label="'下移 ' + credentialLabel(entry)" title="下移" :disabled="editorBusy || index === entries.length - 1" @click="moveEntry(entry, 1)"><Icon name="down" :size="18" /></button>
-              <button type="button" class="icon-button danger" data-action="remove" :aria-label="'移除 ' + credentialLabel(entry)" title="移除" :disabled="editorBusy" @click="removeEntry(entry)"><Icon name="trash" :size="16" /></button>
-            </div>
-          </li>
-        </ol>
 
-        <div v-if="!perspectiveActive" class="route-add-section">
-          <div class="route-section-head"><h3>添加凭据 <span class="muted small">{{ remainingCount }} 个未选择</span></h3></div>
-          <label class="search-box route-credential-search"><Icon name="search" :size="16" /><input v-model="credentialQuery" type="search" aria-label="搜索可添加凭据" placeholder="搜索渠道、凭据或上游模型" autocomplete="off" /></label>
-          <p v-if="!availableCredentials.length" class="muted small" role="status">{{ credentialQuery.trim() ? '没有匹配的凭据。' : remainingCount ? '没有匹配的凭据。' : '没有更多凭据。可在渠道或订阅账号中配置并授权此模型。' }}</p>
-          <ul v-else class="route-available-list" aria-label="可添加凭据">
-            <li v-for="entry in availableCredentials" :key="entryKey(entry)" class="route-available" :data-available-credential="entryKey(entry)">
-              <div class="route-credential-copy">
-                <div class="route-credential-title"><strong>{{ entry.credentialName || entry.credentialId }}</strong><span class="badge neutral">{{ entry.credentialType === 'oauth' ? '订阅账号' : '静态密钥' }}</span><span v-if="!entry.selectable" class="badge warning">不可用</span></div>
-                <p class="muted small">{{ entry.channelName || entry.channelId }}</p>
-                <p class="route-upstream small">上游模型：{{ entry.upstreamModels.join('、') || '无授权模型' }}</p>
-                <p class="muted small">协议：{{ entry.protocols.join(' / ') || '未配置' }}</p>
-                <p v-if="!entry.selectable" class="route-reason small">{{ unavailableReason(entry) }}</p>
-              </div>
-              <button type="button" class="button subtle mini" :aria-label="'添加 ' + credentialLabel(entry)" :title="entry.selectable ? '添加到顺序末尾' : unavailableReason(entry)" :disabled="editorBusy || !entry.selectable" @click="addEntry(entry)"><Icon name="plus" :size="15" />添加</button>
-            </li>
-          </ul>
+        <div class="route-workspace" :class="{ 'is-readonly': perspectiveActive }">
+          <div class="route-selected-pane" :class="{ 'is-mobile-hidden': !perspectiveActive && mobilePane !== 'selected' }">
+            <div class="route-section-head"><h3>已选凭据 <span class="muted small">{{ viewEntries.length }} 个</span></h3><span v-if="dirty && !perspectiveActive" class="badge warning">未保存</span></div>
+            <p v-if="perspectiveActive" class="muted small">只读视角：全局路由共 {{ viewEntries.length }} 条，当前调用方可用 {{ perspectiveUsableCount }} 条。未保存草稿会保留，切回全局后可继续编辑。</p>
+            <p v-else id="route-order-help" class="muted small">支持拖动、上移/下移/置顶，或<strong>双击序号</strong>直接修改位次（其余自动顺延）。</p>
+            <div v-if="!viewEntries.length" class="route-empty route-empty-order">
+              <Icon name="list" :size="25" />
+              <strong>{{ perspectiveActive
+                ? (detail.configured ? '该模型没有全局路由凭据' : '该模型尚未配置路由')
+                : (!detail.configured ? '待配置，请添加凭据' : '尚未选择路由凭据') }}</strong>
+              <p>{{ perspectiveActive ? '该模型当前没有全局路由凭据。' : '从右侧添加凭据。空列表不会自动使用其他凭据，模型将无法接收请求。' }}</p>
+            </div>
+            <ol v-else class="route-entry-list" aria-label="已选凭据顺序" :aria-describedby="perspectiveActive ? undefined : 'route-order-help'">
+              <li v-for="(entry, index) in viewEntries" :key="entryKey(entry)" class="route-entry" :class="{ 'is-unavailable': !entry.selectable, 'is-scope-denied': !!credentialScopeReason(entry), 'is-dragging': draggedEntryKey === entryKey(entry), 'is-drag-over': dragOverEntryKey === entryKey(entry) && draggedEntryKey !== entryKey(entry), 'is-just-moved': recentlyMovedKey === entryKey(entry) }" :data-route-entry="entryKey(entry)" :draggable="!editorBusy && !perspectiveActive && editingPositionKey !== entryKey(entry)" @dragstart="dragStart($event, entry)" @dragover="dragOver($event, entry)" @drop="dropEntry($event, entry)" @dragend="clearDrag">
+                <input
+                  v-if="editingPositionKey === entryKey(entry)"
+                  v-model="editingPositionValue"
+                  type="number"
+                  inputmode="numeric"
+                  class="route-position-input"
+                  data-action="position-input"
+                  :min="1"
+                  :max="entries.length"
+                  :aria-label="'修改 ' + credentialLabel(entry) + ' 的位次'"
+                  @keydown.enter.prevent="commitPositionEdit(entry)"
+                  @keydown.escape.prevent="cancelPositionEdit"
+                  @blur="commitPositionEdit(entry)"
+                />
+                <span
+                  v-else
+                  class="route-position"
+                  :class="{ 'is-editable': !perspectiveActive && !editorBusy && entries.length > 1 }"
+                  :title="!perspectiveActive && entries.length > 1 ? '双击输入目标位次（按回车确认，其余顺延）' : undefined"
+                  aria-hidden="true"
+                  @dblclick.stop="startPositionEdit(entry, index)"
+                >{{ index + 1 }}</span>
+                <div class="route-credential-copy">
+                  <div class="route-credential-title">
+                    <strong>{{ entry.credentialName || entry.credentialId }}</strong>
+                    <span class="route-channel-tag muted small">{{ entry.channelName || entry.channelId }}</span>
+                    <span class="badge neutral">{{ entry.credentialType === 'oauth' ? '订阅账号' : '静态密钥' }}</span>
+                    <span class="badge" :class="entry.selectable ? 'success' : 'warning'">{{ entry.selectable ? '可用' : '不可用' }}</span>
+                    <span v-if="perspectiveActive && credentialScopeReason(entry)" class="badge warning">调用方排除</span>
+                  </div>
+                  <div class="route-credential-meta">
+                    <span class="route-upstream small" :title="entry.upstreamModels.join('、') || undefined">上游模型：{{ entry.upstreamModels.join('、') || '无授权模型' }}</span>
+                    <span class="muted small">协议：{{ entry.protocols.join(' / ') || '未配置' }}</span>
+                  </div>
+                  <p v-if="!entry.selectable" class="route-reason small">{{ unavailableReason(entry) }}</p>
+                  <p v-if="perspectiveActive && credentialScopeReason(entry)" class="route-scope-reason small">调用方范围：{{ credentialScopeReason(entry) }}</p>
+                </div>
+                <div v-if="!perspectiveActive" class="route-entry-actions" :aria-label="credentialLabel(entry) + '的排序与移除操作'" role="group">
+                  <button type="button" class="icon-button" data-action="top" :aria-label="'置顶 ' + credentialLabel(entry)" title="置顶" :disabled="editorBusy || index === 0" @click="moveToPosition(entry, 1, 'top', true)"><Icon name="to-top" :size="16" /></button>
+                  <button type="button" class="icon-button" data-action="up" :aria-label="'上移 ' + credentialLabel(entry)" title="上移" :disabled="editorBusy || index === 0" @click="moveEntry(entry, -1)"><Icon name="up" :size="18" /></button>
+                  <button type="button" class="icon-button" data-action="down" :aria-label="'下移 ' + credentialLabel(entry)" title="下移" :disabled="editorBusy || index === entries.length - 1" @click="moveEntry(entry, 1)"><Icon name="down" :size="18" /></button>
+                  <button type="button" class="icon-button danger" data-action="remove" :aria-label="'移除 ' + credentialLabel(entry)" title="移除" :disabled="editorBusy" @click="removeEntry(entry)"><Icon name="trash" :size="16" /></button>
+                </div>
+              </li>
+            </ol>
+          </div>
+
+          <div v-if="!perspectiveActive" class="route-add-section" :class="{ 'is-mobile-hidden': mobilePane !== 'add' }">
+            <div class="route-section-head">
+              <h3>添加凭据 <span class="muted small">{{ remainingCount }} 个未选择</span></h3>
+              <label v-if="unavailableRemainingCount" class="route-available-filter small">
+                <input v-model="onlySelectableAvailable" type="checkbox" />
+                <span>仅看可用</span>
+              </label>
+            </div>
+            <label class="search-box route-credential-search"><Icon name="search" :size="16" /><input v-model="credentialQuery" type="search" aria-label="搜索可添加凭据" placeholder="搜索渠道、凭据或上游模型" autocomplete="off" /></label>
+            <p v-if="!availableCredentials.length" class="muted small" role="status">{{ credentialQuery.trim() || onlySelectableAvailable ? '没有匹配的凭据。' : remainingCount ? '没有匹配的凭据。' : '没有更多凭据。可在渠道或订阅账号中配置并授权此模型。' }}</p>
+            <ul v-else class="route-available-list" aria-label="可添加凭据">
+              <li v-for="entry in availableCredentials" :key="entryKey(entry)" class="route-available" :data-available-credential="entryKey(entry)">
+                <div class="route-credential-copy">
+                  <div class="route-credential-title">
+                    <strong>{{ entry.credentialName || entry.credentialId }}</strong>
+                    <span class="route-channel-tag muted small">{{ entry.channelName || entry.channelId }}</span>
+                    <span class="badge neutral">{{ entry.credentialType === 'oauth' ? '订阅账号' : '静态密钥' }}</span>
+                    <span v-if="!entry.selectable" class="badge warning">不可用</span>
+                  </div>
+                  <div class="route-credential-meta">
+                    <span class="route-upstream small" :title="entry.upstreamModels.join('、') || undefined">上游模型：{{ entry.upstreamModels.join('、') || '无授权模型' }}</span>
+                    <span class="muted small">协议：{{ entry.protocols.join(' / ') || '未配置' }}</span>
+                  </div>
+                  <p v-if="!entry.selectable" class="route-reason small">{{ unavailableReason(entry) }}</p>
+                </div>
+                <button type="button" class="button subtle mini" :aria-label="'添加 ' + credentialLabel(entry)" :title="entry.selectable ? '添加到顺序末尾' : unavailableReason(entry)" :disabled="editorBusy || !entry.selectable" @click="addEntry(entry)"><Icon name="plus" :size="15" />添加</button>
+              </li>
+            </ul>
+          </div>
         </div>
 
         <div v-if="saveError && !perspectiveActive" class="callout danger" role="alert">{{ saveError }} 草稿已保留，可重试保存。</div>
@@ -637,29 +765,43 @@ onBeforeUnmount(() => {
 .route-empty-order { display: grid; justify-items: center; gap: 8px; margin: 14px 0; padding: 24px 14px; border: 1px dashed var(--line-strong); border-radius: 10px; color: var(--muted); text-align: center; }
 .route-empty-order strong { color: var(--ink); }
 .route-empty-order p { max-width: 44ch; margin: 0; }
-.route-section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.route-section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 24px; }
 .route-section-head h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0; font-size: 14px; }
-.route-section-head + p { margin: 8px 0 12px; line-height: 1.6; }
-.route-entry-list { display: grid; gap: 8px; margin: 0; }
-.route-entry { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 14px 12px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-field); cursor: grab; }
+.route-selected-pane > p, .route-workspace > .route-selected-pane > p { margin: 0; line-height: 1.5; }
+.route-workspace { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.95fr); align-items: start; gap: 18px; min-width: 0; }
+.route-workspace.is-readonly { grid-template-columns: minmax(0, 1fr); }
+.route-mobile-tabs { display: none; gap: 6px; padding: 4px; margin-bottom: 12px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-field); }
+.route-mobile-tab { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 6px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.route-mobile-tab .badge { margin: 0; font-size: 11px; }
+.route-mobile-tab.is-active { background: var(--panel); color: var(--ink); box-shadow: 0 1px 4px rgba(0, 0, 0, .08); }
+.route-selected-pane { display: grid; gap: 10px; min-width: 0; }
+.route-entry-list { display: grid; gap: 6px; max-height: clamp(280px, 56vh, 640px); overflow-y: auto; padding-right: 4px; margin: 0; }
+.route-entry { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-field); cursor: grab; transition: border-color .2s ease, box-shadow .2s ease; }
 .route-entry:active { cursor: grabbing; }
 .route-entry.is-dragging { opacity: .58; }
-.route-entry.is-drag-over { border-color: var(--brand); box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 20%, transparent); }
+.route-entry.is-drag-over, .route-entry.is-just-moved { border-color: var(--brand); box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 22%, transparent); }
 .route-entry.is-unavailable:not(.is-scope-denied) { border-left: 3px solid var(--warning); padding-left: 10px; }
-.route-position { display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid var(--glass-line); border-radius: 50%; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.route-credential-copy { min-width: 0; }
-.route-credential-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 26px; }
+.route-position { display: grid; place-items: center; width: 28px; height: 26px; border: 1px solid var(--glass-line); border-radius: 999px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; user-select: none; touch-action: manipulation; }
+.route-position.is-editable { cursor: pointer; }
+.route-position.is-editable:hover { border-color: var(--brand); color: var(--brand); background: color-mix(in srgb, var(--brand) 8%, transparent); }
+.route-position-input { width: 38px; height: 26px; padding: 0 4px; border: 1px solid var(--brand); border-radius: 8px; background: var(--surface-solid, var(--panel)); color: var(--ink); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 20%, transparent); }
+.route-position-input::-webkit-inner-spin-button, .route-position-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.route-credential-copy { min-width: 0; display: grid; gap: 3px; }
+.route-credential-title { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; min-height: 22px; }
 .route-credential-title strong { font-size: 13px; overflow-wrap: anywhere; }
+.route-channel-tag { font-size: 12px; overflow-wrap: anywhere; }
+.route-credential-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; line-height: 1.45; }
 .route-upstream { color: var(--ink); }
 .route-reason { color: var(--warning); }
 .route-entry-actions { flex-wrap: nowrap; }
-.route-entry-actions .icon-button { width: 34px; height: 34px; }
-.route-add-section { display: grid; gap: 12px; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--glass-line); }
-.route-available-list { display: grid; max-height: 420px; overflow: auto; margin: 0; }
-.route-available { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--glass-line); }
-.route-available:first-child { padding-top: 0; }
+.route-entry-actions .icon-button { width: 30px; height: 30px; touch-action: manipulation; }
+.route-add-section { display: grid; gap: 10px; min-width: 0; padding-left: 18px; border-left: 1px solid var(--glass-line); }
+.route-available-filter { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; user-select: none; }
+.route-available-filter input { margin: 0; accent-color: var(--brand); }
+.route-available-list { display: grid; gap: 6px; max-height: clamp(240px, 50vh, 580px); overflow-y: auto; padding-right: 4px; margin: 0; }
+.route-available { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border: 1px solid var(--glass-line); border-radius: 9px; background: var(--glass-field); }
 .route-available > .button { flex: 0 0 auto; }
-.route-save-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--glass-line); }
+.route-save-bar { position: sticky; bottom: 0; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 16px -18px -18px; padding: 14px 18px; border-top: 1px solid var(--glass-line); border-radius: 0 0 14px 14px; background: var(--panel); backdrop-filter: blur(14px); }
 .route-save-bar > span { color: var(--muted); }
 .route-conflict { margin-bottom: 18px; }
 .route-conflict p { line-height: 1.7; }
@@ -669,7 +811,9 @@ onBeforeUnmount(() => {
 .route-entry-actions button:disabled { opacity: .4; cursor: not-allowed; }
 .route-entry[draggable="false"] { cursor: default; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-@media (max-width: 1000px) { .model-routes-view { grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 12px; } .route-entry { grid-template-columns: 26px minmax(0, 1fr); } .route-entry-actions { grid-column: 2; justify-self: end; } }
-@media (max-width: 760px) { .model-routes-view { grid-template-columns: minmax(0, 1fr); } .route-models { position: static; } .route-model-list { max-height: 250px; } .route-models, .route-editor { padding: 14px; } .route-perspective-summary { flex-basis: 100%; margin-left: 0; } .route-save-bar { align-items: stretch; } .route-save-bar > .route-inline-actions { margin-left: auto; } .route-entry-actions .icon-button, .route-available > .button { min-width: 40px; min-height: 40px; } }
-@media (prefers-reduced-transparency: reduce) { .route-model:hover, .route-model.is-selected, .route-entry { background: var(--panel); } }
+@media (max-width: 1180px) { .route-mobile-tabs { display: flex; } .route-workspace { grid-template-columns: minmax(0, 1fr); } .route-selected-pane.is-mobile-hidden, .route-add-section.is-mobile-hidden { display: none; } .route-add-section { padding-left: 0; border-left: none; } .route-entry-list, .route-available-list { max-height: min(52dvh, 440px); } }
+@media (max-width: 1000px) { .model-routes-view { grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 12px; } .route-entry { grid-template-columns: 28px minmax(0, 1fr); align-items: start; } .route-entry-actions { grid-column: 2; justify-self: end; } }
+@media (max-width: 760px) { .model-routes-view { grid-template-columns: minmax(0, 1fr); } .route-models { position: static; } .route-model-list { max-height: 160px; } .route-models, .route-editor { padding: 14px; } .route-panel-head { margin-bottom: 12px; } .route-perspective-select { flex: 1 1 200px; min-width: 0; } .route-perspective-select select { flex: 1; min-width: 0; max-width: none; } .route-perspective-summary { flex-basis: 100%; margin-left: 0; } .route-entry-list, .route-available-list { max-height: min(46dvh, 380px); } .route-entry { padding: 8px 10px; gap: 6px 10px; } .route-entry-actions .icon-button { width: 32px; height: 32px; } .route-save-bar { align-items: stretch; margin: 12px -14px -14px; padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px)); } .route-save-bar > .route-inline-actions { width: 100%; justify-content: flex-end; } }
+@media (max-width: 640px) { .route-available { flex-direction: column; align-items: stretch; gap: 8px; } .route-available > .button { align-self: flex-end; min-height: 36px; } }
+@media (prefers-reduced-transparency: reduce) { .route-model:hover, .route-model.is-selected, .route-entry, .route-available, .route-save-bar { background: var(--panel); } }
 </style>
