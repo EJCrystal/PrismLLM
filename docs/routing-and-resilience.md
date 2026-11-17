@@ -56,6 +56,8 @@ PrismLLM 定位为单实例自托管网关，在 PostgreSQL 持久化配置、�
 - `GET /admin/api/model-routes/detail?modelId=` 返回当前已保存 `entries`、全部 `availableCredentials`、revision 和可用性。模型 ID 是公共/Canonical ID；不在路径中，避免斜杠等字符的路径歧义。
 - `PUT /admin/api/model-routes` 完整替换路由，只接受 `modelId`、`expectedRevision` 与有序 `entries`。每项只提交上述三个身份字段。版本冲突返回 HTTP 409 `model_route_revision_changed`，应刷新并由管理员核对后重试。
 
+模型路由页顶部可选择「查看视角」：默认全局模式可编辑；选择一把调用方密钥后进入只读视角，按该密钥的渠道、凭据和模型范围隐藏编辑能力，并将被排除的已选凭据置灰、保留原位置且标注拒绝原因（渠道黑名单、静态密钥/OAuth 账号名单或模型名单）。视角只用于解释和核对，不会修改全局路由，也不会改变请求时的运行时排序。
+
 `configured=false`、revision `0` 且没有已保存路由表示尚未配置，运行时没有候选且不会回退到传统候选发现。显式保存 `entries: []` 同样不使用任何凭据，并会保留已配置状态与递增后的 revision。V74 对迁移时启用渠道的活跃公共模型做一次性初始化，只把当时已启用、已授权且符合模型/账号资格的凭据写入初始有序列表；没有合格凭据的模型保留空路由。迁移生成的路由为 `configured=true`、revision `0`，不能仅凭 revision 判断是否配置。初始顺序依迁移时的旧优先级比较生成，此后不再动态排序。之后新增的模型或凭据都不会自动加入既有路由，必须在管理台显式选择。
 
 `channel.priority`、静态密钥和 OAuth 账号的 `priority` 及 OAuth 路由策略环境变量/API 字段为兼容性保留，但不影响运行时路由顺序。管理台保存的完整列表不会因这些字段、协议原生性、`prompt_cache_key` 或策略读数而重排；`prompt_cache_key` 只作为请求字段转发。

@@ -45,6 +45,7 @@ function createFetch(fixture) {
       return new Response('null')
     }
     if (url.pathname === '/admin/api/model-routes' && method === 'GET') return new Response(JSON.stringify({ items: [{ modelId, configured: true, entryCount: 2, availableCount: 2, revision: fixture.detail.revision }], total: 1, offset: 0, limit: 100 }))
+    if (url.pathname === '/admin/api/client-keys' && method === 'GET') return new Response(JSON.stringify([]))
     if (url.pathname === '/admin/api/model-routes/detail' && method === 'GET') return new Response(JSON.stringify(clone(fixture.detail)))
     if (url.pathname === '/admin/api/model-routes' && method === 'PUT') {
       const body = JSON.parse(init.body)

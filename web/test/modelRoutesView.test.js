@@ -42,6 +42,96 @@ function createFixture() {
       [modelA, { modelId: modelA, revision: 5, configured: true, entries: [clone(staticA), clone(oauthB)], availableCredentials: [clone(staticA), clone(oauthB), clone(staticC), clone(oauthD)] }],
       [modelB, { modelId: modelB, revision: 0, configured: false, entries: [], availableCredentials: [clone(staticC)] }],
     ]),
+    clientKeys: [
+      {
+        id: 'caller-a', name: '调用方 A', keyPrefix: 'prism_a', enabled: true, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'denylist', ids: ['channel-b'] },
+          channelKeys: { mode: 'unrestricted', keys: [] },
+          models: { mode: 'unrestricted', ids: [] },
+        },
+      },
+      {
+        id: 'caller-b', name: '调用方 B', keyPrefix: 'prism_b', enabled: true, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'unrestricted', ids: [] },
+          channelKeys: { mode: 'unrestricted', keys: [] },
+          models: { mode: 'denylist', ids: [modelA] },
+        },
+      },
+      {
+        id: 'caller-c', name: '调用方 C', keyPrefix: 'prism_c', enabled: true, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'unrestricted', ids: [] },
+          channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-b', keyId: 'account-b', credentialType: 'oauth' }] },
+          models: { mode: 'unrestricted', ids: [] },
+        },
+      },
+      {
+        id: 'caller-d', name: '调用方 D', keyPrefix: 'prism_d', enabled: true, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'unrestricted', ids: [] },
+          channelKeys: { mode: 'denylist', keys: [{ channelId: 'channel-a', keyId: 'key-a', credentialType: 'static' }] },
+          models: { mode: 'unrestricted', ids: [] },
+        },
+      },
+      {
+        id: 'caller-e', name: '调用方 E', keyPrefix: 'prism_e', enabled: true, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'unrestricted', ids: [] },
+          channelKeys: { mode: 'allowlist', keys: [] },
+          models: { mode: 'unrestricted', ids: [] },
+        },
+      },
+      {
+        id: 'caller-f', name: '调用方 F', keyPrefix: 'prism_f', enabled: true, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'unrestricted', ids: [] },
+          channelKeys: { mode: 'unrestricted', keys: [] },
+          models: { mode: 'allowlist', ids: [modelB] },
+        },
+      },
+      {
+        id: 'caller-g', name: '调用方 G', keyPrefix: 'prism_g', enabled: true, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'allowlist', ids: ['channel-a'] },
+          channelKeys: { mode: 'unrestricted', keys: [] },
+          models: { mode: 'unrestricted', ids: [] },
+        },
+      },
+      {
+        id: 'caller-disabled', name: '调用方 停用', keyPrefix: 'prism_disabled', enabled: false, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'unrestricted', ids: [] },
+          channelKeys: { mode: 'unrestricted', keys: [] },
+          models: { mode: 'unrestricted', ids: [] },
+        },
+      },
+      {
+        id: 'caller-expired', name: '调用方 过期', keyPrefix: 'prism_expired', enabled: true, expiresAt: 1, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'unrestricted', ids: [] },
+          channelKeys: { mode: 'unrestricted', keys: [] },
+          models: { mode: 'unrestricted', ids: [] },
+        },
+      },
+      {
+        id: 'caller-expiring', name: '调用方 即将过期', keyPrefix: 'prism_expiring', enabled: true, expiresAt: Date.now() + 300, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'unrestricted', ids: [] },
+          channelKeys: { mode: 'unrestricted', keys: [] },
+          models: { mode: 'unrestricted', ids: [] },
+        },
+      },
+      {
+        id: 'caller-expiring-selected', name: '调用方 已选即将过期', keyPrefix: 'prism_expiring_selected', enabled: true, expiresAt: Date.now() + 1200, revokedAt: null,
+        accessPolicy: {
+          channels: { mode: 'unrestricted', ids: [] },
+          channelKeys: { mode: 'unrestricted', keys: [] },
+          models: { mode: 'unrestricted', ids: [] },
+        },
+      },
+    ],
     writes: [],
     requests: [],
     conflictNextWrite: false,
@@ -60,6 +150,9 @@ function createFetch(fixture) {
       const limit = Number(url.searchParams.get('limit') || 100)
       const all = fixture.list.filter(item => item.modelId.toLowerCase().includes(q))
       return new Response(JSON.stringify({ items: all.slice(offset, offset + limit), total: all.length, offset, limit }))
+    }
+    if (url.pathname === '/admin/api/client-keys' && method === 'GET') {
+      return new Response(JSON.stringify(clone(fixture.clientKeys)))
     }
     if (url.pathname === '/admin/api/model-routes/detail' && method === 'GET') {
       const detail = fixture.details.get(url.searchParams.get('modelId'))
@@ -141,6 +234,17 @@ describe('ModelRoutesView mounted credential-order editor', () => {
     if (label === '搜索对外模型') await delay(300)
     await settle()
   }
+  const selectPerspective = async value => {
+    await delay(250)
+    await settle()
+    const select = host.querySelector('select[aria-label="调用方视角"]')
+    assert.ok(select, '缺少调用方视角选择器')
+    assert.equal(select.disabled, false, '调用方视角选择器仍禁用')
+    if (value) assert.ok(select.querySelector(`option[value="${value}"]`), '缺少视角选项：' + value)
+    select.selectedIndex = [...select.querySelectorAll('option')].findIndex(option => option.value === value)
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+  }
   async function mount() {
     fixture = createFixture()
     fetchMock = createFetch(fixture)
@@ -173,6 +277,90 @@ describe('ModelRoutesView mounted credential-order editor', () => {
     window.confirm = originalConfirm
   })
   after(async () => { await server?.close(); dom.window.close() })
+
+  it('previews global model routes through a caller key scope without editing', async () => {
+    await mount()
+    const options = [...host.querySelectorAll('select[aria-label="调用方视角"] option')].map(option => option.value)
+    assert.ok(!options.includes('caller-disabled'), '停用密钥不应进入视角选择')
+    assert.ok(!options.includes('caller-expired'), '过期密钥不应进入视角选择')
+
+    host.querySelector(`[data-model-id="${modelB}"]`).click()
+    await settle()
+    assert.equal(button('保存路由').disabled, false)
+    await selectPerspective('caller-a')
+    assert.equal(button('保存路由').disabled, true, '视角模式必须阻止本可保存的空路由')
+    assert.equal(fixture.writes.length, 0)
+
+    host.querySelector(`[data-model-id="${modelA}"]`).click()
+    await settle()
+    const perspective = text(host.querySelector('.route-perspective'))
+    assert.match(perspective, /只读视角/)
+    assert.match(text(host.querySelector('.route-perspective-note')), /只读预览/)
+    assert.ok(perspective.includes(`${modelA}：全局 2 条，当前视角可用 1 条`), perspective)
+    const denied = entryRow(keyFor(oauthB))
+    assert.match(text(denied), /调用方排除/)
+    assert.match(text(denied), /调用方渠道黑名单/)
+    assert.equal(entryButton('remove', keyFor(oauthB)), null)
+    assert.equal(host.querySelector('.route-add-section'), null)
+
+    await selectPerspective('caller-b')
+    const deniedModel = [...host.querySelectorAll('.route-model')].find(node => node.dataset.modelId === modelA)
+    assert.match(text(deniedModel), /调用方拒绝/)
+    assert.match(text(entryRow(keyFor(staticA))), /调用方模型黑名单/)
+
+    await selectPerspective('caller-c')
+    assert.match(text(entryRow(keyFor(oauthB))), /调用方 OAuth 账号黑名单/)
+
+    await selectPerspective('caller-d')
+    assert.match(text(entryRow(keyFor(staticA))), /调用方静态密钥黑名单/)
+
+    await selectPerspective('caller-e')
+    assert.match(text(entryRow(keyFor(staticA))), /调用方未允许该静态密钥/)
+    assert.match(text(entryRow(keyFor(oauthB))), /调用方未允许该 OAuth 账号/)
+
+    await selectPerspective('caller-f')
+    assert.match(text(entryRow(keyFor(staticA))), /调用方未允许该模型/)
+
+    await selectPerspective('caller-g')
+    assert.match(text(entryRow(keyFor(oauthB))), /调用方未允许该渠道/)
+
+    await selectPerspective('')
+    assert.ok(entryButton('remove', keyFor(oauthB)))
+    assert.ok(host.querySelector('.route-add-section'))
+  })
+
+  it('perspective preview uses the saved route while preserving a dirty draft', async () => {
+    await mount()
+    entryButton('down', keyFor(staticA)).click()
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(oauthB), keyFor(staticA)])
+
+    await selectPerspective('caller-a')
+    assert.deepEqual(entryIds(), [keyFor(staticA), keyFor(oauthB)])
+    assert.match(text(host.querySelector('.route-perspective')), /全局 2 条，当前视角可用 1 条/)
+
+    await selectPerspective('')
+    assert.deepEqual(entryIds(), [keyFor(oauthB), keyFor(staticA)])
+  })
+
+  it('removes a caller key from the perspective selector when it expires after loading', async () => {
+    await mount()
+    assert.ok(host.querySelector('select[aria-label="调用方视角"] option[value="caller-expiring"]'))
+    await delay(450)
+    await settle()
+    assert.equal(host.querySelector('select[aria-label="调用方视角"] option[value="caller-expiring"]'), null)
+  })
+
+  it('clears the active perspective when the selected caller key expires', async () => {
+    await mount()
+    await selectPerspective('caller-expiring-selected')
+    assert.match(text(host.querySelector('.route-perspective')), /只读视角/)
+    await delay(1100)
+    await settle()
+    assert.doesNotMatch(text(host.querySelector('.route-perspective')), /只读视角/)
+    assert.match(text(host.querySelector('.route-perspective')), /全局模式/)
+    assert.equal(host.querySelector('select[aria-label="调用方视角"] option[value="caller-expiring-selected"]'), null)
+  })
 
   it('searches and sorts public model IDs, and renders unavailable stored entries with reasons', async () => {
     await mount()
@@ -223,7 +411,7 @@ describe('ModelRoutesView mounted credential-order editor', () => {
     dragEvent(entryRow(keyFor(staticC)), 'drop', data)
     await settle()
     assert.deepEqual(entryIds(), [keyFor(oauthB), keyFor(staticC), keyFor(staticA)])
-    assert.match(text(host.querySelector('[aria-live="polite"]')), /主密钥 已移至第 3 位/)
+    assert.match(text(host.querySelector('.sr-only[aria-live="polite"]')), /主密钥 已移至第 3 位/)
     assert.equal(host.querySelector('.is-dragging, .is-drag-over'), null)
 
     dragEvent(entryRow(keyFor(staticA)), 'dragstart', data)
