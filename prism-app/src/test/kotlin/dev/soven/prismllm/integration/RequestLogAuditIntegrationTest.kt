@@ -559,7 +559,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("73", result.getString(1))
+                        assertEquals("74", result.getString(1))
                     }
                     statement.executeQuery("select model_mapping_revision from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -1322,8 +1322,8 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     @Timeout(300)
-    fun `v73 initializes active public models once using eligible legacy credential order`() = runBlocking {
-        val databaseName = createMigrationDatabase("migration_v73_routes")
+    fun `v74 initializes active public models once using eligible legacy credential order`() = runBlocking {
+        val databaseName = createMigrationDatabase("migration_v74_routes")
         val migrationUrl = migrationDatabaseUrl(databaseName)
         try {
             migrateTo(migrationUrl, "71")
@@ -1404,7 +1404,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     )
                 }
             }
-            migrateTo(migrationUrl, "73")
+            migrateTo(migrationUrl, "74")
             val expected = listOf(
                 dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-b", dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH, "shared-id"),
                 dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity("route-b", dev.soven.prismllm.routing.readmodel.CredentialRouteType.STATIC, "key-b"),
@@ -1439,7 +1439,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                         )
                     }
                 }
-                migrateTo(migrationUrl, "73")
+                migrateTo(migrationUrl, "74")
                 assertNull(repository.find("post/model"), "migration reruns and reads never populate later models")
                 assertEquals(expected, assertNotNull(repository.find("public/family")).entries, "new credentials require an explicit save")
                 val empty = repository.save("public/family", 0, emptyList())
@@ -1453,8 +1453,8 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     @Timeout(300)
-    fun `gateway reconciles pending oauth channel before v73 seeds credential routes`() = runBlocking {
-        val databaseName = createMigrationDatabase("migration_v73_pending_oauth")
+    fun `gateway reconciles pending oauth channel before v74 seeds credential routes`() = runBlocking {
+        val databaseName = createMigrationDatabase("migration_v74_pending_oauth")
         val migrationUrl = migrationDatabaseUrl(databaseName)
         val originalId = "legacy-oauth"
         val publicModel = "migration-public/model"
@@ -1499,17 +1499,17 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
             try {
                 DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                     connection.createStatement().use { statement ->
-                        statement.execute("alter table oauth_account_channels add constraint migration_v73_test_guard check (channel_id = 'legacy-oauth-channel')")
+                        statement.execute("alter table oauth_account_channels add constraint migration_v74_test_guard check (channel_id = 'legacy-oauth-channel')")
                     }
                 }
-                assertTrue(runCatching { upgrade.databaseFactory.migrate() }.isFailure, "a reconciliation failure must block V73")
+                assertTrue(runCatching { upgrade.databaseFactory.migrate() }.isFailure, "a reconciliation failure must block V74")
                 DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
                     connection.createStatement().use { statement ->
                         statement.executeQuery("select to_regclass('model_credential_routes')").use { result ->
                             assertTrue(result.next())
                             assertNull(result.getString(1), "the route seed must not run after a failed prerequisite")
                         }
-                        statement.execute("alter table oauth_account_channels drop constraint migration_v73_test_guard")
+                        statement.execute("alter table oauth_account_channels drop constraint migration_v74_test_guard")
                     }
                 }
                 testApplication {
@@ -1532,7 +1532,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                         dev.soven.prismllm.routing.readmodel.CredentialRouteType.OAUTH,
                         originalId,
                     )
-                    assertEquals(listOf(identity), route.entries, "V73 must seed the final provider-channel identity")
+                    assertEquals(listOf(identity), route.entries, "V74 must seed the final provider-channel identity")
                     val candidates = upgrade.modelCatalog.findCandidates(publicModel, dev.soven.prismllm.shared.domain.GatewayProtocol.RESPONSES)
                     assertEquals(listOf(identity.channelId), candidates.map { it.channel.id })
                     assertEquals(listOf(upstreamModel), candidates.map { it.upstreamModel })
@@ -1554,7 +1554,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                             application { restarted.install(this) }
                             startApplication()
                             val persisted = assertNotNull(restarted.modelCredentialRouteRepository.find(publicModel))
-                            assertEquals(listOf(identity), persisted.entries, "an already-applied V73 must not append later credentials on restart")
+                            assertEquals(listOf(identity), persisted.entries, "an already-applied V74 must not append later credentials on restart")
                             assertFalse(persisted.entries.any { it.credentialId == laterAccount.id })
                             val restartedCandidates = restarted.modelCatalog.findCandidates(
                                 publicModel,

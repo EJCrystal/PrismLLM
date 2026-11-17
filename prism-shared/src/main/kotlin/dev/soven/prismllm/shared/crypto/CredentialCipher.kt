@@ -16,10 +16,15 @@ class CredentialCipher(masterKey: ByteArray) {
     private val key = SecretKeySpec(masterKey, "AES")
     private val random = SecureRandom()
 
-    fun encrypt(plaintext: String): EncryptedCredential {
+    /**
+     * @param aad 可选的附加认证数据；解密时必须提供完全相同的值。
+     *   通知凭据用目标标识与字段名绑定密文，避免密文在行之间被搬运。
+     */
+    fun encrypt(plaintext: String, aad: ByteArray? = null): EncryptedCredential {
         val nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
+        aad?.let(cipher::updateAAD)
         val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
         return EncryptedCredential(
             ciphertext = Base64.getEncoder().encodeToString(ciphertext),
@@ -28,13 +33,14 @@ class CredentialCipher(masterKey: ByteArray) {
         )
     }
 
-    fun decrypt(ciphertext: String, nonce: String): String {
+    fun decrypt(ciphertext: String, nonce: String, aad: ByteArray? = null): String {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(
             Cipher.DECRYPT_MODE,
             key,
             GCMParameterSpec(TAG_BITS, Base64.getDecoder().decode(nonce)),
         )
+        aad?.let(cipher::updateAAD)
         return cipher.doFinal(Base64.getDecoder().decode(ciphertext)).toString(Charsets.UTF_8)
     }
 

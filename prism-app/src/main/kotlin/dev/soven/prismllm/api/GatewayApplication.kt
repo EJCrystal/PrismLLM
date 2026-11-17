@@ -59,8 +59,8 @@ import dev.soven.prismllm.channel.persistence.ModelTestSettingsRepository
 import dev.soven.prismllm.admin.persistence.WebSearchSettingsRepository
 import dev.soven.prismllm.admin.persistence.NotificationRepository
 import dev.soven.prismllm.channel.persistence.KeyStateObserver
+import dev.soven.prismllm.notification.NotificationCredentials
 import dev.soven.prismllm.notification.NotificationRuntime
-import dev.soven.prismllm.notification.NotificationSecrets
 import dev.soven.prismllm.notification.NotificationTransport
 import dev.soven.prismllm.notification.SafeNotificationTransport
 import dev.soven.prismllm.notification.notificationEvent
@@ -287,7 +287,6 @@ private fun escapeLogValue(value: String, maxLength: Int): String {
  */
 class GatewayApplication(
     val config: GatewayConfig,
-    val notificationSecrets: NotificationSecrets = NotificationSecrets(),
     notificationTransport: NotificationTransport? = null,
 ) : AutoCloseable {
     init {
@@ -311,6 +310,7 @@ class GatewayApplication(
     val databaseFactory = DatabaseFactory(config)
     val credentialCipher = CredentialCipher(config.masterKey)
     val notificationRepository = NotificationRepository(databaseFactory.database)
+    val notificationCredentials = NotificationCredentials(notificationRepository, credentialCipher)
     private val notificationKeyObserver = KeyStateObserver { change ->
         notificationRepository.enqueueInTransaction(change.notificationEvent())
     }
@@ -377,7 +377,7 @@ class GatewayApplication(
         onChange = cooldownStateWriter::submit,
     )
     val metrics = GatewayMetrics()
-    private val notificationSender = notificationTransport ?: SafeNotificationTransport(notificationSecrets)
+    private val notificationSender = notificationTransport ?: SafeNotificationTransport(notificationCredentials)
     val notificationRuntime = NotificationRuntime(
         repository = notificationRepository,
         transport = notificationSender,
@@ -494,7 +494,7 @@ class GatewayApplication(
     val providerChannelProvisioner = ProviderChannelProvisioner(channelRepository, oauthAccountRepository)
 
     init {
-        databaseFactory.beforeMigration("73") {
+        databaseFactory.beforeMigration("74") {
             runBlocking { providerChannelProvisioner.reconcileBeforeModelCredentialRouteMigration() }
         }
     }

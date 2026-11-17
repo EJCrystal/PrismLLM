@@ -2,6 +2,7 @@ package dev.soven.prismllm.admin.persistence
 
 import dev.soven.prismllm.admin.domain.NotificationAlertState
 import dev.soven.prismllm.admin.domain.NotificationAlertUpdate
+import dev.soven.prismllm.admin.domain.NotificationCredentialUpdate
 import dev.soven.prismllm.admin.domain.NotificationDelivery
 import dev.soven.prismllm.admin.domain.NotificationDeliveryPage
 import dev.soven.prismllm.admin.domain.NotificationDeliveryResult
@@ -9,9 +10,13 @@ import dev.soven.prismllm.admin.domain.NotificationDeliveryTask
 import dev.soven.prismllm.admin.domain.NotificationEvent
 import dev.soven.prismllm.admin.domain.NotificationEvents
 import dev.soven.prismllm.admin.domain.NotificationSettings
+import dev.soven.prismllm.admin.domain.NotificationStoredCredentials
 import dev.soven.prismllm.admin.domain.NotificationTarget
+import dev.soven.prismllm.shared.crypto.CredentialCipher
+import dev.soven.prismllm.shared.crypto.EncryptedCredential
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.v1.core.Column
 import org.jetbrains.exposed.v1.core.IntegerColumnType
 import org.jetbrains.exposed.v1.core.LongColumnType
 import org.jetbrains.exposed.v1.core.ResultRow
@@ -73,14 +78,22 @@ class NotificationRepository(
             .singleOrNull()?.let(::toTarget)
     }
 
-    /** revision=0 creates; an existing revision is an optimistic update precondition. */
-    suspend fun saveTarget(target: NotificationTarget): NotificationTarget = suspendTransaction(database) {
+    /**
+     * revision=0 creates; an existing revision is an optimistic update precondition.
+     * Credential changes share the same revision guard and cancel pending deliveries.
+     * Credentials must already be encrypted by the caller.
+     */
+    suspend fun saveTarget(
+        target: NotificationTarget,
+        credentials: NotificationCredentialUpdate? = null,
+    ): NotificationTarget = suspendTransaction(database) {
         lockSettings()
         val existing = NotificationTargets.selectAll()
             .where { NotificationTargets.id eq target.id }
             .forUpdate()
             .singleOrNull()
         val now = nowMs()
+        val credentialChange = credentials?.takeIf { it.changesAnything }
         if (target.revision == 0L) {
             require(existing == null) { "notification_target_exists" }
             val count = NotificationTargets.selectAll().count()
@@ -93,17 +106,17 @@ class NotificationRepository(
                 it[enabled] = created.enabled
                 it[events] = json.encodeToString(created.events)
                 it[channelIds] = json.encodeToString(created.channelIds)
-                it[environmentPrefix] = created.environmentPrefix
                 it[revision] = created.revision
                 it[updatedAt] = created.updatedAt
             }
+            if (credentialChange != null) writeCredentials(created.id, credentialChange, now)
             created
         } else {
             require(target.revision > 0) { "notification_target_revision_conflict" }
             val row = existing ?: throw IllegalArgumentException("notification_target_not_found")
             val current = toTarget(row)
             require(current.revision == target.revision) { "notification_target_revision_conflict" }
-            if (sameConfiguration(current, target)) return@suspendTransaction current
+            if (sameConfiguration(current, target) && credentialChange == null) return@suspendTransaction current
             val updated = target.copy(revision = Math.addExact(current.revision, 1), updatedAt = now)
             NotificationTargets.update({ NotificationTargets.id eq target.id }) {
                 it[name] = updated.name
@@ -111,13 +124,21 @@ class NotificationRepository(
                 it[enabled] = updated.enabled
                 it[events] = json.encodeToString(updated.events)
                 it[channelIds] = json.encodeToString(updated.channelIds)
-                it[environmentPrefix] = updated.environmentPrefix
                 it[revision] = updated.revision
                 it[updatedAt] = updated.updatedAt
             }
+            if (credentialChange != null) writeCredentials(updated.id, credentialChange, now)
             cancelTargetDeliveries(target.id, now)
             updated
         }
+    }
+
+    /** 读取目标的加密凭据；没有任何凭据行时返回 null。 */
+    suspend fun loadCredentials(targetId: String): NotificationStoredCredentials? = suspendTransaction(database) {
+        NotificationTargetCredentials.selectAll()
+            .where { NotificationTargetCredentials.targetId eq targetId }
+            .singleOrNull()
+            ?.let(::toStoredCredentials)
     }
 
     suspend fun deleteTarget(id: String): Boolean = suspendTransaction(database) {
@@ -513,10 +534,88 @@ class NotificationRepository(
         enabled = row[NotificationTargets.enabled],
         events = json.decodeFromString(row[NotificationTargets.events]),
         channelIds = json.decodeFromString(row[NotificationTargets.channelIds]),
-        environmentPrefix = row[NotificationTargets.environmentPrefix],
         revision = row[NotificationTargets.revision],
         updatedAt = row[NotificationTargets.updatedAt],
     )
+
+    private fun toStoredCredentials(row: ResultRow) = NotificationStoredCredentials(
+        url = encryptedOrNull(
+            row, NotificationTargetCredentials.urlCiphertext,
+            NotificationTargetCredentials.urlNonce, NotificationTargetCredentials.urlKeyVersion,
+        ),
+        bearerToken = encryptedOrNull(
+            row, NotificationTargetCredentials.bearerTokenCiphertext,
+            NotificationTargetCredentials.bearerTokenNonce, NotificationTargetCredentials.bearerTokenKeyVersion,
+        ),
+        signingSecret = encryptedOrNull(
+            row, NotificationTargetCredentials.signingSecretCiphertext,
+            NotificationTargetCredentials.signingSecretNonce, NotificationTargetCredentials.signingSecretKeyVersion,
+        ),
+    )
+
+    private fun encryptedOrNull(
+        row: ResultRow,
+        ciphertext: Column<String>,
+        nonce: Column<String>,
+        keyVersion: Column<Int>,
+    ): EncryptedCredential? {
+        val value = row[ciphertext]
+        if (value.isEmpty()) return null
+        return EncryptedCredential(value, row[nonce], row[keyVersion])
+    }
+
+    private fun writeCredentials(targetId: String, update: NotificationCredentialUpdate, now: Long) {
+        val existing = NotificationTargetCredentials.selectAll()
+            .where { NotificationTargetCredentials.targetId eq targetId }
+            .forUpdate()
+            .singleOrNull()
+        val current = existing?.let(::toStoredCredentials) ?: NotificationStoredCredentials()
+        val url = applyCredential(update.url, update.clearUrl, current.url)
+        val bearerToken = applyCredential(update.bearerToken, update.clearBearerToken, current.bearerToken)
+        val signingSecret = applyCredential(update.signingSecret, update.clearSigningSecret, current.signingSecret)
+        if (existing == null) {
+            NotificationTargetCredentials.insert {
+                it[NotificationTargetCredentials.targetId] = targetId
+                it[NotificationTargetCredentials.urlCiphertext] = url?.ciphertext.orEmpty()
+                it[NotificationTargetCredentials.urlNonce] = url?.nonce.orEmpty()
+                it[NotificationTargetCredentials.urlKeyVersion] = url?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
+                it[NotificationTargetCredentials.bearerTokenCiphertext] = bearerToken?.ciphertext.orEmpty()
+                it[NotificationTargetCredentials.bearerTokenNonce] = bearerToken?.nonce.orEmpty()
+                it[NotificationTargetCredentials.bearerTokenKeyVersion] =
+                    bearerToken?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
+                it[NotificationTargetCredentials.signingSecretCiphertext] = signingSecret?.ciphertext.orEmpty()
+                it[NotificationTargetCredentials.signingSecretNonce] = signingSecret?.nonce.orEmpty()
+                it[NotificationTargetCredentials.signingSecretKeyVersion] =
+                    signingSecret?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
+                it[NotificationTargetCredentials.updatedAt] = now
+            }
+        } else {
+            NotificationTargetCredentials.update({ NotificationTargetCredentials.targetId eq targetId }) {
+                it[NotificationTargetCredentials.urlCiphertext] = url?.ciphertext.orEmpty()
+                it[NotificationTargetCredentials.urlNonce] = url?.nonce.orEmpty()
+                it[NotificationTargetCredentials.urlKeyVersion] = url?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
+                it[NotificationTargetCredentials.bearerTokenCiphertext] = bearerToken?.ciphertext.orEmpty()
+                it[NotificationTargetCredentials.bearerTokenNonce] = bearerToken?.nonce.orEmpty()
+                it[NotificationTargetCredentials.bearerTokenKeyVersion] =
+                    bearerToken?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
+                it[NotificationTargetCredentials.signingSecretCiphertext] = signingSecret?.ciphertext.orEmpty()
+                it[NotificationTargetCredentials.signingSecretNonce] = signingSecret?.nonce.orEmpty()
+                it[NotificationTargetCredentials.signingSecretKeyVersion] =
+                    signingSecret?.keyVersion ?: CredentialCipher.CURRENT_KEY_VERSION
+                it[NotificationTargetCredentials.updatedAt] = now
+            }
+        }
+    }
+
+    private fun applyCredential(
+        incoming: EncryptedCredential?,
+        clear: Boolean,
+        current: EncryptedCredential?,
+    ): EncryptedCredential? = when {
+        clear -> null
+        incoming != null -> incoming
+        else -> current
+    }
 
     private fun toAlertState(row: ResultRow) = NotificationAlertState(
         subject = row[NotificationAlertStates.subject],
@@ -544,7 +643,7 @@ class NotificationRepository(
 
     private fun sameConfiguration(a: NotificationTarget, b: NotificationTarget) =
         a.name == b.name && a.type == b.type && a.enabled == b.enabled && a.events == b.events &&
-            a.channelIds == b.channelIds && a.environmentPrefix == b.environmentPrefix
+            a.channelIds == b.channelIds
 
     private companion object {
         const val SINGLETON_ID = 1

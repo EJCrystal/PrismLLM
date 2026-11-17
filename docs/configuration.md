@@ -88,9 +88,9 @@ openssl rand -base64 32
 
 ### Webhook 与飞书通知
 
-管理台「系统配置 → 通知」可配置多个通用 Webhook 或飞书机器人目标，默认关闭。目标仅保存 `PRISM_NOTIFY_<名称>` 环境变量前缀；真实 URL、Bearer 令牌和签名密钥分别从 `<前缀>_URL`、`<前缀>_BEARER_TOKEN`、`<前缀>_SIGNING_SECRET` 读取。自定义环境变量须显式传入网关进程或容器，修改后重启。通知仅允许公网 HTTP/HTTPS 地址，不跟随重定向或继承代理。
+管理台「系统配置 → 通知」可配置多个通用 Webhook 或飞书机器人目标，默认关闭。接收端 URL、Bearer 令牌和签名密钥直接在管理台录入，使用 `GATEWAY_MASTER_KEY` 以 AES-256-GCM 加密保存，接口不回显明文；修改后立即生效，无需重启。通知仅允许公网 HTTP/HTTPS 地址，不跟随重定向或继承代理。
 
-触发规则、环境注入、签名协议及重试边界见 [通知指南](notifications.md)。
+触发规则、凭据管理、签名协议及重试边界见 [通知指南](notifications.md)。
 
 ### Web 搜索代理
 

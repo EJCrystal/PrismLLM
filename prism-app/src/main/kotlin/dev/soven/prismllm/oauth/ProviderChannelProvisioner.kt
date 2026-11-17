@@ -179,7 +179,7 @@ class ProviderChannelProvisioner(
     /** 启动搬迁与并集对账可重试，已就位的账号不改基础配置。 */
     suspend fun reconcile(): Int = reconcile(strict = false)
 
-    /** V73 首次 seed 前必须完成搬迁；失败要中止迁移，不能留下旧渠道身份。 */
+    /** V74 首次 seed 前必须完成搬迁；失败要中止迁移，不能留下旧渠道身份。 */
     suspend fun reconcileBeforeModelCredentialRouteMigration(): Int = reconcile(strict = true)
 
     private suspend fun reconcile(strict: Boolean): Int {
@@ -196,7 +196,7 @@ class ProviderChannelProvisioner(
                 } catch (e: Exception) {
                     logger.warn("failed to move subscription account onto provider channel, accountId={}", account.id, e)
                     if (strict) throw IllegalStateException(
-                        "Unable to reconcile pending subscription account ${account.id} before V73 migration",
+                        "Unable to reconcile pending subscription account ${account.id} before V74 migration",
                         e,
                     )
                 }

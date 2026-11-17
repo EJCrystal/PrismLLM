@@ -1,5 +1,7 @@
 package dev.soven.prismllm.integration
 
+import dev.soven.prismllm.admin.domain.NotificationCredentialFields
+import dev.soven.prismllm.admin.domain.NotificationCredentialUpdate
 import dev.soven.prismllm.admin.domain.NotificationEvent
 import dev.soven.prismllm.admin.domain.NotificationEvents
 import dev.soven.prismllm.admin.domain.NotificationTarget
@@ -15,10 +17,10 @@ import dev.soven.prismllm.channel.persistence.ChannelKeyUpdate
 import dev.soven.prismllm.channel.persistence.ChannelRepository
 import dev.soven.prismllm.channel.persistence.KeyStateObserver
 import dev.soven.prismllm.channel.persistence.NewChannelKey
-import dev.soven.prismllm.notification.NotificationSecrets
 import dev.soven.prismllm.notification.NotificationSendResult
 import dev.soven.prismllm.notification.NotificationTransport
 import dev.soven.prismllm.notification.notificationEvent
+import dev.soven.prismllm.shared.crypto.CredentialCipher
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -56,10 +58,8 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
     private fun replaceApp(result: NotificationSendResult = NotificationSendResult(success = true, retryable = false)) {
         app.close()
         sent.clear()
-        val url = "https://receiver.invalid/${UUID.randomUUID()}"
         app = GatewayApplication(
             config(maxAttempts = 1),
-            notificationSecrets = NotificationSecrets { if (it == "PRISM_NOTIFY_TEST_URL") url else null },
             notificationTransport = NotificationTransport { _, event -> sent.add(event); result },
         )
     }
@@ -78,10 +78,19 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
 
     private suspend fun target(events: List<String>): NotificationTarget {
         app.notificationRuntime.updateSettings(true, 2)
-        return app.notificationRepository.saveTarget(NotificationTarget(
+        val created = app.notificationRepository.saveTarget(NotificationTarget(
             id = UUID.randomUUID().toString(), name = "测试接收端", type = "webhook", events = events,
-            environmentPrefix = "PRISM_NOTIFY_TEST", revision = 0,
+            revision = 0,
         ))
+        val url = "https://receiver.invalid/${UUID.randomUUID()}"
+        return app.notificationRepository.saveTarget(
+            created,
+            NotificationCredentialUpdate(
+                url = app.credentialCipher.encrypt(
+                    url, NotificationCredentialFields.aad(created.id, NotificationCredentialFields.URL),
+                ),
+            ),
+        )
     }
 
     private suspend fun setState(channel: ChannelRecord, state: ChannelKeyState, repository: ChannelRepository = app.channelRepository) {
@@ -248,7 +257,7 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.Forbidden, denied.status)
             val listed = client.get("/admin/api/notification-targets") { header(HttpHeaders.Cookie, "gw_session=${session.token}") }
             assertEquals(HttpStatusCode.OK, listed.status)
-            assertTrue(listed.bodyAsText().contains("PRISM_NOTIFY_TEST"))
+            assertTrue(listed.bodyAsText().contains("\"urlConfigured\":true"))
             assertFalse(listed.bodyAsText().contains("receiver.invalid"))
             val invalid = client.put("/admin/api/notification-settings") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
@@ -261,7 +270,7 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
                 header("X-CSRF-Token", session.session.csrf)
                 contentType(ContentType.Application.Json)
-                setBody("""{"name":"created target","type":"webhook","enabled":false,"events":["key.disabled"],"channelIds":[],"environmentPrefix":"PRISM_NOTIFY_TEST","revision":99}""")
+                setBody("""{"name":"created target","type":"webhook","enabled":false,"events":["key.disabled"],"channelIds":[],"revision":99}""")
             }
             assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
             val createdJson = Json.parseToJsonElement(created.bodyAsText()).jsonObject
@@ -272,10 +281,24 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
                 header("X-CSRF-Token", session.session.csrf)
                 contentType(ContentType.Application.Json)
-                setBody("""{"name":"updated target","type":"webhook","enabled":false,"events":["key.disabled"],"channelIds":[],"environmentPrefix":"PRISM_NOTIFY_TEST","revision":$revision}""")
+                setBody("""{"name":"updated target","type":"webhook","enabled":false,"events":["key.disabled"],"channelIds":[],"credentials":{"url":"https://hooks.example.test/notify","bearerToken":"generated-token"},"revision":$revision}""")
             }
             assertEquals(HttpStatusCode.OK, updated.status, updated.bodyAsText())
-            assertEquals("updated target", Json.parseToJsonElement(updated.bodyAsText()).jsonObject.getValue("name").jsonPrimitive.content)
+            val updatedJson = Json.parseToJsonElement(updated.bodyAsText()).jsonObject
+            assertEquals("updated target", updatedJson.getValue("name").jsonPrimitive.content)
+            assertTrue(updatedJson.getValue("credentials").jsonObject.getValue("urlConfigured").jsonPrimitive.content.toBoolean())
+            assertTrue(updatedJson.getValue("credentials").jsonObject.getValue("bearerTokenConfigured").jsonPrimitive.content.toBoolean())
+            assertFalse(updated.bodyAsText().contains("hooks.example.test"))
+            assertFalse(updated.bodyAsText().contains("generated-token"))
+            val stored = assertNotNull(app.notificationRepository.loadCredentials(createdId)).url
+            assertFalse(assertNotNull(stored).ciphertext.contains("hooks.example.test"))
+            assertEquals(
+                "https://hooks.example.test/notify",
+                app.credentialCipher.decrypt(
+                    stored.ciphertext, stored.nonce,
+                    NotificationCredentialFields.aad(createdId, NotificationCredentialFields.URL),
+                ),
+            )
             val removed = client.delete("/admin/api/notification-targets/$createdId") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
                 header("X-CSRF-Token", session.session.csrf)
@@ -297,7 +320,7 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
         replaceApp()
         val configured = target(listOf(NotificationEvents.KEY_DISABLED))
         val session = app.sessions.create("admin")
-        val baseBody = """{"name":"edited target","type":"webhook","enabled":false,"events":["key.disabled"],"channelIds":[],"environmentPrefix":"PRISM_NOTIFY_TEST"}"""
+        val baseBody = """{"name":"edited target","type":"webhook","enabled":false,"events":["key.disabled"],"channelIds":[]}"""
 
         testApplication {
             application { app.install(this) }
@@ -345,12 +368,47 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
                 header("X-CSRF-Token", session.session.csrf)
                 contentType(ContentType.Application.Json)
-                setBody("""{"name":"stale edit","type":"webhook","enabled":true,"events":["key.disabled"],"channelIds":[],"environmentPrefix":"PRISM_NOTIFY_TEST","revision":$initialRevision}""")
+                setBody("""{"name":"stale edit","type":"webhook","enabled":true,"events":["key.disabled"],"channelIds":[],"revision":$initialRevision}""")
             }
             assertEquals(HttpStatusCode.Conflict, staleEdit.status)
 
             val persisted = assertNotNull(app.notificationRepository.findTarget(configured.id))
             assertEquals(firstSaved, persisted)
+        }
+    }
+
+    @Test
+    fun `test delivery is rejected when any stored credential cannot be decrypted`() = runBlocking {
+        replaceApp()
+        app.notificationRuntime.updateSettings(true, 2)
+        val session = app.sessions.create("admin")
+        val created = app.notificationRepository.saveTarget(NotificationTarget(
+            id = UUID.randomUUID().toString(), name = "无法解密目标", type = "webhook", revision = 0,
+        ))
+        val foreignCipher = CredentialCipher(ByteArray(32) { 11 })
+        val configured = app.notificationRepository.saveTarget(
+            created,
+            NotificationCredentialUpdate(
+                url = app.credentialCipher.encrypt(
+                    "https://hooks.example.test/notify",
+                    NotificationCredentialFields.aad(created.id, NotificationCredentialFields.URL),
+                ),
+                bearerToken = foreignCipher.encrypt(
+                    "foreign-token",
+                    NotificationCredentialFields.aad(created.id, NotificationCredentialFields.BEARER),
+                ),
+            ),
+        )
+
+        testApplication {
+            application { app.install(this) }
+            val response = client.post("/admin/api/notification-targets/${configured.id}/test") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status, response.bodyAsText())
+            assertTrue(response.bodyAsText().contains("notification_credentials_unreadable"))
+            assertEquals(0L, app.notificationRepository.deliveries(configured.id).total)
         }
     }
 }

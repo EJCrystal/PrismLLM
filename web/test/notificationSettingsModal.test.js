@@ -23,8 +23,12 @@ const realClearTimeout = window.clearTimeout.bind(window)
 const events = ['channel.unhealthy', 'channel.recovered', 'key.disabled', 'key.recovered', 'attempt.consecutive_failures', 'attempt.recovered']
 const fixtureTarget = (id = 'target-one', extra = {}) => ({
   id, name: id === 'target-one' ? '值班群' : '飞书备用', type: 'webhook', enabled: true,
-  events: [...events], channelIds: [], environmentPrefix: 'PRISM_NOTIFY_ONCALL', revision: 1, updatedAt: 1,
-  credentials: { urlConfigured: true, bearerTokenConfigured: false, signingSecretConfigured: false }, latestDelivery: null,
+  events: [...events], channelIds: [], revision: 1, updatedAt: 1,
+  credentials: {
+    urlConfigured: true, bearerTokenConfigured: false, signingSecretConfigured: false,
+    urlUnreadable: false, bearerTokenUnreadable: false, signingSecretUnreadable: false,
+  },
+  latestDelivery: null,
   ...extra,
 })
 const fixtureDelivery = (index = 1, extra = {}) => ({
@@ -65,7 +69,8 @@ describe('notification settings modal interactions', () => {
     server = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), configFile: false, plugins: [vue()], optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, hmr: false }, appType: 'custom' })
     const icon = await component('Icon')
     const modalBase = await component('Modal', { Icon: icon })
-    const editor = await component('NotificationTargetEditor', { Icon: icon })
+    const secret = await component('SecretInput', { Icon: icon })
+    const editor = await component('NotificationTargetEditor', { Icon: icon, SecretInput: secret })
     modal = await component('NotificationSettingsModal', { Icon: icon, Modal: modalBase, NotificationTargetEditor: editor })
     systemView = await component('SystemSettingsView', {
       Icon: icon, NotificationSettingsModal: modal,
@@ -80,7 +85,7 @@ describe('notification settings modal interactions', () => {
   beforeEach(() => {
     calls = []; emitted = []; historyItems = []; handler = null; state = null; editorState = null
     savedSettings = { enabled: false, consecutiveFailureThreshold: 5, updatedAt: 0 }
-    savedTargets = [fixtureTarget(), fixtureTarget('target-two', { type: 'feishu', enabled: false, environmentPrefix: 'PRISM_NOTIFY_BACKUP', credentials: { urlConfigured: false, bearerTokenConfigured: false, signingSecretConfigured: false } })]
+    savedTargets = [fixtureTarget(), fixtureTarget('target-two', { type: 'feishu', enabled: false, credentials: { urlConfigured: false, bearerTokenConfigured: false, signingSecretConfigured: false, urlUnreadable: false, bearerTokenUnreadable: false, signingSecretUnreadable: false } })]
     window.confirm = () => true
     window.setTimeout = (callback, ms, ...args) => {
       if (ms !== 1200 && ms !== 30_000) return realSetTimeout(callback, ms, ...args)
@@ -102,7 +107,16 @@ describe('notification settings modal interactions', () => {
       }
       if (path === '/notification-targets') {
         if (method === 'POST') {
-          const target = fixtureTarget('target-created', { ...call.body, credentials: { urlConfigured: false, bearerTokenConfigured: false, signingSecretConfigured: false } })
+          const written = call.body.credentials || {}
+          const target = fixtureTarget('target-created', {
+            ...call.body,
+            credentials: {
+              urlConfigured: Boolean(written.url),
+              bearerTokenConfigured: Boolean(written.bearerToken),
+              signingSecretConfigured: Boolean(written.signingSecret),
+              urlUnreadable: false, bearerTokenUnreadable: false, signingSecretUnreadable: false,
+            },
+          })
           savedTargets.push(target)
           return response(target, 201)
         }
@@ -113,7 +127,17 @@ describe('notification settings modal interactions', () => {
         if (path.endsWith('/test')) return response({ deliveryId: 'delivery-1', eventId: 'event-1' }, 202)
         if (method === 'DELETE') { savedTargets = savedTargets.filter(target => target.id !== id); return new Response(null, { status: 204 }) }
         if (method === 'PUT') {
-          const target = { ...savedTargets.find(target => target.id === id), ...call.body, revision: 2, updatedAt: 2 }
+          const previous = savedTargets.find(target => target.id === id)
+          const written = call.body.credentials || {}
+          const target = {
+            ...previous, ...call.body, revision: 2, updatedAt: 2,
+            credentials: {
+              ...previous.credentials,
+              urlConfigured: previous.credentials.urlConfigured || Boolean(written.url),
+              bearerTokenConfigured: previous.credentials.bearerTokenConfigured || Boolean(written.bearerToken),
+              signingSecretConfigured: previous.credentials.signingSecretConfigured || Boolean(written.signingSecret),
+            },
+          }
           savedTargets = savedTargets.map(item => item.id === id ? target : item)
           return response(target)
         }
@@ -163,7 +187,7 @@ describe('notification settings modal interactions', () => {
     assert.equal(document.querySelector('input[type="number"]').value, '5')
     assert.equal(document.querySelectorAll('.notification-target-row').length, 2)
     assert.match(targetRow('target-two').textContent, /飞书机器人.*已停用/s)
-    assert.match(targetRow('target-two').textContent, /_URL 未配置（必需）/)
+    assert.match(targetRow('target-two').textContent, /URL 未配置（必需）/)
     assert.equal(button('发送测试', targetRow()).disabled, true)
     assert.equal(writes().length, 0)
     assert.ok(document.querySelector('.modal.mobile-fullscreen'))
@@ -191,7 +215,6 @@ describe('notification settings modal interactions', () => {
     button('添加目标').click(); await settle()
     const editor = document.querySelector('.notification-target-editor')
     await input(fieldInput('目标名称', editor), '  新值班群  ')
-    await input(fieldInput('环境变量前缀', editor), 'PRISM_NOTIFY_NEW')
     await changeSelect(fieldInput('目标类型', editor), 'feishu')
     editor.querySelector('.switch-row input').click()
     for (const event of [...editor.querySelectorAll('.notification-event-grid input')].slice(1)) { event.click(); await settle() }
@@ -201,7 +224,7 @@ describe('notification settings modal interactions', () => {
     assert.equal(create.disabled, false)
     create.click(); create.click(); await settle()
     assert.equal(writes().length, 1)
-    assert.deepEqual(writes()[0].body, { name: '新值班群', type: 'feishu', enabled: false, events: ['channel.unhealthy'], channelIds: ['channel-one'], environmentPrefix: 'PRISM_NOTIFY_NEW' })
+    assert.deepEqual(writes()[0].body, { name: '新值班群', type: 'feishu', enabled: false, events: ['channel.unhealthy'], channelIds: ['channel-one'] })
     assert.equal(Object.hasOwn(writes()[0].body, 'revision'), false)
     assert.equal(document.querySelector('.notification-target-editor'), null)
     assert.equal(document.querySelectorAll('.notification-target-row').length, 3)
@@ -209,25 +232,52 @@ describe('notification settings modal interactions', () => {
     assert.equal(document.body.innerHTML.includes('FIXTURE_SECRET_MUST_NOT_RENDER'), false)
   })
 
-  it('edits the selected target independently and resets credential flags after prefix changes', async () => {
+  it('edits a target and submits only supplied credentials without echoing stored values', async () => {
     await mount()
     button('编辑', targetRow()).click(); await settle()
     const editor = document.querySelector('.notification-target-editor')
-    assert.match(editor.textContent, /PRISM_NOTIFY_ONCALL_URL.*已配置/s)
-    await input(fieldInput('环境变量前缀', editor), 'https://fixture.invalid/never-send')
-    assert.equal(button('保存目标', editor).disabled, true)
-    assert.equal(editor.querySelector('.notification-env-names').textContent.includes('https://'), false)
-    await input(fieldInput('环境变量前缀', editor), 'PRISM_NOTIFY_CHANGED')
-    assert.match(editor.querySelector('.notification-env-names').textContent, /保存后读取状态/)
+    assert.match(editor.textContent, /已保存，留空保持不变/)
+    assert.equal(fieldInput('接收端 URL', editor).value, '')
+    const secrets = [...editor.querySelectorAll('.notification-credential-row input[type="password"]')]
+    assert.equal(secrets.length, 2)
+    assert.equal(secrets[0].value, '')
+    assert.equal(secrets[1].value, '')
     await input(fieldInput('目标名称', editor), '修改后的值班群')
+    await input(fieldInput('接收端 URL', editor), 'https://fixture.invalid/never-send')
     button('保存目标', editor).click(); await settle()
     assert.equal(writes().length, 1)
     assert.equal(writes()[0].method, 'PUT')
     assert.equal(writes()[0].url, '/admin/api/notification-targets/target-one')
     assert.equal(writes()[0].body.name, '修改后的值班群')
+    assert.deepEqual(writes()[0].body.credentials, { url: 'https://fixture.invalid/never-send' })
     assert.equal(writes()[0].body.revision, fixtureTarget().revision)
     assert.match(targetRow().textContent, /修改后的值班群/)
     assert.equal(calls.some(call => call.url.endsWith('/test')), false)
+  })
+
+  it('clears a stored credential only after the clear flag is checked', async () => {
+    await mount()
+    button('编辑', targetRow()).click(); await settle()
+    const editor = document.querySelector('.notification-target-editor')
+    const urlInput = fieldInput('接收端 URL', editor)
+    const clearUrl = editor.querySelectorAll('.notification-clear input')[0]
+    assert.equal(clearUrl.disabled, false)
+    await input(urlInput, 'https://fixture.invalid/temporary')
+    assert.equal(clearUrl.disabled, true)
+    await input(urlInput, '')
+    clearUrl.click(); await settle()
+    assert.equal(urlInput.disabled, true)
+    button('保存目标', editor).click(); await settle()
+    assert.deepEqual(writes()[0].body.credentials, { clearUrl: true })
+  })
+
+  it('shows unreadable stored credentials and blocks test delivery until they are re-entered', async () => {
+    savedSettings.enabled = true
+    savedTargets[0].credentials = { ...savedTargets[0].credentials, urlConfigured: false, urlUnreadable: true }
+    await mount()
+    assert.match(targetRow().textContent, /URL 无法解密，请重填/)
+    assert.match(targetRow().textContent, /目标凭据无法解密，请在编辑器中重新填写/)
+    assert.equal(button('发送测试', targetRow()).disabled, true)
   })
 
   it('preserves unknown channel selections through load failure and permits explicit removal after retry', async () => {
@@ -380,6 +430,23 @@ describe('notification settings modal interactions', () => {
     assert.ok(deadline); timers.delete(deadline[0]); deadline[1].callback(); await settle()
     assert.match(document.querySelector('.notification-test-result').textContent, /入队结果未知/)
     assert.equal(calls.filter(call => call.url.endsWith('/test')).length, 1)
+  })
+
+  it('keeps the credential draft when a concurrent target update conflicts', async () => {
+    handler = call => call.method === 'PUT'
+      ? response({ error: { code: 'notification_target_changed', message: '通知目标已变化，请刷新后重试' } }, 409)
+      : undefined
+    await mount()
+    button('编辑', targetRow()).click(); await settle()
+    const editor = document.querySelector('.notification-target-editor')
+    await input(fieldInput('目标名称', editor), '冲突草稿')
+    await input(fieldInput('接收端 URL', editor), 'https://fixture.invalid/conflict')
+    button('保存目标', editor).click(); await settle()
+    assert.equal(document.querySelector('.notification-target-editor'), editor)
+    assert.equal(fieldInput('目标名称', editor).value, '冲突草稿')
+    assert.equal(fieldInput('接收端 URL', editor).value, 'https://fixture.invalid/conflict')
+    assert.match(editor.textContent, /已变化，请刷新后重试/)
+    assert.equal(writes().length, 1)
   })
 
   it('opens notifications from system settings and refreshes the saved row state', async () => {

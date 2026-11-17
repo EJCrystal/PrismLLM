@@ -2,11 +2,14 @@ package dev.soven.prismllm.admin.persistence
 
 import dev.soven.prismllm.admin.domain.NotificationAlertState
 import dev.soven.prismllm.admin.domain.NotificationAlertUpdate
+import dev.soven.prismllm.admin.domain.NotificationCredentialFields
+import dev.soven.prismllm.admin.domain.NotificationCredentialUpdate
 import dev.soven.prismllm.admin.domain.NotificationDeliveryResult
 import dev.soven.prismllm.admin.domain.NotificationEvent
 import dev.soven.prismllm.admin.domain.NotificationEvents
 import dev.soven.prismllm.admin.domain.NotificationSettings
 import dev.soven.prismllm.admin.domain.NotificationTarget
+import dev.soven.prismllm.shared.crypto.CredentialCipher
 import dev.soven.prismllm.testsupport.db.SharedPostgres
 import dev.soven.prismllm.testsupport.db.TestDatabase
 import kotlinx.coroutines.CompletableDeferred
@@ -61,6 +64,7 @@ class NotificationRepositoryTest {
                 NotificationDeliveries.deleteAll()
                 NotificationEventRecords.deleteAll()
                 NotificationAlertStates.deleteAll()
+                NotificationTargetCredentials.deleteAll()
                 NotificationTargets.deleteAll()
                 NotificationSettingsTable.deleteAll()
             }
@@ -164,7 +168,7 @@ class NotificationRepositoryTest {
         val tasks = repository.claimDue()
         assertEquals(setOf(firstTarget.id, secondTarget.id), tasks.map { it.target.id }.toSet())
         assertTrue(tasks.all { it.event == original })
-        assertTrue(tasks.all { it.target.environmentPrefix == "PRISM_NOTIFY_TEST" && it.target.revision == 1L })
+        assertTrue(tasks.all { it.target.revision == 1L })
         assertEquals(2L, repository.deliveries().total)
     }
 
@@ -370,7 +374,7 @@ class NotificationRepositoryTest {
         val secondTask = tasks.single { it.target.id == second.id }
         assertEquals(first, repository.saveTarget(first))
         assertTrue(repository.isTaskCurrent(firstTask))
-        val updated = repository.saveTarget(first.copy(environmentPrefix = "PRISM_NOTIFY_REPLACED", name = "New name"))
+        val updated = repository.saveTarget(first.copy(name = "New name"))
         assertEquals(2L, updated.revision)
         assertFalse(repository.isTaskCurrent(firstTask))
         assertFalse(repository.complete(firstTask, NotificationDeliveryResult("succeeded", 200)))
@@ -424,6 +428,84 @@ class NotificationRepositoryTest {
         assertNull(alert("inactive", "health"))
     }
 
+    @Test
+    fun `credentials are stored as bound ciphertext and updated or cleared independently`() = runBlocking {
+        val cipher = CredentialCipher(ByteArray(32) { 4 })
+        val target = repository.saveTarget(target())
+        val url = cipher.encrypt(
+            "https://hooks.example.test/notify",
+            NotificationCredentialFields.aad(target.id, NotificationCredentialFields.URL),
+        )
+        val created = repository.saveTarget(target, NotificationCredentialUpdate(url = url))
+        assertEquals(2L, created.revision)
+        val stored = assertNotNull(repository.loadCredentials(target.id))
+        assertEquals(url, stored.url)
+        assertNull(stored.bearerToken)
+        assertEquals(
+            "https://hooks.example.test/notify",
+            cipher.decrypt(
+                assertNotNull(stored.url).ciphertext, stored.url!!.nonce,
+                NotificationCredentialFields.aad(target.id, NotificationCredentialFields.URL),
+            ),
+        )
+
+        val bearer = cipher.encrypt(
+            "generated-token",
+            NotificationCredentialFields.aad(target.id, NotificationCredentialFields.BEARER),
+        )
+        val updated = repository.saveTarget(created, NotificationCredentialUpdate(bearerToken = bearer))
+        assertEquals(3L, updated.revision)
+        val afterUpdate = assertNotNull(repository.loadCredentials(target.id))
+        assertEquals(url, afterUpdate.url)
+        assertEquals(bearer, afterUpdate.bearerToken)
+
+        val cleared = repository.saveTarget(updated, NotificationCredentialUpdate(clearBearerToken = true))
+        assertEquals(4L, cleared.revision)
+        val afterClear = assertNotNull(repository.loadCredentials(target.id))
+        assertEquals(url, afterClear.url)
+        assertNull(afterClear.bearerToken)
+    }
+
+    @Test
+    fun `credential changes bump revision and cancel pending deliveries`() = runBlocking {
+        repository.saveSettings(true, 5)
+        val cipher = CredentialCipher(ByteArray(32) { 5 })
+        val target = repository.saveTarget(target(events = listOf(NotificationEvents.KEY_DISABLED)))
+        repository.enqueue(event())
+        val task = repository.claimDue().single()
+        val updated = repository.saveTarget(
+            target,
+            NotificationCredentialUpdate(
+                url = cipher.encrypt(
+                    "https://hooks.example.test/notify",
+                    NotificationCredentialFields.aad(target.id, NotificationCredentialFields.URL),
+                ),
+            ),
+        )
+        assertEquals(2L, updated.revision)
+        assertFalse(repository.isTaskCurrent(task))
+        assertFalse(repository.complete(task, NotificationDeliveryResult("succeeded", 200)))
+        assertEquals("cancelled", repository.deliveries(target.id).items.single().status)
+    }
+
+    @Test
+    fun `deleting a target removes its stored credentials`() = runBlocking {
+        val cipher = CredentialCipher(ByteArray(32) { 6 })
+        val target = repository.saveTarget(target())
+        repository.saveTarget(
+            target,
+            NotificationCredentialUpdate(
+                url = cipher.encrypt(
+                    "https://hooks.example.test/notify",
+                    NotificationCredentialFields.aad(target.id, NotificationCredentialFields.URL),
+                ),
+            ),
+        )
+        assertNotNull(repository.loadCredentials(target.id))
+        assertTrue(repository.deleteTarget(target.id))
+        assertNull(repository.loadCredentials(target.id))
+    }
+
     private fun target(
         name: String = "Target",
         enabled: Boolean = true,
@@ -436,7 +518,6 @@ class NotificationRepositoryTest {
         enabled = enabled,
         events = events,
         channelIds = channels,
-        environmentPrefix = "PRISM_NOTIFY_TEST",
         revision = 0,
     )
 

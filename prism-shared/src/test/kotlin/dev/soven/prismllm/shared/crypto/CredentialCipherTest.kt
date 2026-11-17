@@ -42,4 +42,21 @@ class CredentialCipherTest {
 
         assertFailsWith<Exception> { other.decrypt(encrypted.ciphertext, encrypted.nonce) }
     }
+
+    @Test
+    fun `binds ciphertext to additional authenticated data`() {
+        val cipher = CredentialCipher(key)
+        val aad = "prism-notification:target-1:url".toByteArray()
+
+        val encrypted = cipher.encrypt("https://hooks.example.test/notify", aad)
+
+        assertEquals(
+            "https://hooks.example.test/notify",
+            cipher.decrypt(encrypted.ciphertext, encrypted.nonce, aad),
+        )
+        assertFailsWith<Exception> { cipher.decrypt(encrypted.ciphertext, encrypted.nonce) }
+        assertFailsWith<Exception> {
+            cipher.decrypt(encrypted.ciphertext, encrypted.nonce, "prism-notification:target-2:url".toByteArray())
+        }
+    }
 }
