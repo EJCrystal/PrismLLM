@@ -71,6 +71,7 @@ class ModelCredentialRoutesIntegrationTest : GatewayIntegrationTestBase() {
             val oauth = ModelCredentialRouteIdentityDto(oauthChannel.id, "oauth", account.id)
 
             assertEquals(HttpStatusCode.Unauthorized, client.get("/admin/api/model-routes").status)
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/admin/api/model-routes/options").status)
             assertEquals(HttpStatusCode.Unauthorized, client.get("/admin/api/model-routes/detail") { parameter("modelId", model) }.status)
             assertEquals(HttpStatusCode.Unauthorized, client.saveRoute(model, 0, listOf(static), null, csrf).status)
             assertEquals(HttpStatusCode.Forbidden, client.saveRoute(model, 0, listOf(static), cookie, null).status)
@@ -116,6 +117,18 @@ class ModelCredentialRoutesIntegrationTest : GatewayIntegrationTestBase() {
             }
             val metadataKeys = saved.payload()["entries"]!!.jsonArray.first().jsonObject.keys
             assertTrue(metadataKeys.all { it in setOf("channelId", "credentialType", "credentialId", "channelName", "credentialName", "upstreamModels", "protocols", "selectable", "reason") })
+
+            val options = client.get("/admin/api/model-routes/options") { header(HttpHeaders.Cookie, cookie) }
+            assertEquals(HttpStatusCode.OK, options.status, options.bodyAsText())
+            assertEquals("no-store", options.headers[HttpHeaders.CacheControl])
+            val option = options.payload()["models"]!!.jsonArray.single { it.jsonObject["modelId"]!!.jsonPrimitive.content == model }.jsonObject
+            assertEquals(listOf(oauth.credentialId, static.credentialId), option["entries"]!!.jsonArray.map { it.jsonObject["credentialId"]!!.jsonPrimitive.content })
+            val optionKeys = option["entries"]!!.jsonArray.first().jsonObject.keys
+            assertTrue(optionKeys.containsAll(setOf("channelId", "credentialType", "credentialId", "selectable")))
+            assertTrue(optionKeys.all { it in setOf("channelId", "credentialType", "credentialId", "selectable", "reason") })
+            listOf(staticSecret, refreshSecret, accessSecret, account.refreshTokenCiphertext).forEach { secret ->
+                assertFalse(options.bodyAsText().contains(secret))
+            }
 
             val reordered = client.saveRoute(model, 1, listOf(static, oauth), cookie, csrf)
             assertEquals(HttpStatusCode.OK, reordered.status, reordered.bodyAsText())

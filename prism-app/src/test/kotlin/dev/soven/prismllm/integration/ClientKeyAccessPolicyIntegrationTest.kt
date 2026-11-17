@@ -1,8 +1,11 @@
 package dev.soven.prismllm.integration
 
+import dev.soven.prismllm.channel.domain.ChannelModelRecord
+import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
 import dev.soven.prismllm.quota.domain.ClientKeyAllowedChannelKey
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
+import dev.soven.prismllm.shared.domain.GatewayProtocol
 import io.ktor.client.HttpClient
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -459,9 +462,9 @@ class ClientKeyAccessPolicyIntegrationTest : GatewayIntegrationTestBase() {
         }
     }
 
-    /** 完整编辑保留已有模型排除规则，但不接受尚未配置的新模型 ID。 */
+    /** 完整编辑保留已有模型排除规则，但不接受没有模型路由的新模型 ID。 */
     @Test
-    fun `full update preserves deleted model denylist and rejects new unknown exclusions`() = runBlocking {
+    fun `full update preserves deleted model denylist and rejects new unrouted exclusions`() = runBlocking {
         val channel = createChannel("retained-deny", "ok")
         testApplication {
             application { app.install(this) }
@@ -495,7 +498,13 @@ class ClientKeyAccessPolicyIntegrationTest : GatewayIntegrationTestBase() {
                 contentType(ContentType.Application.Json)
                 setBody("""{"name":"new-key","accessPolicy":$original}""")
             }
-            assertEquals(HttpStatusCode.BadRequest, newKey.status, newKey.bodyAsText())
+            assertEquals(HttpStatusCode.Created, newKey.status, newKey.bodyAsText())
+            val unknown = client.post("/admin/api/client-keys") {
+                authenticate(auth)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"unknown-key","accessPolicy":${original.replace("[\"m1\"]", "[\"unknown\"]")}}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, unknown.status, unknown.bodyAsText())
             createChannel("recreated-model", "ok")
             val denied = client.post("/v1/chat/completions") {
                 header(HttpHeaders.Authorization, "Bearer ${created["key"]!!.jsonPrimitive.content}")
@@ -505,6 +514,46 @@ class ClientKeyAccessPolicyIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.Forbidden, denied.status, denied.bodyAsText())
             assertEquals("model_access_denied", denied.headers["X-Prism-Error-Code"])
             assertTrue(fake.requests.isEmpty())
+        }
+    }
+
+    /** 新增模型必须已有模型路由；已有选择在路由移除后仍允许保存其他修改。 */
+    @Test
+    fun `new model access requires a saved route while existing route choices remain editable`() = runBlocking {
+        val routed = createChannel("route-required", "ok")
+        app.channelRepository.create(
+            name = "no-route",
+            baseUrl = "${fake.baseUrl}/ok/v1",
+            keys = listOf(NewChannelKey("no-route-key", app.credentialCipher.encrypt("no-route-secret"), models = listOf("no-route-model"))),
+            authType = "bearer",
+            protocols = GatewayProtocol.default,
+            enabled = true,
+            modelMappings = listOf(ChannelModelRecord("no-route-model")),
+        )
+        val keyId = routed.keys.single().id
+        testApplication {
+            application { app.install(this) }
+            val auth = client.loginAdmin()
+            val rejected = client.post("/admin/api/client-keys") {
+                authenticate(auth)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"no-route","accessPolicy":${scoped(routed.id, keyId, "no-route-model")}}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, rejected.status, rejected.bodyAsText())
+            assertTrue(rejected.bodyAsText().contains("没有已保存的模型路由"))
+
+            val created = client.create(auth, scoped(routed.id, keyId, "m1"))
+            java.sql.DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    assertEquals(1, statement.executeUpdate("delete from model_credential_routes where model_id = 'm1'"))
+                }
+            }
+            val updated = client.put("/admin/api/client-keys/${created.id()}") {
+                authenticate(auth)
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"kept","accessPolicy":${scoped(routed.id, keyId, "m1")}}""")
+            }.objectBody(HttpStatusCode.OK)
+            assertEquals(Json.parseToJsonElement(scoped(routed.id, keyId, "m1")), updated["accessPolicy"])
         }
     }
 

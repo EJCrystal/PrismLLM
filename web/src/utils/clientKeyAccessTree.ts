@@ -1,4 +1,4 @@
-import type { Channel, ChannelKeyState, ClientKeyAccessMode, ClientKeyAccessPolicy, ClientKeyAllowedChannelKey } from '../types/api'
+import type { Channel, ChannelKeyState, ClientKeyAccessMode, ClientKeyAccessPolicy, ClientKeyAllowedChannelKey, ModelRouteAccessOption } from '../types/api'
 
 /**
  * 「渠道与密钥」合并卡片的双向映射。
@@ -353,40 +353,52 @@ export function effectiveStaticKeyCount(policy: ClientKeyAccessPolicy, channels:
 }
 
 export interface ModelAvailability {
-  /** 在当前生效的渠道/密钥下是否可调用。 */
+  /** 在当前生效的渠道/密钥与已保存模型路由下是否可调用。 */
   supported: boolean
   /** 支撑该模型的生效静态密钥数量。 */
   staticKeyCount: number
+  /** 该模型路由中的身份总数。 */
+  routeEntryCount: number
+  /** 当前调用方范围下实际可用的路由身份数量。 */
+  availableCredentialCount: number
 }
 
 /**
- * 计算对外模型 ID 的可用性：数据面以 canonical ?? upstream 作为对外 ID，
- * 模型生效要求存在生效渠道上的生效凭据支撑其任一上游映射。
- * 静态密钥按后端路由契约排除不可路由密钥；OAuth 账号按映射逐一判断
- * `models` 覆盖（空列表表示支持全部，与后端 supports 一致）。
+ * 计算对外模型 ID 的可用性：模型必须已有保存的模型路由，且路由中的身份
+ * 在当前渠道/密钥范围内仍可选。未配置路由的模型不会出现在结果中。
  */
-export function modelAvailabilityMap(policy: ClientKeyAccessPolicy, channels: Channel[]): Map<string, ModelAvailability> {
+export function modelAvailabilityMap(
+  policy: ClientKeyAccessPolicy,
+  channels: Channel[],
+  routeOptions: ModelRouteAccessOption[] = [],
+): Map<string, ModelAvailability> {
   const now = Date.now()
+  const channelsById = new Map(channels.map(channel => [channel.id, channel]))
   const availability = new Map<string, ModelAvailability>()
-  const record = (publicId: string, supported: boolean, staticKeyCount: number): void => {
-    const current = availability.get(publicId) ?? { supported: false, staticKeyCount: 0 }
-    availability.set(publicId, {
-      supported: current.supported || supported,
-      staticKeyCount: current.staticKeyCount + staticKeyCount,
-    })
-  }
-  for (const channel of channels) {
-    if (!channel.enabled) continue
-    if (!channelAllowedByPolicy(policy, channel.id)) continue
-    const routableKeys = channel.keys.filter(key => keyRoutable(key, now))
-    for (const mapping of channel.modelMappings) {
-      const publicId = mapping.canonicalModelId ?? mapping.upstreamModel
-      const keyCount = routableKeys.filter(key =>
-        key.models.includes(mapping.upstreamModel) && staticKeyEffective(policy, { channelId: channel.id, keyId: key.id })).length
-      const oauthReady = oauthEffective(policy, channel.id) && (channel.oauthAccounts ?? []).some(account =>
-        account.enabled && (account.models.length === 0 || account.models.includes(mapping.upstreamModel)))
-      record(publicId, keyCount > 0 || oauthReady, keyCount)
+  for (const route of routeOptions) {
+    let staticKeyCount = 0
+    let availableCredentialCount = 0
+    for (const entry of route.entries) {
+      const channel = channelsById.get(entry.channelId)
+      if (!channel?.enabled || !channelAllowedByPolicy(policy, channel.id)) continue
+      if (entry.credentialType === 'static') {
+        const key = channel.keys.find(item => item.id === entry.credentialId)
+        if (!key || !entry.selectable || !keyRoutable(key, now) ||
+          !staticKeyEffective(policy, { channelId: channel.id, keyId: key.id })) continue
+        staticKeyCount += 1
+        availableCredentialCount += 1
+        continue
+      }
+      const account = (channel.oauthAccounts ?? []).find(item => item.id === entry.credentialId)
+      if (!account?.enabled || !entry.selectable || !oauthEffective(policy, channel.id)) continue
+      availableCredentialCount += 1
     }
+    availability.set(route.modelId, {
+      supported: availableCredentialCount > 0,
+      staticKeyCount,
+      routeEntryCount: route.entries.length,
+      availableCredentialCount,
+    })
   }
   return availability
 }

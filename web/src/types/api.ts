@@ -47,6 +47,22 @@ export interface ModelRouteDetail {
   availableCredentials: ModelRouteCredential[]
 }
 
+/** 调用方访问范围使用的紧凑路由选项；不包含凭据名称或明文。 */
+export interface ModelRouteAccessEntry extends ModelRouteIdentity {
+  selectable: boolean
+  reason?: string | null
+}
+
+export interface ModelRouteAccessOption {
+  modelId: string
+  revision: number
+  entries: ModelRouteAccessEntry[]
+}
+
+export interface ModelRouteAccessOptionsResponse {
+  models: ModelRouteAccessOption[]
+}
+
 export interface ModelRouteUpdateRequest {
   modelId: string
   expectedRevision: number
