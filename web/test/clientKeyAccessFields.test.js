@@ -392,6 +392,22 @@ describe('真实调用方访问范围配置组件', () => {
     assert.match(rows[2].textContent, /调用方范围排除了渠道/)
   })
 
+  it('失效静态密钥与 OAuth 账号同 ID 时分别渲染', async () => {
+    const policy = unrestricted()
+    policy.channels = { mode: 'allowlist', ids: ['deleted-channel'] }
+    policy.channelKeys = {
+      mode: 'allowlist',
+      keys: [
+        { channelId: 'deleted-channel', keyId: 'same-id' },
+        { channelId: 'deleted-channel', keyId: 'same-id', credentialType: 'oauth' },
+      ],
+    }
+    await mount(policy)
+    const rows = [...document.querySelectorAll('.tree-row.is-stale')].filter(node => node.textContent.includes('same-id'))
+    assert.equal(rows.length, 2)
+    assert.match(rows.map(node => node.textContent).join(' '), /OAuth/)
+  })
+
   it('模型黑名单失效 ID 保留展示，清空后触发空名单拦截', async () => {
     const policy = unrestricted()
     policy.models = { mode: 'denylist', ids: ['deleted-model'] }

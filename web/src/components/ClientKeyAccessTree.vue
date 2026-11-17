@@ -244,7 +244,7 @@ function channelStatLabel(info: ReturnType<typeof channelCheckInfo>): string {
       </label>
       <label
         v-for="pair in staleKeys"
-        :key="`${pair.channelId}/${pair.keyId}`"
+        :key="`${pair.channelId}/${pair.credentialType ?? 'static'}/${pair.keyId}`"
         class="tree-row is-key is-stale"
       >
         <input
