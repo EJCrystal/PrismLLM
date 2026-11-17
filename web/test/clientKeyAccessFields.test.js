@@ -56,6 +56,18 @@ const modelRoutes = {
   ],
 }
 
+const modelRouteDetails = {
+  'Model-A': {
+    modelId: 'Model-A', revision: 1, configured: true,
+    entries: [
+      { channelId: 'channel-a', credentialType: 'static', credentialId: 'key-1', channelName: '渠道 A', credentialName: '静态凭据 A', upstreamModels: ['upstream-a'], protocols: ['chat_completions'], selectable: true, reason: null },
+      { channelId: 'channel-b', credentialType: 'static', credentialId: 'key-1', channelName: '渠道 B', credentialName: '静态凭据 B', upstreamModels: ['upstream-b'], protocols: ['chat_completions'], selectable: false, reason: 'channel_disabled' },
+      { channelId: 'channel-a', credentialType: 'oauth', credentialId: 'oauth-1', channelName: '渠道 A', credentialName: 'oauth-a@example.com', upstreamModels: ['upstream-a'], protocols: ['chat_completions'], selectable: true, reason: null },
+    ],
+    availableCredentials: [],
+  },
+}
+
 describe('真实调用方访问范围配置组件', () => {
   let server, parts, app, state, requests
   async function settle() { await nextTick(); await delay(35); await nextTick() }
@@ -84,6 +96,12 @@ describe('真实调用方访问范围配置组件', () => {
       if (url === '/admin/api/model-routes/options') {
         const data = await fetchRoutes()
         return new Response(JSON.stringify(data), { status: 200 })
+      }
+      if (url.startsWith('/admin/api/model-routes/detail?')) {
+        const modelId = new URL(url, 'http://localhost').searchParams.get('modelId')
+        const detail = modelRouteDetails[modelId]
+        if (!detail) return new Response(JSON.stringify({ error: { message: '模型路由不存在' } }), { status: 404 })
+        return new Response(JSON.stringify(detail), { status: 200 })
       }
       assert.fail('意外的目录请求：' + url)
     }
@@ -316,6 +334,44 @@ describe('真实调用方访问范围配置组件', () => {
     assert.ok(row)
     assert.match(row.textContent, /路由 0 条/)
     assert.match(row.textContent, /没有可用凭据/)
+  })
+
+  it('展开模型后按保存顺序显示路由凭据与范围过滤结果', async () => {
+    await mount({ ...unrestricted(), models: { mode: 'allowlist', ids: ['Model-A'] } })
+    const item = [...document.querySelectorAll('.access-model-item')].find(node => node.textContent.includes('Model-A'))
+    assert.ok(item)
+    const toggle = [...item.querySelectorAll('button')].find(node => node.textContent.includes('查看路由'))
+    assert.ok(toggle)
+    toggle.click(); await settle()
+    const rows = [...item.querySelectorAll('.route-preview-list li')]
+    assert.equal(rows.length, 3)
+    assert.match(rows[0].textContent, /静态凭据 A/)
+    assert.match(rows[0].textContent, /当前范围可用/)
+    assert.match(rows[1].textContent, /静态凭据 B/)
+    assert.match(rows[1].textContent, /渠道已停用/)
+    assert.match(rows[2].textContent, /oauth-a@example.com/)
+    assert.match(rows[2].textContent, /当前范围可用/)
+    assert.equal(requests.filter(url => url.startsWith('/admin/api/model-routes/detail?')).length, 1)
+    toggle.click(); await settle()
+    assert.equal(item.querySelector('.route-preview'), null)
+  })
+
+  it('渠道范围排除时，预览逐条标注调用方范围拒绝原因', async () => {
+    await mount({
+      ...unrestricted(),
+      channels: { mode: 'denylist', ids: ['channel-a'] },
+      models: { mode: 'allowlist', ids: ['Model-A'] },
+    })
+    const item = [...document.querySelectorAll('.access-model-item')].find(node => node.textContent.includes('Model-A'))
+    assert.ok(item)
+    const toggle = [...item.querySelectorAll('button')].find(node => node.textContent.includes('查看路由'))
+    assert.ok(toggle)
+    toggle.click(); await settle()
+    const rows = [...item.querySelectorAll('.route-preview-list li')]
+    assert.equal(rows.length, 3)
+    assert.match(rows[0].textContent, /调用方范围排除了渠道/)
+    assert.match(rows[1].textContent, /渠道已停用/)
+    assert.match(rows[2].textContent, /调用方范围排除了渠道/)
   })
 
   it('模型黑名单失效 ID 保留展示，清空后触发空名单拦截', async () => {
