@@ -2,11 +2,13 @@ package dev.soven.prismllm.integration
 
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.channel.persistence.NewChannelKey
+import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
 import dev.soven.prismllm.quota.domain.ClientKeyAllowedChannelKey
 import dev.soven.prismllm.quota.domain.ClientKeyCredentialType
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
 import dev.soven.prismllm.shared.domain.GatewayProtocol
+import dev.soven.prismllm.shared.domain.OAuthProvider
 import io.ktor.client.HttpClient
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -596,6 +598,35 @@ class ClientKeyAccessPolicyIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.BadRequest, rejected.status, rejected.bodyAsText())
             assertTrue(rejected.bodyAsText().contains("渠道凭据不存在或不属于指定渠道"))
         }
+    }
+
+    /** 更新账号渠道集合不能级联删除仍保留渠道上的调用方凭据规则。 */
+    @Test
+    fun `retained oauth channel link preserves caller credential rules`() = runBlocking {
+        val first = createChannel("oauth-retain-first", "ok")
+        val second = createChannel("oauth-retain-second", "ok")
+        val account = app.oauthAccountRepository.create(
+            NewOAuthAccount(
+                name = "retained-oauth",
+                provider = OAuthProvider.CHATGPT,
+                refreshToken = app.credentialCipher.encrypt("retained-oauth-refresh"),
+                channelIds = listOf(first.id, second.id),
+            ),
+        )
+        val identity = ClientKeyAllowedChannelKey(first.id, account.id, ClientKeyCredentialType.OAUTH)
+        val saved = app.clientKeyRepository.create(
+            "retained-oauth-caller", "retained-hash", "prefix", true, null,
+            accessPolicy = ClientKeyAccessPolicy(
+                allowedChannelIds = setOf(first.id, second.id),
+                allowedChannelKeys = setOf(identity),
+            ),
+        )
+        app.oauthAccountRepository.setChannels(account.id, listOf(first.id, second.id))
+        assertEquals(setOf(identity), assertNotNull(app.clientKeyRepository.find(saved.id)).accessPolicy.allowedChannelKeys)
+        app.oauthAccountRepository.setChannels(account.id, listOf(first.id))
+        assertEquals(setOf(identity), assertNotNull(app.clientKeyRepository.find(saved.id)).accessPolicy.allowedChannelKeys)
+        app.oauthAccountRepository.setChannels(account.id, listOf(first.id, second.id))
+        assertEquals(setOf(identity), assertNotNull(app.clientKeyRepository.find(saved.id)).accessPolicy.allowedChannelKeys)
     }
 
     /** 生成独立预期的完整访问范围 JSON。 */
