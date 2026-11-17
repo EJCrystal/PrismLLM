@@ -3,12 +3,16 @@ import { computed, ref, watch } from 'vue'
 import { api } from '../api'
 import {
   changeMergedMode,
+  channelAllowedByPolicy,
   clearChannelSelection,
   effectiveStaticKeyCount,
+  keyRoutable,
   mergedAccessMode,
   modelAvailabilityMap,
+  oauthEffective,
   selectAllChannels,
   sameAccessKey,
+  staticKeyEffective,
   toggleChannelSelection,
   toggleKeySelection,
   toggleOAuthSelection,
@@ -18,7 +22,7 @@ import {
 import AccessModeToggle from './AccessModeToggle.vue'
 import ClientKeyAccessTree from './ClientKeyAccessTree.vue'
 import Icon from './Icon.vue'
-import type { Channel, ClientKeyAccessMode, ClientKeyAccessPolicy, ModelRouteAccessOption } from '../types/api'
+import type { Channel, ClientKeyAccessMode, ClientKeyAccessPolicy, ModelRouteAccessOption, ModelRouteDetail } from '../types/api'
 
 /**
  * 调用方密钥访问范围编辑字段：两张卡片（渠道与密钥合并树、对外模型 ID）。
@@ -31,6 +35,10 @@ const props = defineProps<{ modelValue: ClientKeyAccessPolicy }>()
 const emit = defineEmits<{ 'update:modelValue': [value: ClientKeyAccessPolicy] }>()
 const channels = ref<Channel[]>([])
 const routeOptions = ref<ModelRouteAccessOption[]>([])
+const routeDetails = ref<Record<string, ModelRouteDetail>>({})
+const expandedModels = ref<string[]>([])
+const routeLoading = ref<string[]>([])
+const routeErrors = ref<Record<string, string>>({})
 const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
@@ -47,6 +55,9 @@ async function loadCatalog(): Promise<void> {
     ])
     channels.value = channelCatalog
     routeOptions.value = modelRoutes.models
+    routeDetails.value = {}
+    routeErrors.value = {}
+    expandedModels.value = []
     loaded.value = true
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
@@ -114,6 +125,92 @@ function matchesModelSearch(id: string): boolean {
 const visibleSupportedModels = computed(() => supportedModels.value.filter(matchesModelSearch))
 const visibleUnsupportedModels = computed(() => unsupportedCheckedModels.value.filter(matchesModelSearch))
 const visibleStaleModels = computed(() => conflictStaleModels.value.filter(matchesModelSearch))
+
+const routeReasonLabels: Record<string, string> = {
+  channel_missing: '渠道已删除',
+  credential_missing: '凭据已删除',
+  channel_disabled: '渠道已停用',
+  credential_disabled: '凭据已停用',
+  model_unsupported: '凭据不再支持该模型',
+  protocol_unsupported: '没有共同支持的协议',
+}
+
+interface RoutePreviewItem {
+  key: string
+  channelName: string
+  credentialName: string
+  credentialType: 'static' | 'oauth'
+  upstreamModels: string[]
+  available: boolean
+  reason: string
+}
+
+function isModelPreviewOpen(modelId: string): boolean {
+  return expandedModels.value.includes(modelId)
+}
+
+/** 按需读取单个模型的服务端路由详情，展开预览不改变授权。 */
+async function toggleModelPreview(modelId: string): Promise<void> {
+  if (isModelPreviewOpen(modelId)) {
+    expandedModels.value = expandedModels.value.filter(id => id !== modelId)
+    return
+  }
+  expandedModels.value = [...expandedModels.value, modelId]
+  if (routeDetails.value[modelId] || routeLoading.value.includes(modelId)) return
+  routeLoading.value = [...routeLoading.value, modelId]
+  const errors = { ...routeErrors.value }
+  delete errors[modelId]
+  routeErrors.value = errors
+  try {
+    routeDetails.value = { ...routeDetails.value, [modelId]: await api.getModelRoute(modelId) }
+  } catch (cause) {
+    routeErrors.value = { ...routeErrors.value, [modelId]: cause instanceof Error ? cause.message : String(cause) }
+  } finally {
+    routeLoading.value = routeLoading.value.filter(id => id !== modelId)
+  }
+}
+
+/** 已保存顺序的路由身份，叠加当前调用方范围的过滤结果。 */
+function routePreview(modelId: string): RoutePreviewItem[] {
+  const detail = routeDetails.value[modelId]
+  if (!detail) return []
+  const channelsById = new Map(channels.value.map(channel => [channel.id, channel]))
+  return detail.entries.map((entry, index) => {
+    const channel = channelsById.get(entry.channelId)
+    let available = false
+    let reason = entry.reason ? (routeReasonLabels[entry.reason] ?? entry.reason) : ''
+    if (!channel) {
+      reason = reason || '渠道已删除'
+    } else if (!channel.enabled) {
+      reason = reason || '渠道已停用'
+    } else if (!entry.selectable) {
+      reason = reason || '路由当前不可用'
+    } else if (!channelAllowedByPolicy(props.modelValue, channel.id)) {
+      reason = '调用方范围排除了渠道'
+    } else if (entry.credentialType === 'static') {
+      const key = channel.keys.find(item => item.id === entry.credentialId)
+      if (!key) reason = '静态密钥已删除'
+      else if (!keyRoutable(key, Date.now())) reason = '静态密钥当前不可路由'
+      else if (!staticKeyEffective(props.modelValue, { channelId: channel.id, keyId: key.id })) reason = '调用方范围排除了静态密钥'
+      else available = true
+    } else {
+      const account = (channel.oauthAccounts ?? []).find(item => item.id === entry.credentialId)
+      if (!account) reason = '订阅账号已删除'
+      else if (!account.enabled) reason = '订阅账号已停用'
+      else if (!oauthEffective(props.modelValue, channel.id)) reason = '密钥白名单不包含 OAuth 账号'
+      else available = true
+    }
+    return {
+      key: `${entry.credentialType}:${entry.channelId}:${entry.credentialId}:${index}`,
+      channelName: channel?.name ?? entry.channelId,
+      credentialName: entry.credentialName || entry.credentialId,
+      credentialType: entry.credentialType,
+      upstreamModels: entry.upstreamModels,
+      available,
+      reason: available ? '当前范围可用' : (reason || '路由当前不可用'),
+    }
+  })
+}
 
 function onCardModeChange(mode: ClientKeyAccessMode): void {
   emit('update:modelValue', changeMergedMode(props.modelValue, mode))
@@ -252,27 +349,77 @@ const missingScopes = computed(() => loaded.value ? [
           </div>
         </div>
         <div class="access-options" :aria-label="modelValue.models.mode === 'denylist' ? '模型黑名单' : '模型白名单'">
-          <label
-            v-for="id in visibleSupportedModels"
-            :key="id"
-            class="access-option is-model"
-          >
-            <input type="checkbox" :checked="modelValue.models.ids.includes(id)" @change="changeModelId(id, $event)" />
-            <span class="access-model-id"><code>{{ id }}</code></span>
-            <span class="access-model-stat">
-              {{ (modelChannelNames.get(id) ?? []).join('、') }}
-              · 路由 {{ availability.get(id)?.routeEntryCount ?? 0 }} 条
-              <template v-if="(availability.get(id)?.availableCredentialCount ?? 0) > 0">
-                · 当前范围可用 {{ availability.get(id)?.availableCredentialCount }} 个凭据
-              </template>
-            </span>
-          </label>
-          <label v-for="id in visibleUnsupportedModels" :key="id" class="access-option is-model is-conflict">
-            <input type="checkbox" checked @change="changeModelId(id, $event)" />
-            <span class="access-model-id"><code>{{ id }}</code></span>
-            <span class="access-model-stat">路由 {{ availability.get(id)?.routeEntryCount ?? 0 }} 条</span>
-            <span class="access-model-conflict">⚠️ 当前范围或模型路由没有可用凭据</span>
-          </label>
+          <div v-for="id in visibleSupportedModels" :key="id" class="access-model-item">
+            <div class="access-option is-model access-model-row">
+              <label class="access-model-label">
+                <input type="checkbox" :checked="modelValue.models.ids.includes(id)" @change="changeModelId(id, $event)" />
+                <span class="access-model-id"><code>{{ id }}</code></span>
+                <span class="access-model-stat">
+                  {{ (modelChannelNames.get(id) ?? []).join('、') }}
+                  · 路由 {{ availability.get(id)?.routeEntryCount ?? 0 }} 条
+                  <template v-if="(availability.get(id)?.availableCredentialCount ?? 0) > 0">
+                    · 当前范围可用 {{ availability.get(id)?.availableCredentialCount }} 个凭据
+                  </template>
+                </span>
+              </label>
+              <button
+                type="button"
+                class="route-preview-toggle"
+                :aria-expanded="isModelPreviewOpen(id)"
+                @click.prevent.stop="toggleModelPreview(id)"
+              >
+                {{ isModelPreviewOpen(id) ? '收起路由' : '查看路由' }}
+              </button>
+            </div>
+            <div v-if="isModelPreviewOpen(id)" class="route-preview" role="group" :aria-label="`${id} 的生效路由`">
+              <p v-if="routeLoading.includes(id)" class="muted small">正在读取模型路由…</p>
+              <p v-else-if="routeErrors[id]" class="access-warning">{{ routeErrors[id] }}</p>
+              <p v-else-if="!routePreview(id).length" class="muted small">模型路由为空，暂无凭据。</p>
+              <ol v-else class="route-preview-list">
+                <li v-for="(item, index) in routePreview(id)" :key="item.key">
+                  <span class="route-index">{{ index + 1 }}</span>
+                  <strong class="route-name">{{ item.credentialName }}</strong>
+                  <span class="badge neutral">{{ item.credentialType === 'oauth' ? '订阅账号' : '静态密钥' }}</span>
+                  <span class="route-channel">{{ item.channelName }}</span>
+                  <span class="route-status" :class="item.available ? 'is-ok' : 'is-off'">{{ item.reason }}</span>
+                  <small v-if="item.upstreamModels.length" class="route-upstreams">{{ item.upstreamModels.join(' / ') }}</small>
+                </li>
+              </ol>
+            </div>
+          </div>
+          <div v-for="id in visibleUnsupportedModels" :key="id" class="access-model-item">
+            <div class="access-option is-model is-conflict access-model-row">
+              <label class="access-model-label">
+                <input type="checkbox" checked @change="changeModelId(id, $event)" />
+                <span class="access-model-id"><code>{{ id }}</code></span>
+                <span class="access-model-stat">路由 {{ availability.get(id)?.routeEntryCount ?? 0 }} 条</span>
+                <span class="access-model-conflict">⚠️ 当前范围或模型路由没有可用凭据</span>
+              </label>
+              <button
+                type="button"
+                class="route-preview-toggle"
+                :aria-expanded="isModelPreviewOpen(id)"
+                @click.prevent.stop="toggleModelPreview(id)"
+              >
+                {{ isModelPreviewOpen(id) ? '收起路由' : '查看路由' }}
+              </button>
+            </div>
+            <div v-if="isModelPreviewOpen(id)" class="route-preview" role="group" :aria-label="`${id} 的生效路由`">
+              <p v-if="routeLoading.includes(id)" class="muted small">正在读取模型路由…</p>
+              <p v-else-if="routeErrors[id]" class="access-warning">{{ routeErrors[id] }}</p>
+              <p v-else-if="!routePreview(id).length" class="muted small">模型路由为空，暂无凭据。</p>
+              <ol v-else class="route-preview-list">
+                <li v-for="(item, index) in routePreview(id)" :key="item.key">
+                  <span class="route-index">{{ index + 1 }}</span>
+                  <strong class="route-name">{{ item.credentialName }}</strong>
+                  <span class="badge neutral">{{ item.credentialType === 'oauth' ? '订阅账号' : '静态密钥' }}</span>
+                  <span class="route-channel">{{ item.channelName }}</span>
+                  <span class="route-status" :class="item.available ? 'is-ok' : 'is-off'">{{ item.reason }}</span>
+                  <small v-if="item.upstreamModels.length" class="route-upstreams">{{ item.upstreamModels.join(' / ') }}</small>
+                </li>
+              </ol>
+            </div>
+          </div>
           <label v-for="id in visibleStaleModels" :key="id" class="access-option is-model is-unavailable">
             <input type="checkbox" checked @change="changeModelId(id, $event)" />
             <span class="access-model-id"><strong>{{ unavailableLabel }}</strong><code>{{ id }}</code></span>
@@ -344,6 +491,28 @@ const missingScopes = computed(() => loaded.value ? [
 .access-option:last-child { border-bottom: 0; }
 .access-option input { flex: 0 0 auto; margin: 0; accent-color: var(--brand); }
 .access-option.is-model { justify-content: space-between; }
+.access-model-item { display: grid; border-bottom: 1px solid var(--line); }
+.access-model-item:last-child { border-bottom: 0; }
+.access-model-row.access-option { border-bottom: 0; align-items: flex-start; }
+.access-model-label { display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0; cursor: pointer; }
+.access-model-label .access-model-stat { margin-left: auto; text-align: right; }
+.route-preview-toggle {
+  flex: 0 0 auto; border: 0; background: transparent; color: var(--brand);
+  font-size: 11px; padding: 4px 6px; border-radius: 6px; cursor: pointer;
+}
+.route-preview-toggle:hover { background: var(--glass-bg-strong); }
+.route-preview { padding: 8px 10px 10px 32px; background: var(--glass-bg-soft); border-top: 1px dashed var(--line); }
+.route-preview-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.route-preview-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; min-width: 0; }
+.route-index {
+  display: inline-grid; place-items: center; flex: 0 0 auto; width: 18px; height: 18px;
+  border-radius: 999px; font-size: 10px; color: var(--muted); background: var(--glass-bg-strong);
+}
+.route-name { min-width: 0; overflow-wrap: anywhere; }
+.route-channel { color: var(--muted); }
+.route-status.is-ok { color: var(--brand); font-weight: 600; }
+.route-status.is-off { color: var(--warning); font-weight: 600; }
+.route-upstreams { flex-basis: 100%; color: var(--muted); padding-left: 24px; overflow-wrap: anywhere; }
 .access-model-id { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
 .access-model-id code { color: var(--ink); font-size: 12px; font-family: ui-monospace, monospace; }
 .access-model-stat { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
