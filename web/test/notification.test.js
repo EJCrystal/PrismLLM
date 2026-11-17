@@ -72,6 +72,7 @@ describe('notification settings validation and display', () => {
     assert.match(notificationTemplateError('', 'bad\u0000body'), /控制字符/)
     assert.match(notificationTemplateError('{{unknown}}', ''), /未知模板变量/)
     assert.match(notificationTemplateError('{{channel_name}}', ''), /未知模板变量/)
+    assert.match(notificationTemplateError('{{unknown-variable}}', ''), /未知模板变量/)
     assert.match(notificationTemplateError('', '{{eventType}} {{channel}} {{nope}}'), /nope/)
   })
 

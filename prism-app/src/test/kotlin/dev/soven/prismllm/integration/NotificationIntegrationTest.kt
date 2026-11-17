@@ -440,11 +440,12 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
                 contentType(ContentType.Application.Json)
                 setBody(
                     """{"name":"模板目标","type":"feishu","enabled":false,"events":["key.disabled"],"channelIds":[],""" +
-                        """"templateTitle":"{{unknown}}","templateBody":"{{channel_name}}","revision":$revision}""",
+                        """"templateTitle":"{{severity}}","templateBody":"{{channel_name}} {{unknown-variable}}","revision":$revision}""",
                 )
             }
             assertEquals(HttpStatusCode.BadRequest, invalid.status, invalid.bodyAsText())
             assertTrue(invalid.bodyAsText().contains("invalid_notification_template"))
+            assertEquals("**渠道** {{channel}}", assertNotNull(app.notificationRepository.findTarget(configured.id)).templateBody)
         }
     }
 }

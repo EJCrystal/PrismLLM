@@ -22,7 +22,7 @@ export const notificationTemplateVariables = [
   'occurredAt', 'eventId', 'metrics',
 ] as const
 
-const templateVariablePattern = /\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g
+const templateVariablePattern = /\{\{([^{}]*)\}\}/g
 
 export function notificationTemplateError(title: string, body: string): string {
   if (title.length > 100) return '模板标题不能超过 100 个字符。'
@@ -32,7 +32,8 @@ export function notificationTemplateError(title: string, body: string): string {
   const unknown = new Set<string>()
   for (const text of [title, body]) {
     for (const match of text.matchAll(templateVariablePattern)) {
-      if (!(notificationTemplateVariables as readonly string[]).includes(match[1])) unknown.add(match[1])
+      const name = match[1].trim()
+      if (!(notificationTemplateVariables as readonly string[]).includes(name)) unknown.add(name === '' ? '(空)' : name)
     }
   }
   if (unknown.size) return `未知模板变量：${[...unknown].join('、')}。`

@@ -27,13 +27,18 @@ object NotificationTemplateVariables {
         "occurredAt", "eventId", "metrics",
     )
 
-    private val pattern = Regex("\\{\\{\\s*([A-Za-z][A-Za-z0-9_]*)\\s*\\}\\}")
+    private val pattern = Regex("\\{\\{([^{}]*)\\}\\}")
 
     fun unknown(template: String): Set<String> =
-        pattern.findAll(template).map { it.groupValues[1] }.filter { it !in names }.toSet()
+        pattern.findAll(template)
+            .map { it.groupValues[1].trim() }
+            .filter { it !in names }
+            .toSet()
 
     fun render(template: String, values: Map<String, String>): String =
-        pattern.replace(template) { match -> values[match.groupValues[1]] ?: match.value }
+        pattern.replace(template) { match ->
+            values[match.groupValues[1].trim()] ?: match.value
+        }
 }
 
 @Serializable
