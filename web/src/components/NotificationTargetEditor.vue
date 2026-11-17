@@ -8,6 +8,8 @@ import {
   notificationCredentialUrlError,
   notificationEventOptions,
   notificationTargetError,
+  notificationTemplateError,
+  notificationTemplateVariables,
 } from '../utils/notification'
 import Icon from './Icon.vue'
 import SecretInput from './SecretInput.vue'
@@ -25,6 +27,8 @@ const draft = reactive<NotificationTargetRequest>({
   enabled: props.target?.enabled ?? true,
   events: [...(props.target?.events ?? notificationEventOptions.map(event => event.value))],
   channelIds: [...(props.target?.channelIds ?? [])],
+  templateTitle: props.target?.templateTitle ?? '',
+  templateBody: props.target?.templateBody ?? '',
   revision: props.target?.revision,
 })
 const credentialDraft = reactive({
@@ -48,6 +52,8 @@ const credentials = computed(() => props.target?.credentials ?? null)
 const urlState = computed(() => credentialState(credentials.value?.urlConfigured, credentials.value?.urlUnreadable, true))
 const bearerState = computed(() => credentialState(credentials.value?.bearerTokenConfigured, credentials.value?.bearerTokenUnreadable))
 const signingState = computed(() => credentialState(credentials.value?.signingSecretConfigured, credentials.value?.signingSecretUnreadable))
+const templateVariableHints = notificationTemplateVariables.map(name => '{{' + name + '}}')
+const templateBodyPlaceholder = '例如：\n**渠道** {{channel}}\n原因：{{reason}}'
 const staleChannelIds = computed(() => channelsLoaded.value
   ? draft.channelIds.filter(id => !channels.value.some(channel => channel.id === id))
   : [])
@@ -77,6 +83,12 @@ function payload(): NotificationTargetRequest {
     enabled: draft.enabled,
     events: [...draft.events],
     channelIds: allChannels.value ? [] : [...draft.channelIds],
+    ...(draft.type === 'feishu'
+      ? {
+          templateTitle: draft.templateTitle?.trim() || null,
+          templateBody: draft.templateBody?.trim() || null,
+        }
+      : {}),
     ...(credentials ? { credentials } : {}),
     ...(draft.revision === undefined ? {} : { revision: draft.revision }),
   }
@@ -91,6 +103,10 @@ const validationError = computed(() => {
   const result = notificationTargetError(payload(), channelsLoaded.value ? channels.value : undefined, allChannels.value)
   if (result) return result
   if (credentialError.value) return credentialError.value
+  if (draft.type === 'feishu') {
+    const templateResult = notificationTemplateError(draft.templateTitle ?? '', draft.templateBody ?? '')
+    if (templateResult) return templateResult
+  }
   if (!allChannels.value && !channelsLoaded.value) return '请先成功读取渠道列表，再保存指定渠道范围。'
   return ''
 })
@@ -220,6 +236,29 @@ onBeforeUnmount(() => { disposed = true })
         </div>
       </fieldset>
 
+      <fieldset v-if="draft.type === 'feishu'" class="notification-template-group" :disabled="saving">
+        <legend>消息模板（可选）</legend>
+        <p>
+          留空使用默认卡片。可用变量：
+          <code v-for="hint in templateVariableHints" :key="hint">{{ hint }}</code>
+          ；正文支持 Markdown。
+        </p>
+        <label class="field">
+          <span>卡片标题</span>
+          <input
+            v-model="draft.templateTitle" type="text" maxlength="100" autocomplete="off"
+            placeholder="留空：按事件类型自动选择" :disabled="saving"
+          />
+        </label>
+        <label class="field">
+          <span>卡片正文</span>
+          <textarea
+            v-model="draft.templateBody" rows="5" maxlength="4096" :disabled="saving"
+            :placeholder="templateBodyPlaceholder"
+          ></textarea>
+        </label>
+      </fieldset>
+
       <fieldset class="notification-choice-group" :disabled="saving">
         <legend>订阅事件</legend>
         <p>至少选择一种事件。密钥事件针对上游渠道密钥，不涉及调用方密钥。</p>
@@ -294,6 +333,10 @@ onBeforeUnmount(() => { disposed = true })
 .notification-credential-state.is-optional { color: var(--muted); }
 .notification-clear { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; cursor: pointer; }
 .notification-clear input { flex: 0 0 auto; width: 15px; height: 15px; margin: 0; }
+.notification-template-group { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; gap: 10px; }
+.notification-template-group legend { margin-bottom: 7px; font-size: 13px; font-weight: 650; }
+.notification-template-group > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.notification-template-group code { margin-right: 6px; font-size: 10px; }
 .notification-choice-group { min-width: 0; margin: 0; padding: 0; border: 0; }
 .notification-choice-group legend { margin-bottom: 7px; font-size: 13px; font-weight: 650; }
 .notification-event-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; }

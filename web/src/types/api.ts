@@ -783,6 +783,9 @@ export interface NotificationTargetRequest {
   events: NotificationEventType[]
   /** 空数组订阅全部渠道，包括今后新增的渠道。 */
   channelIds: string[]
+  /** 飞书卡片模板；留空使用默认卡片，仅 feishu 目标使用。 */
+  templateTitle?: string | null
+  templateBody?: string | null
   /** 凭据由管理台录入并加密保存；响应不会回显明文。 */
   credentials?: NotificationCredentialWrite
   revision?: number
@@ -804,6 +807,8 @@ export interface NotificationTargetResponse {
   enabled: boolean
   events: NotificationEventType[]
   channelIds: string[]
+  templateTitle: string | null
+  templateBody: string | null
   revision: number
   updatedAt: number
   credentials: NotificationCredentials

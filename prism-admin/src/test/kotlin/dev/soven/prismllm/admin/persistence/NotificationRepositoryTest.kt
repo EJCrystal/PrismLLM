@@ -429,6 +429,20 @@ class NotificationRepositoryTest {
     }
 
     @Test
+    fun `template configuration persists and bumps revision only when changed`() = runBlocking {
+        val target = repository.saveTarget(target().copy(
+            templateTitle = "【{{severity}}】{{channel}}",
+            templateBody = "渠道 {{channel}}\n原因：{{reason}}",
+        ))
+        assertEquals("【{{severity}}】{{channel}}", target.templateTitle)
+        assertEquals(target, repository.saveTarget(target))
+
+        val updated = repository.saveTarget(target.copy(templateBody = "新正文 {{eventId}}"))
+        assertEquals(target.revision + 1, updated.revision)
+        assertEquals("新正文 {{eventId}}", assertNotNull(repository.findTarget(target.id)).templateBody)
+    }
+
+    @Test
     fun `credentials are stored as bound ciphertext and updated or cleared independently`() = runBlocking {
         val cipher = CredentialCipher(ByteArray(32) { 4 })
         val target = repository.saveTarget(target())

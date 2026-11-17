@@ -52,7 +52,15 @@
 
 配置签名密钥时提供 `X-Prism-Timestamp`（Unix 秒）及 `X-Prism-Signature`（`sha256=` 加小写十六进制摘要）。摘要为 `HMAC-SHA256(secret, timestamp + "." + rawBody)`，UTF-8 编码，rawBody 必须为接收的原始字节；验证时同时限制时间差并去重 eventId。每次重试重新生成时间与签名，事件本身不变。
 
-飞书使用 `msg_type=text` 的中文文本消息，包含 PrismLLM 标识、事件、渠道/密钥、状态与事件 ID；签名遵循飞书自定义机器人协议。成功同时要求 HTTP 成功和飞书业务响应码成功，HTTP 200 下的业务拒绝会记录为失败。
+飞书使用 `msg_type=interactive` 中文卡片：标题按事件类型和严重程度着色，卡片展示事件、渠道/凭据/模型、状态变化、原因与事件 ID；签名遵循飞书自定义机器人协议。成功同时要求 HTTP 成功和飞书业务响应码为 0，HTTP 200 下的业务拒绝会记录为失败。
+
+### 自定义飞书卡片模板
+
+每个飞书目标可在「消息模板」中单独设置卡片标题与正文，留空使用默认卡片。支持变量：
+
+`{{eventType}}`、`{{severity}}`、`{{channel}}`、`{{credential}}`、`{{model}}`、`{{previousState}}`、`{{state}}`、`{{reason}}`、`{{consecutiveFailures}}`、`{{occurredAt}}`、`{{eventId}}`、`{{metrics}}`。
+
+标题最多 100 个字符且不能换行；正文最多 4096 个字符，支持 Markdown 和换行。变量值会按飞书 lark_md 要求用 HTML 实体转义，避免事件数据注入链接、格式或提及；未知变量会被拒绝。模板展开后超过飞书自定义机器人 20 KB 请求体限制时，会自动回退为默认卡片，避免通知因请求被拒而丢失。模板只对飞书目标生效，通用 Webhook 的 JSON 载荷保持稳定契约。
 
 ## 可靠性与排查
 

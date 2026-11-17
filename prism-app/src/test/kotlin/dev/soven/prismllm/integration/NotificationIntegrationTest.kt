@@ -411,4 +411,41 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(0L, app.notificationRepository.deliveries(configured.id).total)
         }
     }
+
+    @Test
+    fun `target templates round trip and reject unknown variables`() = runBlocking {
+        replaceApp()
+        val configured = target(listOf(NotificationEvents.KEY_DISABLED))
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val updated = client.put("/admin/api/notification-targets/${configured.id}") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"模板目标","type":"feishu","enabled":false,"events":["key.disabled"],"channelIds":[],""" +
+                        """"templateTitle":"【{{severity}}】{{channel}}","templateBody":"**渠道** {{channel}}","revision":${configured.revision}}""",
+                )
+            }
+            assertEquals(HttpStatusCode.OK, updated.status, updated.bodyAsText())
+            val json = Json.parseToJsonElement(updated.bodyAsText()).jsonObject
+            assertEquals("【{{severity}}】{{channel}}", json.getValue("templateTitle").jsonPrimitive.content)
+            assertEquals("**渠道** {{channel}}", json.getValue("templateBody").jsonPrimitive.content)
+            val revision = json.getValue("revision").jsonPrimitive.content.toLong()
+
+            val invalid = client.put("/admin/api/notification-targets/${configured.id}") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"模板目标","type":"feishu","enabled":false,"events":["key.disabled"],"channelIds":[],""" +
+                        """"templateTitle":"{{severity}}","templateBody":"{{channel_name}} {{unknown-variable}}","revision":$revision}""",
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, invalid.status, invalid.bodyAsText())
+            assertTrue(invalid.bodyAsText().contains("invalid_notification_template"))
+            assertEquals("**渠道** {{channel}}", assertNotNull(app.notificationRepository.findTarget(configured.id)).templateBody)
+        }
+    }
 }

@@ -1,7 +1,9 @@
 package dev.soven.prismllm.notification
 
 import dev.soven.prismllm.admin.domain.NotificationEvent
+import dev.soven.prismllm.admin.domain.NotificationEvents
 import dev.soven.prismllm.admin.domain.NotificationTarget
+import dev.soven.prismllm.admin.domain.NotificationTemplateVariables
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
@@ -11,6 +13,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
@@ -129,7 +132,7 @@ class SafeNotificationTransport internal constructor(
 
         val now = epochSeconds()
         val payload = try {
-            if (target.type == "feishu") feishuPayload(event, now, environment.signingSecret)
+            if (target.type == "feishu") feishuPayload(target, event, now, environment.signingSecret)
             else EVENT_JSON.encodeToString(event).toByteArray(Charsets.UTF_8)
         } catch (_: Exception) {
             return permanent("invalid_payload")
@@ -182,30 +185,148 @@ class SafeNotificationTransport internal constructor(
         (httpExecutor as? AutoCloseable)?.close()
     }
 
-    private fun feishuPayload(event: NotificationEvent, timestamp: Long, secret: String?): ByteArray {
-        val text = buildString {
-            appendLine("PrismLLM 事件通知")
-            appendLine("事件: ${label(event.eventType)}")
-            appendLine("事件 ID: ${event.eventId}")
-            appendLine("级别: ${label(event.severity)}")
-            appendLine("时间: ${Instant.ofEpochMilli(event.occurredAt)}")
-            (event.channelName ?: event.channelId)?.let { appendLine("渠道: ${display(it)}") }
-            (event.credentialName ?: event.credentialId)?.let { appendLine("凭据: ${display(it)}") }
-            event.upstreamModel?.let { appendLine("模型: ${display(it)}") }
-            event.previousState?.let { appendLine("先前状态: ${label(it)}") }
-            event.state?.let { appendLine("当前状态: ${label(it)}") }
-            event.reasonCode?.let { appendLine("原因: ${label(it)}") }
-            event.consecutiveFailures?.let { appendLine("连续失败: $it") }
-        }.trimEnd()
+private fun feishuPayload(
+        target: NotificationTarget,
+        event: NotificationEvent,
+        timestamp: Long,
+        secret: String?,
+    ): ByteArray {
+        val custom = feishuCard(target, event, timestamp, secret, useCustomTemplate = true)
+        return if (custom.size <= FEISHU_MAX_PAYLOAD_BYTES) {
+            custom
+        } else {
+            // Feishu rejects bodies above 20 KB; prefer the compact default card over a permanent failure.
+            feishuCard(target, event, timestamp, secret, useCustomTemplate = false)
+        }
+    }
+
+    private fun feishuCard(
+        target: NotificationTarget,
+        event: NotificationEvent,
+        timestamp: Long,
+        secret: String?,
+        useCustomTemplate: Boolean,
+    ): ByteArray {
+        val title = (
+            (if (useCustomTemplate) target.templateTitle?.takeIf { it.isNotBlank() } else null)
+                ?.let { NotificationTemplateVariables.render(it, templateValues(event)) }
+                ?: defaultFeishuTitle(event)
+        ).take(100)
+        val template = when {
+            event.eventType == NotificationEvents.CHANNEL_RECOVERED ||
+                event.eventType == NotificationEvents.KEY_RECOVERED ||
+                event.eventType == NotificationEvents.CONSECUTIVE_FAILURES_RECOVERED -> "green"
+            event.severity.equals("critical", ignoreCase = true) -> "red"
+            event.severity.equals("warning", ignoreCase = true) -> "orange"
+            else -> "blue"
+        }
+        val bodyTemplate = if (useCustomTemplate) target.templateBody?.takeIf { it.isNotBlank() } else null
+        val elements = buildJsonArray {
+            if (bodyTemplate != null) {
+                val escaped = templateValues(event).mapValues { (_, value) -> escapeLarkMarkdown(value) }
+                add(buildJsonObject {
+                    put("tag", "div")
+                    put("text", buildJsonObject {
+                        put("tag", "lark_md")
+                        put("content", NotificationTemplateVariables.render(bodyTemplate, escaped))
+                    })
+                })
+            } else {
+                add(buildJsonObject {
+                    put("tag", "div")
+                    put("text", buildJsonObject {
+                        put("tag", "lark_md")
+                        put("content", "**${label(event.eventType)}** · ${label(event.severity)}")
+                    })
+                })
+                val fields = buildList {
+                    (event.channelName ?: event.channelId)?.let { add("渠道" to display(it)) }
+                    (event.credentialName ?: event.credentialId)?.let { add("凭据" to display(it)) }
+                    event.upstreamModel?.let { add("上游模型" to display(it)) }
+                    event.previousState?.let { add("先前状态" to label(it)) }
+                    event.state?.let { add("当前状态" to label(it)) }
+                    event.consecutiveFailures?.let { add("连续失败" to "$it 次") }
+                    event.reasonCode?.let { add("原因" to label(it)) }
+                    event.metrics?.let { add("指标" to it.toString().take(500)) }
+                }
+                if (fields.isNotEmpty()) {
+                    add(buildJsonObject { put("tag", "hr") })
+                    add(buildJsonObject {
+                        put("tag", "div")
+                        put("fields", buildJsonArray {
+                            fields.forEach { (name, value) ->
+                                add(buildJsonObject {
+                                    put("is_short", true)
+                                    put("text", buildJsonObject {
+                                        put("tag", "plain_text")
+                                        put("content", "$name\n$value")
+                                    })
+                                })
+                            }
+                        })
+                    })
+                }
+            }
+            add(buildJsonObject { put("tag", "hr") })
+            add(buildJsonObject {
+                put("tag", "note")
+                put("elements", buildJsonArray {
+                    add(buildJsonObject {
+                        put("tag", "plain_text")
+                        put("content", "PrismLLM · ${Instant.ofEpochMilli(event.occurredAt)} · 事件 ${event.eventId}")
+                    })
+                })
+            })
+        }
         return buildJsonObject {
-            put("msg_type", "text")
-            put("content", buildJsonObject { put("text", text) })
+            put("msg_type", "interactive")
+            put("card", buildJsonObject {
+                put("config", buildJsonObject { put("wide_screen_mode", true) })
+                put("header", buildJsonObject {
+                    put("template", template)
+                    put("title", buildJsonObject {
+                        put("tag", "plain_text")
+                        put("content", title)
+                    })
+                })
+                put("elements", elements)
+            })
             if (secret != null) {
                 put("timestamp", timestamp.toString())
                 put("sign", feishuSignature(secret, timestamp))
             }
         }.toString().toByteArray(Charsets.UTF_8)
     }
+
+    private fun defaultFeishuTitle(event: NotificationEvent): String = when (event.eventType) {
+        NotificationEvents.CHANNEL_UNHEALTHY -> "渠道异常"
+        NotificationEvents.CHANNEL_RECOVERED -> "渠道已恢复"
+        NotificationEvents.KEY_DISABLED -> "上游凭据已禁用"
+        NotificationEvents.KEY_RECOVERED -> "上游凭据已恢复"
+        NotificationEvents.CONSECUTIVE_FAILURES -> "上游连续失败"
+        NotificationEvents.CONSECUTIVE_FAILURES_RECOVERED -> "连续失败已恢复"
+        NotificationEvents.TEST -> "PrismLLM 测试通知"
+        else -> "PrismLLM 事件通知"
+    }
+
+    private fun templateValues(event: NotificationEvent): Map<String, String> = mapOf(
+        "eventType" to label(event.eventType),
+        "severity" to label(event.severity),
+        "channel" to display(event.channelName ?: event.channelId ?: ""),
+        "credential" to display(event.credentialName ?: event.credentialId ?: ""),
+        "model" to display(event.upstreamModel ?: ""),
+        "previousState" to (event.previousState?.let(::label) ?: ""),
+        "state" to (event.state?.let(::label) ?: ""),
+        "reason" to (event.reasonCode?.let(::label) ?: ""),
+        "consecutiveFailures" to (event.consecutiveFailures?.toString() ?: ""),
+        "occurredAt" to Instant.ofEpochMilli(event.occurredAt).toString(),
+        "eventId" to event.eventId,
+        "metrics" to (event.metrics?.toString()?.take(500) ?: ""),
+    )
+
+    /** Escape markdown metacharacters so event data cannot inject links or formatting. */
+    private fun escapeLarkMarkdown(value: String): String =
+        value.replace(Regex("([\\\\*_~`\\[\\]<>&])")) { match -> "&#${match.value[0].code};" }
 
     private fun feishuAccepted(body: ByteArray): Boolean = try {
         val text = Charsets.UTF_8.newDecoder()
@@ -261,6 +382,7 @@ class SafeNotificationTransport internal constructor(
 
     companion object {
         private val EVENT_JSON = Json { encodeDefaults = true; explicitNulls = false }
+        private const val FEISHU_MAX_PAYLOAD_BYTES = 20 * 1024
         private val STRICT_JSON = Json { isLenient = false }
         private val LABELS = mapOf(
             "channel.unhealthy" to "渠道异常", "channel.recovered" to "渠道已恢复",
