@@ -60,7 +60,7 @@
 
 `{{eventType}}`、`{{severity}}`、`{{channel}}`、`{{credential}}`、`{{model}}`、`{{previousState}}`、`{{state}}`、`{{reason}}`、`{{consecutiveFailures}}`、`{{occurredAt}}`、`{{eventId}}`、`{{metrics}}`。
 
-标题最多 100 个字符且不能换行；正文最多 4096 个字符，支持 Markdown 和换行。变量值会转义 Markdown 元字符，避免事件数据注入链接或格式；未知变量会被拒绝。模板只对飞书目标生效，通用 Webhook 的 JSON 载荷保持稳定契约。
+标题最多 100 个字符且不能换行；正文最多 4096 个字符，支持 Markdown 和换行。变量值会按飞书 lark_md 要求用 HTML 实体转义，避免事件数据注入链接、格式或提及；未知变量会被拒绝。模板展开后超过飞书自定义机器人 20 KB 请求体限制时，会自动回退为默认卡片，避免通知因请求被拒而丢失。模板只对飞书目标生效，通用 Webhook 的 JSON 载荷保持稳定契约。
 
 ## 可靠性与排查
 

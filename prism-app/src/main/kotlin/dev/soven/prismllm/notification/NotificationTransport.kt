@@ -185,15 +185,33 @@ class SafeNotificationTransport internal constructor(
         (httpExecutor as? AutoCloseable)?.close()
     }
 
-    private fun feishuPayload(
+private fun feishuPayload(
         target: NotificationTarget,
         event: NotificationEvent,
         timestamp: Long,
         secret: String?,
     ): ByteArray {
-        val title = (target.templateTitle?.takeIf { it.isNotBlank() }
-            ?.let { NotificationTemplateVariables.render(it, templateValues(event)) }
-            ?: defaultFeishuTitle(event)).take(100)
+        val custom = feishuCard(target, event, timestamp, secret, useCustomTemplate = true)
+        return if (custom.size <= FEISHU_MAX_PAYLOAD_BYTES) {
+            custom
+        } else {
+            // Feishu rejects bodies above 20 KB; prefer the compact default card over a permanent failure.
+            feishuCard(target, event, timestamp, secret, useCustomTemplate = false)
+        }
+    }
+
+    private fun feishuCard(
+        target: NotificationTarget,
+        event: NotificationEvent,
+        timestamp: Long,
+        secret: String?,
+        useCustomTemplate: Boolean,
+    ): ByteArray {
+        val title = (
+            (if (useCustomTemplate) target.templateTitle?.takeIf { it.isNotBlank() } else null)
+                ?.let { NotificationTemplateVariables.render(it, templateValues(event)) }
+                ?: defaultFeishuTitle(event)
+        ).take(100)
         val template = when {
             event.eventType == NotificationEvents.CHANNEL_RECOVERED ||
                 event.eventType == NotificationEvents.KEY_RECOVERED ||
@@ -202,7 +220,7 @@ class SafeNotificationTransport internal constructor(
             event.severity.equals("warning", ignoreCase = true) -> "orange"
             else -> "blue"
         }
-        val bodyTemplate = target.templateBody?.takeIf { it.isNotBlank() }
+        val bodyTemplate = if (useCustomTemplate) target.templateBody?.takeIf { it.isNotBlank() } else null
         val elements = buildJsonArray {
             if (bodyTemplate != null) {
                 val escaped = templateValues(event).mapValues { (_, value) -> escapeLarkMarkdown(value) }
@@ -308,7 +326,7 @@ class SafeNotificationTransport internal constructor(
 
     /** Escape markdown metacharacters so event data cannot inject links or formatting. */
     private fun escapeLarkMarkdown(value: String): String =
-        value.replace(Regex("([\\\\*_~`\\[\\]<>&])"), "\\\\$1")
+        value.replace(Regex("([\\\\*_~`\\[\\]<>&])")) { match -> "&#${match.value[0].code};" }
 
     private fun feishuAccepted(body: ByteArray): Boolean = try {
         val text = Charsets.UTF_8.newDecoder()
@@ -364,6 +382,7 @@ class SafeNotificationTransport internal constructor(
 
     companion object {
         private val EVENT_JSON = Json { encodeDefaults = true; explicitNulls = false }
+        private const val FEISHU_MAX_PAYLOAD_BYTES = 20 * 1024
         private val STRICT_JSON = Json { isLenient = false }
         private val LABELS = mapOf(
             "channel.unhealthy" to "渠道异常", "channel.recovered" to "渠道已恢复",

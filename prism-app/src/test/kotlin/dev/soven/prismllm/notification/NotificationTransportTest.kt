@@ -268,6 +268,30 @@ class NotificationTransportTest {
     }
 
     @Test
+    fun `Feishu template expansion escapes markdown and falls back over the payload budget`() = runBlocking<Unit> {
+        val bodies = mutableListOf<String>()
+        val transport = SafeNotificationTransport(
+            credentials(url = "https://hooks.example.test/feishu"),
+            NotificationDnsResolver { listOf(publicIpv4) },
+            NotificationHttpExecutor { _, _, _, body ->
+                bodies += body.toString(Charsets.UTF_8)
+                NotificationHttpResponse(200, null, """{"code":0}""".toByteArray(), false)
+            }, { 1_800_000_456L },
+        )
+        val special = event().copy(channelName = "core*[x](y)<at id=all></at>")
+        assertTrue(transport.send(target("feishu").copy(templateBody = "{{channel}}"), special).success)
+        val escaped = bodies.last()
+        assertTrue(escaped.contains("core&#42;&#91;x&#93;(y)&#60;at id=all&#62;&#60;/at&#62;"))
+        assertFalse(escaped.contains("](y)"))
+
+        val longEvent = event().copy(channelName = "x".repeat(240))
+        val longTemplate = (1..100).joinToString(" ") { "{{channel}}" } + " MARKER"
+        assertTrue(transport.send(target("feishu").copy(templateBody = longTemplate), longEvent).success)
+        assertFalse(bodies.last().contains("MARKER"))
+        assertTrue(bodies.last().toByteArray(Charsets.UTF_8).size <= 20 * 1024)
+    }
+
+    @Test
     fun `Feishu only accepts numeric zero code`() = runBlocking {
         listOf("""{"code":"0"}""", """{"code":false}""", """{"code":1}""", "not-json").forEach { body ->
             val result = transport(

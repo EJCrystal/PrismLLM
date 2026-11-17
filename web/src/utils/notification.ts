@@ -22,7 +22,7 @@ export const notificationTemplateVariables = [
   'occurredAt', 'eventId', 'metrics',
 ] as const
 
-const templateVariablePattern = /\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*\}\}/g
+const templateVariablePattern = /\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g
 
 export function notificationTemplateError(title: string, body: string): string {
   if (title.length > 100) return '模板标题不能超过 100 个字符。'

@@ -27,7 +27,7 @@ object NotificationTemplateVariables {
         "occurredAt", "eventId", "metrics",
     )
 
-    private val pattern = Regex("\\{\\{\\s*([A-Za-z][A-Za-z0-9]*)\\s*\\}\\}")
+    private val pattern = Regex("\\{\\{\\s*([A-Za-z][A-Za-z0-9_]*)\\s*\\}\\}")
 
     fun unknown(template: String): Set<String> =
         pattern.findAll(template).map { it.groupValues[1] }.filter { it !in names }.toSet()

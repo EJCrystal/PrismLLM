@@ -440,7 +440,7 @@ class NotificationIntegrationTest : GatewayIntegrationTestBase() {
                 contentType(ContentType.Application.Json)
                 setBody(
                     """{"name":"模板目标","type":"feishu","enabled":false,"events":["key.disabled"],"channelIds":[],""" +
-                        """"templateTitle":"{{unknown}}","revision":$revision}""",
+                        """"templateTitle":"{{unknown}}","templateBody":"{{channel_name}}","revision":$revision}""",
                 )
             }
             assertEquals(HttpStatusCode.BadRequest, invalid.status, invalid.bodyAsText())
