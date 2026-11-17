@@ -332,17 +332,28 @@ async function startPositionEdit(target: ModelRouteIdentity, index: number) {
   input?.select()
 }
 
-function cancelPositionEdit() {
+function cancelPositionEdit(target: ModelRouteIdentity) {
+  if (editingPositionKey.value !== entryKey(target)) return
   clearPositionEdit()
+  void focusEntry(entryKey(target), 'up')
 }
 
-function commitPositionEdit(target: ModelRouteIdentity) {
+function commitPositionEdit(target: ModelRouteIdentity, restoreFocus = false) {
   const key = entryKey(target)
   if (editingPositionKey.value !== key) return
   const parsed = Number.parseInt(String(editingPositionValue.value).trim(), 10)
   clearPositionEdit()
-  if (!Number.isFinite(parsed)) return
-  moveToPosition(target, parsed, 'up', true)
+  if (!Number.isFinite(parsed)) {
+    if (restoreFocus) void focusEntry(key, 'up')
+    return
+  }
+  const clamped = Math.max(1, Math.min(entries.value.length, Math.trunc(parsed)))
+  const currentIndex = entries.value.findIndex(entry => entryKey(entry) === key)
+  if (currentIndex >= 0 && clamped - 1 === currentIndex) {
+    if (restoreFocus) void focusEntry(key, 'up')
+    return
+  }
+  moveToPosition(target, clamped, 'up', true)
 }
 
 function dragStart(event: DragEvent, target: ModelRouteIdentity) {
@@ -675,9 +686,9 @@ onBeforeUnmount(() => {
                   :min="1"
                   :max="entries.length"
                   :aria-label="'修改 ' + credentialLabel(entry) + ' 的位次'"
-                  @keydown.enter.prevent="commitPositionEdit(entry)"
-                  @keydown.escape.prevent="cancelPositionEdit"
-                  @blur="commitPositionEdit(entry)"
+                  @keydown.enter.prevent="commitPositionEdit(entry, true)"
+                  @keydown.escape.prevent="cancelPositionEdit(entry)"
+                  @blur="editingPositionKey === entryKey(entry) && commitPositionEdit(entry, false)"
                 />
                 <span
                   v-else
