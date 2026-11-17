@@ -115,6 +115,11 @@ function oauthHint(channel: Channel): string {
   return props.mode === 'denylist' && props.policy.channels.ids.includes(channel.id) ? '渠道已被整体排除' : ''
 }
 
+/** 失效凭据行的稳定键：同渠道同 ID 的静态密钥与 OAuth 账号必须区分。 */
+function staleCredentialKey(pair: ClientKeyAllowedChannelKey): string {
+  return `${pair.channelId}/${pair.credentialType ?? 'static'}/${pair.keyId}`
+}
+
 /** 右侧选中统计：全部凭据 / 已选 x/N 凭据；黑名单语境改为“排除”。 */
 function channelStatLabel(info: ReturnType<typeof channelCheckInfo>): string {
   if (info.totalCredentials === 0) return ''
@@ -244,7 +249,7 @@ function channelStatLabel(info: ReturnType<typeof channelCheckInfo>): string {
       </label>
       <label
         v-for="pair in staleKeys"
-        :key="`${pair.channelId}/${pair.credentialType ?? 'static'}/${pair.keyId}`"
+        :key="staleCredentialKey(pair)"
         class="tree-row is-key is-stale"
       >
         <input
