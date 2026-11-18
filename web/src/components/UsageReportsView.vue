@@ -36,7 +36,7 @@ import { usageChartBucketRange, usageChartIndex, usageChartPoint, usageChartScal
 
 type DimensionId = 'clientKey' | 'channel' | 'model' | 'channelKey' | 'protocol' | 'error'
 type DimensionKey = 'byClientKey' | 'byChannel' | 'byModel' | 'byChannelKey' | 'byProtocol' | 'byErrorCode'
-type TrendMetricId = 'requests' | 'errorRate' | 'tokens' | 'cost'
+type TrendMetricId = 'requests' | 'tokens' | 'cost'
 
 interface RangeDraft {
   from: string
@@ -110,11 +110,6 @@ const trendMetrics: TrendMetric[] = [
     ],
   },
   {
-    id: 'errorRate',
-    label: '错误率',
-    series: [{ id: 'errorRate', label: '错误率', value: usageErrorRate }],
-  },
-  {
     id: 'tokens',
     label: 'Token 用量',
     series: [
@@ -138,6 +133,7 @@ const emptyTotal: UsageTotal = {
 }
 const total = computed<UsageTotal>(() => report.value?.total || emptyTotal)
 const successRate = computed(() => usagePercent(total.value.requests, total.value.errors))
+const overallErrorRateText = computed(() => total.value.requests ? `${((total.value.errors / total.value.requests) * 100).toFixed(1)}%` : '—')
 const cacheHitText = computed(() => formatCacheHit(total.value))
 const activeDimension = computed(() => dimensions.find((item) => item.id === dimension.value) || dimensions[0])
 const dimensionRows = computed<UsageGroup[]>(() => report.value?.[activeDimension.value.key] || [])
@@ -161,16 +157,30 @@ const trendMaxValue = computed(() => usageTrendMax(
   ...activeTrendMetric.value.series.map((series) => series.value),
 ))
 const chartScale = computed(() => usageChartScale(trendMaxValue.value))
+const errorRateHasSamples = computed(() => trendRows.value.some((row) => row.requests > 0))
+const errorRateMax = computed(() => Math.max(0, ...trendRows.value.map((row) => usageErrorRate(row) ?? 0)))
+const errorRateScale = computed(() => usageChartScale(errorRateMax.value))
+const errorRateSegments = computed(() => (
+  trendMetric.value === 'requests' ? buildTrendSegments(trendRows.value, usageErrorRate, errorRateScale.value.max) : []
+))
 const chartIndex = ref<number | null>(null)
 const chartSliderIndex = computed(() => Math.max(0, Math.min(trendRows.value.length - 1, chartIndex.value ?? trendRows.value.length - 1)))
 const chartValueText = computed(() => {
   const row = trendRows.value[chartSliderIndex.value]
   if (!row) return ''
   const parts = activeTrendMetric.value.series.map((series) => `${series.label} ${formatTrendValue(series.value(row))}`)
+  if (trendMetric.value === 'requests') parts.push(`错误率 ${formatErrorRateValue(usageErrorRate(row))}`)
   if (trendMetric.value === 'tokens') parts.push(`缓存命中率 ${formatCacheHit(row)}`)
   return `${formatTimeRange(row.bucketStart)}，${parts.join('，')}`
 })
 const chartRow = computed(() => chartIndex.value == null ? null : trendRows.value[chartIndex.value] || null)
+const chartErrorRatePoint = computed(() => {
+  const row = chartRow.value
+  if (!row || trendMetric.value !== 'requests') return null
+  const rate = usageErrorRate(row)
+  if (rate == null) return null
+  return usageChartPoint(chartIndex.value!, trendRows.value.length, rate, errorRateScale.value.max)
+})
 const chartSeriesPoints = computed(() => {
   const row = chartRow.value
   if (!row) return []
@@ -219,11 +229,10 @@ const trendSeriesPoints = computed(() => activeTrendMetric.value.series.map((ser
   id: series.id,
   label: series.label,
   segments: buildTrendSegments(trendRows.value, series.value, chartScale.value.max),
-  max: trendMetric.value === 'errorRate' && !trendRows.value.some(row => row.requests > 0) ? null : trendSeriesMax.value[index] || 0,
+  max: trendSeriesMax.value[index] || 0,
   className: trendSeriesClass(index),
 })))
 const trendArea = computed(() => {
-  if (trendMetric.value === 'errorRate') return ''
   const seriesPoints = trendSeriesPoints.value[0]?.segments[0]
   if (!seriesPoints) return ''
   const lastPoint = seriesPoints.split(' ').at(-1)
@@ -289,11 +298,14 @@ function formatBucket(value: number): string {
 
 function formatTrendValue(value: number | null): string {
   if (value == null) return '—'
-  if (trendMetric.value === 'errorRate') return value.toFixed(1) + '%'
   if (trendMetric.value === 'cost') {
     return formatUsageCost(value)
   }
   return trendMetric.value === 'requests' ? formatNumber(value) : formatTokensCompact(value)
+}
+
+function formatErrorRateValue(value: number | null): string {
+  return value == null ? '—' : `${value.toFixed(1)}%`
 }
 
 function formatCacheHit(row: Pick<UsageTrend, 'inputTokens' | 'cachedTokens'>): string {
@@ -576,17 +588,24 @@ onMounted(() => {
         <div v-if="!trendRows.length" class="usage-chart-empty">该时间范围没有请求。</div>
         <div v-else class="usage-chart-wrap" @focusout="chartFocusOut">
           <div class="usage-chart-readout">
-            <div class="usage-chart-values" aria-live="polite" aria-atomic="true"><strong>{{ chartRow ? formatTimeRange(chartRow.bucketStart) : '选择时间点' }}</strong><span v-for="series in activeTrendMetric.series" :key="series.id"><span class="usage-chart-series-label" :title="series.label">{{ series.label }}</span><b>{{ chartRow ? formatTrendValue(series.value(chartRow)) : '—' }}</b></span></div>
+            <div class="usage-chart-values" aria-live="polite" aria-atomic="true">
+              <strong>{{ chartRow ? formatTimeRange(chartRow.bucketStart) : '点击或滑动图表查看' }}</strong>
+              <span v-for="series in activeTrendMetric.series" :key="series.id"><span class="usage-chart-series-label" :title="series.label">{{ series.label }}</span><b>{{ chartRow ? formatTrendValue(series.value(chartRow)) : '—' }}</b></span>
+              <span v-if="trendMetric === 'requests'"><span class="usage-chart-series-label">错误率</span><b>{{ chartRow ? formatErrorRateValue(usageErrorRate(chartRow)) : '—' }}</b></span>
+              <span v-if="trendMetric === 'tokens'"><span class="usage-chart-series-label" title="缓存命中率 = 缓存读 token / 输入 token">缓存命中率</span><b>{{ chartRow ? formatCacheHit(chartRow) : '—' }}</b></span>
+            </div>
             <button type="button" class="button subtle usage-chart-filter" :disabled="!chartRow" @click="selectChartBucket">只看此时间段</button>
           </div>
-          <div class="usage-chart-with-axis">
-          <div class="usage-chart-y-axis" aria-hidden="true"><span v-for="tick in chartScale.ticks" :key="tick" :style="{ top: `${(142 - tick / chartScale.max * 134) / 150 * 100}%` }">{{ trendMetric === 'errorRate' ? tick + '%' : trendMetric === 'cost' ? Number(tick.toPrecision(6)).toLocaleString('zh-CN', { maximumFractionDigits: 8 }) : formatTokensCompact(tick) }}</span></div>
-          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'errorRate' ? '单位 百分比' : trendMetric === 'cost' ? '单位 USD' : trendMetric === 'tokens' ? '单位 token' : '单位 次'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @keydown="chartKey">
+          <div class="usage-chart-with-axis" :class="{ 'has-right-axis': trendMetric === 'requests' }">
+          <div class="usage-chart-y-axis" aria-hidden="true"><span v-for="tick in chartScale.ticks" :key="tick" :style="{ top: `${(142 - tick / chartScale.max * 134) / 150 * 100}%` }">{{ trendMetric === 'cost' ? Number(tick.toPrecision(6)).toLocaleString('zh-CN', { maximumFractionDigits: 8 }) : formatTokensCompact(tick) }}</span></div>
+          <div v-if="trendMetric === 'requests'" class="usage-chart-y-axis is-right" aria-hidden="true"><span v-for="tick in errorRateScale.ticks" :key="'rate-' + tick" :style="{ top: `${(142 - tick / errorRateScale.max * 134) / 150 * 100}%` }">{{ tick }}%</span></div>
+          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? '单位 USD' : trendMetric === 'tokens' ? '单位 token' : '单位 次与百分比'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @keydown="chartKey">
             <defs><linearGradient id="usage-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0.01"/></linearGradient></defs>
             <line v-for="tick in chartScale.ticks" :key="tick" x1="8" :y1="142 - tick / chartScale.max * 134" x2="632" :y2="142 - tick / chartScale.max * 134" class="usage-chart-grid" />
             <polygon v-if="trendArea" :points="trendArea" class="usage-chart-area" />
             <template v-for="series in trendSeriesPoints" :key="series.id"><template v-for="(points, index) in series.segments" :key="index"><polyline :points="points" :class="['usage-chart-line', series.className]" /><circle v-if="!points.includes(' ')" :cx="points.split(',')[0]" :cy="points.split(',')[1]" r="3" :class="['usage-chart-point', series.className]" /></template></template>
-            <template v-if="chartSeriesPoints.length"><line :x1="chartSeriesPoints[0].x" :x2="chartSeriesPoints[0].x" y1="8" y2="142" class="usage-chart-crosshair" /><circle v-for="point in chartSeriesPoints" :key="point.id" :cx="point.x" :cy="point.y" :r="point.className ? 3.5 : 4" :class="['usage-chart-point', point.className]" /></template>
+            <template v-for="(points, index) in errorRateSegments" :key="'rate-' + index"><polyline :points="points" class="usage-chart-line rate" /><circle v-if="!points.includes(' ')" :cx="points.split(',')[0]" :cy="points.split(',')[1]" r="3" class="usage-chart-point rate" /></template>
+            <template v-if="chartSeriesPoints.length"><line :x1="chartSeriesPoints[0].x" :x2="chartSeriesPoints[0].x" y1="8" y2="142" class="usage-chart-crosshair" /><circle v-for="point in chartSeriesPoints" :key="point.id" :cx="point.x" :cy="point.y" :r="point.className ? 3.5 : 4" :class="['usage-chart-point', point.className]" /><circle v-if="chartErrorRatePoint" :cx="chartErrorRatePoint.x" :cy="chartErrorRatePoint.y" r="5.5" class="usage-chart-point rate is-ring" /></template>
           </svg>
           </div>
           <div class="usage-chart-axis">
@@ -594,8 +613,8 @@ onMounted(() => {
           </div>
           <div class="usage-chart-legend">
             <span v-for="series in trendSeriesPoints" :key="series.id"><i :class="['dot', series.className]"></i>{{ series.label }} 最高 {{ formatTrendValue(series.max) }}</span>
+            <span v-if="trendMetric === 'requests'"><i class="dot rate"></i>错误率 最高 {{ errorRateHasSamples ? formatErrorRateValue(errorRateMax) : '—' }}（整体 {{ overallErrorRateText }} · 无请求不连线）</span>
             <span v-if="trendMetric === 'tokens'" class="usage-chart-note" title="输入 token 包含缓存读与缓存写；缓存命中率只统计缓存读">缓存读 / 写是输入 token 的子集 · 整体缓存命中率 {{ cacheHitText }}</span>
-            <span v-if="trendMetric === 'errorRate'">错误数 / 请求数 · 无请求的时段不连线</span>
             <span v-if="trendMetric === 'cost'">仅统计 USD 费用</span>
           </div>
         </div>
@@ -637,7 +656,7 @@ onMounted(() => {
                 </td>
                 <td><strong>{{ formatNumber(row.requests) }}</strong><small class="muted">{{ row.errors ? `含 ${formatNumber(row.errors)} 错误` : '无错误' }}</small></td>
                 <td><span class="badge" :class="errorRateTone(row)">{{ errorRate(row) }}</span></td>
-                <td>{{ formatTokensCompact(row.totalTokens) }}<small class="muted"> 入 {{ formatTokensCompact(row.inputTokens) }} / 出 {{ formatTokensCompact(row.outputTokens) }}</small></td>
+                <td>{{ formatTokensCompact(row.totalTokens) }}<small class="muted"> 入 {{ formatTokensCompact(row.inputTokens) }} / 出 {{ formatTokensCompact(row.outputTokens) }}<template v-if="row.inputTokens > 0 && row.cachedTokens > 0"> · 缓存 {{ formatCacheHit(row) }}</template></small></td>
                 <td>{{ latency(row.avgTotalMs) }}<small class="muted"> 首 token {{ latency(row.avgFirstTokenMs) }}</small></td>
                 <td class="small"><span class="usage-exact-cost" tabindex="0" :data-exact="row.costUsd != null ? row.costUsd + ' USD' : '无计费数据'" :aria-label="row.costUsd != null ? row.costUsd + ' USD' : '无计费数据'">{{ costText(row) }}</span></td>
               </tr>

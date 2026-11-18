@@ -5081,7 +5081,7 @@ textarea:disabled {
 }
 
 .logs-table {
-  width: max(100%, 1300px);
+  width: max(100%, 1160px);
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
@@ -5091,8 +5091,8 @@ textarea:disabled {
 .logs-table td.time-col {
   position: sticky;
   left: 0;
-  width: 144px;
-  min-width: 144px;
+  width: 136px;
+  min-width: 136px;
   border-right: 1px solid var(--glass-line);
 }
 
@@ -5115,8 +5115,8 @@ textarea:disabled {
 .logs-table td.actions-col {
   position: sticky;
   right: 0;
-  width: 68px;
-  min-width: 68px;
+  width: 64px;
+  min-width: 64px;
   border-left: 1px solid var(--glass-line);
 }
 
@@ -7661,6 +7661,13 @@ textarea:disabled {
   opacity: 0.85;
 }
 
+.usage-chart-line.rate {
+  stroke: var(--danger);
+  stroke-width: 1.6;
+  stroke-dasharray: 2 3;
+  opacity: 0.9;
+}
+
 .usage-chart-axis {
   display: flex;
   align-items: center;
@@ -7713,6 +7720,10 @@ textarea:disabled {
 
 .usage-chart-legend .dot.quaternary {
   background: var(--reasoning);
+}
+
+.usage-chart-legend .dot.rate {
+  background: var(--danger);
 }
 
 .usage-chart-empty {
@@ -8027,15 +8038,21 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .usage-chart-readout > strong { font-size: 12px; }
 .usage-chart-readout b { margin-left: 5px; font-variant-numeric: tabular-nums; }
 .usage-chart-with-axis { position: relative; padding-left: 48px; }
+.usage-chart-with-axis.has-right-axis { padding-right: 44px; }
 .usage-chart-y-axis { position: absolute; inset: 0 auto 0 0; width: 42px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.usage-chart-y-axis.is-right { inset: 0 0 0 auto; width: 38px; }
 .usage-chart-y-axis > span { position: absolute; right: 0; transform: translateY(-50%); white-space: nowrap; }
+.usage-chart-y-axis.is-right > span { right: auto; left: 0; }
 .usage-chart { touch-action: pan-y; cursor: crosshair; border-radius: 4px; outline: none; }
 .usage-chart-crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
 .usage-chart-point { fill: var(--brand); stroke: var(--panel); stroke-width: 2; }
 .usage-chart-point.secondary { fill: var(--warning-fill); }
 .usage-chart-point.tertiary { fill: var(--success-fill); }
 .usage-chart-point.quaternary { fill: var(--reasoning); }
+.usage-chart-point.rate { fill: var(--danger); }
+.usage-chart-point.rate.is-ring { fill: none; stroke: var(--danger); stroke-width: 2; }
 .usage-chart-axis { margin-left: 48px; }
+.usage-chart-with-axis.has-right-axis + .usage-chart-axis { margin-right: 44px; }
 
 @media (max-width: 640px) {
   .page-compact .stat-card { grid-template-columns: minmax(0, 1fr) auto; align-content: center; align-items: center; min-height: 54px; gap: 3px 8px; }
@@ -8076,10 +8093,13 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
   .report-presets { display: flex; flex-wrap: wrap; }
   .report-preset { min-height: 36px; }
   .usage-chart-with-axis { padding-left: 42px; }
+  .usage-chart-with-axis.has-right-axis { padding-right: 38px; }
   .usage-chart-y-axis { width: 36px; }
+  .usage-chart-y-axis.is-right { width: 34px; }
   .usage-chart-readout { min-height: 64px; gap: 4px 12px; }
   .usage-chart-readout > strong { width: 100%; }
   .usage-chart-axis { display: flex; margin-left: 42px; }
+  .usage-chart-with-axis.has-right-axis + .usage-chart-axis { margin-right: 38px; }
   .usage-chart-axis span:not(:first-child):not(:last-child) { display: none; }
   .usage-chart-axis span:first-child { text-align: left; }
   .usage-chart-axis span:last-child { text-align: right; }
@@ -8091,11 +8111,13 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 /* Audit paths and IDs keep their own space rather than forcing character-by-character rows. */
 .audit-table { min-width: 960px; table-layout: fixed; }
 .audit-table th:nth-child(1) { width: 130px; }
-.audit-table th:nth-child(2) { width: 150px; }
+.audit-table th:nth-child(2) { width: 180px; }
 .audit-table th:nth-child(3) { width: 110px; }
 .audit-table th:nth-child(4) { width: 200px; }
-.audit-table th:nth-child(5) { width: 240px; }
+.audit-table th:nth-child(5) { width: 210px; }
 .audit-table th:nth-child(6) { width: 130px; }
+.audit-table td:nth-child(2) .mono,
+.audit-table td:nth-child(3) .mono { white-space: normal; overflow-wrap: anywhere; }
 .audit-table .audit-path { white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 640px) { .channel-status-toggle { min-height: 40px; } }
 
@@ -8134,10 +8156,10 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .density-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; border-radius: 8px; background: var(--glass-field); }
 .density-switch button { min-height: 28px; padding: 3px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
 .density-switch button.active { background: var(--glass-field-strong); color: var(--brand); box-shadow: 0 1px 3px color-mix(in srgb, var(--ink) 10%, transparent); }
-.logs-table .log-col-time { width: 144px; min-width: 144px; }
-.logs-table .log-col-request { width: 116px; }
-.logs-table .log-col-model { width: 196px; }
-.logs-table .log-col-channel { width: 208px; }
+.logs-table .log-col-time { width: 136px; min-width: 136px; }
+.logs-table .log-col-request { width: 102px; }
+.logs-table .log-col-model { width: 176px; }
+.logs-table .log-col-channel { width: 184px; }
 /* 请求日志渠道列：渠道名 → 密钥 → 上游模型逐行对齐，模型用等宽代码块区分标识符。 */
 .logs-table .channel-cell { min-width: 0; max-width: 100%; }
 .logs-table td { vertical-align: top; }
@@ -8240,10 +8262,10 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 }
 .logs-table .log-col-client-ip { width: 132px; }
 .logs-table .log-col-client-ua { width: 180px; }
-.logs-table .log-col-status { width: 136px; }
-.logs-table .log-col-latency { width: 112px; }
-.logs-table .log-col-usage { width: 218px; }
-.logs-table .log-col-cost { width: 106px; }
+.logs-table .log-col-status { width: 122px; }
+.logs-table .log-col-latency { width: 100px; }
+.logs-table .log-col-usage { width: 188px; }
+.logs-table .log-col-cost { width: 88px; }
 .logs-table.logs-density-compact th, .logs-table.logs-density-compact td { padding-top: 7px; padding-bottom: 7px; }
 .logs-table.logs-density-compact .stacked-cell { gap: 3px; }
 .logs-table.logs-density-compact .request-meta { gap: 2px 7px; }
