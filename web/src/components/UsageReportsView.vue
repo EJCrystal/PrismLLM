@@ -192,6 +192,14 @@ function axisTickStyle(index: number): Record<string, string> {
   const { x } = usageChartPoint(index, trendRows.value.length, 0, 1)
   return { left: `${(x / 640) * 100}%` }
 }
+function isAxisTickHidden(index: number): boolean {
+  const count = trendRows.value.length
+  if (count <= 12) return false
+  const last = count - 1
+  if (index === 0 || index === last) return false
+  const step = Math.ceil(count / 8)
+  return index % step !== 0 || last - index < step
+}
 const chartSeriesPoints = computed(() => {
   const row = chartRow.value
   if (!row) return []
@@ -649,7 +657,7 @@ onMounted(() => {
           </div>
           </div>
           <div class="usage-chart-axis">
-            <span v-for="(row, index) in trendRows" :key="row.bucketStart" :class="{ 'is-hidden': trendRows.length > 12 && index % Math.ceil(trendRows.length / 8) !== 0, 'is-first': index === 0 && trendRows.length > 1, 'is-last': index === trendRows.length - 1 && trendRows.length > 1 }" :style="axisTickStyle(index)">{{ formatBucket(row.bucketStart) }}</span>
+            <span v-for="(row, index) in trendRows" :key="row.bucketStart" :class="{ 'is-hidden': isAxisTickHidden(index), 'is-first': index === 0 && trendRows.length > 1, 'is-last': index === trendRows.length - 1 && trendRows.length > 1 }" :style="axisTickStyle(index)">{{ formatBucket(row.bucketStart) }}</span>
           </div>
           <div class="usage-chart-legend">
             <span v-for="series in trendSeriesPoints" :key="series.id"><i :class="['dot', series.className]"></i>{{ series.label }} 最高 {{ formatTrendValue(series.max) }}</span>

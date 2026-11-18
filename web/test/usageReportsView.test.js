@@ -142,6 +142,19 @@ describe('usage reports layout and contracts', () => {
     assert.equal(axisSpans[0].classList.contains('is-first'), true)
     assert.equal(axisSpans[1].style.left, '50%')
     assert.equal(axisSpans[2].classList.contains('is-last'), true)
+
+    const fourteenData = {
+      ...report(),
+      from: firstBucket,
+      to: firstBucket + 14 * 86_400_000 - 1,
+      trend: Array.from({ length: 14 }, (_, index) => ({ ...baseTotal, bucketStart: firstBucket + index * 86_400_000 })),
+    }
+    const fourteen = await render(fourteenData)
+    const ticks14 = [...fourteen.querySelectorAll('.usage-chart-axis > span')]
+    assert.equal(ticks14.length, 14)
+    assert.equal(ticks14[0].classList.contains('is-hidden'), false)
+    assert.equal(ticks14[13].classList.contains('is-hidden'), false)
+    assert.equal(ticks14[12].classList.contains('is-hidden'), true)
   })
 
   it('scales small error rates and fees to their actual range', async () => {
