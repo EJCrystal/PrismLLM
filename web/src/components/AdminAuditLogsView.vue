@@ -248,7 +248,7 @@ onMounted(load)
                 </td>
                 <td>
                   <div>{{ auditActionLabel(row.entry.action) }}</div>
-                  <div class="mono muted small">{{ row.entry.action }}</div>
+                  <div v-if="auditActionLabel(row.entry.action) !== row.entry.action" class="mono muted small">{{ row.entry.action }}</div>
                   <div v-if="auditDetailsSummary(row.entry)" class="audit-details-summary small">{{ auditDetailsSummary(row.entry) }}</div>
                   <details v-if="auditDetailsRows(row.entry).length" class="audit-details">
                     <summary>查看详情</summary>
@@ -296,7 +296,7 @@ onMounted(load)
 </template>
 
 <style scoped>
-.audit-filters { display: grid; grid-template-columns: repeat(5, minmax(140px, 1fr)) auto; align-items: end; gap: 12px; padding: 14px; border: 1px solid var(--glass-line); border-radius: 12px; background: var(--glass-field); }
+.audit-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); align-items: end; gap: 12px; padding: 14px; border: 1px solid var(--glass-line); border-radius: 12px; background: var(--glass-field); min-width: 0; }
 .audit-filters .field { min-width: 0; margin: 0; }
 .audit-filters > .filter-chip-group { justify-self: start; }
 .audit-filters input, .audit-filters select { width: 100%; min-width: 0; }

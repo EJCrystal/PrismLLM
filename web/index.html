@@ -9,11 +9,12 @@
       (function() {
         try {
           var t = localStorage.getItem('prism_llm_theme') || localStorage.getItem('llm_gw_theme');
-          if (t === 'dark' || t === 'sepia') {
-            document.documentElement.setAttribute('data-theme', t);
-          } else {
-            document.documentElement.setAttribute('data-theme', 'light');
-          }
+          var p = localStorage.getItem('prism_llm_palette');
+          var mode = t === 'dark' ? 'dark' : 'light';
+          var valid = { gemini: 1, sky: 1, cyan: 1, orange: 1, red: 1, purple: 1 };
+          var palette = p && valid[p] ? p : (t === 'sepia' ? 'orange' : 'gemini');
+          document.documentElement.setAttribute('data-theme', mode);
+          document.documentElement.setAttribute('data-palette', palette);
         } catch (e) {}
       })();
     </script>

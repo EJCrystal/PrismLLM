@@ -162,6 +162,9 @@ onBeforeUnmount(() => {
           <strong>PrismLLM</strong>
           <span>Control plane</span>
         </div>
+        <button type="button" class="icon-button sidebar-close" aria-label="关闭导航" @click="navOpen = false">
+          <Icon name="close" :size="16" />
+        </button>
       </div>
 
       <nav class="nav" aria-label="管理导航">

@@ -58,6 +58,7 @@ const options: Array<{ value: ClientKeyAccessMode; label: string; sub: string; i
   background: color-mix(in srgb, var(--bg) 46%, transparent);
 }
 .mode-segment {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;

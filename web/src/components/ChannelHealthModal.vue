@@ -171,7 +171,7 @@ function tryClose() {
 </script>
 
 <template>
-  <Modal :title="channel.name + ' · 渠道健康度'" wide @close="tryClose">
+  <Modal :title="channel.name + ' · 渠道健康度'" eyebrow="健康观测" wide @close="tryClose">
     <div class="health-detail">
       <div class="health-detail-toolbar">
         <div class="health-window-tabs" role="group" aria-label="健康度时间范围">

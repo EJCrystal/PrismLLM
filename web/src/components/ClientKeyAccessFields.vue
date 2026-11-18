@@ -279,9 +279,9 @@ const missingScopes = computed(() => loaded.value ? [
     </p>
 
     <fieldset aria-label="渠道与密钥访问范围" class="access-scope">
-      <legend>渠道与密钥</legend>
+      <legend class="sr-only">渠道与密钥</legend>
       <div class="scope-head">
-        <Icon name="layers" :size="15" class="scope-icon" />
+        <span class="scope-title"><Icon name="layers" :size="15" class="scope-icon" />渠道与密钥</span>
         <span class="scope-pill">支持按整渠道或子密钥级联限制</span>
         <span class="scope-stat">当前生效密钥：<strong>{{ effectiveKeys }}/{{ totalKeys }}</strong></span>
       </div>
@@ -316,9 +316,9 @@ const missingScopes = computed(() => loaded.value ? [
     </fieldset>
 
     <fieldset aria-label="模型访问范围" class="access-scope">
-      <legend>对外模型 ID</legend>
+      <legend class="sr-only">对外模型 ID</legend>
       <div class="scope-head">
-        <Icon name="cpu" :size="15" class="scope-icon" />
+        <span class="scope-title"><Icon name="cpu" :size="15" class="scope-icon" />对外模型 ID</span>
         <span class="scope-stat">可调用模型池：<strong>{{ availableModelCount }}</strong> 个</span>
       </div>
       <AccessModeToggle
@@ -451,14 +451,18 @@ const missingScopes = computed(() => loaded.value ? [
 <style scoped>
 .client-key-access-fields { display: grid; gap: 14px; min-width: 0; }
 .access-intro p, .access-scope p { margin: 6px 0 0; }
-.access-scope { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 10px; }
-.access-scope legend { padding: 0 5px; font-weight: 600; }
-.scope-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.access-scope { min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--glass-line); border-radius: 12px; display: grid; gap: 10px; background: color-mix(in srgb, var(--glass-bg) 42%, transparent); }
+.scope-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.scope-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: var(--ink); font-size: 13px; }
 .scope-icon { flex: 0 0 auto; color: var(--brand); }
 .scope-pill {
   flex: 0 1 auto; padding: 2px 9px; border-radius: 999px; font-size: 11px;
-  color: var(--muted); background: var(--glass-bg); border: 1px solid var(--line);
+  color: var(--muted); background: var(--glass-field); border: 1px solid var(--glass-line);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
 .scope-stat { flex: 0 0 auto; margin-left: auto; font-size: 12px; color: var(--muted); }
 .scope-stat strong { color: var(--brand); font-weight: 600; }

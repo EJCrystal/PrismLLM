@@ -699,12 +699,20 @@ onBeforeUnmount(() => {
                   @dblclick.stop="startPositionEdit(entry, index)"
                 >{{ index + 1 }}</span>
                 <div class="route-credential-copy">
-                  <div class="route-credential-title">
-                    <strong>{{ entry.credentialName || entry.credentialId }}</strong>
-                    <span class="route-channel-tag muted small">{{ entry.channelName || entry.channelId }}</span>
-                    <span class="badge neutral">{{ entry.credentialType === 'oauth' ? '订阅账号' : '静态密钥' }}</span>
-                    <span class="badge" :class="entry.selectable ? 'success' : 'warning'">{{ entry.selectable ? '可用' : '不可用' }}</span>
-                    <span v-if="perspectiveActive && credentialScopeReason(entry)" class="badge warning">调用方排除</span>
+                  <div class="route-entry-head">
+                    <div class="route-credential-title">
+                      <strong>{{ entry.credentialName || entry.credentialId }}</strong>
+                      <span class="route-channel-tag muted small">{{ entry.channelName || entry.channelId }}</span>
+                      <span class="badge neutral">{{ entry.credentialType === 'oauth' ? '订阅账号' : '静态密钥' }}</span>
+                      <span class="badge" :class="entry.selectable ? 'success' : 'warning'">{{ entry.selectable ? '可用' : '不可用' }}</span>
+                      <span v-if="perspectiveActive && credentialScopeReason(entry)" class="badge warning">调用方排除</span>
+                    </div>
+                    <div v-if="!perspectiveActive" class="route-entry-actions" :aria-label="credentialLabel(entry) + '的排序与移除操作'" role="group">
+                      <button type="button" class="icon-button" data-action="top" :aria-label="'置顶 ' + credentialLabel(entry)" title="置顶" :disabled="editorBusy || index === 0" @click="moveToPosition(entry, 1, 'top', true)"><Icon name="to-top" :size="16" /></button>
+                      <button type="button" class="icon-button" data-action="up" :aria-label="'上移 ' + credentialLabel(entry)" title="上移" :disabled="editorBusy || index === 0" @click="moveEntry(entry, -1)"><Icon name="up" :size="18" /></button>
+                      <button type="button" class="icon-button" data-action="down" :aria-label="'下移 ' + credentialLabel(entry)" title="下移" :disabled="editorBusy || index === entries.length - 1" @click="moveEntry(entry, 1)"><Icon name="down" :size="18" /></button>
+                      <button type="button" class="icon-button danger" data-action="remove" :aria-label="'移除 ' + credentialLabel(entry)" title="移除" :disabled="editorBusy" @click="removeEntry(entry)"><Icon name="trash" :size="16" /></button>
+                    </div>
                   </div>
                   <div class="route-credential-meta">
                     <span class="route-upstream small" :title="entry.upstreamModels.join('、') || undefined">上游模型：{{ entry.upstreamModels.join('、') || '无授权模型' }}</span>
@@ -712,12 +720,6 @@ onBeforeUnmount(() => {
                   </div>
                   <p v-if="!entry.selectable" class="route-reason small">{{ unavailableReason(entry) }}</p>
                   <p v-if="perspectiveActive && credentialScopeReason(entry)" class="route-scope-reason small">调用方范围：{{ credentialScopeReason(entry) }}</p>
-                </div>
-                <div v-if="!perspectiveActive" class="route-entry-actions" :aria-label="credentialLabel(entry) + '的排序与移除操作'" role="group">
-                  <button type="button" class="icon-button" data-action="top" :aria-label="'置顶 ' + credentialLabel(entry)" title="置顶" :disabled="editorBusy || index === 0" @click="moveToPosition(entry, 1, 'top', true)"><Icon name="to-top" :size="16" /></button>
-                  <button type="button" class="icon-button" data-action="up" :aria-label="'上移 ' + credentialLabel(entry)" title="上移" :disabled="editorBusy || index === 0" @click="moveEntry(entry, -1)"><Icon name="up" :size="18" /></button>
-                  <button type="button" class="icon-button" data-action="down" :aria-label="'下移 ' + credentialLabel(entry)" title="下移" :disabled="editorBusy || index === entries.length - 1" @click="moveEntry(entry, 1)"><Icon name="down" :size="18" /></button>
-                  <button type="button" class="icon-button danger" data-action="remove" :aria-label="'移除 ' + credentialLabel(entry)" title="移除" :disabled="editorBusy" @click="removeEntry(entry)"><Icon name="trash" :size="16" /></button>
                 </div>
               </li>
             </ol>
@@ -772,7 +774,7 @@ onBeforeUnmount(() => {
 .route-models { position: sticky; top: 18px; }
 .route-perspective { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 14px; }
 .route-perspective-select { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-.route-perspective-select select { min-width: 180px; max-width: min(320px, 60vw); padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--glass-field); color: var(--ink); font: inherit; }
+.route-perspective-select select { min-width: 180px; max-width: min(320px, 60vw); min-height: 34px; padding: 6px 32px 6px 10px; border: 1px solid var(--glass-line); border-radius: 9px; background-color: var(--glass-field); color: var(--ink); font: inherit; }
 .route-perspective-summary { margin-left: auto; overflow-wrap: anywhere; }
 .route-perspective-note { margin-bottom: 18px; }
 .route-perspective-note p { margin: 5px 0 0; line-height: 1.7; }
@@ -786,11 +788,11 @@ onBeforeUnmount(() => {
 .route-model-search, .route-credential-search { width: 100%; min-width: 0; }
 .route-model-search input, .route-credential-search input { width: 0; min-width: 0; flex: 1; }
 .route-model-list, .route-entry-list, .route-available-list { list-style: none; padding: 0; }
-.route-model-list { display: grid; gap: 4px; max-height: min(60vh, 680px); margin: 12px -6px; overflow: auto; }
-.route-model { display: grid; gap: 7px; width: 100%; padding: 11px 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.route-model-list { display: grid; gap: 4px; max-height: min(52vh, 560px); margin: 12px -6px; overflow: auto; }
+.route-model { display: grid; gap: 7px; width: 100%; padding: 10px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
 .route-model strong { overflow-wrap: anywhere; font-size: 12px; font-weight: 650; }
 .route-model:hover, .route-model.is-selected { background: var(--glass-field); border-color: var(--glass-line); }
-.route-model.is-selected { border-left: 3px solid var(--brand); padding-left: 8px; }
+.route-model.is-selected { border-color: color-mix(in srgb, var(--brand) 36%, var(--glass-line)); box-shadow: inset 3px 0 0 var(--brand); padding-left: 11px; }
 .route-model-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; font-size: 11px; color: var(--muted); }
 .route-model-meta .badge, .route-credential-title .badge { margin: 0; font-size: 10px; }
 .route-pagination { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--glass-line); padding-top: 12px; }
@@ -810,7 +812,8 @@ onBeforeUnmount(() => {
 .route-mobile-tab.is-active { background: var(--panel); color: var(--ink); box-shadow: 0 1px 4px rgba(0, 0, 0, .08); }
 .route-selected-pane { display: grid; gap: 10px; min-width: 0; }
 .route-entry-list { display: grid; gap: 6px; max-height: clamp(280px, 56vh, 640px); overflow-y: auto; padding-right: 4px; margin: 0; }
-.route-entry { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-field); cursor: grab; transition: border-color .2s ease, box-shadow .2s ease; }
+.route-entry { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; gap: 10px; padding: 10px 12px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-field); cursor: grab; transition: border-color .2s ease, box-shadow .2s ease; }
+.route-entry-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
 .route-entry:active { cursor: grabbing; }
 .route-entry.is-dragging { opacity: .58; }
 .route-entry.is-drag-over, .route-entry.is-just-moved { border-color: var(--brand); box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 22%, transparent); }
@@ -820,22 +823,23 @@ onBeforeUnmount(() => {
 .route-position.is-editable:hover { border-color: var(--brand); color: var(--brand); background: color-mix(in srgb, var(--brand) 8%, transparent); }
 .route-position-input { width: 38px; height: 26px; padding: 0 4px; border: 1px solid var(--brand); border-radius: 8px; background: var(--surface-solid, var(--panel)); color: var(--ink); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 20%, transparent); }
 .route-position-input::-webkit-inner-spin-button, .route-position-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-.route-credential-copy { min-width: 0; display: grid; gap: 3px; }
-.route-credential-title { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; min-height: 22px; }
+.route-credential-copy { min-width: 0; display: grid; gap: 5px; }
+.route-credential-title { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; min-height: 24px; }
 .route-credential-title strong { font-size: 13px; overflow-wrap: anywhere; }
 .route-channel-tag { font-size: 12px; overflow-wrap: anywhere; }
-.route-credential-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; line-height: 1.45; }
+.route-credential-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 12px; min-width: 0; line-height: 1.45; }
+.route-credential-meta > span { min-width: 0; overflow-wrap: anywhere; }
 .route-upstream { color: var(--ink); }
 .route-reason { color: var(--warning); }
-.route-entry-actions { flex-wrap: nowrap; }
-.route-entry-actions .icon-button { width: 30px; height: 30px; touch-action: manipulation; }
+.route-entry-actions { flex: 0 0 auto; flex-wrap: nowrap; gap: 3px; }
+.route-entry-actions .icon-button { width: 26px; height: 26px; touch-action: manipulation; }
 .route-add-section { display: grid; gap: 10px; min-width: 0; padding-left: 18px; border-left: 1px solid var(--glass-line); }
 .route-available-filter { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; user-select: none; }
 .route-available-filter input { margin: 0; accent-color: var(--brand); }
 .route-available-list { display: grid; gap: 6px; max-height: clamp(240px, 50vh, 580px); overflow-y: auto; padding-right: 4px; margin: 0; }
 .route-available { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border: 1px solid var(--glass-line); border-radius: 9px; background: var(--glass-field); }
 .route-available > .button { flex: 0 0 auto; }
-.route-save-bar { position: sticky; bottom: 0; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 16px -18px -18px; padding: 14px 18px; border-top: 1px solid var(--glass-line); border-radius: 0 0 14px 14px; background: var(--panel); backdrop-filter: blur(14px); }
+.route-save-bar { position: sticky; bottom: 0; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 16px -18px -18px; padding: 14px 18px; border-top: 1px solid var(--glass-line); border-radius: 0 0 14px 14px; background: var(--popover-surface, var(--panel)); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
 .route-save-bar > span { color: var(--muted); }
 .route-conflict { margin-bottom: 18px; }
 .route-conflict p { line-height: 1.7; }
